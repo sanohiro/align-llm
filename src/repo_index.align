@@ -237,8 +237,7 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
     }
   }
   revision := revision_run.stdout.trim().clone()
-  revision_view: str := revision
-  return select_tracked_tests(root, changed_path, timeout_ns, revision_view)
+  return select_tracked_tests(root, changed_path, timeout_ns, revision)
 }
 
 // The evaluation entry omits `rev-parse` entirely. A repository whose HEAD is unborn therefore

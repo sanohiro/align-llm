@@ -347,4 +347,76 @@ assert subprocess.run(
 ).returncode == 0
 PY
 
-printf '%s\n' "verification loop smoke: atomic patch application, rejection rollback, repair, full pass, and bounded iteration PASS"
+# Unborn-HEAD task. The index is populated but the repository has no commit, so
+# `git rev-parse --verify HEAD` fails while `git ls-files -z` succeeds. The evaluation selection
+# entry queries only `ls-files`, so the task runs to completion instead of short-circuiting to an
+# `Invalid` result with error code 2 at the selection step.
+unborn_repo_dir="$temp_dir/unborn-repository"
+unborn_task_path="$temp_dir/unborn-task.json"
+unborn_result_path="$temp_dir/unborn-result.json"
+mkdir -p "$unborn_repo_dir"
+cp -R "$repo_dir/src" "$repo_dir/tests" "$unborn_repo_dir/"
+git init -q "$unborn_repo_dir"
+git -C "$unborn_repo_dir" config user.email smoke@example.invalid
+git -C "$unborn_repo_dir" config user.name "Verification Loop Smoke"
+git -C "$unborn_repo_dir" add --all
+if git -C "$unborn_repo_dir" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  printf '%s\n' "verification loop unborn-HEAD fixture unexpectedly has a committed HEAD" >&2
+  exit 1
+fi
+
+python3 - "$task_path" "$unborn_repo_dir" "$unborn_task_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+task["task_id"] = "verification-loop-unborn-head"
+task["root"] = sys.argv[2]
+task["memory_profile"] = None
+Path(sys.argv[3]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+"$root_dir/main" --verify-loop "$unborn_task_path" "$unborn_result_path"
+
+python3 - "$unborn_result_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert result["task_id"] == "verification-loop-unborn-head", result
+assert result["status"] == "PASS", result
+assert result["error_code"] == -1, result
+assert result["evaluation_status"] == "ok", result
+assert result["evaluation"]["status"] == "ok", result
+assert result["evaluation"]["error_code"] == -1, result
+assert result["evaluation"]["recommended_tests"] == [
+    {
+        "path": "tests/test_value.py",
+        "score": 100,
+        "reason": "basename-match",
+    }
+], result
+assert result["iteration_count"] == 2, result
+assert result["repair_count"] == 1, result
+
+first = result["attempts"][0]
+assert first["status"] == "REPAIRING", first
+assert [(stage["stage"], stage["status"]) for stage in first["stages"]] == [
+    ("candidate-apply", "PASS"),
+    ("build", "PASS"),
+    ("targeted-test", "FAIL"),
+    ("repair-apply", "PASS"),
+], first
+
+second = result["attempts"][1]
+assert second["status"] == "PASS", second
+assert [(stage["stage"], stage["status"]) for stage in second["stages"]] == [
+    ("build", "PASS"),
+    ("targeted-test", "PASS"),
+    ("full-test", "PASS"),
+], second
+PY
+
+printf '%s\n' "verification loop smoke: atomic patch application, rejection rollback, repair, full pass, unborn-HEAD selection, and bounded iteration PASS"

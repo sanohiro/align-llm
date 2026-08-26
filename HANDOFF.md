@@ -27,9 +27,20 @@ file records durable project state.
 - Owner regressions extended: `scripts/run-test-selection-smoke` adds an unborn-HEAD CLI failure case
   (`error_code` 128, empty `revision`) beside its existing revision assertion;
   `scripts/run-patch-eval-smoke` adds the three evaluation-path cases — unborn HEAD with a populated
-  index, unborn HEAD with an empty index, and a non-repository directory.
-- Baseline and paired comparison are **pending** and owned by the measurement agent; no performance
-  claim is made until §11's `TBD` fields are filled. This branch must not be published before that.
+  index, unborn HEAD with an empty index, and a non-repository directory;
+  `scripts/run-verification-loop-smoke` adds `verification-loop-unborn-head`, which proves the
+  downstream loop now runs the task (`PASS`, both real stage vectors) instead of short-circuiting to
+  `Invalid` code 2.
+- **Measurement is complete** and recorded in §11 at commit `2628cc8`. Pre-implementation baseline at
+  `9bfa372`: 43,041,708 ns median over 31 samples. The 101-pair `compare-atomic` run measured
+  42,884,666 ns parent against 42,421,792 ns candidate — a 10,793 ppm (1.08%) reduction — on an
+  aarch64 Docker Desktop linux/arm64 VM host. Normalized documents and the four-stage vector agree.
+  That host differs from the §3-10 series, so the claim is path-specific, not a platform claim.
+- The comprehensive review of `e057bf0` was one fresh independent adversarial review: two minor
+  findings and three nits, all accepted. The consolidated repair is the next commit — the
+  `select_tests` redundant `revision_view` binding, the `docs/align-development.md` two-entry
+  description, and three §2.9/§2.9.1 corrections (qualified `Output` row, honest `N/A` for the
+  `ls-files` timeout/spawn sub-paths, and the new verification-loop unborn-HEAD regression).
 
 ## C8 eighth capability: move completed result documents (2026-08-26, merged as PR #119)
 
@@ -83,16 +94,14 @@ file records durable project state.
 ## Resume in another environment
 
 1. Fetch `origin` and resume `agent/c8-selection-single-git-query`. Read `CLAUDE.md`, then
-   `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md` §2.9, §2.9.1, and §11. The design
-   gate, implementation, and extended owner regressions are complete.
-2. Measure: record the §11 pre-implementation baseline with
-   `scripts/run-c8-selection-signal-benchmark baseline-atomic PARENT_BINARY 31`, then the paired
-   `compare-atomic PARENT_BINARY CANDIDATE_BINARY 101`, and replace every `TBD` field. Reject the
-   capability if the candidate median is not repeatably lower.
-3. Complete one fresh comprehensive review, run exact-head preflight with the record owners, then
-   publish the English PR.
-4. After merge, refresh `main` and choose the next measured consumer-complete C8 boundary.
-5. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
+   `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md` §2.9, §2.9.1, and §11. Design gate,
+   implementation, extended owner regressions, measurement, review, and repair are all complete.
+2. Next action: run exact-head preflight,
+   `python3 scripts/pre-pr --owner-test verification-loop -- gmake verify-loop-smoke` together with
+   the other record owners (`test-selection-smoke`, `patch-eval-smoke`, `index-smoke`), then publish
+   the English PR with the §11 measurement and the review envelope.
+3. After merge, refresh `main` and choose the next measured consumer-complete C8 boundary.
+4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
    new Align request unless implementation exposes a genuine shipped-language, compiler/runtime,
    or standard-library gap under the request-register rules.
 
