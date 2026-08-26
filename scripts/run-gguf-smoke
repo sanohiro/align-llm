@@ -1,0 +1,343 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R0-GGUF-INSPECT narrow durable owner (`docs/specs/r0-gguf-inspection.md` section 4.2). It needs no
+# model, no network, and no reference tool: `scripts/gguf_fixture.py` writes an independent
+# synthetic corpus into a temporary tree, and every fixture is removed by the EXIT trap.
+
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+temp_dir=$(mktemp -d)
+fixture_dir="$temp_dir/fixtures"
+work_dir="$temp_dir/work"
+
+cleanup() {
+  rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
+mkdir -p "$work_dir"
+python3 "$root_dir/scripts/gguf_fixture.py" "$fixture_dir"
+
+python3 - "$root_dir/main" "$fixture_dir" "$work_dir" <<'PY'
+import json
+import os
+import struct
+import subprocess
+import sys
+from pathlib import Path
+
+binary, fixture_dir, work_dir = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+manifest = json.loads((fixture_dir / "manifest.json").read_text(encoding="utf-8"))
+WINDOW_BYTES = manifest["window_bytes"]
+
+TOP_ORDER = [
+    "schema_version", "kind", "path", "status", "error_code", "error_offset",
+    "file_size", "bytes_read", "header", "architecture", "alignment", "alignment_source",
+    "metadata_end", "tensor_table_end", "data_offset", "metadata", "tensors",
+]
+HEADER_ORDER = ["magic", "version", "tensor_count", "metadata_kv_count"]
+TENSOR_ORDER = [
+    "index", "name", "name_invalid_utf8", "n_dims", "dims", "type", "type_name",
+    "type_known", "offset", "absolute_offset",
+]
+
+
+def fail(message):
+    raise SystemExit("gguf smoke: FAIL %s" % message)
+
+
+def run(args, env=None):
+    result = subprocess.run(
+        [binary] + args, capture_output=True, env=env, cwd=str(work_dir)
+    )
+    return result
+
+
+def compare(expected, actual, where, strict):
+    """`{"$f32": bits}` / `{"$f64": bits}` compare a JSON number against an exact IEEE-754 bit
+    pattern: the two tools format floats differently while agreeing bit for bit."""
+    if isinstance(expected, dict) and len(expected) == 1 and next(iter(expected)) in ("$f32", "$f64"):
+        tag, hexed = next(iter(expected.items()))
+        if not isinstance(actual, (int, float)) or isinstance(actual, bool):
+            fail("%s: expected a JSON number, got %r" % (where, actual))
+        if tag == "$f32":
+            got = "%08x" % struct.unpack("<I", struct.pack("<f", float(actual)))[0]
+        else:
+            got = "%016x" % struct.unpack("<Q", struct.pack("<d", float(actual)))[0]
+        if got != hexed:
+            fail("%s: float bits %s, expected %s (value %r)" % (where, got, hexed, actual))
+        return
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            fail("%s: expected an object, got %r" % (where, actual))
+        if strict and list(expected.keys()) != list(actual.keys()):
+            fail("%s: field order/set %r, expected %r"
+                 % (where, list(actual.keys()), list(expected.keys())))
+        for key, value in expected.items():
+            if key not in actual:
+                fail("%s: missing field %r" % (where, key))
+            compare(value, actual[key], "%s.%s" % (where, key), strict)
+        return
+    if isinstance(expected, list):
+        if not isinstance(actual, list):
+            fail("%s: expected an array, got %r" % (where, actual))
+        if len(expected) != len(actual):
+            fail("%s: length %d, expected %d" % (where, len(actual), len(expected)))
+        for index, (want, got) in enumerate(zip(expected, actual)):
+            compare(want, got, "%s[%d]" % (where, index), strict)
+        return
+    if expected != actual:
+        fail("%s: %r, expected %r" % (where, actual, expected))
+    if isinstance(expected, bool) != isinstance(actual, bool):
+        fail("%s: %r has the wrong JSON type" % (where, actual))
+
+
+straddle_reference = None
+checked = 0
+
+for case in manifest["cases"]:
+    name = case["name"]
+    model = fixture_dir / case["file"]
+    destination = work_dir / (name + ".json")
+    result = run(["--inspect-gguf", str(model), str(destination)])
+    expected_exit = case["exit"]
+    if expected_exit == 0 and result.returncode != 0:
+        fail("%s: exit %d, expected 0 (stderr %r)" % (name, result.returncode, result.stderr))
+    if expected_exit != 0 and result.returncode == 0:
+        fail("%s: exit 0, expected a nonzero status" % name)
+    # A structural defect is a recorded `Err`, never an abort: the bounds precondition means no
+    # codec read can ever run out of range, so no fixture may die by signal.
+    if result.returncode < 0 or result.returncode > 125:
+        fail("%s: exit %d looks like an abort, not a recorded failure"
+             % (name, result.returncode))
+    if not destination.exists():
+        fail("%s: no document was written" % name)
+    document = json.loads(destination.read_text(encoding="utf-8"))
+
+    # Byte identity between the one-operand and two-operand forms.
+    stdout_result = run(["--inspect-gguf", str(model)])
+    if stdout_result.stdout != destination.read_bytes() + b"\n":
+        fail("%s: the stdout form is not byte-identical to the written document" % name)
+    if stdout_result.returncode != result.returncode:
+        fail("%s: the two forms disagree on the exit status" % name)
+
+    if document["path"] != str(model):
+        fail("%s: path %r was not reported verbatim" % (name, document["path"]))
+    if document["file_size"] != model.stat().st_size:
+        fail("%s: file_size %d, expected %d"
+             % (name, document["file_size"], model.stat().st_size))
+
+    if "top" in case:
+        top = dict(case["top"])
+        if top.get("path") == "@PATH@":
+            top["path"] = str(model)
+        compare(top, document, name, strict=False)
+    if "error" in case:
+        if document["status"] != "error":
+            fail("%s: status %r, expected 'error'" % (name, document["status"]))
+        want = case["error"]
+        if document["error_code"] != want["code"]:
+            fail("%s: error_code %r, expected %r" % (name, document["error_code"], want["code"]))
+        if want.get("offset") is not None and document["error_offset"] != want["offset"]:
+            fail("%s: error_offset %d, expected %d"
+                 % (name, document["error_offset"], want["offset"]))
+        if "offset_max" in want and not (0 <= document["error_offset"] <= want["offset_max"]):
+            fail("%s: error_offset %d is outside [0, %d]"
+                 % (name, document["error_offset"], want["offset_max"]))
+    elif document["status"] != "ok":
+        fail("%s: status %r with error_code %r, expected 'ok'"
+             % (name, document["status"], document["error_code"]))
+
+    if "metadata" in case:
+        compare(case["metadata"], document["metadata"], "%s.metadata" % name, strict=True)
+    if "metadata_count" in case and len(document["metadata"]) != case["metadata_count"]:
+        fail("%s: %d metadata records survived, expected %d"
+             % (name, len(document["metadata"]), case["metadata_count"]))
+    if "tensors" in case:
+        compare(case["tensors"], document["tensors"], "%s.tensors" % name, strict=True)
+    if "tensors_count" in case and len(document["tensors"]) != case["tensors_count"]:
+        fail("%s: %d tensor records survived, expected %d"
+             % (name, len(document["tensors"]), case["tensors_count"]))
+    if "tensor_absolute_offsets" in case:
+        got = [t["absolute_offset"] for t in document["tensors"]]
+        if got != case["tensor_absolute_offsets"]:
+            fail("%s: absolute_offset %r, expected %r"
+                 % (name, got, case["tensor_absolute_offsets"]))
+    if "summary_architecture" in case:
+        # The two-operand summary block is read positionally, so the architecture value must occupy
+        # exactly one line whatever bytes the container declares.
+        summary_lines = result.stdout.decode("utf-8").split("\n")
+        if summary_lines[:4] != ["gguf inspection:", "status:", "OK", "architecture:"]:
+            fail("%s: summary prologue %r" % (name, summary_lines[:4]))
+        if summary_lines[4] != case["summary_architecture"]:
+            fail("%s: summary architecture %r, expected %r"
+                 % (name, summary_lines[4], case["summary_architecture"]))
+        if summary_lines[5] != "version:":
+            fail("%s: the architecture value did not occupy exactly one line (%r)"
+                 % (name, summary_lines[5]))
+    if "bytes_read" in case and document["bytes_read"] != case["bytes_read"]:
+        fail("%s: bytes_read %d, expected exactly %d"
+             % (name, document["bytes_read"], case["bytes_read"]))
+    if case.get("bytes_read_lt_file_size") and document["bytes_read"] >= document["file_size"]:
+        fail("%s: bytes_read %d did not fall below file_size %d"
+             % (name, document["bytes_read"], document["file_size"]))
+    if "skipped_bytes" in case:
+        skipped = document["file_size"] - document["bytes_read"]
+        if skipped != case["skipped_bytes"]:
+            fail("%s: %d bytes were skipped, expected exactly %d"
+                 % (name, skipped, case["skipped_bytes"]))
+    if "unread_max" in case:
+        unread = document["file_size"] - document["bytes_read"]
+        if unread > case["unread_max"]:
+            fail("%s: %d bytes went unread, but a STRING array cannot be skipped" % (name, unread))
+    # Section 4.3 property 3: the read volume is bounded by the metadata region plus one window.
+    if document["data_offset"] >= 0:
+        if document["bytes_read"] >= document["data_offset"] + WINDOW_BYTES:
+            fail("%s: bytes_read %d is not below data_offset + WINDOW_BYTES"
+                 % (name, document["bytes_read"]))
+
+    if case.get("field_order"):
+        if list(document.keys()) != TOP_ORDER:
+            fail("%s: top-level field order %r" % (name, list(document.keys())))
+        if list(document["header"].keys()) != HEADER_ORDER:
+            fail("%s: header field order %r" % (name, list(document["header"].keys())))
+        for tensor in document["tensors"]:
+            if list(tensor.keys()) != TENSOR_ORDER:
+                fail("%s: tensor field order %r" % (name, list(tensor.keys())))
+
+    role = case.get("straddle_role")
+    if role == "reference":
+        straddle_reference = document
+    elif role == "variant":
+        if straddle_reference is None:
+            fail("%s: no straddle reference was recorded" % name)
+        # Everything except the filler KV and the absolute offsets must decode identically no
+        # matter where the window boundary falls, which is what closes the refill-boundary and
+        # borrow-expiry cells.
+        def shared(doc):
+            metadata = [kv for kv in doc["metadata"] if kv["key"] != "kv.filler"]
+            tensors = [{k: v for k, v in t.items() if k != "absolute_offset"}
+                       for t in doc["tensors"]]
+            return metadata, tensors, doc["architecture"], doc["alignment"]
+        if shared(document) != shared(straddle_reference):
+            fail("%s: a window boundary changed the decoded content" % name)
+    checked += 1
+
+if checked != len(manifest["cases"]):
+    fail("only %d of %d cases ran" % (checked, len(manifest["cases"])))
+
+full_model = fixture_dir / "full.gguf"
+full_document = (work_dir / "full.json").read_bytes()
+
+# Option/environment isolation: no environment variable changes any document byte.
+perturbed = dict(os.environ)
+perturbed.update({
+    "LC_ALL": "tr_TR.UTF-8", "LANG": "tr_TR.UTF-8", "TZ": "Pacific/Kiritimati",
+    "ALIGN_LLM_GGUF_MODEL": "/nonexistent", "SOURCE_DATE_EPOCH": "1",
+    "HOME": str(work_dir), "GGUF_ARRAY_PREVIEW": "3",
+})
+env_result = run(["--inspect-gguf", str(full_model)], env=perturbed)
+if env_result.returncode != 0 or env_result.stdout != full_document + b"\n":
+    fail("env-perturbation: a perturbed environment changed the document")
+
+# Determinism across repeated inspections: no drift, no resource growth.
+for _ in range(64):
+    repeat = run(["--inspect-gguf", str(full_model)])
+    if repeat.returncode != 0 or repeat.stdout != full_document + b"\n":
+        fail("repeat-inspect: a repeated inspection diverged")
+
+# Arity. `--inspect-gguf` is selected only at args[1], and arity is checked before any file work.
+no_args = run([])
+if no_args.returncode != 0 or b"--inspect-gguf" not in no_args.stdout:
+    fail("cli-arity: the no-argument help does not name --inspect-gguf")
+unknown = run(["--not-a-mode"])
+if unknown.returncode != 0 or b"Usage:" not in unknown.stdout:
+    fail("unknown-selector: an unrecognized selector must still print help and exit 0")
+missing_operand = run(["--inspect-gguf"])
+if missing_operand.returncode == 0 or missing_operand.stdout != b"":
+    fail("cli-arity: a zero-operand invocation must fail with no output")
+too_many = run(["--inspect-gguf", str(full_model), "a.json", "b.json"])
+if too_many.returncode == 0 or too_many.stdout != b"":
+    fail("cli-arity: a three-operand invocation must fail with no output")
+if (work_dir / "a.json").exists():
+    fail("cli-arity: an over-arity invocation created a file")
+
+# Path validation happens before `fs.open_rw`, so no destination is created.
+for label, bad_path in (("empty", ""), ("over-length", "x" * 4097)):
+    bad = run(["--inspect-gguf", bad_path, str(work_dir / "bad-path.json")])
+    if bad.returncode == 0 or bad.stdout != b"":
+        fail("cli-path: an %s path must fail with no output" % label)
+    if (work_dir / "bad-path.json").exists():
+        fail("cli-path: an %s path created a destination file" % label)
+
+# An OS failure returns Err with no document and no summary, leaving a destination sentinel alone.
+sentinel = work_dir / "sentinel.json"
+sentinel.write_bytes(b"SENTINEL")
+absent = run(["--inspect-gguf", str(fixture_dir / "absent.gguf"), str(sentinel)])
+if absent.returncode == 0 or absent.stdout != b"":
+    fail("missing-path: an absent model must fail with no output")
+if sentinel.read_bytes() != b"SENTINEL":
+    fail("untouched-destination: an OS failure rewrote the destination")
+
+# The same contract for an unreadable model. `fs.open_rw` needs `O_RDWR`, so a mode-000 file is
+# `EACCES` -> `Error.Denied`: `Err`, no document, no summary, destination untouched. Root ignores
+# mode bits entirely, so there the case is skipped with an explicit note rather than asserted.
+denied_model = work_dir / "denied.gguf"
+denied_model.write_bytes((fixture_dir / "full.gguf").read_bytes())
+denied_model.chmod(0o000)
+if hasattr(os, "geteuid") and os.geteuid() == 0:
+    print("gguf smoke: denied-path SKIPPED (running as root; mode bits do not deny root)")
+else:
+    denied_sentinel = work_dir / "denied-sentinel.json"
+    denied_sentinel.write_bytes(b"SENTINEL")
+    denied_result = run(["--inspect-gguf", str(denied_model), str(denied_sentinel)])
+    if denied_result.returncode == 0 or denied_result.stdout != b"":
+        fail("denied-path: an unreadable model must fail with no output")
+    if denied_sentinel.read_bytes() != b"SENTINEL":
+        fail("denied-path: an OS failure rewrote the destination")
+denied_model.chmod(0o600)
+
+# A structural failure replaces the destination with the complete document — never a partial write.
+structural = run(["--inspect-gguf", str(fixture_dir / "bad-magic.gguf"), str(sentinel)])
+if structural.returncode == 0:
+    fail("error-corpus: a structural failure must exit nonzero")
+replaced = json.loads(sentinel.read_text(encoding="utf-8"))
+if replaced["error_code"] != "GGUF_BAD_MAGIC":
+    fail("error-corpus: the destination does not hold the complete failure document")
+if b"gguf inspection:" not in structural.stdout or b"GGUF_BAD_MAGIC" not in structural.stdout:
+    fail("error-corpus: the summary block does not report the error code")
+
+# The two-operand summary block, in order.
+summary = run(["--inspect-gguf", str(full_model), str(work_dir / "summary.json")])
+lines = summary.stdout.decode("utf-8").splitlines()
+expected_labels = ["gguf inspection:", "status:", "OK", "architecture:", "testarch", "version:",
+                   "3", "tensors:", "4", "metadata:", "36", "alignment:", "32", "data offset:"]
+if lines[:len(expected_labels)] != expected_labels:
+    fail("summary: %r" % lines[:len(expected_labels)])
+
+print("gguf smoke: %d fixtures" % checked)
+PY
+
+# A bounded descriptor budget: one inspection opens one model descriptor and nothing else.
+(
+  ulimit -n 64
+  "$root_dir/main" --inspect-gguf "$fixture_dir/full.gguf" >/dev/null
+)
+
+# The generator writes every fixture into the temporary tree and nothing into the repository.
+leaked=$(find "$root_dir" -name '.git' -prune -o \
+  \( -name '*.gguf' -o -name 'manifest.json' \) -print 2>/dev/null || true)
+if [ -n "$leaked" ]; then
+  printf '%s\n' "gguf smoke: a fixture leaked into the repository:" >&2
+  printf '%s\n' "$leaked" >&2
+  exit 1
+fi
+if [ ! -d "$temp_dir" ]; then
+  printf '%s\n' "gguf smoke: the temporary fixture root vanished mid-run" >&2
+  exit 1
+fi
+
+printf '%s\n' "gguf inspection smoke: header, all thirteen value types, bounded arrays, tensor table, refill boundaries, skip accounting, the malformed corpus, and CLI arity/isolation PASS"

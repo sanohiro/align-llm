@@ -3,113 +3,108 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## C8 ninth capability: query Git once for evaluation-side test selection (2026-08-26)
+## Active capability: R0-GGUF-INSPECT — read-only GGUF inspection (2026-08-26)
 
-- The eighth capability, `C8-MOVE-RESULT-DOCUMENTS`, merged as PR #119 on `main` at
-  `9bfa372`. Its recorded evidence is in the section below and in
-  `docs/specs/c8-speed-first.md` §2.8 and §10.
-- Active work is `C8-SELECTION-SINGLE-GIT-QUERY` on `agent/c8-selection-single-git-query`, based on
-  `main` at `9bfa372`. `repo_index.select_tests` spawned `git rev-parse --verify HEAD` and then
-  `git ls-files -z`, but `patch_eval.evaluate` consumes only the candidates, `candidate_count`, and
-  `status` and discards the `revision`, so the rev-parse spawn was pure waste on the evaluation path
-  (about 1.2 ms of the ~46 ms fixed-task total, ≈26,000 ppm). The selector is now a shared private
-  `select_tracked_tests` core plus the unchanged revision-bearing `select_tests` (CLI) and a new
-  revision-free `select_tests_for_evaluation` (patch evaluation).
-- **Contract decision, deliberate and recorded.** The evaluation path now validates exactly what it
-  consumes. A repository with an unborn HEAD previously failed at `rev-parse`; it now reports `ok`
-  with the real index-derived candidates, or zero candidates when the index is empty, because
-  `git ls-files -z` succeeds there. A directory outside a work tree still fails, verified rather than
-  assumed: `git ls-files -z` itself exits 128 outside a work tree. The `--select-tests` CLI document
-  is byte-identical, still carries `revision`, and still runs both processes in the same order.
-- The ledger is `docs/specs/c8-speed-first.md` §2.9 with its §2.9.1 closure matrix; §11 is the
-  `TBD` ninth-baseline placeholder the measurement agent fills, §12 is the renumbered deferred
-  surfaces, and `docs/specs/roadmap.md` §C8 now enumerates the ninth capability.
-- Owner regressions extended: `scripts/run-test-selection-smoke` adds an unborn-HEAD CLI failure case
-  (`error_code` 128, empty `revision`) beside its existing revision assertion;
-  `scripts/run-patch-eval-smoke` adds the three evaluation-path cases — unborn HEAD with a populated
-  index, unborn HEAD with an empty index, and a non-repository directory;
-  `scripts/run-verification-loop-smoke` adds `verification-loop-unborn-head`, which proves the
-  downstream loop now runs the task (`PASS`, both real stage vectors) instead of short-circuiting to
-  `Invalid` code 2.
-- **Measurement is complete** and recorded in §11 at commit `2628cc8`. Pre-implementation baseline at
-  `9bfa372`: 43,041,708 ns median over 31 samples. The 101-pair `compare-atomic` run measured
-  42,884,666 ns parent against 42,421,792 ns candidate — a 10,793 ppm (1.08%) reduction — on an
-  aarch64 Docker Desktop linux/arm64 VM host. Normalized documents and the four-stage vector agree.
-  That host differs from the §3-10 series, so the claim is path-specific, not a platform claim.
-- The comprehensive review of `e057bf0` was one fresh independent adversarial review: two minor
-  findings and three nits, all accepted. The consolidated repair is the next commit — the
-  `select_tests` redundant `revision_view` binding, the `docs/align-development.md` two-entry
-  description, and three §2.9/§2.9.1 corrections (qualified `Output` row, honest `N/A` for the
-  `ls-files` timeout/spawn sub-paths, and the new verification-loop unborn-HEAD regression).
+- Branch `agent/r0-gguf-inspect`, based on `main` at `92c0979`. The authoritative design ledger is
+  `docs/specs/r0-gguf-inspection.md`, committed at `12453d7`. **Implementation is complete in the
+  working tree**: `src/gguf.align`, the `src/main.align` `--inspect-gguf` arm,
+  `scripts/gguf_fixture.py`, `scripts/run-gguf-smoke`, `scripts/run-gguf-reference-parity`, and the
+  `Makefile` `gguf-smoke` target (in `HOSTED_CHECK_TARGETS` and the `check-gate-topology` lists).
+- **What it delivers.** One consumer-complete path: a caller names a `.gguf` file and receives one
+  canonical `R0_GGUF_INSPECTION` document (`schema_version: 1`) describing the header, every
+  metadata key/value with its declared GGUF type, the complete tensor table, the architecture, the
+  alignment, the absolute data offset, and `bytes_read`. `./main --inspect-gguf MODEL` writes the
+  document to stdout; `./main --inspect-gguf MODEL OUT.json` writes it to a file and prints the
+  stable summary block. The document bytes are byte-identical between the two forms.
+- **Design gate is triggered and discharged in the plan**, on two counts: a new public CLI surface
+  and a new versioned exchanged document. The contract ledger, validation order and error codes,
+  closure matrix, and fixture design all live in that document; do not re-derive them here.
+- **Strictly read-only and runtime-independent.** No tensor payload decode, no dequantization, no
+  mmap, no tokenizer materialization, no multi-shard resolution, no big-endian GGUF, and no import
+  of any provider or `align-runtime` surface. R0 makes **no performance claim**, so the `CLAUDE.md`
+  performance-claim row does not apply; the parity runner records wall time as a diagnostic only.
+- **Verification owners.** `make gguf-smoke` (`scripts/run-gguf-smoke` with the independent
+  generator `scripts/gguf_fixture.py`) is the narrow durable owner: no model, no network, no
+  reference tool, seconds to run, and a `HOSTED_CHECK_TARGETS` candidate. Fixtures are generated
+  into a `mktemp -d` tree and are never committed. `scripts/run-gguf-reference-parity` is the
+  opt-in focused qualification that discharges the roadmap gate against llama.cpp's `llama-gguf`;
+  it joins no aggregate and no CI lane, and prints an explicit `N/A` line when
+  `ALIGN_LLM_GGUF_REFERENCE` or `ALIGN_LLM_GGUF_MODEL` is unset or absent. An explicit skip is not
+  a pass and must be named as the `N/A` reason in the pull request.
+- **Owner results (unchanged pin `4b515f8d`, after the review repair).** `gmake check`: 24 units.
+  `gmake build`: PASS. `gmake gguf-smoke`: 62 fixtures, PASS. `python3 scripts/check-gate-topology`:
+  PASS. Every previously passing owner remains PASS (unchanged-owner regression check).
+- **Parity qualification run once** (`scripts/run-gguf-reference-parity`) against the local
+  Qwen2.5-Coder-7B Q4_K_M model (no path recorded here): PASS. `bytes_read` 6,291,456 of a
+  4,683,073,536-byte file (0.1343%), `data_offset` 5,953,536, 29 metadata KV pairs, 339 tensors —
+  this discharges the roadmap gate.
+- **Align requests 21 and 22 are `PROPOSED` and non-blocking.** Request 21: `fs.open_rw` is the only
+  random-access file constructor at pin `4b515f8d`, so inspecting a model requires `O_RDWR` on a file
+  R0 never writes. R0 proceeds on `fs.open_rw` with a documented precondition — the model path must
+  be writable by the invoking user — and an `EACCES` surfaces as `Err(Error.Denied)` with no
+  document. The gap becomes blocking only on a read-only mount, a root-owned shared cache, or a
+  container image layer. Request 22: `array<string>` and arrays of a record with a Move field cannot
+  be indexed (`check_index` rejects it); `src/gguf.align` carries deferred tensor `absolute_offset`
+  values as a NUL-separated prefix stream plus a parallel `array<i64>` instead. Do not build a
+  compatibility layer and do not write against either proposed surface.
+- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
+  the candidate at `ebaaf99`: **A** the Align source (`src/gguf.align`, `src/main.align`) and **B**
+  the specification, fixtures, runners, and governance documents. A returned 1 blocker, 2 minor, and
+  4 nit; B returned 2 medium, 5 low, and 3 nit. **Every finding was accepted** and all fourteen are
+  repaired in the next commit as one consolidated repair, with plan, code, tests, and documentation
+  moving together. The blocker was real and reproduced before the fix: `data_offset + offsets[i]`
+  wrapped in two's complement, so a tensor offset of `0x7FFFFFFFFFFFFFE0` gave `status: "ok"`, exit
+  `0`, and a negative `absolute_offset`; both sites are now non-wrapping and two new fixtures pin
+  them. The other code corrections are a completing `refill` for short reads, a distinct
+  `GGUF_WINDOW_UNAVAILABLE` for a zero-capacity window, control-byte escaping in the summary block,
+  and `architecture_present` on `GgufInspection`. Sections 6 items 15–24 and the new section 6.2
+  cell-to-case mapping of `docs/specs/r0-gguf-inspection.md` carry every contract correction; the
+  repair changed no document field and no `schema_version`.
+- **Next actions, in order.**
+  1. Exact-head preflight: `python3 scripts/pre-pr --owner-test gguf -- gmake gguf-smoke`.
+  2. Publish the English pull request with the owner result, the parity result, and the review
+     envelope above.
 
-## C8 eighth capability: move completed result documents (2026-08-26, merged as PR #119)
+## C8 is closed (2026-08-26)
 
-- C8 atomic patch application PR #118 merged on `main` at
-  `185936492dd52453c8df3fe281c82645373a5946`. Its hosted check passed in 1m35s; the unaffected
-  x86_64 and aarch64 jobs completed in 5s and 9s with native qualification skipped. The shipped
-  101-pair comparison reduced the fixed task by 22,774 ppm (2.28%).
-- `agent/c8-move-process-argv` was measured and rejected without a PR: its 201-pair improvement was
-  only 283 ppm (0.028%) and its 31-pair comparison regressed. The local branch preserves that
-  evidence; do not carry its product change.
-- `C8-MOVE-RESULT-DOCUMENTS` was implemented on `agent/c8-move-result-documents` and is merged. It moves completed
-  owned JSON buffers into their sole returned owner rather than cloning them at the terminal
-  handoff. The exact 31-sample `baseline-atomic` at merge `1859364` is 45,870,371 ns; its binary
-  SHA-256 is `7e00353a3110c16fd802bb935a9d4bf1be784540f23567cdf4704aee728896f3`.
-  Implementation `4f7dd62c3bf6d6e4d81216a44c3b4f2f9bf7eb32` passes `loop-smoke`, `index-smoke`,
-  `test-selection-smoke`, `patch-eval-smoke`, and `verify-loop-smoke`. Its exact 101-pair comparison
-  measured 46,537,217 ns for the parent and 46,355,109 ns for the candidate, a 3,913 ppm (0.39%)
-  reduction; a preceding 31-pair run improved by 5,224 ppm. Normalized documents and all four stage
-  records agree. The comprehensive review at `f29b312` was clean: every removed clone is a terminal
-  ownership transfer with no later source use, the record owners passed again, and the benchmark
-  extension enforces identical normalized four-stage results.
-- Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
-  Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
-  qualification owners retain the focused plus installed profile. The Linux sandbox runner
-  `eval/runners/run-coding-task.py` is an exact target-local exception. Deletions, renames, unknown
-  state, and untrusted no-base events retain their existing fail-closed behavior.
-- Align requests 1–20 are closed. Request 19 shipped in Align PR #891 as
-  `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; align-llm publication PR #108 merged as
-  `75d7cc39b40b287d47b1185306d6bd8e7eb582dc` after all required CI passed.
-- `prompt-verifier-smoke` is restored to the hosted lane. The adopted compiler measured 2.214 s /
-  126,192 KiB for `check` and 12.786 s / 259,720 KiB for `build` on the named representative host,
-  with exact program output.
-- Pure compiler-pin adoption now runs the request owner plus exact managed-toolchain verification
-  locally and the ordinary hosted graph in GitHub CI. It does not select native installed profiles;
-  mixed executable changes retain their normal scope, and deleted or renamed pins fail closed.
-- Platform qualification is capability-owned: run it for changed target-local behavior, a
-  target-specific claim, a concrete provider-CI gap, or an explicit audit—not for every compiler
-  pin. The policy, classifier, owner tests, and final comprehensive review are complete.
-- `C8-TEST-SELECTION-LINEAR` is the first C8 capability. Related-test ranking now makes one tracked
-  file pass and emits the same four score buckets in the same order instead of scanning the complete
-  list for every integer from 120 through 0. The exact public invariant and focused benchmark are in
-  `docs/specs/c8-speed-first.md`.
-- The paired fixed passing-patch benchmark measured 48,829,180 ns for the parent median and
-  12,465,365 ns for the candidate median across 15 samples each on the named x86_64 host, a 74.5%
-  reduction. All non-duration result data agreed. This is a path-specific claim, not a platform
-  claim, so the benchmark remains out of ordinary CI and native installed profiles.
-- The next C8 capability must again start from measured end-to-end cost. Prefer a boundary that uses
-  the current Align surface; captured parallel process execution remains deferred unless measurement
-  justifies a genuine Align request.
-
-## Resume in another environment
-
-1. Fetch `origin` and resume `agent/c8-selection-single-git-query`. Read `CLAUDE.md`, then
-   `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md` §2.9, §2.9.1, and §11. Design gate,
-   implementation, extended owner regressions, measurement, review, and repair are all complete.
-2. Next action: run exact-head preflight,
-   `python3 scripts/pre-pr --owner-test verification-loop -- gmake verify-loop-smoke` together with
-   the other record owners (`test-selection-smoke`, `patch-eval-smoke`, `index-smoke`), then publish
-   the English PR with the §11 measurement and the review envelope.
-3. After merge, refresh `main` and choose the next measured consumer-complete C8 boundary.
-4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
-   new Align request unless implementation exposes a genuine shipped-language, compiler/runtime,
-   or standard-library gap under the request-register rules.
+C8 delivered nine consumer-complete capabilities and its gate is met. The ninth,
+`C8-SELECTION-SINGLE-GIT-QUERY`, merged as PR #120 on `main` at `92c0979`: `patch_eval.evaluate`
+now reaches a revision-free `select_tests_for_evaluation` that runs `git ls-files -z` alone, while
+the revision-bearing `--select-tests` CLI document stays byte-identical. Its 101-pair
+`compare-atomic` measured a 10,793 ppm (1.08%) reduction, but on an aarch64 Docker Desktop
+linux/arm64 VM host rather than the WSL2 x86_64 host of the earlier series, so that number is
+comparable only with its own baseline and is a path-specific claim, not a platform claim. Every
+per-capability baseline, binary digest, host, and ledger row is in `docs/specs/c8-speed-first.md`
+sections 2 through 11 and is not repeated here. The bounded retrospective promoted exactly one
+reusable rule: the **ppm-floor rule** in section 1 of that document — a performance capability
+records its cost ceiling in the ledger before implementation, a seam below the 2,000 ppm shipping
+floor is deferred rather than implemented, and a measured result far below its recorded ceiling is
+reported as a ceiling-estimation miss. `CLAUDE.md`'s performance-claim row carries the one
+corresponding clause. A deferred C8 surface reopens only with a recorded ceiling above the floor or
+as a genuine Align capability request.
 
 Two maintenance items remain deliberately deferred rather than active work: preserve the
 `eval/runners/run-coding-task.py` zombie-counting behavior until a capability already rebinds and
 re-measures the frozen coding corpus or revisits its validation-process budget; replace
 `c6f2-request14-adoption`'s publication-race polling with a deterministic seam only when that owner
 boundary is next changed.
+
+## Resume in another environment
+
+1. Fetch `origin`, check out `agent/r0-gguf-inspect` (based on `main` at `92c0979`), and read
+   `CLAUDE.md`, then `docs/specs/r0-gguf-inspection.md` in full — it is the plan of record — and
+   `docs/specs/roadmap.md` section R0.
+2. Materialize the pinned toolchain with `scripts/align-toolchain ensure compiler`; on macOS use
+   `gmake` and the recorded `LLVM_CONFIG`/`LIBRARY_PATH` environment. Confirm `.align-revision`
+   still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R0 requires no pin change.
+3. Resume at the first unfinished next action above (preflight, then PR). The review and its
+   consolidated repair are complete. `gmake gguf-smoke` is the owner to rerun after any further
+   repair; the parity qualification needs a real model and has been rerun since the repair.
+4. Do not open another Align request unless implementation exposes a further genuine shipped-language,
+   compiler/runtime, or standard-library gap under the register rules. Requests 21 and 22 already
+   cover read-only random access and Move-array indexing.
+5. After merge, refresh `main` and take the next eligible roadmap item. C8 is closed; do not start a
+   tenth C8 capability without a recorded cost ceiling above the 2,000 ppm floor.
 
 ## Merged checkpoint: REQUEST20-PIN — adopt Align's macOS owned-JSON CI repair (2026-08-25)
 

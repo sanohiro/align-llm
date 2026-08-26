@@ -4,6 +4,7 @@ import core.json
 import project
 import verify
 import eval
+import gguf
 import repair
 import model
 import provider
@@ -28,6 +29,7 @@ fn print_help() {
   print("Usage: main [--version | --status | --selfcheck | --index <repo> <index.json> [timeout-ns] | --select-tests <repo> <changed-path> <tests.json> [timeout-ns] | --evaluate-patch <repo> <patch.diff> <evaluation.json> [timeout-ns] | --verify-loop <task.json> <result.json> | --eval [corpus] | --loop]")
   print("       main --persist-result <input.json> <result.json>")
   print("       main --verify-result <result.json>")
+  print("       main --inspect-gguf <model.gguf> [inspection.json]")
   print("       main prompt <experiment|generate|evaluate|accept|rollback> <request.json> <result.json>")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
 }
@@ -412,6 +414,103 @@ fn persisted_result_demo(args: array<str>) -> Result<(), Error> {
   }
 }
 
+SUMMARY_HEX := "0123456789abcdef"
+
+// The section 2.3 summary block is a fixed sequence of logical lines that a consumer reads
+// positionally, and `general.architecture` is attacker-controlled text from the container. A value
+// carrying a newline would inject lines into that block, so every control byte — `< 0x20` and
+// `0x7f` — is replaced by `\xNN` before it is printed. The JSON document is unaffected: its
+// encoder already escapes the same bytes. Runs of ordinary bytes are copied whole; a control byte
+// is ASCII, so a run boundary is always a scalar boundary and `value[a..b]` cannot abort.
+fn sanitize_summary_line(value: str) -> string {
+  b := builder()
+  view := value.bytes()
+  mut start := 0
+  mut index := 0
+  loop {
+    if index >= view.len() { break }
+    byte := view.u8(index) as i64
+    if byte < 32 || byte == 127 {
+      if index > start {
+        b.write(value[start..index])
+      }
+      high := byte / 16
+      low := byte % 16
+      b.write("\\x")
+      b.write(SUMMARY_HEX[high..high + 1])
+      b.write(SUMMARY_HEX[low..low + 1])
+      start = index + 1
+    }
+    index = index + 1
+  }
+  if start < view.len() {
+    b.write(value[start..view.len()])
+  }
+  return b.to_string()
+}
+
+// R0-GGUF-INSPECT CLI adapter (`docs/specs/r0-gguf-inspection.md` sections 2.2 and 2.3). The arm
+// holds no GGUF knowledge: it validates arity, calls `gguf.inspect`, writes or prints the document,
+// prints the summary block, and maps the inspection status to the process exit. Arity is checked
+// before any path or file work, so an arity failure produces no output at all.
+fn inspect_gguf_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() < 3 || args.len() > 4 {
+    return Err(Error.Invalid)
+  }
+  inspected := gguf.inspect(args[2])?
+  document_view: str := inspected.document
+  if args.len() == 3 {
+    // The machine form: the document and one newline, and nothing else.
+    print(document_view)
+  } else {
+    fs.write_file(args[3], document_view)?
+    // Section 2.3 stable summary. The JSON document remains the authoritative result.
+    print("gguf inspection:")
+    print("status:")
+    match inspected.status {
+      Ok => print("OK"),
+      Error => print("ERROR"),
+    }
+    print("architecture:")
+    architecture_view: str := inspected.architecture
+    // `-` is reserved for an absent, non-STRING, or non-UTF-8 `general.architecture`. A key that is
+    // present and empty prints an empty line, which is the value the container actually declares.
+    if inspected.architecture_present {
+      sanitized := sanitize_summary_line(architecture_view)
+      sanitized_view: str := sanitized
+      print(sanitized_view)
+    } else {
+      print("-")
+    }
+    print("version:")
+    print(inspected.version)
+    print("tensors:")
+    print(inspected.tensor_count)
+    print("metadata:")
+    print(inspected.metadata_kv_count)
+    print("alignment:")
+    print(inspected.alignment)
+    print("data offset:")
+    print(inspected.data_offset)
+    print("bytes read:")
+    print(inspected.bytes_read)
+    match inspected.status {
+      Ok => {},
+      Error => {
+        print("error:")
+        error_view: str := inspected.error_code
+        print(error_view)
+      },
+    }
+  }
+  // A structural defect is persisted and reported data; the CLI maps it to the existing
+  // `Error.Invalid` process exit after the document has been emitted.
+  match inspected.status {
+    Ok => { return Ok(()) },
+    Error => { return Err(Error.Invalid) },
+  }
+}
+
 // A repair provider that declines to fix anything (always gives up). It lets the loop's control
 // exits be demonstrated without a model: an already-passing check needs no provider, and a
 // persistently failing check ends in GAVE_UP on the first iteration. A real provider (LLM + patch
@@ -542,10 +641,14 @@ pub fn main(args: array<str>) -> Result<(), Error> {
                         if args[1] == "--loop" {
                           loop_demo()
                         } else {
-                          if c7_selector(args[1]) {
-                            persisted_result_demo(args)?
+                          if args[1] == "--inspect-gguf" {
+                            inspect_gguf_demo(args)?
                           } else {
-                            print_help()
+                            if c7_selector(args[1]) {
+                              persisted_result_demo(args)?
+                            } else {
+                              print_help()
+                            }
                           }
                         }
                       }

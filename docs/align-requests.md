@@ -73,7 +73,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-26): Requests 1–20 are CLOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected.
+> **Status (2026-08-26): Requests 1–20 are CLOSED and Requests 21–22 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: `fs.open_rw` is the only one Align ships, so inspecting a model requires `O_RDWR` on a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -6070,6 +6070,225 @@ integration binary on a leg that already compiles the workspace and is not the c
    selection is untouched unless Align chooses to widen it instead.
 4. `align-llm`'s `make darwin-profile-gate` continues to pass at the adopted pin, with its recorded
    identity block, as the independent client-side observation.
+
+---
+
+## Request 21 — `std.fs`: read-only random-access file open (`fs.open_ro`)
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none today — R0-GGUF-INSPECT ships on `fs.open_rw`. It becomes blocking for the first align-runtime consumer that must read a model from a read-only mount, a root-owned shared cache, or a container image layer, where `O_RDWR` cannot be obtained at all
+Independent work that may continue: all of R0-GGUF-INSPECT, which opens the model with `fs.open_rw` and documents the writable-path precondition; every later Track B slice that can copy or own its model file
+Resume condition: Align ships a read-only `file` constructor whose handle supports `pread` and `len`; align-llm then adopts it in `src/gguf.align`, and `make gguf-smoke` plus `scripts/run-gguf-reference-parity` pass against a model file the invoking user cannot write
+Align commit or pull request: none
+align-llm verification: pending — `make gguf-smoke` extended with a `chmod 444` fixture case, and `scripts/run-gguf-reference-parity` run once against a model on a read-only mount
+```
+
+### Motivation and current sibling evidence
+
+`align-llm` R0 (`docs/specs/r0-gguf-inspection.md`) inspects a GGUF model's header, metadata, and
+tensor table. It reads a few megabytes at explicit offsets out of a multi-gigabyte file and never
+writes a byte to it. That is precisely a random-access read workload, and at the pinned revision
+`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2` Align has no constructor for it.
+
+Verified in the sibling checkout at that exact commit (which is also `../align`'s `main` tip,
+`Merge pull request #891 from sanohiro/agent/request19-drop-codegen`):
+
+- `draft.md:2839-2840` lists the only two `file` constructors:
+
+  ```text
+  fs.create_rw(path: str) -> Result<file, Error>   // O_RDWR|O_CREAT|O_TRUNC — a fresh random-access file
+  fs.open_rw(path: str)   -> Result<file, Error>   // O_RDWR, must exist — in-place update (see std.io `file`)
+  ```
+
+- `draft.md:2770-2776` and `docs/language-spec.md:1042-1044` state the rule directly: `file` "is the
+  offset-addressed block read+write handle … there is **no cursor and no `seek`** …, and there is
+  **no read-only constructor** (pure random reads stay `reader` or the `fs.read_bytes_view` mmap
+  view — a third read path would break 'one way')."
+- `crates/align_runtime/src/lib.rs:9933` implements `fs.open_rw` as
+  `std::fs::OpenOptions::new().read(true).write(true).open(path_str)`, so the request for write
+  access is unconditional. `crates/align_driver/tests/m12_file_io.rs:98-133` pins must-exist and
+  non-truncating behavior for that constructor.
+- `fs.open` (`draft.md:2833`) returns a sequential `reader` with no `pread` and no offset, so it
+  cannot serve a container reader that must jump to a tensor-table entry.
+- `fs.open_read` does not exist anywhere in the repository, and `fs.open_ro` exists only as prose in
+  three deferred-work notes: `docs/impl/07-roadmap.md:1986` records it as "the recorded escape hatch,
+  **deferred-with-trigger**", with the trigger stated as "if a VA-constrained consumer ever needs
+  non-mmap random reads"; `docs/impl/07-roadmap.md:1981` and `:1997` list "`open_ro`" and "read-only
+  opens" under Deferred; `docs/open-questions.md:3707` repeats the settled decision and the same
+  deferral.
+
+**This request is that trigger firing.** R0 is exactly the consumer the deferral anticipated. It
+cannot use the mmap alternative as its primary strategy: `fs.read_bytes_view`
+(`draft.md:2827-2831`) maps the whole file into an arena, which for a 4.68 GB model means committing
+the entire address range for a 5 MB read, and `draft.md:2897` records that concurrent truncation of a
+mapped file raises `SIGBUS` with no handler installed. R0 reads roughly 0.15 percent of the file
+through a bounded window instead.
+
+The observable consequence today is that `align-llm` must ask the operating system for `O_RDWR` on a
+file it never writes. That is recorded here per the `CLAUDE.md` classification rule even though it
+does not block R0 — a model in a developer checkout is normally writable by its owner — because the
+deployment shapes this repository is building toward are exactly the ones where it fails: a
+read-only mount, a root-owned shared model cache, and a container image layer. In every one of those
+an inspection that touches no byte of the file is refused with `EACCES`, which Align's fixed errno
+table (`draft.md:2717`) surfaces as `Error.Denied`. A workaround exists — copy the model, or relax
+its permissions — and it is precisely the kind of application workaround that must not hide a
+language-owned requirement.
+
+### Requested capability
+
+One read-only sibling of the existing `file` constructors, following the established `_rw`/`_ro`
+suffix convention and the one fixed errno table:
+
+```align
+fs.open_ro(path: str) -> Result<file, Error>   // O_RDONLY, must exist — read-only random access
+```
+
+Contract, deliberately minimal and matching `fs.open_rw` everywhere it can:
+
+- Opens an existing path `O_RDONLY | O_CLOEXEC`. It never creates, never truncates, and never
+  extends. A missing path is `Error.NotFound`; a permission failure is `Error.Denied`; anything else
+  goes through the same errno table as every other `std.fs` call.
+- Returns the same `file` handle type. `f.pread(b: mut buffer, off: i64)` and `f.len()` behave
+  exactly as `draft.md:2758-2762` specifies, including the returned actual count, `0` at EOF, the
+  live `fstat`, and the abort on a negative offset. The handle stays Move, owns its fd, closes on
+  `Drop`, and remains structurally single-threaded.
+- `f.pwrite` on a handle from `fs.open_ro` is the one difference. Rejecting it at compile time is
+  preferable, since the constructor is statically known at the binding site in the same way
+  `check_fs_create_open_rw` already discriminates its two callers; if that is not natural in the
+  existing sema shape, a runtime `Error.Denied` from the kernel's own `EBADF` is acceptable and
+  should be documented as such. `align-llm` needs only `pread` and `len`.
+- No new handle type, no capability flag on `file`, no cursor, no `seek`, no buffering, and no
+  `copy_range`. This asks for one constructor, not a read-only handle family.
+
+The "third read path would break one way" objection is understood and this request does not dispute
+it for the *sequential* case. The claim is narrower: `reader` and the arena mmap together do not
+cover bounded random reads of a large file without write permission, and that combination is a real
+consumer shape rather than a hypothetical one. If Align prefers to close the gap differently — a
+mode argument on `fs.open_rw`, or an `fs.open_at_offset`-style reader — `align-llm` will adopt
+whatever shape Align settles on; the requirement is the capability, not the spelling.
+
+The two specification sentences that would have to be amended to admit this are the identical "no
+read-only constructor" claims at `draft.md:2772` and `docs/language-spec.md:1043`.
+
+### Public-contract ledger
+
+| Surface | Exact result/error and precedence | Ownership, allocation, effects, and identity | First real-client acceptance |
+| --- | --- | --- | --- |
+| `fs.open_ro(path: str)` | `Result<file, Error>`. `Error.NotFound` for a missing path, `Error.Denied` for `EACCES`/`EPERM`, `Error.Invalid` for `EINVAL`, `Error.Code(errno)` otherwise — the one fixed table, checked before any read | Returns an owned Move `file` that owns its fd and closes on `Drop`; allocates no buffer; the caller supplies every `buffer` window. No process-global state, no signal handler, no mapping, and no generated-program identity change for existing programs | `align-llm`'s `src/gguf.align` opens the model with `fs.open_ro` and `make gguf-smoke` passes, including a `chmod 444` fixture the current `fs.open_rw` path cannot open |
+| `f.pread` / `f.len` on an `fs.open_ro` handle | Unchanged from `draft.md:2758-2762`: actual count, `0` at EOF, live `fstat`, abort on negative offset | Unchanged | The R0 `bytes_read` assertions and the section 4.4 reference-parity comparison produce byte-identical documents from an `open_ro` and an `open_rw` handle on the same file |
+| `f.pwrite` on an `fs.open_ro` handle | Compile-time rejection preferred; otherwise `Error.Denied` at runtime | Unchanged | A compile-fail test in `m12_file_io.rs`, or the documented runtime error, whichever Align chooses |
+
+### Acceptance criteria
+
+1. `fs.open_ro(path)` compiles, opens an existing readable file with no write permission requested,
+   and returns a `file` whose `pread` and `len` behave identically to the `fs.open_rw` handle's on
+   the same file. A compiler test in `crates/align_driver/tests/m12_file_io.rs` covers the success
+   path, the missing-path `Error.NotFound`, the unreadable-path `Error.Denied`, and byte-equality of
+   a windowed read against the `fs.open_rw` result.
+2. A file whose mode is `0444`, owned by another user, or on a read-only mount opens successfully
+   through `fs.open_ro` and fails through `fs.open_rw` in the same test, which is the whole point of
+   the request and must be asserted rather than assumed.
+3. `f.pwrite` on an `fs.open_ro` handle is rejected — at compile time with a named diagnostic, or at
+   runtime as `Error.Denied` — with a test pinning whichever Align chooses, and the choice recorded
+   in `draft.md` and `docs/language-spec.md`.
+4. The existing `fs.open_rw` and `fs.create_rw` surfaces, their flags, their tests, and every
+   generated-program identity are unchanged. No existing program's behavior moves.
+5. `align-llm` verification: `src/gguf.align` switches its one constructor call to `fs.open_ro`,
+   `make gguf-smoke` passes with a new `chmod 444` fixture case asserting a successful inspection,
+   and `scripts/run-gguf-reference-parity` passes once against a real model on a read-only mount,
+   with its size and modification time unchanged. The R0 writable-path precondition is then removed
+   from `docs/align-development.md` and from `docs/specs/r0-gguf-inspection.md` section 2.7.
+
+---
+
+## Request 22 — Indexing arrays of Move element types
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none (workaround in place)
+Independent work that may continue: all of R0
+Resume condition: Align ships borrow indexing for Move arrays
+Align commit or pull request: none
+align-llm verification: pending
+```
+
+### Motivation and current sibling evidence
+
+While implementing `src/gguf.align` at pin `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`, indexing an
+`array<string>` or an array of a record with a Move field (`arr[i]`) is rejected. Verified in the
+sibling checkout at that exact commit:
+
+- `crates/align_sema/src/lib.rs:52988`, inside `check_index`, reports the exact diagnostic:
+
+  ```rust
+  format!("indexing an array of the Move type {} is not supported yet (it would copy the element without transferring ownership)", self.ty_display(elem)),
+  ```
+
+  guarded by `collection_element_is_unsupported_move(elem)`. The comment immediately above it
+  (`crates/align_sema/src/lib.rs:52982-52985`) states the reason: "the load copies the element's
+  `{ptr,len}` without transferring ownership, so the array and the copy would both free the same
+  buffer (double-free). Such element reads need a borrow / move-out design (a later slice) — reject
+  cleanly until then."
+- `docs/language-spec.md:207-215` documents a narrower admitted case: "An indexed Move element of an
+  admitted ordinary dynamic array may be passed only to an explicit shared-`borrow` parameter
+  selected by a direct, imported, or function-value call." That is call-site-only — the indexed Move
+  element may flow straight into a `borrow` parameter of a function call — and does not admit `arr[i]`
+  as a general expression (e.g. bound to a local, matched, or read back out of a call result).
+- `docs/open-questions.md:4605` and `:4876` record `array<string>` / `array<Move-struct>` as elements
+  needing "a later slice" for their per-element deep free, consistent with declaration/storage of
+  such arrays now being admitted (`docs/open-questions.md:4936`, J3b, "SHIPPED: `array<Move-struct>`
+  struct field") while indexed *reads* of those elements remain the open gap this request names.
+
+**Consequence in align-llm:** `src/gguf.align` cannot store tensor `absolute_offset` values as an
+indexable `array<Tensor>`/`array<string>` and read them back by index. `TensorRow` at
+`src/gguf.align:120` (`TensorRow { json_prefix: string, offset: i64, offset_field: i64 }`) carries
+each tensor's rendered JSON body as a `string` field rather than as an element of an indexable
+record array. `render_tensors` at `src/gguf.align:842` reconstitutes the per-tensor bodies from a
+single NUL-separated `prefixes: str` stream (`b.write(prefixes[cursor..end])`, splitting on `"\0"`)
+plus a parallel `borrow offsets: array<i64>`, because a `array<TensorRow>` or `array<string>` of the
+same rendered bodies could not be indexed back out during rendering. The accumulation site is
+`src/gguf.align:1016-1022`, where each entry's `json_prefix` is appended to a `builder`
+(`tensor_body.write(prefix_view); tensor_body.write("\0")`) instead of being pushed onto an indexable
+array, with `row.offset` / `row.offset_field` pushed onto separate parallel `array<i64>` accumulators
+(`tensor_offsets.push`, `tensor_offset_fields.push`) to keep every field reachable by position.
+
+### Requested capability
+
+Borrow-indexing for a Move-element array: `arr[i]` yields a `borrow` (or `str` view, for
+`array<string>`) without consuming or copying the element, following the existing `check_index`
+double-free rationale — the fix is to hand back a borrow instead of a bit-copy, not to make the
+element Copy. Alternatively, an explicit `arr.at(i)` borrow accessor alongside `arr[i]`, matching the
+`.at(i)` naming convention Align already uses for total, Missing-propagating navigation
+(`d.get(k).at(i)` on a `json.doc`, `draft.md:1934`, `docs/language-spec.md:609`). Either spelling is
+acceptable; the requirement is a non-consuming read of a Move array element usable as an ordinary
+expression, not only as a direct call argument to a `borrow` parameter as `docs/language-spec.md:207`
+already admits.
+
+Scope: `array<string>` and `array<Struct>` where the struct has a Move field, matching exactly the
+element classes `collection_element_is_unsupported_move` rejects today. No change to the existing
+narrower call-argument admission of `docs/language-spec.md:207`, no move-out indexing, and no new
+Move container type.
+
+### Public-contract ledger
+
+| Surface | Exact result/error and precedence | Ownership, allocation, effects, and identity | First real-client acceptance |
+| --- | --- | --- | --- |
+| `arr[i]` on `array<string>` / `array<Struct-with-Move-field>` (or `arr.at(i)`) | Yields a non-consuming `borrow` / `str` view of the element; bounds-checked and aborting exactly like today's Copy-element `xs[i]`; a terminating index forms no bounds action or result, matching the existing convention at `docs/language-spec.md:200-204` | No allocation, no copy of the element's owned buffer, no double-free; the returned view's region is tied to the array's root, following the existing borrowed-place region rules | `align-llm`'s `src/gguf.align` indexes an `array<TensorRow>`/`array<string>` of rendered tensor bodies by position instead of a NUL-separated prefix stream, and `make gguf-smoke` passes |
+
+### Acceptance criteria
+
+1. A compiler test indexes an `array<string>` by borrow and reads the borrowed view as an ordinary
+   expression (not only as a direct call argument).
+2. A compiler test indexes an `array<Struct>` whose struct has a Move field (e.g. an owned `string`
+   field) by borrow and reads a field off the borrowed element.
+3. `align-llm` verification: `src/gguf.align` replaces the NUL-separated `prefixes: str` /
+   parallel-`array<i64>` workaround (`src/gguf.align:120`, `:842`, `:1016-1022`) with a directly
+   indexed `array<TensorRow>` (or equivalent), and `make gguf-smoke` passes.
 
 ---
 
