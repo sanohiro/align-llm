@@ -3,24 +3,19 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## C8 sixth capability: rescan generic fallback (2026-08-26)
+## C8 seventh capability: atomic single patch application (2026-08-26)
 
-- C8 generic-serialization PR #116 merged on `main` at
-  `ed76eea9397a66e542a67633cb383d92b71058a8`. Its hosted check passed in 1m36s while the unaffected
-  x86_64 and aarch64 jobs completed in 9s and 10s with every native qualification step skipped.
-- Active work is on `agent/c8-rescan-generic-fallback`. The sixth capability is
-  `C8-TEST-SELECTION-RESCAN-FALLBACK`: related selection will discard score-0 candidates without
-  allocating an offset array, while generic-only fallback will rescan the already-owned Git listing
-  once without recomputing path signals. The exact pre-implementation 31-sample baseline at merge
-  `ed76eea9397a66e542a67633cb383d92b71058a8` is 47,364,361 ns; the binary SHA-256 is
-  `d4e0de24a5684fb9042cf4bd82a57f0c50bb368bdea3d7b67925c150b6b6a747`. The public output and
-  failure behavior remain unchanged. The performance claim is limited to related selection;
-  generic-only fallback explicitly accepts one extra lightweight listing traversal and is covered
-  by exact correctness owners rather than a speed claim. Implementation
-  `d2e15ad1f14f0317bb3d6227fa0c6ae8c2c7316c` passes selection, patch-evaluation, and verification
-  owners. The exact 201-pair comparison measured 47,880,342 ns for the parent and 47,793,764 ns for
-  the candidate, a 1,808 ppm (0.18%) reduction with identical normalized result documents and all
-  five ordered stages passing. Two preceding 101-pair comparisons improved in the same direction.
+- C8 generic-fallback rescan PR #117 merged on `main` at
+  `269aeec8eb3a31ba5e68ee2ebc72583e71df6477`. Its hosted check passed in 1m32s while the unaffected
+  x86_64 and aarch64 jobs each completed in 9s with every native qualification step skipped.
+- Active work is on `agent/c8-atomic-patch-apply`. The seventh capability is
+  `C8-ATOMIC-PATCH-APPLY`: replace each candidate/repair `git apply --check` plus `git apply` pair
+  with one `git apply --check --apply --recount` invocation. Git keeps whole-patch rejection atomic
+  without `--reject`; the capability removes the successful check-only stage and process while
+  preserving the remaining validation sequence, diagnostics, and timeout. The exact
+  pre-implementation 31-sample baseline at merge
+  `269aeec8eb3a31ba5e68ee2ebc72583e71df6477` is 47,600,824 ns; the binary SHA-256 is
+  `f77b3f102ada7d1ce405524cc8f1535dd6514dc501a07084f88f865a2a2b6f20`.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -52,11 +47,12 @@ file records durable project state.
 
 ## Resume in another environment
 
-1. Fetch `origin` and resume `agent/c8-rescan-generic-fallback` at its latest commit. Read
-   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. The ledger,
-   implementation, correctness owners, exact performance comparison, comprehensive review, and its
-   narrow handoff repair are complete; exact-head preflight is the first unfinished action.
-2. Run exact-head preflight, then publish the English PR with the measurement and review envelope.
+1. Fetch `origin` and resume `agent/c8-atomic-patch-apply` at its latest commit. Read `CLAUDE.md`,
+   then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. The baseline and capability
+   ledger are complete; implementation is the first unfinished action.
+2. Collapse candidate and repair application to one atomic Git invocation, update exact stage owners,
+   add the multi-file rejection control and benchmark comparison mode, then close owner verification
+   and the paired benchmark before review/preflight.
 3. After merge, refresh `main` and choose the next smallest consumer-complete C8 optimization from
    a new measured time-to-passing-patch baseline.
 4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
