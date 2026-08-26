@@ -3,23 +3,20 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## C8 fourth capability: related-only recommendations (2026-08-26)
+## C8 fifth capability: defer generic serialization (2026-08-26)
 
-- The preceding durable handoff is C8 changed-path-hoisting PR #114 on `main` at
-  `9cdf1050041c7c1ecf50b753fd48e8744bbd57eb`. Its hosted check passed in 1m28s while the unaffected
-  x86_64 and aarch64 jobs completed in 5s and 9s without running native qualification.
-- Active work is on `agent/c8-related-only-recommendations`. The fourth capability is
-  `C8-TEST-SELECTION-RELATED-ONLY`: when any positive-score test exists, publish all positive-score
-  candidates and omit score-0 generic candidates; retain every generic candidate only as the
-  no-signal fallback. Implementation `ef192576da2f8bf8bce7e31ea2f2bc129fc52fa1` updates the
-  selection and patch-evaluation owners plus a comparison mode that proves the exact intentional
-  output delta. The repaired exact 101-pair comparison measured 49,635,644 ns for the parent and
-  48,507,915 ns for the candidate, a 22,720 ppm (2.27%) reduction. The comprehensive review of
-  `bc9404dce7373c0eec7237212cba2bc5cb1a0990` found two P2 owner gaps: failure-memory propagation
-  lacked a discriminating mixed-input regression, and the benchmark accepted an unordered stage
-  set without independently checking each stage result. The consolidated repair adds exact
-  evaluation/persistence/reuse assertions and validates the ordered five-stage passing vector.
-  Run exact-head preflight and publication before selecting another C8 capability.
+- C8 related-only recommendation PR #115 merged on `main` at
+  `25c964d8df19c4d6571bdfcb353d0608ac07c518`. Its hosted check passed in 1m34s while the unaffected
+  x86_64 and aarch64 jobs completed in 6s and 9s with every native qualification step skipped.
+- Active work is on `agent/c8-defer-generic-encoding`. The fifth capability is
+  `C8-TEST-SELECTION-DEFER-GENERIC`: keep generic paths as fixed-width offsets into the owned Git
+  listing during selection and serialize them only if no positive relationship exists. This keeps
+  related and fallback output byte-identical while avoiding construction of JSON that related-only
+  selection discards. The exact pre-implementation 31-sample baseline at merge
+  `25c964d8df19c4d6571bdfcb353d0608ac07c518` is 48,115,210 ns; the binary SHA-256 is
+  `f1c8bf75530ad5155c52e54e919be0f5388f2fd2438c1c4a81964efb567cd045`. Implement the settled
+  ledger, run the exact owner documents and paired benchmark, then review and publish only if the
+  candidate improves time to a passing patch.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -51,19 +48,15 @@ file records durable project state.
 
 ## Resume in another environment
 
-1. Fetch `origin` and resume `agent/c8-related-only-recommendations` at its latest commit. Read
-   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Complete the
-   review, exact-head preflight, publication, and merge sequence before selecting another C8
-   capability.
-2. After the fourth C8 pull request merges, refresh `main` and select the next smallest
-   consumer-complete optimization that improves a real fixed coding task end to end. Establish its
-   reproducible current median for time to a passing patch before making an optimization claim;
-   tokens/second or an isolated model latency is not the C8 gate.
-3. Choose the next capability from measured evidence among context reduction, stable-context
-   reuse, targeted tests, parallel checks, small-model routing, and cached static analysis. Record
-   the exact consumer, baseline, changed boundary, owner test, and measurement command in the C8
-   plan before implementation. Apply the proportional design gate only if the selected boundary
-   triggers it.
+1. Fetch `origin` and resume `agent/c8-defer-generic-encoding` at its latest commit. Read
+   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Implement the
+   fifth ledger without changing selection output or the Git failure boundary.
+2. Run `make test-selection-smoke`, `make patch-eval-smoke`, and `make verify-loop-smoke`, then build
+   an exact candidate binary and compare it with the recorded parent using
+   `scripts/run-c8-selection-signal-benchmark compare PARENT_BINARY CANDIDATE_BINARY 101`.
+3. If the paired median improves, record the exact commit/digests/result and complete the normal
+   review, repair, preflight, PR, CI, and merge sequence. If it does not, preserve the measurement
+   and drop the implementation rather than publishing a performance regression.
 4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
    new Align request unless implementation exposes a genuine shipped-language, compiler/runtime,
    or standard-library gap under the request-register rules.

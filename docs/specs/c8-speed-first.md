@@ -1,6 +1,6 @@
 # C8 Speed-first optimization
 
-Status: first three consumer-complete capabilities merged; fourth capability implemented and measured.
+Status: first four consumer-complete capabilities merged; fifth capability baselined.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -108,6 +108,30 @@ non-empty and publishes the zero-score bucket only when no positive candidate ex
 This is not a fixed numeric cap. Every positive relationship remains visible, and generic tests
 remain the one fallback when path ranking has no information. The full-test verification stage is
 unchanged and still owns broad regression coverage after targeted recommendations run.
+
+### 2.5 Defer generic recommendation serialization
+
+`C8-TEST-SELECTION-DEFER-GENERIC` is the fifth consumer-complete capability. After the fourth
+capability, the selector omits generic candidates from related output but still JSON-encodes every
+generic candidate into a builder before discarding that complete body. The optimization records
+only source offsets for generic paths during classification and serializes them after traversal only
+when no positive candidate exists.
+
+| Field | Contract |
+| --- | --- |
+| Consumer | `repo_index.select_tests`, `patch_eval.evaluate`, the C4 verification loop, and failure-memory consumers of recommended tests |
+| Input and output | Root, changed path, timeout, schemas, field order, statuses, errors, candidate paths/scores/reasons/counts, ranking order, and related-only/fallback behavior are unchanged |
+| Changed boundary | A score-0 candidate records its start/end offsets into the already-owned NUL-delimited Git listing during the one classification pass; positive candidates retain immediate bucket serialization |
+| Fallback | If no positive candidate exists, traverse the recorded offsets in Git order and serialize every generic candidate exactly once; if any positive candidate exists, drop the offsets without constructing generic JSON |
+| Ownership/allocation | A function-local `array_builder<TestPathOffset>` owns fixed-width copied offsets, never borrowed path views; `files_run.stdout` owns the referenced bytes through fallback rendering; the builder and its buffer are dropped before return and no cache survives the call |
+| Failure behavior | Existing `rev-parse` then `ls-files` order, timeout handling, error documents, and no-repository behavior are unchanged; deferred work occurs only after both Git commands succeed |
+| Correctness owner | `scripts/run-test-selection-smoke` proves exact mixed related/generic and generic-only fallback documents; `scripts/run-patch-eval-smoke` and `scripts/run-verification-loop-smoke` cover downstream documents and failure-memory propagation |
+| Performance owner | `scripts/run-c8-selection-signal-benchmark baseline BINARY [SAMPLES]` before implementation and `scripts/run-c8-selection-signal-benchmark compare PARENT_BINARY CANDIDATE_BINARY [SAMPLES]` after implementation |
+| Acceptance | On the fixed coding task, normalized result documents are identical, the exact ordered five-stage vector passes with matching exit codes, and candidate median time to a passing patch is lower |
+| Platform scope | Platform-independent selection allocation and JSON construction; no target-local implementation or platform-specific speed claim |
+
+The offset record is an internal traversal checkpoint, not persisted state. It cannot outlive the
+Git listing it indexes, and it does not change the full-test stage that follows targeted tests.
 
 ## 3. Fixed passing-patch benchmark
 
@@ -348,7 +372,32 @@ and matching actual/expected exit codes. A preceding 31-pair comparison improved
 the same direction. This is a path-local claim for a repository with many generic test paths, not a
 universal repository or provider/model-time claim.
 
-## 7. Deferred C8 surfaces
+## 7. Fifth fixed coding-task baseline
+
+The fifth capability reuses the Section 4 real-stage fixture and the exact output/stage validation
+strengthened by the fourth capability. Its related result contains one recommendation, but the
+current selector still constructs and discards JSON for 3,999 generic candidates. The
+pre-implementation baseline is:
+
+```text
+commit:     25c964d8df19c4d6571bdfcb353d0608ac07c518
+binary SHA-256: f1c8bf75530ad5155c52e54e919be0f5388f2fd2438c1c4a81964efb567cd045
+command:    scripts/run-c8-selection-signal-benchmark baseline /tmp/align-llm-c8-defer.MZTl1I/parent-25c964d.bin 31
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    31 measurements after two discarded warmup runs
+median:     48,115,210 ns
+candidate-apply-check median: 1,229,543 ns
+candidate-apply median:       1,140,160 ns
+build median:                 9,426,004 ns
+targeted-test median:        14,739,588 ns
+full-test median:            14,769,219 ns
+```
+
+The stage medians are diagnostic decomposition. Only a lower paired total median with identical
+normalized result documents can close the fifth capability.
+
+## 8. Deferred C8 surfaces
 
 Context reduction, stable-context reuse, parallel checks, small-model routing, and persisted static
 analysis remain separate capabilities. In particular, captured concurrent checks require an Align
