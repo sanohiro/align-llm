@@ -1,6 +1,6 @@
 # C8 Speed-first optimization
 
-Status: first consumer-complete capability merged; second capability implemented and measured.
+Status: first two consumer-complete capabilities merged; third capability baselined.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -60,6 +60,29 @@ candidate and derives both existing fields from them.
 No memoization or persisted cache is introduced. A future change to either signal must update the
 single computation and the existing four-bucket owner rather than restoring separate score/reason
 paths.
+
+### 2.3 Compute changed-path components once
+
+`C8-TEST-SELECTION-CHANGED-PATH-ONCE` is the third consumer-complete capability. After the second
+capability, the selector still derives the unchanged changed path's stem and directory once for
+every test candidate. The optimization derives both components once before the tracked-file loop;
+each candidate continues to derive its own stem and directory exactly once.
+
+| Field | Contract |
+| --- | --- |
+| Consumer | `repo_index.select_tests`, `patch_eval.evaluate`, and the C4 verification loop |
+| Input and output | The existing root, changed path, timeout, schema-1 selection document, patch-evaluation document, verification result, status, counts, candidate bytes, and order are unchanged |
+| Changed boundary | Only function-local derivation of the changed path's stem and directory moves before the existing tracked-file loop |
+| Ownership/allocation | Two function-local strings own the changed stem and directory; they replace per-candidate derivation and no value survives `select_tests` |
+| Failure behavior | Existing `rev-parse` then `ls-files` order, timeout handling, error documents, and no-repository behavior are unchanged |
+| Correctness owner | `scripts/run-test-selection-smoke`, with `scripts/run-patch-eval-smoke` and `scripts/run-verification-loop-smoke` covering both downstream consumers |
+| Performance owner | `scripts/run-c8-selection-signal-benchmark baseline BINARY [SAMPLES]` before implementation and `scripts/run-c8-selection-signal-benchmark compare PARENT_BINARY CANDIDATE_BINARY [SAMPLES]` after implementation |
+| Acceptance | On the fixed coding task, the candidate median time to a first-attempt passing patch is lower; normalized result documents match and all five real stage commands pass |
+| Platform scope | Platform-independent Align path/string computation; no target-local implementation or platform-specific speed claim |
+
+This capability does not cache per-test data, change the ranking formula, or combine path parsing
+with JSON construction. Those remain separate boundaries if later end-to-end measurement justifies
+them.
 
 ## 3. Fixed passing-patch benchmark
 
@@ -177,7 +200,30 @@ All normalized result documents agreed. The measured reduction is deliberately r
 small path-local improvement; it is not generalized to repositories with fewer candidates or to
 provider/model time.
 
-## 5. Deferred C8 surfaces
+## 5. Third fixed coding-task baseline
+
+The third capability reuses the real-stage benchmark and correctness rules from Section 4 without
+changing its fixture or timed region. The pre-implementation baseline is:
+
+```text
+commit:     a51aa065a2f83f4e88d7734068c6b2598b4bd3a8
+binary SHA-256: 04202b4945c757c2f06f409502ec9c6bb0ad60b685b7846656eab233578cdc17
+command:    scripts/run-c8-selection-signal-benchmark baseline /tmp/align-llm-c8-path.3OVLZg/parent-a51aa06.bin 31
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    31 measurements after two discarded warmup runs
+median:     49,875,826 ns
+candidate-apply-check median: 1,300,373 ns
+candidate-apply median:       1,174,545 ns
+build median:                 9,474,076 ns
+targeted-test median:        14,706,220 ns
+full-test median:            14,985,312 ns
+```
+
+The stage medians are diagnostic decomposition. Only a lower paired total median with identical
+normalized result documents can close the third capability.
+
+## 6. Deferred C8 surfaces
 
 Context reduction, stable-context reuse, parallel checks, small-model routing, and persisted static
 analysis remain separate capabilities. In particular, captured concurrent checks require an Align
