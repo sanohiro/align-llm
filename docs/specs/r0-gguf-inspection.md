@@ -146,7 +146,7 @@ gguf inspection:
 status:
 OK | ERROR
 architecture:
-<general.architecture, or "-" when absent or non-UTF-8>
+<general.architecture, control-byte escaped; "-" when absent, non-STRING, or non-UTF-8>
 version:
 <decimal u32>
 tensors:
@@ -173,6 +173,16 @@ This block is a human convenience. The JSON document is the authoritative result
 error reporting remains the source of truth for a returned `Err`. R0 adds no second diagnostic
 grammar.
 
+**Correction (section 6, items 17 and 18): the architecture line is escaped, and `-` means absent.**
+The block is a fixed sequence of logical lines that a consumer reads positionally, and
+`general.architecture` is container-controlled text. Every control byte in it — every byte below
+`0x20`, and `0x7f` — is therefore replaced by `\xNN` (lowercase hexadecimal) before it is printed,
+so the value always occupies exactly one line and cannot inject a `status:` or an `error:` pair.
+The JSON document is unaffected: its encoder already escapes the same bytes. `-` is reserved for an
+`architecture` the container does not supply — absent, non-STRING, or non-UTF-8 — so a key that is
+present and empty prints an **empty line**, which is what the container actually declares. The CLI
+distinguishes the two through the `architecture_present` field of section 2.5.4.
+
 ### 2.4 Exchanged document — `R0_GGUF_INSPECTION`, `schema_version: 1`
 
 The document is canonical UTF-8 JSON in declaration order, produced by `json.encode` over declared
@@ -186,7 +196,7 @@ requires `schema_version: 2`.
 {
   "schema_version": 1,
   "kind": "R0_GGUF_INSPECTION",
-  "path": "/Users/hiro/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+  "path": "MODELS_DIR/qwen2.5-coder-7b-instruct-q4_k_m.gguf",
   "status": "ok",
   "error_code": "",
   "error_offset": -1,
@@ -209,9 +219,10 @@ requires `schema_version: 2`.
 }
 ```
 
-The example above is the real reference model. Every value in it was independently decoded from
-`~/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf` and cross-checked against `llama-gguf`, except
-`bytes_read`, which is the computed lower bound of section 4.3 rather than a measured figure.
+The example above is the real reference model; `MODELS_DIR` is a placeholder for whatever directory
+holds it on the running host, and `path` is always the operand verbatim. Every value in it was
+independently decoded from that model and cross-checked against `llama-gguf`, except `bytes_read`,
+which is the computed lower bound of section 4.3 rather than a measured figure.
 
 | Field | Type | Contract |
 | --- | --- | --- |
@@ -223,7 +234,7 @@ The example above is the real reference model. Every value in it was independent
 | `error_offset` | integer | `-1` when `status` is `"ok"`; otherwise the absolute file offset at which the failing field begins |
 | `file_size` | integer | The `f.len()` result, read once before decoding |
 | `bytes_read` | integer | The exact sum of the counts returned by every `f.pread` call. See section 4.3 |
-| `header` | object | Always present. Fields not decoded hold `-1`, and `magic` holds `""`; only `GGUF_TOO_SMALL` leaves all four unset |
+| `header` | object | Always present. Fields not decoded hold `-1`, and `magic` holds the decoded four bytes when they are valid UTF-8 and `""` when they are not. `GGUF_TOO_SMALL` and a non-UTF-8 `GGUF_BAD_MAGIC` both leave all four unset; see section 6, item 19 |
 | `architecture` | string or null | The `general.architecture` STRING value; `null` when absent, non-STRING, or non-UTF-8 |
 | `alignment` | integer | The effective alignment; `32` when `general.alignment` is absent |
 | `alignment_source` | string | `"general.alignment"` or `"default"` |
@@ -440,11 +451,20 @@ Three operations define it, and they are the whole reading contract:
 1. **`ensure(n)`** guarantees that bytes `[pos, pos + n)` are inside the window. If `pos + n` exceeds
    `file_size`, it fails `GGUF_TRUNCATED` **before** any codec call. If `n` exceeds `capacity`, it
    grows (2.5.2). Otherwise, if the range is not already resident, it refills at `pos`.
-2. **`refill()`** calls `handle.pread(window, pos)`, sets `window_base = pos`, sets `window_len` to
+2. **`refill(n)`** calls `handle.pread(window, pos)`, sets `window_base = pos`, sets `window_len` to
    the returned count, and adds that count to `bytes_read`. A refill always starts at the first
    unconsumed byte, so no *consumed* byte is ever read twice; an unconsumed window tail that an
    oversized item forces past is re-read, and `bytes_read` counts it, because `bytes_read` is
    defined as the I/O actually performed rather than the distinct bytes touched.
+
+   **Correction (section 6, item 16): a refill completes a short read.** `f.pread` reads *one*
+   window and publishes exactly the count the syscall returned, so a count below the requested `n`
+   is surfaced to the caller as-is. Treating that as a truncated container would report
+   `GGUF_TRUNCATED` for a perfectly good file, so `refill` takes the needed length and loops until
+   `window_len >= n`. Each continuation reads at `window_base + window_len` into its own bare `mut`
+   buffer local — the runtime always fills a buffer from *its* capacity, so a continuation cannot be
+   read into `window` itself — and is appended to the window, whose total never exceeds the capacity
+   `ensure` already reserved. Every continuation count enters `bytes_read` on the same rule.
 3. **`skip(n)`** advances `pos` by `n` without reading. If the target is inside the resident window
    it is a pointer move; otherwise the window is simply invalidated and the next `ensure` refills at
    the new position. Skipped bytes never enter `bytes_read`.
@@ -474,6 +494,17 @@ capacity doubles until it is at least the requested `n`, capped at
 `MAX_ITEM_BYTES := 16_777_216`. A request above the cap fails `GGUF_ITEM_TOO_LARGE` without
 allocating. Growth is monotone within one inspection and the window is never shrunk.
 
+**Correction (section 6, item 17): a failed growth allocation is detected by its consequence.**
+`buffer(cap)` reserves fallibly and degrades to a **zero-capacity** window rather than aborting the
+process, and a `pread` into a zero-capacity buffer returns `0` without issuing a syscall. A
+`buffer`'s capacity is not observable at this pin — `b.len()` is the last read's byte count and
+there is no `b.cap()` — so R0 cannot test the reservation directly. It tests the observable
+consequence instead: `ensure` has already proved `pos + n <= file_size`, so any read of zero bytes
+at a position strictly inside the file is impossible for a healthy window, and it is reported as
+`GGUF_WINDOW_UNAVAILABLE` rather than as `GGUF_TRUNCATED`. The same code covers the other cause of
+that observation, a file that shrank under the inspection, which section 3.1 already records as an
+unsupported caller case.
+
 Fixed-width array tails use `skip`. After the first `ARRAY_PREVIEW` elements of an array whose
 element type is not `STRING`, the remaining `(length - 8) * width` bytes are skipped rather than
 read. On the reference model this removes 608,224 of the 608,256 bytes of the
@@ -502,7 +533,7 @@ a codec read returns a Copy value that carries no region.
 | Value | Owner | Allocation | Release |
 | --- | --- | --- | --- |
 | `file` handle | `gguf.inspect` local | one fd | scope `Drop`; there is no `f.close()` at this pin |
-| window `buffer` | `GgufCursor` field | one per refill, `capacity` bytes | scope `Drop` when replaced and at end |
+| window `buffer` | `gguf.inspect` local, a bare `mut` (section 6, items 1 and 2) | one `capacity`-byte window, allocated once and replaced only by the explicit growth path, plus one short-lived continuation buffer per short read | scope `Drop` when replaced and at end |
 | decoded `string` values | the owning `GgufKv` / `GgufTensor` record | one per retained text value | with the record |
 | per-record JSON | `json.encode` result, cloned once into the record | one per record | with the record |
 | final document | `builder` moved out by `to_string()` | one owned `string` | moved into `GgufInspection.document`, then to the caller |
@@ -531,11 +562,19 @@ pub GgufInspection {
   alignment: i64,
   data_offset: i64,
   architecture: string,
+  architecture_present: bool,
   document: string,
 }
 
 pub fn inspect(path: str) -> Result<GgufInspection, Error>
 ```
+
+`architecture_present` (section 6, item 18) is `true` only when `general.architecture` was decoded
+as a valid UTF-8 `STRING`. It is what lets a consumer — including the section 2.3 summary —
+distinguish a key that is present and empty from one that is absent, non-STRING, or non-UTF-8,
+which `architecture` alone cannot express. The document's `architecture` field already carries the
+same distinction as `""` versus `null`; this is the record-level equivalent, not a new document
+field, so `schema_version` stays `1`.
 
 `inspect` returns `Err` only for an invalid path argument or an operating-system failure (open,
 `len`, or `pread`). Every structural defect in the file is data: it returns `Ok` with
@@ -582,8 +621,9 @@ the tensor table in the container. This ordering is a property of the format, no
 | `GGUF_BAD_DIMS` | `n_dims` is `0` or greater than `4` | step 7 |
 | `GGUF_OFFSET_OVERFLOW` | a tensor offset has bit 63 set | step 7 |
 | `GGUF_TENSOR_MISALIGNED` | a tensor offset is not a multiple of `alignment` | step 7 |
-| `GGUF_TENSOR_OUT_OF_RANGE` | `data_offset + offset > file_size` | step 9 |
+| `GGUF_TENSOR_OUT_OF_RANGE` | `offset > file_size - data_offset`, the non-wrapping form of `data_offset + offset > file_size` (section 6, item 15) | step 9 |
 | `GGUF_TRUNCATED` | any required range extends past `file_size`, including `data_offset > file_size` | steps 4, 5, 7, 8 |
+| `GGUF_WINDOW_UNAVAILABLE` | a `pread` returned zero bytes at a position strictly inside the file: the window's capacity could not be reserved, or the file shrank during the inspection (section 6, item 17). Like `GGUF_ITEM_TOO_LARGE` it is a fail-closed guard with no fixture, because neither cause can be provoked deterministically from a test | steps 4, 5, 7 |
 
 Thresholds and their justification, all recorded as named constants in `src/gguf.align`:
 
@@ -601,6 +641,15 @@ There is no `i64` `MAX` constant at this pin, so the representability test is wr
 `(raw >> 63) != 0` on the `u64` value. `>>` is logical on unsigned types and the shift amount shares
 the value's type, so this is exact. It is performed **before** any `as i64`, because `as` truncates
 and extends with defined wrap and would silently produce a negative count.
+
+Signed arithmetic wraps in two's complement without trapping, so the same rule governs every sum of
+file-derived values: it must be proved in range before it is formed. Every addition in
+`src/gguf.align` is bounded by `file_size` plus a capped constant, the one multiplication
+(`(length - ARRAY_PREVIEW) * width` in the fixed-width skip path) is bounded by
+`MAX_ARRAY_ELEMENTS * 8`, and the two `data_offset + offset` sums are written in non-wrapping form
+— the containment test as a subtraction, the rendering behind an explicit representability test
+against a locally declared `I64_MAX` literal. Section 6, item 15 records the defect that forced
+this and the audit that closed the class.
 
 A version-1 GGUF file is rejected rather than supported. v1 encodes counts and array lengths as
 `u32` rather than `u64`, so it is a structurally different container, and no model align-llm targets
@@ -646,7 +695,7 @@ it is not the primary strategy today.
 | Results and errors | `Ok` + `status: "ok"`; `Ok` + `status: "error"` for structural defects; `Err` only for argument or OS failure | `gguf.inspect`, `src/main.align` | error-code corpus, one fixture per row of section 2.6 |
 | Multi-invalid precedence | Section 2.6 is strictly ordered; the first applicable row wins | `src/gguf.align` | multi-defect fixtures asserting the earlier code |
 | Ownership and lifetime | Every retained text is cloned before the next `ensure`; the document is moved into its sole owner | `src/gguf.align` | refill-boundary and large-file cases |
-| Allocation | One fd, one window buffer per refill, one `string` per retained text, one document | `src/gguf.align` | `bytes_read` and window-count assertions |
+| Allocation | One fd, one window buffer for the whole inspection (growth and short-read continuations excepted), one `string` per retained text, one document. Rendering holds the tensor JSON twice at its peak — see the deferred item in section 5.4 | `src/gguf.align` | `bytes_read` and window-count assertions |
 | Persisted/cache identity | `N/A`. R0 writes one caller-named output document and reads nothing it wrote. It creates no cache, no index, no digest-addressed artifact, and changes no Align compiler cache policy | `N/A` with this reason | no cache behavior is claimed or tested |
 | Schema version | `schema_version: 1`; any field addition, removal, reorder, or type change requires version 2 | `src/gguf.align` | golden document bytes, field-order assertion |
 | Validation order | Section 2.6, deterministic and side-effect ordered; no output before the walk completes | `src/gguf.align` | ordered malformed corpus, untouched-destination assertion |
@@ -672,7 +721,7 @@ runner is named.
 | Case | Contract to close | Implementation | Exact regression |
 | --- | --- | --- | --- |
 | Construction — handle | `fs.open_rw` result is bound to a local before any method call; `f.len()` is read once into `file_size` before decoding | `gguf.inspect` prologue | `open-and-size` case asserts `file_size` equals the fixture's byte length |
-| Construction — window | `buffer(WINDOW_BYTES)` is a `mut` local; the first `ensure` triggers the first `pread` at offset 0 | `GgufCursor` init, `refill` | `bytes-read-exact` case asserts the exact `bytes_read` for a single-window fixture |
+| Construction — window | `buffer(WINDOW_BYTES)` is a `mut` local; the first `ensure` triggers the first `pread` at offset 0 | `gguf.inspect` prologue, `refill` (section 6, item 1) | `bytes-read-exact` case asserts the exact `bytes_read` for a single-window fixture |
 | Construction — record | `GgufInspection` is built with every field explicitly initialized, including the `-1`/`""`/`null` sentinels | `gguf.inspect` epilogue | `error-sentinels` case asserts each unreached field on a header-only failure |
 | Bounds precondition | Every codec call is reached only through `ensure`; no codec offset is computed outside `pos - window_base` | `ensure`, all `decode_*` | `truncated-every-boundary` case: one fixture truncated at each of 9 structural boundaries, each yielding `GGUF_TRUNCATED` and **no abort** |
 | Refill boundary | An item that spans a window boundary decodes identically to one that does not | `ensure`, `refill` | `refill-boundary` case: the same logical file emitted twice with window sizes forcing a split mid-key, mid-string, and mid-dims |
@@ -687,7 +736,7 @@ runner is named.
 | Success — alignment | `general.alignment` overrides the default and sets `alignment_source` | `resolve_alignment` | `alignment-default` and `alignment-override` cases (32 default, 64 override) |
 | Success — data offset | `data_offset` is `tensor_table_end` rounded up by remainder arithmetic, not bit masking | `compute_data_offset` | `data-offset` case for a table end that is already aligned and one that is not |
 | Success — architecture | `general.architecture` is surfaced to the top level when it is a valid UTF-8 STRING | `resolve_architecture` | `architecture` case, plus an `architecture-absent` case asserting `null` |
-| Failure — every error code | Each of the 16 codes of section 2.6 is produced by at least one fixture, with the correct `error_offset` | `decode_*` guards | `error-corpus` case: one negative fixture per code, asserting code and offset |
+| Failure — every error code | Each reachable code of section 2.6 is produced by at least one fixture, with the correct `error_offset`; the two unreachable fail-closed guards are named in section 6, items 6 and 17 | `decode_*` guards | `error-corpus` case: one negative fixture per code, asserting code and offset |
 | Failure — precedence | A file with two defects reports the earlier row of section 2.6 | ordered guards | `error-precedence` case: bad magic + bad version; implausible KV count + truncation; misaligned tensor + out-of-range tensor |
 | Failure — u64 representability | Bit 63 is tested before any `as i64` | `read_u64_checked` | `overflow-corpus` case: counts, string lengths, array lengths, `UINT64` values, and tensor offsets each set to `0x8000000000000001` |
 | Malformed — non-UTF-8 | A bad key, a bad string value, a bad preview element, and a bad tensor name each render as `null` plus their flag, and none is fatal | `decode_text` | `invalid-utf8` case with a `0xFF` byte in each of the four positions |
@@ -714,7 +763,7 @@ runner is named.
 | Success — two operands | The document goes to the named file; the summary block goes to stdout | `inspect_gguf_demo` | `file-document` case |
 | Byte identity across forms | Both forms emit identical document bytes | `inspect_gguf_demo` | `form-parity` case diffs the two outputs |
 | Failure mapping | `status: "error"` becomes `Err(Error.Invalid)` **after** the document is emitted | `inspect_gguf_demo` epilogue | `error-corpus` cases assert both a nonzero exit and a complete document |
-| Failure — OS | An unreadable or absent path returns `Err` with no document and no summary | `?` propagation | `missing-path` and `denied-path` cases |
+| Failure — OS | An unreadable or absent path returns `Err` with no document and no summary | `?` propagation | `missing-path` and `denied-path` cases; `denied-path` copies the positive fixture, `chmod 000`s it, and asserts a nonzero exit, empty stdout, and an untouched destination sentinel. Running as root ignores mode bits, so there the case prints an explicit `SKIPPED` note instead of asserting |
 | Early exit | An arity or path failure produces no output at all | guard ordering | `cli-arity` and `cli-path` cases assert empty stdout |
 | Unknown-selector compatibility | An unrecognized `args[1]` still prints help and returns `Ok(())` | unchanged dispatch chain | `unknown-selector` case, asserting exit 0 |
 | Option/environment isolation | No environment variable changes any document byte | no env read exists | `env-perturbation` case runs with a perturbed environment and diffs the document |
@@ -731,7 +780,7 @@ runner is named.
 | Qualification exclusion | `gguf-reference-parity` is a focused, opt-in target and joins **no** aggregate | `Makefile` | `make gate-topology-check` asserts its absence from both lists |
 | Fixture generation | `scripts/gguf_fixture.py` writes every fixture into a `mktemp -d` tree and nothing into the repository | `scripts/run-gguf-smoke` | `git status --porcelain` is empty after the smoke run |
 | Fixture independence | The generator derives no value from `src/gguf.align`; it writes bytes from its own struct-packing tables | `scripts/gguf_fixture.py` | code review; the generator imports only `struct`, `hashlib`, and `pathlib` |
-| Cleanup | Every fixture path is removed by a shell `trap` on `EXIT`, including on failure | `scripts/run-gguf-smoke` | `stale-fixture` case: the temp root is absent after both a passing and a failing run |
+| Cleanup | Every fixture path is removed by a shell `trap` on `EXIT`, including on failure | `scripts/run-gguf-smoke` | `stale-fixture` case, restated (section 6, item 21) to what a runner can prove about its own cleanup: exactly one `trap cleanup EXIT` owns the `mktemp -d` root on every exit path, and the run's last assertion is that the root is **still present** at that point, so nothing removes it early and nothing but the trap removes it at all. The complementary `git`-independent leak sweep asserts that no `*.gguf` or `manifest.json` reached the repository |
 | Reference skip | Absent `ALIGN_LLM_GGUF_REFERENCE` or absent model prints an explicit `N/A` line and exits 0 | `scripts/run-gguf-reference-parity` | run with the variable unset; assert the exact skip line |
 | Reference isolation | The parity runner never modifies the model file and never writes outside its temp root | `scripts/run-gguf-reference-parity` | model `mtime` and size compared before and after |
 | Documentation | `docs/specs/roadmap.md` section R0 and `HANDOFF.md` name this document and the two runners | integration commit | out of scope for this design-only file; recorded as a follow-on |
@@ -765,9 +814,10 @@ The positive fixture is a complete, valid v3 container under 64 KiB containing:
 - Arrays of length 0, 1, 8, and 9 for `INT32`, and of length 0, 1, 8, and 9 for `STRING`, pinning
   both sides of the `truncated` boundary.
 - An array of `FLOAT32`, pinning the `{"value": …, "bits": …}` element shape.
-- Three tensors with 1, 2, and 4 dimensions; type ids `0` (`F32`), `12` (`Q4_K`), and `199`
-  (unknown, asserting `type_known: false`); aligned offsets and real padding before the data
-  section.
+- Four tensors: three with 1, 2, and 4 dimensions and type ids `0` (`F32`), `12` (`Q4_K`), and `199`
+  (unknown, asserting `type_known: false`), plus a fourth whose name bytes contain `0xFF`, which is
+  the tensor-name half of the `invalid-utf8` cell. All four carry aligned offsets, and the container
+  has real padding before the data section.
 - A minimal data section of the exact declared size, which the inspection must not decode.
 
 Two variants of the positive fixture are generated: one without `general.alignment` (default 32) and
@@ -775,9 +825,18 @@ one with `general.alignment = 64`. A third variant re-emits the same logical con
 that forces items to straddle a window boundary, which is what closes the refill-boundary and
 borrow-expiry cells of section 3.1.
 
-The negative corpus is one file per row of the section 2.6 table, plus the precedence pairs. Each
-carries its expected code and its expected `error_offset`, both computed by the generator from the
-byte layout it wrote.
+Three further positive containers pin the section 2.3 architecture contract: one whose
+`general.architecture` is present and empty, one whose value carries a newline, a tab, and `0x7f`,
+and one whose `general.architecture` is a `UINT32`. Each declares the exact summary line the CLI
+must print, so the escaping and the meaning of `-` are asserted rather than assumed.
+
+The negative corpus is one file per reachable row of the section 2.6 table, plus the precedence
+pairs. Each carries its expected code and its expected `error_offset`, both computed by the
+generator from the byte layout it wrote. Two of those files are wrap-specific: a single-tensor
+container and a two-tensor container whose last entry declares the alignment-correct, representable
+offset `0x7FFFFFFFFFFFFFE0`, for which `data_offset + offset` wraps negative. Both must report
+`GGUF_TENSOR_OUT_OF_RANGE`, exit nonzero, and render `absolute_offset: -1`; the two-tensor file
+exists so that a check of only the first entry cannot pass.
 
 ### 4.2 Owner — `scripts/run-gguf-smoke`, `make gguf-smoke`
 
@@ -821,8 +880,8 @@ document against a llama.cpp reference reader on a real model.
 Inputs, both required, both explicitly skippable:
 
 - `ALIGN_LLM_GGUF_REFERENCE` — path to the reference executable, expected to be `llama-gguf`.
-- `ALIGN_LLM_GGUF_MODEL` — path to the model, defaulting to
-  `~/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf`.
+- `ALIGN_LLM_GGUF_MODEL` — path to the model. There is no default: an unset value is a skip, never
+  a guess at a local path.
 
 If either is unset or absent, the runner prints one exact line —
 `gguf reference parity: N/A (ALIGN_LLM_GGUF_REFERENCE unset)` or the model equivalent — and exits 0.
@@ -931,6 +990,14 @@ take a `bytes` view instead of a cursor, and the pread path retained only for th
 - **Multi-shard models.** `split.*` metadata is reported; following the chain is deferred to
   whichever slice first needs a sharded model.
 - **`fs.open_ro`.** Section 2.7. Non-blocking, recorded, not worked around.
+- **One-pass tensor rendering.** `absolute_offset` needs `data_offset`, which is known only after
+  the whole table has been walked, so each entry is accumulated up to its `offset` field and closed
+  during rendering. `render_tensors` therefore builds a second complete copy of the tensor JSON, and
+  peak memory during rendering is twice the tensor-array size — at `MAX_TENSORS` a bounded but real
+  cost, and roughly 60 KB for the 339-tensor reference model. Closing it needs either a rewritable
+  placeholder in the accumulated bytes or an indexable record array, which Request 22 currently
+  blocks. Deferred deliberately: R0 makes no performance claim, and the alternative would trade a
+  measured cost for an unmeasured one.
 - **Full array extraction.** Section 5.1.
 - **A GGUF writer.** Out of scope permanently for R0; if `align-pack` needs to emit GGUF rather than
   `.alignpack`, that is an R2 decision with its own contract.
@@ -949,7 +1016,7 @@ item below is a deferral.
 | 3 | 2.5.4, 3.1 | `builder` and `array_builder<T>` are not parameter types at this pin, so a `walk` helper cannot accumulate the document bodies. The walk lives in `gguf.inspect`, and each fallible step records its fault as a value and leaves the walk immediately. This is exactly the section 2.6 early-exit contract, expressed without a helper | `unknown type: 'builder'` from the pinned compiler | `partial-document` assertions in the error corpus |
 | 4 | 2.4.2, 2.4.3, 2.4.4 | A non-finite `FLOAT32`/`FLOAT64` renders `"value": null` (and `{"value": null, "bits": …}` in a preview). `write_float` spells an infinity `inf` and a NaN `NaN`, neither of which is JSON, so the previous contract could emit an unparseable document. `value_bits` is unchanged and remains authoritative | Rust `Display` for `f32`/`f64` | `full` fixture `kv.float32.inf`, `kv.float64.nan`; the whole corpus is parsed with Python's `json` |
 | 5 | 2.4.3 | The `FLOAT32` example renders `1000000.0`, not `1000000`. `write_float` always emits a decimal point | observed output | `float-bits` comparisons |
-| 6 | 2.6, 3.1, 4.1 | `GGUF_ITEM_TOO_LARGE` is **unreachable** while `MAX_STRING_BYTES == MAX_ITEM_BYTES == 16777216`: every declared string or name length above the cap is already rejected as `GGUF_STRING_TOO_LARGE` before `ensure` is reached, and no other item can request more than 32 bytes. The guard is retained as fail-closed defense and carries no negative fixture. The error corpus therefore has 15 reachable codes, not 16 | validation order of section 2.6 | none; recorded as an unsatisfiable closure cell |
+| 6 | 2.6, 3.1, 4.1 | `GGUF_ITEM_TOO_LARGE` is **unreachable** while `MAX_STRING_BYTES == MAX_ITEM_BYTES == 16777216`: every declared string or name length above the cap is already rejected as `GGUF_STRING_TOO_LARGE` before `ensure` is reached, and no other item can request more than 32 bytes. The guard is retained as fail-closed defense and carries no negative fixture. With `GGUF_WINDOW_UNAVAILABLE` (item 17) the section 2.6 table has 17 rows and the error corpus covers the 15 reachable ones | validation order of section 2.6 | none; recorded as an unsatisfiable closure cell |
 | 7 | 3.1 | In `truncated-every-boundary`, a cut below the 24-byte header yields `GGUF_TOO_SMALL`, not `GGUF_TRUNCATED` — the container is too small to describe itself at all. The invariant asserted at every boundary is the one that matters: a recorded error code and a recorded exit, **never** an abort | section 2.6 step 4 precedes step 5 | 13 `truncated-boundary-*` cases, each asserting a non-signal exit |
 | 8 | 2.6, 3.1 | `error_offset` for `GGUF_TRUNCATED` is the cursor position at the failing `ensure` — the first byte of the range that could not be read. For an arbitrary truncation point that value is not independently predictable, so the boundary sweep asserts `0 <= error_offset <= cut`; the two hand-computed truncations assert the exact offset. Every other code asserts an exact, generator-computed offset | — | `error-truncated-after-header` (24), `error-truncated-mid-header` (24), `error-truncated-data-offset` |
 | 9 | 3.2 | `untouched-destination` splits in two. A structural failure **does** replace the destination, with the complete failure document — that is the failure-persistence contract, and the assertion is that the destination parses and carries the expected `error_code`, never a partial write. The byte-unchanged sentinel assertion belongs to the argument and OS-failure paths, where no document exists | section 2.5.4 | `untouched-destination` (absent model) and the structural-failure replacement assertion |
@@ -958,6 +1025,22 @@ item below is a deferral.
 | 12 | 3.3, 4.1 | The generator imports `json`, `math`, `struct`, `sys`, and `pathlib` — `json` to emit the expectation manifest, `math` for the float edge values. It still imports nothing from `src/`, and derives no value from the decoder | — | code review |
 | 13 | 3.3 | Fixture cleanliness is proven by searching the repository for any `*.gguf` or `manifest.json` after the run rather than by requiring `git status --porcelain` to be empty, which cannot hold in a working tree under development | — | `run-gguf-smoke` epilogue |
 | 14 | 4.3 | Property 2 is asserted in its exact arithmetic form rather than against a same-size string-array control, whose byte layout cannot be made comparable. For the skip fixture the assertion is `bytes_read == WINDOW_BYTES + (file_size - array_end)` **and** `file_size - bytes_read == array_end - WINDOW_BYTES`, both computed by the generator from the layout it wrote. The STRING control asserts that at most 64 bytes go unread | — | `skip-accounting`, `skip-accounting-string-control` |
+
+Items 15 through 24 are the corrections the first comprehensive review forced. Items 15 to 20 are
+code corrections; 21 to 24 correct claims this document made that the shipped runners never held.
+
+| # | Amends | Correction | Evidence | Owner |
+| --- | --- | --- | --- | --- |
+| 15 | 2.4.5, 2.6, 3.1, 4.1 | **`data_offset + offset` wrapped.** Align integer overflow is two's-complement wrap with no trap, and `read_u64_checked` bounds a tensor offset only to `[0, i64::MAX]`. The step 9 containment test and the `absolute_offset` rendering both formed that sum before testing it, so an alignment-correct offset such as `0x7FFFFFFFFFFFFFE0` produced `status: "ok"`, exit `0`, and a negative `absolute_offset`. The containment test is now the subtraction `offset > file_size - data_offset` — both operands non-negative, with `data_offset <= file_size` guaranteed by `resolve_data_offset` — and the rendering forms the sum only when `offset <= I64_MAX - data_offset`, emitting `-1` otherwise. **Class audit:** every other addition on a file-derived value is bounded by `file_size` plus a capped constant (`ensure`, `skip`, `resolve_data_offset`, every `pos + width`, every window-relative offset), and the single multiplication `(length - ARRAY_PREVIEW) * width` is bounded by `MAX_ARRAY_ELEMENTS * 8 = 134,217,728`; no third site can wrap | reproduction before the fix: `status: "ok"`, exit `0`, `absolute_offset: -9223372036854775712` | `error-tensor-offset-overflow`, `error-tensor-offset-overflow-second-entry` |
+| 16 | 2.5.1 | **A short `pread` is completed, not reported as truncation.** `f.pread` reads one window and publishes exactly the count the syscall returned, so a short read on a large item would have surfaced as a spurious `GGUF_TRUNCATED`. `refill` now takes the needed length and loops until the range is resident, reading each continuation into its own bare `mut` buffer local — the runtime fills a buffer from its own capacity, so a continuation cannot be read into `window` — and appending it to the window, which never exceeds the capacity `ensure` reserved. Every continuation count enters `bytes_read`. The loop cannot be provoked from a fixture: on a regular file `ensure` has already proved that at least `n` bytes remain, so `pread` never returns fewer, and the completion is defensive on the item 6 precedent. The mechanism itself was verified out of tree with a throwaway Align program that preads 4 bytes, preads 4 more into a continuation buffer, appends, and observes an 8-byte window ending in the eighth byte | `align_rt_io_file_pread`; `docs/language-spec.md:1043` "reads one window"; the out-of-tree append probe | `make check`; every `gguf-smoke` case, `window-growth` and `refill-boundary-*` in particular |
+| 17 | 2.5.2, 2.6 | **A failed window allocation no longer reports `GGUF_TRUNCATED`.** `buffer(cap)` reserves fallibly and degrades to zero capacity, and a `pread` into a zero-capacity buffer returns `0` with no syscall. Capacity is not observable at this pin (`b.len()` is the last read's count; there is no `b.cap()`), so the observable consequence is tested instead: a zero-length read at a position `ensure` has already proved strictly inside the file reports the new `GGUF_WINDOW_UNAVAILABLE`. The same code covers a file that shrank mid-inspection | `align_rt_buffer_new` (`try_reserve_exact` -> `cap = 0`), `align_rt_io_file_pread` (`cap == 0` returns `0`) | none; a fail-closed guard on the item 6 precedent |
+| 18 | 2.3, 2.5.4 | **`GgufInspection` carries `architecture_present`.** The summary printed `-` for a `general.architecture` that was present and empty, although section 2.3 reserves `-` for absent or non-UTF-8. The record now exposes presence explicitly, and the CLI prints an empty line for present-and-empty and `-` only for absent, non-STRING, or non-UTF-8. The document is unchanged — it already distinguished `""` from `null` — so `schema_version` stays `1` | section 2.3 as written | `architecture-present-empty`, `architecture-non-string`, `empty-container` |
+| 19 | 2.4.1 | **The header sentence was too strong.** It claimed only `GGUF_TOO_SMALL` leaves all four header fields unset, but a magic that is not valid UTF-8 also leaves `magic` as `""` with the other three at `-1`. R0 records the magic as text or not at all — a hexadecimal rendering would change the field's type for one failure mode — so the sentence is widened to state both cases, and a fixture pins the behavior | `decode_text` returns `valid: false` with an empty text | `error-bad-magic-invalid-utf8` |
+| 20 | 2.3, 3.2 | **The summary escapes control bytes.** `general.architecture` was printed verbatim into a block that a consumer reads positionally, so a value containing a newline injected lines into it. Every byte below `0x20` and `0x7f` is now replaced by `\xNN` before printing. The JSON document is unaffected | the smoke's own positional parse of the block | `architecture-control-bytes`, which also asserts that the value occupies exactly one line |
+| 21 | 3.2, 3.3 | **Two verification cells did not match their runners.** `denied-path` had no unreadable-path fixture; the runner now copies the positive fixture, `chmod 000`s it, and asserts a nonzero exit, empty stdout, and an untouched destination sentinel, skipping with an explicit note when running as root, where mode bits do not deny access. `stale-fixture` claimed the temp root is absent after a run, which a runner cannot observe about its own `EXIT` trap; the cell now states what is actually proved — one trap owns the root on every exit path and the root is still present at the last assertion — beside the existing repository leak sweep | the runner asserts the root has **not** vanished mid-run | `denied-path`, `run-gguf-smoke` epilogue |
+| 22 | 2.8, 5.4 | **Peak rendering memory is recorded.** `render_tensors` builds a second complete copy of the tensor JSON, because `absolute_offset` is knowable only after the walk. It is bounded and small for real models (roughly 60 KB at 339 tensors) but doubles at `MAX_TENSORS`, and closing it needs a rewritable placeholder or the indexable record array Request 22 blocks. Recorded as a deferred item rather than repaired | section 5.4 | none; a deferral with its resume condition |
+| 23 | 4.1 | The positive fixture ships **four** tensors, not three: the fourth carries a `0xFF` byte in its name and is the tensor-name half of the `invalid-utf8` cell | `full_tensors()` | `full` |
+| 24 | 4.4 | `ALIGN_LLM_GGUF_MODEL` has **no default**. The runner never guessed a path, and a documented default would have been both wrong and a machine-specific path in a specification | `scripts/run-gguf-reference-parity` | the unset-variable skip line |
 
 ### 6.1 Measured results
 
@@ -976,3 +1059,41 @@ to capacity rather than to the exact remaining need, which is the honest meaning
 actually performed". `scripts/run-gguf-reference-parity` compared the version, alignment, data
 offset, KV count, all 29 ordered keys, the tensor count, and all 339 ordered tensor names and
 offsets against `llama-gguf`, and confirmed the model's size and mtime unchanged.
+
+### 6.2 Closure cell to shipped case
+
+Section 3 was written before implementation and names cells by contract; the runners name cases by
+fixture. This table is the mapping for every cell whose name differs, so a reviewer can move from a
+closure cell to the evidence that closes it without searching. Cells whose names already match a
+shipped case (`window-growth`, `skip-accounting`, `empty-container`, `repeat-inspect`,
+`cli-arity`, `cli-path`, `unknown-selector`, `missing-path`, `denied-path`, `error-precedence` as
+`precedence-*`) are omitted.
+
+| Section 3 cell | Shipped evidence |
+| --- | --- |
+| `open-and-size` | every case: the runner compares `file_size` against the fixture's byte length before any other assertion |
+| `bytes-read-exact` | `full` (`bytes_read == file_size`) and `skip-accounting` (the exact predicted count) |
+| `error-sentinels` | `error-too-small` and `error-bad-magic-invalid-utf8`, which assert `magic: ""`, three `-1` header fields, `-1` for the three offsets, and `architecture: null` |
+| `truncated-every-boundary` | the 13 `truncated-boundary-*` cases plus `error-truncated-after-header`, `error-truncated-mid-header`, and `error-truncated-data-offset` |
+| `refill-boundary`, borrow expiry | `straddle-reference` plus the five `refill-boundary-*` variants, compared field by field through the manifest's `straddle_role` |
+| `header-fields` | `full`, whose `top` block declares magic, version, and both counts |
+| `all-value-types` | `full`, one KV per type with generator-computed golden values |
+| `float-bits` | the `kv.float32.*` / `kv.float64.*` rows of `full`, compared through the `$f32`/`$f64` bit markers |
+| `array-shapes` | the `kv.array.*` rows of `full`: lengths 0, 1, 8, and 9 for `INT32` and `STRING`, plus `FLOAT32`, `BOOL`, `UINT64`, and an invalid-UTF-8 element |
+| `tensor-table` | `full` (1-, 2-, and 4-dimension tensors, a known type, an unknown type, and a non-UTF-8 name) |
+| `alignment-default` | `full` and `data-offset-already-aligned` (`alignment_source: "default"`); the override is `alignment-override` |
+| `data-offset` | `data-offset-already-aligned` for an already-aligned table end; `full` for one that needs padding |
+| `architecture` | `full` (`testarch`), `architecture-present-empty`, `architecture-control-bytes` |
+| `architecture-absent` | `empty-container` and `architecture-non-string`, both asserting `architecture: null` and a `-` summary line |
+| `error-corpus` | the `error-*` cases, one per reachable section 2.6 row, each with its generator-computed `error_offset` |
+| `overflow-corpus` | `error-count-overflow-tensor-count`, `error-array-length-overflow`, `error-string-length-overflow`, `error-value-overflow`, `error-dims-overflow`, `error-tensor-name-length-overflow`, `error-offset-overflow` |
+| `invalid-utf8` | the `kv.string.invalid`, `bad\xffkey`, `kv.array.str.invalid`, and `bad\xffname` members of `full` |
+| `wire-escapes` | the `kv.string.escapes` member of `full`; every document in the corpus is parsed with Python's `json` |
+| `partial-document` | the `metadata_count` / `tensors_count` assertions on `error-unknown-value-type`, `error-unknown-array-element-type`, `error-value-overflow`, `error-offset-overflow`, `error-tensor-misaligned`, and `error-tensor-out-of-range` |
+| `document-move` | every case asserts a complete document for both statuses; `full` additionally asserts top-level, header, and tensor field order |
+| `stdout-document` | the per-case stdout run, whose bytes are parsed and compared to the written document |
+| `file-document` | the per-case two-operand run, which is the primary assertion path |
+| `form-parity` | the per-case byte comparison of the stdout form against the written document plus one newline, and of the two exit statuses |
+| `env-perturbation` | the perturbed-environment run of `full` (locale, `TZ`, `HOME`, `SOURCE_DATE_EPOCH`, and two invented `GGUF_*` variables) |
+| `untouched-destination` | the absent-model and `denied-path` sentinel assertions, plus the structural-failure replacement assertion on `bad-magic.gguf` |
+| `stale-fixture` | item 21 above |

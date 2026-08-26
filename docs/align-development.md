@@ -438,12 +438,12 @@ a focused, opt-in qualification that is deliberately in no aggregate and in no C
 
 ```sh
 ALIGN_LLM_GGUF_REFERENCE=/path/to/llama-gguf \
-ALIGN_LLM_GGUF_MODEL=~/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf \
+ALIGN_LLM_GGUF_MODEL=/path/to/model.gguf \
   scripts/run-gguf-reference-parity
 ```
 
-`ALIGN_LLM_GGUF_MODEL` defaults to that same path. If either the reference executable or the model
-is unset or absent, the runner prints one exact line — `gguf reference parity: N/A
+Both variables are required and neither has a default. If either the reference executable or the
+model is unset or absent, the runner prints one exact line — `gguf reference parity: N/A
 (ALIGN_LLM_GGUF_REFERENCE unset)` or the model equivalent — and exits 0. That skip never counts as a
 pass and must be named as the `N/A` reason in the pull request. Parity covers exactly what
 `llama-gguf FILE r n` prints: version, alignment, data offset, KV count, the ordered key names,

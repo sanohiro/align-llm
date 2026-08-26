@@ -161,6 +161,23 @@ for case in manifest["cases"]:
     if "tensors_count" in case and len(document["tensors"]) != case["tensors_count"]:
         fail("%s: %d tensor records survived, expected %d"
              % (name, len(document["tensors"]), case["tensors_count"]))
+    if "tensor_absolute_offsets" in case:
+        got = [t["absolute_offset"] for t in document["tensors"]]
+        if got != case["tensor_absolute_offsets"]:
+            fail("%s: absolute_offset %r, expected %r"
+                 % (name, got, case["tensor_absolute_offsets"]))
+    if "summary_architecture" in case:
+        # The two-operand summary block is read positionally, so the architecture value must occupy
+        # exactly one line whatever bytes the container declares.
+        summary_lines = result.stdout.decode("utf-8").split("\n")
+        if summary_lines[:4] != ["gguf inspection:", "status:", "OK", "architecture:"]:
+            fail("%s: summary prologue %r" % (name, summary_lines[:4]))
+        if summary_lines[4] != case["summary_architecture"]:
+            fail("%s: summary architecture %r, expected %r"
+                 % (name, summary_lines[4], case["summary_architecture"]))
+        if summary_lines[5] != "version:":
+            fail("%s: the architecture value did not occupy exactly one line (%r)"
+                 % (name, summary_lines[5]))
     if "bytes_read" in case and document["bytes_read"] != case["bytes_read"]:
         fail("%s: bytes_read %d, expected exactly %d"
              % (name, document["bytes_read"], case["bytes_read"]))
@@ -264,6 +281,24 @@ if absent.returncode == 0 or absent.stdout != b"":
     fail("missing-path: an absent model must fail with no output")
 if sentinel.read_bytes() != b"SENTINEL":
     fail("untouched-destination: an OS failure rewrote the destination")
+
+# The same contract for an unreadable model. `fs.open_rw` needs `O_RDWR`, so a mode-000 file is
+# `EACCES` -> `Error.Denied`: `Err`, no document, no summary, destination untouched. Root ignores
+# mode bits entirely, so there the case is skipped with an explicit note rather than asserted.
+denied_model = work_dir / "denied.gguf"
+denied_model.write_bytes((fixture_dir / "full.gguf").read_bytes())
+denied_model.chmod(0o000)
+if hasattr(os, "geteuid") and os.geteuid() == 0:
+    print("gguf smoke: denied-path SKIPPED (running as root; mode bits do not deny root)")
+else:
+    denied_sentinel = work_dir / "denied-sentinel.json"
+    denied_sentinel.write_bytes(b"SENTINEL")
+    denied_result = run(["--inspect-gguf", str(denied_model), str(denied_sentinel)])
+    if denied_result.returncode == 0 or denied_result.stdout != b"":
+        fail("denied-path: an unreadable model must fail with no output")
+    if denied_sentinel.read_bytes() != b"SENTINEL":
+        fail("denied-path: an OS failure rewrote the destination")
+denied_model.chmod(0o600)
 
 # A structural failure replaces the destination with the complete document — never a partial write.
 structural = run(["--inspect-gguf", str(fixture_dir / "bad-magic.gguf"), str(sentinel)])

@@ -6107,7 +6107,7 @@ Verified in the sibling checkout at that exact commit (which is also `../align`'
   offset-addressed block read+write handle … there is **no cursor and no `seek`** …, and there is
   **no read-only constructor** (pure random reads stay `reader` or the `fs.read_bytes_view` mmap
   view — a third read path would break 'one way')."
-- `crates/align_runtime/src/lib.rs:9932` implements `fs.open_rw` as
+- `crates/align_runtime/src/lib.rs:9933` implements `fs.open_rw` as
   `std::fs::OpenOptions::new().read(true).write(true).open(path_str)`, so the request for write
   access is unconditional. `crates/align_driver/tests/m12_file_io.rs:98-133` pins must-exist and
   non-truncating behavior for that constructor.

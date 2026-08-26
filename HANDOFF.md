@@ -31,9 +31,9 @@ file records durable project state.
   it joins no aggregate and no CI lane, and prints an explicit `N/A` line when
   `ALIGN_LLM_GGUF_REFERENCE` or `ALIGN_LLM_GGUF_MODEL` is unset or absent. An explicit skip is not
   a pass and must be named as the `N/A` reason in the pull request.
-- **Owner results (unchanged pin `4b515f8d`).** `gmake check`: 24 units. `gmake build`: PASS.
-  `gmake gguf-smoke`: 56 fixtures, PASS. `python3 scripts/check-gate-topology`: PASS. Every
-  previously passing owner remains PASS (unchanged-owner regression check).
+- **Owner results (unchanged pin `4b515f8d`, after the review repair).** `gmake check`: 24 units.
+  `gmake build`: PASS. `gmake gguf-smoke`: 62 fixtures, PASS. `python3 scripts/check-gate-topology`:
+  PASS. Every previously passing owner remains PASS (unchanged-owner regression check).
 - **Parity qualification run once** (`scripts/run-gguf-reference-parity`) against the local
   Qwen2.5-Coder-7B Q4_K_M model (no path recorded here): PASS. `bytes_read` 6,291,456 of a
   4,683,073,536-byte file (0.1343%), `data_offset` 5,953,536, 29 metadata KV pairs, 339 tensors —
@@ -47,13 +47,23 @@ file records durable project state.
   be indexed (`check_index` rejects it); `src/gguf.align` carries deferred tensor `absolute_offset`
   values as a NUL-separated prefix stream plus a parallel `array<i64>` instead. Do not build a
   compatibility layer and do not write against either proposed surface.
+- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
+  the candidate at `ebaaf99`: **A** the Align source (`src/gguf.align`, `src/main.align`) and **B**
+  the specification, fixtures, runners, and governance documents. A returned 1 blocker, 2 minor, and
+  4 nit; B returned 2 medium, 5 low, and 3 nit. **Every finding was accepted** and all fourteen are
+  repaired in the next commit as one consolidated repair, with plan, code, tests, and documentation
+  moving together. The blocker was real and reproduced before the fix: `data_offset + offsets[i]`
+  wrapped in two's complement, so a tensor offset of `0x7FFFFFFFFFFFFFE0` gave `status: "ok"`, exit
+  `0`, and a negative `absolute_offset`; both sites are now non-wrapping and two new fixtures pin
+  them. The other code corrections are a completing `refill` for short reads, a distinct
+  `GGUF_WINDOW_UNAVAILABLE` for a zero-capacity window, control-byte escaping in the summary block,
+  and `architecture_present` on `GgufInspection`. Sections 6 items 15–24 and the new section 6.2
+  cell-to-case mapping of `docs/specs/r0-gguf-inspection.md` carry every contract correction; the
+  repair changed no document field and no `schema_version`.
 - **Next actions, in order.**
-  1. One fresh comprehensive adversarial review of the stable candidate; validate findings, audit
-     each accepted root-cause class across the whole diff, and consolidate the repair.
-  2. Rerun the affected owner after repair.
-  3. Exact-head preflight: `python3 scripts/pre-pr --owner-test gguf -- gmake gguf-smoke`.
-  4. Publish the English pull request with the owner result, the parity result, and the review
-     envelope.
+  1. Exact-head preflight: `python3 scripts/pre-pr --owner-test gguf -- gmake gguf-smoke`.
+  2. Publish the English pull request with the owner result, the parity result, and the review
+     envelope above.
 
 ## C8 is closed (2026-08-26)
 
@@ -87,9 +97,9 @@ boundary is next changed.
 2. Materialize the pinned toolchain with `scripts/align-toolchain ensure compiler`; on macOS use
    `gmake` and the recorded `LLVM_CONFIG`/`LIBRARY_PATH` environment. Confirm `.align-revision`
    still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R0 requires no pin change.
-3. Resume at the first unfinished next action above (review, then repair, then preflight, then PR).
-   `gmake gguf-smoke` is the owner to rerun after any repair; the parity qualification needs a real
-   model and has already run once.
+3. Resume at the first unfinished next action above (preflight, then PR). The review and its
+   consolidated repair are complete. `gmake gguf-smoke` is the owner to rerun after any further
+   repair; the parity qualification needs a real model and has been rerun since the repair.
 4. Do not open another Align request unless implementation exposes a further genuine shipped-language,
    compiler/runtime, or standard-library gap under the register rules. Requests 21 and 22 already
    cover read-only random access and Move-array indexing.

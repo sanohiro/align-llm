@@ -402,10 +402,12 @@ R0のauthoritative planは[`r0-gguf-inspection.md`](r0-gguf-inspection.md)であ
 `schema_version: 1`）を追加するため、`CLAUDE.md`のproportional design gateが発動する。契約・
 validation順序・error code・closure matrix・fixture設計はすべてその文書が持つ。
 
-実装中に見つかったAlignのgapは1件で、`docs/align-requests.md` Request 21
-（read-only random-access file open）として記録した。pin時点の唯一のrandom-access constructorは
-`fs.open_rw`で、書き込まないmodel fileに`O_RDWR`を要求する。non-blockingであり、R0は
-`fs.open_rw`のまま進む。
+実装中に見つかったAlignのgapは2件で、`docs/align-requests.md` Request 21
+（read-only random-access file open）とRequest 22（Move要素配列のborrow indexing）として記録した。
+Request 21: pin時点の唯一のrandom-access constructorは`fs.open_rw`で、書き込まないmodel fileに
+`O_RDWR`を要求する。Request 22: `array<string>`やMove fieldを持つrecordの配列は`check_index`が
+indexingを拒否するため、`src/gguf.align`はtensorの`absolute_offset`をNUL区切りのprefix streamと
+並行する`array<i64>`として持つ。いずれもnon-blockingであり、R0は現行surfaceのまま進む。
 
 ### Gate
 

@@ -14,6 +14,12 @@ import std.fs
 //     through `ensure`, and every codec offset is `c.pos - c.window_base`.
 //  2. A `str` obtained from the window is borrowed from the window and must not outlive the next
 //     `ensure`. Every retained text value is `.clone()`d inside the borrow scope that produced it.
+//
+// A third rule governs arithmetic. Align integer overflow is two's-complement wrap with no trap, so
+// every sum of two file-derived values must be proved in range before it is formed. Every addition
+// below is bounded by `file_size` plus a capped constant, the one multiplication is bounded by
+// `MAX_ARRAY_ELEMENTS * 8`, and the two `data_offset + offset` sums are written in a form that
+// cannot wrap (section 6, item 15).
 
 // Section 2.5.2 window and growth bounds.
 WINDOW_BYTES := 1048576
@@ -33,6 +39,11 @@ DEFAULT_ALIGNMENT := 32
 
 HEX_DIGITS := "0123456789abcdef"
 
+// There is no `i64` `MAX` constant at this pin (section 2.1), so the one bound that must be named
+// is written as a literal. It is used only to prove that `data_offset + offset` is representable
+// before the sum is formed.
+I64_MAX := 9223372036854775807
+
 // The GGUF header is magic(4) + version(u32) + tensor_count(u64) + metadata_kv_count(u64).
 HEADER_BYTES := 24
 
@@ -49,6 +60,10 @@ pub GgufInspection {
   alignment: i64,
   data_offset: i64,
   architecture: string,
+  // A present `general.architecture` may legitimately be the empty string, which a caller must be
+  // able to tell from an absent, non-STRING, or non-UTF-8 one; `architecture` alone cannot say
+  // which (section 6, item 18).
+  architecture_present: bool,
   document: string,
 }
 
@@ -234,9 +249,20 @@ pub fn ggml_type_name(id: i64) -> str {
   return ""
 }
 
-// A fresh `pread` at the first byte the decoder still needs. `bytes_read` is incremented here and
-// nowhere else, by exactly the count `pread` returned.
-fn refill(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) -> Result<(), Fault> {
+// A fresh `pread` at the first byte the decoder still needs, repeated until `need` bytes are
+// resident. `f.pread` reads **one** window and publishes exactly the count the syscall returned, so
+// a short read is surfaced as-is and must be completed here rather than mistaken for a truncated
+// container (section 6, item 16). Each continuation reads into its own bare `mut` local — the
+// runtime always fills a buffer from its capacity, so a continuation cannot be read into `window`
+// itself — and is appended to the window, which never grows past the capacity `ensure` reserved.
+//
+// `bytes_read` is incremented here and nowhere else, by exactly the counts `pread` returned.
+fn refill(
+  borrow handle: file,
+  borrow mut window: buffer,
+  borrow mut c: Cursor,
+  need: i64,
+) -> Result<(), Fault> {
   count := match handle.pread(window, c.pos) {
     Ok(value) => value,
     Err(failure) => { return Err(os_fault(failure)) },
@@ -244,6 +270,29 @@ fn refill(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) 
   c.window_base = c.pos
   c.window_len = count
   c.bytes_read = c.bytes_read + count
+  if count == 0 {
+    return Err(fault("GGUF_WINDOW_UNAVAILABLE", c.pos))
+  }
+  loop {
+    if c.window_len >= need { break }
+    remaining := need - c.window_len
+    at := c.window_base + c.window_len
+    mut tail := buffer(remaining)
+    extra := match handle.pread(tail, at) {
+      Ok(value) => value,
+      Err(failure) => { return Err(os_fault(failure)) },
+    }
+    // `ensure` has already proved `pos + need <= file_size`, so `at` is strictly inside the file
+    // and a zero-length read there is not EOF: either the window allocation failed — a `buffer`
+    // whose capacity could not be reserved reads zero without a syscall — or the file shrank under
+    // the inspection. Neither is a defect of the container, so neither reports `GGUF_TRUNCATED`.
+    if extra == 0 {
+      return Err(fault("GGUF_WINDOW_UNAVAILABLE", c.pos))
+    }
+    window.append(tail.bytes())
+    c.window_len = c.window_len + extra
+    c.bytes_read = c.bytes_read + extra
+  }
   return Ok(())
 }
 
@@ -269,7 +318,8 @@ fn ensure(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor, 
     c.window_len = 0
   }
   if c.window_base < 0 || c.pos < c.window_base || c.pos + n > c.window_base + c.window_len {
-    refill(handle, window, c)?
+    refill(handle, window, c, n)?
+    // `refill` either satisfies `need` or fails, so this is a retained fail-closed guard.
     if c.window_len < n {
       return Err(fault("GGUF_TRUNCATED", c.pos))
     }
@@ -819,16 +869,23 @@ fn resolve_data_offset(borrow mut c: Cursor, borrow mut w: Walk) -> Result<(), F
 
 // Section 2.6 step 9, in file order. It runs after the walk because `data_offset` is only known
 // once the whole tensor table has been consumed.
+//
+// The containment test is written as a subtraction, never as `data_offset + offsets[index] >
+// file_size`: `read_u64_checked` bounds every offset to `[0, i64::MAX]` but not below `file_size`,
+// so the sum of a near-maximal offset and a positive `data_offset` wraps negative and would pass a
+// `>` test. Both operands of `file_size - data_offset` are non-negative and `resolve_data_offset`
+// guarantees `data_offset <= file_size`, so the difference is exact.
 fn check_tensor_ranges(
   borrow offsets: array<i64>,
   borrow offset_fields: array<i64>,
   data_offset: i64,
   file_size: i64,
 ) -> Fault {
+  headroom := file_size - data_offset
   mut index := 0
   loop {
     if index >= offsets.len() { break }
-    if data_offset + offsets[index] > file_size {
+    if offsets[index] > headroom {
       return fault("GGUF_TENSOR_OUT_OF_RANGE", offset_fields[index])
     }
     index = index + 1
@@ -852,7 +909,10 @@ fn render_tensors(prefixes: str, borrow offsets: array<i64>, data_offset: i64) -
     if index > 0 { b.write(",") }
     b.write(prefixes[cursor..end])
     b.write(",\"absolute_offset\":")
-    if data_offset >= 0 && index < offsets.len() {
+    // The same wrap hazard as `check_tensor_ranges`, and the same non-wrapping form: the sum is
+    // formed only after it is proved representable. A tensor whose absolute offset is not an `i64`
+    // renders `-1`, exactly like an entry decoded before `data_offset` was known.
+    if data_offset >= 0 && index < offsets.len() && offsets[index] <= I64_MAX - data_offset {
       b.write_int(data_offset + offsets[index])
     } else {
       b.write_int(-1)
@@ -1053,6 +1113,7 @@ pub fn inspect(path: str) -> Result<GgufInspection, Error> {
   prefixes_view: str := prefixes
   tensors_json := render_tensors(prefixes_view, offsets, w.data_offset)
   failed := failure.code.len() > 0
+  architecture_present := w.architecture_present
   status_label := if failed { "error" } else { "ok" }
   metadata_view: str := metadata_json
   tensors_view: str := tensors_json
@@ -1078,6 +1139,7 @@ pub fn inspect(path: str) -> Result<GgufInspection, Error> {
       alignment: w.alignment,
       data_offset: w.data_offset,
       architecture: w.architecture,
+      architecture_present: architecture_present,
       document: document,
     })
 }

@@ -434,7 +434,7 @@ def aligned_container():
     raise SystemExit("gguf_fixture: no aligned tensor-table end found")
 
 
-def straddle_container(filler_length, tail_only=False):
+def straddle_container(filler_length):
     kvs = [
         Kv("general.architecture", strv("straddle")),
         Kv("kv.filler", strv(b"x" * filler_length)),
@@ -532,6 +532,53 @@ def build(out_dir):
         "top": empty.top_expect("@PATH@"),
         "metadata": [],
         "tensors": [],
+        # An absent `general.architecture` is `null` in the document and `-` in the summary block.
+        "summary_architecture": "-",
+    })
+
+    # ---- positive: architecture presence and summary-line safety ------------------------------
+    # A present-but-empty `general.architecture` is not an absent one: the document carries `""`
+    # and the summary prints an empty line, leaving `-` to mean absent/non-STRING/non-UTF-8.
+    architecture_empty = Container(
+        [Kv("general.architecture", strv(""))], [Tensor("t.e", [4], 0, 0)],
+    )
+    cases.append({
+        "name": "architecture-present-empty",
+        "file": "architecture-empty.gguf",
+        "bytes": architecture_empty.bytes,
+        "exit": 0,
+        "top": architecture_empty.top_expect("@PATH@"),
+        "metadata": architecture_empty.metadata_expect(),
+        "summary_architecture": "",
+    })
+
+    # A container-controlled architecture carrying control bytes must not inject lines into the
+    # positionally read summary block.
+    architecture_newline = Container(
+        [Kv("general.architecture", strv("line1\nstatus:\tERROR\x7fline2"))],
+        [Tensor("t.n", [4], 0, 0)],
+    )
+    cases.append({
+        "name": "architecture-control-bytes",
+        "file": "architecture-newline.gguf",
+        "bytes": architecture_newline.bytes,
+        "exit": 0,
+        "top": architecture_newline.top_expect("@PATH@"),
+        "metadata": architecture_newline.metadata_expect(),
+        "summary_architecture": "line1\\x0astatus:\\x09ERROR\\x7fline2",
+    })
+
+    # A non-STRING `general.architecture` is absent for the purposes of the top-level field.
+    architecture_non_string = Container(
+        [Kv("general.architecture", u32v(7))], [Tensor("t.x", [4], 0, 0)],
+    )
+    cases.append({
+        "name": "architecture-non-string",
+        "file": "architecture-non-string.gguf",
+        "bytes": architecture_non_string.bytes,
+        "exit": 0,
+        "top": architecture_non_string.top_expect("@PATH@"),
+        "summary_architecture": "-",
     })
 
     # ---- positive: explicit window growth ----------------------------------------------------
@@ -667,6 +714,19 @@ def build(out_dir):
         "exit": 1,
         "error": {"code": "GGUF_BAD_MAGIC", "offset": 0},
         "top": {"header": {"magic": "GGUX", "version": -1, "tensor_count": -1,
+                           "metadata_kv_count": -1}},
+        "metadata": [],
+        "tensors": [],
+    })
+    # A magic that is not valid UTF-8 at all: `magic` cannot hold the bytes, so it stays `""` and
+    # the remaining three header fields stay unset, exactly as for `GGUF_TOO_SMALL`.
+    cases.append({
+        "name": "error-bad-magic-invalid-utf8",
+        "file": "bad-magic-invalid-utf8.gguf",
+        "bytes": patched(full, 0, b"\xff\xfe\xfd\xfc"),
+        "exit": 1,
+        "error": {"code": "GGUF_BAD_MAGIC", "offset": 0},
+        "top": {"header": {"magic": "", "version": -1, "tensor_count": -1,
                            "metadata_kv_count": -1}},
         "metadata": [],
         "tensors": [],
@@ -866,6 +926,46 @@ def build(out_dir):
         "tensors_count": len(full.tensors),
     })
 
+    # A tensor offset that is representable, alignment-correct, and so large that `data_offset +
+    # offset` wraps negative in two's complement. The containment test must be written so that it
+    # cannot wrap; a `data_offset + offset > file_size` form reports `status: "ok"` and exit 0 here.
+    OVERFLOW_OFFSET = 0x7FFFFFFFFFFFFFE0
+    assert OVERFLOW_OFFSET % DEFAULT_ALIGNMENT == 0
+    assert OVERFLOW_OFFSET >> 63 == 0
+    overflow_one = Container(
+        [Kv("general.architecture", strv("overflowarch"))],
+        [Tensor("t.overflow", [4], 0, OVERFLOW_OFFSET)],
+        data_len=32,
+    )
+    assert (overflow_one.data_offset + OVERFLOW_OFFSET) - (1 << 64) < 0
+    cases.append({
+        "name": "error-tensor-offset-overflow",
+        "file": "tensor-offset-overflow.gguf",
+        "bytes": overflow_one.bytes,
+        "exit": 1,
+        "error": {"code": "GGUF_TENSOR_OUT_OF_RANGE",
+                  "offset": overflow_one.tensor_offsets[0]["offset"]},
+        "tensors_count": 1,
+        # An absolute offset that is not representable as `i64` renders `-1`, never a wrapped value.
+        "tensor_absolute_offsets": [-1],
+    })
+    # The same defect at index 1, so the loop cannot pass by only checking the first entry.
+    overflow_second = Container(
+        [Kv("general.architecture", strv("overflowarch2"))],
+        [Tensor("t.zero", [4], 0, 0), Tensor("t.overflow", [4], 0, OVERFLOW_OFFSET)],
+        data_len=32,
+    )
+    cases.append({
+        "name": "error-tensor-offset-overflow-second-entry",
+        "file": "tensor-offset-overflow-second.gguf",
+        "bytes": overflow_second.bytes,
+        "exit": 1,
+        "error": {"code": "GGUF_TENSOR_OUT_OF_RANGE",
+                  "offset": overflow_second.tensor_offsets[1]["offset"]},
+        "tensors_count": 2,
+        "tensor_absolute_offsets": [overflow_second.data_offset, -1],
+    })
+
     # `GGUF_TRUNCATED` with an exactly predictable offset: the header is complete but the first
     # metadata key length is not present at all.
     cases.append({
@@ -953,7 +1053,9 @@ def build(out_dir):
 
 
 def main(argv):
-    if len(argv) != 2:
+    # One positional operand and nothing else. An option-shaped argument — `--help` above all — is
+    # rejected rather than silently taken as a directory name to create.
+    if len(argv) != 2 or argv[1].startswith("-"):
         sys.stderr.write("usage: gguf_fixture.py OUTPUT_DIR\n")
         return 2
     out_dir = Path(argv[1])
