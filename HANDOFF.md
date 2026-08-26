@@ -5,6 +5,9 @@ file records durable project state.
 
 ## No active capability (2026-08-26)
 
+- The durable handoff is `main` at `ab155b391cfe12a2d53674179b993fc43fa86120`, which is pushed
+  to `origin/main`. The primary worktree is clean, no pull request is open, and no active work
+  depends on a local stash or historical worktree.
 - Align requests 1–20 are closed. Request 19 shipped in Align PR #891 as
   `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; align-llm publication PR #108 merged as
   `75d7cc39b40b287d47b1185306d6bd8e7eb582dc` after all required CI passed.
@@ -18,6 +21,31 @@ file records durable project state.
   target-specific claim, a concrete provider-CI gap, or an explicit audit—not for every compiler
   pin. The policy, classifier, owner tests, and final comprehensive review are complete.
 - No work is active. The next roadmap capability is C8, Speed-first Optimization.
+
+## Resume in another environment
+
+1. Fetch `origin`, switch to `main`, and fast-forward to at least the durable handoff commit above.
+   Read `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and the applicable parts of
+   `docs/specs/align-llm.md`. Earlier sections of this file are merged-checkpoint evidence, not
+   pending instructions.
+2. Start C8 by selecting the smallest consumer-complete optimization that improves a real fixed
+   coding task end to end. Establish the reproducible current median for time to a passing patch
+   before making an optimization claim; tokens/second or an isolated model latency is not the C8
+   gate.
+3. Choose the first capability from measured evidence among context reduction, stable-context
+   reuse, targeted tests, parallel checks, small-model routing, and cached static analysis. Record
+   the exact consumer, baseline, changed boundary, owner test, and measurement command in the C8
+   plan before implementation. Apply the proportional design gate only if the selected boundary
+   triggers it.
+4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
+   new Align request unless implementation exposes a genuine shipped-language, compiler/runtime,
+   or standard-library gap under the request-register rules.
+
+Two maintenance items remain deliberately deferred rather than active work: preserve the
+`eval/runners/run-coding-task.py` zombie-counting behavior until a capability already rebinds and
+re-measures the frozen coding corpus or revisits its validation-process budget; replace
+`c6f2-request14-adoption`'s publication-race polling with a deterministic seam only when that owner
+boundary is next changed.
 
 ## Merged checkpoint: REQUEST20-PIN — adopt Align's macOS owned-JSON CI repair (2026-08-25)
 
@@ -1347,32 +1375,3 @@ file records durable project state.
   do not weaken the Makefile for this host.
 - Docker Desktop is native Linux `aarch64`. Do not run or cite an `amd64`-emulated container as
   installed-profile evidence; the native ARM owners are the local acceptance route.
-
-## Next actions
-
-1. Run publication preflight with the Request 19 review disposition, publish with merge-commit
-   integration, and close Request 19 after the merge.
-2. Preserve the deliberate `eval/runners/run-coding-task.py` zombie-counting deferral until a
-   capability already rebinds and re-measures the frozen coding corpus or revisits the validation
-   process budget.
-3. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
-   poll.
-
-## Recovery and preservation
-
-- The failed non-passing baseline chain is superseded evidence, not an accepted checkpoint. Preserve
-  its commits in history and replace it through the required source -> oracle -> finalization chain;
-  do not amend or rewrite it.
-- No generated compiler, image, cache, seed, or signing material belongs in Git.
-- PR #84 supersedes paused PR #69; retain GitHub history as provenance, not as active evidence.
-- Preserve the untracked primary-worktree `io_copy`; it is outside this docs-only checkpoint.
-- The named stash `codex-preserve-local-doc-fixes-before-pull-2026-08-16` is a temporary safety copy
-  of the pre-refresh local documents. Drop it only after this checkpoint is merged and its final
-  diff is confirmed.
-- The named stash `stale-request14-16-17-responses-superseded-by-origin-2026-08-24` holds a
-  2026-08-19 local register draft whose Request 14/16/17 responses were superseded by the merged
-  register; its only unmerged fact, the complete 40-character Request 16 merge hash
-  `8557c1525aefd9a4afef02d1ec5c2f88e16db4e4`, is carried by this reconciliation. Drop the stash
-  after this checkpoint merges.
-- Do not use destructive checkout/reset or broad cleanup. Keep code, documentation, commits, pull
-  request metadata, review records, and diagnostics in English.
