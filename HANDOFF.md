@@ -3,7 +3,25 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active capability: REQUEST20-PIN — adopt Align's macOS owned-JSON CI repair (2026-08-25)
+## Active capability: REQUEST19-PIN — restore the verifier owner to the hosted lane (2026-08-26)
+
+- Work is on `agent/request19-drop-codegen-adoption`, based on align-llm `main` at `eb61086`.
+  Align Request 19 shipped in PR #891 as `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`.
+- `.align-revision` selects that merge. The existing `prompt-verifier-smoke` owner rejoins
+  `HOSTED_CHECK_TARGETS` immediately after `prompt-score-prefix-smoke`; the exact topology bytes and
+  authoritative topology/C6 plans move with it. No align-llm source or verifier behavior changes.
+- Align-side evidence reduced the submitted fixture from 1,517,324 raw-IR lines / 113.6 MB to
+  109,992 lines / 5.96 MB and the cold release build from 471.074 s with more than 832,704 KiB
+  observed RSS to 13.555 s and 266,400 KiB. The final compiler printed the exact PASS line in
+  13.27 s at 264,560 KiB.
+- The managed pin materializes. `gmake gate-topology-check` passes, the restored
+  `gmake prompt-verifier-smoke` prints the exact PASS line in 14.01 s wall, and `gmake check` passes
+  with the current 23-unit graph.
+- Pending: commit the clean implementation source, regenerate the identity-bound baseline chain,
+  run the complete request/fresh-worker acceptance, review, preflight, publish, and merge. Request
+  20 is closed by publication PR #107.
+
+## Merged checkpoint: REQUEST20-PIN — adopt Align's macOS owned-JSON CI repair (2026-08-25)
 
 - Work is on `agent/request20-align-pin-final`, based on align-llm `main` at `0a8b9cf`. Align Request 20
   shipped in Align PR #887 as `fa3f03f15f0b1d876683343233f440bce6ea27c5`; PR #888 then closed
