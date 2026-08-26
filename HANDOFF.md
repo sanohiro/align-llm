@@ -18,8 +18,10 @@ file records durable project state.
   `7c95072b2bfd293911ac01c141c05c0de973c8b1` passes the selection, patch-evaluation, and verification
   owners. The exact 101-pair comparison measured 48,939,615 ns for the parent and 47,753,423 ns for
   the candidate, a 24,237 ppm (2.42%) reduction with identical normalized result documents and all
-  five ordered stages passing. Record the measurement commit, run one comprehensive review, and
-  complete the repair/preflight/publication sequence before selecting another capability.
+  five ordered stages passing. Measurement record `26e939c6ec29956980abb2934f305e624778029e` is
+  complete. Its comprehensive review found one P2 durable-state error: this handoff still called the
+  completed measurement commit pending. The consolidated documentation repair makes exact-head
+  preflight and publication the first unfinished actions.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -53,11 +55,11 @@ file records durable project state.
 
 1. Fetch `origin` and resume `agent/c8-defer-generic-encoding` at its latest commit. Read
    `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. The implementation
-   and exact owner/measurement evidence are complete.
-2. Commit the measurement record, run one comprehensive inspection-only review of the stable
-   candidate, and consolidate every valid finding in one repair commit.
-3. Run exact-head preflight with the selection, patch-evaluation, and verification owners, publish
+   exact owner/measurement evidence, comprehensive review, and consolidated repair are complete.
+2. Run exact-head preflight with the selection, patch-evaluation, and verification owners, publish
    the English PR with the measurement and review envelope, wait for required CI, and merge.
+3. After merge, refresh `main` and choose the next smallest consumer-complete C8 optimization from
+   a new measured time-to-passing-patch baseline.
 4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
    new Align request unless implementation exposes a genuine shipped-language, compiler/runtime,
    or standard-library gap under the request-register rules.
