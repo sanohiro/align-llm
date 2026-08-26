@@ -5,12 +5,18 @@ file records durable project state.
 
 ## C8 first capability: linear related-test ranking (2026-08-26)
 
-- The preceding durable handoff is `main` at `ab155b391cfe12a2d53674179b993fc43fa86120`.
+- The preceding durable handoff is the platform-scope policy merge on `main` at
+  `6d24dedf3df26de1eb9f4af06f46e61012eeb3ee` (PR #111).
 - Unmerged publication work is on `agent/c8-handoff-ready`. The implementation checkpoint is
   `be5291ef79d9f7a9102d91d86afb7880fc5c7182`; the comprehensive review inspected
   `9ae2134010fa8a330bdf1922d62070fd198b70ae` and returned three P2 findings. The consolidated
-  repair follows that reviewed head on the same branch. Run affected owners, exact-head preflight,
-  publish, and merge before starting the next C8 capability.
+  repair is `b30635dd05d2adb8ede2056044dd81a415ac83a5`. The branch integrates PR #111; run its
+  exact-head hosted preflight, publish, and merge before starting the next C8 capability.
+- Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
+  Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
+  qualification owners retain the focused plus installed profile. The Linux sandbox runner
+  `eval/runners/run-coding-task.py` is an exact target-local exception. Deletions, renames, unknown
+  state, and untrusted no-base events retain their existing fail-closed behavior.
 - Align requests 1–20 are closed. Request 19 shipped in Align PR #891 as
   `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; align-llm publication PR #108 merged as
   `75d7cc39b40b287d47b1185306d6bd8e7eb582dc` after all required CI passed.
