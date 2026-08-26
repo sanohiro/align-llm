@@ -20,7 +20,9 @@ file records durable project state.
   `test-selection-smoke`, `patch-eval-smoke`, and `verify-loop-smoke`. Its exact 101-pair comparison
   measured 46,537,217 ns for the parent and 46,355,109 ns for the candidate, a 3,913 ppm (0.39%)
   reduction; a preceding 31-pair run improved by 5,224 ppm. Normalized documents and all four stage
-  records agree.
+  records agree. The comprehensive review at `f29b312` was clean: every removed clone is a terminal
+  ownership transfer with no later source use, the record owners passed again, and the benchmark
+  extension enforces identical normalized four-stage results.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -54,10 +56,10 @@ file records durable project state.
 
 1. Fetch `origin` and resume `agent/c8-move-result-documents`. Read `CLAUDE.md`, then
    `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md` §2.8 and §10. The ledger and exact
-   baseline, implementation, owner verification, and exact comparison are complete. Commit the
-   measurement record, then run one stable-head comprehensive review.
-2. Resolve the complete review finding set coherently without widening the terminal-move rule, then
-   run exact-head preflight and publish the English PR.
+   baseline, implementation, owner verification, exact comparison, and clean comprehensive review
+   are complete. Exact-head preflight is the first unfinished action.
+2. Run exact-head preflight with the record owners, then publish the English PR. The handoff-only
+   review-state update does not trigger another comprehensive review.
 3. After merge, refresh `main` and choose the next measured consumer-complete C8 boundary.
 4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
    new Align request unless implementation exposes a genuine shipped-language, compiler/runtime,
