@@ -14,9 +14,12 @@ file records durable project state.
   related and fallback output byte-identical while avoiding construction of JSON that related-only
   selection discards. The exact pre-implementation 31-sample baseline at merge
   `25c964d8df19c4d6571bdfcb353d0608ac07c518` is 48,115,210 ns; the binary SHA-256 is
-  `f1c8bf75530ad5155c52e54e919be0f5388f2fd2438c1c4a81964efb567cd045`. Implement the settled
-  ledger, run the exact owner documents and paired benchmark, then review and publish only if the
-  candidate improves time to a passing patch.
+  `f1c8bf75530ad5155c52e54e919be0f5388f2fd2438c1c4a81964efb567cd045`. Implementation
+  `7c95072b2bfd293911ac01c141c05c0de973c8b1` passes the selection, patch-evaluation, and verification
+  owners. The exact 101-pair comparison measured 48,939,615 ns for the parent and 47,753,423 ns for
+  the candidate, a 24,237 ppm (2.42%) reduction with identical normalized result documents and all
+  five ordered stages passing. Record the measurement commit, run one comprehensive review, and
+  complete the repair/preflight/publication sequence before selecting another capability.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -49,14 +52,12 @@ file records durable project state.
 ## Resume in another environment
 
 1. Fetch `origin` and resume `agent/c8-defer-generic-encoding` at its latest commit. Read
-   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Implement the
-   fifth ledger without changing selection output or the Git failure boundary.
-2. Run `make test-selection-smoke`, `make patch-eval-smoke`, and `make verify-loop-smoke`, then build
-   an exact candidate binary and compare it with the recorded parent using
-   `scripts/run-c8-selection-signal-benchmark compare PARENT_BINARY CANDIDATE_BINARY 101`.
-3. If the paired median improves, record the exact commit/digests/result and complete the normal
-   review, repair, preflight, PR, CI, and merge sequence. If it does not, preserve the measurement
-   and drop the implementation rather than publishing a performance regression.
+   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. The implementation
+   and exact owner/measurement evidence are complete.
+2. Commit the measurement record, run one comprehensive inspection-only review of the stable
+   candidate, and consolidate every valid finding in one repair commit.
+3. Run exact-head preflight with the selection, patch-evaluation, and verification owners, publish
+   the English PR with the measurement and review envelope, wait for required CI, and merge.
 4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
    new Align request unless implementation exposes a genuine shipped-language, compiler/runtime,
    or standard-library gap under the request-register rules.

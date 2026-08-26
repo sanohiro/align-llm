@@ -1,6 +1,6 @@
 # C8 Speed-first optimization
 
-Status: first four consumer-complete capabilities merged; fifth capability baselined.
+Status: first four consumer-complete capabilities merged; fifth capability implemented and measured.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -396,6 +396,43 @@ full-test median:            14,769,219 ns
 
 The stage medians are diagnostic decomposition. Only a lower paired total median with identical
 normalized result documents can close the fifth capability.
+
+The exact-commit comparison used:
+
+```text
+git worktree add --detach /tmp/align-llm-c8-defer-parent 25c964d8df19c4d6571bdfcb353d0608ac07c518
+git worktree add --detach /tmp/align-llm-c8-defer-candidate 7c95072b2bfd293911ac01c141c05c0de973c8b1
+make -C /tmp/align-llm-c8-defer-parent build
+make -C /tmp/align-llm-c8-defer-candidate build
+install -m 0755 /tmp/align-llm-c8-defer-parent/main /tmp/align-llm-c8-defer-parent.bin
+install -m 0755 /tmp/align-llm-c8-defer-candidate/main /tmp/align-llm-c8-defer-candidate.bin
+git cat-file blob fc3181b4cad91a8a6911100f01e16b6af9670d9a > /tmp/align-llm-c8-defer-benchmark
+chmod 0755 /tmp/align-llm-c8-defer-benchmark
+sha256sum /tmp/align-llm-c8-defer-parent.bin /tmp/align-llm-c8-defer-candidate.bin
+/tmp/align-llm-c8-defer-benchmark compare \
+  /tmp/align-llm-c8-defer-parent.bin /tmp/align-llm-c8-defer-candidate.bin 101
+```
+
+```text
+parent:     25c964d8df19c4d6571bdfcb353d0608ac07c518
+candidate:  7c95072b2bfd293911ac01c141c05c0de973c8b1
+benchmark runner Git blob: fc3181b4cad91a8a6911100f01e16b6af9670d9a
+benchmark runner SHA-256: 995092b913220005e39b6491e5cae98791b83bc88b9d4a4d99515adad16be817
+parent binary SHA-256:    f1c8bf75530ad5155c52e54e919be0f5388f2fd2438c1c4a81964efb567cd045
+candidate binary SHA-256: d4e0de24a5684fb9042cf4bd82a57f0c50bb368bdea3d7b67925c150b6b6a747
+command:    /tmp/align-llm-c8-defer-benchmark compare /tmp/align-llm-c8-defer-parent.bin /tmp/align-llm-c8-defer-candidate.bin 101
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    101 parent and 101 candidate measurements after two discarded warmup pairs
+parent median:    48,939,615 ns
+candidate median: 47,753,423 ns
+improvement:      24,237 ppm (2.42%)
+```
+
+All normalized result documents agreed. The runner required the exact ordered five-stage vector,
+`PASS` on every stage, and matching actual/expected exit codes. A preceding 31-pair comparison
+improved by 15,135 ppm in the same direction. This is a path-local claim for related selection in a
+repository with many generic test paths, not a universal repository or provider/model-time claim.
 
 ## 8. Deferred C8 surfaces
 
