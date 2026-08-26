@@ -14,7 +14,11 @@ file records durable project state.
   `ab23de1c4fc3bef454b51a4e5c7db8f019a81a72` preserves the selection output and removes four lines
   net. The exact 201-pair comparison measured 49,577,277 ns for the parent and 49,481,041 ns for the
   candidate, a 1,941 ppm (0.19%) reduction; two 101-pair comparisons independently improved in the
-  same direction. Run the review/publication sequence before selecting another C8 capability.
+  same direction. The comprehensive review inspected
+  `d4b0dc8d0796aa0d9786f9aa8c54c5d04484dc2f` and returned one P2 documentation finding: the
+  hoisted `std.path` results are borrowed zero-allocation views, not owned strings. The consolidated
+  repair follows that head. Run exact-head preflight and publication before selecting another C8
+  capability.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -48,8 +52,8 @@ file records durable project state.
 
 1. Fetch `origin` and resume `agent/c8-hoist-changed-path-signals` at its latest commit. Read
    `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Complete the
-   review, exact-head preflight, publication, and merge sequence before selecting another C8
-   capability.
+   consolidated review repair, exact-head preflight, publication, and merge sequence before
+   selecting another C8 capability.
 2. After the third C8 pull request merges, refresh `main` and select the next smallest
    consumer-complete optimization that improves a real fixed coding task end to end. Establish its
    reproducible current median for time to a passing patch before making an optimization claim;

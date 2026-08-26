@@ -73,7 +73,7 @@ each candidate continues to derive its own stem and directory exactly once.
 | Consumer | `repo_index.select_tests`, `patch_eval.evaluate`, and the C4 verification loop |
 | Input and output | The existing root, changed path, timeout, schema-1 selection document, patch-evaluation document, verification result, status, counts, candidate bytes, and order are unchanged |
 | Changed boundary | Only function-local derivation of the changed path's stem and directory moves before the existing tracked-file loop |
-| Ownership/allocation | Two function-local strings own the changed stem and directory; they replace per-candidate derivation and no value survives `select_tests` |
+| Ownership/allocation | Two function-local `str` views borrow the changed stem and directory from `changed_path`; they allocate nothing, remain valid for the `select_tests` call, and do not escape it |
 | Failure behavior | Existing `rev-parse` then `ls-files` order, timeout handling, error documents, and no-repository behavior are unchanged |
 | Correctness owner | `scripts/run-test-selection-smoke`, with `scripts/run-patch-eval-smoke` and `scripts/run-verification-loop-smoke` covering both downstream consumers |
 | Performance owner | `scripts/run-c8-selection-signal-benchmark baseline BINARY [SAMPLES]` before implementation and `scripts/run-c8-selection-signal-benchmark compare PARENT_BINARY CANDIDATE_BINARY [SAMPLES]` after implementation |
