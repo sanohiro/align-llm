@@ -454,17 +454,36 @@ unchanged, which is the read-only proof.
 
 ## Model IR development
 
-The R1 consumer is `src/frontend_qwen.align`, specified by `docs/specs/r1-qwen-model-ir.md`. It
-consumes the new public, non-rendering `GgufTable` surface on `src/gguf.align` (`read_table` and its
-typed accessors) rather than re-parsing the container or re-decoding the R0 document, and turns one
-real Qwen2-architecture GGUF file into the Model IR and Block IR that `docs/specs/align-llm.md`
-section 5 places between the GGUF reader and the layout planner. It is strictly read-only on the
-model path and decodes no tensor payload: every tensor byte size is computed from the declared
-dimensions and the GGML block-geometry table, never from reading the data section. The tokenizer and
-vocabulary are out of scope — R1 reads only the declared array length of `tokenizer.ggml.tokens` and
-`tokenizer.ggml.merges`, never an element — so `docs/align-requests.md` Request 22 stays
-non-blocking. A model declaring a nonzero expert count, or any architecture other than `qwen2`, is
-rejected rather than partially described.
+The R1 consumer is `src/frontend_qwen.align`, specified by `docs/specs/r1-qwen-model-ir.md` (merged,
+align-llm PR #122). It consumes the new public, non-rendering `GgufTable` surface on `src/gguf.align`
+(`read_table` and its typed accessors) rather than re-parsing the container or re-decoding the R0
+document, and turns one real Qwen2-architecture GGUF file into the Model IR and Block IR that
+`docs/specs/align-llm.md` section 5 places between the GGUF reader and the layout planner. It is
+strictly read-only on the model path and decodes no tensor payload: every tensor byte size is
+computed from the declared dimensions and the GGML block-geometry table, never from reading the data
+section. The tokenizer and vocabulary are out of scope — R1 reads only the declared array length of
+`tokenizer.ggml.tokens` and `tokenizer.ggml.merges`, never an element — so
+`docs/align-requests.md` Request 22 stays non-blocking.
+
+**The gpt-oss/MoE half is the active R1B-GPTOSS-MOE-IR capability**, specified by
+`docs/specs/r1b-gptoss-moe-ir.md`. `--model-ir` now dispatches on the container's own
+`general.architecture` field, accepting `qwen2` (`src/frontend_qwen.align`) and `gpt-oss`
+(`src/frontend_gpt_oss.align`, new); any other value, or a missing/non-UTF-8 architecture, is
+rejected exactly as before. A neutral `src/model_ir.align` module owns the geometry pass, block
+resolution, coverage, the size-sum oracle, and the document renderer for both frontends, so the
+exchanged format has exactly one producer. `R1_MODEL_IR` becomes `schema_version: 2`, emitted by both
+frontends: the block tensor record gains two additive fields, `claimed_absolute_offset` and
+`claimed_nbytes`, naming the exact byte sub-range a block claims of a tensor. For qwen2 and every
+non-expert member these equal `absolute_offset`/`nbytes` unchanged; a gpt-oss `ExpertBlock` claims
+one `(layer, expert)` sub-range of a stacked expert tensor, giving one `RouterBlock` per layer and
+one `ExpertBlock` per `(layer, expert)` pair. One new geometry row, MXFP4 (GGML type id 39, block
+size 32, 17 bytes/block), joins the GGML block-geometry table in `src/gguf.align`; its provenance is
+a named revision (`ggml.h` from the installed llama.cpp build 10566) plus a library oracle
+(`ggml_blck_size`/`ggml_type_size` linked against `libggml-base` 0.21.0) that reproduces every
+existing row, recorded as "library-oracle verified; real-model verification pending". One new error
+code, `R1_BLOCK_CLAIM_MISMATCH`, guards the claim-tiling invariant — every tensor's block claims
+either include one whole-tensor claim or exactly partition its byte range — and is defensive rather
+than input-reachable once the row and stacked-tensor rules pass.
 
 The CLI arm mirrors `--inspect-gguf`:
 
@@ -474,7 +493,7 @@ The CLI arm mirrors `--inspect-gguf`:
 ```
 
 The document bytes are byte-identical between the two forms. The one-operand form writes the
-`R1_MODEL_IR` document (`schema_version: 1`) to stdout followed by one newline and prints nothing
+`R1_MODEL_IR` document (`schema_version: 2`) to stdout followed by one newline and prints nothing
 else. The two-operand form writes the document to the named path and prints the stable summary block
 (`qwen model ir:`, `status:`, then `arch:`, `layers:`, `embd:`, `heads:`, `heads kv:`, `head dim:`,
 `ff:`, `vocab:`, `experts:`, `context:`, `blocks:`, `tensor bytes:`, and `size sum:`, plus `error:`
@@ -483,20 +502,24 @@ and `detail:` on the error path). Both exit 0 on `status: "ok"` and return `Erro
 before the failure, the same failure-persistence behavior R0 established.
 
 Use `gmake model-ir-smoke` for the narrow durable owner. It needs no model, no network, and no
-reference tool: `scripts/gguf_fixture.py`'s qwen2 corpus generates a complete synthetic positive
-model plus a negative fixture per section 2.6 error code into a `mktemp -d` tree at test time, and
-the runner asserts the document with an inline Python block. It also asserts the
-`table-inspect-parity` agreement between `--inspect-gguf` and `--model-ir` over the combined corpus,
-so the two walks over one decoder cannot silently drift.
+reference tool: `scripts/gguf_fixture.py`'s qwen2 and gpt-oss corpora each generate a complete
+synthetic positive model plus a negative fixture per section 2.6 error code (of
+`docs/specs/r1b-gptoss-moe-ir.md`) into a `mktemp -d` tree at test time, and the runner asserts the
+document with an inline Python block, including recomputing every `claimed_absolute_offset`/
+`claimed_nbytes` from the generator's own layout and independently checking claim tiling in Python.
+It also asserts the `table-inspect-parity` agreement between `--inspect-gguf` and `--model-ir` over
+the combined corpus, so the two walks over one decoder cannot silently drift.
 
-The capability's own completeness proof is the size-sum oracle,
-`data_offset + Σ tensor_nbytes == file_size`, checked from inside the program on every input — real
-or synthetic — and asserted by `gmake model-ir-smoke` on the synthetic corpus.
+The capability's own completeness proofs are the size-sum oracle,
+`data_offset + Σ tensor_nbytes == file_size`, and — new for R1B — the claim-tiling oracle over each
+tensor's block claims, both checked from inside the program on every input — real or synthetic — and
+asserted by `gmake model-ir-smoke` on the synthetic corpus.
 
-The roadmap gate — Model IR and Block IR can be produced — is discharged in part by that oracle and
-in part by a focused, opt-in qualification that compares the derived hyperparameters and quant
+The roadmap gate — Model IR and Block IR can be produced — is discharged in part by those two oracles
+and in part by a focused, opt-in qualification that compares the derived hyperparameters and quant
 summary against `llama-cli -v`'s `print_info` block on a real model. It is deliberately in no
-aggregate and in no CI lane:
+aggregate and in no CI lane, and the same runner dispatches on both architectures by reading
+`model.arch` out of the document it just produced:
 
 ```sh
 ALIGN_LLM_GGUF_MODEL=/path/to/model.gguf \
@@ -524,9 +547,22 @@ the host has neither) inside a subshell whose `ulimit -f 8192` caps its log at 8
 1024-byte blocks), so a reference build that fails to terminate is a bounded failure rather than an
 unbounded log. The timeout diagnostic is reported only when one of those wrappers was actually used.
 
+**The gpt-oss parity qualification is an explicit, named `N/A` today**, stated exactly, per
+`docs/specs/r1b-gptoss-moe-ir.md` section 4.4:
+
+```text
+make model-ir-parity (gpt-oss): N/A — no gpt-oss GGUF on this host; ALIGN_LLM_GGUF_MODEL unset.
+make model-ir-parity (qwen2):   PASS / N/A — unchanged R1 qualification.
+```
+
+`gpt-oss-20b-mxfp4.gguf` is 12.1 GB and is not downloaded by this capability; whether to fetch it, and
+onto what storage, is a decision the user owns, not one the capability makes for them. Until that
+model is present the gpt-oss half of the roadmap gate rests on the synthetic corpus, the size-sum and
+claim-tiling oracles, and the MXFP4 library oracle above.
+
 The model path inherits R0's writable-by-the-invoking-user precondition unchanged — `read_table`
-uses the same `fs.open_rw` constructor — so Request 21 in `docs/align-requests.md` covers this
-capability too, still `PROPOSED` and non-blocking.
+uses the same `fs.open_rw` constructor for both frontends — so Request 21 in
+`docs/align-requests.md` covers this capability too, still `PROPOSED` and non-blocking.
 
 ## The aarch64 platform-profile gates
 

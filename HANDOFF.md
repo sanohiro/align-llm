@@ -3,104 +3,91 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active capability: R1-QWEN-MODEL-IR — Qwen2 Model IR and Block IR (2026-08-27)
+## Active capability: R1B-GPTOSS-MOE-IR — gpt-oss MoE frontend and per-expert Block IR (2026-08-27)
 
-- Branch `agent/r1-qwen-model-ir`, based on the R0-GGUF-INSPECT chain (head `dcd8801`, merging as
-  PR #121 onto `main`). The authoritative design ledger is `docs/specs/r1-qwen-model-ir.md`,
-  committed at `631b2ce`. **Implementation is complete in the working tree**: `src/gguf.align` gains
-  the public `GgufTable` producer surface (`read_table` plus ten accessors and two geometry
-  functions), `src/frontend_qwen.align` is a new module owning Qwen2 architecture knowledge, and
-  `src/main.align` gains the `--model-ir` arm.
-- **What it delivers.** One consumer-complete path: a caller names a `.gguf` file and receives one
+- Branch `agent/r1b-gptoss-moe-ir`, based on the R1-QWEN-MODEL-IR chain (merging as PR #122, head
+  `85a3a97`, onto `main` at merge `08492dc`). The authoritative design ledger is
+  `docs/specs/r1b-gptoss-moe-ir.md`, committed at `b2acfda`. **Implementation is in progress.**
+- **What it delivers.** The MoE half of the R1 roadmap gate: a new architecture-neutral
+  `src/model_ir.align` builder (`BlockPlan` -> `ModelIr` -> document, imported by both frontends), a
+  new `src/frontend_gpt_oss.align` owning gpt-oss hyperparameters and block-plan construction, and
+  `src/frontend_qwen.align` reduced to qwen2 knowledge alone. `--model-ir` dispatches on the
+  container's own `general.architecture` field (`qwen2` or `gpt-oss`; no new flag, no new CLI verb).
+- **Contract decisions, settled in the plan.** `R1_MODEL_IR` becomes `schema_version: 2`, emitted by
+  both frontends: two additive fields on the block tensor record, `claimed_absolute_offset` and
+  `claimed_nbytes`, carry **per-expert** `ExpertBlock` byte sub-ranges (chosen over layer granularity
+  because every named R2/R3 consumer needs the individual expert, section 2.4.1). One new geometry
+  row, MXFP4 (GGML type id 39, block size 32, 17 bytes/block), is transcribed from `ggml.h` in the
+  named revision and verified against `libggml-base` of llama.cpp build 10566 by a library oracle
+  (`ggml_blck_size`/`ggml_type_size`), recorded "library-oracle verified; real-model verification
+  pending". One new error code, `R1_BLOCK_CLAIM_MISMATCH`, is a defensive, provably input-unreachable
+  claim-tiling guard. Requests 21-24 stay `PROPOSED` and unconsumed; `BlockPlan` is new client
+  evidence for Request 23's huge-struct-copy lint.
+- **Next actions, in order.**
+  1. Implement per the plan's sections 2-3: the module split, the MXFP4 row, the gpt-oss frontend,
+     and the schema-2 renderer.
+  2. Extend `gmake model-ir-smoke` with the gpt-oss corpus and the claim-tiling oracle.
+  3. Re-run the qwen `model-ir-parity` qualification and confirm the schema-2 diff is exactly the two
+     additive fields.
+  4. One comprehensive review.
+  5. Exact-head preflight: `python3 scripts/pre-pr --owner-test model-ir -- gmake model-ir-smoke`.
+     The plan leaves the `Makefile` untouched, so ordinary hosted-checks scope is expected, not the
+     fresh-image installed profile.
+  6. Publish the English pull request.
+- **User decision pending.** `gpt-oss-20b-mxfp4.gguf` (12.1 GB) is not downloaded, so the gpt-oss
+  `model-ir-parity` qualification is an explicit `N/A` by design (plan section 4.4) until the user
+  decides whether to fetch it; until then the gpt-oss half of the roadmap gate rests on the synthetic
+  corpus, the size-sum and claim-tiling oracles, and the MXFP4 library oracle alone.
+
+## Merged checkpoint: R1-QWEN-MODEL-IR — Qwen2 Model IR and Block IR (2026-08-27)
+
+- R1-QWEN-MODEL-IR merged as align-llm PR #122 (head `85a3a97`, merge `08492dc`) onto `main` at
+  `6640dcf`. Branch was `agent/r1-qwen-model-ir`; the design ledger is
+  `docs/specs/r1-qwen-model-ir.md`, committed at `631b2ce`.
+- **What it delivered.** One consumer-complete path: a caller names a `.gguf` file and receives one
   canonical `R1_MODEL_IR` document (`schema_version: 1`) carrying the Model IR (architecture-level
   hyperparameters) and the Block IR (placeable, evictable `WeightBlock`/`AttentionBlock`/`MlpBlock`
   units with tensor names, absolute offsets, and byte sizes) that `docs/specs/align-llm.md` section 5
   places between the GGUF reader and the layout planner. `./main --model-ir MODEL` writes the
   document to stdout; `./main --model-ir MODEL OUT.json` writes it to a file and prints the stable
-  summary block. The document bytes are byte-identical between the two forms.
-- **Design gate is triggered and discharged in the plan**, on three counts: a new public CLI surface,
-  a new versioned exchanged document, and a coordinated invariant across `src/gguf.align`,
-  `src/frontend_qwen.align`, and `src/main.align`. The producer-boundary design (`GgufTable`, section
-  2.3), the contract ledger, validation order and error codes, closure matrix, and fixture design all
-  live in that document; do not re-derive them here.
-- **Deliberately out of scope.** No tokenizer or vocabulary materialization — R1 reads only the
-  declared length of `tokenizer.ggml.tokens`/`tokenizer.ggml.merges`, so Request 22 stays
-  non-blocking (section 1.3, 5.2). No MoE/gpt-oss frontend: a nonzero expert count is rejected. No
-  tensor payload decode or dequantization. No layout plan, no `.alignpack`. No execution, no runtime.
-  Inherits R0's `fs.open_rw` precondition and Request 21 unchanged.
-- **Owner results (unchanged pin `4b515f8d`, after the review repair).** `gmake check`: 25 units (up
-  from 24 — the new `frontend_qwen` unit), PASS. `gmake build`: PASS
-  (`alignc: built executable: main`). `gmake gguf-smoke`: 62 fixtures, PASS, byte-identical
-  `--inspect-gguf` documents. `gmake model-ir-smoke`: 49 qwen fixtures + 62 R0 fixtures re-run, PASS
-  ("qwen model ir smoke: hyperparameters, block IR, geometry table, quantization summary, the
-  size-sum oracle, the malformed corpus, table/inspect parity, and CLI arity/isolation PASS").
-  `python3 scripts/check-gate-topology` (`gmake gate-topology-check`): PASS. `gmake format-check`:
-  PASS; `gmake fmt` afterward produces no diff. `git diff --check`: clean. Every pre-existing owner
-  (`gguf-smoke`, `check`, `build`) is unchanged in behavior — only the count and duration grew with
-  the new unit and fixtures.
+  summary block, byte-identical to the one-operand form. `src/gguf.align` gained the public
+  `GgufTable` producer surface (`read_table` plus ten accessors and two geometry functions);
+  `src/frontend_qwen.align` was the new Qwen2 owner module. Deliberately out of scope: tokenizer or
+  vocabulary materialization (Request 22 stays non-blocking), a MoE/gpt-oss frontend (a nonzero
+  expert count was rejected), tensor payload decode or dequantization, layout plan, `.alignpack`, and
+  execution/runtime.
+- **Owner results (unchanged pin `4b515f8d`, after the review repair).** `gmake check`: 25 units,
+  PASS. `gmake build`: PASS. `gmake gguf-smoke`: 62 fixtures, PASS. `gmake model-ir-smoke`: 49 qwen
+  fixtures + 62 R0 fixtures re-run, PASS. `gate-topology-check` and `format-check`: PASS. `git diff
+  --check`: clean. Preflight ran the installed profile via Docker-in-Docker on macOS (the `Makefile`
+  changed, matching `FRESH_IMAGE_PATTERNS`).
 - **Parity qualification run once** (`scripts/run-model-ir-parity`) against the local
   Qwen2.5-Coder-7B Q4_K_M model with the local `llama-cli` (build 10566, `bb4caa754`): **PASS**.
   Compared rows: `n_layer` 28, `n_embd` 3584, `n_head` 28, `n_head_kv` 4, `head_dim`
   (`n_embd_head_k`/`_v`) 128, `n_ff` 18944, `n_vocab` 152064, `n_expert` 0, `rope type` 2,
   `freq_base` 1.0e6, `rms_eps` 1.0e-06. Size-sum oracle: `data_offset` 5,953,536 +
   `total_tensor_bytes` 4,677,120,000 = `computed_end` 4,683,073,536, matching `file_size`
-  4,683,073,536. Coverage 339 of 339 tensors over 58 blocks. `bytes_read` 6,291,456 (0.1343% of the
-  file). Model size and mtime unchanged after the run (read-only proof holds). This discharges the
+  4,683,073,536. Coverage 339 of 339 tensors over 58 blocks. This discharged the dense half of the
   roadmap gate; `docs/specs/roadmap.md` section R1 records these numbers as achieved.
-- **Align requests 23 and 24 are new and `PROPOSED`, non-blocking**, alongside inherited Requests 21
-  and 22; see `docs/align-requests.md`. Request 23: the pinned compiler's huge-struct-copy lint
-  (`crates/align_sema/src/lib.rs:40538-40551`) consults only the parameter's struct type, never its
-  `ParamMode`, so it fires on every one of the ten `borrow t: GgufTable` accessors in
-  `src/gguf.align` even though no call copies the 552-byte struct — reproduced verbatim:
-
-  ```text
-  src/gguf.align:1361:27: warning: huge struct copy: `gguf$GgufTable` (552 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
-  ```
-
-  Request 24: `array_builder<T>` is admitted as a `borrow mut` parameter type at this pin but the
-  plain text `builder` is rejected (`unknown type: 'builder'`, reproduced directly against the
-  managed compiler), so `gguf.inspect` (`:1091`) and `gguf.read_table` (`:1455`) duplicate one
-  decode-and-accumulate walk instead of sharing it through a borrowed builder parameter, per section
-  2.3.6 of the plan.
-- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
-  the candidate at `87a64b4`: **A** the Align source (`src/gguf.align`, `src/frontend_qwen.align`)
-  and **B** the specification, fixtures, runners, and governance documents. A returned 2 major, 2
-  minor, and 3 nit; B returned 3 medium, 5 low, and 2 nit. **Every one of the seventeen findings was
-  accepted** and all of them are repaired at `d05cb2b` as one consolidated repair, with plan,
-  code, tests, and documentation moving together. The two majors were real and reproduced before the
-  fix: GGML's block invariant is per **row**, so the shipped `qwen2-full` fixture was accepted
-  `status: "ok"` with a `Q4_K [128, 32]` tensor GGML cannot store (the whole positive corpus is
-  reshaped to `n_embd 256` / `n_ff 512` and a `qwen2-row-unaligned` fixture pins the rule); and
-  duplicate detection, block-member lookup, and the coverage sweep were quadratic, costing 26.75 s on
-  a 100,000-tensor file and 87.25 s on a 200,000-tensor one against `--inspect-gguf`'s 0.86 s — one
-  sorted tensor-name index brings those to 0.09 s and 0.18 s. The other code corrections are an
-  `n_vocab` plausibility bound, rejection of a present-but-undecodable `qwen2.rope.scaling.type`,
-  first-occurrence-wins for a repeated `general.architecture`, and a non-wrapping block-member end
-  offset. Section 7 items 13-21 and the new section 8 cell-to-case mapping of
-  `docs/specs/r1-qwen-model-ir.md` carry every contract correction, and
-  `docs/specs/r0-gguf-inspection.md` gains section 6 item 31. The repair changed no document field
-  and no `schema_version`. One final comprehensive review of the repair delta at `d05cb2b`, by a
-  fresh independent reviewer, returned **approve** with 5 low findings: the `ulimit -f` block size
-  (bash counts 1024-byte blocks, so `16384` was 16 MiB, not the documented 8 MiB), a stale section 7
-  item 7 reference to the `qwen2-overflow-oracle` fixture item 18 deletes, a `qwen2-bad-shape` row
-  naming `[64, 63]` where the fixture reshapes to `[256, 128]`, an unconditional "no scan is
-  quadratic in `tensor_count`" claim that `first_duplicate`'s pairwise walk inside one equal-hash run
-  does not support against a crafted 42-bit multicollision, and a 300 s timeout diagnostic reported
-  even when no `timeout`/`gtimeout` wrapper was used. All five are low, all five were accepted, and
-  all five are repaired in the following commit; the softened bounded-work claim is recorded as
-  section 7 item 22 rather than removed, for the reason stated there. No further review is required:
-  the repair changed no behavior of the product executable.
 - **Baseline chain**: `51b5d86` -> `a207933` -> `bc42527` (source -> oracle -> finalization),
-  identity-bound and re-recorded on Linux after the final review repair. Exactly two of the twenty
-  recorded artifacts changed against the R0 chain — `Makefile` and `src/main.align`, both carrying
-  the `--model-ir` arm — and the twenty paths are otherwise identical. `gmake baseline-check` on
-  Linux: PASS, ending `baseline chain: PASS`.
-- **Next actions, in order.**
-  1. Exact-head preflight: `python3 scripts/pre-pr --owner-test model-ir -- gmake model-ir-smoke
-     gate-topology-check`. Changing the `Makefile` matches `FRESH_IMAGE_PATTERNS`, so this selects
-     the fresh-image **installed** profile — expected for this capability, not a Docker skip.
-  2. Publish the English pull request with the owner result, the parity result, the baseline chain,
-     and the review envelope.
+  identity-bound and re-recorded on Linux after the final review repair. `gmake baseline-check` on
+  Linux: PASS.
+- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
+  the candidate at `87a64b4` (Align source vs. specification/fixtures/runners/governance); 17
+  findings (2 major, 2 minor, 3 nit, 3 medium, 5 low, 2 nit), **all accepted**, repaired at `d05cb2b`
+  as one consolidated repair. The two majors were real: GGML's block invariant is per row, so the
+  original `qwen2-full` fixture described a tensor GGML cannot store; and duplicate detection,
+  block-member lookup, and the coverage sweep were quadratic (26.75 s / 87.25 s on 100k/200k-tensor
+  files), fixed by a sorted tensor-name index (0.09 s / 0.18 s). One final comprehensive review of the
+  repair delta at `d05cb2b` returned **approve** with 5 low findings, all accepted and repaired in
+  the following commit. No further review was required: the repair changed no behavior of the product
+  executable.
+- **Align requests 23 and 24 opened during this capability**, `PROPOSED`, non-blocking, alongside
+  inherited Requests 21 and 22; all four carry forward into R1B above. Request 23: the pinned
+  compiler's huge-struct-copy lint fires on every `borrow t: GgufTable` accessor even though no call
+  copies the 552-byte struct. Request 24: `array_builder<T>` is admitted as a `borrow mut` parameter
+  type but the plain text `builder` is rejected, so `gguf.inspect` and `gguf.read_table` duplicate one
+  decode-and-accumulate walk.
 
 ## Merged checkpoint: R0-GGUF-INSPECT — read-only GGUF inspection (2026-08-26)
 
@@ -173,22 +160,25 @@ boundary is next changed.
 
 ## Resume in another environment
 
-1. Fetch `origin`, check out `agent/r1-qwen-model-ir`, and read `CLAUDE.md`, then
-   `docs/specs/r1-qwen-model-ir.md` in full — it is the plan of record — and `docs/specs/roadmap.md`
-   section R1. R0-GGUF-INSPECT merged as PR #121 (`dcd8801` -> `6640dcf`); this branch continues
-   from that chain.
+1. Fetch `origin`, check out `agent/r1b-gptoss-moe-ir`, and read `CLAUDE.md`, then
+   `docs/specs/r1b-gptoss-moe-ir.md` in full — it is the plan of record — and
+   `docs/specs/r1-qwen-model-ir.md` for everything it does not amend. R1-QWEN-MODEL-IR merged as PR
+   #122 (`85a3a97` -> `08492dc`); this branch continues from that chain.
 2. Materialize the pinned toolchain with `scripts/align-toolchain ensure compiler`; on macOS use
    `gmake` and the recorded `LLVM_CONFIG`/`LIBRARY_PATH` environment. Confirm `.align-revision`
-   still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R1 requires no pin change.
-3. Resume at the first unfinished next action in the active R1-QWEN-MODEL-IR capability above.
-   Implementation, the owner runs, the opt-in parity run, and the two-reviewer comprehensive review
-   are all complete; what remains is committing the consolidated repair, the exact-head preflight,
-   and the pull request.
+   still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R1B requires no pin change.
+3. Resume at the first unfinished next action in the active R1B-GPTOSS-MOE-IR capability above:
+   implementation of `src/model_ir.align`, `src/frontend_gpt_oss.align`, and the reduced
+   `src/frontend_qwen.align`; the extended `gmake model-ir-smoke` owner; the qwen parity rerun; one
+   comprehensive review; the exact-head preflight; and the pull request.
 4. Do not open another Align request unless implementation exposes a further genuine shipped-language,
-   compiler/runtime, or standard-library gap under the register rules. Requests 21 and 22 already
-   cover read-only random access and Move-array indexing; R1 inherits both non-blocking. Requests 23
-   and 24 were opened during implementation and are also non-blocking.
-5. After merge, refresh `main` and take the next eligible roadmap item. C8 is closed; do not start a
+   compiler/runtime, or standard-library gap under the register rules. Requests 21-24 are inherited
+   `PROPOSED` and non-blocking; `BlockPlan` adds client evidence to Request 23 but does not change its
+   status.
+5. Before publishing, settle with the user whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to
+   run the gpt-oss `model-ir-parity` qualification; absent that decision the qualification stays the
+   documented `N/A`.
+6. After merge, refresh `main` and take the next eligible roadmap item. C8 is closed; do not start a
    tenth C8 capability without a recorded cost ceiling above the 2,000 ppm floor.
 
 ## Merged checkpoint: REQUEST20-PIN — adopt Align's macOS owned-JSON CI repair (2026-08-25)

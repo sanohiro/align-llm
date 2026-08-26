@@ -47,7 +47,7 @@ GGML_NAMES = {
     10: "Q2_K", 11: "Q3_K", 12: "Q4_K", 13: "Q5_K", 14: "Q6_K", 15: "Q8_K",
     16: "IQ2_XXS", 17: "IQ2_XS", 18: "IQ3_XXS", 19: "IQ1_S", 20: "IQ4_NL", 21: "IQ3_S",
     22: "IQ2_S", 23: "IQ4_XS", 24: "I8", 25: "I16", 26: "I32", 27: "I64", 28: "F64",
-    29: "IQ1_M", 30: "BF16", 34: "TQ1_0", 35: "TQ2_0",
+    29: "IQ1_M", 30: "BF16", 34: "TQ1_0", 35: "TQ2_0", 39: "MXFP4",
 }
 
 U64_BIT63 = 0x8000000000000001
@@ -494,9 +494,9 @@ MAX_DETAIL_BYTES = 256
 # `R1_UNKNOWN_TENSOR_TYPE`, never a guessed size.
 GGML_GEOMETRY = {
     0: (1, 4), 1: (1, 2), 2: (32, 18), 3: (32, 20), 6: (32, 22), 7: (32, 24),
-    8: (32, 34), 9: (32, 40), 10: (256, 84), 11: (256, 110), 12: (256, 144),
+    8: (32, 34), 9: (32, 36), 10: (256, 84), 11: (256, 110), 12: (256, 144),
     13: (256, 176), 14: (256, 210), 15: (256, 292), 24: (1, 1), 25: (1, 2),
-    26: (1, 4), 27: (1, 8), 28: (1, 8), 30: (1, 2),
+    26: (1, 4), 27: (1, 8), 28: (1, 8), 30: (1, 2), 39: (32, 17),
 }
 
 # Every quantized tensor's **first** axis must be a multiple of its GGML block size, because that is
@@ -530,7 +530,10 @@ GEOMETRY_TYPES = {
     "output_norm": {None: 0},               # [256]
     "token_embd": {None: 10},               # [256, 32]
     "output": {None: 15},                   # [256, 32]
-    "attn_k": {0: 2, 1: 3},                 # [256, 128]
+    # Id 39 (MXFP4) rides `attn_k` because `[256, 128]` gives `(256 / 32) * 17 * 128 = 17,408`
+    # bytes, a multiple of the 32-byte container alignment. Id 2 keeps its other slot in
+    # `ffn_up`, so no row leaves the sweep.
+    "attn_k": {0: 3, 1: 39},                # [256, 128]
     "attn_v": {0: 6, 1: 8},                 # [256, 128]
     "attn_q": {0: 11, 1: 14},               # [256, 256]
     "attn_output": {0: 12, 1: 13},          # [256, 256]
@@ -707,6 +710,10 @@ class QwenModel:
             "nbytes": self.sizes[index],
             "offset": self.offsets[index],
             "absolute_offset": self.absolute(index),
+            # Schema 2. Every dense block claims the whole tensor, so both fields equal the values
+            # above and the qwen2 corpus's byte arithmetic is unchanged.
+            "claimed_absolute_offset": self.absolute(index),
+            "claimed_nbytes": self.sizes[index],
         }
 
     def block_expect(self, block_index, kind, layer, members):
@@ -1171,6 +1178,637 @@ def qwen_build(out_dir):
     for case in cases:
         write(out_dir, case["file"], case.pop("bytes"))
     return cases
+
+# =================================================================================================
+# R1B-GPTOSS-MOE-IR corpus (`docs/specs/r1b-gptoss-moe-ir.md` section 4.1).
+#
+# The generator keeps its independence property here too: every expected `nbytes`, every per-expert
+# claim, and every block byte total is computed in Python from the bytes this file writes, with the
+# MXFP4 row transcribed into `GGML_GEOMETRY` separately from `src/gguf.align`. That is what makes
+# the claim-tiling oracle a real differential check rather than a mirror of the implementation.
+#
+# **Every key name, tensor name, and shape below is an ASSUMPTION** (section 2.5's banner): no
+# gpt-oss model is present on this host and `make model-ir-parity` for this architecture is a
+# recorded `N/A`. The corpus therefore pins the *derivation*, not the real model.
+# =================================================================================================
+
+MAX_EXPERTS = 1024
+MAX_BLOCKS = 65536
+
+GPTOSS_BASE = {
+    "n_layer": 2, "n_embd": 256, "n_head": 8, "n_head_kv": 2,
+    "key_length": 64, "value_length": 64,
+    "n_ff": 256, "n_ff_exp": 32, "n_expert": 8, "n_expert_used": 2,
+    "n_vocab": 32, "context_length": 512,
+    "sliding_window": 64, "sliding_window_pattern": 2,
+}
+
+# Mixed on purpose: the three stacked expert weights are MXFP4; the router, the norms, `attn_sinks`,
+# and every bias are F32; `attn_q` / `attn_k` / `token_embd` are Q4_K; `attn_v` / `output` are Q6_K;
+# `attn_output` is Q8_0 — five ascending `quant.type_counts` rows (ids 0, 8, 12, 14, 39).
+#
+# A stacked MXFP4 **bias** would have `plane_bytes = row_bytes = 136`, which is not a multiple of the
+# 32-byte container alignment, so expert biases are F32.
+GPTOSS_TYPES = {
+    "token_embd": 12, "output_norm": 0, "output": 14,
+    "attn_norm": 0, "attn_q": 12, "attn_q_bias": 0, "attn_k": 12, "attn_k_bias": 0,
+    "attn_v": 14, "attn_v_bias": 0, "attn_output": 8, "attn_output_bias": 0,
+    "attn_sinks": 0, "ffn_norm": 0, "router": 0, "router_bias": 0,
+    "ffn_gate_exps": 39, "ffn_gate_exps_bias": 0,
+    "ffn_up_exps": 39, "ffn_up_exps_bias": 0,
+    "ffn_down_exps": 39, "ffn_down_exps_bias": 0,
+    "ffn_gate_up_exps": 39, "ffn_gate_up_exps_bias": 0,
+}
+
+GPTOSS_GLOBAL_ROLES = ["token_embd", "output_norm", "output"]
+GPTOSS_ATTENTION_ROLES = [
+    "attn_norm", "attn_q", "attn_q_bias", "attn_k", "attn_k_bias",
+    "attn_v", "attn_v_bias", "attn_output", "attn_output_bias", "attn_sinks",
+]
+GPTOSS_ROUTER_ROLES = ["ffn_norm", "router", "router_bias"]
+GPTOSS_SPLIT_ROLES = [
+    "ffn_gate_exps", "ffn_gate_exps_bias", "ffn_up_exps", "ffn_up_exps_bias",
+    "ffn_down_exps", "ffn_down_exps_bias",
+]
+GPTOSS_FUSED_ROLES = [
+    "ffn_gate_up_exps", "ffn_gate_up_exps_bias", "ffn_down_exps", "ffn_down_exps_bias",
+]
+# The roles the plan slices: their expert axis is the last declared one, with extent `n_expert`.
+GPTOSS_SLICED = set(GPTOSS_SPLIT_ROLES) | set(GPTOSS_FUSED_ROLES)
+
+GPTOSS_SUFFIX = {
+    "attn_norm": "attn_norm.weight", "attn_q": "attn_q.weight", "attn_q_bias": "attn_q.bias",
+    "attn_k": "attn_k.weight", "attn_k_bias": "attn_k.bias",
+    "attn_v": "attn_v.weight", "attn_v_bias": "attn_v.bias",
+    "attn_output": "attn_output.weight", "attn_output_bias": "attn_output.bias",
+    "attn_sinks": "attn_sinks.weight", "ffn_norm": "ffn_norm.weight",
+    "router": "ffn_gate_inp.weight", "router_bias": "ffn_gate_inp.bias",
+    "ffn_gate_exps": "ffn_gate_exps.weight", "ffn_gate_exps_bias": "ffn_gate_exps.bias",
+    "ffn_up_exps": "ffn_up_exps.weight", "ffn_up_exps_bias": "ffn_up_exps.bias",
+    "ffn_down_exps": "ffn_down_exps.weight", "ffn_down_exps_bias": "ffn_down_exps.bias",
+    "ffn_gate_up_exps": "ffn_gate_up_exps.weight",
+    "ffn_gate_up_exps_bias": "ffn_gate_up_exps.bias",
+}
+
+
+def gptoss_head_dim(p):
+    if p.get("key_length") is not None:
+        return p["key_length"]
+    return p["n_embd"] // p["n_head"]
+
+
+def gptoss_ff_exp(p):
+    if p.get("n_ff_exp") is not None:
+        return p["n_ff_exp"]
+    return p["n_ff"]
+
+
+def gptoss_role_shape(role, p):
+    head_dim = gptoss_head_dim(p)
+    ff = gptoss_ff_exp(p)
+    e, v, x = p["n_embd"], p["n_vocab"], p["n_expert"]
+    q, kv = p["n_head"] * head_dim, p["n_head_kv"] * head_dim
+    return {
+        "token_embd": [e, v], "output": [e, v], "output_norm": [e],
+        "attn_norm": [e], "attn_q": [e, q], "attn_q_bias": [q],
+        "attn_k": [e, kv], "attn_k_bias": [kv], "attn_v": [e, kv], "attn_v_bias": [kv],
+        "attn_output": [q, e], "attn_output_bias": [e], "attn_sinks": [p["n_head"]],
+        "ffn_norm": [e], "router": [e, x], "router_bias": [x],
+        "ffn_gate_exps": [ff, e, x], "ffn_gate_exps_bias": [ff, x],
+        "ffn_up_exps": [ff, e, x], "ffn_up_exps_bias": [ff, x],
+        "ffn_down_exps": [e, ff, x], "ffn_down_exps_bias": [e, x],
+        "ffn_gate_up_exps": [2 * ff, e, x], "ffn_gate_up_exps_bias": [2 * ff, x],
+    }[role]
+
+
+def gptoss_role_name(role, layer):
+    if layer is None:
+        return {"token_embd": "token_embd.weight", "output_norm": "output_norm.weight",
+                "output": "output.weight"}[role]
+    return "blk.%d.%s" % (layer, GPTOSS_SUFFIX[role])
+
+
+def gptoss_kvs(p, arch="gpt-oss", drop=(), overrides=None, extra=None):
+    """The metadata block, in the order a converter plausibly writes it. Presence, type, and value
+    are all validated in the section 2.6 order, so the file order below is deliberately not that
+    order."""
+    overrides = overrides or {}
+    rows = [
+        ("general.architecture", strv(arch)),
+        ("general.file_type", u32v(15)),
+        ("general.quantization_version", u32v(2)),
+        ("gpt-oss.block_count", u32v(p["n_layer"])),
+        ("gpt-oss.context_length", u32v(p["context_length"])),
+        ("gpt-oss.embedding_length", u32v(p["n_embd"])),
+        ("gpt-oss.feed_forward_length", u32v(p["n_ff"])),
+        ("gpt-oss.expert_feed_forward_length",
+         u32v(p["n_ff_exp"]) if p.get("n_ff_exp") is not None else None),
+        ("gpt-oss.expert_count", u32v(p["n_expert"])),
+        ("gpt-oss.expert_used_count", u32v(p["n_expert_used"])),
+        ("gpt-oss.attention.head_count", u32v(p["n_head"])),
+        ("gpt-oss.attention.head_count_kv", u32v(p["n_head_kv"])),
+        ("gpt-oss.attention.key_length",
+         u32v(p["key_length"]) if p.get("key_length") is not None else None),
+        ("gpt-oss.attention.value_length",
+         u32v(p["value_length"]) if p.get("value_length") is not None else None),
+        ("gpt-oss.attention.sliding_window",
+         u32v(p["sliding_window"]) if p.get("sliding_window") is not None else None),
+        ("gpt-oss.attention.sliding_window_pattern",
+         u32v(p["sliding_window_pattern"]) if p.get("sliding_window_pattern") is not None else None),
+        ("gpt-oss.rope.freq_base", f32v(1000000.0)),
+        ("gpt-oss.attention.layer_norm_rms_epsilon", f32v(1e-06)),
+        ("tokenizer.ggml.tokens", Array(STRING, [strv("t%d" % i) for i in range(p["n_vocab"])])),
+    ]
+    out = []
+    for key, value in rows:
+        if value is None or key in drop:
+            continue
+        out.append(Kv(key, overrides.get(key, value)))
+    for key, value in (extra or []):
+        out.append(Kv(key, value))
+    return out
+
+
+class GptOssModel:
+    """A synthetic gpt-oss container plus every expected value of its `R1_MODEL_IR` document."""
+
+    def __init__(self, p=None, types=None, tied=False, fused=False, arch="gpt-oss", drop=(),
+                 overrides=None, extra=None, layout=None, trailing=0, mutate=None,
+                 drop_roles=()):
+        self.p = dict(GPTOSS_BASE)
+        self.p.update(p or {})
+        self.types = dict(GPTOSS_TYPES)
+        if types:
+            self.types.update(types)
+        self.tied = tied
+        self.fused = fused
+        self.expert_roles = GPTOSS_FUSED_ROLES if fused else GPTOSS_SPLIT_ROLES
+        self.drop_roles = set(drop_roles)
+        head_dim = gptoss_head_dim(self.p)
+        self.head_dim = head_dim
+        self.head_dim_source = "metadata" if self.p.get("key_length") is not None else "derived"
+        self.ff_exp = gptoss_ff_exp(self.p)
+        self.ff_exp_source = "metadata" if self.p.get("n_ff_exp") is not None else "derived"
+
+        # ---- tensor table, in file order ------------------------------------------------------
+        self.entries = []          # (role, layer, name, dims, type_id)
+        for role in GPTOSS_GLOBAL_ROLES:
+            if role == "output" and tied:
+                continue
+            if role in self.drop_roles:
+                continue
+            self.entries.append((role, None, gptoss_role_name(role, None),
+                                 gptoss_role_shape(role, self.p), self.types[role]))
+        for layer in range(self.p["n_layer"]):
+            for role in GPTOSS_ATTENTION_ROLES + GPTOSS_ROUTER_ROLES + self.expert_roles:
+                if role in self.drop_roles:
+                    continue
+                self.entries.append((role, layer, gptoss_role_name(role, layer),
+                                     gptoss_role_shape(role, self.p), self.types[role]))
+        if mutate:
+            self.entries = mutate(self.entries)
+
+        # ---- data-section layout --------------------------------------------------------------
+        # Every tensor's byte size is a multiple of the 32-byte container alignment, and for a
+        # sliced tensor so is every expert plane, or a contiguous placement could not also be
+        # alignment-correct and the size-sum oracle would be unsatisfiable.
+        sizes = [nbytes_of(dims, type_id) if type_id in GGML_GEOMETRY else 0
+                 for (_, _, _, dims, type_id) in self.entries]
+        order = layout(self.entries) if layout else list(range(len(self.entries)))
+        offsets = [0] * len(self.entries)
+        cursor = 0
+        for position in order:
+            assert cursor % DEFAULT_ALIGNMENT == 0, (position, cursor)
+            offsets[position] = cursor
+            cursor += sizes[position]
+        self.sizes = sizes
+        self.offsets = offsets
+        self.total_bytes = cursor
+
+        tensors = [Tensor(name, dims, type_id, offsets[index])
+                   for index, (_, _, name, dims, type_id) in enumerate(self.entries)]
+        kvs = gptoss_kvs(self.p, arch=arch, drop=drop, overrides=overrides, extra=extra)
+        self.container = Container(kvs, tensors, data_len=cursor + trailing)
+        self.bytes = self.container.bytes
+        self.arch = arch
+
+    def index_of(self, name):
+        for index, (_, _, entry_name, _, _) in enumerate(self.entries):
+            if entry_name == name:
+                return index
+        return -1
+
+    def absolute(self, index):
+        return self.container.data_offset + self.offsets[index]
+
+    def claim(self, index, slice_index):
+        """Section 2.5.3, computed in Python: the last declared axis is the outermost, so each of
+        its indices owns one contiguous byte plane."""
+        _, _, _, dims, _ = self.entries[index]
+        if slice_index is None:
+            return self.absolute(index), self.sizes[index]
+        last = dims[-1]
+        assert self.sizes[index] % last == 0, (dims, self.sizes[index], last)
+        plane = self.sizes[index] // last
+        return self.absolute(index) + plane * slice_index, plane
+
+    def tensor_expect(self, index, role, slice_index=None):
+        _, _, name, dims, type_id = self.entries[index]
+        elements = 1
+        for extent in dims:
+            elements *= extent
+        block_size, type_bytes = GGML_GEOMETRY[type_id]
+        claimed_offset, claimed_nbytes = self.claim(index, slice_index)
+        return {
+            "name": name,
+            "role": role,
+            "type": type_id,
+            "type_name": GGML_NAMES[type_id],
+            "n_dims": len(dims),
+            "dims": list(dims),
+            "n_elements": elements,
+            "block_size": block_size,
+            "type_bytes": type_bytes,
+            "nbytes": self.sizes[index],
+            "offset": self.offsets[index],
+            "absolute_offset": self.absolute(index),
+            "claimed_absolute_offset": claimed_offset,
+            "claimed_nbytes": claimed_nbytes,
+        }
+
+    def block_expect(self, block_index, kind, layer, expert, members):
+        """`members` is a list of (role, tensor index, slice index or None)."""
+        tensors = [self.tensor_expect(index, role, slice_index)
+                   for role, index, slice_index in members]
+        byte_size = sum(t["claimed_nbytes"] for t in tensors)
+        first = min(t["claimed_absolute_offset"] for t in tensors)
+        end = max(t["claimed_absolute_offset"] + t["claimed_nbytes"] for t in tensors)
+        return {
+            "index": block_index,
+            "kind": kind,
+            "layer": layer,
+            "expert": expert,
+            "tensor_count": len(tensors),
+            "byte_size": byte_size,
+            "first_absolute_offset": first,
+            "end_absolute_offset": end,
+            "contiguous": end - first == byte_size,
+            "tensors": tensors,
+        }
+
+    def blocks_expect(self):
+        blocks = []
+        index = 0
+        blocks.append(self.block_expect(index, "WeightBlock", -1, -1,
+                                        [("token_embd", self.index_of("token_embd.weight"), None)]))
+        index += 1
+        for layer in range(self.p["n_layer"]):
+            attention = [(role, self.index_of(gptoss_role_name(role, layer)), None)
+                         for role in GPTOSS_ATTENTION_ROLES if role not in self.drop_roles]
+            blocks.append(self.block_expect(index, "AttentionBlock", layer, -1, attention))
+            index += 1
+            router = [(role, self.index_of(gptoss_role_name(role, layer)), None)
+                      for role in GPTOSS_ROUTER_ROLES if role not in self.drop_roles]
+            blocks.append(self.block_expect(index, "RouterBlock", layer, -1, router))
+            index += 1
+            for expert in range(self.p["n_expert"]):
+                members = [(role, self.index_of(gptoss_role_name(role, layer)), expert)
+                           for role in self.expert_roles if role not in self.drop_roles]
+                blocks.append(self.block_expect(index, "ExpertBlock", layer, expert, members))
+                index += 1
+        output_source = "token_embd.weight" if self.tied else "output.weight"
+        blocks.append(self.block_expect(
+            index, "WeightBlock", -1, -1,
+            [("output_norm", self.index_of("output_norm.weight"), None),
+             ("output", self.index_of(output_source), None)]))
+        return blocks
+
+    def block_count(self):
+        return self.p["n_layer"] * (2 + self.p["n_expert"]) + 2
+
+    def quant_expect(self):
+        rows = []
+        for type_id in sorted(set(entry[4] for entry in self.entries)):
+            members = [i for i, entry in enumerate(self.entries) if entry[4] == type_id]
+            rows.append({
+                "type": type_id,
+                "type_name": GGML_NAMES[type_id],
+                "tensor_count": len(members),
+                "bytes": sum(self.sizes[i] for i in members),
+            })
+        return {
+            "file_type": 15,
+            "file_type_present": True,
+            "type_counts": rows,
+            "total_tensor_bytes": self.total_bytes,
+        }
+
+    def model_expect(self, rope_dim=None, scaling=None):
+        return {
+            "arch": self.arch,
+            "n_layer": self.p["n_layer"],
+            "n_embd": self.p["n_embd"],
+            "n_head": self.p["n_head"],
+            "n_head_kv": self.p["n_head_kv"],
+            "head_dim": self.head_dim,
+            "head_dim_source": self.head_dim_source,
+            "n_ff": self.p["n_ff"],
+            "n_ff_exp": self.ff_exp,
+            "n_ff_exp_source": self.ff_exp_source,
+            "n_vocab": self.p["n_vocab"],
+            "n_expert": self.p["n_expert"],
+            "n_expert_used": self.p["n_expert_used"],
+            "expert_ffn_layout": "fused" if self.fused else "split",
+            "context_length": self.p["context_length"],
+            "sliding_window": self.p.get("sliding_window"),
+            "sliding_window_pattern": self.p.get("sliding_window_pattern"),
+            "rms_eps": marker_f32(f32_bits(1e-06)),
+            "rms_eps_bits": "%08x" % f32_bits(1e-06),
+            "rope": {
+                "type": 2,
+                "type_name": "neox",
+                "type_source": "architecture",
+                "freq_base": marker_f32(f32_bits(1000000.0)),
+                "freq_base_bits": "%08x" % f32_bits(1000000.0),
+                "dim_count": self.head_dim if rope_dim is None else rope_dim,
+                "dim_count_source": "derived" if rope_dim is None else "metadata",
+                "scaling_type": scaling,
+            },
+        }
+
+    def coverage_expect(self):
+        return {
+            "tensor_count": len(self.entries),
+            "assigned_tensor_count": len(self.entries),
+            "unassigned_tensors": [],
+            "block_count": self.block_count(),
+            "data_offset": self.container.data_offset,
+            "total_tensor_bytes": self.total_bytes,
+            "computed_end": self.container.data_offset + self.total_bytes,
+            "file_size": len(self.bytes),
+            "size_sum_ok": True,
+        }
+
+    def source_expect(self):
+        # The header and the tensor table of every fixture here fit inside one window, so the walk
+        # issues exactly one `pread`: `bytes_read` is the whole file when the file is smaller than
+        # the window and exactly one window otherwise. Section 4.6's secondary metric is that the
+        # derivation never starts reading the data section.
+        return {
+            "gguf_version": 3,
+            "alignment": DEFAULT_ALIGNMENT,
+            "file_size": len(self.bytes),
+            "data_offset": self.container.data_offset,
+            "tensor_count": len(self.entries),
+            "metadata_kv_count": len(self.container.kvs),
+            "bytes_read": min(len(self.bytes), WINDOW_BYTES),
+        }
+
+    def positive(self, name, file_name, rope_dim=None, scaling=None, with_blocks=True, **extra):
+        case = {
+            "name": name,
+            "file": file_name,
+            "bytes": self.bytes,
+            "exit": 0,
+            "source": self.source_expect(),
+            "model": self.model_expect(rope_dim=rope_dim, scaling=scaling),
+            "quant": self.quant_expect(),
+            "coverage": self.coverage_expect(),
+            "arch": "gpt-oss",
+        }
+        if with_blocks:
+            case["blocks"] = self.blocks_expect()
+        case.update(extra)
+        return case
+
+
+def gptoss_build(out_dir):
+    """The section 4.1 gpt-oss corpus: the positive fixtures including both expert layouts, and one
+    negative fixture per new or extended row of section 2.6."""
+    cases = []
+
+    def negative(name, file_name, payload, code, detail, **extra):
+        case = {"name": name, "file": file_name, "bytes": payload, "exit": 1,
+                "error": {"code": code, "detail": detail}, "arch": "gpt-oss"}
+        case.update(extra)
+        cases.append(case)
+        return case
+
+    # ---- positive: the complete synthetic gpt-oss container ------------------------------------
+    full = GptOssModel()
+    assert len(full.bytes) < 1048576, len(full.bytes)
+    assert full.container.data_offset + full.total_bytes == len(full.bytes)
+    # Section 4.1's arithmetic, asserted rather than assumed.
+    assert full.total_bytes == 787136, full.total_bytes
+    assert len(full.entries) == 41, len(full.entries)
+    assert full.block_count() == 22, full.block_count()
+    assert sum(b["tensor_count"] for b in full.blocks_expect()) == 125
+    # `head_dim` is 64 from the declared key while `n_embd / n_head` is 32, so the two rules MUST
+    # disagree in the base fixture: a frontend that silently fell back to the division would expect
+    # a `[256, 256]` `attn_q.weight` against this file's `[256, 512]` and fail.
+    assert full.head_dim == 64 and full.p["n_embd"] // full.p["n_head"] == 32
+    assert [row["type"] for row in full.quant_expect()["type_counts"]] == [0, 8, 12, 14, 39]
+    cases.append(full.positive(
+        "gptoss-full", "gptoss-full.gguf",
+        bytes_read=len(full.bytes),
+        field_order=True,
+        expert_tiling=True,
+    ))
+
+    # `attention.key_length` absent: `head_dim` falls back to `n_embd / n_head` and every attention
+    # width narrows with it.
+    derived = GptOssModel(p={"key_length": None, "value_length": None})
+    assert derived.head_dim == 32
+    cases.append(derived.positive("gptoss-headdim-derived", "gptoss-headdim-derived.gguf"))
+
+    # `expert_feed_forward_length` absent: `n_ff_exp` falls back to `n_ff`.
+    ff_absent = GptOssModel(p={"n_ff_exp": None})
+    assert ff_absent.ff_exp == GPTOSS_BASE["n_ff"] and ff_absent.ff_exp_source == "derived"
+    cases.append(ff_absent.positive("gptoss-ffexp-absent", "gptoss-ffexp-absent.gguf"))
+
+    # Both optional sliding-window keys absent: reported as `null`, never interpreted.
+    no_window = GptOssModel(p={"sliding_window": None, "sliding_window_pattern": None})
+    cases.append(no_window.positive("gptoss-optional-absent", "gptoss-optional-absent.gguf"))
+
+    # Section 2.5.4's fused expert feed-forward layout.
+    fused = GptOssModel(fused=True)
+    cases.append(fused.positive("gptoss-variant-fused", "gptoss-variant-fused.gguf",
+                                expert_tiling=True))
+
+    # The optional `RouterBlock` member: an absent `ffn_gate_inp.bias` is dropped, not an error.
+    no_router_bias = GptOssModel(drop_roles=("router_bias",))
+    cases.append(no_router_bias.positive("gptoss-router-bias-absent",
+                                         "gptoss-router-bias-absent.gguf"))
+
+    # The data section grouped by role across layers, so at least one ExpertBlock is non-contiguous
+    # while the size-sum and claim-tiling oracles both still hold.
+    def role_major(entries):
+        return sorted(range(len(entries)),
+                      key=lambda i: (entries[i][0], entries[i][1] if entries[i][1] is not None else -1))
+
+    permuted = GptOssModel(layout=role_major)
+    permuted_case = permuted.positive("gptoss-permuted", "gptoss-permuted.gguf", expert_tiling=True)
+    assert any(not block["contiguous"] for block in permuted_case["blocks"]), "layout is contiguous"
+    cases.append(permuted_case)
+
+    # Tied embeddings: `token_embd.weight` is claimed whole by two blocks, which is the branch of the
+    # claim-tiling rule that a partition cannot express.
+    tied = GptOssModel(tied=True)
+    tied_case = tied.positive("gptoss-tied", "gptoss-tied.gguf", expert_tiling=True)
+    tied_case["tied"] = True
+    cases.append(tied_case)
+
+    # `bounded-work`: 8 layers and 64 experts give 530 blocks and 3,179 claims inside the existing
+    # budget. Its document is asserted structurally rather than field by field, because a per-record
+    # expectation for 3,179 claims would make the manifest, not the derivation, the slow part.
+    wide_types = {role: 0 for role in GPTOSS_TYPES}
+    for role in ("ffn_gate_exps", "ffn_up_exps", "ffn_down_exps", "ffn_gate_up_exps"):
+        wide_types[role] = 39
+    wide = GptOssModel(
+        p={"n_layer": 8, "n_expert": 64, "n_expert_used": 4, "n_embd": 64, "n_head": 8,
+           "key_length": 8, "value_length": 8, "n_ff": 32, "n_ff_exp": 32},
+        types=wide_types)
+    assert wide.block_count() == 530, wide.block_count()
+    cases.append(wide.positive("gptoss-wide", "gptoss-wide.gguf", with_blocks=False,
+                               bounded_work=True, expert_tiling=True,
+                               blocks_len=530, claim_count=3179))
+
+    # ---- negative corpus: one fixture per new or extended section 2.6 row ----------------------
+    def bare(p=None, drop=(), overrides=None, extra=None):
+        """A container whose metadata is complete enough to reach the step under test and whose
+        tensor table is one tensor, so an implausible expert count does not have to be materialized
+        as half a million tensors."""
+        params = dict(GPTOSS_BASE)
+        params.update(p or {})
+        return Container(
+            gptoss_kvs(params, drop=drop, overrides=overrides, extra=extra),
+            [Tensor("token_embd.weight", [256, 32], 0, 0)],
+            data_len=32768,
+        )
+
+    negative("gptoss-expert-zero", "gptoss-expert-zero.gguf",
+             bare(p={"n_expert": 0, "n_expert_used": 0}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "gpt-oss.expert_count", blocks_len=0)
+
+    negative("gptoss-expert-huge", "gptoss-expert-huge.gguf",
+             bare(p={"n_expert": 4096}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "gpt-oss.expert_count", blocks_len=0)
+
+    negative("gptoss-expert-missing", "gptoss-expert-missing.gguf",
+             bare(drop=("gpt-oss.expert_count",)).bytes,
+             "R1_MISSING_KEY", "gpt-oss.expert_count", blocks_len=0)
+
+    negative("gptoss-expert-type", "gptoss-expert-type.gguf",
+             bare(overrides={"gpt-oss.expert_count": strv("8")}).bytes,
+             "R1_KEY_TYPE_MISMATCH", "gpt-oss.expert_count", blocks_len=0)
+
+    negative("gptoss-expert-used-zero", "gptoss-expert-used-zero.gguf",
+             bare(p={"n_expert_used": 0}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "gpt-oss.expert_used_count", blocks_len=0)
+
+    negative("gptoss-expert-used-high", "gptoss-expert-used-high.gguf",
+             bare(p={"n_expert_used": GPTOSS_BASE["n_expert"] + 1}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "gpt-oss.expert_used_count", blocks_len=0)
+
+    # `n_layer * (2 + n_expert) + 2 = 525,314`, well past MAX_BLOCKS, with both operands individually
+    # inside their own bounds. The guard is tested in non-wrapping form before the product.
+    explosion = bare(p={"n_layer": 512, "n_expert": 1024, "n_expert_used": 4})
+    assert 512 * (2 + 1024) + 2 > MAX_BLOCKS
+    negative("gptoss-block-explosion", "gptoss-block-explosion.gguf", explosion.bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "gpt-oss.expert_count", blocks_len=0)
+
+    negative("gptoss-keylength-mismatch", "gptoss-keylength-mismatch.gguf",
+             bare(p={"value_length": 32}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "gpt-oss.attention.value_length", blocks_len=0)
+
+    negative("gptoss-keylength-absent-value", "gptoss-keylength-absent-value.gguf",
+             bare(drop=("gpt-oss.attention.value_length",)).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "gpt-oss.attention.value_length", blocks_len=0)
+
+    # A derived `head_dim` that does not divide exactly.
+    negative("gptoss-headdim-indivisible", "gptoss-headdim-indivisible.gguf",
+             bare(p={"key_length": None, "value_length": None, "n_head": 3, "n_head_kv": 1}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "gpt-oss.embedding_length", blocks_len=0)
+
+    def reshape_dims(entries, name, dims):
+        return [(role, layer, entry_name, dims if entry_name == name else entry_dims, type_id)
+                for (role, layer, entry_name, entry_dims, type_id) in entries]
+
+    # The stacked-tensor rule: the expert axis must be the last declared axis with extent exactly
+    # `n_expert`. Blocks completed before the failure: embedding, attention 0, router 0.
+    stacked_axis = GptOssModel(
+        mutate=lambda e: reshape_dims(e, "blk.0.ffn_gate_exps.weight", [32, 256, 4]))
+    negative("gptoss-stacked-axis", "gptoss-stacked-axis.gguf", stacked_axis.bytes,
+             "R1_TENSOR_SHAPE_UNEXPECTED", "blk.0.ffn_gate_exps.weight", blocks_len=3)
+
+    stacked_ndims = GptOssModel(
+        mutate=lambda e: reshape_dims(e, "blk.0.ffn_gate_exps.weight", [32, 256]))
+    negative("gptoss-stacked-ndims", "gptoss-stacked-ndims.gguf", stacked_ndims.bytes,
+             "R1_TENSOR_SHAPE_UNEXPECTED", "blk.0.ffn_gate_exps.weight", blocks_len=3)
+
+    router_shape = GptOssModel(
+        mutate=lambda e: reshape_dims(e, "blk.0.ffn_gate_inp.weight", [256, 4]))
+    negative("gptoss-router-shape", "gptoss-router-shape.gguf", router_shape.bytes,
+             "R1_TENSOR_SHAPE_UNEXPECTED", "blk.0.ffn_gate_inp.weight", blocks_len=2)
+
+    # Neither the split pair nor the fused tensor: the diagnostic names variant 0's first missing
+    # required member, because that is the form the plan prefers.
+    variant_none = GptOssModel(drop_roles=("ffn_gate_exps",))
+    negative("gptoss-variant-none", "gptoss-variant-none.gguf", variant_none.bytes,
+             "R1_MISSING_TENSOR", "blk.0.ffn_gate_exps.weight", blocks_len=3)
+
+    # An MXFP4 tensor whose first axis is not a multiple of 32 is unrepresentable and is never sized.
+    # The defect is patched into the written bytes because the generator's own sizing asserts the
+    # row rule it is testing.
+    row_unaligned = patched(
+        full, full.container.tensor_offsets[full.index_of("blk.0.ffn_gate_exps.weight")]["dims"],
+        struct.pack("<Q", 48))
+    negative("gptoss-mxfp4-row-unaligned", "gptoss-mxfp4-row-unaligned.gguf", row_unaligned,
+             "R1_TENSOR_SHAPE_UNALIGNED", "blk.0.ffn_gate_exps.weight", blocks_len=0)
+
+    # NVFP4 (id 40) has a name in no table and a geometry in none: it must stay
+    # `R1_UNKNOWN_TENSOR_TYPE` exactly like an id GGML has never used.
+    unknown = patched(
+        full, full.container.tensor_offsets[full.index_of("blk.0.attn_norm.weight")]["type"],
+        struct.pack("<I", 40))
+    negative("gptoss-unknown-type", "gptoss-unknown-type.gguf", unknown,
+             "R1_UNKNOWN_TENSOR_TYPE", "40", blocks_len=0)
+
+    wrong_arch = GptOssModel(arch="qwen2")
+    negative("gptoss-wrong-arch", "gptoss-wrong-arch.gguf", wrong_arch.bytes,
+             "R1_MISSING_KEY", "qwen2.block_count", blocks_len=0, arch="qwen2")
+
+    extra_expert = GptOssModel(mutate=lambda e: e + [
+        ("ffn_gate_exps", 9, "blk.9.ffn_gate_exps.weight", [32, 256, 8], 39)])
+    negative("gptoss-extra-expert", "gptoss-extra-expert.gguf", extra_expert.bytes,
+             "R1_UNASSIGNED_TENSOR", "blk.9.ffn_gate_exps.weight",
+             unassigned=["blk.9.ffn_gate_exps.weight"])
+
+    size_sum = GptOssModel(trailing=64)
+    negative("gptoss-size-sum", "gptoss-size-sum.gguf", size_sum.bytes,
+             "R1_SIZE_SUM_MISMATCH",
+             "%d!=%d" % (size_sum.container.data_offset + size_sum.total_bytes,
+                         len(size_sum.bytes)))
+
+    # ---- precedence: the earlier section 2.6 row wins ------------------------------------------
+    precedence_key = GptOssModel(
+        overrides={"gpt-oss.embedding_length": strv("256")},
+        mutate=lambda e: reshape_dims(e, "blk.0.ffn_gate_exps.weight", [32, 256, 4]))
+    negative("gptoss-precedence-key-shape", "gptoss-precedence-key-shape.gguf",
+             precedence_key.bytes, "R1_KEY_TYPE_MISMATCH", "gpt-oss.embedding_length", blocks_len=0)
+
+    # An out-of-bounds `expert_used_count` (step 7) and a zero vocabulary (step 9): the expert row.
+    precedence_expert = GptOssModel(
+        p={"n_expert_used": GPTOSS_BASE["n_expert"] + 1},
+        mutate=lambda e: reshape_dims(e, "token_embd.weight", [256, 0]))
+    negative("gptoss-precedence-expert-vocab", "gptoss-precedence-expert-vocab.gguf",
+             precedence_expert.bytes, "R1_KEY_VALUE_IMPLAUSIBLE", "gpt-oss.expert_used_count",
+             blocks_len=0)
+
+    for case in cases:
+        write(out_dir, case["file"], case.pop("bytes"))
+    return cases
+
 
 def build(out_dir):
     cases = []
@@ -1748,8 +2386,9 @@ def build(out_dir):
         "window_bytes": WINDOW_BYTES,
         "cases": cases,
         # The R1 corpus is a separate list so `run-gguf-smoke` keeps driving exactly the R0 cases
-        # while `run-model-ir-smoke` drives both.
+        # while `run-model-ir-smoke` drives all three.
         "model_ir_cases": qwen_build(out_dir),
+        "model_ir_gptoss_cases": gptoss_build(out_dir),
     }
 
 

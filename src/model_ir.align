@@ -1,0 +1,1066 @@
+module model_ir
+
+import gguf
+
+// R1B-GPTOSS-MOE-IR (`docs/specs/r1b-gptoss-moe-ir.md` section 2.3.4). The architecture-neutral
+// producer of the `R1_MODEL_IR` document: it owns the tensor geometry pass, the tensor-name index,
+// block resolution and byte arithmetic, the per-expert claim arithmetic, claim tiling, coverage, the
+// size-sum oracle, and the whole document renderer. There is exactly one producer of this exchanged
+// format, so a schema change lands once.
+//
+// It imports `gguf` and nothing else, and it imports no frontend. A frontend describes its
+// architecture as a `BlockPlan` — parallel `array<i64>` columns plus one concatenated text stream,
+// exactly the shape `GgufTable` already proved works at this pin — and hands it here. No callback,
+// no trait, no generic, no `PROPOSED` Align surface.
+//
+// The three rules R1 established govern every line below, unchanged:
+//
+//  1. No byte of the tensor data section is read. Every size is computed from the declared
+//     dimensions and the GGML block-geometry table `src/gguf.align` exposes.
+//  2. Align integer overflow is two's-complement wrap with no trap and there is no `i64` `MAX`
+//     constant at this pin, so every arithmetic guard below is written in non-wrapping form and
+//     tested BEFORE the operation it protects.
+//  3. Validation is strictly ordered (section 2.6) and the first applicable row wins. No document
+//     and no stdout is produced before the whole derivation completes.
+
+MAX_UNASSIGNED_REPORTED := 16
+MAX_DETAIL_BYTES := 256
+
+// The one bound that must be named, written as a literal for the same reason `src/gguf.align` does.
+I64_MAX := 9223372036854775807
+
+// The tensor-name index: one ascending `array<i64>` whose entries pack a 42-bit name hash above a
+// 21-bit tensor index. `MAX_TENSORS` (`src/gguf.align:30`) is 1,048,576, so every index fits in 21
+// bits and the widest packed entry is exactly `I64_MAX`, never negative.
+NAME_INDEX_BITS := 21
+NAME_INDEX_MASK := 2097151
+NAME_HASH_MASK := 4398046511103
+NAME_HASH_SEED := -3750763034362895579
+NAME_HASH_PRIME := 1099511628211
+
+// The claim list packs a slice ordinal below a tensor index. `MAX_EXPERTS` in
+// `src/frontend_gpt_oss.align` is 1,024 and a whole-tensor claim rides ordinal `0`, so eleven bits
+// hold every representable ordinal with 1,023 to spare; a plan that asked for more is rejected as
+// `R1_BLOCK_CLAIM_MISMATCH` rather than silently aliasing onto another tensor.
+CLAIM_SLOT_BITS := 11
+CLAIM_SLOT_MASK := 2047
+
+// The quantization summary sweeps every id the geometry table can size. R1 stopped at 30; MXFP4 is
+// 39 (`docs/specs/r1b-gptoss-moe-ir.md` section 2.8.2), so the sweep stops there.
+MAX_GEOMETRY_TYPE_ID := 39
+
+HEX_DIGITS := "0123456789abcdef"
+
+pub IrStatus { Ok, Error }
+
+// The scalar fields exist for the CLI summary block and for the smoke's assertions; `document` is
+// the authoritative result and is moved, never cloned, into this its sole owning record.
+pub ModelIr {
+  status: IrStatus,
+  error_code: string,
+  error_detail: string,
+  arch: string,
+  arch_present: bool,
+  n_layer: i64,
+  n_embd: i64,
+  n_head: i64,
+  n_head_kv: i64,
+  head_dim: i64,
+  n_ff: i64,
+  n_vocab: i64,
+  n_expert: i64,
+  context_length: i64,
+  rope_freq_base_bits: i64,
+  rms_eps_bits: i64,
+  block_count: i64,
+  total_tensor_bytes: i64,
+  size_sum_ok: bool,
+  document: string,
+}
+
+// Everything one architecture knows, expressed as data. `names` is one concatenated stream carrying
+// every expected tensor name and every role label, addressed by explicit `[start, end)` spans,
+// because a span is the shape `GgufTable` already proves and because a raw name may contain any
+// byte. Every per-block column holds exactly `block_count` entries and every per-member column
+// exactly `member_count`.
+pub BlockPlan {
+  arch: string,
+  arch_present: bool,
+  // The fully rendered `model` object. It is architecture-determined and `model.arch` is its
+  // discriminator (section 2.4.2), so the neutral renderer splices it rather than composing it.
+  model_json: string,
+
+  n_layer: i64,
+  n_embd: i64,
+  n_head: i64,
+  n_head_kv: i64,
+  head_dim: i64,
+  n_ff: i64,
+  n_vocab: i64,
+  n_expert: i64,
+  context_length: i64,
+  rope_freq_base_bits: i64,
+  rms_eps_bits: i64,
+  // `general.file_type` is container-level but is read only once the frontend's own key-type pass
+  // has passed, so it rides the plan rather than being re-read here (R1 section 2.5.4).
+  file_type: i64,
+  file_type_present: bool,
+
+  names: string,
+
+  block_count: i64,
+  // 0 WeightBlock, 1 AttentionBlock, 2 MlpBlock, 3 ExpertBlock, 4 RouterBlock.
+  block_kind: array<i64>,
+  block_layer: array<i64>,
+  block_expert: array<i64>,
+  block_member_start: array<i64>,
+  block_member_end: array<i64>,
+
+  member_count: i64,
+  member_role_start: array<i64>,
+  member_role_end: array<i64>,
+  member_name_start: array<i64>,
+  member_name_end: array<i64>,
+  // 1 required; 0 optional, and an absent optional member is dropped from the block.
+  member_required: array<i64>,
+  member_n_dims: array<i64>,
+  // Expected extents. `-1` means "any"; an axis the member does not declare holds the
+  // multiplicative identity, exactly as `src/gguf.align` records an undeclared axis.
+  member_dim0: array<i64>,
+  member_dim1: array<i64>,
+  member_dim2: array<i64>,
+  member_dim3: array<i64>,
+  // `-1` for a whole-tensor claim; else the index along the last declared axis and that axis's
+  // extent (section 2.5.3).
+  member_slice_index: array<i64>,
+  member_slice_count: array<i64>,
+}
+
+// The step-8 result, carried between the frontend's own ordered validation and `build` so that the
+// section 2.6 order — step 8 geometry, then step 9 `n_vocab`, then steps 10 to 12 — is preserved
+// across the module boundary without a callback.
+pub Geometry {
+  failed: bool,
+  code: string,
+  detail: string,
+  total_bytes: i64,
+  nbytes: array<i64>,
+  elements: array<i64>,
+  order: array<i64>,
+}
+
+// One block member's claim on a tensor. `code` is `0` for a usable claim, `1` for a stacked-tensor
+// rule violation, `2` for an unrepresentable product or sum, and `3` for arithmetic that does not
+// tile the tensor exactly.
+Claim { offset: i64, nbytes: i64, code: i64 }
+
+pub fn int_text(value: i64) -> string {
+  b := builder()
+  b.write_int(value)
+  return b.to_string()
+}
+
+fn bool_text(value: bool) -> string {
+  if value {
+    return "true".clone()
+  }
+  return "false".clone()
+}
+
+// Lowercase hexadecimal of a raw 32-bit IEEE-754 pattern, most-significant nibble first, zero
+// padded. The pattern rode here through `as i64`, whose `int -> int` wrap is defined, so it is
+// non-negative and the arithmetic shift below is exact.
+pub fn hex32(bits: i64) -> string {
+  b := builder()
+  mut index := 7
+  loop {
+    if index < 0 { break }
+    shift := index * 4
+    nibble := (bits >> shift) & 15
+    b.write(HEX_DIGITS[nibble..nibble + 1])
+    index = index - 1
+  }
+  return b.to_string()
+}
+
+// `error_detail` is a diagnostic, not a contract on the identifier's completeness, so a longer one
+// is truncated at a UTF-8 scalar boundary and the truncation is not marked. The scan walks back over
+// continuation bytes (`0x80..0xBF`), so the cut can never split a scalar and the slice can never
+// abort.
+pub fn bounded_detail(value: str) -> string {
+  view := value.bytes()
+  if view.len() <= MAX_DETAIL_BYTES {
+    return value.clone()
+  }
+  mut cut := MAX_DETAIL_BYTES
+  loop {
+    if cut <= 0 { break }
+    byte := view.u8(cut) as i64
+    if byte < 128 || byte >= 192 { break }
+    cut = cut - 1
+  }
+  return value[0..cut].clone()
+}
+
+pub fn json_text_or_null(value: str, present: bool) -> string {
+  if !present {
+    return "null".clone()
+  }
+  return gguf.json_string(value)
+}
+
+fn block_kind_label(kind: i64) -> str {
+  if kind == 0 { return "WeightBlock" }
+  if kind == 1 { return "AttentionBlock" }
+  if kind == 2 { return "MlpBlock" }
+  if kind == 3 { return "ExpertBlock" }
+  if kind == 4 { return "RouterBlock" }
+  return ""
+}
+
+// The element product, one axis at a time, testing representability before each multiplication.
+// A zero extent short-circuits to a zero product. `-1` means the product is not representable.
+fn element_count(d0: i64, d1: i64, d2: i64, d3: i64) -> i64 {
+  mut product := 1
+  mut axis := 0
+  loop {
+    if axis >= 4 { break }
+    extent := if axis == 0 {
+      d0
+    } else if axis == 1 {
+      d1
+    } else if axis == 2 {
+      d2
+    } else {
+      d3
+    }
+    if extent < 0 { return -1 }
+    if extent == 0 { return 0 }
+    if product > I64_MAX / extent { return -1 }
+    product = product * extent
+    axis = axis + 1
+  }
+  return product
+}
+
+// GGML's block invariant is per **row**, not per tensor: `ggml_row_size` requires
+// `ne0 % blck_size == 0` and gives one row `type_size * ne0 / blck_size` bytes, so a tensor occupies
+// that row size times its row count. Each division comes first, so no intermediate is larger than
+// `n_elements`; `-1` means the byte size is not representable.
+fn tensor_nbytes(n_elements: i64, row_extent: i64, block_size: i64, type_bytes: i64) -> i64 {
+  // A zero extent gives a zero element count, and the row count below would divide by it.
+  if n_elements == 0 { return 0 }
+  row_blocks := row_extent / block_size
+  if type_bytes > 0 && row_blocks > I64_MAX / type_bytes { return -1 }
+  row_bytes := row_blocks * type_bytes
+  rows := n_elements / row_extent
+  if rows > 0 && row_bytes > I64_MAX / rows { return -1 }
+  return row_bytes * rows
+}
+
+// 64-bit FNV-1a over the name bytes, folded to 42 bits so a packed entry stays non-negative. The
+// multiplication deliberately wraps — a hash is not an arithmetic result — and the value is only
+// ever a grouping device: every candidate it selects is confirmed by an exact name comparison
+// before it is used, so a collision costs work and never changes an answer.
+fn name_hash(value: str) -> i64 {
+  view := value.bytes()
+  mut accumulator := NAME_HASH_SEED
+  mut at := 0
+  loop {
+    if at >= view.len() { break }
+    accumulator = accumulator ^ (view.u8(at) as i64)
+    accumulator = accumulator * NAME_HASH_PRIME
+    at = at + 1
+  }
+  return (accumulator >> 22) & NAME_HASH_MASK
+}
+
+fn packed_entry(hash: i64, index: i64) -> i64 = (hash << NAME_INDEX_BITS) | index
+
+fn entry_hash(entry: i64) -> i64 = entry >> NAME_INDEX_BITS
+
+fn entry_index(entry: i64) -> i64 = entry & NAME_INDEX_MASK
+
+// One ascending index over every validly named tensor, built once per derivation. `.sort()` is the
+// language's stable `O(n log n)` pipeline sort, so this and every lookup through it are bounded
+// work. A name that is not valid UTF-8 is deliberately absent: it can never match a lookup, and two
+// undecodable names must not collide as duplicates of each other.
+fn name_index(borrow t: gguf.GgufTable) -> array<i64> {
+  mut column: array_builder<i64> := array_builder()
+  mut index := 0
+  loop {
+    if index >= t.tensor_count { break }
+    if t.name_valid[index] != 0 {
+      name := gguf.tensor_name(t, index)
+      name_view: str := name
+      column.push(packed_entry(name_hash(name_view), index))
+    }
+    index = index + 1
+  }
+  raw := column.build()
+  return raw.sort()
+}
+
+// The first index whose name equals `name`, or `-1` — exactly the answer `gguf.find_tensor` gives,
+// in `O(log n)` instead of `O(n)`. Equal hashes sort into one run and, within a run, by ascending
+// index, so the first exact match is the first occurrence in file order.
+fn indexed_tensor(borrow t: gguf.GgufTable, borrow order: array<i64>, name: str) -> i64 {
+  key := name_hash(name)
+  mut lo := 0
+  mut hi := order.len()
+  loop {
+    if lo >= hi { break }
+    mid := lo + (hi - lo) / 2
+    if entry_hash(order[mid]) < key {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  mut at := lo
+  loop {
+    if at >= order.len() { break }
+    if entry_hash(order[at]) != key { break }
+    candidate := entry_index(order[at])
+    candidate_name := gguf.tensor_name(t, candidate)
+    candidate_view: str := candidate_name
+    if candidate_view == name { return candidate }
+    at = at + 1
+  }
+  return -1
+}
+
+// The frontend's own view of the same index. It exists so a frontend can settle a presence question
+// its `model` object must report — the section 2.5.4 expert-layout variant — without a second
+// linear scan and without duplicating the hash.
+pub fn find_indexed(borrow t: gguf.GgufTable, borrow g: Geometry, name: str) -> i64 {
+  return indexed_tensor(t, g.order, name)
+}
+
+// The earliest tensor that repeats an earlier tensor's name, or `-1`. Two equal names share a hash
+// and therefore one contiguous run, so a single pass over the runs replaces the per-tensor lookup.
+// A run is one entry wide unless two distinct names collide, so the pairwise comparison inside it is
+// bounded by the collision width and not by the table size.
+fn first_duplicate(borrow t: gguf.GgufTable, borrow order: array<i64>) -> i64 {
+  mut earliest := -1
+  mut start := 0
+  loop {
+    if start >= order.len() { break }
+    key := entry_hash(order[start])
+    mut end := start + 1
+    loop {
+      if end >= order.len() { break }
+      if entry_hash(order[end]) != key { break }
+      end = end + 1
+    }
+    mut left := start
+    loop {
+      if left >= end { break }
+      mut right := left + 1
+      loop {
+        if right >= end { break }
+        left_name := gguf.tensor_name(t, entry_index(order[left]))
+        right_name := gguf.tensor_name(t, entry_index(order[right]))
+        left_view: str := left_name
+        right_view: str := right_name
+        if left_view == right_view {
+          later := entry_index(order[right])
+          if earliest < 0 || later < earliest { earliest = later }
+        }
+        right = right + 1
+      }
+      left = left + 1
+    }
+    start = end
+  }
+  return earliest
+}
+
+// The bounded `error_detail` for the tensor at `index`, which is the only reason the geometry pass
+// needs a tensor's name at all.
+fn tensor_detail(borrow t: gguf.GgufTable, index: i64) -> string {
+  name := gguf.tensor_name(t, index)
+  name_view: str := name
+  return bounded_detail(name_view)
+}
+
+// The empty geometry a frontend hands `build` when its own ordered validation failed before step 8
+// could run. `failed` is true and `code` is empty, which is exactly "the pass never ran": `build`
+// then emits `-1` for `total_tensor_bytes` and no `quant.type_counts` rows.
+pub fn empty_geometry() -> Geometry {
+  mut nbytes_column: array_builder<i64> := array_builder()
+  mut elements_column: array_builder<i64> := array_builder()
+  mut order_column: array_builder<i64> := array_builder()
+  return Geometry {
+    failed: true,
+    code: "".clone(),
+    detail: "".clone(),
+    total_bytes: -1,
+    nbytes: nbytes_column.build(),
+    elements: elements_column.build(),
+    order: order_column.build(),
+  }
+}
+
+// Step 8. The tensor geometry pass, in file order. The name index and its duplicate scan are built
+// once, before the pass: the per-tensor order section 2.6 requires — duplicate name, then type
+// geometry, then row alignment, then the element product, then the running total — is preserved by
+// comparing the file-order position against the one index the scan reported, with no per-tensor
+// lookup at all.
+pub fn size_tensors(borrow t: gguf.GgufTable) -> Geometry {
+  order := name_index(t)
+  duplicate_at := first_duplicate(t, order)
+  mut nbytes_column: array_builder<i64> := array_builder()
+  mut elements_column: array_builder<i64> := array_builder()
+  mut code := "".clone()
+  mut detail := "".clone()
+  mut running := 0
+  mut index := 0
+  loop {
+    if index >= t.tensor_count { break }
+    if index == duplicate_at {
+      code = "R1_DUPLICATE_TENSOR".clone()
+      detail = tensor_detail(t, index)
+      break
+    }
+    type_id := t.tensor_types[index]
+    block_size := gguf.ggml_block_size(type_id)
+    type_bytes := gguf.ggml_type_size(type_id)
+    if block_size == 0 || type_bytes == 0 {
+      code = "R1_UNKNOWN_TENSOR_TYPE".clone()
+      detail = int_text(type_id)
+      break
+    }
+    // The GGML block invariant is per row: `ne0 % blck_size == 0`. It is strictly stronger than
+    // "the element product is a multiple of the block size" — a Q6_K `[64, 64]` tensor satisfies
+    // the product rule and is still unrepresentable — and it is what makes `tensor_nbytes` agree
+    // with `ggml_row_size` byte for byte.
+    row_extent := t.tensor_dim0[index]
+    if row_extent % block_size != 0 {
+      code = "R1_TENSOR_SHAPE_UNALIGNED".clone()
+      detail = tensor_detail(t, index)
+      break
+    }
+    n_elements := element_count(
+      t.tensor_dim0[index],
+      t.tensor_dim1[index],
+      t.tensor_dim2[index],
+      t.tensor_dim3[index],
+    )
+    if n_elements < 0 {
+      code = "R1_SIZE_OVERFLOW".clone()
+      detail = tensor_detail(t, index)
+      break
+    }
+    nbytes := tensor_nbytes(n_elements, row_extent, block_size, type_bytes)
+    if nbytes < 0 || running > I64_MAX - nbytes {
+      code = "R1_SIZE_OVERFLOW".clone()
+      detail = tensor_detail(t, index)
+      break
+    }
+    running = running + nbytes
+    nbytes_column.push(nbytes)
+    elements_column.push(n_elements)
+    index = index + 1
+  }
+  failed := code.len() > 0
+  return Geometry {
+    failed: failed,
+    code: code.clone(),
+    detail: detail.clone(),
+    total_bytes: if failed { -1 } else { running },
+    nbytes: nbytes_column.build(),
+    elements: elements_column.build(),
+    order: order,
+  }
+}
+
+fn span_text(borrow plan: BlockPlan, start: i64, end: i64) -> string {
+  if start < 0 || end < start || end > plan.names.len() { return "".clone() }
+  return plan.names[start..end].clone()
+}
+
+fn dims_json(n_dims: i64, d0: i64, d1: i64, d2: i64, d3: i64) -> string {
+  b := builder()
+  b.write("[")
+  mut axis := 0
+  loop {
+    if axis >= n_dims { break }
+    if axis > 0 { b.write(",") }
+    if axis == 0 {
+      b.write_int(d0)
+    } else if axis == 1 {
+      b.write_int(d1)
+    } else if axis == 2 {
+      b.write_int(d2)
+    } else {
+      b.write_int(d3)
+    }
+    axis = axis + 1
+  }
+  b.write("]")
+  return b.to_string()
+}
+
+// The section 2.5.3 slice arithmetic. GGML lays a tensor out row-major with the fastest-varying
+// axis first, so the last declared axis is the outermost and each of its indices owns one
+// contiguous byte plane. `nbytes = row_bytes * d1 * ... * dn`, so `nbytes = plane * extent` is
+// exact by construction once the row rule and the stacked-tensor rule have both passed; the
+// division is checked anyway, because a silent tiling bug would describe bytes that do not exist.
+fn member_claim(
+  borrow t: gguf.GgufTable,
+  borrow g: Geometry,
+  index: i64,
+  slice_index: i64,
+  slice_count: i64,
+) -> Claim {
+  absolute := t.tensor_absolute_offsets[index]
+  nbytes := g.nbytes[index]
+  if slice_index < 0 {
+    return Claim { offset: absolute, nbytes: nbytes, code: 0 }
+  }
+  // Step 8b, the stacked-tensor rule, tested before any slice arithmetic.
+  n_dims := t.tensor_n_dims[index]
+  if n_dims < 2 || slice_count < 1 || slice_index >= slice_count {
+    return Claim { offset: -1, nbytes: -1, code: 1 }
+  }
+  last := gguf.tensor_dim(t, index, n_dims - 1)
+  if last != slice_count {
+    return Claim { offset: -1, nbytes: -1, code: 1 }
+  }
+  plane := nbytes / last
+  if plane > I64_MAX / last || plane * last != nbytes {
+    return Claim { offset: -1, nbytes: -1, code: 3 }
+  }
+  if slice_index > 0 && plane > I64_MAX / slice_index {
+    return Claim { offset: -1, nbytes: -1, code: 2 }
+  }
+  into := plane * slice_index
+  if absolute < 0 {
+    return Claim { offset: -1, nbytes: plane, code: 0 }
+  }
+  if absolute > I64_MAX - into {
+    return Claim { offset: -1, nbytes: -1, code: 2 }
+  }
+  return Claim { offset: absolute + into, nbytes: plane, code: 0 }
+}
+
+// One `blocks[].tensors[]` record. It is returned as an owned `string` rather than accumulated
+// through a parameter because `builder` is not a parameter type at this pin.
+fn tensor_json(
+  borrow t: gguf.GgufTable,
+  index: i64,
+  role: str,
+  n_elements: i64,
+  nbytes: i64,
+  claimed_offset: i64,
+  claimed_nbytes: i64,
+) -> string {
+  name := gguf.tensor_name(t, index)
+  name_view: str := name
+  type_id := t.tensor_types[index]
+  type_label := gguf.ggml_type_name(type_id)
+  n_dims := t.tensor_n_dims[index]
+  dims := dims_json(
+    n_dims,
+    t.tensor_dim0[index],
+    t.tensor_dim1[index],
+    t.tensor_dim2[index],
+    t.tensor_dim3[index],
+  )
+  dims_view: str := dims
+  b := builder()
+  b.write("{\"name\":")
+  b.write(gguf.json_string(name_view))
+  b.write(",\"role\":")
+  b.write(gguf.json_string(role))
+  b.write(",\"type\":")
+  b.write_int(type_id)
+  b.write(",\"type_name\":")
+  b.write(json_text_or_null(type_label, type_label.len() > 0))
+  b.write(",\"n_dims\":")
+  b.write_int(n_dims)
+  b.write(",\"dims\":")
+  b.write(dims_view)
+  b.write(",\"n_elements\":")
+  b.write_int(n_elements)
+  b.write(",\"block_size\":")
+  b.write_int(gguf.ggml_block_size(type_id))
+  b.write(",\"type_bytes\":")
+  b.write_int(gguf.ggml_type_size(type_id))
+  b.write(",\"nbytes\":")
+  b.write_int(nbytes)
+  b.write(",\"offset\":")
+  b.write_int(t.tensor_offsets[index])
+  b.write(",\"absolute_offset\":")
+  b.write_int(t.tensor_absolute_offsets[index])
+  // Schema 2's two additive fields. `n_dims`, `dims`, `n_elements`, and `nbytes` continue to
+  // describe the tensor as the container declares it, never the slice: a document that reshaped a
+  // declared 3-axis tensor into one expert's plane would contradict `--inspect-gguf` about the same
+  // file.
+  b.write(",\"claimed_absolute_offset\":")
+  b.write_int(claimed_offset)
+  b.write(",\"claimed_nbytes\":")
+  b.write_int(claimed_nbytes)
+  b.write("}")
+  return b.to_string()
+}
+
+fn source_json(borrow t: gguf.GgufTable) -> string {
+  b := builder()
+  b.write("{\"gguf_version\":")
+  b.write_int(t.version)
+  b.write(",\"alignment\":")
+  b.write_int(t.alignment)
+  b.write(",\"file_size\":")
+  b.write_int(t.file_size)
+  b.write(",\"data_offset\":")
+  b.write_int(t.data_offset)
+  b.write(",\"tensor_count\":")
+  b.write_int(t.tensor_count)
+  b.write(",\"metadata_kv_count\":")
+  b.write_int(t.kv_count)
+  b.write(",\"bytes_read\":")
+  b.write_int(t.bytes_read)
+  b.write("}")
+  return b.to_string()
+}
+
+// The one public producer of `R1_MODEL_IR`. `in_code` and `in_detail` carry the frontend's own
+// ordered validation result for steps 3 to 7 and step 9; an empty `in_code` means the derivation
+// reached step 10 and the block plan is authoritative from here on.
+pub fn build(
+  borrow t: gguf.GgufTable,
+  borrow g: Geometry,
+  borrow plan: BlockPlan,
+  path: str,
+  in_code: str,
+  in_detail: str,
+) -> ModelIr {
+  mut code := in_code.clone()
+  mut detail := in_detail.clone()
+  mut quant_body := builder()
+  mut quant_rows := 0
+  mut blocks_body := builder()
+  mut block_count := 0
+  mut assigned := 0
+  mut unassigned_body := builder()
+  mut unassigned_rows := 0
+  mut computed_end := -1
+  mut size_sum_ok := false
+  total_bytes := g.total_bytes
+
+  if code.len() == 0 && g.failed {
+    code = g.code.clone()
+    detail = g.detail.clone()
+  }
+
+  // The quantization summary: one ascending row per distinct `ggml_type` id present in the table.
+  // Ids are bounded by the geometry table, so a fixed sweep is exhaustive and deterministic. It is
+  // computed whenever the geometry pass completed, exactly as R1 computes it before step 9, so a
+  // later failure still reports what the container declares it contains.
+  if !g.failed {
+    mut type_id := 0
+    loop {
+      if type_id > MAX_GEOMETRY_TYPE_ID { break }
+      mut rows := 0
+      mut bytes := 0
+      mut scan := 0
+      loop {
+        if scan >= t.tensor_count { break }
+        if t.tensor_types[scan] == type_id {
+          rows = rows + 1
+          bytes = bytes + g.nbytes[scan]
+        }
+        scan = scan + 1
+      }
+      if rows > 0 {
+        if quant_rows > 0 { quant_body.write(",") }
+        quant_body.write("{\"type\":")
+        quant_body.write_int(type_id)
+        quant_body.write(",\"type_name\":")
+        quant_body.write(gguf.json_string(gguf.ggml_type_name(type_id)))
+        quant_body.write(",\"tensor_count\":")
+        quant_body.write_int(rows)
+        quant_body.write(",\"bytes\":")
+        quant_body.write_int(bytes)
+        quant_body.write("}")
+        quant_rows = quant_rows + 1
+      }
+      type_id = type_id + 1
+    }
+  }
+
+  mut claim_column: array_builder<i64> := array_builder()
+
+  loop {
+    if code.len() > 0 { break }
+
+    // Step 10. Block assembly in the plan's emission order, which is not file order. Variant
+    // selection happened in the frontend, which had to know its own answer before it could render
+    // `model.expert_ffn_layout`; what arrives here is one settled member set per block.
+    mut assembly_failed := false
+    mut slot := 0
+    loop {
+      if slot >= plan.block_count { break }
+      kind := plan.block_kind[slot]
+      layer := plan.block_layer[slot]
+      expert := plan.block_expert[slot]
+      mut members := builder()
+      mut member_count := 0
+      mut byte_size := 0
+      mut first_abs := -1
+      mut end_abs := -1
+      mut member_at := plan.block_member_start[slot]
+      loop {
+        if member_at >= plan.block_member_end[slot] { break }
+        wanted := span_text(plan, plan.member_name_start[member_at], plan.member_name_end[member_at])
+        wanted_view: str := wanted
+        found := indexed_tensor(t, g.order, wanted_view)
+        if found < 0 && plan.member_required[member_at] != 0 {
+          code = "R1_MISSING_TENSOR".clone()
+          detail = bounded_detail(wanted_view)
+          assembly_failed = true
+          break
+        }
+        if found >= 0 {
+          want_dims := plan.member_n_dims[member_at]
+          got_dims := t.tensor_n_dims[found]
+          mut shape_ok := got_dims == want_dims
+          if shape_ok {
+            mut axis := 0
+            loop {
+              if axis >= 4 { break }
+              want := if axis == 0 {
+                plan.member_dim0[member_at]
+              } else if axis == 1 {
+                plan.member_dim1[member_at]
+              } else if axis == 2 {
+                plan.member_dim2[member_at]
+              } else {
+                plan.member_dim3[member_at]
+              }
+              got := gguf.tensor_dim(t, found, axis)
+              if want >= 0 && got != want { shape_ok = false }
+              axis = axis + 1
+            }
+          }
+          if !shape_ok {
+            code = "R1_TENSOR_SHAPE_UNEXPECTED".clone()
+            detail = tensor_detail(t, found)
+            assembly_failed = true
+            break
+          }
+          claim := member_claim(
+            t,
+            g,
+            found,
+            plan.member_slice_index[member_at],
+            plan.member_slice_count[member_at],
+          )
+          if claim.code == 1 {
+            code = "R1_TENSOR_SHAPE_UNEXPECTED".clone()
+            detail = tensor_detail(t, found)
+            assembly_failed = true
+            break
+          }
+          if claim.code == 2 {
+            code = "R1_SIZE_OVERFLOW".clone()
+            detail = tensor_detail(t, found)
+            assembly_failed = true
+            break
+          }
+          if claim.code == 3 {
+            code = "R1_BLOCK_CLAIM_MISMATCH".clone()
+            detail = tensor_detail(t, found)
+            assembly_failed = true
+            break
+          }
+          ordinal := plan.member_slice_index[member_at] + 1
+          if ordinal < 0 || ordinal > CLAIM_SLOT_MASK {
+            code = "R1_BLOCK_CLAIM_MISMATCH".clone()
+            detail = tensor_detail(t, found)
+            assembly_failed = true
+            break
+          }
+          role := span_text(plan, plan.member_role_start[member_at], plan.member_role_end[member_at])
+          role_view: str := role
+          if member_count > 0 { members.write(",") }
+          member_json := tensor_json(
+            t,
+            found,
+            role_view,
+            g.elements[found],
+            g.nbytes[found],
+            claim.offset,
+            claim.nbytes,
+          )
+          member_json_view: str := member_json
+          members.write(member_json_view)
+          byte_size = byte_size + claim.nbytes
+          if claim.offset >= 0 {
+            if first_abs < 0 || claim.offset < first_abs { first_abs = claim.offset }
+            // Non-wrapping, like every other sum here: an unrepresentable end saturates rather than
+            // wrapping negative and reporting a block that ends before it starts.
+            member_end := if claim.offset > I64_MAX - claim.nbytes {
+              I64_MAX
+            } else {
+              claim.offset + claim.nbytes
+            }
+            if member_end > end_abs { end_abs = member_end }
+          }
+          claim_column.push((found << CLAIM_SLOT_BITS) | ordinal)
+          member_count = member_count + 1
+        }
+        member_at = member_at + 1
+      }
+      if assembly_failed { break }
+      // `byte_size`, `first_absolute_offset`, `end_absolute_offset`, and `contiguous` are computed
+      // over the block's **claims** rather than over its tensors' whole byte ranges (section
+      // 2.4.2). For a whole-tensor claim the two are identical, so every schema-1 document keeps
+      // its exact values; for an `ExpertBlock` this is what makes `byte_size` the size of one
+      // expert rather than of all of them.
+      contiguous := first_abs >= 0 && end_abs - first_abs == byte_size
+      if block_count > 0 { blocks_body.write(",") }
+      blocks_body.write("{\"index\":")
+      blocks_body.write_int(block_count)
+      blocks_body.write(",\"kind\":")
+      blocks_body.write(gguf.json_string(block_kind_label(kind)))
+      blocks_body.write(",\"layer\":")
+      blocks_body.write_int(layer)
+      blocks_body.write(",\"expert\":")
+      blocks_body.write_int(expert)
+      blocks_body.write(",\"tensor_count\":")
+      blocks_body.write_int(member_count)
+      blocks_body.write(",\"byte_size\":")
+      blocks_body.write_int(byte_size)
+      blocks_body.write(",\"first_absolute_offset\":")
+      blocks_body.write_int(first_abs)
+      blocks_body.write(",\"end_absolute_offset\":")
+      blocks_body.write_int(end_abs)
+      blocks_body.write(",\"contiguous\":")
+      blocks_body.write(bool_text(contiguous))
+      blocks_body.write(",\"tensors\":[")
+      members_json := members.to_string()
+      members_view: str := members_json
+      blocks_body.write(members_view)
+      blocks_body.write("]}")
+      block_count = block_count + 1
+      slot = slot + 1
+    }
+    if assembly_failed { break }
+
+    // Block assembly recorded what it took; sorting that record turns the coverage sweep below into
+    // one merge instead of a membership scan per tensor, and puts each tensor's claims in ascending
+    // slice order for the tiling sweep. A tensor named by two blocks — the tied-embedding case —
+    // appears twice here and is still counted once.
+    claimed_raw := claim_column.build()
+    claimed := claimed_raw.sort()
+
+    // Step 11a. Every tensor in the table must be claimed by at least one block. A partial Block IR
+    // is not a Block IR, so an unassigned tensor is a failure and not a warning.
+    mut first_unassigned := -1
+    mut claimed_cursor := 0
+    mut scan := 0
+    loop {
+      if scan >= t.tensor_count { break }
+      loop {
+        if claimed_cursor >= claimed.len() { break }
+        if (claimed[claimed_cursor] >> CLAIM_SLOT_BITS) >= scan { break }
+        claimed_cursor = claimed_cursor + 1
+      }
+      mut is_claimed := false
+      if claimed_cursor < claimed.len() {
+        if (claimed[claimed_cursor] >> CLAIM_SLOT_BITS) == scan { is_claimed = true }
+      }
+      if is_claimed {
+        assigned = assigned + 1
+      } else {
+        if first_unassigned < 0 { first_unassigned = scan }
+        if unassigned_rows < MAX_UNASSIGNED_REPORTED {
+          unassigned_name := gguf.tensor_name(t, scan)
+          unassigned_view: str := unassigned_name
+          if unassigned_rows > 0 { unassigned_body.write(",") }
+          unassigned_body.write(gguf.json_string(unassigned_view))
+          unassigned_rows = unassigned_rows + 1
+        }
+      }
+      scan = scan + 1
+    }
+    if first_unassigned >= 0 {
+      code = "R1_UNASSIGNED_TENSOR".clone()
+      first_name := gguf.tensor_name(t, first_unassigned)
+      first_view: str := first_name
+      detail = bounded_detail(first_view)
+      break
+    }
+
+    // Step 11b, the claim-tiling oracle (section 4.3). Coverage alone asks only "was every tensor
+    // claimed"; with per-expert slicing a tensor can be claimed by every expert while the claims
+    // leave a gap or overlap, and the size-sum oracle would still hold. The rule is: the claims over
+    // one tensor either include a whole-tensor claim — the tied-embedding case, where two blocks
+    // claim the same whole tensor — or exactly partition its range. One sorted walk with one cursor
+    // closes it, so the sweep costs one pass and not a scan per tensor.
+    mut tiling_bad := -1
+    mut run_at := 0
+    loop {
+      if run_at >= claimed.len() { break }
+      subject := claimed[run_at] >> CLAIM_SLOT_BITS
+      mut whole := 0
+      mut expected := 0
+      mut run_end := run_at
+      mut broken := false
+      loop {
+        if run_end >= claimed.len() { break }
+        if (claimed[run_end] >> CLAIM_SLOT_BITS) != subject { break }
+        ordinal := (claimed[run_end] & CLAIM_SLOT_MASK) - 1
+        if ordinal < 0 {
+          whole = whole + 1
+        } else {
+          // Ordinals sort ascending within a tensor, so the first ordinal that is not the next one
+          // expected is a gap, an overlap, or a repeat — all of them the same defect.
+          if ordinal != expected { broken = true }
+          expected = expected + 1
+        }
+        run_end = run_end + 1
+      }
+      if whole > 0 {
+        // A whole-tensor claim beside a slice claim overlaps it by definition.
+        if whole != run_end - run_at { broken = true }
+      } else {
+        n_dims := t.tensor_n_dims[subject]
+        last := gguf.tensor_dim(t, subject, n_dims - 1)
+        if expected != last { broken = true }
+      }
+      if broken && tiling_bad < 0 { tiling_bad = subject }
+      run_at = run_end
+    }
+    if tiling_bad >= 0 {
+      code = "R1_BLOCK_CLAIM_MISMATCH".clone()
+      detail = tensor_detail(t, tiling_bad)
+      break
+    }
+
+    // Step 12. The size-sum oracle: `data_offset + Σ nbytes == file_size`, summed over the tensor
+    // table and not over block membership, so a shared or sliced tensor is counted exactly once.
+    // "Too large to add" and "does not add up" are different facts, so an unrepresentable sum is an
+    // overflow, not a mismatch.
+    if total_bytes > I64_MAX - t.data_offset {
+      code = "R1_SIZE_OVERFLOW".clone()
+      detail = "data_offset".clone()
+      break
+    }
+    computed_end = t.data_offset + total_bytes
+    size_sum_ok = computed_end == t.file_size
+    if !size_sum_ok {
+      code = "R1_SIZE_SUM_MISMATCH".clone()
+      b := builder()
+      b.write_int(computed_end)
+      b.write("!=")
+      b.write_int(t.file_size)
+      detail = b.to_string()
+      break
+    }
+    break
+  }
+
+  failed := code.len() > 0
+
+  code_view: str := code
+  detail_view: str := detail
+  model_view: str := plan.model_json
+
+  quant := builder()
+  quant.write("{\"file_type\":")
+  quant.write_int(plan.file_type)
+  quant.write(",\"file_type_present\":")
+  quant.write(bool_text(plan.file_type_present))
+  // `file_type` is deliberately not given a name: the `LLAMA_FTYPE_*` enumeration is a llama.cpp
+  // concept, not a GGUF-normative one. `type_counts` is the authoritative summary, decoded from the
+  // file.
+  quant.write(",\"type_counts\":[")
+  quant_rows_json := quant_body.to_string()
+  quant_view: str := quant_rows_json
+  quant.write(quant_view)
+  quant.write("],\"total_tensor_bytes\":")
+  quant.write_int(total_bytes)
+  quant.write("}")
+
+  coverage := builder()
+  coverage.write("{\"tensor_count\":")
+  coverage.write_int(t.tensor_count)
+  coverage.write(",\"assigned_tensor_count\":")
+  coverage.write_int(assigned)
+  coverage.write(",\"unassigned_tensors\":[")
+  unassigned_json := unassigned_body.to_string()
+  unassigned_view: str := unassigned_json
+  coverage.write(unassigned_view)
+  coverage.write("],\"block_count\":")
+  coverage.write_int(block_count)
+  coverage.write(",\"data_offset\":")
+  coverage.write_int(t.data_offset)
+  coverage.write(",\"total_tensor_bytes\":")
+  coverage.write_int(total_bytes)
+  coverage.write(",\"computed_end\":")
+  coverage.write_int(computed_end)
+  coverage.write(",\"file_size\":")
+  coverage.write_int(t.file_size)
+  coverage.write(",\"size_sum_ok\":")
+  coverage.write(bool_text(size_sum_ok))
+  coverage.write("}")
+
+  source_object := source_json(t)
+  source_view: str := source_object
+  quant_object := quant.to_string()
+  quant_object_view: str := quant_object
+  coverage_object := coverage.to_string()
+  coverage_view: str := coverage_object
+  blocks_json := blocks_body.to_string()
+  blocks_view: str := blocks_json
+
+  document := builder()
+  document.write("{\"schema_version\":2,\"kind\":\"R1_MODEL_IR\",\"path\":")
+  document.write(gguf.json_string(path))
+  document.write(",\"status\":")
+  document.write(gguf.json_string(if failed { "error" } else { "ok" }))
+  document.write(",\"error_code\":")
+  document.write(gguf.json_string(code_view))
+  document.write(",\"error_detail\":")
+  document.write(gguf.json_string(detail_view))
+  document.write(",\"source\":")
+  document.write(source_view)
+  document.write(",\"model\":")
+  document.write(model_view)
+  document.write(",\"quant\":")
+  document.write(quant_object_view)
+  document.write(",\"coverage\":")
+  document.write(coverage_view)
+  document.write(",\"blocks\":[")
+  document.write(blocks_view)
+  document.write("]}")
+  document_text := document.to_string()
+
+  arch_view: str := plan.arch
+  return ModelIr {
+    status: if failed { IrStatus.Error } else { IrStatus.Ok },
+    error_code: code.clone(),
+    error_detail: detail.clone(),
+    arch: arch_view.clone(),
+    arch_present: plan.arch_present,
+    n_layer: plan.n_layer,
+    n_embd: plan.n_embd,
+    n_head: plan.n_head,
+    n_head_kv: plan.n_head_kv,
+    head_dim: plan.head_dim,
+    n_ff: plan.n_ff,
+    n_vocab: plan.n_vocab,
+    n_expert: plan.n_expert,
+    context_length: plan.context_length,
+    rope_freq_base_bits: plan.rope_freq_base_bits,
+    rms_eps_bits: plan.rms_eps_bits,
+    block_count: block_count,
+    total_tensor_bytes: total_bytes,
+    size_sum_ok: size_sum_ok,
+    document: document_text,
+  }
+}

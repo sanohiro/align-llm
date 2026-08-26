@@ -1254,31 +1254,129 @@ new evidence for or against any of them.
 
 ## 6. Amendments this capability owes `docs/specs/r1-qwen-model-ir.md`
 
-Recorded here rather than applied, because this is a design-only file. Each is a documentation
-change the implementation commit must make together with the code.
+**Applied.** Each item below landed in `docs/specs/r1-qwen-model-ir.md` section 7 together with the
+code, at the item number named in its row. Request 23's additional client evidence is the one item
+that is not a section 7 row; it is listed as item 4 and is owed to `docs/align-requests.md`.
 
-1. **Section 2.7's result type.** `QwenModelIr` becomes the neutral `model_ir.ModelIr`, and
+1. **Section 2.7's result type.** *(applied: R1 section 7, item 25.)* `QwenModelIr` becomes the neutral `model_ir.ModelIr`, and
    `build_model_ir` returns it. The field list is unchanged except that `n_expert` may now be
    positive and two scalar fields (`n_expert_used`, `block_count`) carry MoE values.
-2. **Sections 2.5.6, 2.8, and 5.1's "no schema bump" claim.** True only for a layer-granularity MoE
+2. **Sections 2.5.6, 2.8, and 5.1's "no schema bump" claim.** *(applied: R1 section 7, items 23 and 24.)* True only for a layer-granularity MoE
    frontend. Section 2.4.1 above records the argument and the decision; those three sentences must
    be corrected to say that `kind` and `expert` avoid a *type* change, not a version bump.
-3. **Section 2.4's summary block.** The `blocks:` line's value is unchanged in definition and
+3. **Section 2.4's summary block.** *(applied: R1 section 7, item 26.)* The `blocks:` line's value is unchanged in definition and
    changes by three orders of magnitude in practice on a MoE model. No format change; a note.
-4. **`docs/align-requests.md` Request 23.** Add `BlockPlan` as a second align-llm client of the
+4. **`docs/align-requests.md` Request 23.** *(owed to that register, not to R1's plan; `BlockPlan` is 36 fields wide and the spurious lint fires on every neutral accessor that takes it as `borrow`.)* Add `BlockPlan` as a second align-llm client of the
    spurious huge-struct-copy lint. Evidence only; the status stays `PROPOSED` and non-blocking.
-5. **Section 5.5's geometry-row gate.** The conjunction "a named GGML revision **and** the size-sum
+5. **Section 5.5's geometry-row gate.** *(applied: R1 section 7, item 27, which also corrects the `q8_1` row the oracle falsified.)* The conjunction "a named GGML revision **and** the size-sum
    oracle passing against a real model that uses the type" becomes: a named GGML revision, **and**
    either the size-sum oracle against a real model **or** a recorded library oracle
    (`ggml_blck_size` / `ggml_type_size` linked against that revision's shipped implementation) that
    reproduces every existing row. Section 2.8.2 records why the substitute is stronger for this
    question and what remains owed.
-6. **Section 5.1's "what R1 does not do".** The gpt-oss frontend is no longer deferred; the pointer
+6. **Section 5.1's "what R1 does not do".** *(applied: R1 section 7, item 28.)* The gpt-oss frontend is no longer deferred; the pointer
    becomes this document.
 
 ## 7. Implementation corrections to this plan
 
-Empty. This section is reserved for the corrections implementation forces on the promises above,
-recorded in `docs/specs/r1-qwen-model-ir.md` section 7's format: the section amended, the
-correction, the evidence that forced it, and the owner test that now holds it. Every ASSUMED row of
-section 2.5 that real-model inspection changes lands here.
+The capability was implemented against this plan at pin `4b515f8d`. Every item below is a correction
+to a promise this document made, recorded in `docs/specs/r1-qwen-model-ir.md` section 7's format:
+the section amended, the correction, the evidence that forced it, and the owner test that now holds
+it. No item changes `R1_MODEL_IR`'s `schema_version`, which is `2` as designed.
+
+**No row of section 2.5 was settled by real-model inspection.** The section 4.5 prerequisite could
+not be performed: no gpt-oss GGUF is present on this host and this capability does not download one
+(section 4.4). Every ASSUMED row therefore still stands on its assumption banner rather than on a
+passing test, the section 2.5.4 variant mechanism is retained rather than reduced to the winning
+form, and the honest terminal state is the one section 4.5 names: **the gpt-oss frontend is
+validated against the synthetic corpus and the two in-program oracles only.**
+
+| # | Amends | Correction | Evidence | Owner |
+| --- | --- | --- | --- | --- |
+| 1 | 2.3.4, 2.8 | **`build_model_ir` takes the container table, not a path, and returns `ModelIr` rather than `Result<ModelIr, Error>`.** The ledger's `pub fn build_model_ir(path: str) -> Result<model_ir.ModelIr, Error>` cannot coexist with section 3.5's `dispatch-single-read` cell: dispatching on `general.architecture` requires reading the table, and a frontend that then re-read it would walk the container twice per invocation. `src/main.align` reads it once and hands each frontend `borrow table: gguf.GgufTable` plus the path; `Err` for an invalid path or an OS failure is raised by `gguf.read_table` in the CLI arm, where arity and path validation already live, so the observable CLI contract is unchanged | the alternative is two `read_table` walks per `--model-ir` run, which section 3.5 forbids | `model-ir-smoke`'s `bytes_read` assertions, numerically unchanged from R1; `cli-path`, `missing-path`, `denied-path` |
+| 2 | 2.2, 2.6 step 4, 3.5 | **An unsupported architecture reaches the qwen2 frontend, which rejects it; no neutral rejection path exists.** Section 3.5's `dispatch-unknown` cell says "before any frontend runs", which would require `src/model_ir.align` to render an `R1_UNSUPPORTED_ARCH` document with some architecture-neutral `model` object. Every R1 wrong-architecture document carries the **qwen2** `model` object with its sentinels and its `rope` sub-object, and four qwen fixtures assert exactly those bytes, so a neutral renderer would change documents section 2.4.2 promises change in exactly two ways. Dispatch is therefore: `gpt-oss` selects the MoE frontend, and every other value — including absent, non-STRING, and non-UTF-8 — selects the qwen2 frontend, whose own step-4 re-check produces `R1_UNSUPPORTED_ARCH` with the architecture or `""` as the detail. Section 2.2's observable table is unchanged | the normalized diff of item 12: `qwen2-wrong-arch`, `qwen2-arch-escapes`, `qwen2-wire-escapes`, and `qwen2-precedence-arch-key` are byte-identical to R1 under the two allowed edits | `dispatch-qwen`, `dispatch-gptoss`, `dispatch-unknown`; the whole R0 corpus re-run through `--model-ir` |
+| 3 | 2.3.4 | **`BlockPlan` carries seventeen `array<i64>` columns, not nineteen, and gains the scalars the CLI summary reads.** `member_role` was redundant: the role is text and is addressed by `member_role_start` / `member_role_end` on the same stream, so a separate index column indexed nothing. `member_variant` was removed by item 4. In exchange the plan carries the thirteen `model`-object scalars plus `file_type` / `file_type_present`, because `ModelIr`'s scalar fields and `quant.file_type` are frontend-derived and the neutral builder must not re-read `general.file_type` behind the frontend's key-type pass. The record is 36 fields wide, which is what makes it the second align-llm client of Request 23 | `src/model_ir.align`; the `quant.file_type` sentinels of `qwen2-wrong-arch`, which must stay `-1` / `false` on a file that never passed step 5 | `make check`; `plan-column-lengths` through every document in both corpora |
+| 4 | 2.5.4, 3.2 | **Expert-layout variant selection lives in `src/frontend_gpt_oss.align`, not in the neutral `resolve_block`.** The selection must be *reported* as `model.expert_ffn_layout`, and `model` is rendered by the frontend before `model_ir.build` assembles the document, so a neutral chooser would have to hand its answer back into a string the caller had already produced. The frontend probes `blk.0.ffn_gate_exps.weight` and `blk.0.ffn_gate_up_exps.weight` through the neutral name index and emits only the selected variant's members. The contract is unchanged: split is preferred, fused is selected only when the split weight is absent and the fused one is present, and a file with neither yields `R1_MISSING_TENSOR` naming variant 0's first missing required member | `src/frontend_gpt_oss.align`; `model_ir.find_indexed` is the one accessor added for it | `gptoss-variant-fused`, `gptoss-variant-none`, and `gptoss-full` (split) |
+| 5 | 2.3.4, 2.6 | **The geometry pass is a second public neutral entry point, because step 8 sits between two frontend steps.** Section 2.6 orders the frontend's steps 3–7, then the neutral step 8, then the frontend's step 9, then the neutral steps 10–12. With no callback and no `builder` parameter, that is expressed as `model_ir.size_tensors(borrow t) -> Geometry` called by the frontend after its step 7, plus `model_ir.empty_geometry()` for the case where its own validation already failed, and `Geometry` is then borrowed into `build` alongside the plan. The neutral module still owns every byte size; the frontend owns only when it is computed | `src/model_ir.align`; `qwen2-vocab-mismatch`, whose document must carry a populated `quant` (step 8 completed) and no blocks (step 9 failed) | the whole R1 negative corpus, unchanged |
+| 6 | 2.8.2 | **The library oracle did not reproduce every existing row: `q8_1` was wrong.** Section 2.8.2 states the probe "reproduces every one of R1's twenty existing rows exactly", and the acceptance argument for MXFP4 rests on that. It does not: `ggml_type_size(GGML_TYPE_Q8_1)` is **36** in `ggml 0.21.0` against the 40 R0 transcribed, because `block_q8_1` carries two `ggml_half` scales rather than two `float`s. The row is corrected in `src/gguf.align` and in `scripts/gguf_fixture.py` together, which makes the sentence true and the acceptance argument sound. No shipped GGUF stores `q8_1` — it is an intermediate quantization type — so no model was ever mis-sized | the recorded probe: `f32 1/4  q4_0 32/18  q4_1 32/20  q5_0 32/22  q5_1 32/24  q8_0 32/34  q8_1 32/36  q2_K 256/84  q3_K 256/110  q4_K 256/144  q5_K 256/176  q6_K 256/210  q8_K 256/292  i8 1/1  i16 1/2  i32 1/4  i64 1/8  f64 1/8  bf16 1/2  mxfp4 32/17  nvfp4 64/36` | `qwen2-geometry`, whose generator-computed `nbytes` for id 9 is asserted against the derivation |
+| 7 | 2.8.2, 3.1 | **`ggml_type_name(39)` did not already return `MXFP4`.** Section 3.1's naming cell says the R0 name table is unchanged; that table stops at `TQ2_0` (35). R1B adds the name row beside the two geometry rows, so `type_name` is `"MXFP4"` rather than `null` in both `--model-ir` and `--inspect-gguf`. Id 40 (`NVFP4`) is deliberately still unnamed and unsized | `src/gguf.align:248` before the change | `mxfp4-geometry` asserts `type_name`; `gptoss-unknown-type` (id 40) asserts `R1_UNKNOWN_TENSOR_TYPE` with detail `40` |
+| 8 | 3.1 | **The 1-axis MXFP4 fixture is not representable and is replaced by a second 3-axis one.** Section 3.1's `mxfp4-geometry` cell names `[256]`, `[256, 128]`, and `[256, 128, 4]`. A 1-axis MXFP4 `[256]` tensor is `(256 / 32) * 17 = 136` bytes, which is not a multiple of the 32-byte container alignment, so a contiguous data section cannot also be alignment-correct and the size-sum oracle is unsatisfiable — the same constraint `docs/specs/r1-qwen-model-ir.md` section 7 item 5 records. The smallest representable 1-axis MXFP4 extent is `[1024]` (544 bytes), which no role in either corpus has. The cell is closed instead by `[256, 128]` in the geometry sweep and by two *distinct* 3-axis shapes in the gpt-oss corpus — `[32, 256, 8]` and `[256, 32, 8]`, whose row extents differ — which exercise the row rule and the plane arithmetic on both axis orders | the alignment arithmetic above | `qwen2-geometry` (2-axis); `gptoss-full` and `expert-slice-bytes` (both 3-axis orders) |
+| 9 | 2.7, 4.3 | **The claim list packs `(tensor index, slice ordinal)`, not `(tensor index, claimed offset)`.** Section 2.7 says the list is sorted by `(tensor index, claimed offset)`. Ordinals are cheaper and equivalent: every plane of one stacked tensor is the same size, so ascending ordinal *is* ascending offset, and one `array<i64>` packing an 11-bit ordinal below a 21-bit tensor index sorts with the language's `sort()` over `i64` exactly as the name index does. The tiling walk then needs no second lookup per claim: a run is either all whole-tensor claims or the ordinals `0 .. k-1` with `k` equal to the tensor's last declared extent. A plan asking for an ordinal above 2,047 is `R1_BLOCK_CLAIM_MISMATCH` rather than a silent alias, which `MAX_EXPERTS` (1,024) already excludes | `src/model_ir.align` `CLAIM_SLOT_BITS` | `expert-tiling` in Align; the runner's independent Python tiling assertion over sorted `(claimed_absolute_offset, claimed_nbytes)` spans |
+| 10 | 2.2 | **The stdout summary keeps its `qwen model ir:` header for both architectures.** Section 2.2 freezes the block's "exact line set and order" and calls it architecture-neutral; the header line is the one part that is not, and renaming it would change a stable positional stdout contract for no consumer. It is left verbatim. Renaming it is a separate, breaking change to `--model-ir`'s stdout and belongs to whichever capability has a consumer that needs it | section 2.2's own freeze | `summary-order` over all three corpora |
+| 11 | 4.1 | **Four fixture-shape corrections.** (a) `gptoss-wide` uses `n_embd = 64`, `head_dim = 8`, `n_ff_exp = 32` and F32 everywhere but the expert weights, because the base extents at 64 experts produce a 10 MB fixture; it still gives 530 blocks and 3,179 claims, and its document is asserted structurally rather than field by field so the manifest does not become the slow part. (b) The derived-`head_dim` rejection fixture uses `n_head = 3, n_head_kv = 1`, because `n_head % n_head_kv != 0` is an earlier row than `n_embd % n_head != 0`. (c) `gptoss-variant-none` drops only `blk.*.ffn_gate_exps.weight`, which is enough to make variant 0 unsatisfiable while variant 1 is absent. (d) `source.bytes_read` for a fixture larger than the 1 MiB window is exactly one window, not the file size; three gpt-oss variants exceed the window | the generator's own assertions, which reproduce section 4.1's arithmetic exactly for the base fixture: 787,136 data bytes, 41 tensors, 22 blocks, 125 claims, `quant.type_counts` ids `[0, 8, 12, 14, 39]` | `gptoss-wide` (`bounded-work`), `gptoss-headdim-indivisible`, `gptoss-variant-none`, `gptoss-ffexp-absent` |
+| 12 | 4.1, 4.2 | **Four positive gpt-oss fixtures were added beyond section 4.1's list, and one qwen fixture's container bytes changed.** Added: `gptoss-optional-absent` (both sliding-window keys absent), `gptoss-router-bias-absent` (the one optional block member, dropped rather than an error), `gptoss-keylength-absent-value` (`key_length` present, `value_length` absent), and `gptoss-headdim-indivisible`. Changed: `qwen2-geometry` must gain a slot for id 39, so its `attn_k` tensors become `Q4_1` and `MXFP4`; id 2 keeps its other slot in `ffn_up`, so no row leaves the sweep. That is the **one** qwen fixture whose container bytes are not byte-identical to R1's, and it is therefore the one excluded from item 13's diff | the generator's `covered == set(GGML_GEOMETRY)` assertion, which fails if a row leaves the sweep | `qwen2-geometry`; the four new gpt-oss cases |
+| 13 | 2.4.2, 3.3 | **`qwen-schema2-diff` is discharged out of tree, not inside the runner.** The runner has no schema-1 expectations to diff against — the manifest it reads is regenerated at schema 2 — so the in-runner half of the cell is the `claim-identity` assertion that every dense claim equals its whole tensor plus the `schema_version == 2` assertion, and the byte-level half is a recorded differential run: the R1 binary at the base commit and the R1B binary were each run over the 48 qwen fixtures whose container bytes are unchanged, and applying only the two allowed edits — `schema_version` 1 -> 2 and the two fields appended after `absolute_offset` — to each R1 document reproduces the R1B document exactly, with no document identical before the edits | 48 of 48 documents reproduced; 0 identical before the edits, so the comparison is not vacuous | `claim-identity` in `model-ir-smoke`; the recorded differential run in the pull request |
+
+### 7.1 Closure cell to shipped case
+
+Section 3 names cells by contract; `scripts/run-model-ir-smoke` and `scripts/gguf_fixture.py` name
+cases by fixture. This is the mapping, in section order, so a reviewer can move from a closure cell
+to the evidence that closes it without searching. It lists **every** cell, including the ones whose
+names already match, so a missing row is a visible gap rather than an implied match.
+
+| Section 3 cell | Shipped evidence |
+| --- | --- |
+| 3.1 Construction | `src/gguf.align` `ggml_block_size` / `ggml_type_size` / `ggml_type_name` each gain exactly one row (item 7) |
+| 3.1 Success — sizing | `qwen2-geometry` (2-axis `[256, 128]`); `gptoss-full` (3-axis `[32, 256, 8]` and `[256, 32, 8]`); the 1-axis case is item 8 |
+| 3.1 Success — naming | `gptoss-full` asserts `type_name: "MXFP4"` on every stacked expert weight |
+| 3.1 Failure — neighbours | `gptoss-unknown-type` (id 40 -> `R1_UNKNOWN_TENSOR_TYPE`, detail `40`) |
+| 3.1 Malformed — row rule | `gptoss-mxfp4-row-unaligned` (`dims[0] = 48`) |
+| 3.1 Provenance | the recorded library oracle of item 6, and the provenance comment in `src/gguf.align` |
+| 3.1 Everything else | `make gguf-smoke`: 62 R0 fixtures, byte-unchanged |
+| 3.2 Construction — plan intake | `make check`; every document in all three corpora |
+| 3.2 Construction — result | `qwen2-wrong-arch`, `gptoss-expert-zero`: every unreached field is its stated sentinel |
+| 3.2 Success — geometry pass | `gptoss-full` renders 3-axis `dims` and `n_elements` for every stacked tensor |
+| 3.2 Success — variant selection | `gptoss-full` (split), `gptoss-variant-fused`, `gptoss-variant-none` |
+| 3.2 Success — whole-tensor claim | `claim-identity` over the whole qwen corpus and every non-expert gpt-oss member |
+| 3.2 Success — slice arithmetic | `gptoss-full`, `gptoss-variant-fused`: every `(layer, expert)` claim compared against the generator's own layout |
+| 3.2 Success — block arithmetic | the runner recomputes `byte_size` / `first` / `end` / `contiguous` over claims for every block of every fixture |
+| 3.2 Success — claim tiling | `expert-tiling`: asserted in Align on every positive gpt-oss fixture and again, independently, in Python |
+| 3.2 Success — coverage | `size-sum-oracle` on every positive fixture in both corpora |
+| 3.2 Success — document | `field-order-qwen` and `field-order-gptoss`: two `MODEL_ORDER` lists selected by `model.arch` |
+| 3.2 Failure — every error code | the two negative corpora; every reachable row of section 2.6 |
+| 3.2 Failure — precedence | `gptoss-precedence-key-shape`, `gptoss-precedence-expert-vocab`, and R1's four precedence cases |
+| 3.2 Failure — overflow class | R1's `qwen2-overflow-*` corpus, re-run through the neutral builder |
+| 3.2 Failure — claim mismatch | **closed by argument** (section 2.6): unreachable once steps 8 and 8b pass. The positive `expert-tiling` assertion is the evidence the arithmetic is right; no fixture is invented for an unreachable branch |
+| 3.2 Malformed — non-UTF-8 name | `qwen2-invalid-name`, re-run |
+| 3.2 Early exit | `gptoss-stacked-axis`, `gptoss-variant-none`, `gptoss-router-shape`: the exact block count completed before the failure |
+| 3.2 Bounded work | `gptoss-wide` (530 blocks, 3,179 claims) and `qwen2-many-tensors` (50,015 tensors), both inside the 3 s budget |
+| 3.2 Branch joins / Move-out | `document-move`: the two CLI forms are byte-identical on every fixture; ownership review |
+| 3.2 Loop joins | `gptoss-expert-zero`, `qwen2-zero-layer` (both `R1_KEY_VALUE_IMPLAUSIBLE`) |
+| 3.2 Borrow discipline | `make check` |
+| 3.2 `N/A` cells | `KVBlock` / `DequantBlock`, generics, shared state, concurrency — unchanged reasons |
+| 3.2 Per-unit vs whole-program | `make check` (`check-per-unit`, 27 units) and `make build` |
+| 3.3 Behavior preservation | item 13's differential run: 48 of 48 qwen documents reproduced from R1's under exactly the two allowed edits |
+| 3.3 Ownership | `src/frontend_qwen.align` contains no byte-size computation, no coverage sweep, and no JSON brace outside its `model` object |
+| 3.3 Steps 4–7, 9 | the entire R1 negative corpus, unchanged |
+| 3.3 Public rename | item 1; `make check` |
+| 3.4 Construction — plan | `gptoss-block-count`: `coverage.block_count == n_layer * (2 + n_expert) + 2` on every positive fixture |
+| 3.4 Success — hyperparameters | `gptoss-model-fields`: the whole `model` object compared against generator-declared values |
+| 3.4 Success — `head_dim` | `gptoss-full` (`metadata`, and the declared 64 disagrees with the derived 32), `gptoss-headdim-derived` (`derived`) |
+| 3.4 Success — optional keys | `gptoss-ffexp-absent`, `gptoss-optional-absent`, `gptoss-router-bias-absent` |
+| 3.4 Success — block plan | `gptoss-block-order` and `gptoss-block-roles`: kind, layer, and expert compared element by element against the emission order, and the `ffn_norm`/`router` placement asserted |
+| 3.4 Success — slice declaration | `expert-slice-bytes` |
+| 3.4 Failure — expert bounds | `gptoss-expert-zero`, `gptoss-expert-used-zero`, `gptoss-expert-used-high`, `gptoss-expert-huge` |
+| 3.4 Failure — block explosion | `gptoss-block-explosion` (512 layers x 1,024 experts) |
+| 3.4 Failure — stacked shape | `gptoss-stacked-axis`, `gptoss-stacked-ndims` |
+| 3.4 Failure — router shape | `gptoss-router-shape` |
+| 3.4 Failure — wrong arch | `gptoss-wrong-arch` (item 2: it reaches the qwen2 frontend and fails on the qwen2 key set) |
+| 3.4 Malformed | the R0 corpus re-run through `--model-ir` |
+| 3.4 Early exit | `gptoss-variant-none` (`blocks_len` 3 of 22) |
+| 3.5 Construction — dispatch | `dispatch-single-read`: `bytes_read` numerically unchanged from R1 on the qwen corpus |
+| 3.5 Success — both architectures | `dispatch-qwen`, `dispatch-gptoss` |
+| 3.5 Failure — unknown architecture | `dispatch-unknown`, `qwen2-wrong-arch`, and the whole R0 positive corpus |
+| 3.5 Byte identity across forms | `form-parity` over all three corpora |
+| 3.5 Summary block | `summary-order`, `summary-control-bytes`, and the `blocks:` line asserted against the document's block count |
+| 3.5 Failure mapping | every negative case asserts a nonzero exit and a complete parseable failure document |
+| 3.6 Target definition | `Makefile` unchanged; `git diff --stat` shows no `Makefile` row |
+| 3.6 Aggregate membership | `make gate-topology-check` |
+| 3.6 Qualification exclusion | `make gate-topology-check` |
+| 3.6 Preflight profile selection | `python3 scripts/pre-pr --plan`, recorded in the pull request |
+| 3.6 Fixture generation | the runner's repository leak sweep |
+| 3.6 Fixture independence | the generator imports nothing from `src/`; its import list is unchanged |
+| 3.6 Generator compatibility | `make gguf-smoke` (62, byte-unchanged); item 12 for the one changed qwen fixture |
+| 3.6 Geometry-table completeness | the generator's `covered == set(GGML_GEOMETRY)` assertion |
+| 3.6 Cleanup | the EXIT trap plus the final temporary-root assertion |
+| 3.6 Parity arch dispatch | `build_rows`'s synthetic row-set unit, run before every comparison |
+| 3.6 Parity skip | the four exact `N/A` lines, unchanged, plus the gpt-oss row set |
+| 3.6 Documentation | this section, and `docs/specs/r1-qwen-model-ir.md` section 7 items 23-28 |

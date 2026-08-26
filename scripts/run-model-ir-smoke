@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# R1-QWEN-MODEL-IR narrow durable owner (`docs/specs/r1-qwen-model-ir.md` section 4.2). It needs no
-# model, no network, and no reference tool: `scripts/gguf_fixture.py` writes an independent synthetic
-# qwen2 corpus into a temporary tree, and every fixture is removed by the EXIT trap. That is why it
-# joins HOSTED_CHECK_TARGETS.
+# R1-QWEN-MODEL-IR / R1B-GPTOSS-MOE-IR narrow durable owner (`docs/specs/r1-qwen-model-ir.md`
+# section 4.2, `docs/specs/r1b-gptoss-moe-ir.md` section 4.2). It needs no model, no network, and no
+# reference tool: `scripts/gguf_fixture.py` writes independent synthetic qwen2 and gpt-oss corpora
+# into a temporary tree, and every fixture is removed by the EXIT trap. That is why it joins
+# HOSTED_CHECK_TARGETS.
 #
-# Besides the R1 corpus it re-runs the entire R0 corpus through `--model-ir`, which is where the
-# container error codes and the truncation sweep are re-proved against the second walk, and it
-# compares both CLI arms over every fixture, which is the `table-inspect-parity` regression that
-# keeps the two walks from drifting.
+# One runner drives three lists. The consumer surface is the same CLI, the fixtures share a
+# generator, and a second `make` target would fragment the aggregate for no failure-domain reason.
+# Besides the two Model IR corpora it re-runs the entire R0 corpus through `--model-ir`, which is
+# where the container error codes and the truncation sweep are re-proved against the second walk,
+# and it compares both CLI arms over every fixture, which is the `table-inspect-parity` regression
+# that keeps the two walks from drifting.
 
 unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
 export PYTHONDONTWRITEBYTECODE=1
@@ -40,6 +43,8 @@ binary, fixture_dir, work_dir = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]
 manifest = json.loads((fixture_dir / "manifest.json").read_text(encoding="utf-8"))
 WINDOW_BYTES = manifest["window_bytes"]
 
+SCHEMA_VERSION = 2
+
 TOP_ORDER = [
     "schema_version", "kind", "path", "status", "error_code", "error_detail",
     "source", "model", "quant", "coverage", "blocks",
@@ -48,10 +53,22 @@ SOURCE_ORDER = [
     "gguf_version", "alignment", "file_size", "data_offset", "tensor_count",
     "metadata_kv_count", "bytes_read",
 ]
-MODEL_ORDER = [
-    "arch", "n_layer", "n_embd", "n_head", "n_head_kv", "head_dim", "n_ff", "n_vocab",
-    "n_expert", "context_length", "rms_eps", "rms_eps_bits", "rope",
-]
+# `model` is the one object whose field set is architecture-determined, and `model.arch` is its
+# discriminator (`docs/specs/r1b-gptoss-moe-ir.md` section 2.4.2). A single union object carrying
+# `null` for every inapplicable field would make every future architecture a schema bump and would
+# report `n_expert_used: null` for a dense model as if the concept applied.
+MODEL_ORDER = {
+    "qwen2": [
+        "arch", "n_layer", "n_embd", "n_head", "n_head_kv", "head_dim", "n_ff", "n_vocab",
+        "n_expert", "context_length", "rms_eps", "rms_eps_bits", "rope",
+    ],
+    "gpt-oss": [
+        "arch", "n_layer", "n_embd", "n_head", "n_head_kv", "head_dim", "head_dim_source",
+        "n_ff", "n_ff_exp", "n_ff_exp_source", "n_vocab", "n_expert", "n_expert_used",
+        "expert_ffn_layout", "context_length", "sliding_window", "sliding_window_pattern",
+        "rms_eps", "rms_eps_bits", "rope",
+    ],
+}
 ROPE_ORDER = [
     "type", "type_name", "type_source", "freq_base", "freq_base_bits",
     "dim_count", "dim_count_source", "scaling_type",
@@ -66,14 +83,18 @@ BLOCK_ORDER = [
     "index", "kind", "layer", "expert", "tensor_count", "byte_size",
     "first_absolute_offset", "end_absolute_offset", "contiguous", "tensors",
 ]
+# Schema 2 appends exactly two fields after `absolute_offset`; the neutral fields keep their
+# positions and only grow.
 BLOCK_TENSOR_ORDER = [
     "name", "role", "type", "type_name", "n_dims", "dims", "n_elements",
     "block_size", "type_bytes", "nbytes", "offset", "absolute_offset",
+    "claimed_absolute_offset", "claimed_nbytes",
 ]
 # `bounded-work`: the tensor-name index makes duplicate detection and the coverage sweep
-# `O(n log n)`. The 50,015-tensor fixture derives in about 0.05 s with it and cost roughly 6.7 s
-# without it — and a 200,000-tensor file cost 87 s — so this budget is ~60x the measured time and
-# still well under the quadratic cost it guards against.
+# `O(n log n)`, and the claim sweep is one sorted pass rather than a scan per tensor. The
+# 50,015-tensor fixture derives in about 0.05 s with it and cost roughly 6.7 s without it — and a
+# 200,000-tensor file cost 87 s — so this budget is ~60x the measured time and still well under the
+# quadratic cost it guards against. The 530-block, 3,179-claim gpt-oss fixture shares it.
 BOUNDED_WORK_SECONDS = 3.0
 
 SUMMARY_LABELS = [
@@ -174,7 +195,9 @@ def table_inspect_parity(name, document, inspected):
     elif document["error_code"] == "R1_GGUF_ERROR":
         fail("table-inspect-parity %s: R1_GGUF_ERROR without a container failure" % name)
     # Every tensor the Block IR claimed must carry exactly the name, offset, type, and dimensions
-    # `--inspect-gguf` decoded at the same index.
+    # `--inspect-gguf` decoded at the same index. `n_dims`, `dims`, and `nbytes` describe the tensor
+    # as the container declares it, never one expert's slice of it, so a per-expert claim must not
+    # be able to reshape what the two tools say about the same file.
     by_name = {}
     for tensor in inspected["tensors"]:
         by_name.setdefault(tensor["name"], tensor)
@@ -190,8 +213,72 @@ def table_inspect_parity(name, document, inspected):
                          % (name, tensor["name"], field, tensor[field], theirs[field]))
 
 
-checked = 0
-for case in manifest["model_ir_cases"]:
+def block_arithmetic(name, document):
+    """`byte_size`, `first_absolute_offset`, `end_absolute_offset`, and `contiguous` are computed
+    over the block's **claims**, not over its tensors' whole byte ranges (section 2.4.2). Recomputed
+    here in Python from the document's own claim fields."""
+    for block in document["blocks"]:
+        tensors = block["tensors"]
+        if block["tensor_count"] != len(tensors):
+            fail("%s: block %d declares %d tensors and carries %d"
+                 % (name, block["index"], block["tensor_count"], len(tensors)))
+        if not tensors:
+            continue
+        byte_size = sum(t["claimed_nbytes"] for t in tensors)
+        first = min(t["claimed_absolute_offset"] for t in tensors)
+        end = max(t["claimed_absolute_offset"] + t["claimed_nbytes"] for t in tensors)
+        if block["byte_size"] != byte_size:
+            fail("%s: block %d byte_size %d, claims sum to %d"
+                 % (name, block["index"], block["byte_size"], byte_size))
+        if block["first_absolute_offset"] != first or block["end_absolute_offset"] != end:
+            fail("%s: block %d span [%d, %d), claims span [%d, %d)"
+                 % (name, block["index"], block["first_absolute_offset"],
+                    block["end_absolute_offset"], first, end))
+        if block["contiguous"] != (end - first == byte_size):
+            fail("%s: block %d contiguous %r" % (name, block["index"], block["contiguous"]))
+
+
+def claim_tiling(name, document):
+    """The section 4.3 claim-tiling oracle, computed independently in Python. For each tensor the
+    block claims either include one whole-tensor claim — the tied-embedding case, where two blocks
+    claim the same whole tensor — or exactly partition `[absolute_offset, absolute_offset + nbytes)`
+    with no gap and no overlap. Coverage alone cannot see this: a tensor can be claimed by every
+    expert while the claims leave a hole, and the size-sum oracle would still hold."""
+    claims = {}
+    for block in document["blocks"]:
+        for tensor in block["tensors"]:
+            row = claims.setdefault(tensor["name"], {
+                "absolute_offset": tensor["absolute_offset"],
+                "nbytes": tensor["nbytes"],
+                "spans": [],
+            })
+            if row["absolute_offset"] != tensor["absolute_offset"] or row["nbytes"] != tensor["nbytes"]:
+                fail("%s: %s is described with two different byte ranges" % (name, tensor["name"]))
+            row["spans"].append((tensor["claimed_absolute_offset"], tensor["claimed_nbytes"]))
+    sliced = 0
+    for tensor_name, row in claims.items():
+        start, size = row["absolute_offset"], row["nbytes"]
+        whole = [s for s in row["spans"] if s == (start, size)]
+        if whole:
+            if len(whole) != len(row["spans"]):
+                fail("%s: %s mixes a whole-tensor claim with a partial one" % (name, tensor_name))
+            continue
+        sliced += 1
+        cursor = start
+        for claimed_start, claimed_size in sorted(row["spans"]):
+            if claimed_start != cursor:
+                fail("%s: %s claims do not tile: %d follows %d"
+                     % (name, tensor_name, claimed_start, cursor))
+            if claimed_size <= 0:
+                fail("%s: %s carries an empty claim" % (name, tensor_name))
+            cursor += claimed_size
+        if cursor != start + size:
+            fail("%s: %s claims end at %d, tensor ends at %d"
+                 % (name, tensor_name, cursor, start + size))
+    return sliced
+
+
+def check_case(case, corpus):
     name = case["name"]
     model = fixture_dir / case["file"]
     destination = work_dir / (name + ".model-ir.json")
@@ -220,7 +307,7 @@ for case in manifest["model_ir_cases"]:
     if stdout_result.returncode != result.returncode:
         fail("%s: the two forms disagree on the exit status" % name)
 
-    if document["schema_version"] != 1 or document["kind"] != "R1_MODEL_IR":
+    if document["schema_version"] != SCHEMA_VERSION or document["kind"] != "R1_MODEL_IR":
         fail("%s: schema_version/kind %r/%r" % (name, document["schema_version"], document["kind"]))
     if document["path"] != str(model):
         fail("%s: path %r was not reported verbatim" % (name, document["path"]))
@@ -280,6 +367,24 @@ for case in manifest["model_ir_cases"]:
             fail("%s: bytes_read %d is not below data_offset + WINDOW_BYTES"
                  % (name, document["source"]["bytes_read"]))
 
+    # `claim-identity` and `expert-tiling`, recomputed from the document rather than trusted.
+    block_arithmetic(name, document)
+    sliced_tensors = claim_tiling(name, document)
+    if corpus == "qwen":
+        for block in document["blocks"]:
+            for tensor in block["tensors"]:
+                if (tensor["claimed_absolute_offset"] != tensor["absolute_offset"]
+                        or tensor["claimed_nbytes"] != tensor["nbytes"]):
+                    fail("%s: a dense block claims a sub-range of %r" % (name, tensor["name"]))
+        if sliced_tensors:
+            fail("%s: a qwen2 document tiled %d tensors" % (name, sliced_tensors))
+    if case.get("expert_tiling") and sliced_tensors == 0:
+        fail("%s: no stacked tensor was tiled by its experts" % name)
+    if "claim_count" in case:
+        claims = sum(len(b["tensors"]) for b in document["blocks"])
+        if claims != case["claim_count"]:
+            fail("%s: %d claims, expected %d" % (name, claims, case["claim_count"]))
+
     # `size-sum-oracle`: on every positive fixture the blocks account for every byte between
     # `data_offset` and the end of the file.
     coverage = document["coverage"]
@@ -292,19 +397,45 @@ for case in manifest["model_ir_cases"]:
         if coverage["assigned_tensor_count"] != coverage["tensor_count"]:
             fail("%s: %d of %d tensors assigned"
                  % (name, coverage["assigned_tensor_count"], coverage["tensor_count"]))
-        if coverage["block_count"] != 2 * document["model"]["n_layer"] + 2:
-            fail("%s: %d blocks for %d layers"
-                 % (name, coverage["block_count"], document["model"]["n_layer"]))
+        model_object = document["model"]
+        n_layer = model_object["n_layer"]
         # `block-order`: the emission order is fixed and is not file order.
-        expected_kinds = ["WeightBlock"]
-        for layer in range(document["model"]["n_layer"]):
-            expected_kinds += ["AttentionBlock", "MlpBlock"]
+        if corpus == "qwen":
+            expected_blocks = 2 * n_layer + 2
+            expected_kinds = ["WeightBlock"]
+            expected_layers = [-1]
+            expected_experts = [-1]
+            for layer in range(n_layer):
+                expected_kinds += ["AttentionBlock", "MlpBlock"]
+                expected_layers += [layer, layer]
+                expected_experts += [-1, -1]
+        else:
+            n_expert = model_object["n_expert"]
+            expected_blocks = n_layer * (2 + n_expert) + 2
+            expected_kinds = ["WeightBlock"]
+            expected_layers = [-1]
+            expected_experts = [-1]
+            for layer in range(n_layer):
+                expected_kinds += ["AttentionBlock", "RouterBlock"]
+                expected_layers += [layer, layer]
+                expected_experts += [-1, -1]
+                expected_kinds += ["ExpertBlock"] * n_expert
+                expected_layers += [layer] * n_expert
+                expected_experts += list(range(n_expert))
         expected_kinds.append("WeightBlock")
+        expected_layers.append(-1)
+        expected_experts.append(-1)
+        if coverage["block_count"] != expected_blocks:
+            fail("%s: %d blocks for %d layers" % (name, coverage["block_count"], n_layer))
         if [b["kind"] for b in document["blocks"]] != expected_kinds:
-            fail("%s: block kinds %r" % (name, [b["kind"] for b in document["blocks"]]))
+            fail("%s: block kinds %r" % (name, [b["kind"] for b in document["blocks"]][:8]))
+        if [b["layer"] for b in document["blocks"]] != expected_layers:
+            fail("%s: block layers are not the emission order" % name)
+        if [b["expert"] for b in document["blocks"]] != expected_experts:
+            fail("%s: block experts are not the emission order" % name)
         if [b["index"] for b in document["blocks"]] != list(range(len(document["blocks"]))):
             fail("%s: block indexes are not the emission order" % name)
-        if any(b["expert"] != -1 for b in document["blocks"]):
+        if corpus == "qwen" and any(b["expert"] != -1 for b in document["blocks"]):
             fail("%s: R1 emits no expert block" % name)
         # `quant-summary`: rows ascend by id and their bytes sum to the total.
         rows = document["quant"]["type_counts"]
@@ -314,6 +445,22 @@ for case in manifest["model_ir_cases"]:
             fail("%s: quant rows do not sum to total_tensor_bytes" % name)
         if sum(r["tensor_count"] for r in rows) != coverage["tensor_count"]:
             fail("%s: quant rows do not account for every tensor" % name)
+        # `gptoss-block-roles`: the `RouterBlock` owns `ffn_norm` and the router, and no
+        # `ExpertBlock` carries either — attaching `ffn_norm` to one expert would be a lie about
+        # when it is needed and duplicating it into all of them would break claim tiling.
+        if corpus == "gptoss":
+            for block in document["blocks"]:
+                roles = [t["role"] for t in block["tensors"]]
+                if block["kind"] == "RouterBlock":
+                    if roles[:2] != ["ffn_norm", "router"]:
+                        fail("%s: router block roles %r" % (name, roles))
+                if block["kind"] == "ExpertBlock":
+                    if "ffn_norm" in roles or "router" in roles:
+                        fail("%s: an expert block carries %r" % (name, roles))
+                    if not roles[0].startswith("ffn_"):
+                        fail("%s: expert block roles %r" % (name, roles))
+                if block["kind"] == "AttentionBlock" and "attn_sinks" not in roles:
+                    fail("%s: attention block roles %r" % (name, roles))
 
     if case.get("tied"):
         claimed = [t["name"] for b in document["blocks"] for t in b["tensors"]]
@@ -334,7 +481,8 @@ for case in manifest["model_ir_cases"]:
             fail("%s: top-level field order %r" % (name, list(document.keys())))
         if list(document["source"].keys()) != SOURCE_ORDER:
             fail("%s: source field order %r" % (name, list(document["source"].keys())))
-        if list(document["model"].keys()) != MODEL_ORDER:
+        want_model = MODEL_ORDER[document["model"]["arch"]]
+        if list(document["model"].keys()) != want_model:
             fail("%s: model field order %r" % (name, list(document["model"].keys())))
         if list(document["model"]["rope"].keys()) != ROPE_ORDER:
             fail("%s: rope field order %r" % (name, list(document["model"]["rope"].keys())))
@@ -360,6 +508,10 @@ for case in manifest["model_ir_cases"]:
             fail("%s: summary line %d %r, expected %r" % (name, position, summary[position], label))
     if "summary_arch" in case and summary[4] != case["summary_arch"]:
         fail("%s: summary arch %r, expected %r" % (name, summary[4], case["summary_arch"]))
+    # `blocks:` reports the assembled count, which is the number it was always defined to print.
+    if summary[24] != str(len(document["blocks"])):
+        fail("%s: summary blocks %r, document has %d"
+             % (name, summary[24], len(document["blocks"])))
     if summary[28] not in ("OK", "MISMATCH"):
         fail("%s: summary size sum %r" % (name, summary[28]))
     if "error" in case:
@@ -381,14 +533,39 @@ for case in manifest["model_ir_cases"]:
         got = [t["dims"] for t in inspected["tensors"]]
         if got != case["inspect_dims"]:
             fail("%s: dimension columns %r, expected %r" % (name, got, case["inspect_dims"]))
-    checked += 1
 
+
+checked = 0
+for case in manifest["model_ir_cases"]:
+    check_case(case, "qwen")
+    checked += 1
 if checked != len(manifest["model_ir_cases"]):
     fail("only %d of %d R1 cases ran" % (checked, len(manifest["model_ir_cases"])))
 
+gptoss_checked = 0
+for case in manifest["model_ir_gptoss_cases"]:
+    check_case(case, "gptoss")
+    gptoss_checked += 1
+if gptoss_checked != len(manifest["model_ir_gptoss_cases"]):
+    fail("only %d of %d R1B cases ran"
+         % (gptoss_checked, len(manifest["model_ir_gptoss_cases"])))
+
+# `dispatch-gptoss` / `dispatch-qwen`: the architecture selects the frontend, and neither is usable
+# on the other's file. A MoE qwen file is still `R1_UNSUPPORTED_MOE`, which is the regression that
+# keeps the two frontends from bleeding into each other.
+moe = json.loads((work_dir / "qwen2-moe.model-ir.json").read_text(encoding="utf-8"))
+if moe["error_code"] != "R1_UNSUPPORTED_MOE":
+    fail("dispatch-qwen: a MoE qwen2 file gave %r" % moe["error_code"])
+gptoss_full = json.loads((work_dir / "gptoss-full.model-ir.json").read_text(encoding="utf-8"))
+if gptoss_full["model"]["arch"] != "gpt-oss" or gptoss_full["model"]["n_expert"] <= 0:
+    fail("dispatch-gptoss: the gpt-oss frontend was not selected")
+wrong = json.loads((work_dir / "gptoss-wrong-arch.model-ir.json").read_text(encoding="utf-8"))
+if wrong["model"]["arch"] != "qwen2":
+    fail("dispatch-unknown: a qwen2-labelled file did not reach the qwen2 frontend")
+
 # The entire R0 corpus through `--model-ir`. Every container error code and the whole truncation
 # sweep are re-proved against the second walk, and the R0 positives all reach a non-container R1
-# rejection because none of them declares `general.architecture: "qwen2"`.
+# rejection because none of them declares a supported `general.architecture`.
 r0_checked = 0
 for case in manifest["cases"]:
     name = "r0-" + case["name"]
@@ -396,20 +573,24 @@ for case in manifest["cases"]:
     destination = work_dir / (name + ".model-ir.json")
     result = run(["--model-ir", str(model), str(destination)])
     if result.returncode == 0:
-        fail("%s: no R0 fixture declares the qwen2 architecture" % name)
+        fail("%s: no R0 fixture declares a supported architecture" % name)
     if result.returncode < 0 or result.returncode > 125:
         fail("%s: exit %d looks like an abort, not a recorded failure" % (name, result.returncode))
     if not destination.exists():
         fail("%s: no document was written" % name)
     document = json.loads(destination.read_text(encoding="utf-8"))
+    if document["schema_version"] != SCHEMA_VERSION:
+        fail("%s: schema_version %r" % (name, document["schema_version"]))
     inspected = inspect_document(name, model, work_dir / (name + ".inspect.json"))
     table_inspect_parity(name, document, inspected)
     if inspected["status"] == "ok" and document["error_code"] != "R1_UNSUPPORTED_ARCH":
-        fail("%s: a well-formed non-qwen2 container gave %r" % (name, document["error_code"]))
+        fail("%s: a well-formed unsupported-arch container gave %r" % (name, document["error_code"]))
     r0_checked += 1
 
 full_model = fixture_dir / "qwen2-full.gguf"
 full_document = (work_dir / "qwen2-full.model-ir.json").read_bytes()
+gptoss_model = fixture_dir / "gptoss-full.gguf"
+gptoss_document = (work_dir / "gptoss-full.model-ir.json").read_bytes()
 
 # Option/environment isolation: no environment variable changes any document byte.
 perturbed = dict(os.environ)
@@ -417,16 +598,23 @@ perturbed.update({
     "LC_ALL": "tr_TR.UTF-8", "LANG": "tr_TR.UTF-8", "TZ": "Pacific/Kiritimati",
     "SOURCE_DATE_EPOCH": "1", "HOME": str(work_dir),
     "ALIGN_LLM_GGUF_MODEL": "/nonexistent", "ALIGN_LLM_MODEL_IR_ROPE_TYPE": "9",
+    "ALIGN_LLM_MODEL_IR_ARCH": "gpt-oss", "ALIGN_LLM_MODEL_IR_EXPERTS": "4",
 })
-env_result = run(["--model-ir", str(full_model)], env=perturbed)
-if env_result.returncode != 0 or env_result.stdout != full_document + b"\n":
-    fail("env-perturbation: a perturbed environment changed the document")
+for label, target, expected in (("qwen", full_model, full_document),
+                                ("gptoss", gptoss_model, gptoss_document)):
+    env_result = run(["--model-ir", str(target)], env=perturbed)
+    if env_result.returncode != 0 or env_result.stdout != expected + b"\n":
+        fail("env-perturbation (%s): a perturbed environment changed the document" % label)
 
 # Determinism across repeated derivations: no drift, no resource growth.
 for _ in range(64):
     repeat = run(["--model-ir", str(full_model)])
     if repeat.returncode != 0 or repeat.stdout != full_document + b"\n":
         fail("repeat-model-ir: a repeated derivation diverged")
+for _ in range(16):
+    repeat = run(["--model-ir", str(gptoss_model)])
+    if repeat.returncode != 0 or repeat.stdout != gptoss_document + b"\n":
+        fail("repeat-model-ir (gptoss): a repeated derivation diverged")
 
 # Arity. `--model-ir` is selected only at args[1], and arity is checked before any file work.
 no_args = run([])
@@ -489,13 +677,15 @@ if replaced["error_code"] != "R1_UNSUPPORTED_ARCH":
 if b"qwen model ir:" not in structural.stdout or b"R1_UNSUPPORTED_ARCH" not in structural.stdout:
     fail("error-corpus: the summary block does not report the error code")
 
-print("model ir smoke: %d qwen fixtures, %d R0 fixtures re-run" % (checked, r0_checked))
+print("model ir smoke: %d qwen fixtures, %d gpt-oss fixtures, %d R0 fixtures re-run"
+      % (checked, gptoss_checked, r0_checked))
 PY
 
 # A bounded descriptor budget: one derivation opens one model descriptor and nothing else.
 (
   ulimit -n 64
   "$root_dir/main" --model-ir "$fixture_dir/qwen2-full.gguf" >/dev/null
+  "$root_dir/main" --model-ir "$fixture_dir/gptoss-full.gguf" >/dev/null
 )
 
 # The generator writes every fixture into the temporary tree and nothing into the repository.
@@ -511,4 +701,4 @@ if [ ! -d "$temp_dir" ]; then
   exit 1
 fi
 
-printf '%s\n' "qwen model ir smoke: hyperparameters, block IR, geometry table, quantization summary, the size-sum oracle, the malformed corpus, table/inspect parity, and CLI arity/isolation PASS"
+printf '%s\n' "model ir smoke: hyperparameters, block IR, architecture dispatch, per-expert claims, the MXFP4 geometry row, the quantization summary, the size-sum and claim-tiling oracles, the malformed corpora, table/inspect parity, and CLI arity/isolation PASS"
