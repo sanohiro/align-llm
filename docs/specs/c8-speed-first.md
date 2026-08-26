@@ -1,6 +1,6 @@
 # C8 Speed-first optimization
 
-Status: first two consumer-complete capabilities merged; third capability baselined.
+Status: first two consumer-complete capabilities merged; third capability implemented and measured.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -222,6 +222,43 @@ full-test median:            14,985,312 ns
 
 The stage medians are diagnostic decomposition. Only a lower paired total median with identical
 normalized result documents can close the third capability.
+
+The exact-commit comparison used:
+
+```text
+git worktree add --detach /tmp/align-llm-c8-path-parent a51aa065a2f83f4e88d7734068c6b2598b4bd3a8
+git worktree add --detach /tmp/align-llm-c8-path-candidate ab23de1c4fc3bef454b51a4e5c7db8f019a81a72
+make -C /tmp/align-llm-c8-path-parent build
+make -C /tmp/align-llm-c8-path-candidate build
+install -m 0755 /tmp/align-llm-c8-path-parent/main /tmp/align-llm-c8-path-parent.bin
+install -m 0755 /tmp/align-llm-c8-path-candidate/main /tmp/align-llm-c8-path-candidate.bin
+git cat-file blob 980aed5351e1d06acd212ff851104a542eb7ee9e > /tmp/align-llm-c8-path-benchmark
+chmod 0755 /tmp/align-llm-c8-path-benchmark
+sha256sum /tmp/align-llm-c8-path-parent.bin /tmp/align-llm-c8-path-candidate.bin
+/tmp/align-llm-c8-path-benchmark compare \
+  /tmp/align-llm-c8-path-parent.bin /tmp/align-llm-c8-path-candidate.bin 201
+```
+
+```text
+parent:     a51aa065a2f83f4e88d7734068c6b2598b4bd3a8
+candidate:  ab23de1c4fc3bef454b51a4e5c7db8f019a81a72
+benchmark runner Git blob: 980aed5351e1d06acd212ff851104a542eb7ee9e
+benchmark runner SHA-256: 08d2e17ee669bf3095359753a12055530d90d6fde7162d1123bf0694f90e3de5
+parent binary SHA-256:    04202b4945c757c2f06f409502ec9c6bb0ad60b685b7846656eab233578cdc17
+candidate binary SHA-256: f9407714e8dff911d7a73e682c2766bd8d4f1115c2ff75433fbaff15c0eabc7c
+command:    /tmp/align-llm-c8-path-benchmark compare /tmp/align-llm-c8-path-parent.bin /tmp/align-llm-c8-path-candidate.bin 201
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    201 parent and 201 candidate measurements after two discarded warmup pairs
+parent median:    49,577,277 ns
+candidate median: 49,481,041 ns
+improvement:      1,941 ppm (0.19%)
+```
+
+All normalized result documents agreed. Two preceding 101-pair comparisons also improved in the
+same direction by 4,313 ppm and 2,717 ppm. The accepted 201-pair result is deliberately reported as
+a small path-local improvement; it is not a claim about repositories with fewer test candidates or
+about provider/model time.
 
 ## 6. Deferred C8 surfaces
 

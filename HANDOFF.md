@@ -10,9 +10,11 @@ file records durable project state.
   x86_64 and aarch64 jobs completed in 7s and 4s without running native qualification.
 - Active work is on `agent/c8-hoist-changed-path-signals`. The third capability is
   `C8-TEST-SELECTION-CHANGED-PATH-ONCE`: derive the unchanged changed path's stem and directory once
-  before the 4,000-candidate loop instead of once per candidate. The exact parent baseline is
-  49,875,826 ns across 31 samples. Implement only this boundary, compare exact binaries, then run
-  the review/publication sequence before selecting another C8 capability.
+  before the 4,000-candidate loop instead of once per candidate. Implementation
+  `ab23de1c4fc3bef454b51a4e5c7db8f019a81a72` preserves the selection output and removes four lines
+  net. The exact 201-pair comparison measured 49,577,277 ns for the parent and 49,481,041 ns for the
+  candidate, a 1,941 ppm (0.19%) reduction; two 101-pair comparisons independently improved in the
+  same direction. Run the review/publication sequence before selecting another C8 capability.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -45,9 +47,9 @@ file records durable project state.
 ## Resume in another environment
 
 1. Fetch `origin` and resume `agent/c8-hoist-changed-path-signals` at its latest commit. Read
-   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Preserve the
-   recorded baseline and implement only `C8-TEST-SELECTION-CHANGED-PATH-ONCE` before comparing
-   binaries.
+   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Complete the
+   review, exact-head preflight, publication, and merge sequence before selecting another C8
+   capability.
 2. After the third C8 pull request merges, refresh `main` and select the next smallest
    consumer-complete optimization that improves a real fixed coding task end to end. Establish its
    reproducible current median for time to a passing patch before making an optimization claim;
