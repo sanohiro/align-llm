@@ -15,7 +15,12 @@ file records durable project state.
   preserving the remaining validation sequence, diagnostics, and timeout. The exact
   pre-implementation 31-sample baseline at merge
   `269aeec8eb3a31ba5e68ee2ebc72583e71df6477` is 47,600,824 ns; the binary SHA-256 is
-  `f77b3f102ada7d1ce405524cc8f1535dd6514dc501a07084f88f865a2a2b6f20`.
+  `f77b3f102ada7d1ce405524cc8f1535dd6514dc501a07084f88f865a2a2b6f20`. Implementation
+  `6a08dd788ffc7f80900a0dc3d5f49bd269367567` passes its verification-loop owner, including the
+  multi-file atomic-rejection control and exact candidate/repair stage orders. The exact 101-pair
+  comparison measured 47,913,941 ns for the parent and 46,822,706 ns for the candidate, a 22,774 ppm
+  (2.28%) reduction. Normalized results differed only by the intentionally removed successful
+  `candidate-apply-check` record; all four candidate stages passed with matching exit codes.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -48,11 +53,11 @@ file records durable project state.
 ## Resume in another environment
 
 1. Fetch `origin` and resume `agent/c8-atomic-patch-apply` at its latest commit. Read `CLAUDE.md`,
-   then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. The baseline and capability
-   ledger are complete; implementation is the first unfinished action.
-2. Collapse candidate and repair application to one atomic Git invocation, update exact stage owners,
-   add the multi-file rejection control and benchmark comparison mode, then close owner verification
-   and the paired benchmark before review/preflight.
+   then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. The ledger, implementation,
+   owner verification, and exact performance comparison are complete; comprehensive review is the
+   first unfinished action.
+2. Commit the measurement record, run one stable-head comprehensive review, resolve its complete
+   finding set coherently, then run exact-head preflight and publish the English PR.
 3. After merge, refresh `main` and choose the next smallest consumer-complete C8 optimization from
    a new measured time-to-passing-patch baseline.
 4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a

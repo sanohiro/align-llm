@@ -1,6 +1,6 @@
 # C8 Speed-first optimization
 
-Status: first six consumer-complete capabilities merged; seventh capability baselined.
+Status: first six consumer-complete capabilities merged; seventh capability implemented and measured.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -182,9 +182,10 @@ The optimization replaces each check/apply pair with that one atomic command.
 | Acceptance | On the fixed coding task, result documents agree after removing only the parent's successful `candidate-apply-check` record and normalizing durations; the candidate has the exact four-stage order, every retained stage passes with matching exit codes, and candidate median time to a passing patch is lower |
 | Platform scope | Platform-independent Git command orchestration and document construction; no target-local implementation or platform-specific speed claim |
 
-The authoritative Git contract is the `git apply` documentation: without `--reject`, an
-applicability failure is atomic, and `--apply` after `--check` performs the application. The single
-invocation also removes the check-to-apply process gap rather than caching an earlier verdict.
+The authoritative contract is the [Git apply documentation](https://git-scm.com/docs/git-apply):
+without `--reject`, an applicability failure is atomic, and `--apply` after `--check` performs the
+application. The single invocation also removes the check-to-apply process gap rather than caching
+an earlier verdict.
 
 ## 3. Fixed passing-patch benchmark
 
@@ -569,6 +570,40 @@ full-test median:            14,994,964 ns
 
 The stage medians are diagnostic decomposition. The comparison owner must validate the intentional
 removal of the successful check record rather than requiring byte-identical result documents.
+
+The exact-commit comparison used:
+
+```text
+make build
+install -m 0755 ./main /tmp/align-llm-c8-direct.hu4kUN/candidate-6a08dd7.bin
+sha256sum /tmp/align-llm-c8-direct.hu4kUN/parent-269aeec.bin \
+  /tmp/align-llm-c8-direct.hu4kUN/candidate-6a08dd7.bin
+scripts/run-c8-selection-signal-benchmark compare-atomic-apply \
+  /tmp/align-llm-c8-direct.hu4kUN/parent-269aeec.bin \
+  /tmp/align-llm-c8-direct.hu4kUN/candidate-6a08dd7.bin 101
+```
+
+```text
+parent:     269aeec8eb3a31ba5e68ee2ebc72583e71df6477
+candidate:  6a08dd788ffc7f80900a0dc3d5f49bd269367567
+benchmark runner Git blob: 6312f93270d141f0119a203e0d9e162a82771b28
+benchmark runner SHA-256: 8ddc6ea37ff478f20ae9e34be7f4955b6709850ea59f5b6fcc0606d5050fc6a7
+parent binary SHA-256:    f77b3f102ada7d1ce405524cc8f1535dd6514dc501a07084f88f865a2a2b6f20
+candidate binary SHA-256: 7e00353a3110c16fd802bb935a9d4bf1be784540f23567cdf4704aee728896f3
+command:    scripts/run-c8-selection-signal-benchmark compare-atomic-apply /tmp/align-llm-c8-direct.hu4kUN/parent-269aeec.bin /tmp/align-llm-c8-direct.hu4kUN/candidate-6a08dd7.bin 101
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    101 parent and 101 candidate measurements after two discarded warmup pairs
+parent median:    47,913,941 ns
+candidate median: 46,822,706 ns
+improvement:      22,774 ppm (2.28%)
+```
+
+After duration normalization, the candidate result equaled the parent result with only the
+successful `candidate-apply-check` record removed. The candidate emitted the exact four-stage
+vector; every stage passed with matching actual and expected codes. A preceding 31-pair comparison
+improved by 26,289 ppm in the same direction. This is a path-local process-elimination claim, not a
+platform or provider/model-time claim.
 
 ## 10. Deferred C8 surfaces
 
