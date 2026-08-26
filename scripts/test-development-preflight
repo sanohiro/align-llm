@@ -63,8 +63,21 @@ def test_classifier() -> None:
     require(deleted_docs.scope == "hosted" and deleted_docs.hosted, "deletion became light")
     hosted = classify(("M", "scripts/run-provider-smoke"))
     require(hosted.scope == "hosted" and not hosted.fresh_installed, "hosted scope changed")
+    pin = classify(("M", ".align-revision"))
+    require(
+        pin.scope == "pin"
+        and pin.hosted
+        and not pin.fresh_focused
+        and not pin.fresh_installed,
+        "pin-only adoption selected a platform profile",
+    )
+    pin_with_docs = classify(("M", ".align-revision"), ("M", "docs/align-requests.md"))
+    require(pin_with_docs.scope == "pin", "pin adoption documentation widened verification")
+    require(
+        classify(("D", ".align-revision")).scope == "fresh-image",
+        "deleted pin did not fail closed",
+    )
     for path in (
-        ".align-revision",
         "Makefile",
         ".github/workflows/ci.yml",
         "src/main.align",
@@ -737,6 +750,18 @@ def test_plan() -> None:
         and managed[2].arguments == (str(REPOSITORY / "scripts" / "align-toolchain"), "verify")
         and managed[3].arguments == ("make", "hosted-checks", f"ALIGNC={align / 'target/release/alignc'}"),
         "managed preflight order, admission, or verification changed",
+    )
+    managed_pin = preflight.build_plan(
+        classify(("M", ".align-revision")),
+        owner_label="request-owner",
+        owner_command=("make", "request-owner"),
+        align_repository=align,
+        explicit_align_repository=False,
+    )
+    require(
+        [step.label for step in managed_pin]
+        == ["request-owner", "managed-align-ensure", "pinned-align-build"],
+        "pin-only preflight duplicated the hosted integration graph",
     )
 
 

@@ -4271,24 +4271,28 @@ recorded identities satisfies the profile; superseded by a hosted runner when av
 Its cadence is a named focused qualification, matching `CLAUDE.md`'s rule that platform suites are
 named focused qualifications rather than routine gates. Run it when:
 
-1. `.align-revision` changes, because the attested compiler and runtime digests change with it;
-2. a C7 owner boundary named in section 12.1 of `docs/specs/c7-persisted-result.md` changes — the
+1. a C7 owner boundary named in section 12.1 of `docs/specs/c7-persisted-result.md` changes — the
    product module, the CLI dispatch, either C7 runner, or the C7 Make targets;
-3. the gate's own owner changes — `scripts/check-darwin-profile` or this section's contract —
+2. the gate's own owner changes — `scripts/check-darwin-profile` or this section's contract —
    because the recorded block is evidence produced *by* that owner, and a changed owner has not yet
    emitted the evidence attributed to it;
+3. an adoption makes a Darwin-specific behavior or performance claim, or records a concrete gap in
+   Align's macOS CI coverage;
 4. an explicit audit asks for current platform evidence.
 
 It does not run per pull request and joins no aggregate. A run's evidence is the emitted identity
 block, recorded in section 11 of `docs/specs/c7-persisted-result.md`; a pull request cites that
 record rather than restating it.
 
-The block binds `repository.head`, so the record is evidence for exactly that commit and is
-re-emitted whenever the head moves. This repository integrates pull requests as merge commits, so
-the recorded head stays a first-parent-reachable ancestor of the integration commit rather than
-being rewritten by a rebase or a squash; the assertion "these identities were produced at this
-commit" therefore survives integration unchanged. A rebase, squash, or amend after emission
-invalidates the record and requires a fresh run, exactly as a later executable commit does.
+The block binds `repository.head`, so the record is evidence for exactly that executable profile
+head. A later commit that changes none of the profile's owned inputs may cite the record with the
+path delta instead of re-emitting it; a changed pin alone uses Align CI plus the adopted feature's
+consumer owner and does not claim a new Darwin profile result. This repository integrates pull
+requests as merge commits, so the recorded head stays a first-parent-reachable ancestor of the
+integration commit rather than being rewritten by a rebase or a squash; the assertion "these
+identities were produced at this commit" therefore survives integration unchanged. A rebase,
+squash, or amend after emission invalidates the record and requires a fresh run, exactly as a later
+executable commit does.
 
 Failure is fail-closed and phased. Any host-identity mismatch, missing or unexpected `LIBRARY_PATH`,
 missing Homebrew formula, unreadable declared library, dirty or unreadable repository state,

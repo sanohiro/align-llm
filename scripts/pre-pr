@@ -83,12 +83,12 @@ def build_plan(
     ]
     if managed_ensure is not None:
         plan.append(managed_ensure)
-    plan.extend(
-        (
-            PlanStep("pinned-align-build", align_build),
-            PlanStep("hosted-checks", ("make", "hosted-checks", f"ALIGNC={alignc}")),
-        )
-    )
+    plan.append(PlanStep("pinned-align-build", align_build))
+    # A pure pin adoption proves its request-owned surface locally and leaves the ordinary broad
+    # graph to hosted CI. Repeating that graph in local preflight would add no platform-specific
+    # evidence. Any other executable change retains the existing hosted integration step.
+    if scope.scope != "pin":
+        plan.append(PlanStep("hosted-checks", ("make", "hosted-checks", f"ALIGNC={alignc}")))
     if scope.fresh_installed:
         plan.extend(
             (

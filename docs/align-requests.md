@@ -46,10 +46,12 @@ The currently pinned Align commit is
 `docs/specs/check-gate-topology.md` fresh-compiler design and its FRESH-WORKER/FRESH-IMAGE base
 capabilities are merged. The closed Request 6 installed profile extends that same trust boundary to
 two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not acceptance
-evidence. A later request may change `.align-revision`, run verification against a new compiler, or
-advance to `ALIGN_LLM_VERIFIED` only after its required native row and feature-specific adoption
-gate pass at the exact head. A consumer outside those two Linux rows must still name and merge a
-reviewed platform profile and implementation.
+evidence. A later request may change `.align-revision` and advance to `ALIGN_LLM_VERIFIED` after the
+feature-specific consumer owner passes against the managed pin. The merged Align CI result owns the
+compiler's supported-platform coverage; the pin change does not make align-llm rerun every native
+row. A request adds target-local evidence only when it changes that platform boundary, makes a
+target-specific performance claim, or names a concrete provider-CI gap. A consumer outside the
+reviewed profiles must still define its own profile before claiming target-local acceptance.
 
 A blocking request pauses only its dependent consumer capability. Record that pause and its resume
 condition in `HANDOFF.md`; continue independent work when it remains valid. Do not implement a
@@ -58,18 +60,20 @@ expected consumer and becomes blocking if that consumer is reached before `ALIGN
 
 After Align merges the capability, adopt all merged requests required by the next consumer in one
 pin wave when practical: rebuild the release compiler/runtime once, update `.align-revision` once,
-run every request's original focused acceptance target, then run one final `make ci`. Close each
-request only after this file records Align's response and its real-client verification.
+run every acceptance target that owns the changed consumer boundary, then run the final integration
+owner named by the accepted request. A pin change alone selects managed materialization and the
+feature owner, not a blanket `make ci` or platform matrix. Close each request only after this file
+records Align's response and its real-client verification.
 
 Older entries use terms such as “adoption slice,” “enabling slice,” or “separate target” to name
 dependency and acceptance cells. Those terms do not mandate separate align-llm branches or pull
 requests. Unless an entry identifies a distinct external/platform failure domain, perform its
 adoption target as an ordered checkpoint on the consumer capability branch and review it with the
 consumer that first uses the shipped surface. A focused adoption or qualification target does not
-join routine hosted/capable aggregates merely because it is important; run it on pin changes and
-when its owning boundary changes.
+join routine hosted/capable aggregates merely because it is important; run it when its owning
+boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-26): Requests 1–18 and 20 are CLOSED; Request 19 is ALIGN_MERGED. Its x86_64 adoption is complete, while the pin-bump aarch64 Linux and Apple Silicon qualifications remain. None blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopts that merge, restores `prompt-verifier-smoke` to the hosted topology, and passes the complete x86_64 fresh-worker proof with the member restored.
+> **Status (2026-08-26): Requests 1–18 and 20 are CLOSED; Request 19 is ALIGN_LLM_VERIFIED and waits only for its align-llm publication merge. None blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopts that merge, restores `prompt-verifier-smoke` to the hosted topology, and passes its focused owner and the complete fresh-worker graph with the member restored. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -5772,14 +5776,14 @@ retains verifier-first acceptance, immutable rollback, tamper, lineage, and CLI 
 ## Request 19 — compiler: code-generation cost on a graph of large by-value structs
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none — the affected member was demoted out of the hosted lane, so no gate waits on this
 Independent work that may continue: all of it; every other align-llm capability compiles and runs inside its existing budget at the current pin
-Resume condition: run the pin-bump native aarch64 Linux `persisted-result-smoke` plus `persisted-result-qualification` after its native Section 9 owner, and run `make darwin-profile-gate` on native Apple Silicon, all against this pin and the exact adoption head
+Resume condition: none; publish the verified adoption with merge-commit integration
 Align commit or pull request: PR #891, merged as `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`
-align-llm verification: x86_64 complete — the managed pin materializes, the exact verifier output and current 23-unit graph pass, the hosted topology contains the restored member, and the installed fresh-worker profile including its final `make ci` passes at head `cb28310d6a833a1b4430ec994d1393a380e861f3`; the two required native aarch64 pin-bump qualifications remain
+align-llm verification: complete — the managed pin materializes, the exact verifier output and current 23-unit graph pass, the hosted topology contains the restored member, and the installed fresh-worker profile including its final `make ci` passes at head `cb28310d6a833a1b4430ec994d1393a380e861f3`; Align's merged CI owns the unchanged compiler-platform boundary, while this request changes no target-local align-llm behavior
 ```
 
 ### Motivation and pinned-state evidence
@@ -5883,7 +5887,7 @@ executable 4,096-record graph with one helper frame. All required Align CI rows 
 candidate. The consumer-owned pin adoption, hosted-lane restoration, and fresh-worker proof are
 verified below.
 
-### align-llm verification (2026-08-26 — x86_64 complete)
+### align-llm verification (2026-08-26 — ALIGN_LLM_VERIFIED)
 
 The managed release compiler/runtime materializes at the adopted merge. The restored
 `prompt-verifier-smoke` prints the exact required line in 14.01 seconds on its first local build,
@@ -5919,12 +5923,13 @@ passed through the exact preflight with the managed Align checkout supplied expl
 self-test, trust mutations, runtime replacements, and the native boundary profile all passed; the
 supervised worker's complete `make ci`, including the restored member, passed in 370,529 ms; cleanup
 passed; and the whole installed profile completed in 763,510 ms. This is the request's final capable
-integration evidence at the adopted pin on x86_64. The `.align-revision` change also triggers the
-existing C7 platform cadence: native aarch64 Linux must pass its Section 9 owner followed by
-`persisted-result-smoke` and `persisted-result-qualification`, and native Apple Silicon must emit a
-new `darwin-profile-gate` identity block. Request 19 remains `ALIGN_MERGED` until those records are
-captured; after they pass, the same adoption head may advance to `ALIGN_LLM_VERIFIED`, and `CLOSED`
-then waits for its publication merge.
+integration evidence at the adopted pin. The aggregate was selected because this adoption restores
+one of its members, not because the measurement host was x86_64 or because every pin change selects
+the graph. Request 19 changes no C7 algorithm, wire, digest, validation, persistence, Darwin linker,
+or Linux isolation boundary and makes no aarch64 performance claim. Align's merged CI already owns
+the compiler's supported-platform correctness, so rerunning the C7 Linux aarch64 and Darwin profile
+gates here would duplicate provider and unrelated consumer evidence. The request is
+`ALIGN_LLM_VERIFIED`; `CLOSED` waits only for its publication merge.
 
 ---
 

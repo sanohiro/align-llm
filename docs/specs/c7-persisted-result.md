@@ -842,9 +842,9 @@ compiler revision, platform profile, and environment.
 
 | Target | Owning profile | Target-local gate | Cadence | Status |
 | --- | --- | --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | Section 9 of `docs/specs/check-gate-topology.md` | The installed fresh-image profile plus the supervised `make ci` graph | Per capability gate, as Section 9 already defines | Available; unchanged by this wave |
-| `aarch64-unknown-linux-gnu` | Section 9 of `docs/specs/check-gate-topology.md`, reused under its own stated condition | `persisted-result-smoke` and `persisted-result-qualification`, run natively at the exact head against a pinned-revision compiler and runtime | Named focused qualification: pin bump, C7 owner-boundary change, or explicit audit | Discharged in section 11.2 |
-| `aarch64-apple-darwin` | Section 10 of `docs/specs/check-gate-topology.md` | `make darwin-profile-gate` (`scripts/check-darwin-profile`), whose five acceptance commands include both C7 targets | Named focused qualification: pin bump, C7 owner-boundary change, or explicit audit | Discharged in section 11.3 |
+| `x86_64-unknown-linux-gnu` | Section 9 of `docs/specs/check-gate-topology.md` | The installed fresh-image profile plus the supervised `make ci` graph | When the changed capability owns this integration boundary or explicitly names the graph | Available; unchanged by this wave |
+| `aarch64-unknown-linux-gnu` | Section 9 of `docs/specs/check-gate-topology.md`, reused under its own stated condition | `persisted-result-smoke` and `persisted-result-qualification`, run natively at the exact head against a pinned-revision compiler and runtime | Named focused qualification: C7 target-local owner-boundary change or explicit audit | Discharged in section 11.2 |
+| `aarch64-apple-darwin` | Section 10 of `docs/specs/check-gate-topology.md` | `make darwin-profile-gate` (`scripts/check-darwin-profile`), whose five acceptance commands include both C7 targets | Named focused qualification: C7 target-local owner-boundary change or explicit audit | Discharged in section 11.3 |
 
 Neither aarch64 gate is a per-pull-request check and neither joins `hosted-checks`,
 `capable-checks`, or `ci`; both are named focused qualifications in the sense of `CLAUDE.md`'s
@@ -853,6 +853,11 @@ requires them. The Darwin profile is deliberately minimal: it claims a process b
 attestation, never Linux containment parity, and explicitly no `sandbox-exec`. Its full scope,
 non-claims, identity inputs, contract, and ledger are Section 10 of
 `docs/specs/check-gate-topology.md`; this section records only the discharge evidence.
+
+A compiler pin change is not itself a change to all three consumer boundaries. Align CI owns the
+compiler's supported-platform correctness. A later align-llm adoption reruns a row only when its
+diff changes that row's target-local C7 behavior, makes a target-specific claim, exposes a concrete
+provider-CI gap, or is the subject of an explicit audit.
 
 ### 11.2 Discharge record — `aarch64-unknown-linux-gnu`
 

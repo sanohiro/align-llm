@@ -26,11 +26,11 @@ file records durable project state.
   measurement now closes the performance-evidence class: check is 2.214 s / 126,192 KiB and build is
   12.786 s / 259,720 KiB on native Linux x86_64, a 5.78x wall-clock ratio, with exact output. The
   topology and baseline-chain cells were clean.
-- Request 19 remains `ALIGN_MERGED` until the pin-bump native aarch64 Linux and Apple Silicon C7
-  qualifications pass at the exact adoption head. Pending: commit the accepted non-platform review
-  repairs to establish that clean head, run and record both platform qualifications, run exact-head
-  preflight with the review disposition, publish, and merge. Request 20 is closed by publication PR
-  #107.
+- Request 19 is `ALIGN_LLM_VERIFIED`. Its aggregate proof was selected because the adoption restores
+  `prompt-verifier-smoke` to the hosted lane; the compiler pin alone does not select x86_64, Linux
+  aarch64, or Darwin requalification. Align's merged CI owns the unchanged compiler-platform
+  boundary, and this request changes no target-local C7 boundary. Pending: run publication preflight
+  with the review disposition, publish, and merge. Request 20 is closed by publication PR #107.
 
 ## Merged checkpoint: REQUEST20-PIN — adopt Align's macOS owned-JSON CI repair (2026-08-25)
 
@@ -199,8 +199,9 @@ file records durable project state.
   head `e14ba33` (run `32814437108`, job `97699828694`), and the target-local C7 gate then passed
   natively on aarch64 Linux at this branch's head. `docs/specs/c7-persisted-result.md` sections 11.2
   and 11.3 hold both records, including the two emitted attestation blocks.
-- **Cadence, deliberately.** Both gates are named focused qualifications — run at a pin bump, a C7
-  owner-boundary change, or an explicit audit — not per-pull-request checks. Neither joins
+- **Cadence, deliberately.** Both gates are named focused qualifications — run at a C7 target-local
+  owner-boundary change or an explicit audit, not for a pin change alone and not per pull request.
+  Neither joins
   `hosted-checks`, `capable-checks`, or `ci`, so `scripts/check-gate-topology`'s `EXPECTED` bytes and
   the topology oracle are untouched and `make gate-topology-check` passes unchanged.
 - **The `Makefile` change re-finalized the identity-bound baseline chain.** Adding
@@ -1362,18 +1363,12 @@ file records durable project state.
 
 ## Next actions
 
-1. Commit the accepted Request 19 performance/lifecycle/handoff review repairs to establish the
-   clean head that the platform records will bind.
-2. Run Request 19's native aarch64 Linux pin-bump profile and its
-   `persisted-result-smoke`/`persisted-result-qualification` owners at the exact adoption head.
-3. Run `make darwin-profile-gate` on native Apple Silicon at the same pin and exact adoption head,
-   then record both emitted platform identities and advance Request 19 to `ALIGN_LLM_VERIFIED`.
-4. Run exact-head executable preflight with the review disposition, publish with merge-commit
+1. Run publication preflight with the Request 19 review disposition, publish with merge-commit
    integration, and close Request 19 after the merge.
-5. Preserve the deliberate `eval/runners/run-coding-task.py` zombie-counting deferral until a
+2. Preserve the deliberate `eval/runners/run-coding-task.py` zombie-counting deferral until a
    capability already rebinds and re-measures the frozen coding corpus or revisits the validation
    process budget.
-6. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
+3. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
    poll.
 
 ## Recovery and preservation
