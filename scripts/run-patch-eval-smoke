@@ -9,6 +9,12 @@ repo_dir="$temp_dir/repository"
 patch_path="$temp_dir/candidate.patch"
 evaluation_path="$temp_dir/evaluation.json"
 failed_path="$temp_dir/failed.json"
+unborn_repo_dir="$temp_dir/unborn-repository"
+unborn_evaluation_path="$temp_dir/unborn-evaluation.json"
+empty_repo_dir="$temp_dir/empty-unborn-repository"
+empty_evaluation_path="$temp_dir/empty-unborn-evaluation.json"
+no_repo_dir="$temp_dir/not-a-repository"
+no_repo_evaluation_path="$temp_dir/not-a-repository-evaluation.json"
 
 cleanup() {
   rm -rf "$temp_dir"
@@ -129,4 +135,68 @@ assert failed["symbols"] == [], failed
 assert failed["recommended_tests"] == [], failed
 PY
 
-printf '%s\n' "patch evaluator smoke: diff shape, symbol/risk signals, recommended tests, and failure persistence PASS"
+# The evaluation path consumes only the candidates, their count, and the selection status, so it
+# runs `git ls-files -z` alone. These three cases own that contract:
+#   1. an unborn HEAD with a populated index reports `ok` and the real index-derived candidates;
+#   2. an unborn HEAD with an empty index reports `ok` with zero candidates;
+#   3. a directory outside a work tree still fails, because `git ls-files` itself fails there.
+mkdir -p "$unborn_repo_dir/src" "$unborn_repo_dir/tests"
+printf 'def inclusive_total(start: int, stop: int) -> int:\n    return sum(range(start, stop))\n' \
+  >"$unborn_repo_dir/src/inclusive_range.py"
+printf 'def test_inclusive_range():\n    assert True\n' \
+  >"$unborn_repo_dir/tests/test_inclusive_range.py"
+git init -q "$unborn_repo_dir"
+git -C "$unborn_repo_dir" config user.email smoke@example.invalid
+git -C "$unborn_repo_dir" config user.name "Unborn Patch Eval Smoke"
+git -C "$unborn_repo_dir" add --all
+if git -C "$unborn_repo_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
+  printf '%s\n' "patch evaluator smoke: unborn fixture unexpectedly has a HEAD commit" >&2
+  exit 1
+fi
+"$root_dir/main" --evaluate-patch "$unborn_repo_dir" "$patch_path" "$unborn_evaluation_path"
+
+git init -q "$empty_repo_dir"
+git -C "$empty_repo_dir" config user.email smoke@example.invalid
+git -C "$empty_repo_dir" config user.name "Empty Unborn Patch Eval Smoke"
+"$root_dir/main" --evaluate-patch "$empty_repo_dir" "$patch_path" "$empty_evaluation_path"
+
+python3 - "$unborn_evaluation_path" "$empty_evaluation_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+unborn = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert unborn["status"] == "ok", unborn
+assert unborn["error_code"] == -1, unborn
+assert unborn["touched_file_count"] == 3, unborn
+assert unborn["recommended_test_count"] == 1, unborn
+assert unborn["recommended_tests"] == [
+    {"path": "tests/test_inclusive_range.py", "score": 100, "reason": "basename-match"},
+], unborn
+
+empty = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+assert empty["status"] == "ok", empty
+assert empty["error_code"] == -1, empty
+assert empty["touched_file_count"] == 3, empty
+assert empty["recommended_test_count"] == 0, empty
+assert empty["recommended_tests"] == [], empty
+PY
+
+mkdir "$no_repo_dir"
+if "$root_dir/main" --evaluate-patch "$no_repo_dir" "$patch_path" "$no_repo_evaluation_path"; then
+  exit 1
+fi
+python3 - "$no_repo_evaluation_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+outside = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert outside["status"] == "error", outside
+assert outside["error_code"] == 2, outside
+assert outside["touched_file_count"] == 3, outside
+assert outside["recommended_test_count"] == 0, outside
+assert outside["recommended_tests"] == [], outside
+PY
+
+printf '%s\n' "patch evaluator smoke: diff shape, symbol/risk signals, recommended tests, revision-free selection, and failure persistence PASS"

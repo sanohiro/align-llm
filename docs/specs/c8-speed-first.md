@@ -1,6 +1,7 @@
 # C8 Speed-first optimization
 
-Status: first seven consumer-complete capabilities merged; eighth capability implemented and measured.
+Status: first eight consumer-complete capabilities merged; ninth capability implemented and awaiting
+its paired measurement.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -211,6 +212,60 @@ identical second buffer.
 The capability does not remove a copy merely because two values contain equal bytes. Every removed
 clone is a terminal handoff from a local owner to one returned owner, which keeps the ownership
 proof mechanical.
+
+### 2.9 Query Git once for evaluation-side test selection
+
+`C8-SELECTION-SINGLE-GIT-QUERY` is the ninth consumer-complete capability. `repo_index.select_tests`
+spawns `git rev-parse --verify HEAD` and then `git ls-files -z` on every call. The
+`--select-tests` CLI publishes the resulting `revision` field, but `patch_eval.evaluate` consumes
+only the candidates array, `candidate_count`, and `status`, and discards the selection document
+itself. The optimization splits the selector into a shared tracked-listing core, the existing
+revision-bearing CLI entry, and a revision-free evaluation entry that runs only the one Git query
+whose output it consumes.
+
+| Field | Contract |
+| --- | --- |
+| Consumers | `patch_eval.evaluate`, the C4 verification loop, repair prompts, persisted results, and failure-memory consumers of recommended tests. `main --select-tests` keeps the revision-bearing entry |
+| Surfaces | `repo_index.select_tests(root, changed_path, timeout_ns) -> TestSelection` is unchanged. `repo_index.select_tests_for_evaluation(root, changed_path, timeout_ns) -> TestSelection` is new. Both delegate to the private `select_tracked_tests(root, changed_path, timeout_ns, revision) -> TestSelection` |
+| Owner module | `src/repo_index.align` owns all three; `src/patch_eval.align` owns the single changed call site |
+| Input | Root, changed path, and timeout are unchanged for both entries |
+| Output | `select_tests` returns the same schema-1 selection document byte for byte, `revision` included. `select_tests_for_evaluation` renders the same schema with an empty `revision`; `patch_eval.evaluate` reads only the candidates array, `candidate_count`, and `status`, so every published patch-evaluation, verification, prompt, persisted-result, and failure-memory byte is unchanged |
+| Persisted/cache identity | None. No selection document, revision, or listing is cached, memoized, or persisted between calls; the evaluation entry's document is a function-local value the caller never writes to disk |
+| Schema version | Selection schema stays 1 and patch-evaluation schema stays 1; no field is added, removed, reordered, or retyped |
+| Validation order | CLI: `rev-parse --verify HEAD`, then `ls-files -z`, unchanged. Evaluation: `ls-files -z` alone, the single query that produces the consumed data |
+| Unborn-HEAD contract | Deliberately changed on the evaluation path only. `git rev-parse --verify HEAD` exits 128 in a repository with no commits, while `git ls-files -z` exits 0 and lists the index. The evaluation entry therefore reports `ok` with the real index-derived candidates — zero when the index is empty — instead of the previous `error`/`error_code` 2 patch evaluation and `Invalid` verification result. Validating a revision the path never reads in order to reject a repository whose tracked listing is available is neither honest nor useful, so the contract is now "the evaluation path validates exactly what it consumes". `--select-tests` still fails at `rev-parse` for an unborn HEAD because it publishes `revision` |
+| Non-repository behavior | Unchanged and verified, not assumed: `git ls-files -z` exits 128 outside a work tree, so the evaluation entry still returns `IndexStatus.Failed`, `error_code` 128 in the selection document, `error_code` 2 in the patch evaluation, and a nonzero CLI exit |
+| Failure behavior | `ls-files` timeout, spawn failure, and nonzero exit still map through `process_succeeded` to the existing failure document with that invocation's code. The `rev-parse` failure document, its `error_code`, and its status are unchanged on the CLI path |
+| Ownership/allocation | The CLI entry owns the trimmed revision `string` for the whole shared call and passes a non-owning `str` view that never outlives it; the evaluation entry passes the empty literal. The shared core owns the Git listing, the four bucket builders, and the rendered document exactly as before. No allocation is added and no alias, cache, or shared mutable state is introduced |
+| Optimization | Removes one process spawn, wait, and output capture per patch evaluation — roughly 1.2 ms of the section 10 fixed-task total of about 46 ms, or about 26,000 ppm of unconsumed work |
+| Prerequisites | None beyond the merged eighth capability; the shipped Align pin already provides everything used |
+| Correctness owner | `scripts/run-test-selection-smoke` for the unchanged CLI document — its `revision`, its four-bucket order, its generic fallback, its non-repository failure, and the new unborn-HEAD CLI failure; `scripts/run-patch-eval-smoke` for the evaluation entry's normal, unborn-HEAD, and non-repository cases; `scripts/run-verification-loop-smoke` and `scripts/run-index-smoke` for the unchanged downstream consumers and the unchanged `repo_index.build` |
+| Performance owner | `scripts/run-c8-selection-signal-benchmark baseline-atomic BINARY [SAMPLES]` before implementation and `scripts/run-c8-selection-signal-benchmark compare-atomic PARENT_BINARY CANDIDATE_BINARY [SAMPLES]` after implementation |
+| Acceptance evidence | Section 11. On the fixed coding task, normalized result documents and the exact ordered four-stage vector agree, every stage passes with matching actual and expected codes, and the candidate median time to a passing patch is repeatably lower |
+| Metrics | Primary: median time to a passing patch on the section 4 fixed coding task. Secondary: one fewer Git child process per patch evaluation |
+| Platform scope | Platform-independent Git command orchestration and document construction; no target-local implementation and no platform-specific speed claim |
+
+#### 2.9.1 Closure matrix
+
+Every applicable cell names its implementation and the exact regression that owns it.
+
+| Cell | Implementation | Regression |
+| --- | --- | --- |
+| Construction | `select_tracked_tests` runs one `git ls-files -z` and builds the four score buckets, the candidates array, and the schema-1 document; `select_tests` constructs the revision first, `select_tests_for_evaluation` constructs none | `scripts/run-test-selection-smoke` four-bucket ordering case; `scripts/run-patch-eval-smoke` `recommended_tests` case |
+| Success | CLI document keeps `revision` and every other byte; evaluation document carries an empty `revision` and identical consumed fields | `scripts/run-test-selection-smoke` `selection["revision"] == git rev-parse HEAD`; `scripts/run-patch-eval-smoke` `recommended_test_count == 1` with the exact `recommended_tests` array |
+| Failure | `ls-files` nonzero exit, timeout, or spawn failure returns `IndexStatus.Failed` with that code from either entry; `rev-parse` failure still returns it from the CLI entry only | `scripts/run-patch-eval-smoke` non-repository case (`status == "error"`, `error_code == 2`, nonzero exit); `scripts/run-test-selection-smoke` non-repository case (`error_code == 128`) and unborn-HEAD CLI case (`error_code == 128`) |
+| Malformed input | An untracked or unrelated changed path yields the generic fallback or an empty candidate set rather than an error; an unreadable patch still fails in `patch_eval.evaluate` before any selection | `scripts/run-test-selection-smoke` zero-score generic fallback case; `scripts/run-patch-eval-smoke` missing-patch case |
+| Early exit | `patch_eval.evaluate` returns `failed_evaluation` for an unreadable patch, a segment with no path, and a zero-file patch before reaching selection, so no Git child starts on those paths; `primary_path.len() == 0` still skips selection entirely | `scripts/run-patch-eval-smoke` missing-patch case asserting `recommended_tests == []` |
+| Cleanup | `verify.run` still owns each Git child's spawn, wait, and stream capture; the capability removes one child rather than adding one, and adds no descriptor, temporary file, or persisted artifact | `scripts/run-verification-loop-smoke` unchanged four-stage vector; `scripts/run-patch-eval-smoke` |
+| Module `repo_index` | Three-function split: unchanged public `select_tests`, new public `select_tests_for_evaluation`, private shared `select_tracked_tests`; `build` is untouched | `scripts/run-test-selection-smoke`, `scripts/run-patch-eval-smoke`, `scripts/run-index-smoke` |
+| Module `patch_eval` | One call site moves from `repo_index.select_tests` to `repo_index.select_tests_for_evaluation`; document construction, status mapping, and `extract_candidates` are unchanged | `scripts/run-patch-eval-smoke` |
+| Module `verification_loop` | No source change. It consumes `patch_eval.evaluate`'s status and document, so the unborn-HEAD status change reaches it as a now-runnable task rather than an `Invalid` result | `scripts/run-verification-loop-smoke` |
+| Module `main` | No source change. `--select-tests` keeps `repo_index.select_tests` and its exact output and exit codes | `scripts/run-test-selection-smoke` |
+
+The two entries must not be allowed to drift into separate ranking implementations: any future change
+to bucket weights, ordering, or the generic fallback belongs in `select_tracked_tests` alone. Adding
+a consumer that needs the revision means calling `select_tests`, not reintroducing `rev-parse` into
+the shared core.
 
 ## 3. Fixed passing-patch benchmark
 
@@ -689,9 +744,67 @@ every stage passed with matching actual and expected codes. A preceding 31-pair 
 by 5,224 ppm in the same direction. This is a path-local allocation improvement, not a platform or
 provider/model-time claim.
 
-## 11. Deferred C8 surfaces
+## 11. Ninth fixed coding-task baseline
+
+The ninth capability reuses the Section 4 real-stage fixture and the four-stage protocol shipped by
+the seventh capability. Measurement is owned by the measuring agent; the `TBD` fields below are
+filled from the actual runs and no claim is made until they are.
+
+The pre-implementation baseline is:
+
+```text
+commit:     TBD
+binary SHA-256: TBD
+command:    scripts/run-c8-selection-signal-benchmark baseline-atomic TBD 31
+host:       TBD
+cpu:        TBD
+samples:    31 measurements after two discarded warmup runs
+median:     TBD
+candidate-apply median: TBD
+build median:           TBD
+targeted-test median:   TBD
+full-test median:       TBD
+```
+
+The exact-commit comparison used:
+
+```text
+make build
+install -m 0755 ./main TBD
+sha256sum TBD TBD
+scripts/run-c8-selection-signal-benchmark compare-atomic TBD TBD 101
+```
+
+```text
+parent:     TBD
+candidate:  TBD
+benchmark runner Git blob: TBD
+benchmark runner SHA-256: TBD
+parent binary SHA-256:    TBD
+candidate binary SHA-256: TBD
+command:    TBD
+host:       TBD
+cpu:        TBD
+samples:    101 parent and 101 candidate measurements after two discarded warmup pairs
+parent median:    TBD
+candidate median: TBD
+improvement:      TBD
+```
+
+The stage medians are diagnostic decomposition. Only a repeatably lower paired total median with
+identical normalized result documents closes the claim. The benchmark fixture creates its repository
+with an initial commit, so it exercises the committed-HEAD path; the unborn-HEAD contract change in
+section 2.9 is owned by `scripts/run-patch-eval-smoke`, not by this benchmark. This is a
+path-local process-count improvement, not a platform or provider/model-time claim.
+
+## 12. Deferred C8 surfaces
 
 Context reduction, stable-context reuse, parallel checks, small-model routing, and persisted static
 analysis remain separate capabilities. In particular, captured concurrent checks require an Align
 process surface that the current pin does not provide; this capability does not open an Align request
 or weaken verification dependencies to manufacture parallelism.
+
+The `--select-tests` CLI and `repo_index.build` deliberately keep their `git rev-parse --verify HEAD`
+invocation because both publish `revision`. Reusing one tracked-file listing across an index build
+and a selection in the same process, and caching a listing between invocations, are separate
+capabilities that would need their own invalidation contract; neither is in scope here.
