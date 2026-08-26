@@ -5,9 +5,12 @@ file records durable project state.
 
 ## Active capability: R1B-GPTOSS-MOE-IR — gpt-oss MoE frontend and per-expert Block IR (2026-08-27)
 
-- Branch `agent/r1b-gptoss-moe-ir`, based on the R1-QWEN-MODEL-IR chain (merging as PR #122, head
+- Branch `agent/r1b-gptoss-moe-ir`, based on the merged R1-QWEN-MODEL-IR chain (PR #122, head
   `85a3a97`, onto `main` at merge `08492dc`). The authoritative design ledger is
-  `docs/specs/r1b-gptoss-moe-ir.md`, committed at `2cd2cb4`. **Implementation is in progress.**
+  `docs/specs/r1b-gptoss-moe-ir.md`, committed at `2cd2cb4`. **Implementation is complete** at
+  `a46e19e`; the review repair follows it. Sections 6 and 7 of the ledger are applied and closed —
+  section 7 carries fifteen implementation corrections and section 7.1 maps every section 3 closure
+  cell to its shipped case.
 - **What it delivers.** The MoE half of the R1 roadmap gate: a new architecture-neutral
   `src/model_ir.align` builder (`BlockPlan` -> `ModelIr` -> document, imported by both frontends), a
   new `src/frontend_gpt_oss.align` owning gpt-oss hyperparameters and block-plan construction, and
@@ -22,22 +25,52 @@ file records durable project state.
   (`ggml_blck_size`/`ggml_type_size`), recorded "library-oracle verified; real-model verification
   pending". One new error code, `R1_BLOCK_CLAIM_MISMATCH`, is a defensive, provably input-unreachable
   claim-tiling guard. Requests 21-24 stay `PROPOSED` and unconsumed; `BlockPlan` is new client
-  evidence for Request 23's huge-struct-copy lint.
+  evidence for Request 23's huge-struct-copy lint, now recorded against the shipped file and lines
+  (`src/model_ir.align:478` and `:635`, 36 fields / 440 bytes — **narrower** than `GgufTable`'s 41
+  fields / 552 bytes, which corrects the plan's original "wider" claim).
+- **Owner results at the review-repair head (unchanged pin `4b515f8d`).** `gmake check`: 27 units,
+  PASS. `gmake build`: PASS. `gmake gguf-smoke`: 62 fixtures, byte-identical to R0's, PASS.
+  `gmake model-ir-smoke`: 49 qwen + 31 gpt-oss (30 plus `gptoss-variant-fused-nobias`, added by the
+  review repair) + 62 R0 fixtures re-run, PASS. `gmake gate-topology-check`: PASS (the `Makefile` is
+  untouched). `gmake format-check`: PASS. `gmake fmt`: no diff. `git diff --check`: clean.
+- **Qualifications.** The qwen `model-ir-parity` qualification was re-run against the local
+  Qwen2.5-Coder-7B Q4_K_M model and the local `llama-cli`: **PASS**, size-sum oracle
+  `computed_end` 4,683,073,536 equal to `file_size`. The gpt-oss half is the documented explicit
+  `N/A` (plan section 4.4) pending the user decision below. The MXFP4 geometry row rests on the
+  library oracle against `libggml-base` of llama.cpp build 10566: `ggml_blck_size` 32 and
+  `ggml_type_size` 17 for id 39, and the same probe reproduces all twenty existing rows — which is
+  how it caught the `q8_1` row R0 had transcribed as 40 rather than 36 (ledger section 7, item 6).
+- **The schema-1 to schema-2 byte-level differential was run out of tree** (ledger section 7, item
+  13, which records the exact four-step reproduction): the R1 binary built at base `08492dc` and the
+  R1B binary were each run over the 48 qwen fixtures whose container bytes are unchanged, through one
+  shared path so the documents' `path` field matches; applying only the two allowed edits reproduces
+  all 48 R1B documents exactly, with 0 identical before the edits, so the comparison is not vacuous.
+  `qwen2-geometry.gguf` is the one excluded fixture and the exclusion is recorded. The standing
+  in-runner owners of that promise are `claim-identity` and `field-order-qwen`.
+- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
+  the candidate at `53f064f`: **A** the Align source and **B** the specification, register, and
+  handoff. A returned **approve** with 2 low findings; B returned **approve** with 1 major, 2
+  moderate, and 5 minor. **Every finding was accepted** and all eight were repaired as one
+  consolidated repair in the commit that follows `53f064f`. The two substantive ones were real: the
+  `role_required` comment justified the optional router bias with a regex
+  (`ffn_gate(_exps)?.bias`) that does not match `ffn_gate_inp.bias` at all, and the fused variant
+  required an `ffn_gate_up_exps.bias` that no installed artifact names — role 21 is now optional like
+  role 13, with `gptoss-variant-fused-nobias` as its positive fixture and the asymmetry recorded in
+  ledger section 2.5.4 and section 7, item 15. The rest corrected false ledger and register claims
+  and completed the section 7.1 mapping.
 - **Next actions, in order.**
-  1. Implement per the plan's sections 2-3: the module split, the MXFP4 row, the gpt-oss frontend,
-     and the schema-2 renderer.
-  2. Extend `gmake model-ir-smoke` with the gpt-oss corpus and the claim-tiling oracle.
-  3. Re-run the qwen `model-ir-parity` qualification and confirm the schema-2 diff is exactly the two
-     additive fields.
-  4. One comprehensive review.
-  5. Exact-head preflight: `python3 scripts/pre-pr --owner-test model-ir -- gmake model-ir-smoke`.
-     The plan leaves the `Makefile` untouched, so ordinary hosted-checks scope is expected, not the
-     fresh-image installed profile.
-  6. Publish the English pull request.
+  1. Exact-head preflight: `python3 scripts/pre-pr --owner-test model-ir -- gmake model-ir-smoke`.
+     The `Makefile` is untouched, so ordinary hosted-checks scope is expected, not the fresh-image
+     installed profile; confirm with `--plan` first.
+  2. Publish the English pull request with the owner results, the qualification records, the
+     out-of-tree differential, and the review envelope above.
 - **User decision pending.** `gpt-oss-20b-mxfp4.gguf` (12.1 GB) is not downloaded, so the gpt-oss
   `model-ir-parity` qualification is an explicit `N/A` by design (plan section 4.4) until the user
   decides whether to fetch it; until then the gpt-oss half of the roadmap gate rests on the synthetic
-  corpus, the size-sum and claim-tiling oracles, and the MXFP4 library oracle alone.
+  corpus, the size-sum and claim-tiling oracles, and the MXFP4 library oracle alone. Ledger section 7
+  states the same limit: no row of section 2.5 was settled by real-model inspection, so every ASSUMED
+  row still stands on its assumption banner and the section 2.5.4 variant mechanism is retained
+  rather than reduced to a winning form.
 
 ## Merged checkpoint: R1-QWEN-MODEL-IR — Qwen2 Model IR and Block IR (2026-08-27)
 
@@ -167,10 +200,11 @@ boundary is next changed.
 2. Materialize the pinned toolchain with `scripts/align-toolchain ensure compiler`; on macOS use
    `gmake` and the recorded `LLVM_CONFIG`/`LIBRARY_PATH` environment. Confirm `.align-revision`
    still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R1B requires no pin change.
-3. Resume at the first unfinished next action in the active R1B-GPTOSS-MOE-IR capability above:
-   implementation of `src/model_ir.align`, `src/frontend_gpt_oss.align`, and the reduced
-   `src/frontend_qwen.align`; the extended `gmake model-ir-smoke` owner; the qwen parity rerun; one
-   comprehensive review; the exact-head preflight; and the pull request.
+3. Resume at the first unfinished next action in the active R1B-GPTOSS-MOE-IR capability above.
+   Implementation, the extended `gmake model-ir-smoke` owner, the qwen parity rerun, the out-of-tree
+   schema-2 differential, and the comprehensive review are all done; what remains is the exact-head
+   preflight and the pull request. Re-run the owner commands listed there before publishing if the
+   head moves.
 4. Do not open another Align request unless implementation exposes a further genuine shipped-language,
    compiler/runtime, or standard-library gap under the register rules. Requests 21-24 are inherited
    `PROPOSED` and non-blocking; `BlockPlan` adds client evidence to Request 23 but does not change its

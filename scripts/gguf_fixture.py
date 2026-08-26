@@ -1630,10 +1630,23 @@ def gptoss_build(out_dir):
     no_window = GptOssModel(p={"sliding_window": None, "sliding_window_pattern": None})
     cases.append(no_window.positive("gptoss-optional-absent", "gptoss-optional-absent.gguf"))
 
-    # Section 2.5.4's fused expert feed-forward layout.
+    # Section 2.5.4's fused expert feed-forward layout, with the fused bias present.
     fused = GptOssModel(fused=True)
     cases.append(fused.positive("gptoss-variant-fused", "gptoss-variant-fused.gguf",
                                 expert_tiling=True))
+
+    # The same layout with `ffn_gate_up_exps.bias` absent. Only the fused **weight** is attested by
+    # the installed artifacts (`blk\.\d*\.ffn_gate_up(_exps)?.weight`), so the fused bias is an
+    # optional member like the router bias: dropped from each `ExpertBlock`, never an error. Each
+    # `ExpertBlock` therefore carries three members instead of four, and the tiling oracle still
+    # holds over the remaining stacked tensors.
+    fused_nobias = GptOssModel(fused=True, drop_roles=("ffn_gate_up_exps_bias",))
+    fused_nobias_case = fused_nobias.positive(
+        "gptoss-variant-fused-nobias", "gptoss-variant-fused-nobias.gguf", expert_tiling=True)
+    assert all(block["tensor_count"] == 3
+               for block in fused_nobias_case["blocks"] if block["kind"] == "ExpertBlock"), \
+        "fused-nobias ExpertBlock member count"
+    cases.append(fused_nobias_case)
 
     # The optional `RouterBlock` member: an absent `ffn_gate_inp.bias` is dropped, not an error.
     no_router_bias = GptOssModel(drop_roles=("router_bias",))

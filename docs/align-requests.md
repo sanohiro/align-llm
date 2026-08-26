@@ -6391,14 +6391,28 @@ Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c
   site: `find_key(borrow t: GgufTable, key: str)` takes `t` by `borrow`, and `GgufTable`'s Move fields
   (its `string` and `array<i64>` columns) are never duplicated at the call boundary.
 
-**Additional client evidence, from the active R1B-GPTOSS-MOE-IR capability.**
-`docs/specs/r1b-gptoss-moe-ir.md` section 2.3.4 defines `BlockPlan`, a new nineteen-column record
-wider than `GgufTable`, read the same way through `borrow plan: BlockPlan` accessors in the new
-`src/model_ir.align` neutral builder; section 2.1 states plainly that "`BlockPlan` is wider than
-`GgufTable`, so the spurious lint will fire on every neutral accessor too. That strengthens the
-existing request; it does not create a new one and does not change its status." `src/model_ir.align`
-does not exist yet in this worktree — this evidence is to be cited against the concrete file and line
-numbers once implementation lands.
+**Additional client evidence, from the R1B-GPTOSS-MOE-IR capability, now implemented.**
+`src/model_ir.align:86` declares `BlockPlan`, the architecture-neutral block plan a frontend hands
+the neutral builder. It is a second, independent client of the same false positive, and it is
+**narrower** than `GgufTable`, not wider: 36 fields and 440 bytes against `GgufTable`'s 41 fields and
+552 bytes (`docs/specs/r1b-gptoss-moe-ir.md` section 7, items 3 and 14, which correct that document's
+own earlier "wider" and "nineteen-column" claims). That makes the evidence stronger rather than
+weaker — the warning tracks the declared struct type and ignores the parameter mode, so a smaller
+record trips it just as reliably.
+
+Reproduced the same way, `gmake check` in the worktree with the recorded `LIBRARY_PATH`. Both
+`borrow plan: BlockPlan` parameters emit it, and nothing else in the module does:
+
+```text
+src/model_ir.align:478:27: warning: huge struct copy: `model_ir$BlockPlan` (440 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+src/model_ir.align:635:16: warning: huge struct copy: `model_ir$BlockPlan` (440 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+```
+
+Line 478 is `fn span_text(borrow plan: BlockPlan, start: i64, end: i64) -> string`, the plan's one
+accessor; line 635 is the `borrow plan: BlockPlan` parameter of `pub fn build`, into which the
+frontend moves its plan exactly once per invocation. Neither call site copies the record, and
+`BlockPlan`'s Move fields — its three owned `string`s and seventeen `array<i64>` columns — are never
+duplicated at either boundary.
 
 ### Requested capability
 

@@ -137,12 +137,25 @@ fn role_tensor_name(role: i64, layer: i64) -> string {
   return b.to_string()
 }
 
-// `router_bias` is the one optional member: llama.cpp's quantization-exclusion regexes name
-// `ffn_gate(_exps)?.bias`, so the router bias is a per-architecture option rather than a fixture
-// convenience. Every other member is required, and an absent one is `R1_MISSING_TENSOR` rather than
-// a silently smaller block.
+// Two members are optional, and both for the same reason: **no installed artifact settles whether a
+// gpt-oss GGUF ships them**, so optional is the safe default — an absent optional member is dropped
+// from its block rather than rejecting a real file that never had it.
+//
+//   - role 13, the router bias `blk.L.ffn_gate_inp.bias`. llama.cpp's quantization-exclusion regex
+//     `ffn_gate(_exps)?.bias` matches the dense `ffn_gate.bias` and the stacked expert gate bias
+//     `ffn_gate_exps.bias`; it does **not** match `ffn_gate_inp.bias`, so it says nothing about the
+//     router bias either way.
+//   - role 21, the fused expert gate-up bias `blk.L.ffn_gate_up_exps.bias`. The dylib attests only
+//     `blk\.\d*\.ffn_gate_up(_exps)?.weight` — the fused **weight**. Requiring a fused bias no
+//     artifact names would reject every fused file that ships without one, which is exactly the
+//     failure mode section 2.5.4's variant mechanism exists to avoid. The split variant's expert
+//     biases (roles 15, 17, 19) stay required, because `ffn_gate_exps.bias` is attested; section
+//     2.5.4 records that asymmetry.
+//
+// Every other member is required, and an absent one is `R1_MISSING_TENSOR` rather than a silently
+// smaller block.
 fn role_required(role: i64) -> i64 {
-  if role == 13 { return 0 }
+  if role == 13 || role == 21 { return 0 }
   return 1
 }
 
