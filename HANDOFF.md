@@ -16,7 +16,11 @@ file records durable project state.
   `d4e0de24a5684fb9042cf4bd82a57f0c50bb368bdea3d7b67925c150b6b6a747`. The public output and
   failure behavior remain unchanged. The performance claim is limited to related selection;
   generic-only fallback explicitly accepts one extra lightweight listing traversal and is covered
-  by exact correctness owners rather than a speed claim.
+  by exact correctness owners rather than a speed claim. Implementation
+  `d2e15ad1f14f0317bb3d6227fa0c6ae8c2c7316c` passes selection, patch-evaluation, and verification
+  owners. The exact 201-pair comparison measured 47,880,342 ns for the parent and 47,793,764 ns for
+  the candidate, a 1,808 ppm (0.18%) reduction with identical normalized result documents and all
+  five ordered stages passing. Two preceding 101-pair comparisons improved in the same direction.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -49,11 +53,12 @@ file records durable project state.
 ## Resume in another environment
 
 1. Fetch `origin` and resume `agent/c8-rescan-generic-fallback` at its latest commit. Read
-   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. The baseline and
-   capability ledger are complete; implementation is the first unfinished action.
-2. Remove the generic offset array from related selection, implement the generic-only listing
-   rescan, and run the selection, patch-evaluation, and verification owners. Build exact parent and
-   candidate binaries and close the paired benchmark before review and preflight.
+   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. The ledger,
+   implementation, correctness owners, and exact performance comparison are complete; comprehensive
+   review is the first unfinished action.
+2. Commit the measurement record, run one stable-head comprehensive inspection-only review, resolve
+   its complete finding set in one coherent repair if needed, then run exact-head preflight and
+   publish the English PR with the measurement and review envelope.
 3. After merge, refresh `main` and choose the next smallest consumer-complete C8 optimization from
    a new measured time-to-passing-patch baseline.
 4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a

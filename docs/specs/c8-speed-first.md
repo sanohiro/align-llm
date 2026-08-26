@@ -1,6 +1,6 @@
 # C8 Speed-first optimization
 
-Status: first five consumer-complete capabilities merged; sixth capability baselined.
+Status: first five consumer-complete capabilities merged; sixth capability implemented and measured.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -484,6 +484,40 @@ full-test median:            14,742,235 ns
 The stage medians are diagnostic decomposition. Only a lower paired total median with identical
 normalized result documents can close the related-path performance claim. Generic-only fallback is
 covered for exact behavior and is not part of this performance claim.
+
+The exact-commit comparison used:
+
+```text
+make build
+install -m 0755 ./main /tmp/align-llm-c8-rescan.6DEpCY/candidate-d2e15ad.bin
+sha256sum /tmp/align-llm-c8-rescan.6DEpCY/parent-ed76eea.bin \
+  /tmp/align-llm-c8-rescan.6DEpCY/candidate-d2e15ad.bin
+scripts/run-c8-selection-signal-benchmark compare \
+  /tmp/align-llm-c8-rescan.6DEpCY/parent-ed76eea.bin \
+  /tmp/align-llm-c8-rescan.6DEpCY/candidate-d2e15ad.bin 201
+```
+
+```text
+parent:     ed76eea9397a66e542a67633cb383d92b71058a8
+candidate:  d2e15ad1f14f0317bb3d6227fa0c6ae8c2c7316c
+benchmark runner Git blob: fc3181b4cad91a8a6911100f01e16b6af9670d9a
+benchmark runner SHA-256: 995092b913220005e39b6491e5cae98791b83bc88b9d4a4d99515adad16be817
+parent binary SHA-256:    d4e0de24a5684fb9042cf4bd82a57f0c50bb368bdea3d7b67925c150b6b6a747
+candidate binary SHA-256: f77b3f102ada7d1ce405524cc8f1535dd6514dc501a07084f88f865a2a2b6f20
+command:    scripts/run-c8-selection-signal-benchmark compare /tmp/align-llm-c8-rescan.6DEpCY/parent-ed76eea.bin /tmp/align-llm-c8-rescan.6DEpCY/candidate-d2e15ad.bin 201
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    201 parent and 201 candidate measurements after two discarded warmup pairs
+parent median:    47,880,342 ns
+candidate median: 47,793,764 ns
+improvement:      1,808 ppm (0.18%)
+```
+
+All normalized result documents agreed. The runner required the exact ordered five-stage vector,
+`PASS` on every stage, and matching actual/expected exit codes. Two preceding 101-pair comparisons
+improved by 2,115 ppm and 1,219 ppm in the same direction. The accepted result is deliberately
+reported as a small related-path improvement, not a fallback, universal repository, platform, or
+provider/model-time claim.
 
 ## 9. Deferred C8 surfaces
 
