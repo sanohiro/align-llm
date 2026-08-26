@@ -247,32 +247,72 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
     }
   }
 
-  mut candidates_body := builder()
-  mut candidate_count := 0
+  // The score is the sum of the only two ranking signals below: basename (100) and
+  // directory (20). Bucket the four possible values in one tracked-file pass instead of
+  // rescanning the complete Git listing once for every integer from 120 through 0.
+  mut score_120_body := builder()
+  mut score_100_body := builder()
+  mut score_20_body := builder()
+  mut score_0_body := builder()
+  mut score_120_count := 0
+  mut score_100_count := 0
+  mut score_20_count := 0
+  mut score_0_count := 0
   listing: str := files_run.stdout
-  mut score := 120
+  mut file_cursor := 0
   loop {
-    if score < 0 { break }
-    mut file_cursor := 0
-    loop {
-      if file_cursor >= listing.len() { break }
-      file_end := match listing[file_cursor..listing.len()].find("\0") {
-        Some(offset) => file_cursor + offset,
-        None => listing.len(),
-      }
-      relative := listing[file_cursor..file_end]
-      file_cursor = if file_end < listing.len() { file_end + 1 } else { listing.len() }
-      if relative.len() == 0 { break }
-      if is_test_path(relative) && related_test_score(changed_path, relative) == score {
-        reason := related_test_reason(changed_path, relative)
-        record := RelatedTest { path: relative, score: score, reason: reason }
-        if candidate_count > 0 { candidates_body.write(",") }
-        candidates_body.write(json.encode(record))
-        candidate_count = candidate_count + 1
+    if file_cursor >= listing.len() { break }
+    file_end := match listing[file_cursor..listing.len()].find("\0") {
+      Some(offset) => file_cursor + offset,
+      None => listing.len(),
+    }
+    relative := listing[file_cursor..file_end]
+    file_cursor = if file_end < listing.len() { file_end + 1 } else { listing.len() }
+    if relative.len() == 0 { break }
+    if is_test_path(relative) {
+      score := related_test_score(changed_path, relative)
+      reason := related_test_reason(changed_path, relative)
+      record := RelatedTest { path: relative, score: score, reason: reason }
+      encoded := json.encode(record)
+      if score == 120 {
+        if score_120_count > 0 { score_120_body.write(",") }
+        score_120_body.write(encoded)
+        score_120_count = score_120_count + 1
+      } else {
+        if score == 100 {
+          if score_100_count > 0 { score_100_body.write(",") }
+          score_100_body.write(encoded)
+          score_100_count = score_100_count + 1
+        } else {
+          if score == 20 {
+            if score_20_count > 0 { score_20_body.write(",") }
+            score_20_body.write(encoded)
+            score_20_count = score_20_count + 1
+          } else {
+            if score_0_count > 0 { score_0_body.write(",") }
+            score_0_body.write(encoded)
+            score_0_count = score_0_count + 1
+          }
+        }
       }
     }
-    score = score - 1
   }
+
+  mut candidates_body := builder()
+  candidates_body.write(score_120_body.to_string())
+  if score_100_count > 0 {
+    if score_120_count > 0 { candidates_body.write(",") }
+    candidates_body.write(score_100_body.to_string())
+  }
+  if score_20_count > 0 {
+    if score_120_count + score_100_count > 0 { candidates_body.write(",") }
+    candidates_body.write(score_20_body.to_string())
+  }
+  if score_0_count > 0 {
+    if score_120_count + score_100_count + score_20_count > 0 { candidates_body.write(",") }
+    candidates_body.write(score_0_body.to_string())
+  }
+  candidate_count := score_120_count + score_100_count + score_20_count + score_0_count
 
   document := render_selection_document(
     root,
