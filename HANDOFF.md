@@ -3,25 +3,20 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## C8 fifth capability: defer generic serialization (2026-08-26)
+## C8 sixth capability: rescan generic fallback (2026-08-26)
 
-- C8 related-only recommendation PR #115 merged on `main` at
-  `25c964d8df19c4d6571bdfcb353d0608ac07c518`. Its hosted check passed in 1m34s while the unaffected
-  x86_64 and aarch64 jobs completed in 6s and 9s with every native qualification step skipped.
-- Active work is on `agent/c8-defer-generic-encoding`. The fifth capability is
-  `C8-TEST-SELECTION-DEFER-GENERIC`: keep generic paths as fixed-width offsets into the owned Git
-  listing during selection and serialize them only if no positive relationship exists. This keeps
-  related and fallback output byte-identical while avoiding construction of JSON that related-only
-  selection discards. The exact pre-implementation 31-sample baseline at merge
-  `25c964d8df19c4d6571bdfcb353d0608ac07c518` is 48,115,210 ns; the binary SHA-256 is
-  `f1c8bf75530ad5155c52e54e919be0f5388f2fd2438c1c4a81964efb567cd045`. Implementation
-  `7c95072b2bfd293911ac01c141c05c0de973c8b1` passes the selection, patch-evaluation, and verification
-  owners. The exact 101-pair comparison measured 48,939,615 ns for the parent and 47,753,423 ns for
-  the candidate, a 24,237 ppm (2.42%) reduction with identical normalized result documents and all
-  five ordered stages passing. Measurement record `26e939c6ec29956980abb2934f305e624778029e` is
-  complete. Its comprehensive review found one P2 durable-state error: this handoff still called the
-  completed measurement commit pending. The consolidated documentation repair makes exact-head
-  preflight and publication the first unfinished actions.
+- C8 generic-serialization PR #116 merged on `main` at
+  `ed76eea9397a66e542a67633cb383d92b71058a8`. Its hosted check passed in 1m36s while the unaffected
+  x86_64 and aarch64 jobs completed in 9s and 10s with every native qualification step skipped.
+- Active work is on `agent/c8-rescan-generic-fallback`. The sixth capability is
+  `C8-TEST-SELECTION-RESCAN-FALLBACK`: related selection will discard score-0 candidates without
+  allocating an offset array, while generic-only fallback will rescan the already-owned Git listing
+  once without recomputing path signals. The exact pre-implementation 31-sample baseline at merge
+  `ed76eea9397a66e542a67633cb383d92b71058a8` is 47,364,361 ns; the binary SHA-256 is
+  `d4e0de24a5684fb9042cf4bd82a57f0c50bb368bdea3d7b67925c150b6b6a747`. The public output and
+  failure behavior remain unchanged. The performance claim is limited to related selection;
+  generic-only fallback explicitly accepts one extra lightweight listing traversal and is covered
+  by exact correctness owners rather than a speed claim.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -53,11 +48,12 @@ file records durable project state.
 
 ## Resume in another environment
 
-1. Fetch `origin` and resume `agent/c8-defer-generic-encoding` at its latest commit. Read
-   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. The implementation
-   exact owner/measurement evidence, comprehensive review, and consolidated repair are complete.
-2. Run exact-head preflight with the selection, patch-evaluation, and verification owners, publish
-   the English PR with the measurement and review envelope, wait for required CI, and merge.
+1. Fetch `origin` and resume `agent/c8-rescan-generic-fallback` at its latest commit. Read
+   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. The baseline and
+   capability ledger are complete; implementation is the first unfinished action.
+2. Remove the generic offset array from related selection, implement the generic-only listing
+   rescan, and run the selection, patch-evaluation, and verification owners. Build exact parent and
+   candidate binaries and close the paired benchmark before review and preflight.
 3. After merge, refresh `main` and choose the next smallest consumer-complete C8 optimization from
    a new measured time-to-passing-patch baseline.
 4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
