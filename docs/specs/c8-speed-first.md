@@ -747,55 +747,64 @@ provider/model-time claim.
 ## 11. Ninth fixed coding-task baseline
 
 The ninth capability reuses the Section 4 real-stage fixture and the four-stage protocol shipped by
-the seventh capability. Measurement is owned by the measuring agent; the `TBD` fields below are
-filled from the actual runs and no claim is made until they are.
+the seventh capability. Measurement is owned by the measuring agent; the fields below are filled
+from the actual runs recorded here.
 
 The pre-implementation baseline is:
 
 ```text
-commit:     TBD
-binary SHA-256: TBD
-command:    scripts/run-c8-selection-signal-benchmark baseline-atomic TBD 31
-host:       TBD
-cpu:        TBD
+commit:     9bfa372a3bb1d78fbd672740208e702e7db72122
+binary SHA-256: 76bfa07a13fd0d9b85484d2ebab9b6ed65caa6f60c212b8e607a681df4b08a78
+command:    scripts/run-c8-selection-signal-benchmark baseline-atomic /opt/bench/binary1 31
+host:       Linux 6.11.11-linuxkit aarch64 (Docker Desktop linux/arm64 VM on macOS)
+cpu:        Apple M1, 8 logical CPUs exposed to the container
 samples:    31 measurements after two discarded warmup runs
-median:     TBD
-candidate-apply median: TBD
-build median:           TBD
-targeted-test median:   TBD
-full-test median:       TBD
+median:     43,041,708 ns
+candidate-apply median: 546,917 ns
+build median:           7,506,583 ns
+targeted-test median:   15,506,875 ns
+full-test median:       15,724,000 ns
 ```
 
 The exact-commit comparison used:
 
 ```text
-make build
-install -m 0755 ./main TBD
-sha256sum TBD TBD
-scripts/run-c8-selection-signal-benchmark compare-atomic TBD TBD 101
+scratchpad/linux-bench.sh build scratchpad/candidate-e057bf0 scratchpad/bench/candidate-e057bf0.bin
+sha256sum scratchpad/bench/parent-9bfa372.bin scratchpad/bench/candidate-e057bf0.bin
+scratchpad/linux-bench.sh bench scratchpad/candidate-e057bf0 scratchpad/bench/parent-9bfa372.bin \
+  compare-atomic 101 scratchpad/bench/candidate-e057bf0.bin
 ```
 
 ```text
-parent:     TBD
-candidate:  TBD
-benchmark runner Git blob: TBD
-benchmark runner SHA-256: TBD
-parent binary SHA-256:    TBD
-candidate binary SHA-256: TBD
-command:    TBD
-host:       TBD
-cpu:        TBD
+parent:     9bfa372a3bb1d78fbd672740208e702e7db72122
+candidate:  e057bf0129e7594de5655be68854952405607407
+benchmark runner Git blob: 492f53db5ca6e934daf8340e6c9998cc7340ddcc
+benchmark runner SHA-256: 80618fd088a5e5f75e3772aec60db510ec27fc4f4c0c9024ba0cd0104b08858b
+parent binary SHA-256:    76bfa07a13fd0d9b85484d2ebab9b6ed65caa6f60c212b8e607a681df4b08a78
+candidate binary SHA-256: 976b97c642ec0bfc3d128400d8b11412a400bf5e3bfa55ea69c0457dbf8cbb0a
+command:    scripts/run-c8-selection-signal-benchmark compare-atomic /opt/bench/binary1 /opt/bench/binary2 101
+host:       Linux 6.11.11-linuxkit aarch64 (Docker Desktop linux/arm64 VM on macOS)
+cpu:        Apple M1, 8 logical CPUs exposed to the container
 samples:    101 parent and 101 candidate measurements after two discarded warmup pairs
-parent median:    TBD
-candidate median: TBD
-improvement:      TBD
+parent median:    42,884,666 ns
+candidate median: 42,421,792 ns
+improvement:      10,793 ppm (1.08%)
 ```
+
+All normalized result documents agreed. Both binaries emitted the exact four-stage vector, and
+every stage passed with matching actual and expected codes. A preceding 31-pair comparison improved
+by 13,749 ppm in the same direction.
 
 The stage medians are diagnostic decomposition. Only a repeatably lower paired total median with
 identical normalized result documents closes the claim. The benchmark fixture creates its repository
 with an initial commit, so it exercises the committed-HEAD path; the unborn-HEAD contract change in
 section 2.9 is owned by `scripts/run-patch-eval-smoke`, not by this benchmark. This is a
 path-local process-count improvement, not a platform or provider/model-time claim.
+
+This ninth capability was measured on a different host from Sections 3-10 (an aarch64 Docker
+Desktop VM rather than WSL2 x86_64), so its baseline and comparison are only comparable with each
+other, not with the Section 3-10 series; the improvement above is a path-specific claim, not a
+platform claim.
 
 ## 12. Deferred C8 surfaces
 
