@@ -3,11 +3,9 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## No active capability (2026-08-26)
+## C8 first capability: linear related-test ranking (2026-08-26)
 
-- The durable handoff is `main` at `ab155b391cfe12a2d53674179b993fc43fa86120`, which is pushed
-  to `origin/main`. The primary worktree is clean, no pull request is open, and no active work
-  depends on a local stash or historical worktree.
+- The preceding durable handoff is `main` at `ab155b391cfe12a2d53674179b993fc43fa86120`.
 - Align requests 1–20 are closed. Request 19 shipped in Align PR #891 as
   `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; align-llm publication PR #108 merged as
   `75d7cc39b40b287d47b1185306d6bd8e7eb582dc` after all required CI passed.
@@ -20,7 +18,17 @@ file records durable project state.
 - Platform qualification is capability-owned: run it for changed target-local behavior, a
   target-specific claim, a concrete provider-CI gap, or an explicit audit—not for every compiler
   pin. The policy, classifier, owner tests, and final comprehensive review are complete.
-- No work is active. The next roadmap capability is C8, Speed-first Optimization.
+- `C8-TEST-SELECTION-LINEAR` is the first C8 capability. Related-test ranking now makes one tracked
+  file pass and emits the same four score buckets in the same order instead of scanning the complete
+  list for every integer from 120 through 0. The exact public invariant and focused benchmark are in
+  `docs/specs/c8-speed-first.md`.
+- The paired fixed passing-patch benchmark measured 48,914,189 ns for the parent median and
+  12,496,138 ns for the candidate median across 15 samples each on the named x86_64 host, a 74.5%
+  reduction. All non-duration result data agreed. This is a path-specific claim, not a platform
+  claim, so the benchmark remains out of ordinary CI and native installed profiles.
+- The next C8 capability must again start from measured end-to-end cost. Prefer a boundary that uses
+  the current Align surface; captured parallel process execution remains deferred unless measurement
+  justifies a genuine Align request.
 
 ## Resume in another environment
 
@@ -28,11 +36,11 @@ file records durable project state.
    Read `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and the applicable parts of
    `docs/specs/align-llm.md`. Earlier sections of this file are merged-checkpoint evidence, not
    pending instructions.
-2. Start C8 by selecting the smallest consumer-complete optimization that improves a real fixed
-   coding task end to end. Establish the reproducible current median for time to a passing patch
-   before making an optimization claim; tokens/second or an isolated model latency is not the C8
-   gate.
-3. Choose the first capability from measured evidence among context reduction, stable-context
+2. Continue C8 by selecting the next smallest consumer-complete optimization that improves a real
+   fixed coding task end to end. Establish its reproducible current median for time to a passing
+   patch before making an optimization claim; tokens/second or an isolated model latency is not the
+   C8 gate.
+3. Choose the next capability from measured evidence among context reduction, stable-context
    reuse, targeted tests, parallel checks, small-model routing, and cached static analysis. Record
    the exact consumer, baseline, changed boundary, owner test, and measurement command in the C8
    plan before implementation. Apply the proportional design gate only if the selected boundary
