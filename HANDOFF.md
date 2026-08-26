@@ -3,34 +3,21 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active capability: REQUEST19-PIN — restore the verifier owner to the hosted lane (2026-08-26)
+## No active capability (2026-08-26)
 
-- Work is on `agent/request19-drop-codegen-adoption`, based on align-llm `main` at `eb61086`.
-  Align Request 19 shipped in PR #891 as `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`.
-- `.align-revision` selects that merge. The existing `prompt-verifier-smoke` owner rejoins
-  `HOSTED_CHECK_TARGETS` immediately after `prompt-score-prefix-smoke`; the exact topology bytes and
-  authoritative topology/C6 plans move with it. No align-llm source or verifier behavior changes.
-- Align-side evidence reduced the submitted fixture from 1,517,324 raw-IR lines / 113.6 MB to
-  109,992 lines / 5.96 MB and the cold release build from 471.074 s with more than 832,704 KiB
-  observed RSS to 13.555 s and 266,400 KiB. The final compiler printed the exact PASS line in
-  13.27 s at 264,560 KiB.
-- The managed pin materializes. `gmake gate-topology-check` passes, the restored
-  `gmake prompt-verifier-smoke` prints the exact PASS line in 14.01 s wall, and `gmake check` passes
-  with the current 23-unit graph.
-- The identity-bound baseline chain is source `d574363`, oracle `63250e9`, and finalization
-  `cb28310`; both samples pass and both chain checks pass. At `cb28310`, executable preflight passes:
-  hosted checks take 41,714 ms, focused fresh-worker owners take 24,118 ms, the native boundary
-  profile passes in 160,704 ms, and the supervised worker's complete `make ci` passes in
-  370,529 ms. The installed profile completes in 763,510 ms and records the exact-head stamp.
-- The comprehensive review of `db92646` returned three P2 findings. The direct adopted-pin fixture
-  measurement now closes the performance-evidence class: check is 2.214 s / 126,192 KiB and build is
-  12.786 s / 259,720 KiB on native Linux x86_64, a 5.78x wall-clock ratio, with exact output. The
-  topology and baseline-chain cells were clean.
-- Request 19 is `ALIGN_LLM_VERIFIED`. Its aggregate proof was selected because the adoption restores
-  `prompt-verifier-smoke` to the hosted lane; the compiler pin alone does not select x86_64, Linux
-  aarch64, or Darwin requalification. Align's merged CI owns the unchanged compiler-platform
-  boundary, and this request changes no target-local C7 boundary. Pending: run publication preflight
-  with the review disposition, publish, and merge. Request 20 is closed by publication PR #107.
+- Align requests 1–20 are closed. Request 19 shipped in Align PR #891 as
+  `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; align-llm publication PR #108 merged as
+  `75d7cc39b40b287d47b1185306d6bd8e7eb582dc` after all required CI passed.
+- `prompt-verifier-smoke` is restored to the hosted lane. The adopted compiler measured 2.214 s /
+  126,192 KiB for `check` and 12.786 s / 259,720 KiB for `build` on the named representative host,
+  with exact program output.
+- Pure compiler-pin adoption now runs the request owner plus exact managed-toolchain verification
+  locally and the ordinary hosted graph in GitHub CI. It does not select native installed profiles;
+  mixed executable changes retain their normal scope, and deleted or renamed pins fail closed.
+- Platform qualification is capability-owned: run it for changed target-local behavior, a
+  target-specific claim, a concrete provider-CI gap, or an explicit audit—not for every compiler
+  pin. The policy, classifier, owner tests, and final comprehensive review are complete.
+- No work is active. The next roadmap capability is C8, Speed-first Optimization.
 
 ## Merged checkpoint: REQUEST20-PIN — adopt Align's macOS owned-JSON CI repair (2026-08-25)
 
