@@ -3,30 +3,19 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## C8 seventh capability: atomic single patch application (2026-08-26)
+## C8 eighth capability: move completed result documents (2026-08-26)
 
-- C8 generic-fallback rescan PR #117 merged on `main` at
-  `269aeec8eb3a31ba5e68ee2ebc72583e71df6477`. Its hosted check passed in 1m32s while the unaffected
-  x86_64 and aarch64 jobs each completed in 9s with every native qualification step skipped.
-- Active work is on `agent/c8-atomic-patch-apply`. The seventh capability is
-  `C8-ATOMIC-PATCH-APPLY`: replace each candidate/repair `git apply --check` plus `git apply` pair
-  with one `git apply --check --apply --recount` invocation. Git keeps whole-patch rejection atomic
-  without `--reject`; the capability removes the successful check-only stage and process while
-  preserving the remaining validation sequence, diagnostics, and timeout. The exact
-  pre-implementation 31-sample baseline at merge
-  `269aeec8eb3a31ba5e68ee2ebc72583e71df6477` is 47,600,824 ns; the binary SHA-256 is
-  `f77b3f102ada7d1ce405524cc8f1535dd6514dc501a07084f88f865a2a2b6f20`. Implementation
-  `6a08dd788ffc7f80900a0dc3d5f49bd269367567` passes its verification-loop owner, including the
-  multi-file atomic-rejection control and exact candidate/repair stage orders. The exact 101-pair
-  comparison measured 47,913,941 ns for the parent and 46,822,706 ns for the candidate, a 22,774 ppm
-  (2.28%) reduction. Normalized results differed only by the intentionally removed successful
-  `candidate-apply-check` record; all four candidate stages passed with matching exit codes.
-  Comprehensive review found one benchmark-owner regression: the default baseline and comparison
-  modes no longer accepted their documented five-stage historical binaries. The repair preserves
-  those exact legacy modes and adds explicit `baseline-atomic` for later four-stage baselines. A
-  five-sample replay accepted each baseline protocol; the legacy comparison also passed its vector
-  and normalized-document checks before its deliberately strict timing threshold rejected the
-  noisy five-sample result.
+- C8 atomic patch application PR #118 merged on `main` at
+  `185936492dd52453c8df3fe281c82645373a5946`. Its hosted check passed in 1m35s; the unaffected
+  x86_64 and aarch64 jobs completed in 5s and 9s with native qualification skipped. The shipped
+  101-pair comparison reduced the fixed task by 22,774 ppm (2.28%).
+- `agent/c8-move-process-argv` was measured and rejected without a PR: its 201-pair improvement was
+  only 283 ppm (0.028%) and its 31-pair comparison regressed. The local branch preserves that
+  evidence; do not carry its product change.
+- Active work is on `agent/c8-move-result-documents`. `C8-MOVE-RESULT-DOCUMENTS` moves completed
+  owned JSON buffers into their sole returned owner rather than cloning them at the terminal
+  handoff. The exact 31-sample `baseline-atomic` at merge `1859364` is 45,870,371 ns; its binary
+  SHA-256 is `7e00353a3110c16fd802bb935a9d4bf1be784540f23567cdf4704aee728896f3`.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -58,14 +47,13 @@ file records durable project state.
 
 ## Resume in another environment
 
-1. Fetch `origin` and resume `agent/c8-atomic-patch-apply` at its latest commit. Read `CLAUDE.md`,
-   then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. The ledger, implementation,
-   owner verification, exact performance comparison, comprehensive review, and coherent
-   review-finding repair are complete. Exact-head preflight is the first unfinished action.
-2. Commit the benchmark-owner repair, run exact-head preflight, and publish the English PR. Do not
-   repeat the full-diff review because the repair does not change the capability strategy.
-3. After merge, refresh `main` and choose the next smallest consumer-complete C8 optimization from
-   a new measured time-to-passing-patch baseline.
+1. Fetch `origin` and resume `agent/c8-move-result-documents`. Read `CLAUDE.md`, then
+   `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md` §2.8 and §10. The ledger and exact
+   baseline are complete; implementation is the first unfinished action.
+2. Remove only terminal clones whose completed local buffer moves to one returned owner, run the
+   named record owners, and compare exact binaries with `compare-atomic`.
+3. Publish only if the paired end-to-end improvement is repeatable; otherwise preserve the rejection
+   locally and choose another measured boundary.
 4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
    new Align request unless implementation exposes a genuine shipped-language, compiler/runtime,
    or standard-library gap under the request-register rules.
