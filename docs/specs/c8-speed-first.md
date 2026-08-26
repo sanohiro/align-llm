@@ -1,6 +1,6 @@
 # C8 Speed-first optimization
 
-Status: first five consumer-complete capabilities merged; sixth capability implemented and measured.
+Status: first six consumer-complete capabilities merged; seventh capability implemented and measured.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -158,6 +158,34 @@ The second scan is deliberately conditional rather than a second classification 
 derive path signals, change score semantics, or allocate a retained candidate index. Repositories
 without a positive path signal keep the complete deterministic fallback at the explicitly recorded
 extra traversal cost.
+
+### 2.7 Validate and apply each patch atomically once
+
+`C8-ATOMIC-PATCH-APPLY` is the seventh consumer-complete capability. The verification loop currently
+runs `git apply --check --recount` and then starts a second `git apply --recount` process for every
+candidate and repair patch. Git's normal no-`--reject` application is whole-patch atomic on an
+applicability failure, and `--check --apply` requests validation plus application in one invocation.
+The optimization replaces each check/apply pair with that one atomic command.
+
+| Field | Contract |
+| --- | --- |
+| Consumer | The C4 verification loop, repair prompts, persisted result documents, and failure-memory consumers of their stage arrays |
+| Command | Candidate and repair application each run `git apply --check --apply --recount PATCH` once in the task root with the existing timeout |
+| Successful candidate stages | `candidate-apply`, `build`, `targeted-test`, `full-test` in that exact order; the removed `candidate-apply-check` record is not synthesized |
+| Failed candidate application | Emit one failed `candidate-apply` record and prompt; do not run build or tests, and do not change any path when Git rejects an inapplicable multi-file patch |
+| Repair stages | After the failed validation stage, emit one `repair-apply` record. Success returns `REPAIRING`; failure returns `REPAIR_FAILED` with that invocation's exact status, code, summary, stdout, and stderr. The removed `repair-apply-check` and `NOT_RUN` state are not synthesized |
+| Existing behavior | Task input, patch bytes, `--recount`, root, timeout, expected code 0, build/test ordering, repair budget, terminal loop status, and every non-application record remain unchanged |
+| Atomicity and safety | No `--reject` or `--unsafe-paths` is used. An applicability failure rejects the whole patch without modifying the working tree; the owner includes a multi-file negative control with an earlier valid hunk and a later invalid hunk |
+| Timeout and spawn failure | Existing `verify.run` handling and diagnostics remain unchanged. This capability makes no stronger cleanup claim for an externally killed Git process than the previous apply invocation |
+| Correctness owner | `scripts/run-verification-loop-smoke` covers valid candidate/repair application, exact stage order, invalid repair, invalid multi-file candidate atomicity, prompt stage naming, and unchanged downstream result/failure-memory behavior |
+| Performance owner | `scripts/run-c8-selection-signal-benchmark baseline BINARY [SAMPLES]` before implementation and `scripts/run-c8-selection-signal-benchmark compare-atomic-apply PARENT_BINARY CANDIDATE_BINARY [SAMPLES]` after implementation |
+| Acceptance | On the fixed coding task, result documents agree after removing only the parent's successful `candidate-apply-check` record and normalizing durations; the candidate has the exact four-stage order, every retained stage passes with matching exit codes, and candidate median time to a passing patch is lower |
+| Platform scope | Platform-independent Git command orchestration and document construction; no target-local implementation or platform-specific speed claim |
+
+The authoritative contract is the [Git apply documentation](https://git-scm.com/docs/git-apply):
+without `--reject`, an applicability failure is atomic, and `--apply` after `--check` performs the
+application. The single invocation also removes the check-to-apply process gap rather than caching
+an earlier verdict.
 
 ## 3. Fixed passing-patch benchmark
 
@@ -519,7 +547,68 @@ improved by 2,115 ppm and 1,219 ppm in the same direction. The accepted result i
 reported as a small related-path improvement, not a fallback, universal repository, platform, or
 provider/model-time claim.
 
-## 9. Deferred C8 surfaces
+## 9. Seventh fixed coding-task baseline
+
+The seventh capability reuses the Section 4 real-stage fixture. The current passing path records and
+runs five stages because `candidate-apply-check` and `candidate-apply` are separate Git processes.
+The pre-implementation baseline is:
+
+```text
+commit:     269aeec8eb3a31ba5e68ee2ebc72583e71df6477
+binary SHA-256: f77b3f102ada7d1ce405524cc8f1535dd6514dc501a07084f88f865a2a2b6f20
+command:    scripts/run-c8-selection-signal-benchmark baseline /tmp/align-llm-c8-direct.hu4kUN/parent-269aeec.bin 31
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    31 measurements after two discarded warmup runs
+median:     47,600,824 ns
+candidate-apply-check median: 1,184,847 ns
+candidate-apply median:       1,157,644 ns
+build median:                 9,479,644 ns
+targeted-test median:        14,805,099 ns
+full-test median:            14,994,964 ns
+```
+
+The stage medians are diagnostic decomposition. The comparison owner must validate the intentional
+removal of the successful check record rather than requiring byte-identical result documents.
+`baseline` remains the exact five-stage owner for the earlier recorded capabilities;
+`baseline-atomic` owns new four-stage baselines after this capability. This keeps every recorded
+command reproducible without allowing either stage protocol to satisfy the other's evidence.
+
+The exact-commit comparison used:
+
+```text
+make build
+install -m 0755 ./main /tmp/align-llm-c8-direct.hu4kUN/candidate-6a08dd7.bin
+sha256sum /tmp/align-llm-c8-direct.hu4kUN/parent-269aeec.bin \
+  /tmp/align-llm-c8-direct.hu4kUN/candidate-6a08dd7.bin
+scripts/run-c8-selection-signal-benchmark compare-atomic-apply \
+  /tmp/align-llm-c8-direct.hu4kUN/parent-269aeec.bin \
+  /tmp/align-llm-c8-direct.hu4kUN/candidate-6a08dd7.bin 101
+```
+
+```text
+parent:     269aeec8eb3a31ba5e68ee2ebc72583e71df6477
+candidate:  6a08dd788ffc7f80900a0dc3d5f49bd269367567
+benchmark runner Git blob: 6312f93270d141f0119a203e0d9e162a82771b28
+benchmark runner SHA-256: 8ddc6ea37ff478f20ae9e34be7f4955b6709850ea59f5b6fcc0606d5050fc6a7
+parent binary SHA-256:    f77b3f102ada7d1ce405524cc8f1535dd6514dc501a07084f88f865a2a2b6f20
+candidate binary SHA-256: 7e00353a3110c16fd802bb935a9d4bf1be784540f23567cdf4704aee728896f3
+command:    scripts/run-c8-selection-signal-benchmark compare-atomic-apply /tmp/align-llm-c8-direct.hu4kUN/parent-269aeec.bin /tmp/align-llm-c8-direct.hu4kUN/candidate-6a08dd7.bin 101
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    101 parent and 101 candidate measurements after two discarded warmup pairs
+parent median:    47,913,941 ns
+candidate median: 46,822,706 ns
+improvement:      22,774 ppm (2.28%)
+```
+
+After duration normalization, the candidate result equaled the parent result with only the
+successful `candidate-apply-check` record removed. The candidate emitted the exact four-stage
+vector; every stage passed with matching actual and expected codes. A preceding 31-pair comparison
+improved by 26,289 ppm in the same direction. This is a path-local process-elimination claim, not a
+platform or provider/model-time claim.
+
+## 10. Deferred C8 surfaces
 
 Context reduction, stable-context reuse, parallel checks, small-model routing, and persisted static
 analysis remain separate capabilities. In particular, captured concurrent checks require an Align

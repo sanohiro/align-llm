@@ -19,6 +19,19 @@ from typing import Any
 FIXTURE_TEST_COUNT = 4_000
 DEFAULT_SAMPLE_COUNT = 15
 WARMUP_PAIR_COUNT = 2
+LEGACY_STAGES = [
+    "candidate-apply-check",
+    "candidate-apply",
+    "build",
+    "targeted-test",
+    "full-test",
+]
+ATOMIC_APPLY_STAGES = [
+    "candidate-apply",
+    "build",
+    "targeted-test",
+    "full-test",
+]
 
 
 class BenchmarkError(Exception):
@@ -192,8 +205,31 @@ def validate_related_only_delta(parent: Any, candidate: Any) -> None:
         raise BenchmarkError("benchmark result documents differ outside recommendations")
 
 
+def validate_atomic_apply_delta(parent: Any, candidate: Any) -> None:
+    projected = copy.deepcopy(parent)
+    attempts = projected.get("attempts")
+    if not isinstance(attempts, list) or len(attempts) != 1:
+        raise BenchmarkError("parent result has an unexpected attempt record")
+    stages = attempts[0].get("stages")
+    if not isinstance(stages, list) or not stages:
+        raise BenchmarkError("parent result has an unexpected stage record")
+    removed = stages.pop(0)
+    if not isinstance(removed, dict) or removed.get("stage") != "candidate-apply-check":
+        raise BenchmarkError("parent result did not begin with candidate-apply-check")
+    if removed.get("status") != "PASS" or removed.get("actual_code") != removed.get("expected_code"):
+        raise BenchmarkError("parent candidate-apply-check did not pass")
+    if projected != candidate:
+        raise BenchmarkError(
+            "benchmark result documents differ outside candidate-apply-check removal"
+        )
+
+
 def run_sample(
-    binary: Path, repository: Path, task: Path, result: Path
+    binary: Path,
+    repository: Path,
+    task: Path,
+    result: Path,
+    expected_stages: list[str],
 ) -> tuple[int, Any, dict[str, int]]:
     checked_run(["git", "reset", "--hard", "-q", "HEAD"], repository)
     if result.exists():
@@ -224,13 +260,6 @@ def run_sample(
     stages = attempts[0].get("stages")
     if not isinstance(stages, list):
         raise BenchmarkError(f"{binary} produced an unexpected stage record")
-    expected_stages = [
-        "candidate-apply-check",
-        "candidate-apply",
-        "build",
-        "targeted-test",
-        "full-test",
-    ]
     if [stage.get("stage") if isinstance(stage, dict) else None for stage in stages] != expected_stages:
         raise BenchmarkError(f"{binary} produced an unexpected ordered stage vector")
     stage_durations: dict[str, int] = {}
@@ -276,23 +305,29 @@ def median_map(samples: dict[str, list[int]]) -> dict[str, int]:
 def main() -> int:
     if len(sys.argv) < 3 or sys.argv[1] not in (
         "baseline",
+        "baseline-atomic",
         "compare",
         "compare-related-only",
+        "compare-atomic-apply",
     ):
         print(
             "usage: run-c8-selection-signal-benchmark baseline BINARY [SAMPLES]\n"
+            "       run-c8-selection-signal-benchmark baseline-atomic BINARY "
+            "[SAMPLES]\n"
             "       run-c8-selection-signal-benchmark compare PARENT_BINARY "
             "CANDIDATE_BINARY [SAMPLES]\n"
             "       run-c8-selection-signal-benchmark compare-related-only "
+            "PARENT_BINARY CANDIDATE_BINARY [SAMPLES]\n"
+            "       run-c8-selection-signal-benchmark compare-atomic-apply "
             "PARENT_BINARY CANDIDATE_BINARY [SAMPLES]",
             file=sys.stderr,
         )
         return 2
     try:
         mode = sys.argv[1]
-        if mode == "baseline":
+        if mode in ("baseline", "baseline-atomic"):
             if len(sys.argv) not in (3, 4):
-                raise BenchmarkError("baseline mode expects BINARY [SAMPLES]")
+                raise BenchmarkError(f"{mode} mode expects BINARY [SAMPLES]")
             binaries = (("baseline", resolve_binary(sys.argv[2])),)
             sample_count = parse_sample_count(sys.argv[3] if len(sys.argv) == 4 else None)
         else:
@@ -319,7 +354,15 @@ def main() -> int:
             for ordinal in range(sample_count + WARMUP_PAIR_COUNT):
                 order = binaries if ordinal % 2 == 0 else tuple(reversed(binaries))
                 for name, binary in order:
-                    elapsed, document, stages = run_sample(binary, repository, task, result)
+                    expected_stages = (
+                        LEGACY_STAGES
+                        if mode in ("baseline", "compare", "compare-related-only")
+                        or (mode == "compare-atomic-apply" and name == "parent")
+                        else ATOMIC_APPLY_STAGES
+                    )
+                    elapsed, document, stages = run_sample(
+                        binary, repository, task, result, expected_stages
+                    )
                     if name not in references:
                         references[name] = document
                     elif document != references[name]:
@@ -346,7 +389,9 @@ def main() -> int:
                     raise BenchmarkError("benchmark result documents differ")
             elif mode == "compare-related-only":
                 validate_related_only_delta(references["parent"], references["candidate"])
-            if mode != "baseline":
+            elif mode == "compare-atomic-apply":
+                validate_atomic_apply_delta(references["parent"], references["candidate"])
+            if mode not in ("baseline", "baseline-atomic"):
                 parent_median = output["parent_median_ns"]
                 candidate_median = output["candidate_median_ns"]
                 if candidate_median >= parent_median:

@@ -75,7 +75,7 @@ StageRecord {
   stderr: str,
 }
 
-StageStatus { StagePass, StageFail, StageTimeout, StageError, StageNotRun }
+StageStatus { StagePass, StageFail, StageTimeout, StageError }
 
 FailureEvaluation {
   schema_version: i64,
@@ -92,16 +92,6 @@ StageOutcome {
   stdout: string,
   stderr: string,
   document: string,
-}
-
-RepairRun {
-  check_status: StageStatus,
-  check_code: i64,
-  check_document: string,
-  apply_status: StageStatus,
-  apply_code: i64,
-  apply_document: string,
-  applied: bool,
 }
 
 AttemptRun {
@@ -143,7 +133,6 @@ fn stage_status_label(status: StageStatus) -> str = match status {
   StageFail => "FAIL",
   StageTimeout => "TIMEOUT",
   StageError => "ERROR",
-  StageNotRun => "NOT_RUN",
 }
 
 fn stage_passed(status: StageStatus) -> bool = match status {
@@ -219,42 +208,9 @@ fn run_spec(
   return run_command(stage, cmd, argv, expected_code, root, timeout_ns)
 }
 
-fn run_git(stage: str, check: bool, root: str, patch_path: str, timeout_ns: i64) -> StageOutcome {
-  argv := if check {
-    ["git", "apply", "--check", "--recount", patch_path].to_array()
-  } else {
-    ["git", "apply", "--recount", patch_path].to_array()
-  }
+fn apply_patch(stage: str, root: str, patch_path: str, timeout_ns: i64) -> StageOutcome {
+  argv := ["git", "apply", "--check", "--apply", "--recount", patch_path].to_array()
   return run_command(stage, "git", argv, 0, root, timeout_ns)
-}
-
-fn apply_repair(root: str, patch_path: str, timeout_ns: i64) -> RepairRun {
-  checked := run_git("repair-apply-check", true, root, patch_path, timeout_ns)
-  check_status := checked.status
-  check_document: string := checked.document.clone()
-  if !stage_passed(checked.status) {
-    return RepairRun {
-      check_status: check_status,
-      check_code: checked.actual_code,
-      check_document: check_document,
-      apply_status: StageStatus.StageNotRun,
-      apply_code: -1,
-      apply_document: "".clone(),
-      applied: false,
-    }
-  }
-  applied := run_git("repair-apply", false, root, patch_path, timeout_ns)
-  apply_status := applied.status
-  apply_document: string := applied.document.clone()
-  return RepairRun {
-    check_status: check_status,
-    check_code: checked.actual_code,
-    check_document: check_document,
-    apply_status: apply_status,
-    apply_code: applied.actual_code,
-    apply_document: apply_document,
-    applied: stage_passed(applied.status),
-  }
 }
 
 fn repair_prompt(
@@ -402,25 +358,7 @@ fn run_attempt(
   mut stage_document := "".clone()
 
   if !candidate_done {
-    candidate_check := run_git("candidate-apply-check", true, root, candidate_patch, timeout_ns)
-    stages.write(candidate_check.document)
-    stage_count = stage_count + 1
-    if !stage_passed(candidate_check.status) {
-      prompt := repair_prompt(task_id, evaluation_document, memory_context, "candidate-apply-check", candidate_check.expected_code, candidate_check.actual_code, candidate_check.summary, candidate_check.stdout, candidate_check.stderr)
-      stage_document = stages.to_string()
-      return AttemptRun {
-        status: "FAIL".clone(),
-        final_status: LoopStatus.Failed,
-        code: candidate_check.actual_code,
-        candidate_applied: false,
-        repaired: false,
-        repair_count: repair_count,
-        prompt: prompt.clone(),
-        stages: stage_document.clone(),
-      }
-    }
-    candidate_apply := run_git("candidate-apply", false, root, candidate_patch, timeout_ns)
-    stages.write(",")
+    candidate_apply := apply_patch("candidate-apply", root, candidate_patch, timeout_ns)
     stages.write(candidate_apply.document)
     stage_count = stage_count + 1
     if !stage_passed(candidate_apply.status) {
@@ -460,20 +398,15 @@ fn run_attempt(
         stages: stage_document.clone(),
       }
     }
-    repair_build := apply_repair(root, repair_patch, timeout_ns)
+    repair_build := apply_patch("repair-apply", root, repair_patch, timeout_ns)
     stages.write(",")
-    stages.write(repair_build.check_document)
-    if stage_passed(repair_build.check_status) {
-      stages.write(",")
-      stages.write(repair_build.apply_document)
-    }
-    if !repair_build.applied {
-      code := if !stage_passed(repair_build.check_status) { repair_build.check_code } else { repair_build.apply_code }
+    stages.write(repair_build.document)
+    if !stage_passed(repair_build.status) {
       stage_document = stages.to_string()
       return AttemptRun {
         status: "REPAIR_FAILED".clone(),
         final_status: LoopStatus.RepairFailed,
-        code: code,
+        code: repair_build.actual_code,
         candidate_applied: candidate_done,
         repaired: false,
         repair_count: repair_count,
@@ -514,20 +447,15 @@ fn run_attempt(
         stages: stage_document.clone(),
       }
     }
-    repair_targeted := apply_repair(root, repair_patch, timeout_ns)
+    repair_targeted := apply_patch("repair-apply", root, repair_patch, timeout_ns)
     stages.write(",")
-    stages.write(repair_targeted.check_document)
-    if stage_passed(repair_targeted.check_status) {
-      stages.write(",")
-      stages.write(repair_targeted.apply_document)
-    }
-    if !repair_targeted.applied {
-      code := if !stage_passed(repair_targeted.check_status) { repair_targeted.check_code } else { repair_targeted.apply_code }
+    stages.write(repair_targeted.document)
+    if !stage_passed(repair_targeted.status) {
       stage_document = stages.to_string()
       return AttemptRun {
         status: "REPAIR_FAILED".clone(),
         final_status: LoopStatus.RepairFailed,
-        code: code,
+        code: repair_targeted.actual_code,
         candidate_applied: candidate_done,
         repaired: false,
         repair_count: repair_count,
@@ -581,20 +509,15 @@ fn run_attempt(
       stages: stage_document.clone(),
     }
   }
-  repair_full := apply_repair(root, repair_patch, timeout_ns)
+  repair_full := apply_patch("repair-apply", root, repair_patch, timeout_ns)
   stages.write(",")
-  stages.write(repair_full.check_document)
-  if stage_passed(repair_full.check_status) {
-    stages.write(",")
-    stages.write(repair_full.apply_document)
-  }
-  if !repair_full.applied {
-    code := if !stage_passed(repair_full.check_status) { repair_full.check_code } else { repair_full.apply_code }
+  stages.write(repair_full.document)
+  if !stage_passed(repair_full.status) {
     stage_document = stages.to_string()
     return AttemptRun {
       status: "REPAIR_FAILED".clone(),
       final_status: LoopStatus.RepairFailed,
-      code: code,
+      code: repair_full.actual_code,
       candidate_applied: candidate_done,
       repaired: false,
       repair_count: repair_count,
