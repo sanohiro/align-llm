@@ -452,6 +452,71 @@ dimensions are outside reference parity and are owned by the synthetic corpus in
 also asserts the `bytes_read` bound and verifies that the model's size and modification time are
 unchanged, which is the read-only proof.
 
+## Model IR development
+
+The R1 consumer is `src/frontend_qwen.align`, specified by `docs/specs/r1-qwen-model-ir.md`. It
+consumes the new public, non-rendering `GgufTable` surface on `src/gguf.align` (`read_table` and its
+typed accessors) rather than re-parsing the container or re-decoding the R0 document, and turns one
+real Qwen2-architecture GGUF file into the Model IR and Block IR that `docs/specs/align-llm.md`
+section 5 places between the GGUF reader and the layout planner. It is strictly read-only on the
+model path and decodes no tensor payload: every tensor byte size is computed from the declared
+dimensions and the GGML block-geometry table, never from reading the data section. The tokenizer and
+vocabulary are out of scope — R1 reads only the declared array length of `tokenizer.ggml.tokens` and
+`tokenizer.ggml.merges`, never an element — so `docs/align-requests.md` Request 22 stays
+non-blocking. A model declaring a nonzero expert count, or any architecture other than `qwen2`, is
+rejected rather than partially described.
+
+The CLI arm mirrors `--inspect-gguf`:
+
+```sh
+./main --model-ir MODEL.gguf
+./main --model-ir MODEL.gguf OUT.json
+```
+
+The document bytes are byte-identical between the two forms. The one-operand form writes the
+`R1_MODEL_IR` document (`schema_version: 1`) to stdout followed by one newline and prints nothing
+else. The two-operand form writes the document to the named path and prints the stable summary block
+(`qwen model ir:`, `status:`, then `arch:`, `layers:`, `embd:`, `heads:`, `heads kv:`, `head dim:`,
+`ff:`, `vocab:`, `experts:`, `context:`, `blocks:`, `tensor bytes:`, and `size sum:`, plus `error:`
+and `detail:` on the error path). Both exit 0 on `status: "ok"` and return `Error.Invalid` on
+`status: "error"`. On `status: "error"` the document is still written with every value derived
+before the failure, the same failure-persistence behavior R0 established.
+
+Use `gmake model-ir-smoke` for the narrow durable owner. It needs no model, no network, and no
+reference tool: `scripts/gguf_fixture.py`'s qwen2 corpus generates a complete synthetic positive
+model plus a negative fixture per section 2.6 error code into a `mktemp -d` tree at test time, and
+the runner asserts the document with an inline Python block. It also asserts the
+`table-inspect-parity` agreement between `--inspect-gguf` and `--model-ir` over the combined corpus,
+so the two walks over one decoder cannot silently drift.
+
+The capability's own completeness proof is the size-sum oracle,
+`data_offset + Σ tensor_nbytes == file_size`, checked from inside the program on every input — real
+or synthetic — and asserted by `gmake model-ir-smoke` on the synthetic corpus.
+
+The roadmap gate — Model IR and Block IR can be produced — is discharged in part by that oracle and
+in part by a focused, opt-in qualification that compares the derived hyperparameters and quant
+summary against `llama-cli -v`'s `print_info` block on a real model. It is deliberately in no
+aggregate and in no CI lane:
+
+```sh
+ALIGN_LLM_GGUF_MODEL=/path/to/model.gguf \
+ALIGN_LLM_LLAMA_CLI=/path/to/llama-cli \
+  scripts/run-model-ir-parity
+```
+
+Both variables are required and neither has a default. If either the model or the reference
+executable is unset or absent, the runner prints one exact line — `model ir parity: N/A
+(ALIGN_LLM_GGUF_MODEL unset)` or `model ir parity: N/A (ALIGN_LLM_LLAMA_CLI unset)` — and exits 0.
+That skip never counts as a pass and must be named as the `N/A` reason in the pull request. A parse
+failure against the reference's log output fails closed (a nonzero exit, never a skip and never a
+silent pass). The runner also asserts the size-sum oracle against an independent `stat` of the file,
+the `bytes_read` bound, and that the model's size and modification time are unchanged, which is the
+read-only proof.
+
+The model path inherits R0's writable-by-the-invoking-user precondition unchanged — `read_table`
+uses the same `fs.open_rw` constructor — so Request 21 in `docs/align-requests.md` covers this
+capability too, still `PROPOSED` and non-blocking.
+
 ## The aarch64 platform-profile gates
 
 C7 evidence is target-bound, so each required non-x86 environment has its own reviewed profile.

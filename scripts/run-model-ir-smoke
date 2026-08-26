@@ -1,0 +1,492 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R1-QWEN-MODEL-IR narrow durable owner (`docs/specs/r1-qwen-model-ir.md` section 4.2). It needs no
+# model, no network, and no reference tool: `scripts/gguf_fixture.py` writes an independent synthetic
+# qwen2 corpus into a temporary tree, and every fixture is removed by the EXIT trap. That is why it
+# joins HOSTED_CHECK_TARGETS.
+#
+# Besides the R1 corpus it re-runs the entire R0 corpus through `--model-ir`, which is where the
+# container error codes and the truncation sweep are re-proved against the second walk, and it
+# compares both CLI arms over every fixture, which is the `table-inspect-parity` regression that
+# keeps the two walks from drifting.
+
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+temp_dir=$(mktemp -d)
+fixture_dir="$temp_dir/fixtures"
+work_dir="$temp_dir/work"
+
+cleanup() {
+  rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
+mkdir -p "$work_dir"
+python3 "$root_dir/scripts/gguf_fixture.py" "$fixture_dir"
+
+python3 - "$root_dir/main" "$fixture_dir" "$work_dir" <<'PY'
+import json
+import os
+import struct
+import subprocess
+import sys
+from pathlib import Path
+
+binary, fixture_dir, work_dir = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+manifest = json.loads((fixture_dir / "manifest.json").read_text(encoding="utf-8"))
+WINDOW_BYTES = manifest["window_bytes"]
+
+TOP_ORDER = [
+    "schema_version", "kind", "path", "status", "error_code", "error_detail",
+    "source", "model", "quant", "coverage", "blocks",
+]
+SOURCE_ORDER = [
+    "gguf_version", "alignment", "file_size", "data_offset", "tensor_count",
+    "metadata_kv_count", "bytes_read",
+]
+MODEL_ORDER = [
+    "arch", "n_layer", "n_embd", "n_head", "n_head_kv", "head_dim", "n_ff", "n_vocab",
+    "n_expert", "context_length", "rms_eps", "rms_eps_bits", "rope",
+]
+ROPE_ORDER = [
+    "type", "type_name", "type_source", "freq_base", "freq_base_bits",
+    "dim_count", "dim_count_source", "scaling_type",
+]
+QUANT_ORDER = ["file_type", "file_type_present", "type_counts", "total_tensor_bytes"]
+QUANT_ROW_ORDER = ["type", "type_name", "tensor_count", "bytes"]
+COVERAGE_ORDER = [
+    "tensor_count", "assigned_tensor_count", "unassigned_tensors", "block_count",
+    "data_offset", "total_tensor_bytes", "computed_end", "file_size", "size_sum_ok",
+]
+BLOCK_ORDER = [
+    "index", "kind", "layer", "expert", "tensor_count", "byte_size",
+    "first_absolute_offset", "end_absolute_offset", "contiguous", "tensors",
+]
+BLOCK_TENSOR_ORDER = [
+    "name", "role", "type", "type_name", "n_dims", "dims", "n_elements",
+    "block_size", "type_bytes", "nbytes", "offset", "absolute_offset",
+]
+SUMMARY_LABELS = [
+    "qwen model ir:", "status:", None, "arch:", None, "layers:", None, "embd:", None,
+    "heads:", None, "heads kv:", None, "head dim:", None, "ff:", None, "vocab:", None,
+    "experts:", None, "context:", None, "blocks:", None, "tensor bytes:", None,
+    "size sum:", None,
+]
+
+
+def fail(message):
+    raise SystemExit("model ir smoke: FAIL %s" % message)
+
+
+def run(args, env=None):
+    return subprocess.run([binary] + args, capture_output=True, env=env, cwd=str(work_dir))
+
+
+def compare(expected, actual, where, strict):
+    """`{"$f32": bits}` compares a JSON number against an exact IEEE-754 bit pattern: the two tools
+    format floats differently while agreeing bit for bit."""
+    if isinstance(expected, dict) and len(expected) == 1 and next(iter(expected)) in ("$f32", "$f64"):
+        tag, hexed = next(iter(expected.items()))
+        if not isinstance(actual, (int, float)) or isinstance(actual, bool):
+            fail("%s: expected a JSON number, got %r" % (where, actual))
+        if tag == "$f32":
+            got = "%08x" % struct.unpack("<I", struct.pack("<f", float(actual)))[0]
+        else:
+            got = "%016x" % struct.unpack("<Q", struct.pack("<d", float(actual)))[0]
+        if got != hexed:
+            fail("%s: float bits %s, expected %s (value %r)" % (where, got, hexed, actual))
+        return
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            fail("%s: expected an object, got %r" % (where, actual))
+        if strict and list(expected.keys()) != list(actual.keys()):
+            fail("%s: field order/set %r, expected %r"
+                 % (where, list(actual.keys()), list(expected.keys())))
+        for key, value in expected.items():
+            if key not in actual:
+                fail("%s: missing field %r" % (where, key))
+            compare(value, actual[key], "%s.%s" % (where, key), strict)
+        return
+    if isinstance(expected, list):
+        if not isinstance(actual, list):
+            fail("%s: expected an array, got %r" % (where, actual))
+        if len(expected) != len(actual):
+            fail("%s: length %d, expected %d" % (where, len(actual), len(expected)))
+        for index, (want, got) in enumerate(zip(expected, actual)):
+            compare(want, got, "%s[%d]" % (where, index), strict)
+        return
+    if expected != actual:
+        fail("%s: %r, expected %r" % (where, actual, expected))
+    if isinstance(expected, bool) != isinstance(actual, bool):
+        fail("%s: %r has the wrong JSON type" % (where, actual))
+
+
+def inspect_document(name, model, destination):
+    result = run(["--inspect-gguf", str(model), str(destination)])
+    if result.returncode < 0 or result.returncode > 125:
+        fail("%s: --inspect-gguf exit %d looks like an abort" % (name, result.returncode))
+    if not destination.exists():
+        fail("%s: --inspect-gguf wrote no document" % name)
+    return json.loads(destination.read_text(encoding="utf-8"))
+
+
+def table_inspect_parity(name, document, inspected):
+    """The two walks share one decoder, so every container-level fact must agree. Section 2.3.6."""
+    source = document["source"]
+    pairs = [
+        ("gguf_version", source["gguf_version"], inspected["header"]["version"]),
+        ("alignment", source["alignment"], inspected["alignment"]),
+        ("data_offset", source["data_offset"], inspected["data_offset"]),
+        ("file_size", source["file_size"], inspected["file_size"]),
+        ("bytes_read", source["bytes_read"], inspected["bytes_read"]),
+    ]
+    for label, ours, theirs in pairs:
+        if ours != theirs:
+            fail("table-inspect-parity %s: %s %r, --inspect-gguf says %r"
+                 % (name, label, ours, theirs))
+    # `kv_count` and `tensor_count` are column lengths, which equal the number of records
+    # `--inspect-gguf` rendered on every input, including a partially decoded one.
+    if source["metadata_kv_count"] != len(inspected["metadata"]):
+        fail("table-inspect-parity %s: metadata_kv_count %d, --inspect-gguf rendered %d"
+             % (name, source["metadata_kv_count"], len(inspected["metadata"])))
+    if source["tensor_count"] != len(inspected["tensors"]):
+        fail("table-inspect-parity %s: tensor_count %d, --inspect-gguf rendered %d"
+             % (name, source["tensor_count"], len(inspected["tensors"])))
+    # The container error code reaches `--model-ir` as `R1_GGUF_ERROR` with the container's own code
+    # as the detail, and only then.
+    if inspected["status"] == "error":
+        if document["error_code"] != "R1_GGUF_ERROR":
+            fail("table-inspect-parity %s: container error %r became %r"
+                 % (name, inspected["error_code"], document["error_code"]))
+        if document["error_detail"] != inspected["error_code"]:
+            fail("table-inspect-parity %s: detail %r, container code %r"
+                 % (name, document["error_detail"], inspected["error_code"]))
+    elif document["error_code"] == "R1_GGUF_ERROR":
+        fail("table-inspect-parity %s: R1_GGUF_ERROR without a container failure" % name)
+    # Every tensor the Block IR claimed must carry exactly the name, offset, type, and dimensions
+    # `--inspect-gguf` decoded at the same index.
+    by_name = {}
+    for tensor in inspected["tensors"]:
+        by_name.setdefault(tensor["name"], tensor)
+    for block in document["blocks"]:
+        for tensor in block["tensors"]:
+            theirs = by_name.get(tensor["name"])
+            if theirs is None:
+                fail("table-inspect-parity %s: block tensor %r is not in the container"
+                     % (name, tensor["name"]))
+            for field in ("type", "n_dims", "dims", "offset", "absolute_offset"):
+                if tensor[field] != theirs[field]:
+                    fail("table-inspect-parity %s: %s.%s %r, --inspect-gguf says %r"
+                         % (name, tensor["name"], field, tensor[field], theirs[field]))
+
+
+checked = 0
+for case in manifest["model_ir_cases"]:
+    name = case["name"]
+    model = fixture_dir / case["file"]
+    destination = work_dir / (name + ".model-ir.json")
+    result = run(["--model-ir", str(model), str(destination)])
+    expected_exit = case["exit"]
+    if expected_exit == 0 and result.returncode != 0:
+        fail("%s: exit %d, expected 0 (stderr %r)" % (name, result.returncode, result.stderr))
+    if expected_exit != 0 and result.returncode == 0:
+        fail("%s: exit 0, expected a nonzero status" % name)
+    # A model defect is a recorded `Err`, never an abort.
+    if result.returncode < 0 or result.returncode > 125:
+        fail("%s: exit %d looks like an abort, not a recorded failure" % (name, result.returncode))
+    if not destination.exists():
+        fail("%s: no document was written" % name)
+    document = json.loads(destination.read_text(encoding="utf-8"))
+
+    # `form-parity`: the two CLI forms emit byte-identical documents and agree on the exit status.
+    stdout_result = run(["--model-ir", str(model)])
+    if stdout_result.stdout != destination.read_bytes() + b"\n":
+        fail("%s: the stdout form is not byte-identical to the written document" % name)
+    if stdout_result.returncode != result.returncode:
+        fail("%s: the two forms disagree on the exit status" % name)
+
+    if document["schema_version"] != 1 or document["kind"] != "R1_MODEL_IR":
+        fail("%s: schema_version/kind %r/%r" % (name, document["schema_version"], document["kind"]))
+    if document["path"] != str(model):
+        fail("%s: path %r was not reported verbatim" % (name, document["path"]))
+    if document["source"]["file_size"] != model.stat().st_size:
+        fail("%s: source.file_size %d, expected %d"
+             % (name, document["source"]["file_size"], model.stat().st_size))
+
+    if "error" in case:
+        if document["status"] != "error":
+            fail("%s: status %r, expected 'error'" % (name, document["status"]))
+        want = case["error"]
+        if document["error_code"] != want["code"]:
+            fail("%s: error_code %r, expected %r" % (name, document["error_code"], want["code"]))
+        if document["error_detail"] != want["detail"]:
+            fail("%s: error_detail %r, expected %r"
+                 % (name, document["error_detail"], want["detail"]))
+    else:
+        if document["status"] != "ok":
+            fail("%s: status %r with error_code %r, expected 'ok'"
+                 % (name, document["status"], document["error_code"]))
+        if document["error_code"] != "" or document["error_detail"] != "":
+            fail("%s: an 'ok' document carries %r/%r"
+                 % (name, document["error_code"], document["error_detail"]))
+
+    for section in ("source", "model", "quant", "coverage", "blocks"):
+        if section in case:
+            compare(case[section], document[section], "%s.%s" % (name, section), strict=True)
+    if "blocks_len" in case and len(document["blocks"]) != case["blocks_len"]:
+        fail("%s: %d blocks survived, expected %d"
+             % (name, len(document["blocks"]), case["blocks_len"]))
+    if "table_sentinels" in case:
+        for field, value in case["table_sentinels"].items():
+            if document["source"][field] != value:
+                fail("%s: source.%s %r, expected %r"
+                     % (name, field, document["source"][field], value))
+    if "unassigned" in case:
+        if document["coverage"]["unassigned_tensors"] != case["unassigned"]:
+            fail("%s: unassigned_tensors %r, expected %r"
+                 % (name, document["coverage"]["unassigned_tensors"], case["unassigned"]))
+    if "bytes_read" in case and document["source"]["bytes_read"] != case["bytes_read"]:
+        fail("%s: bytes_read %d, expected exactly %d"
+             % (name, document["source"]["bytes_read"], case["bytes_read"]))
+    # Section 4.5 secondary metric: `read_table` is a second walk and must not start reading more.
+    if document["source"]["data_offset"] >= 0:
+        bound = document["source"]["data_offset"] + WINDOW_BYTES
+        if document["source"]["bytes_read"] >= bound:
+            fail("%s: bytes_read %d is not below data_offset + WINDOW_BYTES"
+                 % (name, document["source"]["bytes_read"]))
+
+    # `size-sum-oracle`: on every positive fixture the blocks account for every byte between
+    # `data_offset` and the end of the file.
+    coverage = document["coverage"]
+    if "error" not in case:
+        if not coverage["size_sum_ok"]:
+            fail("%s: the size-sum oracle did not hold" % name)
+        if coverage["computed_end"] != coverage["file_size"]:
+            fail("%s: computed_end %d, file_size %d"
+                 % (name, coverage["computed_end"], coverage["file_size"]))
+        if coverage["assigned_tensor_count"] != coverage["tensor_count"]:
+            fail("%s: %d of %d tensors assigned"
+                 % (name, coverage["assigned_tensor_count"], coverage["tensor_count"]))
+        if coverage["block_count"] != 2 * document["model"]["n_layer"] + 2:
+            fail("%s: %d blocks for %d layers"
+                 % (name, coverage["block_count"], document["model"]["n_layer"]))
+        # `block-order`: the emission order is fixed and is not file order.
+        expected_kinds = ["WeightBlock"]
+        for layer in range(document["model"]["n_layer"]):
+            expected_kinds += ["AttentionBlock", "MlpBlock"]
+        expected_kinds.append("WeightBlock")
+        if [b["kind"] for b in document["blocks"]] != expected_kinds:
+            fail("%s: block kinds %r" % (name, [b["kind"] for b in document["blocks"]]))
+        if [b["index"] for b in document["blocks"]] != list(range(len(document["blocks"]))):
+            fail("%s: block indexes are not the emission order" % name)
+        if any(b["expert"] != -1 for b in document["blocks"]):
+            fail("%s: R1 emits no expert block" % name)
+        # `quant-summary`: rows ascend by id and their bytes sum to the total.
+        rows = document["quant"]["type_counts"]
+        if [r["type"] for r in rows] != sorted(r["type"] for r in rows):
+            fail("%s: quant.type_counts is not ascending" % name)
+        if sum(r["bytes"] for r in rows) != document["quant"]["total_tensor_bytes"]:
+            fail("%s: quant rows do not sum to total_tensor_bytes" % name)
+        if sum(r["tensor_count"] for r in rows) != coverage["tensor_count"]:
+            fail("%s: quant rows do not account for every tensor" % name)
+
+    if case.get("tied"):
+        claimed = [t["name"] for b in document["blocks"] for t in b["tensors"]]
+        if claimed.count("token_embd.weight") != 2:
+            fail("%s: a tied embedding must appear in two blocks" % name)
+        roles = [t["role"] for b in document["blocks"] for t in b["tensors"]
+                 if t["name"] == "token_embd.weight"]
+        if sorted(roles) != ["output", "token_embd"]:
+            fail("%s: tied roles %r" % (name, roles))
+
+    if case.get("geometry_ids"):
+        seen = sorted(set(t["type"] for b in document["blocks"] for t in b["tensors"]))
+        if seen != case["geometry_ids"]:
+            fail("%s: geometry ids %r, expected %r" % (name, seen, case["geometry_ids"]))
+
+    if case.get("field_order"):
+        if list(document.keys()) != TOP_ORDER:
+            fail("%s: top-level field order %r" % (name, list(document.keys())))
+        if list(document["source"].keys()) != SOURCE_ORDER:
+            fail("%s: source field order %r" % (name, list(document["source"].keys())))
+        if list(document["model"].keys()) != MODEL_ORDER:
+            fail("%s: model field order %r" % (name, list(document["model"].keys())))
+        if list(document["model"]["rope"].keys()) != ROPE_ORDER:
+            fail("%s: rope field order %r" % (name, list(document["model"]["rope"].keys())))
+        if list(document["quant"].keys()) != QUANT_ORDER:
+            fail("%s: quant field order %r" % (name, list(document["quant"].keys())))
+        for row in document["quant"]["type_counts"]:
+            if list(row.keys()) != QUANT_ROW_ORDER:
+                fail("%s: quant row field order %r" % (name, list(row.keys())))
+        if list(document["coverage"].keys()) != COVERAGE_ORDER:
+            fail("%s: coverage field order %r" % (name, list(document["coverage"].keys())))
+        for block in document["blocks"]:
+            if list(block.keys()) != BLOCK_ORDER:
+                fail("%s: block field order %r" % (name, list(block.keys())))
+            for tensor in block["tensors"]:
+                if list(tensor.keys()) != BLOCK_TENSOR_ORDER:
+                    fail("%s: block tensor field order %r" % (name, list(tensor.keys())))
+
+    # `summary-order`: the section 2.4 lines appear in order, and the container-controlled `arch`
+    # and `detail` values each occupy exactly one line whatever bytes the container declares.
+    summary = result.stdout.decode("utf-8").split("\n")
+    for position, label in enumerate(SUMMARY_LABELS):
+        if label is not None and summary[position] != label:
+            fail("%s: summary line %d %r, expected %r" % (name, position, summary[position], label))
+    if "summary_arch" in case and summary[4] != case["summary_arch"]:
+        fail("%s: summary arch %r, expected %r" % (name, summary[4], case["summary_arch"]))
+    if summary[28] not in ("OK", "MISMATCH"):
+        fail("%s: summary size sum %r" % (name, summary[28]))
+    if "error" in case:
+        if summary[29] != "error:" or summary[30] != case["error"]["code"]:
+            fail("%s: summary error rows %r" % (name, summary[29:31]))
+        if summary[31] != "detail:":
+            fail("%s: summary detail label %r" % (name, summary[31]))
+        if "summary_detail" in case and summary[32] != case["summary_detail"]:
+            fail("%s: summary detail %r, expected %r" % (name, summary[32], case["summary_detail"]))
+        if summary[33] != "":
+            fail("%s: the detail value did not occupy exactly one line (%r)" % (name, summary[33]))
+    else:
+        if summary[29] != "":
+            fail("%s: an 'ok' summary printed %r after the size sum" % (name, summary[29]))
+
+    inspected = inspect_document(name, model, work_dir / (name + ".inspect.json"))
+    table_inspect_parity(name, document, inspected)
+    if "inspect_dims" in case:
+        got = [t["dims"] for t in inspected["tensors"]]
+        if got != case["inspect_dims"]:
+            fail("%s: dimension columns %r, expected %r" % (name, got, case["inspect_dims"]))
+    checked += 1
+
+if checked != len(manifest["model_ir_cases"]):
+    fail("only %d of %d R1 cases ran" % (checked, len(manifest["model_ir_cases"])))
+
+# The entire R0 corpus through `--model-ir`. Every container error code and the whole truncation
+# sweep are re-proved against the second walk, and the R0 positives all reach a non-container R1
+# rejection because none of them declares `general.architecture: "qwen2"`.
+r0_checked = 0
+for case in manifest["cases"]:
+    name = "r0-" + case["name"]
+    model = fixture_dir / case["file"]
+    destination = work_dir / (name + ".model-ir.json")
+    result = run(["--model-ir", str(model), str(destination)])
+    if result.returncode == 0:
+        fail("%s: no R0 fixture declares the qwen2 architecture" % name)
+    if result.returncode < 0 or result.returncode > 125:
+        fail("%s: exit %d looks like an abort, not a recorded failure" % (name, result.returncode))
+    if not destination.exists():
+        fail("%s: no document was written" % name)
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    inspected = inspect_document(name, model, work_dir / (name + ".inspect.json"))
+    table_inspect_parity(name, document, inspected)
+    if inspected["status"] == "ok" and document["error_code"] != "R1_UNSUPPORTED_ARCH":
+        fail("%s: a well-formed non-qwen2 container gave %r" % (name, document["error_code"]))
+    r0_checked += 1
+
+full_model = fixture_dir / "qwen2-full.gguf"
+full_document = (work_dir / "qwen2-full.model-ir.json").read_bytes()
+
+# Option/environment isolation: no environment variable changes any document byte.
+perturbed = dict(os.environ)
+perturbed.update({
+    "LC_ALL": "tr_TR.UTF-8", "LANG": "tr_TR.UTF-8", "TZ": "Pacific/Kiritimati",
+    "SOURCE_DATE_EPOCH": "1", "HOME": str(work_dir),
+    "ALIGN_LLM_GGUF_MODEL": "/nonexistent", "ALIGN_LLM_MODEL_IR_ROPE_TYPE": "9",
+})
+env_result = run(["--model-ir", str(full_model)], env=perturbed)
+if env_result.returncode != 0 or env_result.stdout != full_document + b"\n":
+    fail("env-perturbation: a perturbed environment changed the document")
+
+# Determinism across repeated derivations: no drift, no resource growth.
+for _ in range(64):
+    repeat = run(["--model-ir", str(full_model)])
+    if repeat.returncode != 0 or repeat.stdout != full_document + b"\n":
+        fail("repeat-model-ir: a repeated derivation diverged")
+
+# Arity. `--model-ir` is selected only at args[1], and arity is checked before any file work.
+no_args = run([])
+if no_args.returncode != 0 or b"--model-ir" not in no_args.stdout:
+    fail("cli-arity: the no-argument help does not name --model-ir")
+unknown = run(["--not-a-mode"])
+if unknown.returncode != 0 or b"Usage:" not in unknown.stdout:
+    fail("unknown-selector: an unrecognized selector must still print help and exit 0")
+inspect_still_works = run(["--inspect-gguf", str(full_model)])
+if inspect_still_works.returncode != 0 or b"R0_GGUF_INSPECTION" not in inspect_still_works.stdout:
+    fail("unknown-selector: the --inspect-gguf arm changed")
+missing_operand = run(["--model-ir"])
+if missing_operand.returncode == 0 or missing_operand.stdout != b"":
+    fail("cli-arity: a zero-operand invocation must fail with no output")
+too_many = run(["--model-ir", str(full_model), "a.json", "b.json"])
+if too_many.returncode == 0 or too_many.stdout != b"":
+    fail("cli-arity: a three-operand invocation must fail with no output")
+if (work_dir / "a.json").exists():
+    fail("cli-arity: an over-arity invocation created a file")
+
+# Path validation happens before `fs.open_rw`, so no destination is created.
+for label, bad_path in (("empty", ""), ("over-length", "x" * 4097)):
+    bad = run(["--model-ir", bad_path, str(work_dir / "bad-path.json")])
+    if bad.returncode == 0 or bad.stdout != b"":
+        fail("cli-path: an %s path must fail with no output" % label)
+    if (work_dir / "bad-path.json").exists():
+        fail("cli-path: an %s path created a destination file" % label)
+
+# An OS failure returns Err with no document and no summary, leaving a destination sentinel alone.
+sentinel = work_dir / "sentinel.json"
+sentinel.write_bytes(b"SENTINEL")
+absent = run(["--model-ir", str(fixture_dir / "absent.gguf"), str(sentinel)])
+if absent.returncode == 0 or absent.stdout != b"":
+    fail("missing-path: an absent model must fail with no output")
+if sentinel.read_bytes() != b"SENTINEL":
+    fail("untouched-destination: an OS failure rewrote the destination")
+
+denied_model = work_dir / "denied.gguf"
+denied_model.write_bytes(full_model.read_bytes())
+denied_model.chmod(0o000)
+if hasattr(os, "geteuid") and os.geteuid() == 0:
+    print("model ir smoke: denied-path SKIPPED (running as root; mode bits do not deny root)")
+else:
+    denied_sentinel = work_dir / "denied-sentinel.json"
+    denied_sentinel.write_bytes(b"SENTINEL")
+    denied_result = run(["--model-ir", str(denied_model), str(denied_sentinel)])
+    if denied_result.returncode == 0 or denied_result.stdout != b"":
+        fail("denied-path: an unreadable model must fail with no output")
+    if denied_sentinel.read_bytes() != b"SENTINEL":
+        fail("denied-path: an OS failure rewrote the destination")
+denied_model.chmod(0o600)
+
+# A model defect replaces the destination with the complete document — never a partial write.
+structural = run(["--model-ir", str(fixture_dir / "qwen2-wrong-arch.gguf"), str(sentinel)])
+if structural.returncode == 0:
+    fail("error-corpus: a model defect must exit nonzero")
+replaced = json.loads(sentinel.read_text(encoding="utf-8"))
+if replaced["error_code"] != "R1_UNSUPPORTED_ARCH":
+    fail("error-corpus: the destination does not hold the complete failure document")
+if b"qwen model ir:" not in structural.stdout or b"R1_UNSUPPORTED_ARCH" not in structural.stdout:
+    fail("error-corpus: the summary block does not report the error code")
+
+print("model ir smoke: %d qwen fixtures, %d R0 fixtures re-run" % (checked, r0_checked))
+PY
+
+# A bounded descriptor budget: one derivation opens one model descriptor and nothing else.
+(
+  ulimit -n 64
+  "$root_dir/main" --model-ir "$fixture_dir/qwen2-full.gguf" >/dev/null
+)
+
+# The generator writes every fixture into the temporary tree and nothing into the repository.
+leaked=$(find "$root_dir" -name '.git' -prune -o \
+  \( -name '*.gguf' -o -name 'manifest.json' \) -print 2>/dev/null || true)
+if [ -n "$leaked" ]; then
+  printf '%s\n' "model ir smoke: a fixture leaked into the repository:" >&2
+  printf '%s\n' "$leaked" >&2
+  exit 1
+fi
+if [ ! -d "$temp_dir" ]; then
+  printf '%s\n' "model ir smoke: the temporary fixture root vanished mid-run" >&2
+  exit 1
+fi
+
+printf '%s\n' "qwen model ir smoke: hyperparameters, block IR, geometry table, quantization summary, the size-sum oracle, the malformed corpus, table/inspect parity, and CLI arity/isolation PASS"

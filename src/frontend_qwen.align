@@ -1,0 +1,1072 @@
+module frontend_qwen
+
+import gguf
+
+// R1-QWEN-MODEL-IR (`docs/specs/r1-qwen-model-ir.md`). The sole owner of Qwen2 architecture
+// knowledge: it turns one real qwen2-architecture GGUF container into the Model IR (the
+// architecture-level hyperparameters a runtime needs to build an execution graph) and the Block IR
+// (the placeable, evictable, prefetchable units of `docs/specs/align-llm.md` section 5.2).
+//
+// It imports `gguf` and nothing else. R0 answers *what the file declares*; R1 answers *what the
+// model is* and *what the runtime must move*, and the two stay separate modules because
+// architecture-specific knowledge must not leak into the container reader.
+//
+// Three rules govern every line below.
+//
+//  1. No byte of the tensor data section is read. Every size is computed from the declared
+//     dimensions and the GGML block-geometry table `gguf.ggml_block_size` / `gguf.ggml_type_size`
+//     exposes. A type id with no verified geometry is `R1_UNKNOWN_TENSOR_TYPE`, never a guess: a
+//     wrong size silently corrupts every downstream offset and any layout plan built on it.
+//  2. Align integer overflow is two's-complement wrap with no trap and there is no `i64` `MAX`
+//     constant at this pin, so every arithmetic guard below is written in non-wrapping form and
+//     tested BEFORE the operation it protects.
+//  3. Validation is strictly ordered (section 2.6) and the first applicable row wins. No document
+//     and no stdout is produced before the whole derivation completes, so no partial output can be
+//     observed for any failure.
+
+// Section 2.6 thresholds. Each is an order of magnitude or more above anything a shipping dense
+// model declares, so a value above one is corruption rather than an unusual model.
+MAX_LAYERS := 512
+MAX_EMBD := 1048576
+MAX_HEADS := 4096
+MAX_FF := 16777216
+MAX_CONTEXT := 134217728
+MAX_UNASSIGNED_REPORTED := 16
+MAX_DETAIL_BYTES := 256
+
+// The one bound that must be named, written as a literal for the same reason `src/gguf.align` does.
+I64_MAX := 9223372036854775807
+
+HEX_DIGITS := "0123456789abcdef"
+
+// `qwen2` is assigned the NEOX rope layout by the architecture, not by the container: the reference
+// model declares no rope-type key. The value is recorded together with its source so a consumer can
+// tell a derived constant from a declared one (section 2.5.3).
+ROPE_TYPE_NEOX := 2
+
+// The GGUF value type ids this frontend names. `4` is UINT32, `6` is FLOAT32, `8` is STRING, `9` is
+// ARRAY.
+TYPE_UINT32 := 4
+TYPE_FLOAT32 := 6
+TYPE_STRING := 8
+TYPE_ARRAY := 9
+
+pub QwenIrStatus { Ok, Error }
+
+// The scalar fields exist for the CLI summary block and for the smoke's assertions; `document` is
+// the authoritative result and is moved, never cloned, into this its sole owning record.
+pub QwenModelIr {
+  status: QwenIrStatus,
+  error_code: string,
+  error_detail: string,
+  arch: string,
+  arch_present: bool,
+  n_layer: i64,
+  n_embd: i64,
+  n_head: i64,
+  n_head_kv: i64,
+  head_dim: i64,
+  n_ff: i64,
+  n_vocab: i64,
+  n_expert: i64,
+  context_length: i64,
+  rope_freq_base_bits: i64,
+  rms_eps_bits: i64,
+  block_count: i64,
+  total_tensor_bytes: i64,
+  size_sum_ok: bool,
+  document: string,
+}
+
+// The derived hyperparameters, carried together so the shape table is one small parameter rather
+// than seven.
+Hyper {
+  n_layer: i64,
+  n_embd: i64,
+  n_head: i64,
+  n_head_kv: i64,
+  head_dim: i64,
+  n_ff: i64,
+  n_vocab: i64,
+}
+
+// An expected tensor shape. `n_dims` is 1 or 2 for every Qwen2 tensor; `d1` is the identity for a
+// one-dimensional one.
+Shape { n_dims: i64, d0: i64, d1: i64 }
+
+fn int_text(value: i64) -> string {
+  b := builder()
+  b.write_int(value)
+  return b.to_string()
+}
+
+fn bool_text(value: bool) -> string {
+  if value {
+    return "true".clone()
+  }
+  return "false".clone()
+}
+
+// Lowercase hexadecimal of a raw 32-bit IEEE-754 pattern, most-significant nibble first, zero
+// padded. The pattern rode here through `as i64`, whose `int -> int` wrap is defined, so it is
+// non-negative and the arithmetic shift below is exact.
+fn hex32(bits: i64) -> string {
+  b := builder()
+  mut index := 7
+  loop {
+    if index < 0 { break }
+    shift := index * 4
+    nibble := (bits >> shift) & 15
+    b.write(HEX_DIGITS[nibble..nibble + 1])
+    index = index - 1
+  }
+  return b.to_string()
+}
+
+// `error_detail` is a diagnostic, not a contract on the identifier's completeness, so a longer one
+// is truncated at a UTF-8 scalar boundary and the truncation is not marked. The scan walks back over
+// continuation bytes (`0x80..0xBF`), so the cut can never split a scalar and the slice can never
+// abort.
+fn bounded_detail(value: str) -> string {
+  view := value.bytes()
+  if view.len() <= MAX_DETAIL_BYTES {
+    return value.clone()
+  }
+  mut cut := MAX_DETAIL_BYTES
+  loop {
+    if cut <= 0 { break }
+    byte := view.u8(cut) as i64
+    if byte < 128 || byte >= 192 { break }
+    cut = cut - 1
+  }
+  return value[0..cut].clone()
+}
+
+fn json_text_or_null(value: str, present: bool) -> string {
+  if !present {
+    return "null".clone()
+  }
+  return gguf.json_string(value)
+}
+
+// R1's stable, architecture-independent name for a tensor's function within its block. It exists so
+// a consumer does not have to string-match GGUF naming conventions, and it is the seam a second
+// frontend maps its own names onto.
+fn role_label(role: i64) -> str {
+  if role == 0 { return "token_embd" }
+  if role == 1 { return "attn_norm" }
+  if role == 2 { return "attn_q" }
+  if role == 3 { return "attn_q_bias" }
+  if role == 4 { return "attn_k" }
+  if role == 5 { return "attn_k_bias" }
+  if role == 6 { return "attn_v" }
+  if role == 7 { return "attn_v_bias" }
+  if role == 8 { return "attn_output" }
+  if role == 9 { return "ffn_norm" }
+  if role == 10 { return "ffn_gate" }
+  if role == 11 { return "ffn_up" }
+  if role == 12 { return "ffn_down" }
+  if role == 13 { return "output_norm" }
+  if role == 14 { return "output" }
+  return ""
+}
+
+fn role_suffix(role: i64) -> str {
+  if role == 1 { return "attn_norm.weight" }
+  if role == 2 { return "attn_q.weight" }
+  if role == 3 { return "attn_q.bias" }
+  if role == 4 { return "attn_k.weight" }
+  if role == 5 { return "attn_k.bias" }
+  if role == 6 { return "attn_v.weight" }
+  if role == 7 { return "attn_v.bias" }
+  if role == 8 { return "attn_output.weight" }
+  if role == 9 { return "ffn_norm.weight" }
+  if role == 10 { return "ffn_gate.weight" }
+  if role == 11 { return "ffn_up.weight" }
+  if role == 12 { return "ffn_down.weight" }
+  return ""
+}
+
+// Every name below was read out of the reference model, not assumed. Qwen2 attention carries QKV
+// biases, which many architectures do not; omitting them would leave 84 tensors unassigned.
+fn role_tensor_name(role: i64, layer: i64) -> string {
+  if role == 0 { return "token_embd.weight".clone() }
+  if role == 13 { return "output_norm.weight".clone() }
+  if role == 14 { return "output.weight".clone() }
+  b := builder()
+  b.write("blk.")
+  b.write_int(layer)
+  b.write(".")
+  b.write(role_suffix(role))
+  return b.to_string()
+}
+
+// A dense Qwen2 model produces exactly three kinds. `ExpertBlock` and `RouterBlock` are deferred to
+// the gpt-oss frontend; `KVBlock` and `DequantBlock` are runtime constructs no file tensor backs.
+fn block_kind_label(kind: i64) -> str {
+  if kind == 0 || kind == 3 { return "WeightBlock" }
+  if kind == 1 { return "AttentionBlock" }
+  if kind == 2 { return "MlpBlock" }
+  return ""
+}
+
+fn block_role_at(kind: i64, slot: i64) -> i64 {
+  if kind == 0 {
+    if slot == 0 { return 0 }
+    return -1
+  }
+  if kind == 1 {
+    if slot >= 0 && slot < 8 { return slot + 1 }
+    return -1
+  }
+  if kind == 2 {
+    if slot >= 0 && slot < 4 { return slot + 9 }
+    return -1
+  }
+  if kind == 3 {
+    if slot == 0 { return 13 }
+    if slot == 1 { return 14 }
+    return -1
+  }
+  return -1
+}
+
+// `n_head * head_dim == n_embd` and `n_head_kv * head_dim <= n_embd` hold by construction, because
+// `head_dim` is `n_embd / n_head` with the divisibility already proved, so neither product can wrap.
+fn expected_shape(role: i64, h: Hyper) -> Shape {
+  if role == 0 || role == 14 { return Shape { n_dims: 2, d0: h.n_embd, d1: h.n_vocab } }
+  if role == 1 || role == 9 || role == 13 { return Shape { n_dims: 1, d0: h.n_embd, d1: 1 } }
+  if role == 2 { return Shape { n_dims: 2, d0: h.n_embd, d1: h.n_head * h.head_dim } }
+  if role == 3 { return Shape { n_dims: 1, d0: h.n_head * h.head_dim, d1: 1 } }
+  if role == 4 || role == 6 { return Shape { n_dims: 2, d0: h.n_embd, d1: h.n_head_kv * h.head_dim } }
+  if role == 5 || role == 7 { return Shape { n_dims: 1, d0: h.n_head_kv * h.head_dim, d1: 1 } }
+  if role == 8 { return Shape { n_dims: 2, d0: h.n_head * h.head_dim, d1: h.n_embd } }
+  if role == 10 || role == 11 { return Shape { n_dims: 2, d0: h.n_embd, d1: h.n_ff } }
+  if role == 12 { return Shape { n_dims: 2, d0: h.n_ff, d1: h.n_embd } }
+  return Shape { n_dims: -1, d0: -1, d1: -1 }
+}
+
+// The element product, one axis at a time, testing representability before each multiplication.
+// A zero extent short-circuits to a zero product. `-1` means the product is not representable.
+fn element_count(d0: i64, d1: i64, d2: i64, d3: i64) -> i64 {
+  mut product := 1
+  mut axis := 0
+  loop {
+    if axis >= 4 { break }
+    extent := if axis == 0 {
+      d0
+    } else if axis == 1 {
+      d1
+    } else if axis == 2 {
+      d2
+    } else {
+      d3
+    }
+    if extent < 0 { return -1 }
+    if extent == 0 { return 0 }
+    if product > I64_MAX / extent { return -1 }
+    product = product * extent
+    axis = axis + 1
+  }
+  return product
+}
+
+// The division comes first, so the intermediate is never larger than `n_elements`. `-1` means the
+// byte size is not representable.
+fn tensor_nbytes(n_elements: i64, block_size: i64, type_bytes: i64) -> i64 {
+  blocks := n_elements / block_size
+  if type_bytes > 0 && blocks > I64_MAX / type_bytes { return -1 }
+  return blocks * type_bytes
+}
+
+fn dims_json(n_dims: i64, d0: i64, d1: i64, d2: i64, d3: i64) -> string {
+  b := builder()
+  b.write("[")
+  mut axis := 0
+  loop {
+    if axis >= n_dims { break }
+    if axis > 0 { b.write(",") }
+    if axis == 0 {
+      b.write_int(d0)
+    } else if axis == 1 {
+      b.write_int(d1)
+    } else if axis == 2 {
+      b.write_int(d2)
+    } else {
+      b.write_int(d3)
+    }
+    axis = axis + 1
+  }
+  b.write("]")
+  return b.to_string()
+}
+
+// One `blocks[].tensors[]` record. It is returned as an owned `string` rather than accumulated
+// through a parameter because `builder` is not a parameter type at this pin.
+fn tensor_json(
+  borrow t: gguf.GgufTable,
+  index: i64,
+  role: i64,
+  n_elements: i64,
+  nbytes: i64,
+) -> string {
+  name := gguf.tensor_name(t, index)
+  name_view: str := name
+  type_id := t.tensor_types[index]
+  type_label := gguf.ggml_type_name(type_id)
+  n_dims := t.tensor_n_dims[index]
+  dims := dims_json(
+    n_dims,
+    t.tensor_dim0[index],
+    t.tensor_dim1[index],
+    t.tensor_dim2[index],
+    t.tensor_dim3[index],
+  )
+  dims_view: str := dims
+  b := builder()
+  b.write("{\"name\":")
+  b.write(gguf.json_string(name_view))
+  b.write(",\"role\":")
+  b.write(gguf.json_string(role_label(role)))
+  b.write(",\"type\":")
+  b.write_int(type_id)
+  b.write(",\"type_name\":")
+  b.write(json_text_or_null(type_label, type_label.len() > 0))
+  b.write(",\"n_dims\":")
+  b.write_int(n_dims)
+  b.write(",\"dims\":")
+  b.write(dims_view)
+  b.write(",\"n_elements\":")
+  b.write_int(n_elements)
+  b.write(",\"block_size\":")
+  b.write_int(gguf.ggml_block_size(type_id))
+  b.write(",\"type_bytes\":")
+  b.write_int(gguf.ggml_type_size(type_id))
+  b.write(",\"nbytes\":")
+  b.write_int(nbytes)
+  b.write(",\"offset\":")
+  b.write_int(t.tensor_offsets[index])
+  b.write(",\"absolute_offset\":")
+  b.write_int(t.tensor_absolute_offsets[index])
+  b.write("}")
+  return b.to_string()
+}
+
+fn source_json(borrow t: gguf.GgufTable) -> string {
+  b := builder()
+  b.write("{\"gguf_version\":")
+  b.write_int(t.version)
+  b.write(",\"alignment\":")
+  b.write_int(t.alignment)
+  b.write(",\"file_size\":")
+  b.write_int(t.file_size)
+  b.write(",\"data_offset\":")
+  b.write_int(t.data_offset)
+  b.write(",\"tensor_count\":")
+  b.write_int(t.tensor_count)
+  b.write(",\"metadata_kv_count\":")
+  b.write_int(t.kv_count)
+  b.write(",\"bytes_read\":")
+  b.write_int(t.bytes_read)
+  b.write("}")
+  return b.to_string()
+}
+
+// Whether a member of `claimed` names `index`. The list is the block assembly's record of what it
+// took; a tensor named by two blocks — the tied-embedding case — appears once here and its bytes are
+// counted once in the section 4.3 oracle, which sums over the tensor table rather than over block
+// membership.
+fn claims(borrow claimed: array<i64>, index: i64) -> bool {
+  mut at := 0
+  loop {
+    if at >= claimed.len() { break }
+    if claimed[at] == index { return true }
+    at = at + 1
+  }
+  return false
+}
+
+// The one public entry point. `Err` is returned only for an invalid path argument or an
+// operating-system failure, both propagated unchanged from `gguf.read_table`. Every defect in the
+// file or in the model is data: it returns `Ok` with `status: Error`, a populated `error_code` and
+// `error_detail`, and a complete document.
+pub fn build_model_ir(path: str) -> Result<QwenModelIr, Error> {
+  table := gguf.read_table(path)?
+
+  mut code := "".clone()
+  mut detail := "".clone()
+  mut n_layer := -1
+  mut n_embd := -1
+  mut n_head := -1
+  mut n_head_kv := -1
+  mut head_dim := -1
+  mut n_ff := -1
+  mut n_vocab := -1
+  mut n_expert := -1
+  mut context_length := -1
+  mut rms_eps_bits := -1
+  mut rms_eps_text := "null".clone()
+  mut freq_base_bits := -1
+  mut freq_base_text := "null".clone()
+  mut rope_type := -1
+  mut rope_dim_count := -1
+  mut rope_dim_source := "".clone()
+  mut rope_scaling_json := "null".clone()
+  mut file_type := -1
+  mut file_type_present := false
+  mut quant_body := builder()
+  mut quant_rows := 0
+  mut blocks_body := builder()
+  mut block_count := 0
+  mut assigned := 0
+  mut unassigned_body := builder()
+  mut unassigned_rows := 0
+  mut total_bytes := -1
+  mut computed_end := -1
+  mut size_sum_ok := false
+
+  loop {
+    // Step 3. A container failure is data with the container's own code as the detail.
+    container_failed := match table.status {
+      Ok => false,
+      Error => true,
+    }
+    if container_failed {
+      code = "R1_GGUF_ERROR".clone()
+      container_code: str := table.error_code
+      detail = bounded_detail(container_code)
+      break
+    }
+
+    // Step 4. Architecture: present, UTF-8, exactly `qwen2`. A near relative such as `qwen3` shares
+    // much of the key vocabulary and differs in exactly the places a Model IR must be right about,
+    // so it is rejected rather than half-described.
+    architecture_view: str := table.architecture
+    if !table.architecture_present || architecture_view != "qwen2" {
+      code = "R1_UNSUPPORTED_ARCH".clone()
+      detail = if table.architecture_present {
+        bounded_detail(architecture_view)
+      } else {
+        "".clone()
+      }
+      break
+    }
+    rope_type = ROPE_TYPE_NEOX
+
+    // Step 5, first pass: presence of every required key, in the section 2.5.3 order.
+    mut missing := ""
+    if gguf.kv_type(table, "qwen2.block_count") < 0 {
+      missing = "qwen2.block_count"
+    } else if gguf.kv_type(table, "qwen2.embedding_length") < 0 {
+      missing = "qwen2.embedding_length"
+    } else if gguf.kv_type(table, "qwen2.attention.head_count") < 0 {
+      missing = "qwen2.attention.head_count"
+    } else if gguf.kv_type(table, "qwen2.attention.head_count_kv") < 0 {
+      missing = "qwen2.attention.head_count_kv"
+    } else if gguf.kv_type(table, "qwen2.feed_forward_length") < 0 {
+      missing = "qwen2.feed_forward_length"
+    } else if gguf.kv_type(table, "qwen2.context_length") < 0 {
+      missing = "qwen2.context_length"
+    } else if gguf.kv_type(table, "qwen2.attention.layer_norm_rms_epsilon") < 0 {
+      missing = "qwen2.attention.layer_norm_rms_epsilon"
+    } else if gguf.kv_type(table, "qwen2.rope.freq_base") < 0 {
+      missing = "qwen2.rope.freq_base"
+    }
+    if missing.len() > 0 {
+      code = "R1_MISSING_KEY".clone()
+      detail = missing.clone()
+      break
+    }
+
+    // Step 5, second pass: the declared value type of every required key, then of every optional key
+    // that is present. `general.file_type` is deliberately absent from this pass: an absent or
+    // non-`UINT32` value is reported as `file_type_present: false`, not as a defect.
+    mut mistyped := ""
+    if gguf.kv_type(table, "qwen2.block_count") != TYPE_UINT32 {
+      mistyped = "qwen2.block_count"
+    } else if gguf.kv_type(table, "qwen2.embedding_length") != TYPE_UINT32 {
+      mistyped = "qwen2.embedding_length"
+    } else if gguf.kv_type(table, "qwen2.attention.head_count") != TYPE_UINT32 {
+      mistyped = "qwen2.attention.head_count"
+    } else if gguf.kv_type(table, "qwen2.attention.head_count_kv") != TYPE_UINT32 {
+      mistyped = "qwen2.attention.head_count_kv"
+    } else if gguf.kv_type(table, "qwen2.feed_forward_length") != TYPE_UINT32 {
+      mistyped = "qwen2.feed_forward_length"
+    } else if gguf.kv_type(table, "qwen2.context_length") != TYPE_UINT32 {
+      mistyped = "qwen2.context_length"
+    } else if gguf.kv_type(table, "qwen2.attention.layer_norm_rms_epsilon") != TYPE_FLOAT32 {
+      mistyped = "qwen2.attention.layer_norm_rms_epsilon"
+    } else if gguf.kv_type(table, "qwen2.rope.freq_base") != TYPE_FLOAT32 {
+      mistyped = "qwen2.rope.freq_base"
+    } else if gguf.kv_type(table, "qwen2.expert_count") >= 0
+      && gguf.kv_type(table, "qwen2.expert_count") != TYPE_UINT32 {
+      mistyped = "qwen2.expert_count"
+    } else if gguf.kv_type(table, "qwen2.rope.dimension_count") >= 0
+      && gguf.kv_type(table, "qwen2.rope.dimension_count") != TYPE_UINT32 {
+      mistyped = "qwen2.rope.dimension_count"
+    } else if gguf.kv_type(table, "qwen2.rope.scaling.type") >= 0
+      && gguf.kv_type(table, "qwen2.rope.scaling.type") != TYPE_STRING {
+      mistyped = "qwen2.rope.scaling.type"
+    }
+    if mistyped.len() > 0 {
+      code = "R1_KEY_TYPE_MISMATCH".clone()
+      detail = mistyped.clone()
+      break
+    }
+
+    // Every accessor below is preceded by its presence and class check, so `else { -1 }` is a
+    // fail-closed default that the guards above already exclude.
+    n_layer = match gguf.kv_int(table, "qwen2.block_count") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_embd = match gguf.kv_int(table, "qwen2.embedding_length") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_head = match gguf.kv_int(table, "qwen2.attention.head_count") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_head_kv = match gguf.kv_int(table, "qwen2.attention.head_count_kv") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_ff = match gguf.kv_int(table, "qwen2.feed_forward_length") {
+      Some(value) => value,
+      None => -1,
+    }
+    context_length = match gguf.kv_int(table, "qwen2.context_length") {
+      Some(value) => value,
+      None => -1,
+    }
+    rms_eps_bits = match gguf.kv_float_bits(table, "qwen2.attention.layer_norm_rms_epsilon") {
+      Some(value) => value,
+      None => -1,
+    }
+    rms_eps_text = match gguf.kv_float_text(table, "qwen2.attention.layer_norm_rms_epsilon") {
+      Some(value) => value,
+      None => "null".clone(),
+    }
+    freq_base_bits = match gguf.kv_float_bits(table, "qwen2.rope.freq_base") {
+      Some(value) => value,
+      None => -1,
+    }
+    freq_base_text = match gguf.kv_float_text(table, "qwen2.rope.freq_base") {
+      Some(value) => value,
+      None => "null".clone(),
+    }
+    if gguf.kv_type(table, "general.file_type") == TYPE_UINT32 {
+      file_type = match gguf.kv_int(table, "general.file_type") {
+        Some(value) => value,
+        None => -1,
+      }
+      file_type_present = file_type >= 0
+    }
+    rope_scaling_json = match gguf.kv_string(table, "qwen2.rope.scaling.type") {
+      Some(value) => {
+        scaling_view: str := value
+        gguf.json_string(scaling_view)
+      },
+      None => "null".clone(),
+    }
+
+    // Step 6. Plausibility and derivation, in the section 2.5.3 order, including every divisibility
+    // requirement.
+    mut implausible := ""
+    if n_layer < 1 || n_layer > MAX_LAYERS {
+      implausible = "qwen2.block_count"
+    } else if n_embd < 1 || n_embd > MAX_EMBD {
+      implausible = "qwen2.embedding_length"
+    } else if n_head < 1 || n_head > MAX_HEADS {
+      implausible = "qwen2.attention.head_count"
+    } else if n_head_kv < 1 || n_head_kv > n_head || n_head % n_head_kv != 0 {
+      implausible = "qwen2.attention.head_count_kv"
+    } else if n_embd % n_head != 0 {
+      implausible = "qwen2.embedding_length"
+    } else if n_ff < 1 || n_ff > MAX_FF {
+      implausible = "qwen2.feed_forward_length"
+    } else if context_length < 1 || context_length > MAX_CONTEXT {
+      implausible = "qwen2.context_length"
+    }
+    if implausible.len() > 0 {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = implausible.clone()
+      break
+    }
+    head_dim = n_embd / n_head
+    rope_dim_count = match gguf.kv_int(table, "qwen2.rope.dimension_count") {
+      Some(value) => value,
+      None => head_dim,
+    }
+    rope_dim_source = if gguf.kv_type(table, "qwen2.rope.dimension_count") >= 0 {
+      "metadata".clone()
+    } else {
+      "derived".clone()
+    }
+    if rope_dim_count < 1 || rope_dim_count > head_dim {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = "qwen2.rope.dimension_count".clone()
+      break
+    }
+
+    // Step 7. A dense frontend describes a dense model. A file declaring experts is rejected rather
+    // than half-described: a Model IR that silently omitted the expert tensors would satisfy neither
+    // the coverage check nor a consumer.
+    n_expert = match gguf.kv_int(table, "qwen2.expert_count") {
+      Some(value) => value,
+      None => 0,
+    }
+    if n_expert != 0 {
+      code = "R1_UNSUPPORTED_MOE".clone()
+      detail = int_text(n_expert)
+      break
+    }
+
+    // Step 8. The tensor geometry pass, in file order.
+    mut nbytes_column: array_builder<i64> := array_builder()
+    mut elements_column: array_builder<i64> := array_builder()
+    mut running := 0
+    mut geometry_failed := false
+    mut index := 0
+    loop {
+      if index >= table.tensor_count { break }
+      name := gguf.tensor_name(table, index)
+      name_view: str := name
+      if table.name_valid[index] != 0 {
+        duplicate := gguf.find_tensor(table, name_view)
+        if duplicate >= 0 && duplicate != index {
+          code = "R1_DUPLICATE_TENSOR".clone()
+          detail = bounded_detail(name_view)
+          geometry_failed = true
+          break
+        }
+      }
+      type_id := table.tensor_types[index]
+      block_size := gguf.ggml_block_size(type_id)
+      type_bytes := gguf.ggml_type_size(type_id)
+      if block_size == 0 || type_bytes == 0 {
+        code = "R1_UNKNOWN_TENSOR_TYPE".clone()
+        detail = int_text(type_id)
+        geometry_failed = true
+        break
+      }
+      n_elements := element_count(
+        table.tensor_dim0[index],
+        table.tensor_dim1[index],
+        table.tensor_dim2[index],
+        table.tensor_dim3[index],
+      )
+      if n_elements < 0 {
+        code = "R1_SIZE_OVERFLOW".clone()
+        detail = bounded_detail(name_view)
+        geometry_failed = true
+        break
+      }
+      if n_elements % block_size != 0 {
+        code = "R1_TENSOR_SHAPE_UNALIGNED".clone()
+        detail = bounded_detail(name_view)
+        geometry_failed = true
+        break
+      }
+      nbytes := tensor_nbytes(n_elements, block_size, type_bytes)
+      if nbytes < 0 || running > I64_MAX - nbytes {
+        code = "R1_SIZE_OVERFLOW".clone()
+        detail = bounded_detail(name_view)
+        geometry_failed = true
+        break
+      }
+      running = running + nbytes
+      nbytes_column.push(nbytes)
+      elements_column.push(n_elements)
+      index = index + 1
+    }
+    if geometry_failed { break }
+    nbytes_of := nbytes_column.build()
+    elements_of := elements_column.build()
+    total_bytes = running
+
+    // The quantization summary: one ascending row per distinct `ggml_type` id present in the table.
+    // Ids are bounded by the geometry table, which stops at 30, so a fixed sweep is exhaustive and
+    // deterministic.
+    mut type_id := 0
+    loop {
+      if type_id > 30 { break }
+      mut rows := 0
+      mut bytes := 0
+      mut scan := 0
+      loop {
+        if scan >= table.tensor_count { break }
+        if table.tensor_types[scan] == type_id {
+          rows = rows + 1
+          bytes = bytes + nbytes_of[scan]
+        }
+        scan = scan + 1
+      }
+      if rows > 0 {
+        if quant_rows > 0 { quant_body.write(",") }
+        quant_body.write("{\"type\":")
+        quant_body.write_int(type_id)
+        quant_body.write(",\"type_name\":")
+        quant_body.write(gguf.json_string(gguf.ggml_type_name(type_id)))
+        quant_body.write(",\"tensor_count\":")
+        quant_body.write_int(rows)
+        quant_body.write(",\"bytes\":")
+        quant_body.write_int(bytes)
+        quant_body.write("}")
+        quant_rows = quant_rows + 1
+      }
+      type_id = type_id + 1
+    }
+
+    // Step 9. `n_vocab` is `dims[1]` of `token_embd.weight`, cross-checked against the declared
+    // length of `tokenizer.ggml.tokens`. R1 reads that array's *length* and nothing else, which is
+    // exactly what keeps Align Request 22 non-blocking.
+    embd_index := gguf.find_tensor(table, "token_embd.weight")
+    if embd_index < 0 {
+      code = "R1_MISSING_TENSOR".clone()
+      detail = "token_embd.weight".clone()
+      break
+    }
+    n_vocab = gguf.tensor_dim(table, embd_index, 1)
+    mut vocab_mismatch := false
+    match gguf.kv_array_length(table, "tokenizer.ggml.tokens") {
+      Some(declared) => {
+        if declared != n_vocab {
+          code = "R1_VOCAB_MISMATCH".clone()
+          b := builder()
+          b.write_int(declared)
+          b.write("!=")
+          b.write_int(n_vocab)
+          detail = b.to_string()
+          vocab_mismatch = true
+        }
+      },
+      None => {},
+    }
+    if vocab_mismatch { break }
+
+    hyper := Hyper {
+      n_layer: n_layer,
+      n_embd: n_embd,
+      n_head: n_head,
+      n_head_kv: n_head_kv,
+      head_dim: head_dim,
+      n_ff: n_ff,
+      n_vocab: n_vocab,
+    }
+
+    // Step 10. Block assembly in the fixed emission order, which is not file order:
+    //   index 0                   embedding WeightBlock
+    //   index 1 + 2*L             AttentionBlock, layer L
+    //   index 2 + 2*L             MlpBlock, layer L
+    //   index 1 + 2*n_layer       output WeightBlock
+    mut claimed_column: array_builder<i64> := array_builder()
+    total_blocks := 2 * n_layer + 2
+    mut assembly_failed := false
+    mut slot := 0
+    loop {
+      if slot >= total_blocks { break }
+      kind := if slot == 0 {
+        0
+      } else if slot == total_blocks - 1 {
+        3
+      } else if (slot - 1) % 2 == 0 {
+        1
+      } else {
+        2
+      }
+      layer := if slot == 0 || slot == total_blocks - 1 { -1 } else { (slot - 1) / 2 }
+      mut members := builder()
+      mut member_count := 0
+      mut byte_size := 0
+      mut first_abs := -1
+      mut end_abs := -1
+      mut member_slot := 0
+      loop {
+        role := block_role_at(kind, member_slot)
+        if role < 0 { break }
+        wanted := role_tensor_name(role, layer)
+        wanted_view: str := wanted
+        mut found := gguf.find_tensor(table, wanted_view)
+        // Tied embeddings: an absent `output.weight` puts `token_embd.weight` in two blocks. The
+        // condition is visible in the document as two blocks naming the same tensor, so `model`
+        // gains no field for it, and the coverage accounting counts its bytes once.
+        if found < 0 && role == 14 {
+          found = gguf.find_tensor(table, "token_embd.weight")
+        }
+        if found < 0 {
+          code = "R1_MISSING_TENSOR".clone()
+          detail = bounded_detail(wanted_view)
+          assembly_failed = true
+          break
+        }
+        want := expected_shape(role, hyper)
+        got_dims := table.tensor_n_dims[found]
+        got_d0 := table.tensor_dim0[found]
+        got_d1 := table.tensor_dim1[found]
+        if got_dims != want.n_dims || got_d0 != want.d0 || got_d1 != want.d1 {
+          code = "R1_TENSOR_SHAPE_UNEXPECTED".clone()
+          member_name := gguf.tensor_name(table, found)
+          member_view: str := member_name
+          detail = bounded_detail(member_view)
+          assembly_failed = true
+          break
+        }
+        nbytes := nbytes_of[found]
+        absolute := table.tensor_absolute_offsets[found]
+        if member_count > 0 { members.write(",") }
+        member_json := tensor_json(table, found, role, elements_of[found], nbytes)
+        member_json_view: str := member_json
+        members.write(member_json_view)
+        byte_size = byte_size + nbytes
+        if absolute >= 0 {
+          if first_abs < 0 || absolute < first_abs { first_abs = absolute }
+          member_end := absolute + nbytes
+          if member_end > end_abs { end_abs = member_end }
+        }
+        claimed_column.push(found)
+        member_count = member_count + 1
+        member_slot = member_slot + 1
+      }
+      if assembly_failed { break }
+      // `contiguous` is `true` when the block's tensors occupy one unbroken byte range. It is
+      // computed here because a layout planner needs it and recomputing it per consumer invites an
+      // off-by-one. A `false` here is a measured fact about the file, not a defect.
+      contiguous := first_abs >= 0 && end_abs - first_abs == byte_size
+      if block_count > 0 { blocks_body.write(",") }
+      blocks_body.write("{\"index\":")
+      blocks_body.write_int(block_count)
+      blocks_body.write(",\"kind\":")
+      blocks_body.write(gguf.json_string(block_kind_label(kind)))
+      blocks_body.write(",\"layer\":")
+      blocks_body.write_int(layer)
+      // `expert` is always `-1` in R1 and exists so that an `ExpertBlock` from a later frontend does
+      // not force `schema_version: 2`.
+      blocks_body.write(",\"expert\":-1,\"tensor_count\":")
+      blocks_body.write_int(member_count)
+      blocks_body.write(",\"byte_size\":")
+      blocks_body.write_int(byte_size)
+      blocks_body.write(",\"first_absolute_offset\":")
+      blocks_body.write_int(first_abs)
+      blocks_body.write(",\"end_absolute_offset\":")
+      blocks_body.write_int(end_abs)
+      blocks_body.write(",\"contiguous\":")
+      blocks_body.write(bool_text(contiguous))
+      blocks_body.write(",\"tensors\":[")
+      members_json := members.to_string()
+      members_view: str := members_json
+      blocks_body.write(members_view)
+      blocks_body.write("]}")
+      block_count = block_count + 1
+      slot = slot + 1
+    }
+    if assembly_failed { break }
+    claimed := claimed_column.build()
+
+    // Step 11. Every tensor in the table must be claimed by at least one block. A partial Block IR
+    // is not a Block IR, so an unassigned tensor is a failure and not a warning.
+    mut first_unassigned := -1
+    mut scan := 0
+    loop {
+      if scan >= table.tensor_count { break }
+      if claims(claimed, scan) {
+        assigned = assigned + 1
+      } else {
+        if first_unassigned < 0 { first_unassigned = scan }
+        if unassigned_rows < MAX_UNASSIGNED_REPORTED {
+          unassigned_name := gguf.tensor_name(table, scan)
+          unassigned_view: str := unassigned_name
+          if unassigned_rows > 0 { unassigned_body.write(",") }
+          unassigned_body.write(gguf.json_string(unassigned_view))
+          unassigned_rows = unassigned_rows + 1
+        }
+      }
+      scan = scan + 1
+    }
+    if first_unassigned >= 0 {
+      code = "R1_UNASSIGNED_TENSOR".clone()
+      first_name := gguf.tensor_name(table, first_unassigned)
+      first_view: str := first_name
+      detail = bounded_detail(first_view)
+      break
+    }
+
+    // Step 12. The size-sum oracle: `data_offset + Σ nbytes == file_size`. "Too large to add" and
+    // "does not add up" are different facts, so an unrepresentable sum is an overflow, not a
+    // mismatch.
+    if total_bytes > I64_MAX - table.data_offset {
+      code = "R1_SIZE_OVERFLOW".clone()
+      detail = "data_offset".clone()
+      break
+    }
+    computed_end = table.data_offset + total_bytes
+    size_sum_ok = computed_end == table.file_size
+    if !size_sum_ok {
+      code = "R1_SIZE_SUM_MISMATCH".clone()
+      b := builder()
+      b.write_int(computed_end)
+      b.write("!=")
+      b.write_int(table.file_size)
+      detail = b.to_string()
+      break
+    }
+    break
+  }
+
+  failed := code.len() > 0
+
+  architecture_view: str := table.architecture
+  code_view: str := code
+  detail_view: str := detail
+  rms_eps_view: str := rms_eps_text
+  freq_base_view: str := freq_base_text
+  rope_dim_source_view: str := rope_dim_source
+  rope_scaling_view: str := rope_scaling_json
+
+  model := builder()
+  model.write("{\"arch\":")
+  model.write(json_text_or_null(architecture_view, table.architecture_present))
+  model.write(",\"n_layer\":")
+  model.write_int(n_layer)
+  model.write(",\"n_embd\":")
+  model.write_int(n_embd)
+  model.write(",\"n_head\":")
+  model.write_int(n_head)
+  model.write(",\"n_head_kv\":")
+  model.write_int(n_head_kv)
+  model.write(",\"head_dim\":")
+  model.write_int(head_dim)
+  model.write(",\"n_ff\":")
+  model.write_int(n_ff)
+  model.write(",\"n_vocab\":")
+  model.write_int(n_vocab)
+  model.write(",\"n_expert\":")
+  model.write_int(n_expert)
+  model.write(",\"context_length\":")
+  model.write_int(context_length)
+  model.write(",\"rms_eps\":")
+  model.write(rms_eps_view)
+  model.write(",\"rms_eps_bits\":")
+  rms_eps_hex := hex32(rms_eps_bits)
+  rms_eps_hex_view: str := rms_eps_hex
+  model.write(json_text_or_null(rms_eps_hex_view, rms_eps_bits >= 0))
+  model.write(",\"rope\":{\"type\":")
+  model.write_int(rope_type)
+  model.write(",\"type_name\":")
+  model.write(json_text_or_null("neox", rope_type >= 0))
+  // `rope.type` is architecture-owned and is not read from the file, and that is stated rather than
+  // hidden: `type_source` is the only field in `model` whose value comes from architecture knowledge
+  // rather than from the container.
+  model.write(",\"type_source\":")
+  model.write(json_text_or_null("architecture", rope_type >= 0))
+  model.write(",\"freq_base\":")
+  model.write(freq_base_view)
+  model.write(",\"freq_base_bits\":")
+  freq_base_hex := hex32(freq_base_bits)
+  freq_base_hex_view: str := freq_base_hex
+  model.write(json_text_or_null(freq_base_hex_view, freq_base_bits >= 0))
+  model.write(",\"dim_count\":")
+  model.write_int(rope_dim_count)
+  model.write(",\"dim_count_source\":")
+  model.write(json_text_or_null(rope_dim_source_view, rope_dim_source_view.len() > 0))
+  model.write(",\"scaling_type\":")
+  model.write(rope_scaling_view)
+  model.write("}}")
+
+  quant := builder()
+  quant.write("{\"file_type\":")
+  quant.write_int(file_type)
+  quant.write(",\"file_type_present\":")
+  quant.write(bool_text(file_type_present))
+  // `file_type` is deliberately not given a name: the `LLAMA_FTYPE_*` enumeration is a llama.cpp
+  // concept, not a GGUF-normative one. `type_counts` is the authoritative summary, decoded from the
+  // file.
+  quant.write(",\"type_counts\":[")
+  quant_rows_json := quant_body.to_string()
+  quant_view: str := quant_rows_json
+  quant.write(quant_view)
+  quant.write("],\"total_tensor_bytes\":")
+  quant.write_int(total_bytes)
+  quant.write("}")
+
+  coverage := builder()
+  coverage.write("{\"tensor_count\":")
+  coverage.write_int(table.tensor_count)
+  coverage.write(",\"assigned_tensor_count\":")
+  coverage.write_int(assigned)
+  coverage.write(",\"unassigned_tensors\":[")
+  unassigned_json := unassigned_body.to_string()
+  unassigned_view: str := unassigned_json
+  coverage.write(unassigned_view)
+  coverage.write("],\"block_count\":")
+  coverage.write_int(block_count)
+  coverage.write(",\"data_offset\":")
+  coverage.write_int(table.data_offset)
+  coverage.write(",\"total_tensor_bytes\":")
+  coverage.write_int(total_bytes)
+  coverage.write(",\"computed_end\":")
+  coverage.write_int(computed_end)
+  coverage.write(",\"file_size\":")
+  coverage.write_int(table.file_size)
+  coverage.write(",\"size_sum_ok\":")
+  coverage.write(bool_text(size_sum_ok))
+  coverage.write("}")
+
+  source_object := source_json(table)
+  source_view: str := source_object
+  model_object := model.to_string()
+  model_view: str := model_object
+  quant_object := quant.to_string()
+  quant_object_view: str := quant_object
+  coverage_object := coverage.to_string()
+  coverage_view: str := coverage_object
+  blocks_json := blocks_body.to_string()
+  blocks_view: str := blocks_json
+
+  document := builder()
+  document.write("{\"schema_version\":1,\"kind\":\"R1_MODEL_IR\",\"path\":")
+  document.write(gguf.json_string(path))
+  document.write(",\"status\":")
+  document.write(gguf.json_string(if failed { "error" } else { "ok" }))
+  document.write(",\"error_code\":")
+  document.write(gguf.json_string(code_view))
+  document.write(",\"error_detail\":")
+  document.write(gguf.json_string(detail_view))
+  document.write(",\"source\":")
+  document.write(source_view)
+  document.write(",\"model\":")
+  document.write(model_view)
+  document.write(",\"quant\":")
+  document.write(quant_object_view)
+  document.write(",\"coverage\":")
+  document.write(coverage_view)
+  document.write(",\"blocks\":[")
+  document.write(blocks_view)
+  document.write("]}")
+  document_text := document.to_string()
+
+  architecture_present := table.architecture_present
+  return Ok(QwenModelIr {
+      status: if failed { QwenIrStatus.Error } else { QwenIrStatus.Ok },
+      error_code: code.clone(),
+      error_detail: detail.clone(),
+      arch: architecture_view.clone(),
+      arch_present: architecture_present,
+      n_layer: n_layer,
+      n_embd: n_embd,
+      n_head: n_head,
+      n_head_kv: n_head_kv,
+      head_dim: head_dim,
+      n_ff: n_ff,
+      n_vocab: n_vocab,
+      n_expert: n_expert,
+      context_length: context_length,
+      rope_freq_base_bits: freq_base_bits,
+      rms_eps_bits: rms_eps_bits,
+      block_count: block_count,
+      total_tensor_bytes: total_bytes,
+      size_sum_ok: size_sum_ok,
+      document: document_text,
+    })
+}

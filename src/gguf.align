@@ -116,6 +116,13 @@ ScalarValue {
   text_valid: bool,
   byte_length: i64,
   is_string: bool,
+  // Section 2.3.2 column feed. `float_bits` carries the raw IEEE-754 pattern through `as i64`, whose
+  // `int -> int` wrap is defined and therefore exactly reversible; there is no bit-cast at this pin.
+  float_bits: i64,
+  has_float: bool,
+  float_finite: bool,
+  array_elem_type: i64,
+  array_length: i64,
 }
 
 KvRow {
@@ -128,11 +135,32 @@ KvRow {
   has_int: bool,
   text: string,
   text_valid: bool,
+  float_bits: i64,
+  has_float: bool,
+  float_finite: bool,
+  float_text: string,
+  array_elem_type: i64,
+  array_length: i64,
 }
 
 // `absolute_offset` needs `data_offset`, which is only known once the whole table has been walked,
 // so each entry is emitted up to (and including) its `offset` field and closed during rendering.
-TensorRow { json_prefix: string, offset: i64, offset_field: i64 }
+// The decoded fields beside the prefix are what `read_table` freezes into columns: an axis the
+// tensor does not declare holds `1`, the multiplicative identity, so an element-count product is a
+// fixed four-term multiplication with no branch.
+TensorRow {
+  json_prefix: string,
+  offset: i64,
+  offset_field: i64,
+  name: string,
+  name_valid: bool,
+  n_dims: i64,
+  dim0: i64,
+  dim1: i64,
+  dim2: i64,
+  dim3: i64,
+  type_id: i64,
+}
 
 fn fault(code: str, offset: i64) -> Fault =
 Fault { code: code, offset: offset, os: false, os_error: Error.Invalid }
@@ -143,8 +171,11 @@ Fault { code: "GGUF_IO", offset: -1, os: true, os_error: e }
 fn no_fault() -> Fault = fault("", -1)
 
 // The one text-to-JSON boundary. `json.encode` owns escaping, so a GGUF string carrying a quote, a
-// backslash, a control byte, an embedded NUL, or a 4-byte scalar survives into valid JSON.
-fn json_string(value: str) -> string {
+// backslash, a control byte, an embedded NUL, or a 4-byte scalar survives into valid JSON. It is
+// public because `src/frontend_qwen.align` splices container-supplied text into its own document and
+// must cross the wire boundary through this one encoder rather than a second escaping grammar
+// (`docs/specs/r1-qwen-model-ir.md` section 2.5, section 2.7).
+pub fn json_string(value: str) -> string {
   boxed := TextBox { v: value }
   encoded := json.encode(boxed)
   return encoded[5..encoded.len() - 1].clone()
@@ -449,6 +480,11 @@ fn read_f32(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor
       text_valid: false,
       byte_length: -1,
       is_string: false,
+      float_bits: bits as i64,
+      has_float: true,
+      float_finite: f32_finite(bits),
+      array_elem_type: -1,
+      array_length: -1,
     })
 }
 
@@ -473,6 +509,11 @@ fn read_f64(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor
       text_valid: false,
       byte_length: -1,
       is_string: false,
+      float_bits: bits as i64,
+      has_float: true,
+      float_finite: f64_finite(bits),
+      array_elem_type: -1,
+      array_length: -1,
     })
 }
 
@@ -522,6 +563,11 @@ fn int_scalar(value: i64) -> ScalarValue = ScalarValue {
   text_valid: false,
   byte_length: -1,
   is_string: false,
+  float_bits: 0,
+  has_float: false,
+  float_finite: false,
+  array_elem_type: -1,
+  array_length: -1,
 }
 
 fn decode_scalar(
@@ -565,6 +611,11 @@ fn decode_scalar(
         text_valid: false,
         byte_length: -1,
         is_string: false,
+        float_bits: 0,
+        has_float: false,
+        float_finite: false,
+        array_elem_type: -1,
+        array_length: -1,
       })
   }
   if type_id == 8 {
@@ -581,6 +632,11 @@ fn decode_scalar(
         text_valid: decoded.valid,
         byte_length: length,
         is_string: true,
+        float_bits: 0,
+        has_float: false,
+        float_finite: false,
+        array_elem_type: -1,
+        array_length: -1,
       })
   }
   if type_id == 10 {
@@ -688,6 +744,11 @@ fn decode_array(
       text_valid: false,
       byte_length: -1,
       is_string: false,
+      float_bits: 0,
+      has_float: false,
+      float_finite: false,
+      array_elem_type: element_type,
+      array_length: length,
     })
 }
 
@@ -733,6 +794,11 @@ fn decode_kv(
     b.write_int(value.byte_length)
   }
   b.write("}")
+  float_text := if value.has_float && value.float_finite {
+    value.json.clone()
+  } else {
+    "".clone()
+  }
   return Ok(KvRow {
       json: b.to_string(),
       key: key.text,
@@ -743,6 +809,12 @@ fn decode_kv(
       has_int: value.has_int,
       text: value.text,
       text_valid: value.text_valid,
+      float_bits: value.float_bits,
+      has_float: value.has_float,
+      float_finite: value.float_finite,
+      float_text: float_text,
+      array_elem_type: value.array_elem_type,
+      array_length: value.array_length,
     })
 }
 
@@ -761,10 +833,20 @@ fn decode_tensor(
     return Err(fault("GGUF_BAD_DIMS", dims_at))
   }
   dims := builder()
+  // An axis the tensor does not declare holds the multiplicative identity, so a consumer's element
+  // product is a fixed four-term multiplication with no branch (section 2.3.2).
+  mut dim0 := 1
+  mut dim1 := 1
+  mut dim2 := 1
+  mut dim3 := 1
   mut axis := 0
   loop {
     if axis >= n_dims { break }
     extent := read_u64_checked(handle, window, c, "GGUF_COUNT_OVERFLOW")?
+    if axis == 0 { dim0 = extent }
+    if axis == 1 { dim1 = extent }
+    if axis == 2 { dim2 = extent }
+    if axis == 3 { dim3 = extent }
     if axis > 0 { dims.write(",") }
     dims.write_int(extent)
     axis = axis + 1
@@ -797,7 +879,19 @@ fn decode_tensor(
   b.write(bool_text(type_label.len() > 0))
   b.write(",\"offset\":")
   b.write_int(offset)
-  return Ok(TensorRow { json_prefix: b.to_string(), offset: offset, offset_field: offset_at })
+  return Ok(TensorRow {
+      json_prefix: b.to_string(),
+      offset: offset,
+      offset_field: offset_at,
+      name: name.text,
+      name_valid: name.valid,
+      n_dims: n_dims,
+      dim0: dim0,
+      dim1: dim1,
+      dim2: dim2,
+      dim3: dim3,
+      type_id: type_id,
+    })
 }
 
 fn is_power_of_two(value: i64) -> bool {
@@ -1141,5 +1235,461 @@ pub fn inspect(path: str) -> Result<GgufInspection, Error> {
       architecture: w.architecture,
       architecture_present: architecture_present,
       document: document,
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
+// R1 producer surface (`docs/specs/r1-qwen-model-ir.md` section 2.3).
+//
+// `GgufTable` is the non-rendering view of one container: every collection field is either an owned
+// `string` holding all decoded text back-to-back or an `array<i64>` of Copy scalars. Text is
+// addressed by an explicit `[start, end)` pair rather than a separator, because a raw GGUF key,
+// string value, or tensor name may legitimately contain `U+0000`. Only decoded, valid text is ever
+// appended, so every recorded boundary is a UTF-8 scalar boundary and a slice can never abort.
+//
+// `read_table` and `inspect` are two walks over one decoder: they call the same `decode_header`,
+// `decode_kv`, `decode_tensor`, `resolve_data_offset`, and `check_tensor_ranges`. They cannot share
+// a single walk function because `builder` is not a parameter type at this pin (section 2.3.6), so
+// each accumulates its own bodies inline. `table-inspect-parity` is the regression that keeps the
+// two walks from drifting.
+
+pub GgufTable {
+  status: GgufStatus,
+  error_code: string,
+  error_offset: i64,
+  file_size: i64,
+  bytes_read: i64,
+  version: i64,
+  alignment: i64,
+  metadata_end: i64,
+  tensor_table_end: i64,
+  data_offset: i64,
+  architecture: string,
+  architecture_present: bool,
+
+  // Metadata columns. Every column holds exactly `kv_count` entries, which is the number of pairs
+  // decoded before the walk stopped, not the count the header declared.
+  kv_count: i64,
+  keys: string,
+  key_starts: array<i64>,
+  key_ends: array<i64>,
+  key_valid: array<i64>,
+  kv_types: array<i64>,
+  kv_ints: array<i64>,
+  kv_has_int: array<i64>,
+  kv_float_bits: array<i64>,
+  kv_has_float: array<i64>,
+  texts: string,
+  kv_text_starts: array<i64>,
+  kv_text_ends: array<i64>,
+  kv_has_text: array<i64>,
+  kv_array_elem_types: array<i64>,
+  kv_array_lengths: array<i64>,
+
+  // Tensor columns. Every column holds exactly `tensor_count` entries, on the same rule.
+  tensor_count: i64,
+  names: string,
+  name_starts: array<i64>,
+  name_ends: array<i64>,
+  name_valid: array<i64>,
+  tensor_n_dims: array<i64>,
+  tensor_dim0: array<i64>,
+  tensor_dim1: array<i64>,
+  tensor_dim2: array<i64>,
+  tensor_dim3: array<i64>,
+  tensor_types: array<i64>,
+  tensor_offsets: array<i64>,
+  tensor_absolute_offsets: array<i64>,
+}
+
+// Elements per GGML block for the types whose geometry was transcribed and cross-checked. Every
+// other id — including all `IQ*` and `TQ*` types and every id GGML adds after the pin — returns `0`,
+// which a consumer must treat as "cannot be sized" rather than guessing (section 2.5.7).
+pub fn ggml_block_size(id: i64) -> i64 {
+  if id == 0 { return 1 }
+  if id == 1 { return 1 }
+  if id == 2 { return 32 }
+  if id == 3 { return 32 }
+  if id == 6 { return 32 }
+  if id == 7 { return 32 }
+  if id == 8 { return 32 }
+  if id == 9 { return 32 }
+  if id == 10 { return 256 }
+  if id == 11 { return 256 }
+  if id == 12 { return 256 }
+  if id == 13 { return 256 }
+  if id == 14 { return 256 }
+  if id == 15 { return 256 }
+  if id == 24 { return 1 }
+  if id == 25 { return 1 }
+  if id == 26 { return 1 }
+  if id == 27 { return 1 }
+  if id == 28 { return 1 }
+  if id == 30 { return 1 }
+  return 0
+}
+
+// Bytes per GGML block for the same set. `ggml_type_name` keeps its full R0 table and is unchanged:
+// naming a type and sizing it are different claims, and only the second is narrowed here.
+pub fn ggml_type_size(id: i64) -> i64 {
+  if id == 0 { return 4 }
+  if id == 1 { return 2 }
+  if id == 2 { return 18 }
+  if id == 3 { return 20 }
+  if id == 6 { return 22 }
+  if id == 7 { return 24 }
+  if id == 8 { return 34 }
+  if id == 9 { return 40 }
+  if id == 10 { return 84 }
+  if id == 11 { return 110 }
+  if id == 12 { return 144 }
+  if id == 13 { return 176 }
+  if id == 14 { return 210 }
+  if id == 15 { return 292 }
+  if id == 24 { return 1 }
+  if id == 25 { return 2 }
+  if id == 26 { return 4 }
+  if id == 27 { return 8 }
+  if id == 28 { return 8 }
+  if id == 30 { return 2 }
+  return 0
+}
+
+// The first index whose decoded key equals `key`, or `-1`. A key whose bytes were not valid UTF-8
+// holds a zero-length span and can never match, which is what keeps an undecodable key from
+// colliding with a present empty one.
+pub fn find_key(borrow t: GgufTable, key: str) -> i64 {
+  mut index := 0
+  loop {
+    if index >= t.kv_count { break }
+    if t.key_valid[index] != 0 && t.keys[t.key_starts[index]..t.key_ends[index]] == key {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
+}
+
+pub fn find_tensor(borrow t: GgufTable, name: str) -> i64 {
+  mut index := 0
+  loop {
+    if index >= t.tensor_count { break }
+    if t.name_valid[index] != 0 && t.names[t.name_starts[index]..t.name_ends[index]] == name {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
+}
+
+// The GGUF value type id stored under `key`, or `-1` when the key is absent. This is what lets a
+// consumer tell "absent" from "present with the wrong class", which the `Option` accessors below
+// deliberately conflate.
+pub fn kv_type(borrow t: GgufTable, key: str) -> i64 {
+  index := find_key(t, key)
+  if index < 0 { return -1 }
+  return t.kv_types[index]
+}
+
+pub fn kv_int(borrow t: GgufTable, key: str) -> Option<i64> {
+  index := find_key(t, key)
+  if index < 0 { return None }
+  if t.kv_has_int[index] == 0 { return None }
+  return Some(t.kv_ints[index])
+}
+
+pub fn kv_float_bits(borrow t: GgufTable, key: str) -> Option<i64> {
+  index := find_key(t, key)
+  if index < 0 { return None }
+  if t.kv_has_float[index] == 0 { return None }
+  return Some(t.kv_float_bits[index])
+}
+
+pub fn kv_string(borrow t: GgufTable, key: str) -> Option<string> {
+  index := find_key(t, key)
+  if index < 0 { return None }
+  if t.kv_types[index] != 8 { return None }
+  if t.kv_has_text[index] == 0 { return None }
+  return Some(t.texts[t.kv_text_starts[index]..t.kv_text_ends[index]].clone())
+}
+
+// The `write_float` rendering of a float value, which is exact and round-trips but never uses
+// exponent notation. A non-finite float has no text; its bit pattern remains authoritative.
+pub fn kv_float_text(borrow t: GgufTable, key: str) -> Option<string> {
+  index := find_key(t, key)
+  if index < 0 { return None }
+  if t.kv_has_float[index] == 0 { return None }
+  if t.kv_has_text[index] == 0 { return None }
+  return Some(t.texts[t.kv_text_starts[index]..t.kv_text_ends[index]].clone())
+}
+
+pub fn kv_array_length(borrow t: GgufTable, key: str) -> Option<i64> {
+  index := find_key(t, key)
+  if index < 0 { return None }
+  if t.kv_types[index] != 9 { return None }
+  return Some(t.kv_array_lengths[index])
+}
+
+// An index outside `[0, tensor_count)` and a name that failed UTF-8 both yield `""`; `find_tensor`
+// never matching an invalid name is the discriminator.
+pub fn tensor_name(borrow t: GgufTable, index: i64) -> string {
+  if index < 0 || index >= t.tensor_count { return "".clone() }
+  if t.name_valid[index] == 0 { return "".clone() }
+  return t.names[t.name_starts[index]..t.name_ends[index]].clone()
+}
+
+pub fn tensor_dim(borrow t: GgufTable, index: i64, axis: i64) -> i64 {
+  if index < 0 || index >= t.tensor_count { return -1 }
+  if axis == 0 { return t.tensor_dim0[index] }
+  if axis == 1 { return t.tensor_dim1[index] }
+  if axis == 2 { return t.tensor_dim2[index] }
+  if axis == 3 { return t.tensor_dim3[index] }
+  return -1
+}
+
+// The second public entry point. `Err` is returned only for an invalid path argument or an
+// operating-system failure; every structural defect in the file is data, exactly as for `inspect`.
+// The rendering work `decode_kv` / `decode_tensor` perform is discarded here, which buys the one
+// property that matters: there is exactly one implementation of GGUF container interpretation in the
+// repository, so `--inspect-gguf` and `--model-ir` cannot disagree about what a file says.
+pub fn read_table(path: str) -> Result<GgufTable, Error> {
+  if !valid_path(path) {
+    return Err(Error.Invalid)
+  }
+  handle := fs.open_rw(path)?
+  file_size := handle.len()?
+  mut window := buffer(WINDOW_BYTES)
+  mut c := Cursor {
+    file_size: file_size,
+    window_base: -1,
+    window_len: 0,
+    pos: 0,
+    capacity: WINDOW_BYTES,
+    bytes_read: 0,
+  }
+  mut w := Walk {
+    magic: "".clone(),
+    version: -1,
+    tensor_count: -1,
+    metadata_kv_count: -1,
+    alignment: DEFAULT_ALIGNMENT,
+    alignment_from_metadata: false,
+    metadata_end: -1,
+    tensor_table_end: -1,
+    data_offset: -1,
+    architecture: "".clone(),
+    architecture_present: false,
+  }
+  mut keys_body := builder()
+  mut texts_body := builder()
+  mut names_body := builder()
+  mut keys_len := 0
+  mut texts_len := 0
+  mut names_len := 0
+  mut kv_rows := 0
+  mut tensor_rows := 0
+  mut key_starts: array_builder<i64> := array_builder()
+  mut key_ends: array_builder<i64> := array_builder()
+  mut key_valid: array_builder<i64> := array_builder()
+  mut kv_types: array_builder<i64> := array_builder()
+  mut kv_ints: array_builder<i64> := array_builder()
+  mut kv_has_int: array_builder<i64> := array_builder()
+  mut kv_bits: array_builder<i64> := array_builder()
+  mut kv_has_float: array_builder<i64> := array_builder()
+  mut kv_text_starts: array_builder<i64> := array_builder()
+  mut kv_text_ends: array_builder<i64> := array_builder()
+  mut kv_has_text: array_builder<i64> := array_builder()
+  mut kv_array_elem_types: array_builder<i64> := array_builder()
+  mut kv_array_lengths: array_builder<i64> := array_builder()
+  mut name_starts: array_builder<i64> := array_builder()
+  mut name_ends: array_builder<i64> := array_builder()
+  mut name_valid: array_builder<i64> := array_builder()
+  mut tensor_n_dims: array_builder<i64> := array_builder()
+  mut tensor_dim0: array_builder<i64> := array_builder()
+  mut tensor_dim1: array_builder<i64> := array_builder()
+  mut tensor_dim2: array_builder<i64> := array_builder()
+  mut tensor_dim3: array_builder<i64> := array_builder()
+  mut tensor_types: array_builder<i64> := array_builder()
+  mut tensor_offsets: array_builder<i64> := array_builder()
+  mut tensor_offset_fields: array_builder<i64> := array_builder()
+  mut failure := no_fault()
+
+  loop {
+    match decode_header(handle, window, c, w) {
+      Ok(_) => {},
+      Err(detected) => { failure = detected },
+    }
+    if failure.code.len() > 0 { break }
+
+    mut index := 0
+    mut interrupted := false
+    loop {
+      if index >= w.metadata_kv_count { break }
+      match decode_kv(handle, window, c, index) {
+        Ok(row) => {
+          key_view: str := row.key
+          key_starts.push(keys_len)
+          if row.key_valid {
+            keys_body.write(key_view)
+            keys_len = keys_len + key_view.len()
+          }
+          key_ends.push(keys_len)
+          key_valid.push(if row.key_valid { 1 } else { 0 })
+          kv_types.push(row.value_type)
+          kv_ints.push(if row.has_int { row.int_value } else { 0 })
+          kv_has_int.push(if row.has_int { 1 } else { 0 })
+          kv_bits.push(row.float_bits)
+          kv_has_float.push(if row.has_float { 1 } else { 0 })
+          kv_text_starts.push(texts_len)
+          // A KV is never simultaneously a `STRING` and a float, so one stream serves both without
+          // ambiguity: `kv_types[i]` says which it is.
+          mut has_text := 0
+          if row.value_type == 8 && row.text_valid {
+            text_view: str := row.text
+            texts_body.write(text_view)
+            texts_len = texts_len + text_view.len()
+            has_text = 1
+          } else if row.has_float && row.float_finite {
+            float_view: str := row.float_text
+            texts_body.write(float_view)
+            texts_len = texts_len + float_view.len()
+            has_text = 1
+          }
+          kv_text_ends.push(texts_len)
+          kv_has_text.push(has_text)
+          kv_array_elem_types.push(row.array_elem_type)
+          kv_array_lengths.push(row.array_length)
+          kv_rows = kv_rows + 1
+          if row.key_valid && key_view == "general.alignment" {
+            match apply_alignment(w, row) {
+              Ok(_) => {},
+              Err(detected) => { failure = detected },
+            }
+          }
+          if row.key_valid && key_view == "general.architecture" && row.value_type == 8 && row.text_valid {
+            w.architecture = row.text.clone()
+            w.architecture_present = true
+          }
+        },
+        Err(detected) => { failure = detected },
+      }
+      if failure.code.len() > 0 {
+        interrupted = true
+        break
+      }
+      index = index + 1
+    }
+    if interrupted { break }
+    w.metadata_end = c.pos
+
+    mut entry := 0
+    mut halted := false
+    loop {
+      if entry >= w.tensor_count { break }
+      match decode_tensor(handle, window, c, entry, w.alignment) {
+        Ok(row) => {
+          name_view: str := row.name
+          name_starts.push(names_len)
+          if row.name_valid {
+            names_body.write(name_view)
+            names_len = names_len + name_view.len()
+          }
+          name_ends.push(names_len)
+          name_valid.push(if row.name_valid { 1 } else { 0 })
+          tensor_n_dims.push(row.n_dims)
+          tensor_dim0.push(row.dim0)
+          tensor_dim1.push(row.dim1)
+          tensor_dim2.push(row.dim2)
+          tensor_dim3.push(row.dim3)
+          tensor_types.push(row.type_id)
+          tensor_offsets.push(row.offset)
+          tensor_offset_fields.push(row.offset_field)
+          tensor_rows = tensor_rows + 1
+        },
+        Err(detected) => { failure = detected },
+      }
+      if failure.code.len() > 0 {
+        halted = true
+        break
+      }
+      entry = entry + 1
+    }
+    if halted { break }
+    w.tensor_table_end = c.pos
+
+    match resolve_data_offset(c, w) {
+      Ok(_) => {},
+      Err(detected) => { failure = detected },
+    }
+    break
+  }
+
+  offsets := tensor_offsets.build()
+  offset_fields := tensor_offset_fields.build()
+  if failure.code.len() == 0 && w.data_offset >= 0 {
+    failure = check_tensor_ranges(offsets, offset_fields, w.data_offset, file_size)
+  }
+  if failure.os {
+    return Err(failure.os_error)
+  }
+
+  // The same wrap hazard and the same non-wrapping form as `render_tensors`: the sum is formed only
+  // after it is proved representable, and an unrepresentable absolute offset is `-1`.
+  mut absolute_offsets: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= offsets.len() { break }
+    if w.data_offset >= 0 && offsets[at] <= I64_MAX - w.data_offset {
+      absolute_offsets.push(w.data_offset + offsets[at])
+    } else {
+      absolute_offsets.push(-1)
+    }
+    at = at + 1
+  }
+
+  failed := failure.code.len() > 0
+  architecture_present := w.architecture_present
+  return Ok(GgufTable {
+      status: if failed { GgufStatus.Error } else { GgufStatus.Ok },
+      error_code: failure.code.clone(),
+      error_offset: failure.offset,
+      file_size: file_size,
+      bytes_read: c.bytes_read,
+      version: w.version,
+      alignment: w.alignment,
+      metadata_end: w.metadata_end,
+      tensor_table_end: w.tensor_table_end,
+      data_offset: w.data_offset,
+      architecture: w.architecture,
+      architecture_present: architecture_present,
+      kv_count: kv_rows,
+      keys: keys_body.to_string(),
+      key_starts: key_starts.build(),
+      key_ends: key_ends.build(),
+      key_valid: key_valid.build(),
+      kv_types: kv_types.build(),
+      kv_ints: kv_ints.build(),
+      kv_has_int: kv_has_int.build(),
+      kv_float_bits: kv_bits.build(),
+      kv_has_float: kv_has_float.build(),
+      texts: texts_body.to_string(),
+      kv_text_starts: kv_text_starts.build(),
+      kv_text_ends: kv_text_ends.build(),
+      kv_has_text: kv_has_text.build(),
+      kv_array_elem_types: kv_array_elem_types.build(),
+      kv_array_lengths: kv_array_lengths.build(),
+      tensor_count: tensor_rows,
+      names: names_body.to_string(),
+      name_starts: name_starts.build(),
+      name_ends: name_ends.build(),
+      name_valid: name_valid.build(),
+      tensor_n_dims: tensor_n_dims.build(),
+      tensor_dim0: tensor_dim0.build(),
+      tensor_dim1: tensor_dim1.build(),
+      tensor_dim2: tensor_dim2.build(),
+      tensor_dim3: tensor_dim3.build(),
+      tensor_types: tensor_types.build(),
+      tensor_offsets: offsets,
+      tensor_absolute_offsets: absolute_offsets.build(),
     })
 }
