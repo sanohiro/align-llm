@@ -9,6 +9,7 @@ repo_dir="$temp_dir/repository"
 candidate_patch="$temp_dir/candidate.patch"
 repair_patch="$temp_dir/repair.patch"
 bad_repair_patch="$temp_dir/bad-repair.patch"
+bad_candidate_patch="$temp_dir/bad-candidate.patch"
 task_path="$temp_dir/task.json"
 result_path="$temp_dir/result.json"
 second_result_path="$temp_dir/second-result.json"
@@ -19,7 +20,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-python3 - "$repo_dir" "$candidate_patch" "$repair_patch" "$bad_repair_patch" "$task_path" "$profile_path" <<'PY'
+python3 - "$repo_dir" "$candidate_patch" "$repair_patch" "$bad_repair_patch" "$bad_candidate_patch" "$task_path" "$profile_path" <<'PY'
 import difflib
 import json
 import sys
@@ -29,8 +30,9 @@ repo = Path(sys.argv[1])
 candidate_patch = Path(sys.argv[2])
 repair_patch = Path(sys.argv[3])
 bad_repair_patch = Path(sys.argv[4])
-task_path = Path(sys.argv[5])
-profile_path = Path(sys.argv[6])
+bad_candidate_patch = Path(sys.argv[5])
+task_path = Path(sys.argv[6])
+profile_path = Path(sys.argv[7])
 
 (repo / "src").mkdir(parents=True)
 (repo / "tests").mkdir()
@@ -41,6 +43,7 @@ base_source = (
 )
 candidate_source = base_source.replace("stop + 1", "stop + 2")
 (repo / "src" / "value.py").write_text(base_source, encoding="utf-8")
+(repo / "src" / "other.py").write_text("OTHER = 1\n", encoding="utf-8")
 (repo / "tests" / "test_value.py").write_text(
     "def test_value_path_signal():\n    assert True\n",
     encoding="utf-8",
@@ -66,19 +69,24 @@ candidate_source = base_source.replace("stop + 1", "stop + 2")
     encoding="utf-8",
 )
 
-def patch_for(before: str, after: str) -> str:
+def patch_for_path(path: str, before: str, after: str) -> str:
     diff = difflib.unified_diff(
         before.splitlines(keepends=True),
         after.splitlines(keepends=True),
-        fromfile="a/src/value.py",
-        tofile="b/src/value.py",
+        fromfile=f"a/{path}",
+        tofile=f"b/{path}",
         n=3,
     )
-    return "diff --git a/src/value.py b/src/value.py\n" + "".join(diff)
+    return f"diff --git a/{path} b/{path}\n" + "".join(diff)
 
-candidate_patch.write_text(patch_for(base_source, candidate_source), encoding="utf-8")
-repair_patch.write_text(patch_for(candidate_source, base_source), encoding="utf-8")
-bad_repair_patch.write_text(patch_for(base_source, base_source.replace("stop + 1", "stop + 0")), encoding="utf-8")
+candidate_patch.write_text(patch_for_path("src/value.py", base_source, candidate_source), encoding="utf-8")
+repair_patch.write_text(patch_for_path("src/value.py", candidate_source, base_source), encoding="utf-8")
+bad_repair_patch.write_text(patch_for_path("src/value.py", base_source, base_source.replace("stop + 1", "stop + 0")), encoding="utf-8")
+bad_candidate_patch.write_text(
+    patch_for_path("src/value.py", base_source, candidate_source)
+    + patch_for_path("src/other.py", "OTHER = 999\n", "OTHER = 2\n"),
+    encoding="utf-8",
+)
 
 task = {
     "schema_version": 1,
@@ -151,17 +159,15 @@ assert first["status"] == "REPAIRING", first
 assert "targeted-test" in first["repair_prompt"], first
 assert "actual exit code: 1" in first["repair_prompt"], first
 assert [stage["stage"] for stage in first["stages"]] == [
-    "candidate-apply-check",
     "candidate-apply",
     "build",
     "targeted-test",
-    "repair-apply-check",
     "repair-apply",
 ], first
-assert first["stages"][2]["status"] == "PASS", first
-assert first["stages"][3]["status"] == "FAIL", first
-assert first["stages"][3]["actual_code"] != first["stages"][3]["expected_code"], first
-assert first["stages"][5]["status"] == "PASS", first
+assert first["stages"][1]["status"] == "PASS", first
+assert first["stages"][2]["status"] == "FAIL", first
+assert first["stages"][2]["actual_code"] != first["stages"][2]["expected_code"], first
+assert first["stages"][3]["status"] == "PASS", first
 
 second = result["attempts"][1]
 assert second["iteration"] == 2, second
@@ -283,13 +289,62 @@ assert result["iteration_count"] == 1, result
 assert result["repair_count"] == 0, result
 stages = result["attempts"][0]["stages"]
 assert [stage["stage"] for stage in stages] == [
-    "candidate-apply-check",
     "candidate-apply",
     "build",
     "targeted-test",
-    "repair-apply-check",
+    "repair-apply",
 ], stages
 assert stages[-1]["status"] == "FAIL", stages
 PY
 
-printf '%s\n' "verification loop smoke: build, targeted failure, structured repair prompt, patch repair, full pass, and bounded iteration PASS"
+git -C "$repo_dir" reset --hard -q HEAD
+atomic_task_path="$temp_dir/atomic-task.json"
+atomic_result_path="$temp_dir/atomic-result.json"
+python3 - "$task_path" "$bad_candidate_patch" "$atomic_task_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+task["task_id"] = "verification-loop-atomic-candidate-rejection"
+task["candidate_patch"] = sys.argv[2]
+task["repair_patch"] = ""
+task["memory_profile"] = None
+Path(sys.argv[3]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if "$root_dir/main" --verify-loop "$atomic_task_path" "$atomic_result_path"; then
+  printf '%s\n' "verification loop atomic candidate rejection unexpectedly passed" >&2
+  exit 1
+fi
+
+python3 - "$repo_dir" "$atomic_result_path" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+result = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+assert result["status"] == "FAIL", result
+assert result["iteration_count"] == 1, result
+assert result["repair_count"] == 0, result
+attempt = result["attempts"][0]
+assert [stage["stage"] for stage in attempt["stages"]] == ["candidate-apply"], attempt
+assert attempt["stages"][0]["status"] == "FAIL", attempt
+assert "stage: candidate-apply" in attempt["repair_prompt"], attempt
+assert (repo / "src" / "value.py").read_text(encoding="utf-8") == (
+    "def inclusive_range(start, stop):\n"
+    "    return list(range(start, stop + 1))\n"
+)
+assert (repo / "src" / "other.py").read_text(encoding="utf-8") == "OTHER = 1\n"
+assert subprocess.run(
+    ["git", "diff", "--exit-code"],
+    cwd=repo,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    check=False,
+).returncode == 0
+PY
+
+printf '%s\n' "verification loop smoke: atomic patch application, rejection rollback, repair, full pass, and bounded iteration PASS"
