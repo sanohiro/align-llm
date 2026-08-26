@@ -66,7 +66,7 @@ file records durable project state.
   the candidate at `87a64b4`: **A** the Align source (`src/gguf.align`, `src/frontend_qwen.align`)
   and **B** the specification, fixtures, runners, and governance documents. A returned 2 major, 2
   minor, and 3 nit; B returned 3 medium, 5 low, and 2 nit. **Every one of the seventeen findings was
-  accepted** and all of them are repaired in the next commit as one consolidated repair, with plan,
+  accepted** and all of them are repaired at `d05cb2b` as one consolidated repair, with plan,
   code, tests, and documentation moving together. The two majors were real and reproduced before the
   fix: GGML's block invariant is per **row**, so the shipped `qwen2-full` fixture was accepted
   `status: "ok"` with a `Q4_K [128, 32]` tensor GGML cannot store (the whole positive corpus is
@@ -79,9 +79,22 @@ file records durable project state.
   offset. Section 7 items 13-21 and the new section 8 cell-to-case mapping of
   `docs/specs/r1-qwen-model-ir.md` carry every contract correction, and
   `docs/specs/r0-gguf-inspection.md` gains section 6 item 31. The repair changed no document field
-  and no `schema_version`.
+  and no `schema_version`. One final comprehensive review of the repair delta at `d05cb2b`, by a
+  fresh independent reviewer, returned **approve** with 5 low findings: the `ulimit -f` block size
+  (bash counts 1024-byte blocks, so `16384` was 16 MiB, not the documented 8 MiB), a stale section 7
+  item 7 reference to the `qwen2-overflow-oracle` fixture item 18 deletes, a `qwen2-bad-shape` row
+  naming `[64, 63]` where the fixture reshapes to `[256, 128]`, an unconditional "no scan is
+  quadratic in `tensor_count`" claim that `first_duplicate`'s pairwise walk inside one equal-hash run
+  does not support against a crafted 42-bit multicollision, and a 300 s timeout diagnostic reported
+  even when no `timeout`/`gtimeout` wrapper was used. All five are low, all five were accepted, and
+  all five are repaired in the following commit; the softened bounded-work claim is recorded as
+  section 7 item 22 rather than removed, for the reason stated there. No further review is required:
+  the repair changed no behavior of the product executable.
 - **Next actions, in order.**
-  1. Commit the consolidated repair.
+  1. Re-record the canonical baseline chain (source -> `test(eval): record ... baseline oracle` ->
+     `test(eval): finalize ... baseline`) on Linux, exactly as the R0 chain did. `Makefile` and
+     `src/main.align` are the artifacts whose hashes change. Verify with
+     `python3 scripts/check-baseline-chain`.
   2. Exact-head preflight: `python3 scripts/pre-pr --owner-test model-ir -- gmake model-ir-smoke
      gate-topology-check`. Changing the `Makefile` matches `FRESH_IMAGE_PATTERNS`, so this selects
      the fresh-image **installed** profile — expected for this capability, not a Docker skip.

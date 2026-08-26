@@ -520,8 +520,9 @@ failure against the reference's log output fails closed (a nonzero exit, never a
 silent pass). The runner also asserts the size-sum oracle against an independent `stat` of the file,
 the `bytes_read` bound, and that the model's size and modification time are unchanged, which is the
 read-only proof. The reference itself runs under a 300-second `timeout` (or `gtimeout`; skipped when
-the host has neither) inside a subshell whose `ulimit -f` caps its log at 8 MiB, so a reference build
-that fails to terminate is a bounded failure rather than an unbounded log.
+the host has neither) inside a subshell whose `ulimit -f 8192` caps its log at 8 MiB (bash counts
+1024-byte blocks), so a reference build that fails to terminate is a bounded failure rather than an
+unbounded log. The timeout diagnostic is reported only when one of those wrappers was actually used.
 
 The model path inherits R0's writable-by-the-invoking-user precondition unchanged — `read_table`
 uses the same `fs.open_rw` constructor — so Request 21 in `docs/align-requests.md` covers this

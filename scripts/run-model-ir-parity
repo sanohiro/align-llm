@@ -74,10 +74,12 @@ end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
 #
 # The wall-clock and log-size limits below are the belt to that suspenders: the observed failure
 # without `-st` was 461 MB of log and a 300 s hang, and a future reference build must not be able to
-# recreate it from inside this runner. `ulimit -f` is in 512-byte blocks, so 16,384 caps the log at
-# 8 MiB and a run that exceeds it dies on SIGXFSZ; the recorded build writes 237 KB. `timeout` is
-# used when the host has it (GNU coreutils, `gtimeout` on Homebrew) and skipped otherwise, because a
-# missing optional utility must not turn a qualification into a false failure.
+# recreate it from inside this runner. Bash counts `ulimit -f` in 1024-byte blocks, so 8,192 caps
+# the log at 8 MiB and a run that exceeds it dies on SIGXFSZ; the recorded build writes 237 KB.
+# `timeout` is used when the host has it (GNU coreutils, `gtimeout` on Homebrew) and skipped
+# otherwise, because a missing optional utility must not turn a qualification into a false failure.
+# The 124 diagnostic below is therefore reported only when a wrapper was actually used: without one,
+# 124 is the reference's own exit status and must not be renamed a timeout.
 reference_timeout=""
 if command -v timeout >/dev/null 2>&1; then
   reference_timeout="timeout 300"
@@ -85,12 +87,12 @@ elif command -v gtimeout >/dev/null 2>&1; then
   reference_timeout="gtimeout 300"
 fi
 (
-  ulimit -f 16384
+  ulimit -f 8192
   exec $reference_timeout "$reference" -m "$model" -v -n 0 --no-warmup -st -p hi \
     </dev/null >"$temp_dir/reference.log" 2>&1
 ) || {
   status=$?
-  if [ "$status" -eq 124 ]; then
+  if [ -n "$reference_timeout" ] && [ "$status" -eq 124 ]; then
     printf '%s\n' "model ir parity: the reference reader did not finish within 300 s" >&2
   else
     printf '%s\n' "model ir parity: the reference reader exited $status" >&2
