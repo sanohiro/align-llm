@@ -1,0 +1,1083 @@
+module gguf
+
+import core.json
+import std.fs
+
+// R0-GGUF-INSPECT (`docs/specs/r0-gguf-inspection.md`). Read-only GGUF header, metadata, and
+// tensor-table inspection. This module is the sole owner of GGUF container knowledge: it imports
+// `core.json` and `std.fs` and nothing else, so it is usable and testable before any runtime exists.
+//
+// Two invariants govern every line below.
+//
+//  1. `bytes.<scalar>(off)` ABORTS on an out-of-range read at the pinned toolchain, so bounds
+//     checking is a correctness obligation, not an optimization. Every codec call is reached only
+//     through `ensure`, and every codec offset is `c.pos - c.window_base`.
+//  2. A `str` obtained from the window is borrowed from the window and must not outlive the next
+//     `ensure`. Every retained text value is `.clone()`d inside the borrow scope that produced it.
+
+// Section 2.5.2 window and growth bounds.
+WINDOW_BYTES := 1048576
+MAX_ITEM_BYTES := 16777216
+
+// Section 2.6 plausibility thresholds.
+MAX_METADATA_KV := 4096
+MAX_TENSORS := 1048576
+MAX_STRING_BYTES := 16777216
+MAX_ARRAY_ELEMENTS := 16777216
+MAX_TENSOR_DIMS := 4
+MAX_PATH_BYTES := 4096
+
+// Section 2.4.4 bounded array rendering, and the section 2.4.1 default alignment.
+ARRAY_PREVIEW := 8
+DEFAULT_ALIGNMENT := 32
+
+HEX_DIGITS := "0123456789abcdef"
+
+// The GGUF header is magic(4) + version(u32) + tensor_count(u64) + metadata_kv_count(u64).
+HEADER_BYTES := 24
+
+pub GgufStatus { Ok, Error }
+
+pub GgufInspection {
+  status: GgufStatus,
+  error_code: string,
+  file_size: i64,
+  bytes_read: i64,
+  version: i64,
+  tensor_count: i64,
+  metadata_kv_count: i64,
+  alignment: i64,
+  data_offset: i64,
+  architecture: string,
+  document: string,
+}
+
+// A structural defect in the container. `os` distinguishes an operating-system failure, which
+// `inspect` surfaces as `Err(Error)` with no document, from a decode fault, which is data.
+Fault { code: str, offset: i64, os: bool, os_error: Error }
+
+// `file` never rides an aggregate other than its constructor's `Result<file, Error>` and a native
+// buffer fill requires a bare `mut` buffer local, so the handle and the window stay locals in
+// `inspect` and travel as `borrow` / `borrow mut` parameters. The cursor record therefore carries
+// only the scalar reading state.
+Cursor {
+  file_size: i64,
+  window_base: i64,
+  window_len: i64,
+  pos: i64,
+  capacity: i64,
+  bytes_read: i64,
+}
+
+// Everything the walk resolves for the top level of the document.
+Walk {
+  magic: string,
+  version: i64,
+  tensor_count: i64,
+  metadata_kv_count: i64,
+  alignment: i64,
+  alignment_from_metadata: bool,
+  metadata_end: i64,
+  tensor_table_end: i64,
+  data_offset: i64,
+  architecture: string,
+  architecture_present: bool,
+}
+
+TextBox { v: str }
+
+TextValue { text: string, valid: bool }
+
+// One decoded metadata scalar. `json` is the rendered `value`; the remaining fields let the caller
+// render the optional siblings and let the walk resolve `general.alignment` / `general.architecture`
+// without re-reading the container.
+ScalarValue {
+  json: string,
+  bits: string,
+  has_bits: bool,
+  int_value: i64,
+  has_int: bool,
+  text: string,
+  text_valid: bool,
+  byte_length: i64,
+  is_string: bool,
+}
+
+KvRow {
+  json: string,
+  key: string,
+  key_valid: bool,
+  value_type: i64,
+  value_offset: i64,
+  int_value: i64,
+  has_int: bool,
+  text: string,
+  text_valid: bool,
+}
+
+// `absolute_offset` needs `data_offset`, which is only known once the whole table has been walked,
+// so each entry is emitted up to (and including) its `offset` field and closed during rendering.
+TensorRow { json_prefix: string, offset: i64, offset_field: i64 }
+
+fn fault(code: str, offset: i64) -> Fault =
+Fault { code: code, offset: offset, os: false, os_error: Error.Invalid }
+
+fn os_fault(e: Error) -> Fault =
+Fault { code: "GGUF_IO", offset: -1, os: true, os_error: e }
+
+fn no_fault() -> Fault = fault("", -1)
+
+// The one text-to-JSON boundary. `json.encode` owns escaping, so a GGUF string carrying a quote, a
+// backslash, a control byte, an embedded NUL, or a 4-byte scalar survives into valid JSON.
+fn json_string(value: str) -> string {
+  boxed := TextBox { v: value }
+  encoded := json.encode(boxed)
+  return encoded[5..encoded.len() - 1].clone()
+}
+
+fn json_text_or_null(value: str, valid: bool) -> string {
+  if !valid {
+    return "null".clone()
+  }
+  return json_string(value)
+}
+
+fn int_text(value: i64) -> string {
+  b := builder()
+  b.write_int(value)
+  return b.to_string()
+}
+
+fn bool_text(value: bool) -> string {
+  if value {
+    return "true".clone()
+  }
+  return "false".clone()
+}
+
+// Lowercase hexadecimal of a raw IEEE-754 bit pattern, most-significant nibble first, zero padded.
+fn hex_u64(value: u64, digits: i64) -> string {
+  b := builder()
+  mut index := digits - 1
+  loop {
+    if index < 0 { break }
+    shift := (index * 4) as u64
+    nibble := ((value >> shift) & 15) as i64
+    b.write(HEX_DIGITS[nibble..nibble + 1])
+    index = index - 1
+  }
+  return b.to_string()
+}
+
+pub fn value_type_name(id: i64) -> str {
+  if id == 0 { return "UINT8" }
+  if id == 1 { return "INT8" }
+  if id == 2 { return "UINT16" }
+  if id == 3 { return "INT16" }
+  if id == 4 { return "UINT32" }
+  if id == 5 { return "INT32" }
+  if id == 6 { return "FLOAT32" }
+  if id == 7 { return "BOOL" }
+  if id == 8 { return "STRING" }
+  if id == 9 { return "ARRAY" }
+  if id == 10 { return "UINT64" }
+  if id == 11 { return "INT64" }
+  if id == 12 { return "FLOAT64" }
+  return ""
+}
+
+// The on-disk width of a fixed-width metadata value; `-1` for STRING and ARRAY, whose length is
+// carried in the payload and therefore cannot be skipped arithmetically.
+fn value_type_width(id: i64) -> i64 {
+  if id == 0 || id == 1 || id == 7 { return 1 }
+  if id == 2 || id == 3 { return 2 }
+  if id == 4 || id == 5 || id == 6 { return 4 }
+  if id == 10 || id == 11 || id == 12 { return 8 }
+  return -1
+}
+
+// The GGML type enumeration as of the pinned toolchain. Ids 4, 5, 31, 32, and 33 were defined and
+// later removed, so they are deliberately absent: a file using one reports `type_known: false`
+// rather than a name that no longer means anything. This is data, not control flow.
+pub fn ggml_type_name(id: i64) -> str {
+  if id == 0 { return "F32" }
+  if id == 1 { return "F16" }
+  if id == 2 { return "Q4_0" }
+  if id == 3 { return "Q4_1" }
+  if id == 6 { return "Q5_0" }
+  if id == 7 { return "Q5_1" }
+  if id == 8 { return "Q8_0" }
+  if id == 9 { return "Q8_1" }
+  if id == 10 { return "Q2_K" }
+  if id == 11 { return "Q3_K" }
+  if id == 12 { return "Q4_K" }
+  if id == 13 { return "Q5_K" }
+  if id == 14 { return "Q6_K" }
+  if id == 15 { return "Q8_K" }
+  if id == 16 { return "IQ2_XXS" }
+  if id == 17 { return "IQ2_XS" }
+  if id == 18 { return "IQ3_XXS" }
+  if id == 19 { return "IQ1_S" }
+  if id == 20 { return "IQ4_NL" }
+  if id == 21 { return "IQ3_S" }
+  if id == 22 { return "IQ2_S" }
+  if id == 23 { return "IQ4_XS" }
+  if id == 24 { return "I8" }
+  if id == 25 { return "I16" }
+  if id == 26 { return "I32" }
+  if id == 27 { return "I64" }
+  if id == 28 { return "F64" }
+  if id == 29 { return "IQ1_M" }
+  if id == 30 { return "BF16" }
+  if id == 34 { return "TQ1_0" }
+  if id == 35 { return "TQ2_0" }
+  return ""
+}
+
+// A fresh `pread` at the first byte the decoder still needs. `bytes_read` is incremented here and
+// nowhere else, by exactly the count `pread` returned.
+fn refill(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) -> Result<(), Fault> {
+  count := match handle.pread(window, c.pos) {
+    Ok(value) => value,
+    Err(failure) => { return Err(os_fault(failure)) },
+  }
+  c.window_base = c.pos
+  c.window_len = count
+  c.bytes_read = c.bytes_read + count
+  return Ok(())
+}
+
+// Guarantee that bytes `[pos, pos + n)` are resident before any codec call touches them.
+fn ensure(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor, n: i64) -> Result<(), Fault> {
+  if n < 0 || c.pos < 0 || c.pos + n > c.file_size {
+    return Err(fault("GGUF_TRUNCATED", c.pos))
+  }
+  if n > c.capacity {
+    // The cap is checked before any allocation, so an implausible item never reserves memory.
+    if n > MAX_ITEM_BYTES {
+      return Err(fault("GGUF_ITEM_TOO_LARGE", c.pos))
+    }
+    mut capacity := c.capacity
+    loop {
+      if capacity >= n { break }
+      capacity = capacity * 2
+      if capacity > MAX_ITEM_BYTES { capacity = MAX_ITEM_BYTES }
+    }
+    window = buffer(capacity)
+    c.capacity = capacity
+    c.window_base = -1
+    c.window_len = 0
+  }
+  if c.window_base < 0 || c.pos < c.window_base || c.pos + n > c.window_base + c.window_len {
+    refill(handle, window, c)?
+    if c.window_len < n {
+      return Err(fault("GGUF_TRUNCATED", c.pos))
+    }
+  }
+  return Ok(())
+}
+
+// Advance without reading. Skipped bytes never enter `bytes_read`.
+fn skip(borrow mut c: Cursor, n: i64) -> Result<(), Fault> {
+  if n < 0 || c.pos + n > c.file_size {
+    return Err(fault("GGUF_TRUNCATED", c.pos))
+  }
+  c.pos = c.pos + n
+  return Ok(())
+}
+
+fn read_u8(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) -> Result<i64, Fault> {
+  ensure(handle, window, c, 1)?
+  view := window.bytes()
+  value := view.u8(c.pos - c.window_base) as i64
+  c.pos = c.pos + 1
+  return Ok(value)
+}
+
+fn read_i8(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) -> Result<i64, Fault> {
+  ensure(handle, window, c, 1)?
+  view := window.bytes()
+  value := view.i8(c.pos - c.window_base) as i64
+  c.pos = c.pos + 1
+  return Ok(value)
+}
+
+fn read_u16(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) -> Result<i64, Fault> {
+  ensure(handle, window, c, 2)?
+  view := window.bytes()
+  value := view.u16_le(c.pos - c.window_base) as i64
+  c.pos = c.pos + 2
+  return Ok(value)
+}
+
+fn read_i16(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) -> Result<i64, Fault> {
+  ensure(handle, window, c, 2)?
+  view := window.bytes()
+  value := view.i16_le(c.pos - c.window_base) as i64
+  c.pos = c.pos + 2
+  return Ok(value)
+}
+
+fn read_u32(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) -> Result<i64, Fault> {
+  ensure(handle, window, c, 4)?
+  view := window.bytes()
+  value := view.u32_le(c.pos - c.window_base) as i64
+  c.pos = c.pos + 4
+  return Ok(value)
+}
+
+fn read_i32(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) -> Result<i64, Fault> {
+  ensure(handle, window, c, 4)?
+  view := window.bytes()
+  value := view.i32_le(c.pos - c.window_base) as i64
+  c.pos = c.pos + 4
+  return Ok(value)
+}
+
+fn read_i64(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) -> Result<i64, Fault> {
+  ensure(handle, window, c, 8)?
+  view := window.bytes()
+  value := view.i64_le(c.pos - c.window_base)
+  c.pos = c.pos + 8
+  return Ok(value)
+}
+
+// There is no `i64` MAX constant at this pin, so representability is bit 63 of the raw `u64`. The
+// test runs BEFORE any `as i64`, because `as` truncates and extends with defined wrap and would
+// silently produce a negative count.
+fn read_u64_checked(
+  borrow handle: file,
+  borrow mut window: buffer,
+  borrow mut c: Cursor,
+  code: str,
+) -> Result<i64, Fault> {
+  ensure(handle, window, c, 8)?
+  view := window.bytes()
+  raw := view.u64_le(c.pos - c.window_base)
+  at := c.pos
+  c.pos = c.pos + 8
+  if (raw >> 63) != 0 {
+    return Err(fault(code, at))
+  }
+  return Ok(raw as i64)
+}
+
+// A non-finite IEEE-754 value has every exponent bit set. `write_float` would emit Rust's `inf` /
+// `NaN` spelling, which is not JSON, so such a value renders as `null` and `value_bits` remains the
+// authoritative, exact rendering. The test is on the raw bits, so it needs no float classifier.
+fn f32_finite(bits: u32) -> bool = (bits & 2139095040) != 2139095040
+
+fn f64_finite(bits: u64) -> bool = (bits & 9218868437227405312) != 9218868437227405312
+
+fn float_json(text: str, finite: bool) -> string {
+  if !finite {
+    return "null".clone()
+  }
+  return text.clone()
+}
+
+// `value` and `value_bits` come from two codec reads at the same offset. `as` is a numeric value
+// conversion with defined truncating wrap, so it never touches a float here.
+fn read_f32(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) -> Result<ScalarValue, Fault> {
+  ensure(handle, window, c, 4)?
+  view := window.bytes()
+  offset := c.pos - c.window_base
+  value := view.f32_le(offset)
+  bits := view.u32_le(offset)
+  c.pos = c.pos + 4
+  text := builder()
+  text.write_float(value)
+  rendered := text.to_string()
+  rendered_view: str := rendered
+  return Ok(ScalarValue {
+      json: float_json(rendered_view, f32_finite(bits)),
+      bits: hex_u64(bits as u64, 8),
+      has_bits: true,
+      int_value: 0,
+      has_int: false,
+      text: "".clone(),
+      text_valid: false,
+      byte_length: -1,
+      is_string: false,
+    })
+}
+
+fn read_f64(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) -> Result<ScalarValue, Fault> {
+  ensure(handle, window, c, 8)?
+  view := window.bytes()
+  offset := c.pos - c.window_base
+  value := view.f64_le(offset)
+  bits := view.u64_le(offset)
+  c.pos = c.pos + 8
+  text := builder()
+  text.write_float(value)
+  rendered := text.to_string()
+  rendered_view: str := rendered
+  return Ok(ScalarValue {
+      json: float_json(rendered_view, f64_finite(bits)),
+      bits: hex_u64(bits, 16),
+      has_bits: true,
+      int_value: 0,
+      has_int: false,
+      text: "".clone(),
+      text_valid: false,
+      byte_length: -1,
+      is_string: false,
+    })
+}
+
+// Materialize a window region as an owned `string` before the next `ensure` can invalidate it. A
+// region that is not valid UTF-8 is data, never a hard failure.
+fn decode_text(
+  borrow handle: file,
+  borrow mut window: buffer,
+  borrow mut c: Cursor,
+  length: i64,
+) -> Result<TextValue, Fault> {
+  if length == 0 {
+    return Ok(TextValue { text: "".clone(), valid: true })
+  }
+  ensure(handle, window, c, length)?
+  view := window.bytes()
+  offset := c.pos - c.window_base
+  region := view[offset..offset + length]
+  decoded := match region.as_str() {
+    Ok(text) => TextValue { text: text.clone(), valid: true },
+    Err(_) => TextValue { text: "".clone(), valid: false },
+  }
+  c.pos = c.pos + length
+  return Ok(decoded)
+}
+
+fn read_declared_length(
+  borrow handle: file,
+  borrow mut window: buffer,
+  borrow mut c: Cursor,
+) -> Result<i64, Fault> {
+  at := c.pos
+  length := read_u64_checked(handle, window, c, "GGUF_COUNT_OVERFLOW")?
+  if length > MAX_STRING_BYTES {
+    return Err(fault("GGUF_STRING_TOO_LARGE", at))
+  }
+  return Ok(length)
+}
+
+fn int_scalar(value: i64) -> ScalarValue = ScalarValue {
+  json: int_text(value),
+  bits: "".clone(),
+  has_bits: false,
+  int_value: value,
+  has_int: true,
+  text: "".clone(),
+  text_valid: false,
+  byte_length: -1,
+  is_string: false,
+}
+
+fn decode_scalar(
+  borrow handle: file,
+  borrow mut window: buffer,
+  borrow mut c: Cursor,
+  type_id: i64,
+) -> Result<ScalarValue, Fault> {
+  if type_id == 0 {
+    return Ok(int_scalar(read_u8(handle, window, c)?))
+  }
+  if type_id == 1 {
+    return Ok(int_scalar(read_i8(handle, window, c)?))
+  }
+  if type_id == 2 {
+    return Ok(int_scalar(read_u16(handle, window, c)?))
+  }
+  if type_id == 3 {
+    return Ok(int_scalar(read_i16(handle, window, c)?))
+  }
+  if type_id == 4 {
+    return Ok(int_scalar(read_u32(handle, window, c)?))
+  }
+  if type_id == 5 {
+    return Ok(int_scalar(read_i32(handle, window, c)?))
+  }
+  if type_id == 6 {
+    return read_f32(handle, window, c)
+  }
+  if type_id == 7 {
+    // Any nonzero byte renders `true`. Writers in the wild are not consistent about the encoding
+    // and the distinction carries no information.
+    raw := read_u8(handle, window, c)?
+    return Ok(ScalarValue {
+        json: bool_text(raw != 0),
+        bits: "".clone(),
+        has_bits: false,
+        int_value: raw,
+        has_int: false,
+        text: "".clone(),
+        text_valid: false,
+        byte_length: -1,
+        is_string: false,
+      })
+  }
+  if type_id == 8 {
+    length := read_declared_length(handle, window, c)?
+    decoded := decode_text(handle, window, c, length)?
+    decoded_view: str := decoded.text
+    return Ok(ScalarValue {
+        json: json_text_or_null(decoded_view, decoded.valid),
+        bits: "".clone(),
+        has_bits: false,
+        int_value: 0,
+        has_int: false,
+        text: decoded.text,
+        text_valid: decoded.valid,
+        byte_length: length,
+        is_string: true,
+      })
+  }
+  if type_id == 10 {
+    return Ok(int_scalar(read_u64_checked(handle, window, c, "GGUF_VALUE_OVERFLOW")?))
+  }
+  if type_id == 11 {
+    return Ok(int_scalar(read_i64(handle, window, c)?))
+  }
+  if type_id == 12 {
+    return read_f64(handle, window, c)
+  }
+  return Err(fault("GGUF_UNKNOWN_VALUE_TYPE", c.pos))
+}
+
+// Inside `preview`, a float element renders as `{"value": …, "bits": "…"}` and a non-UTF-8 string
+// element as `{"value": null, "invalid_utf8": true, "byte_length": n}`, so the exactness rule of
+// section 2.4.3 holds for array elements too.
+fn preview_element_json(value: ScalarValue) -> string {
+  b := builder()
+  if value.has_bits {
+    b.write("{\"value\":")
+    b.write(value.json)
+    b.write(",\"bits\":\"")
+    b.write(value.bits)
+    b.write("\"}")
+    return b.to_string()
+  }
+  if value.is_string && !value.text_valid {
+    b.write("{\"value\":null,\"invalid_utf8\":true,\"byte_length\":")
+    b.write_int(value.byte_length)
+    b.write("}")
+    return b.to_string()
+  }
+  return value.json.clone()
+}
+
+fn decode_array(
+  borrow handle: file,
+  borrow mut window: buffer,
+  borrow mut c: Cursor,
+) -> Result<ScalarValue, Fault> {
+  type_at := c.pos
+  element_type := read_u32(handle, window, c)?
+  if element_type == 9 {
+    // The GGUF container does not define nesting and no writer produces it.
+    return Err(fault("GGUF_NESTED_ARRAY", type_at))
+  }
+  if element_type > 12 {
+    return Err(fault("GGUF_UNKNOWN_VALUE_TYPE", type_at))
+  }
+  length_at := c.pos
+  length := read_u64_checked(handle, window, c, "GGUF_COUNT_OVERFLOW")?
+  if length > MAX_ARRAY_ELEMENTS {
+    return Err(fault("GGUF_COUNT_IMPLAUSIBLE", length_at))
+  }
+  preview_count := if length < ARRAY_PREVIEW { length } else { ARRAY_PREVIEW }
+  preview := builder()
+  mut index := 0
+  loop {
+    if index >= preview_count { break }
+    element := decode_scalar(handle, window, c, element_type)?
+    if index > 0 { preview.write(",") }
+    preview.write(preview_element_json(element))
+    index = index + 1
+  }
+  remaining := length - preview_count
+  if remaining > 0 {
+    width := value_type_width(element_type)
+    if width > 0 {
+      // A fixed-width tail advances the cursor without reading, so it contributes nothing to
+      // `bytes_read`.
+      skip(c, remaining * width)?
+    } else {
+      // A STRING tail cannot be skipped arithmetically: each element's length prefix is
+      // interleaved with its bytes, so the end of the array is not computable without walking it.
+      // The element bytes themselves are still skipped rather than decoded.
+      mut walked := 0
+      loop {
+        if walked >= remaining { break }
+        element_length := read_declared_length(handle, window, c)?
+        skip(c, element_length)?
+        walked = walked + 1
+      }
+    }
+  }
+  body := builder()
+  body.write("{\"element_type\":")
+  body.write_int(element_type)
+  body.write(",\"element_type_name\":")
+  body.write(json_string(value_type_name(element_type)))
+  body.write(",\"length\":")
+  body.write_int(length)
+  body.write(",\"preview\":[")
+  body.write(preview.to_string())
+  body.write("],\"truncated\":")
+  body.write(bool_text(length > ARRAY_PREVIEW))
+  body.write("}")
+  return Ok(ScalarValue {
+      json: body.to_string(),
+      bits: "".clone(),
+      has_bits: false,
+      int_value: 0,
+      has_int: false,
+      text: "".clone(),
+      text_valid: false,
+      byte_length: -1,
+      is_string: false,
+    })
+}
+
+fn decode_kv(
+  borrow handle: file,
+  borrow mut window: buffer,
+  borrow mut c: Cursor,
+  index: i64,
+) -> Result<KvRow, Fault> {
+  key_length := read_declared_length(handle, window, c)?
+  key := decode_text(handle, window, c, key_length)?
+  type_at := c.pos
+  value_type := read_u32(handle, window, c)?
+  if value_type > 12 {
+    return Err(fault("GGUF_UNKNOWN_VALUE_TYPE", type_at))
+  }
+  value_offset := c.pos
+  value := if value_type == 9 {
+    decode_array(handle, window, c)?
+  } else {
+    decode_scalar(handle, window, c, value_type)?
+  }
+  key_view: str := key.text
+  b := builder()
+  b.write("{\"index\":")
+  b.write_int(index)
+  b.write(",\"key\":")
+  b.write(json_text_or_null(key_view, key.valid))
+  b.write(",\"key_invalid_utf8\":")
+  b.write(bool_text(!key.valid))
+  b.write(",\"type\":")
+  b.write_int(value_type)
+  b.write(",\"type_name\":")
+  b.write(json_string(value_type_name(value_type)))
+  b.write(",\"value\":")
+  b.write(value.json)
+  if value.has_bits {
+    b.write(",\"value_bits\":")
+    b.write(json_string(value.bits))
+  }
+  if value.is_string && !value.text_valid {
+    b.write(",\"invalid_utf8\":true,\"byte_length\":")
+    b.write_int(value.byte_length)
+  }
+  b.write("}")
+  return Ok(KvRow {
+      json: b.to_string(),
+      key: key.text,
+      key_valid: key.valid,
+      value_type: value_type,
+      value_offset: value_offset,
+      int_value: value.int_value,
+      has_int: value.has_int,
+      text: value.text,
+      text_valid: value.text_valid,
+    })
+}
+
+fn decode_tensor(
+  borrow handle: file,
+  borrow mut window: buffer,
+  borrow mut c: Cursor,
+  index: i64,
+  alignment: i64,
+) -> Result<TensorRow, Fault> {
+  name_length := read_declared_length(handle, window, c)?
+  name := decode_text(handle, window, c, name_length)?
+  dims_at := c.pos
+  n_dims := read_u32(handle, window, c)?
+  if n_dims == 0 || n_dims > MAX_TENSOR_DIMS {
+    return Err(fault("GGUF_BAD_DIMS", dims_at))
+  }
+  dims := builder()
+  mut axis := 0
+  loop {
+    if axis >= n_dims { break }
+    extent := read_u64_checked(handle, window, c, "GGUF_COUNT_OVERFLOW")?
+    if axis > 0 { dims.write(",") }
+    dims.write_int(extent)
+    axis = axis + 1
+  }
+  type_id := read_u32(handle, window, c)?
+  type_label := ggml_type_name(type_id)
+  offset_at := c.pos
+  offset := read_u64_checked(handle, window, c, "GGUF_OFFSET_OVERFLOW")?
+  if offset % alignment != 0 {
+    return Err(fault("GGUF_TENSOR_MISALIGNED", offset_at))
+  }
+  name_view: str := name.text
+  b := builder()
+  b.write("{\"index\":")
+  b.write_int(index)
+  b.write(",\"name\":")
+  b.write(json_text_or_null(name_view, name.valid))
+  b.write(",\"name_invalid_utf8\":")
+  b.write(bool_text(!name.valid))
+  b.write(",\"n_dims\":")
+  b.write_int(n_dims)
+  b.write(",\"dims\":[")
+  b.write(dims.to_string())
+  b.write("],\"type\":")
+  b.write_int(type_id)
+  b.write(",\"type_name\":")
+  // An unknown id is not an error: new quantization types are added to GGML regularly.
+  b.write(json_text_or_null(type_label, type_label.len() > 0))
+  b.write(",\"type_known\":")
+  b.write(bool_text(type_label.len() > 0))
+  b.write(",\"offset\":")
+  b.write_int(offset)
+  return Ok(TensorRow { json_prefix: b.to_string(), offset: offset, offset_field: offset_at })
+}
+
+fn is_power_of_two(value: i64) -> bool {
+  if value <= 0 { return false }
+  return (value & (value - 1)) == 0
+}
+
+// Section 2.6 step 6. Alignment is resolved at the point `general.alignment` is decoded, which the
+// container guarantees precedes the tensor table.
+fn apply_alignment(borrow mut w: Walk, borrow row: KvRow) -> Result<(), Fault> {
+  if row.value_type != 4 || !row.has_int || !is_power_of_two(row.int_value) {
+    return Err(fault("GGUF_BAD_ALIGNMENT", row.value_offset))
+  }
+  w.alignment = row.int_value
+  w.alignment_from_metadata = true
+  return Ok(())
+}
+
+// Section 2.6 step 4. The header is decoded without touching the accumulating document bodies, so
+// it keeps ordinary `?` propagation.
+fn decode_header(
+  borrow handle: file,
+  borrow mut window: buffer,
+  borrow mut c: Cursor,
+  borrow mut w: Walk,
+) -> Result<(), Fault> {
+  if c.file_size < HEADER_BYTES {
+    return Err(fault("GGUF_TOO_SMALL", 0))
+  }
+  magic := decode_text(handle, window, c, 4)?
+  w.magic = magic.text.clone()
+  magic_view: str := magic.text
+  if !magic.valid || magic_view != "GGUF" {
+    return Err(fault("GGUF_BAD_MAGIC", 0))
+  }
+  version := read_u32(handle, window, c)?
+  w.version = version
+  // v1 encodes counts and array lengths as `u32`, so it is a structurally different container and
+  // is rejected rather than supported.
+  if version != 2 && version != 3 {
+    return Err(fault("GGUF_UNSUPPORTED_VERSION", 4))
+  }
+  tensor_count_at := c.pos
+  tensor_count := read_u64_checked(handle, window, c, "GGUF_COUNT_OVERFLOW")?
+  if tensor_count > MAX_TENSORS {
+    return Err(fault("GGUF_COUNT_IMPLAUSIBLE", tensor_count_at))
+  }
+  w.tensor_count = tensor_count
+  metadata_count_at := c.pos
+  metadata_kv_count := read_u64_checked(handle, window, c, "GGUF_COUNT_OVERFLOW")?
+  if metadata_kv_count > MAX_METADATA_KV {
+    return Err(fault("GGUF_COUNT_IMPLAUSIBLE", metadata_count_at))
+  }
+  w.metadata_kv_count = metadata_kv_count
+  return Ok(())
+}
+
+// Section 2.6 step 8: `tensor_table_end` rounded up to `alignment` by remainder arithmetic rather
+// than bit masking, then contained in the file.
+fn resolve_data_offset(borrow mut c: Cursor, borrow mut w: Walk) -> Result<(), Fault> {
+  remainder := c.pos % w.alignment
+  data_offset := if remainder == 0 { c.pos } else { c.pos + w.alignment - remainder }
+  if data_offset > c.file_size {
+    return Err(fault("GGUF_TRUNCATED", c.pos))
+  }
+  w.data_offset = data_offset
+  return Ok(())
+}
+
+// Section 2.6 step 9, in file order. It runs after the walk because `data_offset` is only known
+// once the whole tensor table has been consumed.
+fn check_tensor_ranges(
+  borrow offsets: array<i64>,
+  borrow offset_fields: array<i64>,
+  data_offset: i64,
+  file_size: i64,
+) -> Fault {
+  mut index := 0
+  loop {
+    if index >= offsets.len() { break }
+    if data_offset + offsets[index] > file_size {
+      return fault("GGUF_TENSOR_OUT_OF_RANGE", offset_fields[index])
+    }
+    index = index + 1
+  }
+  return no_fault()
+}
+
+// Each tensor entry was emitted up to its `offset` field and terminated by a raw NUL byte. A
+// rendered JSON document can never contain a raw NUL, because the encoder escapes it, so the
+// sentinel is unambiguous.
+fn render_tensors(prefixes: str, borrow offsets: array<i64>, data_offset: i64) -> string {
+  b := builder()
+  mut cursor := 0
+  mut index := 0
+  loop {
+    if cursor >= prefixes.len() { break }
+    end := match prefixes[cursor..prefixes.len()].find("\0") {
+      Some(offset) => cursor + offset,
+      None => prefixes.len(),
+    }
+    if index > 0 { b.write(",") }
+    b.write(prefixes[cursor..end])
+    b.write(",\"absolute_offset\":")
+    if data_offset >= 0 && index < offsets.len() {
+      b.write_int(data_offset + offsets[index])
+    } else {
+      b.write_int(-1)
+    }
+    b.write("}")
+    cursor = end + 1
+    index = index + 1
+  }
+  return b.to_string()
+}
+
+fn render_document(
+  path: str,
+  status_label: str,
+  error_code: str,
+  error_offset: i64,
+  file_size: i64,
+  bytes_read: i64,
+  borrow w: Walk,
+  metadata_json: str,
+  tensors_json: str,
+) -> string {
+  architecture_view: str := w.architecture
+  magic_view: str := w.magic
+  b := builder()
+  b.write("{\"schema_version\":1,\"kind\":\"R0_GGUF_INSPECTION\",\"path\":")
+  b.write(json_string(path))
+  b.write(",\"status\":")
+  b.write(json_string(status_label))
+  b.write(",\"error_code\":")
+  b.write(json_string(error_code))
+  b.write(",\"error_offset\":")
+  b.write_int(error_offset)
+  b.write(",\"file_size\":")
+  b.write_int(file_size)
+  b.write(",\"bytes_read\":")
+  b.write_int(bytes_read)
+  b.write(",\"header\":{\"magic\":")
+  b.write(json_string(magic_view))
+  b.write(",\"version\":")
+  b.write_int(w.version)
+  b.write(",\"tensor_count\":")
+  b.write_int(w.tensor_count)
+  b.write(",\"metadata_kv_count\":")
+  b.write_int(w.metadata_kv_count)
+  b.write("},\"architecture\":")
+  b.write(json_text_or_null(architecture_view, w.architecture_present))
+  b.write(",\"alignment\":")
+  b.write_int(w.alignment)
+  b.write(",\"alignment_source\":")
+  if w.alignment_from_metadata {
+    b.write(json_string("general.alignment"))
+  } else {
+    b.write(json_string("default"))
+  }
+  b.write(",\"metadata_end\":")
+  b.write_int(w.metadata_end)
+  b.write(",\"tensor_table_end\":")
+  b.write_int(w.tensor_table_end)
+  b.write(",\"data_offset\":")
+  b.write_int(w.data_offset)
+  b.write(",\"metadata\":[")
+  b.write(metadata_json)
+  b.write("],\"tensors\":[")
+  b.write(tensors_json)
+  b.write("]}")
+  return b.to_string()
+}
+
+fn valid_path(path: str) -> bool {
+  if path.len() == 0 || path.len() > MAX_PATH_BYTES { return false }
+  return !path.contains("\0")
+}
+
+// The one public entry point. `Err` is returned only for an invalid path argument or an
+// operating-system failure; every structural defect in the file is data.
+//
+// `builder` and `array_builder` are not parameter types at this pin, so the document bodies are
+// accumulated here rather than inside a `walk` helper. The fallible steps therefore record their
+// fault as a value and leave the walk immediately, which is exactly the section 2.6 early-exit
+// contract: `metadata` and `tensors` hold precisely the records completed before the failure.
+pub fn inspect(path: str) -> Result<GgufInspection, Error> {
+  if !valid_path(path) {
+    return Err(Error.Invalid)
+  }
+  handle := fs.open_rw(path)?
+  file_size := handle.len()?
+  mut window := buffer(WINDOW_BYTES)
+  mut c := Cursor {
+    file_size: file_size,
+    window_base: -1,
+    window_len: 0,
+    pos: 0,
+    capacity: WINDOW_BYTES,
+    bytes_read: 0,
+  }
+  mut w := Walk {
+    magic: "".clone(),
+    version: -1,
+    tensor_count: -1,
+    metadata_kv_count: -1,
+    alignment: DEFAULT_ALIGNMENT,
+    alignment_from_metadata: false,
+    metadata_end: -1,
+    tensor_table_end: -1,
+    data_offset: -1,
+    architecture: "".clone(),
+    architecture_present: false,
+  }
+  mut metadata_body := builder()
+  mut tensor_body := builder()
+  mut tensor_offsets: array_builder<i64> := array_builder()
+  mut tensor_offset_fields: array_builder<i64> := array_builder()
+  mut failure := no_fault()
+
+  loop {
+    match decode_header(handle, window, c, w) {
+      Ok(_) => {},
+      Err(detected) => { failure = detected },
+    }
+    if failure.code.len() > 0 { break }
+
+    mut index := 0
+    mut interrupted := false
+    loop {
+      if index >= w.metadata_kv_count { break }
+      match decode_kv(handle, window, c, index) {
+        Ok(row) => {
+          json_view: str := row.json
+          if index > 0 { metadata_body.write(",") }
+          metadata_body.write(json_view)
+          key_view: str := row.key
+          if row.key_valid && key_view == "general.alignment" {
+            match apply_alignment(w, row) {
+              Ok(_) => {},
+              Err(detected) => { failure = detected },
+            }
+          }
+          if row.key_valid && key_view == "general.architecture" && row.value_type == 8 && row.text_valid {
+            w.architecture = row.text.clone()
+            w.architecture_present = true
+          }
+        },
+        Err(detected) => { failure = detected },
+      }
+      if failure.code.len() > 0 {
+        interrupted = true
+        break
+      }
+      index = index + 1
+    }
+    if interrupted { break }
+    w.metadata_end = c.pos
+
+    mut entry := 0
+    mut halted := false
+    loop {
+      if entry >= w.tensor_count { break }
+      match decode_tensor(handle, window, c, entry, w.alignment) {
+        Ok(row) => {
+          // The NUL sentinel is the only separator; `render_tensors` inserts the JSON commas once
+          // it can close each entry with its `absolute_offset`.
+          prefix_view: str := row.json_prefix
+          tensor_body.write(prefix_view)
+          tensor_body.write("\0")
+          tensor_offsets.push(row.offset)
+          tensor_offset_fields.push(row.offset_field)
+        },
+        Err(detected) => { failure = detected },
+      }
+      if failure.code.len() > 0 {
+        halted = true
+        break
+      }
+      entry = entry + 1
+    }
+    if halted { break }
+    w.tensor_table_end = c.pos
+
+    match resolve_data_offset(c, w) {
+      Ok(_) => {},
+      Err(detected) => { failure = detected },
+    }
+    break
+  }
+
+  offsets := tensor_offsets.build()
+  offset_fields := tensor_offset_fields.build()
+  if failure.code.len() == 0 && w.data_offset >= 0 {
+    failure = check_tensor_ranges(offsets, offset_fields, w.data_offset, file_size)
+  }
+  if failure.os {
+    return Err(failure.os_error)
+  }
+
+  metadata_json := metadata_body.to_string()
+  prefixes := tensor_body.to_string()
+  prefixes_view: str := prefixes
+  tensors_json := render_tensors(prefixes_view, offsets, w.data_offset)
+  failed := failure.code.len() > 0
+  status_label := if failed { "error" } else { "ok" }
+  metadata_view: str := metadata_json
+  tensors_view: str := tensors_json
+  document := render_document(
+    path,
+    status_label,
+    failure.code,
+    failure.offset,
+    file_size,
+    c.bytes_read,
+    w,
+    metadata_view,
+    tensors_view,
+  )
+  return Ok(GgufInspection {
+      status: if failed { GgufStatus.Error } else { GgufStatus.Ok },
+      error_code: failure.code.clone(),
+      file_size: file_size,
+      bytes_read: c.bytes_read,
+      version: w.version,
+      tensor_count: w.tensor_count,
+      metadata_kv_count: w.metadata_kv_count,
+      alignment: w.alignment,
+      data_offset: w.data_offset,
+      architecture: w.architecture,
+      document: document,
+    })
+}

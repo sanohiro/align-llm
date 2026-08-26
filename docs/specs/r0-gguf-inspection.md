@@ -1,9 +1,11 @@
 # R0-GGUF-INSPECT: read-only GGUF header, metadata, and tensor-table inspection
 
-Status: design plan of record for the first Track B capability named by `docs/specs/roadmap.md`
-section R0. Implementation has not started. This document triggers the `CLAUDE.md` proportional
-design gate on two counts: it adds a public CLI surface (`main --inspect-gguf`) and a new versioned
-exchanged document (`R0_GGUF_INSPECTION`, `schema_version: 1`).
+Status: plan of record for the first Track B capability named by `docs/specs/roadmap.md` section
+R0, implemented at pin `4b515f8d` by `src/gguf.align`, the `src/main.align` `--inspect-gguf` arm,
+`scripts/run-gguf-smoke`, and `scripts/run-gguf-reference-parity`. Section 6 records every
+correction implementation forced on this contract. This document triggers the `CLAUDE.md`
+proportional design gate on two counts: it adds a public CLI surface (`main --inspect-gguf`) and a
+new versioned exchanged document (`R0_GGUF_INSPECTION`, `schema_version: 1`).
 
 This document is authoritative for the R0 public contract. `docs/specs/roadmap.md` remains
 authoritative for delivery order; `docs/specs/align-llm.md` remains authoritative for the
@@ -261,6 +263,15 @@ on-disk `u32` id and `type_name` is its name. An id outside this table is reject
 `BOOL` is one byte. Any nonzero byte renders `true`; R0 does not reject a byte outside `{0, 1}`,
 because writers in the wild are not consistent and the distinction carries no information.
 
+**Correction (section 6, item 4): a non-finite float renders `null`.** `write_float` emits Rust's
+`Display`, whose spelling for an infinity or a NaN is `inf` / `-inf` / `NaN` — none of which is
+JSON. A `FLOAT32` or `FLOAT64` whose exponent bits are all set therefore renders `"value": null`
+(and `{"value": null, "bits": "…"}` inside an array preview), while `value_bits` still carries the
+exact pattern and remains the authoritative rendering. The test is `(bits & 0x7F800000) ==
+0x7F800000` on the raw `u32`, or the `f64` equivalent, so it needs no float classifier and no
+bit-cast. This is a wire-boundary correctness fix, not a schema change: `value` was already
+documented as "number", and `null` is the only honest rendering of a value JSON cannot express.
+
 #### 2.4.3 Scalar KV record
 
 ```json
@@ -270,7 +281,7 @@ because writers in the wild are not consistent and the distinction carries no in
   "key_invalid_utf8": false,
   "type": 6,
   "type_name": "FLOAT32",
-  "value": 1000000,
+  "value": 1000000.0,
   "value_bits": "49742400"
 }
 ```
@@ -407,11 +418,9 @@ one-line change that does not touch the decoder.
 offset. GGUF is a variable-length forward format, so R0 supplies its own cursor over `pread`.
 
 ```text
-GgufCursor {
-  handle: file,        // owned; Drop closes the fd at scope end
+Cursor {
   file_size: i64,      // f.len(), read once
   window_base: i64,    // absolute offset of window byte 0
-  window: buffer,      // mut local; the only decode surface
   window_len: i64,     // bytes actually returned by the last pread
   pos: i64,            // absolute offset of the next byte to decode
   capacity: i64,       // current window capacity
@@ -419,24 +428,35 @@ GgufCursor {
 }
 ```
 
+**Correction (section 6, item 1): the handle and the window are not cursor fields.** `file` never
+rides an aggregate other than its constructor's `Result<file, Error>`, and every native buffer fill
+requires its buffer argument to be a bare local declared `mut`, so neither `handle: file` nor
+`window: buffer` can live in a record. Both stay locals in `gguf.inspect` and travel to the cursor
+operations as `borrow handle: file` and `borrow mut window: buffer`, alongside `borrow mut c:
+Cursor`. The reading contract is unchanged; only where the three pieces of state live changes.
+
 Three operations define it, and they are the whole reading contract:
 
 1. **`ensure(n)`** guarantees that bytes `[pos, pos + n)` are inside the window. If `pos + n` exceeds
    `file_size`, it fails `GGUF_TRUNCATED` **before** any codec call. If `n` exceeds `capacity`, it
    grows (2.5.2). Otherwise, if the range is not already resident, it refills at `pos`.
-2. **`refill()`** allocates a fresh `mut buffer(capacity)`, calls
-   `handle.pread(window, pos)`, sets `window_base = pos`, sets `window_len` to the returned count,
-   and adds that count to `bytes_read`. A refill always starts at the first unconsumed byte, so no
-   byte is ever read twice.
+2. **`refill()`** calls `handle.pread(window, pos)`, sets `window_base = pos`, sets `window_len` to
+   the returned count, and adds that count to `bytes_read`. A refill always starts at the first
+   unconsumed byte, so no *consumed* byte is ever read twice; an unconsumed window tail that an
+   oversized item forces past is re-read, and `bytes_read` counts it, because `bytes_read` is
+   defined as the I/O actually performed rather than the distinct bytes touched.
 3. **`skip(n)`** advances `pos` by `n` without reading. If the target is inside the resident window
    it is a pointer move; otherwise the window is simply invalidated and the next `ensure` refills at
    the new position. Skipped bytes never enter `bytes_read`.
 
-A fresh `buffer` is allocated per refill rather than reusing one. `buffer` is a growable handle
-whose length is set by the fill, and this plan does not depend on unverified semantics for a second
-`pread` into an already-filled buffer. The cost is bounded and small: the reference model needs
-roughly six one-megabyte refills for a 4.6 GB file. If a future adoption verifies that `pread`
-resets the buffer length, reuse becomes a mechanical, behavior-preserving change.
+**Correction (section 6, item 2): the window buffer is reused across refills.** The condition this
+plan named — "if a future adoption verifies that `pread` resets the buffer length, reuse becomes a
+mechanical, behavior-preserving change" — was verified at the pin before implementation:
+`align_rt_io_file_pread` fills from the buffer's *capacity*, then publishes exactly the returned
+count as its length on every call, including a short read and an EOF read of zero. One
+`buffer(WINDOW_BYTES)` is therefore allocated in `gguf.inspect` and replaced only by the explicit
+growth path of 2.5.2. The reference model allocates one window instead of six, and `bytes_read` is
+unaffected.
 
 **Bounds checking is a correctness obligation, not an optimization.** At this pin
 `bytes.<scalar>(off)` **aborts** on an out-of-range read — the same fail-closed policy as `slice[i]`
@@ -557,7 +577,7 @@ the tensor table in the container. This ordering is a property of the format, no
 | `GGUF_UNKNOWN_VALUE_TYPE` | a metadata value type id, or an array element type id, is greater than `12` | step 5 |
 | `GGUF_NESTED_ARRAY` | an array declares element type `9` | step 5 |
 | `GGUF_VALUE_OVERFLOW` | a `UINT64` value has bit 63 set | step 5 |
-| `GGUF_ITEM_TOO_LARGE` | a single item needs a window larger than `16777216` | steps 5, 7 |
+| `GGUF_ITEM_TOO_LARGE` | a single item needs a window larger than `16777216` (see section 6, item 6: unreachable while `MAX_STRING_BYTES == MAX_ITEM_BYTES`; retained as a fail-closed guard) | steps 5, 7 |
 | `GGUF_BAD_ALIGNMENT` | `general.alignment` is not `UINT32`, is `0`, or is not a power of two | step 6 |
 | `GGUF_BAD_DIMS` | `n_dims` is `0` or greater than `4` | step 7 |
 | `GGUF_OFFSET_OVERFLOW` | a tensor offset has bit 63 set | step 7 |
@@ -601,11 +621,11 @@ block R0**: model files in a developer checkout are normally writable by their o
 blocking the moment a model lives on a read-only mount, in a root-owned shared cache, or in a
 container image layer — all ordinary deployment shapes for the runtime this repository is building.
 
-The request belongs in `docs/align-requests.md` as a new numbered entry with `Blocking: no`, a
-proposed `fs.open_ro(path) -> Result<file, Error>` opening `O_RDONLY` and supporting `pread`/`len`
-but not `pwrite`, and acceptance criteria naming `--inspect-gguf` against a `chmod 444` model file.
-Filing it is not part of this capability's diff; this section is the evidence that the gap was
-classified rather than worked around.
+The request is filed as Request 21 in `docs/align-requests.md`, `Status: PROPOSED`, `Blocking: no`,
+proposing `fs.open_ro(path) -> Result<file, Error>` opening `O_RDONLY` and supporting `pread`/`len`
+but not `pwrite`, with acceptance criteria naming `--inspect-gguf` against a `chmod 444` model file.
+R0 ships on `fs.open_rw`; this section is the evidence that the gap was classified rather than
+worked around.
 
 Two things R0 explicitly does **not** do: it does not build a compatibility layer, and it does not
 write against the proposed surface. It uses `fs.open_rw` today. The one visible consequence is a
@@ -914,3 +934,45 @@ take a `bytes` view instead of a cursor, and the pread path retained only for th
 - **Full array extraction.** Section 5.1.
 - **A GGUF writer.** Out of scope permanently for R0; if `align-pack` needs to emit GGUF rather than
   `.alignpack`, that is an R2 decision with its own contract.
+
+## 6. Implementation corrections to this plan
+
+The capability was implemented against this plan at pin `4b515f8d`. Every item below is a
+correction to a promise this document made, recorded here with the section it amends, the evidence
+that forced it, and the owner test that now holds it. Plan, code, and tests changed together; no
+item below is a deferral.
+
+| # | Amends | Correction | Evidence | Owner |
+| --- | --- | --- | --- | --- |
+| 1 | 2.5.1, 2.5.3, 3.1 | `GgufCursor` cannot own `handle: file` or `window: buffer`. `file` never rides an aggregate other than its constructor's `Result<file, Error>`, and every native buffer fill requires a bare `mut` buffer **local**. Both are locals in `gguf.inspect` and reach the cursor operations as `borrow handle: file` / `borrow mut window: buffer`. The reading contract is unchanged | `draft.md` §18.2; `align_sema::require_mut_buffer_local` | `make check`; every `gguf-smoke` case |
+| 2 | 2.5.1, 2.5.3 | The window buffer is **reused** across refills rather than reallocated per refill. The plan's own release condition was verified: `align_rt_io_file_pread` fills from the buffer's capacity and publishes exactly the returned count as its length on every call, including short and EOF reads. One window is allocated; growth is the only reallocation | `align_runtime` `align_rt_io_file_pread` plus its `file_pread_short_at_eof_returns_actual_count` unit | `bytes-read-exact`, `window-growth` |
+| 3 | 2.5.4, 3.1 | `builder` and `array_builder<T>` are not parameter types at this pin, so a `walk` helper cannot accumulate the document bodies. The walk lives in `gguf.inspect`, and each fallible step records its fault as a value and leaves the walk immediately. This is exactly the section 2.6 early-exit contract, expressed without a helper | `unknown type: 'builder'` from the pinned compiler | `partial-document` assertions in the error corpus |
+| 4 | 2.4.2, 2.4.3, 2.4.4 | A non-finite `FLOAT32`/`FLOAT64` renders `"value": null` (and `{"value": null, "bits": …}` in a preview). `write_float` spells an infinity `inf` and a NaN `NaN`, neither of which is JSON, so the previous contract could emit an unparseable document. `value_bits` is unchanged and remains authoritative | Rust `Display` for `f32`/`f64` | `full` fixture `kv.float32.inf`, `kv.float64.nan`; the whole corpus is parsed with Python's `json` |
+| 5 | 2.4.3 | The `FLOAT32` example renders `1000000.0`, not `1000000`. `write_float` always emits a decimal point | observed output | `float-bits` comparisons |
+| 6 | 2.6, 3.1, 4.1 | `GGUF_ITEM_TOO_LARGE` is **unreachable** while `MAX_STRING_BYTES == MAX_ITEM_BYTES == 16777216`: every declared string or name length above the cap is already rejected as `GGUF_STRING_TOO_LARGE` before `ensure` is reached, and no other item can request more than 32 bytes. The guard is retained as fail-closed defense and carries no negative fixture. The error corpus therefore has 15 reachable codes, not 16 | validation order of section 2.6 | none; recorded as an unsatisfiable closure cell |
+| 7 | 3.1 | In `truncated-every-boundary`, a cut below the 24-byte header yields `GGUF_TOO_SMALL`, not `GGUF_TRUNCATED` — the container is too small to describe itself at all. The invariant asserted at every boundary is the one that matters: a recorded error code and a recorded exit, **never** an abort | section 2.6 step 4 precedes step 5 | 13 `truncated-boundary-*` cases, each asserting a non-signal exit |
+| 8 | 2.6, 3.1 | `error_offset` for `GGUF_TRUNCATED` is the cursor position at the failing `ensure` — the first byte of the range that could not be read. For an arbitrary truncation point that value is not independently predictable, so the boundary sweep asserts `0 <= error_offset <= cut`; the two hand-computed truncations assert the exact offset. Every other code asserts an exact, generator-computed offset | — | `error-truncated-after-header` (24), `error-truncated-mid-header` (24), `error-truncated-data-offset` |
+| 9 | 3.2 | `untouched-destination` splits in two. A structural failure **does** replace the destination, with the complete failure document — that is the failure-persistence contract, and the assertion is that the destination parses and carries the expected `error_code`, never a partial write. The byte-unchanged sentinel assertion belongs to the argument and OS-failure paths, where no document exists | section 2.5.4 | `untouched-destination` (absent model) and the structural-failure replacement assertion |
+| 10 | 3.1 | `repeat-inspect` cannot be "64 inspections in one process": the CLI contract is one inspection per invocation and R0 ships no in-process repeat driver. It is replaced by 64 sequential invocations asserting byte-identical documents, plus one inspection under `ulimit -n 64`, which bounds descriptor use directly | CLI surface of section 2.2 | `repeat-inspect`, the low-descriptor run |
+| 11 | 3.2 | A NUL-bearing path cannot be delivered through `argv`, so that third `cli-path` case is `N/A` at the CLI. The empty and over-length cases are asserted, and the module-level NUL guard remains | POSIX `execve` | `cli-path` |
+| 12 | 3.3, 4.1 | The generator imports `json`, `math`, `struct`, `sys`, and `pathlib` — `json` to emit the expectation manifest, `math` for the float edge values. It still imports nothing from `src/`, and derives no value from the decoder | — | code review |
+| 13 | 3.3 | Fixture cleanliness is proven by searching the repository for any `*.gguf` or `manifest.json` after the run rather than by requiring `git status --porcelain` to be empty, which cannot hold in a working tree under development | — | `run-gguf-smoke` epilogue |
+| 14 | 4.3 | Property 2 is asserted in its exact arithmetic form rather than against a same-size string-array control, whose byte layout cannot be made comparable. For the skip fixture the assertion is `bytes_read == WINDOW_BYTES + (file_size - array_end)` **and** `file_size - bytes_read == array_end - WINDOW_BYTES`, both computed by the generator from the layout it wrote. The STRING control asserts that at most 64 bytes go unread | — | `skip-accounting`, `skip-accounting-string-control` |
+
+### 6.1 Measured results
+
+The reference model `qwen2.5-coder-7b-instruct-q4_k_m.gguf` (4,683,073,536 bytes) inspects as:
+
+```text
+version 3   alignment 32 (default)   tensor_count 339   metadata_kv_count 29
+metadata_end 5,934,224   tensor_table_end 5,953,528   data_offset 5,953,536
+architecture qwen2       bytes_read 6,291,456 (0.1343% of the file)
+```
+
+Every one of those figures except `bytes_read` matches the independently decoded values recorded in
+section 2.4.1. `bytes_read` is six full one-megabyte windows, inside the section 4.3 predicted band
+`5,345,312 <= bytes_read < 7,002,112`; the lower bound is not reached because the window is refilled
+to capacity rather than to the exact remaining need, which is the honest meaning of "the I/O
+actually performed". `scripts/run-gguf-reference-parity` compared the version, alignment, data
+offset, KV count, all 29 ordered keys, the tensor count, and all 339 ordered tensor names and
+offsets against `llama-gguf`, and confirmed the model's size and mtime unchanged.

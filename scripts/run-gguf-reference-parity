@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R0-GGUF-INSPECT focused qualification (`docs/specs/r0-gguf-inspection.md` section 4.4). It
+# discharges the roadmap gate — "the metadata and tensor list of the target GGUF agree with an
+# existing tool" — by comparing the R0 document against a llama.cpp reference reader on a real
+# model. It is opt-in, never joins an aggregate, and never runs in CI.
+#
+#   ALIGN_LLM_GGUF_REFERENCE  path to the reference executable, expected to be `llama-gguf`
+#   ALIGN_LLM_GGUF_MODEL      path to the model
+#
+# A qualification that silently passes when its subject is missing is worse than no qualification,
+# so a missing input prints one exact N/A line and exits 0 without claiming a pass.
+
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+reference="${ALIGN_LLM_GGUF_REFERENCE:-}"
+model="${ALIGN_LLM_GGUF_MODEL:-}"
+
+if [ -z "$reference" ]; then
+  printf '%s\n' "gguf reference parity: N/A (ALIGN_LLM_GGUF_REFERENCE unset)"
+  exit 0
+fi
+if [ ! -x "$reference" ]; then
+  printf '%s\n' "gguf reference parity: N/A (ALIGN_LLM_GGUF_REFERENCE is not executable)"
+  exit 0
+fi
+if [ -z "$model" ]; then
+  printf '%s\n' "gguf reference parity: N/A (ALIGN_LLM_GGUF_MODEL unset)"
+  exit 0
+fi
+if [ ! -f "$model" ]; then
+  printf '%s\n' "gguf reference parity: N/A (ALIGN_LLM_GGUF_MODEL is absent)"
+  exit 0
+fi
+if [ ! -x "$root_dir/main" ]; then
+  printf '%s\n' "gguf reference parity: the product executable is missing; run 'make build'" >&2
+  exit 1
+fi
+
+temp_dir=$(mktemp -d)
+cleanup() {
+  rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
+before=$(python3 - "$model" <<'PY'
+import os, sys
+info = os.stat(sys.argv[1])
+print("%d %d" % (info.st_size, info.st_mtime_ns))
+PY
+)
+
+start_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+"$root_dir/main" --inspect-gguf "$model" >"$temp_dir/inspection.json"
+end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+
+# `llama-gguf FILE r n` reads the container without loading tensor data.
+"$reference" "$model" r n >"$temp_dir/reference.txt" 2>"$temp_dir/reference.err" || {
+  status=$?
+  printf '%s\n' "gguf reference parity: the reference reader exited $status" >&2
+  tail -20 "$temp_dir/reference.err" >&2 || true
+  exit 1
+}
+
+after=$(python3 - "$model" <<'PY'
+import os, sys
+info = os.stat(sys.argv[1])
+print("%d %d" % (info.st_size, info.st_mtime_ns))
+PY
+)
+if [ "$before" != "$after" ]; then
+  printf '%s\n' "gguf reference parity: the model's size or mtime changed during the run" >&2
+  exit 1
+fi
+
+python3 - "$temp_dir/inspection.json" "$temp_dir/reference.txt" "$start_ns" "$end_ns" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+# `llama-gguf` prints two passes; the container survey is the `gguf_ex_read_0` one, and the second
+# pass repeats the header lines, so parsing is restricted to the first pass.
+raw_reference = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
+PREFIX = "gguf_ex_read_0: "
+reference_text = "\n".join(
+    line[len(PREFIX):] for line in raw_reference.splitlines() if line.startswith(PREFIX)
+)
+if not reference_text:
+    raise SystemExit("gguf reference parity: FAIL the reference printed no gguf_ex_read_0 output")
+elapsed_ns = int(sys.argv[4]) - int(sys.argv[3])
+WINDOW_BYTES = 1048576
+
+
+def fail(message):
+    raise SystemExit("gguf reference parity: FAIL %s" % message)
+
+
+def scalar(pattern):
+    found = re.search(pattern, reference_text, re.MULTILINE)
+    if not found:
+        fail("the reference output has no %r line" % pattern)
+    return int(found.group(1))
+
+
+if document["status"] != "ok":
+    fail("the inspection reported %r (%r)" % (document["status"], document["error_code"]))
+
+# Section 4.4 comparison scope: exactly the fields the reference actually prints.
+comparisons = [
+    ("header.version", document["header"]["version"], scalar(r"^version:\s+(\d+)\s*$")),
+    ("alignment", document["alignment"], scalar(r"^alignment:\s+(\d+)\s*$")),
+    ("data_offset", document["data_offset"], scalar(r"^data offset:\s+(\d+)\s*$")),
+    ("metadata_kv_count", document["header"]["metadata_kv_count"], scalar(r"^n_kv:\s+(\d+)\s*$")),
+    ("tensor_count", document["header"]["tensor_count"], scalar(r"^n_tensors:\s+(\d+)\s*$")),
+]
+for label, ours, theirs in comparisons:
+    if ours != theirs:
+        fail("%s: %r, the reference says %r" % (label, ours, theirs))
+
+reference_keys = re.findall(r"^kv\[\s*\d+\]: key = (\S+)\s*$", reference_text, re.MULTILINE)
+our_keys = [kv["key"] for kv in document["metadata"]]
+if len(reference_keys) != len(our_keys):
+    fail("%d metadata keys, the reference lists %d" % (len(our_keys), len(reference_keys)))
+for index, (ours, theirs) in enumerate(zip(our_keys, reference_keys)):
+    if ours != theirs:
+        fail("metadata[%d].key %r, the reference says %r" % (index, ours, theirs))
+
+reference_tensors = re.findall(
+    r"^tensor\[\s*\d+\]: name = (.+?), size = \d+, offset = (\d+)\s*$",
+    reference_text,
+    re.MULTILINE,
+)
+our_tensors = [(t["name"], t["offset"]) for t in document["tensors"]]
+if len(reference_tensors) != len(our_tensors):
+    fail("%d tensors, the reference lists %d" % (len(our_tensors), len(reference_tensors)))
+for index, (ours, theirs) in enumerate(zip(our_tensors, reference_tensors)):
+    if ours[0] != theirs[0]:
+        fail("tensors[%d].name %r, the reference says %r" % (index, ours[0], theirs[0]))
+    if ours[1] != int(theirs[1]):
+        fail("tensors[%d].offset %r, the reference says %r" % (index, ours[1], theirs[1]))
+
+# Section 4.3 property 3, the secondary metric.
+bound = document["data_offset"] + WINDOW_BYTES
+if not 0 < document["bytes_read"] < bound:
+    fail("bytes_read %d is outside (0, %d)" % (document["bytes_read"], bound))
+
+print("gguf reference parity: PASS")
+print("  file_size        %d" % document["file_size"])
+print("  bytes_read       %d (%.4f%% of the file)"
+      % (document["bytes_read"], 100.0 * document["bytes_read"] / document["file_size"]))
+print("  data_offset      %d" % document["data_offset"])
+print("  version          %d" % document["header"]["version"])
+print("  alignment        %d" % document["alignment"])
+print("  metadata_kv      %d keys compared in order" % len(our_keys))
+print("  tensors          %d names and offsets compared in order" % len(our_tensors))
+print("  architecture     %s" % document["architecture"])
+print("  elapsed          %.3f s (diagnostic only; R0 makes no performance claim)"
+      % (elapsed_ns / 1e9))
+PY
+
+printf '%s\n' "gguf reference parity: model size and mtime unchanged (read-only proof)"

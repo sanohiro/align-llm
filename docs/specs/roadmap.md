@@ -61,6 +61,32 @@ The current forward delivery order is:
    qualifications; neither joins an aggregate. It is listed after the consumer because the consumer
    defines the exact targets a profile must gate, and because the profiles gate *evidence*, not
    implementation.
+8. **C8 — speed-first optimization. Closed.** Nine consumer-complete capabilities each preserved
+   their correctness contract, named one changed path, and closed a paired fixed-task benchmark
+   before claiming an improvement. The section C8 gate is met and `docs/specs/c8-speed-first.md` is
+   authoritative for every baseline and measurement. Its retrospective promoted one reusable rule —
+   the ppm-floor rule with a 2,000 ppm shipping floor — into section 1 of that document and one
+   clause into the `CLAUDE.md` performance-claim row. A deferred C8 surface reopens only with a
+   recorded cost ceiling above the floor or as a genuine Align capability request.
+9. **R0-GGUF-INSPECT — read-only GGUF header, metadata, and tensor-table inspection. Active.** The
+   first Track B capability and the next item on the "最初の実装順" list below, whose step 8 is
+   `align-inspect`. It delivers one consumer-complete path: a caller names a `.gguf` path and
+   receives one canonical `R0_GGUF_INSPECTION` document describing what the file declares about
+   itself. It triggers the proportional design gate on a public CLI surface and a versioned
+   exchanged document, so `docs/specs/r0-gguf-inspection.md` is the authoritative plan and owns the
+   contract ledger, closure matrix, and fixture design. It makes no performance claim, so the C8
+   performance row does not apply to it.
+
+**I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
+prove its value on an existing model, and the merged C6-MEASURED wave (align-llm PR #103, `c9a510d`)
+already did so end to end: `src/provider_llama.align` drives a real local provider, and the frozen
+`eval/prompt/canonical-v1/` scope names `LOCAL_OPENAI` at
+`http://127.0.0.1:18080/v1/chat/completions` with model `qwen2.5-coder-7b-instruct-q4_k_m` and a
+recorded `provider_service_revision`. The measured run reported `IMPROVED` with
+`gate_eligible: true`, zero serious regressions, and completion gain 2, against a parent-vs-parent
+null replicate that flipped no cell. That evidence carries no paired timing, so I0's claim is the
+completion-gain path only; the remaining I0 work is absorbed by later Track B integration rather
+than by a separate align-coder capability.
 
 **ALIGN-ADOPTION is an internal prerequisite checkpoint, not a standalone capability.** Within the
 next consumer branch, batch its merged Align requests into one compiler-pin update, run every named
@@ -335,6 +361,15 @@ HEAD repositoryは評価経路で`ok`（candidate 0件、あるいはindexが持
 
 baselineと比べて、固定タスクの中央値でtime to passing patchが短縮すること。
 
+**達成済み。C8は9個のcapabilityでcloseした。** 9個すべてが固定タスクのpaired benchmarkで
+中央値の短縮を測定しており、最後の第9capabilityは10,793 ppm（1.08%）の短縮を記録した。個々の
+baseline・測定値・host・binary digestは
+[`c8-speed-first.md`](c8-speed-first.md)のsection 3〜11がsource of truthである。同じretrospective
+で**ppm-floor rule**（cost ceilingを実装前にledgerへ記録し、shipping floorである2,000 ppmを
+下回るseamは実装せずdeferred surfacesに記録する）をsection 1へ昇格させた。残るdeferred surface
+は、floorを超えるcost ceilingを持つか、genuineなAlign capability requestになった場合にのみ
+新しいcapabilityとして再開する。次の実装対象はTrack BのR0である。
+
 ---
 
 # Track B: align-runtime
@@ -356,11 +391,27 @@ align-inspect model.gguf
 - architecture判定
 ```
 
-同時にalign標準ライブラリへlittle-endian decode APIを追加する。
+little-endian decode APIはすでにAlign標準ライブラリが提供している。pin
+`4b515f8d`時点で`bytes`（`slice<u8>`）は`u8`/`i8`と`u16 i16 u32 i32 u64 i64 f32 f64`の
+`_le`/`_be`形、計18個のscalar decoderを持つ（例: `bv.u32_le(off)`）。range外読み出しは
+`slice[i]`と同じくabortするfail-closedなので、bounds checkはR0側の正しさの責務である。
+したがってR0は新しいAlign surfaceを提案せず、compatibility layerも作らない。
+
+R0のauthoritative planは[`r0-gguf-inspection.md`](r0-gguf-inspection.md)である。公開CLI
+（`main --inspect-gguf`）と versioned exchanged document（`R0_GGUF_INSPECTION`,
+`schema_version: 1`）を追加するため、`CLAUDE.md`のproportional design gateが発動する。契約・
+validation順序・error code・closure matrix・fixture設計はすべてその文書が持つ。
+
+実装中に見つかったAlignのgapは1件で、`docs/align-requests.md` Request 21
+（read-only random-access file open）として記録した。pin時点の唯一のrandom-access constructorは
+`fs.open_rw`で、書き込まないmodel fileに`O_RDWR`を要求する。non-blockingであり、R0は
+`fs.open_rw`のまま進む。
 
 ### Gate
 
-対象GGUFのmetadataとtensor一覧が既存toolと一致すること。
+対象GGUFのmetadataとtensor一覧が既存toolと一致すること。この gateは
+`scripts/run-gguf-reference-parity`（opt-in focused qualification、llama.cppの`llama-gguf`と比較）
+が担い、model不要の`make gguf-smoke`が日常のownerとなる。
 
 ---
 

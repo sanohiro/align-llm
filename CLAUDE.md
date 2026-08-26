@@ -48,7 +48,7 @@ Classify the changed surface first and follow only its row. Reclassify when the 
 | Classifier-eligible authoritative specification or governance additions/modifications | Author consistency check | `python3 scripts/pre-pr` | One comprehensive review |
 | Local implementation checkpoint | Narrow owner test after a coherent batch | Do not publish; reclassify as an executable consumer capability first | No repeated full-diff review |
 | Executable consumer capability | Narrow owner tests; named qualification when its boundary changes | `python3 scripts/pre-pr --owner-test LABEL -- COMMAND ...` | One comprehensive review |
-| Performance claim | Owner test plus reproducible benchmark | Applicable row above, with baseline and result | Include measurement risk |
+| Performance claim | Owner test plus reproducible benchmark, whose baseline includes a cost ceiling recorded before implementation (the ppm-floor rule in `docs/specs/c8-speed-first.md` section 1) | Applicable row above, with baseline and result | Include measurement risk |
 
 `scripts/pre-pr` is the shared final classifier. Its `--plan` mode explains the selected checks but
 is not evidence. The successful stamp belongs to the exact unchanged `HEAD`; commit, amend, or

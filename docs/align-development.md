@@ -392,6 +392,66 @@ rediscovers a compiler from a temporary tree, `PATH`, or a sibling checkout, and
 with an explicit environment map, separate bounded stdout/stderr capture, and a fixed 60-second
 timeout.
 
+## GGUF-inspection development
+
+The R0 consumer is `src/gguf.align`, specified by `docs/specs/r0-gguf-inspection.md`. It reads a
+GGUF model file's header, metadata, and tensor table and publishes one canonical
+`R0_GGUF_INSPECTION` document with `schema_version: 1`. It is strictly read-only on the model path:
+no tensor payload is decoded, no dequantization happens, nothing is written, and no provider,
+inference code, or `align-runtime` surface is imported. Only little-endian GGUF is decoded; the
+container carries no endianness flag, so a big-endian file is a recorded limitation rather than a
+detected rejection.
+
+The CLI arm has the two forms every other document-producing arm has:
+
+```sh
+./main --inspect-gguf <model.gguf>
+./main --inspect-gguf <model.gguf> <inspection.json>
+```
+
+The document bytes are byte-identical between the two. The one-operand form writes the document to
+stdout followed by one newline and prints nothing else, so a machine consumer needs no temporary
+file. The two-operand form writes the document to the named path and prints the stable summary block
+(`gguf inspection:`, `status:`, `OK` or `ERROR`, then `architecture:`, `version:`, `tensors:`,
+`metadata:`, `alignment:`, `data offset:`, and `bytes read:` with their values, plus `error:` and
+its code on the error path). Both exit 0 on `status: "ok"` and return `Error.Invalid` on
+`status: "error"`. Wrong arity returns `Error.Invalid` before any filesystem access.
+
+`bytes_read` is the exact sum of the counts returned by every `pread` during one inspection, not an
+estimate and not derived from the file size. It is what makes the "header and metadata only" claim
+measurable: against a 4.68 GB reference model the expected value is roughly 5.35 MB.
+
+The model path must currently be **writable by the invoking user**, because `fs.open_rw` is the only
+random-access file constructor at the pinned Align revision. That gap is recorded as Request 21 in
+`docs/align-requests.md` (`PROPOSED`, non-blocking); an `EACCES` surfaces as `Err(Error.Denied)`
+with no document.
+
+Use `make gguf-smoke` for the narrow durable owner. It needs no model, no network, and no reference
+tool: `scripts/gguf_fixture.py` generates a complete synthetic container plus a negative corpus into
+a `mktemp -d` tree at test time, and the runner asserts the document with an inline Python block.
+Fixtures are build inputs and are never committed. The generator packs its own bytes from tables
+transcribed from the specification and never imports or derives a value from `src/gguf.align`, which
+is what makes the check differential rather than a mirror of the decoder.
+
+The roadmap gate — that metadata and the tensor list agree with an existing tool — is discharged by
+a focused, opt-in qualification that is deliberately in no aggregate and in no CI lane:
+
+```sh
+ALIGN_LLM_GGUF_REFERENCE=/path/to/llama-gguf \
+ALIGN_LLM_GGUF_MODEL=~/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf \
+  scripts/run-gguf-reference-parity
+```
+
+`ALIGN_LLM_GGUF_MODEL` defaults to that same path. If either the reference executable or the model
+is unset or absent, the runner prints one exact line — `gguf reference parity: N/A
+(ALIGN_LLM_GGUF_REFERENCE unset)` or the model equivalent — and exits 0. That skip never counts as a
+pass and must be named as the `N/A` reason in the pull request. Parity covers exactly what
+`llama-gguf FILE r n` prints: version, alignment, data offset, KV count, the ordered key names,
+tensor count, and each tensor's name and offset. Value types, values, dimension counts, and
+dimensions are outside reference parity and are owned by the synthetic corpus instead. The runner
+also asserts the `bytes_read` bound and verifies that the model's size and modification time are
+unchanged, which is the read-only proof.
+
 ## The aarch64 platform-profile gates
 
 C7 evidence is target-bound, so each required non-x86 environment has its own reviewed profile.

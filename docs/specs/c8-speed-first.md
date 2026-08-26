@@ -1,7 +1,10 @@
 # C8 Speed-first optimization
 
-Status: first eight consumer-complete capabilities merged; ninth capability implemented and awaiting
-its paired measurement.
+Status: closed after the ninth consumer-complete capability. The ninth,
+`C8-SELECTION-SINGLE-GIT-QUERY`, merged as PR #120 on `main` at
+`92c0979`, with a measured 10,793 ppm reduction on the fixed task (section 11).
+The C8 gate is met and no further C8 capability is scheduled; section 12 states the condition under
+which a deferred surface reopens.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -16,6 +19,33 @@ The first capability, `C8-TEST-SELECTION-LINEAR`, changes only related-test rank
 `repo_index.select_tests`. `patch_eval.evaluate` consumes that ranking before the verification loop
 applies and validates a candidate, so the fixed benchmark measures the complete first-attempt
 passing-patch path through `main --verify-loop`.
+
+**The ppm-floor rule.** A performance capability records its cost ceiling — the profiled or measured
+ppm share of the fixed-task total that the change can remove — in the ledger's optimization row
+before implementation. A seam whose ceiling is below the shipping floor is recorded in the deferred-
+surfaces section instead of being implemented; a measured result far below its recorded ceiling is
+reported as a ceiling-estimation miss, not only as a rejected candidate.
+
+The shipping floor for C8 is **2,000 ppm on the fixed task**. It is calibrated from this wave's own
+measured spread rather than chosen in advance.
+
+Below the floor: the `agent/c8-move-process-argv` candidate measured 283 ppm over 201 pairs and
+regressed over 31 pairs. It was rejected without a pull request, and because its ceiling had never
+been estimated, the paired benchmark was the first and only signal that the seam was too small — the
+measurement cost the whole diagnosis. Two capabilities did ship below the floor, the third at
+1,941 ppm (section 5) and the sixth at 1,808 ppm (section 8). The rule is forward-looking and does
+not retract them, but a ceiling recorded before implementation would have deferred both, and that is
+the point: each still paid the full paired-benchmark cost to establish a fifth of a percent.
+
+Above the floor: the eighth capability shipped at 3,913 ppm (section 10) and the ninth at
+10,793 ppm (section 11). The ninth's recorded ceiling — the roughly 1.2 ms `rev-parse` spawn out of
+the ~46 ms fixed-task total, about 26,000 ppm — was more than twice its measured result. That is a
+ceiling-estimation miss, and the rule requires it to be reported as one rather than being quietly
+absorbed into a passing claim.
+
+The floor therefore sits an order of magnitude above the rejected candidate and just above the two
+smallest shipped results, which is the band where the cost of measuring exceeded the value of the
+result.
 
 ## 2. Capability ledgers
 
@@ -807,6 +837,14 @@ other, not with the Section 3-10 series; the improvement above is a path-specifi
 platform claim.
 
 ## 12. Deferred C8 surfaces
+
+**C8 is closed.** The gate in `docs/specs/roadmap.md` section C8 — a shorter median time to a passing
+patch on the fixed task than the baseline — is met by all nine measured capabilities, and delivery has
+moved to Track B (`docs/specs/r0-gguf-inspection.md`). The surfaces below are not a backlog. One
+reopens as a new capability only when it carries a recorded cost ceiling above the section 1 shipping
+floor of 2,000 ppm, or when it becomes a genuine Align capability request under the `CLAUDE.md`
+classification rule. Neither condition is met by any surface today, and neither is satisfied by an
+intuition that a seam "looks hot" without a profiled or measured share of the fixed-task total.
 
 Context reduction, stable-context reuse, parallel checks, small-model routing, and persisted static
 analysis remain separate capabilities. In particular, captured concurrent checks require an Align
