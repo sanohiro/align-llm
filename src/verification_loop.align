@@ -190,10 +190,10 @@ fn run_command(
     expected_code: expected_code,
     actual_code: captured.code,
     duration_ns: elapsed,
-    summary: summary.clone(),
-    stdout: stdout.clone(),
-    stderr: stderr.clone(),
-    document: document.clone(),
+    summary: summary,
+    stdout: stdout,
+    stderr: stderr,
+    document: document,
   }
 }
 
@@ -323,7 +323,7 @@ fn invalid_result(task_id: str, error_code: i64) -> VerificationResult {
     "",
   )
   return VerificationResult {
-    document: invalid_document.clone(),
+    document: invalid_document,
     status: LoopStatus.Invalid,
     iteration_count: 0,
     repair_count: 0,
@@ -371,8 +371,8 @@ fn run_attempt(
         candidate_applied: false,
         repaired: false,
         repair_count: repair_count,
-        prompt: prompt.clone(),
-        stages: stage_document.clone(),
+        prompt: prompt,
+        stages: stage_document,
       }
     }
     candidate_done = true
@@ -394,8 +394,8 @@ fn run_attempt(
         candidate_applied: candidate_done,
         repaired: false,
         repair_count: repair_count,
-        prompt: prompt.clone(),
-        stages: stage_document.clone(),
+        prompt: prompt,
+        stages: stage_document,
       }
     }
     repair_build := apply_patch("repair-apply", root, repair_patch, timeout_ns)
@@ -410,8 +410,8 @@ fn run_attempt(
         candidate_applied: candidate_done,
         repaired: false,
         repair_count: repair_count,
-        prompt: prompt.clone(),
-        stages: stage_document.clone(),
+        prompt: prompt,
+        stages: stage_document,
       }
     }
     stage_document = stages.to_string()
@@ -422,8 +422,8 @@ fn run_attempt(
       candidate_applied: candidate_done,
       repaired: true,
       repair_count: repair_count + 1,
-      prompt: prompt.clone(),
-      stages: stage_document.clone(),
+      prompt: prompt,
+      stages: stage_document,
     }
   }
 
@@ -443,8 +443,8 @@ fn run_attempt(
         candidate_applied: candidate_done,
         repaired: false,
         repair_count: repair_count,
-        prompt: prompt.clone(),
-        stages: stage_document.clone(),
+        prompt: prompt,
+        stages: stage_document,
       }
     }
     repair_targeted := apply_patch("repair-apply", root, repair_patch, timeout_ns)
@@ -459,8 +459,8 @@ fn run_attempt(
         candidate_applied: candidate_done,
         repaired: false,
         repair_count: repair_count,
-        prompt: prompt.clone(),
-        stages: stage_document.clone(),
+        prompt: prompt,
+        stages: stage_document,
       }
     }
     stage_document = stages.to_string()
@@ -471,8 +471,8 @@ fn run_attempt(
       candidate_applied: candidate_done,
       repaired: true,
       repair_count: repair_count + 1,
-      prompt: prompt.clone(),
-      stages: stage_document.clone(),
+      prompt: prompt,
+      stages: stage_document,
     }
   }
 
@@ -490,7 +490,7 @@ fn run_attempt(
       repaired: false,
       repair_count: repair_count,
       prompt: "".clone(),
-      stages: stage_document.clone(),
+      stages: stage_document,
     }
   }
 
@@ -505,8 +505,8 @@ fn run_attempt(
       candidate_applied: candidate_done,
       repaired: false,
       repair_count: repair_count,
-      prompt: prompt.clone(),
-      stages: stage_document.clone(),
+      prompt: prompt,
+      stages: stage_document,
     }
   }
   repair_full := apply_patch("repair-apply", root, repair_patch, timeout_ns)
@@ -521,8 +521,8 @@ fn run_attempt(
       candidate_applied: candidate_done,
       repaired: false,
       repair_count: repair_count,
-      prompt: prompt.clone(),
-      stages: stage_document.clone(),
+      prompt: prompt,
+      stages: stage_document,
     }
   }
   stage_document = stages.to_string()
@@ -533,8 +533,8 @@ fn run_attempt(
     candidate_applied: candidate_done,
     repaired: true,
     repair_count: repair_count + 1,
-    prompt: prompt.clone(),
-    stages: stage_document.clone(),
+    prompt: prompt,
+    stages: stage_document,
   }
 }
 
@@ -569,7 +569,7 @@ fn run_task(task: VerificationTask, memory_context: str) -> VerificationResult {
       "",
     )
     return VerificationResult {
-      document: evaluation_failure_document.clone(),
+      document: evaluation_failure_document,
       status: LoopStatus.Invalid,
       iteration_count: 0,
       repair_count: 0,
@@ -629,7 +629,7 @@ fn run_task(task: VerificationTask, memory_context: str) -> VerificationResult {
     attempts,
   )
   return VerificationResult {
-    document: final_document.clone(),
+    document: final_document,
     status: final_status,
     iteration_count: iteration,
     repair_count: repair_count,

@@ -98,7 +98,7 @@ pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
     failed_root := root.clone()
     failed_document := render_document(failed_root, "", "error", revision_run.code, 0, 0, 0, 0, 0, 0, "", "", "", "", "")
     return IndexBuild {
-      document: failed_document.clone(),
+      document: failed_document,
       status: IndexStatus.Failed,
       file_count: 0,
       symbol_count: 0,
@@ -115,7 +115,7 @@ pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
     failed_root := root.clone()
     failed_document := render_document(failed_root, "", "error", files_run.code, 0, 0, 0, 0, 0, 0, "", "", "", "", "")
     return IndexBuild {
-      document: failed_document.clone(),
+      document: failed_document,
       status: IndexStatus.Failed,
       file_count: 0,
       symbol_count: 0,
@@ -208,7 +208,7 @@ pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
     tests_body.to_string(),
   )
   return IndexBuild {
-    document: document.clone(),
+    document: document,
     status: build_status,
     file_count: file_count,
     symbol_count: symbol_count,
@@ -226,7 +226,7 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
     failed_changed_path := changed_path.clone()
     failed_document := render_selection_document(failed_root, "", "error", revision_run.code, failed_changed_path, 0, "")
     return TestSelection {
-      document: failed_document.clone(),
+      document: failed_document,
       status: IndexStatus.Failed,
       changed_path: changed_path.clone(),
       candidate_count: 0,
@@ -240,7 +240,7 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
     failed_changed_path := changed_path.clone()
     failed_document := render_selection_document(failed_root, "", "error", files_run.code, failed_changed_path, 0, "")
     return TestSelection {
-      document: failed_document.clone(),
+      document: failed_document,
       status: IndexStatus.Failed,
       changed_path: changed_path.clone(),
       candidate_count: 0,
@@ -339,7 +339,7 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
     candidates_body.to_string(),
   )
   return TestSelection {
-    document: document.clone(),
+    document: document,
     status: IndexStatus.Ready,
     changed_path: changed_path.clone(),
     candidate_count: candidate_count,

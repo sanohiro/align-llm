@@ -149,7 +149,7 @@ pub fn evaluate(root: str, patch_path: str, timeout_ns: i64) -> PatchEvaluation 
     recommended_tests_json,
   )
   return PatchEvaluation {
-    document: document.clone(),
+    document: document,
     status: status,
     touched_file_count: touched_file_count,
     touched_symbol_count: touched_symbol_count,
@@ -174,7 +174,7 @@ fn failed_evaluation(root: str, patch_path: str, error_code: i64) -> PatchEvalua
     "",
   )
   return PatchEvaluation {
-    document: document.clone(),
+    document: document,
     status: repo_index.IndexStatus.Failed,
     touched_file_count: 0,
     touched_symbol_count: 0,
