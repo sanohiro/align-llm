@@ -7,7 +7,7 @@ file records durable project state.
 
 - Branch `agent/r1b-gptoss-moe-ir`, based on the R1-QWEN-MODEL-IR chain (merging as PR #122, head
   `85a3a97`, onto `main` at merge `08492dc`). The authoritative design ledger is
-  `docs/specs/r1b-gptoss-moe-ir.md`, committed at `b2acfda`. **Implementation is in progress.**
+  `docs/specs/r1b-gptoss-moe-ir.md`, committed at `2cd2cb4`. **Implementation is in progress.**
 - **What it delivers.** The MoE half of the R1 roadmap gate: a new architecture-neutral
   `src/model_ir.align` builder (`BlockPlan` -> `ModelIr` -> document, imported by both frontends), a
   new `src/frontend_gpt_oss.align` owning gpt-oss hyperparameters and block-plan construction, and

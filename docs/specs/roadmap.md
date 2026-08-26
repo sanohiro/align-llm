@@ -87,7 +87,7 @@ The current forward delivery order is:
     58 blocks, size-sum oracle `data_offset` 5,953,536 + `total_tensor_bytes` 4,677,120,000 =
     `computed_end` 4,683,073,536, matching `file_size`.
 11. **R1B-GPTOSS-MOE-IR — gpt-oss MoE frontend and per-expert Block IR. Active.** The next Track B
-    capability, on branch `agent/r1b-gptoss-moe-ir` (ledger commit `b2acfda`). It discharges the MoE
+    capability, on branch `agent/r1b-gptoss-moe-ir` (ledger commit `2cd2cb4`). It discharges the MoE
     half of the R1 roadmap gate: a new architecture-neutral `src/model_ir.align` builder, a new
     `src/frontend_gpt_oss.align`, per-expert `ExpertBlock`/`RouterBlock` block kinds, and
     `R1_MODEL_IR` at `schema_version: 2`. `docs/specs/r1b-gptoss-moe-ir.md` is the authoritative plan
