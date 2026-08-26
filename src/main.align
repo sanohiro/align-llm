@@ -5,6 +5,7 @@ import project
 import verify
 import eval
 import gguf
+import frontend_qwen
 import repair
 import model
 import provider
@@ -30,6 +31,7 @@ fn print_help() {
   print("       main --persist-result <input.json> <result.json>")
   print("       main --verify-result <result.json>")
   print("       main --inspect-gguf <model.gguf> [inspection.json]")
+  print("       main --model-ir <model.gguf> [model-ir.json]")
   print("       main prompt <experiment|generate|evaluate|accept|rollback> <request.json> <result.json>")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
 }
@@ -511,6 +513,94 @@ fn inspect_gguf_demo(args: array<str>) -> Result<(), Error> {
   }
 }
 
+// R1-QWEN-MODEL-IR CLI adapter (`docs/specs/r1-qwen-model-ir.md` sections 2.2 and 2.4). The arm
+// holds no GGUF and no architecture knowledge: it validates arity, calls
+// `frontend_qwen.build_model_ir`, writes or prints the document, prints the summary block, and maps
+// the derivation status to the process exit. Arity is checked before any path or file work, so an
+// arity failure produces no output at all. The shape deliberately mirrors `--inspect-gguf` rather
+// than inventing a second CLI grammar in the same repository.
+fn model_ir_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() < 3 || args.len() > 4 {
+    return Err(Error.Invalid)
+  }
+  ir := frontend_qwen.build_model_ir(args[2])?
+  document_view: str := ir.document
+  if args.len() == 3 {
+    // The machine form: the document and one newline, and nothing else.
+    print(document_view)
+  } else {
+    fs.write_file(args[3], document_view)?
+    // Section 2.4 stable summary. The JSON document remains the authoritative result.
+    print("qwen model ir:")
+    print("status:")
+    match ir.status {
+      Ok => print("OK"),
+      Error => print("ERROR"),
+    }
+    print("arch:")
+    arch_view: str := ir.arch
+    // `-` is reserved for an architecture the container does not supply — absent, non-STRING, or
+    // non-UTF-8 — so a key that is present and empty prints an empty line. This is the R0 contract
+    // reused verbatim, not a second escaping grammar.
+    if ir.arch_present {
+      sanitized := sanitize_summary_line(arch_view)
+      sanitized_view: str := sanitized
+      print(sanitized_view)
+    } else {
+      print("-")
+    }
+    print("layers:")
+    print(ir.n_layer)
+    print("embd:")
+    print(ir.n_embd)
+    print("heads:")
+    print(ir.n_head)
+    print("heads kv:")
+    print(ir.n_head_kv)
+    print("head dim:")
+    print(ir.head_dim)
+    print("ff:")
+    print(ir.n_ff)
+    print("vocab:")
+    print(ir.n_vocab)
+    print("experts:")
+    print(ir.n_expert)
+    print("context:")
+    print(ir.context_length)
+    print("blocks:")
+    print(ir.block_count)
+    print("tensor bytes:")
+    print(ir.total_tensor_bytes)
+    print("size sum:")
+    if ir.size_sum_ok {
+      print("OK")
+    } else {
+      print("MISMATCH")
+    }
+    match ir.status {
+      Ok => {},
+      Error => {
+        print("error:")
+        error_view: str := ir.error_code
+        print(error_view)
+        print("detail:")
+        detail_view: str := ir.error_detail
+        // The detail names a container-supplied key or tensor name, so it is escaped for the same
+        // reason `arch` is: the block is read positionally.
+        sanitized_detail := sanitize_summary_line(detail_view)
+        sanitized_detail_view: str := sanitized_detail
+        print(sanitized_detail_view)
+      },
+    }
+  }
+  // A model defect is persisted and reported data; the CLI maps it to the existing `Error.Invalid`
+  // process exit after the document has been emitted.
+  match ir.status {
+    Ok => { return Ok(()) },
+    Error => { return Err(Error.Invalid) },
+  }
+}
+
 // A repair provider that declines to fix anything (always gives up). It lets the loop's control
 // exits be demonstrated without a model: an already-passing check needs no provider, and a
 // persistently failing check ends in GAVE_UP on the first iteration. A real provider (LLM + patch
@@ -644,7 +734,9 @@ pub fn main(args: array<str>) -> Result<(), Error> {
                           if args[1] == "--inspect-gguf" {
                             inspect_gguf_demo(args)?
                           } else {
-                            if c7_selector(args[1]) {
+                            if args[1] == "--model-ir" {
+                              model_ir_demo(args)?
+                            } else if c7_selector(args[1]) {
                               persisted_result_demo(args)?
                             } else {
                               print_help()

@@ -474,6 +474,704 @@ def patched(base, offset, replacement):
     return bytes(raw)
 
 
+
+# =================================================================================================
+# R1-QWEN-MODEL-IR corpus (`docs/specs/r1-qwen-model-ir.md` section 4.1).
+#
+# The generator keeps its independence property here too: the GGML block-geometry table below is
+# transcribed separately from the one in `src/gguf.align`, and every expected `nbytes`, block byte
+# size, and coverage total is computed in Python from the bytes this file writes. That is what makes
+# the size-sum oracle a real differential check rather than a mirror of the implementation.
+# =================================================================================================
+
+I64_MAX = 9223372036854775807
+
+# Transcribed from `docs/specs/r1-qwen-model-ir.md` section 2.6, not imported from `src/`.
+MAX_UNASSIGNED_REPORTED = 16
+MAX_DETAIL_BYTES = 256
+
+# id -> (elements per block, bytes per block). Every id outside this table is
+# `R1_UNKNOWN_TENSOR_TYPE`, never a guessed size.
+GGML_GEOMETRY = {
+    0: (1, 4), 1: (1, 2), 2: (32, 18), 3: (32, 20), 6: (32, 22), 7: (32, 24),
+    8: (32, 34), 9: (32, 40), 10: (256, 84), 11: (256, 110), 12: (256, 144),
+    13: (256, 176), 14: (256, 210), 15: (256, 292), 24: (1, 1), 25: (1, 2),
+    26: (1, 4), 27: (1, 8), 28: (1, 8), 30: (1, 2),
+}
+
+# Every quantized tensor's **first** axis must be a multiple of its GGML block size, because that is
+# the invariant `ggml_row_size` enforces; `n_embd` and `n_ff` are therefore multiples of 256, the
+# widest block in the table. `n_vocab` stays 32 and `n_ff` stays distinct from `n_embd` so a
+# transposed `ffn_down` is still a test failure, and every resulting byte size is a multiple of the
+# 32-byte container alignment, which is what keeps the size-sum oracle satisfiable.
+QWEN_BASE = {
+    "n_layer": 2, "n_embd": 256, "n_head": 4, "n_head_kv": 2,
+    "n_ff": 512, "n_vocab": 32, "context_length": 512,
+}
+
+# Norms and biases are F32; the projections are deliberately mixed so one file exercises a
+# 256-element K-block, a 32-element legacy block, and a 1-element unquantized type, giving
+# `quant.type_counts` five ascending rows.
+QWEN_TYPES = {
+    "token_embd": 12, "output_norm": 0, "output": 14,
+    "attn_norm": 0, "attn_q": 12, "attn_q_bias": 0, "attn_k": 12, "attn_k_bias": 0,
+    "attn_v": 14, "attn_v_bias": 0, "attn_output": 8, "ffn_norm": 0,
+    "ffn_gate": 12, "ffn_up": 2, "ffn_down": 14,
+}
+
+# One tensor per listed geometry id, placed on a slot whose element count keeps both the block
+# alignment and the 32-byte container alignment satisfiable.
+GEOMETRY_TYPES = {
+    "attn_k_bias": {0: 24, 1: 25},          # [128]
+    "attn_v_bias": {0: 26, 1: 27},          # [128]
+    "attn_norm": {0: 0, 1: 1},              # [256]
+    "attn_q_bias": {0: 28, 1: 30},          # [256]
+    "ffn_norm": {0: 7, 1: 9},               # [256]
+    "output_norm": {None: 0},               # [256]
+    "token_embd": {None: 10},               # [256, 32]
+    "output": {None: 15},                   # [256, 32]
+    "attn_k": {0: 2, 1: 3},                 # [256, 128]
+    "attn_v": {0: 6, 1: 8},                 # [256, 128]
+    "attn_q": {0: 11, 1: 14},               # [256, 256]
+    "attn_output": {0: 12, 1: 13},          # [256, 256]
+    "ffn_gate": {0: 12, 1: 14},             # [256, 512]
+    "ffn_up": {0: 8, 1: 2},                 # [256, 512]
+    "ffn_down": {0: 13, 1: 10},             # [512, 256]
+}
+
+QWEN_GLOBAL_ROLES = ["token_embd", "output_norm", "output"]
+QWEN_LAYER_ROLES = [
+    "attn_norm", "attn_q", "attn_q_bias", "attn_k", "attn_k_bias",
+    "attn_v", "attn_v_bias", "attn_output", "ffn_norm", "ffn_gate",
+    "ffn_up", "ffn_down",
+]
+ROLE_SUFFIX = {
+    "attn_norm": "attn_norm.weight", "attn_q": "attn_q.weight", "attn_q_bias": "attn_q.bias",
+    "attn_k": "attn_k.weight", "attn_k_bias": "attn_k.bias", "attn_v": "attn_v.weight",
+    "attn_v_bias": "attn_v.bias", "attn_output": "attn_output.weight",
+    "ffn_norm": "ffn_norm.weight", "ffn_gate": "ffn_gate.weight",
+    "ffn_up": "ffn_up.weight", "ffn_down": "ffn_down.weight",
+}
+
+
+def qwen_role_shape(role, p):
+    head_dim = p["n_embd"] // p["n_head"]
+    e, v, ff = p["n_embd"], p["n_vocab"], p["n_ff"]
+    q, kv = p["n_head"] * head_dim, p["n_head_kv"] * head_dim
+    return {
+        "token_embd": [e, v], "output": [e, v], "output_norm": [e],
+        "attn_norm": [e], "attn_q": [e, q], "attn_q_bias": [q],
+        "attn_k": [e, kv], "attn_k_bias": [kv], "attn_v": [e, kv], "attn_v_bias": [kv],
+        "attn_output": [q, e], "ffn_norm": [e], "ffn_gate": [e, ff],
+        "ffn_up": [e, ff], "ffn_down": [ff, e],
+    }[role]
+
+
+def qwen_role_name(role, layer):
+    if layer is None:
+        return {"token_embd": "token_embd.weight", "output_norm": "output_norm.weight",
+                "output": "output.weight"}[role]
+    return "blk.%d.%s" % (layer, ROLE_SUFFIX[role])
+
+
+def nbytes_of(dims, type_id):
+    """GGML sizes a tensor by rows, not by its element product: `ggml_row_size` requires
+    `ne0 % blck_size == 0` and gives one row `type_size * ne0 / blck_size` bytes. A tensor whose
+    element count is a multiple of the block size but whose first axis is not is unrepresentable,
+    so the assertion below is on `dims[0]`."""
+    elements = 1
+    for extent in dims:
+        elements *= extent
+    block_size, type_bytes = GGML_GEOMETRY[type_id]
+    assert dims[0] % block_size == 0, (dims, type_id, block_size)
+    if elements == 0:
+        return 0
+    row_bytes = (dims[0] // block_size) * type_bytes
+    return row_bytes * (elements // dims[0])
+
+
+def qwen_kvs(p, arch="qwen2", drop=(), overrides=None, extra=None):
+    """The metadata block, in the order a real converter writes it."""
+    overrides = overrides or {}
+    rows = [
+        ("general.architecture", strv(arch)),
+        ("general.file_type", u32v(15)),
+        ("general.quantization_version", u32v(2)),
+        ("qwen2.block_count", u32v(p["n_layer"])),
+        ("qwen2.context_length", u32v(p["context_length"])),
+        ("qwen2.embedding_length", u32v(p["n_embd"])),
+        ("qwen2.feed_forward_length", u32v(p["n_ff"])),
+        ("qwen2.attention.head_count", u32v(p["n_head"])),
+        ("qwen2.attention.head_count_kv", u32v(p["n_head_kv"])),
+        ("qwen2.rope.freq_base", f32v(1000000.0)),
+        ("qwen2.attention.layer_norm_rms_epsilon", f32v(1e-06)),
+        ("tokenizer.ggml.tokens", Array(STRING, [strv("t%d" % i) for i in range(p["n_vocab"])])),
+    ]
+    out = []
+    for key, value in rows:
+        if key in drop:
+            continue
+        out.append(Kv(key, overrides.get(key, value)))
+    for key, value in (extra or []):
+        out.append(Kv(key, value))
+    return out
+
+
+class QwenModel:
+    """A synthetic qwen2 container plus every expected value of its `R1_MODEL_IR` document."""
+
+    def __init__(self, p=None, types=None, tied=False, arch="qwen2", drop=(), overrides=None,
+                 extra=None, layout=None, trailing=0, mutate=None, kv_override=None):
+        self.p = dict(QWEN_BASE)
+        self.p.update(p or {})
+        self.types = dict(QWEN_TYPES)
+        if types:
+            self.types.update(types)
+        self.tied = tied
+
+        # ---- tensor table, in file order ----------------------------------------------------
+        self.entries = []          # (role, layer, name, dims, type_id)
+        for role in QWEN_GLOBAL_ROLES:
+            if role == "output" and tied:
+                continue
+            self.entries.append((role, None, qwen_role_name(role, None),
+                                 qwen_role_shape(role, self.p), self.resolve_type(role, None)))
+        for layer in range(self.p["n_layer"]):
+            for role in QWEN_LAYER_ROLES:
+                self.entries.append((role, layer, qwen_role_name(role, layer),
+                                     qwen_role_shape(role, self.p),
+                                     self.resolve_type(role, layer)))
+        if mutate:
+            self.entries = mutate(self.entries)
+
+        # ---- data-section layout ---------------------------------------------------------------
+        # Every tensor's byte size is a multiple of the 32-byte container alignment, so a contiguous
+        # placement is also an alignment-correct one and `data_offset + sum(nbytes) == file_size`
+        # holds exactly. That single property is what makes the oracle testable without a 4.68 GB
+        # model.
+        sizes = [nbytes_of(dims, type_id) if type_id in GGML_GEOMETRY else 0
+                 for (_, _, _, dims, type_id) in self.entries]
+        order = layout(self.entries) if layout else list(range(len(self.entries)))
+        offsets = [0] * len(self.entries)
+        cursor = 0
+        for position in order:
+            assert cursor % DEFAULT_ALIGNMENT == 0, (position, cursor)
+            offsets[position] = cursor
+            cursor += sizes[position]
+        self.sizes = sizes
+        self.offsets = offsets
+        self.total_bytes = cursor
+
+        tensors = [Tensor(name, dims, type_id, offsets[index])
+                   for index, (_, _, name, dims, type_id) in enumerate(self.entries)]
+        kvs = qwen_kvs(self.p, arch=arch, drop=drop, overrides=overrides, extra=extra)
+        if kv_override:
+            kvs = kv_override(kvs)
+        self.container = Container(kvs, tensors, data_len=cursor + trailing)
+        self.bytes = self.container.bytes
+        self.arch = arch
+
+    def resolve_type(self, role, layer):
+        entry = self.types[role]
+        if isinstance(entry, dict):
+            if layer in entry:
+                return entry[layer]
+            return entry[None]
+        return entry
+
+    def index_of(self, name):
+        for index, (_, _, entry_name, _, _) in enumerate(self.entries):
+            if entry_name == name:
+                return index
+        return -1
+
+    def absolute(self, index):
+        return self.container.data_offset + self.offsets[index]
+
+    def tensor_expect(self, index, role):
+        _, _, name, dims, type_id = self.entries[index]
+        elements = 1
+        for extent in dims:
+            elements *= extent
+        block_size, type_bytes = GGML_GEOMETRY[type_id]
+        return {
+            "name": name,
+            "role": role,
+            "type": type_id,
+            "type_name": GGML_NAMES[type_id],
+            "n_dims": len(dims),
+            "dims": list(dims),
+            "n_elements": elements,
+            "block_size": block_size,
+            "type_bytes": type_bytes,
+            "nbytes": self.sizes[index],
+            "offset": self.offsets[index],
+            "absolute_offset": self.absolute(index),
+        }
+
+    def block_expect(self, block_index, kind, layer, members):
+        """`members` is a list of (role, tensor index)."""
+        tensors = [self.tensor_expect(index, role) for role, index in members]
+        byte_size = sum(t["nbytes"] for t in tensors)
+        first = min(t["absolute_offset"] for t in tensors)
+        end = max(t["absolute_offset"] + t["nbytes"] for t in tensors)
+        return {
+            "index": block_index,
+            "kind": kind,
+            "layer": layer,
+            "expert": -1,
+            "tensor_count": len(tensors),
+            "byte_size": byte_size,
+            "first_absolute_offset": first,
+            "end_absolute_offset": end,
+            "contiguous": end - first == byte_size,
+            "tensors": tensors,
+        }
+
+    def blocks_expect(self):
+        blocks = []
+        blocks.append(self.block_expect(0, "WeightBlock", -1,
+                                        [("token_embd", self.index_of("token_embd.weight"))]))
+        for layer in range(self.p["n_layer"]):
+            attention = [(role, self.index_of(qwen_role_name(role, layer)))
+                         for role in QWEN_LAYER_ROLES[:8]]
+            blocks.append(self.block_expect(1 + 2 * layer, "AttentionBlock", layer, attention))
+            mlp = [(role, self.index_of(qwen_role_name(role, layer)))
+                   for role in QWEN_LAYER_ROLES[8:]]
+            blocks.append(self.block_expect(2 + 2 * layer, "MlpBlock", layer, mlp))
+        output_source = "token_embd.weight" if self.tied else "output.weight"
+        blocks.append(self.block_expect(
+            1 + 2 * self.p["n_layer"], "WeightBlock", -1,
+            [("output_norm", self.index_of("output_norm.weight")),
+             ("output", self.index_of(output_source))]))
+        return blocks
+
+    def quant_expect(self):
+        rows = []
+        for type_id in sorted(set(entry[4] for entry in self.entries)):
+            members = [i for i, entry in enumerate(self.entries) if entry[4] == type_id]
+            rows.append({
+                "type": type_id,
+                "type_name": GGML_NAMES[type_id],
+                "tensor_count": len(members),
+                "bytes": sum(self.sizes[i] for i in members),
+            })
+        return {
+            "file_type": 15,
+            "file_type_present": True,
+            "type_counts": rows,
+            "total_tensor_bytes": self.total_bytes,
+        }
+
+    def model_expect(self, rope_dim=None, scaling=None):
+        head_dim = self.p["n_embd"] // self.p["n_head"]
+        return {
+            "arch": self.arch,
+            "n_layer": self.p["n_layer"],
+            "n_embd": self.p["n_embd"],
+            "n_head": self.p["n_head"],
+            "n_head_kv": self.p["n_head_kv"],
+            "head_dim": head_dim,
+            "n_ff": self.p["n_ff"],
+            "n_vocab": self.p["n_vocab"],
+            "n_expert": 0,
+            "context_length": self.p["context_length"],
+            "rms_eps": marker_f32(f32_bits(1e-06)),
+            "rms_eps_bits": "%08x" % f32_bits(1e-06),
+            "rope": {
+                "type": 2,
+                "type_name": "neox",
+                "type_source": "architecture",
+                "freq_base": marker_f32(f32_bits(1000000.0)),
+                "freq_base_bits": "%08x" % f32_bits(1000000.0),
+                "dim_count": head_dim if rope_dim is None else rope_dim,
+                "dim_count_source": "derived" if rope_dim is None else "metadata",
+                "scaling_type": scaling,
+            },
+        }
+
+    def coverage_expect(self):
+        return {
+            "tensor_count": len(self.entries),
+            "assigned_tensor_count": len(self.entries),
+            "unassigned_tensors": [],
+            "block_count": 2 * self.p["n_layer"] + 2,
+            "data_offset": self.container.data_offset,
+            "total_tensor_bytes": self.total_bytes,
+            "computed_end": self.container.data_offset + self.total_bytes,
+            "file_size": len(self.bytes),
+            "size_sum_ok": True,
+        }
+
+    def source_expect(self):
+        return {
+            "gguf_version": 3,
+            "alignment": DEFAULT_ALIGNMENT,
+            "file_size": len(self.bytes),
+            "data_offset": self.container.data_offset,
+            "tensor_count": len(self.entries),
+            "metadata_kv_count": len(self.container.kvs),
+            "bytes_read": len(self.bytes),
+        }
+
+    def positive(self, name, file_name, rope_dim=None, scaling=None, **extra):
+        case = {
+            "name": name,
+            "file": file_name,
+            "bytes": self.bytes,
+            "exit": 0,
+            "source": self.source_expect(),
+            "model": self.model_expect(rope_dim=rope_dim, scaling=scaling),
+            "quant": self.quant_expect(),
+            "coverage": self.coverage_expect(),
+            "blocks": self.blocks_expect(),
+        }
+        case.update(extra)
+        return case
+
+
+def qwen_build(out_dir):
+    """The section 4.1 corpus: four positive fixtures, the geometry sweep, and one negative fixture
+    per reachable row of section 2.6, each carrying the code and `error_detail` this generator
+    computed from the bytes it wrote."""
+    cases = []
+
+    def negative(name, file_name, payload, code, detail, **extra):
+        case = {"name": name, "file": file_name, "bytes": payload, "exit": 1,
+                "error": {"code": code, "detail": detail}}
+        case.update(extra)
+        cases.append(case)
+        return case
+
+    # ---- positive: the complete synthetic qwen2 container -------------------------------------
+    full = QwenModel()
+    assert len(full.bytes) < 1048576, len(full.bytes)
+    assert full.container.data_offset + full.total_bytes == len(full.bytes)
+    cases.append(full.positive(
+        "qwen2-full", "qwen2-full.gguf",
+        bytes_read=len(full.bytes),
+        field_order=True,
+    ))
+
+    # Tied embeddings: an absent `output.weight` puts `token_embd.weight` in two blocks and the
+    # oracle still holds, because the shared tensor's bytes are counted once.
+    tied = QwenModel(tied=True)
+    tied_case = tied.positive("qwen2-tied", "qwen2-tied.gguf")
+    tied_case["tied"] = True
+    cases.append(tied_case)
+
+    # A declared rope dimension count and a rope scaling type, pinning `dim_count_source:
+    # "metadata"` and a non-null `scaling_type`.
+    rope = QwenModel(extra=[("qwen2.rope.dimension_count", u32v(16)),
+                            ("qwen2.rope.scaling.type", strv("linear"))])
+    cases.append(rope.positive("qwen2-rope-dim", "qwen2-rope-dim.gguf",
+                               rope_dim=16, scaling="linear"))
+
+    # The same logical model with the data section grouped by role across layers — which is exactly
+    # what the reference model's writer does — so a per-layer block's tensors are scattered and at
+    # least one block is non-contiguous while the oracle still holds.
+    def role_major(entries):
+        return sorted(range(len(entries)),
+                      key=lambda i: (entries[i][0], entries[i][1] if entries[i][1] is not None else -1))
+
+    permuted = QwenModel(layout=role_major)
+    permuted_case = permuted.positive("qwen2-permuted", "qwen2-permuted.gguf")
+    assert any(not block["contiguous"] for block in permuted_case["blocks"]), "layout is contiguous"
+    cases.append(permuted_case)
+
+    # One tensor per listed geometry id, so every row of the section 2.5.7 table is exercised with a
+    # generator-computed `nbytes` in one file.
+    geometry = QwenModel(types=GEOMETRY_TYPES)
+    geometry_case = geometry.positive("qwen2-geometry", "qwen2-geometry.gguf")
+    covered = set(entry[4] for entry in geometry.entries)
+    assert covered == set(GGML_GEOMETRY), sorted(set(GGML_GEOMETRY) - covered)
+    geometry_case["geometry_ids"] = sorted(covered)
+    cases.append(geometry_case)
+
+    # A non-finite rope base is a wire-rendering problem, not a structural one, so it stays a
+    # positive case: `null` plus the exact bits is the honest rendering.
+    nonfinite = QwenModel(overrides={"qwen2.rope.freq_base": f32v(bits=0x7F800000)})
+    nonfinite_case = nonfinite.positive("qwen2-nonfinite", "qwen2-nonfinite.gguf")
+    nonfinite_case["model"]["rope"]["freq_base"] = None
+    nonfinite_case["model"]["rope"]["freq_base_bits"] = "7f800000"
+    cases.append(nonfinite_case)
+
+    nan = QwenModel(overrides={
+        "qwen2.attention.layer_norm_rms_epsilon": f32v(bits=0x7FC00000)})
+    nan_case = nan.positive("qwen2-nan", "qwen2-nan.gguf")
+    nan_case["model"]["rms_eps"] = None
+    nan_case["model"]["rms_eps_bits"] = "7fc00000"
+    cases.append(nan_case)
+
+    # `kv_array_length` on a value that is not an ARRAY returns `None` rather than a coerced value,
+    # so the `n_vocab` cross-check is simply not performed and the derivation still succeeds.
+    tokens_scalar = QwenModel(overrides={"tokenizer.ggml.tokens": u32v(31)})
+    cases.append(tokens_scalar.positive("qwen2-tokens-scalar", "qwen2-tokens-scalar.gguf"))
+
+    # A repeated `general.architecture` resolves to its **first** occurrence, which is the rule
+    # `find_key` applies to every other key. A last-wins reader would derive `llama` here and reject
+    # a model it can describe.
+    dup_arch = QwenModel(extra=[("general.architecture", strv("llama"))])
+    cases.append(dup_arch.positive("qwen2-dup-arch", "qwen2-dup-arch.gguf"))
+
+    # A key whose bytes are not valid UTF-8 holds a zero-length span and can never match a lookup,
+    # so it changes nothing about the derivation.
+    invalid_key = QwenModel(extra=[(b"qwen2.block\xffcount", u32v(99))])
+    invalid_key_case = invalid_key.positive("qwen2-invalid-key", "qwen2-invalid-key.gguf")
+    cases.append(invalid_key_case)
+
+    # ---- negative corpus: one fixture per reachable section 2.6 row ----------------------------
+    negative("qwen2-bad-magic", "qwen2-bad-magic.gguf", patched(full, 0, b"GGUX"),
+             "R1_GGUF_ERROR", "GGUF_BAD_MAGIC",
+             table_sentinels={"tensor_count": 0, "metadata_kv_count": 0, "gguf_version": -1},
+             blocks_len=0)
+
+    wrong_arch = QwenModel(arch="llama")
+    negative("qwen2-wrong-arch", "qwen2-wrong-arch.gguf", wrong_arch.bytes,
+             "R1_UNSUPPORTED_ARCH", "llama", blocks_len=0,
+             model_sentinels={"n_layer": -1, "n_embd": -1, "n_head": -1, "n_head_kv": -1,
+                              "head_dim": -1, "n_ff": -1, "n_vocab": -1, "n_expert": -1,
+                              "context_length": -1, "rms_eps": None, "rms_eps_bits": None})
+
+    # Container-controlled text carried into `error_detail` and into the positional summary block.
+    arch_escapes = QwenModel(arch=ESCAPE_STRING.decode("utf-8", "surrogateescape")
+                             if False else "line1\nstatus:\tERROR\x7fline2")
+    negative("qwen2-arch-escapes", "qwen2-arch-escapes.gguf", arch_escapes.bytes,
+             "R1_UNSUPPORTED_ARCH", "line1\nstatus:\tERROR\x7fline2",
+             summary_arch="line1\\x0astatus:\\x09ERROR\\x7fline2",
+             summary_detail="line1\\x0astatus:\\x09ERROR\\x7fline2")
+
+    escapes = QwenModel(arch=ESCAPE_STRING.decode("utf-8"))
+    negative("qwen2-wire-escapes", "qwen2-wire-escapes.gguf", escapes.bytes,
+             "R1_UNSUPPORTED_ARCH", ESCAPE_STRING.decode("utf-8"))
+
+    missing_key = QwenModel(drop=("qwen2.block_count",))
+    negative("qwen2-missing-key", "qwen2-missing-key.gguf", missing_key.bytes,
+             "R1_MISSING_KEY", "qwen2.block_count")
+
+    key_type = QwenModel(overrides={"qwen2.embedding_length": strv("128")})
+    negative("qwen2-key-type", "qwen2-key-type.gguf", key_type.bytes,
+             "R1_KEY_TYPE_MISMATCH", "qwen2.embedding_length")
+
+    expert_type = QwenModel(extra=[("qwen2.expert_count", strv("4"))])
+    negative("qwen2-expert-type", "qwen2-expert-type.gguf", expert_type.bytes,
+             "R1_KEY_TYPE_MISMATCH", "qwen2.expert_count")
+
+    implausible = QwenModel(overrides={"qwen2.attention.head_count": u32v(0)})
+    negative("qwen2-implausible", "qwen2-implausible.gguf", implausible.bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "qwen2.attention.head_count")
+
+    zero_layer = QwenModel(overrides={"qwen2.block_count": u32v(0)})
+    negative("qwen2-zero-layer", "qwen2-zero-layer.gguf", zero_layer.bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "qwen2.block_count")
+
+    indivisible = QwenModel(overrides={"qwen2.embedding_length": u32v(129)})
+    negative("qwen2-indivisible", "qwen2-indivisible.gguf", indivisible.bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "qwen2.embedding_length")
+
+    rope_dim_bad = QwenModel(extra=[("qwen2.rope.dimension_count", u32v(4096))])
+    negative("qwen2-rope-dim-implausible", "qwen2-rope-dim-implausible.gguf", rope_dim_bad.bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "qwen2.rope.dimension_count")
+
+    # Present, declared `STRING`, and not valid UTF-8. `scaling_type: null` is reserved for "the
+    # container did not supply it", so reporting this as `null` would erase the difference.
+    scaling_invalid = QwenModel(extra=[("qwen2.rope.scaling.type", strv(b"lin\xffear"))])
+    negative("qwen2-scaling-invalid-utf8", "qwen2-scaling-invalid-utf8.gguf",
+             scaling_invalid.bytes, "R1_KEY_TYPE_MISMATCH", "qwen2.rope.scaling.type")
+
+    moe = QwenModel(extra=[("qwen2.expert_count", u32v(4))])
+    negative("qwen2-moe", "qwen2-moe.gguf", moe.bytes, "R1_UNSUPPORTED_MOE", "4")
+
+    def duplicate_entries(entries):
+        target = [e for e in entries if e[2] == "blk.0.attn_norm.weight"][0]
+        return entries + [target]
+
+    duplicate = QwenModel(mutate=duplicate_entries)
+    negative("qwen2-duplicate", "qwen2-duplicate.gguf", duplicate.bytes,
+             "R1_DUPLICATE_TENSOR", "blk.0.attn_norm.weight")
+
+    # An unknown `ggml_type` id is an error and never a guessed size: R1 computes a byte size, and a
+    # guess silently corrupts every downstream offset.
+    unknown = patched(full, full.container.tensor_offsets[full.index_of(
+        "blk.0.attn_norm.weight")]["type"], struct.pack("<I", 21))
+    unknown = patched(unknown, full.container.tensor_offsets[full.index_of(
+        "blk.1.attn_norm.weight")]["type"], struct.pack("<I", 199))
+    negative("qwen2-unknown-type", "qwen2-unknown-type.gguf", unknown,
+             "R1_UNKNOWN_TENSOR_TYPE", "21")
+
+    # Id 5 was defined and later removed from GGML, so it has a name in no table and a geometry in
+    # this one; it must be rejected exactly like an id GGML has never used.
+    removed = patched(full, full.container.tensor_offsets[0]["type"], struct.pack("<I", 5))
+    negative("qwen2-unknown-type-removed", "qwen2-unknown-type-removed.gguf", removed,
+             "R1_UNKNOWN_TENSOR_TYPE", "5")
+
+    # `token_embd.weight` is Q4_K, so its first axis must be a multiple of 256. 33 is not, and its
+    # element product is not a multiple either.
+    unaligned = patched(full, full.container.tensor_offsets[0]["dims"],
+                        struct.pack("<Q", 33))
+    negative("qwen2-unaligned", "qwen2-unaligned.gguf", unaligned,
+             "R1_TENSOR_SHAPE_UNALIGNED", "token_embd.weight")
+
+    # The discriminating case: `[128, 64]` is 8,192 elements, a clean multiple of the 256-element
+    # Q4_K block, and is still unrepresentable because GGML's invariant is per row. A frontend that
+    # tested only the element product would size this tensor and accept the model.
+    row_unaligned = patched(full, full.container.tensor_offsets[0]["dims"],
+                            struct.pack("<Q", 128))
+    row_unaligned = patched(row_unaligned, full.container.tensor_offsets[0]["dims"] + 8,
+                            struct.pack("<Q", 64))
+    negative("qwen2-row-unaligned", "qwen2-row-unaligned.gguf", row_unaligned,
+             "R1_TENSOR_SHAPE_UNALIGNED", "token_embd.weight")
+
+    # ---- the overflow class, each guard tested before the arithmetic it protects ----------------
+    def reshape_dims(entries, name, dims):
+        return [(role, layer, entry_name, dims if entry_name == name else entry_dims, type_id)
+                for (role, layer, entry_name, entry_dims, type_id) in entries]
+
+    def bare_qwen(tensors, data_len=64, p=None, tied=True, drop=("tokenizer.ggml.tokens",)):
+        return Container(qwen_kvs({**QWEN_BASE, **(p or {})}, drop=drop), tensors,
+                         data_len=data_len)
+
+    dims3 = bare_qwen([Tensor("token_embd.weight", [2 ** 31, 2 ** 31, 2 ** 31], 0, 0)])
+    negative("qwen2-overflow-dims", "qwen2-overflow-dims.gguf", dims3.bytes,
+             "R1_SIZE_OVERFLOW", "token_embd.weight",
+             inspect_dims=[[2 ** 31, 2 ** 31, 2 ** 31]])
+
+    dims4 = bare_qwen([Tensor("token_embd.weight", [2 ** 22, 2 ** 22, 2 ** 22, 2 ** 22], 0, 0)])
+    negative("qwen2-overflow-dims4", "qwen2-overflow-dims4.gguf", dims4.bytes,
+             "R1_SIZE_OVERFLOW", "token_embd.weight",
+             inspect_dims=[[2 ** 22, 2 ** 22, 2 ** 22, 2 ** 22]])
+
+    nbytes_overflow = bare_qwen([Tensor("token_embd.weight", [2 ** 62], 0, 0)])
+    negative("qwen2-overflow-nbytes", "qwen2-overflow-nbytes.gguf", nbytes_overflow.bytes,
+             "R1_SIZE_OVERFLOW", "token_embd.weight")
+
+    total_overflow = bare_qwen([
+        Tensor("token_embd.weight", [2 ** 30, 2 ** 30], 0, 0),
+        Tensor("output_norm.weight", [2 ** 30, 2 ** 30], 0, 32),
+    ])
+    negative("qwen2-overflow-total", "qwen2-overflow-total.gguf", total_overflow.bytes,
+             "R1_SIZE_OVERFLOW", "output_norm.weight")
+
+    # `n_vocab` is derived from `token_embd.weight` `dims[1]`, so the step-10 shape check is built
+    # from the very value it would have to falsify. These two fixtures own the bound that catches
+    # what that circularity cannot: a vocabulary of zero, and one three orders of magnitude past any
+    # shipping tokenizer.
+    vocab_zero = QwenModel(
+        mutate=lambda entries: reshape_dims(entries, "token_embd.weight", [QWEN_BASE["n_embd"], 0]))
+    negative("qwen2-vocab-zero", "qwen2-vocab-zero.gguf", vocab_zero.bytes,
+             "R1_TENSOR_SHAPE_UNEXPECTED", "token_embd.weight", blocks_len=0)
+
+    vocab_huge = bare_qwen([Tensor("token_embd.weight", [256, 2 ** 30], 0, 0)])
+    negative("qwen2-vocab-implausible", "qwen2-vocab-implausible.gguf", vocab_huge.bytes,
+             "R1_TENSOR_SHAPE_UNEXPECTED", "token_embd.weight", blocks_len=0)
+
+    # ---- block assembly, coverage, and the oracle ---------------------------------------------
+    missing_tensor = QwenModel(
+        mutate=lambda entries: [e for e in entries if e[2] != "blk.1.ffn_up.weight"])
+    negative("qwen2-missing-tensor", "qwen2-missing-tensor.gguf", missing_tensor.bytes,
+             "R1_MISSING_TENSOR", "blk.1.ffn_up.weight",
+             # The embedding block, both layer-0 blocks, and the layer-1 attention block completed
+             # before the failure; the layer-1 MLP block did not.
+             blocks_len=4)
+
+    missing_embd = QwenModel(
+        mutate=lambda entries: [e for e in entries if e[2] != "token_embd.weight"])
+    negative("qwen2-missing-embd", "qwen2-missing-embd.gguf", missing_embd.bytes,
+             "R1_MISSING_TENSOR", "token_embd.weight", blocks_len=0)
+
+    bad_shape = QwenModel(
+        mutate=lambda entries: reshape_dims(entries, "blk.0.attn_q.weight", [256, 128]))
+    negative("qwen2-bad-shape", "qwen2-bad-shape.gguf", bad_shape.bytes,
+             "R1_TENSOR_SHAPE_UNEXPECTED", "blk.0.attn_q.weight", blocks_len=1)
+
+    vocab = QwenModel(overrides={
+        "tokenizer.ggml.tokens": Array(STRING, [strv("t%d" % i) for i in range(31)])})
+    negative("qwen2-vocab-mismatch", "qwen2-vocab-mismatch.gguf", vocab.bytes,
+             "R1_VOCAB_MISMATCH", "31!=32", blocks_len=0)
+
+    extra_tensor = QwenModel(mutate=lambda entries: entries + [
+        ("attn_q", 9, "blk.9.attn_q.weight", [256, 256], 12)])
+    negative("qwen2-extra-tensor", "qwen2-extra-tensor.gguf", extra_tensor.bytes,
+             "R1_UNASSIGNED_TENSOR", "blk.9.attn_q.weight",
+             unassigned=["blk.9.attn_q.weight"])
+
+    invalid_name = QwenModel(mutate=lambda entries: entries + [
+        ("attn_q", None, b"bad\xffname", [256, 256], 12)])
+    negative("qwen2-invalid-name", "qwen2-invalid-name.gguf", invalid_name.bytes,
+             "R1_UNASSIGNED_TENSOR", "", unassigned=[""])
+
+    # `coverage.unassigned_tensors` is capped at MAX_UNASSIGNED_REPORTED, so a document cannot grow
+    # with the size of the defect. This fixture is also the bounded-work regression: 50,000 extra
+    # tensors are a linear amount of work, not a quadratic one (section 7, item 15). The junk
+    # tensors declare a zero extent, so they cost table bytes and no data bytes at all — which also
+    # pins `tensor_nbytes`'s zero-element guard.
+    junk_count = 50000
+    many = QwenModel(p={"n_layer": 1}, mutate=lambda entries: entries + [
+        ("junk", None, "junk.%05d.weight" % i, [0], 0) for i in range(junk_count)])
+    many_names = ["junk.%05d.weight" % i for i in range(MAX_UNASSIGNED_REPORTED)]
+    negative("qwen2-many-tensors", "qwen2-many-tensors.gguf", many.bytes,
+             "R1_UNASSIGNED_TENSOR", "junk.00000.weight",
+             unassigned=many_names, unassigned_total=junk_count, bounded_work=True)
+
+    # `error_detail` is bounded at MAX_DETAIL_BYTES and truncated at a UTF-8 scalar boundary. This
+    # name is 100 three-byte scalars, so the 256-byte cut lands inside the 86th one and the detail
+    # must stop at 255 bytes rather than splitting it.
+    long_name = "\u3042" * 100
+    long_raw = long_name.encode("utf-8")
+    long_cut = MAX_DETAIL_BYTES
+    while long_cut > 0 and (long_raw[long_cut] & 0xC0) == 0x80:
+        long_cut -= 1
+    long_detail = long_raw[:long_cut]
+    assert len(long_detail) == 255, len(long_detail)
+    long_case = QwenModel(mutate=lambda entries: entries + [
+        ("attn_q", None, long_name, [256, 256], 12)])
+    negative("qwen2-long-name", "qwen2-long-name.gguf", long_case.bytes,
+             "R1_UNASSIGNED_TENSOR", long_detail.decode("utf-8"),
+             unassigned=[long_name])
+
+    size_sum = QwenModel(trailing=64)
+    negative("qwen2-size-sum", "qwen2-size-sum.gguf", size_sum.bytes,
+             "R1_SIZE_SUM_MISMATCH",
+             "%d!=%d" % (size_sum.container.data_offset + size_sum.total_bytes,
+                         len(size_sum.bytes)))
+
+    # ---- early exit: the columns hold exactly the entries completed before the failure ----------
+    partial_kv = patched(full, full.container.kv_offsets[3]["type"], struct.pack("<I", 13))
+    negative("qwen2-partial-kv", "qwen2-partial-kv.gguf", partial_kv,
+             "R1_GGUF_ERROR", "GGUF_UNKNOWN_VALUE_TYPE",
+             table_sentinels={"metadata_kv_count": 3, "tensor_count": 0})
+
+    partial_tensor = patched(full, full.container.tensor_offsets[2]["offset"],
+                             struct.pack("<Q", 33))
+    negative("qwen2-partial-tensor", "qwen2-partial-tensor.gguf", partial_tensor,
+             "R1_GGUF_ERROR", "GGUF_TENSOR_MISALIGNED",
+             table_sentinels={"metadata_kv_count": len(full.container.kvs), "tensor_count": 2})
+
+    # ---- precedence: the earlier section 2.6 row wins ------------------------------------------
+    precedence_arch = QwenModel(arch="llama", drop=("qwen2.block_count",))
+    negative("qwen2-precedence-arch-key", "qwen2-precedence-arch-key.gguf",
+             precedence_arch.bytes, "R1_UNSUPPORTED_ARCH", "llama")
+
+    precedence_key = QwenModel(
+        drop=("qwen2.block_count",),
+        mutate=lambda entries: reshape_dims(entries, "blk.0.attn_q.weight", [256, 128]))
+    negative("qwen2-precedence-key-shape", "qwen2-precedence-key-shape.gguf",
+             precedence_key.bytes, "R1_MISSING_KEY", "qwen2.block_count")
+
+    precedence_type = patched(QwenModel(trailing=64).bytes,
+                              full.container.tensor_offsets[0]["type"], struct.pack("<I", 21))
+    negative("qwen2-precedence-type-sum", "qwen2-precedence-type-sum.gguf", precedence_type,
+             "R1_UNKNOWN_TENSOR_TYPE", "21")
+
+    precedence_dup = QwenModel(mutate=lambda entries: duplicate_entries(entries) + [
+        ("attn_q", 9, "blk.9.attn_q.weight", [256, 256], 12)])
+    negative("qwen2-precedence-duplicate-unassigned", "qwen2-precedence-duplicate-unassigned.gguf",
+             precedence_dup.bytes, "R1_DUPLICATE_TENSOR", "blk.0.attn_norm.weight")
+
+    for case in cases:
+        write(out_dir, case["file"], case.pop("bytes"))
+    return cases
+
 def build(out_dir):
     cases = []
 
@@ -1049,6 +1747,9 @@ def build(out_dir):
     return {
         "window_bytes": WINDOW_BYTES,
         "cases": cases,
+        # The R1 corpus is a separate list so `run-gguf-smoke` keeps driving exactly the R0 cases
+        # while `run-model-ir-smoke` drives both.
+        "model_ir_cases": qwen_build(out_dir),
     }
 
 

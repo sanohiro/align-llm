@@ -23,7 +23,8 @@ table, its architecture, its alignment, and the exact byte offset at which tenso
 
 R0 is the measurement and correctness foundation for every later Track B slice. R1 model frontends
 must read metadata to build a Model IR; R2 `align-pack` must read the tensor table to plan a
-physical layout. Both consume the record types defined here rather than re-parsing the container.
+physical layout. Both consume the public `GgufTable` surface `docs/specs/r1-qwen-model-ir.md` section 2.3 adds to
+this module rather than re-parsing the container. No record type defined in this document is public.
 
 ### 1.2 In scope
 
@@ -47,7 +48,12 @@ These are deliberate exclusions, not deferred work items inside this capability.
   read window may incidentally *contain* payload bytes (section 4.3 states the exact bound); those
   bytes are never decoded, retained, or rendered.
 - **No dequantization.** No GGML block format is unpacked. The tensor `type` field is reported as an
-  id and a name; its element layout, block size, and scale encoding are R2 concerns.
+  id and a name; its scale encoding and element layout are R2 concerns. Its **block geometry** —
+  elements per block and bytes per block — is exposed by this module as `ggml_block_size` /
+  `ggml_type_size` (`docs/specs/r1-qwen-model-ir.md` section 2.5.7), because both R1 and R2 need it
+  and duplicating a GGML table into each frontend would be worse than owning it beside
+  `ggml_type_name`. No block is unpacked and no scale is read; the non-goal is otherwise
+  unchanged.
 - **No runtime dependency.** `src/gguf.align` imports no provider, no inference code, and no
   `align-runtime` surface. R0 must be usable and testable before any runtime exists.
 - **No memory mapping.** Section 5.3 records the mmap/arena alternative as an explicitly deferred
@@ -534,7 +540,7 @@ a codec read returns a Copy value that carries no region.
 | --- | --- | --- | --- |
 | `file` handle | `gguf.inspect` local | one fd | scope `Drop`; there is no `f.close()` at this pin |
 | window `buffer` | `gguf.inspect` local, a bare `mut` (section 6, items 1 and 2) | one `capacity`-byte window, allocated once and replaced only by the explicit growth path, plus one short-lived continuation buffer per short read | scope `Drop` when replaced and at end |
-| decoded `string` values | the owning `GgufKv` / `GgufTensor` record | one per retained text value | with the record |
+| decoded `string` values | the `KvRow` / `TensorRow` value, which is private and short-lived; retained text reaches a caller either inside `GgufInspection.document` or inside a `GgufTable` stream | one per retained text value | with the record |
 | per-record JSON | `json.encode` result, cloned once into the record | one per record | with the record |
 | final document | `builder` moved out by `to_string()` | one owned `string` | moved into `GgufInspection.document`, then to the caller |
 
@@ -567,7 +573,33 @@ pub GgufInspection {
 }
 
 pub fn inspect(path: str) -> Result<GgufInspection, Error>
+
+pub GgufTable { … }   // `docs/specs/r1-qwen-model-ir.md` section 2.3.2 declares every field
+
+pub fn read_table(path: str) -> Result<GgufTable, Error>
+
+pub fn find_key(borrow t: GgufTable, key: str) -> i64
+pub fn find_tensor(borrow t: GgufTable, name: str) -> i64
+pub fn kv_type(borrow t: GgufTable, key: str) -> i64
+pub fn kv_int(borrow t: GgufTable, key: str) -> Option<i64>
+pub fn kv_float_bits(borrow t: GgufTable, key: str) -> Option<i64>
+pub fn kv_string(borrow t: GgufTable, key: str) -> Option<string>
+pub fn kv_float_text(borrow t: GgufTable, key: str) -> Option<string>
+pub fn kv_array_length(borrow t: GgufTable, key: str) -> Option<i64>
+pub fn tensor_name(borrow t: GgufTable, index: i64) -> string
+pub fn tensor_dim(borrow t: GgufTable, index: i64, axis: i64) -> i64
+
+pub fn ggml_block_size(id: i64) -> i64
+pub fn ggml_type_size(id: i64) -> i64
+
+pub fn json_string(value: str) -> string
 ```
+
+`inspect` and `read_table` are two walks over one decoder; `docs/specs/r1-qwen-model-ir.md` section
+2.3.6 records why they cannot share a walk function at this pin and the `table-inspect-parity`
+regression that keeps them from drifting. `json_string` is public for the same reason: it is the one
+text-to-JSON boundary in the repository, and a frontend splicing container-supplied text into its own
+document must cross it rather than invent a second escaping grammar.
 
 `architecture_present` (section 6, item 18) is `true` only when `general.architecture` was decoded
 as a valid UTF-8 `STRING`. It is what lets a consumer — including the section 2.3 summary —
@@ -939,13 +971,18 @@ baseline; R0 has neither and does not pretend to.
 
 R0 deliberately stops at "what the file declares". It does not interpret `qwen2.block_count`,
 `qwen2.attention.head_count_kv`, or the rope parameters, and it does not map tensor names to layers.
-R1 frontends under `frontends/qwen/` and `frontends/gpt_oss/` consume `GgufKv` and `GgufTensor`
-records to build a Model IR. The seam is deliberate: architecture-specific knowledge must not leak
+R1 frontends — `src/frontend_qwen.align`, and later `src/frontend_gpt_oss.align`, flat under `src/`
+because Align's unit of modularity is one file per module — consume `gguf.read_table` and its typed
+accessors to build a Model IR. `GgufKv` and `GgufTensor` were never implemented: Request 22 rejects
+indexing an array of Move elements, so the table is carried as concatenated text streams plus
+parallel `array<i64>` columns. The seam is deliberate: architecture-specific knowledge must not leak
 into the container reader, exactly as `docs/specs/align-llm.md` section 5.1 requires.
 
 Two consequences are accepted now. First, a caller needing the full 152,064-entry token array cannot
-get it from the section 2.4 document; it will call a future `gguf.read_string_array(path, key)` that
-R1 owns. Second, `type_name` is a label only — element layout, block size, and scale encoding are
+get it from the section 2.4 document, and R1 does not add one: `docs/specs/r1-qwen-model-ir.md`
+section 5.2 keeps the tokenizer out of scope precisely so that Request 22 stays non-blocking. A
+`gguf.read_string_array(path, key)` becomes possible when Request 22 merges, and is owned by the
+tokenizer capability, not by R1. Second, `type_name` is a label only — element layout, block size, and scale encoding are
 R2's.
 
 ### 5.2 R2 hooks — `align-pack`
@@ -1097,3 +1134,24 @@ shipped case (`window-growth`, `skip-accounting`, `empty-container`, `repeat-ins
 | `env-perturbation` | the perturbed-environment run of `full` (locale, `TZ`, `HOME`, `SOURCE_DATE_EPOCH`, and two invented `GGUF_*` variables) |
 | `untouched-destination` | the absent-model and `denied-path` sentinel assertions, plus the structural-failure replacement assertion on `bad-magic.gguf` |
 | `stale-fixture` | item 21 above |
+
+### 6.3 Corrections the R1 consumer forced
+
+`docs/specs/r1-qwen-model-ir.md` section 6 records the first six items as owed by that capability and
+they are applied here in its implementation commit, so plan, code, and consumer changed together.
+Items 25 through 27 correct claims about a consumer contract that was written before any consumer
+existed. Item 28 narrows a non-goal that would otherwise be violated by an obviously correct change.
+Items 29 and 30 correct the ownership table and the public-API block to match what shipped plus what
+R1 adds. Item 31 was found by R1's review rather than by its implementation and corrects a claim
+about float rendering that was wrong in both plans. None is a deferral, and none changes
+`R0_GGUF_INSPECTION`'s `schema_version`.
+
+| # | Amends | Correction | Evidence | Owner |
+| --- | --- | --- | --- | --- |
+| 25 | 1.1 | "Both consume the record types defined here" was false: no record type in this document is public. Both consume the `GgufTable` surface R1 adds to this module | `src/gguf.align`: `KvRow` and `TensorRow` have no `pub` | `make check`; `model-ir-smoke` |
+| 26 | 5.1 | `GgufKv` and `GgufTensor` were never implemented, and the frontends are flat `src/frontend_*.align` modules rather than `frontends/qwen/` directories, because Align's unit of modularity is one file per module. The table is concatenated text streams plus parallel `array<i64>` columns, which is what Request 22 leaves expressible | Request 22; `docs/specs/r1-qwen-model-ir.md` section 2.3.3 | `src/frontend_qwen.align`; `model-ir-smoke` |
+| 27 | 5.1 | R1 does not add `gguf.read_string_array`. Keeping the tokenizer out of R1's scope is precisely what keeps Request 22 non-blocking; the surface is owned by the later tokenizer capability | `docs/specs/r1-qwen-model-ir.md` section 5.2 | none; a deferral with its resume condition |
+| 28 | 1.3, 2.5.4 | Block **geometry** — elements and bytes per block — is now exposed as `ggml_block_size` / `ggml_type_size`. Both R1 and R2 need it, and duplicating a GGML table into each frontend would be worse than owning it beside `ggml_type_name`. No block is unpacked and no scale is read | `docs/specs/r1-qwen-model-ir.md` section 2.5.7 | `type-geometry` in `model-ir-smoke` |
+| 29 | 2.5.3 | The allocation row named a record that does not exist. Retained text is owned by the private, short-lived `KvRow` / `TensorRow` and reaches a caller only inside `GgufInspection.document` or inside a `GgufTable` stream | `src/gguf.align` | ownership review; `document-move` |
+| 30 | 2.5.4 | The public-API block listed only `GgufStatus`, `GgufInspection`, and `inspect`. It now also lists `GgufTable`, `read_table`, the ten accessors, the two geometry functions, and `json_string`, which R1 needs as the one text-to-JSON boundary | `src/gguf.align` | `make check`; `model-ir-smoke` |
+| 31 | 2.1 (the `write_float` row) and 2.4.3 | "`write_float` emits Rust's shortest round-trip `Display`, which is exact but **never uses exponent notation**: an `f32` near its maximum renders as a 39-digit decimal" is false. Rust's `f32` `Display` renders `1e-45` and `3.4028235e+38`, and the decoder reproduces that verbatim. Read the sentence as: the rendering is exact and round-trips, but its **spelling** is not stable to compare across tools, which is exactly why `value_bits` is authoritative. Nothing in R0 or R1 depended on the false half — every comparison is on the bits | a FLOAT32 fixture with bit patterns `0x00000001` and `0x7f7fffff` rendered `1e-45` and `3.4028235e+38` through `--inspect-gguf`; `docs/specs/r1-qwen-model-ir.md` section 7 item 20 | `float-bits` in `gguf-smoke`, which compares bit patterns and is unaffected |

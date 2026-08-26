@@ -68,14 +68,21 @@ The current forward delivery order is:
    the ppm-floor rule with a 2,000 ppm shipping floor — into section 1 of that document and one
    clause into the `CLAUDE.md` performance-claim row. A deferred C8 surface reopens only with a
    recorded cost ceiling above the floor or as a genuine Align capability request.
-9. **R0-GGUF-INSPECT — read-only GGUF header, metadata, and tensor-table inspection. Active.** The
-   first Track B capability and the next item on the "最初の実装順" list below, whose step 8 is
-   `align-inspect`. It delivers one consumer-complete path: a caller names a `.gguf` path and
-   receives one canonical `R0_GGUF_INSPECTION` document describing what the file declares about
-   itself. It triggers the proportional design gate on a public CLI surface and a versioned
-   exchanged document, so `docs/specs/r0-gguf-inspection.md` is the authoritative plan and owns the
-   contract ledger, closure matrix, and fixture design. It makes no performance claim, so the C8
-   performance row does not apply to it.
+9. **R0-GGUF-INSPECT — read-only GGUF header, metadata, and tensor-table inspection. Gate met,
+   closed.** The first Track B capability. It delivers one consumer-complete path: a caller names a
+   `.gguf` path and receives one canonical `R0_GGUF_INSPECTION` document describing what the file
+   declares about itself. It triggered the proportional design gate on a public CLI surface and a
+   versioned exchanged document, so `docs/specs/r0-gguf-inspection.md` is the authoritative plan and
+   owns the contract ledger, closure matrix, and fixture design. It makes no performance claim, so
+   the C8 performance row does not apply to it. Merged as PR #121 (head `dcd8801`, merge
+   `6640dcf`); the `scripts/run-gguf-reference-parity` qualification ran once against a real
+   Qwen2.5-Coder-7B Q4_K_M model and passed: 29 metadata KV pairs, 339 tensors, `data_offset`
+   5,953,536, `bytes_read` 6,291,456.
+10. **R1-QWEN-MODEL-IR — Qwen2 Model IR and Block IR. Active.** The next Track B capability, on
+    branch `agent/r1-qwen-model-ir` (ledger commit `631b2ce`). It turns one real Qwen2-architecture
+    GGUF file into the Model IR and Block IR that `docs/specs/align-llm.md` section 5 places between
+    the GGUF reader and the layout planner. `docs/specs/r1-qwen-model-ir.md` is the authoritative
+    plan and owns the contract ledger, closure matrix, and fixture design.
 
 **I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
 prove its value on an existing model, and the merged C6-MEASURED wave (align-llm PR #103, `c9a510d`)
@@ -91,7 +98,9 @@ than by a separate align-coder capability.
 **ALIGN-ADOPTION is an internal prerequisite checkpoint, not a standalone capability.** Within the
 next consumer branch, batch its merged Align requests into one compiler-pin update, run every named
 focused real-client acceptance target, and then run one final fresh `make ci`. Preserve each
-request's lifecycle evidence without opening a pin-only pull request.
+request's lifecycle evidence without opening a pin-only pull request. As of R1-QWEN-MODEL-IR, no
+Align request has merged since R0; `.align-revision` stays pinned to `4b515f8d` and there is
+nothing to batch.
 
 Only design the next eligible capability in implementation detail; later ledger entries may retain
 their accepted contracts but must not generate speculative implementation pull requests. The
@@ -368,7 +377,7 @@ baseline・測定値・host・binary digestは
 で**ppm-floor rule**（cost ceilingを実装前にledgerへ記録し、shipping floorである2,000 ppmを
 下回るseamは実装せずdeferred surfacesに記録する）をsection 1へ昇格させた。残るdeferred surface
 は、floorを超えるcost ceilingを持つか、genuineなAlign capability requestになった場合にのみ
-新しいcapabilityとして再開する。次の実装対象はTrack BのR0である。
+新しいcapabilityとして再開する。R0のgateは達成済みでcloseした。次の実装対象はTrack BのR1である。
 
 ---
 
@@ -377,7 +386,7 @@ baseline・測定値・host・binary digestは
 ## R0: GGUF Inspection
 
 ```text
-align-inspect model.gguf
+main --inspect-gguf MODEL.gguf
 ```
 
 ### 実装
@@ -415,6 +424,9 @@ indexingを拒否するため、`src/gguf.align`はtensorの`absolute_offset`を
 `scripts/run-gguf-reference-parity`（opt-in focused qualification、llama.cppの`llama-gguf`と比較）
 が担い、model不要の`make gguf-smoke`が日常のownerとなる。
 
+**達成済み。** 実モデル（Qwen2.5-Coder-7B Q4_K_M）に対する`scripts/run-gguf-reference-parity`は
+PASSし、metadata KVペア29件、tensor 339件、`data_offset` 5,953,536、`bytes_read` 6,291,456を記録した。
+
 ---
 
 ## R1: Qwen / gpt-oss Frontend
@@ -424,6 +436,13 @@ frontends/
   qwen/
   gpt_oss/
 ```
+
+R1のauthoritative planは[`r1-qwen-model-ir.md`](r1-qwen-model-ir.md)である。Alignの1ファイル1
+モジュールという慣習に沿い、上記`frontends/qwen/`が指すQwen2 frontendは`src/frontend_qwen.align`
+としてflatな`src/`配下に実装する。tokenizer/vocabulary（`tokenizer.ggml.tokens`のようなMove要素
+配列のindexingを要する、Request 22）はこのcapabilityから意図的に除外し、Request 22を
+non-blockingのまま保つ。gpt-oss/MoE frontend（`ExpertBlock`/`RouterBlock`）は別のcapabilityとして
+後で実装する。
 
 ### Gate
 

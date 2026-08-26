@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R1-QWEN-MODEL-IR focused qualification (`docs/specs/r1-qwen-model-ir.md` section 4.4). It
+# discharges the roadmap gate — "Model IR and Block IR can be produced" — by comparing the derived
+# Model IR against llama.cpp's own reading of the same file. It is opt-in, never joins an aggregate,
+# and never runs in CI.
+#
+#   ALIGN_LLM_GGUF_MODEL   path to the model
+#   ALIGN_LLM_LLAMA_CLI    path to the reference executable, expected to be `llama-cli`
+#
+# Neither variable has a default. A qualification that silently passes when its subject is missing is
+# worse than no qualification, so a missing input prints one exact N/A line and exits 0 without
+# claiming a pass.
+
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+reference="${ALIGN_LLM_LLAMA_CLI:-}"
+model="${ALIGN_LLM_GGUF_MODEL:-}"
+
+if [ -z "$reference" ]; then
+  printf '%s\n' "model ir parity: N/A (ALIGN_LLM_LLAMA_CLI unset)"
+  exit 0
+fi
+if [ ! -x "$reference" ]; then
+  printf '%s\n' "model ir parity: N/A (ALIGN_LLM_LLAMA_CLI is not executable)"
+  exit 0
+fi
+if [ -z "$model" ]; then
+  printf '%s\n' "model ir parity: N/A (ALIGN_LLM_GGUF_MODEL unset)"
+  exit 0
+fi
+if [ ! -f "$model" ]; then
+  printf '%s\n' "model ir parity: N/A (ALIGN_LLM_GGUF_MODEL is absent)"
+  exit 0
+fi
+if [ ! -x "$root_dir/main" ]; then
+  printf '%s\n' "model ir parity: the product executable is missing; run 'make build'" >&2
+  exit 1
+fi
+
+temp_dir=$(mktemp -d)
+cleanup() {
+  rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
+before=$(python3 - "$model" <<'PY'
+import os, sys
+info = os.stat(sys.argv[1])
+print("%d %d" % (info.st_size, info.st_mtime_ns))
+PY
+)
+
+start_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+"$root_dir/main" --model-ir "$model" >"$temp_dir/model-ir.json"
+end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+
+# `print_info` is a diagnostic log, not a stable interface: a future build may rename a field, and
+# the recorded build identity is what makes a later failure diagnosable rather than mysterious.
+"$reference" --version >"$temp_dir/version.txt" 2>&1 || {
+  status=$?
+  printf '%s\n' "model ir parity: the reference exited $status for --version" >&2
+  tail -20 "$temp_dir/version.txt" >&2 || true
+  exit 1
+}
+
+# `-st` (single turn) and a closed stdin are load-bearing, not cosmetic: without them this build
+# never terminates. It reaches end-of-input, prints `> `, and repeats that forever, producing an
+# unbounded log. `-n 0` and `--no-warmup` keep the run to a model load plus one empty turn, which is
+# all the comparison needs; the whole invocation finishes in about three seconds.
+#
+# The wall-clock and log-size limits below are the belt to that suspenders: the observed failure
+# without `-st` was 461 MB of log and a 300 s hang, and a future reference build must not be able to
+# recreate it from inside this runner. Bash counts `ulimit -f` in 1024-byte blocks, so 8,192 caps
+# the log at 8 MiB and a run that exceeds it dies on SIGXFSZ; the recorded build writes 237 KB.
+# `timeout` is used when the host has it (GNU coreutils, `gtimeout` on Homebrew) and skipped
+# otherwise, because a missing optional utility must not turn a qualification into a false failure.
+# The 124 diagnostic below is therefore reported only when a wrapper was actually used: without one,
+# 124 is the reference's own exit status and must not be renamed a timeout.
+reference_timeout=""
+if command -v timeout >/dev/null 2>&1; then
+  reference_timeout="timeout 300"
+elif command -v gtimeout >/dev/null 2>&1; then
+  reference_timeout="gtimeout 300"
+fi
+(
+  ulimit -f 8192
+  exec $reference_timeout "$reference" -m "$model" -v -n 0 --no-warmup -st -p hi \
+    </dev/null >"$temp_dir/reference.log" 2>&1
+) || {
+  status=$?
+  if [ -n "$reference_timeout" ] && [ "$status" -eq 124 ]; then
+    printf '%s\n' "model ir parity: the reference reader did not finish within 300 s" >&2
+  else
+    printf '%s\n' "model ir parity: the reference reader exited $status" >&2
+  fi
+  tail -20 "$temp_dir/reference.log" >&2 || true
+  exit 1
+}
+
+after=$(python3 - "$model" <<'PY'
+import os, sys
+info = os.stat(sys.argv[1])
+print("%d %d" % (info.st_size, info.st_mtime_ns))
+PY
+)
+if [ "$before" != "$after" ]; then
+  printf '%s\n' "model ir parity: the model's size or mtime changed during the run" >&2
+  exit 1
+fi
+
+python3 - "$temp_dir/model-ir.json" "$temp_dir/reference.log" "$temp_dir/version.txt" \
+  "$model" "$start_ns" "$end_ns" <<'PY'
+import json
+import os
+import re
+import struct
+import sys
+from pathlib import Path
+
+document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+raw_log = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
+version_text = Path(sys.argv[3]).read_text(encoding="utf-8", errors="replace").strip()
+model_path = sys.argv[4]
+elapsed_ns = int(sys.argv[6]) - int(sys.argv[5])
+WINDOW_BYTES = 1048576
+
+# Every parser rule below is stated because the log format is not a contract.
+#  1. Strip the optional leading `-v` log prefix, which is how the observed output spells it
+#     (`0.00.248.535 I print_info: n_layer               = 28`).
+#  2. The remainder must match `print_info: KEY = VALUE`, where KEY is everything before the run of
+#     whitespace preceding `=`, right-trimmed, and may contain spaces (`rope type`, `file type`).
+#  3. The reference loads the model more than once in a single run — three complete `print_info`
+#     blocks on the recorded build — so ALL occurrences are collected; a required key appearing
+#     twice with different values is AMBIGUOUS, never first-wins or last-wins.
+#  4. A required key still missing after parsing is UNPARSED. Parse failure fails closed: it is
+#     never a skip and never a pass.
+LOG_PREFIX = re.compile(r"^\S+\s+I\s+")
+PRINT_INFO = re.compile(r"^print_info:\s+(?P<key>.+?)\s*=\s*(?P<value>.*)$")
+TYPE_CENSUS = re.compile(r"^llama_model_loader: - type\s+(?P<name>\S+):\s+(?P<count>\d+) tensors$")
+
+
+def fail(message):
+    raise SystemExit("model ir parity: FAIL %s" % message)
+
+
+def strip_prefix(line):
+    return LOG_PREFIX.sub("", line.rstrip())
+
+
+def parse_print_info(text):
+    found = {}
+    for raw in text.splitlines():
+        line = strip_prefix(raw)
+        match = PRINT_INFO.match(line)
+        if not match:
+            continue
+        found.setdefault(match.group("key"), []).append(match.group("value").rstrip())
+    return found
+
+
+def parse_type_census(text):
+    rows = {}
+    for raw in text.splitlines():
+        line = strip_prefix(raw)
+        match = TYPE_CENSUS.match(line)
+        if not match:
+            continue
+        rows.setdefault(match.group("name").lower(), []).append(int(match.group("count")))
+    return rows
+
+
+# A synthetic unit for rule 3 and rule 4, run before the real comparison so a parser regression is
+# caught even on a host where the reference is healthy.
+UNIT_LOG = """0.00.248.535 I print_info: arch             = qwen2
+0.00.248.536 I print_info: n_layer          = 28
+print_info: rope type        = 2
+0.00.999.000 I print_info: n_layer          = 29
+"""
+unit = parse_print_info(UNIT_LOG)
+if unit.get("arch") != ["qwen2"]:
+    fail("parser unit: the `-v` prefix was not stripped (%r)" % unit.get("arch"))
+if unit.get("rope type") != ["2"]:
+    fail("parser unit: a key containing a space was not parsed (%r)" % unit.get("rope type"))
+if unit.get("n_layer") != ["28", "29"]:
+    fail("parser unit: repeated occurrences were not all collected (%r)" % unit.get("n_layer"))
+if parse_print_info("print_info: nothing here\n"):
+    fail("parser unit: a line with no `=` was accepted")
+
+info = parse_print_info(raw_log)
+census = parse_type_census(raw_log)
+
+model = document["model"]
+if document["status"] != "ok":
+    fail("the derivation reported %r (%r)" % (document["status"], document["error_code"]))
+
+
+def unpack_f32(bits_hex):
+    return struct.unpack("<f", struct.pack("<I", int(bits_hex, 16)))[0]
+
+
+# The two float rows are the reason `*_bits` exists in the schema: our side is reconstructed
+# bit-exactly in Python and then formatted with the reference's own `printf` precision, so the
+# comparison is exact in both directions and needs no tolerance.
+ROWS = [
+    ("model.arch", "arch", str(model["arch"])),
+    ("model.n_layer", "n_layer", str(model["n_layer"])),
+    ("model.n_embd", "n_embd", str(model["n_embd"])),
+    ("model.n_head", "n_head", str(model["n_head"])),
+    ("model.n_head_kv", "n_head_kv", str(model["n_head_kv"])),
+    ("model.head_dim", "n_embd_head_k", str(model["head_dim"])),
+    ("model.head_dim", "n_embd_head_v", str(model["head_dim"])),
+    ("model.n_ff", "n_ff", str(model["n_ff"])),
+    ("model.n_expert", "n_expert", str(model["n_expert"])),
+    ("model.n_vocab", "n_vocab", str(model["n_vocab"])),
+    ("model.context_length", "n_ctx_train", str(model["context_length"])),
+    ("model.rope.type", "rope type", str(model["rope"]["type"])),
+    ("model.rope.freq_base_bits", "freq_base_train",
+     "%.1f" % unpack_f32(model["rope"]["freq_base_bits"])),
+    ("model.rms_eps_bits", "f_norm_rms_eps", "%.1e" % unpack_f32(model["rms_eps_bits"])),
+]
+
+compared = []
+for label, key, ours in ROWS:
+    values = info.get(key)
+    if not values:
+        fail("parity: UNPARSED %s" % key)
+    unique = sorted(set(values))
+    if len(unique) != 1:
+        fail("parity: AMBIGUOUS %s (%r)" % (key, unique))
+    theirs = unique[0]
+    if ours != theirs:
+        fail("%s: %r, print_info says %r" % (label, ours, theirs))
+    compared.append((label, key, ours))
+
+# The loader's own type census is the closest thing to a direct check of the Block IR's tensor
+# classification that an external tool offers, and it needs no `print_info` parsing.
+if not census:
+    fail("parity: UNPARSED llama_model_loader type census")
+ours_by_name = {row["type_name"].lower(): row["tensor_count"]
+                for row in document["quant"]["type_counts"]}
+for name, counts in census.items():
+    unique = sorted(set(counts))
+    if len(unique) != 1:
+        fail("parity: AMBIGUOUS type census %s (%r)" % (name, unique))
+    if name not in ours_by_name:
+        fail("type census: the reference lists %s, quant.type_counts does not" % name)
+    if ours_by_name[name] != unique[0]:
+        fail("type census %s: %d tensors, the reference says %d"
+             % (name, ours_by_name[name], unique[0]))
+for name in ours_by_name:
+    if name not in census:
+        fail("type census: quant.type_counts lists %s, the reference does not" % name)
+
+# The section 4.3 oracle against an independent `stat` of the file.
+coverage = document["coverage"]
+actual_size = os.stat(model_path).st_size
+if coverage["file_size"] != actual_size:
+    fail("coverage.file_size %d, stat says %d" % (coverage["file_size"], actual_size))
+if coverage["data_offset"] + coverage["total_tensor_bytes"] != actual_size:
+    fail("the size-sum oracle does not hold: %d + %d != %d"
+         % (coverage["data_offset"], coverage["total_tensor_bytes"], actual_size))
+if not coverage["size_sum_ok"]:
+    fail("size_sum_ok is false")
+if coverage["assigned_tensor_count"] != coverage["tensor_count"] or coverage["unassigned_tensors"]:
+    fail("%d of %d tensors assigned, unassigned %r"
+         % (coverage["assigned_tensor_count"], coverage["tensor_count"],
+            coverage["unassigned_tensors"]))
+
+# The section 4.5 secondary metric.
+source = document["source"]
+bound = source["data_offset"] + WINDOW_BYTES
+if not 0 < source["bytes_read"] < bound:
+    fail("bytes_read %d is outside (0, %d)" % (source["bytes_read"], bound))
+
+print("model ir parity: PASS")
+print("  reference build")
+for line in version_text.splitlines():
+    print("    %s" % line.strip())
+print("  compared rows")
+for label, key, ours in compared:
+    print("    %-26s print_info %-16s %s" % (label, key, ours))
+print("  type census")
+for row in document["quant"]["type_counts"]:
+    print("    %-6s %5d tensors  %16d bytes" % (row["type_name"], row["tensor_count"], row["bytes"]))
+print("  size-sum oracle")
+print("    data_offset       %d" % coverage["data_offset"])
+print("    total_tensor_bytes %d" % coverage["total_tensor_bytes"])
+print("    computed_end      %d" % coverage["computed_end"])
+print("    file_size         %d" % coverage["file_size"])
+print("  coverage           %d of %d tensors over %d blocks"
+      % (coverage["assigned_tensor_count"], coverage["tensor_count"], coverage["block_count"]))
+print("  bytes_read         %d (%.4f%% of the file)"
+      % (source["bytes_read"], 100.0 * source["bytes_read"] / source["file_size"]))
+print("  elapsed            %.3f s (diagnostic only; R1 makes no performance claim)"
+      % (elapsed_ns / 1e9))
+PY
+
+printf '%s\n' "model ir parity: model size and mtime unchanged (read-only proof)"
