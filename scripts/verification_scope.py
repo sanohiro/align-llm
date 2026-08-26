@@ -22,6 +22,7 @@ REPOSITORY = Path(__file__).resolve().parent.parent
 FRESH_IMAGE_PATTERNS = (
     "Makefile",
     ".github/workflows/ci.yml",
+    "eval/runners/run-coding-task.py",
     "image/fresh/*",
     "scripts/alignc",
     "scripts/build-fresh-image-control",

@@ -8,10 +8,11 @@ file records durable project state.
 - The preceding durable handoff is the `agent/c8-handoff-publication` merge on `main`. C8's first
   implementation branch exposed that the classifier still sent every `src/` change through both
   native installed profiles even when neither behavior nor claim was target-specific.
-- Ordinary `src/` and `eval/` changes now select the pinned hosted graph. Fresh-image construction,
-  workflow, classifier, Make topology, worker/control, and their qualification owners retain the
-  focused plus installed profile. Deletions, renames, unknown state, and untrusted no-base events
-  retain their existing fail-closed behavior.
+- Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
+  Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
+  qualification owners retain the focused plus installed profile. The Linux sandbox runner
+  `eval/runners/run-coding-task.py` is an exact target-local exception. Deletions, renames, unknown
+  state, and untrusted no-base events retain their existing fail-closed behavior.
 - Align requests 1–20 are closed. Request 19 shipped in Align PR #891 as
   `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; align-llm publication PR #108 merged as
   `75d7cc39b40b287d47b1185306d6bd8e7eb582dc` after all required CI passed.

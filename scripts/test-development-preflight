@@ -67,7 +67,7 @@ def test_classifier() -> None:
         "src/main.align",
         "src/repo_index.align",
         "eval/tasks/smoke-v1.json",
-        "eval/runners/run-coding-task.py",
+        "eval/runners/record-baseline.py",
     ):
         selected = classify(("M", path))
         require(
@@ -101,6 +101,31 @@ def test_classifier() -> None:
         and pin_with_fresh.fresh_focused
         and pin_with_fresh.fresh_installed,
         "pin plus fresh owner skipped the installed profile",
+    )
+    linux_runner = "eval/runners/run-coding-task.py"
+    for status in ("A", "M", "D"):
+        selected = classify((status, linux_runner))
+        require(
+            selected.scope == "fresh-image"
+            and selected.hosted
+            and selected.fresh_focused
+            and selected.fresh_installed,
+            f"Linux sandbox runner {status} skipped a platform profile",
+        )
+    renamed_linux_runner = scope_module.parse_name_status(
+        b"D\x00eval/runners/run-coding-task.py\x00A\x00eval/runners/retired.py\x00"
+    )
+    require(
+        classify(*renamed_linux_runner).scope == "fresh-image",
+        "renamed Linux sandbox runner skipped a platform profile",
+    )
+    pin_with_linux_runner = classify(
+        ("M", ".align-revision"), ("M", linux_runner)
+    )
+    require(
+        pin_with_linux_runner.scope == "fresh-image"
+        and pin_with_linux_runner.fresh_installed,
+        "pin plus Linux sandbox runner skipped a platform profile",
     )
     renamed_pin_changes = scope_module.parse_name_status(
         b"D\x00.align-revision\x00A\x00retired-align-revision\x00"
