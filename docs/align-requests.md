@@ -86,9 +86,13 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > in place and `table-inspect-parity` guards the two walks from drifting — with all of
 > R1-QWEN-MODEL-IR as independent work. R1-QWEN-MODEL-IR then merged as align-llm PR #122
 > (`85a3a97` -> `08492dc`), closing no request but discharging the dense half of the R1 roadmap
-> gate. The active R1B-GPTOSS-MOE-IR (`docs/specs/r1b-gptoss-moe-ir.md`) consumes no `PROPOSED`
-> request and adds new client evidence to Request 23 (its wider `BlockPlan` record) without changing
-> any request's status; all of R1B is independent work for Requests 21–24.
+> gate. R1B-GPTOSS-MOE-IR (`docs/specs/r1b-gptoss-moe-ir.md`) then merged as align-llm PR #123
+> (`3bf5c9c` -> `d8d4ef6`), consuming no `PROPOSED` request and adding new client evidence to
+> Request 23 (its narrower `BlockPlan` record) without changing any request's status; all of R1B was
+> independent work for Requests 21–24. The active R2A-EXPERT-TRACE-CAPTURE
+> (`docs/specs/r2a-expert-trace.md`) is the current consumer of Requests 21–24 and likewise consumes
+> no `PROPOSED` request; it is expected new client evidence for Request 22's node-name stream and,
+> if its expert-id decode duplicates a decode-and-accumulate walk, for Request 24 as well.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -6094,8 +6098,8 @@ integration binary on a leg that already compiles the workspace and is not the c
 Status: PROPOSED
 Priority: medium
 Blocking: no
-Blocked gate or slice: none today — R0-GGUF-INSPECT (merged, PR #121), R1-QWEN-MODEL-IR (merged, PR #122), and the active R1B-GPTOSS-MOE-IR (`docs/specs/r1b-gptoss-moe-ir.md`) all ship on `fs.open_rw`, since both `gguf.read_table` and R1B's dispatch reuse R0's constructor unchanged. It becomes blocking for the first align-runtime consumer that must read a model from a read-only mount, a root-owned shared cache, or a container image layer, where `O_RDWR` cannot be obtained at all
-Independent work that may continue: all of R0-GGUF-INSPECT, R1-QWEN-MODEL-IR, and R1B-GPTOSS-MOE-IR, all of which open the model with `fs.open_rw` and document the writable-path precondition; every later Track B slice that can copy or own its model file
+Blocked gate or slice: none today — R0-GGUF-INSPECT (merged, PR #121), R1-QWEN-MODEL-IR (merged, PR #122), R1B-GPTOSS-MOE-IR (merged, PR #123), and the active R2A-EXPERT-TRACE-CAPTURE (`docs/specs/r2a-expert-trace.md`) all ship on `fs.open_rw`, since `gguf.read_table`, R1B's dispatch, and R2A's own model-path reads all reuse R0's constructor unchanged. It becomes blocking for the first align-runtime consumer that must read a model from a read-only mount, a root-owned shared cache, or a container image layer, where `O_RDWR` cannot be obtained at all
+Independent work that may continue: all of R0-GGUF-INSPECT, R1-QWEN-MODEL-IR, R1B-GPTOSS-MOE-IR, and R2A-EXPERT-TRACE-CAPTURE, all of which open the model with `fs.open_rw` and document the writable-path precondition; every later Track B slice that can copy or own its model file
 Resume condition: Align ships a read-only `file` constructor whose handle supports `pread` and `len`; align-llm then adopts it in `src/gguf.align`, and `make gguf-smoke`, `make model-ir-smoke`, `scripts/run-gguf-reference-parity`, and `scripts/run-model-ir-parity` pass against a model file the invoking user cannot write
 Align commit or pull request: none
 align-llm verification: pending — `make gguf-smoke` extended with a `chmod 444` fixture case, and `scripts/run-gguf-reference-parity` run once against a model on a read-only mount
@@ -6228,14 +6232,19 @@ Blocking: no
 Blocked gate or slice: none (workaround in place). R1-QWEN-MODEL-IR (`docs/specs/r1-qwen-model-ir.md`
 section 1.3 and section 5.2) deliberately excludes the tokenizer and reads only the declared length
 of `tokenizer.ggml.tokens`/`tokenizer.ggml.merges` — exactly what R0's decoder already records
-without materializing an element — precisely so this request stays non-blocking through R1, and the
-active R1B-GPTOSS-MOE-IR (`docs/specs/r1b-gptoss-moe-ir.md` section 2.1) inherits the same exclusion
-unchanged: it reads no `array<string>` and builds no tokenizer. The first consumer that would make it
-blocking is a tokenizer/vocabulary-inspection capability, which needs `tokenizer.ggml.tokens` and
+without materializing an element — precisely so this request stays non-blocking through R1, and
+R1B-GPTOSS-MOE-IR (merged, PR #123; `docs/specs/r1b-gptoss-moe-ir.md` section 2.1) inherited the same
+exclusion unchanged: it reads no `array<string>` and builds no tokenizer. The active
+R2A-EXPERT-TRACE-CAPTURE (`docs/specs/r2a-expert-trace.md`) is expected to add new client evidence
+here — a `llama-eval-callback` transcript's per-layer expert-name stream is exactly the same
+Move-array-of-`string` shape this request names — without itself becoming the tokenizer/vocabulary
+consumer that would reclassify it as blocking. The first consumer that would make it blocking is a
+tokenizer/vocabulary-inspection capability, which needs `tokenizer.ggml.tokens` and
 `tokenizer.ggml.merges` as addressable data; per `CLAUDE.md`, this request reclassifies as blocking
 the moment that capability becomes the active consumer
-Independent work that may continue: all of R0, R1-QWEN-MODEL-IR, and R1B-GPTOSS-MOE-IR, all of which
-avoid indexing an `array<string>` or an array of a Move-field record
+Independent work that may continue: all of R0, R1-QWEN-MODEL-IR, R1B-GPTOSS-MOE-IR, and
+R2A-EXPERT-TRACE-CAPTURE, all of which avoid indexing an `array<string>` or an array of a Move-field
+record
 Resume condition: Align ships borrow indexing for Move arrays. Section 5.2 of
 `docs/specs/r1-qwen-model-ir.md` names the resulting producer surface,
 `gguf.read_string_array(path, key) -> Result<array<string>, Error>`, owned by the future tokenizer
@@ -6446,6 +6455,12 @@ Resume condition: Align ships builder parameters
 Align commit or pull request: none
 align-llm verification: pending
 ```
+
+If the active R2A-EXPERT-TRACE-CAPTURE (`docs/specs/r2a-expert-trace.md`) needs its own
+decode-and-accumulate walk over a `llama-eval-callback` transcript — expected, given the shape of
+that consumer — it becomes a further client of this request's duplicated-walk workaround, the same
+way `gguf.inspect`/`gguf.read_table` are today; that would add client evidence without changing this
+request's status.
 
 ### Motivation and current sibling evidence
 

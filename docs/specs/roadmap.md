@@ -86,12 +86,22 @@ The current forward delivery order is:
     qualification ran once against a real Qwen2.5-Coder-7B Q4_K_M model and passed: 339 tensors over
     58 blocks, size-sum oracle `data_offset` 5,953,536 + `total_tensor_bytes` 4,677,120,000 =
     `computed_end` 4,683,073,536, matching `file_size`.
-11. **R1B-GPTOSS-MOE-IR — gpt-oss MoE frontend and per-expert Block IR. Active.** The next Track B
-    capability, on branch `agent/r1b-gptoss-moe-ir` (ledger commit `2cd2cb4`). It discharges the MoE
-    half of the R1 roadmap gate: a new architecture-neutral `src/model_ir.align` builder, a new
-    `src/frontend_gpt_oss.align`, per-expert `ExpertBlock`/`RouterBlock` block kinds, and
+11. **R1B-GPTOSS-MOE-IR — gpt-oss MoE frontend and per-expert Block IR. Gate met, closed.** Merged
+    as align-llm PR #123 (head `3bf5c9c`, merge `d8d4ef6`) onto `main` at `08492dc`. It discharged
+    the MoE half of the R1 roadmap gate: a new architecture-neutral `src/model_ir.align` builder, a
+    new `src/frontend_gpt_oss.align`, per-expert `ExpertBlock`/`RouterBlock` block kinds, and
     `R1_MODEL_IR` at `schema_version: 2`. `docs/specs/r1b-gptoss-moe-ir.md` is the authoritative plan
-    and owns the contract ledger, closure matrix, and fixture design.
+    and owns the contract ledger, closure matrix, and fixture design. **One qualification stays an
+    open standing item**: the gpt-oss `model-ir-parity` qualification and real-model inspection
+    against ledger section 2.5 remain the documented explicit `N/A` pending the user decision to
+    download `gpt-oss-20b-mxfp4.gguf` (12.1 GB); the qwen half of the gate is real-model verified.
+12. **R2A-EXPERT-TRACE-CAPTURE — expert-trace capture from a callback transcript. Active.** The next
+    Track B capability, on branch `agent/r2a-expert-trace`. `docs/specs/r2a-expert-trace.md` is the
+    authoritative plan for R2a: `main --expert-trace CALLBACK_LOG [OUT.json]` consumes a
+    `llama-eval-callback` transcript (recorded instrument build 10566) into an
+    `R2_ACTIVATION_TRACE`, `schema_version: 1` document with per-(token, layer) expert ids and
+    locality aggregates; a dense transcript yields `moe: false`. The R2 roadmap gate needs a real MoE
+    transcript, which is a separate pending user decision (a small 1-4 GB MoE GGUF).
 
 **I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
 prove its value on an existing model, and the merged C6-MEASURED wave (align-llm PR #103, `c9a510d`)
@@ -107,8 +117,8 @@ than by a separate align-coder capability.
 **ALIGN-ADOPTION is an internal prerequisite checkpoint, not a standalone capability.** Within the
 next consumer branch, batch its merged Align requests into one compiler-pin update, run every named
 focused real-client acceptance target, and then run one final fresh `make ci`. Preserve each
-request's lifecycle evidence without opening a pin-only pull request. As of R1B-GPTOSS-MOE-IR, no
-Align request has merged since R0; `.align-revision` stays pinned to `4b515f8d` and there is
+request's lifecycle evidence without opening a pin-only pull request. As of R2A-EXPERT-TRACE-CAPTURE,
+no Align request has merged since R0; `.align-revision` stays pinned to `4b515f8d` and there is
 nothing to batch.
 
 Only design the next eligible capability in implementation detail; later ledger entries may retain
@@ -387,7 +397,9 @@ baseline・測定値・host・binary digestは
 下回るseamは実装せずdeferred surfacesに記録する）をsection 1へ昇格させた。残るdeferred surface
 は、floorを超えるcost ceilingを持つか、genuineなAlign capability requestになった場合にのみ
 新しいcapabilityとして再開する。R0のgateは達成済みでcloseした。R1（Qwen2 Model IR）のgateも
-達成済みでcloseした。次の実装対象はTrack BのR1B（gpt-oss/MoEフロントエンド）である。
+達成済みでcloseし、R1B（gpt-oss/MoEフロントエンド）もPR #123としてmergeされ、R1のgateはgpt-oss側を
+含めてcloseした（gpt-oss実モデルによるqualificationのみ、ユーザー判断待ちのopen項目として残る）。
+次の実装対象はTrack BのR2a（expert trace）である。
 
 ---
 
@@ -452,27 +464,30 @@ R1のauthoritative planは[`r1-qwen-model-ir.md`](r1-qwen-model-ir.md)である�
 としてflatな`src/`配下に実装する。tokenizer/vocabulary（`tokenizer.ggml.tokens`のようなMove要素
 配列のindexingを要する、Request 22）はこのcapabilityから意図的に除外し、Request 22を
 non-blockingのまま保つ。gpt-oss/MoE frontend（`ExpertBlock`/`RouterBlock`）は別capability
-R1B-GPTOSS-MOE-IRとして実装中である（[`r1b-gptoss-moe-ir.md`](r1b-gptoss-moe-ir.md)）。その
+R1B-GPTOSS-MOE-IRとしてPR #123でmergeされた（[`r1b-gptoss-moe-ir.md`](r1b-gptoss-moe-ir.md)）。その
 MoE frontendは`R1_MODEL_IR`を`schema_version: 2`へ引き上げ、block tensor recordへ
 `claimed_absolute_offset`/`claimed_nbytes`の2フィールドを追加してper-expertのbyte claimを
-表現する（同文書section 2.4）。
+表現する（同文書section 2.4）。`schema_version: 2`は既に出荷済みである。
 
 ### Gate
 
 Model IRとBlock IRを生成できること。
 
-**達成済み（Qwen2の半分）。** 実モデル（Qwen2.5-Coder-7B Q4_K_M）に対する
+**達成済み。** 実モデル（Qwen2.5-Coder-7B Q4_K_M）に対する
 `scripts/run-model-ir-parity`はPASSし、`n_layer` 28、`n_embd` 3584、`n_head` 28、
 `n_head_kv` 4、`head_dim` 128、`n_ff` 18944、`n_vocab` 152064、`n_expert` 0を記録した。
 size-sum oracleは`data_offset` 5,953,536 + `total_tensor_bytes` 4,677,120,000 =
 `computed_end` 4,683,073,536で`file_size`と一致し、339 tensorすべてが58 blockへ割り当てられた。
-gpt-oss/MoEの半分（`n_expert > 0`、per-expert `ExpertBlock`）はR1B-GPTOSS-MOE-IRが引き継ぐ。
+gpt-oss/MoEの半分（`n_expert > 0`、per-expert `ExpertBlock`）はR1B-GPTOSS-MOE-IR（PR #123）で
+実装・mergeされ、合成corpusおよびsize-sum/claim-tiling oracle、MXFP4 library oracleで検証済み。
+gpt-oss実モデルに対する`model-ir-parity` qualificationのみ、`gpt-oss-20b-mxfp4.gguf`（12.1 GB）の
+ダウンロードに関するユーザー判断待ちのopen項目として残る。
 
 ---
 
 ## R2: Expert Trace
 
-既存runtimeを測定器として利用する。
+既存runtimeを測定器として利用する。測定器は`llama-eval-callback`（build 10566）である。
 
 ```text
 R2a:
@@ -484,6 +499,12 @@ R2b:
 R2c:
   不足時のみ最小patch
 ```
+
+R2aのauthoritative planは[`r2a-expert-trace.md`](r2a-expert-trace.md)である。branch
+`agent/r2a-expert-trace`でActive: `main --expert-trace CALLBACK_LOG [OUT.json]`が
+`llama-eval-callback`のtranscriptを`R2_ACTIVATION_TRACE`（`schema_version: 1`）document
+へ変換し、token・layerごとのexpert idとlocality aggregateを記録する。dense（非MoE）transcript
+は`moe: false`を返す。
 
 ### 測定
 
@@ -500,6 +521,10 @@ R2c:
 条件付き局所性が存在するか、数値で判断できること。
 
 局所性が弱ければ、repo expert profileへの投資を縮小する。
+
+このgateは実際のMoE transcriptを必要とする。R2a実装が生成できるのはdense（`moe: false`）transcript
+の`R2_ACTIVATION_TRACE`のみで、局所性の数値判断には小さなMoE GGUF（1-4 GB）が別途必要であり、
+それを取得するかどうかはユーザー判断待ちである。取得されるまでgateはopenのままとなる。
 
 ---
 

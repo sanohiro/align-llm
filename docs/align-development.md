@@ -465,8 +465,9 @@ section. The tokenizer and vocabulary are out of scope — R1 reads only the dec
 `tokenizer.ggml.tokens` and `tokenizer.ggml.merges`, never an element — so
 `docs/align-requests.md` Request 22 stays non-blocking.
 
-**The gpt-oss/MoE half is the active R1B-GPTOSS-MOE-IR capability**, specified by
-`docs/specs/r1b-gptoss-moe-ir.md`. `--model-ir` now dispatches on the container's own
+**The gpt-oss/MoE half is the merged R1B-GPTOSS-MOE-IR capability** (align-llm PR #123, head
+`3bf5c9c`, merge `d8d4ef6`), specified by `docs/specs/r1b-gptoss-moe-ir.md`. `--model-ir` dispatches
+on the container's own
 `general.architecture` field, accepting `qwen2` (`src/frontend_qwen.align`) and `gpt-oss`
 (`src/frontend_gpt_oss.align`, new); any other value, or a missing/non-UTF-8 architecture, is
 rejected exactly as before. A neutral `src/model_ir.align` module owns the geometry pass, block
@@ -563,6 +564,39 @@ claim-tiling oracles, and the MXFP4 library oracle above.
 The model path inherits R0's writable-by-the-invoking-user precondition unchanged — `read_table`
 uses the same `fs.open_rw` constructor for both frontends — so Request 21 in
 `docs/align-requests.md` covers this capability too, still `PROPOSED` and non-blocking.
+
+## Expert trace development
+
+**Planned; finalized with the implementation.** R2A-EXPERT-TRACE-CAPTURE is the active capability on
+branch `agent/r2a-expert-trace`; its authoritative plan is `docs/specs/r2a-expert-trace.md`. The
+instrument is llama.cpp's `llama-eval-callback` (recorded build 10566), used as a measurement device
+rather than adopted as a runtime dependency. The planned CLI arm:
+
+```sh
+./main --expert-trace CALLBACK_LOG.txt
+./main --expert-trace CALLBACK_LOG.txt OUT.json
+```
+
+consumes a `llama-eval-callback` transcript and produces an `R2_ACTIVATION_TRACE`
+(`schema_version: 1`) document with per-(token, layer) expert ids and locality aggregates; a dense
+(non-MoE) transcript yields `moe: false`.
+
+The planned narrow durable owner is `gmake expert-trace-smoke`; adding it to the `Makefile` selects
+the fresh-image preflight profile at publication. The planned named opt-in qualification is
+`scripts/run-expert-trace-parity`, taking two environment variables:
+
+```sh
+ALIGN_LLM_GGUF_MODEL=/path/to/model.gguf \
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \
+  scripts/run-expert-trace-parity
+```
+
+`ALIGN_LLM_GGUF_MODEL` names the model to run the callback instrument against; a dense model (e.g.
+the existing Qwen2.5-Coder-7B) exercises the `moe: false` path, and a small MoE GGUF (1-4 GB, not
+yet downloaded — a pending user decision) is required to exercise `moe: true` and close the R2
+roadmap gate's locality question. `ALIGN_LLM_LLAMA_EVAL_CALLBACK` names the callback instrument
+executable. Exact skip/failure wording and the qualification's oracle are not yet settled; they will
+be recorded here and in the ledger once implementation lands.
 
 ## The aarch64 platform-profile gates
 
