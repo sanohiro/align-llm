@@ -799,7 +799,8 @@ supersede this section before adding a threshold.
 
 ## 11. Compatibility and adoption environment
 
-The minimum C7 acceptance environment is the repository's pinned Align environment:
+The minimum environment for a new C7 acceptance claim is the exact Align pin at that C7 capability
+head:
 
 - `x86_64-unknown-linux-gnu` on Ubuntu 24.04;
 - Rust 1.96 and LLVM 22 as required by the pinned Align release build;
@@ -810,8 +811,13 @@ The minimum C7 acceptance environment is the repository's pinned Align environme
   `./Configure --prefix="$OPENSSL_PREFIX" --libdir=lib shared no-tests`, `make`, and
   `make install_sw`; the resulting `LIBRARY_PATH`, `LD_LIBRARY_PATH`, and
   `PKG_CONFIG_PATH` are the only OpenSSL paths admitted to the runner;
-- the exact Align revision recorded in `.align-revision`, materialized as the managed release
-  compiler and runtime before adoption.
+- the exact Align revision recorded in `.align-revision` by that capability head, materialized as
+  the managed release compiler and runtime before its acceptance run.
+
+This is capability evidence, not a rolling certification of every later compiler pin. The emitted
+record stays bound to its tested repository head, compiler revision, platform profile, and
+environment. A later unrelated pin neither rewrites that historical claim nor claims new C7
+evidence.
 
 That list is the Linux minimum environment. The `aarch64-apple-darwin` target's own toolchain
 inputs, including its Homebrew `openssl@3`/`zstd`/`llvm` identities and the `LIBRARY_PATH` the Align
@@ -829,14 +835,15 @@ C7 acceptance environments, not supplementary evidence, because Request 9 makes 
 ownership/layout behavior part of its contract. Before either non-x86 environment can enter C7
 adoption or provide C7 evidence, it needs its own reviewed platform profile, including the
 compiler/runtime construction, namespace or process boundary, toolchain inputs, and exact acceptance
-commands. Each native environment must run the C7 focused targets against a compiler and runtime
-**rebuilt or materialized** at the exact pinned revision after its own profile passes — the same
-wording section 12.1 uses, because the requirement is revision identity, not a particular way of
-producing the binary. What each profile owes is a verifiable statement of which it did: the checkout
-revision is verified, and the binary is recorded by digest. A newer compiler, host, or generic
-OpenSSL 3.0 installation is not a substitute for the named build configurations. The C7 artifact
-itself contains no target or ABI field; the adoption result is bound externally to the tested
-compiler revision, platform profile, and environment.
+commands. When a change claims new C7 evidence on a native environment, that environment must run
+the C7 focused targets against a compiler and runtime **rebuilt or materialized** at the exact pin
+of the claiming capability after its own profile passes — the same wording section 12.1 uses,
+because the requirement is revision identity, not a particular way of producing the binary. What
+each profile owes is a verifiable statement of which it did: the checkout revision is verified, and
+the binary is recorded by digest. A newer compiler, host, or generic OpenSSL 3.0 installation is not
+a substitute for that claim's named build configuration. The C7 artifact itself contains no target
+or ABI field; each adoption result is bound externally to its tested compiler revision, platform
+profile, and environment.
 
 ### 11.1 Platform profiles, owners, and gate cadence
 

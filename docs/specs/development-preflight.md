@@ -34,16 +34,22 @@ head, merge base, scope, owner label, and UTC creation time.
 ## Classification ownership
 
 Markdown-only additions and modifications are `docs`. A deletion is never light. Every other path
-is at least `hosted`. The classifier owns the exact fresh-image path inventory currently duplicated
-between the two CI jobs. Changes to that inventory, the workflow, the Makefile, `.align-revision`,
-fresh image inputs, worker/control implementations, or their qualification owners select
-`fresh-image`. Unknown executable paths select `hosted`; selection machinery selects
-`fresh-image` so a classifier change cannot silently exempt its own deepest consumer.
+is executable verification. An added or modified `.align-revision` accompanied only by added or
+modified Markdown selects `pin`: local preflight runs the request owner and exact managed-toolchain
+verification, while `hosted=true` makes GitHub CI run the ordinary hosted graph once. A pin deletion
+or rename fails closed to `fresh-image`; a pin plus another executable path selects that path's
+ordinary `hosted` or `fresh-image` owner. The classifier owns the exact fresh-image path inventory
+currently consumed by both CI jobs. Changes to that inventory, the workflow, the Makefile, fresh
+image inputs, worker/control implementations, or their qualification owners select `fresh-image`.
+Unknown executable paths select `hosted`; selection machinery selects `fresh-image` so a classifier
+change cannot silently exempt its own deepest consumer.
 
-The three scopes are cumulative:
+The four outcomes share flags between local and hosted execution; `pin` is deliberately not a local
+superset of `hosted`:
 
 ```text
 docs         static documentation checks
+pin          local owner + managed Align ensure/verify; hosted CI runs the hosted graph
 hosted       owner + pinned Align build + hosted functional graph
 fresh-image  hosted + focused fresh qualification + required installed profile
 ```
@@ -57,7 +63,7 @@ The managed local toolchain closes these paths before adoption:
 | Cooperative overlap and failed preparation | revision lock and private temporary directory | two same-revision helper invocations build once; injected build failure, missing output, and failing compiler probe publish nothing and remove their temporary state. Mutation by non-cooperating processes is explicitly outside this trusted developer-cache contract |
 | Compiler-selection overrides and default | `scripts/alignc`, Makefile | authenticated fresh mode rejects every other path; explicit `ALIGNC` wins; explicit `ALIGN_REPO` selects only that checkout; default and empty Make `ALIGNC` select the managed wrapper and never sibling/PATH state |
 | Local preflight plan and execution | `scripts/pre-pr` | missing owner is rejected before ensure; plan predicts and prints managed ensure without side effects; execution runs owner before ensure/verify; explicit `--align-repo` retains source-build behavior; fresh installed qualification receives the exact selected checkout |
-| Pin update | `.align-revision`, managed helper, hosted bundle/image identities | the new pin invalidates every revision-bound cache, the real managed compiler builds, focused owner and aggregate checks use it, and hosted CI qualifies the same revision |
+| Pin update | `.align-revision`, managed helper, and hosted bundle identity | the new pin invalidates revision-bound compiler caches, the real managed compiler builds, the request owner uses it locally, and hosted CI runs the ordinary graph against the same revision; installed-image identities move only when another changed path selects that owner |
 
 Allocation, generic monomorphization, interface serialization, runtime inspection, detail levels,
 and product migration are N/A because this capability owns an out-of-process development

@@ -5808,6 +5808,12 @@ $ make prompt-verifier-smoke          # alignc run: code generation, link, then 
 
 Code generation owns effectively all of that: the produced program prints one line and exits.
 
+The native aarch64 sample identifies the real-client regression that motivated this request. It is
+not a permanent target-specific acceptance floor: this request makes no per-architecture latency
+or memory promise. Admission of the compiler optimization is measured on one named reproducible
+host by comparing `check` and `build` for the same fixture. A future claim about a particular
+architecture's performance must carry a benchmark on that architecture.
+
 The compiler's own diagnostics point at the shape it is struggling with. The same `check` emits 345
 `huge struct copy` warnings over exactly two kinds — by-value parameter passing and by-value return
 — across 39 distinct record types, and 100 of the 345 name one 5,056-byte record
@@ -5827,13 +5833,20 @@ before publication (see `docs/specs/check-gate-topology.md` §2 and
 is. That is a scheduling decision on the client side, not a fix, and it is exactly the kind of
 non-blocking, workaround-shaped gap this register exists to record.
 
+Supported-platform correctness remains the compiler provider's CI responsibility. The consumer
+reruns a platform profile only when its own target-local behavior changes or when the request makes
+a target-specific performance claim; ordinary compiler pin adoption does not create either claim.
+
 ### Requested behavior
 
-No new public surface. `alignc build` should generate code for a unit of this shape in time and
-memory proportional to what `alignc check` already proves is tractable — concretely, within a small
-constant multiple of the `check` cost and without a peak resident set that scales with the product
-of copy sites and struct size. Diagnostics, generated-program semantics, and the `huge struct copy`
-warning text are unchanged by this request; the warning is useful client advice and should stay.
+No new public surface. On one named reproducible measurement host, `alignc build` should generate
+code for a unit of this shape in time and memory proportional to what `alignc check` already proves
+is tractable — concretely, within a small constant multiple of the `check` cost and without a peak
+resident set that scales with the product of copy sites and struct size. The structural IR reduction
+and generated-program behavior are platform-independent; the measured ratio is representative lane
+admission evidence, not a promise that every architecture has the same ratio. Diagnostics,
+generated-program semantics, and the `huge struct copy` warning text are unchanged by this request;
+the warning is useful client advice and should stay.
 
 Align owns the choice of remedy. Plausible directions, listed only as evidence of where the cost
 concentrates and not as a required design:
@@ -5849,14 +5862,15 @@ concentrates and not as a required design:
 
 | Surface | Exact result/error and precedence | Ownership, allocation, effects, and identity | First real-client acceptance |
 | --- | --- | --- | --- |
-| `alignc build <unit>` | Unchanged. Same accepted programs, same rejections, same diagnostic text and order, same generated-program behavior. This request changes only the resources the existing contract consumes. | Unchanged for the generated program. Compiler-internal only: the peak resident set during code generation must not scale with (copy sites x copied struct bytes) across the whole unit. | `make prompt-verifier-smoke` at the adopted pin completes within the supervised aggregate's per-target budget, its output line is byte-identical to today's, and `prompt-verifier-smoke` is restored to `HOSTED_CHECK_TARGETS`, to `scripts/check-gate-topology`'s `EXPECTED` bytes, and to the `docs/specs/check-gate-topology.md` hosted oracle, with `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker` passing at that head. |
+| `alignc build <unit>` | Unchanged. Same accepted programs, same rejections, same diagnostic text and order, same generated-program behavior. This request changes only the resources the existing contract consumes. | Unchanged for the generated program. Compiler-internal only: the peak resident set during code generation must not scale with (copy sites x copied struct bytes) across the whole unit. The check/build resource ratio is measured on one named host and is not a target-specific SLA. | Direct `check`/`build` measurement on one named host satisfies the ratio and memory bound; `make prompt-verifier-smoke` at the adopted pin preserves its output and fits the lane budget; the target is restored to `HOSTED_CHECK_TARGETS`, to `scripts/check-gate-topology`'s `EXPECTED` bytes, and to the `docs/specs/check-gate-topology.md` hosted oracle; and `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker` passes on one capable host at that head. |
 
 ### Acceptance criteria
 
-1. At the adopted pin, `alignc check src/prompt_verifier_smoke.align` and
-   `alignc build src/prompt_verifier_smoke.align` both succeed, the build's wall time is within a
-   small constant multiple of the check's, and its peak resident memory stays well under the
-   1,525,732 KiB measured here.
+1. At the adopted pin, on one named reproducible measurement host, both compiler phases succeed for
+   `src/prompt_verifier_smoke.align`: `alignc check` and `alignc build`. The build's wall time is
+   within a small constant multiple of the check's, and its peak resident memory stays well under
+   the 1,525,732 KiB filing-time observation. This is representative-host admission evidence, not
+   an architecture-specific performance guarantee.
 2. `make prompt-verifier-smoke` prints exactly
    `prompt verifier smoke: complete, incomplete, compact, and tamper cases PASS`.
 3. `make check` reports the current 23 units per-unit (the filing-time graph had 22 before C7 added
@@ -5864,7 +5878,7 @@ concentrates and not as a required design:
 4. `prompt-verifier-smoke` is restored to the hosted lane in `Makefile`,
    `scripts/check-gate-topology`, and `docs/specs/check-gate-topology.md` in one change, and
    `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker` passes
-   at that head with the aggregate back inside its historical cost.
+   on one capable host at that head with the restored member inside its per-target budget.
 
 ### Align response (2026-08-26 — merged)
 
@@ -5925,11 +5939,13 @@ supervised worker's complete `make ci`, including the restored member, passed in
 passed; and the whole installed profile completed in 763,510 ms. This is the request's final capable
 integration evidence at the adopted pin. The aggregate was selected because this adoption restores
 one of its members, not because the measurement host was x86_64 or because every pin change selects
-the graph. Request 19 changes no C7 algorithm, wire, digest, validation, persistence, Darwin linker,
-or Linux isolation boundary and makes no aarch64 performance claim. Align's merged CI already owns
-the compiler's supported-platform correctness, so rerunning the C7 Linux aarch64 and Darwin profile
-gates here would duplicate provider and unrelated consumer evidence. The request is
-`ALIGN_LLM_VERIFIED`; `CLOSED` waits only for its publication merge.
+the graph. The filing-time aarch64 result motivated the optimization, but it does not turn each later
+pin into a rolling aarch64 performance certification. Request 19 changes no C7 algorithm, wire,
+digest, validation, persistence, Darwin linker, or Linux isolation boundary and makes no
+architecture-specific performance claim. Align's merged CI already owns the compiler's
+supported-platform correctness, so rerunning the C7 Linux aarch64 and Darwin profile gates here
+would duplicate provider and unrelated consumer evidence. The request is `ALIGN_LLM_VERIFIED`;
+`CLOSED` waits only for its publication merge.
 
 ---
 
