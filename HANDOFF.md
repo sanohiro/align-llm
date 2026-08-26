@@ -97,11 +97,20 @@ file records durable project state.
   of the real build-10566 excerpt through the arm with **0 aborts**, which is the durable evidence
   that the multi-byte slicing class repaired at `e99bceb` is closed. The repair is narrow and bound
   to the recorded findings, so it does not trigger another full review.
+- **Baseline chain**: `a2eefdf` -> `8cffdd4` -> `dd0b150` (source -> oracle -> finalization),
+  identity-bound and re-recorded on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) after
+  the final review repair. Exactly three of the twenty recorded artifacts changed against the R1B
+  chain — `Makefile` and `src/main.align` (the `--expert-trace` owner and arm) and `.gitattributes`
+  (the `eval/fixtures/expert-trace/*.txt -whitespace` rule) — and the twenty paths are otherwise
+  identical, every other hash unchanged. `make baseline-check` on Linux: PASS, ending `baseline
+  chain: PASS`.
 - **Next actions, in order.**
   1. Exact-head preflight — confirm with `scripts/pre-pr --plan` that the `Makefile` change selects
      the fresh-image installed profile, then run
-     `python3 scripts/pre-pr --owner-test expert-trace-smoke -- make expert-trace-smoke`.
-  2. Publish the English pull request.
+     `python3 scripts/pre-pr --owner-test expert-trace -- make expert-trace-smoke
+     gate-topology-check`.
+  2. Publish the English pull request with the owner result, the parity result, the baseline chain,
+     and the review envelope.
 - **Two pending user decisions, tracked and not to be lost.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
      gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
