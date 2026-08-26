@@ -48,16 +48,21 @@ def create_fixture(root: Path) -> tuple[Path, Path]:
     generated.mkdir(parents=True)
     source.parent.mkdir(parents=True)
     source.write_text("def value():\n    return 0\n", encoding="utf-8")
-    silent_test = """import runpy
+    targeted_test = """import runpy
 
 assert runpy.run_path("src/value.py")["value"]() == 1
 """
     (tests / "test_value.py").write_text(
-        silent_test,
+        targeted_test,
         encoding="utf-8",
     )
     (tests / "test_full.py").write_text(
-        silent_test,
+        """import runpy
+
+runpy.run_path("tests/test_value.py")
+value = runpy.run_path("src/value.py")["value"]
+assert value() + value() == 2
+""",
         encoding="utf-8",
     )
     for ordinal in range(FIXTURE_TEST_COUNT - 2):
@@ -140,6 +145,8 @@ def run_sample(
     binary: Path, repository: Path, task: Path, result: Path
 ) -> tuple[int, Any, dict[str, int]]:
     checked_run(["git", "reset", "--hard", "-q", "HEAD"], repository)
+    if result.exists():
+        result.unlink()
     started = time.perf_counter_ns()
     completed = subprocess.run(
         [str(binary), "--verify-loop", str(task), str(result)],
@@ -155,6 +162,8 @@ def run_sample(
         raise BenchmarkError(
             f"{binary} failed ({completed.returncode})\n{completed.stderr}"
         )
+    if not result.is_file():
+        raise BenchmarkError(f"{binary} did not create a result document")
     document = json.loads(result.read_text(encoding="utf-8"))
     if document.get("status") != "PASS" or document.get("iteration_count") != 1:
         raise BenchmarkError(f"{binary} did not produce a first-attempt passing patch")

@@ -13,8 +13,11 @@ file records durable project state.
   real Python compile, targeted assertion, and full assertion with 4,000 tracked test candidates.
   The implementation is `eaed3e03aac7d07c68851bfb7c684dce959f4ba0`: each test now computes
   basename/directory signals once and derives both score and reason without changing output. The
-  exact-commit 101-pair comparison
-  measured 50,037,025 ns for the parent and 49,774,517 ns for the candidate, a 5,246 ppm (0.52%)
+  comprehensive review inspected `ec58cc1fdb70464b1a11f84de5299038a59b1e2c` and returned four
+  P2 findings in the benchmark proof and resume prose; the consolidated repair follows that head.
+  The repaired benchmark requires a newly created result on every run and makes full-test include
+  targeted coverage plus an independent assertion. The exact-commit 101-pair comparison
+  measured 49,926,004 ns for the parent and 49,650,937 ns for the candidate, a 5,509 ppm (0.55%)
   reduction. Run the complete review/publication sequence, then merge before selecting another C8
   boundary.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
@@ -49,8 +52,9 @@ file records durable project state.
 ## Resume in another environment
 
 1. Fetch `origin` and resume `agent/c8-selection-signals-once` at its latest commit. Read
-   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Preserve the
-   recorded baseline and implement only `C8-TEST-SELECTION-SIGNALS-ONCE` before comparing binaries.
+   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Complete the
+   consolidated review repair, exact-head preflight, publication, and merge sequence before
+   selecting another C8 capability.
 2. After the second C8 pull request merges, refresh `main` and select the next smallest
    consumer-complete optimization that improves a real fixed coding task end to end. Establish its
    reproducible current median for time to a passing patch before making an optimization claim;

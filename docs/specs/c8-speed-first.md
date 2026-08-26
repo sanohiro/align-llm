@@ -113,12 +113,13 @@ repository or the model/provider phase improves by 74.5%.
 ## 4. Second fixed coding-task baseline
 
 The second benchmark retains 4,000 tracked test candidates but replaces the three `/usr/bin/true`
-stages with a real Python source compile, a targeted assertion, and a distinct full assertion. The
-candidate changes `src/value.py` from returning zero to returning one; both tests load the patched
-source and require one. Repository creation and reset remain outside the timed region. Baseline and
-compare modes discard two warmup pairs, use an odd sample count of at least five, and require every
-normalized result document to agree. Compare mode additionally rejects identical binary SHA-256
-digests and a non-improving candidate median.
+stages with a real Python source compile, a targeted assertion, and a full assertion that first runs
+the targeted test and then checks an independent property. The candidate changes `src/value.py`
+from returning zero to returning one. Repository creation, reset, and removal of the preceding
+result document remain outside the timed region; every invocation must create a new result.
+Baseline and compare modes discard two warmup pairs, use an odd sample count of at least five, and
+require every normalized result document to agree. Compare mode additionally rejects identical
+binary SHA-256 digests and a non-improving candidate median.
 
 The pre-implementation baseline is:
 
@@ -129,12 +130,12 @@ command:    scripts/run-c8-selection-signal-benchmark baseline ./main 15
 host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
 cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
 samples:    15 measurements after two discarded warmup runs
-median:     49,350,067 ns
-candidate-apply-check median: 1,300,692 ns
-candidate-apply median:       1,169,056 ns
-build median:                 9,328,803 ns
-targeted-test median:        14,547,160 ns
-full-test median:            14,526,182 ns
+median:     49,910,961 ns
+candidate-apply-check median: 1,303,719 ns
+candidate-apply median:       1,200,812 ns
+build median:                 9,331,491 ns
+targeted-test median:        14,732,039 ns
+full-test median:            14,887,075 ns
 ```
 
 The stage medians are diagnostic decomposition, not separate acceptance claims. Only the total
@@ -143,17 +144,33 @@ time-to-passing-patch median decides the capability gate.
 The exact-commit comparison used:
 
 ```text
+git worktree add --detach /tmp/align-llm-c8-signals-parent 4ed50d237e65e164818b3060fe11312296685ec3
+git worktree add --detach /tmp/align-llm-c8-signals-candidate eaed3e03aac7d07c68851bfb7c684dce959f4ba0
+make -C /tmp/align-llm-c8-signals-parent build
+make -C /tmp/align-llm-c8-signals-candidate build
+install -m 0755 /tmp/align-llm-c8-signals-parent/main /tmp/align-llm-c8-signals-parent.bin
+install -m 0755 /tmp/align-llm-c8-signals-candidate/main /tmp/align-llm-c8-signals-candidate.bin
+git cat-file blob 980aed5351e1d06acd212ff851104a542eb7ee9e > /tmp/align-llm-c8-signals-benchmark
+chmod 0755 /tmp/align-llm-c8-signals-benchmark
+sha256sum /tmp/align-llm-c8-signals-parent.bin /tmp/align-llm-c8-signals-candidate.bin
+/tmp/align-llm-c8-signals-benchmark compare \
+  /tmp/align-llm-c8-signals-parent.bin /tmp/align-llm-c8-signals-candidate.bin 101
+```
+
+```text
 parent:     4ed50d237e65e164818b3060fe11312296685ec3
 candidate:  eaed3e03aac7d07c68851bfb7c684dce959f4ba0
+benchmark runner Git blob: 980aed5351e1d06acd212ff851104a542eb7ee9e
+benchmark runner SHA-256: 08d2e17ee669bf3095359753a12055530d90d6fde7162d1123bf0694f90e3de5
 parent binary SHA-256:    9c71f3d55d1335a74723c2933c2091945db6a8a827d95ce08739c1ce35ba3561
 candidate binary SHA-256: 04202b4945c757c2f06f409502ec9c6bb0ad60b685b7846656eab233578cdc17
-command:    scripts/run-c8-selection-signal-benchmark compare PARENT CANDIDATE 101
+command:    /tmp/align-llm-c8-signals-benchmark compare /tmp/align-llm-c8-signals-parent.bin /tmp/align-llm-c8-signals-candidate.bin 101
 host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
 cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
 samples:    101 parent and 101 candidate measurements after two discarded warmup pairs
-parent median:    50,037,025 ns
-candidate median: 49,774,517 ns
-improvement:      5,246 ppm (0.52%)
+parent median:    49,926,004 ns
+candidate median: 49,650,937 ns
+improvement:      5,509 ppm (0.55%)
 ```
 
 All normalized result documents agreed. The measured reduction is deliberately reported as a
