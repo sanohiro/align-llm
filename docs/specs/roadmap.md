@@ -324,7 +324,8 @@ score 0のgeneric候補をcontextから省き、正の候補がない場合だ�
 が必要と確定した場合だけJSONへserializeする。第6capabilityは、関連候補がある通常経路ではその
 offset保持も省き、正の候補がない場合だけ既に所有しているGit listingを再走査してgeneric fallbackを
 構築する。第7capabilityは、候補・修正patchの事前checkと適用をGitの原子的な1 invocationにまとめ、
-成功時の重複processとcheck専用stage recordを省く。
+成功時の重複processとcheck専用stage recordを省く。第8capabilityは、各layerで完成したowned JSON
+bufferを唯一のresult ownerへ移し、return直前の同一buffer再allocationを省く。
 
 ### Gate
 

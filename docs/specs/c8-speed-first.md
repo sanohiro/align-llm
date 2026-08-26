@@ -1,6 +1,6 @@
 # C8 Speed-first optimization
 
-Status: first six consumer-complete capabilities merged; seventh capability implemented and measured.
+Status: first seven consumer-complete capabilities merged; eighth capability implemented and measured.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -186,6 +186,31 @@ The authoritative contract is the [Git apply documentation](https://git-scm.com/
 without `--reject`, an applicability failure is atomic, and `--apply` after `--check` performs the
 application. The single invocation also removes the check-to-apply process gap rather than caching
 an earlier verdict.
+
+### 2.8 Move completed result documents into their owners
+
+`C8-MOVE-RESULT-DOCUMENTS` is the eighth consumer-complete capability. The repository selection,
+patch evaluation, stage, attempt, and verification layers currently clone locally completed owned
+JSON strings when returning them in their sole owning result record. The optimization moves each
+completed string into that record after its last local read instead of allocating and copying an
+identical second buffer.
+
+| Field | Contract |
+| --- | --- |
+| Consumers | Repository index and test selection, patch evaluation, the C4 verification loop, repair prompts, persisted results, and failure-memory consumers |
+| Input and output | Schemas, field order and bytes, statuses, counts, recommendations, stage order, prompts, diagnostics, durations, failure precedence, and CLI files are unchanged |
+| Moved values | Only a function-local owned `string` whose next and sole owner is the returned result record; borrowed views finish before the move and no source is read afterward |
+| Retained copies | Process-output views still clone once into owned stage data; JSON encoders whose result is a region-bound view still clone once; reusable task/profile data and any value with multiple consumers are unchanged |
+| Ownership/allocation | Each moved buffer has exactly one owner before and after the change; the capability removes redundant terminal allocations and introduces no cache, alias, or shared mutable state |
+| Failure behavior | Existing Git validation order, patch-analysis failure, command timeout/spawn mapping, repair transitions, terminal status, and persisted failure behavior are unchanged |
+| Correctness owner | `index-smoke`, `test-selection-smoke`, `patch-eval-smoke`, and `verify-loop-smoke` cover the moved records and their downstream persistence; `loop-smoke` covers the unchanged lower verification primitive |
+| Performance owner | `scripts/run-c8-selection-signal-benchmark baseline-atomic BINARY [SAMPLES]` before implementation and `scripts/run-c8-selection-signal-benchmark compare-atomic PARENT_BINARY CANDIDATE_BINARY [SAMPLES]` after implementation |
+| Acceptance | On the fixed coding task, normalized result documents and the exact ordered four-stage vector agree, every stage passes with matching exit codes, and candidate median time to a passing patch is repeatably lower |
+| Platform scope | Platform-independent Align ownership and JSON result construction; no target-local implementation or platform-specific speed claim |
+
+The capability does not remove a copy merely because two values contain equal bytes. Every removed
+clone is a terminal handoff from a local owner to one returned owner, which keeps the ownership
+proof mechanical.
 
 ## 3. Fixed passing-patch benchmark
 
@@ -608,7 +633,63 @@ vector; every stage passed with matching actual and expected codes. A preceding 
 improved by 26,289 ppm in the same direction. This is a path-local process-elimination claim, not a
 platform or provider/model-time claim.
 
-## 10. Deferred C8 surfaces
+## 10. Eighth fixed coding-task baseline
+
+The eighth capability reuses the Section 4 real-stage fixture and the four-stage protocol shipped
+by the seventh capability. The pre-implementation baseline is:
+
+```text
+commit:     185936492dd52453c8df3fe281c82645373a5946
+binary SHA-256: 7e00353a3110c16fd802bb935a9d4bf1be784540f23567cdf4704aee728896f3
+command:    scripts/run-c8-selection-signal-benchmark baseline-atomic /tmp/align-llm-c8-owned-argv.peN7CZ/parent-1859364.bin 31
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    31 measurements after two discarded warmup runs
+median:     45,870,371 ns
+candidate-apply median: 1,284,880 ns
+build median:           9,317,021 ns
+targeted-test median:  14,706,435 ns
+full-test median:      14,776,505 ns
+```
+
+The stage medians are diagnostic decomposition. Only a repeatably lower paired total median with
+identical normalized result documents closes the claim. `compare-atomic` requires the exact
+four-stage protocol from both binaries and keeps historical five-stage evidence distinct.
+
+The exact-commit comparison used:
+
+```text
+make build
+install -m 0755 ./main /tmp/align-llm-c8-owned-argv.peN7CZ/candidate-4f7dd62.bin
+sha256sum /tmp/align-llm-c8-owned-argv.peN7CZ/parent-1859364.bin \
+  /tmp/align-llm-c8-owned-argv.peN7CZ/candidate-4f7dd62.bin
+scripts/run-c8-selection-signal-benchmark compare-atomic \
+  /tmp/align-llm-c8-owned-argv.peN7CZ/parent-1859364.bin \
+  /tmp/align-llm-c8-owned-argv.peN7CZ/candidate-4f7dd62.bin 101
+```
+
+```text
+parent:     185936492dd52453c8df3fe281c82645373a5946
+candidate:  4f7dd62c3bf6d6e4d81216a44c3b4f2f9bf7eb32
+benchmark runner Git blob: 492f53db5ca6e934daf8340e6c9998cc7340ddcc
+benchmark runner SHA-256: 80618fd088a5e5f75e3772aec60db510ec27fc4f4c0c9024ba0cd0104b08858b
+parent binary SHA-256:    7e00353a3110c16fd802bb935a9d4bf1be784540f23567cdf4704aee728896f3
+candidate binary SHA-256: 64c40cb4ba967575a40d7e489175ff0703fff4f503f8d967db46c4dbe05309fe
+command:    scripts/run-c8-selection-signal-benchmark compare-atomic /tmp/align-llm-c8-owned-argv.peN7CZ/parent-1859364.bin /tmp/align-llm-c8-owned-argv.peN7CZ/candidate-4f7dd62.bin 101
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    101 parent and 101 candidate measurements after two discarded warmup pairs
+parent median:    46,537,217 ns
+candidate median: 46,355,109 ns
+improvement:      3,913 ppm (0.39%)
+```
+
+All normalized result documents agreed. Both binaries emitted the exact four-stage vector, and
+every stage passed with matching actual and expected codes. A preceding 31-pair comparison improved
+by 5,224 ppm in the same direction. This is a path-local allocation improvement, not a platform or
+provider/model-time claim.
+
+## 11. Deferred C8 surfaces
 
 Context reduction, stable-context reuse, parallel checks, small-model routing, and persisted static
 analysis remain separate capabilities. In particular, captured concurrent checks require an Align

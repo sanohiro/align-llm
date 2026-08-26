@@ -307,6 +307,7 @@ def main() -> int:
         "baseline",
         "baseline-atomic",
         "compare",
+        "compare-atomic",
         "compare-related-only",
         "compare-atomic-apply",
     ):
@@ -315,6 +316,8 @@ def main() -> int:
             "       run-c8-selection-signal-benchmark baseline-atomic BINARY "
             "[SAMPLES]\n"
             "       run-c8-selection-signal-benchmark compare PARENT_BINARY "
+            "CANDIDATE_BINARY [SAMPLES]\n"
+            "       run-c8-selection-signal-benchmark compare-atomic PARENT_BINARY "
             "CANDIDATE_BINARY [SAMPLES]\n"
             "       run-c8-selection-signal-benchmark compare-related-only "
             "PARENT_BINARY CANDIDATE_BINARY [SAMPLES]\n"
@@ -384,7 +387,7 @@ def main() -> int:
                     statistics.median(elapsed_samples[name])
                 )
                 output[f"{name}_stage_medians_ns"] = median_map(stage_samples[name])
-            if mode == "compare":
+            if mode in ("compare", "compare-atomic"):
                 if references["candidate"] != references["parent"]:
                     raise BenchmarkError("benchmark result documents differ")
             elif mode == "compare-related-only":
