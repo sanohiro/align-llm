@@ -1,6 +1,6 @@
 # C8 Speed-first optimization
 
-Status: first seven consumer-complete capabilities merged; eighth capability baseline recorded.
+Status: first seven consumer-complete capabilities merged; eighth capability implemented and measured.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -655,6 +655,39 @@ full-test median:      14,776,505 ns
 The stage medians are diagnostic decomposition. Only a repeatably lower paired total median with
 identical normalized result documents closes the claim. `compare-atomic` requires the exact
 four-stage protocol from both binaries and keeps historical five-stage evidence distinct.
+
+The exact-commit comparison used:
+
+```text
+make build
+install -m 0755 ./main /tmp/align-llm-c8-owned-argv.peN7CZ/candidate-4f7dd62.bin
+sha256sum /tmp/align-llm-c8-owned-argv.peN7CZ/parent-1859364.bin \
+  /tmp/align-llm-c8-owned-argv.peN7CZ/candidate-4f7dd62.bin
+scripts/run-c8-selection-signal-benchmark compare-atomic \
+  /tmp/align-llm-c8-owned-argv.peN7CZ/parent-1859364.bin \
+  /tmp/align-llm-c8-owned-argv.peN7CZ/candidate-4f7dd62.bin 101
+```
+
+```text
+parent:     185936492dd52453c8df3fe281c82645373a5946
+candidate:  4f7dd62c3bf6d6e4d81216a44c3b4f2f9bf7eb32
+benchmark runner Git blob: 492f53db5ca6e934daf8340e6c9998cc7340ddcc
+benchmark runner SHA-256: 80618fd088a5e5f75e3772aec60db510ec27fc4f4c0c9024ba0cd0104b08858b
+parent binary SHA-256:    7e00353a3110c16fd802bb935a9d4bf1be784540f23567cdf4704aee728896f3
+candidate binary SHA-256: 64c40cb4ba967575a40d7e489175ff0703fff4f503f8d967db46c4dbe05309fe
+command:    scripts/run-c8-selection-signal-benchmark compare-atomic /tmp/align-llm-c8-owned-argv.peN7CZ/parent-1859364.bin /tmp/align-llm-c8-owned-argv.peN7CZ/candidate-4f7dd62.bin 101
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    101 parent and 101 candidate measurements after two discarded warmup pairs
+parent median:    46,537,217 ns
+candidate median: 46,355,109 ns
+improvement:      3,913 ppm (0.39%)
+```
+
+All normalized result documents agreed. Both binaries emitted the exact four-stage vector, and
+every stage passed with matching actual and expected codes. A preceding 31-pair comparison improved
+by 5,224 ppm in the same direction. This is a path-local allocation improvement, not a platform or
+provider/model-time claim.
 
 ## 11. Deferred C8 surfaces
 

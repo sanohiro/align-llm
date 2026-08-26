@@ -16,6 +16,11 @@ file records durable project state.
   owned JSON buffers into their sole returned owner rather than cloning them at the terminal
   handoff. The exact 31-sample `baseline-atomic` at merge `1859364` is 45,870,371 ns; its binary
   SHA-256 is `7e00353a3110c16fd802bb935a9d4bf1be784540f23567cdf4704aee728896f3`.
+  Implementation `4f7dd62c3bf6d6e4d81216a44c3b4f2f9bf7eb32` passes `loop-smoke`, `index-smoke`,
+  `test-selection-smoke`, `patch-eval-smoke`, and `verify-loop-smoke`. Its exact 101-pair comparison
+  measured 46,537,217 ns for the parent and 46,355,109 ns for the candidate, a 3,913 ppm (0.39%)
+  reduction; a preceding 31-pair run improved by 5,224 ppm. Normalized documents and all four stage
+  records agree.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -49,11 +54,11 @@ file records durable project state.
 
 1. Fetch `origin` and resume `agent/c8-move-result-documents`. Read `CLAUDE.md`, then
    `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md` §2.8 and §10. The ledger and exact
-   baseline are complete; implementation is the first unfinished action.
-2. Remove only terminal clones whose completed local buffer moves to one returned owner, run the
-   named record owners, and compare exact binaries with `compare-atomic`.
-3. Publish only if the paired end-to-end improvement is repeatable; otherwise preserve the rejection
-   locally and choose another measured boundary.
+   baseline, implementation, owner verification, and exact comparison are complete. Commit the
+   measurement record, then run one stable-head comprehensive review.
+2. Resolve the complete review finding set coherently without widening the terminal-move rule, then
+   run exact-head preflight and publish the English PR.
+3. After merge, refresh `main` and choose the next measured consumer-complete C8 boundary.
 4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
    new Align request unless implementation exposes a genuine shipped-language, compiler/runtime,
    or standard-library gap under the request-register rules.
