@@ -63,6 +63,20 @@ def test_classifier() -> None:
     require(deleted_docs.scope == "hosted" and deleted_docs.hosted, "deletion became light")
     hosted = classify(("M", "scripts/run-provider-smoke"))
     require(hosted.scope == "hosted" and not hosted.fresh_installed, "hosted scope changed")
+    for path in (
+        "src/main.align",
+        "src/repo_index.align",
+        "eval/tasks/smoke-v1.json",
+        "eval/runners/run-coding-task.py",
+    ):
+        selected = classify(("M", path))
+        require(
+            selected.scope == "hosted"
+            and selected.hosted
+            and not selected.fresh_focused
+            and not selected.fresh_installed,
+            f"ordinary application path selected a platform profile: {path}",
+        )
     pin = classify(("M", ".align-revision"))
     require(
         pin.scope == "pin"
@@ -98,8 +112,6 @@ def test_classifier() -> None:
     for path in (
         "Makefile",
         ".github/workflows/ci.yml",
-        "src/main.align",
-        "eval/tasks/smoke-v1.json",
         "image/fresh/Dockerfile",
         "scripts/run-fresh-worker-qualification",
         "scripts/verification_scope.py",

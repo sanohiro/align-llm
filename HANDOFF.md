@@ -3,11 +3,15 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## No active capability (2026-08-26)
+## Platform verification follows capability ownership (2026-08-26)
 
-- The durable handoff is `main` at `ab155b391cfe12a2d53674179b993fc43fa86120`, which is pushed
-  to `origin/main`. The primary worktree is clean, no pull request is open, and no active work
-  depends on a local stash or historical worktree.
+- The preceding durable handoff is the `agent/c8-handoff-publication` merge on `main`. C8's first
+  implementation branch exposed that the classifier still sent every `src/` change through both
+  native installed profiles even when neither behavior nor claim was target-specific.
+- Ordinary `src/` and `eval/` changes now select the pinned hosted graph. Fresh-image construction,
+  workflow, classifier, Make topology, worker/control, and their qualification owners retain the
+  focused plus installed profile. Deletions, renames, unknown state, and untrusted no-base events
+  retain their existing fail-closed behavior.
 - Align requests 1–20 are closed. Request 19 shipped in Align PR #891 as
   `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; align-llm publication PR #108 merged as
   `75d7cc39b40b287d47b1185306d6bd8e7eb582dc` after all required CI passed.
@@ -20,7 +24,8 @@ file records durable project state.
 - Platform qualification is capability-owned: run it for changed target-local behavior, a
   target-specific claim, a concrete provider-CI gap, or an explicit audit—not for every compiler
   pin. The policy, classifier, owner tests, and final comprehensive review are complete.
-- No work is active. The next roadmap capability is C8, Speed-first Optimization.
+- After this policy capability merges, resume `agent/c8-handoff-ready`, integrate the new `main`,
+  rerun its exact-head preflight under hosted scope, and publish the reviewed C8 optimization.
 
 ## Resume in another environment
 
