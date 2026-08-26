@@ -312,11 +312,11 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
     if score_120_count + score_100_count > 0 { candidates_body.write(",") }
     candidates_body.write(score_20_body.to_string())
   }
-  if score_0_count > 0 {
-    if score_120_count + score_100_count + score_20_count > 0 { candidates_body.write(",") }
+  related_count := score_120_count + score_100_count + score_20_count
+  if related_count == 0 && score_0_count > 0 {
     candidates_body.write(score_0_body.to_string())
   }
-  candidate_count := score_120_count + score_100_count + score_20_count + score_0_count
+  candidate_count := if related_count > 0 { related_count } else { score_0_count }
 
   document := render_selection_document(
     root,
