@@ -6,6 +6,11 @@ file records durable project state.
 ## C8 first capability: linear related-test ranking (2026-08-26)
 
 - The preceding durable handoff is `main` at `ab155b391cfe12a2d53674179b993fc43fa86120`.
+- Unmerged publication work is on `agent/c8-handoff-ready`. The implementation checkpoint is
+  `be5291ef79d9f7a9102d91d86afb7880fc5c7182`; the comprehensive review inspected
+  `9ae2134010fa8a330bdf1922d62070fd198b70ae` and returned three P2 findings. The consolidated
+  repair follows that reviewed head on the same branch. Run affected owners, exact-head preflight,
+  publish, and merge before starting the next C8 capability.
 - Align requests 1–20 are closed. Request 19 shipped in Align PR #891 as
   `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; align-llm publication PR #108 merged as
   `75d7cc39b40b287d47b1185306d6bd8e7eb582dc` after all required CI passed.
@@ -22,8 +27,8 @@ file records durable project state.
   file pass and emits the same four score buckets in the same order instead of scanning the complete
   list for every integer from 120 through 0. The exact public invariant and focused benchmark are in
   `docs/specs/c8-speed-first.md`.
-- The paired fixed passing-patch benchmark measured 48,914,189 ns for the parent median and
-  12,496,138 ns for the candidate median across 15 samples each on the named x86_64 host, a 74.5%
+- The paired fixed passing-patch benchmark measured 48,829,180 ns for the parent median and
+  12,465,365 ns for the candidate median across 15 samples each on the named x86_64 host, a 74.5%
   reduction. All non-duration result data agreed. This is a path-specific claim, not a platform
   claim, so the benchmark remains out of ordinary CI and native installed profiles.
 - The next C8 capability must again start from measured end-to-end cost. Prefer a boundary that uses
@@ -32,11 +37,11 @@ file records durable project state.
 
 ## Resume in another environment
 
-1. Fetch `origin`, switch to `main`, and fast-forward to at least the durable handoff commit above.
-   Read `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and the applicable parts of
-   `docs/specs/align-llm.md`. Earlier sections of this file are merged-checkpoint evidence, not
-   pending instructions.
-2. Continue C8 by selecting the next smallest consumer-complete optimization that improves a real
+1. Fetch `origin` and resume `agent/c8-handoff-ready` at its latest commit. Read `CLAUDE.md`, then
+   `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Complete the publication sequence
+   named above; do not restart from `main` while this capability remains unmerged.
+2. After the C8 test-selection pull request merges, refresh `main` and select the next smallest
+   consumer-complete optimization that improves a real
    fixed coding task end to end. Establish its reproducible current median for time to a passing
    patch before making an optimization claim; tokens/second or an isolated model latency is not the
    C8 gate.
