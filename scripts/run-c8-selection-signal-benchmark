@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""C8 fixed coding-task benchmark for related-test signal computation."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import statistics
+import subprocess
+import sys
+import tempfile
+import time
+from typing import Any
+
+
+FIXTURE_TEST_COUNT = 4_000
+DEFAULT_SAMPLE_COUNT = 15
+WARMUP_PAIR_COUNT = 2
+
+
+class BenchmarkError(Exception):
+    pass
+
+
+def checked_run(argv: list[str], cwd: Path) -> None:
+    completed = subprocess.run(
+        argv,
+        cwd=cwd,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+    )
+    if completed.returncode != 0:
+        raise BenchmarkError(
+            f"command failed ({completed.returncode}): {' '.join(argv)}\n{completed.stderr}"
+        )
+
+
+def create_fixture(root: Path) -> tuple[Path, Path]:
+    repository = root / "repository"
+    source = repository / "src" / "value.py"
+    tests = repository / "tests"
+    generated = tests / "generated"
+    generated.mkdir(parents=True)
+    source.parent.mkdir(parents=True)
+    source.write_text("def value():\n    return 0\n", encoding="utf-8")
+    targeted_test = """import runpy
+
+assert runpy.run_path("src/value.py")["value"]() == 1
+"""
+    (tests / "test_value.py").write_text(
+        targeted_test,
+        encoding="utf-8",
+    )
+    (tests / "test_full.py").write_text(
+        """import runpy
+
+runpy.run_path("tests/test_value.py")
+value = runpy.run_path("src/value.py")["value"]
+assert value() + value() == 2
+""",
+        encoding="utf-8",
+    )
+    for ordinal in range(FIXTURE_TEST_COUNT - 2):
+        (generated / f"test_generated_{ordinal:04d}.txt").write_text(
+            "deterministic related-test selection fixture\n", encoding="utf-8"
+        )
+
+    patch = root / "candidate.patch"
+    patch.write_text(
+        """diff --git a/src/value.py b/src/value.py
+--- a/src/value.py
++++ b/src/value.py
+@@ -1,2 +1,2 @@
+ def value():
+-    return 0
++    return 1
+""",
+        encoding="utf-8",
+    )
+
+    checked_run(["git", "init", "-q"], repository)
+    checked_run(["git", "config", "user.email", "benchmark@example.invalid"], repository)
+    checked_run(["git", "config", "user.name", "C8 Benchmark"], repository)
+    checked_run(["git", "add", "--all"], repository)
+    checked_run(["git", "commit", "-qm", "fixture"], repository)
+
+    python = "/usr/bin/python3"
+    task = root / "task.json"
+    task.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "task_id": "c8-selection-signals-once",
+                "root": str(repository),
+                "candidate_patch": str(patch),
+                "repair_patch": "",
+                "memory_profile": None,
+                "build": {
+                    "cmd": python,
+                    "argv": [
+                        python,
+                        "-c",
+                        "compile(open('src/value.py', encoding='utf-8').read(), "
+                        "'src/value.py', 'exec')",
+                    ],
+                    "expected_code": 0,
+                },
+                "targeted_test": {
+                    "cmd": python,
+                    "argv": [python, "tests/test_value.py"],
+                    "expected_code": 0,
+                },
+                "full_test": {
+                    "cmd": python,
+                    "argv": [python, "tests/test_full.py"],
+                    "expected_code": 0,
+                },
+                "timeout_ns": 10_000_000_000,
+                "max_iterations": 1,
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    return repository, task
+
+
+def normalize_result(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: 0 if key == "duration_ns" else normalize_result(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [normalize_result(item) for item in value]
+    return value
+
+
+def run_sample(
+    binary: Path, repository: Path, task: Path, result: Path
+) -> tuple[int, Any, dict[str, int]]:
+    checked_run(["git", "reset", "--hard", "-q", "HEAD"], repository)
+    if result.exists():
+        result.unlink()
+    started = time.perf_counter_ns()
+    completed = subprocess.run(
+        [str(binary), "--verify-loop", str(task), str(result)],
+        cwd=repository,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+    )
+    elapsed = time.perf_counter_ns() - started
+    if completed.returncode != 0:
+        raise BenchmarkError(
+            f"{binary} failed ({completed.returncode})\n{completed.stderr}"
+        )
+    if not result.is_file():
+        raise BenchmarkError(f"{binary} did not create a result document")
+    document = json.loads(result.read_text(encoding="utf-8"))
+    if document.get("status") != "PASS" or document.get("iteration_count") != 1:
+        raise BenchmarkError(f"{binary} did not produce a first-attempt passing patch")
+    attempts = document.get("attempts")
+    if not isinstance(attempts, list) or len(attempts) != 1:
+        raise BenchmarkError(f"{binary} produced an unexpected attempt record")
+    stages = attempts[0].get("stages")
+    if not isinstance(stages, list):
+        raise BenchmarkError(f"{binary} produced an unexpected stage record")
+    stage_durations: dict[str, int] = {}
+    for stage in stages:
+        name = stage.get("stage")
+        duration = stage.get("duration_ns")
+        if not isinstance(name, str) or not isinstance(duration, int) or name in stage_durations:
+            raise BenchmarkError(f"{binary} produced an invalid stage record")
+        stage_durations[name] = duration
+    expected_stages = {
+        "candidate-apply-check",
+        "candidate-apply",
+        "build",
+        "targeted-test",
+        "full-test",
+    }
+    if set(stage_durations) != expected_stages:
+        raise BenchmarkError(f"{binary} produced an unexpected stage set")
+    return elapsed, normalize_result(document), stage_durations
+
+
+def resolve_binary(argument: str) -> Path:
+    path = Path(argument).resolve()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise BenchmarkError(f"not an executable file: {path}")
+    return path
+
+
+def digest_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def parse_sample_count(argument: str | None) -> int:
+    sample_count = DEFAULT_SAMPLE_COUNT if argument is None else int(argument)
+    if sample_count < 5 or sample_count % 2 == 0:
+        raise BenchmarkError("sample count must be an odd integer of at least 5")
+    return sample_count
+
+
+def median_map(samples: dict[str, list[int]]) -> dict[str, int]:
+    return {name: int(statistics.median(values)) for name, values in samples.items()}
+
+
+def main() -> int:
+    if len(sys.argv) < 3 or sys.argv[1] not in ("baseline", "compare"):
+        print(
+            "usage: run-c8-selection-signal-benchmark baseline BINARY [SAMPLES]\n"
+            "       run-c8-selection-signal-benchmark compare PARENT_BINARY "
+            "CANDIDATE_BINARY [SAMPLES]",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        mode = sys.argv[1]
+        if mode == "baseline":
+            if len(sys.argv) not in (3, 4):
+                raise BenchmarkError("baseline mode expects BINARY [SAMPLES]")
+            binaries = (("baseline", resolve_binary(sys.argv[2])),)
+            sample_count = parse_sample_count(sys.argv[3] if len(sys.argv) == 4 else None)
+        else:
+            if len(sys.argv) not in (4, 5):
+                raise BenchmarkError(
+                    "compare mode expects PARENT_BINARY CANDIDATE_BINARY [SAMPLES]"
+                )
+            parent = resolve_binary(sys.argv[2])
+            candidate = resolve_binary(sys.argv[3])
+            if digest_file(parent) == digest_file(candidate):
+                raise BenchmarkError(
+                    "parent and candidate binaries must have different SHA-256 digests"
+                )
+            binaries = (("parent", parent), ("candidate", candidate))
+            sample_count = parse_sample_count(sys.argv[4] if len(sys.argv) == 5 else None)
+
+        with tempfile.TemporaryDirectory(prefix="align-llm-c8-selection-signal-") as raw:
+            root = Path(raw)
+            repository, task = create_fixture(root)
+            result = root / "result.json"
+            elapsed_samples = {name: [] for name, _ in binaries}
+            stage_samples = {name: {} for name, _ in binaries}
+            reference: Any | None = None
+            for ordinal in range(sample_count + WARMUP_PAIR_COUNT):
+                order = binaries if ordinal % 2 == 0 else tuple(reversed(binaries))
+                for name, binary in order:
+                    elapsed, document, stages = run_sample(binary, repository, task, result)
+                    if reference is None:
+                        reference = document
+                    elif document != reference:
+                        raise BenchmarkError("benchmark result documents differ")
+                    if ordinal >= WARMUP_PAIR_COUNT:
+                        elapsed_samples[name].append(elapsed)
+                        for stage, duration in stages.items():
+                            stage_samples[name].setdefault(stage, []).append(duration)
+
+            output: dict[str, Any] = {
+                "schema_version": 1,
+                "mode": mode,
+                "fixture_test_count": FIXTURE_TEST_COUNT,
+                "sample_count": sample_count,
+            }
+            for name, binary in binaries:
+                output[f"{name}_binary_sha256"] = digest_file(binary)
+                output[f"{name}_median_ns"] = int(
+                    statistics.median(elapsed_samples[name])
+                )
+                output[f"{name}_stage_medians_ns"] = median_map(stage_samples[name])
+            if mode == "compare":
+                parent_median = output["parent_median_ns"]
+                candidate_median = output["candidate_median_ns"]
+                if candidate_median >= parent_median:
+                    raise BenchmarkError(
+                        "candidate median did not improve time to passing patch: "
+                        f"parent={parent_median}ns candidate={candidate_median}ns"
+                    )
+                output["improvement_ppm"] = (
+                    (parent_median - candidate_median) * 1_000_000 // parent_median
+                )
+            print(json.dumps(output, separators=(",", ":")))
+    except (BenchmarkError, OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"benchmark error: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

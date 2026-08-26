@@ -315,7 +315,9 @@ qualifications run at a pin bump, a C7 owner-boundary change, or an explicit aud
 
 性能主張と固定passing-patch benchmarkのrecordは
 [`c8-speed-first.md`](c8-speed-first.md)をsource of truthとする。最初のcapabilityは公開selection
-documentと検証順序を変えず、4種類のscore bucketを一度のtracked-file走査で構築する。
+documentと検証順序を変えず、4種類のscore bucketを一度のtracked-file走査で構築する。次の
+capabilityは同じ公開fieldを保ったまま、各testのbasename/directory signalをscore用とreason用に
+二重計算せず一度だけ求める。
 
 ### Gate
 

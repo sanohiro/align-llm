@@ -270,8 +270,10 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
     file_cursor = if file_end < listing.len() { file_end + 1 } else { listing.len() }
     if relative.len() == 0 { break }
     if is_test_path(relative) {
-      score := related_test_score(changed_path, relative)
-      reason := related_test_reason(changed_path, relative)
+      name_match := related_test_basename_match(changed_path, relative)
+      same_directory := related_test_same_directory(changed_path, relative)
+      score := related_test_score(name_match, same_directory)
+      reason := related_test_reason(name_match, same_directory)
       record := RelatedTest { path: relative, score: score, reason: reason }
       encoded := json.encode(record)
       if score == 120 {
@@ -1019,15 +1021,13 @@ fn related_test_same_directory(changed_path: str, test_path: str) -> bool {
   return path.dir(changed_path) == path.dir(test_path)
 }
 
-fn related_test_score(changed_path: str, test_path: str) -> i64 {
-  name_score := if related_test_basename_match(changed_path, test_path) { 100 } else { 0 }
-  directory_score := if related_test_same_directory(changed_path, test_path) { 20 } else { 0 }
+fn related_test_score(name_match: bool, same_directory: bool) -> i64 {
+  name_score := if name_match { 100 } else { 0 }
+  directory_score := if same_directory { 20 } else { 0 }
   return name_score + directory_score
 }
 
-fn related_test_reason(changed_path: str, test_path: str) -> str {
-  name_match := related_test_basename_match(changed_path, test_path)
-  same_directory := related_test_same_directory(changed_path, test_path)
+fn related_test_reason(name_match: bool, same_directory: bool) -> str {
   if name_match && same_directory { return "basename-match+same-directory" }
   if name_match { return "basename-match" }
   if same_directory { return "same-directory" }
