@@ -3,11 +3,15 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Platform verification follows capability ownership (2026-08-26)
+## C8 first capability: linear related-test ranking (2026-08-26)
 
-- The preceding durable handoff is the `agent/c8-handoff-publication` merge on `main`. C8's first
-  implementation branch exposed that the classifier still sent every `src/` change through both
-  native installed profiles even when neither behavior nor claim was target-specific.
+- The preceding durable handoff is the platform-scope policy merge on `main` at
+  `6d24dedf3df26de1eb9f4af06f46e61012eeb3ee` (PR #111).
+- Unmerged publication work is on `agent/c8-handoff-ready`. The implementation checkpoint is
+  `be5291ef79d9f7a9102d91d86afb7880fc5c7182`; the comprehensive review inspected
+  `9ae2134010fa8a330bdf1922d62070fd198b70ae` and returned three P2 findings. The consolidated
+  repair is `b30635dd05d2adb8ede2056044dd81a415ac83a5`. The branch integrates PR #111; run its
+  exact-head hosted preflight, publish, and merge before starting the next C8 capability.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -25,20 +29,29 @@ file records durable project state.
 - Platform qualification is capability-owned: run it for changed target-local behavior, a
   target-specific claim, a concrete provider-CI gap, or an explicit audit—not for every compiler
   pin. The policy, classifier, owner tests, and final comprehensive review are complete.
-- After this policy capability merges, resume `agent/c8-handoff-ready`, integrate the new `main`,
-  rerun its exact-head preflight under hosted scope, and publish the reviewed C8 optimization.
+- `C8-TEST-SELECTION-LINEAR` is the first C8 capability. Related-test ranking now makes one tracked
+  file pass and emits the same four score buckets in the same order instead of scanning the complete
+  list for every integer from 120 through 0. The exact public invariant and focused benchmark are in
+  `docs/specs/c8-speed-first.md`.
+- The paired fixed passing-patch benchmark measured 48,829,180 ns for the parent median and
+  12,465,365 ns for the candidate median across 15 samples each on the named x86_64 host, a 74.5%
+  reduction. All non-duration result data agreed. This is a path-specific claim, not a platform
+  claim, so the benchmark remains out of ordinary CI and native installed profiles.
+- The next C8 capability must again start from measured end-to-end cost. Prefer a boundary that uses
+  the current Align surface; captured parallel process execution remains deferred unless measurement
+  justifies a genuine Align request.
 
 ## Resume in another environment
 
-1. Fetch `origin`, switch to `main`, and fast-forward to at least the durable handoff commit above.
-   Read `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and the applicable parts of
-   `docs/specs/align-llm.md`. Earlier sections of this file are merged-checkpoint evidence, not
-   pending instructions.
-2. Start C8 by selecting the smallest consumer-complete optimization that improves a real fixed
-   coding task end to end. Establish the reproducible current median for time to a passing patch
-   before making an optimization claim; tokens/second or an isolated model latency is not the C8
-   gate.
-3. Choose the first capability from measured evidence among context reduction, stable-context
+1. Fetch `origin` and resume `agent/c8-handoff-ready` at its latest commit. Read `CLAUDE.md`, then
+   `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Complete the publication sequence
+   named above; do not restart from `main` while this capability remains unmerged.
+2. After the C8 test-selection pull request merges, refresh `main` and select the next smallest
+   consumer-complete optimization that improves a real
+   fixed coding task end to end. Establish its reproducible current median for time to a passing
+   patch before making an optimization claim; tokens/second or an isolated model latency is not the
+   C8 gate.
+3. Choose the next capability from measured evidence among context reduction, stable-context
    reuse, targeted tests, parallel checks, small-model routing, and cached static analysis. Record
    the exact consumer, baseline, changed boundary, owner test, and measurement command in the C8
    plan before implementation. Apply the proportional design gate only if the selected boundary

@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""Paired C8 time-to-passing-patch benchmark for related-test selection."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import statistics
+import subprocess
+import sys
+import tempfile
+import time
+from typing import Any
+
+
+FIXTURE_TEST_COUNT = 4_000
+DEFAULT_SAMPLE_COUNT = 15
+
+
+class BenchmarkError(Exception):
+    pass
+
+
+def checked_run(argv: list[str], cwd: Path) -> None:
+    completed = subprocess.run(
+        argv,
+        cwd=cwd,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+    )
+    if completed.returncode != 0:
+        raise BenchmarkError(
+            f"command failed ({completed.returncode}): {' '.join(argv)}\n{completed.stderr}"
+        )
+
+
+def create_fixture(root: Path) -> tuple[Path, Path]:
+    repository = root / "repository"
+    source = repository / "src" / "value.py"
+    tests = repository / "tests" / "generated"
+    tests.mkdir(parents=True)
+    source.parent.mkdir(parents=True)
+    source.write_text("def value():\n    return 0\n", encoding="utf-8")
+    for ordinal in range(FIXTURE_TEST_COUNT):
+        (tests / f"test_generated_{ordinal:04d}.py").write_text(
+            "# deterministic related-test selection fixture\n", encoding="utf-8"
+        )
+
+    patch = root / "candidate.patch"
+    patch.write_text(
+        """diff --git a/src/value.py b/src/value.py
+--- a/src/value.py
++++ b/src/value.py
+@@ -1,2 +1,2 @@
+ def value():
+-    return 0
++    return 1
+""",
+        encoding="utf-8",
+    )
+
+    checked_run(["git", "init", "-q"], repository)
+    checked_run(["git", "config", "user.email", "benchmark@example.invalid"], repository)
+    checked_run(["git", "config", "user.name", "C8 Benchmark"], repository)
+    checked_run(["git", "add", "--all"], repository)
+    checked_run(["git", "commit", "-qm", "fixture"], repository)
+
+    task = root / "task.json"
+    task.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "task_id": "c8-linear-test-selection",
+                "root": str(repository),
+                "candidate_patch": str(patch),
+                "repair_patch": "",
+                "memory_profile": None,
+                "build": {
+                    "cmd": "/usr/bin/true",
+                    "argv": ["/usr/bin/true"],
+                    "expected_code": 0,
+                },
+                "targeted_test": {
+                    "cmd": "/usr/bin/true",
+                    "argv": ["/usr/bin/true"],
+                    "expected_code": 0,
+                },
+                "full_test": {
+                    "cmd": "/usr/bin/true",
+                    "argv": ["/usr/bin/true"],
+                    "expected_code": 0,
+                },
+                "timeout_ns": 10_000_000_000,
+                "max_iterations": 1,
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    return repository, task
+
+
+def normalize_result(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: 0 if key == "duration_ns" else normalize_result(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [normalize_result(item) for item in value]
+    return value
+
+
+def run_sample(binary: Path, repository: Path, task: Path, result: Path) -> tuple[int, Any]:
+    checked_run(["git", "reset", "--hard", "-q", "HEAD"], repository)
+    started = time.perf_counter_ns()
+    completed = subprocess.run(
+        [str(binary), "--verify-loop", str(task), str(result)],
+        cwd=repository,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+    )
+    elapsed = time.perf_counter_ns() - started
+    if completed.returncode != 0:
+        raise BenchmarkError(
+            f"{binary} failed ({completed.returncode})\n{completed.stderr}"
+        )
+    document = json.loads(result.read_text(encoding="utf-8"))
+    if document.get("status") != "PASS" or document.get("iteration_count") != 1:
+        raise BenchmarkError(f"{binary} did not produce a first-attempt passing patch")
+    return elapsed, normalize_result(document)
+
+
+def resolve_binary(argument: str) -> Path:
+    path = Path(argument).resolve()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise BenchmarkError(f"not an executable file: {path}")
+    return path
+
+
+def digest_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def main() -> int:
+    if len(sys.argv) not in (3, 4):
+        print(
+            "usage: run-c8-test-selection-benchmark PARENT_BINARY CANDIDATE_BINARY [SAMPLES]",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        parent = resolve_binary(sys.argv[1])
+        candidate = resolve_binary(sys.argv[2])
+        parent_sha256 = digest_file(parent)
+        candidate_sha256 = digest_file(candidate)
+        if parent_sha256 == candidate_sha256:
+            raise BenchmarkError("parent and candidate binaries must have different SHA-256 digests")
+        sample_count = int(sys.argv[3]) if len(sys.argv) == 4 else DEFAULT_SAMPLE_COUNT
+        if sample_count < 5 or sample_count % 2 == 0:
+            raise BenchmarkError("sample count must be an odd integer of at least 5")
+
+        with tempfile.TemporaryDirectory(prefix="align-llm-c8-test-selection-") as temporary:
+            root = Path(temporary)
+            repository, task = create_fixture(root)
+            result = root / "result.json"
+
+            parent_samples: list[int] = []
+            candidate_samples: list[int] = []
+            reference: Any | None = None
+            for ordinal in range(sample_count + 2):
+                order = (
+                    ((parent, parent_samples), (candidate, candidate_samples))
+                    if ordinal % 2 == 0
+                    else ((candidate, candidate_samples), (parent, parent_samples))
+                )
+                for binary, samples in order:
+                    elapsed, document = run_sample(binary, repository, task, result)
+                    if reference is None:
+                        reference = document
+                    elif document != reference:
+                        raise BenchmarkError("parent and candidate result documents differ")
+                    if ordinal >= 2:
+                        samples.append(elapsed)
+
+            parent_median = int(statistics.median(parent_samples))
+            candidate_median = int(statistics.median(candidate_samples))
+            if candidate_median >= parent_median:
+                raise BenchmarkError(
+                    "candidate median did not improve time to passing patch: "
+                    f"parent={parent_median}ns candidate={candidate_median}ns"
+                )
+            improvement_ppm = (
+                (parent_median - candidate_median) * 1_000_000 // parent_median
+            )
+            print(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "fixture_test_count": FIXTURE_TEST_COUNT,
+                        "sample_count": sample_count,
+                        "parent_binary_sha256": parent_sha256,
+                        "candidate_binary_sha256": candidate_sha256,
+                        "parent_median_ns": parent_median,
+                        "candidate_median_ns": candidate_median,
+                        "improvement_ppm": improvement_ppm,
+                    },
+                    separators=(",", ":"),
+                )
+            )
+    except (BenchmarkError, OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"benchmark error: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

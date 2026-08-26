@@ -307,11 +307,15 @@ qualifications run at a pin bump, a C7 owner-boundary change, or an explicit aud
 ```text
 - context縮小
 - stable context reuse
-- targeted tests
+- targeted tests（最初のcapabilityはtracked-file rankingを121走査から1走査へ変更）
 - parallel checks
 - small-model routing
 - cached static analysis
 ```
+
+性能主張と固定passing-patch benchmarkのrecordは
+[`c8-speed-first.md`](c8-speed-first.md)をsource of truthとする。最初のcapabilityは公開selection
+documentと検証順序を変えず、4種類のscore bucketを一度のtracked-file走査で構築する。
 
 ### Gate
 
