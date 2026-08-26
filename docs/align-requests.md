@@ -74,16 +74,16 @@ join routine hosted/capable aggregates merely because it is important; run it wh
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
 > **Status (2026-08-27): Requests 1–20 are CLOSED and Requests 21–24 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: `fs.open_rw` is the only one Align ships, so inspecting a model requires `O_RDWR` on a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
-R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
-parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
-`borrow t: GgufTable` accessors in `src/gguf.align` get the by-value warning even though no call
-copies the 552-byte struct. It is non-blocking — the warnings are noise, not a build failure — with
-all of R1 as independent work. R1-QWEN-MODEL-IR also added Request 24, admitting `builder` (not just
-`array_builder<T>`) as a `borrow mut` parameter type: `array_builder<T>` is already admitted in that
-position at this pin, but the plain text `builder` is rejected as an unknown type, so `gguf.inspect`
-and `gguf.read_table` duplicate one decode-and-accumulate walk instead of sharing it through a
-borrowed builder parameter. It is non-blocking — the duplication is in place and `table-inspect-parity`
-guards the two walks from drifting — with all of R1 as independent work.
+> R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
+> parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
+> `borrow t: GgufTable` accessors in `src/gguf.align` get the by-value warning even though no call
+> copies the 552-byte struct. It is non-blocking — the warnings are noise, not a build failure — with
+> all of R1 as independent work. R1-QWEN-MODEL-IR also added Request 24, admitting `builder` (not just
+> `array_builder<T>`) as a `borrow mut` parameter type: `array_builder<T>` is already admitted in that
+> position at this pin, but the plain text `builder` is rejected as an unknown type, so `gguf.inspect`
+> and `gguf.read_table` duplicate one decode-and-accumulate walk instead of sharing it through a
+> borrowed builder parameter. It is non-blocking — the duplication is in place and `table-inspect-parity`
+> guards the two walks from drifting — with all of R1 as independent work.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -6339,7 +6339,7 @@ Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c
 
 - `crates/align_sema/src/lib.rs:40525-40529` documents the lint as targeting a struct "passed or
   returned **by value**"; the comment names exactly the case this request says is mishandled.
-- `crates/align_sema/src/lib.rs:40538-40551` is the parameter loop that actually emits it:
+- `crates/align_sema/src/lib.rs:40544-40553` is the parameter loop that actually emits it:
 
   ```rust
   for (p, ty) in f.params.iter().zip(&param_tys) {
@@ -6356,9 +6356,9 @@ Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c
 
   The loop reads only `ty` (the parameter's struct type) and never reads `p`'s mode. `align_ast`
   carries the mode separately — `crates/align_ast/src/lib.rs:184-188` defines
-  `pub enum ParamMode { ByValue, Borrow, BorrowMut }`, and the signature's parallel
+  `pub enum ParamMode { ByValue, Out, Borrow, BorrowMut }`, and the signature's parallel
   `sig.param_modes: Vec<ParamMode>` is already in scope in the same function (consulted a few lines
-  above at `crates/align_sema/src/lib.rs:40509` for the unrelated `main`-argv shape check). The lint
+  above at `crates/align_sema/src/lib.rs:40513` for the unrelated `main`-argv shape check). The lint
   never consults it, so it fires identically for `fn f(x: Big)` and `fn f(borrow x: Big)`.
 
 - Reproduced against `src/gguf.align` by running `gmake check` in the worktree with
@@ -6381,8 +6381,8 @@ Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c
 Suppress the diagnostic for a `Borrow`/`BorrowMut` parameter — no new syntax, no new diagnostic code,
 just consulting the mode the sema pass already carries in `sig.param_modes` (or the AST `p.mode`
 directly) before pushing the warning at
-`crates/align_sema/src/lib.rs:40538-40551`. The by-value branch (a bare `x: Big`) and the return-type
-branch (`crates/align_sema/src/lib.rs:40553-40560`, which returns a fresh owned value and is correctly
+`crates/align_sema/src/lib.rs:40544-40553`. The by-value branch (a bare `x: Big`) and the return-type
+branch (`crates/align_sema/src/lib.rs:40554-40560`, which returns a fresh owned value and is correctly
 targeted regardless of mode) are both unaffected.
 
 ### Acceptance criteria
@@ -6412,9 +6412,10 @@ align-llm verification: pending
 ### Motivation and current sibling evidence
 
 `array_builder<T>` is admitted as a `borrow mut` parameter type at the pinned commit
-`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`, but the plain text `builder` (`core.builder`, the "one
-way" to build a `string` incrementally, `docs/language-spec.md:2144-2151` in the sibling checkout) is
-not admitted in that position at all; it is rejected as an unknown type name.
+`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`, but the plain text `builder` (`core.builder`, listed
+among the core areas at `docs/language-spec.md:970` in the sibling checkout, with its `borrow mut`
+rule stated for the array form at `:1004-1006`) is not admitted in that position at all; it is
+rejected as an unknown type name.
 
 Verified in the sibling checkout:
 
@@ -6423,7 +6424,7 @@ Verified in the sibling checkout:
   `("array_builder", Ty::ArrayBuilder(BRIDGE_ELEM))`, but has no `"builder"` entry at all — `Ty::Builder`
   (defined and used elsewhere in the same file, e.g. `crates/align_sema/src/lib.rs:51009`,
   `:59325`) is reachable only from the `builder()`/`builder(cap)` *expression* form
-  (`crates/align_sema/src/lib.rs:4954-4959`, `check_builder_new`), never from a type annotation.
+  (`crates/align_sema/src/lib.rs:50987`, `check_builder_new`), never from a type annotation.
   `crates/align_sema/src/lib.rs:4958` is the fallback that fires when a bare name matches neither a
   declared type nor a `BUILTIN_SPELLING_TYS` entry: `diags.error(format!("unknown type: '{bare}'"),
   span)`.

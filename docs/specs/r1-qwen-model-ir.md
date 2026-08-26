@@ -427,8 +427,10 @@ size sum:
 OK | MISMATCH
 ```
 
-On `status: "error"` every field that was not derived prints `-1`, `size sum` prints `MISMATCH`
-whenever the oracle did not run or did not hold, and two further pairs are appended:
+On `status: "error"` every field that was not derived prints `-1` — except `blocks`, which prints
+the number of blocks that were assembled before the failure and is therefore `0`, not `-1`, when
+assembly was never reached. `size sum` prints `MISMATCH` whenever the oracle did not run or did not
+hold, and two further pairs are appended:
 
 ```text
 error:
@@ -557,7 +559,7 @@ Every value in the example is the real reference model, cross-checked in section
 | `n_head_kv` | `qwen2.attention.head_count_kv` | Required, `UINT32`, in `[1, n_head]`, and `n_head % n_head_kv == 0` |
 | `head_dim` | derived | `n_embd / n_head`, requiring `n_embd % n_head == 0` |
 | `n_ff` | `qwen2.feed_forward_length` | Required, `UINT32`, in `[1, 16777216]` |
-| `n_vocab` | derived | `dims[1]` of `token_embd.weight`; see section 2.5.7 |
+| `n_vocab` | derived | `dims[1]` of `token_embd.weight`, required to be in `[1, 4194304]`; see section 2.5.7 |
 | `n_expert` | `qwen2.expert_count` | Optional `UINT32`; absent means `0`. A present non-`UINT32` value is `R1_KEY_TYPE_MISMATCH`; any nonzero value is `R1_UNSUPPORTED_MOE` |
 | `context_length` | `qwen2.context_length` | Required, `UINT32`, in `[1, 134217728]` |
 | `rms_eps` | `qwen2.attention.layer_norm_rms_epsilon` | Required, `FLOAT32`. The JSON number is the `write_float` rendering; `null` if non-finite |
@@ -566,7 +568,14 @@ Every value in the example is the real reference model, cross-checked in section
 | `rope.freq_base_bits` | same key | 8 hexadecimal characters. Authoritative |
 | `rope.type` / `type_name` | architecture | Fixed at `2` / `"neox"` for `qwen2`; `type_source` is always `"architecture"`. See below |
 | `rope.dim_count` | `qwen2.rope.dimension_count` when present, else `head_dim` | Optional `UINT32`, in `[1, head_dim]`; `dim_count_source` is `"metadata"` or `"derived"` accordingly |
-| `rope.scaling_type` | `qwen2.rope.scaling.type` | Optional `STRING`; `null` when absent. Reported, never interpreted |
+| `rope.scaling_type` | `qwen2.rope.scaling.type` | Optional `STRING`; `null` when absent. Reported, never interpreted. A present value whose bytes are not valid UTF-8 is `R1_KEY_TYPE_MISMATCH`, because `null` means "the container did not supply it" and must not also mean "it supplied something unrepeatable" |
+
+**`n_vocab` is the one derived value the shape contract cannot check.** Every other field of
+section 2.5.8's shape table is compared against a hyperparameter read from metadata, but
+`token_embd.weight`'s expected shape is built from the very dimension that tensor declares, so
+`[n_embd, 0]` matches its own expectation exactly. The `[1, 4194304]` bound of section 2.6 step 9 is
+what makes an implausible vocabulary a rejection instead of a Model IR no consumer can use; the
+upper end is more than an order of magnitude above the 152,064 the reference model declares.
 
 **`rope.type` is architecture-owned and is not read from the file, and that is stated rather than
 hidden.** The reference model declares no rope-type key; llama.cpp assigns `qwen2` the NEOX rope
@@ -577,8 +586,10 @@ records the value, its source, and — in section 4.4 — the parity row that is
 field in `model` whose value comes from architecture knowledge rather than from the container.
 
 `rms_eps` and `rope.freq_base` carry both a rendering and a bit pattern for the reason R0 gives in
-its section 2.4.3: `write_float` is exact and round-trips, but never uses exponent notation, so it
-is not a stable string to compare across tools. Every comparison in section 4 is on the bits or on
+its section 2.4.3, with that section's own claim corrected by section 7 item 20: `write_float` is
+exact and round-trips, but its spelling is not a stable string to compare across tools — an `f32` at
+the extremes renders in exponent notation (`1e-45`, `3.4028235e+38`) while a mid-range value does
+not. Every comparison in section 4 is on the bits or on
 the other tool's own formatting of our bits; the decimal is for humans.
 
 #### 2.5.4 `quant`
@@ -698,9 +709,22 @@ is auditable from the document alone without a copy of the table.
 
 #### 2.5.7 GGML block geometry, and why an unknown id is an error
 
-`nbytes = (n_elements / block_size) * type_bytes`, requiring `n_elements % block_size == 0`. The
-table below is data in `src/gguf.align`, not control flow, and every row is the shipped GGML
-block layout for that type:
+GGML sizes a tensor by **rows**, not by its element product. `ggml_row_size` requires
+`ne0 % blck_size == 0` and gives one row `type_size * ne0 / blck_size` bytes, so
+
+```text
+row_bytes = (dims[0] / block_size) * type_bytes
+nbytes    = row_bytes * (n_elements / dims[0])
+```
+
+requiring `dims[0] % block_size == 0`. That requirement is strictly stronger than
+`n_elements % block_size == 0`: a Q6_K `[64, 64]` tensor has 4,096 elements, a clean multiple of the
+256-element block, and is still unrepresentable, because no row of 64 elements can be built out of
+256-element blocks. Sizing it from the element product would produce 3,360 bytes for a tensor GGML
+will not store, and the two formulas agree on every tensor GGML *will* store. A tensor whose first
+axis is not a multiple of its block size is therefore `R1_TENSOR_SHAPE_UNALIGNED` and is never
+sized. The table below is data in `src/gguf.align`, not control flow, and every row is the shipped
+GGML block layout for that type:
 
 ```text
 id  name    block_size  type_bytes        id  name    block_size  type_bytes
@@ -805,9 +829,11 @@ before the whole derivation completes, so no partial output can be observed for 
 5. Required metadata presence, then type, key by key in section 2.5.3 order.
 6. Hyperparameter plausibility and derivation, including every divisibility requirement.
 7. Expert count.
-8. Tensor geometry pass, in file order: duplicate name, then type geometry, then element product,
-   then block alignment, then the running byte total.
-9. `n_vocab` derivation and its cross-check.
+8. Tensor geometry pass, in file order: duplicate name, then type geometry, then row alignment,
+   then element product, then the running byte total. Duplicate detection is computed once, before
+   the pass, over a sorted name index; the pass still reports the earliest repeated name in file
+   order, at its own position among the per-tensor rules.
+9. `n_vocab` derivation, then its bound, then its cross-check.
 10. Block assembly in the section 2.5.8 emission order: required tensor present, then shape.
 11. Coverage: every tensor assigned to at least one block.
 12. The size-sum oracle.
@@ -817,15 +843,15 @@ before the whole derivation completes, so no partial output can be observed for 
 | `R1_GGUF_ERROR` | `gguf.read_table` returned `status: Error` | step 3 | the container `error_code` |
 | `R1_UNSUPPORTED_ARCH` | `general.architecture` is absent, non-STRING, non-UTF-8, or not `"qwen2"` | step 4 | the architecture, or `""` |
 | `R1_MISSING_KEY` | a required key of section 2.5.3 is absent | step 5 | the key |
-| `R1_KEY_TYPE_MISMATCH` | a required key is present with a value type other than the one section 2.5.3 names | step 5 | the key |
+| `R1_KEY_TYPE_MISMATCH` | a required key is present with a value type other than the one section 2.5.3 names, or `qwen2.rope.scaling.type` is present as a `STRING` whose bytes are not valid UTF-8 | step 5 | the key |
 | `R1_KEY_VALUE_IMPLAUSIBLE` | a value is outside its section 2.5.3 bound, or a divisibility requirement fails | step 6 | the key |
 | `R1_UNSUPPORTED_MOE` | `qwen2.expert_count` is present and nonzero | step 7 | the decimal count |
 | `R1_DUPLICATE_TENSOR` | two tensor-table entries declare the same name | step 8 | the name |
 | `R1_UNKNOWN_TENSOR_TYPE` | a tensor's `ggml_type` id has no section 2.5.7 entry | step 8 | the decimal id |
-| `R1_TENSOR_SHAPE_UNALIGNED` | `n_elements % block_size != 0` | step 8 | the name |
+| `R1_TENSOR_SHAPE_UNALIGNED` | `dims[0] % block_size != 0` (section 2.5.7) | step 8 | the name |
 | `R1_SIZE_OVERFLOW` | the dimension product, a tensor's `nbytes`, or the running total is not representable as `i64` | step 8 | the name |
 | `R1_MISSING_TENSOR` | a tensor a block requires is absent | steps 9, 10 | the name |
-| `R1_TENSOR_SHAPE_UNEXPECTED` | a tensor's `dims` disagree with the section 2.5.8 expectation | step 10 | the name |
+| `R1_TENSOR_SHAPE_UNEXPECTED` | a tensor's `dims` disagree with the section 2.5.8 expectation, or the derived `n_vocab` is outside `[1, MAX_VOCAB]` | steps 9, 10 | the name |
 | `R1_VOCAB_MISMATCH` | `tokenizer.ggml.tokens` is present as an ARRAY and its length differs from `token_embd.weight` `dims[1]` | step 9 | the two decimal lengths, separated by `!=` |
 | `R1_UNASSIGNED_TENSOR` | a tensor in the table was claimed by no block | step 11 | the first unassigned name |
 | `R1_SIZE_SUM_MISMATCH` | `data_offset + total_tensor_bytes != file_size` | step 12 | the two decimal values, separated by `!=` |
@@ -839,6 +865,7 @@ Thresholds, all recorded as named constants in `src/frontend_qwen.align`:
 | `MAX_HEADS` | 4,096 | 28 | Same |
 | `MAX_FF` | 16,777,216 | 18,944 | Same |
 | `MAX_CONTEXT` | 134,217,728 | 131,072 | Three orders of magnitude of headroom |
+| `MAX_VOCAB` | 4,194,304 | 152,064 | The `n_vocab` bound of step 9. More than an order of magnitude above any shipping tokenizer |
 | `MAX_UNASSIGNED_REPORTED` | 16 | 0 | The `coverage.unassigned_tensors` bound; a document must not grow with the size of the defect |
 | `MAX_DETAIL_BYTES` | 256 | — | The `error_detail` bound |
 
@@ -849,12 +876,21 @@ two's-complement wrap with no trap, and there is no `i64` `MAX` constant at the 
 
 - the element product accumulates one axis at a time, testing `product > I64_MAX / extent` **before**
   each multiplication, with `extent == 0` short-circuiting to a zero product;
-- `nbytes` is `(n_elements / block_size) * type_bytes` — the division first, so the intermediate is
-  never larger than `n_elements` — guarded by `blocks > I64_MAX / type_bytes`;
+- `nbytes` is `((dims[0] / block_size) * type_bytes) * (n_elements / dims[0])` — each division
+  first, so no intermediate is larger than `n_elements` — guarded by
+  `row_blocks > I64_MAX / type_bytes` and then by `row_bytes > I64_MAX / rows`, with a zero element
+  count short-circuiting to zero bytes before the row count divides by `dims[0]`;
 - the running byte total is guarded by `total > I64_MAX - nbytes` before each addition;
+- a block member's end offset is guarded by `absolute > I64_MAX - nbytes` and saturates at `I64_MAX`
+  rather than wrapping negative, so `end_absolute_offset` can never precede
+  `first_absolute_offset`;
 - the oracle sum `data_offset + total_tensor_bytes` is formed only after
   `total_tensor_bytes <= I64_MAX - data_offset`, and reports `R1_SIZE_OVERFLOW` otherwise rather
-  than a mismatch, because an unrepresentable total is a different fact from a wrong one.
+  than a mismatch, because an unrepresentable total is a different fact from a wrong one. Since step
+  11 admits only the `12 * n_layer + 3` tensors of section 2.5.8 and every one of their shapes is
+  bounded by the thresholds above, `total_tensor_bytes` at step 12 cannot exceed roughly `2^58`;
+  this guard is therefore defensive rather than reachable, and section 7 item 18 records the
+  consequence for its regression.
 
 ### 2.7 Ownership, allocation, and owner modules
 
@@ -911,6 +947,7 @@ the `--inspect-gguf` arm does (`src/main.align:505-511`).
 | `GgufTable` streams (`keys`, `texts`, `names`) | the `GgufTable` record | three owned `string`s for the whole file, built once by `builder.to_string()` | with the record |
 | `GgufTable` columns | the `GgufTable` record | one `array<i64>` per column, each frozen once from an `array_builder<i64>` | with the record |
 | accessor results | the caller | one owned `string` per `kv_string` / `kv_float_text` / `tensor_name` call | caller scope |
+| tensor-name index | one local in `build_model_ir` | one `array<i64>` of `(hash, index)` pairs, one entry per validly named tensor, frozen once and sorted once | scope `Drop` |
 | block and tensor JSON | one `builder` in `build_model_ir` | accumulated once, in emission order | moved out by `to_string()` |
 | final document | `builder` moved out by `to_string()` | one owned `string` | **moved** into `QwenModelIr.document`, then to the caller |
 
@@ -920,6 +957,18 @@ already does. `GgufTable` is likewise moved out of `read_table` and lives as one
 `build_model_ir`. No cache, alias, or shared mutable state is introduced, and no module holds
 process-global state, so two `--model-ir` invocations in one process, or in two processes, are
 independent.
+
+**Work is bounded, and so is allocation.** `build_model_ir` performs no scan whose cost is
+quadratic in `tensor_count`. Three places would otherwise be: duplicate detection, the per-block
+name lookup, and the coverage sweep. All three go through one **tensor-name index** — an
+`array<i64>` whose entries pack a 42-bit name hash above a 21-bit tensor index, built once and
+sorted once with the language's stable `O(n log n)` pipeline `sort()`. Duplicate detection is then
+one pass over the index's equal-hash runs; a block member's lookup is a binary search followed by an
+exact name comparison, which returns the same first-occurrence index `gguf.find_tensor` would; and
+the coverage sweep merges the sorted claim list against the tensor table with one cursor. The whole
+derivation is `O(n log n)` in the tensor count, with `n` bounded by `MAX_TENSORS`. This is a
+correctness-of-bound statement, not a performance claim: section 4.5 still claims no timing, and the
+measured before/after numbers live in section 7 item 15.
 
 **Accessor allocation is bounded and counted.** `build_model_ir` performs at most 16 `kv_*` lookups
 — the eleven metadata keys of section 2.5.3 other than `general.architecture`, which is a
@@ -935,12 +984,13 @@ simpler, provably-safe form ships.
 
 | Dimension | Contract | Owner | Acceptance |
 | --- | --- | --- | --- |
-| Exact command/API | Section 2.2 (`--model-ir`, two forms), section 2.3.2 (`read_table` and nine accessors plus two geometry functions), section 2.7 (`build_model_ir`). No aliases, no flags | `src/gguf.align`, `src/frontend_qwen.align`, `src/main.align` | `model-ir-smoke` CLI cases |
+| Exact command/API | Section 2.2 (`--model-ir`, two forms), section 2.3.2 (`read_table` and ten accessors plus two geometry functions and `json_string`), section 2.7 (`build_model_ir`). No aliases, no flags | `src/gguf.align`, `src/frontend_qwen.align`, `src/main.align` | `model-ir-smoke` CLI cases |
 | Inputs and defaults | One model path; optional destination path; `n_expert` defaults to 0 when the key is absent; `rope.dim_count` defaults to `head_dim`; `rope.type` is fixed at 2; no ambient options | `src/frontend_qwen.align` | arity, option-isolation, and default cases |
 | Results and errors | `Ok` + `status: "ok"`; `Ok` + `status: "error"` for every model defect; `Err` only for argument or OS failure | `src/frontend_qwen.align`, `src/main.align` | one fixture per row of section 2.6 |
 | Multi-invalid precedence | Section 2.6 is strictly ordered; within a step, file order for tensors and section 2.5.3 order for keys; the first applicable row wins | `src/frontend_qwen.align` | `error-precedence` cases |
 | Ownership and lifetime | Section 2.7. Every retained text is owned; the document is moved into its sole owner | `src/frontend_qwen.align` | `document-move`, ownership review |
-| Allocation | Three streams and 25 columns per table; one document; at most `2 * tensor_count + 11` short-lived accessor strings | `src/gguf.align`, `src/frontend_qwen.align` | `bytes_read` bound and the descriptor-budget run |
+| Allocation | Three streams and 25 columns per table; one document; one sorted `array<i64>` name index; a short-lived accessor string per name touched | `src/gguf.align`, `src/frontend_qwen.align` | `bytes_read` bound and the descriptor-budget run |
+| Bounded work | No scan is quadratic in `tensor_count`: duplicate detection, block-member lookup, and the coverage sweep all go through the one sorted name index, so the derivation is `O(n log n)` (section 2.7) | `src/frontend_qwen.align` | `bounded-work` in `model-ir-smoke`; the section 7 item 15 measurements |
 | Persisted/cache identity | `N/A`. R1 writes one caller-named output document and reads nothing it wrote. It creates no cache, no index, no digest-addressed artifact, and changes no Align compiler cache policy. `GgufTable` is an in-process value with no persisted form, so there is no nominal-versus-structural fingerprint question | `N/A` with this reason | no cache behavior is claimed or tested |
 | Schema version | `schema_version: 1`; any field addition, removal, reorder, or type change requires version 2. `blocks[].kind` and `blocks[].expert` are deliberately shaped so a MoE frontend needs no bump | `src/frontend_qwen.align` | golden document bytes, field-order assertion |
 | Validation order | Section 2.6, deterministic and side-effect ordered; no output before derivation completes | `src/frontend_qwen.align` | ordered malformed corpus, untouched-destination assertion |
@@ -1004,7 +1054,8 @@ inside `scripts/run-model-ir-smoke` (section 4.2) unless another runner is named
 | Success — coverage | Every tensor is assigned; `computed_end == file_size` | `check_coverage` | `size-sum-oracle` on every positive fixture |
 | Failure — every error code | Each of the 15 rows of section 2.6 is produced by at least one fixture, with the correct `error_detail` | ordered guards | `error-corpus`, one negative fixture per row |
 | Failure — precedence | A file with two defects reports the earlier row | ordered guards | `error-precedence`: wrong arch + missing key; missing key + bad shape; unknown type + size-sum mismatch; duplicate tensor + unassigned tensor |
-| Failure — overflow class | Every guard of section 2.6 is tested before the arithmetic it protects | `size_tensors`, `check_coverage` | `overflow-corpus`: a dimension product above `i64`, an `nbytes` above `i64`, a running total above `i64`, and an oracle sum above `i64` |
+| Failure — overflow class | Every guard of section 2.6 is tested before the arithmetic it protects | `size_tensors`, `check_coverage` | `overflow-corpus`: a dimension product above `i64`, an `nbytes` above `i64`, and a running total above `i64`. The oracle sum is unreachable once `n_vocab` is bounded and is closed by the argument in section 7 item 18 |
+| Bounded work | No scan is quadratic in `tensor_count`: duplicate detection, block-member lookup, and the coverage sweep all go through one sorted tensor-name index (section 2.7) | `name_index`, `first_duplicate`, `indexed_tensor`, `check_coverage` | `bounded-work`: a 50,015-tensor fixture inside a fixed wall-clock budget |
 | Malformed — non-UTF-8 name | A tensor whose name is not UTF-8 matches no block and surfaces as `R1_UNASSIGNED_TENSOR` with an escaped, bounded detail; the document stays valid JSON | `check_coverage` | `invalid-utf8-name`, whose document is parsed with Python's `json` |
 | Malformed — JSON safety | Every container-supplied string reaching the document goes through `json_string` | `render_*` | `wire-escapes` |
 | Early exit | On any failure, derivation stops immediately and `blocks` holds exactly the blocks completed before it | guard returns | `ir-partial`: a failure injected at layer 1 of 2 asserts the exact block count |
@@ -1074,8 +1125,8 @@ general.file_type                           UINT32   15
 general.quantization_version                UINT32   2
 qwen2.block_count                           UINT32   2
 qwen2.context_length                        UINT32   512
-qwen2.embedding_length                      UINT32   64
-qwen2.feed_forward_length                   UINT32   128
+qwen2.embedding_length                      UINT32   256
+qwen2.feed_forward_length                   UINT32   512
 qwen2.attention.head_count                  UINT32   4
 qwen2.attention.head_count_kv               UINT32   2
 qwen2.rope.freq_base                        FLOAT32  1000000.0
@@ -1083,19 +1134,25 @@ qwen2.attention.layer_norm_rms_epsilon      FLOAT32  1e-06
 tokenizer.ggml.tokens                       ARRAY of STRING, length 32
 ```
 
-giving `head_dim = 16`, `n_vocab = 32`, `n_expert = 0`, and 27 tensors: `token_embd.weight`,
+giving `head_dim = 64`, `n_vocab = 32`, `n_expert = 0`, and 27 tensors: `token_embd.weight`,
 `output_norm.weight`, `output.weight`, and 12 per layer for 2 layers. Shapes follow section 2.5.8
-exactly, so `token_embd.weight` is `[64, 32]`, `blk.L.attn_k.weight` is `[64, 32]`,
-`blk.L.ffn_gate.weight` is `[64, 128]`, and `blk.L.ffn_down.weight` is `[128, 64]`.
+exactly, so `token_embd.weight` is `[256, 32]`, `blk.L.attn_k.weight` is `[256, 128]`,
+`blk.L.ffn_gate.weight` is `[256, 512]`, and `blk.L.ffn_down.weight` is `[512, 256]`.
+
+`n_embd` and `n_ff` are multiples of 256 because that is what section 2.5.7's **row** invariant
+requires of every quantized tensor's first axis, and 256 is the widest block in the table. `n_ff`
+stays distinct from `n_embd` so that a transposed `ffn_down` remains a test failure, and `n_vocab`
+stays 32 so the file remains well under 1 MiB.
 
 Quantization types are mixed on purpose: norms and biases are `F32`; `attn_q.weight`,
 `attn_k.weight`, `ffn_gate.weight`, and `token_embd.weight` are `Q4_K`; `attn_v.weight`,
 `ffn_down.weight`, and `output.weight` are `Q6_K`; `attn_output.weight` is `Q8_0`;
 `ffn_up.weight` is `Q4_0`. That exercises a 256-element K-block, a 32-element legacy block, and a
 1-element unquantized type in one file, and gives `quant.type_counts` five ascending rows. Every
-quantized tensor's element count is a multiple of its block size — `64 * 64 = 4096`,
-`64 * 32 = 2048`, `64 * 128 = 8192` are all multiples of 256 — so the fixture is representable
-rather than contrived.
+quantized tensor's **first axis** is a multiple of its block size — 256 for every weight but
+`ffn_down`, whose first axis is `n_ff = 512` — so the fixture is representable rather than
+contrived, and every resulting byte size is a multiple of the 32-byte container alignment, which is
+what keeps a contiguous data section alignment-correct.
 
 The generator computes each tensor's `nbytes`, lays the data section out contiguously in tensor-table
 order at aligned offsets, and sets the file length so that `data_offset + Σ nbytes == file_size`
@@ -1126,16 +1183,23 @@ and `error_detail`, both computed by the generator from the bytes it wrote:
 | `qwen2-moe.gguf` | `qwen2.expert_count = 4` | `R1_UNSUPPORTED_MOE`, detail `4` |
 | `qwen2-duplicate.gguf` | two `blk.0.attn_norm.weight` entries | `R1_DUPLICATE_TENSOR` |
 | `qwen2-unknown-type.gguf` | one tensor with `ggml_type` 21, one with 199 | `R1_UNKNOWN_TENSOR_TYPE`, detail `21` |
-| `qwen2-unaligned.gguf` | a `Q4_K` tensor with 100 elements | `R1_TENSOR_SHAPE_UNALIGNED` |
+| `qwen2-scaling-invalid-utf8.gguf` | `qwen2.rope.scaling.type` present as a `STRING` whose bytes are not UTF-8 | `R1_KEY_TYPE_MISMATCH`, detail the key |
+| `qwen2-unaligned.gguf` | `token_embd.weight` (`Q4_K`) with `dims[0] = 33` | `R1_TENSOR_SHAPE_UNALIGNED` |
+| `qwen2-row-unaligned.gguf` | `token_embd.weight` (`Q4_K`) reshaped to `[128, 64]`: 8,192 elements, a clean multiple of the 256-element block, with a first axis that is not | `R1_TENSOR_SHAPE_UNALIGNED`. The discriminating case for the row rule |
 | `qwen2-overflow-dims.gguf` | an `F32` tensor with dims `[2^31, 2^31, 2^31]`, so the element product alone exceeds `i64` | `R1_SIZE_OVERFLOW` |
 | `qwen2-overflow-total.gguf` | two `F32` tensors of dims `[2^30, 2^30]`: each `nbytes` is `2^62` and representable, their sum is `2^63` and is not | `R1_SIZE_OVERFLOW` |
 | `qwen2-missing-tensor.gguf` | no `blk.1.ffn_up.weight` | `R1_MISSING_TENSOR` |
 | `qwen2-bad-shape.gguf` | `blk.0.attn_q.weight` as `[64, 63]` | `R1_TENSOR_SHAPE_UNEXPECTED` |
 | `qwen2-vocab-mismatch.gguf` | `tokenizer.ggml.tokens` length 31 against `token_embd` `dims[1] = 32` | `R1_VOCAB_MISMATCH`, detail `31!=32` |
+| `qwen2-vocab-zero.gguf` | `token_embd.weight` reshaped to `[n_embd, 0]`, which matches its own derived expectation | `R1_TENSOR_SHAPE_UNEXPECTED`, detail `token_embd.weight` |
+| `qwen2-vocab-implausible.gguf` | `token_embd.weight` `dims[1] = 2^30` | `R1_TENSOR_SHAPE_UNEXPECTED`, detail `token_embd.weight` |
 | `qwen2-extra-tensor.gguf` | an extra `blk.9.attn_q.weight` beyond `n_layer` | `R1_UNASSIGNED_TENSOR` |
 | `qwen2-invalid-name.gguf` | a tensor name containing `0xFF` | `R1_UNASSIGNED_TENSOR`, escaped bounded detail |
+| `qwen2-many-tensors.gguf` | 50,000 zero-extent junk tensors on a one-layer model | `R1_UNASSIGNED_TENSOR`; `coverage.unassigned_tensors` holds exactly `MAX_UNASSIGNED_REPORTED` names, and the derivation must finish inside the `bounded-work` budget |
+| `qwen2-long-name.gguf` | an unassigned tensor whose name is 100 three-byte scalars | `R1_UNASSIGNED_TENSOR`, detail truncated to 255 bytes at a scalar boundary rather than 256 |
 | `qwen2-size-sum.gguf` | 64 extra trailing bytes past the data section | `R1_SIZE_SUM_MISMATCH`, detail `A!=B` |
 | `qwen2-nonfinite.gguf` | `qwen2.rope.freq_base` as an infinity | `status: "ok"`, `freq_base: null`, `freq_base_bits: "7f800000"` |
+| `qwen2-dup-arch.gguf` | `general.architecture` declared twice, `"qwen2"` then `"llama"` | `status: "ok"`, `arch: "qwen2"`: the first occurrence wins, as it does for every other key |
 
 Plus the four precedence pairs named in section 3.2, each asserting the earlier code.
 
@@ -1174,8 +1238,13 @@ computed from inside the program on every input, real or synthetic. Four propert
 1. **It is not self-referential.** `data_offset` comes from the container walk, `file_size` from
    `f.len()`, and each `nbytes` from the declared dimensions and the independent geometry table. No
    term is derived from another.
-2. **It catches the failure modes that matter.** A wrong `block_size` or `type_bytes`, a transposed
-   dimension, a missed tensor, a double-counted tensor, and a misread `n_dims` all move the sum.
+2. **It catches the failure modes that matter — but not every one.** A wrong `block_size` or
+   `type_bytes`, a transposed dimension, a missed tensor, a double-counted tensor, and a misread
+   `n_dims` all move the sum. It does **not** catch a tensor whose first axis is not a multiple of
+   its block size: the element-product formula and the row formula of section 2.5.7 agree on the
+   total whenever the row count divides evenly, so an oracle-passing corpus can still contain
+   tensors GGML would refuse to store. That is why the row rule is a step-8 guard and not an
+   inference from this sum, and why `qwen2-row-unaligned` exists.
 3. **It is exact, not a bound.** GGUF's data section is exactly the concatenation of the tensors at
    their declared offsets, with alignment padding accounted for by `data_offset`. On the reference
    model `5,953,536 + 4,677,120,000 = 4,683,073,536`, which is the file's byte length to the byte.
@@ -1300,7 +1369,9 @@ The parity runner asserts the bound; the smoke asserts the exact value on single
 
 R1 makes **no performance claim**. Wall-clock duration is recorded by the parity runner as a
 diagnostic so a later regression is visible, but no threshold is asserted and no baseline is
-established. Under `CLAUDE.md` a speed claim would require a reproducible benchmark and a named
+established. The one wall-clock assertion in the repository — the `bounded-work` budget of section
+3.2 — is a complexity guard and not a performance target: it sits about sixty times above the
+measured time and can only fail if a scan that is quadratic in the tensor count returns. Under `CLAUDE.md` a speed claim would require a reproducible benchmark and a named
 baseline; R1 has neither and does not pretend to. In particular, section 2.3.6's discarded rendering
 work and section 2.7's per-lookup string allocations are recorded as known, bounded costs — not as
 regressions to be optimized before there is a measurement that says they matter.
@@ -1413,7 +1484,7 @@ and consumer change together. This document does not edit that file.
 | 27 | section 5.1, fourth paragraph (`:946-948`) | "First, a caller needing the full 152,064-entry token array cannot get it from the section 2.4 document; it will call a future `gguf.read_string_array(path, key)` that R1 owns." | Replace with: "First, a caller needing the full 152,064-entry token array cannot get it from the section 2.4 document, and R1 does not add one: `docs/specs/r1-qwen-model-ir.md` section 5.2 keeps the tokenizer out of scope precisely so that Request 22 stays non-blocking. A `gguf.read_string_array(path, key)` becomes possible when Request 22 merges, and is owned by the tokenizer capability, not by R1." |
 | 28 | section 1.3, second bullet, and section 2.5.4 | "No dequantization. No GGML block format is unpacked. The tensor `type` field is reported as an id and a name; its element layout, block size, and scale encoding are R2 concerns." | Amend the last clause to: "…its scale encoding and element layout are R2 concerns. Its **block geometry** — elements per block and bytes per block — is exposed by this module as `ggml_block_size` / `ggml_type_size` (`docs/specs/r1-qwen-model-ir.md` section 2.5.7), because both R1 and R2 need it and duplicating a GGML table into each frontend would be worse than owning it beside `ggml_type_name`. No block is unpacked and no scale is read; the non-goal is otherwise unchanged." |
 | 29 | section 2.5.3, allocation table row (`:537`) | "\| decoded `string` values \| the owning `GgufKv` / `GgufTensor` record \| one per retained text value \| with the record \|" | Replace the owner cell with: "the `KvRow` / `TensorRow` value, which is private and short-lived; retained text reaches a caller either inside `GgufInspection.document` or inside a `GgufTable` stream". |
-| 30 | section 2.5.4, the public-API block (`:551-569`) | The block lists only `GgufStatus`, `GgufInspection`, and `pub fn inspect`. | Extend it with the section 2.3.2 surface — `GgufTable`, `read_table`, the nine accessors, and the two geometry functions — and add the sentence: "`inspect` and `read_table` are two walks over one decoder; `docs/specs/r1-qwen-model-ir.md` section 2.3.6 records why they cannot share a walk function at this pin and the `table-inspect-parity` regression that keeps them from drifting." |
+| 30 | section 2.5.4, the public-API block (`:551-569`) | The block lists only `GgufStatus`, `GgufInspection`, and `pub fn inspect`. | Extend it with the section 2.3.2 surface — `GgufTable`, `read_table`, the ten accessors, the two geometry functions, and `json_string` — and add the sentence: "`inspect` and `read_table` are two walks over one decoder; `docs/specs/r1-qwen-model-ir.md` section 2.3.6 records why they cannot share a walk function at this pin and the `table-inspect-parity` regression that keeps them from drifting." |
 
 Items 25 through 27 correct claims about a consumer contract. Item 28 narrows a non-goal that would
 otherwise be violated by an obviously correct change. Items 29 and 30 correct the ownership table
@@ -1441,3 +1512,118 @@ deferral, and none changes `R1_MODEL_IR`'s `schema_version`.
 | 10 | 2.6 | **Duplicate detection skips a name that is not valid UTF-8.** Such a name is a zero-length span, so two undecodable names would otherwise collide as duplicates of each other. An invalid name is surfaced by the coverage step instead, which is where section 3.2 already puts it, and its `error_detail` is the empty string | `src/gguf.align` `name_valid` column | `qwen2-invalid-name`, `qwen2-duplicate` |
 | 11 | 3.1, 3.2 | **The 3- and 4-axis half of `tensor-dims` is closed behaviourally.** A qwen2 Model IR never assigns a tensor with more than two axes, so `dims` for a 3- or 4-dimension tensor cannot appear in an `R1_MODEL_IR` block. The third and fourth dimension columns are proved instead by `qwen2-overflow-dims` and `qwen2-overflow-dims4`, whose element product overflows only if `tensor_dim2` and `tensor_dim3` feed it, together with the `--inspect-gguf` dims assertion the same cases make over the identical column source | section 2.5.8's shape table admits only 1- and 2-axis tensors | `qwen2-overflow-dims`, `qwen2-overflow-dims4` |
 | 12 | 2.7 | **The accessor budget is about 40 lookups, not 16.** The two-pass validation of item 9 probes `kv_type` for each required key twice and for each optional key up to twice, on top of the value reads section 2.7 counted. Each probe is one linear scan of at most `kv_count` entries with no allocation, and only the `Option<string>` accessors allocate. Section 4.5 makes no performance claim and this changes none | `src/frontend_qwen.align` | `bytes_read` bound; the descriptor-budget run |
+| 13 | 2.5.7, 2.6, 4.1, 4.3 | **The block invariant is per row, not per tensor.** `nbytes = (n_elements / block_size) * type_bytes` with `n_elements % block_size == 0` is not GGML's rule. `ggml_row_size` requires `ne0 % blck_size == 0` and sizes a row as `type_size * ne0 / blck_size`, so a tensor's size is that row size times its row count. The two formulas agree on every tensor GGML will store and disagree about *which* tensors those are: a Q6_K `[64, 64]` tensor is 4,096 elements, a clean multiple of 256, and is unrepresentable. Step 8 now tests `dims[0] % block_size != 0` before the element product, `tensor_nbytes` takes the row extent, and the positive corpus was reshaped to `n_embd = 256`, `n_ff = 512` so every quantized tensor's first axis is a block multiple | before the fix the shipped `qwen2-full` fixture was accepted `status: "ok"` with `token_embd.weight` `Q4_K [128, 32]` — first axis 128, block size 256 — sized 2,304 bytes, and a crafted Q6_K `[64, 64]` tensor was sized 3,360 bytes against `ggml_row_size`'s 3,328; after it both are `R1_TENSOR_SHAPE_UNALIGNED` with no byte size computed | `qwen2-row-unaligned` (product-aligned, row-unaligned), `qwen2-unaligned`, and the whole reshaped positive corpus |
+| 14 | 2.5.3, 2.6 | **`n_vocab` gains a `[1, MAX_VOCAB]` bound.** It is the one derived value the step-10 shape contract cannot falsify, because `token_embd.weight`'s expected shape is built from the dimension that tensor declares: `[n_embd, 0]` matched its own expectation and produced a `status: "ok"` Model IR with a zero-token vocabulary. The bound is checked in step 9 between the derivation and the `tokenizer.ggml.tokens` cross-check, and reports `R1_TENSOR_SHAPE_UNEXPECTED` with detail `token_embd.weight` — the row that already owns a wrong tensor shape and, like `R1_MISSING_TENSOR`, already spans steps 9 and 10 | `MAX_VOCAB` 4,194,304 against the reference model's 152,064 | `qwen2-vocab-zero`, `qwen2-vocab-implausible` |
+| 15 | 2.7, 2.8, 3.2 | **Duplicate detection, block-member lookup, and the coverage sweep are bounded work.** All three were quadratic in `tensor_count`: `find_tensor` ran per tensor inside the step-8 loop and per block member, and the coverage sweep scanned the claim list per tensor. A file declaring many tensors therefore cost time in the tensor count squared. All three now go through one **tensor-name index** — an `array<i64>` packing a 42-bit FNV-1a name hash above a 21-bit tensor index, built once and sorted once by the language's stable `O(n log n)` `sort()` — plus a sorted claim list merged with one cursor. Lookup semantics are unchanged: equal hashes form one run ordered by ascending index and every candidate is confirmed by an exact name comparison, so the answer is the same first occurrence `gguf.find_tensor` returns. The per-tensor position of the duplicate rule is preserved by comparing the file-order index against the one index the pre-pass reported | measured on this host with crafted junk containers, unchanged compiler and flags: 100,000 tensors 26.75 s -> 0.09 s; 200,000 tensors 87.25 s -> 0.18 s, against `--inspect-gguf`'s 0.86 s on the same 200,000-tensor file. Section 4.5 still makes no timing claim; this is a bound, not an optimization claim | `bounded-work` on `qwen2-many-tensors` (50,015 tensors, 3 s budget against a measured 0.05 s) |
+| 16 | 2.5.3, 2.6 | **A present but undecodable `qwen2.rope.scaling.type` is rejected, not reported as `null`.** `kv_string` returns `None` both for an absent key and for a `STRING` whose bytes are not valid UTF-8, so the document said `scaling_type: null` for a container that had supplied something this frontend cannot repeat. `null` is now reserved for absence, and the undecodable case is `R1_KEY_TYPE_MISMATCH` in step 5's type pass with the key as its detail. Adding a `scaling_type_invalid_utf8` field was rejected: section 2.5 makes any field addition a `schema_version` bump, and the fact is a defect rather than a reportable value | `src/gguf.align` `kv_has_text` | `qwen2-scaling-invalid-utf8` |
+| 17 | 2.3.2, 6 | **A repeated `general.architecture` resolves to its first occurrence.** `read_table` and `inspect` both overwrote the field on every matching pair, so a container declaring the key twice described one model to `GgufTable.architecture` and another to `find_key`, which has always returned the first match. Both walks now keep the first occurrence, which makes the rule uniform across the whole surface. `general.alignment` is deliberately unchanged: its handler is a validating one, and silently ignoring a malformed second declaration would turn an R0 rejection into an omission | `src/gguf.align:1148`, `:1569` | `qwen2-dup-arch`, a positive fixture that derives `arch: "qwen2"` from a file whose second architecture key says `llama` |
+| 18 | 2.6, 3.2 | **Step 12's `R1_SIZE_OVERFLOW` branch is unreachable and is retained as a defensive guard.** Step 11 admits only the `12 * n_layer + 3` tensors of section 2.5.8, and item 14 bounds the last unbounded shape input, so every tensor reaching step 12 has a shape bounded by section 2.6's thresholds and `total_tensor_bytes` cannot exceed roughly `2^58`. The `qwen2-overflow-oracle` fixture reached that branch only because `n_vocab` was unbounded — its existence was itself evidence of the gap item 14 closes — and it is replaced by the two bound fixtures. The guard, its `data_offset` detail (item 7), and the distinction between "too large to add" and "does not add up" all stand | the arithmetic bound above | none; this closure cell is closed by the argument, and the three reachable overflow guards keep `qwen2-overflow-dims`, `-dims4`, `-nbytes`, and `-total` |
+| 19 | 2.6 | **A block member's end offset is formed non-wrappingly.** `absolute + nbytes` was the one sum in the module written without its guard. `nbytes` is bounded only by the step-8 running total, so a near-maximal size could wrap `end_absolute_offset` negative and report a block ending before it starts. It now saturates at `I64_MAX` | the class audit `docs/specs/r0-gguf-inspection.md` section 6 item 15 forced on R0 | `make check`; the whole positive corpus, whose offsets are unaffected |
+| 20 | 2.5.3, and `docs/specs/r0-gguf-inspection.md` 2.4.3 | **`write_float` does use exponent notation.** Both plans and the `kv_float_text` doc comment claimed it never does, and that a near-maximal `f32` renders as a 39-digit decimal. Rust's `f32` `Display` renders `1e-45` and `3.4028235e+38`, which the decoder reproduces verbatim. Nothing depends on the false half of the claim — every comparison in section 4 is on the bits — but the sentence is what a reader would rely on, so it is corrected in all three places and `docs/specs/r0-gguf-inspection.md` section 6 gains item 31 | a FLOAT32 fixture with bit patterns `0x00000001` and `0x7f7fffff` rendered `1e-45` and `3.4028235e+38` through `--inspect-gguf` | `float-bits`, which compares bit patterns and is unaffected |
+| 21 | 2.4, 4.4 | **Two runner and summary details.** The summary block's `blocks:` line prints the number of blocks assembled before a failure, so it is `0` and not `-1` on a file that never reached assembly; section 2.4 said every underived field prints `-1`. And `scripts/run-model-ir-parity` now runs the reference under a 300-second `timeout` (or `gtimeout`, skipped when the host has neither) inside a subshell with `ulimit -f 16384`, so the 461 MB / 300 s failure item 6 records cannot be recreated from inside the runner by a future reference build | item 6's observation; `src/main.align:570` | `model-ir-smoke` summary assertions; `make model-ir-parity` |
+
+## 8. Closure cell to shipped case
+
+Section 3 was written before implementation and names cells by contract; `scripts/run-model-ir-smoke`
+and `scripts/gguf_fixture.py` name cases by fixture. This table is the mapping, in section order, so
+a reviewer can move from a closure cell to the evidence that closes it without searching. It follows
+`docs/specs/r0-gguf-inspection.md` section 6.2, and unlike that table it lists **every** cell,
+including the ones whose names already match, so that a missing row is a visible gap rather than an
+implied match.
+
+### 8.1 Section 3.1 — `src/gguf.align`
+
+| Section 3.1 cell | Shipped evidence |
+| --- | --- |
+| Construction — table | `qwen2-bad-magic`, whose `table_sentinels` assert `tensor_count 0`, `metadata_kv_count 0`, `gguf_version -1` and `blocks_len 0` (section 7 item 3) |
+| Construction — columns | every positive case: `source.tensor_count` / `source.metadata_kv_count` are the column lengths, compared against the generator's own counts |
+| Column/stream agreement | the per-case `table_inspect_parity` name/offset/type/dims comparison, which reads every span back out through both walks |
+| Success — decoder reuse | `table_inspect_parity`, run on all 49 R1 fixtures and all 62 R0 fixtures |
+| Success — text spans | `qwen2-wire-escapes` and `qwen2-arch-escapes`, plus every document being parsed with Python's `json` |
+| Success — float columns | `qwen2-full` (`rms_eps_bits`, `freq_base_bits` against `struct.pack`), `qwen2-nonfinite`, `qwen2-nan` |
+| Success — dimension columns | `qwen2-full` (1- and 2-axis tensors) and the `inspect_dims` assertions on `qwen2-overflow-dims` / `qwen2-overflow-dims4` (section 7 item 11) |
+| Success — lookup | `qwen2-missing-tensor` and `qwen2-missing-embd` for the `-1` answer; `qwen2-invalid-key` and `qwen2-invalid-name` for a name or key that is not valid UTF-8 never matching |
+| Success — geometry table | `qwen2-geometry`, one tensor per listed id with a generator-computed `nbytes`, plus `qwen2-unknown-type` (21, 199) and `qwen2-unknown-type-removed` (5) |
+| Failure — container | the 62 R0 fixtures re-run through `--model-ir`, each asserting `R1_GGUF_ERROR` with the container's own code |
+| Failure — OS | `missing-path` and `denied-path` in the runner |
+| Malformed — accessor class | `qwen2-key-type`, `qwen2-expert-type`, `qwen2-scaling-invalid-utf8`, and `qwen2-tokens-scalar` |
+| Early exit | `qwen2-partial-kv` (3 of 12 pairs) and `qwen2-partial-tensor` (2 of 27 entries) |
+| Cleanup | the 64-iteration repeat loop and the `ulimit -n 64` descriptor-budget run |
+| Branch joins | `qwen2-bad-magic` and the column-length assertions on every positive case |
+| Loop joins | the R0 `empty-container` fixture re-run through `--model-ir`, which reaches `R1_UNSUPPORTED_ARCH` |
+| Move-out | every case asserts a complete document for both statuses; ownership reviewed against `docs/specs/c8-speed-first.md` section 2.8 |
+| Borrow discipline | `make check`; section 7 item 1 records the probe |
+| Bounds precondition | the R0 truncation corpus re-run through `--model-ir`, asserting a recorded code and an exit inside `[1, 125]` |
+| Generic monomorphization | `N/A`: the surface declares no generic type or function |
+| Shared/process-global state | the 64-iteration repeat loop |
+| Concurrency | `N/A`: read-only, no lock |
+| Per-unit vs whole-program | `gmake check` (`check-per-unit`, 25 units) and `gmake build` |
+
+### 8.2 Section 3.2 — `src/frontend_qwen.align`
+
+| Section 3.2 cell | Shipped evidence |
+| --- | --- |
+| Construction — result | `qwen2-wrong-arch`, whose `model_sentinels` assert each unreached field |
+| Construction — table intake | the 62 R0 fixtures, each asserting `R1_GGUF_ERROR` with the container code as `error_detail` |
+| Success — hyperparameters | `qwen2-full`'s `model` block, compared field by field against generator-declared golden values |
+| Success — derivation | `qwen2-full` (`head_dim`, `dim_count_source: "derived"`) and `qwen2-rope-dim` (`dim_count_source: "metadata"`) |
+| Success — optional keys | `qwen2-full` (absent expert count and scaling type) and `qwen2-rope-dim` (both present) |
+| Success — geometry pass | `qwen2-geometry` and `qwen2-full`, whose every `n_elements` / `block_size` / `type_bytes` / `nbytes` is generator-computed |
+| Success — block assembly | `qwen2-full`: block kinds, indexes, layers, roles, and names against the section 2.5.8 emission order |
+| Success — block arithmetic | `qwen2-full` and `qwen2-permuted`, the latter asserting at least one non-contiguous block |
+| Success — tied embedding | `qwen2-tied`, asserting two blocks name `token_embd.weight` under roles `output` and `token_embd`, and that the oracle still holds |
+| Success — quant summary | `qwen2-full`: five ascending rows whose `bytes` sum to `total_tensor_bytes` and whose `tensor_count` sums to the table |
+| Success — coverage | the `size-sum-oracle` assertions on every positive case |
+| Failure — every error code | the negative corpus, one fixture per reachable section 2.6 row: `qwen2-bad-magic`, `-wrong-arch`, `-missing-key`, `-key-type`, `-scaling-invalid-utf8`, `-implausible`, `-moe`, `-duplicate`, `-unknown-type`, `-unaligned`, `-row-unaligned`, `-overflow-dims`, `-missing-tensor`, `-bad-shape`, `-vocab-zero`, `-vocab-mismatch`, `-extra-tensor`, `-size-sum` |
+| Failure — precedence | `qwen2-precedence-arch-key`, `-precedence-key-shape`, `-precedence-type-sum`, `-precedence-duplicate-unassigned` |
+| Failure — overflow class | `qwen2-overflow-dims`, `-overflow-dims4`, `-overflow-nbytes`, `-overflow-total`. The oracle-sum row is closed by the argument in section 7 item 18, not by a fixture |
+| Malformed — non-UTF-8 name | `qwen2-invalid-name`, whose document is parsed with Python's `json` and whose detail is the empty string (section 7 item 10) |
+| Malformed — JSON safety | `qwen2-wire-escapes`; every document in both corpora is parsed with Python's `json` |
+| Early exit | the `blocks_len` assertions on `qwen2-missing-tensor` (4), `qwen2-bad-shape` (1), `qwen2-missing-embd` (0), `qwen2-vocab-zero` (0) |
+| Early exit — no side effect | `untouched-destination` on the argument and OS-failure paths |
+| Cleanup | the 64-iteration repeat loop under the descriptor budget |
+| Branch joins | every case asserts a complete, parseable document for both statuses |
+| Loop joins | `qwen2-zero-layer` (`R1_KEY_VALUE_IMPLAUSIBLE`, never an empty success) |
+| Move-out | the same complete-document assertion on both statuses |
+| Bounded work | `bounded-work` on `qwen2-many-tensors` (section 7 item 15) |
+| `KVBlock` / `DequantBlock` | `N/A`: neither is backed by a file tensor |
+| `ExpertBlock` / `RouterBlock` | `qwen2-moe` asserts `R1_UNSUPPORTED_MOE`; the frontend is `DEFERRED` to section 5.1 |
+| Generic monomorphization | `N/A`: no generic type or function is declared |
+| Shared/process-global state | the perturbed-environment run |
+| Per-unit vs whole-program | `gmake check`, `gmake build` |
+
+### 8.3 Section 3.3 — `src/main.align`
+
+| Section 3.3 cell | Shipped evidence |
+| --- | --- |
+| Construction — dispatch | the arity block: 1, 2, 3, 4, and 5 arguments |
+| Construction — path validation | the empty and 4,097-byte path runs, each asserting no destination file was created |
+| Success — one operand | the per-case stdout run, parsed as JSON |
+| Success — two operands | the per-case two-operand run, which is the primary assertion path |
+| Byte identity across forms | the per-case byte comparison of stdout against the written document plus one newline |
+| Summary block | the `SUMMARY_LABELS` positional check on every case, plus `qwen2-arch-escapes`'s `summary_arch` / `summary_detail` and the assertion that the detail occupies exactly one line |
+| Failure mapping | every negative case asserts a nonzero exit and a complete parseable failure document; `qwen2-wrong-arch` additionally replaces a sentinel file |
+| Failure — OS | `missing-path`; `denied-path`, which prints an explicit `SKIPPED` note under `root` |
+| Early exit | the arity and path runs assert empty stdout |
+| Unknown-selector compatibility | `--not-a-mode` still prints help and exits 0; `--inspect-gguf` still emits `R0_GGUF_INSPECTION`; the full `gguf-smoke` run |
+| Option/environment isolation | the perturbed-environment run (locale, `TZ`, `HOME`, `SOURCE_DATE_EPOCH`, two invented `ALIGN_LLM_*` variables) |
+| Help text | the no-argument run, which must name `--model-ir` |
+| Cleanup | `N/A`: the arm owns no resource beyond the `QwenModelIr` record |
+
+### 8.4 Section 3.4 — `Makefile` and `scripts/`
+
+| Section 3.4 cell | Shipped evidence |
+| --- | --- |
+| Target definition | `gmake model-ir-smoke` from a clean tree |
+| Aggregate membership | `model-ir-smoke` is in `HOSTED_CHECK_TARGETS`; `gmake gate-topology-check` |
+| Topology consistency | `python3 scripts/check-gate-topology` |
+| Qualification exclusion | `gmake gate-topology-check` asserts `model-ir-parity` is in neither list |
+| Preflight profile selection | `python3 scripts/pre-pr --plan` names the fresh-image installed profile; the run itself is the evidence |
+| Fixture generation | the runner's repository leak sweep for `*.gguf` and `manifest.json` |
+| Fixture independence | the generator imports nothing from `src/`; its geometry table and every expected `nbytes` are transcribed and computed in Python |
+| Generator compatibility | `gmake gguf-smoke`: 62 fixtures, unchanged |
+| Cleanup | the EXIT trap plus the final assertion that the temporary root still exists |
+| Reference skip | the four exact `N/A` lines of `scripts/run-model-ir-parity`, listed in `docs/align-development.md` |
+| Reference isolation | the size and `mtime` comparison around the run, plus the `ulimit -f` log cap (section 7 item 21) |
+| Parse failure fails closed | the runner's own required-key and conflicting-value checks, which exit nonzero rather than skipping |
+| Documentation | `docs/specs/roadmap.md` section R1, `HANDOFF.md`, and the `docs/specs/r0-gguf-inspection.md` section 6 items 25-31 |

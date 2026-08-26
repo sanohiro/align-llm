@@ -1145,7 +1145,11 @@ pub fn inspect(path: str) -> Result<GgufInspection, Error> {
               Err(detected) => { failure = detected },
             }
           }
-          if row.key_valid && key_view == "general.architecture" && row.value_type == 8 && row.text_valid {
+          // The **first** occurrence wins, which is the same rule `find_key` applies to every other
+          // key: a container that repeats `general.architecture` must not describe one model to the
+          // accessors and another to this field.
+          if row.key_valid && !w.architecture_present && key_view == "general.architecture"
+            && row.value_type == 8 && row.text_valid {
             w.architecture = row.text.clone()
             w.architecture_present = true
           }
@@ -1413,8 +1417,10 @@ pub fn kv_string(borrow t: GgufTable, key: str) -> Option<string> {
   return Some(t.texts[t.kv_text_starts[index]..t.kv_text_ends[index]].clone())
 }
 
-// The `write_float` rendering of a float value, which is exact and round-trips but never uses
-// exponent notation. A non-finite float has no text; its bit pattern remains authoritative.
+// The `write_float` rendering of a float value. It is exact and round-trips, but it is not a stable
+// string to compare across tools: an `f32` at the extremes renders in exponent notation (`1e-45`,
+// `3.4028235e+38`) while a mid-range value does not. A non-finite float has no text; in every case
+// the bit pattern beside it remains authoritative.
 pub fn kv_float_text(borrow t: GgufTable, key: str) -> Option<string> {
   index := find_key(t, key)
   if index < 0 { return None }
@@ -1566,7 +1572,11 @@ pub fn read_table(path: str) -> Result<GgufTable, Error> {
               Err(detected) => { failure = detected },
             }
           }
-          if row.key_valid && key_view == "general.architecture" && row.value_type == 8 && row.text_valid {
+          // The **first** occurrence wins, which is the same rule `find_key` applies to every other
+          // key: a container that repeats `general.architecture` must not describe one model to the
+          // accessors and another to this field.
+          if row.key_valid && !w.architecture_present && key_view == "general.architecture"
+            && row.value_type == 8 && row.text_valid {
             w.architecture = row.text.clone()
             w.architecture_present = true
           }

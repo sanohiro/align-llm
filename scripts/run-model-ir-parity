@@ -71,10 +71,30 @@ end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
 # never terminates. It reaches end-of-input, prints `> `, and repeats that forever, producing an
 # unbounded log. `-n 0` and `--no-warmup` keep the run to a model load plus one empty turn, which is
 # all the comparison needs; the whole invocation finishes in about three seconds.
-"$reference" -m "$model" -v -n 0 --no-warmup -st -p hi \
-  </dev/null >"$temp_dir/reference.log" 2>&1 || {
+#
+# The wall-clock and log-size limits below are the belt to that suspenders: the observed failure
+# without `-st` was 461 MB of log and a 300 s hang, and a future reference build must not be able to
+# recreate it from inside this runner. `ulimit -f` is in 512-byte blocks, so 16,384 caps the log at
+# 8 MiB and a run that exceeds it dies on SIGXFSZ; the recorded build writes 237 KB. `timeout` is
+# used when the host has it (GNU coreutils, `gtimeout` on Homebrew) and skipped otherwise, because a
+# missing optional utility must not turn a qualification into a false failure.
+reference_timeout=""
+if command -v timeout >/dev/null 2>&1; then
+  reference_timeout="timeout 300"
+elif command -v gtimeout >/dev/null 2>&1; then
+  reference_timeout="gtimeout 300"
+fi
+(
+  ulimit -f 16384
+  exec $reference_timeout "$reference" -m "$model" -v -n 0 --no-warmup -st -p hi \
+    </dev/null >"$temp_dir/reference.log" 2>&1
+) || {
   status=$?
-  printf '%s\n' "model ir parity: the reference reader exited $status" >&2
+  if [ "$status" -eq 124 ]; then
+    printf '%s\n' "model ir parity: the reference reader did not finish within 300 s" >&2
+  else
+    printf '%s\n' "model ir parity: the reference reader exited $status" >&2
+  fi
   tail -20 "$temp_dir/reference.log" >&2 || true
   exit 1
 }

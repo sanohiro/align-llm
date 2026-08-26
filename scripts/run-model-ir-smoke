@@ -33,6 +33,7 @@ import os
 import struct
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 binary, fixture_dir, work_dir = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
@@ -69,6 +70,12 @@ BLOCK_TENSOR_ORDER = [
     "name", "role", "type", "type_name", "n_dims", "dims", "n_elements",
     "block_size", "type_bytes", "nbytes", "offset", "absolute_offset",
 ]
+# `bounded-work`: the tensor-name index makes duplicate detection and the coverage sweep
+# `O(n log n)`. The 50,015-tensor fixture derives in about 0.05 s with it and cost roughly 6.7 s
+# without it — and a 200,000-tensor file cost 87 s — so this budget is ~60x the measured time and
+# still well under the quadratic cost it guards against.
+BOUNDED_WORK_SECONDS = 3.0
+
 SUMMARY_LABELS = [
     "qwen model ir:", "status:", None, "arch:", None, "layers:", None, "embd:", None,
     "heads:", None, "heads kv:", None, "head dim:", None, "ff:", None, "vocab:", None,
@@ -188,7 +195,12 @@ for case in manifest["model_ir_cases"]:
     name = case["name"]
     model = fixture_dir / case["file"]
     destination = work_dir / (name + ".model-ir.json")
+    started = time.monotonic()
     result = run(["--model-ir", str(model), str(destination)])
+    elapsed = time.monotonic() - started
+    if case.get("bounded_work") and elapsed > BOUNDED_WORK_SECONDS:
+        fail("bounded-work %s: the derivation took %.2f s, budget %.2f s"
+             % (name, elapsed, BOUNDED_WORK_SECONDS))
     expected_exit = case["exit"]
     if expected_exit == 0 and result.returncode != 0:
         fail("%s: exit %d, expected 0 (stderr %r)" % (name, result.returncode, result.stderr))
@@ -248,6 +260,16 @@ for case in manifest["model_ir_cases"]:
         if document["coverage"]["unassigned_tensors"] != case["unassigned"]:
             fail("%s: unassigned_tensors %r, expected %r"
                  % (name, document["coverage"]["unassigned_tensors"], case["unassigned"]))
+    # `MAX_UNASSIGNED_REPORTED`: the report is capped, so a document cannot grow with the size of
+    # the defect, while `coverage` still accounts for every tensor.
+    if "unassigned_total" in case:
+        coverage_block = document["coverage"]
+        missed = coverage_block["tensor_count"] - coverage_block["assigned_tensor_count"]
+        if missed != case["unassigned_total"]:
+            fail("%s: %d tensors unassigned, expected %d" % (name, missed, case["unassigned_total"]))
+        if len(coverage_block["unassigned_tensors"]) != 16:
+            fail("%s: %d unassigned names reported, expected the 16-entry cap"
+                 % (name, len(coverage_block["unassigned_tensors"])))
     if "bytes_read" in case and document["source"]["bytes_read"] != case["bytes_read"]:
         fail("%s: bytes_read %d, expected exactly %d"
              % (name, document["source"]["bytes_read"], case["bytes_read"]))

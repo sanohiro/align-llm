@@ -31,8 +31,18 @@ MAX_EMBD := 1048576
 MAX_HEADS := 4096
 MAX_FF := 16777216
 MAX_CONTEXT := 134217728
+MAX_VOCAB := 4194304
 MAX_UNASSIGNED_REPORTED := 16
 MAX_DETAIL_BYTES := 256
+
+// The tensor-name index of `name_index`: one ascending `array<i64>` whose entries pack a 42-bit
+// name hash above a 21-bit tensor index. `MAX_TENSORS` (`src/gguf.align:30`) is 1,048,576, so every
+// index fits in 21 bits and the widest packed entry is exactly `I64_MAX`, never negative.
+NAME_INDEX_BITS := 21
+NAME_INDEX_MASK := 2097151
+NAME_HASH_MASK := 4398046511103
+NAME_HASH_SEED := -3750763034362895579
+NAME_HASH_PRIME := 1099511628211
 
 // The one bound that must be named, written as a literal for the same reason `src/gguf.align` does.
 I64_MAX := 9223372036854775807
@@ -140,6 +150,17 @@ fn bounded_detail(value: str) -> string {
     cut = cut - 1
   }
   return value[0..cut].clone()
+}
+
+// A `STRING` value whose bytes are not valid UTF-8 has no decoded text, so `kv_string` returns
+// `None` for it exactly as it does for an absent key. R1 must not conflate the two: reporting an
+// undecodable value as `null` would claim the container said nothing when it said something this
+// frontend cannot repeat.
+fn kv_text_decodable(borrow t: gguf.GgufTable, key: str) -> bool {
+  return match gguf.kv_string(t, key) {
+    Some(_) => true,
+    None => false,
+  }
 }
 
 fn json_text_or_null(value: str, present: bool) -> string {
@@ -271,12 +292,141 @@ fn element_count(d0: i64, d1: i64, d2: i64, d3: i64) -> i64 {
   return product
 }
 
-// The division comes first, so the intermediate is never larger than `n_elements`. `-1` means the
+// GGML's block invariant is per **row**, not per tensor: `ggml_row_size` requires
+// `ne0 % blck_size == 0` and gives one row `type_size * ne0 / blck_size` bytes, so a tensor occupies
+// that row size times its row count. Sizing from the element product alone agrees only when the
+// first axis is itself a multiple of the block size, which `build_model_ir` proves before calling
+// this. Each division comes first, so no intermediate is larger than `n_elements`; `-1` means the
 // byte size is not representable.
-fn tensor_nbytes(n_elements: i64, block_size: i64, type_bytes: i64) -> i64 {
-  blocks := n_elements / block_size
-  if type_bytes > 0 && blocks > I64_MAX / type_bytes { return -1 }
-  return blocks * type_bytes
+fn tensor_nbytes(n_elements: i64, row_extent: i64, block_size: i64, type_bytes: i64) -> i64 {
+  // A zero extent gives a zero element count, and the row count below would divide by it.
+  if n_elements == 0 { return 0 }
+  row_blocks := row_extent / block_size
+  if type_bytes > 0 && row_blocks > I64_MAX / type_bytes { return -1 }
+  row_bytes := row_blocks * type_bytes
+  rows := n_elements / row_extent
+  if rows > 0 && row_bytes > I64_MAX / rows { return -1 }
+  return row_bytes * rows
+}
+
+// 64-bit FNV-1a over the name bytes, folded to 42 bits so a packed entry stays non-negative. The
+// multiplication deliberately wraps — a hash is not an arithmetic result — and the value is only
+// ever a grouping device: every candidate it selects is confirmed by an exact name comparison
+// before it is used, so a collision costs work and never changes an answer.
+fn name_hash(value: str) -> i64 {
+  view := value.bytes()
+  mut accumulator := NAME_HASH_SEED
+  mut at := 0
+  loop {
+    if at >= view.len() { break }
+    accumulator = accumulator ^ (view.u8(at) as i64)
+    accumulator = accumulator * NAME_HASH_PRIME
+    at = at + 1
+  }
+  return (accumulator >> 22) & NAME_HASH_MASK
+}
+
+fn packed_entry(hash: i64, index: i64) -> i64 = (hash << NAME_INDEX_BITS) | index
+
+fn entry_hash(entry: i64) -> i64 = entry >> NAME_INDEX_BITS
+
+fn entry_index(entry: i64) -> i64 = entry & NAME_INDEX_MASK
+
+// One ascending index over every validly named tensor, built once per derivation. `.sort()` is the
+// language's stable `O(n log n)` pipeline sort, so this and every lookup through it are bounded
+// work; the per-tensor `gguf.find_tensor` scan it replaces was quadratic (section 7, item 15). A
+// name that is not valid UTF-8 is deliberately absent: it can never match a lookup, and two
+// undecodable names must not collide as duplicates of each other (section 7, item 10).
+fn name_index(borrow t: gguf.GgufTable) -> array<i64> {
+  mut column: array_builder<i64> := array_builder()
+  mut index := 0
+  loop {
+    if index >= t.tensor_count { break }
+    if t.name_valid[index] != 0 {
+      name := gguf.tensor_name(t, index)
+      name_view: str := name
+      column.push(packed_entry(name_hash(name_view), index))
+    }
+    index = index + 1
+  }
+  raw := column.build()
+  return raw.sort()
+}
+
+// The first index whose name equals `name`, or `-1` — exactly the answer `gguf.find_tensor` gives,
+// in `O(log n)` instead of `O(n)`. Equal hashes sort into one run and, within a run, by ascending
+// index, so the first exact match is the first occurrence in file order.
+fn indexed_tensor(borrow t: gguf.GgufTable, borrow order: array<i64>, name: str) -> i64 {
+  key := name_hash(name)
+  mut lo := 0
+  mut hi := order.len()
+  loop {
+    if lo >= hi { break }
+    mid := lo + (hi - lo) / 2
+    if entry_hash(order[mid]) < key {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  mut at := lo
+  loop {
+    if at >= order.len() { break }
+    if entry_hash(order[at]) != key { break }
+    candidate := entry_index(order[at])
+    candidate_name := gguf.tensor_name(t, candidate)
+    candidate_view: str := candidate_name
+    if candidate_view == name { return candidate }
+    at = at + 1
+  }
+  return -1
+}
+
+// The earliest tensor that repeats an earlier tensor's name, or `-1`. Two equal names share a hash
+// and therefore one contiguous run, so a single pass over the runs replaces the per-tensor lookup.
+// A run is one entry wide unless two distinct names collide, so the pairwise comparison inside it is
+// bounded by the collision width and not by the table size.
+fn first_duplicate(borrow t: gguf.GgufTable, borrow order: array<i64>) -> i64 {
+  mut earliest := -1
+  mut start := 0
+  loop {
+    if start >= order.len() { break }
+    key := entry_hash(order[start])
+    mut end := start + 1
+    loop {
+      if end >= order.len() { break }
+      if entry_hash(order[end]) != key { break }
+      end = end + 1
+    }
+    mut left := start
+    loop {
+      if left >= end { break }
+      mut right := left + 1
+      loop {
+        if right >= end { break }
+        left_name := gguf.tensor_name(t, entry_index(order[left]))
+        right_name := gguf.tensor_name(t, entry_index(order[right]))
+        left_view: str := left_name
+        right_view: str := right_name
+        if left_view == right_view {
+          later := entry_index(order[right])
+          if earliest < 0 || later < earliest { earliest = later }
+        }
+        right = right + 1
+      }
+      left = left + 1
+    }
+    start = end
+  }
+  return earliest
+}
+
+// The bounded `error_detail` for the tensor at `index`, which is the only reason the geometry pass
+// needs a tensor's name at all.
+fn tensor_detail(borrow t: gguf.GgufTable, index: i64) -> string {
+  name := gguf.tensor_name(t, index)
+  name_view: str := name
+  return bounded_detail(name_view)
 }
 
 fn dims_json(n_dims: i64, d0: i64, d1: i64, d2: i64, d3: i64) -> string {
@@ -370,20 +520,6 @@ fn source_json(borrow t: gguf.GgufTable) -> string {
   b.write_int(t.bytes_read)
   b.write("}")
   return b.to_string()
-}
-
-// Whether a member of `claimed` names `index`. The list is the block assembly's record of what it
-// took; a tensor named by two blocks — the tied-embedding case — appears once here and its bytes are
-// counted once in the section 4.3 oracle, which sums over the tensor table rather than over block
-// membership.
-fn claims(borrow claimed: array<i64>, index: i64) -> bool {
-  mut at := 0
-  loop {
-    if at >= claimed.len() { break }
-    if claimed[at] == index { return true }
-    at = at + 1
-  }
-  return false
 }
 
 // The one public entry point. `Err` is returned only for an invalid path argument or an
@@ -507,6 +643,11 @@ pub fn build_model_ir(path: str) -> Result<QwenModelIr, Error> {
     } else if gguf.kv_type(table, "qwen2.rope.scaling.type") >= 0
       && gguf.kv_type(table, "qwen2.rope.scaling.type") != TYPE_STRING {
       mistyped = "qwen2.rope.scaling.type"
+    } else if gguf.kv_type(table, "qwen2.rope.scaling.type") == TYPE_STRING
+      && !kv_text_decodable(table, "qwen2.rope.scaling.type") {
+      // Present, declared `STRING`, and not valid UTF-8. `null` is reserved for "the container did
+      // not supply it", so this is a rejection rather than a silently indistinguishable report.
+      mistyped = "qwen2.rope.scaling.type"
     }
     if mistyped.len() > 0 {
       code = "R1_KEY_TYPE_MISMATCH".clone()
@@ -623,7 +764,13 @@ pub fn build_model_ir(path: str) -> Result<QwenModelIr, Error> {
       break
     }
 
-    // Step 8. The tensor geometry pass, in file order.
+    // Step 8. The tensor geometry pass, in file order. The name index and its duplicate scan are
+    // built once, before the pass: the per-tensor order section 2.6 requires — duplicate name, then
+    // type geometry, then row alignment, then the element product, then the running total — is
+    // preserved by comparing the file-order position against the one index the scan reported, with
+    // no per-tensor lookup at all.
+    order := name_index(table)
+    duplicate_at := first_duplicate(table, order)
     mut nbytes_column: array_builder<i64> := array_builder()
     mut elements_column: array_builder<i64> := array_builder()
     mut running := 0
@@ -631,16 +778,11 @@ pub fn build_model_ir(path: str) -> Result<QwenModelIr, Error> {
     mut index := 0
     loop {
       if index >= table.tensor_count { break }
-      name := gguf.tensor_name(table, index)
-      name_view: str := name
-      if table.name_valid[index] != 0 {
-        duplicate := gguf.find_tensor(table, name_view)
-        if duplicate >= 0 && duplicate != index {
-          code = "R1_DUPLICATE_TENSOR".clone()
-          detail = bounded_detail(name_view)
-          geometry_failed = true
-          break
-        }
+      if index == duplicate_at {
+        code = "R1_DUPLICATE_TENSOR".clone()
+        detail = tensor_detail(table, index)
+        geometry_failed = true
+        break
       }
       type_id := table.tensor_types[index]
       block_size := gguf.ggml_block_size(type_id)
@@ -648,6 +790,17 @@ pub fn build_model_ir(path: str) -> Result<QwenModelIr, Error> {
       if block_size == 0 || type_bytes == 0 {
         code = "R1_UNKNOWN_TENSOR_TYPE".clone()
         detail = int_text(type_id)
+        geometry_failed = true
+        break
+      }
+      // The GGML block invariant is per row: `ne0 % blck_size == 0`. It is strictly stronger than
+      // "the element product is a multiple of the block size" — a Q6_K `[64, 64]` tensor satisfies
+      // the product rule and is still unrepresentable — and it is what makes `tensor_nbytes` agree
+      // with `ggml_row_size` byte for byte.
+      row_extent := table.tensor_dim0[index]
+      if row_extent % block_size != 0 {
+        code = "R1_TENSOR_SHAPE_UNALIGNED".clone()
+        detail = tensor_detail(table, index)
         geometry_failed = true
         break
       }
@@ -659,20 +812,14 @@ pub fn build_model_ir(path: str) -> Result<QwenModelIr, Error> {
       )
       if n_elements < 0 {
         code = "R1_SIZE_OVERFLOW".clone()
-        detail = bounded_detail(name_view)
+        detail = tensor_detail(table, index)
         geometry_failed = true
         break
       }
-      if n_elements % block_size != 0 {
-        code = "R1_TENSOR_SHAPE_UNALIGNED".clone()
-        detail = bounded_detail(name_view)
-        geometry_failed = true
-        break
-      }
-      nbytes := tensor_nbytes(n_elements, block_size, type_bytes)
+      nbytes := tensor_nbytes(n_elements, row_extent, block_size, type_bytes)
       if nbytes < 0 || running > I64_MAX - nbytes {
         code = "R1_SIZE_OVERFLOW".clone()
-        detail = bounded_detail(name_view)
+        detail = tensor_detail(table, index)
         geometry_failed = true
         break
       }
@@ -719,9 +866,11 @@ pub fn build_model_ir(path: str) -> Result<QwenModelIr, Error> {
       type_id = type_id + 1
     }
 
-    // Step 9. `n_vocab` is `dims[1]` of `token_embd.weight`, cross-checked against the declared
-    // length of `tokenizer.ggml.tokens`. R1 reads that array's *length* and nothing else, which is
-    // exactly what keeps Align Request 22 non-blocking.
+    // Step 9. `n_vocab` is `dims[1]` of `token_embd.weight`, bounded, then cross-checked against the
+    // declared length of `tokenizer.ggml.tokens`. R1 reads that array's *length* and nothing else,
+    // which is exactly what keeps Align Request 22 non-blocking. This one lookup stays on the public
+    // accessor: `gguf.find_tensor` is the definition of the lookup semantics `indexed_tensor`
+    // accelerates, it runs once, and every positive fixture exercises both against the same table.
     embd_index := gguf.find_tensor(table, "token_embd.weight")
     if embd_index < 0 {
       code = "R1_MISSING_TENSOR".clone()
@@ -729,6 +878,15 @@ pub fn build_model_ir(path: str) -> Result<QwenModelIr, Error> {
       break
     }
     n_vocab = gguf.tensor_dim(table, embd_index, 1)
+    // `n_vocab` is derived from a tensor dimension, so step 10 cannot falsify it: the expected shape
+    // of `token_embd.weight` is built from the very value that tensor declared, and `[n_embd, 0]`
+    // therefore matches its own expectation exactly. This bound is what makes an implausible
+    // vocabulary a rejection rather than a Model IR no consumer can use.
+    if n_vocab < 1 || n_vocab > MAX_VOCAB {
+      code = "R1_TENSOR_SHAPE_UNEXPECTED".clone()
+      detail = "token_embd.weight".clone()
+      break
+    }
     mut vocab_mismatch := false
     match gguf.kv_array_length(table, "tokenizer.ggml.tokens") {
       Some(declared) => {
@@ -788,12 +946,12 @@ pub fn build_model_ir(path: str) -> Result<QwenModelIr, Error> {
         if role < 0 { break }
         wanted := role_tensor_name(role, layer)
         wanted_view: str := wanted
-        mut found := gguf.find_tensor(table, wanted_view)
+        mut found := indexed_tensor(table, order, wanted_view)
         // Tied embeddings: an absent `output.weight` puts `token_embd.weight` in two blocks. The
         // condition is visible in the document as two blocks naming the same tensor, so `model`
         // gains no field for it, and the coverage accounting counts its bytes once.
         if found < 0 && role == 14 {
-          found = gguf.find_tensor(table, "token_embd.weight")
+          found = indexed_tensor(table, order, "token_embd.weight")
         }
         if found < 0 {
           code = "R1_MISSING_TENSOR".clone()
@@ -822,7 +980,10 @@ pub fn build_model_ir(path: str) -> Result<QwenModelIr, Error> {
         byte_size = byte_size + nbytes
         if absolute >= 0 {
           if first_abs < 0 || absolute < first_abs { first_abs = absolute }
-          member_end := absolute + nbytes
+          // Non-wrapping, like every other sum here: `nbytes` is bounded only by the step-8 running
+          // total, so an unrepresentable end saturates rather than wrapping negative and reporting a
+          // block that ends before it starts.
+          member_end := if absolute > I64_MAX - nbytes { I64_MAX } else { absolute + nbytes }
           if member_end > end_abs { end_abs = member_end }
         }
         claimed_column.push(found)
@@ -862,15 +1023,30 @@ pub fn build_model_ir(path: str) -> Result<QwenModelIr, Error> {
       slot = slot + 1
     }
     if assembly_failed { break }
-    claimed := claimed_column.build()
+    // Block assembly recorded what it took; sorting that record turns the coverage sweep below into
+    // one merge instead of a membership scan per tensor. A tensor named by two blocks — the
+    // tied-embedding case — appears twice here and is still counted once, because the cursor walks
+    // past every entry below the tensor being examined.
+    claimed_raw := claimed_column.build()
+    claimed := claimed_raw.sort()
 
     // Step 11. Every tensor in the table must be claimed by at least one block. A partial Block IR
     // is not a Block IR, so an unassigned tensor is a failure and not a warning.
     mut first_unassigned := -1
+    mut claimed_cursor := 0
     mut scan := 0
     loop {
       if scan >= table.tensor_count { break }
-      if claims(claimed, scan) {
+      loop {
+        if claimed_cursor >= claimed.len() { break }
+        if claimed[claimed_cursor] >= scan { break }
+        claimed_cursor = claimed_cursor + 1
+      }
+      mut is_claimed := false
+      if claimed_cursor < claimed.len() {
+        if claimed[claimed_cursor] == scan { is_claimed = true }
+      }
+      if is_claimed {
         assigned = assigned + 1
       } else {
         if first_unassigned < 0 { first_unassigned = scan }

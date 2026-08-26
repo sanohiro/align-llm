@@ -504,14 +504,24 @@ ALIGN_LLM_LLAMA_CLI=/path/to/llama-cli \
   scripts/run-model-ir-parity
 ```
 
-Both variables are required and neither has a default. If either the model or the reference
-executable is unset or absent, the runner prints one exact line — `model ir parity: N/A
-(ALIGN_LLM_GGUF_MODEL unset)` or `model ir parity: N/A (ALIGN_LLM_LLAMA_CLI unset)` — and exits 0.
-That skip never counts as a pass and must be named as the `N/A` reason in the pull request. A parse
+Both variables are required and neither has a default. If the reference executable or the model is
+missing, the runner prints exactly one of these four lines and exits 0:
+
+```text
+model ir parity: N/A (ALIGN_LLM_LLAMA_CLI unset)
+model ir parity: N/A (ALIGN_LLM_LLAMA_CLI is not executable)
+model ir parity: N/A (ALIGN_LLM_GGUF_MODEL unset)
+model ir parity: N/A (ALIGN_LLM_GGUF_MODEL is absent)
+```
+
+They are checked in that order, so an unset variable is reported before an unusable one. That skip
+never counts as a pass and the exact line must be named as the `N/A` reason in the pull request. A parse
 failure against the reference's log output fails closed (a nonzero exit, never a skip and never a
 silent pass). The runner also asserts the size-sum oracle against an independent `stat` of the file,
 the `bytes_read` bound, and that the model's size and modification time are unchanged, which is the
-read-only proof.
+read-only proof. The reference itself runs under a 300-second `timeout` (or `gtimeout`; skipped when
+the host has neither) inside a subshell whose `ulimit -f` caps its log at 8 MiB, so a reference build
+that fails to terminate is a bounded failure rather than an unbounded log.
 
 The model path inherits R0's writable-by-the-invoking-user precondition unchanged — `read_table`
 uses the same `fs.open_rw` constructor — so Request 21 in `docs/align-requests.md` covers this

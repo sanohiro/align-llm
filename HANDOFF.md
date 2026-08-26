@@ -8,9 +8,9 @@ file records durable project state.
 - Branch `agent/r1-qwen-model-ir`, based on the R0-GGUF-INSPECT chain (head `dcd8801`, merging as
   PR #121 onto `main`). The authoritative design ledger is `docs/specs/r1-qwen-model-ir.md`,
   committed at `631b2ce`. **Implementation is complete in the working tree**: `src/gguf.align` gains
-  the public `GgufTable` producer surface (`read_table` plus nine accessors and two geometry
+  the public `GgufTable` producer surface (`read_table` plus ten accessors and two geometry
   functions), `src/frontend_qwen.align` is a new module owning Qwen2 architecture knowledge, and
-  `src/main.align` gains the `--model-ir` arm. Not yet committed.
+  `src/main.align` gains the `--model-ir` arm.
 - **What it delivers.** One consumer-complete path: a caller names a `.gguf` file and receives one
   canonical `R1_MODEL_IR` document (`schema_version: 1`) carrying the Model IR (architecture-level
   hyperparameters) and the Block IR (placeable, evictable `WeightBlock`/`AttentionBlock`/`MlpBlock`
@@ -28,15 +28,16 @@ file records durable project state.
   non-blocking (section 1.3, 5.2). No MoE/gpt-oss frontend: a nonzero expert count is rejected. No
   tensor payload decode or dequantization. No layout plan, no `.alignpack`. No execution, no runtime.
   Inherits R0's `fs.open_rw` precondition and Request 21 unchanged.
-- **Owner results (unchanged pin `4b515f8d`).** `gmake check`: 25 units (up from 24 — the new
-  `frontend_qwen` unit), PASS. `gmake build`: PASS (`alignc: built executable: main`).
-  `gmake gguf-smoke`: 62 fixtures, PASS. `gmake model-ir-smoke`: 43 qwen fixtures + 62 R0 fixtures
-  re-run, PASS ("qwen model ir smoke: hyperparameters, block IR, geometry table, quantization
-  summary, the size-sum oracle, the malformed corpus, table/inspect parity, and CLI arity/isolation
-  PASS"). `python3 scripts/check-gate-topology` (`gmake gate-topology-check`): PASS.
-  `gmake format-check`: PASS; `gmake fmt` afterward produces no diff. `git diff --check`: clean.
-  Every pre-existing owner (`gguf-smoke`, `check`, `build`) is unchanged in behavior — only the count
-  and duration grew with the new unit and fixtures.
+- **Owner results (unchanged pin `4b515f8d`, after the review repair).** `gmake check`: 25 units (up
+  from 24 — the new `frontend_qwen` unit), PASS. `gmake build`: PASS
+  (`alignc: built executable: main`). `gmake gguf-smoke`: 62 fixtures, PASS, byte-identical
+  `--inspect-gguf` documents. `gmake model-ir-smoke`: 49 qwen fixtures + 62 R0 fixtures re-run, PASS
+  ("qwen model ir smoke: hyperparameters, block IR, geometry table, quantization summary, the
+  size-sum oracle, the malformed corpus, table/inspect parity, and CLI arity/isolation PASS").
+  `python3 scripts/check-gate-topology` (`gmake gate-topology-check`): PASS. `gmake format-check`:
+  PASS; `gmake fmt` afterward produces no diff. `git diff --check`: clean. Every pre-existing owner
+  (`gguf-smoke`, `check`, `build`) is unchanged in behavior — only the count and duration grew with
+  the new unit and fixtures.
 - **Parity qualification run once** (`scripts/run-model-ir-parity`) against the local
   Qwen2.5-Coder-7B Q4_K_M model with the local `llama-cli` (build 10566, `bb4caa754`): **PASS**.
   Compared rows: `n_layer` 28, `n_embd` 3584, `n_head` 28, `n_head_kv` 4, `head_dim`
@@ -61,8 +62,26 @@ file records durable project state.
   managed compiler), so `gguf.inspect` (`:1091`) and `gguf.read_table` (`:1455`) duplicate one
   decode-and-accumulate walk instead of sharing it through a borrowed builder parameter, per section
   2.3.6 of the plan.
+- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
+  the candidate at `87a64b4`: **A** the Align source (`src/gguf.align`, `src/frontend_qwen.align`)
+  and **B** the specification, fixtures, runners, and governance documents. A returned 2 major, 2
+  minor, and 3 nit; B returned 3 medium, 5 low, and 2 nit. **Every one of the seventeen findings was
+  accepted** and all of them are repaired in the next commit as one consolidated repair, with plan,
+  code, tests, and documentation moving together. The two majors were real and reproduced before the
+  fix: GGML's block invariant is per **row**, so the shipped `qwen2-full` fixture was accepted
+  `status: "ok"` with a `Q4_K [128, 32]` tensor GGML cannot store (the whole positive corpus is
+  reshaped to `n_embd 256` / `n_ff 512` and a `qwen2-row-unaligned` fixture pins the rule); and
+  duplicate detection, block-member lookup, and the coverage sweep were quadratic, costing 26.75 s on
+  a 100,000-tensor file and 87.25 s on a 200,000-tensor one against `--inspect-gguf`'s 0.86 s — one
+  sorted tensor-name index brings those to 0.09 s and 0.18 s. The other code corrections are an
+  `n_vocab` plausibility bound, rejection of a present-but-undecodable `qwen2.rope.scaling.type`,
+  first-occurrence-wins for a repeated `general.architecture`, and a non-wrapping block-member end
+  offset. Section 7 items 13-21 and the new section 8 cell-to-case mapping of
+  `docs/specs/r1-qwen-model-ir.md` carry every contract correction, and
+  `docs/specs/r0-gguf-inspection.md` gains section 6 item 31. The repair changed no document field
+  and no `schema_version`.
 - **Next actions, in order.**
-  1. One comprehensive review of the candidate.
+  1. Commit the consolidated repair.
   2. Exact-head preflight: `python3 scripts/pre-pr --owner-test model-ir -- gmake model-ir-smoke
      gate-topology-check`. Changing the `Makefile` matches `FRESH_IMAGE_PATTERNS`, so this selects
      the fresh-image **installed** profile — expected for this capability, not a Docker skip.
@@ -147,13 +166,14 @@ boundary is next changed.
 2. Materialize the pinned toolchain with `scripts/align-toolchain ensure compiler`; on macOS use
    `gmake` and the recorded `LLVM_CONFIG`/`LIBRARY_PATH` environment. Confirm `.align-revision`
    still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R1 requires no pin change.
-3. Resume at the first unfinished next action in the active R1-QWEN-MODEL-IR capability above
-   (implementation, then `gmake model-ir-smoke`, then the opt-in parity run, then review, then
-   preflight, then PR).
+3. Resume at the first unfinished next action in the active R1-QWEN-MODEL-IR capability above.
+   Implementation, the owner runs, the opt-in parity run, and the two-reviewer comprehensive review
+   are all complete; what remains is committing the consolidated repair, the exact-head preflight,
+   and the pull request.
 4. Do not open another Align request unless implementation exposes a further genuine shipped-language,
    compiler/runtime, or standard-library gap under the register rules. Requests 21 and 22 already
-   cover read-only random access and Move-array indexing; R1 inherits both non-blocking, and section
-   2.3.5 of the plan names the one pre-implementation compile probe to run first.
+   cover read-only random access and Move-array indexing; R1 inherits both non-blocking. Requests 23
+   and 24 were opened during implementation and are also non-blocking.
 5. After merge, refresh `main` and take the next eligible roadmap item. C8 is closed; do not start a
    tenth C8 capability without a recorded cost ceiling above the 2,000 ppm floor.
 

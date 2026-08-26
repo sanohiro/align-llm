@@ -1137,12 +1137,14 @@ shipped case (`window-growth`, `skip-accounting`, `empty-container`, `repeat-ins
 
 ### 6.3 Corrections the R1 consumer forced
 
-`docs/specs/r1-qwen-model-ir.md` section 6 records these six items as owed by that capability and
+`docs/specs/r1-qwen-model-ir.md` section 6 records the first six items as owed by that capability and
 they are applied here in its implementation commit, so plan, code, and consumer changed together.
 Items 25 through 27 correct claims about a consumer contract that was written before any consumer
 existed. Item 28 narrows a non-goal that would otherwise be violated by an obviously correct change.
 Items 29 and 30 correct the ownership table and the public-API block to match what shipped plus what
-R1 adds. None is a deferral, and none changes `R0_GGUF_INSPECTION`'s `schema_version`.
+R1 adds. Item 31 was found by R1's review rather than by its implementation and corrects a claim
+about float rendering that was wrong in both plans. None is a deferral, and none changes
+`R0_GGUF_INSPECTION`'s `schema_version`.
 
 | # | Amends | Correction | Evidence | Owner |
 | --- | --- | --- | --- | --- |
@@ -1152,3 +1154,4 @@ R1 adds. None is a deferral, and none changes `R0_GGUF_INSPECTION`'s `schema_ver
 | 28 | 1.3, 2.5.4 | Block **geometry** — elements and bytes per block — is now exposed as `ggml_block_size` / `ggml_type_size`. Both R1 and R2 need it, and duplicating a GGML table into each frontend would be worse than owning it beside `ggml_type_name`. No block is unpacked and no scale is read | `docs/specs/r1-qwen-model-ir.md` section 2.5.7 | `type-geometry` in `model-ir-smoke` |
 | 29 | 2.5.3 | The allocation row named a record that does not exist. Retained text is owned by the private, short-lived `KvRow` / `TensorRow` and reaches a caller only inside `GgufInspection.document` or inside a `GgufTable` stream | `src/gguf.align` | ownership review; `document-move` |
 | 30 | 2.5.4 | The public-API block listed only `GgufStatus`, `GgufInspection`, and `inspect`. It now also lists `GgufTable`, `read_table`, the ten accessors, the two geometry functions, and `json_string`, which R1 needs as the one text-to-JSON boundary | `src/gguf.align` | `make check`; `model-ir-smoke` |
+| 31 | 2.1 (the `write_float` row) and 2.4.3 | "`write_float` emits Rust's shortest round-trip `Display`, which is exact but **never uses exponent notation**: an `f32` near its maximum renders as a 39-digit decimal" is false. Rust's `f32` `Display` renders `1e-45` and `3.4028235e+38`, and the decoder reproduces that verbatim. Read the sentence as: the rendering is exact and round-trips, but its **spelling** is not stable to compare across tools, which is exactly why `value_bits` is authoritative. Nothing in R0 or R1 depended on the false half — every comparison is on the bits | a FLOAT32 fixture with bit patterns `0x00000001` and `0x7f7fffff` rendered `1e-45` and `3.4028235e+38` through `--inspect-gguf`; `docs/specs/r1-qwen-model-ir.md` section 7 item 20 | `float-bits` in `gguf-smoke`, which compares bit patterns and is unaffected |
