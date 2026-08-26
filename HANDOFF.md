@@ -54,11 +54,9 @@ file records durable project state.
 
 1. Fetch `origin` and resume `agent/c8-rescan-generic-fallback` at its latest commit. Read
    `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. The ledger,
-   implementation, correctness owners, and exact performance comparison are complete; comprehensive
-   review is the first unfinished action.
-2. Commit the measurement record, run one stable-head comprehensive inspection-only review, resolve
-   its complete finding set in one coherent repair if needed, then run exact-head preflight and
-   publish the English PR with the measurement and review envelope.
+   implementation, correctness owners, exact performance comparison, comprehensive review, and its
+   narrow handoff repair are complete; exact-head preflight is the first unfinished action.
+2. Run exact-head preflight, then publish the English PR with the measurement and review envelope.
 3. After merge, refresh `main` and choose the next smallest consumer-complete C8 optimization from
    a new measured time-to-passing-patch baseline.
 4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
