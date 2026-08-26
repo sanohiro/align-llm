@@ -1241,3 +1241,142 @@ and Request 24's `builder` parameter type, whose absence is what makes section 2
 reader duplication the shipped form. All inherited from `docs/specs/r1-qwen-model-ir.md` section 5
 and `docs/specs/r1b-gptoss-moe-ir.md` section 5.6, unchanged in status. R2A introduces no new
 evidence for or against Requests 22 and 24.
+
+## 6. Correction ledger
+
+The capability is now **implemented**. This section records every place where implementation and
+measurement contradicted the plan above, what the shipped contract is, and the exact case that
+closes it. Sections 1 to 5 remain authoritative except where a row below supersedes them; each row
+names the superseded text. Cases without a runner prefix are cases inside
+`scripts/run-expert-trace-smoke`.
+
+| # | Superseded text | Shipped contract | Why | Case |
+| --- | --- | --- | --- | --- |
+| 1 | Section 2.5.1 "every later step produces a `status: "error"` document"; section 2.6 step 3 | An operating-system failure at `open`, `len`, or `pread` returns `Err(Error)` with **no document and no stdout**, exactly as `gguf.inspect` and `--model-ir` do. `R2_TRANSCRIPT_UNREADABLE` names the fault class inside the module and never appears in a document | Section 2.3, section 3.1's Cleanup row, and section 3.3 all require the destination to be untouched on an OS failure, which is incompatible with writing a document for it. The R0/R1 precedent already fixed the shape | `unreadable-transcript`, `directory-operand`, `untouched-destination` |
+| 2 | Section 2.5.2's `"skipped_line_count": 0` | A blank line is ignorable and counted, as section 2.6 states. The real full run reports `1` (its trailing blank) and the section 4.3 excerpt reports `5` | Two normative statements — section 2.5.2's field contract and section 2.6's "a trailing blank line … counted into `source.skipped_line_count`" — outrank one illustrative constant | `real-transcript`, `run-expert-trace-parity` |
+| 3 | Section 2.4's `next_line` step 3, window doubling | The window is never grown. `WINDOW_BYTES` is sixteen times `MAX_LINE_BYTES`, so a window that starts at a line and fills without a newline already proves the line is over the cap; the cap is additionally enforced on the length of every returned line, so a line between 64 KiB and 1 MiB whose newline *is* resident still fails | Unreachable code is worse than an argued absence, and the second enforcement point is the one a 200,000-byte line actually needs | `huge-line-first`, `huge-line-late`, `window-header-*`, `window-row-40`, `window-sum-40`, `window-marker-40` |
+| 4 | Section 2.5.6 "A graph boundary is a repeated node name. ggml node names are unique within one graph" | **False at build 10566.** One 958-block qwen2 prefill graph carries **650** distinct names and prints `Qcur-0` four times. The shipped rule: the first callback node of the transcript names the graph **entry point**, and every later occurrence of that name opens the next graph | Finding 3's own occurrence counts (`Qcur-N 112` over 28 layers) already implied four per layer; finding 7 established that build 10566 emits exactly one `embd` and one `result_output` per graph evaluation, which is the property a boundary can rest on | `multi-graph`, `graph-limit`, `moe-inconsistent-graphs`, `run-expert-trace-parity` over all 958 blocks |
+| 5 | Section 2.6's `R2_ROW_COUNT` condition | Extended with the axis-3 group count, which must equal `ne3` **exactly**: axis 3 carries no truncation marker among the nine shapes and the printer loops `i3` over `ne3` with no truncation branch, so the `min(ne, 6)` rule does not apply to it | Silently accepting a wrong number of `    [` … `    ]` groups would mis-associate every row that follows | `axis-shapes` (a `{4, 3, 2, 3}` tensor) |
+| 6 | Section 2.5.6's three-valued `phase` | `graphs[].n_tokens` and `graphs[].phase` are `null` for a graph that carries neither `embd` nor an `ffn_moe_topk`. The three values remain normative for every graph whose token axis was derived | Nothing is fabricated and a capture that began mid-graph stays diagnosable. `R2_TOKEN_COUNT` then fires exactly on section 2.6's stated condition — an out-of-range value, or two sources disagreeing | partial documents across the error corpus |
+| 7 | Section 2.5.5's third `n_expert` rule and the `"router_weight"` value of `n_expert_source` | **Withdrawn.** The only identifier for the router weight operand is the `ffn_moe_logits-N` node, whose own axis 0 is already rule two, so the third rule can never be selected. `n_expert_source` is `"ffn_moe_probs"`, `"ffn_moe_logits"`, or `null` | Dead code that no fixture can reach is not a contract | `n-expert-logits`, `n-expert-absent`; the `n-expert-router` cell is withdrawn with it |
+| 8 | Section 4.3's `real-transcript` assertions | The excerpt asserts `graph.n_layer == 1`, `graph.shape_class == "unknown"`, and `source.skipped_line_count == 5`. `n_layer == 28` and `shape_class == "dense-ffn"` are the **full run's** values and are asserted by the parity qualification instead | The six-block excerpt contains only `-0` suffixed nodes and no dense feed-forward family; asserting 28 against it would assert a number the fixture does not contain | `real-transcript`, `run-expert-trace-parity` |
+| 9 | Section 2.3's column-aligned summary block | The same lines in the same order, rendered one value per line (`print(label)` then `print(value)`), following the R0 and R1 arms verbatim | It keeps the property `summary-control-bytes` asserts: a transcript-controlled value occupies exactly one line whatever bytes the transcript declares | `summary-order`, `summary-control-bytes` |
+| 10 | Section 2.6's `R2_HEADER_GRAMMAR` detail | The escaped, bounded line prefix when the line is valid UTF-8; the line's **start offset** when it is not | There is no `str` to escape for a non-UTF-8 line, and inventing a lossy one would hide the byte that caused the failure | `invalid-utf8-name`, `nul-in-header` |
+| 11 | Section 2.6's `R2_EXPERT_ID_NOT_INTEGRAL` detail | The element text **verbatim, padding included** | The `%12.4f` field width is itself part of the grammar; trimming would hide a width change that is evidence of drift | `expert-fraction`, `expert-negative`, `expert-nan`, `expert-inf` |
+| 12 | Section 2.6's `R2_NODE_LIMIT` condition | Also fires when the distinct-name interning table is exhausted — `MAX_NODES_PER_GRAPH` names or `MAX_NODES_PER_GRAPH * MAX_NAME_BYTES` name bytes — with the graph ordinal as the detail | The name table is the memory the node count actually bounds, and a graph's nodes are drawn from it | `node-limit` |
+| 13 | Section 2.4's constant table | Adds `MAX_OPS` = 1024 and `OP_STREAM_BYTES` = 16384, the bound on distinct operation names and their text. Exhausting either is `R2_HEADER_GRAMMAR` | `graph.ops` is a rendered list and needed its own bound; the measured graph uses twelve operations | bounded by construction; no fixture reaches 1,024 distinct operations |
+| 14 | Section 2.5.7's "the same reuse triple" | Each `phase_split` side is `{"adjacent_pair_count", "reuse_numerator", "reuse_denominator", "reuse_per_mille"}`, in that order, or `null` | Schema 1 needs a named field set, not a description | `phase-*`, field-order assertions |
+
+**One finding, not a correction.** Because `R2_ROW_COUNT` enforces `printed = min(ne, 6)`, no
+`(graph, layer)` pair can ever carry more than six observed token indices, so a run of consecutive
+observed tokens is at most six long and every `locality.working_set` window above `4` reports
+`sample_count: 0` on **every transcript this parser accepts**. Windows 8 through 64 become
+non-vacuous only if R2c ships section 5.2's first change. The windows are still emitted, with their
+zero sample counts visible, because a reader must be able to see that the question was asked.
+
+## 7. Verification record and unclosed cells
+
+### 7.1 Shipped surface
+
+| Path | Role |
+| --- | --- |
+| `src/expert_trace.align` | the line reader, the grammar, graph segmentation, `TranscriptScan`, `ExpertTrace`, the selection table, the locality aggregates, the renderer, every `R2_*` code |
+| `src/main.align` | the `--expert-trace` arm: arity, destination, summary block, exit mapping |
+| `scripts/eval_callback_fixture.py` | the synthetic corpus and every expected value, independent of `src/` |
+| `scripts/run-expert-trace-smoke` | the narrow durable owner; `make expert-trace-smoke`, in `HOSTED_CHECK_TARGETS` |
+| `scripts/run-expert-trace-parity` | the opt-in focused qualification; `make expert-trace-parity`, in no aggregate |
+| `eval/fixtures/expert-trace/qwen2-prefill-build10566.txt` | the format-fidelity excerpt, 171 lines / 11,764 bytes, md5 `81df3252be98a5e790e57fa77ba1e4b2` |
+| `Makefile`, `scripts/check-gate-topology` | the two targets and both pinned aggregate lists |
+
+### 7.2 Cells closed by a case
+
+Every applicable cell of section 3 maps to a passing case in `scripts/run-expert-trace-smoke`
+(87 corpus fixtures plus the real excerpt and the CLI cases) or in `scripts/run-expert-trace-parity`,
+except the rows below. Seventeen of the nineteen section 2.6 codes fire on their own fixture and the
+runner asserts that none is missing.
+
+### 7.3 Cells not closed, with the reason
+
+| Cell | Status | Reason |
+| --- | --- | --- |
+| `line-limit` / `R2_LINE_LIMIT` | **not closed by a case** | `MAX_LINES` is 2^30, so a fixture needs at least a 1 GiB transcript and roughly 10^9 scan iterations — not a hosted-smoke cost. `MAX_TRANSCRIPT_BYTES` binds first on every realistic transcript. The guard is implemented and ordered before line classification, and it is reachable only through a file `oversize-transcript` already refuses |
+| `n-expert-router` | **withdrawn** | Correction 7: the rule is unreachable and is not implemented |
+| `peak-allocation` | **closed indirectly** | Align at this pin exposes no resident-set measurement. The claim is carried by `bytes-read-bound` (a 1.2 MB transcript reads one window at a time, proven by `bytes_read > file_size` on the straddling corpus) and by `descriptor-budget` |
+| every **MOE-PREREQ** cell | **closed synthetically only** | No MoE model and no MoE transcript exists on this host. `moe-E*-U*`, `trunc-T*-U*`, `expert-id-format`, `multi-graph`, and the aggregate oracle close them against the generator's known ids; section 4.5's decision is what would replace them with real input. Section 1.4 item 3 stands: **the R2 roadmap gate is open** |
+| `topk-slots-4` (axis-0 full print) | **synthetic only** | Finding 6 recorded that no real axis-0 extent under seven was observed on this host. `moe-E4-U1`, `moe-E8-U2`, `moe-E32-U4`, and `trunc-*-U4`/`-U6` exercise the `ne <= 6` branch on axis 0 |
+| `fixture-selfcheck` (section 3.4) | **discharged differently** | Instead of the generator re-parsing the real excerpt, `scripts/run-expert-trace-parity` runs a second, independent implementation of the section 2.2 grammar over a **whole 958-block real transcript** and compares node families, operations, layer count, graph count, token counts, phases, line censuses, and every selection field for field. That is strictly stronger than a six-block self-check |
+
+### 7.4 Commands and results
+
+```text
+make check                      PASS   (check-per-unit over 28 units, expert_trace included)
+make build                      PASS
+make fmt                        PASS   (no diff; idempotent on src/expert_trace.align)
+make format-check               PASS
+make gate-topology-check        PASS   (both pinned lists updated)
+make expert-trace-smoke         PASS   87 fixtures, 17 error codes, the real build-10566 excerpt,
+                                       both CLI forms, the aggregate oracle, fixture determinism,
+                                       the window-boundary and huge-line corpora, CLI arity and
+                                       isolation; about 9 s
+make gguf-smoke                 PASS   (unchanged owner)
+make model-ir-smoke             PASS   (unchanged owner)
+make test-selection-smoke       PASS   (unchanged owner)
+make patch-eval-smoke           PASS   (unchanged owner)
+make verify-loop-smoke          PASS   (unchanged owner)
+git diff --check                clean
+
+make expert-trace-parity (dense qwen2): PASS
+  instrument   version: 0.2.0 (build 10566, commit bb4caa754), AppleClang 21.0.0 for Darwin arm64
+  graphs 1, nodes 958, layers 28, shape class dense-ffn, moe false, selections 0
+  bytes / lines 1101250 / 16633, bytes_read 1101339 (100.01%), elapsed 0.062 s
+  locality N/A - moe.present is false, so the R2 gate stays open (section 4.5)
+make expert-trace-parity (MoE):         N/A - no MoE GGUF on this host; see section 4.5.
+```
+
+`make ci` is not selected: this capability changes no aggregate topology beyond adding one hosted
+target, which `gate-topology-check` owns, and makes no performance claim.
+
+**Preflight profile, as section 3.5 predicted.** The `Makefile` **is** modified, so it matches
+`FRESH_IMAGE_PATTERNS` (`scripts/verification_scope.py:21`) and the shared classifier selects the
+fresh-image installed profile. `python3 scripts/pre-pr --plan` refuses a dirty worktree
+(`preflight error: preflight requires a clean worktree`), so it must be run on the committed
+candidate before publication, its output recorded in the pull request, and the full
+`python3 scripts/pre-pr --owner-test expert-trace-smoke -- make expert-trace-smoke` run after it.
+The required installed profile must not be replaced by a Docker skip or an ambient `DOCKER_HOST`
+endpoint.
+
+### 7.5 Align limitations met while implementing
+
+Classified, not worked around. The register in `docs/align-requests.md` is the orchestrator's to
+edit; this section is the client evidence.
+
+1. **No `str`-to-number conversion** (section 5.5.2, candidate Request 26). Confirmed as a genuine
+   language gap and now with a fourth private implementation: `expert_trace.parse_uint`, plus
+   `parse_integral_element` on top of it. Finding 5 kept it to the integer form.
+2. **No string ordering and no string sort.** `array<i64>.sort()` orders integers; nothing orders
+   text, and `array<string>` indexing is Request 22. `graph.node_families`, `graph.unsuffixed_nodes`,
+   and `graph.ops` are sorted lists, so this module writes `span_less` (a byte comparison over two
+   spans of one stream) and `sort_spans` (a bottom-up merge sort over an index array). This is a
+   **new** gap, adjacent to Request 22 and distinct from it: even with indexable `array<string>` there
+   would be no ordering to sort by. Candidate: a `str` comparison operator or a `sort_by` on the
+   array pipeline.
+3. **No readable accumulator.** `builder` and `array_builder` are write-only until `build()`, so an
+   interning table that must compare a candidate against text it has already accumulated cannot use
+   either. The module accumulates node and operation text into a `buffer` — which *is* readable
+   through `.bytes()` while still growing — and keeps its spans in pre-sized mutable `array<i64>`s.
+   This works and is bounded, but it is a workaround for a missing "append and read" collection.
+4. **`builder` and `array_builder` are not parameter types** (Request 24, unconsumed). The whole
+   forward pass is therefore one function, as `gguf.inspect` already is. Third client, no status
+   change.
+5. **`fs.open_rw` for a read-only input** (Request 21, unconsumed). Second class of read-only input:
+   a transcript captured into a read-only artifact directory cannot be opened at all. New client
+   evidence for an existing request.
+6. **Huge-struct-copy warning** (Request 23, unconsumed). `expert_trace.Header` (176 bytes) is
+   returned by value and `TranscriptScan` is read through a `borrow` parameter; both raise the
+   warning. Third client, no status change.
+7. **A `Fault` record cannot carry a `str` field across a loop iteration.** Assigning a record with
+   a `str` field out of a `match` arm inside a loop is rejected as "use of invalidated borrow … its
+   source was dropped at the end of the loop iteration", even when every value the field can hold is
+   a `'static` literal. The fix is one `.clone()` per fault construction, which is cheap; the
+   diagnostic is nevertheless conservative about literals. Minor, non-blocking, recorded for
+   completeness.

@@ -1,0 +1,901 @@
+#!/usr/bin/env python3
+"""R2A-EXPERT-TRACE-CAPTURE synthetic corpus (`docs/specs/r2a-expert-trace.md` section 4.1).
+
+The generator renders llama.cpp eval-callback transcripts from its own copy of the section 2.2
+format string and computes every expected value — every selection and every locality aggregate —
+in Python. It imports nothing from `src/` and re-derives nothing from the parser under test, which
+is the whole point: two independent implementations of one stated grammar.
+
+Usage: eval_callback_fixture.py OUTPUT_DIR
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+WINDOW_BYTES = 1048576
+MAX_LINE_BYTES = 65536
+MAX_TRANSCRIPT_BYTES = 68719476736
+MAX_GRAPHS = 65536
+MAX_NODES_PER_GRAPH = 8192
+MAX_LAYERS = 1024
+MAX_EXPERTS = 1024
+MAX_EXPERTS_USED = 64
+MAX_SELECTIONS = 1048576
+MAX_REUSE_WINDOW = 64
+MAX_NAME_BYTES = 256
+CONTRACT_BUILD = 10566
+TRUNCATION_HALF = 3
+TRUNCATION_PRINTED = 6
+WINDOWS = (1, 2, 4, 8, 16, 32, 64)
+
+# Section 2.2 finding 6, byte for byte.
+A3_OPEN = "    ["
+A3_CLOSE = "    ]"
+A2_OPEN = "        ["
+A2_CLOSE = "        ],"
+A2_TRUNC = "        ..., "
+A1_TRUNC = "            ..., "
+ROW_OPEN = "            ["
+ROW_CLOSE = "  ],"
+A0_MARK = "   ..."
+
+
+def printed_indices(ne):
+    if ne <= TRUNCATION_PRINTED:
+        return list(range(ne))
+    return [0, 1, 2, ne - 3, ne - 2, ne - 1]
+
+
+def truncated(ne):
+    return ne > TRUNCATION_PRINTED
+
+
+def fmt_dims(dims):
+    return ", ".join(str(d) for d in dims)
+
+
+class Block:
+    """One callback record: its header fields and the value block that follows it."""
+
+    def __init__(self, name, dtype, op, src0, src1, ne, value=None):
+        self.name = name
+        self.dtype = dtype
+        self.op = op
+        self.src0 = src0
+        self.src1 = src1
+        self.ne = list(ne)
+        # `value(i0, i1, i2, i3) -> float`; defaults to a deterministic ramp.
+        self.value = value or (lambda i0, i1, i2, i3: 0.0)
+
+    def header(self):
+        src0 = "%s{%s}" % (self.src0[0], fmt_dims(self.src0[1]))
+        src1 = "" if self.src1 is None else "%s{%s}" % (self.src1[0], fmt_dims(self.src1[1]))
+        # `%s: %24s = (%s) %10s(%s{%s}, %s}) = {%s}` with the `%s{%s}` source-operand helper.
+        return "common_debug_cb_eval: %24s = (%s) %10s(%s, %s}) = {%s}" % (
+            self.name, self.dtype, self.op, src0, src1, fmt_dims(self.ne))
+
+    def body(self):
+        ne0, ne1, ne2, ne3 = self.ne
+        lines = []
+        total = 0.0
+        for i3 in range(ne3):
+            lines.append(A3_OPEN)
+            for position, i2 in enumerate(printed_indices(ne2)):
+                if truncated(ne2) and position == TRUNCATION_HALF:
+                    lines.append(A2_TRUNC)
+                lines.append(A2_OPEN)
+                for row_position, i1 in enumerate(printed_indices(ne1)):
+                    if truncated(ne1) and row_position == TRUNCATION_HALF:
+                        lines.append(A1_TRUNC)
+                    parts = []
+                    for element_position, i0 in enumerate(printed_indices(ne0)):
+                        if truncated(ne0) and element_position == TRUNCATION_HALF:
+                            parts.append(A0_MARK)
+                        element = self.value(i0, i1, i2, i3)
+                        total += element
+                        parts.append("%12.4f" % element)
+                    lines.append(ROW_OPEN + ", ".join(parts) + ROW_CLOSE)
+                lines.append(A2_CLOSE)
+            lines.append(A3_CLOSE)
+        lines.append("    sum = %f" % total)
+        return lines
+
+    def lines(self):
+        return [self.header()] + self.body()
+
+
+def render(graphs, trailing_newline=True, separator=""):
+    """One transcript. `separator` is the ignorable line emitted between blocks; the real instrument
+    emits one empty line, which lands in `source.skipped_line_count`."""
+    out = []
+    for blocks in graphs:
+        for block in blocks:
+            out.extend(block.lines())
+            if separator is not None:
+                out.append(separator)
+    text = "\n".join(out)
+    if trailing_newline:
+        text += "\n"
+    return text
+
+
+# ---------------------------------------------------------------------------------------------
+# Graph shapes.
+
+def dense_graph(n_layer, n_tokens, embd=3584):
+    blocks = [Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [embd, 152064, 1, 1]),
+                    ("inp_tokens", [n_tokens, 1, 1, 1]), [embd, n_tokens, 1, 1])]
+    for layer in range(n_layer):
+        blocks.append(Block("attn_norm-%d" % layer, "f32", "RMS_NORM",
+                            ("embd", [embd, n_tokens, 1, 1]), None, [embd, n_tokens, 1, 1]))
+        blocks.append(Block("ffn_norm-%d" % layer, "f32", "RMS_NORM",
+                            ("attn_norm-%d" % layer, [embd, n_tokens, 1, 1]), None,
+                            [embd, n_tokens, 1, 1]))
+        blocks.append(Block("ffn_gate-%d" % layer, "f32", "MUL_MAT",
+                            ("blk.%d.ffn_gate.weight" % layer, [embd, 18944, 1, 1]),
+                            ("ffn_norm-%d" % layer, [embd, n_tokens, 1, 1]),
+                            [18944, n_tokens, 1, 1]))
+        blocks.append(Block("ffn_up-%d" % layer, "f32", "MUL_MAT",
+                            ("blk.%d.ffn_up.weight" % layer, [embd, 18944, 1, 1]),
+                            ("ffn_norm-%d" % layer, [embd, n_tokens, 1, 1]),
+                            [18944, n_tokens, 1, 1]))
+        blocks.append(Block("ffn_swiglu-%d" % layer, "f32", "SWIGLU",
+                            ("ffn_gate-%d" % layer, [18944, n_tokens, 1, 1]), None,
+                            [18944, n_tokens, 1, 1]))
+        blocks.append(Block("l_out-%d" % layer, "f32", "ADD",
+                            ("ffn_swiglu-%d" % layer, [18944, n_tokens, 1, 1]),
+                            ("embd", [embd, n_tokens, 1, 1]), [embd, n_tokens, 1, 1]))
+    blocks.append(Block("result_norm", "f32", "RMS_NORM", ("l_out", [embd, 1, 1, 1]), None,
+                        [embd, 1, 1, 1]))
+    blocks.append(Block("result_output", "f32", "MUL_MAT",
+                        ("output.weight", [embd, 152064, 1, 1]),
+                        ("result_norm", [embd, 1, 1, 1]), [152064, 1, 1, 1]))
+    return blocks
+
+
+class Router:
+    """A deterministic router. The expert chosen at `(graph, layer, token, slot)` is a pure function
+    of the seed, so the generator knows every selection before the parser has read a byte."""
+
+    def __init__(self, seed, n_expert, n_expert_used):
+        self.seed = seed
+        self.n_expert = n_expert
+        self.n_expert_used = n_expert_used
+
+    def experts(self, graph, layer, token):
+        state = (self.seed * 1000003) ^ (graph * 97 + layer * 7919 + token * 104729)
+        chosen = []
+        while len(chosen) < self.n_expert_used:
+            state = (state * 6364136223846793005 + 1442695040888963407) & ((1 << 63) - 1)
+            candidate = (state >> 17) % self.n_expert
+            # A router picks distinct experts; a duplicate would make the reuse denominator lie.
+            while candidate in chosen:
+                candidate = (candidate + 1) % self.n_expert
+            chosen.append(candidate)
+        return chosen
+
+
+def moe_graph(n_layer, n_tokens, router, graph_ordinal, embd=3584, probs=True, logits=True):
+    n_expert = router.n_expert
+    used = router.n_expert_used
+    blocks = [Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [embd, 152064, 1, 1]),
+                    ("inp_tokens", [n_tokens, 1, 1, 1]), [embd, n_tokens, 1, 1])]
+    for layer in range(n_layer):
+        blocks.append(Block("ffn_norm-%d" % layer, "f32", "RMS_NORM",
+                            ("embd", [embd, n_tokens, 1, 1]), None, [embd, n_tokens, 1, 1]))
+        if logits:
+            blocks.append(Block("ffn_moe_logits-%d" % layer, "f32", "MUL_MAT",
+                                ("blk.%d.ffn_gate_inp.weight" % layer, [embd, n_expert, 1, 1]),
+                                ("ffn_norm-%d" % layer, [embd, n_tokens, 1, 1]),
+                                [n_expert, n_tokens, 1, 1]))
+        if probs:
+            blocks.append(Block("ffn_moe_probs-%d" % layer, "f32", "SOFT_MAX",
+                                ("ffn_moe_logits-%d" % layer, [n_expert, n_tokens, 1, 1]), None,
+                                [n_expert, n_tokens, 1, 1]))
+
+        def value(i0, i1, i2, i3, layer=layer):
+            return float(router.experts(graph_ordinal, layer, i1)[i0])
+
+        blocks.append(Block("ffn_moe_topk-%d" % layer, "i32", "TOP_K",
+                            ("ffn_moe_probs-%d" % layer, [n_expert, n_tokens, 1, 1]), None,
+                            [used, n_tokens, 1, 1], value))
+        blocks.append(Block("ffn_moe_out-%d" % layer, "f32", "ADD",
+                            ("ffn_moe_topk-%d" % layer, [used, n_tokens, 1, 1]),
+                            ("ffn_norm-%d" % layer, [embd, n_tokens, 1, 1]),
+                            [embd, n_tokens, 1, 1]))
+    blocks.append(Block("result_output", "f32", "MUL_MAT",
+                        ("output.weight", [embd, 152064, 1, 1]),
+                        ("result_norm", [embd, 1, 1, 1]), [152064, 1, 1, 1]))
+    return blocks
+
+
+# ---------------------------------------------------------------------------------------------
+# The expected document, computed from the emitted model rather than by re-parsing it.
+
+def family_of(name):
+    cut = name.rfind("-")
+    if cut <= 0 or cut + 1 >= len(name):
+        return None, -1
+    suffix = name[cut + 1:]
+    if not suffix.isdigit():
+        return None, -1
+    return name[:cut], int(suffix)
+
+
+def expected_selections(graphs):
+    rows = []
+    for ordinal, blocks in enumerate(graphs):
+        for block in blocks:
+            family, layer = family_of(block.name)
+            if family != "ffn_moe_topk":
+                continue
+            ne0, ne1 = block.ne[0], block.ne[1]
+            for row_position, i1 in enumerate(printed_indices(ne1)):
+                for element_position, i0 in enumerate(printed_indices(ne0)):
+                    rows.append({
+                        "graph": ordinal,
+                        "layer": layer,
+                        "token": i1,
+                        "slot": i0,
+                        "expert": int(round(block.value(i0, i1, 0, 0))),
+                    })
+    return rows
+
+
+def naive_locality(selections, graph_phase, topk_layers):
+    """The section 4.3 oracle: nested loops over adjacent pairs and set intersections, deliberately
+    unlike the parser's single sorted sweep."""
+    by_group = {}
+    for row in selections:
+        by_group.setdefault((row["graph"], row["layer"], row["token"]), set()).add(row["expert"])
+
+    def triple(keys):
+        pairs = numerator = denominator = 0
+        for (graph, layer, token) in sorted(keys):
+            following = (graph, layer, token + 1)
+            if following not in keys:
+                continue
+            pairs += 1
+            numerator += len(by_group[(graph, layer, token)] & by_group[following])
+            denominator += len(by_group[following])
+        return pairs, numerator, denominator
+
+    def rendered(pairs, numerator, denominator):
+        return {
+            "adjacent_pair_count": pairs,
+            "reuse_numerator": numerator if pairs else None,
+            "reuse_denominator": denominator if pairs else None,
+            "reuse_per_mille": (numerator * 1000) // denominator if pairs and denominator else None,
+        }
+
+    keys = set(by_group)
+    pairs, numerator, denominator = triple(keys)
+
+    per_layer = []
+    for layer in sorted(set(topk_layers)):
+        layer_keys = {k for k in keys if k[1] == layer}
+        lp, ln, ld = triple(layer_keys)
+        histogram = {}
+        for row in selections:
+            if row["layer"] == layer:
+                histogram[row["expert"]] = histogram.get(row["expert"], 0) + 1
+        entry = {"layer": layer}
+        entry.update(rendered(lp, ln, ld))
+        entry["histogram"] = [[expert, histogram[expert]] for expert in sorted(histogram)]
+        per_layer.append(entry)
+
+    working_set = []
+    for width in WINDOWS:
+        samples = unique_sum = 0
+        for (graph, layer, token) in sorted(keys):
+            run = [(graph, layer, token - offset) for offset in range(width)]
+            if not all(entry in keys for entry in run):
+                continue
+            samples += 1
+            union = set()
+            for entry in run:
+                union |= by_group[entry]
+            unique_sum += len(union)
+        working_set.append({
+            "window": width,
+            "sample_count": samples,
+            "unique_sum": unique_sum,
+            "unique_mean_per_mille": (unique_sum * 1000) // samples if samples else None,
+        })
+
+    phase_split = {}
+    for name, code in (("prefill", "prefill"), ("decode", "decode")):
+        if code not in graph_phase.values():
+            phase_split[name] = None
+            continue
+        phase_keys = {k for k in keys if graph_phase.get(k[0]) == code}
+        phase_split[name] = rendered(*triple(phase_keys))
+
+    document = {"adjacent_pair_count": pairs}
+    document.update(rendered(pairs, numerator, denominator))
+    del document["adjacent_pair_count"]
+    result = {
+        "adjacent_pair_count": pairs,
+        "reuse_numerator": numerator if pairs else None,
+        "reuse_denominator": denominator if pairs else None,
+        "reuse_per_mille": (numerator * 1000) // denominator if pairs and denominator else None,
+        "per_layer": per_layer,
+        "working_set": working_set,
+        "phase_split": phase_split,
+    }
+    return result
+
+
+def expected_document(path, graphs, text, separator=""):
+    names = []
+    ops = []
+    families = []
+    plains = []
+    topk_layers = []
+    n_layer = -1
+    moe_present = False
+    dense_present = False
+    n_expert = None
+    n_expert_source = None
+    n_expert_used = None
+    for blocks in graphs:
+        for block in blocks:
+            if block.name not in names:
+                names.append(block.name)
+                family, layer = family_of(block.name)
+                if family is None:
+                    plains.append(block.name)
+                else:
+                    families.append(family)
+            if block.op not in ops:
+                ops.append(block.op)
+            family, layer = family_of(block.name)
+            if family is not None:
+                n_layer = max(n_layer, layer + 1)
+                if family == "ffn_moe_topk":
+                    moe_present = True
+                    topk_layers.append(layer)
+                    n_expert_used = block.ne[0]
+                if family in ("ffn_gate", "ffn_up", "ffn_swiglu"):
+                    dense_present = True
+    for blocks in graphs:
+        for block in blocks:
+            family, _ = family_of(block.name)
+            if family == "ffn_moe_probs" and n_expert is None:
+                n_expert, n_expert_source = block.ne[0], "ffn_moe_probs"
+    if n_expert is None:
+        for blocks in graphs:
+            for block in blocks:
+                family, _ = family_of(block.name)
+                if family == "ffn_moe_logits" and n_expert is None:
+                    n_expert, n_expert_source = block.ne[0], "ffn_moe_logits"
+    if not moe_present:
+        n_expert = None
+        n_expert_source = None
+        n_expert_used = None
+
+    graph_rows = []
+    graph_phase = {}
+    for ordinal, blocks in enumerate(graphs):
+        n_tokens = None
+        for block in blocks:
+            if block.name == "embd":
+                n_tokens = block.ne[1]
+                break
+        if n_tokens is None:
+            for block in blocks:
+                if family_of(block.name)[0] == "ffn_moe_topk":
+                    n_tokens = block.ne[1]
+                    break
+        observed = printed_indices(n_tokens)
+        phase = "prefill" if n_tokens > 1 else ("single_token_first_graph" if ordinal == 0 else "decode")
+        graph_phase[ordinal] = phase
+        graph_rows.append({
+            "ordinal": ordinal,
+            "n_tokens": n_tokens,
+            "phase": phase,
+            "tokens_observed": len(observed),
+            "tokens_truncated": n_tokens > TRUNCATION_PRINTED,
+            "observed_token_indices": observed,
+            "node_count": len(blocks),
+        })
+
+    selections = expected_selections(graphs)
+    encoded = text.encode("utf-8")
+    line_count = encoded.count(b"\n") + (0 if encoded.endswith(b"\n") or not encoded else 1)
+    callback_lines = sum(len(blocks) for blocks in graphs)
+    skipped = line_count - sum(len(block.lines()) for blocks in graphs for block in blocks)
+
+    if moe_present:
+        locality = naive_locality(selections, graph_phase, topk_layers)
+    else:
+        locality = {
+            "adjacent_pair_count": 0,
+            "reuse_numerator": None,
+            "reuse_denominator": None,
+            "reuse_per_mille": None,
+            "per_layer": [],
+            "working_set": [],
+            "phase_split": {"prefill": None, "decode": None},
+        }
+
+    shape_class = "moe-ffn" if moe_present else ("dense-ffn" if dense_present else "unknown")
+    shape_basis = ("ffn_moe_topk present" if moe_present else
+                   ("ffn_gate/ffn_up/ffn_swiglu present, ffn_moe_topk absent" if dense_present else
+                    "ffn_moe_topk absent, no dense feed-forward family present"))
+
+    return {
+        "schema_version": 1,
+        "kind": "R2_ACTIVATION_TRACE",
+        "path": path,
+        "status": "ok",
+        "error_code": "",
+        "error_detail": "",
+        "source": {
+            "file_size": len(encoded),
+            "line_count": line_count,
+            "bytes_read": {"$bytes_read": len(encoded)},
+            "callback_line_count": callback_lines,
+            "skipped_line_count": skipped,
+        },
+        "run": {
+            "instrument": "llama-eval-callback",
+            "build": None,
+            "build_source": "absent",
+            "contract_build": CONTRACT_BUILD,
+            "build_matches_contract": None,
+            "version_line": None,
+        },
+        "graph": {
+            "graph_count": len(graphs),
+            "n_layer": n_layer,
+            "node_families": sorted(set(families)),
+            "unsuffixed_nodes": sorted(set(plains)),
+            "ops": sorted(set(ops)),
+            "shape_class": shape_class,
+            "shape_class_basis": shape_basis,
+        },
+        "moe": {
+            "present": moe_present,
+            "n_expert": n_expert,
+            "n_expert_used": n_expert_used,
+            "n_expert_source": n_expert_source,
+            "topk_layers": sorted(set(topk_layers)),
+            "slots_truncated": bool(moe_present and n_expert_used > TRUNCATION_PRINTED),
+        },
+        "graphs": graph_rows,
+        "selections": selections,
+        "locality": locality,
+    }
+
+
+# ---------------------------------------------------------------------------------------------
+# The corpus.
+
+def mutate(text, old, new, count=1):
+    if old not in text:
+        raise SystemExit("eval_callback_fixture: mutation target %r absent" % old)
+    return text.replace(old, new, count)
+
+
+def emit(cases, root, name, text, expect="error", code=None, detail=None, asserts=None,
+         document=None, binary=None):
+    target = root / (name + ".txt")
+    if binary is not None:
+        target.write_bytes(binary)
+    else:
+        target.write_text(text, encoding="utf-8")
+    case = {"name": name, "file": target.name, "expect": expect}
+    if code is not None:
+        case["error_code"] = code
+    if detail is not None:
+        case["error_detail"] = detail
+    if asserts:
+        case["asserts"] = asserts
+    if document is not None:
+        case["document"] = document
+    cases.append(case)
+
+
+def positive(cases, root, name, graphs, separator="", trailing_newline=True, extra=None,
+             asserts=None):
+    text = render(graphs, trailing_newline=trailing_newline, separator=separator)
+    if extra is not None:
+        text = extra(text)
+    document = expected_document(str((root / (name + ".txt")).resolve()), graphs, text,
+                                 separator=separator)
+    emit(cases, root, name, text, expect="ok", document=document, asserts=asserts)
+    return text
+
+
+def main():
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: eval_callback_fixture.py OUTPUT_DIR")
+    root = Path(sys.argv[1])
+    root.mkdir(parents=True, exist_ok=True)
+    cases = []
+
+    # 1. Dense. A qwen2-shaped graph is a first-class success: `status: "ok"` with
+    #    `moe.present: false` and every locality aggregate `null`.
+    for n_layer, n_tokens in ((1, 1), (2, 5), (28, 5), (1, 64), (28, 64)):
+        positive(cases, root, "dense-L%d-T%d" % (n_layer, n_tokens),
+                 [dense_graph(n_layer, n_tokens)])
+
+    # A graph with no `-N` suffixed node at all: `n_layer` stays at its `-1` sentinel.
+    positive(cases, root, "dense-zero-layer", [dense_graph(0, 3)])
+
+    # 2. MoE with generator-known ids. This is the corpus that closes every MOE-PREREQ cell
+    #    synthetically, and the one a real MoE transcript would replace.
+    for n_expert, used in ((4, 1), (8, 2), (32, 4), (128, 8), (8, 8), (1024, 64)):
+        positive(cases, root, "moe-E%d-U%d" % (n_expert, used),
+                 [moe_graph(4, 5, Router(11, n_expert, used), 0)])
+
+    # `n_expert` sources: probs wins, then logits, then absent.
+    positive(cases, root, "n-expert-logits",
+             [moe_graph(2, 5, Router(3, 16, 4), 0, probs=False)])
+    positive(cases, root, "n-expert-absent",
+             [moe_graph(2, 5, Router(3, 16, 4), 0, probs=False, logits=False)])
+
+    # 3. Truncated axes. Every combination of full and three-plus-three printing on axes 0 and 1.
+    for n_tokens in (6, 7, 8, 64, 1024):
+        for used in (4, 6, 7, 8):
+            positive(cases, root, "trunc-T%d-U%d" % (n_tokens, used),
+                     [moe_graph(2, n_tokens, Router(5, 64, used), 0)])
+
+    # Axis 2 and axis 3 exercised by a three- and four-axis tensor.
+    axis_blocks = [
+        Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [64, 152064, 1, 1]),
+              ("inp_tokens", [5, 1, 1, 1]), [64, 5, 1, 1]),
+        Block("Qcur-0 (view) (permuted)", "f32", "PERMUTE", ("Qcur-0 (view)", [8, 28, 5, 1]),
+              None, [8, 5, 28, 1]),
+        Block("cache_v_l0 (view)", "f16", "VIEW", ("cache_v_l0", [512, 119040, 1, 1]), None,
+              [8, 4, 256, 1]),
+        Block("node_946", "f32", "GET_ROWS", ("l_out-0", [64, 5, 1, 1]),
+              ("inp_out_ids", [1, 1, 1, 1]), [64, 1, 1, 1]),
+        Block("axis3-0", "f32", "ADD", ("MTL0#embd#0", [4, 3, 2, 3]), None, [4, 3, 2, 3]),
+    ]
+    positive(cases, root, "axis-shapes", [axis_blocks])
+
+    # Multi-graph: a repeated node name opens the next graph, and the three-valued phase rule
+    # separates a genuine decode step from a one-token prompt's prefill.
+    router = Router(29, 32, 4)
+    positive(cases, root, "multi-graph", [
+        moe_graph(3, 5, router, 0),
+        moe_graph(3, 1, router, 1),
+        moe_graph(3, 1, router, 2),
+    ])
+    positive(cases, root, "phase-ambiguous", [moe_graph(2, 1, Router(31, 8, 2), 0)])
+
+    # Every expert id 0..255 rendered through `%12.4f` and round-tripped.
+    sweep = [Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [64, 152064, 1, 1]),
+                   ("inp_tokens", [6, 1, 1, 1]), [64, 6, 1, 1])]
+    for layer in range(8):
+        sweep.append(Block("ffn_moe_probs-%d" % layer, "f32", "SOFT_MAX",
+                           ("ffn_moe_logits-%d" % layer, [256, 6, 1, 1]), None, [256, 6, 1, 1]))
+        sweep.append(Block("ffn_moe_topk-%d" % layer, "i32", "TOP_K",
+                           ("ffn_moe_probs-%d" % layer, [256, 6, 1, 1]), None, [6, 6, 1, 1],
+                           (lambda i0, i1, i2, i3, layer=layer: float((layer * 36 + i1 * 6 + i0) % 256))))
+    positive(cases, root, "expert-id-format", [sweep])
+
+    # A transcript with no callback line at all: every loop join terminates on a zero count.
+    empty_graph_text = "".join("ggml_backend_sched: node %d\n" % index for index in range(24))
+    emit(cases, root, "zero-graph", empty_graph_text, expect="ok",
+         asserts={"graph_count": 0, "callback_line_count": 0, "skipped_line_count": 24,
+                  "n_layer": -1, "moe_present": False})
+
+    # A `2>&1` capture: interleaved logger lines are ignorable and counted, never an error. The
+    # logger writes between callback records, which is the asymmetry section 2.6 records — the same
+    # line inside a value block is `R2_VALUE_GRAMMAR`.
+    dense = [dense_graph(2, 5)]
+    positive(cases, root, "dense-interleave-base", dense)
+    logged = ["version: 0.2.0 (build 10566, commit bb4caa754)"]
+    for blocks in dense:
+        for index, block in enumerate(blocks):
+            logged.append("0.02.233.039 I system_info: n_threads = 4")
+            logged.extend(block.lines())
+            logged.append("")
+    emit(cases, root, "interleaved-stderr", "\n".join(logged) + "\n", expect="ok",
+         asserts={"same_document_as": "dense-interleave-base", "build": 10566})
+
+    # A transcript need not end in a newline, and CRLF is not silently stripped.
+    positive(cases, root, "no-trailing-newline", [dense_graph(1, 3)], trailing_newline=False)
+    emit(cases, root, "crlf-transcript", render([dense_graph(1, 3)]).replace("\n", "\r\n"),
+         expect="error", code="R2_HEADER_GRAMMAR")
+    positive(cases, root, "blank-lines", [dense_graph(1, 3)], separator="")
+
+    # 6. Window boundary. The same logical transcript, prefixed with exactly enough ignorable bytes
+    #    that a chosen line starts `k` bytes before offset WINDOW_BYTES and therefore runs off the
+    #    end of the first window. A whole-file parser passes these trivially; a streaming one can
+    #    fail them silently, which is why section 2.4's choice owns this family.
+    boundary_graph = [dense_graph(28, 64)]
+    boundary_text = render(boundary_graph)
+    positive(cases, root, "window-unpadded", boundary_graph)
+
+    def pad_bytes(count):
+        if count <= 0:
+            return ""
+        out = []
+        while count > 64:
+            out.append("#" * 63 + "\n")
+            count -= 64
+        if count == 1:
+            out.append("\n")
+        else:
+            out.append("#" * (count - 1) + "\n")
+        return "".join(out)
+
+    def line_offsets(text):
+        offset = 0
+        for line in text.split("\n"):
+            yield offset, line
+            offset += len(line.encode()) + 1
+
+    def classify(line):
+        if line.startswith("common_debug_cb_eval:"):
+            return "header"
+        if line.startswith("    sum = "):
+            return "sum"
+        if line.startswith(ROW_OPEN) and line.endswith(ROW_CLOSE):
+            return "row"
+        if line in (A1_TRUNC, A2_TRUNC):
+            return "marker"
+        return "other"
+
+    targets = {}
+    for offset, line in line_offsets(boundary_text):
+        kind = classify(line)
+        if kind != "other" and kind not in targets and offset > 2048:
+            targets[kind] = offset
+    for kind, offsets in (("header", (1, 2, 40, 200)), ("row", (40,)), ("sum", (40,)),
+                          ("marker", (40,))):
+        if kind not in targets:
+            raise SystemExit("eval_callback_fixture: no %s line to straddle the window" % kind)
+        for k in offsets:
+            required = WINDOW_BYTES - k - targets[kind]
+            text = pad_bytes(required) + boundary_text
+            if len(text.encode()) <= WINDOW_BYTES:
+                raise SystemExit("eval_callback_fixture: the boundary fixture fits one window")
+            emit(cases, root, "window-%s-%d" % (kind, k), text, expect="ok",
+                 asserts={"same_document_as": "window-unpadded", "straddles_window": True})
+
+    # 5. Huge line, first and after five hundred blocks.
+    long_line = "z" * 200000
+    emit(cases, root, "huge-line-first", long_line + "\n" + render([dense_graph(1, 3)]),
+         expect="error", code="R2_LINE_TOO_LONG", detail="0",
+         asserts={"callback_line_count": 0})
+    prefix_blocks = [Block("node_%d" % index, "f32", "ADD", ("embd", [4, 1, 1, 1]), None,
+                           [4, 1, 1, 1]) for index in range(500)]
+    prefix_text = render([[Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [4, 8, 1, 1]),
+                                 ("inp_tokens", [1, 1, 1, 1]), [4, 1, 1, 1])] + prefix_blocks])
+    emit(cases, root, "huge-line-late", prefix_text + long_line + "\n",
+         expect="error", code="R2_LINE_TOO_LONG", detail=str(len(prefix_text.encode())),
+         asserts={"callback_line_count": 501})
+
+    # 4. Malformed: one fixture per row of the section 2.6 table.
+    base = render([dense_graph(1, 5)])
+    header_line = [line for line in base.split("\n") if line.startswith("common_debug_cb_eval:")][0]
+
+    emit(cases, root, "empty-transcript", "", expect="error", code="R2_TRANSCRIPT_EMPTY",
+         detail="")
+    # `grammar-drift`: five mutations of a real header line, each refused rather than half-read.
+    drifts = [
+        ("drift-narrow-name", mutate(base, "common_debug_cb_eval: " + " " * 20,
+                                     "common_debug_cb_eval: ")),
+        ("drift-missing-brace", mutate(base, "}) = {", ") = {")),
+        ("drift-missing-paren", mutate(base, " = (f32)", " = f32)")),
+        ("drift-narrow-op", mutate(base, "(f32)   RMS_NORM(", "(f32) RMS_NORM(")),
+        ("drift-no-separator", mutate(base, "}, ", "},")),
+    ]
+    for name, text in drifts:
+        emit(cases, root, name, text, expect="error", code="R2_HEADER_GRAMMAR")
+
+    long_name = "n" * (MAX_NAME_BYTES + 1)
+    emit(cases, root, "node-name-too-long",
+         render([[Block(long_name, "f32", "ADD", ("embd", [4, 1, 1, 1]), None, [4, 1, 1, 1])]]),
+         expect="error", code="R2_NODE_NAME_TOO_LONG")
+
+    emit(cases, root, "dims-invalid", mutate(base, "= {3584, 5, 1, 1}", "= {3584, 5, 1}"),
+         expect="error", code="R2_DIMS_INVALID", detail="embd")
+
+    emit(cases, root, "value-drift-inside",
+         mutate(base, "        ],\n    ]", "        ],\n        stray\n    ]"),
+         expect="error", code="R2_VALUE_GRAMMAR")
+    positive(cases, root, "value-drift-base", [dense_graph(1, 5)])
+    emit(cases, root, "value-drift-outside", base.replace("\n\n", "\n        stray\n\n"),
+         expect="ok", asserts={"same_document_as": "value-drift-base", "ignore_source": True})
+
+    emit(cases, root, "sum-missing", base.replace("    sum = ", "    total = ", 1),
+         expect="error", code="R2_VALUE_GRAMMAR")
+    emit(cases, root, "sum-missing-eof",
+         "\n".join(base.split("\n")[:-3]) + "\n", expect="error", code="R2_SUM_MISSING")
+
+    emit(cases, root, "layer-index",
+         render([[Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [4, 8, 1, 1]),
+                        ("inp_tokens", [1, 1, 1, 1]), [4, 1, 1, 1]),
+                  Block("ffn_out-%d" % MAX_LAYERS, "f32", "ADD", ("embd", [4, 1, 1, 1]), None,
+                        [4, 1, 1, 1])]]),
+         expect="error", code="R2_LAYER_INDEX", detail="ffn_out-%d" % MAX_LAYERS)
+
+    rowcount_base = render([[Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [8, 8, 1, 1]),
+                                   ("inp_tokens", [28, 1, 1, 1]), [8, 28, 1, 1])]])
+    dropped = rowcount_base.split("\n")
+    dropped = [line for index, line in enumerate(dropped) if index != 5]
+    emit(cases, root, "rowcount-mismatch", "\n".join(dropped), expect="error",
+         code="R2_ROW_COUNT", detail="embd")
+
+    token_mismatch = render([moe_graph(1, 5, Router(2, 8, 2), 0)])
+    token_mismatch = mutate(token_mismatch, "ffn_moe_topk-0 = (i32)      TOP_K(ffn_moe_probs-0{8, 5, 1, 1}, }) = {2, 5, 1, 1}",
+                            "ffn_moe_topk-0 = (i32)      TOP_K(ffn_moe_probs-0{8, 5, 1, 1}, }) = {2, 4, 1, 1}")
+    emit(cases, root, "token-count", token_mismatch, expect="error", code="R2_TOKEN_COUNT",
+         detail="ffn_moe_topk-0")
+
+    id_base = render([moe_graph(1, 5, Router(2, 8, 2), 0)])
+    # The detail is the element text verbatim, padding included: it is what the transcript printed,
+    # and trimming it would hide a width change that is itself evidence of grammar drift.
+    for name, replacement, code in (
+        ("expert-fraction", "     12.5000", "R2_EXPERT_ID_NOT_INTEGRAL"),
+        ("expert-negative", "     -1.0000", "R2_EXPERT_ID_NOT_INTEGRAL"),
+        ("expert-nan", "         nan", "R2_EXPERT_ID_NOT_INTEGRAL"),
+        ("expert-inf", "         inf", "R2_EXPERT_ID_NOT_INTEGRAL"),
+    ):
+        detail = replacement
+        rows = id_base.split("\n")
+        for index, line in enumerate(rows):
+            if line.startswith(ROW_OPEN) and "ffn_moe_topk-0" in rows[index - 4]:
+                pass
+        marker = rows.index([line for line in rows
+                             if "ffn_moe_topk-0" in line and line.startswith("common")][0])
+        for index in range(marker, len(rows)):
+            if rows[index].startswith(ROW_OPEN):
+                parts = rows[index][len(ROW_OPEN):-len(ROW_CLOSE)].split(", ")
+                parts[0] = replacement
+                rows[index] = ROW_OPEN + ", ".join(parts) + ROW_CLOSE
+                break
+        emit(cases, root, name, "\n".join(rows), expect="error", code=code, detail=detail)
+
+    bounds = render([moe_graph(1, 5, Router(2, 8, 2), 0)])
+    rows = bounds.split("\n")
+    marker = rows.index([line for line in rows
+                         if "ffn_moe_topk-0" in line and line.startswith("common")][0])
+    for index in range(marker, len(rows)):
+        if rows[index].startswith(ROW_OPEN):
+            parts = rows[index][len(ROW_OPEN):-len(ROW_CLOSE)].split(", ")
+            parts[0] = "%12.4f" % 9.0
+            rows[index] = ROW_OPEN + ", ".join(parts) + ROW_CLOSE
+            break
+    emit(cases, root, "expert-out-of-range", "\n".join(rows), expect="error",
+         code="R2_EXPERT_BOUNDS", detail="ffn_moe_topk-0")
+
+    over_used = render([[Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [8, 8, 1, 1]),
+                               ("inp_tokens", [2, 1, 1, 1]), [8, 2, 1, 1]),
+                         Block("ffn_moe_topk-0", "i32", "TOP_K", ("ffn_moe_probs-0", [8, 2, 1, 1]),
+                               None, [MAX_EXPERTS_USED + 1, 2, 1, 1])]])
+    emit(cases, root, "expert-used-bounds", over_used, expect="error", code="R2_EXPERT_BOUNDS",
+         detail="ffn_moe_topk-0")
+
+    inconsistent = [
+        Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [8, 8, 1, 1]),
+              ("inp_tokens", [2, 1, 1, 1]), [8, 2, 1, 1]),
+        Block("ffn_moe_topk-0", "i32", "TOP_K", ("ffn_moe_probs-0", [8, 2, 1, 1]), None,
+              [2, 2, 1, 1]),
+        Block("ffn_moe_topk-1", "i32", "TOP_K", ("ffn_moe_probs-1", [8, 2, 1, 1]), None,
+              [3, 2, 1, 1]),
+    ]
+    emit(cases, root, "moe-inconsistent-layers", render([inconsistent]), expect="error",
+         code="R2_MOE_INCONSISTENT", detail="ffn_moe_topk-1")
+    graph_a = [
+        Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [8, 8, 1, 1]),
+              ("inp_tokens", [2, 1, 1, 1]), [8, 2, 1, 1]),
+        Block("ffn_moe_topk-0", "i32", "TOP_K", ("ffn_moe_probs-0", [8, 2, 1, 1]), None,
+              [2, 2, 1, 1]),
+    ]
+    graph_b = [
+        Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [8, 8, 1, 1]),
+              ("inp_tokens", [2, 1, 1, 1]), [8, 2, 1, 1]),
+        Block("ffn_moe_topk-0", "i32", "TOP_K", ("ffn_moe_probs-0", [8, 2, 1, 1]), None,
+              [4, 2, 1, 1]),
+    ]
+    emit(cases, root, "moe-inconsistent-graphs", render([graph_a, graph_b]), expect="error",
+         code="R2_MOE_INCONSISTENT", detail="ffn_moe_topk-0")
+
+    # Malformed bytes: a NUL and an invalid UTF-8 byte in a header line are each refused, and the
+    # document that reports them is still valid JSON.
+    nul_text = base.replace("embd", "em\0d", 1).encode("utf-8")
+    emit(cases, root, "nul-in-header", None, expect="error", code="R2_HEADER_GRAMMAR",
+         binary=nul_text)
+    invalid_utf8 = base.replace("embd", "emXd", 1).encode("utf-8").replace(b"emXd", b"em\xffd", 1)
+    emit(cases, root, "invalid-utf8-name", None, expect="error", code="R2_HEADER_GRAMMAR",
+         binary=invalid_utf8)
+
+    # Precedence: a transcript defective in two ordered ways reports the earlier row.
+    emit(cases, root, "precedence-line-then-header",
+         long_line + "\n" + drifts[1][1], expect="error", code="R2_LINE_TOO_LONG", detail="0")
+    header_then_rowcount = "\n".join(dropped).replace(
+        "common_debug_cb_eval: ", "common_debug_cb_eval:", 1)
+    emit(cases, root, "precedence-header-then-rowcount", header_then_rowcount, expect="error",
+         code="R2_HEADER_GRAMMAR")
+
+    # `partial-scan`: a defect at block 500 of 1,000 reports the exact callback line count.
+    many = [Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [4, 8, 1, 1]),
+                  ("inp_tokens", [1, 1, 1, 1]), [4, 1, 1, 1])]
+    many += [Block("node_%d" % index, "f32", "ADD", ("embd", [4, 1, 1, 1]), None, [4, 1, 1, 1])
+             for index in range(999)]
+    partial = render([many]).split("\n")
+    target = [index for index, line in enumerate(partial)
+              if line.startswith("common_debug_cb_eval:")][500]
+    partial[target] = partial[target].replace("}) = {", ") = {")
+    emit(cases, root, "partial-scan", "\n".join(partial), expect="error",
+         code="R2_HEADER_GRAMMAR", asserts={"callback_line_count": 501})
+
+    # Limits whose real constants a fixture can reach.
+    node_limit = [Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [4, 8, 1, 1]),
+                        ("inp_tokens", [1, 1, 1, 1]), [4, 1, 1, 1])]
+    node_limit += [Block("node_%d" % index, "f32", "ADD", ("embd", [4, 1, 1, 1]), None,
+                         [4, 1, 1, 1]) for index in range(MAX_NODES_PER_GRAPH)]
+    emit(cases, root, "node-limit", render([node_limit]), expect="error", code="R2_NODE_LIMIT",
+         detail="0")
+
+    graph_limit_block = Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [4, 8, 1, 1]),
+                              ("inp_tokens", [1, 1, 1, 1]), [4, 1, 1, 1])
+    emit(cases, root, "graph-limit",
+         render([[graph_limit_block] for _ in range(MAX_GRAPHS + 1)]),
+         expect="error", code="R2_GRAPH_LIMIT", detail=str(MAX_GRAPHS))
+
+    # `MAX_SELECTIONS`: 36 printed elements per `ffn_moe_topk` block is the ceiling the truncation
+    # rule imposes, so the fixture is the smallest graph count that crosses the bound.
+    per_block = TRUNCATION_PRINTED * TRUNCATION_PRINTED
+    blocks_needed = MAX_SELECTIONS // per_block + 2
+    layers = MAX_LAYERS
+    graph_count = (blocks_needed + layers - 1) // layers
+    selection_router = Router(7, 64, 6)
+    selection_graphs = []
+    for ordinal in range(graph_count):
+        blocks = [Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [8, 8, 1, 1]),
+                        ("inp_tokens", [6, 1, 1, 1]), [8, 6, 1, 1])]
+        for layer in range(layers):
+            blocks.append(Block("ffn_moe_topk-%d" % layer, "i32", "TOP_K",
+                                ("ffn_moe_probs-%d" % layer, [64, 6, 1, 1]), None, [6, 6, 1, 1],
+                                (lambda i0, i1, i2, i3, layer=layer, ordinal=ordinal:
+                                 float(selection_router.experts(ordinal, layer, i1)[i0]))))
+        selection_graphs.append(blocks)
+    emit(cases, root, "selection-limit", render(selection_graphs), expect="error",
+         code="R2_SELECTION_LIMIT", detail=str(MAX_SELECTIONS))
+
+    # `MAX_TRANSCRIPT_BYTES` is reached with a sparse file: the guard fires on `f.len()` alone, so
+    # not one of its bytes is ever read.
+    oversize = root / "oversize-transcript.txt"
+    sparse = False
+    try:
+        with open(oversize, "wb") as handle:
+            handle.truncate(MAX_TRANSCRIPT_BYTES + 1)
+        sparse = oversize.stat().st_size == MAX_TRANSCRIPT_BYTES + 1
+    except OSError:
+        sparse = False
+    if sparse:
+        cases.append({"name": "oversize-transcript", "file": oversize.name, "expect": "error",
+                      "error_code": "R2_TRANSCRIPT_TOO_LARGE",
+                      "error_detail": str(MAX_TRANSCRIPT_BYTES + 1)})
+    else:
+        if oversize.exists():
+            oversize.unlink()
+
+    manifest = {
+        "window_bytes": WINDOW_BYTES,
+        "max_line_bytes": MAX_LINE_BYTES,
+        "max_selections": MAX_SELECTIONS,
+        "max_graphs": MAX_GRAPHS,
+        "max_nodes_per_graph": MAX_NODES_PER_GRAPH,
+        "contract_build": CONTRACT_BUILD,
+        "windows": list(WINDOWS),
+        "sparse_oversize": sparse,
+        "cases": cases,
+    }
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=False),
+                                        encoding="utf-8")
+    print("eval callback fixture: %d cases" % len(cases))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,2107 @@
+module expert_trace
+
+import core.json
+import std.fs
+
+// R2A-EXPERT-TRACE-CAPTURE (`docs/specs/r2a-expert-trace.md`). One llama.cpp eval-callback
+// transcript in, one `R2_ACTIVATION_TRACE` document out. This module is the sole owner of the
+// transcript grammar of section 2.2, the bounded streaming line reader of section 2.4, the
+// `R2_ACTIVATION_TRACE` schema of section 2.5, the ordered validation of section 2.6, and every
+// `R2_*` code.
+//
+// It imports `core.json` and `std.fs` and nothing else. Its input is a text file: a dependency on
+// `src/gguf.align` would couple a container reader to a log parser, so the `Cursor` / window idiom
+// is reused by transcription rather than by import (section 2.7).
+//
+// Four rules govern every line below.
+//
+//  1. `view.u8(i)` ABORTS on an out-of-range read at the pinned toolchain, so every byte touched is
+//     inside a span the line reader has already proved resident.
+//  2. A `str` obtained from the window is borrowed from the window and must not outlive the next
+//     refill. Every retained text value is copied into the name stream inside the iteration that
+//     produced it.
+//  3. Align integer overflow is two's-complement wrap with no trap, so every sum or product of a
+//     transcript-derived value is proved in range before it is formed.
+//  4. Validation is strictly ordered (section 2.6) and the first applicable row wins. No document
+//     and no stdout is produced before the whole derivation completes.
+
+// Section 2.4 bounds.
+WINDOW_BYTES := 1048576
+MAX_LINE_BYTES := 65536
+MAX_TRANSCRIPT_BYTES := 68719476736
+MAX_LINES := 1073741824
+MAX_GRAPHS := 65536
+MAX_NODES_PER_GRAPH := 8192
+MAX_LAYERS := 1024
+MAX_EXPERTS := 1024
+MAX_EXPERTS_USED := 64
+MAX_TOKENS_PER_GRAPH := 1048576
+MAX_SELECTIONS := 1048576
+MAX_REUSE_WINDOW := 64
+MAX_NAME_BYTES := 256
+MAX_DETAIL_BYTES := 256
+MAX_PATH_BYTES := 4096
+
+// The build this parser's grammar was derived from (section 2.2).
+CONTRACT_BUILD := 10566
+
+// Interning tables. `MAX_NODES_PER_GRAPH` distinct names and `MAX_OPS` distinct operation names sit
+// in open-addressed tables at a load factor of at most one half, so a probe run is bounded.
+SLOT_COUNT := 16384
+SLOT_MASK := 16383
+MAX_OPS := 1024
+// Name bytes are bounded by `MAX_NODES_PER_GRAPH * MAX_NAME_BYTES`; the initial reservation is the
+// measured size of a real 958-node graph's distinct names with two orders of magnitude of room.
+NAME_STREAM_BYTES := 2097152
+OP_STREAM_BYTES := 16384
+
+// The truncation split of section 2.2 finding 6: an axis longer than `2 * TRUNCATION_HALF` prints
+// its first and last `TRUNCATION_HALF` entries with one marker between them.
+TRUNCATION_HALF := 3
+TRUNCATION_PRINTED := 6
+
+// The section 2.5.7 working-set windows, ascending, each `<= MAX_REUSE_WINDOW`.
+WINDOW_COUNT := 7
+
+// There is no `i64` `MAX` constant at this pin, so the one bound that must be named is a literal.
+I64_MAX := 9223372036854775807
+
+// Section 2.2 finding 1 and finding 6: the complete line grammar, byte for byte.
+CB_PREFIX := "common_debug_cb_eval: "
+CB_PREFIX_BYTES := 22
+// `%24s` and `%10s`: a field narrower than its width is grammar drift, not a short name.
+NAME_FIELD_WIDTH := 24
+OP_FIELD_WIDTH := 10
+HEADER_NAME_SEP := " = ("
+HEADER_TAIL := "}) = {"
+A3_OPEN := "    ["
+A3_CLOSE := "    ]"
+A2_OPEN := "        ["
+A2_CLOSE := "        ],"
+A2_TRUNC := "        ..., "
+A1_TRUNC := "            ..., "
+ROW_OPEN := "            ["
+ROW_CLOSE := "  ],"
+A0_MARK := "   ..."
+ELEMENT_SEP := ", "
+SUM_PREFIX := "    sum = "
+VERSION_PREFIX := "version: "
+VERSION_BUILD := "(build "
+
+// The MoE node families of section 2.2 finding 4 that R2A keys on.
+FAMILY_TOPK := "ffn_moe_topk"
+FAMILY_PROBS := "ffn_moe_probs"
+FAMILY_LOGITS := "ffn_moe_logits"
+FAMILY_GATE := "ffn_gate"
+FAMILY_UP := "ffn_up"
+FAMILY_SWIGLU := "ffn_swiglu"
+NODE_EMBD := "embd"
+
+// `n_expert_source` codes. Section 2.5.5's third rule — the router weight operand of the `MUL_MAT`
+// producing `ffn_moe_logits-N` — is unreachable and therefore not implemented: the only identifier
+// for that operand is the `ffn_moe_logits-N` node itself, whose own axis 0 is already rule two
+// (section 6, item 7).
+SOURCE_NONE := 0
+SOURCE_PROBS := 1
+SOURCE_LOGITS := 2
+
+// Selection packing. `graph` 16 bits, `layer` 10, `token` 20, `expert` 10, `slot` 6: 62 bits, so a
+// packed key is always non-negative and `array<i64>.sort()` orders by
+// `(graph, layer, token, expert, slot)`. Expert sorts above slot deliberately: the aggregates need
+// the distinct expert set of one token, never its slot order.
+SLOT_BITS := 6
+EXPERT_SHIFT := 6
+TOKEN_SHIFT := 16
+LAYER_SHIFT := 36
+GRAPH_SHIFT := 46
+SLOT_FIELD_MASK := 63
+EXPERT_FIELD_MASK := 1023
+TOKEN_FIELD_MASK := 1048575
+LAYER_FIELD_MASK := 1023
+
+HEX_DIGITS := "0123456789abcdef"
+
+pub TraceStatus { Ok, Error }
+
+// The scalar fields exist for the CLI summary block and for the smoke's assertions; `document` is
+// the authoritative result and is moved, never cloned, into this its sole owning record.
+pub ExpertTrace {
+  status: TraceStatus,
+  error_code: string,
+  error_detail: string,
+  graph_count: i64,
+  n_layer: i64,
+  tokens_observed: i64,
+  tokens_total: i64,
+  moe_present: bool,
+  n_expert: i64,
+  n_expert_used: i64,
+  selection_count: i64,
+  reuse_per_mille: i64,
+  reuse_present: bool,
+  document: string,
+}
+
+// A structural defect in the transcript. `os` distinguishes an operating-system failure, which
+// `build_trace` surfaces as `Err(Error)` with no document, from a grammar fault, which is data.
+Fault { code: string, detail: string, os: bool, os_error: Error }
+
+// `file` never rides an aggregate other than its constructor's `Result<file, Error>` and a native
+// buffer fill requires a bare `mut` buffer local, so the handle and the window stay locals in
+// `scan` and travel as `borrow` / `borrow mut` parameters.
+Cursor {
+  file_size: i64,
+  window_base: i64,
+  window_len: i64,
+  pos: i64,
+  capacity: i64,
+  bytes_read: i64,
+}
+
+// One line, addressed relative to the resident window. `rel` is always `c.pos - c.window_base` at
+// the moment the line was found, so `[rel, rel + len)` is inside `[0, window_len)`.
+Line { rel: i64, len: i64, offset: i64, done: bool }
+
+Dims { ok: bool, d0: i64, d1: i64, d2: i64, d3: i64 }
+
+// The extracted header fields, as `[start, end)` spans into the line the caller still holds. A view
+// derived from a parameter is never returned; the caller re-slices its own line.
+Header {
+  code: str,
+  name_start: i64,
+  name_end: i64,
+  op_start: i64,
+  op_end: i64,
+  s0: Dims,
+  has_src1: bool,
+  s1: Dims,
+  ne: Dims,
+}
+
+// The section 2.7 stream-plus-columns scan result. One concatenated `names` stream addressed by
+// explicit `[start, end)` spans plus parallel Copy columns, the third instance of the `GgufTable` /
+// `BlockPlan` shape. The NUL-free property is enforced, not assumed: a NUL anywhere in a header
+// line is `R2_HEADER_GRAMMAR`.
+pub TranscriptScan {
+  code: string,
+  detail: string,
+
+  file_size: i64,
+  bytes_read: i64,
+  line_count: i64,
+  callback_line_count: i64,
+  skipped_line_count: i64,
+
+  build: i64,
+  build_present: bool,
+  version_line: string,
+
+  graph_count: i64,
+  n_layer: i64,
+
+  moe_present: bool,
+  n_expert: i64,
+  n_expert_used: i64,
+  n_expert_source: i64,
+  dense_ffn_present: bool,
+
+  // Distinct node names, in first-seen order. `family_len` is the length of the `-N` family prefix,
+  // or `-1` when the name carries no layer suffix.
+  name_count: i64,
+  names: string,
+  name_start: array<i64>,
+  name_end: array<i64>,
+  name_family_len: array<i64>,
+
+  // Distinct operation names, in first-seen order.
+  op_count: i64,
+  ops: string,
+  op_start: array<i64>,
+  op_end: array<i64>,
+
+  // One entry per graph evaluation, in transcript order.
+  graph_tokens: array<i64>,
+  graph_nodes: array<i64>,
+
+  // The selection table, in observation order, plus the packed sort key of the same rows.
+  selection_count: i64,
+  sel_graph: array<i64>,
+  sel_layer: array<i64>,
+  sel_token: array<i64>,
+  sel_slot: array<i64>,
+  sel_expert: array<i64>,
+  sel_key: array<i64>,
+
+  topk_layers: array<i64>,
+}
+
+fn fault(code: str, detail: string) -> Fault =
+Fault { code: code.clone(), detail: detail, os: false, os_error: Error.Invalid }
+
+fn no_fault() -> Fault = fault("", "".clone())
+
+fn os_fault(e: Error) -> Fault =
+Fault { code: "R2_TRANSCRIPT_UNREADABLE".clone(), detail: error_label(e).clone(), os: true, os_error: e }
+
+fn error_label(e: Error) -> str = match e {
+  NotFound => "NotFound",
+  Invalid => "Invalid",
+  Denied => "Denied",
+  Timeout => "Timeout",
+  Code(_) => "Code",
+}
+
+TextBox { v: str }
+
+// The one text-to-JSON boundary. `json.encode` owns escaping, so a transcript-supplied name
+// carrying a quote, a backslash, or a control byte survives into valid JSON.
+fn json_string(value: str) -> string {
+  boxed := TextBox { v: value }
+  encoded := json.encode(boxed)
+  return encoded[5..encoded.len() - 1].clone()
+}
+
+fn int_text(value: i64) -> string {
+  b := builder()
+  b.write_int(value)
+  return b.to_string()
+}
+
+fn bool_text(value: bool) -> string {
+  if value {
+    return "true".clone()
+  }
+  return "false".clone()
+}
+
+// `error_detail` is a diagnostic, not a contract on the identifier's completeness, so a longer one
+// is truncated at a UTF-8 scalar boundary. The scan walks back over continuation bytes, so the cut
+// can never split a scalar and the slice can never abort.
+fn bounded_detail(value: str) -> string {
+  view := value.bytes()
+  if view.len() <= MAX_DETAIL_BYTES {
+    return value.clone()
+  }
+  mut cut := MAX_DETAIL_BYTES
+  loop {
+    if cut <= 0 { break }
+    byte := view.u8(cut) as i64
+    if byte < 128 || byte >= 192 { break }
+    cut = cut - 1
+  }
+  return value[0..cut].clone()
+}
+
+fn valid_path(path: str) -> bool {
+  if path.len() == 0 || path.len() > MAX_PATH_BYTES { return false }
+  return !path.contains("\0")
+}
+
+// Section 2.2 finding 6. `printed` is `min(ne, 6)`; `axis_index` maps a printed ordinal back to the
+// exact index it stands for, which is what makes a truncated prefill yield exact token indices.
+fn printed_count(ne: i64) -> i64 {
+  if ne < 0 { return 0 }
+  if ne <= TRUNCATION_PRINTED { return ne }
+  return TRUNCATION_PRINTED
+}
+
+fn axis_index(ordinal: i64, ne: i64) -> i64 {
+  if ne <= TRUNCATION_PRINTED { return ordinal }
+  if ordinal < TRUNCATION_HALF { return ordinal }
+  return ne - TRUNCATION_PRINTED + ordinal
+}
+
+// The bounded decimal integer parse Align has no standard-library form of (section 5.5.2). `-1`
+// means "not a non-negative decimal integer that fits", and every caller treats `-1` as a fault
+// rather than as a value.
+fn parse_uint(text: str) -> i64 {
+  view := text.bytes()
+  n := view.len()
+  if n == 0 || n > 19 { return -1 }
+  mut value := 0
+  mut at := 0
+  loop {
+    if at >= n { break }
+    byte := view.u8(at) as i64
+    if byte < 48 || byte > 57 { return -1 }
+    digit := byte - 48
+    if value > (I64_MAX - digit) / 10 { return -1 }
+    value = value * 10 + digit
+    at = at + 1
+  }
+  return value
+}
+
+// Section 2.2 finding 5: an `I32` tensor prints through `%12.4f`, so an expert id arrives as
+// `<digits>.<zeros>`. A sign, a non-zero fraction, `nan`, and `inf` are each rejected here rather
+// than rounded, and no float parse exists anywhere in this module.
+fn parse_integral_element(text: str) -> i64 {
+  trimmed := text.trim()
+  point := match trimmed.find(".") {
+    Some(value) => value,
+    None => { return -1 },
+  }
+  whole := parse_uint(trimmed[0..point])
+  if whole < 0 { return -1 }
+  fraction := trimmed[point + 1..trimmed.len()]
+  fraction_view := fraction.bytes()
+  if fraction_view.len() == 0 { return -1 }
+  mut at := 0
+  loop {
+    if at >= fraction_view.len() { break }
+    if fraction_view.u8(at) != 48 { return -1 }
+    at = at + 1
+  }
+  return whole
+}
+
+// Exactly four non-negative integers separated by `, `, with no representable product overflow.
+fn parse_dims(text: str) -> Dims {
+  bad := Dims { ok: false, d0: -1, d1: -1, d2: -1, d3: -1 }
+  cut0 := match text.find(ELEMENT_SEP) {
+    Some(value) => value,
+    None => { return bad },
+  }
+  d0 := parse_uint(text[0..cut0])
+  if d0 < 0 { return bad }
+  rest1 := text[cut0 + 2..text.len()]
+  cut1 := match rest1.find(ELEMENT_SEP) {
+    Some(value) => value,
+    None => { return bad },
+  }
+  d1 := parse_uint(rest1[0..cut1])
+  if d1 < 0 { return bad }
+  rest2 := rest1[cut1 + 2..rest1.len()]
+  cut2 := match rest2.find(ELEMENT_SEP) {
+    Some(value) => value,
+    None => { return bad },
+  }
+  d2 := parse_uint(rest2[0..cut2])
+  if d2 < 0 { return bad }
+  d3 := parse_uint(rest2[cut2 + 2..rest2.len()])
+  if d3 < 0 { return bad }
+  // The element product must be representable, tested one axis at a time before each product.
+  mut product := 1
+  mut axis := 0
+  loop {
+    if axis >= 4 { break }
+    extent := if axis == 0 { d0 } else if axis == 1 { d1 } else if axis == 2 { d2 } else { d3 }
+    if extent == 0 {
+      product = 0
+      axis = axis + 1
+    } else {
+      if product > I64_MAX / extent { return bad }
+      product = product * extent
+      axis = axis + 1
+    }
+  }
+  return Dims { ok: true, d0: d0, d1: d1, d2: d2, d3: d3 }
+}
+
+fn empty_dims() -> Dims = Dims { ok: false, d0: -1, d1: -1, d2: -1, d3: -1 }
+
+fn header_error(code: str) -> Header = Header {
+  code: code,
+  name_start: -1,
+  name_end: -1,
+  op_start: -1,
+  op_end: -1,
+  s0: empty_dims(),
+  has_src1: false,
+  s1: empty_dims(),
+  ne: empty_dims(),
+}
+
+// Section 2.2 finding 1, as a parser rather than as a split. A node name may contain spaces and
+// parentheses (finding 2) and a source operand may contain `#`, so every field boundary below is a
+// literal from the format string and never whitespace.
+fn parse_header(line: str) -> Header {
+  if !line.starts_with(CB_PREFIX) {
+    return header_error("R2_HEADER_GRAMMAR")
+  }
+  separator := match line.find(HEADER_NAME_SEP) {
+    Some(value) => value,
+    None => { return header_error("R2_HEADER_GRAMMAR") },
+  }
+  if separator < CB_PREFIX_BYTES + NAME_FIELD_WIDTH {
+    // `%24s` never yields a field narrower than 24. A narrower one is grammar drift, and reading it
+    // anyway would report a name this build never printed.
+    return header_error("R2_HEADER_GRAMMAR")
+  }
+  field := line[CB_PREFIX_BYTES..separator]
+  field_view := field.bytes()
+  mut name_at := 0
+  loop {
+    if name_at >= field_view.len() { break }
+    if field_view.u8(name_at) != 32 { break }
+    name_at = name_at + 1
+  }
+  if name_at >= field_view.len() {
+    return header_error("R2_HEADER_GRAMMAR")
+  }
+  if field_view.u8(field_view.len() - 1) == 32 {
+    return header_error("R2_HEADER_GRAMMAR")
+  }
+  name_start := CB_PREFIX_BYTES + name_at
+  name_end := separator
+  if name_end - name_start > MAX_NAME_BYTES {
+    return header_error("R2_NODE_NAME_TOO_LONG")
+  }
+
+  after_name := separator + 4
+  if after_name > line.len() {
+    return header_error("R2_HEADER_GRAMMAR")
+  }
+  type_tail := line[after_name..line.len()]
+  type_len := match type_tail.find(")") {
+    Some(value) => value,
+    None => { return header_error("R2_HEADER_GRAMMAR") },
+  }
+  if type_len == 0 {
+    return header_error("R2_HEADER_GRAMMAR")
+  }
+  type_close := after_name + type_len
+  if type_close + 2 > line.len() || line[type_close + 1..type_close + 2] != " " {
+    return header_error("R2_HEADER_GRAMMAR")
+  }
+
+  op_field_start := type_close + 2
+  op_tail := line[op_field_start..line.len()]
+  op_field_len := match op_tail.find("(") {
+    Some(value) => value,
+    None => { return header_error("R2_HEADER_GRAMMAR") },
+  }
+  if op_field_len < OP_FIELD_WIDTH {
+    return header_error("R2_HEADER_GRAMMAR")
+  }
+  op_field := line[op_field_start..op_field_start + op_field_len]
+  op_field_view := op_field.bytes()
+  mut op_at := 0
+  loop {
+    if op_at >= op_field_view.len() { break }
+    if op_field_view.u8(op_at) != 32 { break }
+    op_at = op_at + 1
+  }
+  if op_at >= op_field_view.len() {
+    return header_error("R2_HEADER_GRAMMAR")
+  }
+  if op_field_view.u8(op_field_view.len() - 1) == 32 {
+    return header_error("R2_HEADER_GRAMMAR")
+  }
+  op_start := op_field_start + op_at
+  op_end := op_field_start + op_field_len
+  args_start := op_end + 1
+
+  tail_at := match line.rfind(HEADER_TAIL) {
+    Some(value) => value,
+    None => { return header_error("R2_HEADER_GRAMMAR") },
+  }
+  if tail_at < args_start {
+    return header_error("R2_HEADER_GRAMMAR")
+  }
+  if line[line.len() - 1..line.len()] != "}" {
+    return header_error("R2_HEADER_GRAMMAR")
+  }
+  result_text := line[tail_at + 6..line.len() - 1]
+  args := line[args_start..tail_at]
+
+  // `src0{dims}, ` then the source-operand helper's `src1{dims}`, empty for a unary node.
+  open0 := match args.find("{") {
+    Some(value) => value,
+    None => { return header_error("R2_HEADER_GRAMMAR") },
+  }
+  tail0 := args[open0 + 1..args.len()]
+  close0_len := match tail0.find("}") {
+    Some(value) => value,
+    None => { return header_error("R2_HEADER_GRAMMAR") },
+  }
+  close0 := open0 + 1 + close0_len
+  if close0 + 2 > args.len() || args[close0 + 1..close0 + 3] != ELEMENT_SEP {
+    return header_error("R2_HEADER_GRAMMAR")
+  }
+  s0 := parse_dims(args[open0 + 1..close0])
+  rest := args[close0 + 3..args.len()]
+  mut has_src1 := false
+  mut s1 := empty_dims()
+  if rest.len() > 0 {
+    if rest[rest.len() - 1..rest.len()] != "}" {
+      return header_error("R2_HEADER_GRAMMAR")
+    }
+    open1 := match rest.find("{") {
+      Some(value) => value,
+      None => { return header_error("R2_HEADER_GRAMMAR") },
+    }
+    has_src1 = true
+    s1 = parse_dims(rest[open1 + 1..rest.len() - 1])
+  }
+  ne := parse_dims(result_text)
+  if !s0.ok || !ne.ok || (has_src1 && !s1.ok) {
+    return Header {
+      code: "R2_DIMS_INVALID",
+      name_start: name_start,
+      name_end: name_end,
+      op_start: op_start,
+      op_end: op_end,
+      s0: s0,
+      has_src1: has_src1,
+      s1: s1,
+      ne: ne,
+    }
+  }
+  return Header {
+    code: "",
+    name_start: name_start,
+    name_end: name_end,
+    op_start: op_start,
+    op_end: op_end,
+    s0: s0,
+    has_src1: has_src1,
+    s1: s1,
+    ne: ne,
+  }
+}
+
+// The `-N` suffix of section 2.2 finding 3, as a length. `-1` means the name carries no layer,
+// which is what keeps `node_946` from being read as layer 946 and `cache_v_l0 (view)` from being
+// read as a family at all.
+fn family_length(name: str) -> i64 {
+  cut := match name.rfind("-") {
+    Some(value) => value,
+    None => { return -1 },
+  }
+  if cut == 0 || cut + 1 >= name.len() { return -1 }
+  suffix := name[cut + 1..name.len()]
+  view := suffix.bytes()
+  mut at := 0
+  loop {
+    if at >= view.len() { break }
+    byte := view.u8(at) as i64
+    if byte < 48 || byte > 57 { return -1 }
+    at = at + 1
+  }
+  return cut
+}
+
+fn layer_of(name: str, family_len: i64) -> i64 {
+  if family_len < 0 { return -1 }
+  return parse_uint(name[family_len + 1..name.len()])
+}
+
+fn filled_table(n: i64, value: i64) -> array<i64> {
+  mut column: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= n { break }
+    column.push(value)
+    at = at + 1
+  }
+  return column.build()
+}
+
+// 64-bit FNV-1a folded to 62 bits so a slot probe is non-negative. The multiplication deliberately
+// wraps; every candidate the hash selects is confirmed by an exact byte comparison before it is
+// used, so a collision costs work and never changes an answer.
+NAME_HASH_SEED := -3750763034362895579
+NAME_HASH_PRIME := 1099511628211
+NAME_HASH_MASK := 4611686018427387903
+
+fn text_hash(value: str) -> i64 {
+  view := value.bytes()
+  mut accumulator := NAME_HASH_SEED
+  mut at := 0
+  loop {
+    if at >= view.len() { break }
+    accumulator = accumulator ^ (view.u8(at) as i64)
+    accumulator = accumulator * NAME_HASH_PRIME
+    at = at + 1
+  }
+  return (accumulator >> 2) & NAME_HASH_MASK
+}
+
+fn stream_equals(stream: slice<u8>, start: i64, end: i64, value: str) -> bool {
+  view := value.bytes()
+  if end - start != view.len() { return false }
+  mut at := 0
+  loop {
+    if at >= view.len() { break }
+    if stream.u8(start + at) != view.u8(at) { return false }
+    at = at + 1
+  }
+  return true
+}
+
+fn span_text(text: str, start: i64, end: i64) -> str {
+  if start < 0 || end < start || end > text.len() { return "" }
+  return text[start..end]
+}
+
+// Byte-lexicographic order over two spans of one stream. The rendered name and op lists are sorted
+// (section 2.5.4) and Align ships no string ordering at this pin, so the comparison is written once
+// here and the sort below is the only consumer.
+fn span_less(text: str, a_start: i64, a_end: i64, b_start: i64, b_end: i64) -> bool {
+  view := text.bytes()
+  a_len := a_end - a_start
+  b_len := b_end - b_start
+  shorter := if a_len < b_len { a_len } else { b_len }
+  mut at := 0
+  loop {
+    if at >= shorter { break }
+    left := view.u8(a_start + at) as i64
+    right := view.u8(b_start + at) as i64
+    if left != right { return left < right }
+    at = at + 1
+  }
+  return a_len < b_len
+}
+
+fn span_same(text: str, a_start: i64, a_end: i64, b_start: i64, b_end: i64) -> bool {
+  if a_end - a_start != b_end - b_start { return false }
+  return !span_less(text, a_start, a_end, b_start, b_end)
+    && !span_less(text, b_start, b_end, a_start, a_end)
+}
+
+// Bottom-up merge sort over an index array, `O(n log n)` in span comparisons. `array<i64>.sort()`
+// orders integers, not text, so an ordering that must be lexicographic is written here.
+fn sort_spans(text: str, borrow starts: array<i64>, borrow ends: array<i64>, borrow index: array<i64>) -> array<i64> {
+  n := index.len()
+  mut source := filled_table(n, 0)
+  mut target := filled_table(n, 0)
+  mut at := 0
+  loop {
+    if at >= n { break }
+    source[at] = index[at]
+    at = at + 1
+  }
+  mut width := 1
+  loop {
+    if width >= n { break }
+    mut lo := 0
+    loop {
+      if lo >= n { break }
+      mid := if lo + width < n { lo + width } else { n }
+      hi := if lo + width + width < n { lo + width + width } else { n }
+      mut left := lo
+      mut right := mid
+      mut out := lo
+      loop {
+        if out >= hi { break }
+        take_left := if left >= mid {
+          false
+        } else if right >= hi {
+          true
+        } else {
+          !span_less(text, starts[source[right]], ends[source[right]],
+            starts[source[left]], ends[source[left]])
+        }
+        if take_left {
+          target[out] = source[left]
+          left = left + 1
+        } else {
+          target[out] = source[right]
+          right = right + 1
+        }
+        out = out + 1
+      }
+      lo = hi
+    }
+    mut swap := 0
+    loop {
+      if swap >= n { break }
+      source[swap] = target[swap]
+      swap = swap + 1
+    }
+    width = width * 2
+  }
+  return source
+}
+
+// ---------------------------------------------------------------------------------------------
+// Section 2.4 — the bounded streaming line reader.
+
+// A fresh `pread` at the first byte the reader still needs, repeated until the window holds its
+// whole capacity or the file ends. `f.pread` publishes exactly the count the syscall returned, so a
+// short read is completed here rather than mistaken for end of file.
+//
+// `bytes_read` is incremented here and nowhere else, by exactly the counts `pread` returned.
+fn refill(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) -> Result<(), Fault> {
+  count := match handle.pread(window, c.pos) {
+    Ok(value) => value,
+    Err(failure) => { return Err(os_fault(failure)) },
+  }
+  c.window_base = c.pos
+  c.window_len = count
+  c.bytes_read = c.bytes_read + count
+  if count == 0 {
+    return Err(os_fault(Error.Invalid))
+  }
+  loop {
+    if c.window_len >= c.capacity { break }
+    at := c.window_base + c.window_len
+    if at >= c.file_size { break }
+    remaining := c.capacity - c.window_len
+    mut tail := buffer(remaining)
+    extra := match handle.pread(tail, at) {
+      Ok(value) => value,
+      Err(failure) => { return Err(os_fault(failure)) },
+    }
+    if extra == 0 { break }
+    window.append(tail.bytes())
+    c.window_len = c.window_len + extra
+    c.bytes_read = c.bytes_read + extra
+  }
+  return Ok(())
+}
+
+// One line, without its terminator. The window is refilled **at the start of the unconsumed line**,
+// so a line never spans two windows: reassembly is achieved by re-reading rather than by
+// concatenating, and no partial-line buffer exists to get wrong.
+//
+// `WINDOW_BYTES` is sixteen times `MAX_LINE_BYTES`, so a window that starts at a line and fills
+// without a newline already proves the line is over the cap. The design's window-doubling step is
+// therefore unreachable at these constants and is deliberately not written (section 6, item 3).
+fn next_line(borrow handle: file, borrow mut window: buffer, borrow mut c: Cursor) -> Result<Line, Fault> {
+  if c.pos >= c.file_size {
+    return Ok(Line { rel: 0, len: 0, offset: c.pos, done: true })
+  }
+  start := c.pos
+  loop {
+    if c.window_base < 0 || c.pos < c.window_base || c.pos >= c.window_base + c.window_len {
+      refill(handle, window, c)?
+    }
+    rel := c.pos - c.window_base
+    view := window.bytes()
+    mut at := rel
+    mut found := -1
+    loop {
+      if at >= c.window_len { break }
+      if view.u8(at) == 10 {
+        found = at
+        break
+      }
+      at = at + 1
+    }
+    if found >= 0 {
+      length := found - rel
+      if length > MAX_LINE_BYTES {
+        return Err(fault("R2_LINE_TOO_LONG", int_text(start)))
+      }
+      c.pos = c.window_base + found + 1
+      return Ok(Line { rel: rel, len: length, offset: start, done: false })
+    }
+    if c.window_base + c.window_len >= c.file_size {
+      // A transcript need not end in a newline; the residue is a complete final line.
+      length := c.file_size - c.pos
+      if length > MAX_LINE_BYTES {
+        return Err(fault("R2_LINE_TOO_LONG", int_text(start)))
+      }
+      c.pos = c.file_size
+      return Ok(Line { rel: rel, len: length, offset: start, done: false })
+    }
+    if rel == 0 {
+      return Err(fault("R2_LINE_TOO_LONG", int_text(start)))
+    }
+    // The line began inside the window and ran off its end. Drop the window and re-read at the
+    // line's own first byte; the extra `pread` is counted honestly into `bytes_read`.
+    c.window_base = -1
+    c.window_len = 0
+  }
+}
+
+fn has_nul(view: slice<u8>, start: i64, length: i64) -> bool {
+  mut at := 0
+  loop {
+    if at >= length { break }
+    if view.u8(start + at) == 0 { return true }
+    at = at + 1
+  }
+  return false
+}
+
+fn empty_scan(code: str, detail: string, file_size: i64, bytes_read: i64) -> TranscriptScan {
+  mut empty: array_builder<i64> := array_builder()
+  return TranscriptScan {
+    code: code.clone(),
+    detail: detail,
+    file_size: file_size,
+    bytes_read: bytes_read,
+    line_count: 0,
+    callback_line_count: 0,
+    skipped_line_count: 0,
+    build: -1,
+    build_present: false,
+    version_line: "".clone(),
+    graph_count: 0,
+    n_layer: -1,
+    moe_present: false,
+    n_expert: -1,
+    n_expert_used: -1,
+    n_expert_source: SOURCE_NONE,
+    dense_ffn_present: false,
+    name_count: 0,
+    names: "".clone(),
+    name_start: empty.build(),
+    name_end: filled_table(0, 0),
+    name_family_len: filled_table(0, 0),
+    op_count: 0,
+    ops: "".clone(),
+    op_start: filled_table(0, 0),
+    op_end: filled_table(0, 0),
+    graph_tokens: filled_table(0, 0),
+    graph_nodes: filled_table(0, 0),
+    selection_count: 0,
+    sel_graph: filled_table(0, 0),
+    sel_layer: filled_table(0, 0),
+    sel_token: filled_table(0, 0),
+    sel_slot: filled_table(0, 0),
+    sel_expert: filled_table(0, 0),
+    sel_key: filled_table(0, 0),
+    topk_layers: filled_table(0, 0),
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Section 2.6 — the ordered scan.
+//
+// `builder` and `array_builder` are not parameter types at this pin, so the whole forward pass is
+// one function: the interning tables, the block state machine, and every column accumulate here.
+// The fallible steps record their fault as a value and leave the walk immediately, which is the
+// section 2.5.1 early-exit contract — every column then holds precisely what parsed before the
+// failure.
+BLOCK_OUTER := 0
+BLOCK_GROUP := 1
+BLOCK_SLICE := 2
+
+fn scan(path: str) -> Result<TranscriptScan, Error> {
+  handle := fs.open_rw(path)?
+  file_size := handle.len()?
+  if file_size == 0 {
+    return Ok(empty_scan("R2_TRANSCRIPT_EMPTY", "".clone(), file_size, 0))
+  }
+  if file_size > MAX_TRANSCRIPT_BYTES {
+    return Ok(empty_scan("R2_TRANSCRIPT_TOO_LARGE", int_text(file_size), file_size, 0))
+  }
+
+  mut window := buffer(WINDOW_BYTES)
+  mut c := Cursor {
+    file_size: file_size,
+    window_base: -1,
+    window_len: 0,
+    pos: 0,
+    capacity: WINDOW_BYTES,
+    bytes_read: 0,
+  }
+  mut failure := no_fault()
+
+  mut line_count := 0
+  mut callback_line_count := 0
+  mut skipped_line_count := 0
+
+  // Distinct node names, interned exactly: a hash selects the candidate and a byte comparison
+  // confirms it, so a collision costs work and never merges two names.
+  mut name_slots := filled_table(SLOT_COUNT, 0)
+  mut name_bytes := buffer(NAME_STREAM_BYTES)
+  mut name_start := filled_table(MAX_NODES_PER_GRAPH, 0)
+  mut name_end := filled_table(MAX_NODES_PER_GRAPH, 0)
+  mut name_family_len := filled_table(MAX_NODES_PER_GRAPH, -1)
+  mut name_count := 0
+  mut name_stream_len := 0
+
+  mut op_slots := filled_table(SLOT_COUNT, 0)
+  mut op_bytes := buffer(OP_STREAM_BYTES)
+  mut op_start := filled_table(MAX_OPS, 0)
+  mut op_end := filled_table(MAX_OPS, 0)
+  mut op_count := 0
+  mut op_stream_len := 0
+
+  mut graph_tokens_column: array_builder<i64> := array_builder()
+  mut graph_nodes_column: array_builder<i64> := array_builder()
+  mut graph_index := 0
+  mut graph_nodes := 0
+  mut graph_tokens := -1
+  mut graph_count := 0
+  mut entry_name := -1
+
+  mut n_layer := -1
+  mut dense_ffn_present := false
+  mut topk_present := false
+  mut n_expert_used := -1
+  mut probs_experts := -1
+  mut logits_experts := -1
+
+  mut sel_graph_column: array_builder<i64> := array_builder()
+  mut sel_layer_column: array_builder<i64> := array_builder()
+  mut sel_token_column: array_builder<i64> := array_builder()
+  mut sel_slot_column: array_builder<i64> := array_builder()
+  mut sel_expert_column: array_builder<i64> := array_builder()
+  mut sel_key_column: array_builder<i64> := array_builder()
+  mut selection_count := 0
+  mut topk_layer_column: array_builder<i64> := array_builder()
+
+  mut build_value := -1
+  mut build_present := false
+  mut version_line := "".clone()
+
+  mut in_block := false
+  mut block_state := BLOCK_OUTER
+  mut block_ne0 := 0
+  mut block_ne1 := 0
+  mut block_ne2 := 0
+  mut block_ne3 := 0
+  mut block_groups := 0
+  mut block_slices := 0
+  mut block_rows := 0
+  mut block_a2_marked := false
+  mut block_a1_marked := false
+  mut block_is_topk := false
+  mut block_layer := -1
+  mut block_name := "".clone()
+
+  loop {
+    if failure.code.len() > 0 { break }
+    line := match next_line(handle, window, c) {
+      Ok(value) => value,
+      Err(detected) => { failure = detected; break },
+    }
+    if line.done { break }
+    if line_count >= MAX_LINES {
+      failure = fault("R2_LINE_LIMIT", int_text(MAX_LINES))
+      break
+    }
+    line_count = line_count + 1
+
+    view := window.bytes()
+    is_callback := line.len >= CB_PREFIX_BYTES
+      && stream_equals(view, line.rel, line.rel + CB_PREFIX_BYTES, CB_PREFIX)
+    region := view[line.rel..line.rel + line.len]
+    mut text_valid := true
+    text := match region.as_str() {
+      Ok(value) => value,
+      Err(_) => {
+        text_valid = false
+        ""
+      },
+    }
+
+    if in_block {
+      if is_callback {
+        // A callback header inside a value block means the previous block was never terminated.
+        failure = fault("R2_SUM_MISSING", block_name.clone())
+        break
+      }
+      if !text_valid {
+        failure = fault("R2_VALUE_GRAMMAR", int_text(line.offset))
+        break
+      }
+      if block_state == BLOCK_OUTER {
+        if text == A3_OPEN {
+          if block_groups >= block_ne3 {
+            failure = fault("R2_ROW_COUNT", block_name.clone())
+            break
+          }
+          block_groups = block_groups + 1
+          block_slices = 0
+          block_a2_marked = false
+          block_state = BLOCK_GROUP
+        } else if text.starts_with(SUM_PREFIX) {
+          if text.len() <= SUM_PREFIX.len() {
+            failure = fault("R2_VALUE_GRAMMAR", int_text(line.offset))
+            break
+          }
+          // Axis 3 carries no truncation marker in this build's printer, so its group count is the
+          // extent itself (section 6, item 5).
+          if block_groups != block_ne3 {
+            failure = fault("R2_ROW_COUNT", block_name.clone())
+            break
+          }
+          in_block = false
+        } else {
+          failure = fault("R2_VALUE_GRAMMAR", int_text(line.offset))
+          break
+        }
+      } else if block_state == BLOCK_GROUP {
+        if text == A2_OPEN {
+          if block_slices >= printed_count(block_ne2) {
+            failure = fault("R2_ROW_COUNT", block_name.clone())
+            break
+          }
+          block_slices = block_slices + 1
+          block_rows = 0
+          block_a1_marked = false
+          block_state = BLOCK_SLICE
+        } else if text == A2_TRUNC {
+          if block_ne2 <= TRUNCATION_PRINTED || block_a2_marked || block_slices != TRUNCATION_HALF {
+            failure = fault("R2_ROW_COUNT", block_name.clone())
+            break
+          }
+          block_a2_marked = true
+        } else if text == A3_CLOSE {
+          if block_slices != printed_count(block_ne2)
+            || (block_ne2 > TRUNCATION_PRINTED && !block_a2_marked) {
+            failure = fault("R2_ROW_COUNT", block_name.clone())
+            break
+          }
+          block_state = BLOCK_OUTER
+        } else {
+          failure = fault("R2_VALUE_GRAMMAR", int_text(line.offset))
+          break
+        }
+      } else {
+        if text == A2_CLOSE {
+          if block_rows != printed_count(block_ne1)
+            || (block_ne1 > TRUNCATION_PRINTED && !block_a1_marked) {
+            failure = fault("R2_ROW_COUNT", block_name.clone())
+            break
+          }
+          block_state = BLOCK_GROUP
+        } else if text == A1_TRUNC {
+          if block_ne1 <= TRUNCATION_PRINTED || block_a1_marked || block_rows != TRUNCATION_HALF {
+            failure = fault("R2_ROW_COUNT", block_name.clone())
+            break
+          }
+          block_a1_marked = true
+        } else if text.len() >= ROW_OPEN.len() + ROW_CLOSE.len()
+          && text.starts_with(ROW_OPEN)
+          && text[text.len() - ROW_CLOSE.len()..text.len()] == ROW_CLOSE {
+          if block_rows >= printed_count(block_ne1) {
+            failure = fault("R2_ROW_COUNT", block_name.clone())
+            break
+          }
+          token := axis_index(block_rows, block_ne1)
+          block_rows = block_rows + 1
+          inner := text[ROW_OPEN.len()..text.len() - ROW_CLOSE.len()]
+          mut elements := 0
+          mut marked := false
+          mut at := 0
+          mut row_failed := false
+          loop {
+            if inner.len() == 0 { break }
+            rest := inner[at..inner.len()]
+            cut := match rest.find(ELEMENT_SEP) {
+              Some(value) => value,
+              None => -1,
+            }
+            piece := if cut < 0 { rest } else { rest[0..cut] }
+            if piece == A0_MARK {
+              if block_ne0 <= TRUNCATION_PRINTED || marked || elements != TRUNCATION_HALF {
+                failure = fault("R2_ROW_COUNT", block_name.clone())
+                row_failed = true
+                break
+              }
+              marked = true
+            } else {
+              slot := axis_index(elements, block_ne0)
+              elements = elements + 1
+              if block_is_topk {
+                expert := parse_integral_element(piece)
+                if expert < 0 {
+                  failure = fault("R2_EXPERT_ID_NOT_INTEGRAL", bounded_detail(piece))
+                  row_failed = true
+                  break
+                }
+                if expert >= MAX_EXPERTS {
+                  failure = fault("R2_EXPERT_BOUNDS", block_name.clone())
+                  row_failed = true
+                  break
+                }
+                if selection_count >= MAX_SELECTIONS {
+                  failure = fault("R2_SELECTION_LIMIT", int_text(MAX_SELECTIONS))
+                  row_failed = true
+                  break
+                }
+                sel_graph_column.push(graph_index)
+                sel_layer_column.push(block_layer)
+                sel_token_column.push(token)
+                sel_slot_column.push(slot)
+                sel_expert_column.push(expert)
+                sel_key_column.push((graph_index << GRAPH_SHIFT) | (block_layer << LAYER_SHIFT)
+                    | (token << TOKEN_SHIFT) | (expert << EXPERT_SHIFT) | slot)
+                selection_count = selection_count + 1
+              }
+            }
+            if cut < 0 { break }
+            at = at + cut + 2
+          }
+          if row_failed { break }
+          if elements != printed_count(block_ne0)
+            || (block_ne0 > TRUNCATION_PRINTED && !marked) {
+            failure = fault("R2_ROW_COUNT", block_name.clone())
+            break
+          }
+        } else {
+          failure = fault("R2_VALUE_GRAMMAR", int_text(line.offset))
+          break
+        }
+      }
+    } else if is_callback {
+      callback_line_count = callback_line_count + 1
+      if !text_valid {
+        failure = fault("R2_HEADER_GRAMMAR", int_text(line.offset))
+        break
+      }
+      if has_nul(view, line.rel, line.len) {
+        failure = fault("R2_HEADER_GRAMMAR", bounded_detail(text))
+        break
+      }
+      header := parse_header(text)
+      if header.code.len() > 0 {
+        detail := if header.code == "R2_DIMS_INVALID" {
+          bounded_detail(text[header.name_start..header.name_end])
+        } else {
+          bounded_detail(text)
+        }
+        failure = fault(header.code, detail)
+        break
+      }
+      name := text[header.name_start..header.name_end]
+      operation := text[header.op_start..header.op_end]
+      family_len := family_length(name)
+      layer := layer_of(name, family_len)
+      if family_len >= 0 && (layer < 0 || layer >= MAX_LAYERS) {
+        failure = fault("R2_LAYER_INDEX", bounded_detail(name))
+        break
+      }
+      if family_len >= 0 && layer + 1 > n_layer { n_layer = layer + 1 }
+
+      // Intern the node name.
+      name_hash := text_hash(name)
+      mut probe := name_hash & SLOT_MASK
+      mut name_index := -1
+      mut interned := false
+      loop {
+        slot := name_slots[probe]
+        if slot == 0 {
+          if name_count >= MAX_NODES_PER_GRAPH
+            || name_stream_len + name.len() > NAME_STREAM_BYTES {
+            failure = fault("R2_NODE_LIMIT", int_text(graph_index))
+            break
+          }
+          name_bytes.append(name.bytes())
+          name_start[name_count] = name_stream_len
+          name_stream_len = name_stream_len + name.len()
+          name_end[name_count] = name_stream_len
+          name_family_len[name_count] = family_len
+          name_index = name_count
+          name_count = name_count + 1
+          name_slots[probe] = name_index + 1
+          interned = true
+          break
+        }
+        candidate := slot - 1
+        if stream_equals(name_bytes.bytes(), name_start[candidate], name_end[candidate], name) {
+          name_index = candidate
+          interned = true
+          break
+        }
+        probe = (probe + 1) & SLOT_MASK
+      }
+      if !interned { break }
+
+      // Section 2.5.6, as corrected by measurement (section 6, item 4): a ggml node name is NOT
+      // unique within one graph — a real 958-block qwen2 graph carries 650 distinct names and
+      // prints `Qcur-0` four times — so a repeat cannot mark a boundary. What is unique is the
+      // graph's entry node: build 10566 emits exactly one `embd` and one `result_output` per graph
+      // evaluation. The first callback node of the transcript therefore names the entry point, and
+      // every later occurrence of that same name opens the next graph.
+      if entry_name < 0 {
+        entry_name = name_index
+      } else if name_index == entry_name && graph_nodes > 0 {
+        graph_tokens_column.push(graph_tokens)
+        graph_nodes_column.push(graph_nodes)
+        graph_count = graph_index + 1
+        if graph_index + 1 >= MAX_GRAPHS {
+          failure = fault("R2_GRAPH_LIMIT", int_text(MAX_GRAPHS))
+          break
+        }
+        graph_index = graph_index + 1
+        graph_nodes = 0
+        graph_tokens = -1
+      }
+      graph_nodes = graph_nodes + 1
+      if graph_nodes > MAX_NODES_PER_GRAPH {
+        failure = fault("R2_NODE_LIMIT", int_text(graph_index))
+        break
+      }
+
+      // Intern the operation name.
+      op_hash := text_hash(operation)
+      mut op_probe := op_hash & SLOT_MASK
+      mut op_done := false
+      loop {
+        slot := op_slots[op_probe]
+        if slot == 0 {
+          if op_count >= MAX_OPS || op_stream_len + operation.len() > OP_STREAM_BYTES {
+            failure = fault("R2_HEADER_GRAMMAR", bounded_detail(text))
+            break
+          }
+          op_bytes.append(operation.bytes())
+          op_start[op_count] = op_stream_len
+          op_stream_len = op_stream_len + operation.len()
+          op_end[op_count] = op_stream_len
+          op_slots[op_probe] = op_count + 1
+          op_count = op_count + 1
+          op_done = true
+          break
+        }
+        candidate := slot - 1
+        if stream_equals(op_bytes.bytes(), op_start[candidate], op_end[candidate], operation) {
+          op_done = true
+          break
+        }
+        op_probe = (op_probe + 1) & SLOT_MASK
+      }
+      if !op_done { break }
+
+      family := if family_len >= 0 { name[0..family_len] } else { name }
+      mut tokens_claim := -1
+      if family_len < 0 && name == NODE_EMBD { tokens_claim = header.ne.d1 }
+      mut is_topk := false
+      if family_len >= 0 {
+        if family == FAMILY_TOPK {
+          is_topk = true
+          tokens_claim = header.ne.d1
+        } else if family == FAMILY_PROBS {
+          if probs_experts < 0 {
+            probs_experts = header.ne.d0
+          } else if probs_experts != header.ne.d0 {
+            failure = fault("R2_MOE_INCONSISTENT", bounded_detail(name))
+            break
+          }
+        } else if family == FAMILY_LOGITS {
+          if logits_experts < 0 {
+            logits_experts = header.ne.d0
+          } else if logits_experts != header.ne.d0 {
+            failure = fault("R2_MOE_INCONSISTENT", bounded_detail(name))
+            break
+          }
+        } else if family == FAMILY_GATE || family == FAMILY_UP || family == FAMILY_SWIGLU {
+          dense_ffn_present = true
+        }
+      }
+      if tokens_claim >= 0 {
+        if tokens_claim < 1 || tokens_claim > MAX_TOKENS_PER_GRAPH {
+          failure = fault("R2_TOKEN_COUNT", bounded_detail(name))
+          break
+        }
+        if graph_tokens < 0 {
+          graph_tokens = tokens_claim
+        } else if graph_tokens != tokens_claim {
+          failure = fault("R2_TOKEN_COUNT", bounded_detail(name))
+          break
+        }
+      }
+      if is_topk {
+        if header.ne.d0 < 1 || header.ne.d0 > MAX_EXPERTS_USED {
+          failure = fault("R2_EXPERT_BOUNDS", bounded_detail(name))
+          break
+        }
+        if n_expert_used < 0 {
+          n_expert_used = header.ne.d0
+        } else if n_expert_used != header.ne.d0 {
+          failure = fault("R2_MOE_INCONSISTENT", bounded_detail(name))
+          break
+        }
+        topk_present = true
+        topk_layer_column.push(layer)
+      }
+
+      in_block = true
+      block_state = BLOCK_OUTER
+      block_ne0 = header.ne.d0
+      block_ne1 = header.ne.d1
+      block_ne2 = header.ne.d2
+      block_ne3 = header.ne.d3
+      block_groups = 0
+      block_slices = 0
+      block_rows = 0
+      block_a2_marked = false
+      block_a1_marked = false
+      block_is_topk = is_topk
+      block_layer = layer
+      block_name = bounded_detail(name)
+    } else {
+      skipped_line_count = skipped_line_count + 1
+      // Section 2.5.3: the build number is provenance, recovered when the capture happens to carry
+      // the instrument's own `--version` line, and never assumed.
+      if !build_present && text_valid && text.starts_with(VERSION_PREFIX) {
+        marker := match text.find(VERSION_BUILD) {
+          Some(value) => value,
+          None => -1,
+        }
+        if marker >= 0 {
+          rest := text[marker + VERSION_BUILD.len()..text.len()]
+          stop := match rest.find(",") {
+            Some(value) => value,
+            None => match rest.find(")") {
+              Some(value) => value,
+              None => -1,
+            },
+          }
+          if stop > 0 {
+            parsed := parse_uint(rest[0..stop])
+            if parsed >= 0 {
+              build_value = parsed
+              build_present = true
+              version_line = bounded_detail(text)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if failure.os {
+    return Err(failure.os_error)
+  }
+  if failure.code.len() == 0 && in_block {
+    failure = fault("R2_SUM_MISSING", block_name.clone())
+  }
+  if graph_nodes > 0 {
+    // A graph that carries neither `embd` nor an `ffn_moe_topk` supplies no token axis. That is
+    // reported as `n_tokens: null` and `phase: null` rather than refused: nothing is fabricated,
+    // and a capture that began mid-graph stays diagnosable (section 6, item 6).
+    graph_tokens_column.push(graph_tokens)
+    graph_nodes_column.push(graph_nodes)
+    graph_count = graph_index + 1
+  }
+
+  // Section 2.5.5. The first rule that can supply `n_expert` wins, and the document reports which.
+  mut n_expert := -1
+  mut n_expert_source := SOURCE_NONE
+  if topk_present {
+    if probs_experts >= 0 {
+      n_expert = probs_experts
+      n_expert_source = SOURCE_PROBS
+    } else if logits_experts >= 0 {
+      n_expert = logits_experts
+      n_expert_source = SOURCE_LOGITS
+    }
+    if failure.code.len() == 0 && n_expert >= 0 && (n_expert < 1 || n_expert > MAX_EXPERTS) {
+      failure = fault("R2_EXPERT_BOUNDS", int_text(n_expert))
+      n_expert = -1
+      n_expert_source = SOURCE_NONE
+    }
+  }
+
+  selections_graph := sel_graph_column.build()
+  selections_layer := sel_layer_column.build()
+  selections_token := sel_token_column.build()
+  selections_slot := sel_slot_column.build()
+  selections_expert := sel_expert_column.build()
+  selections_key := sel_key_column.build()
+
+  // Step 10, completed: `n_expert` may be discovered after a `ffn_moe_topk` block in a transcript
+  // whose node order differs from this build's, so every recorded id is re-checked against the
+  // settled bound before the document is rendered.
+  if failure.code.len() == 0 && n_expert > 0 {
+    mut at := 0
+    loop {
+      if at >= selections_expert.len() { break }
+      if selections_expert[at] >= n_expert {
+        b := builder()
+        b.write(FAMILY_TOPK)
+        b.write("-")
+        b.write_int(selections_layer[at])
+        failure = fault("R2_EXPERT_BOUNDS", b.to_string())
+        break
+      }
+      at = at + 1
+    }
+  }
+
+  names_text := match name_bytes.bytes()[0..name_stream_len].as_str() {
+    Ok(value) => value.clone(),
+    Err(_) => "".clone(),
+  }
+  ops_text := match op_bytes.bytes()[0..op_stream_len].as_str() {
+    Ok(value) => value.clone(),
+    Err(_) => "".clone(),
+  }
+  raw_topk := topk_layer_column.build()
+
+  return Ok(TranscriptScan {
+      code: failure.code.clone(),
+      detail: failure.detail,
+      file_size: file_size,
+      bytes_read: c.bytes_read,
+      line_count: line_count,
+      callback_line_count: callback_line_count,
+      skipped_line_count: skipped_line_count,
+      build: build_value,
+      build_present: build_present,
+      version_line: version_line,
+      graph_count: graph_count,
+      n_layer: n_layer,
+      moe_present: topk_present,
+      n_expert: n_expert,
+      n_expert_used: n_expert_used,
+      n_expert_source: n_expert_source,
+      dense_ffn_present: dense_ffn_present,
+      name_count: name_count,
+      names: names_text,
+      name_start: name_start,
+      name_end: name_end,
+      name_family_len: name_family_len,
+      op_count: op_count,
+      ops: ops_text,
+      op_start: op_start,
+      op_end: op_end,
+      graph_tokens: graph_tokens_column.build(),
+      graph_nodes: graph_nodes_column.build(),
+      selection_count: selection_count,
+      sel_graph: selections_graph,
+      sel_layer: selections_layer,
+      sel_token: selections_token,
+      sel_slot: selections_slot,
+      sel_expert: selections_expert,
+      sel_key: selections_key,
+      topk_layers: raw_topk.sort(),
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Section 2.5 — the aggregates and the document.
+
+fn identity_index(n: i64) -> array<i64> {
+  mut column: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= n { break }
+    column.push(at)
+    at = at + 1
+  }
+  return column.build()
+}
+
+// A sorted, de-duplicated JSON string array body. Duplicates are dropped after the sort, so the
+// rendered list is the distinct set in byte-lexicographic order.
+fn render_span_list(
+  text: str,
+  borrow starts: array<i64>,
+  borrow ends: array<i64>,
+  borrow order: array<i64>,
+) -> string {
+  b := builder()
+  mut written := 0
+  mut at := 0
+  loop {
+    if at >= order.len() { break }
+    entry := order[at]
+    duplicate := at > 0
+      && span_same(text, starts[order[at - 1]], ends[order[at - 1]], starts[entry], ends[entry])
+    if !duplicate {
+      if written > 0 { b.write(",") }
+      b.write(json_string(span_text(text, starts[entry], ends[entry])))
+      written = written + 1
+    }
+    at = at + 1
+  }
+  return b.to_string()
+}
+
+fn int_or_null(value: i64, present: bool) -> string {
+  if !present { return "null".clone() }
+  return int_text(value)
+}
+
+fn expert_of(key: i64) -> i64 = (key >> EXPERT_SHIFT) & EXPERT_FIELD_MASK
+
+// Distinct expert ids in one `(graph, layer, token)` run of the sorted key column.
+fn distinct_experts(borrow keys: array<i64>, start: i64, end: i64) -> i64 {
+  mut count := 0
+  mut at := start
+  loop {
+    if at >= end { break }
+    if at == start || expert_of(keys[at]) != expert_of(keys[at - 1]) { count = count + 1 }
+    at = at + 1
+  }
+  return count
+}
+
+// Distinct expert ids present in both runs. Both are ascending in expert, so one merge walk answers
+// it without an auxiliary set.
+fn shared_experts(
+  borrow keys: array<i64>,
+  a_start: i64,
+  a_end: i64,
+  b_start: i64,
+  b_end: i64,
+) -> i64 {
+  mut left := a_start
+  mut right := b_start
+  mut count := 0
+  loop {
+    if left >= a_end || right >= b_end { break }
+    a := expert_of(keys[left])
+    b := expert_of(keys[right])
+    if a < b {
+      left = left + 1
+    } else if b < a {
+      right = right + 1
+    } else {
+      count = count + 1
+      loop {
+        if left >= a_end || expert_of(keys[left]) != a { break }
+        left = left + 1
+      }
+      loop {
+        if right >= b_end || expert_of(keys[right]) != b { break }
+        right = right + 1
+      }
+    }
+  }
+  return count
+}
+
+// The section 2.5.7 working-set windows, ascending and each `<= MAX_REUSE_WINDOW`.
+fn window_size(index: i64) -> i64 {
+  if index == 0 { return 1 }
+  if index == 1 { return 2 }
+  if index == 2 { return 4 }
+  if index == 3 { return 8 }
+  if index == 4 { return 16 }
+  if index == 5 { return 32 }
+  return 64
+}
+
+// `phase` codes: 0 not derived, 1 prefill, 2 decode, 3 single_token_first_graph.
+fn phase_code(n_tokens: i64, ordinal: i64) -> i64 {
+  if n_tokens < 1 { return 0 }
+  if n_tokens > 1 { return 1 }
+  if ordinal == 0 { return 3 }
+  return 2
+}
+
+fn phase_label(code: i64) -> str {
+  if code == 1 { return "prefill" }
+  if code == 2 { return "decode" }
+  if code == 3 { return "single_token_first_graph" }
+  return ""
+}
+
+fn reuse_triple(pairs: i64, numerator: i64, denominator: i64) -> string {
+  b := builder()
+  b.write("{\"adjacent_pair_count\":")
+  b.write_int(pairs)
+  b.write(",\"reuse_numerator\":")
+  b.write(int_or_null(numerator, pairs > 0))
+  b.write(",\"reuse_denominator\":")
+  b.write(int_or_null(denominator, pairs > 0))
+  b.write(",\"reuse_per_mille\":")
+  if pairs > 0 && denominator > 0 {
+    b.write_int(numerator * 1000 / denominator)
+  } else {
+    b.write("null")
+  }
+  b.write("}")
+  return b.to_string()
+}
+
+fn source_label(code: i64) -> str {
+  if code == SOURCE_PROBS { return FAMILY_PROBS }
+  if code == SOURCE_LOGITS { return FAMILY_LOGITS }
+  return ""
+}
+
+// The one public producer of `R2_ACTIVATION_TRACE`. Every field is decoded from the transcript or
+// derived by a stated formula from decoded values; nothing is read from the environment.
+pub fn build(borrow t: TranscriptScan, path: str) -> ExpertTrace {
+  names_view: str := t.names
+  ops_view: str := t.ops
+  code_view: str := t.code
+  detail_view: str := t.detail
+  failed := code_view.len() > 0
+
+  // Section 2.5.4 name lists. Families come from the distinct node names, so the family list is
+  // bounded by the name table and is de-duplicated by the sort.
+  mut family_start_column: array_builder<i64> := array_builder()
+  mut family_end_column: array_builder<i64> := array_builder()
+  mut plain_start_column: array_builder<i64> := array_builder()
+  mut plain_end_column: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= t.name_count { break }
+    family_len := t.name_family_len[at]
+    if family_len >= 0 {
+      family_start_column.push(t.name_start[at])
+      family_end_column.push(t.name_start[at] + family_len)
+    } else {
+      plain_start_column.push(t.name_start[at])
+      plain_end_column.push(t.name_end[at])
+    }
+    at = at + 1
+  }
+  family_start := family_start_column.build()
+  family_end := family_end_column.build()
+  plain_start := plain_start_column.build()
+  plain_end := plain_end_column.build()
+  family_index := identity_index(family_start.len())
+  plain_index := identity_index(plain_start.len())
+  op_index := identity_index(t.op_count)
+  family_order := sort_spans(names_view, family_start, family_end, family_index)
+  plain_order := sort_spans(names_view, plain_start, plain_end, plain_index)
+  op_order := sort_spans(ops_view, t.op_start, t.op_end, op_index)
+
+  families_json := render_span_list(names_view, family_start, family_end, family_order)
+  plains_json := render_span_list(names_view, plain_start, plain_end, plain_order)
+  ops_json := render_span_list(ops_view, t.op_start, t.op_end, op_order)
+
+  shape_class := if t.moe_present {
+    "moe-ffn"
+  } else if t.dense_ffn_present {
+    "dense-ffn"
+  } else {
+    "unknown"
+  }
+  shape_basis := if t.moe_present {
+    "ffn_moe_topk present"
+  } else if t.dense_ffn_present {
+    "ffn_gate/ffn_up/ffn_swiglu present, ffn_moe_topk absent"
+  } else {
+    "ffn_moe_topk absent, no dense feed-forward family present"
+  }
+
+  // Section 2.5.6 graph rows, plus the per-graph phase the phase split needs.
+  mut graphs_body := builder()
+  mut phase_column: array_builder<i64> := array_builder()
+  mut tokens_observed_total := 0
+  mut tokens_total := 0
+  mut prefill_seen := false
+  mut decode_seen := false
+  mut graph_at := 0
+  loop {
+    if graph_at >= t.graph_count { break }
+    n_tokens := t.graph_tokens[graph_at]
+    known := n_tokens >= 1
+    observed := printed_count(n_tokens)
+    phase := phase_code(n_tokens, graph_at)
+    phase_column.push(phase)
+    if phase == 1 { prefill_seen = true }
+    if phase == 2 { decode_seen = true }
+    if known {
+      tokens_observed_total = tokens_observed_total + observed
+      tokens_total = tokens_total + n_tokens
+    }
+    if graph_at > 0 { graphs_body.write(",") }
+    graphs_body.write("{\"ordinal\":")
+    graphs_body.write_int(graph_at)
+    graphs_body.write(",\"n_tokens\":")
+    graphs_body.write(int_or_null(n_tokens, known))
+    graphs_body.write(",\"phase\":")
+    if phase == 0 {
+      graphs_body.write("null")
+    } else {
+      graphs_body.write(json_string(phase_label(phase)))
+    }
+    graphs_body.write(",\"tokens_observed\":")
+    graphs_body.write_int(observed)
+    graphs_body.write(",\"tokens_truncated\":")
+    graphs_body.write(bool_text(known && n_tokens > TRUNCATION_PRINTED))
+    graphs_body.write(",\"observed_token_indices\":[")
+    mut index_at := 0
+    loop {
+      if index_at >= observed { break }
+      if index_at > 0 { graphs_body.write(",") }
+      graphs_body.write_int(axis_index(index_at, n_tokens))
+      index_at = index_at + 1
+    }
+    graphs_body.write("],\"node_count\":")
+    graphs_body.write_int(t.graph_nodes[graph_at])
+    graphs_body.write("}")
+    graph_at = graph_at + 1
+  }
+  graph_phase := phase_column.build()
+
+  // Section 2.5.6 selections, in observation order.
+  mut selections_body := builder()
+  mut selection_at := 0
+  loop {
+    if selection_at >= t.selection_count { break }
+    if selection_at > 0 { selections_body.write(",") }
+    selections_body.write("{\"graph\":")
+    selections_body.write_int(t.sel_graph[selection_at])
+    selections_body.write(",\"layer\":")
+    selections_body.write_int(t.sel_layer[selection_at])
+    selections_body.write(",\"token\":")
+    selections_body.write_int(t.sel_token[selection_at])
+    selections_body.write(",\"slot\":")
+    selections_body.write_int(t.sel_slot[selection_at])
+    selections_body.write(",\"expert\":")
+    selections_body.write_int(t.sel_expert[selection_at])
+    selections_body.write("}")
+    selection_at = selection_at + 1
+  }
+
+  // Section 2.5.7 locality. Every aggregate is computed only over adjacent observed token pairs —
+  // pairs of token indices differing by exactly one, within one graph and one layer — because
+  // truncation breaks adjacency in the middle of a long prefill.
+  mut adjacent_pairs := 0
+  mut reuse_numerator := 0
+  mut reuse_denominator := 0
+  mut layer_pairs := filled_table(MAX_LAYERS, 0)
+  mut layer_numerator := filled_table(MAX_LAYERS, 0)
+  mut layer_denominator := filled_table(MAX_LAYERS, 0)
+  mut prefill_pairs := 0
+  mut prefill_numerator := 0
+  mut prefill_denominator := 0
+  mut decode_pairs := 0
+  mut decode_numerator := 0
+  mut decode_denominator := 0
+  mut window_samples := filled_table(WINDOW_COUNT, 0)
+  mut window_unique := filled_table(WINDOW_COUNT, 0)
+
+  if t.moe_present && t.selection_count > 0 {
+    mut key_column: array_builder<i64> := array_builder()
+    mut copy_at := 0
+    loop {
+      if copy_at >= t.selection_count { break }
+      key_column.push(t.sel_key[copy_at])
+      copy_at = copy_at + 1
+    }
+    raw_keys := key_column.build()
+    keys := raw_keys.sort()
+    mut mark := filled_table(MAX_EXPERTS, 0)
+    mut generation := 0
+    mut ring_start := filled_table(MAX_REUSE_WINDOW, 0)
+    mut ring_end := filled_table(MAX_REUSE_WINDOW, 0)
+    mut run_index := -1
+    mut previous_start := -1
+    mut previous_end := -1
+    mut previous_key := -1
+    mut cursor := 0
+    loop {
+      if cursor >= keys.len() { break }
+      key := keys[cursor]
+      group_key := key >> TOKEN_SHIFT
+      mut stop := cursor + 1
+      loop {
+        if stop >= keys.len() { break }
+        if (keys[stop] >> TOKEN_SHIFT) != group_key { break }
+        stop = stop + 1
+      }
+      adjacent := previous_key >= 0 && previous_key + 1 == group_key
+      if adjacent {
+        layer := (key >> LAYER_SHIFT) & LAYER_FIELD_MASK
+        graph := key >> GRAPH_SHIFT
+        shared := shared_experts(keys, previous_start, previous_end, cursor, stop)
+        distinct := distinct_experts(keys, cursor, stop)
+        adjacent_pairs = adjacent_pairs + 1
+        reuse_numerator = reuse_numerator + shared
+        reuse_denominator = reuse_denominator + distinct
+        layer_pairs[layer] = layer_pairs[layer] + 1
+        layer_numerator[layer] = layer_numerator[layer] + shared
+        layer_denominator[layer] = layer_denominator[layer] + distinct
+        phase := if graph < graph_phase.len() { graph_phase[graph] } else { 0 }
+        if phase == 1 {
+          prefill_pairs = prefill_pairs + 1
+          prefill_numerator = prefill_numerator + shared
+          prefill_denominator = prefill_denominator + distinct
+        } else if phase == 2 {
+          decode_pairs = decode_pairs + 1
+          decode_numerator = decode_numerator + shared
+          decode_denominator = decode_denominator + distinct
+        }
+        run_index = run_index + 1
+      } else {
+        run_index = 0
+      }
+      slot := run_index % MAX_REUSE_WINDOW
+      ring_start[slot] = cursor
+      ring_end[slot] = stop
+      // One sliding sample per window that fits inside the run ending at this token.
+      mut window_at := 0
+      loop {
+        if window_at >= WINDOW_COUNT { break }
+        width := window_size(window_at)
+        if width <= run_index + 1 && width <= MAX_REUSE_WINDOW {
+          generation = generation + 1
+          mut unique := 0
+          mut back := 0
+          loop {
+            if back >= width { break }
+            ring := (run_index - back) % MAX_REUSE_WINDOW
+            mut scan_at := ring_start[ring]
+            loop {
+              if scan_at >= ring_end[ring] { break }
+              expert := expert_of(keys[scan_at])
+              if mark[expert] != generation {
+                mark[expert] = generation
+                unique = unique + 1
+              }
+              scan_at = scan_at + 1
+            }
+            back = back + 1
+          }
+          window_samples[window_at] = window_samples[window_at] + 1
+          window_unique[window_at] = window_unique[window_at] + unique
+        }
+        window_at = window_at + 1
+      }
+      previous_start = cursor
+      previous_end = stop
+      previous_key = group_key
+      cursor = stop
+    }
+  }
+
+  // The per-layer expert histogram, over observed selections, sorted by expert id.
+  mut histogram_column: array_builder<i64> := array_builder()
+  mut histogram_at := 0
+  loop {
+    if histogram_at >= t.selection_count { break }
+    histogram_column.push(t.sel_layer[histogram_at] * MAX_EXPERTS + t.sel_expert[histogram_at])
+    histogram_at = histogram_at + 1
+  }
+  raw_histogram := histogram_column.build()
+  histogram := raw_histogram.sort()
+
+  mut locality_body := builder()
+  if t.moe_present {
+    mut per_layer_body := builder()
+    mut layer_rows := 0
+    mut histogram_cursor := 0
+    mut topk_at := 0
+    loop {
+      if topk_at >= t.topk_layers.len() { break }
+      layer := t.topk_layers[topk_at]
+      if topk_at > 0 && t.topk_layers[topk_at - 1] == layer {
+        topk_at = topk_at + 1
+      } else {
+        if layer_rows > 0 { per_layer_body.write(",") }
+        per_layer_body.write("{\"layer\":")
+        per_layer_body.write_int(layer)
+        per_layer_body.write(",\"adjacent_pair_count\":")
+        per_layer_body.write_int(layer_pairs[layer])
+        per_layer_body.write(",\"reuse_numerator\":")
+        per_layer_body.write(int_or_null(layer_numerator[layer], layer_pairs[layer] > 0))
+        per_layer_body.write(",\"reuse_denominator\":")
+        per_layer_body.write(int_or_null(layer_denominator[layer], layer_pairs[layer] > 0))
+        per_layer_body.write(",\"reuse_per_mille\":")
+        if layer_pairs[layer] > 0 && layer_denominator[layer] > 0 {
+          per_layer_body.write_int(layer_numerator[layer] * 1000 / layer_denominator[layer])
+        } else {
+          per_layer_body.write("null")
+        }
+        per_layer_body.write(",\"histogram\":[")
+        loop {
+          if histogram_cursor >= histogram.len() { break }
+          if histogram[histogram_cursor] / MAX_EXPERTS >= layer { break }
+          histogram_cursor = histogram_cursor + 1
+        }
+        mut histogram_rows := 0
+        loop {
+          if histogram_cursor >= histogram.len() { break }
+          if histogram[histogram_cursor] / MAX_EXPERTS != layer { break }
+          expert := histogram[histogram_cursor] % MAX_EXPERTS
+          mut count := 0
+          loop {
+            if histogram_cursor >= histogram.len() { break }
+            if histogram[histogram_cursor] != layer * MAX_EXPERTS + expert { break }
+            count = count + 1
+            histogram_cursor = histogram_cursor + 1
+          }
+          if histogram_rows > 0 { per_layer_body.write(",") }
+          per_layer_body.write("[")
+          per_layer_body.write_int(expert)
+          per_layer_body.write(",")
+          per_layer_body.write_int(count)
+          per_layer_body.write("]")
+          histogram_rows = histogram_rows + 1
+        }
+        per_layer_body.write("]}")
+        layer_rows = layer_rows + 1
+        topk_at = topk_at + 1
+      }
+    }
+
+    mut working_body := builder()
+    mut window_at := 0
+    loop {
+      if window_at >= WINDOW_COUNT { break }
+      if window_at > 0 { working_body.write(",") }
+      working_body.write("{\"window\":")
+      working_body.write_int(window_size(window_at))
+      working_body.write(",\"sample_count\":")
+      working_body.write_int(window_samples[window_at])
+      working_body.write(",\"unique_sum\":")
+      working_body.write_int(window_unique[window_at])
+      working_body.write(",\"unique_mean_per_mille\":")
+      if window_samples[window_at] > 0 {
+        working_body.write_int(window_unique[window_at] * 1000 / window_samples[window_at])
+      } else {
+        working_body.write("null")
+      }
+      working_body.write("}")
+      window_at = window_at + 1
+    }
+
+    locality_body.write("{\"adjacent_pair_count\":")
+    locality_body.write_int(adjacent_pairs)
+    locality_body.write(",\"reuse_numerator\":")
+    locality_body.write(int_or_null(reuse_numerator, adjacent_pairs > 0))
+    locality_body.write(",\"reuse_denominator\":")
+    locality_body.write(int_or_null(reuse_denominator, adjacent_pairs > 0))
+    locality_body.write(",\"reuse_per_mille\":")
+    if adjacent_pairs > 0 && reuse_denominator > 0 {
+      locality_body.write_int(reuse_numerator * 1000 / reuse_denominator)
+    } else {
+      locality_body.write("null")
+    }
+    locality_body.write(",\"per_layer\":[")
+    per_layer_json := per_layer_body.to_string()
+    per_layer_view: str := per_layer_json
+    locality_body.write(per_layer_view)
+    locality_body.write("],\"working_set\":[")
+    working_json := working_body.to_string()
+    working_view: str := working_json
+    locality_body.write(working_view)
+    locality_body.write("],\"phase_split\":{\"prefill\":")
+    if prefill_seen {
+      prefill_json := reuse_triple(prefill_pairs, prefill_numerator, prefill_denominator)
+      prefill_view: str := prefill_json
+      locality_body.write(prefill_view)
+    } else {
+      locality_body.write("null")
+    }
+    locality_body.write(",\"decode\":")
+    if decode_seen {
+      decode_json := reuse_triple(decode_pairs, decode_numerator, decode_denominator)
+      decode_view: str := decode_json
+      locality_body.write(decode_view)
+    } else {
+      locality_body.write("null")
+    }
+    locality_body.write("}}")
+  } else {
+    // Section 2.5.7: a dense transcript reports the denominator it does not have, so no reader can
+    // mistake an unobserved zero for a measured one.
+    locality_body.write("{\"adjacent_pair_count\":0,\"reuse_numerator\":null,\"reuse_denominator\":null")
+    locality_body.write(",\"reuse_per_mille\":null,\"per_layer\":[],\"working_set\":[]")
+    locality_body.write(",\"phase_split\":{\"prefill\":null,\"decode\":null}}")
+  }
+
+  reuse_present := t.moe_present && adjacent_pairs > 0 && reuse_denominator > 0
+  reuse_per_mille := if reuse_present { reuse_numerator * 1000 / reuse_denominator } else { -1 }
+
+  graphs_json := graphs_body.to_string()
+  graphs_view: str := graphs_json
+  selections_json := selections_body.to_string()
+  selections_view: str := selections_json
+  locality_json := locality_body.to_string()
+  locality_view: str := locality_json
+  families_view: str := families_json
+  plains_view: str := plains_json
+  ops_list_view: str := ops_json
+
+  document := builder()
+  document.write("{\"schema_version\":1,\"kind\":\"R2_ACTIVATION_TRACE\",\"path\":")
+  document.write(json_string(path))
+  document.write(",\"status\":")
+  document.write(json_string(if failed { "error" } else { "ok" }))
+  document.write(",\"error_code\":")
+  document.write(json_string(code_view))
+  document.write(",\"error_detail\":")
+  document.write(json_string(detail_view))
+  document.write(",\"source\":{\"file_size\":")
+  document.write_int(t.file_size)
+  document.write(",\"line_count\":")
+  document.write_int(t.line_count)
+  document.write(",\"bytes_read\":")
+  document.write_int(t.bytes_read)
+  document.write(",\"callback_line_count\":")
+  document.write_int(t.callback_line_count)
+  document.write(",\"skipped_line_count\":")
+  document.write_int(t.skipped_line_count)
+  document.write("},\"run\":{\"instrument\":\"llama-eval-callback\",\"build\":")
+  document.write(int_or_null(t.build, t.build_present))
+  document.write(",\"build_source\":")
+  document.write(json_string(if t.build_present { "transcript" } else { "absent" }))
+  document.write(",\"contract_build\":")
+  document.write_int(CONTRACT_BUILD)
+  document.write(",\"build_matches_contract\":")
+  if t.build_present {
+    document.write(bool_text(t.build == CONTRACT_BUILD))
+  } else {
+    document.write("null")
+  }
+  document.write(",\"version_line\":")
+  if t.build_present {
+    version_view: str := t.version_line
+    document.write(json_string(version_view))
+  } else {
+    document.write("null")
+  }
+  document.write("},\"graph\":{\"graph_count\":")
+  document.write_int(t.graph_count)
+  document.write(",\"n_layer\":")
+  document.write_int(t.n_layer)
+  document.write(",\"node_families\":[")
+  document.write(families_view)
+  document.write("],\"unsuffixed_nodes\":[")
+  document.write(plains_view)
+  document.write("],\"ops\":[")
+  document.write(ops_list_view)
+  document.write("],\"shape_class\":")
+  document.write(json_string(shape_class))
+  document.write(",\"shape_class_basis\":")
+  document.write(json_string(shape_basis))
+  document.write("},\"moe\":{\"present\":")
+  document.write(bool_text(t.moe_present))
+  document.write(",\"n_expert\":")
+  document.write(int_or_null(t.n_expert, t.moe_present && t.n_expert >= 0))
+  document.write(",\"n_expert_used\":")
+  document.write(int_or_null(t.n_expert_used, t.moe_present && t.n_expert_used >= 0))
+  document.write(",\"n_expert_source\":")
+  if t.moe_present && t.n_expert_source != SOURCE_NONE {
+    document.write(json_string(source_label(t.n_expert_source)))
+  } else {
+    document.write("null")
+  }
+  document.write(",\"topk_layers\":[")
+  mut topk_written := 0
+  mut topk_render := 0
+  loop {
+    if topk_render >= t.topk_layers.len() { break }
+    if topk_render == 0 || t.topk_layers[topk_render - 1] != t.topk_layers[topk_render] {
+      if topk_written > 0 { document.write(",") }
+      document.write_int(t.topk_layers[topk_render])
+      topk_written = topk_written + 1
+    }
+    topk_render = topk_render + 1
+  }
+  document.write("],\"slots_truncated\":")
+  document.write(bool_text(t.moe_present && t.n_expert_used > TRUNCATION_PRINTED))
+  document.write("},\"graphs\":[")
+  document.write(graphs_view)
+  document.write("],\"selections\":[")
+  document.write(selections_view)
+  document.write("],\"locality\":")
+  document.write(locality_view)
+  document.write("}")
+
+  return ExpertTrace {
+    status: if failed { TraceStatus.Error } else { TraceStatus.Ok },
+    error_code: t.code.clone(),
+    error_detail: t.detail.clone(),
+    graph_count: t.graph_count,
+    n_layer: t.n_layer,
+    tokens_observed: tokens_observed_total,
+    tokens_total: tokens_total,
+    moe_present: t.moe_present,
+    n_expert: t.n_expert,
+    n_expert_used: t.n_expert_used,
+    selection_count: t.selection_count,
+    reuse_per_mille: reuse_per_mille,
+    reuse_present: reuse_present,
+    document: document.to_string(),
+  }
+}
+
+// The one public entry point. `Err` is returned only for an invalid path argument or an
+// operating-system failure; every structural defect in the transcript is data.
+pub fn build_trace(path: str) -> Result<ExpertTrace, Error> {
+  if !valid_path(path) {
+    return Err(Error.Invalid)
+  }
+  scanned := scan(path)?
+  return Ok(build(scanned, path))
+}

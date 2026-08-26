@@ -7,6 +7,7 @@ import eval
 import gguf
 import frontend_qwen
 import frontend_gpt_oss
+import expert_trace
 import repair
 import model
 import provider
@@ -33,6 +34,7 @@ fn print_help() {
   print("       main --verify-result <result.json>")
   print("       main --inspect-gguf <model.gguf> [inspection.json]")
   print("       main --model-ir <model.gguf> [model-ir.json]")
+  print("       main --expert-trace <callback.log> [trace.json]")
   print("       main prompt <experiment|generate|evaluate|accept|rollback> <request.json> <result.json>")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
 }
@@ -614,6 +616,95 @@ fn model_ir_demo(args: array<str>) -> Result<(), Error> {
   }
 }
 
+// R2A-EXPERT-TRACE-CAPTURE CLI adapter (`docs/specs/r2a-expert-trace.md` section 2.3). The arm holds
+// no transcript grammar: it validates arity, derives the document exactly once, writes or prints it,
+// prints the summary block, and maps the derivation status to the process exit. Arity is checked
+// before any path or file work, so an arity failure produces no output at all.
+//
+// There is no `--build`, no `--arch`, and no `--strict` flag, and there is no acquisition verb: the
+// transcript is a file that already exists, which is what keeps the whole-stdout limitation of the
+// shipped `std.process` surface out of this capability entirely.
+fn expert_trace_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() < 3 || args.len() > 4 {
+    return Err(Error.Invalid)
+  }
+  traced := expert_trace.build_trace(args[2])?
+  document_view: str := traced.document
+  if args.len() == 3 {
+    // The machine form: the document and one newline, and nothing else.
+    print(document_view)
+  } else {
+    fs.write_file(args[3], document_view)?
+    // Section 2.3 stable summary. The JSON document remains the authoritative result.
+    print("expert trace:")
+    print("status:")
+    match traced.status {
+      Ok => print("OK"),
+      Error => print("ERROR"),
+    }
+    print("graphs:")
+    print(traced.graph_count)
+    print("layers:")
+    print(traced.n_layer)
+    print("tokens observed:")
+    print(traced.tokens_observed)
+    print("tokens total:")
+    print(traced.tokens_total)
+    print("moe:")
+    if traced.moe_present {
+      print("YES")
+    } else {
+      print("NO")
+    }
+    // `-` is reserved for a value the transcript does not supply, reusing the R0 convention rather
+    // than inventing a second one.
+    print("experts:")
+    if traced.moe_present && traced.n_expert >= 0 {
+      print(traced.n_expert)
+    } else {
+      print("-")
+    }
+    print("experts used:")
+    if traced.moe_present && traced.n_expert_used >= 0 {
+      print(traced.n_expert_used)
+    } else {
+      print("-")
+    }
+    print("selections:")
+    print(traced.selection_count)
+    // Per mille rather than a decimal: the summary block is a stable stdout contract and this
+    // repository has no float formatting contract. The JSON document carries the exact
+    // numerator/denominator pair and is the authoritative result.
+    print("reuse:")
+    if traced.reuse_present {
+      print(traced.reuse_per_mille)
+    } else {
+      print("-")
+    }
+    match traced.status {
+      Ok => {},
+      Error => {
+        print("error:")
+        error_view: str := traced.error_code
+        print(error_view)
+        print("detail:")
+        detail_view: str := traced.error_detail
+        // The detail names a transcript-supplied identifier, so it is escaped for the same reason
+        // `arch` is in the R1 arm: the block is read positionally.
+        sanitized_detail := sanitize_summary_line(detail_view)
+        sanitized_detail_view: str := sanitized_detail
+        print(sanitized_detail_view)
+      },
+    }
+  }
+  // A transcript defect is persisted and reported data; the CLI maps it to the existing
+  // `Error.Invalid` process exit after the document has been emitted.
+  match traced.status {
+    Ok => { return Ok(()) },
+    Error => { return Err(Error.Invalid) },
+  }
+}
+
 // A repair provider that declines to fix anything (always gives up). It lets the loop's control
 // exits be demonstrated without a model: an already-passing check needs no provider, and a
 // persistently failing check ends in GAVE_UP on the first iteration. A real provider (LLM + patch
@@ -749,6 +840,8 @@ pub fn main(args: array<str>) -> Result<(), Error> {
                           } else {
                             if args[1] == "--model-ir" {
                               model_ir_demo(args)?
+                            } else if args[1] == "--expert-trace" {
+                              expert_trace_demo(args)?
                             } else if c7_selector(args[1]) {
                               persisted_result_demo(args)?
                             } else {

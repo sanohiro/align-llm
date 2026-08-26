@@ -14,23 +14,45 @@ file records durable project state.
   (`schema_version: 1`) document recording, per (token, layer), the selected expert ids and locality
   aggregates. A dense (non-MoE) transcript yields `moe: false` rather than an error, so the arm is
   exercisable before a real MoE transcript exists.
+- **Align capability requests.** R2A added Requests 25 (`std.process` streaming/redirecting child
+  stdout), 26 (`str`-to-integer parsing in the standard library), and 27 (string ordering and
+  sorting) to `docs/align-requests.md`. All three are PROPOSED and non-blocking: Request 25 does not
+  block because R2A consumes a transcript *file* and never invokes `llama-eval-callback` itself (the
+  shell redirection already in `scripts/run-expert-trace-parity` stands in); Request 26 does not
+  block because a fourth hand-rolled decimal parser, `parse_uint` at `src/expert_trace.align:317`, is
+  a viable (if duplicative) workaround; Request 27 does not block because `src/expert_trace.align`
+  hand-writes `span_less`/`sort_spans` (lines 638-716) and `src/model_ir.align` packs a 42-bit name
+  hash (`name_hash`/`packed_entry`/`name_index`, lines 261-301) instead of sorting or binary-searching
+  by string directly. Request 27's evidence corrects an assumption in `src/expert_trace.align`'s own
+  comment (line 638-639): `str`/`string` already satisfy `Ord` and back `<`/`<=`/`>`/`>=` and
+  `sort_by_key`'s `str`-key comparator at this pin (confirmed by compiling against the pinned
+  `alignc 0.5.0`); the genuine remaining gap is that plain `array<T>.sort()` rejects `str` elements
+  ("needs a numeric element type, got str" — the compiler's own `check_array_sort` comment calls this
+  a "first cut" with "a `sort(cmp)` overload" as a named follow-up,
+  `crates/align_sema/src/lib.rs:50602-50603`). Requests 21–24 remain inherited, unconsumed, and
+  unchanged in status.
 - **Owner and qualification.** `make expert-trace-smoke` is the new narrow Makefile owner; adding it
   changes the `Makefile`, so preflight selects the fresh-image installed profile.
   `scripts/run-expert-trace-parity` is the named opt-in qualification. The R2 roadmap gate stays open
   until a real MoE transcript exists — a small MoE GGUF (1-4 GB) is a separate pending user decision
-  that would close it — with a dense-Qwen parity run (`moe: false` path) planned as smoke-level
+  that would close it — with a dense-Qwen parity run (`moe: false` path) recorded below as smoke-level
   evidence ahead of that decision.
+- **Implementation is complete in the working tree.** `--expert-trace` is implemented
+  (`src/expert_trace.align`, `src/main.align`), `docs/specs/r2a-expert-trace.md` is updated, and every
+  owner below passes at the unchanged pin `4b515f8d`:
+  - `gmake check`: 28 units, PASS. `gmake build`: PASS.
+  - `gmake expert-trace-smoke`: 87 fixtures plus a real transcript excerpt, PASS.
+  - `gmake gguf-smoke`: PASS. `gmake model-ir-smoke`: PASS.
+  - `python3 scripts/check-gate-topology`: PASS. `gmake format-check`: PASS. `gmake fmt`: no diff.
+  - `git diff --check`: clean.
+  - Dense-Qwen parity (`moe: false` path, `scripts/run-expert-trace-parity`): **PASS** — 1 graph, 958
+    nodes, 28 layers, `moe: false`, 16,633 lines, `bytes_read` 1,101,339, 0.062 s.
+  - MoE parity: **N/A** (no small MoE GGUF downloaded yet; see the pending user decision below).
 - **Next actions, in order.**
-  1. Commit the design ledger (`docs/specs/r2a-expert-trace.md`) and replace the `b4dfb60`
-     placeholder above with its real commit id.
-  2. Implement `--expert-trace`, the `R2_ACTIVATION_TRACE` schema-1 document, and the
-     `src/model_ir.align`/`src/frontend_gpt_oss.align` reuse needed to interpret expert ids.
-  3. Add the `gmake expert-trace-smoke` owner and run it.
-  4. Run the dense-Qwen parity smoke (`moe: false` path) against a local `llama-eval-callback`
-     transcript.
-  5. Comprehensive review, then exact-head preflight — confirm with `scripts/pre-pr --plan` whether
-     the `Makefile` change selects the fresh-image installed profile via Docker-in-Docker.
-  6. Publish the English pull request.
+  1. One comprehensive review of the candidate, then exact-head preflight — confirm with
+     `scripts/pre-pr --plan` whether the `Makefile` change selects the fresh-image installed profile
+     via Docker-in-Docker.
+  2. Publish the English pull request.
 - **Two pending user decisions, tracked and not to be lost.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
      gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
@@ -217,11 +239,10 @@ boundary is next changed.
    `gmake` and the recorded `LLVM_CONFIG`/`LIBRARY_PATH` environment. Confirm `.align-revision`
    still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R2A requires no pin change.
 3. Resume at the first unfinished next action in the active R2A-EXPERT-TRACE-CAPTURE capability
-   above. The design ledger is not yet committed (`b4dfb60`); commit it first, then implement
-   `--expert-trace`, add the `gmake expert-trace-smoke` owner, run the dense-Qwen parity smoke,
-   review, and publish.
+   above: implementation and every owner already pass in the working tree, so the next action is
+   review, then exact-head preflight, then publication.
 4. Do not open another Align request unless implementation exposes a further genuine shipped-language,
-   compiler/runtime, or standard-library gap under the register rules. Requests 21-24 are inherited
+   compiler/runtime, or standard-library gap under the register rules. Requests 21-27 are inherited
    `PROPOSED` and non-blocking.
 5. Two user decisions are pending and must not be silently dropped: whether to download
    `gpt-oss-20b-mxfp4.gguf` (12.1 GB) for the carried-forward gpt-oss `model-ir-parity`

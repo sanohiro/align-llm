@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R2A-EXPERT-TRACE-CAPTURE focused qualification (`docs/specs/r2a-expert-trace.md` section 4.4). It
+# captures one transcript from the real instrument and cross-checks the derived document against an
+# independent Python parse of the same bytes. It is opt-in, never joins an aggregate, and never runs
+# in CI.
+#
+#   ALIGN_LLM_GGUF_MODEL            path to the model
+#   ALIGN_LLM_LLAMA_EVAL_CALLBACK   path to llama-eval-callback
+#
+# Neither variable has a default. A qualification that silently passes when its subject is missing is
+# worse than no qualification, so a missing input prints one exact N/A line and exits 0 without
+# claiming a pass.
+#
+# On this host only a dense model exists, so `moe.present` is false and every locality aggregate is
+# `null`. That half of the R2 gate is a recorded N/A (section 4.5) and never a pass: the parser is
+# correct and the measurement does not exist yet.
+
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+instrument="${ALIGN_LLM_LLAMA_EVAL_CALLBACK:-}"
+model="${ALIGN_LLM_GGUF_MODEL:-}"
+
+if [ -z "$instrument" ]; then
+  printf '%s\n' "expert trace parity: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)"
+  exit 0
+fi
+if [ ! -x "$instrument" ]; then
+  printf '%s\n' "expert trace parity: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable)"
+  exit 0
+fi
+if [ -z "$model" ]; then
+  printf '%s\n' "expert trace parity: N/A (ALIGN_LLM_GGUF_MODEL unset)"
+  exit 0
+fi
+if [ ! -f "$model" ]; then
+  printf '%s\n' "expert trace parity: N/A (ALIGN_LLM_GGUF_MODEL is absent)"
+  exit 0
+fi
+if [ ! -x "$root_dir/main" ]; then
+  printf '%s\n' "expert trace parity: the product executable is missing; run 'make build'" >&2
+  exit 1
+fi
+
+temp_dir=$(mktemp -d)
+cleanup() {
+  rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
+before=$(python3 - "$model" <<'PY'
+import os, sys
+info = os.stat(sys.argv[1])
+print("%d %d" % (info.st_size, info.st_mtime_ns))
+PY
+)
+
+# The build identity is recorded explicitly: section 2.2 finding 8 established that no build string
+# appears in either stream at default verbosity, which is why `run.build` is nullable by design.
+"$instrument" --version >"$temp_dir/version.txt" 2>&1 || {
+  status=$?
+  printf '%s\n' "expert trace parity: the instrument exited $status for --version" >&2
+  tail -20 "$temp_dir/version.txt" >&2 || true
+  exit 1
+}
+
+# The wall-clock and log-size limits are the belt to the fixed prompt's suspenders: a future build
+# must not be able to produce an unbounded transcript from inside this runner. Bash counts
+# `ulimit -f` in 1024-byte blocks, so 262144 caps the transcript at 256 MiB; the recorded build
+# writes about 1.4 MB for a five-token prompt. `timeout` is used when the host has it and skipped
+# otherwise, because a missing optional utility must not turn a qualification into a false failure,
+# and the 124 diagnostic below is therefore reported only when a wrapper was actually used.
+instrument_timeout=""
+if command -v timeout >/dev/null 2>&1; then
+  instrument_timeout="timeout 600"
+elif command -v gtimeout >/dev/null 2>&1; then
+  instrument_timeout="gtimeout 600"
+fi
+(
+  ulimit -f 262144
+  exec $instrument_timeout "$instrument" -m "$model" -p "Write a function" -n 1 -t 4 \
+    </dev/null >"$temp_dir/transcript.txt" 2>"$temp_dir/instrument.log"
+) || {
+  status=$?
+  if [ -n "$instrument_timeout" ] && [ "$status" -eq 124 ]; then
+    printf '%s\n' "expert trace parity: the instrument did not finish within 600 s" >&2
+  else
+    printf '%s\n' "expert trace parity: the instrument exited $status" >&2
+  fi
+  tail -20 "$temp_dir/instrument.log" >&2 || true
+  exit 1
+}
+
+after=$(python3 - "$model" <<'PY'
+import os, sys
+info = os.stat(sys.argv[1])
+print("%d %d" % (info.st_size, info.st_mtime_ns))
+PY
+)
+if [ "$before" != "$after" ]; then
+  printf '%s\n' "expert trace parity: the model's size or mtime changed during the run" >&2
+  exit 1
+fi
+
+start_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+"$root_dir/main" --expert-trace "$temp_dir/transcript.txt" >"$temp_dir/trace.json"
+end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+
+python3 - "$temp_dir/trace.json" "$temp_dir/transcript.txt" "$temp_dir/version.txt" \
+  "$start_ns" "$end_ns" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+transcript = Path(sys.argv[2])
+version_text = Path(sys.argv[3]).read_text(encoding="utf-8", errors="replace").strip()
+elapsed_ns = int(sys.argv[5]) - int(sys.argv[4])
+WINDOW_BYTES = 1048576
+TRUNCATION_PRINTED = 6
+
+
+def fail(message):
+    raise SystemExit("expert trace parity: FAIL %s" % message)
+
+
+# An independent implementation of the section 2.2 grammar, written here so that the comparison is
+# between two parsers rather than between a document and itself. Every rule is stated because the
+# transcript grammar is a debug print, not a contract.
+HEADER = re.compile(
+    r"^common_debug_cb_eval: (?P<name>.{24,}?) = \((?P<type>[^)]+)\) *(?P<op>\S+)\("
+    r"(?P<args>.*)\}\) = \{(?P<ne>[^}]*)\}$")
+ROW = re.compile(r"^            \[(?P<body>.*)  \],$")
+SUFFIX = re.compile(r"^(?P<family>.+)-(?P<layer>\d+)$")
+ELEMENT = re.compile(r"^(?P<whole>\d+)\.(?P<fraction>0+)$")
+
+
+def printed_indices(ne):
+    if ne <= TRUNCATION_PRINTED:
+        return list(range(ne))
+    return [0, 1, 2, ne - 3, ne - 2, ne - 1]
+
+
+def parse(path):
+    families = set()
+    plains = set()
+    ops = set()
+    graphs = []
+    selections = []
+    callback_lines = 0
+    skipped = 0
+    line_count = 0
+    entry_name = None
+    current = {"n_tokens": None, "nodes": 0}
+    block = None
+    row_position = 0
+    n_layer = -1
+    with path.open("r", encoding="utf-8", errors="strict") as handle:
+        for raw in handle:
+            line_count += 1
+            line = raw.rstrip("\n")
+            match = HEADER.match(line)
+            if match:
+                callback_lines += 1
+                name = match.group("name").strip()
+                ne = [int(part) for part in match.group("ne").split(", ")]
+                # A ggml node name repeats within one graph (`Qcur-0` four times in a 28-layer
+                # qwen2 graph), so the boundary is the graph's entry node: the first callback node
+                # of the transcript, which build 10566 emits exactly once per evaluation.
+                if entry_name is None:
+                    entry_name = name
+                elif name == entry_name and current["nodes"]:
+                    graphs.append(current)
+                    current = {"n_tokens": None, "nodes": 0}
+                current["nodes"] += 1
+                ops.add(match.group("op"))
+                suffix = SUFFIX.match(name)
+                layer = None
+                if suffix:
+                    families.add(suffix.group("family"))
+                    layer = int(suffix.group("layer"))
+                    n_layer = max(n_layer, layer + 1)
+                else:
+                    plains.add(name)
+                if name == "embd":
+                    current["n_tokens"] = ne[1]
+                block = {"name": name, "ne": ne, "layer": layer,
+                         "topk": bool(suffix) and suffix.group("family") == "ffn_moe_topk"}
+                row_position = 0
+                continue
+            if block is None:
+                skipped += 1
+                continue
+            row = ROW.match(line)
+            if row:
+                if block["topk"]:
+                    token = printed_indices(block["ne"][1])[row_position]
+                    slots = printed_indices(block["ne"][0])
+                    pieces = [piece for piece in row.group("body").split(", ")
+                              if piece != "   ..."]
+                    if len(pieces) != len(slots):
+                        fail("independent parse: %s row %d has %d elements, expected %d"
+                             % (block["name"], row_position, len(pieces), len(slots)))
+                    for slot, piece in zip(slots, pieces):
+                        element = ELEMENT.match(piece.strip())
+                        if not element:
+                            fail("independent parse: %s element %r is not integral"
+                                 % (block["name"], piece))
+                        selections.append({"graph": len(graphs), "layer": block["layer"],
+                                           "token": token, "slot": slot,
+                                           "expert": int(element.group("whole"))})
+                row_position += 1
+                continue
+            if line.startswith("    sum = "):
+                block = None
+                continue
+            if line in ("    [", "    ]", "        [", "        ],", "        ..., ",
+                        "            ..., "):
+                continue
+            fail("independent parse: unrecognized line inside a block: %r" % line)
+    if current["nodes"]:
+        graphs.append(current)
+    return {"families": sorted(families), "plains": sorted(plains), "ops": sorted(ops),
+            "graphs": graphs, "selections": selections, "callback_lines": callback_lines,
+            "skipped": skipped, "line_count": line_count, "n_layer": n_layer}
+
+
+reference = parse(transcript)
+
+if document["status"] != "ok":
+    fail("the derivation reported %r (%r/%r)"
+         % (document["status"], document["error_code"], document["error_detail"]))
+if document["schema_version"] != 1 or document["kind"] != "R2_ACTIVATION_TRACE":
+    fail("schema %r kind %r" % (document["schema_version"], document["kind"]))
+
+rows = [
+    ("source.line_count", document["source"]["line_count"], reference["line_count"]),
+    ("source.callback_line_count", document["source"]["callback_line_count"],
+     reference["callback_lines"]),
+    ("source.skipped_line_count", document["source"]["skipped_line_count"], reference["skipped"]),
+    ("source.file_size", document["source"]["file_size"], transcript.stat().st_size),
+    ("graph.graph_count", document["graph"]["graph_count"], len(reference["graphs"])),
+    ("graph.n_layer", document["graph"]["n_layer"], reference["n_layer"]),
+    ("graph.node_families", document["graph"]["node_families"], reference["families"]),
+    ("graph.unsuffixed_nodes", document["graph"]["unsuffixed_nodes"], reference["plains"]),
+    ("graph.ops", document["graph"]["ops"], reference["ops"]),
+    ("moe.present", document["moe"]["present"], bool(reference["selections"])),
+    ("selections", document["selections"], reference["selections"]),
+]
+for label, ours, theirs in rows:
+    if ours != theirs:
+        fail("%s: %r, the independent parse says %r" % (label, ours, theirs))
+
+if len(document["graphs"]) != len(reference["graphs"]):
+    fail("graphs: %d rows, the independent parse found %d"
+         % (len(document["graphs"]), len(reference["graphs"])))
+for index, (ours, theirs) in enumerate(zip(document["graphs"], reference["graphs"])):
+    if ours["n_tokens"] != theirs["n_tokens"] or ours["node_count"] != theirs["nodes"]:
+        fail("graphs[%d]: %r, the independent parse says %r" % (index, ours, theirs))
+    expected_phase = ("prefill" if theirs["n_tokens"] > 1 else
+                      ("single_token_first_graph" if index == 0 else "decode"))
+    if ours["phase"] != expected_phase:
+        fail("graphs[%d].phase %r, expected %r" % (index, ours["phase"], expected_phase))
+
+# The section 4.6 secondary metric: the reader streams rather than re-scanning.
+size = document["source"]["file_size"]
+windows = max(1, (size + WINDOW_BYTES - 1) // WINDOW_BYTES)
+if not size <= document["source"]["bytes_read"] <= size + windows * WINDOW_BYTES:
+    fail("bytes_read %d is outside [%d, %d]"
+         % (document["source"]["bytes_read"], size, size + windows * WINDOW_BYTES))
+
+moe = document["moe"]["present"]
+if moe:
+    groups = {}
+    for row in reference["selections"]:
+        groups.setdefault((row["graph"], row["layer"], row["token"]), set()).add(row["expert"])
+    pairs = numerator = denominator = 0
+    for key in sorted(groups):
+        following = (key[0], key[1], key[2] + 1)
+        if following not in groups:
+            continue
+        pairs += 1
+        numerator += len(groups[key] & groups[following])
+        denominator += len(groups[following])
+    locality = document["locality"]
+    if locality["adjacent_pair_count"] != pairs:
+        fail("locality.adjacent_pair_count %d, the independent parse says %d"
+             % (locality["adjacent_pair_count"], pairs))
+    if pairs and (locality["reuse_numerator"] != numerator
+                  or locality["reuse_denominator"] != denominator):
+        fail("locality reuse %r/%r, the independent parse says %d/%d"
+             % (locality["reuse_numerator"], locality["reuse_denominator"], numerator, denominator))
+else:
+    for field in ("reuse_numerator", "reuse_denominator", "reuse_per_mille"):
+        if document["locality"][field] is not None:
+            fail("a dense transcript reported locality.%s" % field)
+    if document["locality"]["adjacent_pair_count"] != 0:
+        fail("a dense transcript reported adjacent pairs")
+    if document["selections"]:
+        fail("a dense transcript produced selections")
+
+print("expert trace parity: PASS")
+print("  instrument build")
+for line in version_text.splitlines():
+    print("    %s" % line.strip())
+print("  graphs             %d" % document["graph"]["graph_count"])
+print("  nodes              %d" % sum(row["node_count"] for row in document["graphs"]))
+print("  layers             %d" % document["graph"]["n_layer"])
+print("  shape class        %s (%s)"
+      % (document["graph"]["shape_class"], document["graph"]["shape_class_basis"]))
+print("  moe                %s" % ("true" if moe else "false"))
+print("  selections         %d" % len(document["selections"]))
+print("  bytes / lines      %d / %d"
+      % (document["source"]["file_size"], document["source"]["line_count"]))
+print("  bytes_read         %d (%.2f%% of the file)"
+      % (document["source"]["bytes_read"],
+         100.0 * document["source"]["bytes_read"] / document["source"]["file_size"]))
+print("  elapsed            %.3f s (diagnostic only; R2A makes no performance claim)"
+      % (elapsed_ns / 1e9))
+if not moe:
+    print("  locality           N/A - moe.present is false, so the R2 gate stays open "
+          "(section 4.5)")
+PY
+
+printf '%s\n' "expert trace parity: model size and mtime unchanged (read-only proof)"
