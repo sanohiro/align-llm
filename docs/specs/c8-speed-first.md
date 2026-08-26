@@ -1,7 +1,7 @@
 # C8 Speed-first optimization
 
-Status: first consumer-complete capability implemented. This document owns performance claims and
-acceptance measurements for C8 optimizations.
+Status: first consumer-complete capability merged; second capability baseline recorded. This
+document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
 
@@ -16,7 +16,9 @@ The first capability, `C8-TEST-SELECTION-LINEAR`, changes only related-test rank
 applies and validates a candidate, so the fixed benchmark measures the complete first-attempt
 passing-patch path through `main --verify-loop`.
 
-## 2. Capability ledger
+## 2. Capability ledgers
+
+### 2.1 Linear related-test ranking
 
 | Field | Contract |
 | --- | --- |
@@ -35,6 +37,29 @@ passing-patch path through `main --verify-loop`.
 Changing either score weight must update the bucket set and the four-bucket owner in the same
 capability. An unrecognized score cannot arise from the current formula; the lowest bucket is the
 explicit zero-score case, not a general sorting fallback.
+
+### 2.2 Compute related-test signals once
+
+`C8-TEST-SELECTION-SIGNALS-ONCE` is the next proposed consumer-complete capability. The linear
+selector currently evaluates basename and directory equality once to compute the score and again
+to compute the reason for every test candidate. The optimization computes the two booleans once per
+candidate and derives both existing fields from them.
+
+| Field | Contract |
+| --- | --- |
+| Consumer | `repo_index.select_tests`, `patch_eval.evaluate`, and the C4 verification loop |
+| Input and output | The existing root, changed path, timeout, schema-1 selection document, patch-evaluation document, verification result, status, counts, candidate bytes, and order are unchanged |
+| Changed boundary | Only the function-local computation of basename-match and same-directory signals for one already-classified test path |
+| Ownership/allocation | Both booleans are non-owning scalar locals; builders, strings, subprocesses, and persisted artifacts are unchanged |
+| Failure behavior | Existing `rev-parse` then `ls-files` order, timeout handling, error documents, and no-repository behavior are unchanged |
+| Correctness owner | `scripts/run-test-selection-smoke`, with `scripts/run-patch-eval-smoke` and `scripts/run-verification-loop-smoke` covering both downstream consumers |
+| Performance owner | `scripts/run-c8-selection-signal-benchmark baseline BINARY [SAMPLES]` before implementation and `scripts/run-c8-selection-signal-benchmark compare PARENT_BINARY CANDIDATE_BINARY [SAMPLES]` after implementation |
+| Acceptance | On the fixed coding task, the candidate median time to a first-attempt passing patch is lower; normalized result documents match and all five real stage commands pass |
+| Platform scope | Platform-independent Align path/string computation; no target-local implementation or platform-specific speed claim |
+
+No memoization or persisted cache is introduced. A future change to either signal must update the
+single computation and the existing four-bucket owner rather than restoring separate score/reason
+paths.
 
 ## 3. Fixed passing-patch benchmark
 
@@ -85,7 +110,37 @@ Both binaries were built with the repository's normal `make build` command and t
 Align pin. This evidence closes the C8 gate for this capability only; it does not claim that every
 repository or the model/provider phase improves by 74.5%.
 
-## 4. Deferred C8 surfaces
+## 4. Second fixed coding-task baseline
+
+The second benchmark retains 4,000 tracked test candidates but replaces the three `/usr/bin/true`
+stages with a real Python source compile, a targeted assertion, and a distinct full assertion. The
+candidate changes `src/value.py` from returning zero to returning one; both tests load the patched
+source and require one. Repository creation and reset remain outside the timed region. Baseline and
+compare modes discard two warmup pairs, use an odd sample count of at least five, and require every
+normalized result document to agree. Compare mode additionally rejects identical binary SHA-256
+digests and a non-improving candidate median.
+
+The pre-implementation baseline is:
+
+```text
+commit:     4ed50d237e65e164818b3060fe11312296685ec3
+binary SHA-256: 9c71f3d55d1335a74723c2933c2091945db6a8a827d95ce08739c1ce35ba3561
+command:    scripts/run-c8-selection-signal-benchmark baseline ./main 15
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    15 measurements after two discarded warmup runs
+median:     49,350,067 ns
+candidate-apply-check median: 1,300,692 ns
+candidate-apply median:       1,169,056 ns
+build median:                 9,328,803 ns
+targeted-test median:        14,547,160 ns
+full-test median:            14,526,182 ns
+```
+
+The stage medians are diagnostic decomposition, not separate acceptance claims. Only the total
+time-to-passing-patch median decides the capability gate.
+
+## 5. Deferred C8 surfaces
 
 Context reduction, stable-context reuse, parallel checks, small-model routing, and persisted static
 analysis remain separate capabilities. In particular, captured concurrent checks require an Align

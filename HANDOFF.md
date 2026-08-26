@@ -3,15 +3,16 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## C8 first capability: linear related-test ranking (2026-08-26)
+## C8 second capability: compute related-test signals once (2026-08-26)
 
-- The preceding durable handoff is the platform-scope policy merge on `main` at
-  `6d24dedf3df26de1eb9f4af06f46e61012eeb3ee` (PR #111).
-- Unmerged publication work is on `agent/c8-handoff-ready`. The implementation checkpoint is
-  `be5291ef79d9f7a9102d91d86afb7880fc5c7182`; the comprehensive review inspected
-  `9ae2134010fa8a330bdf1922d62070fd198b70ae` and returned three P2 findings. The consolidated
-  repair is `b30635dd05d2adb8ede2056044dd81a415ac83a5`. The branch integrates PR #111; run its
-  exact-head hosted preflight, publish, and merge before starting the next C8 capability.
+- The preceding durable handoff is C8 test-selection PR #112 on `main` at
+  `4ed50d237e65e164818b3060fe11312296685ec3`. PR #111 first restricted native profiles to their
+  owned target-local/image boundaries; PR #112 then passed hosted CI while both unaffected native
+  jobs completed in 6–9 seconds without image qualification.
+- Active work is on `agent/c8-selection-signals-once`. The new fixed coding-task benchmark owns a
+  real Python compile, targeted assertion, and full assertion with 4,000 tracked test candidates.
+  The product is unchanged at the recorded 49,350,067 ns baseline; implement only the ledgered
+  duplicate-signal removal, compare the parent and candidate, then review, publish, and merge.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -43,14 +44,13 @@ file records durable project state.
 
 ## Resume in another environment
 
-1. Fetch `origin` and resume `agent/c8-handoff-ready` at its latest commit. Read `CLAUDE.md`, then
-   `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Complete the publication sequence
-   named above; do not restart from `main` while this capability remains unmerged.
-2. After the C8 test-selection pull request merges, refresh `main` and select the next smallest
-   consumer-complete optimization that improves a real
-   fixed coding task end to end. Establish its reproducible current median for time to a passing
-   patch before making an optimization claim; tokens/second or an isolated model latency is not the
-   C8 gate.
+1. Fetch `origin` and resume `agent/c8-selection-signals-once` at its latest commit. Read
+   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Preserve the
+   recorded baseline and implement only `C8-TEST-SELECTION-SIGNALS-ONCE` before comparing binaries.
+2. After the second C8 pull request merges, refresh `main` and select the next smallest
+   consumer-complete optimization that improves a real fixed coding task end to end. Establish its
+   reproducible current median for time to a passing patch before making an optimization claim;
+   tokens/second or an isolated model latency is not the C8 gate.
 3. Choose the next capability from measured evidence among context reduction, stable-context
    reuse, targeted tests, parallel checks, small-model routing, and cached static analysis. Record
    the exact consumer, baseline, changed boundary, owner test, and measurement command in the C8
