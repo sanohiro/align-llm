@@ -617,10 +617,12 @@ expert trace parity: N/A (ALIGN_LLM_GGUF_MODEL is absent)
 ```
 
 They are checked in that order, so an unset variable is reported before an unusable one. A run that
-reaches the instrument also emits its own two-line verdict — `expert trace parity (dense): PASS` and
-either `expert trace parity (MoE): PASS` or
-`expert trace parity (MoE): N/A - no MoE GGUF on this host; see section 4.5.` — so the pull-request
-record quotes lines the runner printed rather than lines an author composed.
+reaches the instrument also emits its own two-line verdict, one line per half, and exactly one of
+the two is a `PASS`: a dense model prints `expert trace parity (dense): PASS` with
+`expert trace parity (MoE): N/A - no MoE GGUF on this host; see section 4.5.`, and a MoE model
+prints `expert trace parity (MoE): PASS` with `expert trace parity (dense): N/A - moe.present is
+true`. A half whose branch never ran never claims a pass, so the pull-request record quotes lines
+the runner printed rather than lines an author composed.
 
 **The oracle is an independent Python re-parse, not a self-check.** The runner re-implements the
 section 2.2 grammar in Python inside itself and parses the same transcript a second time, then

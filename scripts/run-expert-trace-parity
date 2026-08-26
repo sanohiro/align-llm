@@ -329,11 +329,13 @@ if not moe:
     print("  locality           N/A - moe.present is false, so the R2 gate stays open "
           "(section 4.5)")
 # The two halves of the qualification, emitted rather than authored, so the pull-request record of
-# section 7.4 quotes lines this script actually printed.
-print("expert trace parity (dense): PASS")
+# section 7.4 quotes lines this script actually printed. Exactly one half is a PASS on any one run:
+# a model is either MoE or it is not, and a half whose branch never executed must not claim a pass.
 if moe:
+    print("expert trace parity (dense): N/A - moe.present is true")
     print("expert trace parity (MoE): PASS")
 else:
+    print("expert trace parity (dense): PASS")
     print("expert trace parity (MoE): N/A - no MoE GGUF on this host; see section 4.5.")
 PY
 

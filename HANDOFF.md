@@ -21,10 +21,10 @@ file records durable project state.
   - **25** does not block because R2A consumes a transcript *file* and never invokes
     `llama-eval-callback` itself (the shell redirection already in `scripts/run-expert-trace-parity`
     stands in).
-  - **26** does not block because `parse_uint` at `src/expert_trace.align:317` is a viable
+  - **26** does not block because `parse_uint` at `src/expert_trace.align:328` is a viable
     workaround. Its evidence is *not* "four hand-rolled parsers": `src/main.align:71`,
     `src/failure_memory.align:176`, and `src/c6f1_request11_adoption.align:6` are each a two-line
-    `json.decode` detour, and only `src/expert_trace.align:317` is a real parser — which is the
+    `json.decode` detour, and only `src/expert_trace.align:328` is a real parser — which is the
     stronger argument, because those three route a plain decimal integer through a JSON decoder and
     R2A cannot even do that (`     12.0000` is not a JSON integer and an expert id must not travel
     through a float).
@@ -48,7 +48,7 @@ file records durable project state.
   Requests 21 and 23 gained new R2A client evidence without a status change — 21 a second class of
   read-only input (a transcript in a root-owned or read-only artifact directory; the `0444`
   `read-only-transcript` smoke case exits 3 with no document), 23 the single `borrow`-parameter lint
-  line `src/expert_trace.align:1607`. Request 22 gained **none**: R2A holds no `array<string>` and
+  line `src/expert_trace.align:1622`. Request 22 gained **none**: R2A holds no `array<string>` and
   avoids that shape entirely. Requests 22 and 24 remain inherited, unconsumed, and unchanged.
 - **Owner and qualification.** `make expert-trace-smoke` is the new narrow Makefile owner; adding it
   changes the `Makefile`, so preflight selects the fresh-image installed profile.
@@ -70,7 +70,9 @@ file records durable project state.
   - Dense-Qwen parity (`moe: false` path, `scripts/run-expert-trace-parity`): **PASS** — 1 graph, 958
     nodes, 28 layers, `moe: false`, 16,633 lines, `bytes_read` 1,101,339.
   - MoE parity: **N/A** (no small MoE GGUF downloaded yet; see the pending user decision below). The
-    runner now *emits* both verdict lines rather than leaving them for an author to compose.
+    runner now *emits* both verdict lines rather than leaving them for an author to compose, and
+    exactly one of them is a `PASS`: the dense half prints `N/A - moe.present is true` on a MoE run,
+    because its dense-only assertions never execute there.
 - **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
   the candidate at `140e868`: **A** the Align source, **B** the specification, register, handoff, and
   fixtures. A returned 1 blocker class, 1 major, 2 minor, and 1 low; B returned 3 major, 5 moderate,
@@ -80,7 +82,21 @@ file records durable project state.
   transcript carrying a multi-byte UTF-8 scalar at the offset — the whole class is now audited and
   every `str[a..b]` uses an ASCII-matched offset — and the locality adjacency test compared packed
   keys alone, so a token index at the top of its field carried into the layer field and manufactured
-  a cross-layer pair (measured: `adjacent_pair_count` 9 where the definition gives 8).
+  a cross-layer pair (measured: `adjacent_pair_count` 9 where the definition gives 8). A final
+  review of the repair delta at `e99bceb` returned **changes requested**: 3 medium and 3 low, every
+  one accepted and repaired in the commit that follows it. The medium class was
+  documentation accuracy against the shipped source — every `src/*.align:NNN` citation in the diff
+  was stale by the eleven lines the repair added, Request 27 mis-stated the `sort_by_key` blocker as
+  a missing `str` key when the real blocker is owned-value lambda capture plus `borrow`-parameter
+  field access, and Request 21 called `fs.open_rw` the *only* random-access constructor. The low
+  class was three assertions that could not fail: an unconditional dense parity verdict, a `-1`
+  printed for an underived layer count, and a `destination-path-guard` that accepted any nonzero
+  exit. Every `src/*.align` citation in the whole diff has since been re-resolved against `HEAD`,
+  the Request 23 lint block is a paste of this HEAD's `gmake check` output, and the Request 27 probe
+  block is a paste of a probe re-run at this HEAD. That review also swept **207,807 UTF-8 mutations**
+  of the real build-10566 excerpt through the arm with **0 aborts**, which is the durable evidence
+  that the multi-byte slicing class repaired at `e99bceb` is closed. The repair is narrow and bound
+  to the recorded findings, so it does not trigger another full review.
 - **Next actions, in order.**
   1. Exact-head preflight — confirm with `scripts/pre-pr --plan` that the `Makefile` change selects
      the fresh-image installed profile, then run
@@ -218,8 +234,9 @@ file records durable project state.
   gate. `docs/specs/roadmap.md` section R0 records these numbers as achieved.
 - **Align requests 21 and 22 are `PROPOSED` and non-blocking**, and both are inherited unchanged by
   the active R1-QWEN-MODEL-IR capability above; see `docs/align-requests.md` for the current
-  next-consumer framing. Request 21: `fs.open_rw` is the only random-access file constructor at pin
-  `4b515f8d`, so inspecting a model requires `O_RDWR` on a file that is never written. Request 22:
+  next-consumer framing. Request 21: both random-access `file` constructors at pin `4b515f8d`
+  (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a
+  file that is never written. Request 22:
   `array<string>` and arrays of a record with a Move field cannot be indexed (`check_index` rejects
   it); `src/gguf.align` carries tensor `absolute_offset` values as a NUL-separated prefix stream plus
   a parallel `array<i64>` instead.

@@ -665,8 +665,15 @@ fn expert_trace_demo(args: array<str>) -> Result<(), Error> {
     }
     print("graphs:")
     print(traced.graph_count)
+    // `graph.n_layer` is `null` in the document when no `-N` suffixed node was seen, and the
+    // derivation carries that as `-1`; the summary prints `-`, never the sentinel, for the same
+    // reason `experts` does below.
     print("layers:")
-    print(traced.n_layer)
+    if traced.n_layer >= 0 {
+      print(traced.n_layer)
+    } else {
+      print("-")
+    }
     print("tokens observed:")
     print(traced.tokens_observed)
     print("tokens total:")

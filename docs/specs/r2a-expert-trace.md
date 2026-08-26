@@ -134,11 +134,11 @@ leans on hardest, each with the in-repository evidence that it works at the pin.
 
 | Surface | Status at the pin | Consequence for R2A |
 | --- | --- | --- |
-| `fs.open_rw(path) -> Result<file, Error>`, `f.pread(b: mut buffer, off: i64)`, `f.len()` | **Shipped.** `src/gguf.align:288-360` is the working windowed reader; `docs/align-requests.md` Request 21 records the surface verbatim and the writable-path precondition | The line reader of section 2.4 is the same handle, the same `pread`, the same `bytes_read` accounting |
+| `fs.open_rw(path) -> Result<file, Error>`, `f.pread(b: mut buffer, off: i64)`, `f.len()` | **Shipped.** `src/gguf.align:288-364` is the working windowed reader; `docs/align-requests.md` Request 21 records the surface verbatim and the writable-path precondition | The line reader of section 2.4 is the same handle, the same `pread`, the same `bytes_read` accounting |
 | `buffer(capacity)`, `window.bytes()`, `view.u8(i)`, `window.append(tail.bytes())` | **Shipped.** `src/gguf.align:302-330, 375-380` | Byte-level newline scanning needs no new codec surface |
 | `array<i64>` field indexed through a `borrow` record parameter | **Shipped.** `docs/specs/r1-qwen-model-ir.md` section 7 item 1; every `GgufTable` and `BlockPlan` accessor | The selection table of section 2.7 is five parallel `array<i64>` Copy columns |
 | `array_builder<i64>` as a `borrow mut` parameter | **Shipped.** Same item 2 | Columns accumulate across helper boundaries and are frozen once |
-| Owned `string` sliced through a `borrow` record parameter (`t.names[a..b]`) compared against a `str` | **Shipped.** Same item 1; `src/model_ir.align:96-100` | The node-name stream is addressed by explicit `[start, end)` spans |
+| Owned `string` sliced through a `borrow` record parameter (`t.names[a..b]`) compared against a `str` | **Shipped.** Same item 1; `src/model_ir.align:478-481` | The node-name stream is addressed by explicit `[start, end)` spans |
 | `s.find(needle) -> Option<i64>` used as `... else default`, `.rfind`, `.starts_with`, `.contains`, `.trim`, `[a..b]` slicing, `.len()` | **Shipped.** `src/failure_memory.align:77, 219-246`; `src/patch_eval.align:246-266` | Header-line field extraction needs no regex and no new surface |
 | `s.split(...)` | **NOT available.** Align ships `split` only as a `regex` method; the `str` form is unimplemented at this pin | The header parser composes `find` + `[a..b]` explicitly, which it would do anyway: finding 2 shows a name may contain the space a naive split would cut on |
 | Hand-rolled decimal integer parse | **Necessary, not preferred.** Align has **no** `str`-to-number surface at all at this pin — no `parse_int`, no `parse_i64`, no `parse_f64`. The three existing call sites (`src/main.align:71`, `src/failure_memory.align:176`, `src/c6f1_request11_adoption.align:6`) do not hand-roll one: each is a two-line `json.decode` detour, which is the escape hatch this gap forces | R2A cannot take that detour — `12.0000` is not a JSON integer and an expert id must not be routed through a float — so it writes the one genuine private parser, bounded, over `window.bytes()`. Section 2.2 finding 5 at least removes any need for a *float* parse. The gap is genuine; section 5.5.2 states it and `docs/align-requests.md` Request 26 records it |
@@ -324,13 +324,14 @@ main --expert-trace CALLBACK_LOG OUT.json     # document to OUT.json, plus the s
 
 The grammar, arity rules, `MAX_PATH_BYTES` guard, byte-identical-document requirement across the two
 forms, and exit mapping are `--model-ir`'s, reused verbatim rather than re-invented
-(`src/main.align:529-600`): exit `0` on `status: "ok"`, `Err(Error.Invalid)` on `status: "error"`,
+(`src/main.align:531-617`): exit `0` on `status: "ok"`, `Err(Error.Invalid)` on `status: "error"`,
 and arity checked before any path or file work so an arity failure produces no output at all. The
 `MAX_PATH_BYTES` guard covers **both** operands — an empty, over-long, or NUL-bearing `CALLBACK_LOG`
 *or* `OUT.json` is `Err` with no output and no scan (section 2.6 step 2, section 6 item 18).
 
 **Precondition: the transcript must be writable by the invoking user.** `src/expert_trace.align`
-opens it with `fs.open_rw`, the only random-access `file` constructor Align ships at this pin, so a
+opens it with `fs.open_rw`; both random-access `file` constructors Align ships at this pin
+(`fs.create_rw` and `fs.open_rw`, `docs/language-spec.md:1063`) demand `O_RDWR`, so a
 transcript in a root-owned or read-only artifact directory — the ordinary home of a CI-produced
 trace — is refused by the kernel with `EACCES` before a byte is read, and the arm exits nonzero with
 no document. This is the R0 model-path precondition applied to a second class of read-only input;
@@ -351,7 +352,7 @@ The two-operand summary block, in this exact order:
 expert trace:
 status:            OK | ERROR
 graphs:            <integer>
-layers:            <integer>
+layers:            <integer or ->
 tokens observed:   <integer>
 tokens total:      <integer>
 moe:               YES | NO
@@ -367,7 +368,8 @@ detail:            <identifier>    # only when status is ERROR
 stable stdout contract and this repository has no float formatting contract; the JSON document
 carries the same value as an exact numerator/denominator pair (section 2.5.7) and is the
 authoritative result. `-` is reserved for a value the transcript does not supply, reusing the R0
-convention rather than inventing a second one.
+convention rather than inventing a second one; `layers` prints it whenever `graph.n_layer` is
+`null` (finding 17), so the summary never shows the `-1` the derivation carries internally.
 
 ### 2.4 The streaming decision
 
@@ -442,7 +444,7 @@ work it protects, in non-wrapping form, following `src/model_ir.align`'s rule 2:
 | `MAX_SELECTIONS` | `1048576` | The real memory bound: five `array<i64>` columns at 8 MiB each, 40 MiB total. Finding 6 caps observations at `6 * n_layer * n_expert_used` per graph, so for a 24-layer 4-slot model this admits over 1,800 graphs of prefill or over 10,000 decode steps |
 | `MAX_REUSE_WINDOW` | `64` | The largest working-set window reported (section 2.5.7) |
 | `MAX_NAME_BYTES` | `256` | A node name is a `%24s` field; 256 is a fail-closed stop, not a target |
-| `MAX_DETAIL_BYTES` | `256` | Identical to `src/model_ir.align:26` |
+| `MAX_DETAIL_BYTES` | `256` | Identical to `src/model_ir.align:27` |
 
 ### 2.5 Exchanged document — `R2_ACTIVATION_TRACE`, `schema_version: 1`
 
@@ -630,7 +632,7 @@ masquerade as decode evidence in exactly the prefill-versus-decode comparison se
 
 **A graph boundary is a repeated node name.** ggml node names are unique within one graph, so the
 first callback line whose name is already in the current graph's name index opens the next graph.
-The index is the packed-hash ascending `array<i64>` of `src/model_ir.align:60-66`, bounded at
+The index is the packed-hash ascending `array<i64>` of `src/model_ir.align:261-301`, bounded at
 `MAX_NODES_PER_GRAPH`. This is stated rather than assumed because finding 7 means the only
 transcripts available here have exactly one graph, so section 4.1 owns a concatenated multi-graph
 fixture and section 3.2 marks the cell.
@@ -883,7 +885,7 @@ transcript exists. Marking them is the section 1.4 honesty requirement made mech
 | Failure — path guard | An empty, over-`MAX_PATH_BYTES`, or NUL-bearing operand — transcript **or** destination — is `Err` with no output and no scan | `valid_cli_path`, applied to both operands before the derivation | `path-too-long`, `destination-path-guard` |
 | Failure — read-only transcript | A transcript the invoking user cannot write cannot be opened at this pin; the arm exits nonzero with no document and an untouched destination | `fs.open_rw` (section 2.3 precondition) | `read-only-transcript` (mode `0444`; skipped under root) |
 | Failure mapping | `status: "error"` becomes `Err(Error.Invalid)` after the document is emitted | epilogue | `error-corpus` exit codes |
-| Selector isolation | `--expert-trace` in an operand position is an operand, not a selector | dispatch shape | `selector-as-operand`, following the `c7_selector` precedent at `src/main.align:371` |
+| Selector isolation | `--expert-trace` in an operand position is an operand, not a selector | dispatch shape | `selector-as-operand`, following the `c7_selector` precedent at `src/main.align:373` |
 | Help text | The usage block gains one line and no other line changes | `usage` | `usage-diff` |
 | Everything else | **inherited** from `docs/specs/r1-qwen-model-ir.md` section 3.3: unknown selector, environment isolation, OS failure | unchanged | the R1 CLI cases re-run |
 
@@ -1065,8 +1067,11 @@ expert trace parity (dense): PASS
 expert trace parity (MoE): N/A - no MoE GGUF on this host; see section 4.5.
 ```
 
-`(MoE)` prints `PASS` instead when `moe.present` is true, which is the one line that changes the day
-section 4.5's decision is answered.
+**Exactly one half is a `PASS` on any one run**, because one model is either MoE or it is not: the
+pair above is what a dense model prints, and a MoE model prints `expert trace parity (MoE): PASS`
+with `expert trace parity (dense): N/A - moe.present is true` instead. The dense-only assertions —
+null locality fields, an empty `selections` array — do not execute on a MoE transcript, so the dense
+half must not claim a pass there. Both lines change the day section 4.5's decision is answered.
 
 The dense half is runnable on this host today and is the strongest available evidence that the parser
 matches the real instrument across a whole 958-block transcript rather than the six-block excerpt.
@@ -1255,7 +1260,7 @@ through a JSON decoder because the standard library offers nothing else.
 2.2 finding 5 means an expert id arrives as `     12.0000` — not a JSON integer, and decoding it as
 a JSON *number* would route an exact array index through a float. Every tensor dimension and every
 layer suffix arrives as text too, inside lines that are not JSON at all. So this module writes the
-one genuine private parser, `parse_uint` at `src/expert_trace.align:317`, with its own overflow
+one genuine private parser, `parse_uint` at `src/expert_trace.align:328`, with its own overflow
 bound and its own sign rule, and `parse_integral_element` on top of it.
 
 The `json.decode` detour therefore deserves naming twice: as the workaround three call sites already
@@ -1278,7 +1283,7 @@ Resume condition: Align ships a checked text-to-integer conversion returning
 Align commit or pull request: none
 align-llm verification: pending — src/main.align:71, src/failure_memory.align:176, and
   src/c6f1_request11_adoption.align:6 drop the json.decode detour and
-  src/expert_trace.align:317 drops parse_uint; `make check failure-memory-smoke
+  src/expert_trace.align:328 drops parse_uint; `make check failure-memory-smoke
   expert-trace-smoke` passes.
 ```
 
@@ -1497,10 +1502,10 @@ edit; this section is the client evidence.
    toolchain, verbatim:
 
    ```text
-   src/expert_trace.align:403:31: warning: huge struct copy: returning `expert_trace$Header` (176 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
-   src/expert_trace.align:418:31: warning: huge struct copy: returning `expert_trace$Header` (176 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
-   src/expert_trace.align:820:78: warning: huge struct copy: returning `expert_trace$TranscriptScan` (424 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
-   src/expert_trace.align:1607:24: warning: huge struct copy: `expert_trace$TranscriptScan` (424 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+   src/expert_trace.align:414:31: warning: huge struct copy: returning `expert_trace$Header` (176 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+   src/expert_trace.align:429:31: warning: huge struct copy: returning `expert_trace$Header` (176 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+   src/expert_trace.align:834:78: warning: huge struct copy: returning `expert_trace$TranscriptScan` (424 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+   src/expert_trace.align:1622:24: warning: huge struct copy: `expert_trace$TranscriptScan` (424 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
    ```
 
    Only the last is Request 23's defect: `build`'s parameter is `borrow t: TranscriptScan`, so no

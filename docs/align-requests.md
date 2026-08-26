@@ -73,7 +73,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-27): Requests 1–20 are CLOSED and Requests 21–28 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: `fs.open_rw` is the only one Align ships, so inspecting a model requires `O_RDWR` on a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
+> **Status (2026-08-27): Requests 1–20 are CLOSED and Requests 21–28 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
 > R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
 > parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
 > `borrow t: GgufTable` accessors in `src/gguf.align` get the by-value warning even though no call
@@ -104,7 +104,7 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > missing `str`-to-integer conversion in the standard library: Align has no
 > `parse_i64`/`parse_int`/`to_i64` surface at this pin at all, so `src/main.align:71`,
 > `src/failure_memory.align:176`, and `src/c6f1_request11_adoption.align:6` each route a plain
-> decimal integer through a two-line `json.decode` detour, and `src/expert_trace.align:317` — whose
+> decimal integer through a two-line `json.decode` detour, and `src/expert_trace.align:328` — whose
 > `     12.0000` expert ids are not JSON numbers and must not travel through a float — writes the
 > one genuine private parser instead. It is also non-blocking — the detour and the private parser
 > are both in place — with all of R2A as independent work. R2A then added Request 27, string
@@ -112,8 +112,10 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > `sort_by_key`'s `str`-key comparator (`align_rt_str_cmp`), so the comparison R2A needs is
 > shipped; what is missing is a sort that can consume it. Plain `array<T>.sort()` is
 > compiler-restricted to numeric elements — an explicitly acknowledged "first cut"
-> (`crates/align_sema/src/lib.rs:50612-50618`) — `sort_by_key` cannot carry a `str` key by value,
-> and there is no comparator-based `sort_by` overload, so `src/expert_trace.align` sorts an index
+> (`crates/align_sema/src/lib.rs:50612-50618`); `sort_by_key` *does* admit a borrowed `str` key
+> (`docs/language-spec.md:252-253`) but cannot reach R2A's columns, because a lambda cannot capture
+> the owned `array<i64>` span bounds yet and field access is only supported on a local binding; and
+> there is no comparator-based `sort_by` overload, so `src/expert_trace.align` sorts an index
 > array with a hand-written bottom-up merge and `src/model_ir.align` packs a 42-bit name hash into
 > a sortable integer key instead of sorting or binary-searching by string directly. It is
 > non-blocking — both workarounds are in place — with all of R2A as independent work. R2A finally
@@ -6178,7 +6180,8 @@ through a bounded window instead.
 **R2A-EXPERT-TRACE-CAPTURE is a second, different class of read-only input for the same gap.** It
 opens no GGUF: its subject is a `llama-eval-callback` transcript, a text file it scans through the
 same bounded window and never writes. `src/expert_trace.align`'s `scan` calls `fs.open_rw(path)`
-because it is the only random-access constructor Align ships, so a transcript in a root-owned or
+because both random-access `file` constructors Align ships (`fs.create_rw` and `fs.open_rw`,
+`docs/language-spec.md:1063`) demand `O_RDWR`, so a transcript in a root-owned or
 read-only artifact directory is refused before a byte is read. Asserted on this host rather than
 argued: `make expert-trace-smoke`'s `read-only-transcript` case copies a valid transcript, sets mode
 `0444`, and observes `main --expert-trace` exit **3** with no document written and the destination
@@ -6390,7 +6393,7 @@ Resume condition: Align ships the diagnostic fix
 Align commit or pull request: none
 align-llm verification: pending — `make check` emits no "huge struct copy" warning for a
   `borrow`/`borrow mut` parameter, specifically none for
-  `src/expert_trace.align:1607` (`borrow t: TranscriptScan`) or the ten
+  `src/expert_trace.align:1622` (`borrow t: TranscriptScan`) or the ten
   `borrow t: GgufTable` accessors in `src/gguf.align`, while the by-value
   warnings the lint legitimately owns are unchanged
 ```
@@ -6403,10 +6406,10 @@ eighteen scalars, 424 bytes — read by the document renderer through a `borrow`
 check` at the pinned toolchain emits, verbatim:
 
 ```text
-src/expert_trace.align:403:31: warning: huge struct copy: returning `expert_trace$Header` (176 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
-src/expert_trace.align:418:31: warning: huge struct copy: returning `expert_trace$Header` (176 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
-src/expert_trace.align:820:78: warning: huge struct copy: returning `expert_trace$TranscriptScan` (424 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
-src/expert_trace.align:1607:24: warning: huge struct copy: `expert_trace$TranscriptScan` (424 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+src/expert_trace.align:414:31: warning: huge struct copy: returning `expert_trace$Header` (176 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+src/expert_trace.align:429:31: warning: huge struct copy: returning `expert_trace$Header` (176 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+src/expert_trace.align:834:78: warning: huge struct copy: returning `expert_trace$TranscriptScan` (424 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+src/expert_trace.align:1622:24: warning: huge struct copy: `expert_trace$TranscriptScan` (424 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
 ```
 
 Only the last line is this request's defect. `pub fn build(borrow t: TranscriptScan, path: str)`
@@ -6741,7 +6744,7 @@ Align commit or pull request: none
 align-llm verification: pending — replace the three `json.decode` detours
   (`src/main.align:71` `parse_i64`, `src/failure_memory.align:176` `parse_integer`,
   `src/c6f1_request11_adoption.align:6` `parse_i64`) and the one private parser
-  (`src/expert_trace.align:317` `parse_uint`) with the shipped surface and pass their
+  (`src/expert_trace.align:328` `parse_uint`) with the shipped surface and pass their
   owners: `make check failure-memory-smoke expert-trace-smoke` plus the `c6f1_request11_adoption`
   owner.
 ```
@@ -6802,7 +6805,7 @@ document decoder being used as one because the standard library offers no other 
 element through `%12.4f`, so an expert id arrives as `     12.0000`. That is not a JSON integer;
 decoding it as a JSON *number* would route an exact array index through an `f64`, which is precisely
 what an array index must never do. Tensor dimensions and layer suffixes arrive inside header lines
-that are not JSON at all. So `src/expert_trace.align:317` writes the one genuine private parser,
+that are not JSON at all. So `src/expert_trace.align:328` writes the one genuine private parser,
 `fn parse_uint`, with its own comment recording the gap directly ("The bounded decimal integer parse
 Align has no standard-library form of"), plus `parse_integral_element` on top of it to reject a
 sign, a non-zero fraction, `nan`, and `inf` without a float parse.
@@ -6860,7 +6863,7 @@ so no genuine float-parsing consumer is recorded here.
    to either is a deliberate, reviewed decision rather than a silent drift.
 3. `align-llm` verification: `src/main.align:71`, `src/failure_memory.align:176`, and
    `src/c6f1_request11_adoption.align:6` each drop the `json.decode` detour for the shipped surface,
-   and `src/expert_trace.align:317` adopts the shipped surface instead of its private `parse_uint`.
+   and `src/expert_trace.align:328` adopts the shipped surface instead of its private `parse_uint`.
    `make check failure-memory-smoke expert-trace-smoke` and the `c6f1_request11_adoption`
    owner pass unchanged.
 
@@ -6883,7 +6886,7 @@ Resume condition: Align ships `array<T>.sort()` over `str` (and owned `string`) 
   packed-hash index in `src/model_ir.align`.
 Align commit or pull request: none
 align-llm verification: pending — replace `span_less`/`sort_spans` in `src/expert_trace.align`
-  (`src/expert_trace.align:638-716`) and the packed-42-bit-hash name index in `src/model_ir.align`
+  (`src/expert_trace.align:656-730`) and the packed-42-bit-hash name index in `src/model_ir.align`
   (`src/model_ir.align:261-301`) with the shipped surface, and pass `make expert-trace-smoke
   model-ir-smoke`.
 ```
@@ -6960,11 +6963,12 @@ error: heap array_builder<str> requires a Copy scalar, `string`, or a closed hea
        use `array_builder(out)` for RegionPlain values
 
 # 3. sort an index array by a sliced-`str` key — the shape that *should* work
-src/expert_trace.align:1649: family_index.sort_by_key(fn i { span_text(names_view, family_start[i], family_end[i]) })
-error: a lambda cannot capture the owned value 'family_start' yet (capture supports copy values like int/float/bool/char)
-error: a lambda cannot capture the owned value 'family_end' yet (capture supports copy values like int/float/bool/char)
-src/expert_trace.align:1651: op_index.sort_by_key(fn i { span_text(ops_view, t.op_start[i], t.op_end[i]) })
-error: field access is only supported on a local binding
+src/expert_trace.align:1655: family_index.sort_by_key(fn i { span_text(names_view, family_start[i], family_end[i]) })
+src/expert_trace.align:1655:28: error: a lambda cannot capture the owned value 'family_start' yet (capture supports copy values like int/float/bool/char)
+src/expert_trace.align:1655:28: error: a lambda cannot capture the owned value 'family_end' yet (capture supports copy values like int/float/bool/char)
+src/expert_trace.align:1657: op_index.sort_by_key(fn i { span_text(ops_view, t.op_start[i], t.op_end[i]) })
+src/expert_trace.align:1657:51: error: field access is only supported on a local binding
+src/expert_trace.align:1657:66: error: field access is only supported on a local binding
 ```
 
 Path 3 is the correction to an earlier draft of this entry, which claimed the isolated experiment

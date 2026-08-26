@@ -346,6 +346,11 @@ for case in manifest["cases"]:
             fail("%s: summary line %d %r, expected %r" % (name, position, summary[position], label))
     if summary[2] != ("OK" if expect_ok else "ERROR"):
         fail("%s: summary status %r" % (name, summary[2]))
+    # `dense-zero-layer`: an underived layer count prints the reserved `-`, never the `-1`
+    # sentinel the derivation carries and never a value a reader could mistake for a count.
+    n_layer = document["graph"]["n_layer"]
+    if summary[6] != ("-" if n_layer is None else str(n_layer)):
+        fail("%s: summary layers %r, document graph.n_layer %r" % (name, summary[6], n_layer))
     if summary[12] != ("YES" if document["moe"]["present"] else "NO"):
         fail("%s: summary moe %r" % (name, summary[12]))
     if summary[18] != str(len(document["selections"])):
@@ -497,8 +502,12 @@ for label, bad_path in (("empty", ""), ("over-length", "x" * 4097)):
 # derivation, so an unusable destination produces no document, no summary block, and no scan.
 for label, bad_destination in (("empty", ""), ("over-length", "x" * 4097)):
     bad = run(["--expert-trace", str(sample), bad_destination])
-    if bad.returncode == 0 or bad.stdout != b"":
-        fail("destination-path-guard: an %s destination must fail with no output" % label)
+    # Exit 2 is `Err(Error.Invalid)` from the lexical guard. A bare "nonzero" assertion would also
+    # accept a failure raised *after* the transcript was scanned, which is the thing this case
+    # exists to rule out.
+    if bad.returncode != 2 or bad.stdout != b"":
+        fail("destination-path-guard: an %s destination must exit 2 with no output (saw %d, %r)"
+             % (label, bad.returncode, bad.stdout[:80]))
 if (work_dir / ("x" * 4097)).exists():
     fail("destination-path-guard: an over-length destination created a file")
 
