@@ -21,6 +21,12 @@ file records durable project state.
   comparison measured 47,913,941 ns for the parent and 46,822,706 ns for the candidate, a 22,774 ppm
   (2.28%) reduction. Normalized results differed only by the intentionally removed successful
   `candidate-apply-check` record; all four candidate stages passed with matching exit codes.
+  Comprehensive review found one benchmark-owner regression: the default baseline and comparison
+  modes no longer accepted their documented five-stage historical binaries. The repair preserves
+  those exact legacy modes and adds explicit `baseline-atomic` for later four-stage baselines. A
+  five-sample replay accepted each baseline protocol; the legacy comparison also passed its vector
+  and normalized-document checks before its deliberately strict timing threshold rejected the
+  noisy five-sample result.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -54,10 +60,10 @@ file records durable project state.
 
 1. Fetch `origin` and resume `agent/c8-atomic-patch-apply` at its latest commit. Read `CLAUDE.md`,
    then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. The ledger, implementation,
-   owner verification, and exact performance comparison are complete; comprehensive review is the
-   first unfinished action.
-2. Commit the measurement record, run one stable-head comprehensive review, resolve its complete
-   finding set coherently, then run exact-head preflight and publish the English PR.
+   owner verification, exact performance comparison, comprehensive review, and coherent
+   review-finding repair are complete. Exact-head preflight is the first unfinished action.
+2. Commit the benchmark-owner repair, run exact-head preflight, and publish the English PR. Do not
+   repeat the full-diff review because the repair does not change the capability strategy.
 3. After merge, refresh `main` and choose the next smallest consumer-complete C8 optimization from
    a new measured time-to-passing-patch baseline.
 4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a

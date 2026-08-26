@@ -570,6 +570,9 @@ full-test median:            14,994,964 ns
 
 The stage medians are diagnostic decomposition. The comparison owner must validate the intentional
 removal of the successful check record rather than requiring byte-identical result documents.
+`baseline` remains the exact five-stage owner for the earlier recorded capabilities;
+`baseline-atomic` owns new four-stage baselines after this capability. This keeps every recorded
+command reproducible without allowing either stage protocol to satisfy the other's evidence.
 
 The exact-commit comparison used:
 
