@@ -73,16 +73,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-27): Requests 1–20 are CLOSED and Requests 21–27 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: `fs.open_rw` is the only one Align ships, so inspecting a model requires `O_RDWR` on a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
-R2A-EXPERT-TRACE-CAPTURE then added Requests 25 and 26 (see their entries below) plus Request 27,
-string ordering and sorting: `str`/`string` already satisfy `Ord` and already back the four ordering
-operators and `sort_by_key`'s `str`-key comparator (`align_rt_str_cmp`), but plain `array<T>.sort()`
-is compiler-restricted to numeric elements only — an explicitly acknowledged "first cut"
-(`crates/align_sema/src/lib.rs:50602-50603`) — and there is no general comparator-based `sort_by`
-overload, so `src/expert_trace.align` hand-writes a byte-lexicographic `span_less` plus a bottom-up
-merge sort and `src/model_ir.align` packs a 42-bit name hash into a sortable integer key instead of
-sorting or binary-searching by string directly. It is non-blocking — both hand-written workarounds
-are in place — with all of R2A as independent work.
+> **Status (2026-08-27): Requests 1–20 are CLOSED and Requests 21–28 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: `fs.open_rw` is the only one Align ships, so inspecting a model requires `O_RDWR` on a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
 > R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
 > parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
 > `borrow t: GgufTable` accessors in `src/gguf.align` get the by-value warning even though no call
@@ -100,19 +91,37 @@ are in place — with all of R2A as independent work.
 > Request 23 (its narrower `BlockPlan` record) without changing any request's status; all of R1B was
 > independent work for Requests 21–24. The active R2A-EXPERT-TRACE-CAPTURE
 > (`docs/specs/r2a-expert-trace.md`) is the current consumer of Requests 21–24 and likewise consumes
-> no `PROPOSED` request; it is expected new client evidence for Request 22's node-name stream and,
-> if its expert-id decode duplicates a decode-and-accumulate walk, for Request 24 as well.
-> R2A-EXPERT-TRACE-CAPTURE also added Request 25, the missing streaming/redirecting child-stdout
-> surface on `std.process`: `command.run()` returns a child's entire stdout as one region-bound
-> value and `process.spawn` does no redirection at all, so an align-native acquisition verb that
-> invoked `llama-eval-callback` directly could not process its multi-hundred-megabyte transcript
-> without materializing the whole thing first. It is non-blocking — R2A consumes a transcript file
-> the shell already redirected into and never invokes the instrument itself — with all of R2A as
-> independent work. R2A also added Request 26, the missing `str`-to-integer conversion in the
-> standard library: Align has no `parse_i64`/`parse_int`/`to_i64` surface at this pin at all, so
-> `src/main.align`, `src/failure_memory.align`, and `src/c6f1_request11_adoption.align` each carry a
-> private decimal parser, and `src/expert_trace.align` adds a fourth. It is also non-blocking — each
-> call site writes its own parser — with all of R2A as independent work.
+> no `PROPOSED` request; it added new client evidence to Request 23 (a wide `borrow` record) and to
+> Request 21 (a second class of read-only input), and it is **not** a client of Request 22: its
+> node-name stream is spans into one concatenated `string`, so it holds no `array<string>` and
+> avoids the shape that request names. R2A-EXPERT-TRACE-CAPTURE also added Request 25, the missing
+> streaming/redirecting child-stdout surface on `std.process`: `command.run()` returns a child's
+> entire stdout as one region-bound value and `process.spawn` does no redirection at all, so an
+> align-native acquisition verb that invoked `llama-eval-callback` directly could not process its
+> multi-hundred-megabyte transcript without materializing the whole thing first. It is
+> non-blocking — R2A consumes a transcript file the shell already redirected into and never invokes
+> the instrument itself — with all of R2A as independent work. R2A also added Request 26, the
+> missing `str`-to-integer conversion in the standard library: Align has no
+> `parse_i64`/`parse_int`/`to_i64` surface at this pin at all, so `src/main.align:71`,
+> `src/failure_memory.align:176`, and `src/c6f1_request11_adoption.align:6` each route a plain
+> decimal integer through a two-line `json.decode` detour, and `src/expert_trace.align:317` — whose
+> `     12.0000` expert ids are not JSON numbers and must not travel through a float — writes the
+> one genuine private parser instead. It is also non-blocking — the detour and the private parser
+> are both in place — with all of R2A as independent work. R2A then added Request 27, string
+> *sorting*: `str`/`string` already satisfy `Ord` and already back the four ordering operators and
+> `sort_by_key`'s `str`-key comparator (`align_rt_str_cmp`), so the comparison R2A needs is
+> shipped; what is missing is a sort that can consume it. Plain `array<T>.sort()` is
+> compiler-restricted to numeric elements — an explicitly acknowledged "first cut"
+> (`crates/align_sema/src/lib.rs:50612-50618`) — `sort_by_key` cannot carry a `str` key by value,
+> and there is no comparator-based `sort_by` overload, so `src/expert_trace.align` sorts an index
+> array with a hand-written bottom-up merge and `src/model_ir.align` packs a 42-bit name hash into
+> a sortable integer key instead of sorting or binary-searching by string directly. It is
+> non-blocking — both workarounds are in place — with all of R2A as independent work. R2A finally
+> added Request 28, a readable append-only accumulator: `builder` and `array_builder` are
+> write-only until `build()`, so an interning table that must compare a candidate against text it
+> has already accumulated cannot use either and `src/expert_trace.align` accumulates into a
+> `buffer` plus pre-sized span columns instead. It is non-blocking — the `buffer` workaround is in
+> place — with all of R2A as independent work.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -6118,11 +6127,11 @@ integration binary on a leg that already compiles the workspace and is not the c
 Status: PROPOSED
 Priority: medium
 Blocking: no
-Blocked gate or slice: none today — R0-GGUF-INSPECT (merged, PR #121), R1-QWEN-MODEL-IR (merged, PR #122), R1B-GPTOSS-MOE-IR (merged, PR #123), and the active R2A-EXPERT-TRACE-CAPTURE (`docs/specs/r2a-expert-trace.md`) all ship on `fs.open_rw`, since `gguf.read_table`, R1B's dispatch, and R2A's own model-path reads all reuse R0's constructor unchanged. It becomes blocking for the first align-runtime consumer that must read a model from a read-only mount, a root-owned shared cache, or a container image layer, where `O_RDWR` cannot be obtained at all
-Independent work that may continue: all of R0-GGUF-INSPECT, R1-QWEN-MODEL-IR, R1B-GPTOSS-MOE-IR, and R2A-EXPERT-TRACE-CAPTURE, all of which open the model with `fs.open_rw` and document the writable-path precondition; every later Track B slice that can copy or own its model file
-Resume condition: Align ships a read-only `file` constructor whose handle supports `pread` and `len`; align-llm then adopts it in `src/gguf.align`, and `make gguf-smoke`, `make model-ir-smoke`, `scripts/run-gguf-reference-parity`, and `scripts/run-model-ir-parity` pass against a model file the invoking user cannot write
+Blocked gate or slice: none today — R0-GGUF-INSPECT (merged, PR #121), R1-QWEN-MODEL-IR (merged, PR #122), R1B-GPTOSS-MOE-IR (merged, PR #123), and the active R2A-EXPERT-TRACE-CAPTURE (`docs/specs/r2a-expert-trace.md` section 2.1) all ship on `fs.open_rw`. R2A opens **no** GGUF at all: its input is a `llama-eval-callback` transcript, which is a second class of read-only input — a transcript captured into a root-owned or read-only artifact directory, exactly where a CI-produced trace lives, cannot be opened at all. It becomes blocking for the first align-runtime consumer that must read a model from a read-only mount, a root-owned shared cache, or a container image layer, where `O_RDWR` cannot be obtained at all
+Independent work that may continue: all of R0-GGUF-INSPECT, R1-QWEN-MODEL-IR, R1B-GPTOSS-MOE-IR (each opening the model with `fs.open_rw`), and all of R2A-EXPERT-TRACE-CAPTURE (opening its transcript with the same constructor); every one of them documents the writable-path precondition, and every later Track B slice that can copy or own its input file
+Resume condition: Align ships a read-only `file` constructor whose handle supports `pread` and `len`; align-llm then adopts it in `src/gguf.align` and `src/expert_trace.align`, and `make gguf-smoke`, `make model-ir-smoke`, `make expert-trace-smoke`, `scripts/run-gguf-reference-parity`, and `scripts/run-model-ir-parity` pass against input files the invoking user cannot write
 Align commit or pull request: none
-align-llm verification: pending — `make gguf-smoke` extended with a `chmod 444` fixture case, and `scripts/run-gguf-reference-parity` run once against a model on a read-only mount
+align-llm verification: pending — `make gguf-smoke` extended with a `chmod 444` model fixture case, `make expert-trace-smoke`'s existing `read-only-transcript` case (mode `0444`) flipped from "exits nonzero with no document" to a successful derivation, and `scripts/run-gguf-reference-parity` run once against a model on a read-only mount
 ```
 
 ### Motivation and current sibling evidence
@@ -6165,6 +6174,17 @@ cannot use the mmap alternative as its primary strategy: `fs.read_bytes_view`
 the entire address range for a 5 MB read, and `draft.md:2897` records that concurrent truncation of a
 mapped file raises `SIGBUS` with no handler installed. R0 reads roughly 0.15 percent of the file
 through a bounded window instead.
+
+**R2A-EXPERT-TRACE-CAPTURE is a second, different class of read-only input for the same gap.** It
+opens no GGUF: its subject is a `llama-eval-callback` transcript, a text file it scans through the
+same bounded window and never writes. `src/expert_trace.align`'s `scan` calls `fs.open_rw(path)`
+because it is the only random-access constructor Align ships, so a transcript in a root-owned or
+read-only artifact directory is refused before a byte is read. Asserted on this host rather than
+argued: `make expert-trace-smoke`'s `read-only-transcript` case copies a valid transcript, sets mode
+`0444`, and observes `main --expert-trace` exit **3** with no document written and the destination
+untouched. That case is written to flip the day this request ships. A model is normally writable by
+its owner; a CI artifact directory normally is not, which makes the transcript the stronger of the
+two clients.
 
 The observable consequence today is that `align-llm` must ask the operating system for `O_RDWR` on a
 file it never writes. That is recorded here per the `CLAUDE.md` classification rule even though it
@@ -6254,11 +6274,13 @@ section 1.3 and section 5.2) deliberately excludes the tokenizer and reads only 
 of `tokenizer.ggml.tokens`/`tokenizer.ggml.merges` — exactly what R0's decoder already records
 without materializing an element — precisely so this request stays non-blocking through R1, and
 R1B-GPTOSS-MOE-IR (merged, PR #123; `docs/specs/r1b-gptoss-moe-ir.md` section 2.1) inherited the same
-exclusion unchanged: it reads no `array<string>` and builds no tokenizer. The active
-R2A-EXPERT-TRACE-CAPTURE (`docs/specs/r2a-expert-trace.md`) is expected to add new client evidence
-here — a `llama-eval-callback` transcript's per-layer expert-name stream is exactly the same
-Move-array-of-`string` shape this request names — without itself becoming the tokenizer/vocabulary
-consumer that would reclassify it as blocking. The first consumer that would make it blocking is a
+exclusion unchanged: it reads no `array<string>` and builds no tokenizer. R2A-EXPERT-TRACE-CAPTURE
+(`docs/specs/r2a-expert-trace.md` section 2.1) added **no** client evidence here, contrary to what
+this entry anticipated: it holds no `array<string>` at all. Its distinct node names and operation
+names are one concatenated `string` addressed by explicit `[start, end)` spans in parallel
+`array<i64>` columns — the third instance of the `GgufTable`/`BlockPlan` shape — so it *avoids* the
+Move-array shape rather than exercising it, for the same reason those two did. The first consumer
+that would make it blocking is a
 tokenizer/vocabulary-inspection capability, which needs `tokenizer.ggml.tokens` and
 `tokenizer.ggml.merges` as addressable data; per `CLAUDE.md`, this request reclassifies as blocking
 the moment that capability becomes the active consumer
@@ -6366,10 +6388,34 @@ Blocked gate or slice: none
 Independent work that may continue: all
 Resume condition: Align ships the diagnostic fix
 Align commit or pull request: none
-align-llm verification: pending
+align-llm verification: pending — `make check` emits no "huge struct copy" warning for a
+  `borrow`/`borrow mut` parameter, specifically none for
+  `src/expert_trace.align:1607` (`borrow t: TranscriptScan`) or the ten
+  `borrow t: GgufTable` accessors in `src/gguf.align`, while the by-value
+  warnings the lint legitimately owns are unchanged
 ```
 
 ### Motivation and current sibling evidence
+
+**Third client: R2A-EXPERT-TRACE-CAPTURE.** `src/expert_trace.align`'s `TranscriptScan` is another
+wide read-only stream-plus-columns record — a `names` stream, ten `array<i64>` columns, and
+eighteen scalars, 424 bytes — read by the document renderer through a `borrow` parameter. `make
+check` at the pinned toolchain emits, verbatim:
+
+```text
+src/expert_trace.align:403:31: warning: huge struct copy: returning `expert_trace$Header` (176 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+src/expert_trace.align:418:31: warning: huge struct copy: returning `expert_trace$Header` (176 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+src/expert_trace.align:820:78: warning: huge struct copy: returning `expert_trace$TranscriptScan` (424 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+src/expert_trace.align:1607:24: warning: huge struct copy: `expert_trace$TranscriptScan` (424 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+```
+
+Only the last line is this request's defect. `pub fn build(borrow t: TranscriptScan, path: str)`
+never copies its 424 bytes, yet the lint says "is passed by value — every call copies it" because
+the parameter loop below consults the parameter's struct type and never its `ParamMode`. The three
+`returning … by value` lines above it are the lint working exactly as designed on genuine by-value
+returns (`expert_trace.Header` is 176 bytes and is returned from `header_error` and `parse_header`),
+and they are **not** evidence for this request — they are quoted so the one line that is evidence
+can be told apart from the three that are not.
 
 R1-QWEN-MODEL-IR's `GgufTable` producer surface (`src/gguf.align`) is a wide read-only record — every
 metadata and tensor column the decoder recorded — passed to its ten accessors as `borrow t: GgufTable`
@@ -6684,17 +6730,18 @@ Align prefers) is Align's call; the requirement is the capability, not the name.
 Status: PROPOSED
 Priority: medium
 Blocking: no
-Blocked gate or slice: none. A hand-rolled decimal parser is in place at every call site that needs
-  one, including R2A's.
-Independent work that may continue: all of it — every consumer to date writes a private parser, and
-  this is a duplication and correctness-surface concern, not a capability gate.
+Blocked gate or slice: none. Three call sites route a plain decimal integer through a `json.decode`
+  detour and R2A writes the one private parser the detour cannot serve.
+Independent work that may continue: all of it — this is a duplication and correctness-surface
+  concern, not a capability gate.
 Resume condition: Align ships a checked text-to-integer conversion (e.g. `str.parse_i64() ->
-  Result<i64, Error>`) with a stated overflow/sign/whitespace contract; align-llm then deletes its
-  private parsers and adopts the shipped surface.
+  Result<i64, Error>`) with a stated overflow/sign/whitespace contract; align-llm then drops the
+  three `json.decode` detours and R2A's private parser and adopts the shipped surface.
 Align commit or pull request: none
-align-llm verification: pending — replace the four hand-rolled parsers
-  (`src/main.align:69`, `src/failure_memory.align:176`, `src/c6f1_request11_adoption.align:6`, and
-  `src/expert_trace.align:317` (`parse_uint`)) with the shipped surface and pass their
+align-llm verification: pending — replace the three `json.decode` detours
+  (`src/main.align:71` `parse_i64`, `src/failure_memory.align:176` `parse_integer`,
+  `src/c6f1_request11_adoption.align:6` `parse_i64`) and the one private parser
+  (`src/expert_trace.align:317` `parse_uint`) with the shipped surface and pass their
   owners: `make check failure-memory-smoke expert-trace-smoke` plus the `c6f1_request11_adoption`
   owner.
 ```
@@ -6727,24 +6774,45 @@ Verified in the sibling checkout:
   (`docs/specs/r2a-expert-trace.md`, section 2.1 table row "`s.split(...)`"), which is why R2A's
   header parser composes `.find` + range slicing explicitly rather than splitting.
 
-**Evidence from this repository, which is the point.** align-llm has now written the same private
-decimal integer parser three times, each independently: `fn parse_i64` at `src/main.align:69` (CLI
-timeout flags), `fn parse_integer` at `src/failure_memory.align:176` (a persisted document field),
-and `fn parse_i64` at `src/c6f1_request11_adoption.align:6` (verified — each grepped directly at
-those line numbers in this worktree). `docs/specs/r2a-expert-trace.md` section 2.2 finding 5 and
-section 5.5.2 record that `src/expert_trace.align` needed a fourth: every expert id, tensor dimension,
-and layer suffix in a transcript arrives as text, and `fn parse_uint` at `src/expert_trace.align:317`
-is that fourth parser, with its own comment recording the same gap directly ("The bounded decimal
-integer parse Align has no standard-library form of (section 5.5.2)"). That is four
-independent implementations of one primitive, each free to diverge in its own overflow behavior, sign
-handling, and bound.
+**Evidence from this repository, which is the point.** Every existing align-llm call site that needs
+an integer out of text takes the JSON detour, because there is nothing else to take. Verified by
+reading each function in this worktree:
 
-The `json.doc` escape hatch is the tempting workaround and a bad one: parsing a bare integer by
-wrapping it in a JSON document requires an enclosing `arena {}` and an allocation for a single scalar,
-and routes anything with a fractional literal through a float. A workaround existing (four private
-parsers, and a technically-reachable `json.doc` detour) does not make this a purely application
-concern — it is exactly the class of duplication `CLAUDE.md`'s request-register rule exists to
-surface.
+```align
+// src/main.align:71                    // src/failure_memory.align:176
+fn parse_i64(value: str)                fn parse_integer(value: str)
+    -> Result<i64, Error> {                 -> Result<i64, Error> {
+  number: i64 := json.decode(value)?      number: i64 := json.decode(value)?
+  return Ok(number)                       return Ok(number)
+}                                       }
+
+// src/c6f1_request11_adoption.align:6
+fn parse_i64(value: str) -> Result<i64, Error> {
+  decoded: i64 := json.decode(value)?
+  return Ok(decoded)
+}
+```
+
+Three call sites, three two-line wrappers, all routing a plain decimal integer through a JSON
+decoder. That is the gap made visible: `json.decode` is not a text-to-integer conversion, it is a
+document decoder being used as one because the standard library offers no other spelling.
+
+**And the fourth consumer cannot even do that**, which is the stronger half of the argument.
+`docs/specs/r2a-expert-trace.md` section 2.2 finding 5 records that llama.cpp prints *every* tensor
+element through `%12.4f`, so an expert id arrives as `     12.0000`. That is not a JSON integer;
+decoding it as a JSON *number* would route an exact array index through an `f64`, which is precisely
+what an array index must never do. Tensor dimensions and layer suffixes arrive inside header lines
+that are not JSON at all. So `src/expert_trace.align:317` writes the one genuine private parser,
+`fn parse_uint`, with its own comment recording the gap directly ("The bounded decimal integer parse
+Align has no standard-library form of"), plus `parse_integral_element` on top of it to reject a
+sign, a non-zero fraction, `nan`, and `inf` without a float parse.
+
+So the register's claim is not "four hand-rolled parsers" — it is one private parser and three
+`json.decode` detours, which is a worse shape: the three call sites silently inherit a JSON
+document's number grammar, its overflow behavior, and its whitespace rules for a value that is not
+JSON, and nobody reading them would notice. A workaround existing does not make this a purely
+application concern — it is exactly the class of duplication `CLAUDE.md`'s request-register rule
+exists to surface.
 
 ### Requested capability
 
@@ -6760,9 +6828,11 @@ s.parse_i64() -> Result<i64, Error>   // or Option<i64>, Align's call — see be
 with a stated contract for:
 
 - **Sign.** An optional leading `+`/`-`.
-- **Whitespace.** Whether leading/trailing ASCII whitespace is trimmed automatically or rejected;
-  align-llm's own three private parsers do not currently agree with each other on this point, which
-  is itself evidence the contract needs to be settled once, centrally.
+- **Whitespace.** Whether leading/trailing ASCII whitespace is trimmed automatically or rejected.
+  align-llm's three `json.decode` call sites inherit whatever the JSON decoder does — which none of
+  their authors chose — while `src/expert_trace.align`'s `parse_integral_element` trims explicitly
+  because a `%12.4f` field is padded. A single settled contract is what would let all four agree on
+  purpose rather than by accident.
 - **Overflow.** Out-of-range input is a defined error (`Error.Invalid` or equivalent), not a silent
   wrap, consistent with `docs/open-questions.md:249`'s existing zero-UB-by-design numeric conversion
   rule for `as` casts (int→int wraps only under an explicit cast; nothing about `str` parsing should
@@ -6770,9 +6840,9 @@ with a stated contract for:
 - **Empty / non-digit input.** A defined error, not an abort.
 
 `Result<i64, Error>` is proposed over `Option<i64>` because the existing `str` predicate/lookup
-methods (`.find`, `.rfind`) return `Option` for a "not present" outcome, while this repository's own
-three private parsers already return `Result<i64, Error>` for a "malformed" outcome — closer in kind
-to a decode failure than a missing-value lookup. Align may prefer `Option` for symmetry with
+methods (`.find`, `.rfind`) return `Option` for a "not present" outcome, while all three of this
+repository's existing call sites already return `Result<i64, Error>` for a "malformed" outcome —
+closer in kind to a decode failure than a missing-value lookup. Align may prefer `Option` for symmetry with
 `json.doc`'s `as_i64`; either satisfies this request, and the acceptance criteria below are phrased to
 accept whichever Align settles on.
 
@@ -6788,10 +6858,10 @@ so no genuine float-parsing consumer is recorded here.
    chooses.
 2. A compiler test pins the settled whitespace and overflow behavior named above, so a future change
    to either is a deliberate, reviewed decision rather than a silent drift.
-3. `align-llm` verification: `src/main.align`, `src/failure_memory.align`, and
-   `src/c6f1_request11_adoption.align` each drop their private parser for the shipped surface, and
-   `src/expert_trace.align` (`parse_uint` at line 317) adopts the shipped surface directly instead of
-   its fourth private parser. `make check failure-memory-smoke expert-trace-smoke` and the `c6f1_request11_adoption`
+3. `align-llm` verification: `src/main.align:71`, `src/failure_memory.align:176`, and
+   `src/c6f1_request11_adoption.align:6` each drop the `json.decode` detour for the shipped surface,
+   and `src/expert_trace.align:317` adopts the shipped surface instead of its private `parse_uint`.
+   `make check failure-memory-smoke expert-trace-smoke` and the `c6f1_request11_adoption`
    owner pass unchanged.
 
 ---
@@ -6854,7 +6924,7 @@ general comparator overload.** Both are confirmed directly in the compiler sourc
 `crates/align_sema/src/lib.rs:50601-50603`, the doc comment on `check_array_sort`: "`source.….sort()` —
 materialize the surviving elements into an owned `array<T>` and sort them ascending. **First cut:
 numeric scalar elements only** (an ordering exists), **no comparator argument (a `sort(cmp)` overload is
-a follow-up)**." `crates/align_sema/src/lib.rs:50614-50617` enforces this: a struct element is rejected
+a follow-up)**." `crates/align_sema/src/lib.rs:50612-50618` enforces this: a struct element is rejected
 with `'sort' over struct elements is not supported yet`, and any non-numeric element — including `str`,
 even though `str` is `Ord` — is rejected with `'sort' needs a numeric element type, got {type}`.
 Empirically confirmed: `["banana", "apple", "cherry"].sort()` fails at the pinned compiler with exactly
@@ -6867,20 +6937,44 @@ same `str`-key path just confirmed), but there is still no `sort_by(comparator)`
 a multi-field or otherwise non-scalar-keyed order, which is exactly the shape the compiler's own comment
 calls out as a deferred follow-up.
 
-**Consequence for align-llm.** `src/expert_trace.align:638-716` needs an ordering over spans — byte
-ranges `(start, end)` into one shared name-stream buffer, not standalone `str` values — to sort the
-rendered name and op lists (`docs/specs/r2a-expert-trace.md` section 2.5.4). `span_less`
-(`src/expert_trace.align:641-655`) hand-writes a byte-lexicographic comparison, and its own comment
-(line 638-639, "Align ships no string ordering at this pin") is the incorrect assumption corrected
-above; `sort_spans` (`src/expert_trace.align:665-716`) hand-writes a bottom-up merge sort over an index
-array because, per its own comment (line 663-664), "`array<i64>.sort()` orders integers, not text."
-That specific narrow claim is accurate — `.sort()` does reject `str` — but the broader consequence does
-not follow: the empirical test above shows `index.sort_by_key(fn i { text[starts[i]..ends[i]] })` (an
-identical span-key shape) already sorts correctly on the pinned compiler, so this file's specific
-hand-rolled merge sort is a duplication of an already-shipped capability rather than a capability this
-request is what unblocks. It is kept as-is rather than swapped opportunistically mid-request; the point
-of recording this request is the narrower, still-real gap below, which this file's approach does not
-by itself require. `src/model_ir.align:261-301` (`name_hash`, `packed_entry`, `name_index`) packs a
+**Consequence for align-llm.** `src/expert_trace.align` needs an ordering over spans — byte ranges
+`(start, end)` into one shared name-stream buffer, not standalone `str` values — to sort the
+rendered name and op lists (`docs/specs/r2a-expert-trace.md` section 2.5.4).
+
+The *comparison* is now the shipped one. `span_less` and `span_same` are one expression each,
+`span_text(text, a, b) < span_text(text, c, d)`, and the earlier hand-written byte loop and its
+"Align ships no string ordering at this pin" comment are both gone; that assumption is the one
+corrected above.
+
+The *sort* is not, and the reason is narrower and more interesting than "no string sort". Three
+paths were compiled against the pinned toolchain in this module's own shape, and each is rejected:
+
+```text
+# 1. sort the names directly
+src/…:  built.sort()
+error: 'sort' needs a numeric element type, got str
+
+# 2. materialize the spans as an array<str> first
+src/…:  mut b: array_builder<str> := array_builder()
+error: heap array_builder<str> requires a Copy scalar, `string`, or a closed heap record;
+       use `array_builder(out)` for RegionPlain values
+
+# 3. sort an index array by a sliced-`str` key — the shape that *should* work
+src/expert_trace.align:1649: family_index.sort_by_key(fn i { span_text(names_view, family_start[i], family_end[i]) })
+error: a lambda cannot capture the owned value 'family_start' yet (capture supports copy values like int/float/bool/char)
+error: a lambda cannot capture the owned value 'family_end' yet (capture supports copy values like int/float/bool/char)
+src/expert_trace.align:1651: op_index.sort_by_key(fn i { span_text(ops_view, t.op_start[i], t.op_end[i]) })
+error: field access is only supported on a local binding
+```
+
+Path 3 is the correction to an earlier draft of this entry, which claimed the isolated experiment
+`idx.sort_by_key(fn i { text[starts[i]..ends[i]] })` showed the hand-rolled merge sort to be
+redundant. It does not. That experiment succeeds only because its `text`, `starts`, and `ends` are a
+`str` literal and fixed-size array literals — Copy values a lambda may capture. The real call site's
+columns are owned `array<i64>`s frozen from an `array_builder<i64>`, and one of them is a field of a
+`borrow` parameter, and neither is capturable at this pin. So `sort_spans`
+(a bottom-up merge sort over an index array, ordered by the shipped comparison) stays, and its
+comment now records all three diagnostics so the next client does not repeat the experiment. `src/model_ir.align:261-301` (`name_hash`, `packed_entry`, `name_index`) packs a
 64-bit FNV-1a hash, folded to 42 bits, above an index into one `i64`, so the resulting `array<i64>` is
 both plain-`.sort()`-able and binary-searchable with only integer comparisons at every probe
 (`indexed_tensor`, `src/model_ir.align:307` onward). That structure is not purely forced by missing
@@ -6898,7 +6992,7 @@ follow-up, and consistent with Align's existing pipeline/sort idioms (no new typ
 1. **`array<T>.sort()` admits `str` (and, by the same non-consuming borrow `Eq`/`Ord` already use for
    owned operands, `string`) elements directly**, since `str` already satisfies the `Ord` bound this
    method requires for every other admitted element type. This removes the special-cased
-   `elem.is_numeric()` check in `check_array_sort` (`crates/align_sema/src/lib.rs:50614`) for the one
+   `elem.is_numeric()` check in `check_array_sort` (`crates/align_sema/src/lib.rs:50616`) for the one
    other type that already satisfies `Ord`.
 2. **`array<T>.sort_by(cmp)` — a general comparator overload**, exactly the follow-up
    `crates/align_sema/src/lib.rs:50603` already names: `cmp: fn(T, T) -> bool` (or an `Ordering`-typed
@@ -6919,10 +7013,111 @@ call whether to expose it alongside the two items above.
 2. A compiler test sorts an index (or a struct array, once struct elements are otherwise admitted) using
    `sort_by` with a comparator over a non-scalar Copy key — the case `sort_by_key` cannot express — and
    asserts the result matches an independently computed expected order.
-3. `align-llm` verification: `src/expert_trace.align`'s `span_less`/`sort_spans` pair and
-   `src/model_ir.align`'s packed-hash `name_index` are replaced with the shipped surface (`sort()` on a
+3. `align-llm` verification: `src/expert_trace.align`'s `sort_spans` and `src/model_ir.align`'s
+   packed-hash `name_index` are replaced with the shipped surface (`sort()` on a
    sliced-`str` array, or `sort_by`/`sort_by_key` as appropriate), and `make expert-trace-smoke
-   model-ir-smoke` pass unchanged.
+   model-ir-smoke` pass unchanged. `span_less`/`span_same` already use the shipped `str` ordering
+   and are unaffected.
+
+---
+
+## Request 28 — A readable append-only accumulator
+
+```text
+Status: PROPOSED
+Priority: low
+Blocking: no
+Blocked gate or slice: none. `src/expert_trace.align` accumulates into a `buffer`, which is
+  readable through `.bytes()` while still growing, and keeps its spans in pre-sized
+  mutable `array<i64>` columns.
+Independent work that may continue: all of R2A-EXPERT-TRACE-CAPTURE, and every existing
+  `builder`/`array_builder` client, none of which needs to read back what it has
+  accumulated.
+Resume condition: Align ships read access to an unfinished accumulator — a `.len()` plus an
+  indexed or byte-view read on `array_builder<T>` and/or `builder`, or a distinct
+  append-and-read collection — with a stated aliasing rule for a read that a later `push`
+  may reallocate behind.
+Align commit or pull request: none
+align-llm verification: pending — `src/expert_trace.align` interns node and operation names
+  into the shipped accumulator instead of a `buffer` plus pre-sized `array<i64>` span
+  columns, and `make expert-trace-smoke` passes unchanged.
+```
+
+### Motivation and current sibling evidence
+
+`builder` and `array_builder<T>` are **write-only until `build()`/`to_string()`**. There is no
+`.len()`, no index, and no byte view on either while it is still growing. Verified by compiling
+against the exact toolchain align-llm materializes for the pinned commit
+`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2` (`alignc 0.5.0`); all four errors come from one probe
+program:
+
+```text
+error: '.len()' is not defined on array_builder<i64>
+error: cannot index array_builder<i64> (only array / slice / owned array)
+error: '.len()' is not defined on builder
+error: '.bytes()' is not a method on builder
+```
+
+The specification is consistent with the probe rather than contradicted by it:
+`docs/language-spec.md:982-1006` describes `array_builder<T>` entirely in terms of `push`, `append`,
+`build()`, and Drop — "a helper may push through a `borrow mut` parameter but cannot store, return,
+or consume that borrowed builder" — and names no reader. `docs/guide/18-std-services.md:84` lists
+the whole surface as "`array_builder<T>` with `push`, `append`, and consuming `build()` for a result
+whose final length is discovered while reading." `builder` is documented the same way, as an
+accumulate-then-`to_string()` value.
+
+**Consequence for align-llm.** `src/expert_trace.align` interns every distinct node name and
+operation name so a repeated name costs no bytes and a graph boundary can be recognized by identity.
+An interning table is exactly an accumulator that must be *read back*: a candidate name is confirmed
+against the bytes already accumulated by an exact comparison before the hash-selected slot is
+trusted, because a hash collision must cost work and never merge two names. Neither builder can do
+that, so the module accumulates node and operation text into a `buffer` — which *is* readable through
+`.bytes()` while still growing — and keeps `name_start` / `name_end` / `op_start` / `op_end` in
+pre-sized mutable `array<i64>`s rather than in `array_builder<i64>`s, purely because those columns
+are indexed during the walk that fills them.
+
+That works, is bounded, and is not a hardship. It is recorded because the shape — accumulate, look
+back at what you accumulated, keep accumulating — is the ordinary shape of interning, deduplication,
+run-length coding, and any incremental parser that must recognize a repeat, and every one of those
+will hit the same wall. The `buffer` workaround also costs the pre-sizing: `NAME_STREAM_BYTES` and
+`SLOT_COUNT` are fixed reservations where an accumulator would have grown.
+
+### Requested capability
+
+Read access to an accumulator that is still growing, in whichever of these shapes Align prefers:
+
+```align
+b.len() -> i64                       // elements accumulated so far
+b[i]                                 // borrow of an already-pushed Copy element
+builder.len() -> i64                 // bytes accumulated so far
+builder.bytes() -> slice<u8>         // borrowed view of the accumulated prefix
+```
+
+The aliasing rule is the substance of the request, not an afterthought: a view taken from an
+unfinished accumulator must either be invalidated by the next `push`/`write` — the same borrow rule
+`borrow mut` already enforces elsewhere — or the accumulator must document that it never reallocates
+behind a live view. `align-llm` needs only the read; the rule is Align's to choose, and stating it is
+what makes the surface safe rather than a foot-gun.
+
+This request does **not** ask for removal, mutation of an already-pushed element, iteration, or a
+second collection type. It is the minimum that turns a write-only accumulator into one an interning
+table can use.
+
+### Acceptance criteria
+
+1. A compiler test pushes into an `array_builder<T>`, reads back an already-pushed element and the
+   current length before `build()`, and asserts both; `build()` afterwards still yields the complete
+   array.
+2. A compiler test accumulates into a `builder`, reads the accumulated byte prefix before
+   `to_string()`, and asserts it; `to_string()` afterwards still yields the complete text.
+3. A compiler test pins the chosen aliasing rule — either a rejected use of a view across a
+   subsequent `push`/`write`, or a passing test demonstrating the documented no-reallocation
+   guarantee — so the decision is reviewed rather than incidental.
+4. Every existing `builder`/`array_builder` program, its Drop behavior, and its generated-program
+   identity are unchanged.
+5. `align-llm` verification: `src/expert_trace.align` replaces its `buffer`-plus-pre-sized-column
+   interning tables with the shipped accumulator, and `make check` and `make expert-trace-smoke`
+   pass unchanged.
 
 ---
 

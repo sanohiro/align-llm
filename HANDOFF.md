@@ -7,51 +7,84 @@ file records durable project state.
 
 - Branch `agent/r2a-expert-trace`, based on the merged R1B-GPTOSS-MOE-IR chain (PR #123, head
   `3bf5c9c`, merge `d8d4ef6`, onto `main` at `08492dc`). The authoritative design ledger is
-  `docs/specs/r2a-expert-trace.md`; ledger commit `b4dfb60` (design in progress, not yet
-  committed).
+  `docs/specs/r2a-expert-trace.md`, committed at `b4dfb60`; the implementation is committed at
+  `140e868` and the consolidated review repair sits on top of it.
 - **What it delivers.** The R2a slice of the R2 roadmap item: `main --expert-trace CALLBACK_LOG
   [OUT.json]` consumes a `llama-eval-callback` transcript and produces an `R2_ACTIVATION_TRACE`
   (`schema_version: 1`) document recording, per (token, layer), the selected expert ids and locality
   aggregates. A dense (non-MoE) transcript yields `moe: false` rather than an error, so the arm is
   exercisable before a real MoE transcript exists.
 - **Align capability requests.** R2A added Requests 25 (`std.process` streaming/redirecting child
-  stdout), 26 (`str`-to-integer parsing in the standard library), and 27 (string ordering and
-  sorting) to `docs/align-requests.md`. All three are PROPOSED and non-blocking: Request 25 does not
-  block because R2A consumes a transcript *file* and never invokes `llama-eval-callback` itself (the
-  shell redirection already in `scripts/run-expert-trace-parity` stands in); Request 26 does not
-  block because a fourth hand-rolled decimal parser, `parse_uint` at `src/expert_trace.align:317`, is
-  a viable (if duplicative) workaround; Request 27 does not block because `src/expert_trace.align`
-  hand-writes `span_less`/`sort_spans` (lines 638-716) and `src/model_ir.align` packs a 42-bit name
-  hash (`name_hash`/`packed_entry`/`name_index`, lines 261-301) instead of sorting or binary-searching
-  by string directly. Request 27's evidence corrects an assumption in `src/expert_trace.align`'s own
-  comment (line 638-639): `str`/`string` already satisfy `Ord` and back `<`/`<=`/`>`/`>=` and
-  `sort_by_key`'s `str`-key comparator at this pin (confirmed by compiling against the pinned
-  `alignc 0.5.0`); the genuine remaining gap is that plain `array<T>.sort()` rejects `str` elements
-  ("needs a numeric element type, got str" — the compiler's own `check_array_sort` comment calls this
-  a "first cut" with "a `sort(cmp)` overload" as a named follow-up,
-  `crates/align_sema/src/lib.rs:50602-50603`). Requests 21–24 remain inherited, unconsumed, and
-  unchanged in status.
+  stdout), 26 (`str`-to-integer parsing in the standard library), 27 (string sorting), and 28 (a
+  readable append-only accumulator) to `docs/align-requests.md`. All four are PROPOSED and
+  non-blocking:
+  - **25** does not block because R2A consumes a transcript *file* and never invokes
+    `llama-eval-callback` itself (the shell redirection already in `scripts/run-expert-trace-parity`
+    stands in).
+  - **26** does not block because `parse_uint` at `src/expert_trace.align:317` is a viable
+    workaround. Its evidence is *not* "four hand-rolled parsers": `src/main.align:71`,
+    `src/failure_memory.align:176`, and `src/c6f1_request11_adoption.align:6` are each a two-line
+    `json.decode` detour, and only `src/expert_trace.align:317` is a real parser — which is the
+    stronger argument, because those three route a plain decimal integer through a JSON decoder and
+    R2A cannot even do that (`     12.0000` is not a JSON integer and an expert id must not travel
+    through a float).
+  - **27** does not block because `sort_spans` sorts an index array by hand and `src/model_ir.align`
+    packs a 42-bit name hash (`name_hash`/`packed_entry`/`name_index`, lines 261-301). The request is
+    string *sorting*, not string ordering: `str` satisfies `Ord` and backs `<`/`<=`/`>`/`>=` and
+    `sort_by_key`'s `str`-key comparator at this pin, so `span_less`/`span_same` now use the shipped
+    `<` and the module's false "Align ships no string ordering" comment is gone. Three sort paths
+    were compiled and rejected in the module's own shape: `.sort()` ("needs a numeric element type,
+    got str"), `array_builder<str>` ("requires a Copy scalar, `string`, or a closed heap record"),
+    and `index.sort_by_key(fn i { span_text(...) })` ("a lambda cannot capture the owned value
+    'family_start' yet"; "field access is only supported on a local binding" for a `borrow`
+    parameter's column). `crates/align_sema/src/lib.rs:50616` is the `elem.is_numeric()` gate and
+    `:50601-50603` the "first cut … a `sort(cmp)` overload is a follow-up" comment.
+  - **28** does not block because the module accumulates interned name and operation text into a
+    `buffer` (readable through `.bytes()` while growing) plus pre-sized `array<i64>` span columns.
+    `builder` and `array_builder` are write-only until `build()`: `'.len()' is not defined on
+    array_builder<i64>`, `cannot index array_builder<i64>`, `'.len()' is not defined on builder`,
+    `'.bytes()' is not a method on builder`.
+
+  Requests 21 and 23 gained new R2A client evidence without a status change — 21 a second class of
+  read-only input (a transcript in a root-owned or read-only artifact directory; the `0444`
+  `read-only-transcript` smoke case exits 3 with no document), 23 the single `borrow`-parameter lint
+  line `src/expert_trace.align:1607`. Request 22 gained **none**: R2A holds no `array<string>` and
+  avoids that shape entirely. Requests 22 and 24 remain inherited, unconsumed, and unchanged.
 - **Owner and qualification.** `make expert-trace-smoke` is the new narrow Makefile owner; adding it
   changes the `Makefile`, so preflight selects the fresh-image installed profile.
   `scripts/run-expert-trace-parity` is the named opt-in qualification. The R2 roadmap gate stays open
   until a real MoE transcript exists — a small MoE GGUF (1-4 GB) is a separate pending user decision
   that would close it — with a dense-Qwen parity run (`moe: false` path) recorded below as smoke-level
   evidence ahead of that decision.
-- **Implementation is complete in the working tree.** `--expert-trace` is implemented
+- **Implementation is complete and reviewed.** `--expert-trace` is implemented
   (`src/expert_trace.align`, `src/main.align`), `docs/specs/r2a-expert-trace.md` is updated, and every
   owner below passes at the unchanged pin `4b515f8d`:
   - `gmake check`: 28 units, PASS. `gmake build`: PASS.
-  - `gmake expert-trace-smoke`: 87 fixtures plus a real transcript excerpt, PASS.
+  - `gmake expert-trace-smoke`: 95 fixtures plus a real transcript excerpt, PASS.
   - `gmake gguf-smoke`: PASS. `gmake model-ir-smoke`: PASS.
-  - `python3 scripts/check-gate-topology`: PASS. `gmake format-check`: PASS. `gmake fmt`: no diff.
-  - `git diff --check`: clean.
+  - `gmake gate-topology-check`: PASS. `gmake format-check`: PASS. `gmake fmt`: no diff.
+  - `git diff --check` and `git diff --check d8d4ef6..HEAD`: clean. The checked-in excerpt's
+    truncation markers end in a significant space, so `eval/fixtures/expert-trace/*.txt -whitespace`
+    is now in `.gitattributes` (the `corpus-file-set.manifest` precedent) rather than the markers
+    being stripped.
   - Dense-Qwen parity (`moe: false` path, `scripts/run-expert-trace-parity`): **PASS** — 1 graph, 958
-    nodes, 28 layers, `moe: false`, 16,633 lines, `bytes_read` 1,101,339, 0.062 s.
-  - MoE parity: **N/A** (no small MoE GGUF downloaded yet; see the pending user decision below).
+    nodes, 28 layers, `moe: false`, 16,633 lines, `bytes_read` 1,101,339.
+  - MoE parity: **N/A** (no small MoE GGUF downloaded yet; see the pending user decision below). The
+    runner now *emits* both verdict lines rather than leaving them for an author to compose.
+- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
+  the candidate at `140e868`: **A** the Align source, **B** the specification, register, handoff, and
+  fixtures. A returned 1 blocker class, 1 major, 2 minor, and 1 low; B returned 3 major, 5 moderate,
+  and 5 minor. **Every finding was accepted** and all repaired as one consolidated repair on top of
+  `140e868`. The two substantive ones were real and both are recorded as ledger corrections 15 and
+  16: five `str` slices at length-relative offsets aborted the process (exit 134, no document) on any
+  transcript carrying a multi-byte UTF-8 scalar at the offset — the whole class is now audited and
+  every `str[a..b]` uses an ASCII-matched offset — and the locality adjacency test compared packed
+  keys alone, so a token index at the top of its field carried into the layer field and manufactured
+  a cross-layer pair (measured: `adjacent_pair_count` 9 where the definition gives 8).
 - **Next actions, in order.**
-  1. One comprehensive review of the candidate, then exact-head preflight — confirm with
-     `scripts/pre-pr --plan` whether the `Makefile` change selects the fresh-image installed profile
-     via Docker-in-Docker.
+  1. Exact-head preflight — confirm with `scripts/pre-pr --plan` that the `Makefile` change selects
+     the fresh-image installed profile, then run
+     `python3 scripts/pre-pr --owner-test expert-trace-smoke -- make expert-trace-smoke`.
   2. Publish the English pull request.
 - **Two pending user decisions, tracked and not to be lost.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
@@ -231,7 +264,8 @@ boundary is next changed.
 ## Resume in another environment
 
 1. Fetch `origin`, check out `agent/r2a-expert-trace`, and read `CLAUDE.md`, then
-   `docs/specs/r2a-expert-trace.md` in full once it is committed — it is the plan of record — and
+   `docs/specs/r2a-expert-trace.md` in full (committed at `b4dfb60`, corrections applied) — it is
+   the plan of record — and
    `docs/specs/r1b-gptoss-moe-ir.md` for the Model IR/Block IR surface it consumes.
    R1B-GPTOSS-MOE-IR merged as PR #123 (`3bf5c9c` -> `d8d4ef6`); this branch continues from that
    chain.
@@ -239,10 +273,10 @@ boundary is next changed.
    `gmake` and the recorded `LLVM_CONFIG`/`LIBRARY_PATH` environment. Confirm `.align-revision`
    still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R2A requires no pin change.
 3. Resume at the first unfinished next action in the active R2A-EXPERT-TRACE-CAPTURE capability
-   above: implementation and every owner already pass in the working tree, so the next action is
-   review, then exact-head preflight, then publication.
+   above: implementation (`140e868`), its comprehensive review, and the consolidated repair are
+   done and every owner passes, so the next action is exact-head preflight, then publication.
 4. Do not open another Align request unless implementation exposes a further genuine shipped-language,
-   compiler/runtime, or standard-library gap under the register rules. Requests 21-27 are inherited
+   compiler/runtime, or standard-library gap under the register rules. Requests 21-28 are
    `PROPOSED` and non-blocking.
 5. Two user decisions are pending and must not be silently dropped: whether to download
    `gpt-oss-20b-mxfp4.gguf` (12.1 GB) for the carried-forward gpt-oss `model-ir-parity`

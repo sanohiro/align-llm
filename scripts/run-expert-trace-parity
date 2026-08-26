@@ -244,7 +244,10 @@ rows = [
     ("source.skipped_line_count", document["source"]["skipped_line_count"], reference["skipped"]),
     ("source.file_size", document["source"]["file_size"], transcript.stat().st_size),
     ("graph.graph_count", document["graph"]["graph_count"], len(reference["graphs"])),
-    ("graph.n_layer", document["graph"]["n_layer"], reference["n_layer"]),
+    # `graph.n_layer` is `null` when no `-N` suffixed node was seen at all, so the independent
+    # parse's `-1` sentinel is normalized to the same shape before the comparison.
+    ("graph.n_layer", document["graph"]["n_layer"],
+     reference["n_layer"] if reference["n_layer"] >= 0 else None),
     ("graph.node_families", document["graph"]["node_families"], reference["families"]),
     ("graph.unsuffixed_nodes", document["graph"]["unsuffixed_nodes"], reference["plains"]),
     ("graph.ops", document["graph"]["ops"], reference["ops"]),
@@ -309,7 +312,8 @@ for line in version_text.splitlines():
     print("    %s" % line.strip())
 print("  graphs             %d" % document["graph"]["graph_count"])
 print("  nodes              %d" % sum(row["node_count"] for row in document["graphs"]))
-print("  layers             %d" % document["graph"]["n_layer"])
+print("  layers             %s"
+      % ("-" if document["graph"]["n_layer"] is None else document["graph"]["n_layer"]))
 print("  shape class        %s (%s)"
       % (document["graph"]["shape_class"], document["graph"]["shape_class_basis"]))
 print("  moe                %s" % ("true" if moe else "false"))
@@ -324,6 +328,13 @@ print("  elapsed            %.3f s (diagnostic only; R2A makes no performance cl
 if not moe:
     print("  locality           N/A - moe.present is false, so the R2 gate stays open "
           "(section 4.5)")
+# The two halves of the qualification, emitted rather than authored, so the pull-request record of
+# section 7.4 quotes lines this script actually printed.
+print("expert trace parity (dense): PASS")
+if moe:
+    print("expert trace parity (MoE): PASS")
+else:
+    print("expert trace parity (MoE): N/A - no MoE GGUF on this host; see section 4.5.")
 PY
 
 printf '%s\n' "expert trace parity: model size and mtime unchanged (read-only proof)"

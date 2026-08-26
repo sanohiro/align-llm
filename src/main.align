@@ -616,6 +616,16 @@ fn model_ir_demo(args: array<str>) -> Result<(), Error> {
   }
 }
 
+// The section 2.6 step 2 lexical path guard, applied to every operand of the `--expert-trace` arm.
+// It is deliberately lexical only: existence, type, and permissions are the operating system's
+// answer, reported through `R2_TRANSCRIPT_UNREADABLE` or a `write_file` failure, not guessed here.
+EXPERT_TRACE_MAX_PATH_BYTES := 4096
+
+fn valid_cli_path(path: str) -> bool {
+  if path.len() == 0 || path.len() > EXPERT_TRACE_MAX_PATH_BYTES { return false }
+  return !path.contains("\0")
+}
+
 // R2A-EXPERT-TRACE-CAPTURE CLI adapter (`docs/specs/r2a-expert-trace.md` section 2.3). The arm holds
 // no transcript grammar: it validates arity, derives the document exactly once, writes or prints it,
 // prints the summary block, and maps the derivation status to the process exit. Arity is checked
@@ -626,6 +636,17 @@ fn model_ir_demo(args: array<str>) -> Result<(), Error> {
 // shipped `std.process` surface out of this capability entirely.
 fn expert_trace_demo(args: array<str>) -> Result<(), Error> {
   if args.len() < 3 || args.len() > 4 {
+    return Err(Error.Invalid)
+  }
+  // Section 2.6 step 2, and it owns **both** operands. `expert_trace.build_trace` re-checks the
+  // transcript path as its own fail-closed contract, but nothing below this arm ever sees the
+  // destination, so an over-long or NUL-bearing destination has to be refused here — before the
+  // derivation runs — or it would surface as a `write_file` failure after a whole transcript was
+  // scanned (section 6, item 18).
+  if !valid_cli_path(args[2]) {
+    return Err(Error.Invalid)
+  }
+  if args.len() == 4 && !valid_cli_path(args[3]) {
     return Err(Error.Invalid)
   }
   traced := expert_trace.build_trace(args[2])?

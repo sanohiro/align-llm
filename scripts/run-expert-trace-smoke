@@ -309,6 +309,10 @@ for case in manifest["cases"]:
             got = document["graph"][key]
         elif key == "moe_present":
             got = document["moe"]["present"]
+        elif key == "selection_count":
+            # `zero-selection`: the selection loop, the aggregate sweep, and the renderer all
+            # terminate on a zero count.
+            got = len(document["selections"])
         else:
             got = document["source"][key]
         if got != want:
@@ -363,8 +367,12 @@ if checked != len(manifest["cases"]):
 
 expected_codes = set(CODES)
 if not manifest["sparse_oversize"]:
+    # A dropped expectation is never silent: the code this run did *not* cover is named on its own
+    # line, so a reader of the log can tell an unexercised row from a passing one.
     expected_codes.discard("R2_TRANSCRIPT_TOO_LARGE")
-    print("expert trace smoke: oversize-transcript SKIPPED (no sparse-file support here)")
+    print("expert trace smoke: SKIPPED oversize-transcript / R2_TRANSCRIPT_TOO_LARGE - this "
+          "filesystem did not produce a sparse file above MAX_TRANSCRIPT_BYTES, so the code is "
+          "not covered by this run")
 missing = sorted(expected_codes - codes_seen)
 if missing:
     fail("error-corpus: no fixture fired %s" % ", ".join(missing))
@@ -395,11 +403,24 @@ real = (root_dir / "eval/fixtures/expert-trace/qwen2-prefill-build10566.txt").re
 raw = real.read_bytes()
 if hashlib.md5(raw).hexdigest() != "81df3252be98a5e790e57fa77ba1e4b2":
     fail("real-transcript: the checked-in fixture changed; re-record its provenance")
-for needle in (b"/Users/", b"/home/", b"/private/", b"/opt/", b"/var/", b"/tmp/", b"\\\\"):
+PATH_NEEDLES = (b"/Users/", b"/home/", b"/private/", b"/opt/", b"/var/", b"/tmp/", b"\\\\")
+for needle in PATH_NEEDLES:
     if needle in raw:
         fail("real-transcript: the fixture carries a path fragment %r" % needle)
 if re.search(rb"[A-Za-z]:\\", raw):
     fail("real-transcript: the fixture carries a Windows drive prefix")
+# The operator's own account name, swept for the same reason the path fragments are: a future
+# re-capture must not smuggle one in. Names shorter than four bytes are skipped because they would
+# collide with the grammar's own vocabulary rather than detect anything.
+account_names = {os.environ.get("USER") or "", os.environ.get("LOGNAME") or "",
+                 Path.home().name if str(Path.home()) else ""}
+swept = sorted(name for name in account_names if len(name) >= 4)
+for name in swept:
+    if name.encode("utf-8") in raw:
+        fail("real-transcript: the fixture carries the operator's account name %r" % name)
+print("expert trace smoke: real-transcript sanitization swept %d path fragment(s), the Windows "
+      "drive prefix, every non-printable byte, and %d account name(s) %s"
+      % (len(PATH_NEEDLES), len(swept), swept))
 for byte in set(raw):
     if byte != 10 and (byte < 32 or byte > 126):
         fail("real-transcript: the fixture carries a non-printable byte %d" % byte)
@@ -472,6 +493,15 @@ for label, bad_path in (("empty", ""), ("over-length", "x" * 4097)):
     if (work_dir / "bad-path.json").exists():
         fail("path-too-long: an %s path created a destination file" % label)
 
+# `destination-path-guard`: section 2.6 step 2 owns *both* operands, and the guard runs before the
+# derivation, so an unusable destination produces no document, no summary block, and no scan.
+for label, bad_destination in (("empty", ""), ("over-length", "x" * 4097)):
+    bad = run(["--expert-trace", str(sample), bad_destination])
+    if bad.returncode == 0 or bad.stdout != b"":
+        fail("destination-path-guard: an %s destination must fail with no output" % label)
+if (work_dir / ("x" * 4097)).exists():
+    fail("destination-path-guard: an over-length destination created a file")
+
 sentinel = work_dir / "sentinel.json"
 sentinel.write_bytes(b"SENTINEL")
 absent = run(["--expert-trace", str(fixture_dir / "absent.txt"), str(sentinel)])
@@ -497,6 +527,30 @@ else:
     if sentinel.read_bytes() != b"SENTINEL":
         fail("untouched-destination: an unreadable transcript rewrote the destination")
 denied.chmod(0o600)
+
+# `read-only-transcript`: the Request 21 client evidence, asserted rather than described. The
+# transcript below is readable by its owner and not writable by anyone, which is exactly a
+# CI-produced trace in a root-owned or read-only artifact directory. Align ships only `fs.open_rw`,
+# so the kernel refuses `O_RDWR` and the derivation cannot start at all — no document, untouched
+# destination, nonzero exit. This case is expected to FLIP to a successful derivation the day
+# `docs/align-requests.md` Request 21 ships `fs.open_ro` and `src/expert_trace.align` adopts it.
+read_only = work_dir / "read-only.txt"
+read_only.write_bytes(sample.read_bytes())
+read_only.chmod(0o444)
+if hasattr(os, "geteuid") and os.geteuid() == 0:
+    print("expert trace smoke: SKIPPED read-only-transcript - running as root, which may write a "
+          "mode 0444 file, so the writable-path precondition is not observable here")
+else:
+    read_only_result = run(["--expert-trace", str(read_only), str(sentinel)])
+    if read_only_result.returncode == 0 or read_only_result.stdout != b"":
+        fail("read-only-transcript: `fs.open_rw` unexpectedly opened a mode 0444 transcript; if "
+             "Align now ships a read-only open, adopt it and close Request 21")
+    if sentinel.read_bytes() != b"SENTINEL":
+        fail("untouched-destination: a read-only transcript rewrote the destination")
+    print("expert trace smoke: read-only-transcript exits %d with no document (Request 21 client "
+          "evidence: `fs.open_rw` requires O_RDWR on a transcript R2A never writes)"
+          % read_only_result.returncode)
+read_only.chmod(0o600)
 
 # A transcript defect replaces the destination with the complete document — never a partial write.
 structural = run(["--expert-trace", str((fixture_dir / "dims-invalid.txt").resolve()),

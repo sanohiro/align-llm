@@ -2,3 +2,9 @@
 
 # The canonical corpus file-set manifest is byte-identity-bearing framed data.
 eval/prompt/canonical-v1/corpus-file-set.manifest -text
+
+# The checked-in eval-callback excerpts are byte-exact instrument output. llama.cpp's truncation
+# markers ("            ..., " and "        ..., ") end in a significant space that the grammar of
+# `docs/specs/r2a-expert-trace.md` section 2.2 finding 6 matches literally, so `git diff --check`
+# must not report it and no tool may strip it.
+eval/fixtures/expert-trace/*.txt -whitespace

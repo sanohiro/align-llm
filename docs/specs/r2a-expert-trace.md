@@ -141,7 +141,7 @@ leans on hardest, each with the in-repository evidence that it works at the pin.
 | Owned `string` sliced through a `borrow` record parameter (`t.names[a..b]`) compared against a `str` | **Shipped.** Same item 1; `src/model_ir.align:96-100` | The node-name stream is addressed by explicit `[start, end)` spans |
 | `s.find(needle) -> Option<i64>` used as `... else default`, `.rfind`, `.starts_with`, `.contains`, `.trim`, `[a..b]` slicing, `.len()` | **Shipped.** `src/failure_memory.align:77, 219-246`; `src/patch_eval.align:246-266` | Header-line field extraction needs no regex and no new surface |
 | `s.split(...)` | **NOT available.** Align ships `split` only as a `regex` method; the `str` form is unimplemented at this pin | The header parser composes `find` + `[a..b]` explicitly, which it would do anyway: finding 2 shows a name may contain the space a naive split would cut on |
-| Hand-rolled decimal integer parse | **Necessary, not preferred.** Align has **no** `str`-to-number surface at all at this pin — no `parse_int`, no `parse_i64`, no `parse_f64`; `src/main.align:69`, `src/failure_memory.align:176`, and `src/c6f1_request11_adoption.align:6` are each a private reimplementation | R2A writes a fourth, bounded, over `window.bytes()`. Section 2.2 finding 5 at least removes any need for a *float* parse. The gap is genuine and unrecorded; section 5.5.2 states it |
+| Hand-rolled decimal integer parse | **Necessary, not preferred.** Align has **no** `str`-to-number surface at all at this pin — no `parse_int`, no `parse_i64`, no `parse_f64`. The three existing call sites (`src/main.align:71`, `src/failure_memory.align:176`, `src/c6f1_request11_adoption.align:6`) do not hand-roll one: each is a two-line `json.decode` detour, which is the escape hatch this gap forces | R2A cannot take that detour — `12.0000` is not a JSON integer and an expert id must not be routed through a float — so it writes the one genuine private parser, bounded, over `window.bytes()`. Section 2.2 finding 5 at least removes any need for a *float* parse. The gap is genuine; section 5.5.2 states it and `docs/align-requests.md` Request 26 records it |
 | `sort()` over `array<i64>` | **Shipped.** `docs/specs/r1-qwen-model-ir.md` section 2.7 | The per-graph node-name index and the per-layer expert histogram each sort once |
 | `builder` local + `to_string()` move-out; owned-`string`-returning render helpers | **Shipped.** `src/model_ir.align`; Request 24 stays unconsumed | The renderer is the same shape as `model_ir`'s and passes no `builder` across a boundary |
 | `Result<T, Error>`, `Option<T>`, `match`, integer `as` | **Shipped**, unchanged | unchanged |
@@ -163,11 +163,14 @@ leans on hardest, each with the in-repository evidence that it works at the pin.
 - **Request 24** (`builder` as a `borrow mut` parameter): unconsumed. The renderer returns owned
   `string`s, exactly as `model_ir` does.
 
-**Two genuine gaps are recorded, not worked around.** Section 5.5 states the `command.run()`
-whole-stdout limitation as candidate Request 25, and the absent `str`-to-number surface as candidate
-Request 26, each with evidence. Both are **non-blocking for R2A** — the first by construction,
-because the CLI consumes a file; the second because a private parser is writable. The orchestrator
-owns the register edits; this document does not edit `docs/align-requests.md`.
+**Genuine gaps are recorded, not worked around.** Section 5.5 states the two the plan already
+foresaw: the `command.run()` whole-stdout limitation as Request 25, and the absent `str`-to-number
+surface as Request 26. Implementation added two more, recorded in section 7.5 and shipped to the
+register: Request 27 (string *sorting* — the ordering is shipped, the sort is not) and Request 28
+(a readable append-only accumulator). All four are **non-blocking for R2A** — 25 by construction,
+because the CLI consumes a file; 26 because a private parser is writable; 27 because `sort_spans`
+is; 28 because a `buffer` is readable while it grows. This document does not edit
+`docs/align-requests.md`; the orchestrator owns the register edits, and they are done.
 
 ### 2.2 Verified instrument grammar at llama.cpp build 10566
 
@@ -322,7 +325,16 @@ main --expert-trace CALLBACK_LOG OUT.json     # document to OUT.json, plus the s
 The grammar, arity rules, `MAX_PATH_BYTES` guard, byte-identical-document requirement across the two
 forms, and exit mapping are `--model-ir`'s, reused verbatim rather than re-invented
 (`src/main.align:529-600`): exit `0` on `status: "ok"`, `Err(Error.Invalid)` on `status: "error"`,
-and arity checked before any path or file work so an arity failure produces no output at all.
+and arity checked before any path or file work so an arity failure produces no output at all. The
+`MAX_PATH_BYTES` guard covers **both** operands — an empty, over-long, or NUL-bearing `CALLBACK_LOG`
+*or* `OUT.json` is `Err` with no output and no scan (section 2.6 step 2, section 6 item 18).
+
+**Precondition: the transcript must be writable by the invoking user.** `src/expert_trace.align`
+opens it with `fs.open_rw`, the only random-access `file` constructor Align ships at this pin, so a
+transcript in a root-owned or read-only artifact directory — the ordinary home of a CI-produced
+trace — is refused by the kernel with `EACCES` before a byte is read, and the arm exits nonzero with
+no document. This is the R0 model-path precondition applied to a second class of read-only input;
+`docs/align-requests.md` Request 21 records it, and `read-only-transcript` asserts it.
 
 There is **no `--build` flag, no `--arch` flag, and no `--strict` flag.** A build flag would be a
 second source of truth for a fact the transcript either states or does not (finding 8), and a
@@ -538,8 +550,17 @@ check; the build number is provenance.
 }
 ```
 
-`n_layer` is `max(N) + 1` over every `-N` suffix observed (finding 3). `node_families` and `ops` are
-sorted, de-duplicated, and bounded at `MAX_NODES_PER_GRAPH` entries.
+| Field | Type | Contract |
+| --- | --- | --- |
+| `graph_count` | integer | Graph evaluations segmented from the transcript; `0` when segmentation was not reached |
+| `n_layer` | integer or **`null`** | `max(N) + 1` over every `-N` suffix observed (finding 3). **`null`** — never a sentinel — when the transcript carries no suffixed node at all, which is what a six-block excerpt, a capture that began mid-graph, and a transcript with no callback line each produce (section 6, item 17) |
+| `node_families` | array of string | The distinct `-N` family prefixes, sorted byte-lexicographically and de-duplicated |
+| `unsuffixed_nodes` | array of string | The distinct names carrying no `-N` suffix, same ordering |
+| `ops` | array of string | The distinct operation names, same ordering |
+| `shape_class` | string | `"dense-ffn"`, `"moe-ffn"`, or `"unknown"` |
+| `shape_class_basis` | string | The evidence for `shape_class`, in every case |
+
+`node_families` and `ops` are sorted, de-duplicated, and bounded at `MAX_NODES_PER_GRAPH` entries.
 
 **`shape_class` is a graph shape class, not a model architecture.** Its closed value set is
 `"dense-ffn"`, `"moe-ffn"`, and `"unknown"`, selected solely by the presence of `ffn_moe_topk-N` and
@@ -668,8 +689,11 @@ at all; every later step produces a `status: "error"` document and then maps to
 `Err(Error.Invalid)`.
 
 1. CLI selector and exact arity. *(`src/main.align`)*
-2. Path lexical validation against `MAX_PATH_BYTES`. *(`src/main.align`)*
-3. Open, `f.len()`. *(`src/expert_trace.align`)*
+2. Path lexical validation of **both** operands against `MAX_PATH_BYTES`, plus emptiness and a NUL
+   byte. *(`src/main.align`; `expert_trace.build_trace` re-checks the transcript path as the
+   module's own fail-closed contract)*
+3. Open, `f.len()`. The transcript must be writable by the invoking user (section 2.3); a mode
+   `0444` or root-owned transcript fails here as `Error.Denied`. *(`src/expert_trace.align`)*
 4. Size and emptiness bounds.
 5. Line scan: line length, line count.
 6. Per-line shape classification: header, value-block structure, `sum`, or ignorable.
@@ -687,7 +711,7 @@ at all; every later step produces a `status: "error"` document and then maps to
 | `R2_TRANSCRIPT_TOO_LARGE` | `file_size > MAX_TRANSCRIPT_BYTES` | 4 | `file_size` |
 | `R2_LINE_TOO_LONG` | A line reaches `MAX_LINE_BYTES` with no newline | 5 | the line's start offset |
 | `R2_LINE_LIMIT` | Line count would exceed `MAX_LINES` | 5 | `MAX_LINES` |
-| `R2_HEADER_GRAMMAR` | A line begins `common_debug_cb_eval:` but does not match section 2.2 finding 1 — including a NUL byte anywhere in it, which is what keeps the name stream NUL-free by construction | 6, 7 | the escaped line prefix, bounded at `MAX_DETAIL_BYTES` |
+| `R2_HEADER_GRAMMAR` | A line begins `common_debug_cb_eval:` but does not match section 2.2 finding 1 — including a NUL byte anywhere in it, which is what keeps the name stream NUL-free by construction, and including a multi-byte UTF-8 scalar where the grammar requires a specific ASCII byte (section 6, item 15) | 6, 7 | the escaped line prefix, bounded at `MAX_DETAIL_BYTES` |
 | `R2_NODE_NAME_TOO_LONG` | The name field exceeds `MAX_NAME_BYTES` | 7 | the escaped prefix |
 | `R2_DIMS_INVALID` | A dimension list is not exactly four non-negative integers, or a product would wrap | 7 | the node name |
 | `R2_VALUE_GRAMMAR` | Inside a value block, a line matches none of finding 6's nine shapes | 6 | the line's start offset |
@@ -797,11 +821,11 @@ transcript exists. Marking them is the section 1.4 honesty requirement made mech
 | Case | Contract to close | Implementation | Exact regression |
 | --- | --- | --- | --- |
 | Construction | Handle and window are bare locals; the window is one `WINDOW_BYTES` buffer | `scan` prologue | `descriptor-budget`, `peak-allocation` |
-| Success — short file | A transcript smaller than one window is read in one `pread` | `next_line` | `window-single-read`: `bytes_read == file_size` |
+| Success — short file | A transcript smaller than one window is read in one `pread` | `next_line` | `window-single-read`, shipped as the runner's per-fixture assertion `size <= WINDOW_BYTES` implies `bytes_read in {0, size}`, applied to every fixture rather than to one named case |
 | Success — window boundary | A line straddling a window boundary is returned whole, exactly once, with correct content | `next_line` step 3 | `window-boundary`: the generator places a header line at offsets `WINDOW_BYTES - k` for `k` in `{1, 2, 40, 200}` and asserts identical documents |
 | Success — no trailing newline | A final line without `\n` is a complete line | `next_line` step 5 | `no-trailing-newline` |
 | Success — CRLF and blank lines | A `\r` is part of the line and is rejected by the header grammar, not silently stripped; a blank line is ignorable | grammar | `crlf-transcript`, `blank-lines` |
-| Failure — long line | A line reaching `MAX_LINE_BYTES` is `R2_LINE_TOO_LONG` with its start offset | `next_line` step 4 | `huge-line`: one 200,000-byte line |
+| Failure — long line | A line reaching `MAX_LINE_BYTES` is `R2_LINE_TOO_LONG` with its start offset | `next_line` step 4 | shipped as two cases, not one `huge-line`: `huge-line-first` (a 200,000-byte first line, detail `0`) and `huge-line-late` (the same line after 500 valid blocks, detail its exact byte offset, `callback_line_count` 501) |
 | Failure — line count | `MAX_LINES` is enforced before the line is classified | scan loop guard | `line-limit`: a generated file of `MAX_LINES + 1` empty lines, run against a lowered constant in a debug fixture rather than a 70 GB file |
 | Failure — OS | Missing, unreadable, or a directory is `R2_TRANSCRIPT_UNREADABLE` | `scan` prologue | `unreadable-transcript`, `directory-operand` |
 | Failure — bounds | Empty and oversize are their own codes | step 4 | `empty-transcript`; `oversize-transcript` against a lowered constant |
@@ -837,9 +861,12 @@ transcript exists. Marking them is the section 1.4 honesty requirement made mech
 | Failure — MoE inconsistency | Two layers disagreeing on `n_expert_used` is `R2_MOE_INCONSISTENT` | step 11 | `moe-inconsistent-layers`, `moe-inconsistent-graphs` |
 | Failure — limits | Graph, node, and selection limits each fire against lowered debug constants | ordered guards | `graph-limit`, `node-limit`, `selection-limit` |
 | Malformed — non-UTF-8 / NUL | A NUL or an invalid UTF-8 byte in a header line is `R2_HEADER_GRAMMAR`; the document stays valid JSON | `parse_header` | `invalid-utf8-name`, `nul-in-header` |
+| Malformed — multi-byte UTF-8 at a computed offset | *Valid* multi-byte UTF-8 where the grammar requires a specific ASCII byte is refused as data — a recorded code and a truthful partial document — and never aborts the process. Every `str[a..b]` uses offsets an ASCII match already proved (section 6, item 15) | `parse_header`, the row classifier | `multibyte-type-close`, `multibyte-header-tail`, `multibyte-src0-separator`, `multibyte-src1-tail` (each `R2_HEADER_GRAMMAR`), `multibyte-value-row` (`R2_VALUE_GRAMMAR`) |
+| Success — multi-byte UTF-8 in every field | A transcript whose names, types, operations, and operands all carry multi-byte scalars parses, interns, sorts byte-lexicographically, and renders | `scan`, `build` | `multibyte-everywhere` |
+| Success — saturated token index | A token index at the top of the packed key's token field does not carry into the layer field and manufacture a cross-layer adjacent pair (section 6, item 16) | aggregate pass | `moe-saturated-token`: `n_tokens = MAX_TOKENS_PER_GRAPH` over two layers, every aggregate asserted against the generator oracle |
 | Malformed — interleaved logs | A `2>&1` capture parses identically to the stdout-only capture, with `skipped_line_count` equal to the log line count | classification | `interleaved-stderr`: the real stdout and the real merged capture produce byte-identical documents except `source` counts |
 | Branch joins | `Ok` / `Error` construction and the document return have exactly one owner | `build` return | `document-move` |
-| Loop joins | The scan loop, the block loop, the row loop, the element loop, and the aggregate sweep each terminate on count, on failure, and on a zero count | loop guards | `zero-graph`, `zero-selection`, `zero-layer` |
+| Loop joins | The scan loop, the block loop, the row loop, the element loop, and the aggregate sweep each terminate on count, on failure, and on a zero count | loop guards | `zero-graph` (0 callback lines, `graph_count` 0, `n_layer` null, `selections` 0); `zero-selection` shipped as `zero-graph`'s `selection_count: 0` assertion plus every dense fixture's empty `selections`; `zero-layer` shipped as `dense-zero-layer` |
 | Move-out | The document is moved into `ExpertTrace.document`; `TranscriptScan` is moved into `build`'s owner local | epilogue | `document-move`; review against `docs/specs/c8-speed-first.md` section 2.8 |
 | Borrow discipline | No helper returns a view derived from a `borrow` parameter; every text result is owned | signatures | `make check` |
 | Generic monomorphization | `N/A`: no generic type or function is declared | `N/A` with this reason | — |
@@ -853,7 +880,8 @@ transcript exists. Marking them is the section 1.4 honesty requirement made mech
 | Construction — arity | Two and three operands accepted; anything else is `Err` before any file work | `expert_trace_demo` | `cli-arity`: zero output on an arity failure |
 | Success — both forms | Both forms emit byte-identical document bytes | `expert_trace_demo` | `form-parity` over every positive fixture |
 | Success — summary block | Section 2.3's lines keep their order; `-` for absent values; control bytes sanitized | `expert_trace_demo` | `summary-order`, `summary-control-bytes` |
-| Failure — path guard | A path over `MAX_PATH_BYTES` is `Err` with no output | path validation | `path-too-long` |
+| Failure — path guard | An empty, over-`MAX_PATH_BYTES`, or NUL-bearing operand — transcript **or** destination — is `Err` with no output and no scan | `valid_cli_path`, applied to both operands before the derivation | `path-too-long`, `destination-path-guard` |
+| Failure — read-only transcript | A transcript the invoking user cannot write cannot be opened at this pin; the arm exits nonzero with no document and an untouched destination | `fs.open_rw` (section 2.3 precondition) | `read-only-transcript` (mode `0444`; skipped under root) |
 | Failure mapping | `status: "error"` becomes `Err(Error.Invalid)` after the document is emitted | epilogue | `error-corpus` exit codes |
 | Selector isolation | `--expert-trace` in an operand position is an operand, not a selector | dispatch shape | `selector-as-operand`, following the `c7_selector` precedent at `src/main.align:371` |
 | Help text | The usage block gains one line and no other line changes | `usage` | `usage-diff` |
@@ -876,10 +904,10 @@ transcript exists. Marking them is the section 1.4 honesty requirement made mech
 | Target definition | One new target `expert-trace-smoke` and one new focused qualification `expert-trace-parity`; the new module is reached through `check-per-unit $(ENTRY)`, which follows imports | `Makefile` | `python3 scripts/check-gate-topology` |
 | Aggregate membership | `expert-trace-smoke` joins `HOSTED_CHECK_TARGETS`: no model, no network, no reference tool, runs in seconds — the same argument that admitted `model-ir-smoke` | `Makefile:17, 36` | `make gate-topology-check` |
 | Qualification exclusion | `expert-trace-parity` stays outside `HOSTED_CHECK_TARGETS`, `CAPABLE_ONLY_CHECK_TARGETS`, and every aggregate | `Makefile` | `make gate-topology-check` |
-| **Preflight profile selection** | **The `Makefile` IS modified, so `FRESH_IMAGE_PATTERNS` (`scripts/verification_scope.py:23`) matches and the classifier selects the fresh-image installed profile.** This is the opposite of R1B's case and must not be discovered late: `python3 scripts/pre-pr --plan` must be run and recorded before the real run, and the required installed profile must **not** be replaced by a Docker skip or an ambient `DOCKER_HOST` endpoint | `scripts/pre-pr` | `--plan` output recorded in the pull request, then the full `scripts/pre-pr --owner-test expert-trace-smoke -- make expert-trace-smoke` |
+| **Preflight profile selection** | **The `Makefile` IS modified, so `FRESH_IMAGE_PATTERNS` (`scripts/verification_scope.py:22`) matches and the classifier selects the fresh-image installed profile.** This is the opposite of R1B's case and must not be discovered late: `python3 scripts/pre-pr --plan` must be run and recorded before the real run, and the required installed profile must **not** be replaced by a Docker skip or an ambient `DOCKER_HOST` endpoint | `scripts/pre-pr` | `--plan` output recorded in the pull request, then the full `scripts/pre-pr --owner-test expert-trace-smoke -- make expert-trace-smoke` |
 | Fixture cleanup | Every fixture path is removed by the `trap` on `EXIT`; the last assertion is that the temp root is still present | `scripts/run-expert-trace-smoke` | the `run-model-ir-smoke` shape, reused |
 | Parity skip | An unset or absent `ALIGN_LLM_GGUF_MODEL` or `ALIGN_LLM_LLAMA_EVAL_CALLBACK` prints one exact `N/A` line and exits 0; a parse failure fails closed | `scripts/run-expert-trace-parity` | a synthetic-log unit inside the runner |
-| Documentation | `docs/specs/roadmap.md` section R2 and `HANDOFF.md` name this document; `docs/align-requests.md` receives the Request 21 and Request 23 client evidence and both section 5.5 candidates (25, streaming stdout; 26, `str`-to-number) | integration commit | out of scope for this design-only file; listed for the orchestrator in section 5.5 |
+| Documentation | `docs/specs/roadmap.md` section R2 and `HANDOFF.md` name this document; `docs/align-requests.md` receives the Request 21 and Request 23 client evidence, the section 5.5 candidates (25, streaming stdout; 26, `str`-to-number), and the two implementation added (27, string sorting; 28, a readable accumulator). It receives **no** Request 22 evidence: R2A holds no `array<string>` | integration commit | the register edits are applied; `docs/align-development.md`'s expert-trace section is finalized |
 
 ## 4. Fixture and qualification design
 
@@ -961,12 +989,15 @@ operand; axis-1 truncation (`ne1 = 28`); a name containing spaces and parenthese
 with axis-2 truncation (`ne2 = 256`); and a single-row result with a `152064` axis. Each header is
 followed by its complete real value block and its real `sum` line.
 
-**Sanitization is asserted, not assumed.** The file was swept for `/Users/`, `/home/`, `/private/`,
-`/opt/`, `/var/`, `/tmp/`, a Windows drive prefix, and the operator's username, and for any byte
-outside printable ASCII. It contains none: the transcript's own content is node names, dimensions,
-and floats, and the model path appears only in the *stderr* stream, which this fixture does not
-include. The smoke re-runs both sweeps on every invocation, so a future re-capture cannot smuggle a
-path in.
+**Sanitization is asserted, not assumed.** The file is swept for the seven path fragments `/Users/`,
+`/home/`, `/private/`, `/opt/`, `/var/`, `/tmp/`, and `\\`; for a Windows drive prefix; for any byte
+outside printable ASCII; and for the invoking account's own name — `USER`, `LOGNAME`, and the home
+directory's basename, each swept when it is at least four bytes long, below which a name would
+collide with the grammar's own vocabulary rather than detect anything. It contains none: the
+transcript's own content is node names, dimensions, and floats, and the model path appears only in
+the *stderr* stream, which this fixture does not include. The smoke runs **all four** sweeps on
+every invocation and prints what it swept, so a future re-capture cannot smuggle a path or a
+username in, and the md5 assertion means any re-capture must re-record the provenance block above.
 
 **Provenance recorded with the fixture** (the header comment in
 `scripts/run-expert-trace-smoke`, not in the fixture, so the fixture stays byte-exact instrument
@@ -1016,13 +1047,26 @@ What it does:
 4. For a MoE model, recomputes the locality aggregates from the Python selections and compares.
 
 **Neither variable has a default.** A qualification that silently passes when its subject is missing
-is worse than no qualification, so a missing input prints one exact `N/A` line and exits 0 without
-claiming a pass. The pull request records:
+is worse than no qualification, so a missing input prints exactly one of these four lines, in this
+order, and exits 0 without claiming a pass:
 
 ```text
-make expert-trace-parity (dense qwen2): PASS — ALIGN_LLM_GGUF_MODEL set to the local 7B Q4_K_M model.
-make expert-trace-parity (MoE):         N/A — no MoE GGUF on this host; see section 4.5.
+expert trace parity: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)
+expert trace parity: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable)
+expert trace parity: N/A (ALIGN_LLM_GGUF_MODEL unset)
+expert trace parity: N/A (ALIGN_LLM_GGUF_MODEL is absent)
 ```
+
+**The two halves are emitted, not authored.** A run that reaches the instrument ends by printing its
+own verdict for each half, so the pull-request record quotes lines the runner produced:
+
+```text
+expert trace parity (dense): PASS
+expert trace parity (MoE): N/A - no MoE GGUF on this host; see section 4.5.
+```
+
+`(MoE)` prints `PASS` instead when `moe.present` is true, which is the one line that changes the day
+section 4.5's decision is answered.
 
 The dense half is runnable on this host today and is the strongest available evidence that the parser
 matches the real instrument across a whole 958-block transcript rather than the six-block excerpt.
@@ -1141,10 +1185,11 @@ precision limit, rather than a four-decimal number recorded now and trusted late
 
 ### 5.5 Candidate Align capability requests
 
-**Both are recorded here for the orchestrator; this document does not edit
-`docs/align-requests.md`.** Neither is consumed, and no compatibility layer is written for either.
+**These two were foreseen before implementation; Requests 27 and 28 were added during it and are
+recorded in section 7.5 items 2 and 3.** All four are now in `docs/align-requests.md`. None is
+consumed, and no compatibility layer is written for any of them.
 
-#### 5.5.1 Candidate Request 25 — `std.process` has no streaming stdout
+#### 5.5.1 Request 25 — `std.process` has no streaming stdout
 
 `docs/align-requests.md` Request 1 records `std.process` capture as COMPLETE. The shipped surface is
 a command builder, not a free function: `c := process.command(cmd, argv)` then `out := c.run()?`
@@ -1168,7 +1213,7 @@ verification loop is already a client of `std.process`. The limitation is in the
 surface, not in this repository's use of it.
 
 ```text
-Status: PROPOSED (candidate; not yet in the register)
+Status: PROPOSED (now in the register)
 Priority: medium
 Blocking: no
 Blocked gate or slice: none. R2A-EXPERT-TRACE-CAPTURE consumes a transcript *file* and
@@ -1189,7 +1234,7 @@ The workaround — capture with the shell, parse the file — is the shipped des
 on its own merits; that is precisely why the language-owned requirement is recorded rather than
 hidden.
 
-#### 5.5.2 Candidate Request 26 — no `str`-to-number conversion in the standard library
+#### 5.5.2 Request 26 — no `str`-to-number conversion in the standard library
 
 Align at this pin has **no** surface that converts text to a number. There is no `parse_int`, no
 `parse_i64`, no `parse_f64`, no `to_i64`, and no `str` method of any kind that yields a number.
@@ -1199,35 +1244,42 @@ The two places the runtime does parse a number from text are unreachable as a ge
 buried inside `json.doc`'s `as_i64` / `as_f64`, and inside `std.cli`'s `p.get_i64(name)` for command
 -line flags.
 
-**Evidence from this repository, which is the point.** `align-llm` has now written the same private
-decimal integer parser three times: `src/main.align:69` (`parse_i64`, for CLI timeouts),
-`src/failure_memory.align:176` (`parse_integer`, for a persisted document), and
-`src/c6f1_request11_adoption.align:6`. `src/expert_trace.align` needs a fourth, because section 2.2
-finding 5 means every expert id, every tensor dimension, and every layer suffix in a transcript
-arrives as text. That is four independent implementations of one primitive, each with its own
-overflow behavior, its own sign handling, and its own bound — which is exactly the class of
-duplication that produces a divergence nobody notices.
+**Evidence from this repository, which is the point.** Every existing call site that needs a number
+out of text takes the JSON detour rather than writing a parser: `src/main.align:71` (`parse_i64`,
+for CLI timeouts), `src/failure_memory.align:176` (`parse_integer`, for a persisted document field),
+and `src/c6f1_request11_adoption.align:6` (`parse_i64`) are each two lines of `json.decode(value)?`
+wrapped in a `Result`. That is the shape of the gap: three call sites route a plain decimal integer
+through a JSON decoder because the standard library offers nothing else.
 
-The `json.doc` escape hatch deserves naming because it is the tempting workaround and it is a bad
-one: parsing `12.0000` by wrapping it in a JSON document allocates a document, requires an enclosing
-`arena {}`, and routes an array index through a float. R2A does not do it, and section 2.2 finding 5
-is why it does not have to.
+`src/expert_trace.align` cannot even do that, which is the stronger half of the argument. Section
+2.2 finding 5 means an expert id arrives as `     12.0000` — not a JSON integer, and decoding it as
+a JSON *number* would route an exact array index through a float. Every tensor dimension and every
+layer suffix arrives as text too, inside lines that are not JSON at all. So this module writes the
+one genuine private parser, `parse_uint` at `src/expert_trace.align:317`, with its own overflow
+bound and its own sign rule, and `parse_integral_element` on top of it.
+
+The `json.decode` detour therefore deserves naming twice: as the workaround three call sites already
+take, and as the workaround the fourth cannot. It allocates a document, needs an enclosing
+`arena {}` in the general case, and answers a different question than "is this text a bounded
+decimal integer".
 
 ```text
-Status: PROPOSED (candidate; not yet in the register)
+Status: PROPOSED (now in the register)
 Priority: medium
 Blocking: no
-Blocked gate or slice: none. Every consumer to date, R2A included, writes a private
-  parser. It never blocks; it accumulates.
+Blocked gate or slice: none. Three consumers take the json.decode detour and R2A
+  writes a private parser. It never blocks; it accumulates.
 Independent work that may continue: all of it. This is a duplication and
   correctness-surface concern, not a capability gate.
 Resume condition: Align ships a checked text-to-integer conversion returning
   Result<i64, Error> or Option<i64>, with a stated overflow contract; align-llm then
-  deletes its private parsers and passes the owning smokes of each.
+  drops the three json.decode detours and expert_trace's private parser and passes the
+  owning smokes of each.
 Align commit or pull request: none
-align-llm verification: pending — src/main.align, src/failure_memory.align, and
-  src/expert_trace.align each drop their private parser and `make check
-  failure-memory-smoke expert-trace-smoke` passes.
+align-llm verification: pending — src/main.align:71, src/failure_memory.align:176, and
+  src/c6f1_request11_adoption.align:6 drop the json.decode detour and
+  src/expert_trace.align:317 drops parse_uint; `make check failure-memory-smoke
+  expert-trace-smoke` passes.
 ```
 
 Whether Align wants a float parse as well is Align's call, and R2A takes no position: finding 5 lets
@@ -1266,6 +1318,11 @@ names the superseded text. Cases without a runner prefix are cases inside
 | 12 | Section 2.6's `R2_NODE_LIMIT` condition | Also fires when the distinct-name interning table is exhausted — `MAX_NODES_PER_GRAPH` names or `MAX_NODES_PER_GRAPH * MAX_NAME_BYTES` name bytes — with the graph ordinal as the detail | The name table is the memory the node count actually bounds, and a graph's nodes are drawn from it | `node-limit` |
 | 13 | Section 2.4's constant table | Adds `MAX_OPS` = 1024 and `OP_STREAM_BYTES` = 16384, the bound on distinct operation names and their text. Exhausting either is `R2_HEADER_GRAMMAR` | `graph.ops` is a rendered list and needed its own bound; the measured graph uses twelve operations | bounded by construction; no fixture reaches 1,024 distinct operations |
 | 14 | Section 2.5.7's "the same reuse triple" | Each `phase_split` side is `{"adjacent_pair_count", "reuse_numerator", "reuse_denominator", "reuse_per_mille"}`, in that order, or `null` | Schema 1 needs a named field set, not a description | `phase-*`, field-order assertions |
+| 15 | Section 2.6's `R2_HEADER_GRAMMAR` and `R2_VALUE_GRAMMAR` conditions, and section 2.4's implicit "no line is materialized unless it is kept" | **Valid multi-byte UTF-8 where the grammar requires a specific ASCII byte is a grammar fault, not a crash.** A `str` range slice at a length-relative offset ABORTS the process ("not a UTF-8 boundary", exit 134, no document) when the offset lands inside a scalar. Every such offset is now proved by an ASCII match — `starts_with` / `ends_with` at the five sites `parse_header` and the row classifier used a fixed-width slice — and rule 5 of the module header states the class | A transcript is arbitrary UTF-8: a node name, a type, an operation, or an operand may carry any scalar (finding 2 already records `(view)` and `#`). A header ending `…{1, 1, 1, 1}é` took the whole process down and produced no document, which is the exact opposite of section 2.5.1's fail-closed-with-evidence contract. `bounded_detail` remains the one offset computed from a length, and it walks back over continuation bytes itself | `multibyte-type-close`, `multibyte-header-tail`, `multibyte-src0-separator`, `multibyte-src1-tail`, `multibyte-value-row`, `multibyte-everywhere` |
+| 16 | Section 2.5.7's "pairs of token indices differing by exactly one, within one graph and one layer" | Adjacency compares the `(graph, layer)` prefix of the packed group key **separately** from the token step: `(previous >> GROUP_TOKEN_BITS) == (current >> GROUP_TOKEN_BITS) && previous + 1 == current`, with `GROUP_TOKEN_BITS` = `LAYER_SHIFT - TOKEN_SHIFT` = 20 | `previous + 1 == current` on the packed key alone was *not* the stated contract: at `token = MAX_TOKENS_PER_GRAPH - 1` the increment carries out of the token field into the layer field, so the last token of layer N and the first token of layer N+1 were counted as an adjacent pair. Measured on a two-layer, `n_tokens = 1048576` transcript: `adjacent_pair_count` 9 where the definition gives 8, with `per_layer`, `working_set`, and the phase split all inflated with it | `moe-saturated-token`, asserted against the generator's independent oracle |
+| 17 | Section 2.5.4's `"n_layer": 28` | `graph.n_layer` is `null`, never `-1`, when the transcript carries no `-N` suffixed node. The three producers are the six-block excerpt with no suffixed family, a transcript with no callback line, and a capture that began mid-graph | `-1` is a value a JSON reader cannot tell from a derived layer count, and every other underived field in this schema is already `null` (`run.build`, `moe.n_expert`, `graphs[].n_tokens`). Section 2.5.4 now carries the field table that states it | `dense-zero-layer`, `zero-graph`, `real-transcript` |
+| 18 | Section 2.6 step 2, "Path lexical validation against `MAX_PATH_BYTES`" | Step 2 validates **both** operands — emptiness, `MAX_PATH_BYTES`, and a NUL byte — in `src/main.align`, before the derivation. `expert_trace.build_trace` keeps its own transcript-path check as the module's fail-closed contract | The destination never reaches `expert_trace`, so an unusable one was only discovered by `fs.write_file` after a whole transcript had been scanned and a document built. Step 2 is ordered before step 3 precisely so that cannot happen | `path-too-long`, `destination-path-guard` |
+| 19 | Section 7.5 item 2, "No string ordering and no string sort" | Half withdrawn. `str` satisfies `Ord` at this pin and `<` **is** the byte-lexicographic comparison, so `span_less` / `span_same` are two expressions over `span_text`, not a hand-written byte loop. The genuine remaining gap is the *sort*: `array<T>.sort()` rejects `str` elements, `array_builder<str>` is rejected outright, and `sort_by_key` — which does admit a `str` key — cannot reach these columns because "a lambda cannot capture the owned value 'starts' yet"; there is no comparator `sort_by` — so `sort_spans` stays | Claiming a gap that does not exist weakens the register. `docs/align-requests.md` Request 27 and section 7.5 item 2 now state the shipped half and the missing half separately | `make check`, `make expert-trace-smoke` (every `node_families` / `unsuffixed_nodes` / `ops` list), `multibyte-everywhere` |
 
 **One finding, not a correction.** Because `R2_ROW_COUNT` enforces `printed = min(ne, 6)`, no
 `(graph, layer)` pair can ever carry more than six observed token indices, so a run of consecutive
@@ -1287,13 +1344,25 @@ zero sample counts visible, because a reader must be able to see that the questi
 | `scripts/run-expert-trace-parity` | the opt-in focused qualification; `make expert-trace-parity`, in no aggregate |
 | `eval/fixtures/expert-trace/qwen2-prefill-build10566.txt` | the format-fidelity excerpt, 171 lines / 11,764 bytes, md5 `81df3252be98a5e790e57fa77ba1e4b2` |
 | `Makefile`, `scripts/check-gate-topology` | the two targets and both pinned aggregate lists |
+| `.gitattributes` | `eval/fixtures/expert-trace/*.txt -whitespace`, so the truncation markers' significant trailing space survives `git diff --check` and every whitespace-stripping tool |
 
 ### 7.2 Cells closed by a case
 
 Every applicable cell of section 3 maps to a passing case in `scripts/run-expert-trace-smoke`
-(87 corpus fixtures plus the real excerpt and the CLI cases) or in `scripts/run-expert-trace-parity`,
+(95 corpus fixtures plus the real excerpt and the CLI cases) or in `scripts/run-expert-trace-parity`,
 except the rows below. Seventeen of the nineteen section 2.6 codes fire on their own fixture and the
 runner asserts that none is missing.
+
+**Four section 3 cells are closed by a case whose shipped name differs from the planned one.** They
+are listed here rather than left to a reader's search, because a cell that names a case nobody can
+find is indistinguishable from an unclosed one:
+
+| Planned cell name | Shipped case | Note |
+| --- | --- | --- |
+| `n-expert-probs` (section 3.2) | `n-expert-probs` | Now a fixture of that exact name — a graph carrying both `ffn_moe_probs-N` and `ffn_moe_logits-N`, asserting `n_expert_source: "ffn_moe_probs"`. Every `moe-E*-U*` fixture exercises the same rule |
+| `zero-selection` (section 3.2) | `zero-graph`'s `selection_count: 0` assertion, plus every dense fixture's empty `selections` and `null` locality | There is no separate fixture: a transcript with zero selections is either a dense one or one with no callback line, and both are already in the corpus |
+| `window-single-read` (section 3.1) | the runner's per-fixture assertion: `file_size <= WINDOW_BYTES` implies `bytes_read in {0, file_size}` | Applied to all 95 fixtures rather than to one named case, which is strictly broader |
+| `huge-line` (section 3.1) | `huge-line-first` and `huge-line-late` | Split so the start-offset detail is asserted both at `0` and at a real mid-file offset (correction 3) |
 
 ### 7.3 Cells not closed, with the reason
 
@@ -1314,30 +1383,67 @@ make build                      PASS
 make fmt                        PASS   (no diff; idempotent on src/expert_trace.align)
 make format-check               PASS
 make gate-topology-check        PASS   (both pinned lists updated)
-make expert-trace-smoke         PASS   87 fixtures, 17 error codes, the real build-10566 excerpt,
+make expert-trace-smoke         PASS   95 fixtures, 17 error codes, the real build-10566 excerpt,
                                        both CLI forms, the aggregate oracle, fixture determinism,
-                                       the window-boundary and huge-line corpora, CLI arity and
-                                       isolation; about 9 s
+                                       the window-boundary, huge-line, and multi-byte corpora,
+                                       CLI arity, the destination-path guard, and the read-only
+                                       transcript case; about 9 s
 make gguf-smoke                 PASS   (unchanged owner)
 make model-ir-smoke             PASS   (unchanged owner)
 make test-selection-smoke       PASS   (unchanged owner)
 make patch-eval-smoke           PASS   (unchanged owner)
 make verify-loop-smoke          PASS   (unchanged owner)
 git diff --check                clean
+git diff --check d8d4ef6..HEAD  clean
+```
 
-make expert-trace-parity (dense qwen2): PASS
-  instrument   version: 0.2.0 (build 10566, commit bb4caa754), AppleClang 21.0.0 for Darwin arm64
-  graphs 1, nodes 958, layers 28, shape class dense-ffn, moe false, selections 0
-  bytes / lines 1101250 / 16633, bytes_read 1101339 (100.01%), elapsed 0.062 s
-  locality N/A - moe.present is false, so the R2 gate stays open (section 4.5)
-make expert-trace-parity (MoE):         N/A - no MoE GGUF on this host; see section 4.5.
+**`git diff --check` is clean only because the fixture is exempted, and that is deliberate.** The
+checked-in excerpt's axis-1 and axis-2 truncation markers (`"            ..., "` and
+`"        ..., "`) end in a space the grammar of section 2.2 finding 6 matches literally, so seven
+lines of `eval/fixtures/expert-trace/qwen2-prefill-build10566.txt` are trailing whitespace by
+`git diff --check`'s definition and load-bearing by this parser's. The file is byte-exact instrument
+output and must not be stripped, so `.gitattributes` carries
+`eval/fixtures/expert-trace/*.txt -whitespace`, following the `corpus-file-set.manifest -text`
+precedent already in that file. Both the working-tree and the full-branch range form of the check are
+recorded above because the range form is the one that reads the fixture's added lines.
+
+Three lines the smoke prints on this host, quoted because they are the evidence for section 4.3's
+sanitization claim, `docs/align-requests.md` Request 21's client evidence, and the corpus size:
+
+```text
+expert trace smoke: real-transcript sanitization swept 7 path fragment(s), the Windows drive prefix, every non-printable byte, and 1 account name(s) ['hiro']
+expert trace smoke: read-only-transcript exits 3 with no document (Request 21 client evidence: `fs.open_rw` requires O_RDWR on a transcript R2A never writes)
+expert trace smoke: 95 fixtures, 17 error codes, the real build-10566 excerpt, both CLI forms, the aggregate oracle, and CLI arity/isolation PASS
+```
+
+The parity qualification, run against the local dense model and the local instrument. Every line
+below is the runner's own output, not an author's summary:
+
+```text
+expert trace parity: PASS
+  instrument build
+    version: 0.2.0 (build 10566, commit bb4caa754)
+    built with AppleClang 21.0.0.21000101 for Darwin arm64
+  graphs             1
+  nodes              958
+  layers             28
+  shape class        dense-ffn (ffn_gate/ffn_up/ffn_swiglu present, ffn_moe_topk absent)
+  moe                false
+  selections         0
+  bytes / lines      1101250 / 16633
+  bytes_read         1101339 (100.01% of the file)
+  elapsed            0.042 s (diagnostic only; R2A makes no performance claim)
+  locality           N/A - moe.present is false, so the R2 gate stays open (section 4.5)
+expert trace parity (dense): PASS
+expert trace parity (MoE): N/A - no MoE GGUF on this host; see section 4.5.
+expert trace parity: model size and mtime unchanged (read-only proof)
 ```
 
 `make ci` is not selected: this capability changes no aggregate topology beyond adding one hosted
 target, which `gate-topology-check` owns, and makes no performance claim.
 
 **Preflight profile, as section 3.5 predicted.** The `Makefile` **is** modified, so it matches
-`FRESH_IMAGE_PATTERNS` (`scripts/verification_scope.py:21`) and the shared classifier selects the
+`FRESH_IMAGE_PATTERNS` (`scripts/verification_scope.py:22`) and the shared classifier selects the
 fresh-image installed profile. `python3 scripts/pre-pr --plan` refuses a dirty worktree
 (`preflight error: preflight requires a clean worktree`), so it must be run on the committed
 candidate before publication, its output recorded in the pull request, and the full
@@ -1350,31 +1456,69 @@ endpoint.
 Classified, not worked around. The register in `docs/align-requests.md` is the orchestrator's to
 edit; this section is the client evidence.
 
-1. **No `str`-to-number conversion** (section 5.5.2, candidate Request 26). Confirmed as a genuine
-   language gap and now with a fourth private implementation: `expert_trace.parse_uint`, plus
-   `parse_integral_element` on top of it. Finding 5 kept it to the integer form.
-2. **No string ordering and no string sort.** `array<i64>.sort()` orders integers; nothing orders
-   text, and `array<string>` indexing is Request 22. `graph.node_families`, `graph.unsuffixed_nodes`,
-   and `graph.ops` are sorted lists, so this module writes `span_less` (a byte comparison over two
-   spans of one stream) and `sort_spans` (a bottom-up merge sort over an index array). This is a
-   **new** gap, adjacent to Request 22 and distinct from it: even with indexable `array<string>` there
-   would be no ordering to sort by. Candidate: a `str` comparison operator or a `sort_by` on the
-   array pipeline.
+1. **No `str`-to-number conversion** (section 5.5.2, Request 26). Confirmed as a genuine language
+   gap, and the shape of the evidence is not what the plan assumed. The three existing align-llm
+   call sites do not hand-roll a parser: `src/main.align:71`, `src/failure_memory.align:176`, and
+   `src/c6f1_request11_adoption.align:6` are each a two-line `json.decode` detour. R2A cannot take
+   that detour — `     12.0000` is not a JSON integer and an expert id must not travel through a
+   float — so `expert_trace.parse_uint`, plus `parse_integral_element` on top of it, is the one
+   genuine private parser in the repository. Finding 5 kept it to the integer form.
+2. **No string *sort*** (Request 27) — and, on measurement, **not** the "no string ordering" gap this
+   section first claimed. `str` satisfies `Ord` at this pin and `<` is exactly the byte-lexicographic
+   comparison `graph.node_families`, `graph.unsuffixed_nodes`, and `graph.ops` need, so `span_less`
+   and `span_same` are one expression each over `span_text` and no byte loop is written. What is
+   genuinely missing is the sort, verified three ways against the pinned toolchain in this module's
+   own shape: `array<T>.sort()` over the names is "'sort' needs a numeric element type, got str";
+   materializing the spans first is "heap `array_builder<str>` requires a Copy scalar, `string`, or
+   a closed heap record"; and `index.sort_by_key(fn i { span_text(names, starts[i], ends[i]) })` —
+   which is otherwise exactly right, since `sort_by_key` *does* admit a `str` key — is "a lambda
+   cannot capture the owned value 'starts' yet (capture supports copy values like
+   int/float/bool/char)", with "field access is only supported on a local binding" for the column
+   that lives on a `borrow` parameter. There is no comparator-based `sort_by` overload. `sort_spans`,
+   a bottom-up merge sort over an index array ordered by the shipped comparison, stays.
+   Correction 19 records the withdrawal of the wrong half.
 3. **No readable accumulator.** `builder` and `array_builder` are write-only until `build()`, so an
    interning table that must compare a candidate against text it has already accumulated cannot use
    either. The module accumulates node and operation text into a `buffer` — which *is* readable
    through `.bytes()` while still growing — and keeps its spans in pre-sized mutable `array<i64>`s.
    This works and is bounded, but it is a workaround for a missing "append and read" collection.
+   Recorded as `docs/align-requests.md` Request 28, `PROPOSED` and non-blocking.
 4. **`builder` and `array_builder` are not parameter types** (Request 24, unconsumed). The whole
    forward pass is therefore one function, as `gguf.inspect` already is. Third client, no status
    change.
-5. **`fs.open_rw` for a read-only input** (Request 21, unconsumed). Second class of read-only input:
-   a transcript captured into a read-only artifact directory cannot be opened at all. New client
+5. **`fs.open_rw` for a read-only input** (Request 21, unconsumed). Second class of read-only
+   input, and R2A opens no GGUF at all: a transcript captured into a root-owned or read-only
+   artifact directory cannot be opened. Asserted rather than argued — `read-only-transcript` sets a
+   valid transcript to mode `0444` and observes `main --expert-trace` exit **3** with no document
+   and an untouched destination, and the case is written to flip the day `fs.open_ro` ships. The
+   precondition is stated in sections 2.3 and 2.6 and in `docs/align-development.md`. New client
    evidence for an existing request.
-6. **Huge-struct-copy warning** (Request 23, unconsumed). `expert_trace.Header` (176 bytes) is
-   returned by value and `TranscriptScan` is read through a `borrow` parameter; both raise the
-   warning. Third client, no status change.
-7. **A `Fault` record cannot carry a `str` field across a loop iteration.** Assigning a record with
+6. **Huge-struct-copy warning** (Request 23, unconsumed). Four lines of `make check` at the pinned
+   toolchain, verbatim:
+
+   ```text
+   src/expert_trace.align:403:31: warning: huge struct copy: returning `expert_trace$Header` (176 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+   src/expert_trace.align:418:31: warning: huge struct copy: returning `expert_trace$Header` (176 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+   src/expert_trace.align:820:78: warning: huge struct copy: returning `expert_trace$TranscriptScan` (424 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+   src/expert_trace.align:1607:24: warning: huge struct copy: `expert_trace$TranscriptScan` (424 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+   ```
+
+   Only the last is Request 23's defect: `build`'s parameter is `borrow t: TranscriptScan`, so no
+   call copies the 424 bytes, yet the lint reports "is passed by value — every call copies it"
+   because it consults the parameter's struct type and never its `ParamMode`. Third client, no
+   status change. The three `returning … by value` lines are the lint working as designed on
+   genuine by-value returns and are *not* evidence for Request 23; they are recorded here so the
+   register's client evidence names the one line that is.
+7. **A `str` range slice aborts on a non-boundary offset, with no fallible form.** `text[a..b]`
+   panics — "string slice index N is not a UTF-8 boundary within length M", process exit 134 — when
+   either offset falls inside a multi-byte scalar. There is no `Option`/`Result`-returning slice, no
+   `is_char_boundary`, and no "round to the nearest boundary" helper, so a parser over arbitrary
+   text must prove every offset itself against an ASCII match. This is not recorded as a request:
+   the abort is Align's stated fail-fast contract for an invalid index, exactly as `view.u8(i)`
+   aborts out of range, and the discipline it forces is the correct one (rule 5 of the module
+   header, correction 15). Recorded so the next text-parsing client inherits the rule rather than
+   the bug.
+8. **A `Fault` record cannot carry a `str` field across a loop iteration.** Assigning a record with
    a `str` field out of a `match` arm inside a loop is rejected as "use of invalidated borrow … its
    source was dropped at the end of the loop iteration", even when every value the field can hold is
    a `'static` literal. The fix is one `.clone()` per fault construction, which is cheap; the

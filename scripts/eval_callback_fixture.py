@@ -22,6 +22,7 @@ MAX_NODES_PER_GRAPH = 8192
 MAX_LAYERS = 1024
 MAX_EXPERTS = 1024
 MAX_EXPERTS_USED = 64
+MAX_TOKENS_PER_GRAPH = 1048576
 MAX_SELECTIONS = 1048576
 MAX_REUSE_WINDOW = 64
 MAX_NAME_BYTES = 256
@@ -450,7 +451,9 @@ def expected_document(path, graphs, text, separator=""):
         },
         "graph": {
             "graph_count": len(graphs),
-            "n_layer": n_layer,
+            # A transcript with no `-N` suffixed node supplies no layer count at all, and the
+            # document says `null` rather than a sentinel a reader cannot tell from a real value.
+            "n_layer": n_layer if n_layer >= 0 else None,
             "node_families": sorted(set(families)),
             "unsuffixed_nodes": sorted(set(plains)),
             "ops": sorted(set(ops)),
@@ -523,7 +526,7 @@ def main():
         positive(cases, root, "dense-L%d-T%d" % (n_layer, n_tokens),
                  [dense_graph(n_layer, n_tokens)])
 
-    # A graph with no `-N` suffixed node at all: `n_layer` stays at its `-1` sentinel.
+    # A graph with no `-N` suffixed node at all: `graph.n_layer` is `null`, not a sentinel.
     positive(cases, root, "dense-zero-layer", [dense_graph(0, 3)])
 
     # 2. MoE with generator-known ids. This is the corpus that closes every MOE-PREREQ cell
@@ -532,7 +535,16 @@ def main():
         positive(cases, root, "moe-E%d-U%d" % (n_expert, used),
                  [moe_graph(4, 5, Router(11, n_expert, used), 0)])
 
+    # A token index at the very top of the packed key's token field. The last token of layer N and
+    # the first token of layer N+1 are one apart *as packed integers*, so an adjacency test that
+    # compares packed keys alone manufactures a pair across the layer boundary. Every aggregate
+    # below comes from the generator's own oracle, so the phantom pair is caught as a value.
+    positive(cases, root, "moe-saturated-token",
+             [moe_graph(2, MAX_TOKENS_PER_GRAPH, Router(13, 8, 2), 0)])
+
     # `n_expert` sources: probs wins, then logits, then absent.
+    positive(cases, root, "n-expert-probs",
+             [moe_graph(2, 5, Router(3, 16, 4), 0)])
     positive(cases, root, "n-expert-logits",
              [moe_graph(2, 5, Router(3, 16, 4), 0, probs=False)])
     positive(cases, root, "n-expert-absent",
@@ -583,7 +595,7 @@ def main():
     empty_graph_text = "".join("ggml_backend_sched: node %d\n" % index for index in range(24))
     emit(cases, root, "zero-graph", empty_graph_text, expect="ok",
          asserts={"graph_count": 0, "callback_line_count": 0, "skipped_line_count": 24,
-                  "n_layer": -1, "moe_present": False})
+                  "n_layer": None, "moe_present": False, "selection_count": 0})
 
     # A `2>&1` capture: interleaved logger lines are ignorable and counted, never an error. The
     # logger writes between callback records, which is the asymmetry section 2.6 records — the same
@@ -808,6 +820,55 @@ def main():
     invalid_utf8 = base.replace("embd", "emXd", 1).encode("utf-8").replace(b"emXd", b"em\xffd", 1)
     emit(cases, root, "invalid-utf8-name", None, expect="error", code="R2_HEADER_GRAMMAR",
          binary=invalid_utf8)
+
+    # Multi-byte UTF-8 at every offset the grammar computes rather than matches. A `str` range slice
+    # aborts the process when either offset falls inside a scalar, so each of these lines must be
+    # refused as data — a recorded code and a truthful partial document — and never abort. `é` is
+    # two bytes and `あ` is three, chosen so the byte that a fixed-width slice would land on is a
+    # continuation byte in each case.
+    multibyte = [
+        # The byte after the `(type)` close paren, which the grammar tests for a single space.
+        ("multibyte-type-close", "R2_HEADER_GRAMMAR",
+         mutate(base, " = (f32)   RMS_NORM(", " = (f32)é  RMS_NORM(")),
+        # The final byte of a header line, which the grammar tests for `}`.
+        ("multibyte-header-tail", "R2_HEADER_GRAMMAR",
+         mutate(base, "GET_ROWS(token_embd.weight{3584, 152064, 1, 1}, inp_tokens{5, 1, 1, 1}}) = "
+                      "{3584, 5, 1, 1}",
+                "GET_ROWS(token_embd.weight{3584, 152064, 1, 1}, inp_tokens{5, 1, 1, 1}}) = "
+                "{3584, 5, 1, 1}é")),
+        # The two bytes after src0's closing `}`, which the grammar tests for `, `.
+        ("multibyte-src0-separator", "R2_HEADER_GRAMMAR",
+         mutate(base, "{3584, 152064, 1, 1}, ", "{3584, 152064, 1, 1}あ, ")),
+        # The final byte of the src1 operand, which the grammar tests for `}`.
+        ("multibyte-src1-tail", "R2_HEADER_GRAMMAR",
+         mutate(base, "inp_tokens{5, 1, 1, 1}}) = {", "inp_tokens{5, 1, 1, 1}é}) = {")),
+    ]
+    for name, code, text in multibyte:
+        emit(cases, root, name, text, expect="error", code=code)
+    # The last four bytes of a value row, which the grammar tests for `  ],`.
+    row_rows = base.split("\n")
+    for index, line in enumerate(row_rows):
+        if line.startswith(ROW_OPEN) and line.endswith(ROW_CLOSE):
+            row_rows[index] = ROW_OPEN + "Xéあ"
+            break
+    else:
+        raise SystemExit("eval_callback_fixture: no value row to truncate")
+    emit(cases, root, "multibyte-value-row", "\n".join(row_rows), expect="error",
+         code="R2_VALUE_GRAMMAR")
+
+    # And the positive half: a transcript whose names, types, operations, and operands all carry
+    # multi-byte scalars parses, interns, sorts, and renders normally.
+    multibyte_graph = [
+        Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [8, 8, 1, 1]),
+              ("inp_tokens", [5, 1, 1, 1]), [8, 5, 1, 1]),
+        Block("ünïcode_nöde-0", "f³2", "RMS_NÖRM", ("MTL0#embd#0", [8, 5, 1, 1]), None,
+              [8, 5, 1, 1]),
+        Block("naïve (view) (permüted)", "f16", "PERMÜTE", ("naïve (view)", [8, 5, 1, 1]), None,
+              [4, 5, 1, 1]),
+        Block("日本語ノード", "f32", "ADD", ("ünïcode_nöde-0", [8, 5, 1, 1]),
+              ("embd", [8, 5, 1, 1]), [8, 5, 1, 1]),
+    ]
+    positive(cases, root, "multibyte-everywhere", [multibyte_graph])
 
     # Precedence: a transcript defective in two ordered ways reports the earlier row.
     emit(cases, root, "precedence-line-then-header",
