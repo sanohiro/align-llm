@@ -1,6 +1,6 @@
 # C8 Speed-first optimization
 
-Status: first three consumer-complete capabilities merged; fourth capability baselined.
+Status: first three consumer-complete capabilities merged; fourth capability implemented and measured.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -308,6 +308,44 @@ full-test median:            14,762,036 ns
 
 The stage medians are diagnostic decomposition. The comparison owner must validate the intentional
 recommendation delta rather than requiring byte-equal result documents.
+
+The exact-commit comparison used:
+
+```text
+git worktree add --detach /tmp/align-llm-c8-related-parent 9cdf1050041c7c1ecf50b753fd48e8744bbd57eb
+git worktree add --detach /tmp/align-llm-c8-related-candidate ef192576da2f8bf8bce7e31ea2f2bc129fc52fa1
+make -C /tmp/align-llm-c8-related-parent build
+make -C /tmp/align-llm-c8-related-candidate build
+install -m 0755 /tmp/align-llm-c8-related-parent/main /tmp/align-llm-c8-related-parent.bin
+install -m 0755 /tmp/align-llm-c8-related-candidate/main /tmp/align-llm-c8-related-candidate.bin
+git cat-file blob c5c4d7e480e3cacdaf7d5f9a81876a5e076c004c > /tmp/align-llm-c8-related-benchmark
+chmod 0755 /tmp/align-llm-c8-related-benchmark
+sha256sum /tmp/align-llm-c8-related-parent.bin /tmp/align-llm-c8-related-candidate.bin
+/tmp/align-llm-c8-related-benchmark compare-related-only \
+  /tmp/align-llm-c8-related-parent.bin /tmp/align-llm-c8-related-candidate.bin 101
+```
+
+```text
+parent:     9cdf1050041c7c1ecf50b753fd48e8744bbd57eb
+candidate:  ef192576da2f8bf8bce7e31ea2f2bc129fc52fa1
+benchmark runner Git blob: c5c4d7e480e3cacdaf7d5f9a81876a5e076c004c
+benchmark runner SHA-256: 67546c53f8b31cb18c72b71ee4afe89feddaac62d7f367d866e35d3b83adff65
+parent binary SHA-256:    f9407714e8dff911d7a73e682c2766bd8d4f1115c2ff75433fbaff15c0eabc7c
+candidate binary SHA-256: f1c8bf75530ad5155c52e54e919be0f5388f2fd2438c1c4a81964efb567cd045
+command:    /tmp/align-llm-c8-related-benchmark compare-related-only /tmp/align-llm-c8-related-parent.bin /tmp/align-llm-c8-related-candidate.bin 101
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    101 parent and 101 candidate measurements after two discarded warmup pairs
+parent median:    49,745,797 ns
+candidate median: 48,516,433 ns
+improvement:      24,712 ppm (2.47%)
+```
+
+The parent emitted the exact 4,000-candidate list, the candidate emitted only
+`tests/test_value.py` with score 100 and reason `basename-match`, and all other normalized result
+fields agreed. A preceding 31-pair comparison improved by 21,068 ppm in the same direction. This is
+a path-local claim for a repository with many generic test paths, not a universal repository or
+provider/model-time claim.
 
 ## 7. Deferred C8 surfaces
 

@@ -11,9 +11,11 @@ file records durable project state.
 - Active work is on `agent/c8-related-only-recommendations`. The fourth capability is
   `C8-TEST-SELECTION-RELATED-ONLY`: when any positive-score test exists, publish all positive-score
   candidates and omit score-0 generic candidates; retain every generic candidate only as the
-  no-signal fallback. The exact parent baseline is 49,461,240 ns across 31 samples on the real-stage
-  4,000-test fixture. Implement the recorded output contract and comparison owner, then run the
-  review/publication sequence before selecting another C8 capability.
+  no-signal fallback. Implementation `ef192576da2f8bf8bce7e31ea2f2bc129fc52fa1` updates the
+  selection and patch-evaluation owners plus a comparison mode that proves the exact intentional
+  output delta. The exact 101-pair comparison measured 49,745,797 ns for the parent and 48,516,433
+  ns for the candidate, a 24,712 ppm (2.47%) reduction. Run the review/publication sequence before
+  selecting another C8 capability.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -46,8 +48,9 @@ file records durable project state.
 ## Resume in another environment
 
 1. Fetch `origin` and resume `agent/c8-related-only-recommendations` at its latest commit. Read
-   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Preserve the
-   recorded baseline and implement only `C8-TEST-SELECTION-RELATED-ONLY` plus its comparison owner.
+   `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Complete the
+   review, exact-head preflight, publication, and merge sequence before selecting another C8
+   capability.
 2. After the fourth C8 pull request merges, refresh `main` and select the next smallest
    consumer-complete optimization that improves a real fixed coding task end to end. Establish its
    reproducible current median for time to a passing patch before making an optimization claim;
