@@ -1,7 +1,7 @@
 # C8 Speed-first optimization
 
-Status: first consumer-complete capability merged; second capability baseline recorded. This
-document owns performance claims and acceptance measurements for C8 optimizations.
+Status: first consumer-complete capability merged; second capability implemented and measured.
+This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
 
@@ -40,7 +40,7 @@ explicit zero-score case, not a general sorting fallback.
 
 ### 2.2 Compute related-test signals once
 
-`C8-TEST-SELECTION-SIGNALS-ONCE` is the next proposed consumer-complete capability. The linear
+`C8-TEST-SELECTION-SIGNALS-ONCE` is the second consumer-complete capability. The linear
 selector currently evaluates basename and directory equality once to compute the score and again
 to compute the reason for every test candidate. The optimization computes the two booleans once per
 candidate and derives both existing fields from them.
@@ -139,6 +139,26 @@ full-test median:            14,526,182 ns
 
 The stage medians are diagnostic decomposition, not separate acceptance claims. Only the total
 time-to-passing-patch median decides the capability gate.
+
+The exact-commit comparison used:
+
+```text
+parent:     4ed50d237e65e164818b3060fe11312296685ec3
+candidate:  eaed3e03aac7d07c68851bfb7c684dce959f4ba0
+parent binary SHA-256:    9c71f3d55d1335a74723c2933c2091945db6a8a827d95ce08739c1ce35ba3561
+candidate binary SHA-256: 04202b4945c757c2f06f409502ec9c6bb0ad60b685b7846656eab233578cdc17
+command:    scripts/run-c8-selection-signal-benchmark compare PARENT CANDIDATE 101
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    101 parent and 101 candidate measurements after two discarded warmup pairs
+parent median:    50,037,025 ns
+candidate median: 49,774,517 ns
+improvement:      5,246 ppm (0.52%)
+```
+
+All normalized result documents agreed. The measured reduction is deliberately reported as a
+small path-local improvement; it is not generalized to repositories with fewer candidates or to
+provider/model time.
 
 ## 5. Deferred C8 surfaces
 

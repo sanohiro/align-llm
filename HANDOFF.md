@@ -11,8 +11,12 @@ file records durable project state.
   jobs completed in 6–9 seconds without image qualification.
 - Active work is on `agent/c8-selection-signals-once`. The new fixed coding-task benchmark owns a
   real Python compile, targeted assertion, and full assertion with 4,000 tracked test candidates.
-  The product is unchanged at the recorded 49,350,067 ns baseline; implement only the ledgered
-  duplicate-signal removal, compare the parent and candidate, then review, publish, and merge.
+  The implementation is `eaed3e03aac7d07c68851bfb7c684dce959f4ba0`: each test now computes
+  basename/directory signals once and derives both score and reason without changing output. The
+  exact-commit 101-pair comparison
+  measured 50,037,025 ns for the parent and 49,774,517 ns for the candidate, a 5,246 ppm (0.52%)
+  reduction. Run the complete review/publication sequence, then merge before selecting another C8
+  boundary.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
