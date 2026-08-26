@@ -1,6 +1,6 @@
 # C8 Speed-first optimization
 
-Status: first four consumer-complete capabilities merged; fifth capability implemented and measured.
+Status: first five consumer-complete capabilities merged; sixth capability implemented and measured.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -132,6 +132,32 @@ when no positive candidate exists.
 
 The offset record is an internal traversal checkpoint, not persisted state. It cannot outlive the
 Git listing it indexes, and it does not change the full-test stage that follows targeted tests.
+
+### 2.6 Rescan the generic fallback without retaining offsets
+
+`C8-TEST-SELECTION-RESCAN-FALLBACK` is the sixth consumer-complete capability. After the fifth
+capability, related selection avoids generic JSON but still allocates, fills, finalizes, and drops an
+offset array for every generic test. The optimization omits that array. It scans the already-owned
+Git listing a second time only when the first pass finds no positive candidate.
+
+| Field | Contract |
+| --- | --- |
+| Consumer | `repo_index.select_tests`, `patch_eval.evaluate`, the C4 verification loop, and failure-memory consumers of recommended tests |
+| Input and output | Root, changed path, timeout, schemas, field order, statuses, errors, candidate paths/scores/reasons/counts, ranking order, and related-only/fallback behavior are unchanged |
+| Changed boundary | The first classification pass serializes positive candidates and discards score-0 candidates without retaining offsets; if the positive count is zero, a second pass parses the same NUL-delimited listing and serializes every recognized test as the generic fallback |
+| Fallback | The second pass applies the unchanged `is_test_path` predicate, emits each generic candidate exactly once in Git order, and does not recompute basename or directory signals |
+| Ownership/allocation | `files_run.stdout` owns the listing through both function-local passes; no borrowed path view escapes, no generic offset builder or array is allocated, and no cache survives the call |
+| Failure behavior | Existing `rev-parse` then `ls-files` order, timeout handling, error documents, and no-repository behavior are unchanged; the fallback rescan occurs only after both Git commands succeed and the first pass finds no positive candidate |
+| Cost boundary | Related selection removes `O(G)` fixed-width offset writes and storage for `G` generic tests; no-signal fallback adds one `O(N)` listing parse without path scoring for `N` tracked paths. This capability makes no fallback-speed claim |
+| Correctness owner | `scripts/run-test-selection-smoke` proves exact mixed related/generic and generic-only fallback documents; `scripts/run-patch-eval-smoke` and `scripts/run-verification-loop-smoke` cover downstream documents and failure-memory propagation |
+| Performance owner | `scripts/run-c8-selection-signal-benchmark baseline BINARY [SAMPLES]` before implementation and `scripts/run-c8-selection-signal-benchmark compare PARENT_BINARY CANDIDATE_BINARY [SAMPLES]` after implementation |
+| Acceptance | On the fixed related-selection coding task, normalized result documents are identical, the exact ordered five-stage vector passes with matching exit codes, and candidate median time to a passing patch is lower |
+| Platform scope | Platform-independent selection allocation and Git-listing traversal; no target-local implementation or platform-specific speed claim |
+
+The second scan is deliberately conditional rather than a second classification pass: it does not
+derive path signals, change score semantics, or allocate a retained candidate index. Repositories
+without a positive path signal keep the complete deterministic fallback at the explicitly recorded
+extra traversal cost.
 
 ## 3. Fixed passing-patch benchmark
 
@@ -434,7 +460,66 @@ All normalized result documents agreed. The runner required the exact ordered fi
 improved by 15,135 ppm in the same direction. This is a path-local claim for related selection in a
 repository with many generic test paths, not a universal repository or provider/model-time claim.
 
-## 8. Deferred C8 surfaces
+## 8. Sixth fixed coding-task baseline
+
+The sixth capability reuses the Section 4 real-stage fixture and the exact output/stage validation
+from the fifth capability. Its related result contains one recommendation, but the current selector
+still retains 3,999 generic offsets that are never consumed. The pre-implementation baseline is:
+
+```text
+commit:     ed76eea9397a66e542a67633cb383d92b71058a8
+binary SHA-256: d4e0de24a5684fb9042cf4bd82a57f0c50bb368bdea3d7b67925c150b6b6a747
+command:    scripts/run-c8-selection-signal-benchmark baseline /tmp/align-llm-c8-rescan.6DEpCY/parent-ed76eea.bin 31
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    31 measurements after two discarded warmup runs
+median:     47,364,361 ns
+candidate-apply-check median: 1,140,019 ns
+candidate-apply median:       1,147,480 ns
+build median:                 9,454,599 ns
+targeted-test median:        14,803,122 ns
+full-test median:            14,742,235 ns
+```
+
+The stage medians are diagnostic decomposition. Only a lower paired total median with identical
+normalized result documents can close the related-path performance claim. Generic-only fallback is
+covered for exact behavior and is not part of this performance claim.
+
+The exact-commit comparison used:
+
+```text
+make build
+install -m 0755 ./main /tmp/align-llm-c8-rescan.6DEpCY/candidate-d2e15ad.bin
+sha256sum /tmp/align-llm-c8-rescan.6DEpCY/parent-ed76eea.bin \
+  /tmp/align-llm-c8-rescan.6DEpCY/candidate-d2e15ad.bin
+scripts/run-c8-selection-signal-benchmark compare \
+  /tmp/align-llm-c8-rescan.6DEpCY/parent-ed76eea.bin \
+  /tmp/align-llm-c8-rescan.6DEpCY/candidate-d2e15ad.bin 201
+```
+
+```text
+parent:     ed76eea9397a66e542a67633cb383d92b71058a8
+candidate:  d2e15ad1f14f0317bb3d6227fa0c6ae8c2c7316c
+benchmark runner Git blob: fc3181b4cad91a8a6911100f01e16b6af9670d9a
+benchmark runner SHA-256: 995092b913220005e39b6491e5cae98791b83bc88b9d4a4d99515adad16be817
+parent binary SHA-256:    d4e0de24a5684fb9042cf4bd82a57f0c50bb368bdea3d7b67925c150b6b6a747
+candidate binary SHA-256: f77b3f102ada7d1ce405524cc8f1535dd6514dc501a07084f88f865a2a2b6f20
+command:    scripts/run-c8-selection-signal-benchmark compare /tmp/align-llm-c8-rescan.6DEpCY/parent-ed76eea.bin /tmp/align-llm-c8-rescan.6DEpCY/candidate-d2e15ad.bin 201
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    201 parent and 201 candidate measurements after two discarded warmup pairs
+parent median:    47,880,342 ns
+candidate median: 47,793,764 ns
+improvement:      1,808 ppm (0.18%)
+```
+
+All normalized result documents agreed. The runner required the exact ordered five-stage vector,
+`PASS` on every stage, and matching actual/expected exit codes. Two preceding 101-pair comparisons
+improved by 2,115 ppm and 1,219 ppm in the same direction. The accepted result is deliberately
+reported as a small related-path improvement, not a fallback, universal repository, platform, or
+provider/model-time claim.
+
+## 9. Deferred C8 surfaces
 
 Context reduction, stable-context reuse, parallel checks, small-model routing, and persisted static
 analysis remain separate capabilities. In particular, captured concurrent checks require an Align

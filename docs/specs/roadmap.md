@@ -321,7 +321,9 @@ capabilityは同じ公開fieldを保ったまま、各testのbasename/directory 
 directoryをtracked-file loopの前に一度だけ求める。第4capabilityは正の関連候補がある場合に
 score 0のgeneric候補をcontextから省き、正の候補がない場合だけgeneric全件をfallbackにする。
 第5capabilityはその契約を保ちつつ、generic pathをGit listing内のoffsetとして一時保持し、fallback
-が必要と確定した場合だけJSONへserializeする。
+が必要と確定した場合だけJSONへserializeする。第6capabilityは、関連候補がある通常経路ではその
+offset保持も省き、正の候補がない場合だけ既に所有しているGit listingを再走査してgeneric fallbackを
+構築する。
 
 ### Gate
 

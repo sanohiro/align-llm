@@ -78,7 +78,6 @@ SelectionMeta {
 }
 
 RelatedTest { path: str, score: i64, reason: str }
-TestPathOffset { start: i64, end: i64 }
 
 FileFragments {
   file_json: string,
@@ -254,7 +253,6 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
   mut score_120_body := builder()
   mut score_100_body := builder()
   mut score_20_body := builder()
-  mut generic_offsets: array_builder<TestPathOffset> := array_builder()
   mut score_120_count := 0
   mut score_100_count := 0
   mut score_20_count := 0
@@ -264,7 +262,6 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
   mut file_cursor := 0
   loop {
     if file_cursor >= listing.len() { break }
-    file_start := file_cursor
     file_end := match listing[file_cursor..listing.len()].find("\0") {
       Some(offset) => file_cursor + offset,
       None => listing.len(),
@@ -276,9 +273,7 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
       name_match := related_test_basename_match(changed_stem, path_stem(relative))
       same_directory := changed_directory == path.dir(relative)
       score := related_test_score(name_match, same_directory)
-      if score == 0 {
-        generic_offsets.push(TestPathOffset { start: file_start, end: file_end })
-      } else {
+      if score != 0 {
         reason := related_test_reason(name_match, same_directory)
         record := RelatedTest { path: relative, score: score, reason: reason }
         encoded := json.encode(record)
@@ -300,7 +295,6 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
       }
     }
   }
-  generic_paths := generic_offsets.build()
 
   mut candidates_body := builder()
   candidates_body.write(score_120_body.to_string())
@@ -313,19 +307,27 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
     candidates_body.write(score_20_body.to_string())
   }
   related_count := score_120_count + score_100_count + score_20_count
+  mut generic_count := 0
   if related_count == 0 {
-    mut generic_index := 0
+    file_cursor = 0
     loop {
-      if generic_index >= generic_paths.len() { break }
-      offset := generic_paths[generic_index]
-      relative := listing[offset.start..offset.end]
-      record := RelatedTest { path: relative, score: 0, reason: "generic" }
-      if generic_index > 0 { candidates_body.write(",") }
-      candidates_body.write(json.encode(record))
-      generic_index = generic_index + 1
+      if file_cursor >= listing.len() { break }
+      file_end := match listing[file_cursor..listing.len()].find("\0") {
+        Some(offset) => file_cursor + offset,
+        None => listing.len(),
+      }
+      relative := listing[file_cursor..file_end]
+      file_cursor = if file_end < listing.len() { file_end + 1 } else { listing.len() }
+      if relative.len() == 0 { break }
+      if is_test_path(relative) {
+        record := RelatedTest { path: relative, score: 0, reason: "generic" }
+        if generic_count > 0 { candidates_body.write(",") }
+        candidates_body.write(json.encode(record))
+        generic_count = generic_count + 1
+      }
     }
   }
-  candidate_count := if related_count > 0 { related_count } else { generic_paths.len() }
+  candidate_count := if related_count > 0 { related_count } else { generic_count }
 
   document := render_selection_document(
     root,
