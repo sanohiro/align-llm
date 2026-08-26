@@ -1,6 +1,6 @@
 # C8 Speed-first optimization
 
-Status: first two consumer-complete capabilities merged; third capability implemented and measured.
+Status: first three consumer-complete capabilities merged; fourth capability implemented and measured.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -83,6 +83,31 @@ each candidate continues to derive its own stem and directory exactly once.
 This capability does not cache per-test data, change the ranking formula, or combine path parsing
 with JSON construction. Those remain separate boundaries if later end-to-end measurement justifies
 them.
+
+### 2.4 Prefer related recommendations over generic fallback
+
+`C8-TEST-SELECTION-RELATED-ONLY` is the fourth consumer-complete capability. The selector currently
+publishes every recognized test path even when one or more candidates have a positive basename or
+directory relationship. The optimization publishes the positive-score buckets when any is
+non-empty and publishes the zero-score bucket only when no positive candidate exists.
+
+| Field | Contract |
+| --- | --- |
+| Consumer | The `--select-tests` CLI, `patch_eval.evaluate`, the C4 verification loop, and failure-memory consumers of recommended tests |
+| Input and schema | Root, changed path, timeout, schema version, field order, field types, statuses, and errors are unchanged |
+| Related case | When the combined 120, 100, and 20 buckets contain at least one candidate, emit exactly those candidates and omit every score-0 generic candidate |
+| Fallback case | When all positive buckets are empty, emit every score-0 candidate so repositories without a path signal retain deterministic fallback recommendations |
+| Count and ordering | `candidate_count` and downstream `recommended_test_count` count only emitted candidates; descending score and Git order within each emitted bucket are unchanged |
+| Ownership/allocation | The same four function-local builders own candidate bytes; omitted generic bytes never enter the final selection, patch-evaluation, verification, or failure-memory documents, and no cache is introduced |
+| Failure behavior | Existing `rev-parse` then `ls-files` order, timeout handling, error documents, and no-repository behavior are unchanged |
+| Correctness owner | `scripts/run-test-selection-smoke` covers mixed related/generic input and generic-only fallback; `scripts/run-patch-eval-smoke` covers the direct downstream document; `scripts/run-verification-loop-smoke` asserts the exact filtered evaluation list and the existing string-encoded recommendation payload in both persisted failure memory and reused memory context |
+| Performance owner | `scripts/run-c8-selection-signal-benchmark baseline BINARY [SAMPLES]` before implementation and `scripts/run-c8-selection-signal-benchmark compare-related-only PARENT_BINARY CANDIDATE_BINARY [SAMPLES]` after implementation |
+| Acceptance | On the fixed coding task, the candidate emits only the exact related test, the parent retains all 4,000 candidates, all other normalized result fields agree, the exact five-stage vector appears in execution order with every stage passing its expected exit code, and candidate median time to a passing patch is lower |
+| Platform scope | Platform-independent selection and JSON/context reduction; no target-local implementation or platform-specific speed claim |
+
+This is not a fixed numeric cap. Every positive relationship remains visible, and generic tests
+remain the one fallback when path ranking has no information. The full-test verification stage is
+unchanged and still owns broad regression coverage after targeted recommendations run.
 
 ## 3. Fixed passing-patch benchmark
 
@@ -260,7 +285,70 @@ same direction by 4,313 ppm and 2,717 ppm. The accepted 201-pair result is delib
 a small path-local improvement; it is not a claim about repositories with fewer test candidates or
 about provider/model time.
 
-## 6. Deferred C8 surfaces
+## 6. Fourth fixed coding-task baseline
+
+The fourth capability reuses the Section 4 real-stage fixture. Before implementation, its one
+basename-related test and 3,999 generic tests are all copied into selection, patch-evaluation, and
+verification output. The pre-implementation baseline is:
+
+```text
+commit:     9cdf1050041c7c1ecf50b753fd48e8744bbd57eb
+binary SHA-256: f9407714e8dff911d7a73e682c2766bd8d4f1115c2ff75433fbaff15c0eabc7c
+command:    scripts/run-c8-selection-signal-benchmark baseline /tmp/align-llm-c8-related.WwkfjF/parent-9cdf105.bin 31
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    31 measurements after two discarded warmup runs
+median:     49,461,240 ns
+candidate-apply-check median: 1,275,418 ns
+candidate-apply median:       1,202,635 ns
+build median:                 9,444,952 ns
+targeted-test median:        14,686,911 ns
+full-test median:            14,762,036 ns
+```
+
+The stage medians are diagnostic decomposition. The comparison owner must validate the intentional
+recommendation delta rather than requiring byte-equal result documents.
+
+The exact-commit comparison used:
+
+```text
+git worktree add --detach /tmp/align-llm-c8-related-parent 9cdf1050041c7c1ecf50b753fd48e8744bbd57eb
+git worktree add --detach /tmp/align-llm-c8-related-candidate ef192576da2f8bf8bce7e31ea2f2bc129fc52fa1
+make -C /tmp/align-llm-c8-related-parent build
+make -C /tmp/align-llm-c8-related-candidate build
+install -m 0755 /tmp/align-llm-c8-related-parent/main /tmp/align-llm-c8-related-parent.bin
+install -m 0755 /tmp/align-llm-c8-related-candidate/main /tmp/align-llm-c8-related-candidate.bin
+git cat-file blob fc3181b4cad91a8a6911100f01e16b6af9670d9a > /tmp/align-llm-c8-related-benchmark
+chmod 0755 /tmp/align-llm-c8-related-benchmark
+sha256sum /tmp/align-llm-c8-related-parent.bin /tmp/align-llm-c8-related-candidate.bin
+/tmp/align-llm-c8-related-benchmark compare-related-only \
+  /tmp/align-llm-c8-related-parent.bin /tmp/align-llm-c8-related-candidate.bin 101
+```
+
+```text
+parent:     9cdf1050041c7c1ecf50b753fd48e8744bbd57eb
+candidate:  ef192576da2f8bf8bce7e31ea2f2bc129fc52fa1
+benchmark runner Git blob: fc3181b4cad91a8a6911100f01e16b6af9670d9a
+benchmark runner SHA-256: 995092b913220005e39b6491e5cae98791b83bc88b9d4a4d99515adad16be817
+parent binary SHA-256:    f9407714e8dff911d7a73e682c2766bd8d4f1115c2ff75433fbaff15c0eabc7c
+candidate binary SHA-256: f1c8bf75530ad5155c52e54e919be0f5388f2fd2438c1c4a81964efb567cd045
+command:    /tmp/align-llm-c8-related-benchmark compare-related-only /tmp/align-llm-c8-related-parent.bin /tmp/align-llm-c8-related-candidate.bin 101
+host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
+samples:    101 parent and 101 candidate measurements after two discarded warmup pairs
+parent median:    49,635,644 ns
+candidate median: 48,507,915 ns
+improvement:      22,720 ppm (2.27%)
+```
+
+The parent emitted the exact 4,000-candidate list, the candidate emitted only
+`tests/test_value.py` with score 100 and reason `basename-match`, and all other normalized result
+fields agreed. The runner also required the exact ordered five-stage vector, `PASS` on every stage,
+and matching actual/expected exit codes. A preceding 31-pair comparison improved by 21,068 ppm in
+the same direction. This is a path-local claim for a repository with many generic test paths, not a
+universal repository or provider/model-time claim.
+
+## 7. Deferred C8 surfaces
 
 Context reduction, stable-context reuse, parallel checks, small-model routing, and persisted static
 analysis remain separate capabilities. In particular, captured concurrent checks require an Align

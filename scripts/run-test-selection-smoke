@@ -75,7 +75,7 @@ assert selection["revision"] == revision, selection
 assert selection["status"] == "ok", selection
 assert selection["error_code"] == -1, selection
 assert selection["changed_path"] == "src/app.align", selection
-assert selection["candidate_count"] == 5, selection
+assert selection["candidate_count"] == 4, selection
 assert selection["candidates"] == [
     {
         "path": "src/app_test.align",
@@ -85,7 +85,6 @@ assert selection["candidates"] == [
     {"path": "src/app_z_test.py", "score": 120, "reason": "basename-match+same-directory"},
     {"path": "tests/test_app.py", "score": 100, "reason": "basename-match"},
     {"path": "src/other_test.align", "score": 20, "reason": "same-directory"},
-    {"path": "tests/test_other.py", "score": 0, "reason": "generic"},
 ], selection
 
 assert zero_selection["candidate_count"] == 5, zero_selection
@@ -97,14 +96,13 @@ assert zero_selection["candidates"] == [
     {"path": "tests/test_other.py", "score": 0, "reason": "generic"},
 ], zero_selection
 
-assert sparse_selection["candidate_count"] == 2, sparse_selection
+assert sparse_selection["candidate_count"] == 1, sparse_selection
 assert sparse_selection["candidates"] == [
     {
         "path": "src/app_test.align",
         "score": 120,
         "reason": "basename-match+same-directory",
     },
-    {"path": "tests/test_other.py", "score": 0, "reason": "generic"},
 ], sparse_selection
 PY
 

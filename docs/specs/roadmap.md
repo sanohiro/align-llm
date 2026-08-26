@@ -318,7 +318,8 @@ qualifications run at a pin bump, a C7 owner-boundary change, or an explicit aud
 documentと検証順序を変えず、4種類のscore bucketを一度のtracked-file走査で構築する。次の
 capabilityは同じ公開fieldを保ったまま、各testのbasename/directory signalをscore用とreason用に
 二重計算せず一度だけ求める。第3capabilityは、全test candidateで不変なchanged pathのstemと
-directoryをtracked-file loopの前に一度だけ求める。
+directoryをtracked-file loopの前に一度だけ求める。第4capabilityは正の関連候補がある場合に
+score 0のgeneric候補をcontextから省き、正の候補がない場合だけgeneric全件をfallbackにする。
 
 ### Gate
 

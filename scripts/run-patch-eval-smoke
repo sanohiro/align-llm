@@ -87,7 +87,7 @@ assert evaluation["risk_score"] == 51, evaluation
 assert evaluation["unrelated_diff"] is True, evaluation
 assert evaluation["public_api_change"] is True, evaluation
 assert evaluation["complexity_delta"] == 0, evaluation
-assert evaluation["recommended_test_count"] == 2, evaluation
+assert evaluation["recommended_test_count"] == 1, evaluation
 
 files = {item["path"]: item for item in evaluation["files"]}
 assert files["src/inclusive_range.py"] == {
@@ -108,7 +108,6 @@ assert ("tests/test_inclusive_range.py", "test_inclusive_range", "function") in 
 assert ("src/api.align", "old", "public-function") in symbols, symbols
 assert evaluation["recommended_tests"] == [
     {"path": "tests/test_inclusive_range.py", "score": 100, "reason": "basename-match"},
-    {"path": "tests/test_other.py", "score": 0, "reason": "generic"},
 ], evaluation
 PY
 

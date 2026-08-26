@@ -197,11 +197,13 @@ accepts one changed path and writes a schema-version-1 selection document:
 
 Tracked paths recognized as tests are ranked by a deterministic path heuristic. A basename/stem
 match contributes 100 points, a shared directory contributes 20 points, and candidates with
-neither signal remain at score 0. The JSON includes the score and reason for every candidate;
-equal scores retain Git listing order. The selector is intentionally path-based and does not yet
-use the resolved symbol/reference graph, so symbol-specific ranking remains a later C2 slice.
+neither signal remain at score 0. When at least one candidate has a positive score, the JSON includes
+all positive-score candidates and omits score-0 generic candidates. When no positive candidate
+exists, it includes every generic candidate as the deterministic fallback. Equal scores retain Git
+listing order. The selector is intentionally path-based and does not yet use the resolved
+symbol/reference graph, so symbol-specific ranking remains a later C2 slice.
 Use `make test-selection-smoke` for the fixture covering ranking order, reasons, revision binding,
-and persisted failure metadata.
+generic fallback, and persisted failure metadata.
 
 ## Patch-evaluator development
 
