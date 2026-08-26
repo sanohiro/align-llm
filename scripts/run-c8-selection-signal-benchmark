@@ -224,22 +224,26 @@ def run_sample(
     stages = attempts[0].get("stages")
     if not isinstance(stages, list):
         raise BenchmarkError(f"{binary} produced an unexpected stage record")
-    stage_durations: dict[str, int] = {}
-    for stage in stages:
-        name = stage.get("stage")
-        duration = stage.get("duration_ns")
-        if not isinstance(name, str) or not isinstance(duration, int) or name in stage_durations:
-            raise BenchmarkError(f"{binary} produced an invalid stage record")
-        stage_durations[name] = duration
-    expected_stages = {
+    expected_stages = [
         "candidate-apply-check",
         "candidate-apply",
         "build",
         "targeted-test",
         "full-test",
-    }
-    if set(stage_durations) != expected_stages:
-        raise BenchmarkError(f"{binary} produced an unexpected stage set")
+    ]
+    if [stage.get("stage") if isinstance(stage, dict) else None for stage in stages] != expected_stages:
+        raise BenchmarkError(f"{binary} produced an unexpected ordered stage vector")
+    stage_durations: dict[str, int] = {}
+    for stage in stages:
+        name = stage.get("stage")
+        duration = stage.get("duration_ns")
+        if not isinstance(duration, int):
+            raise BenchmarkError(f"{binary} produced an invalid stage record")
+        if stage.get("status") != "PASS":
+            raise BenchmarkError(f"{binary} produced a non-passing stage record")
+        if stage.get("actual_code") != stage.get("expected_code"):
+            raise BenchmarkError(f"{binary} produced a stage with mismatched exit codes")
+        stage_durations[name] = duration
     return elapsed, normalize_result(document), stage_durations
 
 

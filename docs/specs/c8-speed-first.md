@@ -100,9 +100,9 @@ non-empty and publishes the zero-score bucket only when no positive candidate ex
 | Count and ordering | `candidate_count` and downstream `recommended_test_count` count only emitted candidates; descending score and Git order within each emitted bucket are unchanged |
 | Ownership/allocation | The same four function-local builders own candidate bytes; omitted generic bytes never enter the final selection, patch-evaluation, verification, or failure-memory documents, and no cache is introduced |
 | Failure behavior | Existing `rev-parse` then `ls-files` order, timeout handling, error documents, and no-repository behavior are unchanged |
-| Correctness owner | `scripts/run-test-selection-smoke` covers mixed related/generic input and generic-only fallback; `scripts/run-patch-eval-smoke` and `scripts/run-verification-loop-smoke` cover downstream documents |
+| Correctness owner | `scripts/run-test-selection-smoke` covers mixed related/generic input and generic-only fallback; `scripts/run-patch-eval-smoke` covers the direct downstream document; `scripts/run-verification-loop-smoke` asserts the exact filtered evaluation list and the existing string-encoded recommendation payload in both persisted failure memory and reused memory context |
 | Performance owner | `scripts/run-c8-selection-signal-benchmark baseline BINARY [SAMPLES]` before implementation and `scripts/run-c8-selection-signal-benchmark compare-related-only PARENT_BINARY CANDIDATE_BINARY [SAMPLES]` after implementation |
-| Acceptance | On the fixed coding task, the candidate emits only the exact related test, the parent retains all 4,000 candidates, all other normalized result fields agree, all five real stages pass, and candidate median time to a passing patch is lower |
+| Acceptance | On the fixed coding task, the candidate emits only the exact related test, the parent retains all 4,000 candidates, all other normalized result fields agree, the exact five-stage vector appears in execution order with every stage passing its expected exit code, and candidate median time to a passing patch is lower |
 | Platform scope | Platform-independent selection and JSON/context reduction; no target-local implementation or platform-specific speed claim |
 
 This is not a fixed numeric cap. Every positive relationship remains visible, and generic tests
@@ -318,7 +318,7 @@ make -C /tmp/align-llm-c8-related-parent build
 make -C /tmp/align-llm-c8-related-candidate build
 install -m 0755 /tmp/align-llm-c8-related-parent/main /tmp/align-llm-c8-related-parent.bin
 install -m 0755 /tmp/align-llm-c8-related-candidate/main /tmp/align-llm-c8-related-candidate.bin
-git cat-file blob c5c4d7e480e3cacdaf7d5f9a81876a5e076c004c > /tmp/align-llm-c8-related-benchmark
+git cat-file blob fc3181b4cad91a8a6911100f01e16b6af9670d9a > /tmp/align-llm-c8-related-benchmark
 chmod 0755 /tmp/align-llm-c8-related-benchmark
 sha256sum /tmp/align-llm-c8-related-parent.bin /tmp/align-llm-c8-related-candidate.bin
 /tmp/align-llm-c8-related-benchmark compare-related-only \
@@ -328,24 +328,25 @@ sha256sum /tmp/align-llm-c8-related-parent.bin /tmp/align-llm-c8-related-candida
 ```text
 parent:     9cdf1050041c7c1ecf50b753fd48e8744bbd57eb
 candidate:  ef192576da2f8bf8bce7e31ea2f2bc129fc52fa1
-benchmark runner Git blob: c5c4d7e480e3cacdaf7d5f9a81876a5e076c004c
-benchmark runner SHA-256: 67546c53f8b31cb18c72b71ee4afe89feddaac62d7f367d866e35d3b83adff65
+benchmark runner Git blob: fc3181b4cad91a8a6911100f01e16b6af9670d9a
+benchmark runner SHA-256: 995092b913220005e39b6491e5cae98791b83bc88b9d4a4d99515adad16be817
 parent binary SHA-256:    f9407714e8dff911d7a73e682c2766bd8d4f1115c2ff75433fbaff15c0eabc7c
 candidate binary SHA-256: f1c8bf75530ad5155c52e54e919be0f5388f2fd2438c1c4a81964efb567cd045
 command:    /tmp/align-llm-c8-related-benchmark compare-related-only /tmp/align-llm-c8-related-parent.bin /tmp/align-llm-c8-related-candidate.bin 101
 host:       Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
 cpu:        AMD Ryzen 9 5950X 16-Core Processor, 32 logical CPUs
 samples:    101 parent and 101 candidate measurements after two discarded warmup pairs
-parent median:    49,745,797 ns
-candidate median: 48,516,433 ns
-improvement:      24,712 ppm (2.47%)
+parent median:    49,635,644 ns
+candidate median: 48,507,915 ns
+improvement:      22,720 ppm (2.27%)
 ```
 
 The parent emitted the exact 4,000-candidate list, the candidate emitted only
 `tests/test_value.py` with score 100 and reason `basename-match`, and all other normalized result
-fields agreed. A preceding 31-pair comparison improved by 21,068 ppm in the same direction. This is
-a path-local claim for a repository with many generic test paths, not a universal repository or
-provider/model-time claim.
+fields agreed. The runner also required the exact ordered five-stage vector, `PASS` on every stage,
+and matching actual/expected exit codes. A preceding 31-pair comparison improved by 21,068 ppm in
+the same direction. This is a path-local claim for a repository with many generic test paths, not a
+universal repository or provider/model-time claim.
 
 ## 7. Deferred C8 surfaces
 

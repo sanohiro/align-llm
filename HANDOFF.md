@@ -13,9 +13,13 @@ file records durable project state.
   candidates and omit score-0 generic candidates; retain every generic candidate only as the
   no-signal fallback. Implementation `ef192576da2f8bf8bce7e31ea2f2bc129fc52fa1` updates the
   selection and patch-evaluation owners plus a comparison mode that proves the exact intentional
-  output delta. The exact 101-pair comparison measured 49,745,797 ns for the parent and 48,516,433
-  ns for the candidate, a 24,712 ppm (2.47%) reduction. Run the review/publication sequence before
-  selecting another C8 capability.
+  output delta. The repaired exact 101-pair comparison measured 49,635,644 ns for the parent and
+  48,507,915 ns for the candidate, a 22,720 ppm (2.27%) reduction. The comprehensive review of
+  `bc9404dce7373c0eec7237212cba2bc5cb1a0990` found two P2 owner gaps: failure-memory propagation
+  lacked a discriminating mixed-input regression, and the benchmark accepted an unordered stage
+  set without independently checking each stage result. The consolidated repair adds exact
+  evaluation/persistence/reuse assertions and validates the ordered five-stage passing vector.
+  Run exact-head preflight and publication before selecting another C8 capability.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner

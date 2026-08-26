@@ -41,6 +41,10 @@ base_source = (
 )
 candidate_source = base_source.replace("stop + 1", "stop + 2")
 (repo / "src" / "value.py").write_text(base_source, encoding="utf-8")
+(repo / "tests" / "test_value.py").write_text(
+    "def test_value_path_signal():\n    assert True\n",
+    encoding="utf-8",
+)
 (repo / "tests" / "test_targeted.py").write_text(
     "import sys\nimport unittest\nfrom pathlib import Path\n\n"
     "sys.path.insert(0, str(Path(__file__).resolve().parents[1] / \"src\"))\n"
@@ -130,6 +134,15 @@ assert result["iteration_count"] == 2, result
 assert result["max_iterations"] == 3, result
 assert result["repair_count"] == 1, result
 assert result["evaluation"]["status"] == "ok", result
+expected_recommendations = [
+    {
+        "path": "tests/test_value.py",
+        "score": 100,
+        "reason": "basename-match",
+    }
+]
+assert result["evaluation"]["recommended_test_count"] == 1, result
+assert result["evaluation"]["recommended_tests"] == expected_recommendations, result
 assert len(result["attempts"]) == 2, result
 
 first = result["attempts"][0]
@@ -179,6 +192,10 @@ assert event["failed_test"] == "targeted-test", event
 assert event["attempted_patch"].endswith("candidate.patch"), event
 assert event["successful_strategy"] == "deterministic-repair-patch", event
 assert event["unsuccessful_strategy"] == "candidate-patch-failed-validation", event
+expected_memory_recommendations = (
+    '{"path":"tests/test_value.py","score":100,"reason":"basename-match"}]'
+)
+assert event["recommended_tests"] == expected_memory_recommendations, event
 PY
 
 git -C "$repo_dir" reset --hard -q HEAD
@@ -195,6 +212,19 @@ prompt = result["attempts"][0]["repair_prompt"]
 assert "memory context:" in prompt, prompt
 assert "PASS_AFTER_REPAIR" in prompt, prompt
 assert "targeted-test" in prompt, prompt
+memory_context = prompt.split("\nmemory context:\n", 1)[1]
+memory_event = json.loads(memory_context.splitlines()[0])
+expected_recommendations = [
+    {
+        "path": "tests/test_value.py",
+        "score": 100,
+        "reason": "basename-match",
+    }
+]
+expected_memory_recommendations = (
+    '{"path":"tests/test_value.py","score":100,"reason":"basename-match"}]'
+)
+assert memory_event["recommended_tests"] == expected_memory_recommendations, memory_event
 PY
 
 git -C "$repo_dir" reset --hard -q HEAD
