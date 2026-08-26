@@ -188,7 +188,7 @@ binding, and persisted failure metadata for a non-repository path.
 
 ### Related-test selection
 
-The related-test selector uses the same revision-bound Git `ls-files -z` boundary as the index. It
+The related-test selector uses the same Git `ls-files -z` tracked-file boundary as the index. It
 accepts one changed path and writes a schema-version-1 selection document:
 
 ```sh
@@ -202,8 +202,20 @@ all positive-score candidates and omits score-0 generic candidates. When no posi
 exists, it includes every generic candidate as the deterministic fallback. Equal scores retain Git
 listing order. The selector is intentionally path-based and does not yet use the resolved
 symbol/reference graph, so symbol-specific ranking remains a later C2 slice.
+
+The selector has two entries over one shared ranking core. The revision-bearing CLI entry
+(`repo_index.select_tests`, used by `--select-tests`) runs `git rev-parse --verify HEAD` and then
+`git ls-files -z`, because it publishes `revision`. The revision-free evaluation entry
+(`repo_index.select_tests_for_evaluation`, used by `patch_eval.evaluate`) runs `git ls-files -z`
+alone, because that is the only output it consumes. The two differ only for a repository with an
+unborn HEAD: `rev-parse` exits 128 there, so the CLI still writes a failure document with
+`error_code` 128 and an empty `revision`, while patch evaluation reports `ok` with the real
+index-derived candidates — zero of them when the index is empty. A directory outside a work tree
+fails on both entries, because `git ls-files -z` itself exits 128 there.
+
 Use `make test-selection-smoke` for the fixture covering ranking order, reasons, revision binding,
-generic fallback, and persisted failure metadata.
+generic fallback, the unborn-HEAD CLI failure, and persisted failure metadata; `make patch-eval-smoke`
+owns the evaluation entry's unborn-HEAD and non-repository behavior.
 
 ## Patch-evaluator development
 

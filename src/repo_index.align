@@ -219,6 +219,10 @@ pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
   }
 }
 
+// The selection document published by `--select-tests` carries `revision`, so that entry keeps the
+// `rev-parse` validation before listing tracked files. `patch_eval.evaluate` consumes only the
+// candidates, their count, and the status, so it uses the revision-free entry below and spawns the
+// single Git process whose output it actually reads. Both share one ranking implementation.
 pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelection {
   revision_run := verify.run("git", ["git", "rev-parse", "--verify", "HEAD"].to_array(), root, timeout_ns)
   if !process_succeeded(revision_run.status, revision_run.code) {
@@ -233,7 +237,17 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
     }
   }
   revision := revision_run.stdout.trim().clone()
+  return select_tracked_tests(root, changed_path, timeout_ns, revision)
+}
 
+// The evaluation entry omits `rev-parse` entirely. A repository whose HEAD is unborn therefore
+// reports `ok` with whatever the index lists instead of failing on a revision this path never reads;
+// a directory outside a work tree still fails, because `git ls-files` itself fails there.
+pub fn select_tests_for_evaluation(root: str, changed_path: str, timeout_ns: i64) -> TestSelection {
+  return select_tracked_tests(root, changed_path, timeout_ns, "")
+}
+
+fn select_tracked_tests(root: str, changed_path: str, timeout_ns: i64, revision: str) -> TestSelection {
   files_run := verify.run("git", ["git", "ls-files", "-z"].to_array(), root, timeout_ns)
   if !process_succeeded(files_run.status, files_run.code) {
     failed_root := root.clone()

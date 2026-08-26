@@ -325,7 +325,11 @@ score 0のgeneric候補をcontextから省き、正の候補がない場合だ�
 offset保持も省き、正の候補がない場合だけ既に所有しているGit listingを再走査してgeneric fallbackを
 構築する。第7capabilityは、候補・修正patchの事前checkと適用をGitの原子的な1 invocationにまとめ、
 成功時の重複processとcheck専用stage recordを省く。第8capabilityは、各layerで完成したowned JSON
-bufferを唯一のresult ownerへ移し、return直前の同一buffer再allocationを省く。
+bufferを唯一のresult ownerへ移し、return直前の同一buffer再allocationを省く。第9capabilityは、
+test selectionをrevision付きCLI entryとrevision不要なevaluation entryに分け、評価経路が消費しない
+`git rev-parse --verify HEAD`のspawnを省いて`git ls-files -z`のみを実行する。CLI documentはbyte
+単位で不変で、非repositoryは`git ls-files`が失敗するため引き続きfailするが、commitのないunborn
+HEAD repositoryは評価経路で`ok`（candidate 0件、あるいはindexが持つ候補）を返すようになる。
 
 ### Gate
 

@@ -3,7 +3,46 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## C8 eighth capability: move completed result documents (2026-08-26)
+## C8 ninth capability: query Git once for evaluation-side test selection (2026-08-26)
+
+- The eighth capability, `C8-MOVE-RESULT-DOCUMENTS`, merged as PR #119 on `main` at
+  `9bfa372`. Its recorded evidence is in the section below and in
+  `docs/specs/c8-speed-first.md` §2.8 and §10.
+- Active work is `C8-SELECTION-SINGLE-GIT-QUERY` on `agent/c8-selection-single-git-query`, based on
+  `main` at `9bfa372`. `repo_index.select_tests` spawned `git rev-parse --verify HEAD` and then
+  `git ls-files -z`, but `patch_eval.evaluate` consumes only the candidates, `candidate_count`, and
+  `status` and discards the `revision`, so the rev-parse spawn was pure waste on the evaluation path
+  (about 1.2 ms of the ~46 ms fixed-task total, ≈26,000 ppm). The selector is now a shared private
+  `select_tracked_tests` core plus the unchanged revision-bearing `select_tests` (CLI) and a new
+  revision-free `select_tests_for_evaluation` (patch evaluation).
+- **Contract decision, deliberate and recorded.** The evaluation path now validates exactly what it
+  consumes. A repository with an unborn HEAD previously failed at `rev-parse`; it now reports `ok`
+  with the real index-derived candidates, or zero candidates when the index is empty, because
+  `git ls-files -z` succeeds there. A directory outside a work tree still fails, verified rather than
+  assumed: `git ls-files -z` itself exits 128 outside a work tree. The `--select-tests` CLI document
+  is byte-identical, still carries `revision`, and still runs both processes in the same order.
+- The ledger is `docs/specs/c8-speed-first.md` §2.9 with its §2.9.1 closure matrix; §11 is the
+  `TBD` ninth-baseline placeholder the measurement agent fills, §12 is the renumbered deferred
+  surfaces, and `docs/specs/roadmap.md` §C8 now enumerates the ninth capability.
+- Owner regressions extended: `scripts/run-test-selection-smoke` adds an unborn-HEAD CLI failure case
+  (`error_code` 128, empty `revision`) beside its existing revision assertion;
+  `scripts/run-patch-eval-smoke` adds the three evaluation-path cases — unborn HEAD with a populated
+  index, unborn HEAD with an empty index, and a non-repository directory;
+  `scripts/run-verification-loop-smoke` adds `verification-loop-unborn-head`, which proves the
+  downstream loop now runs the task (`PASS`, both real stage vectors) instead of short-circuiting to
+  `Invalid` code 2.
+- **Measurement is complete** and recorded in §11 at commit `2628cc8`. Pre-implementation baseline at
+  `9bfa372`: 43,041,708 ns median over 31 samples. The 101-pair `compare-atomic` run measured
+  42,884,666 ns parent against 42,421,792 ns candidate — a 10,793 ppm (1.08%) reduction — on an
+  aarch64 Docker Desktop linux/arm64 VM host. Normalized documents and the four-stage vector agree.
+  That host differs from the §3-10 series, so the claim is path-specific, not a platform claim.
+- The comprehensive review of `e057bf0` was one fresh independent adversarial review: two minor
+  findings and three nits, all accepted. The consolidated repair is the next commit — the
+  `select_tests` redundant `revision_view` binding, the `docs/align-development.md` two-entry
+  description, and three §2.9/§2.9.1 corrections (qualified `Output` row, honest `N/A` for the
+  `ls-files` timeout/spawn sub-paths, and the new verification-loop unborn-HEAD regression).
+
+## C8 eighth capability: move completed result documents (2026-08-26, merged as PR #119)
 
 - C8 atomic patch application PR #118 merged on `main` at
   `185936492dd52453c8df3fe281c82645373a5946`. Its hosted check passed in 1m35s; the unaffected
@@ -12,7 +51,7 @@ file records durable project state.
 - `agent/c8-move-process-argv` was measured and rejected without a PR: its 201-pair improvement was
   only 283 ppm (0.028%) and its 31-pair comparison regressed. The local branch preserves that
   evidence; do not carry its product change.
-- Active work is on `agent/c8-move-result-documents`. `C8-MOVE-RESULT-DOCUMENTS` moves completed
+- `C8-MOVE-RESULT-DOCUMENTS` was implemented on `agent/c8-move-result-documents` and is merged. It moves completed
   owned JSON buffers into their sole returned owner rather than cloning them at the terminal
   handoff. The exact 31-sample `baseline-atomic` at merge `1859364` is 45,870,371 ns; its binary
   SHA-256 is `7e00353a3110c16fd802bb935a9d4bf1be784540f23567cdf4704aee728896f3`.
@@ -54,12 +93,13 @@ file records durable project state.
 
 ## Resume in another environment
 
-1. Fetch `origin` and resume `agent/c8-move-result-documents`. Read `CLAUDE.md`, then
-   `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md` §2.8 and §10. The ledger and exact
-   baseline, implementation, owner verification, exact comparison, and clean comprehensive review
-   are complete. Exact-head preflight is the first unfinished action.
-2. Run exact-head preflight with the record owners, then publish the English PR. The handoff-only
-   review-state update does not trigger another comprehensive review.
+1. Fetch `origin` and resume `agent/c8-selection-single-git-query`. Read `CLAUDE.md`, then
+   `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md` §2.9, §2.9.1, and §11. Design gate,
+   implementation, extended owner regressions, measurement, review, and repair are all complete.
+2. Next action: run exact-head preflight,
+   `python3 scripts/pre-pr --owner-test verification-loop -- gmake verify-loop-smoke` together with
+   the other record owners (`test-selection-smoke`, `patch-eval-smoke`, `index-smoke`), then publish
+   the English PR with the §11 measurement and the review envelope.
 3. After merge, refresh `main` and choose the next measured consumer-complete C8 boundary.
 4. Continue against existing providers. Do not make C8 depend on `align-runtime`, and do not open a
    new Align request unless implementation exposes a genuine shipped-language, compiler/runtime,

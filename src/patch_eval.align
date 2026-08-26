@@ -113,7 +113,7 @@ pub fn evaluate(root: str, patch_path: str, timeout_ns: i64) -> PatchEvaluation 
   mut recommended_tests_json := "".clone()
   mut recommended_test_count := 0
   if primary_path.len() > 0 {
-    selected := repo_index.select_tests(root, primary_path, timeout_ns)
+    selected := repo_index.select_tests_for_evaluation(root, primary_path, timeout_ns)
     selected_document: str := selected.document
     recommended_tests_json = extract_candidates(selected_document).clone()
     recommended_test_count = selected.candidate_count

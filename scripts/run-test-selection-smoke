@@ -10,6 +10,8 @@ selection_path="$temp_dir/selection.json"
 zero_selection_path="$temp_dir/zero-selection.json"
 sparse_repo_dir="$temp_dir/sparse-repository"
 sparse_selection_path="$temp_dir/sparse-selection.json"
+unborn_repo_dir="$temp_dir/unborn-repository"
+unborn_failed_path="$temp_dir/unborn-failed.json"
 failed_path="$temp_dir/failed.json"
 
 cleanup() {
@@ -106,6 +108,34 @@ assert sparse_selection["candidates"] == [
 ], sparse_selection
 PY
 
+# The CLI selection document publishes `revision`, so it validates HEAD before listing tracked
+# files. A repository with staged files but no commit therefore still fails here, unlike the
+# revision-free evaluation entry owned by scripts/run-patch-eval-smoke.
+mkdir -p "$unborn_repo_dir/src"
+printf 'module app\n' >"$unborn_repo_dir/src/app.align"
+printf 'module app_test\n' >"$unborn_repo_dir/src/app_test.align"
+git init -q "$unborn_repo_dir"
+git -C "$unborn_repo_dir" config user.email smoke@example.invalid
+git -C "$unborn_repo_dir" config user.name "Unborn Test Selection Smoke"
+git -C "$unborn_repo_dir" add --all
+if "$root_dir/main" --select-tests "$unborn_repo_dir" src/app.align "$unborn_failed_path"; then
+  exit 1
+fi
+python3 - "$unborn_failed_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+failed = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert failed["schema_version"] == 1, failed
+assert failed["revision"] == "", failed
+assert failed["status"] == "error", failed
+assert failed["error_code"] == 128, failed
+assert failed["changed_path"] == "src/app.align", failed
+assert failed["candidate_count"] == 0, failed
+assert failed["candidates"] == [], failed
+PY
+
 mkdir "$temp_dir/not-a-repository"
 if "$root_dir/main" --select-tests "$temp_dir/not-a-repository" src/app.align "$failed_path"; then
   exit 1
@@ -124,4 +154,4 @@ assert failed["candidate_count"] == 0, failed
 assert failed["candidates"] == [], failed
 PY
 
-printf '%s\n' "related-test selection smoke: deterministic path ranking and failure persistence PASS"
+printf '%s\n' "related-test selection smoke: deterministic path ranking, revision-bearing CLI document, and failure persistence PASS"
