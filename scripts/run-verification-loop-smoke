@@ -3,6 +3,10 @@ set -euo pipefail
 
 unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
 
+# Keep the embedded python fixtures from writing tests/__pycache__/*.pyc into the temporary
+# repository; a tracked .pyc would give the selector two basename-match candidates.
+export PYTHONDONTWRITEBYTECODE=1
+
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 temp_dir=$(mktemp -d)
 repo_dir="$temp_dir/repository"
@@ -356,6 +360,9 @@ unborn_task_path="$temp_dir/unborn-task.json"
 unborn_result_path="$temp_dir/unborn-result.json"
 mkdir -p "$unborn_repo_dir"
 cp -R "$repo_dir/src" "$repo_dir/tests" "$unborn_repo_dir/"
+# Drop any __pycache__ directories copied from earlier cases so the tracked listing stays
+# deterministic regardless of the ambient PYTHONDONTWRITEBYTECODE setting.
+find "$unborn_repo_dir" -name __pycache__ -type d -prune -exec rm -rf {} +
 git init -q "$unborn_repo_dir"
 git -C "$unborn_repo_dir" config user.email smoke@example.invalid
 git -C "$unborn_repo_dir" config user.name "Verification Loop Smoke"
