@@ -320,6 +320,8 @@ capabilityは同じ公開fieldを保ったまま、各testのbasename/directory 
 二重計算せず一度だけ求める。第3capabilityは、全test candidateで不変なchanged pathのstemと
 directoryをtracked-file loopの前に一度だけ求める。第4capabilityは正の関連候補がある場合に
 score 0のgeneric候補をcontextから省き、正の候補がない場合だけgeneric全件をfallbackにする。
+第5capabilityはその契約を保ちつつ、generic pathをGit listing内のoffsetとして一時保持し、fallback
+が必要と確定した場合だけJSONへserializeする。
 
 ### Gate
 

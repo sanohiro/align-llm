@@ -78,6 +78,7 @@ SelectionMeta {
 }
 
 RelatedTest { path: str, score: i64, reason: str }
+TestPathOffset { start: i64, end: i64 }
 
 FileFragments {
   file_json: string,
@@ -253,17 +254,17 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
   mut score_120_body := builder()
   mut score_100_body := builder()
   mut score_20_body := builder()
-  mut score_0_body := builder()
+  mut generic_offsets: array_builder<TestPathOffset> := array_builder()
   mut score_120_count := 0
   mut score_100_count := 0
   mut score_20_count := 0
-  mut score_0_count := 0
   changed_stem := path_stem(changed_path)
   changed_directory := path.dir(changed_path)
   listing: str := files_run.stdout
   mut file_cursor := 0
   loop {
     if file_cursor >= listing.len() { break }
+    file_start := file_cursor
     file_end := match listing[file_cursor..listing.len()].find("\0") {
       Some(offset) => file_cursor + offset,
       None => listing.len(),
@@ -275,32 +276,31 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
       name_match := related_test_basename_match(changed_stem, path_stem(relative))
       same_directory := changed_directory == path.dir(relative)
       score := related_test_score(name_match, same_directory)
-      reason := related_test_reason(name_match, same_directory)
-      record := RelatedTest { path: relative, score: score, reason: reason }
-      encoded := json.encode(record)
-      if score == 120 {
-        if score_120_count > 0 { score_120_body.write(",") }
-        score_120_body.write(encoded)
-        score_120_count = score_120_count + 1
+      if score == 0 {
+        generic_offsets.push(TestPathOffset { start: file_start, end: file_end })
       } else {
-        if score == 100 {
-          if score_100_count > 0 { score_100_body.write(",") }
-          score_100_body.write(encoded)
-          score_100_count = score_100_count + 1
+        reason := related_test_reason(name_match, same_directory)
+        record := RelatedTest { path: relative, score: score, reason: reason }
+        encoded := json.encode(record)
+        if score == 120 {
+          if score_120_count > 0 { score_120_body.write(",") }
+          score_120_body.write(encoded)
+          score_120_count = score_120_count + 1
         } else {
-          if score == 20 {
+          if score == 100 {
+            if score_100_count > 0 { score_100_body.write(",") }
+            score_100_body.write(encoded)
+            score_100_count = score_100_count + 1
+          } else {
             if score_20_count > 0 { score_20_body.write(",") }
             score_20_body.write(encoded)
             score_20_count = score_20_count + 1
-          } else {
-            if score_0_count > 0 { score_0_body.write(",") }
-            score_0_body.write(encoded)
-            score_0_count = score_0_count + 1
           }
         }
       }
     }
   }
+  generic_paths := generic_offsets.build()
 
   mut candidates_body := builder()
   candidates_body.write(score_120_body.to_string())
@@ -313,10 +313,19 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
     candidates_body.write(score_20_body.to_string())
   }
   related_count := score_120_count + score_100_count + score_20_count
-  if related_count == 0 && score_0_count > 0 {
-    candidates_body.write(score_0_body.to_string())
+  if related_count == 0 {
+    mut generic_index := 0
+    loop {
+      if generic_index >= generic_paths.len() { break }
+      offset := generic_paths[generic_index]
+      relative := listing[offset.start..offset.end]
+      record := RelatedTest { path: relative, score: 0, reason: "generic" }
+      if generic_index > 0 { candidates_body.write(",") }
+      candidates_body.write(json.encode(record))
+      generic_index = generic_index + 1
+    }
   }
-  candidate_count := if related_count > 0 { related_count } else { score_0_count }
+  candidate_count := if related_count > 0 { related_count } else { generic_paths.len() }
 
   document := render_selection_document(
     root,
