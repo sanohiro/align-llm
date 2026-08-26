@@ -137,8 +137,10 @@ When the engine needs a feature that does not compile in the current Align check
 5. Implement and test that capability in `../align` as a separate, reviewable change.
 6. Update this repository only after the Align change is available at a named commit or release.
 7. Batch merged prerequisites needed by the next consumer when practical. Update `.align-revision`
-   once, materialize its managed release compiler, run every original request acceptance target and
-   one final `make ci`, and record the real-client verification before closing each request.
+   once, materialize its managed release compiler, run the acceptance targets that own the changed
+   consumer boundary and the request's named final integration owner, and record the real-client
+   verification before closing each request. The pin change alone does not select `make ci` or a
+   platform matrix.
 
 This separation keeps engine work reproducible and prevents application code from becoming an accidental language specification.
 
@@ -379,8 +381,10 @@ timeout.
 ## The aarch64 platform-profile gates
 
 C7 evidence is target-bound, so each required non-x86 environment has its own reviewed profile.
-Both gates are named focused qualifications: run them at a `.align-revision` pin bump, at a change
-to a C7 owner boundary, or for an explicit audit. Neither joins an aggregate.
+Both gates are named focused qualifications: run them when a change reaches that target's C7 owner
+boundary or for an explicit audit. A `.align-revision` change alone does not select either gate;
+Align CI owns compiler portability, while align-llm owns only its changed consumer boundary.
+Neither gate joins an aggregate.
 
 On `aarch64-apple-darwin`, run the Section 10 profile gate of `docs/specs/check-gate-topology.md`.
 `LIBRARY_PATH` is this target's Align build-gate linker input, and the gate fails closed — with the

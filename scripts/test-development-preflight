@@ -63,8 +63,39 @@ def test_classifier() -> None:
     require(deleted_docs.scope == "hosted" and deleted_docs.hosted, "deletion became light")
     hosted = classify(("M", "scripts/run-provider-smoke"))
     require(hosted.scope == "hosted" and not hosted.fresh_installed, "hosted scope changed")
+    pin = classify(("M", ".align-revision"))
+    require(
+        pin.scope == "pin"
+        and pin.hosted
+        and not pin.fresh_focused
+        and not pin.fresh_installed,
+        "pin-only adoption selected a platform profile",
+    )
+    pin_with_docs = classify(("M", ".align-revision"), ("M", "docs/align-requests.md"))
+    require(pin_with_docs.scope == "pin", "pin adoption documentation widened verification")
+    pin_with_hosted = classify(("M", ".align-revision"), ("M", "scripts/run-provider-smoke"))
+    require(
+        pin_with_hosted.scope == "hosted"
+        and pin_with_hosted.hosted
+        and not pin_with_hosted.fresh_installed,
+        "pin plus hosted owner skipped or widened its ordinary scope",
+    )
+    pin_with_fresh = classify(("M", ".align-revision"), ("M", "Makefile"))
+    require(
+        pin_with_fresh.scope == "fresh-image"
+        and pin_with_fresh.hosted
+        and pin_with_fresh.fresh_focused
+        and pin_with_fresh.fresh_installed,
+        "pin plus fresh owner skipped the installed profile",
+    )
+    renamed_pin_changes = scope_module.parse_name_status(
+        b"D\x00.align-revision\x00A\x00retired-align-revision\x00"
+    )
+    require(
+        classify(*renamed_pin_changes).scope == "fresh-image",
+        "renamed pin did not fail closed",
+    )
     for path in (
-        ".align-revision",
         "Makefile",
         ".github/workflows/ci.yml",
         "src/main.align",
@@ -738,6 +769,53 @@ def test_plan() -> None:
         and managed[3].arguments == ("make", "hosted-checks", f"ALIGNC={align / 'target/release/alignc'}"),
         "managed preflight order, admission, or verification changed",
     )
+    managed_pin = preflight.build_plan(
+        classify(("M", ".align-revision")),
+        owner_label="request-owner",
+        owner_command=("make", "request-owner"),
+        align_repository=align,
+        explicit_align_repository=False,
+    )
+    require(
+        [step.label for step in managed_pin]
+        == ["request-owner", "managed-align-ensure", "pinned-align-build"],
+        "pin-only preflight duplicated the hosted integration graph",
+    )
+    mixed_hosted = preflight.build_plan(
+        classify(("M", ".align-revision"), ("M", "scripts/run-provider-smoke")),
+        owner_label="provider-owner",
+        owner_command=("python3", "scripts/run-provider-smoke"),
+        align_repository=align,
+        explicit_align_repository=False,
+    )
+    require(
+        [step.label for step in mixed_hosted]
+        == ["provider-owner", "managed-align-ensure", "pinned-align-build", "hosted-checks"],
+        "pin plus hosted owner lost the local hosted graph",
+    )
+    for label, changes in (
+        ("pin plus fresh owner", (("M", ".align-revision"), ("M", "Makefile"))),
+        ("renamed pin", (("D", ".align-revision"), ("A", "retired-align-revision"))),
+    ):
+        mixed_fresh = preflight.build_plan(
+            classify(*changes),
+            owner_label="workflow-owner",
+            owner_command=("python3", "scripts/test-development-preflight"),
+            align_repository=align,
+            explicit_align_repository=False,
+        )
+        require(
+            [step.label for step in mixed_fresh]
+            == [
+                "workflow-owner",
+                "managed-align-ensure",
+                "pinned-align-build",
+                "hosted-checks",
+                "fresh-focused",
+                "fresh-installed",
+            ],
+            f"{label} lost the fail-closed local plan",
+        )
 
 
 def git(repository: Path, *arguments: str) -> str:

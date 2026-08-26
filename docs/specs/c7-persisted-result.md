@@ -799,7 +799,8 @@ supersede this section before adding a threshold.
 
 ## 11. Compatibility and adoption environment
 
-The minimum C7 acceptance environment is the repository's pinned Align environment:
+The minimum environment for a new C7 acceptance claim is the exact Align pin at that C7 capability
+head:
 
 - `x86_64-unknown-linux-gnu` on Ubuntu 24.04;
 - Rust 1.96 and LLVM 22 as required by the pinned Align release build;
@@ -810,8 +811,13 @@ The minimum C7 acceptance environment is the repository's pinned Align environme
   `./Configure --prefix="$OPENSSL_PREFIX" --libdir=lib shared no-tests`, `make`, and
   `make install_sw`; the resulting `LIBRARY_PATH`, `LD_LIBRARY_PATH`, and
   `PKG_CONFIG_PATH` are the only OpenSSL paths admitted to the runner;
-- the exact Align revision recorded in `.align-revision`, materialized as the managed release
-  compiler and runtime before adoption.
+- the exact Align revision recorded in `.align-revision` by that capability head, materialized as
+  the managed release compiler and runtime before its acceptance run.
+
+This is capability evidence, not a rolling certification of every later compiler pin. The emitted
+record stays bound to its tested repository head, compiler revision, platform profile, and
+environment. A later unrelated pin neither rewrites that historical claim nor claims new C7
+evidence.
 
 That list is the Linux minimum environment. The `aarch64-apple-darwin` target's own toolchain
 inputs, including its Homebrew `openssl@3`/`zstd`/`llvm` identities and the `LIBRARY_PATH` the Align
@@ -829,22 +835,23 @@ C7 acceptance environments, not supplementary evidence, because Request 9 makes 
 ownership/layout behavior part of its contract. Before either non-x86 environment can enter C7
 adoption or provide C7 evidence, it needs its own reviewed platform profile, including the
 compiler/runtime construction, namespace or process boundary, toolchain inputs, and exact acceptance
-commands. Each native environment must run the C7 focused targets against a compiler and runtime
-**rebuilt or materialized** at the exact pinned revision after its own profile passes — the same
-wording section 12.1 uses, because the requirement is revision identity, not a particular way of
-producing the binary. What each profile owes is a verifiable statement of which it did: the checkout
-revision is verified, and the binary is recorded by digest. A newer compiler, host, or generic
-OpenSSL 3.0 installation is not a substitute for the named build configurations. The C7 artifact
-itself contains no target or ABI field; the adoption result is bound externally to the tested
-compiler revision, platform profile, and environment.
+commands. When a change claims new C7 evidence on a native environment, that environment must run
+the C7 focused targets against a compiler and runtime **rebuilt or materialized** at the exact pin
+of the claiming capability after its own profile passes — the same wording section 12.1 uses,
+because the requirement is revision identity, not a particular way of producing the binary. What
+each profile owes is a verifiable statement of which it did: the checkout revision is verified, and
+the binary is recorded by digest. A newer compiler, host, or generic OpenSSL 3.0 installation is not
+a substitute for that claim's named build configuration. The C7 artifact itself contains no target
+or ABI field; each adoption result is bound externally to its tested compiler revision, platform
+profile, and environment.
 
 ### 11.1 Platform profiles, owners, and gate cadence
 
 | Target | Owning profile | Target-local gate | Cadence | Status |
 | --- | --- | --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | Section 9 of `docs/specs/check-gate-topology.md` | The installed fresh-image profile plus the supervised `make ci` graph | Per capability gate, as Section 9 already defines | Available; unchanged by this wave |
-| `aarch64-unknown-linux-gnu` | Section 9 of `docs/specs/check-gate-topology.md`, reused under its own stated condition | `persisted-result-smoke` and `persisted-result-qualification`, run natively at the exact head against a pinned-revision compiler and runtime | Named focused qualification: pin bump, C7 owner-boundary change, or explicit audit | Discharged in section 11.2 |
-| `aarch64-apple-darwin` | Section 10 of `docs/specs/check-gate-topology.md` | `make darwin-profile-gate` (`scripts/check-darwin-profile`), whose five acceptance commands include both C7 targets | Named focused qualification: pin bump, C7 owner-boundary change, or explicit audit | Discharged in section 11.3 |
+| `x86_64-unknown-linux-gnu` | Section 9 of `docs/specs/check-gate-topology.md` | The installed fresh-image profile plus the supervised `make ci` graph | When the changed capability owns this integration boundary or explicitly names the graph | Available; unchanged by this wave |
+| `aarch64-unknown-linux-gnu` | Section 9 of `docs/specs/check-gate-topology.md`, reused under its own stated condition | `persisted-result-smoke` and `persisted-result-qualification`, run natively at the exact head against a pinned-revision compiler and runtime | Named focused qualification: C7 target-local owner-boundary change or explicit audit | Discharged in section 11.2 |
+| `aarch64-apple-darwin` | Section 10 of `docs/specs/check-gate-topology.md` | `make darwin-profile-gate` (`scripts/check-darwin-profile`), whose five acceptance commands include both C7 targets | Named focused qualification: C7 target-local owner-boundary change or explicit audit | Discharged in section 11.3 |
 
 Neither aarch64 gate is a per-pull-request check and neither joins `hosted-checks`,
 `capable-checks`, or `ci`; both are named focused qualifications in the sense of `CLAUDE.md`'s
@@ -853,6 +860,11 @@ requires them. The Darwin profile is deliberately minimal: it claims a process b
 attestation, never Linux containment parity, and explicitly no `sandbox-exec`. Its full scope,
 non-claims, identity inputs, contract, and ledger are Section 10 of
 `docs/specs/check-gate-topology.md`; this section records only the discharge evidence.
+
+A compiler pin change is not itself a change to all three consumer boundaries. Align CI owns the
+compiler's supported-platform correctness. A later align-llm adoption reruns a row only when its
+diff changes that row's target-local C7 behavior, makes a target-specific claim, exposes a concrete
+provider-CI gap, or is the subject of an explicit audit.
 
 ### 11.2 Discharge record — `aarch64-unknown-linux-gnu`
 

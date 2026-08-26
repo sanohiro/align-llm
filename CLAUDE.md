@@ -170,8 +170,9 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 - Do not consume a hypothetical surface during `PROPOSED`, `ACCEPTED`, or `IMPLEMENTING`.
 - At `ALIGN_MERGED`, name the shipped Align commit, update `.align-revision`, materialize its managed
   release compiler/runtime, and adopt the real surface.
-- `ALIGN_LLM_VERIFIED` requires every originally named focused acceptance target and one final
-  `make ci` against the same pin and final integration head.
+- `ALIGN_LLM_VERIFIED` requires every originally named acceptance target that owns the changed
+  consumer boundary and the final integration owner named by that request. A pin change alone does
+  not add `make ci`, a platform profile, or another qualification to the request.
 - `CLOSED` records the shipped surface, ownership, limits, links, and client evidence.
 
 A blocking request pauses only its dependent consumer. Record the blocker and resume condition in
@@ -191,12 +192,19 @@ Verification is evidence for a coherent checkpoint, not an edit-loop ritual.
   coherent.
 - `scripts/pre-pr` runs every publication check selected by the shared classifier. Do not manually
   duplicate its aggregate sequence.
-- `make ci` is the complete capable-host integration graph, not every qualification. Run it at a
-  named implementation/adoption gate, after pin or check-topology changes, before merging an
-  integration behavior change, or for fresh base-integration evidence.
+- A pure `.align-revision` adoption runs the request owner plus managed-toolchain materialization
+  and verification locally; ordinary hosted CI owns the broad consumer graph. It does not select
+  the installed platform profile. Any other executable path retains its normal classifier scope.
+- `make ci` is the complete capable-host integration graph, not every qualification. Run it when a
+  request changes aggregate membership, check topology, or integration behavior, when its accepted
+  ledger names the aggregate, or for explicit fresh base-integration evidence. Do not select it for
+  an otherwise unrelated `.align-revision` change.
 - Security, resource, race, fuzz, stress, platform, mutation, and benchmark suites remain named
   focused qualifications. Run them only when their owner boundary changes or an explicit audit
-  requires them.
+  requires them. Changing `.align-revision` alone is not a change to every such owner.
+- Align CI owns the compiler's supported-platform correctness. An align-llm adoption adds a native
+  platform qualification only when it changes an align-llm target-local boundary, makes a
+  target-specific performance claim, or records a concrete gap in the provider's CI coverage.
 - Adding a regression does not automatically add it to an aggregate. Prefer the narrowest stable
   owner and document focused commands not reached by an aggregate.
 

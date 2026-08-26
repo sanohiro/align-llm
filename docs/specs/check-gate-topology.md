@@ -18,14 +18,13 @@ refresh `eval/baselines/coding-v1-reference.json`,
 change the evaluation contract, or make an unsupported check optional inside a gate that claims to
 run it.
 
-The later C6c2 verifier slice originally extended this authoritative graph with
-`prompt-verifier-smoke` immediately after `prompt-score-prefix-smoke`. C6-MEASURED demoted that
-member to a named focused qualification because the pinned compiler needs roughly 720 s and 1.5 GiB
-of resident memory to code-generate its single smoke binary, which alone exceeded the supervised
-aggregate's practical budget. The target, its owner script, and its coverage are unchanged; only its
-lane membership is. Run it directly whenever the §10 verifier boundary in `src/prompt_score.align`
-changes and before publishing such a change. See `docs/align-requests.md` Request 19 for the
-compiler-side gap that must close before it can rejoin the hosted lane.
+The later C6c2 verifier slice extended this authoritative graph with `prompt-verifier-smoke`
+immediately after `prompt-score-prefix-smoke`. C6-MEASURED temporarily demoted that member when the
+then-pinned compiler needed roughly 720 s and 1.5 GiB of resident memory to code-generate its single
+smoke binary. Align Request 19 closed that compiler-side gap in PR #891; at the adopted merge the
+same owner completes in 13.27 s at 264,560 KiB on the Align benchmark host and again fits the
+supervised aggregate's per-target budget. The target therefore rejoins the hosted lane in its
+original position. Its owner script and verifier coverage are unchanged.
 
 The C6d offline lifecycle slice extends the same graph with `prompt-state-smoke`, which the hosted
 list orders after the C6c1p and C6e prompt members. It consumes the verifier owner, exercises
@@ -52,12 +51,12 @@ may not satisfy this prerequisite by retaining the current direct
 | Surface | Exact contract |
 | --- | --- |
 | `make gate-topology-check` | Export the three Make-owned lists into `ALIGN_LLM_HOSTED_CHECK_TARGETS`, `ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS`, and `ALIGN_LLM_SERIAL_CHECK_AGGREGATES` for this target, then invoke `python3 scripts/check-gate-topology` without interpolating list text into the recipe shell. The script constructs a canonical byte report from those values and compares it with an expected byte string embedded in that script. Fail before claiming an aggregate result if any list drifts without an intentional oracle update. |
-| `make hosted-checks` | Run `gate-topology-check`, then clear `MAKEFLAGS` and `GNUMAKEFLAGS`, launch one recursive GNU Make with an explicit `-j1`, and run `format-check`, `check`, `build`, `eval-smoke`, `loop-smoke`, `provider-smoke`, `index-smoke`, `test-selection-smoke`, `patch-eval-smoke`, `verify-loop-smoke`, `failure-memory-smoke`, `prompt-model-smoke`, `prompt-render-parity-smoke`, `prompt-score-smoke`, `prompt-score-prefix-smoke`, `prompt-seed-attestation-smoke`, `prompt-experiment-smoke`, `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`, `prompt-credential-lifetime-smoke`, `prompt-state-smoke`, `prompt-gate-validator-smoke`, `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke`, `prompt-gate-git-replacement-graft-smoke`, `prompt-gate-local-git-config-smoke`, `prompt-gate-ordinary-clone-config-smoke`, `prompt-gate-replacement-namespace-smoke`, `prompt-gate-ancestry-smoke`, `prompt-gate-merge-head-ancestry-smoke`, `c6e-request2-adoption`, and `persisted-result-smoke` as that child Make's ordered goals. The compiler-facing targets consume the compiler selected by `ALIGNC`. It does not build Align and does not run `eval-coding` or `baseline-check`. |
+| `make hosted-checks` | Run `gate-topology-check`, then clear `MAKEFLAGS` and `GNUMAKEFLAGS`, launch one recursive GNU Make with an explicit `-j1`, and run `format-check`, `check`, `build`, `eval-smoke`, `loop-smoke`, `provider-smoke`, `index-smoke`, `test-selection-smoke`, `patch-eval-smoke`, `verify-loop-smoke`, `failure-memory-smoke`, `prompt-model-smoke`, `prompt-render-parity-smoke`, `prompt-score-smoke`, `prompt-score-prefix-smoke`, `prompt-verifier-smoke`, `prompt-seed-attestation-smoke`, `prompt-experiment-smoke`, `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`, `prompt-credential-lifetime-smoke`, `prompt-state-smoke`, `prompt-gate-validator-smoke`, `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke`, `prompt-gate-git-replacement-graft-smoke`, `prompt-gate-local-git-config-smoke`, `prompt-gate-ordinary-clone-config-smoke`, `prompt-gate-replacement-namespace-smoke`, `prompt-gate-ancestry-smoke`, `prompt-gate-merge-head-ancestry-smoke`, `c6e-request2-adoption`, and `persisted-result-smoke` as that child Make's ordered goals. The compiler-facing targets consume the compiler selected by `ALIGNC`. It does not build Align and does not run `eval-coding` or `baseline-check`. |
 | `make capable-checks` | Run `gate-topology-check`, then clear `MAKEFLAGS` and `GNUMAKEFLAGS`, launch one recursive GNU Make with an explicit `-j1`, consume the compiler selected by `ALIGNC`, and run the complete hosted focused-target list followed by `eval-coding`, `baseline-check`, and `c6-evaluation-adoption` as that child Make's ordered goals. The final target executes the complete evaluator/helper/adapter tree inside the authenticated fresh-worker cgroup. It does not invoke `hosted-checks` as a nested aggregate and does not build Align. |
 | `make ci` | Verify `.align-revision`, release-build the pinned sibling Align compiler, require that compiler to be executable, and invoke `capable-checks` with `ALIGNC` set to that exact release compiler. This remains the canonical complete local or capable-runner gate. |
 | Aggregate coexistence | `hosted-checks`, `capable-checks`, and `ci` are the complete serialized-aggregate set. If a top-level GNU Make invocation requests one of them, that aggregate must be the invocation's sole goal. An aggregate plus any other goal, or a repeated aggregate, fails during Makefile parsing before a prerequisite or recipe runs, with `verification aggregates must be requested alone`. Separate concurrent Make processes are unsupported caller behavior and are not valid verification evidence; this slice adds no cross-process repository lock. The recursive `ci` child is a separate invocation containing only `capable-checks` and remains valid. |
 | GitHub Actions pull-request gate | Resolve the event comparison through `scripts/classify-verification`, the shared local/hosted classifier specified in `docs/specs/development-preflight.md`. Documentation-only changes run static checks. An executable scope checks out `.align-revision`, runs `make align-build`, requires the resulting release compiler, runs `python3 scripts/check-gate-topology --self-test`, and invokes `make -j8 hosted-checks` with `ALIGNC` set to it. A fresh-image scope separately runs focused qualification once and installed-profile-only qualification once. Preserve the aggregate recipe in the job log so review can verify the option-cleared child command, explicit `-j1`, and ordered focused-goal list. |
-| Focused targets and qualifications | Existing public target commands remain stable, but their declared coverage is explicit. `eval-coding` runs the coding corpus, bounded invalid-input/containment smoke, Git-configuration isolation, and timeout/process cleanup; it intentionally does not run the deep resource/race/failure-injection qualification at `python3 scripts/run-coding-task-resource-scan-smoke`. `prompt-score-prefix-smoke` owns the C6c1p prefix-validator gate and `prompt-state-smoke` owns the C6d offline accept/rollback behavior. `prompt-verifier-smoke` remains the decoded C6c2 verifier owner but is a named focused qualification rather than a hosted-lane member: at the pinned compiler its single `alignc run` costs roughly 720 s and 1.5 GiB of resident memory, against 0.494 s for `alignc check` of the same unit, so it does not fit the supervised aggregate's budget. Run `make prompt-verifier-smoke` directly when the §10 verifier boundary in `src/prompt_score.align` changes and before publishing such a change; `docs/align-requests.md` Request 19 tracks the compiler-side gap. `failure-memory-smoke` continues to depend on `verify-loop-smoke`; naming both in an aggregate graph does not execute the shared recipe twice in one Make invocation. `persisted-result-smoke` is the C7-PERSISTED-RESULT bounded functional owner and is a hosted member by the measured admission decision in `docs/specs/c7-persisted-result.md` section 12: it drives the six `c7-persisted-result-*-smoke` runners in 3.6 s at the pinned compiler, so it is a small stable integration regression rather than a budget risk, and the six member targets stay outside every aggregate so the set runs exactly once. `persisted-result-qualification` owns the seeded differential corpus, the malformed and artifact-mutation corpora, and the temporary source mutation with its extra whole-program compile; it remains a named focused qualification outside every aggregate and is run when the C7 algorithm, wire, digest, validation order, or verifier boundary changes. Admitting the bounded owner changed `Makefile`, so the identity-bound canonical baseline chain is re-finalized with the rest of that capability's Make changes rather than per target. |
+| Focused targets and qualifications | Existing public target commands remain stable, but their declared coverage is explicit. `eval-coding` runs the coding corpus, bounded invalid-input/containment smoke, Git-configuration isolation, and timeout/process cleanup; it intentionally does not run the deep resource/race/failure-injection qualification at `python3 scripts/run-coding-task-resource-scan-smoke`. `prompt-score-prefix-smoke` owns the C6c1p prefix-validator gate and `prompt-state-smoke` owns the C6d offline accept/rollback behavior. `prompt-verifier-smoke` is the decoded C6c2 verifier owner and a hosted member again after Align Request 19 reduced its build from roughly 720 s / 1.5 GiB to 13.27 s / 264,560 KiB on the Align benchmark host. `failure-memory-smoke` continues to depend on `verify-loop-smoke`; naming both in an aggregate graph does not execute the shared recipe twice in one Make invocation. `persisted-result-smoke` is the C7-PERSISTED-RESULT bounded functional owner and is a hosted member by the measured admission decision in `docs/specs/c7-persisted-result.md` section 12: it drives the six `c7-persisted-result-*-smoke` runners in 3.6 s at the pinned compiler, so it is a small stable integration regression rather than a budget risk, and the six member targets stay outside every aggregate so the set runs exactly once. `persisted-result-qualification` owns the seeded differential corpus, the malformed and artifact-mutation corpora, and the temporary source mutation with its extra whole-program compile; it remains a named focused qualification outside every aggregate and is run when the C7 algorithm, wire, digest, validation order, or verifier boundary changes. Admitting the bounded owner changed `Makefile`, so the identity-bound canonical baseline chain is re-finalized with the rest of that capability's Make changes rather than per target. |
 | Canonical C0 baseline | Record two deterministic-reference samples from a clean implementation source commit containing the final `Makefile`; commit the derived immutable oracle; finalize the canonical baseline with that full oracle commit; require the finalized record's source and oracle identities to equal those named commits; and keep the source, oracle, and finalization commits as ancestors of the final reviewed head and merge result. |
 
 ### 2.1 Inputs and defaults
@@ -655,7 +654,7 @@ must encode as ASCII. The script constructs exactly these three lines in memory,
 one LF after every line including the last:
 
 ```text
-hosted=gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke c6e-request2-adoption persisted-result-smoke
+hosted=gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke c6e-request2-adoption persisted-result-smoke
 capable-only=eval-coding baseline-check c6-evaluation-adoption
 serialized=hosted-checks capable-checks ci
 ```
@@ -4272,24 +4271,28 @@ recorded identities satisfies the profile; superseded by a hosted runner when av
 Its cadence is a named focused qualification, matching `CLAUDE.md`'s rule that platform suites are
 named focused qualifications rather than routine gates. Run it when:
 
-1. `.align-revision` changes, because the attested compiler and runtime digests change with it;
-2. a C7 owner boundary named in section 12.1 of `docs/specs/c7-persisted-result.md` changes — the
+1. a C7 owner boundary named in section 12.1 of `docs/specs/c7-persisted-result.md` changes — the
    product module, the CLI dispatch, either C7 runner, or the C7 Make targets;
-3. the gate's own owner changes — `scripts/check-darwin-profile` or this section's contract —
+2. the gate's own owner changes — `scripts/check-darwin-profile` or this section's contract —
    because the recorded block is evidence produced *by* that owner, and a changed owner has not yet
    emitted the evidence attributed to it;
+3. an adoption makes a Darwin-specific behavior or performance claim, or records a concrete gap in
+   Align's macOS CI coverage;
 4. an explicit audit asks for current platform evidence.
 
 It does not run per pull request and joins no aggregate. A run's evidence is the emitted identity
 block, recorded in section 11 of `docs/specs/c7-persisted-result.md`; a pull request cites that
 record rather than restating it.
 
-The block binds `repository.head`, so the record is evidence for exactly that commit and is
-re-emitted whenever the head moves. This repository integrates pull requests as merge commits, so
-the recorded head stays a first-parent-reachable ancestor of the integration commit rather than
-being rewritten by a rebase or a squash; the assertion "these identities were produced at this
-commit" therefore survives integration unchanged. A rebase, squash, or amend after emission
-invalidates the record and requires a fresh run, exactly as a later executable commit does.
+The block binds `repository.head`, so the record is evidence for exactly that executable profile
+head. A later commit that changes none of the profile's owned inputs may cite the record with the
+path delta instead of re-emitting it; a changed pin alone uses Align CI plus the adopted feature's
+consumer owner and does not claim a new Darwin profile result. This repository integrates pull
+requests as merge commits, so the recorded head stays a first-parent-reachable ancestor of the
+integration commit rather than being rewritten by a rebase or a squash; the assertion "these
+identities were produced at this commit" therefore survives integration unchanged. A rebase,
+squash, or amend after emission invalidates the record and requires a fresh run, exactly as a later
+executable commit does.
 
 Failure is fail-closed and phased. Any host-identity mismatch, missing or unexpected `LIBRARY_PATH`,
 missing Homebrew formula, unreadable declared library, dirty or unreadable repository state,

@@ -3,7 +3,36 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active capability: REQUEST20-PIN — adopt Align's macOS owned-JSON CI repair (2026-08-25)
+## Active capability: REQUEST19-PIN — restore the verifier owner to the hosted lane (2026-08-26)
+
+- Work is on `agent/request19-drop-codegen-adoption`, based on align-llm `main` at `eb61086`.
+  Align Request 19 shipped in PR #891 as `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`.
+- `.align-revision` selects that merge. The existing `prompt-verifier-smoke` owner rejoins
+  `HOSTED_CHECK_TARGETS` immediately after `prompt-score-prefix-smoke`; the exact topology bytes and
+  authoritative topology/C6 plans move with it. No align-llm source or verifier behavior changes.
+- Align-side evidence reduced the submitted fixture from 1,517,324 raw-IR lines / 113.6 MB to
+  109,992 lines / 5.96 MB and the cold release build from 471.074 s with more than 832,704 KiB
+  observed RSS to 13.555 s and 266,400 KiB. The final compiler printed the exact PASS line in
+  13.27 s at 264,560 KiB.
+- The managed pin materializes. `gmake gate-topology-check` passes, the restored
+  `gmake prompt-verifier-smoke` prints the exact PASS line in 14.01 s wall, and `gmake check` passes
+  with the current 23-unit graph.
+- The identity-bound baseline chain is source `d574363`, oracle `63250e9`, and finalization
+  `cb28310`; both samples pass and both chain checks pass. At `cb28310`, executable preflight passes:
+  hosted checks take 41,714 ms, focused fresh-worker owners take 24,118 ms, the native boundary
+  profile passes in 160,704 ms, and the supervised worker's complete `make ci` passes in
+  370,529 ms. The installed profile completes in 763,510 ms and records the exact-head stamp.
+- The comprehensive review of `db92646` returned three P2 findings. The direct adopted-pin fixture
+  measurement now closes the performance-evidence class: check is 2.214 s / 126,192 KiB and build is
+  12.786 s / 259,720 KiB on native Linux x86_64, a 5.78x wall-clock ratio, with exact output. The
+  topology and baseline-chain cells were clean.
+- Request 19 is `ALIGN_LLM_VERIFIED`. Its aggregate proof was selected because the adoption restores
+  `prompt-verifier-smoke` to the hosted lane; the compiler pin alone does not select x86_64, Linux
+  aarch64, or Darwin requalification. Align's merged CI owns the unchanged compiler-platform
+  boundary, and this request changes no target-local C7 boundary. Pending: run publication preflight
+  with the review disposition, publish, and merge. Request 20 is closed by publication PR #107.
+
+## Merged checkpoint: REQUEST20-PIN — adopt Align's macOS owned-JSON CI repair (2026-08-25)
 
 - Work is on `agent/request20-align-pin-final`, based on align-llm `main` at `0a8b9cf`. Align Request 20
   shipped in Align PR #887 as `fa3f03f15f0b1d876683343233f440bce6ea27c5`; PR #888 then closed
@@ -170,8 +199,9 @@ file records durable project state.
   head `e14ba33` (run `32814437108`, job `97699828694`), and the target-local C7 gate then passed
   natively on aarch64 Linux at this branch's head. `docs/specs/c7-persisted-result.md` sections 11.2
   and 11.3 hold both records, including the two emitted attestation blocks.
-- **Cadence, deliberately.** Both gates are named focused qualifications — run at a pin bump, a C7
-  owner-boundary change, or an explicit audit — not per-pull-request checks. Neither joins
+- **Cadence, deliberately.** Both gates are named focused qualifications — run at a C7 target-local
+  owner-boundary change or an explicit audit, not for a pin change alone and not per pull request.
+  Neither joins
   `hosted-checks`, `capable-checks`, or `ci`, so `scripts/check-gate-topology`'s `EXPECTED` bytes and
   the topology oracle are untouched and `make gate-topology-check` passes unchanged.
 - **The `Makefile` change re-finalized the identity-bound baseline chain.** Adding
@@ -1333,15 +1363,12 @@ file records durable project state.
 
 ## Next actions
 
-1. Commit REQUEST20-PIN's evidence record, review the stable candidate, run the exact-head
-   executable preflight, and publish with merge-commit integration.
-2. After the pin capability merges, close Request 20 with the merged align-llm publication evidence.
-3. Start Request 19, the only remaining proposed Align request and the highest-priority upstream
-   capability.
-4. Preserve the deliberate `eval/runners/run-coding-task.py` zombie-counting deferral until a
+1. Run publication preflight with the Request 19 review disposition, publish with merge-commit
+   integration, and close Request 19 after the merge.
+2. Preserve the deliberate `eval/runners/run-coding-task.py` zombie-counting deferral until a
    capability already rebinds and re-measures the frozen coding corpus or revisits the validation
    process budget.
-5. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
+3. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
    poll.
 
 ## Recovery and preservation

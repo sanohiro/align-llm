@@ -4503,20 +4503,16 @@ addition changes the literal lane bytes owned by `scripts/check-gate-topology`, 
 change refreshes its `EXPECTED` sequence and the check-baseline chain, following the section 11.1
 precedent.
 
-C6-MEASURED also removes one member from that lane. `prompt-verifier-smoke` stays the direct C6c2
-owner and a `.PHONY` public target, but it is now a **named focused qualification** rather than a
-hosted-lane member. At the pinned Align revision `2f33ac5c33a898a7894af58322852632ce6ffe42`,
-`make prompt-verifier-smoke` costs roughly 720 s of wall time at a 1,525,732 KiB peak resident set,
-while `alignc check` of the same unit costs 0.494 s. The unit's many large by-value record
-literals — 100 of its 345 `huge struct copy` warnings name one 5,056-byte record — hit a compiler
-code-generation cost that one smoke alone exceeded the supervised fresh-worker aggregate's
-practical budget with. Run `make prompt-verifier-smoke` directly whenever
-the section 10 verifier boundary in `src/prompt_score.align` changes, and before publishing such a
-change; it is not reached by `hosted-checks`, `capable-checks`, or `ci`. `docs/align-requests.md`
-Request 19 records the compiler-side gap, and the member rejoins the lane when that gap closes.
-Removing it changes the same lane bytes an addition would, so this change refreshes
-`scripts/check-gate-topology`, the `docs/specs/check-gate-topology.md` oracle, and the
-check-baseline chain together.
+C6-MEASURED temporarily removed one member from that lane. `prompt-verifier-smoke` stayed the direct
+C6c2 owner and a `.PHONY` public target, but became a named focused qualification because Align
+revision `2f33ac5c33a898a7894af58322852632ce6ffe42` needed roughly 720 s and 1,525,732 KiB to
+code-generate it. Align Request 19 closed that compiler-side gap in PR #891. At adopted Align merge
+`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`, the same fixture completes in 13.27 s at 264,560 KiB
+on the Align benchmark host and prints the unchanged PASS line. It therefore rejoins `HOSTED_CHECK_TARGETS`
+in its original position after `prompt-score-prefix-smoke`; `hosted-checks`, `capable-checks`, and
+`ci` again reach it. Restoring it changes the same lane bytes an addition would, so this adoption
+refreshes `scripts/check-gate-topology`, the `docs/specs/check-gate-topology.md` oracle, and the
+identity-bound baseline chain together.
 
 The C6-MEASURED closure matrix is:
 

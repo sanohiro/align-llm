@@ -16,9 +16,10 @@ from typing import Sequence
 REPOSITORY = Path(__file__).resolve().parent.parent
 
 # This is the installed profile's executable ownership boundary. Keep it here only: the local
-# preflight and both hosted jobs consume the classifier instead of copying this inventory.
+# preflight and both hosted jobs consume the classifier instead of copying this inventory. A pin by
+# itself is deliberately not in this set: provider platform CI owns compiler portability, while the
+# consumer CI retains its ordinary hosted graph and local preflight runs the request owner.
 FRESH_IMAGE_PATTERNS = (
-    ".align-revision",
     "Makefile",
     ".github/workflows/ci.yml",
     "src/*",
@@ -160,7 +161,16 @@ def classify_changes(
     )
     if docs_only:
         return Scope("docs", base, head, True, False, False, False)
-    fresh = any(owns_fresh_image(path) for _, path in changes)
+    pin_only = any(path == ".align-revision" for _, path in changes) and all(
+        status in LIGHT_STATUSES and (path == ".align-revision" or path.endswith(".md"))
+        for status, path in changes
+    )
+    if pin_only:
+        return Scope("pin", base, head, False, True, False, False)
+    fresh = any(
+        owns_fresh_image(path) or (path == ".align-revision" and status not in LIGHT_STATUSES)
+        for status, path in changes
+    )
     return Scope(
         "fresh-image" if fresh else "hosted",
         base,
