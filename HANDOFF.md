@@ -17,9 +17,14 @@ file records durable project state.
 - The managed pin materializes. `gmake gate-topology-check` passes, the restored
   `gmake prompt-verifier-smoke` prints the exact PASS line in 14.01 s wall, and `gmake check` passes
   with the current 23-unit graph.
-- Pending: commit the clean implementation source, regenerate the identity-bound baseline chain,
-  run the complete request/fresh-worker acceptance, review, preflight, publish, and merge. Request
-  20 is closed by publication PR #107.
+- The identity-bound baseline chain is source `d574363`, oracle `63250e9`, and finalization
+  `cb28310`; both samples pass and both chain checks pass. At `cb28310`, executable preflight passes:
+  hosted checks take 41,714 ms, focused fresh-worker owners take 24,118 ms, the native boundary
+  profile passes in 160,704 ms, and the supervised worker's complete `make ci` passes in
+  370,529 ms. The installed profile completes in 763,510 ms and records the exact-head stamp.
+- Request 19 is `ALIGN_LLM_VERIFIED`. Pending: commit this evidence, run the one comprehensive
+  review, repair any valid finding class, rerun exact-head preflight, publish, and merge. Request 20
+  is closed by publication PR #107.
 
 ## Merged checkpoint: REQUEST20-PIN — adopt Align's macOS owned-JSON CI repair (2026-08-25)
 
