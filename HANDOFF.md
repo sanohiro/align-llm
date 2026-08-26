@@ -90,16 +90,17 @@ file records durable project state.
   all five are repaired in the following commit; the softened bounded-work claim is recorded as
   section 7 item 22 rather than removed, for the reason stated there. No further review is required:
   the repair changed no behavior of the product executable.
+- **Baseline chain**: `51b5d86` -> `a207933` -> `bc42527` (source -> oracle -> finalization),
+  identity-bound and re-recorded on Linux after the final review repair. Exactly two of the twenty
+  recorded artifacts changed against the R0 chain — `Makefile` and `src/main.align`, both carrying
+  the `--model-ir` arm — and the twenty paths are otherwise identical. `gmake baseline-check` on
+  Linux: PASS, ending `baseline chain: PASS`.
 - **Next actions, in order.**
-  1. Re-record the canonical baseline chain (source -> `test(eval): record ... baseline oracle` ->
-     `test(eval): finalize ... baseline`) on Linux, exactly as the R0 chain did. `Makefile` and
-     `src/main.align` are the artifacts whose hashes change. Verify with
-     `python3 scripts/check-baseline-chain`.
-  2. Exact-head preflight: `python3 scripts/pre-pr --owner-test model-ir -- gmake model-ir-smoke
+  1. Exact-head preflight: `python3 scripts/pre-pr --owner-test model-ir -- gmake model-ir-smoke
      gate-topology-check`. Changing the `Makefile` matches `FRESH_IMAGE_PATTERNS`, so this selects
      the fresh-image **installed** profile — expected for this capability, not a Docker skip.
-  3. Publish the English pull request with the owner result, the parity result, and the review
-     envelope.
+  2. Publish the English pull request with the owner result, the parity result, the baseline chain,
+     and the review envelope.
 
 ## Merged checkpoint: R0-GGUF-INSPECT — read-only GGUF inspection (2026-08-26)
 
