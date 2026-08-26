@@ -258,6 +258,8 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
   mut score_100_count := 0
   mut score_20_count := 0
   mut score_0_count := 0
+  changed_stem := path_stem(changed_path)
+  changed_directory := path.dir(changed_path)
   listing: str := files_run.stdout
   mut file_cursor := 0
   loop {
@@ -270,8 +272,8 @@ pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelect
     file_cursor = if file_end < listing.len() { file_end + 1 } else { listing.len() }
     if relative.len() == 0 { break }
     if is_test_path(relative) {
-      name_match := related_test_basename_match(changed_path, relative)
-      same_directory := related_test_same_directory(changed_path, relative)
+      name_match := related_test_basename_match(changed_stem, path_stem(relative))
+      same_directory := changed_directory == path.dir(relative)
       score := related_test_score(name_match, same_directory)
       reason := related_test_reason(name_match, same_directory)
       record := RelatedTest { path: relative, score: score, reason: reason }
@@ -1008,17 +1010,11 @@ fn path_stem(path_name: str) -> str {
   return base[0..base.len() - extension.len()]
 }
 
-fn related_test_basename_match(changed_path: str, test_path: str) -> bool {
-  changed_stem := path_stem(changed_path)
-  test_stem := path_stem(test_path)
+fn related_test_basename_match(changed_stem: str, test_stem: str) -> bool {
   if changed_stem.len() == 0 || test_stem.len() == 0 {
     return false
   }
   return test_stem.contains(changed_stem) || changed_stem.contains(test_stem)
-}
-
-fn related_test_same_directory(changed_path: str, test_path: str) -> bool {
-  return path.dir(changed_path) == path.dir(test_path)
 }
 
 fn related_test_score(name_match: bool, same_directory: bool) -> i64 {

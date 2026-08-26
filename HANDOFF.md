@@ -3,23 +3,22 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## C8 second capability: compute related-test signals once (2026-08-26)
+## C8 third capability: compute changed-path components once (2026-08-26)
 
-- The preceding durable handoff is C8 test-selection PR #112 on `main` at
-  `4ed50d237e65e164818b3060fe11312296685ec3`. PR #111 first restricted native profiles to their
-  owned target-local/image boundaries; PR #112 then passed hosted CI while both unaffected native
-  jobs completed in 6–9 seconds without image qualification.
-- Active work is on `agent/c8-selection-signals-once`. The new fixed coding-task benchmark owns a
-  real Python compile, targeted assertion, and full assertion with 4,000 tracked test candidates.
-  The implementation is `eaed3e03aac7d07c68851bfb7c684dce959f4ba0`: each test now computes
-  basename/directory signals once and derives both score and reason without changing output. The
-  comprehensive review inspected `ec58cc1fdb70464b1a11f84de5299038a59b1e2c` and returned four
-  P2 findings in the benchmark proof and resume prose; the consolidated repair follows that head.
-  The repaired benchmark requires a newly created result on every run and makes full-test include
-  targeted coverage plus an independent assertion. The exact-commit 101-pair comparison
-  measured 49,926,004 ns for the parent and 49,650,937 ns for the candidate, a 5,509 ppm (0.55%)
-  reduction. Run the complete review/publication sequence, then merge before selecting another C8
-  boundary.
+- The preceding durable handoff is C8 signal-computation PR #113 on `main` at
+  `a51aa065a2f83f4e88d7734068c6b2598b4bd3a8`. Its hosted check passed in 1m37s while the unaffected
+  x86_64 and aarch64 jobs completed in 7s and 4s without running native qualification.
+- Active work is on `agent/c8-hoist-changed-path-signals`. The third capability is
+  `C8-TEST-SELECTION-CHANGED-PATH-ONCE`: derive the unchanged changed path's stem and directory once
+  before the 4,000-candidate loop instead of once per candidate. Implementation
+  `ab23de1c4fc3bef454b51a4e5c7db8f019a81a72` preserves the selection output and removes four lines
+  net. The exact 201-pair comparison measured 49,577,277 ns for the parent and 49,481,041 ns for the
+  candidate, a 1,941 ppm (0.19%) reduction; two 101-pair comparisons independently improved in the
+  same direction. The comprehensive review inspected
+  `d4b0dc8d0796aa0d9786f9aa8c54c5d04484dc2f` and returned one P2 documentation finding: the
+  hoisted `std.path` results are borrowed zero-allocation views, not owned strings. The consolidated
+  repair follows that head. Run exact-head preflight and publication before selecting another C8
+  capability.
 - Ordinary `src/` and platform-independent `eval/` changes now select the pinned hosted graph.
   Fresh-image construction, workflow, classifier, Make topology, worker/control, and their
   qualification owners retain the focused plus installed profile. The Linux sandbox runner
@@ -51,11 +50,11 @@ file records durable project state.
 
 ## Resume in another environment
 
-1. Fetch `origin` and resume `agent/c8-selection-signals-once` at its latest commit. Read
+1. Fetch `origin` and resume `agent/c8-hoist-changed-path-signals` at its latest commit. Read
    `CLAUDE.md`, then `docs/specs/roadmap.md` §C8 and `docs/specs/c8-speed-first.md`. Complete the
    consolidated review repair, exact-head preflight, publication, and merge sequence before
    selecting another C8 capability.
-2. After the second C8 pull request merges, refresh `main` and select the next smallest
+2. After the third C8 pull request merges, refresh `main` and select the next smallest
    consumer-complete optimization that improves a real fixed coding task end to end. Establish its
    reproducible current median for time to a passing patch before making an optimization claim;
    tokens/second or an isolated model latency is not the C8 gate.
