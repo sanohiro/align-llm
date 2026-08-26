@@ -78,11 +78,20 @@ The current forward delivery order is:
    `6640dcf`); the `scripts/run-gguf-reference-parity` qualification ran once against a real
    Qwen2.5-Coder-7B Q4_K_M model and passed: 29 metadata KV pairs, 339 tensors, `data_offset`
    5,953,536, `bytes_read` 6,291,456.
-10. **R1-QWEN-MODEL-IR — Qwen2 Model IR and Block IR. Active.** The next Track B capability, on
-    branch `agent/r1-qwen-model-ir` (ledger commit `631b2ce`). It turns one real Qwen2-architecture
-    GGUF file into the Model IR and Block IR that `docs/specs/align-llm.md` section 5 places between
-    the GGUF reader and the layout planner. `docs/specs/r1-qwen-model-ir.md` is the authoritative
-    plan and owns the contract ledger, closure matrix, and fixture design.
+10. **R1-QWEN-MODEL-IR — Qwen2 Model IR and Block IR. Gate met, closed.** Turned one real
+    Qwen2-architecture GGUF file into the Model IR and Block IR that `docs/specs/align-llm.md`
+    section 5 places between the GGUF reader and the layout planner. `docs/specs/r1-qwen-model-ir.md`
+    is the authoritative plan and owns the contract ledger, closure matrix, and fixture design.
+    Merged as PR #122 (head `85a3a97`, merge `08492dc`); the `scripts/run-model-ir-parity`
+    qualification ran once against a real Qwen2.5-Coder-7B Q4_K_M model and passed: 339 tensors over
+    58 blocks, size-sum oracle `data_offset` 5,953,536 + `total_tensor_bytes` 4,677,120,000 =
+    `computed_end` 4,683,073,536, matching `file_size`.
+11. **R1B-GPTOSS-MOE-IR — gpt-oss MoE frontend and per-expert Block IR. Active.** The next Track B
+    capability, on branch `agent/r1b-gptoss-moe-ir` (ledger commit `2cd2cb4`). It discharges the MoE
+    half of the R1 roadmap gate: a new architecture-neutral `src/model_ir.align` builder, a new
+    `src/frontend_gpt_oss.align`, per-expert `ExpertBlock`/`RouterBlock` block kinds, and
+    `R1_MODEL_IR` at `schema_version: 2`. `docs/specs/r1b-gptoss-moe-ir.md` is the authoritative plan
+    and owns the contract ledger, closure matrix, and fixture design.
 
 **I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
 prove its value on an existing model, and the merged C6-MEASURED wave (align-llm PR #103, `c9a510d`)
@@ -98,7 +107,7 @@ than by a separate align-coder capability.
 **ALIGN-ADOPTION is an internal prerequisite checkpoint, not a standalone capability.** Within the
 next consumer branch, batch its merged Align requests into one compiler-pin update, run every named
 focused real-client acceptance target, and then run one final fresh `make ci`. Preserve each
-request's lifecycle evidence without opening a pin-only pull request. As of R1-QWEN-MODEL-IR, no
+request's lifecycle evidence without opening a pin-only pull request. As of R1B-GPTOSS-MOE-IR, no
 Align request has merged since R0; `.align-revision` stays pinned to `4b515f8d` and there is
 nothing to batch.
 
@@ -377,7 +386,8 @@ baseline・測定値・host・binary digestは
 で**ppm-floor rule**（cost ceilingを実装前にledgerへ記録し、shipping floorである2,000 ppmを
 下回るseamは実装せずdeferred surfacesに記録する）をsection 1へ昇格させた。残るdeferred surface
 は、floorを超えるcost ceilingを持つか、genuineなAlign capability requestになった場合にのみ
-新しいcapabilityとして再開する。R0のgateは達成済みでcloseした。次の実装対象はTrack BのR1である。
+新しいcapabilityとして再開する。R0のgateは達成済みでcloseした。R1（Qwen2 Model IR）のgateも
+達成済みでcloseした。次の実装対象はTrack BのR1B（gpt-oss/MoEフロントエンド）である。
 
 ---
 
@@ -441,12 +451,22 @@ R1のauthoritative planは[`r1-qwen-model-ir.md`](r1-qwen-model-ir.md)である�
 モジュールという慣習に沿い、上記`frontends/qwen/`が指すQwen2 frontendは`src/frontend_qwen.align`
 としてflatな`src/`配下に実装する。tokenizer/vocabulary（`tokenizer.ggml.tokens`のようなMove要素
 配列のindexingを要する、Request 22）はこのcapabilityから意図的に除外し、Request 22を
-non-blockingのまま保つ。gpt-oss/MoE frontend（`ExpertBlock`/`RouterBlock`）は別のcapabilityとして
-後で実装する。
+non-blockingのまま保つ。gpt-oss/MoE frontend（`ExpertBlock`/`RouterBlock`）は別capability
+R1B-GPTOSS-MOE-IRとして実装中である（[`r1b-gptoss-moe-ir.md`](r1b-gptoss-moe-ir.md)）。その
+MoE frontendは`R1_MODEL_IR`を`schema_version: 2`へ引き上げ、block tensor recordへ
+`claimed_absolute_offset`/`claimed_nbytes`の2フィールドを追加してper-expertのbyte claimを
+表現する（同文書section 2.4）。
 
 ### Gate
 
 Model IRとBlock IRを生成できること。
+
+**達成済み（Qwen2の半分）。** 実モデル（Qwen2.5-Coder-7B Q4_K_M）に対する
+`scripts/run-model-ir-parity`はPASSし、`n_layer` 28、`n_embd` 3584、`n_head` 28、
+`n_head_kv` 4、`head_dim` 128、`n_ff` 18944、`n_vocab` 152064、`n_expert` 0を記録した。
+size-sum oracleは`data_offset` 5,953,536 + `total_tensor_bytes` 4,677,120,000 =
+`computed_end` 4,683,073,536で`file_size`と一致し、339 tensorすべてが58 blockへ割り当てられた。
+gpt-oss/MoEの半分（`n_expert > 0`、per-expert `ExpertBlock`）はR1B-GPTOSS-MOE-IRが引き継ぐ。
 
 ---
 

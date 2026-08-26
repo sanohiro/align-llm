@@ -6,6 +6,7 @@ import verify
 import eval
 import gguf
 import frontend_qwen
+import frontend_gpt_oss
 import repair
 import model
 import provider
@@ -513,17 +514,29 @@ fn inspect_gguf_demo(args: array<str>) -> Result<(), Error> {
   }
 }
 
-// R1-QWEN-MODEL-IR CLI adapter (`docs/specs/r1-qwen-model-ir.md` sections 2.2 and 2.4). The arm
-// holds no GGUF and no architecture knowledge: it validates arity, calls
-// `frontend_qwen.build_model_ir`, writes or prints the document, prints the summary block, and maps
-// the derivation status to the process exit. Arity is checked before any path or file work, so an
-// arity failure produces no output at all. The shape deliberately mirrors `--inspect-gguf` rather
-// than inventing a second CLI grammar in the same repository.
+// R1-QWEN-MODEL-IR / R1B-GPTOSS-MOE-IR CLI adapter (`docs/specs/r1-qwen-model-ir.md` sections 2.2
+// and 2.4; `docs/specs/r1b-gptoss-moe-ir.md` section 2.2). The arm holds no GGUF and no architecture
+// knowledge beyond the dispatch itself: it validates arity, reads the container table exactly once,
+// selects the frontend from the container's own `general.architecture` field, writes or prints the
+// document, prints the summary block, and maps the derivation status to the process exit. Arity is
+// checked before any path or file work, so an arity failure produces no output at all.
+//
+// There is no `--arch` flag. A flag would be a second source of truth for a fact the file already
+// states, and a mismatch between the two would need an error code of its own; the file wins because
+// the file is the subject. `gpt-oss` selects the MoE frontend and every other value — including an
+// absent, non-STRING, or non-UTF-8 one — selects the qwen2 frontend, whose own step-4 re-check
+// rejects it as `R1_UNSUPPORTED_ARCH` with the architecture as the detail.
 fn model_ir_demo(args: array<str>) -> Result<(), Error> {
   if args.len() < 3 || args.len() > 4 {
     return Err(Error.Invalid)
   }
-  ir := frontend_qwen.build_model_ir(args[2])?
+  table := gguf.read_table(args[2])?
+  architecture_view: str := table.architecture
+  ir := if table.architecture_present && architecture_view == "gpt-oss" {
+    frontend_gpt_oss.build_model_ir(table, args[2])
+  } else {
+    frontend_qwen.build_model_ir(table, args[2])
+  }
   document_view: str := ir.document
   if args.len() == 3 {
     // The machine form: the document and one newline, and nothing else.

@@ -277,6 +277,11 @@ pub fn ggml_type_name(id: i64) -> str {
   if id == 30 { return "BF16" }
   if id == 34 { return "TQ1_0" }
   if id == 35 { return "TQ2_0" }
+  // `GGML_TYPE_MXFP4 = 39` (`/opt/homebrew/include/ggml.h:429`, the header symlinked to
+  // `ggml/0.21.0` that llama.cpp build 10566 links against). Ids 36 to 38 and 40 onward remain
+  // unnamed: naming a type and sizing it are different claims, and R1B makes only the two this
+  // repository verified.
+  if id == 39 { return "MXFP4" }
   return ""
 }
 
@@ -1330,6 +1335,15 @@ pub fn ggml_block_size(id: i64) -> i64 {
   if id == 27 { return 1 }
   if id == 28 { return 1 }
   if id == 30 { return 1 }
+  // MXFP4 (`docs/specs/r1b-gptoss-moe-ir.md` section 2.8.2). Provenance: the id is transcribed from
+  // `/opt/homebrew/include/ggml.h:429` (`GGML_TYPE_MXFP4 = 39`), which is the header of the
+  // `ggml/0.21.0` build that llama.cpp `0.2.0 (build 10566, commit bb4caa754)` links against; the
+  // geometry is not derivable from the installed headers — `ggml-common.h`, which defines
+  // `QK_MXFP4` and `struct block_mxfp4`, is not installed — and was read out of that revision's own
+  // shipped implementation through `ggml_blck_size(GGML_TYPE_MXFP4)` / `ggml_type_size(...)`, which
+  // returned `32` / `17` and reproduced every one of the twenty rows above exactly. Status:
+  // library-oracle verified; real-model verification pending (section 4.4's `N/A`).
+  if id == 39 { return 32 }
   return 0
 }
 
@@ -1343,7 +1357,13 @@ pub fn ggml_type_size(id: i64) -> i64 {
   if id == 6 { return 22 }
   if id == 7 { return 24 }
   if id == 8 { return 34 }
-  if id == 9 { return 40 }
+  // `q8_1` is 36, not 40: `block_q8_1` carries two `ggml_half` scales beside its 32 `int8_t`
+  // quants in this revision. The 40 R0 transcribed is the pre-`ggml_half` layout, and re-running
+  // the section 2.8.2 library oracle against the pinned revision is what caught it
+  // (`docs/specs/r1b-gptoss-moe-ir.md` section 7, item 6). No shipped GGUF stores `q8_1`, so no
+  // model was ever mis-sized; the row is corrected because the oracle's whole value is that it
+  // reproduces every row.
+  if id == 9 { return 36 }
   if id == 10 { return 84 }
   if id == 11 { return 110 }
   if id == 12 { return 144 }
@@ -1356,6 +1376,10 @@ pub fn ggml_type_size(id: i64) -> i64 {
   if id == 27 { return 8 }
   if id == 28 { return 8 }
   if id == 30 { return 2 }
+  // MXFP4: 17 bytes per 32-element block, from the same library oracle. `NVFP4` (id 40, `blck=64`,
+  // `type_size=36` from that probe) is deliberately not added: it has no consumer, no fixture need,
+  // and no model, and an id with no consumer stays `R1_UNKNOWN_TENSOR_TYPE`.
+  if id == 39 { return 17 }
   return 0
 }
 

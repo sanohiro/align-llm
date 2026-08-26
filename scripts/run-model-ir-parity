@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# R1-QWEN-MODEL-IR focused qualification (`docs/specs/r1-qwen-model-ir.md` section 4.4). It
-# discharges the roadmap gate — "Model IR and Block IR can be produced" — by comparing the derived
-# Model IR against llama.cpp's own reading of the same file. It is opt-in, never joins an aggregate,
-# and never runs in CI.
+# R1-QWEN-MODEL-IR / R1B-GPTOSS-MOE-IR focused qualification (`docs/specs/r1-qwen-model-ir.md`
+# section 4.4, `docs/specs/r1b-gptoss-moe-ir.md` section 4.4). It discharges the roadmap gate —
+# "Model IR and Block IR can be produced" — by comparing the derived Model IR against llama.cpp's
+# own reading of the same file. It is opt-in, never joins an aggregate, and never runs in CI.
 #
 #   ALIGN_LLM_GGUF_MODEL   path to the model
 #   ALIGN_LLM_LLAMA_CLI    path to the reference executable, expected to be `llama-cli`
+#
+# One runner, arch-dispatched: it reads `model.arch` out of the document it just produced and
+# selects the comparison row set from it, so one environment variable serves a qwen2 model and a
+# gpt-oss model and there is no second variable to forget. A gpt-oss model is 12.1 GB and is not
+# present on this host, so that half of the gate is a recorded `N/A` (section 4.4) and never a pass.
 #
 # Neither variable has a default. A qualification that silently passes when its subject is missing is
 # worse than no qualification, so a missing input prints one exact N/A line and exits 0 without
@@ -202,26 +207,79 @@ def unpack_f32(bits_hex):
     return struct.unpack("<f", struct.pack("<I", int(bits_hex, 16)))[0]
 
 
+# Every row whose reference value must be a plain scalar integer. In this build `n_head` and
+# `n_head_kv` print with `%s`, not `%u` (`%s: n_head                = %s`), so an architecture with
+# per-layer head counts may print a list rather than a number. The runner must fail closed with
+# `parity: UNPARSED n_head` rather than coerce a list into an integer comparison; this note exists
+# so that the failure is recognized rather than debugged.
+INTEGER_KEYS = {
+    "n_layer", "n_embd", "n_head", "n_head_kv", "n_embd_head_k", "n_embd_head_v",
+    "n_ff", "n_ff_exp", "n_expert", "n_expert_used", "n_vocab", "n_ctx_train",
+    "rope type", "n_swa",
+}
+INTEGER_TEXT = re.compile(r"^[+-]?[0-9]+$")
+
+
 # The two float rows are the reason `*_bits` exists in the schema: our side is reconstructed
 # bit-exactly in Python and then formatted with the reference's own `printf` precision, so the
 # comparison is exact in both directions and needs no tolerance.
-ROWS = [
-    ("model.arch", "arch", str(model["arch"])),
-    ("model.n_layer", "n_layer", str(model["n_layer"])),
-    ("model.n_embd", "n_embd", str(model["n_embd"])),
-    ("model.n_head", "n_head", str(model["n_head"])),
-    ("model.n_head_kv", "n_head_kv", str(model["n_head_kv"])),
-    ("model.head_dim", "n_embd_head_k", str(model["head_dim"])),
-    ("model.head_dim", "n_embd_head_v", str(model["head_dim"])),
-    ("model.n_ff", "n_ff", str(model["n_ff"])),
-    ("model.n_expert", "n_expert", str(model["n_expert"])),
-    ("model.n_vocab", "n_vocab", str(model["n_vocab"])),
-    ("model.context_length", "n_ctx_train", str(model["context_length"])),
-    ("model.rope.type", "rope type", str(model["rope"]["type"])),
-    ("model.rope.freq_base_bits", "freq_base_train",
-     "%.1f" % unpack_f32(model["rope"]["freq_base_bits"])),
-    ("model.rms_eps_bits", "f_norm_rms_eps", "%.1e" % unpack_f32(model["rms_eps_bits"])),
-]
+def build_rows(model):
+    """The comparison row set, selected by `model.arch`. Returns `(rows, notes)`, where a note
+    records a row that is deliberately not compared and why — never a silent omission."""
+    rows = [
+        ("model.arch", "arch", str(model["arch"])),
+        ("model.n_layer", "n_layer", str(model["n_layer"])),
+        ("model.n_embd", "n_embd", str(model["n_embd"])),
+        ("model.n_head", "n_head", str(model["n_head"])),
+        ("model.n_head_kv", "n_head_kv", str(model["n_head_kv"])),
+        ("model.head_dim", "n_embd_head_k", str(model["head_dim"])),
+        ("model.head_dim", "n_embd_head_v", str(model["head_dim"])),
+        ("model.n_ff", "n_ff", str(model["n_ff"])),
+        ("model.n_expert", "n_expert", str(model["n_expert"])),
+        ("model.n_vocab", "n_vocab", str(model["n_vocab"])),
+        ("model.context_length", "n_ctx_train", str(model["context_length"])),
+        ("model.rope.type", "rope type", str(model["rope"]["type"])),
+        ("model.rope.freq_base_bits", "freq_base_train",
+         "%.1f" % unpack_f32(model["rope"]["freq_base_bits"])),
+        ("model.rms_eps_bits", "f_norm_rms_eps", "%.1e" % unpack_f32(model["rms_eps_bits"])),
+    ]
+    notes = []
+    if model["arch"] == "gpt-oss":
+        rows += [
+            ("model.n_expert_used", "n_expert_used", str(model["n_expert_used"])),
+            ("model.n_ff_exp", "n_ff_exp", str(model["n_ff_exp"])),
+        ]
+        if model.get("sliding_window") is None:
+            notes.append("model.sliding_window is null; the n_swa row is not compared")
+        else:
+            rows.append(("model.sliding_window", "n_swa", str(model["sliding_window"])))
+    return rows, notes
+
+
+# A synthetic unit for each row set, run before the real comparison so that a row-set regression is
+# caught on a host whose only model is a dense one — and, when the only model is a gpt-oss one, the
+# other way round.
+UNIT_QWEN = {
+    "arch": "qwen2", "n_layer": 28, "n_embd": 3584, "n_head": 28, "n_head_kv": 4,
+    "head_dim": 128, "n_ff": 18944, "n_expert": 0, "n_vocab": 152064,
+    "context_length": 32768, "rope": {"type": 2, "freq_base_bits": "49742400"},
+    "rms_eps_bits": "3727c5ac",
+}
+UNIT_GPTOSS = dict(UNIT_QWEN, arch="gpt-oss", n_expert=32, n_expert_used=4, n_ff_exp=2880,
+                   sliding_window=128)
+qwen_rows, qwen_notes = build_rows(UNIT_QWEN)
+gptoss_rows, gptoss_notes = build_rows(UNIT_GPTOSS)
+if [key for _, key, _ in qwen_rows] != [key for _, key, _ in gptoss_rows][:len(qwen_rows)]:
+    fail("row-set unit: the gpt-oss set does not extend the shared set")
+if [key for _, key, _ in gptoss_rows][len(qwen_rows):] != ["n_expert_used", "n_ff_exp", "n_swa"]:
+    fail("row-set unit: the gpt-oss rows are %r" % [key for _, key, _ in gptoss_rows])
+if any(key in ("n_expert_used", "n_ff_exp", "n_swa") for _, key, _ in qwen_rows):
+    fail("row-set unit: a MoE row leaked into the dense set")
+_, absent_notes = build_rows(dict(UNIT_GPTOSS, sliding_window=None))
+if len(absent_notes) != 1:
+    fail("row-set unit: a null sliding_window must be recorded as a skipped row")
+
+ROWS, ROW_NOTES = build_rows(model)
 
 compared = []
 for label, key, ours in ROWS:
@@ -232,6 +290,10 @@ for label, key, ours in ROWS:
     if len(unique) != 1:
         fail("parity: AMBIGUOUS %s (%r)" % (key, unique))
     theirs = unique[0]
+    # Fail closed on a value this comparison cannot interpret — a per-layer head-count list above
+    # all — rather than coerce it into a scalar.
+    if key in INTEGER_KEYS and not INTEGER_TEXT.match(theirs):
+        fail("parity: UNPARSED %s (non-scalar value %r)" % (key, theirs))
     if ours != theirs:
         fail("%s: %r, print_info says %r" % (label, ours, theirs))
     compared.append((label, key, ours))
@@ -280,9 +342,12 @@ print("model ir parity: PASS")
 print("  reference build")
 for line in version_text.splitlines():
     print("    %s" % line.strip())
+print("  architecture       %s" % model["arch"])
 print("  compared rows")
 for label, key, ours in compared:
     print("    %-26s print_info %-16s %s" % (label, key, ours))
+for note in ROW_NOTES:
+    print("    note: %s" % note)
 print("  type census")
 for row in document["quant"]["type_counts"]:
     print("    %-6s %5d tensors  %16d bytes" % (row["type_name"], row["tensor_count"], row["bytes"]))

@@ -78,12 +78,17 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
 > `borrow t: GgufTable` accessors in `src/gguf.align` get the by-value warning even though no call
 > copies the 552-byte struct. It is non-blocking — the warnings are noise, not a build failure — with
-> all of R1 as independent work. R1-QWEN-MODEL-IR also added Request 24, admitting `builder` (not just
-> `array_builder<T>`) as a `borrow mut` parameter type: `array_builder<T>` is already admitted in that
-> position at this pin, but the plain text `builder` is rejected as an unknown type, so `gguf.inspect`
-> and `gguf.read_table` duplicate one decode-and-accumulate walk instead of sharing it through a
-> borrowed builder parameter. It is non-blocking — the duplication is in place and `table-inspect-parity`
-> guards the two walks from drifting — with all of R1 as independent work.
+> all of R1-QWEN-MODEL-IR as independent work. R1-QWEN-MODEL-IR also added Request 24, admitting
+> `builder` (not just `array_builder<T>`) as a `borrow mut` parameter type: `array_builder<T>` is
+> already admitted in that position at this pin, but the plain text `builder` is rejected as an
+> unknown type, so `gguf.inspect` and `gguf.read_table` duplicate one decode-and-accumulate walk
+> instead of sharing it through a borrowed builder parameter. It is non-blocking — the duplication is
+> in place and `table-inspect-parity` guards the two walks from drifting — with all of
+> R1-QWEN-MODEL-IR as independent work. R1-QWEN-MODEL-IR then merged as align-llm PR #122
+> (`85a3a97` -> `08492dc`), closing no request but discharging the dense half of the R1 roadmap
+> gate. The active R1B-GPTOSS-MOE-IR (`docs/specs/r1b-gptoss-moe-ir.md`) consumes no `PROPOSED`
+> request and adds new client evidence to Request 23 (its wider `BlockPlan` record) without changing
+> any request's status; all of R1B is independent work for Requests 21–24.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -6089,8 +6094,8 @@ integration binary on a leg that already compiles the workspace and is not the c
 Status: PROPOSED
 Priority: medium
 Blocking: no
-Blocked gate or slice: none today — R0-GGUF-INSPECT (merged, PR #121) and the active R1-QWEN-MODEL-IR (`docs/specs/r1-qwen-model-ir.md`) both ship on `fs.open_rw`, since R1's `gguf.read_table` reuses R0's constructor unchanged. It becomes blocking for the first align-runtime consumer that must read a model from a read-only mount, a root-owned shared cache, or a container image layer, where `O_RDWR` cannot be obtained at all
-Independent work that may continue: all of R0-GGUF-INSPECT and R1-QWEN-MODEL-IR, both of which open the model with `fs.open_rw` and document the writable-path precondition; every later Track B slice that can copy or own its model file
+Blocked gate or slice: none today — R0-GGUF-INSPECT (merged, PR #121), R1-QWEN-MODEL-IR (merged, PR #122), and the active R1B-GPTOSS-MOE-IR (`docs/specs/r1b-gptoss-moe-ir.md`) all ship on `fs.open_rw`, since both `gguf.read_table` and R1B's dispatch reuse R0's constructor unchanged. It becomes blocking for the first align-runtime consumer that must read a model from a read-only mount, a root-owned shared cache, or a container image layer, where `O_RDWR` cannot be obtained at all
+Independent work that may continue: all of R0-GGUF-INSPECT, R1-QWEN-MODEL-IR, and R1B-GPTOSS-MOE-IR, all of which open the model with `fs.open_rw` and document the writable-path precondition; every later Track B slice that can copy or own its model file
 Resume condition: Align ships a read-only `file` constructor whose handle supports `pread` and `len`; align-llm then adopts it in `src/gguf.align`, and `make gguf-smoke`, `make model-ir-smoke`, `scripts/run-gguf-reference-parity`, and `scripts/run-model-ir-parity` pass against a model file the invoking user cannot write
 Align commit or pull request: none
 align-llm verification: pending — `make gguf-smoke` extended with a `chmod 444` fixture case, and `scripts/run-gguf-reference-parity` run once against a model on a read-only mount
@@ -6223,18 +6228,28 @@ Blocking: no
 Blocked gate or slice: none (workaround in place). R1-QWEN-MODEL-IR (`docs/specs/r1-qwen-model-ir.md`
 section 1.3 and section 5.2) deliberately excludes the tokenizer and reads only the declared length
 of `tokenizer.ggml.tokens`/`tokenizer.ggml.merges` — exactly what R0's decoder already records
-without materializing an element — precisely so this request stays non-blocking through R1. The
-first consumer that would make it blocking is a tokenizer/vocabulary-inspection capability, which
-needs `tokenizer.ggml.tokens` and `tokenizer.ggml.merges` as addressable data; per `CLAUDE.md`, this
-request reclassifies as blocking the moment that capability becomes the active consumer
-Independent work that may continue: all of R0 and all of R1-QWEN-MODEL-IR, both of which avoid
-indexing an `array<string>` or an array of a Move-field record
+without materializing an element — precisely so this request stays non-blocking through R1, and the
+active R1B-GPTOSS-MOE-IR (`docs/specs/r1b-gptoss-moe-ir.md` section 2.1) inherits the same exclusion
+unchanged: it reads no `array<string>` and builds no tokenizer. The first consumer that would make it
+blocking is a tokenizer/vocabulary-inspection capability, which needs `tokenizer.ggml.tokens` and
+`tokenizer.ggml.merges` as addressable data; per `CLAUDE.md`, this request reclassifies as blocking
+the moment that capability becomes the active consumer
+Independent work that may continue: all of R0, R1-QWEN-MODEL-IR, and R1B-GPTOSS-MOE-IR, all of which
+avoid indexing an `array<string>` or an array of a Move-field record
 Resume condition: Align ships borrow indexing for Move arrays. Section 5.2 of
 `docs/specs/r1-qwen-model-ir.md` names the resulting producer surface,
 `gguf.read_string_array(path, key) -> Result<array<string>, Error>`, owned by the future tokenizer
 capability, not by R1
 Align commit or pull request: none
-align-llm verification: pending
+align-llm verification: pending — two targets. `src/gguf.align`'s `render_tensors` NUL-separated
+`prefixes: str`/parallel-`array<i64>` workaround (`:120`, `:842`, `:1016-1022`) is the first. The
+second, named by `docs/specs/r1-qwen-model-ir.md` section 5.4 as a documentation follow-on now that
+R1-QWEN-MODEL-IR has merged (PR #122): once this request reaches `ALIGN_MERGED`, `GgufTable`'s
+internals can become indexable `array<KvEntry>`/`array<TensorEntry>` records with no change to any
+accessor signature in that document's section 2.3.2, since every accessor is already
+index-in/owned-value-out and the stream-plus-column representation is entirely behind them.
+`docs/specs/r1b-gptoss-moe-ir.md` section 2.3.4 repeats the same stream-plus-column shape in the new
+`BlockPlan`, so both producer surfaces migrate together when this request ships.
 ```
 
 ### Motivation and current sibling evidence
@@ -6375,6 +6390,29 @@ Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c
   The message's own claim — "is passed by value — every call copies it" — is false for this call
   site: `find_key(borrow t: GgufTable, key: str)` takes `t` by `borrow`, and `GgufTable`'s Move fields
   (its `string` and `array<i64>` columns) are never duplicated at the call boundary.
+
+**Additional client evidence, from the R1B-GPTOSS-MOE-IR capability, now implemented.**
+`src/model_ir.align:86` declares `BlockPlan`, the architecture-neutral block plan a frontend hands
+the neutral builder. It is a second, independent client of the same false positive, and it is
+**narrower** than `GgufTable`, not wider: 36 fields and 440 bytes against `GgufTable`'s 41 fields and
+552 bytes (`docs/specs/r1b-gptoss-moe-ir.md` section 7, items 3 and 14, which correct that document's
+own earlier "wider" and "nineteen-column" claims). That makes the evidence stronger rather than
+weaker — the warning tracks the declared struct type and ignores the parameter mode, so a smaller
+record trips it just as reliably.
+
+Reproduced the same way, `gmake check` in the worktree with the recorded `LIBRARY_PATH`. Both
+`borrow plan: BlockPlan` parameters emit it, and nothing else in the module does:
+
+```text
+src/model_ir.align:478:27: warning: huge struct copy: `model_ir$BlockPlan` (440 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+src/model_ir.align:635:16: warning: huge struct copy: `model_ir$BlockPlan` (440 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+```
+
+Line 478 is `fn span_text(borrow plan: BlockPlan, start: i64, end: i64) -> string`, the plan's one
+accessor; line 635 is the `borrow plan: BlockPlan` parameter of `pub fn build`, into which the
+frontend moves its plan exactly once per invocation. Neither call site copies the record, and
+`BlockPlan`'s Move fields — its three owned `string`s and seventeen `array<i64>` columns — are never
+duplicated at either boundary.
 
 ### Requested capability
 
