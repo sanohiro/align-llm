@@ -63,6 +63,20 @@ def test_classifier() -> None:
     require(deleted_docs.scope == "hosted" and deleted_docs.hosted, "deletion became light")
     hosted = classify(("M", "scripts/run-provider-smoke"))
     require(hosted.scope == "hosted" and not hosted.fresh_installed, "hosted scope changed")
+    for path in (
+        "src/main.align",
+        "src/repo_index.align",
+        "eval/tasks/smoke-v1.json",
+        "eval/runners/record-baseline.py",
+    ):
+        selected = classify(("M", path))
+        require(
+            selected.scope == "hosted"
+            and selected.hosted
+            and not selected.fresh_focused
+            and not selected.fresh_installed,
+            f"ordinary application path selected a platform profile: {path}",
+        )
     pin = classify(("M", ".align-revision"))
     require(
         pin.scope == "pin"
@@ -88,6 +102,31 @@ def test_classifier() -> None:
         and pin_with_fresh.fresh_installed,
         "pin plus fresh owner skipped the installed profile",
     )
+    linux_runner = "eval/runners/run-coding-task.py"
+    for status in ("A", "M", "D"):
+        selected = classify((status, linux_runner))
+        require(
+            selected.scope == "fresh-image"
+            and selected.hosted
+            and selected.fresh_focused
+            and selected.fresh_installed,
+            f"Linux sandbox runner {status} skipped a platform profile",
+        )
+    renamed_linux_runner = scope_module.parse_name_status(
+        b"D\x00eval/runners/run-coding-task.py\x00A\x00eval/runners/retired.py\x00"
+    )
+    require(
+        classify(*renamed_linux_runner).scope == "fresh-image",
+        "renamed Linux sandbox runner skipped a platform profile",
+    )
+    pin_with_linux_runner = classify(
+        ("M", ".align-revision"), ("M", linux_runner)
+    )
+    require(
+        pin_with_linux_runner.scope == "fresh-image"
+        and pin_with_linux_runner.fresh_installed,
+        "pin plus Linux sandbox runner skipped a platform profile",
+    )
     renamed_pin_changes = scope_module.parse_name_status(
         b"D\x00.align-revision\x00A\x00retired-align-revision\x00"
     )
@@ -98,8 +137,6 @@ def test_classifier() -> None:
     for path in (
         "Makefile",
         ".github/workflows/ci.yml",
-        "src/main.align",
-        "eval/tasks/smoke-v1.json",
         "image/fresh/Dockerfile",
         "scripts/run-fresh-worker-qualification",
         "scripts/verification_scope.py",
