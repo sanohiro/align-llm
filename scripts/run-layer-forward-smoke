@@ -313,6 +313,53 @@ PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
                "reference_path": "<reference>", "transcript_path": "<transcript>"}
 
 
+# A golden mismatch used to print both whole documents. One of these is 8 KB on its own, the fresh
+# worker supervisor bounds the aggregate child at 65,536 bytes per stream, and the controller shows
+# only the last 8,192 bytes of a failed worker's stderr — so the one line naming the case scrolled
+# out of the diagnostic and the failure was unreadable exactly where it mattered. Report the field
+# paths that differ instead: it is what a reader needs, and it fits.
+def describe_difference(expected_text, actual_text, limit=8):
+    if actual_text is None:
+        return "no document was produced"
+    try:
+        expected = json.loads(expected_text)
+        actual = json.loads(actual_text)
+    except Exception as error:  # noqa: BLE001 - the document is the thing under test
+        return "the documents are not both JSON: %s" % error
+    differences = []
+
+    def walk(left, right, path):
+        if len(differences) >= limit:
+            return
+        if type(left) is not type(right):
+            differences.append("%s: %r != %r" % (path or ".", left, right))
+        elif isinstance(left, dict):
+            for key in sorted(set(left) | set(right)):
+                if len(differences) >= limit:
+                    return
+                if key not in left:
+                    differences.append("%s.%s: absent != %r" % (path, key, right[key]))
+                elif key not in right:
+                    differences.append("%s.%s: %r != absent" % (path, key, left[key]))
+                else:
+                    walk(left[key], right[key], "%s.%s" % (path, key))
+        elif isinstance(left, list):
+            if len(left) != len(right):
+                differences.append("%s: %d entries != %d" % (path, len(left), len(right)))
+                return
+            for index in range(len(left)):
+                if len(differences) >= limit:
+                    return
+                walk(left[index], right[index], "%s[%d]" % (path, index))
+        elif left != right:
+            differences.append("%s: %r != %r" % (path or ".", left, right))
+
+    walk(expected, actual, "")
+    if not differences:
+        return "the documents differ only in text form"
+    return "expected != actual at " + "; ".join(differences)
+
+
 def normalize(text):
     document = json.loads(text)
     for key in document["timings"]:
@@ -565,8 +612,10 @@ else:
     else:
         for row in golden:
             if produced.get(row["case"]) != row["document"]:
-                failures.append("golden mismatch for %s:\n  expected %s\n  actual   %s"
-                                % (row["case"], row["document"], produced.get(row["case"])))
+                failures.append("golden mismatch for %s: %s"
+                                % (row["case"],
+                                   describe_difference(row["document"],
+                                                       produced.get(row["case"]))))
 
 if failures:
     for line in failures:
