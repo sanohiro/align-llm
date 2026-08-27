@@ -6185,7 +6185,11 @@ because both random-access `file` constructors Align ships (`fs.create_rw` and `
 read-only artifact directory is refused before a byte is read. Asserted on this host rather than
 argued: `make expert-trace-smoke`'s `read-only-transcript` case copies a valid transcript, sets mode
 `0444`, and observes `main --expert-trace` exit **3** with no document written and the destination
-untouched. That case is written to flip the day this request ships. A model is normally writable by
+untouched. The request also charges its own owner test: `make expert-trace-smoke` must copy the
+checked-in `eval/fixtures/expert-trace/qwen2-prefill-build10566.txt` into a writable directory
+before scanning it, because the fresh trusted worker mounts the checkout read-only and the
+in-place scan exits 3 there. That copy is a workaround, not a design: an `fs.open_ro` would let the
+owner read its own fixture where it lies. That case is written to flip the day this request ships. A model is normally writable by
 its owner; a CI artifact directory normally is not, which makes the transcript the stronger of the
 two clients.
 

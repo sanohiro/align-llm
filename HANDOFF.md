@@ -67,7 +67,11 @@ file records durable project state.
     first Linux run of the new owner failed in `destination-path-guard`, which probed a 4097-byte
     destination with `Path.exists()`: `stat` answers `ENAMETOOLONG`, which Python 3.12 re-raises and
     3.13 swallows, so the case passed on this macOS host and aborted in the container. The guard now
-    reads the working directory instead of probing the impossible name.
+    reads the working directory instead of probing the impossible name. The first *installed*
+    profile run then failed inside the fresh trusted worker with `expert trace smoke: FAIL
+    real-transcript: exit 3` (named by `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1`): that worker mounts the
+    checkout read-only and `fs.open_rw` demands `O_RDWR`, so the owner now scans a writable copy of
+    the checked-in excerpt. This is fresh Request 21 client evidence and is recorded there.
   - `git diff --check` and `git diff --check d8d4ef6..HEAD`: clean. The checked-in excerpt's
     truncation markers end in a significant space, so `eval/fixtures/expert-trace/*.txt -whitespace`
     is now in `.gitattributes` (the `corpus-file-set.manifest` precedent) rather than the markers

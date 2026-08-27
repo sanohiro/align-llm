@@ -430,8 +430,15 @@ for byte in set(raw):
     if byte != 10 and (byte < 32 or byte > 126):
         fail("real-transcript: the fixture carries a non-printable byte %d" % byte)
 
+# The arm is pointed at a **writable copy**, never at the checked-in path. `expert_trace.scan`
+# opens its transcript with `fs.open_rw` (Request 21), so a read-only checkout — which is exactly
+# what the fresh trusted worker mounts, and what a CI artifact directory normally is — refuses the
+# scan with exit 3 before a byte is read. The sanitization sweep above still reads the checked-in
+# bytes, so nothing about the fixture's own contract is weakened.
+real_input = work_dir / "real-transcript.txt"
+real_input.write_bytes(raw)
 real_destination = work_dir / "real.trace.json"
-real_result = run(["--expert-trace", str(real), str(real_destination)])
+real_result = run(["--expert-trace", str(real_input), str(real_destination)])
 if real_result.returncode != 0:
     fail("real-transcript: exit %d" % real_result.returncode)
 real_document = json.loads(real_destination.read_text(encoding="utf-8"))
