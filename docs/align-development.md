@@ -636,7 +636,7 @@ under a 600-second `timeout` so a run that fails to terminate is a bounded failu
 
 ## alignpack development
 
-R4-ALIGNPACK-LAYER-MAJOR is implemented on branch `agent/r4-alignpack-layer-major`; its
+R4-ALIGNPACK-LAYER-MAJOR is merged into `main` as PR #125 (head `a7e72dc`, merge `991eab1`); its
 authoritative plan is `docs/specs/r4-alignpack-layer-major.md`, which owns the container format,
 the contract ledger, the closure matrix, the fixture design, the correction ledger, and the
 cell-to-case map. Two CLI arms, three or four operands each:

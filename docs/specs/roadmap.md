@@ -105,21 +105,23 @@ The current forward delivery order is:
     `expert-trace-smoke` a hosted member — while **the R2 roadmap gate stays open** pending a real
     MoE transcript, a separate pending user decision (a small 1-4 GB MoE GGUF).
 13. **R4-ALIGNPACK-LAYER-MAJOR — the alignpack v1 container, its layer-major writer, and its
-    verifier. Active.** On branch `agent/r4-alignpack-layer-major`.
+    verifier. Merged as PR #125** (head `a7e72dc`, merge `991eab1`), from branch
+    `agent/r4-alignpack-layer-major`.
     [`r4-alignpack-layer-major.md`](r4-alignpack-layer-major.md) is the authoritative plan and owns
     the contract ledger, closure matrix, fixture design, correction ledger, and cell-to-case map.
     `main --pack MODEL OUT.alignpack [DOC.json]` writes a layer-major container whose every block is
     one contiguous range, and `main --pack-verify MODEL PACK [DOC.json]` re-reads both files and
     compares every claimed byte; both emit `schema_version: 1` documents
     (`R4_ALIGNPACK`, `R4_ALIGNPACK_VERIFY`). It consumes R1's Block IR through
-    `model_ir.resolve_claims` and `model_ir.derive_status` and imports no frontend. **It discharges
+    `model_ir.resolve_claims` and `model_ir.derive_status` and imports no frontend. **It closes
     the R4 gate on the qwen half with real weights**: one qualification run over
     Qwen2.5-Coder-7B Q4_K_M reported byte identity and 89 → 58 ranges, 11,130,544,128 → 4,677,120,000
     span bytes, 2,379,786 → 1,000,000 ppm, and 27 → 58 of 58 contiguous blocks. The per-expert half
     is closed synthetically and stays **MOE-PREREQ**, pending the same small MoE GGUF decision R2
     names.
 14. **R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer.
-    Active.** On branch `agent/r4-5-external-buffer`, continuing R4.
+    Publication in progress.** On branch `agent/r4-5-external-buffer`, rebased onto the merged R4 at
+    `main` `991eab1`.
     [`r4-5-external-buffer.md`](r4-5-external-buffer.md) is the authoritative plan and owns the probe
     record, the contract ledger, the closure matrix, the fixture design, the correction ledger, and
     the cell-to-case map. `ggml-spike PACK BLOCK MEMBER [DOC.json [REF.gguf]]` is a **separate**
@@ -597,7 +599,8 @@ layer-major
 
 元GGUFとのtensor内容一致と、連続read量の改善を確認できること。
 
-このgateはR4-ALIGNPACK-LAYER-MAJORが所有する。実装・contract ledger・closure
+このgateはR4-ALIGNPACK-LAYER-MAJORが所有し、PR #125（head `a7e72dc`、merge `991eab1`）で
+merge済みである。実装・contract ledger・closure
 matrix・fixture設計・correction ledgerはすべて
 [`r4-alignpack-layer-major.md`](r4-alignpack-layer-major.md)にある。qwen側は実weightで達成済み
 （89 → 58 range、2,379,786 → 1,000,000 ppm、27 → 58/58 contiguous、byte identity）。per-expert側は

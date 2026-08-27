@@ -3,24 +3,166 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Awaiting publication: R4-ALIGNPACK-LAYER-MAJOR — alignpack v1 container, layer-major layout, and verifier (2026-08-27)
+## Awaiting publication: R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer (2026-08-27)
 
-- Branch `agent/r4-alignpack-layer-major`, **rebased onto the merged R2A-EXPERT-TRACE-CAPTURE
-  work**: it now sits directly on `main` at `b8e1cb6` (the PR #124 merge of R2A head `ab5f7d8`),
-  which itself continues the merged R1B-GPTOSS-MOE-IR chain (PR #123, head `3bf5c9c`, merge
-  `d8d4ef6`) onto `main` at `08492dc`. The authoritative design ledger is
-  `docs/specs/r4-alignpack-layer-major.md`, committed at `d678485`.
-- **Status: implemented, verified, reviewed twice, and both review repairs plus the re-recorded
-  baseline chain are committed.** The branch is seven commits on `b8e1cb6`: the design ledger
-  `d678485`, the implementation `4bc2b86` ("feat: pack GGUF models into layer-major alignpack
-  containers"), the consolidated repair for both reviewers' findings `ab7d4a6` ("fix: close
-  alignpack review findings"), the reconciliation commit `cb116f4` that records this rebase, the
-  final-review repair `de5e12d` ("docs: close alignpack final review findings"), and the baseline
-  chain `47ba089` and `cfd15e8`. Nothing is intentionally uncommitted. The rebase
-  carried three content conflicts, all resolved keeping both sides: the `docs/align-requests.md`
-  status header (R2A's corrected Request 21 text with "Requests 21–31 are PROPOSED"), Request 23's
-  `align-llm verification` field (R2A's `src/expert_trace.align:1622` citation plus R4's `PackPlan`
-  sites), and this file's R2A next actions.
+- Branch `agent/r4-5-external-buffer`, **rebased onto the merged R4-ALIGNPACK-LAYER-MAJOR work**:
+  it now sits directly on `main` at `991eab1` (the PR #125 merge of R4 head `a7e72dc`). The
+  authoritative design ledger is `docs/specs/r4-5-external-buffer.md`, committed at `7bd7d0d`
+  ("docs: add R4.5 external buffer spike design ledger").
+- **Status: implemented, verified, reviewed twice, both review repairs committed, and rebased onto
+  the merged R4; awaiting publication.** The branch is five commits on `991eab1`: the design ledger
+  `7bd7d0d`, the implementation `de86c58` ("feat: compute a ggml matmul over an Align-owned
+  alignpack block"), the consolidated repair for both reviewers' findings `bf7f10b` ("fix: close
+  external buffer spike review findings"), the final-review repair `049a5cc` ("docs: close external
+  buffer spike final review findings"), and the reconciliation commit that records this rebase.
+  Nothing is intentionally uncommitted. The rebase carried one content conflict, resolved keeping
+  both sides: this file's R4 status bullet, where `main`'s final R4 content (the re-recorded
+  baseline chain and the two review repairs) supersedes the branch's older "publication in
+  progress" text, while R4.5's own section is kept intact.
+- **Probe evidence (ledger section 2), gathered before the design was written.**
+  - Pointer identity: `ggml_get_data(A)` equals the Align `weights` buffer's base plus the member's
+    own interior offset, exactly `14336` bytes (`pack_offset - block.pack_offset`), and the output
+    tensor is likewise Align-owned — no silent copy on either side (probe 2b).
+  - Bit-identity vs. GGUF: a real Q4_K tensor (`blk.0.attn_q.weight`, Qwen2.5-Coder-7B Q4_K_M,
+    3584x3584, 7,225,344 bytes) computed from pack bytes is bit-identical to the same tensor read
+    from the original GGUF into ggml-owned memory — `differing_elements = 0` of 14,336 output f32.
+  - Compute cost: 0.41-0.55 ms per `mul_mat` call (mean of five, after one mandatory warm-up call
+    that absorbs ~4.6 ms of thread-pool spin-up); external vs. internal (Align-owned vs.
+    ggml-owned weights) showed no measurable penalty, 0.427 ms vs. 0.423 ms.
+  - GPU half: Metal accepted the same host pointer with no copy (`base == ptr`, this host's unified
+    memory) and computed successfully, but its output was not bit-identical to the CPU's — max
+    absolute difference 0.029 across all 14,336 elements. A GPU arm therefore needs a
+    tolerance-based oracle rather than the bit-exact one this design ships, so section 5.4 defers
+    it to R5 instead of shipping two acceptance rules under one name.
+- **Owner verification (`docs/specs/r4-5-external-buffer.md` section 7.2), all passing.**
+  `gmake check` — `ok: checked 29 unit(s) per-unit`; `gmake build` — links no ggml on the link line;
+  `gmake ggml-spike` builds both against the stub (`ALIGN_LLM_GGML_INCLUDE` unset) and against the
+  real ggml headers/libs; `gmake ggml-spike-smoke` — 7 no-document cases, **33** documented cases,
+  reader parity, shared shim contract, and lifetime all PASS, consecutive runs identical;
+  `gmake alignpack-smoke`, `gmake gguf-smoke`, `gmake model-ir-smoke`, `gmake expert-trace-smoke` —
+  unchanged PASS; `gmake gate-topology-check` — PASS; `gmake format-check` / `gmake fmt` — clean,
+  `fmt` a no-op on the three new modules; `git diff --check` — clean.
+- **Qualification (`gmake ggml-spike-qualification`, section 7.3), run twice before the review repair
+  and three times after it, end to end on the real model** (`qwen2.5-coder-7b-instruct-q4_k_m.gguf`, block 1
+  / member 1, `blk.0.attn_q.weight`, Q4_K, 3584x3584): `verdict EXTERNAL`;
+  `buffer.interior_offset == buffer.tensor_data_offset == 14336` (the no-silent-copy clause,
+  discharged) on every run — after the repair the offset is measured from block byte 0, so the value
+  is unchanged by the compensation; `output.sha256` reproduced
+  `2ccc7dc778108df3b626128895347f203795a2d82b502805806fb8472457e044` on every run (bit-identical to
+  the section 2.3 probe digest); `reference.verdict IDENTICAL`, `differing_elements 0` of 14,336 on
+  every run; `compute.backend_name CPU`; post-repair compute 435,075 ns over Align-owned memory vs.
+  584,292 ns over ggml-owned memory on the final run, pre-repair 550,308 vs. 560,792 ns (no penalty
+  for external memory — the roadmap's actual question); pread 6,829,084 ns for 17,020,928 B
+  post-repair against 5,080,833 ns before, the difference being the one copy into the
+  alignment-compensated window;
+  `base_alignment 0 / weights_pad 64 / output_base_alignment 0 / output_pad 0`; lifetime counts
+  balanced (buffers 4/4, contexts 2/2, backends 1/1, `released_before_owner_scope_end true`), no abort
+  at `exit`; forced failures `init -> R4_5_GGML_INIT`, `compute -> R4_5_COMPUTE`,
+  `reference -> R4_5_REFERENCE_MISMATCH`; the temporary pack (4,677,222,400 bytes) was removed and
+  reclaimed on every run, with no file left behind.
+- **Requests 32-35 in `docs/align-requests.md`, all PROPOSED and non-blocking.** Request 32, FFI v1
+  by-value struct ABI (AAPCS64 and SysV MEMORY class) and `bool` FFI type: `ggml_init`'s 24-byte-by-
+  value struct and `ggml_tallocr_new`'s by-value return are unreachable from Align by any route
+  (by-value rejected at codegen; by-pointer impossible because `layout(C)` cannot hold a `raw`
+  field), forcing the C shim `scripts/ggml_shim.c`. Request 33, aligned heap allocation:
+  `ggml_backend_cpu_buffer_from_ptr` aborts on a misaligned pointer, but neither `buffer(n)` nor
+  `raw.alloc(n)` guarantees any alignment; its evidence is now strengthened with correction C9's
+  measurement that the same 192-byte `buffer` came back 32-aligned on one run and 16-aligned on the
+  next, and with correction C14's, that a rule consulting that base refused a legitimate member at
+  interior offset 0 on 20 of 20 runs. The shipped arm compensates on **both** device-visible windows
+  by over-reserving `MAX_TENSOR_ALIGNMENT = 64` bytes and handing ggml an aligned interior range;
+  the price, and the request's concrete cost, is that over-reservation plus one copy of each block
+  into its aligned window. Request 34 (new),
+  `Result` ok payloads beyond scalars (`raw`, `buffer`, records): a `Result` ok payload must be a
+  scalar at this pin — verified directly against the pinned compiler — so `src/ggml_ffi.align`'s
+  constructors return a bare `raw` with a null sentinel and `src/ggml_spike.align`'s reference reader
+  threads bytes out through a `borrow mut buffer` parameter instead of an owned return; a plain
+  struct cannot hold a `raw` field either, closing off the record workaround. Request 35 (new),
+  observable `buffer` capacity and allocation failure: `buffer(n)` is an advisory reservation that
+  never fails and has no `.cap()` accessor, so `R4_WINDOW_UNAVAILABLE` (R0) and R4.5's
+  window-adjacent codes are untestable guards for an observable consequence rather than the
+  reservation itself — R0, R4, and R4.5 each reached the same conclusion independently. The header
+  status line in `docs/align-requests.md` now reads "21–35 are PROPOSED".
+- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
+  the candidate at `6b19163`, which the rebase onto `991eab1` replayed as `de86c58`: **A** the Align
+  source, **B** the specification, register, handoff,
+  runners, and `Makefile`. A requested changes with 2 major, 2 minor, and 2 nit findings; B requested
+  changes with 1 high, 3 medium, and 6 low. **Every finding was accepted** and all were repaired as
+  one consolidated commit on top of `6b19163`, replayed as `bf7f10b`; the contract changes are ledger section 6.1 rows
+  C14-C21, each with its case in section 6.2. A's and B's highest findings were the **same root
+  cause**: the alignment gate `(base_alignment + interior_offset) % tensor_alignment` consulted the
+  Align allocator's base, so a legal member at interior offset 0 was refused `R4_5_ALIGNMENT` on 20
+  of 20 runs on this host while `weights_pad` compensated nothing, and two goldens
+  (`spike-block-zero`, `spike-misaligned-member`) were recordings of an allocator accident. The arm
+  now over-reserves the weights window too and reads the block in **behind** `weights_pad` through a
+  new `alignpack_read.read_append`, so block byte 0 lands on a boundary and the gate is the
+  container's own property, `interior_offset % tensor_alignment != 0`. The other substantive repairs:
+  a short, empty, or wrong reference file reported `R4_WINDOW_UNAVAILABLE` instead of
+  `R4_5_SOURCE_UNREADABLE` (`read_reference` now bounds the range against `f.len()` before the
+  `pread`, with three new fixtures); `output.element_count` was non-zero on an `UNAVAILABLE`
+  document; `tensor.blck_size` published the `-3` status sentinel as a size; `STATUS_BOUNDS` mapped
+  to `R4_5_GGML_INIT` rather than `R4_5_SHAPE`; section 6.2 cited `make check` for five cells over
+  modules `make check` never compiles; `docs/align-development.md` had no R4.5 section and
+  `docs/specs/roadmap.md` no R4.5 forward-order item or gate-clause pointer. A final review of the
+  repair delta at `ddc9bc6` (replayed as `bf7f10b`) returned **approve** with 3 low/nit findings, all documentation: the
+  section 6 correction table listed rows C1-C9, C14-C21, C10-C13 instead of running C1-C21
+  monotonically; a `docs/align-requests.md` blockquote line ran 136 characters against the
+  surrounding ~100-column width; and `scripts/run-ggml-spike-smoke` and `docs/align-requests.md`
+  both described `weights_pad` as alternating between 16 and 48, which is not reproducible
+  (measured `{16, 32}` under the stub and `{32, 48, 64}` under the real shim) rather than varying
+  run to run within `[1, 64]`. All three are repaired in `049a5cc`. The rebase onto `991eab1` is a
+  replay of the same trees: `git diff` between each pre-rebase commit and its replacement is empty
+  except for this file, so no reviewed R4.5 risk changed across it, and
+  `docs/specs/r4-5-external-buffer.md` keeps the pre-rebase hashes as the identities its
+  measurements were actually taken at.
+- **Next actions, in order.**
+  1. Re-record the canonical baseline chain on Linux. R4.5 changes `Makefile`, which is one of the
+     twenty recorded artifacts, so the chain that shipped with R4 no longer binds this head;
+     `src/main.align`, the other artifact R4 moved, is unchanged by R4.5.
+  2. Exact-head preflight —
+     `python3 scripts/pre-pr --owner-test ggml-spike -- make ggml-spike-smoke gate-topology-check`.
+     Do not replace the required installed profile with a Docker skip or an ambient `DOCKER_HOST`
+     endpoint.
+  3. Publish the English pull request against `main` at `991eab1` or later, recording the
+     qualification numbers above, the baseline chain, the review envelope, and the finding
+     dispositions.
+- **Two pending user decisions, carried forward verbatim.**
+  1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
+     gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
+     `N/A`.
+  2. Carried forward from R2A: whether to download a small MoE GGUF (1-4 GB) so
+     `scripts/run-expert-trace-parity` can exercise the `moe: true` path against a real MoE
+     transcript; until decided the R2 roadmap gate stays open on dense-only smoke evidence, R4's own
+     MoE case stays synthetic-only (design ledger section 1.4, item 3), and R3 stays blocked (below).
+     Note: a small MoE GGUF chosen for size will most likely not be gpt-oss architecture, so R3's
+     real measurement would also need a new R1C frontend for whatever architecture that model uses,
+     not just the download itself.
+- **R3 (Cache Simulator) is blocked on pending decision 2 above.** R3's gate
+  ("対象ハードウェア条件で、baselineより有効なpolicyを特定できること", `docs/specs/roadmap.md` section
+  R3) needs a real MoE activation trace and a cache-policy comparison against it; R2A's design ledger
+  already records that no such trace exists on this host. Resume condition: the small-MoE-GGUF
+  decision is made, the model's architecture is identified, an R1C frontend is built if that
+  architecture is not already `qwen2`/`gpt-oss`, and R2A's `moe: true` path is exercised against a
+  real transcript from it. Independent work that may continue: R4.5's publication (its DRAM half
+  needs no MoE trace) and the next eligible roadmap capability.
+
+
+## Merged checkpoint: R4-ALIGNPACK-LAYER-MAJOR — alignpack v1 container, layer-major layout, and verifier (2026-08-27)
+
+- **Status: merged.** R4-ALIGNPACK-LAYER-MAJOR merged as align-llm PR #125, head `a7e72dc`, merge
+  commit `991eab1` on `main`. Required checks passed before merge; GitHub owns that transient
+  check and review metadata.
+- Branch was `agent/r4-alignpack-layer-major`, rebased onto the merged R2A-EXPERT-TRACE-CAPTURE
+  work and therefore based on `main` at `b8e1cb6` (the PR #124 merge of R2A head `ab5f7d8`), which
+  itself continued the merged R1B-GPTOSS-MOE-IR chain (PR #123, head `3bf5c9c`, merge `d8d4ef6`)
+  onto `main` at `08492dc`. The authoritative design ledger is
+  `docs/specs/r4-alignpack-layer-major.md`, committed at `d678485`. The branch was eight commits on
+  `b8e1cb6`: the design ledger `d678485`, the implementation `4bc2b86` ("feat: pack GGUF models
+  into layer-major alignpack containers"), the consolidated repair for both reviewers' findings
+  `ab7d4a6`, the reconciliation commit `cb116f4`, the final-review repair `de5e12d`, the baseline
+  chain `47ba089` and `cfd15e8` with its record `a4d9be6`, and the preflight repair `a7e72dc`
+  ("fix: compile the lowered-limit entry point once", which compiles the lowered-limit entry point
+  a single time instead of once per negative source).
 - **What it delivers.** `main --pack MODEL.gguf OUT.alignpack [DOC.json]` and
   `main --pack-verify MODEL.gguf PACK.alignpack [DOC.json]`: a byte-exact streaming rewrite of one
   GGUF file into the alignpack v1 container (magic, versioned 128-byte header, name stream, 64-byte
@@ -115,159 +257,6 @@ file records durable project state.
   chain — `Makefile` and `src/main.align`, which carry the `alignpack-smoke` owner target and the
   `--pack` / `--pack-verify` arms — and the twenty paths are otherwise identical, every other hash
   unchanged. `make baseline-check` on Linux: PASS, ending `baseline chain: PASS`.
-- **Next actions, in order.**
-  1. Exact-head preflight — `python3 scripts/pre-pr --plan` to confirm the `Makefile` change selects
-     the fresh-image installed profile, then
-     `python3 scripts/pre-pr --owner-test alignpack -- make alignpack-smoke gate-topology-check`.
-     Do not replace the required installed profile with a Docker skip or an ambient `DOCKER_HOST`
-     endpoint.
-  2. Publish the English pull request against `main` at `b8e1cb6` or later, recording the
-     qualification numbers above, the baseline chain, the review envelope, and the finding
-     dispositions.
-- **Two pending user decisions, carried forward verbatim.**
-  1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
-     gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
-     `N/A`.
-  2. Carried forward from R2A: whether to download a small MoE GGUF (1-4 GB) so
-     `scripts/run-expert-trace-parity` can exercise the `moe: true` path against a real MoE
-     transcript; until decided the R2 roadmap gate stays open on dense-only smoke evidence, R4's own
-     MoE case stays synthetic-only (design ledger section 1.4, item 3), and R3 stays blocked (below).
-     Note: a small MoE GGUF chosen for size will most likely not be gpt-oss architecture, so R3's
-     real measurement would also need a new R1C frontend for whatever architecture that model uses,
-     not just the download itself.
-- **R3 (Cache Simulator) is blocked on pending decision 2 above.** R3's gate
-  ("対象ハードウェア条件で、baselineより有効なpolicyを特定できること", `docs/specs/roadmap.md` section
-  R3) needs a real MoE activation trace and a cache-policy comparison against it; R2A's design ledger
-  already records that no such trace exists on this host. Resume condition: the small-MoE-GGUF
-  decision is made, the model's architecture is identified, an R1C frontend is built if that
-  architecture is not already `qwen2`/`gpt-oss`, and R2A's `moe: true` path is exercised against a
-  real transcript from it. Independent work that may continue: R4's publication (its dense-case gate
-  needs no MoE trace) and the next eligible roadmap capability.
-
-## Active capability: R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer (2026-08-27)
-
-- Branch `agent/r4-5-external-buffer`, continuing from R4-ALIGNPACK-LAYER-MAJOR (not yet merged).
-  Ledger commit `262c52d` ("docs: add R4.5 external buffer spike design ledger"). The authoritative
-  design ledger is `docs/specs/r4-5-external-buffer.md`.
-- **Status: implemented, reviewed, and repaired; next action is preflight and publication.**
-  `src/alignpack_read.align`, `src/ggml_ffi.align`, `src/ggml_spike.align`, `scripts/ggml_shim.c`,
-  `scripts/ggml_shim_stub.c`, `scripts/build-ggml-shim`, `scripts/ggml_spike_fixture.py`,
-  `scripts/run-ggml-spike-smoke`, `scripts/run-ggml-spike`, and `scripts/ggml-spike-golden.jsonl` all
-  exist on the branch; `Makefile`, `scripts/check-gate-topology`, and `.gitignore` are wired for the
-  `ggml-spike` / `ggml-spike-smoke` / `ggml-spike-qualification` targets. `docs/specs/r4-5-external-buffer.md`
-  section 6 records twenty-one implementation-forced corrections (C1-C21) against the design — C1-C13
-  from the implementation, C14-C21 from the review below; section 7 is the delivered-surface record.
-- **Probe evidence (ledger section 2), gathered before the design was written.**
-  - Pointer identity: `ggml_get_data(A)` equals the Align `weights` buffer's base plus the member's
-    own interior offset, exactly `14336` bytes (`pack_offset - block.pack_offset`), and the output
-    tensor is likewise Align-owned — no silent copy on either side (probe 2b).
-  - Bit-identity vs. GGUF: a real Q4_K tensor (`blk.0.attn_q.weight`, Qwen2.5-Coder-7B Q4_K_M,
-    3584x3584, 7,225,344 bytes) computed from pack bytes is bit-identical to the same tensor read
-    from the original GGUF into ggml-owned memory — `differing_elements = 0` of 14,336 output f32.
-  - Compute cost: 0.41-0.55 ms per `mul_mat` call (mean of five, after one mandatory warm-up call
-    that absorbs ~4.6 ms of thread-pool spin-up); external vs. internal (Align-owned vs.
-    ggml-owned weights) showed no measurable penalty, 0.427 ms vs. 0.423 ms.
-  - GPU half: Metal accepted the same host pointer with no copy (`base == ptr`, this host's unified
-    memory) and computed successfully, but its output was not bit-identical to the CPU's — max
-    absolute difference 0.029 across all 14,336 elements. A GPU arm therefore needs a
-    tolerance-based oracle rather than the bit-exact one this design ships, so section 5.4 defers
-    it to R5 instead of shipping two acceptance rules under one name.
-- **Owner verification (`docs/specs/r4-5-external-buffer.md` section 7.2), all passing.**
-  `gmake check` — `ok: checked 29 unit(s) per-unit`; `gmake build` — links no ggml on the link line;
-  `gmake ggml-spike` builds both against the stub (`ALIGN_LLM_GGML_INCLUDE` unset) and against the
-  real ggml headers/libs; `gmake ggml-spike-smoke` — 7 no-document cases, **33** documented cases,
-  reader parity, shared shim contract, and lifetime all PASS, consecutive runs identical;
-  `gmake alignpack-smoke`, `gmake gguf-smoke`, `gmake model-ir-smoke`, `gmake expert-trace-smoke` —
-  unchanged PASS; `gmake gate-topology-check` — PASS; `gmake format-check` / `gmake fmt` — clean,
-  `fmt` a no-op on the three new modules; `git diff --check` — clean.
-- **Qualification (`gmake ggml-spike-qualification`, section 7.3), run twice before the review repair
-  and three times after it, end to end on the real model** (`qwen2.5-coder-7b-instruct-q4_k_m.gguf`, block 1
-  / member 1, `blk.0.attn_q.weight`, Q4_K, 3584x3584): `verdict EXTERNAL`;
-  `buffer.interior_offset == buffer.tensor_data_offset == 14336` (the no-silent-copy clause,
-  discharged) on every run — after the repair the offset is measured from block byte 0, so the value
-  is unchanged by the compensation; `output.sha256` reproduced
-  `2ccc7dc778108df3b626128895347f203795a2d82b502805806fb8472457e044` on every run (bit-identical to
-  the section 2.3 probe digest); `reference.verdict IDENTICAL`, `differing_elements 0` of 14,336 on
-  every run; `compute.backend_name CPU`; post-repair compute 435,075 ns over Align-owned memory vs.
-  584,292 ns over ggml-owned memory on the final run, pre-repair 550,308 vs. 560,792 ns (no penalty
-  for external memory — the roadmap's actual question); pread 6,829,084 ns for 17,020,928 B
-  post-repair against 5,080,833 ns before, the difference being the one copy into the
-  alignment-compensated window;
-  `base_alignment 0 / weights_pad 64 / output_base_alignment 0 / output_pad 0`; lifetime counts
-  balanced (buffers 4/4, contexts 2/2, backends 1/1, `released_before_owner_scope_end true`), no abort
-  at `exit`; forced failures `init -> R4_5_GGML_INIT`, `compute -> R4_5_COMPUTE`,
-  `reference -> R4_5_REFERENCE_MISMATCH`; the temporary pack (4,677,222,400 bytes) was removed and
-  reclaimed on every run, with no file left behind.
-- **Requests 32-35 in `docs/align-requests.md`, all PROPOSED and non-blocking.** Request 32, FFI v1
-  by-value struct ABI (AAPCS64 and SysV MEMORY class) and `bool` FFI type: `ggml_init`'s 24-byte-by-
-  value struct and `ggml_tallocr_new`'s by-value return are unreachable from Align by any route
-  (by-value rejected at codegen; by-pointer impossible because `layout(C)` cannot hold a `raw`
-  field), forcing the C shim `scripts/ggml_shim.c`. Request 33, aligned heap allocation:
-  `ggml_backend_cpu_buffer_from_ptr` aborts on a misaligned pointer, but neither `buffer(n)` nor
-  `raw.alloc(n)` guarantees any alignment; its evidence is now strengthened with correction C9's
-  measurement that the same 192-byte `buffer` came back 32-aligned on one run and 16-aligned on the
-  next, and with correction C14's, that a rule consulting that base refused a legitimate member at
-  interior offset 0 on 20 of 20 runs. The shipped arm compensates on **both** device-visible windows
-  by over-reserving `MAX_TENSOR_ALIGNMENT = 64` bytes and handing ggml an aligned interior range;
-  the price, and the request's concrete cost, is that over-reservation plus one copy of each block
-  into its aligned window. Request 34 (new),
-  `Result` ok payloads beyond scalars (`raw`, `buffer`, records): a `Result` ok payload must be a
-  scalar at this pin — verified directly against the pinned compiler — so `src/ggml_ffi.align`'s
-  constructors return a bare `raw` with a null sentinel and `src/ggml_spike.align`'s reference reader
-  threads bytes out through a `borrow mut buffer` parameter instead of an owned return; a plain
-  struct cannot hold a `raw` field either, closing off the record workaround. Request 35 (new),
-  observable `buffer` capacity and allocation failure: `buffer(n)` is an advisory reservation that
-  never fails and has no `.cap()` accessor, so `R4_WINDOW_UNAVAILABLE` (R0) and R4.5's
-  window-adjacent codes are untestable guards for an observable consequence rather than the
-  reservation itself — R0, R4, and R4.5 each reached the same conclusion independently. The header
-  status line in `docs/align-requests.md` now reads "21–35 are PROPOSED".
-- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
-  the candidate at `6b19163`: **A** the Align source, **B** the specification, register, handoff,
-  runners, and `Makefile`. A requested changes with 2 major, 2 minor, and 2 nit findings; B requested
-  changes with 1 high, 3 medium, and 6 low. **Every finding was accepted** and all were repaired as
-  one consolidated commit on top of `6b19163`; the contract changes are ledger section 6.1 rows
-  C14-C21, each with its case in section 6.2. A's and B's highest findings were the **same root
-  cause**: the alignment gate `(base_alignment + interior_offset) % tensor_alignment` consulted the
-  Align allocator's base, so a legal member at interior offset 0 was refused `R4_5_ALIGNMENT` on 20
-  of 20 runs on this host while `weights_pad` compensated nothing, and two goldens
-  (`spike-block-zero`, `spike-misaligned-member`) were recordings of an allocator accident. The arm
-  now over-reserves the weights window too and reads the block in **behind** `weights_pad` through a
-  new `alignpack_read.read_append`, so block byte 0 lands on a boundary and the gate is the
-  container's own property, `interior_offset % tensor_alignment != 0`. The other substantive repairs:
-  a short, empty, or wrong reference file reported `R4_WINDOW_UNAVAILABLE` instead of
-  `R4_5_SOURCE_UNREADABLE` (`read_reference` now bounds the range against `f.len()` before the
-  `pread`, with three new fixtures); `output.element_count` was non-zero on an `UNAVAILABLE`
-  document; `tensor.blck_size` published the `-3` status sentinel as a size; `STATUS_BOUNDS` mapped
-  to `R4_5_GGML_INIT` rather than `R4_5_SHAPE`; section 6.2 cited `make check` for five cells over
-  modules `make check` never compiles; `docs/align-development.md` had no R4.5 section and
-  `docs/specs/roadmap.md` no R4.5 forward-order item or gate-clause pointer. A final review of the
-  repair delta at `ddc9bc6` returned **approve** with 3 low/nit findings, all documentation: the
-  section 6 correction table listed rows C1-C9, C14-C21, C10-C13 instead of running C1-C21
-  monotonically; a `docs/align-requests.md` blockquote line ran 136 characters against the
-  surrounding ~100-column width; and `scripts/run-ggml-spike-smoke` and `docs/align-requests.md`
-  both described `weights_pad` as alternating between 16 and 48, which is not reproducible
-  (measured `{16, 32}` under the stub and `{32, 48, 64}` under the real shim) rather than varying
-  run to run within `[1, 64]`. All three are repaired in this commit.
-- **Next action: preflight and publish**, alongside or after R4's own publication.
-- **Two pending user decisions, carried forward verbatim.**
-  1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
-     gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
-     `N/A`.
-  2. Carried forward from R2A: whether to download a small MoE GGUF (1-4 GB) so
-     `scripts/run-expert-trace-parity` can exercise the `moe: true` path against a real MoE
-     transcript; until decided the R2 roadmap gate stays open on dense-only smoke evidence, R4's own
-     MoE case stays synthetic-only (design ledger section 1.4, item 3), and R3 stays blocked (below).
-     Note: a small MoE GGUF chosen for size will most likely not be gpt-oss architecture, so R3's
-     real measurement would also need a new R1C frontend for whatever architecture that model uses,
-     not just the download itself.
-- **R3 (Cache Simulator) is blocked on pending decision 2 above.** R3's gate
-  ("対象ハードウェア条件で、baselineより有効なpolicyを特定できること", `docs/specs/roadmap.md` section
-  R3) needs a real MoE activation trace and a cache-policy comparison against it; R2A's design ledger
-  already records that no such trace exists on this host. Resume condition: the small-MoE-GGUF
-  decision is made, the model's architecture is identified, an R1C frontend is built if that
-  architecture is not already `qwen2`/`gpt-oss`, and R2A's `moe: true` path is exercised against a
-  real transcript from it. Independent work that may continue: R4's publication (its dense-case gate
-  needs no MoE trace), R4.5's implementation, and the next eligible roadmap capability.
 
 
 ## Merged checkpoint: R2A-EXPERT-TRACE-CAPTURE — expert-trace capture (2026-08-27)
@@ -565,20 +554,20 @@ boundary is next changed.
 
 ## Resume in another environment
 
-1. Fetch `origin`, check out `agent/r2a-expert-trace`, and read `CLAUDE.md`, then
-   `docs/specs/r2a-expert-trace.md` in full (committed at `b4dfb60`, corrections applied) — it is
-   the plan of record — and
-   `docs/specs/r1b-gptoss-moe-ir.md` for the Model IR/Block IR surface it consumes.
-   R1B-GPTOSS-MOE-IR merged as PR #123 (`3bf5c9c` -> `d8d4ef6`); this branch continues from that
-   chain.
+1. Fetch `origin`, check out `agent/r4-5-external-buffer`, and read `CLAUDE.md`, then
+   `docs/specs/r4-5-external-buffer.md` in full (committed at `7bd7d0d`, corrections applied) — it
+   is the plan of record — and `docs/specs/r4-alignpack-layer-major.md` for the alignpack container
+   surface it consumes. R4-ALIGNPACK-LAYER-MAJOR merged as PR #125 (`a7e72dc` -> `991eab1`); this
+   branch is rebased onto that merge.
 2. Materialize the pinned toolchain with `scripts/align-toolchain ensure compiler`; on macOS use
    `gmake` and the recorded `LLVM_CONFIG`/`LIBRARY_PATH` environment. Confirm `.align-revision`
-   still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R2A requires no pin change.
-3. Resume at the first unfinished next action in the active R2A-EXPERT-TRACE-CAPTURE capability
-   above: implementation (`140e868`), its comprehensive review, and the consolidated repair are
-   done and every owner passes, so the next action is exact-head preflight, then publication.
+   still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R4.5 requires no pin change.
+3. Resume at the first unfinished next action in the R4.5-EXTERNAL-BUFFER-SPIKE capability above:
+   the implementation (`de86c58`), both reviews, and both repairs (`bf7f10b`, `049a5cc`) are done
+   and every owner passes, so what remains is the re-recorded baseline chain, exact-head preflight,
+   and publication.
 4. Do not open another Align request unless implementation exposes a further genuine shipped-language,
-   compiler/runtime, or standard-library gap under the register rules. Requests 21-28 are
+   compiler/runtime, or standard-library gap under the register rules. Requests 21-35 are
    `PROPOSED` and non-blocking.
 5. Two user decisions are pending and must not be silently dropped: whether to download
    `gpt-oss-20b-mxfp4.gguf` (12.1 GB) for the carried-forward gpt-oss `model-ir-parity`

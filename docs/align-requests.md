@@ -124,8 +124,9 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > has already accumulated cannot use either and `src/expert_trace.align` accumulates into a
 > `buffer` plus pre-sized span columns instead. It is non-blocking — the `buffer` workaround is in
 > place — with all of R2A as independent work.
-> R4-ALIGNPACK-LAYER-MAJOR (`docs/specs/r4-alignpack-layer-major.md`) is the current active
-> capability; it consumes no `PROPOSED` request and added Requests 29, 30, and 31. Request 29, an
+> R4-ALIGNPACK-LAYER-MAJOR (`docs/specs/r4-alignpack-layer-major.md`) merged as align-llm PR #125
+> (head `a7e72dc`, merge `991eab1`); it consumed no `PROPOSED` request and added Requests 29, 30,
+> and 31. Request 29, an
 > incremental digest: `crypto.sha256`/`sha512` are one-shot over exactly one byte view, so align-llm
 > cannot digest a file larger than memory; R4 wanted a whole-payload digest so a pack could certify
 > itself without re-reading the source and instead ships the bounded header-region digest of its own
@@ -146,8 +147,9 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > and to Request 23 — `PackPlan`, another wide columns-plus-stream record read through `borrow`
 > accessors, is a fourth client of the same false-positive huge-struct-copy lint, with its concrete
 > source line to be cited at implementation.
-> R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md`) is the active capability that
-> computes a real ggml matmul over an Align-owned quantized buffer; it consumes no `PROPOSED` request
+> R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md`) is the active capability,
+> awaiting publication on `agent/r4-5-external-buffer` rebased onto that merge; it computes a real
+> ggml matmul over an Align-owned quantized buffer, it consumes no `PROPOSED` request
 > and added Requests 32 and 33. Request 32, FFI v1 by-value struct ABI (AAPCS64 and SysV MEMORY
 > class) and `bool` FFI type: `ggml_init`'s 24-byte-by-value `struct ggml_init_params` and
 > `ggml_tallocr_new`'s by-value return are unreachable from Align by any route — by-value struct
