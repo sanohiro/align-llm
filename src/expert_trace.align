@@ -244,6 +244,9 @@ pub TranscriptScan {
   sel_key: array<i64>,
 
   topk_layers: array<i64>,
+  // Layers whose `ffn_moe_topk` token axis was shorter than the graph's, so no token index is
+  // recoverable for them (section 6, item 20).
+  token_reduced_layers: array<i64>,
 }
 
 fn fault(code: str, detail: string) -> Fault =
@@ -870,6 +873,7 @@ fn empty_scan(code: str, detail: string, file_size: i64, bytes_read: i64) -> Tra
     sel_expert: filled_table(0, 0),
     sel_key: filled_table(0, 0),
     topk_layers: filled_table(0, 0),
+    token_reduced_layers: filled_table(0, 0),
   }
 }
 
@@ -932,6 +936,10 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
   mut graph_index := 0
   mut graph_nodes := 0
   mut graph_tokens := -1
+  // The one layer of the current graph accepted as token-reduced, or -1. Section 6 item 20's
+  // exemption is the instrument's *tail* reduction, so at most one layer may claim it and it must
+  // be the graph's highest layer index.
+  mut graph_reduced_layer := -1
   mut graph_count := 0
   mut entry_name := -1
 
@@ -950,6 +958,7 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
   mut sel_key_column: array_builder<i64> := array_builder()
   mut selection_count := 0
   mut topk_layer_column: array_builder<i64> := array_builder()
+  mut reduced_layer_column: array_builder<i64> := array_builder()
 
   mut build_value := -1
   mut build_present := false
@@ -967,6 +976,7 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
   mut block_a2_marked := false
   mut block_a1_marked := false
   mut block_is_topk := false
+  mut block_is_reduced := false
   mut block_layer := -1
   mut block_name := "".clone()
 
@@ -1123,14 +1133,20 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
                   row_failed = true
                   break
                 }
-                sel_graph_column.push(graph_index)
-                sel_layer_column.push(block_layer)
-                sel_token_column.push(token)
-                sel_slot_column.push(slot)
-                sel_expert_column.push(expert)
-                sel_key_column.push((graph_index << GRAPH_SHIFT) | (block_layer << LAYER_SHIFT)
-                    | (token << TOKEN_SHIFT) | (expert << EXPERT_SHIFT) | slot)
-                selection_count = selection_count + 1
+                // A token-reduced block is parsed and validated exactly like any other — a
+                // grammar fault inside it still fires — but it yields no row, because the token
+                // index its rows would carry is not recoverable from the transcript and a
+                // fabricated one would corrupt every adjacency (section 6, item 20).
+                if !block_is_reduced {
+                  sel_graph_column.push(graph_index)
+                  sel_layer_column.push(block_layer)
+                  sel_token_column.push(token)
+                  sel_slot_column.push(slot)
+                  sel_expert_column.push(expert)
+                  sel_key_column.push((graph_index << GRAPH_SHIFT) | (block_layer << LAYER_SHIFT)
+                      | (token << TOKEN_SHIFT) | (expert << EXPERT_SHIFT) | slot)
+                  selection_count = selection_count + 1
+                }
               }
             }
             if cut < 0 { break }
@@ -1230,6 +1246,7 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
         graph_index = graph_index + 1
         graph_nodes = 0
         graph_tokens = -1
+        graph_reduced_layer = -1
       }
       graph_nodes = graph_nodes + 1
       if graph_nodes > MAX_NODES_PER_GRAPH {
@@ -1266,10 +1283,21 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
       }
       if !op_done { break }
 
+      // The exemption is bounded by the instrument it models. Build 10566 applies the output-token
+      // `GET_ROWS` reduction before the *last* layer's feed-forward, so a shorter token axis is
+      // explained only at the graph's highest layer index. A suffixed node at a higher layer,
+      // arriving after a layer was accepted as token-reduced, proves the reduction was not that
+      // tail reduction, and the disagreement returns to the `R2_TOKEN_COUNT` it came from.
+      if family_len >= 0 && graph_reduced_layer >= 0 && layer > graph_reduced_layer {
+        failure = fault("R2_TOKEN_COUNT", bounded_detail(name))
+        break
+      }
+
       family := if family_len >= 0 { name[0..family_len] } else { name }
       mut tokens_claim := -1
       if family_len < 0 && name == NODE_EMBD { tokens_claim = header.ne.d1 }
       mut is_topk := false
+      mut is_reduced := false
       if family_len >= 0 {
         if family == FAMILY_TOPK {
           is_topk = true
@@ -1300,8 +1328,17 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
         if graph_tokens < 0 {
           graph_tokens = tokens_claim
         } else if graph_tokens != tokens_claim {
-          failure = fault("R2_TOKEN_COUNT", bounded_detail(name))
-          break
+          // A `ffn_moe_topk` block may carry a *shorter* token axis than the graph's: build 10566
+          // applies the output-token `GET_ROWS` reduction before the last layer's feed-forward, so
+          // the final layer routes only the retained output tokens and the leaf that names them is
+          // never printed. The block is token-reduced, not inconsistent (section 6, item 20). A
+          // longer axis remains `R2_TOKEN_COUNT`, and so does any disagreement outside `topk`.
+          if is_topk && tokens_claim < graph_tokens {
+            is_reduced = true
+          } else {
+            failure = fault("R2_TOKEN_COUNT", bounded_detail(name))
+            break
+          }
         }
       }
       if is_topk {
@@ -1316,7 +1353,18 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
           break
         }
         topk_present = true
-        topk_layer_column.push(layer)
+        if is_reduced {
+          // Two token-reduced layers in one graph cannot both be its highest, so the second one
+          // refutes the exemption for both.
+          if graph_reduced_layer >= 0 && graph_reduced_layer != layer {
+            failure = fault("R2_TOKEN_COUNT", bounded_detail(name))
+            break
+          }
+          graph_reduced_layer = layer
+          reduced_layer_column.push(layer)
+        } else {
+          topk_layer_column.push(layer)
+        }
       }
 
       in_block = true
@@ -1331,6 +1379,7 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
       block_a2_marked = false
       block_a1_marked = false
       block_is_topk = is_topk
+      block_is_reduced = is_reduced
       block_layer = layer
       block_name = bounded_detail(name)
     } else {
@@ -1432,6 +1481,7 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
     Err(_) => "".clone(),
   }
   raw_topk := topk_layer_column.build()
+  raw_reduced := reduced_layer_column.build()
 
   return Ok(TranscriptScan {
       code: failure.code.clone(),
@@ -1470,6 +1520,7 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
       sel_expert: selections_expert,
       sel_key: selections_key,
       topk_layers: raw_topk.sort(),
+      token_reduced_layers: raw_reduced.sort(),
     })
 }
 
@@ -2089,6 +2140,19 @@ pub fn build(borrow t: TranscriptScan, path: str) -> ExpertTrace {
       topk_written = topk_written + 1
     }
     topk_render = topk_render + 1
+  }
+  document.write("],\"token_reduced_layers\":[")
+  mut reduced_written := 0
+  mut reduced_render := 0
+  loop {
+    if reduced_render >= t.token_reduced_layers.len() { break }
+    if reduced_render == 0
+      || t.token_reduced_layers[reduced_render - 1] != t.token_reduced_layers[reduced_render] {
+      if reduced_written > 0 { document.write(",") }
+      document.write_int(t.token_reduced_layers[reduced_render])
+      reduced_written = reduced_written + 1
+    }
+    reduced_render = reduced_render + 1
   }
   document.write("],\"slots_truncated\":")
   document.write(bool_text(t.moe_present && t.n_expert_used > TRUNCATION_PRINTED))

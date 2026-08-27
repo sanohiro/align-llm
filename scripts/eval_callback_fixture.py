@@ -178,34 +178,46 @@ class Router:
         return chosen
 
 
-def moe_graph(n_layer, n_tokens, router, graph_ordinal, embd=3584, probs=True, logits=True):
+def moe_graph(n_layer, n_tokens, router, graph_ordinal, embd=3584, probs=True, logits=True,
+              reduced_tail=0, reduced_layer=None):
+    """`reduced_tail` models build 10566's real MoE shape: llama.cpp applies the output-token
+    `GET_ROWS` reduction before the *last* layer's feed-forward, so that layer's `ffn_moe_topk`
+    carries a shorter token axis than the graph and the leaf naming the retained tokens is never
+    printed.
+
+    `reduced_layer` shortens a **middle** layer's axis instead, which no build 10566 reduction can
+    produce. The parser must refuse it with `R2_TOKEN_COUNT` rather than silently drop a whole
+    interior layer's routing (section 6, item 20)."""
     n_expert = router.n_expert
     used = router.n_expert_used
     blocks = [Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [embd, 152064, 1, 1]),
                     ("inp_tokens", [n_tokens, 1, 1, 1]), [embd, n_tokens, 1, 1])]
     for layer in range(n_layer):
+        layer_tokens = reduced_tail if (reduced_tail and layer == n_layer - 1) else n_tokens
+        if reduced_layer is not None and layer == reduced_layer:
+            layer_tokens = 1
         blocks.append(Block("ffn_norm-%d" % layer, "f32", "RMS_NORM",
-                            ("embd", [embd, n_tokens, 1, 1]), None, [embd, n_tokens, 1, 1]))
+                            ("embd", [embd, n_tokens, 1, 1]), None, [embd, layer_tokens, 1, 1]))
         if logits:
             blocks.append(Block("ffn_moe_logits-%d" % layer, "f32", "MUL_MAT",
                                 ("blk.%d.ffn_gate_inp.weight" % layer, [embd, n_expert, 1, 1]),
-                                ("ffn_norm-%d" % layer, [embd, n_tokens, 1, 1]),
-                                [n_expert, n_tokens, 1, 1]))
+                                ("ffn_norm-%d" % layer, [embd, layer_tokens, 1, 1]),
+                                [n_expert, layer_tokens, 1, 1]))
         if probs:
             blocks.append(Block("ffn_moe_probs-%d" % layer, "f32", "SOFT_MAX",
-                                ("ffn_moe_logits-%d" % layer, [n_expert, n_tokens, 1, 1]), None,
-                                [n_expert, n_tokens, 1, 1]))
+                                ("ffn_moe_logits-%d" % layer, [n_expert, layer_tokens, 1, 1]), None,
+                                [n_expert, layer_tokens, 1, 1]))
 
         def value(i0, i1, i2, i3, layer=layer):
             return float(router.experts(graph_ordinal, layer, i1)[i0])
 
         blocks.append(Block("ffn_moe_topk-%d" % layer, "i32", "TOP_K",
-                            ("ffn_moe_probs-%d" % layer, [n_expert, n_tokens, 1, 1]), None,
-                            [used, n_tokens, 1, 1], value))
+                            ("ffn_moe_probs-%d" % layer, [n_expert, layer_tokens, 1, 1]), None,
+                            [used, layer_tokens, 1, 1], value))
         blocks.append(Block("ffn_moe_out-%d" % layer, "f32", "ADD",
-                            ("ffn_moe_topk-%d" % layer, [used, n_tokens, 1, 1]),
-                            ("ffn_norm-%d" % layer, [embd, n_tokens, 1, 1]),
-                            [embd, n_tokens, 1, 1]))
+                            ("ffn_moe_topk-%d" % layer, [used, layer_tokens, 1, 1]),
+                            ("ffn_norm-%d" % layer, [embd, layer_tokens, 1, 1]),
+                            [embd, layer_tokens, 1, 1]))
     blocks.append(Block("result_output", "f32", "MUL_MAT",
                         ("output.weight", [embd, 152064, 1, 1]),
                         ("result_norm", [embd, 1, 1, 1]), [152064, 1, 1, 1]))
@@ -225,12 +237,37 @@ def family_of(name):
     return name[:cut], int(suffix)
 
 
+def token_axis(blocks):
+    """The graph's token axis and the set of token-reduced layers, by the parser's own rule: the
+    first `embd` or `ffn_moe_topk` block establishes the axis, and a later `ffn_moe_topk` whose
+    axis is strictly shorter is token-reduced (section 6, item 20).
+
+    Only a *tail* reduction is representable here: a shorter axis at any layer the graph later
+    exceeds is `R2_TOKEN_COUNT`, so it never reaches an expected document."""
+    axis = None
+    reduced = set()
+    for block in blocks:
+        family, layer = family_of(block.name)
+        is_topk = family == "ffn_moe_topk"
+        if block.name != "embd" and not is_topk:
+            continue
+        claim = block.ne[1]
+        if axis is None:
+            axis = claim
+        elif claim != axis and is_topk and claim < axis:
+            reduced.add(layer)
+    return axis, reduced
+
+
 def expected_selections(graphs):
     rows = []
     for ordinal, blocks in enumerate(graphs):
+        _, reduced = token_axis(blocks)
         for block in blocks:
             family, layer = family_of(block.name)
             if family != "ffn_moe_topk":
+                continue
+            if layer in reduced:
                 continue
             ne0, ne1 = block.ne[0], block.ne[1]
             for row_position, i1 in enumerate(printed_indices(ne1)):
@@ -335,6 +372,7 @@ def expected_document(path, graphs, text, separator=""):
     families = []
     plains = []
     topk_layers = []
+    reduced_layers = []
     n_layer = -1
     moe_present = False
     dense_present = False
@@ -342,6 +380,8 @@ def expected_document(path, graphs, text, separator=""):
     n_expert_source = None
     n_expert_used = None
     for blocks in graphs:
+        _, reduced = token_axis(blocks)
+        reduced_layers.extend(reduced)
         for block in blocks:
             if block.name not in names:
                 names.append(block.name)
@@ -357,7 +397,8 @@ def expected_document(path, graphs, text, separator=""):
                 n_layer = max(n_layer, layer + 1)
                 if family == "ffn_moe_topk":
                     moe_present = True
-                    topk_layers.append(layer)
+                    if layer not in reduced:
+                        topk_layers.append(layer)
                     n_expert_used = block.ne[0]
                 if family in ("ffn_gate", "ffn_up", "ffn_swiglu"):
                     dense_present = True
@@ -380,16 +421,7 @@ def expected_document(path, graphs, text, separator=""):
     graph_rows = []
     graph_phase = {}
     for ordinal, blocks in enumerate(graphs):
-        n_tokens = None
-        for block in blocks:
-            if block.name == "embd":
-                n_tokens = block.ne[1]
-                break
-        if n_tokens is None:
-            for block in blocks:
-                if family_of(block.name)[0] == "ffn_moe_topk":
-                    n_tokens = block.ne[1]
-                    break
+        n_tokens, _ = token_axis(blocks)
         observed = printed_indices(n_tokens)
         phase = "prefill" if n_tokens > 1 else ("single_token_first_graph" if ordinal == 0 else "decode")
         graph_phase[ordinal] = phase
@@ -466,6 +498,7 @@ def expected_document(path, graphs, text, separator=""):
             "n_expert_used": n_expert_used,
             "n_expert_source": n_expert_source,
             "topk_layers": sorted(set(topk_layers)),
+            "token_reduced_layers": sorted(set(reduced_layers)),
             "slots_truncated": bool(moe_present and n_expert_used > TRUNCATION_PRINTED),
         },
         "graphs": graph_rows,
@@ -539,6 +572,13 @@ def main():
     # the first token of layer N+1 are one apart *as packed integers*, so an adjacency test that
     # compares packed keys alone manufactures a pair across the layer boundary. Every aggregate
     # below comes from the generator's own oracle, so the phantom pair is caught as a value.
+    # Section 6, item 20: build 10566 reduces the graph to the output tokens *before* the last
+    # layer's feed-forward, so that layer's `ffn_moe_topk` is one token wide, its retained token
+    # index is not printed anywhere, and it therefore yields no selection at all.
+    positive(cases, root, "moe-token-reduced-tail",
+             [moe_graph(3, 5, Router(17, 64, 8), 0, reduced_tail=1)])
+    positive(cases, root, "moe-token-reduced-pair",
+             [moe_graph(2, 6, Router(19, 16, 4), 0, reduced_tail=2)])
     positive(cases, root, "moe-saturated-token",
              [moe_graph(2, MAX_TOKENS_PER_GRAPH, Router(13, 8, 2), 0)])
 
@@ -739,7 +779,15 @@ def main():
 
     token_mismatch = render([moe_graph(1, 5, Router(2, 8, 2), 0)])
     token_mismatch = mutate(token_mismatch, "ffn_moe_topk-0 = (i32)      TOP_K(ffn_moe_probs-0{8, 5, 1, 1}, }) = {2, 5, 1, 1}",
-                            "ffn_moe_topk-0 = (i32)      TOP_K(ffn_moe_probs-0{8, 5, 1, 1}, }) = {2, 4, 1, 1}")
+                            "ffn_moe_topk-0 = (i32)      TOP_K(ffn_moe_probs-0{8, 5, 1, 1}, }) = {2, 6, 1, 1}")
+    # The token-reduced exemption is the instrument's *tail* reduction and nothing else. A middle
+    # layer whose token axis is short is not a reduction build 10566 can perform, and accepting it
+    # would drop an interior layer's whole routing from every aggregate without a refusal. The
+    # first suffixed node at a higher layer is what proves the reduced layer was not the last.
+    emit(cases, root, "token-reduced-middle",
+         render([moe_graph(3, 5, Router(23, 16, 4), 0, reduced_layer=1)]),
+         expect="error", code="R2_TOKEN_COUNT", detail="ffn_norm-2")
+
     emit(cases, root, "token-count", token_mismatch, expect="error", code="R2_TOKEN_COUNT",
          detail="ffn_moe_topk-0")
 

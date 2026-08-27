@@ -3,18 +3,94 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## No active capability (2026-08-28)
+## Active: R2-LOCALITY-GATE (2026-08-28)
+
+Branch `agent/r2-locality-gate`, based on `main` `d5280ab`. **Decision 1 below has been taken**, and
+this capability is the first thing it unblocked.
+
+**The model.** `~/models/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, 4,213,512,192 bytes, sha256
+`4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f`. Architecture `olmoe`, 16 layers,
+`n_expert` 64, `n_expert_used` 8. It is **not** `qwen2` and **not** `gpt-oss`, so R3's real
+measurement needs an R1C frontend for `olmoe` exactly as decision 1 predicted; that work is
+**active in parallel** on branch `agent/r1c-olmoe-moe-ir` and is not part of this capability.
+
+**The R2 gate is met, in the prefill direction.** `scripts/run-expert-locality-gate` over
+`eval/prompts/expert-locality-v1.txt` (40 prompts, all ≤ 6 tokens, md5
+`d7fff23f5a1d4f6237e6f848f3318d8b`), one invocation per prompt, 51.8 s:
+
+```text
+verdict=LOCALITY prompts=40 layers=15 layers_clearing=15 pairs=2280 hits=3924 trials=13680
+p0_per_mille=125 p_hat_per_mille=286 wilson_lo_per_mille=279 wilson_hi_per_mille=294 clusters=40
+deff_per_mille=10460 cluster_lo_per_mille=262 cluster_hi_per_mille=311 ratio_per_mille=2288
+entropy_per_mille=992 top8_mass_per_mille=180 truncated_documents=0 token_reduced_documents=40
+token_reduced_layers=15
+```
+
+Adjacent-token expert reuse is 286 per mille against a 125 per mille null (`k/n` = 8/64), 2.29× the
+null against a 1.5× materiality threshold, and all 15 contributing layers clear the null on their
+own stratum. The trials are clustered by prompt, so the verdict is judged on the cluster-robust
+interval `[262, 311]` (design effect 10.460 over 40 prompt clusters), not on the naive Wilson
+`[279, 294]`. The router histogram is nearly uniform (entropy 992 per mille of uniform, all 64
+experts used), so the effect is conditional structure rather than popularity.
+Working sets grow sublinearly: 10.278 experts over two consecutive tokens where independence
+predicts 11.437, 16.495 over four where it predicts 20.830. **Prefill only** — build 10566 evaluates
+one graph per invocation, `phase_split.decode` is `null`, and nothing here licenses a decode or
+cache-policy claim. Full numbers and every caveat: `docs/specs/r2a-expert-trace.md` section 8.
+R2's "局所性が弱ければ投資を縮小する" contingency does **not** fire; R3 has a measured demand signal.
+
+**R2A's MOE-PREREQ cells are discharged.** `scripts/run-expert-trace-parity` prints
+`expert trace parity (MoE): PASS` on the real model, cross-checked field for field against its own
+independent Python parse of all 934 callback blocks. That run also found one real contract error:
+build 10566 applies the output-token `GET_ROWS` reduction **before the last layer's feed-forward**,
+so `ffn_moe_topk-15` carries a shorter token axis than `embd` and the parser refused every real MoE
+transcript with `R2_TOKEN_COUNT`. Repaired as correction 20 — such a block is *token-reduced*, is
+parsed and validated but contributes no `selections[]` row, and its layer is listed in the new
+additive `moe.token_reduced_layers` field (`schema_version` stays 1). The exemption is bounded to
+the reduction the instrument performs: at most one layer per graph, and it must be the graph's
+highest layer index; an interior short axis stays `R2_TOKEN_COUNT`.
+
+**Committed on the branch.** Nothing in this capability is uncommitted: commit `19d91d1` carries
+`src/expert_trace.align`, `scripts/eval_callback_fixture.py`, `scripts/run-expert-trace-smoke`,
+`scripts/run-expert-trace-parity`, the new `scripts/run-expert-locality-gate`,
+`scripts/expert_locality_gate.py`, `eval/prompts/expert-locality-v1.txt`, and the four documents
+updated with the result; the review repair below is the second commit. No `Makefile` change: the
+gate joins no aggregate, so the classifier stays in hosted scope.
+
+**Review.** One comprehensive reviewer at `19d91d1` returned 1 major and 5 minor findings, all
+accepted and all repaired in the follow-up commit: (1) the `locality-gate-aggregator` unit was
+vacuous against the verdict rule — its two corpora failed or passed both halves at once, and six
+mutations of the rule survived it; (2) the gate never read `moe.token_reduced_layers` or
+`truncated_documents`; (3) the token-reduced exemption was broader than the instrument that
+motivates it, silently accepting an interior reduced layer; (4) the Wilson interval ignored
+(prompt, layer) clustering; (5) the truncation bias-direction claim was only half rigorous; (6) this
+file's "everything uncommitted" paragraph was false. The repair adds five hand-built aggregator
+cases that decide each half of the rule separately (all six mutants now fail), pools and prints both
+omission fields, restricts the exemption to the graph's highest layer index with a new
+`token-reduced-middle` refusal fixture, reports a cluster-robust interval and judges the verdict on
+its lower bound, and states only the `t`-side half of the bias claim.
+
+**Verification.** `gmake expert-trace-smoke` PASS (98 fixtures, up from 95; three added for
+correction 20; the `locality-gate-aggregator` case owns the statistics with no model). `gmake check`
+PASS. `gmake fmt` no diff. `git diff --check` clean. `scripts/run-expert-trace-parity` MoE half
+PASS. `scripts/run-expert-locality-gate` MEASURED / LOCALITY, rerun after the repair.
+
+**Next actions, in order.** (1) `python3 scripts/pre-pr` and publish. (2) R2b — the corpus-wide
+stratification section R2 still names (language別 / task別 / repo別偏り), which this corpus and this
+aggregator are the input to. (3) R3's residency simulation, once R1C lands an `olmoe` frontend.
+R2c's decode measurement stays blocked on decision 3.
+
+## Pending decisions (2026-08-28)
 
 R5C-METAL-PREFILL-ARM merged as align-llm PR #129 (head `c025ee2`, merge `39c69a2` on `main`).
 Track B progress R0 → R5C is now complete on the dense local model. **No roadmap item is startable
 without a user decision or an Align-side change.** The decision list, consolidated (previously
 tracked across the now-merged R5C section; this supersedes it):
 
-1. **Small MoE GGUF, 1-4 GB.** Unblocks the R2 locality gate, R3's residency simulation, R4's
-   per-expert half, and R4.5's expert matmul. A model chosen for size is unlikely to be `gpt-oss`
-   architecture, so R3's real measurement also needs a new R1C frontend for whatever architecture it
-   turns out to be — not just the download. Disk: the model plus roughly equal alignpack space,
-   against ~26 GB free on this host.
+1. **Small MoE GGUF, 1-4 GB. — TAKEN.** `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (3.9 GiB) is on
+   this host; see the active section above. The R2 locality gate is measured and met. Still open
+   behind it: R3's residency simulation and R4's per-expert half and R4.5's expert matmul, which
+   need an R1C `olmoe` frontend (active in parallel on `agent/r1c-olmoe-moe-ir`) rather than another
+   download.
 2. **`gpt-oss-20b-mxfp4.gguf`, 12.1 GB.** Unblocks R1B's real-model `model-ir-parity` qualification
    and every `ASSUMED` row of `docs/specs/r1b-gptoss-moe-ir.md` section 2.5. Disk: roughly 24 GB with
    its pack against ~26 GB free — tight enough that it should not be decided alongside decision 1
@@ -44,10 +120,9 @@ sign-bit/payload difference (arm64's default NaN vs. x86-64 SSE's QNaN) surfacin
 non-finite-readback goldens, masked in golden normalization alone. Full ledger:
 `docs/specs/r5c-metal-prefill.md`.
 
-**Resume in another environment.** Fetch `origin`, check out `main`, and read this section. Pick one
-pending decision, then start the capability it unblocks: decision 1 → R2 (`docs/specs/roadmap.md`
-section R2), R3 (section R3), R4's per-expert half (section R4), and R4.5's expert matmul (section
-R4.5), plus a new R1C frontend if the chosen model is not `qwen2`/`gpt-oss`; decision 2 → R1B's
+**Resume in another environment.** Fetch `origin`, check out `main`, and read this section. Decision
+1 is taken and R2 is measured; the work it still gates (R3, R4's per-expert half, R4.5's expert
+matmul) waits on R1C's `olmoe` frontend, not on another decision. For the rest: decision 2 → R1B's
 `model-ir-parity` qualification (section R1); decision 3 → R6 (section R6) and, through it, R7-R9;
 decision 4 → R5's deferred microbenchmark C (section R5). With no decision made, no roadmap item is
 startable; do not invent a workaround for any of the four.

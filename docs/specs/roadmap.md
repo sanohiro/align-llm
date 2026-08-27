@@ -608,8 +608,8 @@ R2c:
   不足時のみ最小patch
 ```
 
-R2aのauthoritative planは[`r2a-expert-trace.md`](r2a-expert-trace.md)である。branch
-`agent/r2a-expert-trace`でActive: `main --expert-trace CALLBACK_LOG [OUT.json]`が
+R2aのauthoritative planは[`r2a-expert-trace.md`](r2a-expert-trace.md)である。Merged:
+`main --expert-trace CALLBACK_LOG [OUT.json]`が
 `llama-eval-callback`のtranscriptを`R2_ACTIVATION_TRACE`（`schema_version: 1`）document
 へ変換し、token・layerごとのexpert idとlocality aggregateを記録する。dense（非MoE）transcript
 は`moe: false`を返す。
@@ -630,9 +630,40 @@ R2aのauthoritative planは[`r2a-expert-trace.md`](r2a-expert-trace.md)である
 
 局所性が弱ければ、repo expert profileへの投資を縮小する。
 
-このgateは実際のMoE transcriptを必要とする。R2a実装が生成できるのはdense（`moe: false`）transcript
-の`R2_ACTIVATION_TRACE`のみで、局所性の数値判断には小さなMoE GGUF（1-4 GB）が別途必要であり、
-それを取得するかどうかはユーザー判断待ちである。取得されるまでgateはopenのままとなる。
+**このgateはprefill方向で満たされた（2026-08-28、R2-LOCALITY-GATE）。** 小さなMoE GGUFの取得
+判断は決定済みで、`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`（olmoe、16層、`n_expert` 64、
+`n_expert_used` 8）を実測に使用した。測定器は`scripts/run-expert-locality-gate`、prompt corpusは
+`eval/prompts/expert-locality-v1.txt`（40 prompt、全て6 token以下、md5
+`d7fff23f5a1d4f6237e6f848f3318d8b`）。1 promptにつき1 invocation、合計51.8秒。
+
+```text
+verdict=LOCALITY  prompts=40  layers=15  layers_clearing=15  pairs=2280
+null p0 = 125 per mille (k/n = 8/64)
+observed p^ = 286 per mille (3924 / 13680)
+95% Wilson = [279, 294] per mille (independent-trial assumption)
+95% cluster-robust = [262, 311] per mille (40 prompt clusters, design effect 10.460) <- 判定に使用
+p^ / p0 = 2.29x  (LOCALITY threshold: 1.5x)
+histogram entropy = 992 per mille of uniform, top-8 mass = 180 per mille (uniform: 125)
+working set w=2: 10.278 experts vs null 11.437 / w=4: 16.495 vs null 20.830
+```
+
+数値の意味と限界は[`r2a-expert-trace.md`](r2a-expert-trace.md) section 8にある。要点のみ:
+routerのhistogramはほぼ一様（entropy 992 per mille、64 expertすべて使用）なので、2.29倍はpopularity
+偏りではなくtoken間の条件付き構造による。15層すべてが単独でnullを超える（最小207、最大326 per mille）。
+trialは1 prompt内で相関するため（1 promptが全層・全token位置を供給する）、design effect 10.460で
+広げたcluster-robust区間[262, 311]を判定に使う。naiveなWilson区間[279, 294]ではない。
+
+したがって「局所性が弱ければrepo expert profileへの投資を縮小する」は**発動しない**。R3の
+residency simulationは実測されたdemand signalを前提にしてよい。
+
+ただし**prefillのみ**である。build 10566は1 invocationにつき1 graphしか評価しないため
+decodeの測定は存在せず（`phase_split.decode` は `null`）、decode時reuseやcache policyについては
+何も主張しない。また1 promptあたり6 token位置まで、reuseは印字された3+3スロットのみの観測である。
+このうち厳密に言えるのは**t側**の制限だけで、これはhitのみを取り除くのでp^を**低く**偏らせる。
+t+1側の制限は分子と分母を同時に動かすため方向は確定できず、真のtop-8 reuseが286 per milleより
+上か下かはここでは主張しない。最終層はinstrumentがoutput-token reductionを先に適用するため寄与しない
+（section 6 correction 20）。R2bのcorpus横断層別（language別/task別/repo別偏り）とR2cのdecode測定は
+未達のまま残る。
 
 ---
 

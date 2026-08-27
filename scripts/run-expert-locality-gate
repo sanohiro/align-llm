@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R2-LOCALITY-GATE: the roadmap section R2 measurement — 条件付き局所性が存在するか、数値で判断できること.
+#
+# `docs/specs/r2a-expert-trace.md` section 4.5 named the one prerequisite the gate needed: a real
+# MoE model. This runner is what consumes it. It captures one prefill transcript per prompt from a
+# checked-in prompt corpus, derives one `R2_ACTIVATION_TRACE` document per transcript with
+# `main --expert-trace`, deletes the transcript, and pools every document into one verdict through
+# `scripts/expert_locality_gate.py`.
+#
+#   ALIGN_LLM_GGUF_MODEL            path to a MoE model
+#   ALIGN_LLM_LLAMA_EVAL_CALLBACK   path to llama-eval-callback
+#   ALIGN_LLM_LOCALITY_PROMPTS      prompt corpus (default eval/prompts/expert-locality-v1.txt)
+#   ALIGN_LLM_LOCALITY_PROMPT_COUNT prompts to use, from the top of the corpus (default 40)
+#
+# Opt-in, never in an aggregate, never in CI. Neither model variable has a default: a qualification
+# that silently passes when its subject is missing is worse than no qualification, so a missing
+# input prints one exact N/A line and exits 0 without claiming a measurement.
+#
+# The gate is a measurement, not a pass/fail owner test. It exits 0 on either verdict — LOCALITY and
+# NO_LOCALITY are both answers to the roadmap question — and exits nonzero only when the instrument,
+# the corpus, or the parser prevented a measurement from being taken at all.
+
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+instrument="${ALIGN_LLM_LLAMA_EVAL_CALLBACK:-}"
+model="${ALIGN_LLM_GGUF_MODEL:-}"
+prompts="${ALIGN_LLM_LOCALITY_PROMPTS:-$root_dir/eval/prompts/expert-locality-v1.txt}"
+prompt_count="${ALIGN_LLM_LOCALITY_PROMPT_COUNT:-40}"
+
+if [ -z "$instrument" ]; then
+  printf '%s\n' "expert locality gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)"
+  exit 0
+fi
+if [ ! -x "$instrument" ]; then
+  printf '%s\n' "expert locality gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable)"
+  exit 0
+fi
+if [ -z "$model" ]; then
+  printf '%s\n' "expert locality gate: N/A (ALIGN_LLM_GGUF_MODEL unset)"
+  exit 0
+fi
+if [ ! -f "$model" ]; then
+  printf '%s\n' "expert locality gate: N/A (ALIGN_LLM_GGUF_MODEL is absent)"
+  exit 0
+fi
+if [ ! -f "$prompts" ]; then
+  printf '%s\n' "expert locality gate: the prompt corpus $prompts is absent" >&2
+  exit 1
+fi
+if [ ! -x "$root_dir/main" ]; then
+  printf '%s\n' "expert locality gate: the product executable is missing; run 'make build'" >&2
+  exit 1
+fi
+
+temp_dir=$(mktemp -d)
+cleanup() {
+  rm -rf "$temp_dir"
+}
+# A signal must remove the transcript too: one transcript is tens of megabytes, and a run
+# interrupted at the terminal is the ordinary way this gate ends early.
+trap cleanup EXIT HUP INT TERM
+
+before=$(python3 - "$model" <<'PY'
+import os, sys
+info = os.stat(sys.argv[1])
+print("%d %d" % (info.st_size, info.st_mtime_ns))
+PY
+)
+
+"$instrument" --version >"$temp_dir/version.txt" 2>&1 || {
+  status=$?
+  printf '%s\n' "expert locality gate: the instrument exited $status for --version" >&2
+  tail -20 "$temp_dir/version.txt" >&2 || true
+  exit 1
+}
+
+# The corpus is read once, in file order, and the first `prompt_count` lines are used. The order is
+# part of the corpus identity recorded below, so a reordered file is a different corpus.
+selected=()
+while IFS= read -r line || [ -n "$line" ]; do
+  [ -n "$line" ] || continue
+  selected+=("$line")
+  [ "${#selected[@]}" -lt "$prompt_count" ] || break
+done <"$prompts"
+if [ "${#selected[@]}" -lt "$prompt_count" ]; then
+  printf '%s\n' "expert locality gate: the corpus holds ${#selected[@]} prompts, $prompt_count requested" >&2
+  exit 1
+fi
+
+corpus_identity=$(python3 - "$prompts" "$prompt_count" <<'PY'
+import hashlib, sys
+from pathlib import Path
+raw = Path(sys.argv[1]).read_bytes()
+print("%s %s %d %d"
+      % (Path(sys.argv[1]).name, hashlib.md5(raw).hexdigest(), len(raw), int(sys.argv[2])))
+PY
+)
+
+instrument_timeout=""
+if command -v timeout >/dev/null 2>&1; then
+  instrument_timeout="timeout 600"
+elif command -v gtimeout >/dev/null 2>&1; then
+  instrument_timeout="gtimeout 600"
+fi
+
+mkdir -p "$temp_dir/documents"
+printf '%s\n' "expert locality gate: capturing ${#selected[@]} prefill transcripts" >&2
+start_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+index=0
+for prompt in "${selected[@]}"; do
+  transcript="$temp_dir/transcript.txt"
+  # The flags are contractual, not incidental. `-fa off` keeps attention unfused so the graph shape
+  # stays the one section 2.2 was measured against; `-ctk f32 -ctv f32` keeps the cache tensors in
+  # a printable type; `-nr` suppresses the reasoning wrapper so the prompt reaches the tokenizer
+  # verbatim; `-c 512` bounds the context. `ulimit -f` caps the transcript at 256 MiB.
+  (
+    ulimit -f 262144
+    exec $instrument_timeout "$instrument" -m "$model" -p "$prompt" -n 1 -t 4 \
+      -fa off -ctk f32 -ctv f32 -nr -c 512 \
+      </dev/null >"$transcript" 2>"$temp_dir/instrument.log"
+  ) || {
+    status=$?
+    if [ -n "$instrument_timeout" ] && [ "$status" -eq 124 ]; then
+      printf '%s\n' "expert locality gate: the instrument did not finish within 600 s on prompt $index" >&2
+    else
+      printf '%s\n' "expert locality gate: the instrument exited $status on prompt $index" >&2
+    fi
+    tail -20 "$temp_dir/instrument.log" >&2 || true
+    exit 1
+  }
+  "$root_dir/main" --expert-trace "$transcript" \
+    >"$temp_dir/documents/$(printf '%03d' "$index").json" || {
+    status=$?
+    printf '%s\n' "expert locality gate: --expert-trace exited $status on prompt $index" >&2
+    exit 1
+  }
+  # The transcripts are the bulk of the run and none is retained: the documents are the evidence.
+  rm -f "$transcript"
+  index=$((index + 1))
+done
+end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+
+after=$(python3 - "$model" <<'PY'
+import os, sys
+info = os.stat(sys.argv[1])
+print("%d %d" % (info.st_size, info.st_mtime_ns))
+PY
+)
+if [ "$before" != "$after" ]; then
+  printf '%s\n' "expert locality gate: the model's size or mtime changed during the run" >&2
+  exit 1
+fi
+
+python3 - "$temp_dir/documents" "$prompts" "$prompt_count" "$temp_dir/version.txt" \
+  "$corpus_identity" "$start_ns" "$end_ns" "$root_dir/scripts" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[8])
+from expert_locality_gate import CAVEATS, GateError, aggregate
+
+document_dir = Path(sys.argv[1])
+prompt_path = Path(sys.argv[2])
+prompt_count = int(sys.argv[3])
+version_text = Path(sys.argv[4]).read_text(encoding="utf-8", errors="replace").strip()
+corpus_identity = sys.argv[5]
+elapsed_ns = int(sys.argv[7]) - int(sys.argv[6])
+
+paths = sorted(document_dir.glob("*.json"))
+documents = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+labels = [path.stem for path in paths]
+
+try:
+    result = aggregate(documents, labels)
+except GateError as error:
+    raise SystemExit("expert locality gate: the measurement could not be taken: %s" % error)
+
+print("expert locality gate: MEASURED")
+print("  instrument build")
+for line in version_text.splitlines():
+    print("    %s" % line.strip())
+print("  corpus             %s" % corpus_identity)
+print("  prompts            %d captured, %d contributed an adjacent pair"
+      % (result["document_count"], result["documents_with_pairs"]))
+print("  router             n_expert %d, n_expert_used %d, %d slot(s) printed per token"
+      % (result["n_expert"], result["n_expert_used"], result["observed_slots_per_token"]))
+print("  observed           %d token position(s), %d adjacent pair(s), %d layer(s)"
+      % (result["token_positions"], result["adjacent_pair_count"], result["layer_count"]))
+# What the instrument dropped before the gate ever saw it. Both are omissions, not measurements,
+# and a reader has to be able to see that they were counted rather than ignored.
+print("  omitted            %d document(s) with a truncated token axis; %d with a token-reduced "
+      "layer" % (result["truncated_documents"], result["documents_token_reduced"]))
+print("  token-reduced      layer(s) %s (contributed no selection anywhere)"
+      % (", ".join(str(layer) for layer in result["token_reduced_layers"]) or "none"))
+print()
+print("  pooled adjacent-token expert reuse")
+print("    null p0          %d per mille (k/n = %d/%d); printed-subset null %d per mille"
+      % (result["null_per_mille"], result["n_expert_used"], result["n_expert"],
+         result["observed_null_per_mille"]))
+print("    observed p^      %d per mille (%d / %d)"
+      % (result["reuse_per_mille"], result["reuse_numerator"], result["reuse_denominator"]))
+print("    95%% Wilson       [%d, %d] per mille (independent-trial assumption)"
+      % (result["wilson_low_per_mille"], result["wilson_high_per_mille"]))
+print("    95%% clustered    [%d, %d] per mille over %d prompt cluster(s), design effect %d per "
+      "mille%s"
+      % (result["cluster_low_per_mille"], result["cluster_high_per_mille"],
+         result["cluster_count"], result["design_effect_per_mille"],
+         "" if result["design_effect_estimated"] else " (not estimable; floored at 1000)"))
+print("    p^ / p0          %d per mille (threshold for LOCALITY: 1500)"
+      % result["ratio_to_null_per_mille"])
+print("    excludes null    %s (on the clustered lower bound)"
+      % ("yes" if result["excludes_null"] else "no"))
+print("    >= 1.5 x null    %s" % ("yes" if result["materially_above_null"] else "no"))
+print()
+print("  per-layer strata (%d of %d layers clear the null)"
+      % (result["layers_clearing_null"], result["layer_count"]))
+print("    layer  pairs  reuse      p^   wilson lo/hi    deff  cluster lo/hi   clears  experts  "
+      "entropy  top8 mass")
+for row in result["per_layer"]:
+    print("    %5d  %5d  %4d/%-4d  %4s  %5s / %-5s  %6s  %5s / %-5s  %-6s  %7d  %7s  %9s"
+          % (row["layer"], row["adjacent_pair_count"], row["reuse_numerator"],
+             row["reuse_denominator"], row["reuse_per_mille"], row["wilson_low_per_mille"],
+             row["wilson_high_per_mille"], row["design_effect_per_mille"],
+             row["cluster_low_per_mille"], row["cluster_high_per_mille"],
+             "yes" if row["clears_null"] else "no",
+             row["distinct_experts"], row["entropy_per_mille"], row["top8_mass_per_mille"]))
+print("    pooled: %d distinct expert(s), entropy %s per mille of uniform, top-8 mass %s per mille"
+      % (result["pooled_distinct_experts"], result["pooled_entropy_per_mille"],
+         result["pooled_top8_mass_per_mille"]))
+print()
+print("  working-set growth over w consecutive observed tokens")
+print("       w  samples  observed mean  null mean  deficit  (per mille of one expert)")
+for row in result["working_set"]:
+    print("    %4d  %7d  %13s  %9d  %7s"
+          % (row["window"], row["sample_count"], row["unique_mean_per_mille"],
+             row["null_unique_mean_per_mille"], row["deficit_per_mille"]))
+print()
+print("  phase split")
+for name in ("prefill", "decode"):
+    row = result["phase_split"].get(name)
+    if row is None:
+        print("    %-8s N/A - not observed" % name)
+    else:
+        print("    %-8s %d/%d = %d per mille over %d adjacent pair(s)"
+              % (name, row["reuse_numerator"], row["reuse_denominator"],
+                 row["reuse_per_mille"], row["adjacent_pair_count"]))
+print()
+print("  caveats")
+for caveat in CAVEATS:
+    print("    - %s" % caveat)
+print()
+print("  elapsed            %.1f s for %d invocation(s) (diagnostic only; no performance claim)"
+      % (elapsed_ns / 1e9, result["document_count"]))
+print("  transcripts        deleted; the %d document(s) are the evidence" % result["document_count"])
+print()
+print("expert-locality-gate verdict=%s prompts=%d layers=%d layers_clearing=%d pairs=%d "
+      "hits=%d trials=%d p0_per_mille=%d p_hat_per_mille=%d wilson_lo_per_mille=%d "
+      "wilson_hi_per_mille=%d clusters=%d deff_per_mille=%d cluster_lo_per_mille=%d "
+      "cluster_hi_per_mille=%d ratio_per_mille=%d entropy_per_mille=%s top8_mass_per_mille=%s "
+      "truncated_documents=%d token_reduced_documents=%d token_reduced_layers=%s"
+      % (result["verdict"], result["document_count"], result["layer_count"],
+         result["layers_clearing_null"], result["adjacent_pair_count"], result["reuse_numerator"],
+         result["reuse_denominator"], result["null_per_mille"], result["reuse_per_mille"],
+         result["wilson_low_per_mille"], result["wilson_high_per_mille"],
+         result["cluster_count"], result["design_effect_per_mille"],
+         result["cluster_low_per_mille"], result["cluster_high_per_mille"],
+         result["ratio_to_null_per_mille"], result["pooled_entropy_per_mille"],
+         result["pooled_top8_mass_per_mille"], result["truncated_documents"],
+         result["documents_token_reduced"],
+         ",".join(str(layer) for layer in result["token_reduced_layers"]) or "none"))
+PY
+
+printf '%s\n' "expert locality gate: model size and mtime unchanged (read-only proof)"

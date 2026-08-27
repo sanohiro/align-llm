@@ -601,10 +601,9 @@ ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \
 ```
 
 `ALIGN_LLM_GGUF_MODEL` names the model to run the callback instrument against; a dense model (e.g.
-the existing Qwen2.5-Coder-7B) exercises the `moe: false` path, and a small MoE GGUF (1-4 GB, not
-yet downloaded — a pending user decision) is required to exercise `moe: true` and close the R2
-roadmap gate's locality question. `ALIGN_LLM_LLAMA_EVAL_CALLBACK` names the callback instrument
-executable.
+the existing Qwen2.5-Coder-7B) exercises the `moe: false` path, and a MoE model exercises
+`moe: true`. Both halves are now discharged on this host: `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`
+is the MoE subject. `ALIGN_LLM_LLAMA_EVAL_CALLBACK` names the callback instrument executable.
 
 Neither variable has a default. A missing or unusable input prints exactly one of these lines and
 exits 0 without claiming a pass, and the line must be named as the `N/A` reason in the pull request:
@@ -633,6 +632,84 @@ Any disagreement fails closed with a nonzero exit; a parse failure against the i
 is a hard failure and never a skip. The runner also asserts the `bytes_read` bound and that the
 model's size and modification time are unchanged, which is the read-only proof. The instrument runs
 under a 600-second `timeout` so a run that fails to terminate is a bounded failure.
+
+### The R2 locality gate
+
+`scripts/run-expert-locality-gate` is the R2 roadmap gate's measurement: it captures one prefill
+transcript per prompt from a checked-in corpus, derives one `R2_ACTIVATION_TRACE` document from each
+with `main --expert-trace`, deletes the transcript, and pools every document into one verdict. The
+numbers it produced, and every caveat they carry, are recorded in `docs/specs/r2a-expert-trace.md`
+section 8; that section is authoritative for the result and this one for how to run it.
+
+```sh
+ALIGN_LLM_GGUF_MODEL=/path/to/moe-model.gguf \
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \
+  scripts/run-expert-locality-gate
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ALIGN_LLM_GGUF_MODEL` | none | a **MoE** GGUF; a dense model makes the gate refuse, because a dense graph has no router to measure |
+| `ALIGN_LLM_LLAMA_EVAL_CALLBACK` | none | the callback instrument executable |
+| `ALIGN_LLM_LOCALITY_PROMPTS` | `eval/prompts/expert-locality-v1.txt` | the prompt corpus, one prompt per line |
+| `ALIGN_LLM_LOCALITY_PROMPT_COUNT` | `40` | prompts to use, taken from the **top** of the corpus in file order |
+
+Neither model variable has a default. A missing or unusable input prints exactly one of these lines,
+in this order, and exits 0 without claiming a measurement:
+
+```text
+expert locality gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)
+expert locality gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable)
+expert locality gate: N/A (ALIGN_LLM_GGUF_MODEL unset)
+expert locality gate: N/A (ALIGN_LLM_GGUF_MODEL is absent)
+```
+
+**The gate is a measurement, not a pass/fail owner test.** It exits 0 on either verdict — `LOCALITY`
+and `NO_LOCALITY` are both answers to the roadmap question — and exits nonzero only when the
+instrument, the corpus, or the parser prevented a measurement from being taken. It prints a human
+table and one machine-readable final line:
+
+```text
+expert-locality-gate verdict=... prompts=... layers=... layers_clearing=... pairs=... hits=...
+  trials=... p0_per_mille=... p_hat_per_mille=... wilson_lo_per_mille=... wilson_hi_per_mille=...
+  clusters=... deff_per_mille=... cluster_lo_per_mille=... cluster_hi_per_mille=...
+  ratio_per_mille=... entropy_per_mille=... top8_mass_per_mille=... truncated_documents=...
+  token_reduced_documents=... token_reduced_layers=...
+```
+
+**Two intervals are reported and the wider one decides.** The trials are clustered by prompt — one
+prompt supplies every layer and token position it has — so the naive Wilson interval assumes an
+independence the corpus does not have. The gate estimates the design effect with the prompt as the
+cluster, widens Wilson by deflating the sample size to `N / deff`, and judges the interval half of
+the verdict on the **cluster-robust** lower bound. The design effect is floored at 1, so clustering
+can only widen. `truncated_documents` and `token_reduced_layers` report what the instrument dropped
+before the gate saw it: a token-reduced layer contributes to no number in the result.
+
+**The prompt corpus is checked in and its order is part of its identity.** Every prompt in
+`eval/prompts/expert-locality-v1.txt` tokenizes to six tokens or fewer against the subject model,
+verified with `llama-tokenize` before the file was frozen. That matters: the instrument prints at
+most six entries per axis, so a longer prompt hides token positions and breaks adjacency in the
+middle of the prefill. A new corpus must repeat that check. The runner prints the corpus name, md5,
+byte count, and prompt count with every result.
+
+**Transcripts are captured one at a time and deleted immediately**; only the documents are pooled.
+A 40-prompt run against a 16-layer MoE model writes and removes roughly 44 MB of transcript and
+takes about a minute with a warm page cache.
+
+**The aggregation is a separate importable module**, `scripts/expert_locality_gate.py`, so that the
+statistics have an owner test with no model and no network: `scripts/run-expert-trace-smoke`'s
+`locality-gate-aggregator` case pools the synthetic corpus's memoryless-router documents and
+requires `NO_LOCALITY`, then decides each half of the verdict rule on its own with routers it
+specifies exactly: a case that clears the null but is immaterial, one that is material but whose
+interval includes the null, one at exactly 2.0× the null, and one whose reuse is entirely
+between-prompt and must be refused by the cluster-robust bound after the naive interval accepts it.
+It also requires that a document whose `locality` disagrees with a recomputation from its own
+`selections[]` is refused. Every number the module produces is an integer per mille; floating point
+appears only inside the Wilson bound and the design effect, and every output is floored before any
+comparison, so the verdict is a comparison of integers.
+
+The gate joins no aggregate and no `Makefile` target: adding one would select the fresh-image
+preflight profile for a runner that cannot execute in CI anyway.
 
 ## alignpack development
 

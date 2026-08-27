@@ -120,6 +120,12 @@ be the exact failure `CLAUDE.md` warns about.** It discharges the part it owns a
    user decision — download a small MoE GGUF — that closes it, and section 4.4's parity
    qualification is the thing that would then run.
 
+**Superseded by section 8.** Section 4.5's decision has since been answered: a small MoE GGUF was
+obtained, item 3 above is discharged, and **the R2 gate is met** with the numbers section 8 records.
+The paragraph below is kept as written because it was true of R2A on its own, and because it is the
+shape of the honest statement a later capability should reuse when its measurement does not exist
+yet.
+
 R2A's honest terminal state is therefore: *the instrument is understood and the parser is correct;
 the number the gate asks for does not exist yet.* That is a checkpoint worth shipping, because the
 parser is the long pole and because section 2.2's findings materially change what R2b and R2c must
@@ -1100,6 +1106,10 @@ does not download anything.
 
 Until (1) is answered yes, the MoE half is `N/A` with this reason, and it never counts as a pass.
 
+**Answered.** `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (3.9 GiB, `olmoe`, 16 layers, `n_expert` 64,
+`n_expert_used` 8) is present on this host. Every **MOE-PREREQ** cell is discharged by
+`scripts/run-expert-trace-parity`'s MoE half, and the gate itself is section 8.
+
 ### 4.6 Metrics
 
 **Primary — correctness.** Three pass/fail measurements: every synthetic fixture's parsed selections
@@ -1328,6 +1338,7 @@ names the superseded text. Cases without a runner prefix are cases inside
 | 17 | Section 2.5.4's `"n_layer": 28` | `graph.n_layer` is `null`, never `-1`, when the transcript carries no `-N` suffixed node. The three producers are the six-block excerpt with no suffixed family, a transcript with no callback line, and a capture that began mid-graph | `-1` is a value a JSON reader cannot tell from a derived layer count, and every other underived field in this schema is already `null` (`run.build`, `moe.n_expert`, `graphs[].n_tokens`). Section 2.5.4 now carries the field table that states it | `dense-zero-layer`, `zero-graph`, `real-transcript` |
 | 18 | Section 2.6 step 2, "Path lexical validation against `MAX_PATH_BYTES`" | Step 2 validates **both** operands — emptiness, `MAX_PATH_BYTES`, and a NUL byte — in `src/main.align`, before the derivation. `expert_trace.build_trace` keeps its own transcript-path check as the module's fail-closed contract | The destination never reaches `expert_trace`, so an unusable one was only discovered by `fs.write_file` after a whole transcript had been scanned and a document built. Step 2 is ordered before step 3 precisely so that cannot happen | `path-too-long`, `destination-path-guard` |
 | 19 | Section 7.5 item 2, "No string ordering and no string sort" | Half withdrawn. `str` satisfies `Ord` at this pin and `<` **is** the byte-lexicographic comparison, so `span_less` / `span_same` are two expressions over `span_text`, not a hand-written byte loop. The genuine remaining gap is the *sort*: `array<T>.sort()` rejects `str` elements, `array_builder<str>` is rejected outright, and `sort_by_key` — which does admit a `str` key — cannot reach these columns because "a lambda cannot capture the owned value 'starts' yet"; there is no comparator `sort_by` — so `sort_spans` stays | Claiming a gap that does not exist weakens the register. `docs/align-requests.md` Request 27 and section 7.5 item 2 now state the shipped half and the missing half separately | `make check`, `make expert-trace-smoke` (every `node_families` / `unsuffixed_nodes` / `ops` list), `multibyte-everywhere` |
+| 20 | Section 2.5.6's `n_tokens` — "cross-checked against axis 1 of every `ffn_moe_topk-N` in the same graph" — and section 2.5.5's `topk_layers` | **False against a real MoE model.** Build 10566 applies the output-token `GET_ROWS` reduction *before* the **last** layer's feed-forward, so on a 16-layer OLMoE prefill of 3 tokens `embd` is `{2048, 3, 1, 1}` while `ffn_moe_topk-15` is `{8, 1, 1, 1}`. A `ffn_moe_topk-N` block whose token axis is **shorter** than the graph's is *token-reduced*, not inconsistent: it is parsed and validated exactly like any other block, but it contributes **no `selections[]` row and nothing to any locality aggregate**, its layer is excluded from `moe.topk_layers`, and it is listed in the new `moe.token_reduced_layers`. A **longer** axis, and any disagreement outside `ffn_moe_topk`, remain `R2_TOKEN_COUNT`. The exemption is bounded to the reduction the instrument actually performs: **at most one layer per graph may claim it, and it must be the graph's highest layer index.** A suffixed node at a higher layer arriving after a layer was accepted as token-reduced, or a second reduced layer in the same graph, is `R2_TOKEN_COUNT` with that node's name as the detail — dropping an *interior* layer's entire routing from every aggregate is a silent loss no rule of build 10566 explains | The transcript does not carry the retained token indices: `inp_out_ids` reaches the graph as a leaf (`node_899 = GET_ROWS(l_out-14{2048, 3, 1, 1}, MTL0#leaf_227#0{1, 1, 1, 1}) = {2048, 1, 1, 1}`) and a leaf is never printed by the callback. Labelling the reduced block's single row `token: 0` would place the *last* position's routing at index 0 and corrupt every adjacency; refusing the transcript would reject every real MoE model. `moe.token_reduced_layers` is what keeps the omission visible, which is section 1.1's third property. `schema_version` stays `1`: the field is additive, and no consumer outside this repository reads the document | `moe-token-reduced-tail`, `moe-token-reduced-pair`, `token-reduced-middle` (a short axis at layer 1 of 3, refused at `ffn_norm-2`), `token-count` (retargeted to a *longer* axis), `run-expert-trace-parity` on the real OLMoE model, `run-expert-locality-gate` |
 
 **One finding, not a correction.** Because `R2_ROW_COUNT` enforces `printed = min(ne, 6)`, no
 `(graph, layer)` pair can ever carry more than six observed token indices, so a run of consecutive
@@ -1529,3 +1540,184 @@ edit; this section is the client evidence.
    a `'static` literal. The fix is one `.clone()` per fault construction, which is cheap; the
    diagnostic is nevertheless conservative about literals. Minor, non-blocking, recorded for
    completeness.
+
+## 8. R2 locality gate measurement
+
+Section 1.4 item 3 recorded the honest terminal state of R2A: *the instrument is understood and the
+parser is correct; the number the gate asks for does not exist yet.* Section 4.5's decision has since
+been answered — a small MoE GGUF was obtained — so this section records the measurement itself. It
+supersedes section 1.4 item 3 and section 4.4's `expert trace parity (MoE): N/A` line; sections 1
+to 5 are otherwise unchanged.
+
+The capability that produced it is **R2-LOCALITY-GATE**: no new CLI verb, no new exchanged document,
+and no new coordinated invariant, so it triggers no design gate. It is a checked-in prompt corpus,
+one qualification runner, one importable aggregation module, and this record.
+
+### 8.1 Subject, corpus, and instrument
+
+```text
+model      OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf (olmoe, 16 layers, n_expert 64, n_expert_used 8)
+instrument llama-eval-callback, version: 0.2.0 (build 10566, commit bb4caa754)
+           built with AppleClang 21.0.0.21000101 for Darwin arm64
+corpus     eval/prompts/expert-locality-v1.txt
+           40 prompts, md5 d7fff23f5a1d4f6237e6f848f3318d8b, 877 bytes
+           sha256 b6b64ec7d7551f69b30786aee1a147bbde95d9ba5b1538b92af264209e4b4518
+runner     scripts/run-expert-locality-gate
+aggregator scripts/expert_locality_gate.py
+flags      -n 1 -t 4 -fa off -ctk f32 -ctv f32 -nr -c 512, one invocation per prompt
+```
+
+Every prompt tokenizes to **six tokens or fewer**, verified with `llama-tokenize` against this model
+before the corpus was frozen. That is the property that makes the measurement clean: finding 6's
+`printed = min(ne, 6)` rule hides no token position, so every adjacency the aggregates use is a real
+adjacency between consecutive positions rather than a jump across a truncation marker. The corpus is
+deliberately mixed — Python, SQL, git, Rust, C-family, shell, Kubernetes, npm, English prose and
+verse, French, German, Spanish, Italian, Japanese, mathematics, law, economics, medicine, cooking,
+and music — and its **order is part of its identity**, because the runner takes the first `N` lines.
+
+Transcripts are captured one at a time and **deleted immediately** after their document is derived.
+The forty `R2_ACTIVATION_TRACE` documents are the evidence; roughly 44 MB of transcript is not
+retained.
+
+### 8.2 Result
+
+```text
+expert-locality-gate verdict=LOCALITY prompts=40 layers=15 layers_clearing=15 pairs=2280
+  hits=3924 trials=13680 p0_per_mille=125 p_hat_per_mille=286 wilson_lo_per_mille=279
+  wilson_hi_per_mille=294 clusters=40 deff_per_mille=10460 cluster_lo_per_mille=262
+  cluster_hi_per_mille=311 ratio_per_mille=2288 entropy_per_mille=992 top8_mass_per_mille=180
+  truncated_documents=0 token_reduced_documents=40 token_reduced_layers=15
+```
+
+| Quantity | Value |
+| --- | --- |
+| Prompts captured / contributing an adjacent pair | 40 / 40 |
+| Token positions observed | 192 |
+| Adjacent observed token pairs | 2,280 |
+| Layers contributing | 15 of 16 (layer 15 is token-reduced; correction 20) |
+| Null `p0` = `k/n` = 8/64 | **125** per mille |
+| Null for the printed subset = 6/64 | 93 per mille (smaller; the verdict uses the larger, conservative one) |
+| Observed pooled reuse `p̂` | **286** per mille (3,924 / 13,680) |
+| 95% Wilson interval, independent trials | [279, 294] per mille |
+| Prompt clusters / measured design effect | 40 / **10.460** |
+| 95% cluster-robust interval | **[262, 311]** per mille — the one the verdict uses |
+| `p̂ / p0` | 2,288 per mille (2.29×; the LOCALITY threshold is 1.5×) |
+| Documents with a truncated token axis / a token-reduced layer | 0 / 40 |
+| Pooled token-reduced layers (contributed nothing anywhere) | layer 15 |
+| Per-layer strata clearing the null (on the cluster-robust bound) | **15 of 15** |
+| Per-layer design effect | 1.000 (layers 0, 1, 6, 7) to 2.730 (layer 14) |
+| Per-layer `p̂` range | 207 per mille (layer 10) to 326 per mille (layer 4) |
+| Pooled distinct experts | 64 of 64 |
+| Pooled normalized histogram entropy | 992 per mille of uniform |
+| Pooled top-8 expert mass | 180 per mille (uniform would be 125) |
+| Working set, `w = 2` | observed 10.278 experts vs. null 11.437 — a deficit of 1.159 |
+| Working set, `w = 4` | observed 16.495 experts vs. null 20.830 — a deficit of 4.335 |
+| Phase split | prefill 3,924/13,680 = 286 per mille; decode **N/A, not observed** |
+| Runtime | 51.8 s for 40 invocations, warm page cache |
+
+**Verdict: LOCALITY.** Both halves of the rule hold — the **cluster-robust** interval excludes the
+null (262 > 125) and the point estimate is 2.29× the null, above the 1.5× materiality threshold —
+and every one of the 15 contributing layers clears the null on its own stratum, on the same
+cluster-robust rule, so the effect is not carried by a few layers.
+
+**On the clustering.** The 13,680 trials are not 13,680 independent draws: one prompt supplies every
+layer and every token position it has, and those trials share a tokenization and a router state. The
+gate therefore estimates the design effect with the prompt as the cluster — the cluster-robust
+variance of the ratio estimator divided by the binomial variance Wilson assumes — and widens the
+interval by deflating the sample size to `N / deff`. The measured design effect is **10.460**: the
+effective sample is roughly 1,308 trials, not 13,680, and the honest interval is [262, 311] rather
+than [279, 294]. The effect survives the correction with a factor of two to spare, which is the
+point of reporting it. The design effect is floored at 1, so clustering may widen this interval and
+never narrow it.
+
+### 8.3 What the number does and does not license
+
+The three quantities agree on a consistent picture and they measure different things:
+
+- **Reuse is real and it is not a popularity artefact.** The pooled histogram is nearly uniform
+  (entropy 992 per mille of uniform, all 64 experts used, top-8 mass 180 per mille against 125 for
+  uniform). A skewed router would raise adjacent reuse without any *conditional* structure; this one
+  is barely skewed, so the 2.29× is dominated by the token-to-token conditioning the gate asks about.
+- **Working-set growth is sublinear in the same direction.** Two consecutive tokens touch 10.28
+  distinct experts where independence predicts 11.44, and four touch 16.50 where independence
+  predicts 20.83. The deficit widens with the window, which is what a residency cache converts into
+  hit rate.
+- **The effect is layer-wide but not uniform.** Layer 10 is the weakest at 207 per mille and layer 4
+  the strongest at 326; no layer falls back to the null.
+
+The caveats the runner prints with every result, and which this record repeats rather than softens:
+
+1. **Prefill only.** Finding 7 stands: build 10566 evaluates one graph per invocation. **No decode
+   measurement exists**, `phase_split.decode` is `null`, and nothing here licenses a claim about
+   decode-time reuse or about a cache policy. Section 5.2's R2c patch is what would change that.
+2. **At most six token positions per prompt**, and the corpus is authored so that all of them are
+   observed. Long-context behaviour is unmeasured.
+3. **Reuse is measured among observed slots only.** `n_expert_used` is 8 and the printer emits 3+3 of
+   them, so each token contributes 6 of its 8 experts, and a hit requires the expert to be in the
+   printed subset at *both* ends. Only one half of that is rigorous: restricting the `t` side can
+   only **remove** hits from a fixed denominator, so that half biases `p̂` **low**. The `t+1`
+   restriction moves numerator and denominator together and its sign depends on how reuse is
+   distributed across a token's printed and unprinted slots, which this instrument cannot show. The
+   record therefore claims only the `t`-side direction and makes **no claim** about where the true
+   top-8 reuse sits relative to 286 per mille.
+4. **The last layer of every graph contributes nothing** (correction 20). All 40 documents dropped
+   layer 15, and none had a truncated token axis; the gate prints both counts and the pooled set of
+   dropped layers with every result.
+5. **The 6 printed slots within one token are drawn without replacement**, so the Wilson interval's
+   independence assumption is approximate even within a token.
+6. **The trials are clustered by prompt**, which the naive Wilson interval ignores. Measured design
+   effect 10.460; the verdict uses the widened [262, 311] interval, not [279, 294]. Between-prompt
+   structure alone cannot pass this gate — the aggregator's `between-prompt` case is exactly that
+   corpus, and it is required to score NO_LOCALITY.
+7. **The null is the conservative one.** Judging against 6/64 = 93 per mille rather than 8/64 = 125
+   would make the ratio 3.07× instead of 2.29×.
+
+**Consequence for the roadmap.** Section R2's gate — 条件付き局所性が存在するか、数値で判断できること —
+is **met, in the prefill direction, with the number 286 per mille against a 125 per mille null and a
+cluster-robust 95% interval of [262, 311]**. Its
+stated contingency ("局所性が弱ければ、repo expert profileへの投資を縮小する") is **not** triggered.
+R3's residency simulation has a measured demand signal to work from. R2b's cross-corpus stratification
+(language別 / task別 / repo別偏り) and R2c's decode measurement remain open and are not claimed here.
+
+### 8.4 Verification
+
+```text
+scripts/run-expert-trace-parity   PASS (MoE half) on the real OLMoE model; the dense half is N/A
+                                  because moe.present is true. Cross-checked field for field against
+                                  the runner's independent Python parse of all 934 callback blocks:
+                                  moe.present true, n_expert 64 (ffn_moe_probs), n_expert_used 8,
+                                  slots_truncated true, topk_layers 0..14, token_reduced_layers [15],
+                                  selections 270, graph.n_layer 16, shape_class moe-ffn.
+make expert-trace-smoke           PASS 98 fixtures (three added for correction 20), 17 error codes,
+                                  the real build-10566 excerpt, both CLI forms, the aggregate oracle,
+                                  and the locality-gate aggregator on the synthetic corpus.
+scripts/run-expert-locality-gate  MEASURED, verdict LOCALITY, 51.8 s (section 8.2).
+git diff --check                  clean
+```
+
+The aggregator has its own owner case inside `scripts/run-expert-trace-smoke`
+(`locality-gate-aggregator`), which needs no model, no network, and no instrument. It pools the
+generator's MoE fixtures — whose router is a deterministic hash of `(seed, graph, layer, token)` and
+therefore memoryless — and requires **NO_LOCALITY**: an aggregator that found locality in a
+memoryless router would find it anywhere. That corpus fails *both* halves of the verdict rule at
+once, however, so it cannot tell a conjunction from a disjunction, the 1.5× threshold from a 3.0×
+one, or a 95% interval from a zero-width one. Five further cases are built inside the unit from a
+router the file specifies exactly — `built_document(shares)` names the per-pair overlap and computes
+the document's `locality` from the `selections[]` it emits — and each decides one half on its own:
+
+| Case | Shape | Required |
+| --- | --- | --- |
+| `sticky` | every expert repeats, 1 document | LOCALITY at 1000 per mille, `null_per_mille` **125** and `observed_null_per_mille` **93** asserted directly, 4 of 4 layers clearing |
+| `half-detectable` | 1 of 6 shared, 1,200 trials, 8 documents | `excludes_null` true, `materially_above_null` **false** → **NO_LOCALITY** at 166 per mille |
+| `half-material` | 3 of 12 trials, 1 document | `materially_above_null` true, `excludes_null` **false** (Wilson [88, 532]) → **NO_LOCALITY** at 250 per mille |
+| `material` | 250 per mille on 1,200 trials | **LOCALITY** at exactly 2.0× the null — between the shipped 1.5× bar and 3.0× |
+| `between-prompt` | 2 sticky and 4 memoryless prompts | Wilson [299, 368] but design effect 144 and cluster-robust low **86** → **NO_LOCALITY** |
+
+A sixth case requires that a document whose `locality` disagrees with a recomputation from its own
+`selections[]` is **refused** rather than averaged in, and a seventh requires the pooled
+`token_reduced_layers`, `documents_token_reduced`, and `truncated_documents` fields to carry a
+dropped layer through. Six mutations of the shipped rule — `and`→`or`, `materially_above` forced
+true, `excludes_null` forced true, the null computed from the printed subset instead of `k/n`,
+`Z_95` set to zero, and the materiality threshold raised from 1.5× to 3.0× — were each applied to a
+scratch copy of `scripts/expert_locality_gate.py` and run against these cases; all six fail, and the
+unmutated module passes.
