@@ -146,18 +146,26 @@ file records durable project state.
   `--model-forward` block of `scripts/run-layer-forward-smoke` ran `root_dir/ggml-spike` rather than
   the `work_dir` executable it had just built, so `make layer-forward-smoke` failed outright on a
   clean checkout and otherwise tested a stale binary.
+- **Canonical baseline chain, re-recorded on Linux.** R5B changes `Makefile` (the
+  `model-forward-qualification` recipe and its `.PHONY` entry) and `.gitattributes` (the
+  `-whitespace` rule for the checked-in whole-model excerpt), two of the twenty recorded baseline
+  artifacts, so the chain that shipped with R5A no longer bound this head. The identity-bound chain
+  is `d07ba6a` -> `69ebfdb` -> `40a05e8` (source -> immutable oracle -> finalization), recorded on
+  Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3). Exactly those two of the twenty artifacts
+  changed against the R5A chain; the other eighteen hashes, `src/main.align` included, are unchanged
+  and the twenty paths are identical. `make baseline-check` on Linux: PASS, ending
+  `baseline chain: PASS`.
 - **Next actions, in order.**
   1. Rerun owner verification and the named qualification against the rebased head.
-  2. Re-record the canonical baseline chain on Linux against the rebased head.
-  3. Do **not** rely on `layer-forward-smoke`'s existing `HOSTED_CHECK_TARGETS` membership as an
+  2. Do **not** rely on `layer-forward-smoke`'s existing `HOSTED_CHECK_TARGETS` membership as an
      exemption: `python3 scripts/verification_scope.py --base ccbd8ae --head <head>` classifies this
      diff as `scope: fresh-image` (`fresh_focused` and `fresh_installed` both true) because the
      `Makefile` gains the `model-forward-qualification` recipe. No *aggregate membership* changed
      and the new target joins no aggregate, but the fresh-image scope is selected. Run the
      classifier against the exact head rather than reasoning about it.
-  4. Exact-head preflight (`python3 scripts/pre-pr`), including the DinD-capable installed profile
+  3. Exact-head preflight (`python3 scripts/pre-pr`), including the DinD-capable installed profile
      check; do not substitute a Docker skip or an ambient `DOCKER_HOST` endpoint.
-  5. Publish the English pull request against `main`. R5A's PR #127, R4.5's PR #126, and R4's
+  4. Publish the English pull request against `main`. R5A's PR #127, R4.5's PR #126, and R4's
      PR #125 are all merged.
 - **Two pending user decisions, carried forward verbatim.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
