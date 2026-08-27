@@ -1,0 +1,678 @@
+module alignpack_read
+
+// R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md` section 3.5). The standalone
+// alignpack v1 reader: it walks a container with `pread` and the scalar decoders **without the
+// source GGUF**, and exposes one block and one of its members as `pub` data.
+//
+// It is a second decoder for a format `src/alignpack.align` already decodes, and section 3.5 argues
+// the case rather than assuming it. That module's `decode_pack` takes a `PackPlan` derived from the
+// source model and validates the container against it, because its consumer is the verifier;
+// exporting it would export a reader that cannot read a pack unless you already hold the model it
+// came from. R4.5 needs the opposite. The cost is that the v1 field offsets are written in two
+// places, and the binding regression is third-party rather than shared code:
+// `scripts/run-ggml-spike-smoke` compares this reader's decoded header, block record, and member
+// record against `scripts/alignpack_reader.py` on every fixture.
+//
+// Codes are `R4_PACK_*`, surfaced verbatim with the meanings
+// `docs/specs/r4-alignpack-layer-major.md` section 2.8 gives them, because a second name for
+// `R4_PACK_MAGIC` would be a second truth.
+//
+// Three rules govern every line below, inherited unchanged from the modules this one reads beside.
+//
+//  1. `bytes.<scalar>(off)` ABORTS on an out-of-range read, so every decode is reached only after
+//     the region that contains it was proved resident.
+//  2. Align integer overflow wraps silently and there is no `i64` `MAX` constant at this pin, so
+//     every sum of two file-derived values is proved representable before it is formed.
+//  3. Nothing here trusts a declared length: a `u64` field with its high bit set is not a length
+//     this repository can represent, and is refused as a header defect rather than truncated.
+
+// Section 2.4 format constants. A v1 reader validates them and refuses anything else rather than
+// mis-striding a table it does not understand.
+FORMAT_VERSION := 1
+DOCUMENT_SCHEMA_VERSION := 1
+HEADER_BYTES := 128
+BLOCK_RECORD_BYTES := 64
+MEMBER_RECORD_BYTES := 96
+SOURCE_RECORD_BYTES := 128
+MAX_ALIGNMENT := 65536
+DEFERRED_U32 := 4294967295
+
+// Bounded work. Identical to `src/alignpack.align`'s bounds, for the same reasons: an implausible
+// container must never reserve table space before it is refused.
+TABLE_CHUNK_BYTES := 65536
+MAX_BLOCKS := 1048576
+MAX_MEMBERS := 1048576
+MAX_TABLE_BYTES := 134217728
+MAX_NAME_STREAM_BYTES := 16777216
+MAX_NAME_BYTES := 1024
+MAX_DETAIL_BYTES := 256
+
+I64_MAX := 9223372036854775807
+
+HEX_DIGITS := "0123456789abcdef"
+
+pub Fault { code: string, detail: string }
+
+// Reader work, published so a caller can assert on it. `pack-len-mismatch` is the fixture that
+// needs it: the header check must refuse the container before a single table byte is read, and
+// "zero table reads" is only checkable if the count is visible.
+pub Counters { pread_count: i64, bytes_read: i64, peak_window_bytes: i64 }
+
+pub fn new_counters() -> Counters = Counters {
+  pread_count: 0,
+  bytes_read: 0,
+  peak_window_bytes: 0,
+}
+
+// The decoded header and the block table as `array<i64>` columns — the `GgufTable` / `BlockPlan` /
+// `PackPlan` shape, fifth instance.
+//
+// The **member table is not loaded**, and the **name stream is not loaded**. `block_at` publishes
+// `member_start` and `member_count`; `member_at` reads exactly one 96-byte record, and
+// `member_name` reads exactly one span of at most `MAX_NAME_BYTES`. That is what section 2.4.2's
+// fixed record widths are for, and it means a 99,139-member container costs one 96-byte read.
+pub PackIndex {
+  format_version: i64,
+  block_align: i64,
+  member_align: i64,
+  flags: i64,
+  total_bytes: i64,
+  name_stream_offset: i64,
+  name_stream_bytes: i64,
+  block_table_offset: i64,
+  block_count: i64,
+  member_table_offset: i64,
+  member_count: i64,
+  source_record_offset: i64,
+  payload_offset: i64,
+  payload_bytes: i64,
+  block_kind: array<i64>,
+  block_layer: array<i64>,
+  block_expert: array<i64>,
+  block_member_count: array<i64>,
+  block_member_start: array<i64>,
+  block_pack_offset: array<i64>,
+  block_pack_bytes: array<i64>,
+  block_payload_bytes: array<i64>,
+}
+
+pub PackBlock {
+  index: i64,
+  kind: i64,
+  layer: i64,
+  expert: i64,
+  member_count: i64,
+  member_start: i64,
+  pack_offset: i64,
+  pack_bytes: i64,
+  payload_bytes: i64,
+}
+
+pub PackMember {
+  index_in_block: i64,
+  index_global: i64,
+  name_start: i64,
+  name_bytes: i64,
+  role_id: i64,
+  source_offset: i64,
+  nbytes: i64,
+  pack_offset: i64,
+  ggml_type: i64,
+  n_dims: i64,
+  dim0: i64,
+  dim1: i64,
+  dim2: i64,
+  dim3: i64,
+  slice_index: i64,
+  slice_count: i64,
+}
+
+// A decoded name, and whether it decoded. A tensor name is container-supplied bytes; invalid UTF-8
+// is reported as data, exactly as `src/gguf.align`'s `TextValue` does, and never as a fault the
+// caller cannot distinguish from a truncated file.
+pub Text { text: string, valid: bool }
+
+// ---------------------------------------------------------------------------------------------
+// Faults, arithmetic, and the bounded read
+// ---------------------------------------------------------------------------------------------
+
+fn bounded_detail(value: str) -> string {
+  if value.len() <= MAX_DETAIL_BYTES {
+    return value.clone()
+  }
+  return value[0..MAX_DETAIL_BYTES].clone()
+}
+
+pub fn int_text(value: i64) -> string {
+  b := builder()
+  b.write_int(value)
+  return b.to_string()
+}
+
+fn fault(code: str, detail: str) -> Fault =
+Fault { code: code.clone(), detail: bounded_detail(detail) }
+
+fn fault_at(code: str, at: i64) -> Fault {
+  text := int_text(at)
+  text_view: str := text
+  return fault(code, text_view)
+}
+
+fn indexed_fault(code: str, label: str, index: i64, field: str) -> Fault {
+  b := builder()
+  b.write(label)
+  b.write("[")
+  b.write_int(index)
+  b.write("]")
+  if field.len() > 0 {
+    b.write(".")
+    b.write(field)
+  }
+  rendered := b.to_string()
+  rendered_view: str := rendered
+  return fault(code, rendered_view)
+}
+
+fn error_name(e: Error) -> str = match e {
+  NotFound => "NotFound",
+  Invalid => "Invalid",
+  Denied => "Denied",
+  Timeout => "Timeout",
+  Code(_) => "Code",
+}
+
+fn os_fault(code: str, e: Error) -> Fault = fault(code, error_name(e))
+
+fn is_power_of_two(value: i64) -> bool {
+  if value <= 0 { return false }
+  return (value & (value - 1)) == 0
+}
+
+fn add_checked(left: i64, right: i64) -> i64 {
+  if left < 0 || right < 0 { return -1 }
+  if left > I64_MAX - right { return -1 }
+  return left + right
+}
+
+fn mul_checked(left: i64, right: i64) -> i64 {
+  if left < 0 || right < 0 { return -1 }
+  if right == 0 { return 0 }
+  if left > I64_MAX / right { return -1 }
+  return left * right
+}
+
+fn min_of(left: i64, right: i64) -> i64 {
+  if left < right { return left }
+  return right
+}
+
+fn hex_escape(borrow b: buffer, at: i64, count: i64) -> string {
+  view := b.bytes()
+  out := builder()
+  mut index := 0
+  loop {
+    if index >= count { break }
+    byte := view.u8(at + index) as i64
+    high := byte / 16
+    low := byte % 16
+    out.write("\\x")
+    out.write(HEX_DIGITS[high..high + 1])
+    out.write(HEX_DIGITS[low..low + 1])
+    index = index + 1
+  }
+  return out.to_string()
+}
+
+// `n` bytes at `at`, completed rather than mistaken for EOF, in `src/alignpack.align`'s discipline:
+// `pread` publishes exactly the count the syscall returned, a short read is completed here, and a
+// zero-length read at an offset already proved inside the file is `R4_WINDOW_UNAVAILABLE` — an
+// allocation failure or a file that shrank underneath — never a truncation of the container.
+pub fn read_exact(
+  borrow handle: file,
+  borrow mut window: buffer,
+  borrow mut c: Counters,
+  code: str,
+  at: i64,
+  n: i64,
+) -> Result<(), Fault> {
+  window = buffer(n)
+  if n > c.peak_window_bytes { c.peak_window_bytes = n }
+  count := match handle.pread(window, at) {
+    Ok(value) => value,
+    Err(failure) => { return Err(os_fault(code, failure)) },
+  }
+  c.pread_count = c.pread_count + 1
+  c.bytes_read = c.bytes_read + count
+  if count > n { return Err(fault_at("R4_PACK_UNREADABLE", at)) }
+  if count == 0 && n > 0 { return Err(fault_at("R4_WINDOW_UNAVAILABLE", at)) }
+  mut have := count
+  loop {
+    if have >= n { break }
+    mut tail := buffer(n - have)
+    extra := match handle.pread(tail, at + have) {
+      Ok(value) => value,
+      Err(failure) => { return Err(os_fault(code, failure)) },
+    }
+    c.pread_count = c.pread_count + 1
+    c.bytes_read = c.bytes_read + extra
+    if extra > n - have { return Err(fault_at("R4_PACK_UNREADABLE", at + have)) }
+    if extra == 0 { return Err(fault_at("R4_WINDOW_UNAVAILABLE", at + have)) }
+    window.append(tail.bytes())
+    have = have + extra
+  }
+  return Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// The header (section 2.4.2, read back)
+// ---------------------------------------------------------------------------------------------
+
+// A `u64` field whose high bit is set is not a length this repository can represent; every field
+// below is an offset or a count, so `R4_PACK_HEADER` naming the field is the honest answer.
+fn decode_u64(borrow view: slice<u8>, at: i64, field: str) -> Result<i64, Fault> {
+  raw := view.u64_le(at)
+  if (raw >> 63) != 0 {
+    return Err(fault("R4_PACK_HEADER", field))
+  }
+  return Ok(raw as i64)
+}
+
+fn disjoint(a_start: i64, a_len: i64, b_start: i64, b_len: i64) -> bool {
+  if a_len <= 0 || b_len <= 0 { return true }
+  if a_start + a_len <= b_start { return true }
+  if b_start + b_len <= a_start { return true }
+  return false
+}
+
+fn region_inside(start: i64, length: i64, total: i64) -> bool {
+  if start < 0 || length < 0 { return false }
+  if start > total { return false }
+  return length <= total - start
+}
+
+// Section 3.5's validation order, exactly: magic; version; the four fixed widths; the two
+// alignments; `flags`; `f.len() == total_bytes`; region containment and pairwise disjointness;
+// `payload_offset` alignment. It does **not** verify payload bytes against a source, does not
+// recompute the source-identity digest, and does not check padding — those are `--pack-verify`'s
+// and stay there.
+pub fn open_pack(borrow f: file, borrow mut c: Counters) -> Result<PackIndex, Fault> {
+  file_size := match f.len() {
+    Ok(value) => value,
+    Err(failure) => { return Err(os_fault("R4_PACK_UNREADABLE", failure)) },
+  }
+  if file_size < HEADER_BYTES {
+    return Err(fault("R4_PACK_TRUNCATED", "header"))
+  }
+  mut window: buffer := buffer(HEADER_BYTES)
+  read_exact(f, window, c, "R4_PACK_UNREADABLE", 0, HEADER_BYTES)?
+  view := window.bytes()
+  if view.u8(0) as i64 != 65 || view.u8(1) as i64 != 76
+    || view.u8(2) as i64 != 71 || view.u8(3) as i64 != 80 {
+    escaped := hex_escape(window, 0, 4)
+    escaped_view: str := escaped
+    return Err(fault("R4_PACK_MAGIC", escaped_view))
+  }
+  format_version := view.u32_le(4) as i64
+  if format_version != FORMAT_VERSION {
+    return Err(fault_at("R4_PACK_VERSION", format_version))
+  }
+  header_bytes := view.u32_le(8) as i64
+  if header_bytes != HEADER_BYTES {
+    return Err(fault("R4_PACK_HEADER", "header_bytes"))
+  }
+  block_align := view.u32_le(12) as i64
+  if !is_power_of_two(block_align) || block_align > MAX_ALIGNMENT {
+    return Err(fault("R4_PACK_HEADER", "block_align"))
+  }
+  member_align := view.u32_le(16) as i64
+  if !is_power_of_two(member_align) || member_align > MAX_ALIGNMENT || member_align > block_align {
+    return Err(fault("R4_PACK_HEADER", "member_align"))
+  }
+  flags := view.u32_le(20) as i64
+  if flags != 0 {
+    return Err(fault("R4_PACK_RESERVED", "flags"))
+  }
+  total_bytes := decode_u64(view, 24, "total_bytes")?
+  name_stream_offset := decode_u64(view, 32, "name_stream_offset")?
+  name_stream_bytes := decode_u64(view, 40, "name_stream_bytes")?
+  block_table_offset := decode_u64(view, 48, "block_table_offset")?
+  block_count := decode_u64(view, 56, "block_count")?
+  member_table_offset := decode_u64(view, 64, "member_table_offset")?
+  member_count := decode_u64(view, 72, "member_count")?
+  source_record_offset := decode_u64(view, 80, "source_record_offset")?
+  payload_offset := decode_u64(view, 88, "payload_offset")?
+  payload_bytes := decode_u64(view, 96, "payload_bytes")?
+  block_record_bytes := view.u32_le(104) as i64
+  if block_record_bytes != BLOCK_RECORD_BYTES {
+    return Err(fault("R4_PACK_HEADER", "block_record_bytes"))
+  }
+  member_record_bytes := view.u32_le(108) as i64
+  if member_record_bytes != MEMBER_RECORD_BYTES {
+    return Err(fault("R4_PACK_HEADER", "member_record_bytes"))
+  }
+  source_record_bytes := view.u32_le(112) as i64
+  if source_record_bytes != SOURCE_RECORD_BYTES {
+    return Err(fault("R4_PACK_HEADER", "source_record_bytes"))
+  }
+  document_schema_version := view.u32_le(116) as i64
+  if document_schema_version != DOCUMENT_SCHEMA_VERSION {
+    return Err(fault("R4_PACK_HEADER", "document_schema_version"))
+  }
+  reserved := decode_u64(view, 120, "reserved")?
+  if reserved != 0 {
+    return Err(fault("R4_PACK_RESERVED", "reserved"))
+  }
+  if block_count > MAX_BLOCKS {
+    return Err(fault_at("R4_PACK_HEADER", block_count))
+  }
+  if member_count > MAX_MEMBERS {
+    return Err(fault_at("R4_PACK_HEADER", member_count))
+  }
+  if name_stream_bytes > MAX_NAME_STREAM_BYTES {
+    return Err(fault("R4_PACK_REGION", "name_stream"))
+  }
+  // The container's own declared length against the file the caller actually opened. This is the
+  // step that must precede every table read, and `pack-len-mismatch` asserts exactly that by
+  // reading `Counters.pread_count` back as `1`.
+  if file_size != total_bytes {
+    return Err(fault_at("R4_PACK_TRUNCATED", file_size))
+  }
+  block_table_bytes := mul_checked(block_count, BLOCK_RECORD_BYTES)
+  member_table_bytes := mul_checked(member_count, MEMBER_RECORD_BYTES)
+  if block_table_bytes < 0 || block_table_bytes > MAX_TABLE_BYTES {
+    return Err(fault("R4_PACK_REGION", "block_table"))
+  }
+  if member_table_bytes < 0 || member_table_bytes > MAX_TABLE_BYTES {
+    return Err(fault("R4_PACK_REGION", "member_table"))
+  }
+  if !region_inside(0, HEADER_BYTES, total_bytes) {
+    return Err(fault("R4_PACK_TRUNCATED", "header"))
+  }
+  if !region_inside(name_stream_offset, name_stream_bytes, total_bytes) {
+    return Err(fault("R4_PACK_TRUNCATED", "name_stream"))
+  }
+  if !region_inside(block_table_offset, block_table_bytes, total_bytes) {
+    return Err(fault("R4_PACK_TRUNCATED", "block_table"))
+  }
+  if !region_inside(member_table_offset, member_table_bytes, total_bytes) {
+    return Err(fault("R4_PACK_TRUNCATED", "member_table"))
+  }
+  if !region_inside(source_record_offset, SOURCE_RECORD_BYTES, total_bytes) {
+    return Err(fault("R4_PACK_TRUNCATED", "source_record"))
+  }
+  if !region_inside(payload_offset, total_bytes - payload_offset, total_bytes) {
+    return Err(fault("R4_PACK_TRUNCATED", "payload"))
+  }
+  if payload_bytes != total_bytes - payload_offset {
+    return Err(fault("R4_PACK_REGION", "payload"))
+  }
+  if payload_offset % block_align != 0 {
+    return Err(fault("R4_PACK_REGION", "payload_offset"))
+  }
+  if !disjoint(0, HEADER_BYTES, name_stream_offset, name_stream_bytes) {
+    return Err(fault("R4_PACK_REGION", "name_stream"))
+  }
+  if !disjoint(0, HEADER_BYTES, block_table_offset, block_table_bytes) {
+    return Err(fault("R4_PACK_REGION", "block_table"))
+  }
+  if !disjoint(0, HEADER_BYTES, member_table_offset, member_table_bytes) {
+    return Err(fault("R4_PACK_REGION", "member_table"))
+  }
+  if !disjoint(0, HEADER_BYTES, source_record_offset, SOURCE_RECORD_BYTES) {
+    return Err(fault("R4_PACK_REGION", "source_record"))
+  }
+  if !disjoint(name_stream_offset, name_stream_bytes, block_table_offset, block_table_bytes) {
+    return Err(fault("R4_PACK_REGION", "block_table"))
+  }
+  if !disjoint(name_stream_offset, name_stream_bytes, member_table_offset, member_table_bytes) {
+    return Err(fault("R4_PACK_REGION", "member_table"))
+  }
+  if !disjoint(name_stream_offset, name_stream_bytes, source_record_offset, SOURCE_RECORD_BYTES) {
+    return Err(fault("R4_PACK_REGION", "source_record"))
+  }
+  if !disjoint(block_table_offset, block_table_bytes, member_table_offset, member_table_bytes) {
+    return Err(fault("R4_PACK_REGION", "member_table"))
+  }
+  if !disjoint(block_table_offset, block_table_bytes, source_record_offset, SOURCE_RECORD_BYTES) {
+    return Err(fault("R4_PACK_REGION", "source_record"))
+  }
+  if !disjoint(member_table_offset, member_table_bytes, source_record_offset, SOURCE_RECORD_BYTES) {
+    return Err(fault("R4_PACK_REGION", "source_record"))
+  }
+  if !disjoint(payload_offset, payload_bytes, name_stream_offset, name_stream_bytes)
+    || !disjoint(payload_offset, payload_bytes, block_table_offset, block_table_bytes)
+    || !disjoint(payload_offset, payload_bytes, member_table_offset, member_table_bytes)
+    || !disjoint(payload_offset, payload_bytes, source_record_offset, SOURCE_RECORD_BYTES) {
+    return Err(fault("R4_PACK_REGION", "payload"))
+  }
+
+  mut kind_column: array_builder<i64> := array_builder()
+  mut layer_column: array_builder<i64> := array_builder()
+  mut expert_column: array_builder<i64> := array_builder()
+  mut member_count_column: array_builder<i64> := array_builder()
+  mut member_start_column: array_builder<i64> := array_builder()
+  mut offset_column: array_builder<i64> := array_builder()
+  mut bytes_column: array_builder<i64> := array_builder()
+  mut payload_column: array_builder<i64> := array_builder()
+  blocks_per_chunk := TABLE_CHUNK_BYTES / BLOCK_RECORD_BYTES
+  // The previous record's end, carried across chunks. `array_builder` has no random-access
+  // accessor at this pin, so the monotonicity check keeps its own one-value cursor rather than
+  // reading back the column it is filling.
+  mut previous_end := 0
+  mut block_index := 0
+  loop {
+    if block_index >= block_count { break }
+    count := min_of(blocks_per_chunk, block_count - block_index)
+    read_exact(
+      f,
+      window,
+      c,
+      "R4_PACK_UNREADABLE",
+      block_table_offset + block_index * BLOCK_RECORD_BYTES,
+      count * BLOCK_RECORD_BYTES,
+    )?
+    records := window.bytes()
+    mut k := 0
+    loop {
+      if k >= count { break }
+      base := k * BLOCK_RECORD_BYTES
+      at := block_index + k
+      record_member_count := records.u32_le(base + 12) as i64
+      record_member_start := decode_u64(records, base + 16, "block.member_start")?
+      record_pack_offset := decode_u64(records, base + 24, "block.pack_offset")?
+      record_pack_bytes := decode_u64(records, base + 32, "block.pack_bytes")?
+      record_payload_bytes := decode_u64(records, base + 40, "block.payload_bytes")?
+      if records.u32_le(base + 48) as i64 != DEFERRED_U32 {
+        return Err(indexed_fault("R4_PACK_RESERVED", "block", at, "prefetch_group"))
+      }
+      if records.u32_le(base + 52) as i64 != DEFERRED_U32 {
+        return Err(indexed_fault("R4_PACK_RESERVED", "block", at, "hotness_rank"))
+      }
+      if decode_u64(records, base + 56, "block.reserved")? != 0 {
+        return Err(indexed_fault("R4_PACK_RESERVED", "block", at, "reserved"))
+      }
+      if record_member_count < 1 {
+        return Err(indexed_fault("R4_PACK_HEADER", "block", at, "member_count"))
+      }
+      member_end := add_checked(record_member_start, record_member_count)
+      if member_end < 0 || member_end > member_count {
+        return Err(indexed_fault("R4_PACK_REGION", "block", at, "member_start"))
+      }
+      if record_pack_offset % block_align != 0 || record_pack_offset < payload_offset {
+        return Err(indexed_fault("R4_PACK_OFFSET", "block", at, ""))
+      }
+      block_end := add_checked(record_pack_offset, record_pack_bytes)
+      if block_end < 0 || block_end > total_bytes {
+        return Err(indexed_fault("R4_PACK_REGION", "block", at, "pack_bytes"))
+      }
+      if record_payload_bytes > record_pack_bytes {
+        return Err(indexed_fault("R4_PACK_REGION", "block", at, "payload_bytes"))
+      }
+      // `pack_offset` is strictly increasing across the table (section 2.4.3), and a container that
+      // says otherwise is `R4_PACK_OFFSET` rather than a block whose bytes overlap its neighbour's.
+      if at > 0 && record_pack_offset < previous_end {
+        return Err(indexed_fault("R4_PACK_OFFSET", "block", at, ""))
+      }
+      previous_end = block_end
+      kind_column.push(records.u32_le(base) as i64)
+      layer_column.push(records.i32_le(base + 4) as i64)
+      expert_column.push(records.i32_le(base + 8) as i64)
+      member_count_column.push(record_member_count)
+      member_start_column.push(record_member_start)
+      offset_column.push(record_pack_offset)
+      bytes_column.push(record_pack_bytes)
+      payload_column.push(record_payload_bytes)
+      k = k + 1
+    }
+    block_index = block_index + count
+  }
+
+  return Ok(PackIndex {
+      format_version: format_version,
+      block_align: block_align,
+      member_align: member_align,
+      flags: flags,
+      total_bytes: total_bytes,
+      name_stream_offset: name_stream_offset,
+      name_stream_bytes: name_stream_bytes,
+      block_table_offset: block_table_offset,
+      block_count: block_count,
+      member_table_offset: member_table_offset,
+      member_count: member_count,
+      source_record_offset: source_record_offset,
+      payload_offset: payload_offset,
+      payload_bytes: payload_bytes,
+      block_kind: kind_column.build(),
+      block_layer: layer_column.build(),
+      block_expert: expert_column.build(),
+      block_member_count: member_count_column.build(),
+      block_member_start: member_start_column.build(),
+      block_pack_offset: offset_column.build(),
+      block_pack_bytes: bytes_column.build(),
+      block_payload_bytes: payload_column.build(),
+    })
+}
+
+pub fn block_count(borrow x: PackIndex) -> i64 {
+  return x.block_count
+}
+
+pub fn member_count(borrow x: PackIndex) -> i64 {
+  return x.member_count
+}
+
+pub fn block_at(borrow x: PackIndex, index: i64) -> Result<PackBlock, Fault> {
+  if index < 0 || index >= x.block_count {
+    return Err(indexed_fault("R4_PACK_REGION", "block", index, ""))
+  }
+  return Ok(PackBlock {
+      index: index,
+      kind: x.block_kind[index],
+      layer: x.block_layer[index],
+      expert: x.block_expert[index],
+      member_count: x.block_member_count[index],
+      member_start: x.block_member_start[index],
+      pack_offset: x.block_pack_offset[index],
+      pack_bytes: x.block_pack_bytes[index],
+      payload_bytes: x.block_payload_bytes[index],
+    })
+}
+
+// Exactly one 96-byte read at `member_table_offset + (member_start + within) * 96`. The record is
+// validated against its own block: inside the member table, inside the block's byte range, and
+// `member_align`-aligned.
+pub fn member_at(
+  borrow f: file,
+  borrow x: PackIndex,
+  borrow b: PackBlock,
+  within: i64,
+  borrow mut c: Counters,
+) -> Result<PackMember, Fault> {
+  if within < 0 || within >= b.member_count {
+    return Err(indexed_fault("R4_PACK_REGION", "member", within, ""))
+  }
+  global := add_checked(b.member_start, within)
+  if global < 0 || global >= x.member_count {
+    return Err(indexed_fault("R4_PACK_REGION", "member", within, ""))
+  }
+  at := x.member_table_offset + global * MEMBER_RECORD_BYTES
+  mut window: buffer := buffer(MEMBER_RECORD_BYTES)
+  read_exact(f, window, c, "R4_PACK_UNREADABLE", at, MEMBER_RECORD_BYTES)?
+  view := window.bytes()
+  name_start := decode_u64(view, 0, "member.name_start")?
+  name_bytes := view.u32_le(8) as i64
+  role_id := view.u32_le(12) as i64
+  source_offset := decode_u64(view, 16, "member.source_offset")?
+  nbytes := decode_u64(view, 24, "member.nbytes")?
+  pack_offset := decode_u64(view, 32, "member.pack_offset")?
+  ggml_type := view.u32_le(40) as i64
+  n_dims := view.u32_le(44) as i64
+  dim0 := decode_u64(view, 48, "member.dim0")?
+  dim1 := decode_u64(view, 56, "member.dim1")?
+  dim2 := decode_u64(view, 64, "member.dim2")?
+  dim3 := decode_u64(view, 72, "member.dim3")?
+  slice_index := view.i32_le(80) as i64
+  slice_count := view.i32_le(84) as i64
+  if decode_u64(view, 88, "member.reserved")? != 0 {
+    return Err(indexed_fault("R4_PACK_RESERVED", "member", global, "reserved"))
+  }
+  if name_bytes < 1 || name_bytes > MAX_NAME_BYTES {
+    return Err(indexed_fault("R4_PACK_REGION", "member", global, "name_bytes"))
+  }
+  name_end := add_checked(name_start, name_bytes)
+  if name_end < 0 || name_end > x.name_stream_bytes {
+    return Err(indexed_fault("R4_PACK_REGION", "member", global, "name_start"))
+  }
+  if n_dims < 1 || n_dims > 4 {
+    return Err(indexed_fault("R4_PACK_REGION", "member", global, "n_dims"))
+  }
+  if pack_offset % x.member_align != 0 {
+    return Err(indexed_fault("R4_PACK_OFFSET", "member", global, ""))
+  }
+  member_end := add_checked(pack_offset, nbytes)
+  block_end := add_checked(b.pack_offset, b.pack_bytes)
+  if member_end < 0 || block_end < 0 || pack_offset < b.pack_offset || member_end > block_end {
+    return Err(indexed_fault("R4_PACK_OFFSET", "member", global, ""))
+  }
+  return Ok(PackMember {
+      index_in_block: within,
+      index_global: global,
+      name_start: name_start,
+      name_bytes: name_bytes,
+      role_id: role_id,
+      source_offset: source_offset,
+      nbytes: nbytes,
+      pack_offset: pack_offset,
+      ggml_type: ggml_type,
+      n_dims: n_dims,
+      dim0: dim0,
+      dim1: dim1,
+      dim2: dim2,
+      dim3: dim3,
+      slice_index: slice_index,
+      slice_count: slice_count,
+    })
+}
+
+// One bounded read of the member's own `[name_start, name_start + name_bytes)` span. The whole name
+// stream is never resident: a 16 MiB stream costs at most `MAX_NAME_BYTES` here, and a corrupted
+// span is refused by `member_at`'s containment check before this function is reached.
+pub fn member_name(
+  borrow f: file,
+  borrow x: PackIndex,
+  borrow m: PackMember,
+  borrow mut c: Counters,
+) -> Result<Text, Fault> {
+  at := add_checked(x.name_stream_offset, m.name_start)
+  if at < 0 {
+    return Err(indexed_fault("R4_PACK_REGION", "member", m.index_global, "name_start"))
+  }
+  mut window: buffer := buffer(m.name_bytes)
+  read_exact(f, window, c, "R4_PACK_UNREADABLE", at, m.name_bytes)?
+  view := window.bytes()
+  region := view[0..m.name_bytes]
+  return Ok(match region.as_str() {
+      Ok(text) => Text { text: text.clone(), valid: true },
+      Err(_) => Text { text: "".clone(), valid: false },
+    })
+}

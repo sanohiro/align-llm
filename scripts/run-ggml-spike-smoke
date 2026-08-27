@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# R4.5-EXTERNAL-BUFFER-SPIKE narrow durable owner (`docs/specs/r4-5-external-buffer.md` section
+# 5.1). Hosted, ggml-free, in HOSTED_CHECK_TARGETS.
+#
+# It builds the **stub** shim and the `ggml-spike` executable, writes a synthetic alignpack v1
+# corpus into a temporary tree, runs the whole CLI over every fixture, and compares each rendered
+# document byte for byte against a checked-in golden. Ten of the fifteen error codes are reached for
+# real, without ggml, without a model, without a network, and without a reference tool.
+#
+# `ALIGN_LLM_GGML_INCLUDE` is unset deliberately and unconditionally: this runner's contract is that
+# it exercises the ggml-free build, so a developer's exported include path must not silently turn it
+# into a different test.
+#
+#   ALIGN_LLM_GGML_SPIKE_GOLDEN_UPDATE=1   rewrite the golden file instead of comparing to it
+
+unset ALIGN_LLM_GGML_INCLUDE ALIGN_LLM_GGML_LIB
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+
+work_dir=$(mktemp -d)
+cleanup() {
+  status=$?
+  rm -rf "${work_dir}"
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+# Static assertions that are not about a fixture (section 5.1).
+#
+# The two C files are one contract compiled twice; a drift between them would let this runner pass
+# against a contract the qualification never runs. `grep -rl unsafe src/` is the discipline
+# `../align/docs/guide/15-unsafe-and-ffi.md` asks for, and it is checkable rather than aspirational.
+real_region=$(sed -n '/BEGIN R4.5 SHARED SHIM CONTRACT/,/END R4.5 SHARED SHIM CONTRACT/p' \
+  "${root_dir}/scripts/ggml_shim.c")
+stub_region=$(sed -n '/BEGIN R4.5 SHARED SHIM CONTRACT/,/END R4.5 SHARED SHIM CONTRACT/p' \
+  "${root_dir}/scripts/ggml_shim_stub.c")
+if [ -z "${real_region}" ] || [ "${real_region}" != "${stub_region}" ]; then
+  echo "ggml spike smoke: FAIL the shared shim contract differs between the two C files" >&2
+  exit 1
+fi
+if grep -q "malloc" "${root_dir}/scripts/ggml_shim.c" "${root_dir}/scripts/ggml_shim_stub.c"; then
+  echo "ggml spike smoke: FAIL a shim allocates; the shim owns no memory the document describes" >&2
+  exit 1
+fi
+# The keyword, not the word: `prompt_verifier_smoke.align` legitimately names an
+# `unsafe_workspace` parameter, and this capability's own modules discuss the boundary in prose.
+unsafe_files=$(cd "${root_dir}" \
+  && grep -rlE '(^|[^A-Za-z_])unsafe[[:space:]]*\{' src/ | sort | tr '\n' ' ')
+if [ "${unsafe_files}" != "src/ggml_ffi.align " ]; then
+  echo "ggml spike smoke: FAIL an unsafe block appears outside src/ggml_ffi.align: ${unsafe_files}" >&2
+  exit 1
+fi
+extern_files=$(cd "${root_dir}" \
+  && grep -rlE '^[[:space:]]*extern[[:space:]]+"C"' src/ | sort | tr '\n' ' ')
+if [ "${extern_files}" != "src/ggml_ffi.align " ]; then
+  echo "ggml spike smoke: FAIL an extern block appears outside src/ggml_ffi.align: ${extern_files}" >&2
+  exit 1
+fi
+
+shim_dir=$("${root_dir}/scripts/build-ggml-shim")
+(
+  cd "${root_dir}"
+  LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}" \
+  DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+  LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  "${compiler}" build src/ggml_spike.align >/dev/null
+  mv -f ggml_spike ggml-spike
+)
+
+python3 "${root_dir}/scripts/ggml_spike_fixture.py" "${work_dir}" >/dev/null
+
+DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+python3 - "${root_dir}" "${work_dir}" <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+root_dir, work_dir = sys.argv[1:3]
+sys.path.insert(0, os.path.join(root_dir, "scripts"))
+import alignpack_reader  # noqa: E402  (the independent third opinion, section 3.5)
+
+binary = os.path.join(root_dir, "ggml-spike")
+golden_path = os.path.join(root_dir, "scripts", "ggml-spike-golden.jsonl")
+update = os.environ.get("ALIGN_LLM_GGML_SPIKE_GOLDEN_UPDATE") == "1"
+
+PACK = os.path.join(work_dir, "pack-minimal.alignpack")
+SOURCE_OK = os.path.join(work_dir, "source-identical.bin")
+SOURCE_BAD = os.path.join(work_dir, "source-diverged.bin")
+
+
+def pack(name):
+    return os.path.join(work_dir, name + ".alignpack")
+
+
+# Every case: (name, operands). A case whose operands are rejected before any file work emits no
+# document at all, and is listed in NO_DOCUMENT instead.
+NO_DOCUMENT = [
+    ("spike-arity-2", [PACK]),
+    ("spike-arity-3", [PACK, "1"]),
+    ("spike-arity-6", [PACK, "1", "1", "-", SOURCE_OK, "extra"]),
+    ("spike-path-empty", ["", "1", "1"]),
+    ("spike-path-long", ["/" + ("a" * 5000), "1", "1"]),
+    ("spike-doc-path-empty", [PACK, "1", "1", ""]),
+    ("spike-reference-path-empty", [PACK, "1", "1", "-", ""]),
+]
+
+CASES = [
+    ("spike-stub-unavailable", [PACK, "1", "1"]),
+    ("spike-block-zero", [PACK, "0", "0"]),
+    ("spike-index-negative", [PACK, "-1", "1"]),
+    ("spike-index-nonnumeric", [PACK, "1x", "1"]),
+    ("spike-index-leading-zero", [PACK, "01", "1"]),
+    ("spike-index-huge", [PACK, "1", "99999999999999999999"]),
+    ("spike-block-oob", [PACK, "9", "0"]),
+    ("spike-member-oob", [PACK, "1", "9"]),
+    ("pack-bad-magic", [pack("pack-bad-magic"), "1", "1"]),
+    ("pack-bad-version", [pack("pack-bad-version"), "1", "1"]),
+    ("pack-bad-widths", [pack("pack-bad-widths"), "1", "1"]),
+    ("pack-bad-align", [pack("pack-bad-align"), "1", "1"]),
+    ("pack-flags-set", [pack("pack-flags-set"), "1", "1"]),
+    ("pack-len-mismatch", [pack("pack-len-mismatch"), "1", "1"]),
+    ("pack-region-overlap", [pack("pack-region-overlap"), "1", "1"]),
+    ("pack-u64-highbit", [pack("pack-u64-highbit"), "1", "1"]),
+    ("pack-name-overrun", [pack("pack-name-overrun"), "1", "1"]),
+    ("pack-offset-nonmonotonic", [pack("pack-offset-nonmonotonic"), "1", "1"]),
+    ("pack-reserved-block", [pack("pack-reserved-block"), "1", "1"]),
+    ("pack-reserved-member", [pack("pack-reserved-member"), "1", "1"]),
+    ("pack-missing", [os.path.join(work_dir, "absent.alignpack"), "1", "1"]),
+    ("spike-shape-3d", [pack("spike-shape-3d"), "1", "1"]),
+    ("spike-shape-zero", [pack("spike-shape-zero"), "1", "1"]),
+    ("spike-dimension-bound", [pack("spike-dimension-bound"), "1", "1"]),
+    ("spike-ne0-not-multiple", [pack("spike-ne0-not-multiple"), "1", "1"]),
+    ("spike-type-unsupported", [pack("spike-type-unsupported"), "1", "1"]),
+    ("spike-misaligned-member", [pack("spike-misaligned-member"), "1", "1"]),
+    ("spike-reference-identical", [PACK, "1", "1", "-", SOURCE_OK]),
+    ("spike-reference-diverged", [PACK, "1", "1", "-", SOURCE_BAD]),
+    ("spike-reference-missing", [PACK, "1", "1", "-", os.path.join(work_dir, "absent.bin")]),
+]
+
+PLACEHOLDER = "<pack>"
+SOURCE_PLACEHOLDER = "<source>"
+
+
+# The fields that are properties of *this run* rather than of the contract, and cannot be
+# byte-stable (section 6, correction C10):
+#
+#   timings.*                  wall-clock nanoseconds;
+#   pack_path, reference_path  a `mktemp -d` tree;
+#   buffer.base_alignment, buffer.weights_pad,
+#   buffer.output_base_alignment, buffer.output_pad
+#                              the **allocator's** answer. Measured on this host, a 192-byte
+#                              `buffer` comes back 32-aligned on one run and 16-aligned on the
+#                              next. That variation is the whole of the recorded aligned-allocation
+#                              gap, it is why the arm pads instead of refusing, and it is why these
+#                              four are checked as an invariant below rather than as a constant.
+#
+# Everything else stays a byte-for-byte regression: the normalizer rewrites values in place and
+# never reorders, adds, or drops a field.
+ALLOCATOR_FIELDS = ("base_alignment", "weights_pad", "output_base_alignment", "output_pad")
+
+
+def normalize(text):
+    document = json.loads(text)
+    for key in document["timings"]:
+        document["timings"][key] = 0
+    for key in ALLOCATOR_FIELDS:
+        document["buffer"][key] = 0
+    for key, placeholder in (("pack_path", PLACEHOLDER), ("reference_path", SOURCE_PLACEHOLDER)):
+        value = document[key]
+        if value:
+            document[key] = placeholder
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+def check_alignment_invariant(name, document):
+    """What the four allocator-dependent fields must satisfy on every run.
+
+    A pad is the distance from the allocator's base to the next `TENSOR_ALIGNMENT` boundary, and
+    nothing else; when the arm got past the alignment step, the member's absolute address is on a
+    boundary. Both are exact, and neither depends on what the allocator happened to return.
+    """
+    buffer = document["buffer"]
+    alignment = document["abi"]["tensor_alignment"]
+    problems = []
+    if alignment <= 0:
+        return problems
+    for base_key, pad_key in (("base_alignment", "weights_pad"),
+                              ("output_base_alignment", "output_pad")):
+        base = buffer[base_key]
+        pad = buffer[pad_key]
+        if base < 0:
+            continue
+        if not 0 <= base < alignment:
+            problems.append("%s: %s is %d, outside [0, %d)" % (name, base_key, base, alignment))
+        if pad != (alignment - base) % alignment:
+            problems.append("%s: %s is %d, not the distance to the next %d boundary from %d"
+                            % (name, pad_key, pad, alignment, base))
+    if document["error_code"] not in ("R4_5_ALIGNMENT",) and buffer["base_alignment"] >= 0:
+        if (buffer["base_alignment"] + buffer["interior_offset"]) % alignment != 0:
+            problems.append("%s: the member address is not %d-aligned but the run continued"
+                            % (name, alignment))
+    return problems
+
+
+def run(operands):
+    return subprocess.run([binary] + operands, capture_output=True, cwd=work_dir)
+
+
+failures = []
+produced = {}
+
+for name, operands in NO_DOCUMENT:
+    result = run(operands)
+    if result.returncode == 0:
+        failures.append("%s: expected a non-zero exit, got 0" % name)
+    if result.stdout != b"":
+        failures.append("%s: expected no document, got %d bytes" % (name, len(result.stdout)))
+
+for name, operands in CASES:
+    result = run(operands)
+    if result.stdout == b"":
+        failures.append("%s: no document (exit %d): %s"
+                        % (name, result.returncode, result.stderr.decode("utf-8", "replace")[-400:]))
+        continue
+    try:
+        rendered = normalize(result.stdout.decode("utf-8"))
+    except Exception as error:  # noqa: BLE001 - the document is the thing under test
+        failures.append("%s: the document is not valid JSON: %s" % (name, error))
+        continue
+    produced[name] = rendered
+    document = json.loads(result.stdout.decode("utf-8"))
+    failures.extend(check_alignment_invariant(name, document))
+    expected_exit = 0 if document["status"] == "ok" else 1
+    if (result.returncode == 0) != (expected_exit == 0):
+        failures.append("%s: status %r but exit %d"
+                        % (name, document["status"], result.returncode))
+
+# Both output forms must emit byte-identical document bytes (section 3.3).
+document_path = os.path.join(work_dir, "spike.json")
+stdout_form = run([PACK, "1", "1"]).stdout.decode("utf-8").rstrip("\n")
+run([PACK, "1", "1", document_path])
+with open(document_path, "r", encoding="utf-8") as handle:
+    file_form = handle.read()
+if normalize(stdout_form) != normalize(file_form):
+    failures.append("the stdout and file forms differ")
+
+# The `-` fourth operand is the machine form: the document alone, no summary block.
+dash_form = run([PACK, "1", "1", "-"]).stdout.decode("utf-8").rstrip("\n")
+if normalize(dash_form) != normalize(stdout_form):
+    failures.append("the `-` form differs from the three-operand form")
+
+# Section 3.5's two-decoders guard: the Align reader's decoded header, block record, and member
+# record against `scripts/alignpack_reader.py`, which shares no code with either Align decoder.
+independent = alignpack_reader.Pack(PACK)
+try:
+    mine = json.loads(produced["spike-stub-unavailable"])
+    header = independent.header
+    block = independent.blocks[1]
+    member = independent.members[2]
+    parity = [
+        ("format_version", mine["pack"]["format_version"], header["format_version"]),
+        ("block_align", mine["pack"]["block_align"], header["block_align"]),
+        ("member_align", mine["pack"]["member_align"], header["member_align"]),
+        ("block_count", mine["pack"]["block_count"], header["block_count"]),
+        ("member_count", mine["pack"]["member_count"], header["member_count"]),
+        ("total_bytes", mine["pack"]["total_bytes"], header["total_bytes"]),
+        ("payload_offset", mine["pack"]["payload_offset"], header["payload_offset"]),
+        ("block.pack_offset", mine["buffer"]["block_pack_offset"], block["pack_offset"]),
+        ("block.pack_bytes", mine["buffer"]["block_pack_bytes"], block["pack_bytes"]),
+        ("block.layer", mine["selection"]["layer"], block["layer"]),
+        ("block.expert", mine["selection"]["expert"], block["expert"]),
+        ("block.kind", mine["selection"]["kind"],
+         alignpack_reader.BLOCK_KINDS[block["kind"]].replace("WeightBlock", "Weight")),
+        ("member.index_global", mine["selection"]["member_index_global"], member["index"]),
+        ("member.name", mine["selection"]["name"], member["name"]),
+        ("member.role_id", mine["selection"]["role_id"], member["role_id"]),
+        ("member.pack_offset", mine["buffer"]["member_pack_offset"], member["pack_offset"]),
+        ("member.nbytes", mine["tensor"]["nbytes"], member["nbytes"]),
+        ("member.ggml_type", mine["tensor"]["ggml_type"], member["ggml_type"]),
+        ("member.n_dims", mine["tensor"]["n_dims"], member["n_dims"]),
+        ("member.ne0", mine["tensor"]["ne0"], member["dims"][0]),
+        ("member.ne1", mine["tensor"]["ne1"], member["dims"][1]),
+        ("interior_offset", mine["buffer"]["interior_offset"],
+         member["pack_offset"] - block["pack_offset"]),
+    ]
+    for field, got, want in parity:
+        if got != want:
+            failures.append("reader parity %s: align %r, python %r" % (field, got, want))
+finally:
+    independent.close()
+
+# The pack-len-mismatch container must be refused before a single table byte is read.
+len_mismatch = json.loads(produced["pack-len-mismatch"])
+if len_mismatch["pack"]["reader_pread_count"] != 1:
+    failures.append("pack-len-mismatch read the tables: %d preads"
+                    % len_mismatch["pack"]["reader_pread_count"])
+
+if update:
+    with open(golden_path, "w", encoding="utf-8") as handle:
+        for name, _ in CASES:
+            handle.write(json.dumps({"case": name, "document": produced[name]},
+                                    separators=(",", ":"), ensure_ascii=False) + "\n")
+    print("ggml spike smoke: golden rewritten with %d cases" % len(produced))
+else:
+    with open(golden_path, "r", encoding="utf-8") as handle:
+        golden = [json.loads(line) for line in handle if line.strip()]
+    if [row["case"] for row in golden] != [name for name, _ in CASES]:
+        failures.append("the golden case list does not match the runner's case list")
+    else:
+        for row in golden:
+            if produced.get(row["case"]) != row["document"]:
+                failures.append("golden mismatch for %s:\n  expected %s\n  actual   %s"
+                                % (row["case"], row["document"], produced.get(row["case"])))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("ggml spike smoke: FAIL %s\n" % line)
+    raise SystemExit(1)
+
+print("ggml spike smoke: %d no-document cases, %d documented cases, reader parity, "
+      "shared shim contract, and lifetime PASS" % (len(NO_DOCUMENT), len(CASES)))
+PY

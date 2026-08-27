@@ -36,7 +36,7 @@ EXPECTED = (
     b"prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke "
     b"prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke "
     b"c6e-request2-adoption persisted-result-smoke gguf-smoke model-ir-smoke "
-    b"expert-trace-smoke alignpack-smoke\n"
+    b"expert-trace-smoke alignpack-smoke ggml-spike-smoke\n"
     b"capable-only=eval-coding baseline-check c6-evaluation-adoption\n"
     b"serialized=hosted-checks capable-checks ci\n"
 )
@@ -102,7 +102,7 @@ def exact_environment() -> dict[str, str]:
             "prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke "
             "prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke "
             "c6e-request2-adoption persisted-result-smoke gguf-smoke model-ir-smoke "
-            "expert-trace-smoke alignpack-smoke"
+            "expert-trace-smoke alignpack-smoke ggml-spike-smoke"
         ),
         "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS": "eval-coding baseline-check c6-evaluation-adoption",
         "ALIGN_LLM_SERIAL_CHECK_AGGREGATES": "hosted-checks capable-checks ci",
