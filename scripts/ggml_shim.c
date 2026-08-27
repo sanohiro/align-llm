@@ -45,6 +45,19 @@
  * `src/ggml_ffi.align`'s single `match`. `docs/specs/r4-5-external-buffer.md` section 3.8 owns the
  * mapping and the validation order that reaches each one.
  */
+/* **Floating-point contraction is off, in the source and in the build flags** (section 6,
+ * correction C15). `a * b + c` may be contracted into one fused multiply-add, and whether it is
+ * depends on the compiler and the target: Apple clang on `arm64` contracts by default, GCC 13 on
+ * `x86-64` does not. The stub engine's kernels are the reference the checked-in golden documents
+ * are generated from, so a contraction difference is a twelve-of-forty-eight golden mismatch on a
+ * host that is otherwise correct. `scripts/build-ggml-shim` passes `-ffp-contract=off` and defines
+ * `ALIGN_GGML_FP_CONTRACT_OFF`, and the pragma below makes the source say the same thing so a
+ * golden regenerated with a hand-run compiler is still the golden a flagged build reproduces.
+ */
+#if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 14)
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 #define ALIGN_GGML_OK           0
 #define ALIGN_GGML_UNAVAILABLE (-1)
 #define ALIGN_GGML_ABI         (-2)
@@ -267,6 +280,64 @@ static float align_ggml_bits_to_f32(int32_t bits) {
     float value = 0.0f;
     memcpy(&value, &bits, sizeof(value));
     return value;
+}
+
+/* `1` when this translation unit was compiled with floating-point contraction disabled, which is
+ * `scripts/build-ggml-shim`'s `-ffp-contract=off` plus `-DALIGN_GGML_FP_CONTRACT_OFF=1`. The
+ * document publishes it as `abi.fp_contract_off` and both runners assert it, so dropping the flag
+ * is a failing check rather than a golden corpus that only reproduces on one compiler.
+ */
+int32_t align_ggml_fp_contract_off(void) {
+#ifdef ALIGN_GGML_FP_CONTRACT_OFF
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+/* The highest occupied slot index plus one, `0` for an empty store, or `ALIGN_GGML_SLOT` for a
+ * window this file did not write. The document's `graph.slot_high_water` (section 6, correction
+ * C16): it was a constant derived from the node table, which could not disagree with the node
+ * table and therefore measured nothing. Scanned rather than tracked, because the store is the only
+ * thing that knows what was actually written into it.
+ */
+int64_t align_ggml_slots_high_water(const void *slots) {
+    int64_t capacity = align_ggml_slot_capacity(slots);
+    int64_t index = 0;
+    int64_t high = 0;
+    if (capacity < 0) {
+        return ALIGN_GGML_SLOT;
+    }
+    for (index = 0; index < capacity; index++) {
+        if (align_ggml_slot_load(slots, index) != NULL) {
+            high = index + 1;
+        }
+    }
+    return high;
+}
+
+/* `1` when an `int32_t` bit pattern names a float `ggml_rms_norm` will accept (section 6,
+ * correction C17). ggml asserts `eps >= 0.0f` internally and `GGML_ASSERT` is `abort()`, so a
+ * geometry document carrying `7fc00000` (NaN), `ff800000` (-inf), or `bf800000` (-1.0) would take
+ * the process down with no document, no error code, and no teardown — the one class of input the
+ * validation order cannot otherwise reach, because Align never interprets the pattern it forwards.
+ *
+ * `src/layer_qwen2.align` refuses the same patterns at step 7 with `R5_GEOMETRY`, so this is the
+ * fail-closed backstop for a caller that reaches the wrapper by another route. It lives in the
+ * shared region because both shims must answer it identically.
+ */
+static int32_t align_ggml_eps_ok(int32_t bits) {
+    float value = align_ggml_bits_to_f32(bits);
+    if (value != value) {
+        return 0;  /* NaN */
+    }
+    if (value - value != 0.0f) {
+        return 0;  /* an infinity */
+    }
+    if (value < 0.0f) {
+        return 0;
+    }
+    return 1;
 }
 /* --- END R4.5 SHARED SHIM CONTRACT --- */
 
@@ -854,6 +925,10 @@ int32_t align_ggml_op_get_rows(void *ctx, void *slots, int64_t out, int64_t a, i
 
 int32_t align_ggml_op_rms_norm(void *ctx, void *slots, int64_t out, int64_t a, int32_t eps_bits) {
     ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    /* Before the call that would `abort()` on a negative or non-finite epsilon. */
+    if (!align_ggml_eps_ok(eps_bits)) {
+        return ALIGN_GGML_SHAPE;
+    }
     result = ggml_rms_norm((struct ggml_context *) ctx, sa, align_ggml_bits_to_f32(eps_bits));
     if (result == NULL) {
         return ALIGN_GGML_INIT;

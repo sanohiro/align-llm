@@ -143,6 +143,8 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_slots_init(slots: slice<u8>, bytes: i64) -> i32
   fn align_ggml_slots_capacity(slots: slice<u8>) -> i64
   fn align_ggml_slots_ok(slots: slice<u8>) -> i32
+  fn align_ggml_slots_high_water(slots: slice<u8>) -> i64
+  fn align_ggml_fp_contract_off() -> i32
   fn align_ggml_slot_copy(destination: slice<u8>, to: i64, source: slice<u8>, from: i64) -> i32
   fn align_ggml_slot_nbytes(slots: slice<u8>, index: i64) -> i64
   fn align_ggml_slot_ne(slots: slice<u8>, index: i64, dim: i32) -> i64
@@ -475,6 +477,25 @@ pub fn slots_capacity(borrow slots: slice<u8>) -> i64 {
 pub fn slots_ok(borrow slots: slice<u8>) -> bool {
   unsafe {
     return align_ggml_slots_ok(slots) != 0
+  }
+}
+
+// The highest slot the shim actually wrote, plus one. It is scanned from the store rather than
+// derived from the node table, so it is a measurement instead of a restatement of a constant
+// (`docs/specs/r5a-dense-layer-forward.md` section 6, correction C16).
+pub fn slots_high_water(borrow slots: slice<u8>) -> i64 {
+  unsafe {
+    return align_ggml_slots_high_water(slots)
+  }
+}
+
+// `true` when the loaded shim was compiled with floating-point contraction disabled. The engine's
+// kernels are what the checked-in golden documents were generated from, and whether `a * b + c`
+// becomes one fused multiply-add is a per-compiler, per-target choice, so the flag is part of the
+// ABI the document publishes rather than a build preference (section 6, correction C15).
+pub fn fp_contract_off() -> bool {
+  unsafe {
+    return align_ggml_fp_contract_off() != 0
   }
 }
 

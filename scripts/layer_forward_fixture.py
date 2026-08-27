@@ -673,6 +673,20 @@ def geometry_corpus(g):
     broken = json.loads(json.dumps(base))
     broken["model"]["rope"]["dim_count"] = 2
     out.append(("geometry-rope-dims", broken))
+    # The bit patterns that are legal eight-hex-digit strings and illegal floats. `rms_eps_bits`
+    # reaches `ggml_rms_norm`, which asserts `eps >= 0.0f` inside ggml, and `GGML_ASSERT` is
+    # `abort()`: without step 7's refusal each of these takes the process down at step 24 with no
+    # document and no error code. `freq_base` must additionally be positive.
+    for name, bits in (("nan", "7fc00000"), ("neg-inf", "ff800000"),
+                       ("negative", "bf800000"), ("all-ones", "ffffffff")):
+        broken = json.loads(json.dumps(base))
+        broken["model"]["rms_eps_bits"] = bits
+        out.append(("geometry-eps-" + name, broken))
+    for name, bits in (("nan", "7fc00000"), ("inf", "7f800000"),
+                       ("negative", "bf800000"), ("zero", "00000000")):
+        broken = json.loads(json.dumps(base))
+        broken["model"]["rope"]["freq_base_bits"] = bits
+        out.append(("geometry-rope-base-" + name, broken))
     return out
 
 
@@ -756,6 +770,21 @@ def write_corpus(directory):
     value = float(original[first:first + 12])
     perturbed[row] = original[:first] + ("%12.4f" % (value + 0.0003)) + original[first + 12:]
     emit("transcript-perturbed.txt", "\n".join(perturbed) + "\n")
+
+    # `R5_ORACLE_MISSING` by shortfall, not by absence: every record's header survives, so every
+    # oracle node matches by name and by declared shape and then carries no element at all. Before
+    # the review repair this was a `PASS` over zero compared elements.
+    headers = [line for line in lines
+               if line.startswith("common_debug_cb_eval:") or line.startswith("build: ")
+               or line.startswith("number of input tokens")]
+    emit("transcript-headers.txt", "\n".join(headers) + "\n")
+
+    # The same shortfall for exactly one node: `l_out-0`'s value block is deleted and its header
+    # and `sum` line are kept, which is what a truncated capture of one large tensor looks like.
+    end = next(i for i, line in enumerate(lines[start:], start)
+               if line.startswith("    sum = "))
+    emit("transcript-novalues.txt",
+         "\n".join(lines[:start + 1] + lines[end:]) + "\n")
 
     emit("transcript-garbage.txt", bytes(range(256)) * 8)
 

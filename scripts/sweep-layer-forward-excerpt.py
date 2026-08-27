@@ -12,6 +12,14 @@ stale, and it is swept for paths, usernames, and non-ASCII bytes before it is wr
 import re
 import sys
 
+# The attention output projection has **no stable name**: section 2.2 fact 3 recorded it as
+# `node_31` under `-fa off` and `node_26` under flash attention, a positional name that moves when
+# anything upstream changes. `src/layer_forward.align` matches it by its source weight and this
+# sweep must do the same, or a build that renumbers the node makes the excerpt unregenerable for a
+# reason that has nothing to do with the excerpt (section 6, correction C21).
+ATTN_OUTPUT = "@attn_output"
+ATTN_OUTPUT_RE = re.compile(r"blk\.\d+\.attn_output\.weight$")
+
 # The twenty records, in transcript order: the eighteen oracle nodes of section 3.6 plus `kq-0` and
 # `kq_soft_max-0`, which are matched and then excluded from element comparison by contract.
 WANT = [
@@ -19,7 +27,7 @@ WANT = [
     ("Qcur-0", "ADD"), ("Vcur-0", "ADD"), ("Kcur-0", "ADD"),
     ("Qcur-0", "ROPE"), ("Kcur-0", "ROPE"),
     ("kq-0", "MUL_MAT"), ("kq_soft_max-0", "SOFT_MAX"), ("kqv-0", "MUL_MAT"),
-    ("kqv_out-0", "CONT"), ("node_31", "MUL_MAT"), ("ffn_inp-0", "ADD"),
+    ("kqv_out-0", "CONT"), (ATTN_OUTPUT, "MUL_MAT"), ("ffn_inp-0", "ADD"),
     ("ffn_norm-0", "MUL"), ("ffn_gate-0", "MUL_MAT"), ("ffn_up-0", "MUL_MAT"),
     ("ffn_swiglu-0", "SWIGLU"), ("ffn_out-0", "MUL_MAT"), ("l_out-0", "ADD"),
 ]
@@ -50,7 +58,15 @@ HEADER = """# R5A-DENSE-LAYER-FORWARD checked-in transcript excerpt.
 
 FORBIDDEN = ("/Users", "/home/", "/private", "/opt/", "\\Users", "C:\\")
 
-HEADER_RE = re.compile(r"^common_debug_cb_eval:\s+(\S.*?) = \((\w+)\)\s+(\w+)\(")
+HEADER_RE = re.compile(r"^common_debug_cb_eval:\s+(\S.*?) = \((\w+)\)\s+(\w+)\(([^{]*)\{")
+
+
+def key_of(match):
+    """`(identity, op)`, where the attention output projection's identity is its source weight."""
+    name, op, source = match.group(1), match.group(3), match.group(4).strip()
+    if op == "MUL_MAT" and ATTN_OUTPUT_RE.search(source):
+        return (ATTN_OUTPUT, op)
+    return (name, op)
 
 
 def sweep(source):
@@ -63,7 +79,7 @@ def sweep(source):
         if not match:
             at += 1
             continue
-        key = (match.group(1), match.group(3))
+        key = key_of(match)
         end = at + 1
         while end < len(lines) and not lines[end].startswith("    sum = "):
             end += 1

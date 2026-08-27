@@ -11,8 +11,8 @@ set -euo pipefail
 # section 4.6. Twenty-four of the twenty-six error codes are reached for real, **and both oracle
 # verdicts**, without ggml, without a model, without a network, and without a reference tool.
 #
-# Eight shim builds are used and each one is a real contract: the default stub is unavailable and
-# stops the arm at step 17, and the seven `ALIGN_LLM_GGML_FORCE=engine*` builds turn on the
+# Nine shim builds are used and each one is a real contract: the default stub is unavailable and
+# stops the arm at step 17, and the eight `ALIGN_LLM_GGML_FORCE=engine*` builds turn on the
 # deterministic single-precision engine of section 5.1 so steps 18 to 29 are reachable at all.
 #
 # `ALIGN_LLM_GGML_INCLUDE` is unset deliberately and unconditionally: this runner's contract is that
@@ -193,6 +193,33 @@ STUB_CASES = [
     ("lf-stride", [ARM, path("pack-bad-stride.alignpack"), "0", GEOM, TOKENS], "R5_SHAPE"),
 ]
 
+# Section 4.1's "a missing field" cell: one fixture per consumed `model` field, each of which must
+# be `R5_GEOMETRY` naming that field and nothing else. The corpus has written these fifteen
+# documents since the first implementation and no case referenced one, so the cell's evidence was
+# a file on disk rather than a run (section 6, correction C20).
+GEOMETRY_MISSING = [
+    "arch", "n_layer", "n_embd", "n_head", "n_head_kv", "head_dim", "n_ff", "n_vocab",
+    "n_expert", "context_length", "rms_eps_bits",
+    "rope-type", "rope-dim_count", "rope-freq_base_bits", "rope-scaling_type",
+]
+STUB_CASES.extend(("lf-geometry-missing-" + field,
+                   [ARM, PACK, "0", geom("geometry-missing-" + field), TOKENS],
+                   "R5_GEOMETRY")
+                  for field in GEOMETRY_MISSING)
+
+# The bit patterns that are legal eight-hex-digit strings and illegal floats. `rms_eps_bits`
+# reaches `ggml_rms_norm`, which asserts `eps >= 0.0f` inside ggml, and `GGML_ASSERT` is `abort()`:
+# each of these is a SIGABRT with no document, no error code, and no teardown unless step 7 refuses
+# it first (section 6, correction C17). They are stub-reachable because the refusal is Align's.
+GEOMETRY_BITS = [
+    "eps-nan", "eps-neg-inf", "eps-negative", "eps-all-ones",
+    "rope-base-nan", "rope-base-inf", "rope-base-negative", "rope-base-zero",
+]
+STUB_CASES.extend(("lf-geometry-" + name,
+                   [ARM, PACK, "0", geom("geometry-" + name), TOKENS],
+                   "R5_GEOMETRY")
+                  for name in GEOMETRY_BITS)
+
 # Everything from step 18 onward. The engine build answers the whole contract; the default stub
 # stops at step 17 and cannot reach one of these rows.
 ENGINE_CASES = [
@@ -218,6 +245,15 @@ ENGINE_CASES = [
      "R5_ORACLE_SHAPE"),
     ("lf-engine-transcript-perturbed",
      [ARM, PACK, "0", GEOM, TOKENS, "-", SOURCE, path("transcript-perturbed.txt")], ""),
+    # A transcript whose records all match by name and shape and carry no value block at all, and
+    # one whose `l_out-0` block alone is deleted. Both used to be a `PASS` over zero compared
+    # elements (section 6, correction C19).
+    ("lf-engine-transcript-headers",
+     [ARM, PACK, "0", GEOM, TOKENS, "-", SOURCE, path("transcript-headers.txt")],
+     "R5_ORACLE_MISSING"),
+    ("lf-engine-transcript-novalues",
+     [ARM, PACK, "0", GEOM, TOKENS, "-", SOURCE, path("transcript-novalues.txt")],
+     "R5_ORACLE_MISSING"),
     ("lf-engine-transcript-garbage",
      [ARM, PACK, "0", GEOM, TOKENS, "-", SOURCE, path("transcript-garbage.txt")], "R5_TRANSCRIPT"),
     # The checked-in real-model excerpt. Every one of its twenty records is found by name, op, and —
@@ -236,6 +272,12 @@ FORCED_CASES = [
      "R5_REFERENCE_MISMATCH"),
     ("lf-force-slot-range", "engine+slot-range", [ARM, PACK, "0", GEOM, TOKENS], "R5_SLOT"),
     ("lf-force-slot-empty", "engine+slot-empty", [ARM, PACK, "0", GEOM, TOKENS], "R5_SLOT"),
+    # Section 5.6's named risk, made observable: the engine's `gallocr` reuses a dead
+    # intermediate's block exactly as ggml's does, so a node `mark_outputs` forgot is overwritten
+    # before it is read back. The run stays `ok` — a wrong number is data — and the oracle must say
+    # `FAIL` (section 6, correction C18).
+    ("lf-force-no-mark-output", "engine+no-mark-output",
+     [ARM, PACK, "0", GEOM, TOKENS, "-", SOURCE, TRANSCRIPT], ""),
 ]
 
 PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
@@ -296,6 +338,14 @@ def record(name, operands, expected):
     if document["kind"] != "R5_LAYER_FORWARD" or document["schema_version"] != 1:
         failures.append("%s: wrong document identity %r/%r"
                         % (name, document["kind"], document["schema_version"]))
+    # The golden corpus is generated from the stub engine's kernels, and whether `a * b + c` is
+    # contracted into one fused multiply-add is a per-compiler, per-target choice: Apple clang on
+    # arm64 contracts, GCC 13 on x86-64 does not, and twelve of these documents differ between the
+    # two. `scripts/build-ggml-shim` passes `-ffp-contract=off`; this asserts that the library the
+    # run actually loaded was built that way (section 6, correction C15).
+    if not document["abi"]["fp_contract_off"]:
+        failures.append("%s: the shim was not built with -ffp-contract=off; the goldens are not "
+                        "reproducible across compilers" % name)
     return document
 
 
@@ -354,6 +404,11 @@ for name, operands, expected in ENGINE_CASES:
             failures.append("%s: shape_incomparable nodes are %r" % (name, excluded))
         if not document["abi"]["slot_magic_ok"]:
             failures.append("%s: the slot store magic did not validate" % name)
+        # Measured by scanning the store, so it can disagree with the node table and a slot the
+        # walk failed to write is visible here (section 6, correction C16).
+        if document["graph"]["slot_high_water"] != 48:
+            failures.append("%s: slot_high_water %d, not the 48 slots the layer writes"
+                            % (name, document["graph"]["slot_high_water"]))
         if document["graph"]["slot_capacity"] != 128:
             failures.append("%s: slot_capacity %d, not 128"
                             % (name, document["graph"]["slot_capacity"]))
@@ -425,11 +480,19 @@ repeats = {normalize(run([ARM, PACK, "0", GEOM, TOKENS, "-", SOURCE, TRANSCRIPT]
 if len(repeats) != 1:
     failures.append("three consecutive runs produced %d distinct documents" % len(repeats))
 
+forced_documents = {}
 for name, force, operands, expected in FORCED_CASES:
     build_shim(force)
-    record(name, operands, expected)
+    forced_documents[name] = record(name, operands, expected)
 
 build_shim(None)
+
+unmarked = forced_documents.get("lf-force-no-mark-output")
+if unmarked is not None and unmarked["oracle"]["verdict"] != "FAIL":
+    failures.append("lf-force-no-mark-output: ggml_set_output was dropped and the oracle still "
+                    "reported %r -- the allocator is not reusing an unmarked node's memory, so "
+                    "this owner cannot see a missing mark_outputs"
+                    % unmarked["oracle"]["verdict"])
 
 REQUIRED_CODES = {
     "R5_INDEX", "R5_TOKENS", "R5_GEOMETRY_UNREADABLE", "R5_GEOMETRY", "R4_PACK_UNREADABLE",

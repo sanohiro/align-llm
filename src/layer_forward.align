@@ -127,6 +127,21 @@ fn named(label: str, value: str) -> string {
   return b.to_string()
 }
 
+// `node[<id>]<got>/<expected>`: a compared node that carried fewer printed elements than its own
+// declared shape yields. The counts are in the detail because "the oracle compared nothing" and
+// "the oracle compared half" are different bugs and the document must say which (section 6,
+// correction C19).
+fn shortfall(node: str, got: i64, expected: i64) -> string {
+  b := builder()
+  b.write("node[")
+  b.write(node)
+  b.write("]")
+  b.write_int(got)
+  b.write("/")
+  b.write_int(expected)
+  return b.to_string()
+}
+
 fn at_index(label: str, node: str, index: i64) -> string {
   b := builder()
   b.write(label)
@@ -1105,6 +1120,7 @@ pub Outcome {
   tensor_alignment: i64,
   table_drift: i64,
   slot_magic_ok: bool,
+  fp_contract_off: bool,
   graph_context_bytes: i64,
 }
 
@@ -1190,6 +1206,7 @@ pub fn empty_outcome() -> Outcome = Outcome {
   tensor_alignment: 0,
   table_drift: -1,
   slot_magic_ok: false,
+  fp_contract_off: false,
   graph_context_bytes: 0,
 }
 
@@ -2252,6 +2269,33 @@ fn stage_oracle(
     }
     at = at + 1
   }
+  // Every compared node must have contributed the elements its own declared shape yields. Each
+  // axis prints at most six positions, so the product of `printed_count(ne_d)` is exactly how many
+  // `(index, value)` pairs a well-formed record carries. A record whose value block was truncated,
+  // deleted, or silently skipped matches by name and by shape and then compares **nothing**, and
+  // the run would report `PASS` over an oracle that measured nothing — the one failure section 3.8
+  // says this design most needs to make impossible (section 6, correction C19).
+  mut count_at := 0
+  loop {
+    if count_at >= oracle.count || o.code.len() > 0 { break }
+    if oracle.compared[count_at] == 1 {
+      expected := printed_count(scan.ne0[count_at]) * printed_count(scan.ne1[count_at])
+        * printed_count(scan.ne2[count_at]) * printed_count(scan.ne3[count_at])
+      mut got := 0
+      mut probe := 0
+      loop {
+        if probe >= scan.element_node.len() { break }
+        if scan.element_node[probe] == count_at { got = got + 1 }
+        probe = probe + 1
+      }
+      if got != expected {
+        fail(o, "R5_ORACLE_MISSING",
+          shortfall(layer_qwen2.oracle_id(oracle, count_at), got, expected))
+        break
+      }
+    }
+    count_at = count_at + 1
+  }
   mut current := -1
   mut span := 0
   mut element_at := 0
@@ -2299,6 +2343,11 @@ fn stage_oracle(
       if magnitude > bound { breach = true }
     }
     sum_at = sum_at + 1
+  }
+  // The backstop the count check above makes nearly unreachable, kept because "PASS with zero
+  // elements" must be impossible by construction and not only by arithmetic.
+  if o.code.len() == 0 && o.oracle_elements <= 0 {
+    fail(o, "R5_ORACLE_MISSING", "elements[0]")
   }
   if o.code.len() == 0 {
     if o.oracle_max_abs <= TOLERANCE_TEN_THOUSANDTHS && !breach {
@@ -2467,6 +2516,9 @@ pub fn execute(
 ) -> Outcome {
   started := time.instant()
   mut o := empty_outcome()
+  // A compile-time property of the loaded library, not of any run, so it is read before the first
+  // validation step and published even when the arm stops at step 1 (section 6, correction C15).
+  o.fp_contract_off = ggml_ffi.fp_contract_off()
   o.reference_present = reference_path.len() > 0
   o.transcript_present = transcript_path.len() > 0
 
@@ -2646,7 +2698,7 @@ pub fn execute(
     o.activation_bytes = activation_bytes
     o.build_ns = time.instant() - build_started
     o.node_count = ggml_ffi.graph_node_count(graph)
-    o.slot_high_water = layer_qwen2.SLOT_NODE_BASE + node_table.count
+    o.slot_high_water = ggml_ffi.slots_high_water(slot_view)
   }
   if o.code.len() == 0 { stage_compute(backend, graph, o) }
 
@@ -3121,6 +3173,8 @@ pub fn render(
   d.write_int(o.table_drift)
   d.write(",\"slot_magic_ok\":")
   d.write(bool_text(o.slot_magic_ok))
+  d.write(",\"fp_contract_off\":")
+  d.write(bool_text(o.fp_contract_off))
   d.write(",\"graph_context_bytes\":")
   d.write_int(o.graph_context_bytes)
   d.write("}}")

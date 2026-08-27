@@ -839,8 +839,8 @@ defect.
 
 ## Dense layer forward development
 
-R5A-DENSE-LAYER-FORWARD is in design (probes complete, implementation in progress) on branch
-`agent/r5a-dense-layer-forward`; its authoritative plan is
+R5A-DENSE-LAYER-FORWARD is **implemented, owner-verified, and qualified against the real model**
+on branch `agent/r5a-dense-layer-forward`; its authoritative plan is
 `docs/specs/r5a-dense-layer-forward.md`, which owns the probe record, the contract ledger, the
 closure matrix, and the fixtures, qualification, metrics, deferrals, risks, and candidate requests.
 It answers the second of R5's three gate stages — a single Qwen2 dense layer, CPU only — computed by
@@ -871,9 +871,13 @@ not an arithmetic one):
 ./ggml-spike --layer-forward PACK LAYER GEOM.json TOKENS -         REF.gguf TRANSCRIPT.txt   # document to stdout
 ```
 
-`GEOM.json` is an `R1_QWEN_MODEL_IR` document (the alignpack carries no hyperparameters); only its
-`model` object is read, and only as the `_bits` fields for `eps`/`freq_base` — a rendered float is
-never trusted as the value.
+`GEOM.json` is an **`R1_MODEL_IR` document at `schema_version: 2`** — what `main --model-ir` emits,
+and what the qualification feeds straight into the arm; the alignpack carries no hyperparameters.
+Only its `model` object is read, and `rms_eps` / `rope.freq_base` are taken only from the
+`_bits` fields, which are lowercase eight-character IEEE-754 hex strings: a rendered float is never
+trusted as the value. A `_bits` string that names a NaN, an infinity, or a negative — and, for
+`freq_base`, a zero — is `R5_GEOMETRY` naming the field, because `ggml_rms_norm` asserts
+`eps >= 0.0f` and `GGML_ASSERT` is `abort()` (plan section 6, correction C17).
 
 **Env vars, all read by `scripts/run-layer-forward` and reused unchanged from R4.5 where named:**
 
@@ -894,30 +898,40 @@ repacking):
 ```
 
 The qualification captures the transcript with exactly these flags plus `-ngl 0`, and asserts
-`nodes_matched == nodes_expected == 18` so a future build that renames or reshapes a node fails
-loudly (`R5_ORACLE_MISSING`/`R5_ORACLE_SHAPE`) rather than silently comparing fewer elements.
+`nodes_matched == nodes_expected == 18` **and** `elements_compared == 1116` so a future build that
+renames, reshapes, or truncates a node fails loudly (`R5_ORACLE_MISSING`/`R5_ORACLE_SHAPE`) rather
+than silently comparing fewer elements: a matched node that carries fewer printed elements than its
+own declared shape yields is `R5_ORACLE_MISSING` with detail `node[<id>]<got>/<expected>`.
+
+**The shim is built with `-ffp-contract=off`**, and both runners assert `abi.fp_contract_off` is
+`true`. That is a correctness flag, not an optimisation preference: `a * b + c` contracts into one
+fused multiply-add under Apple clang on `arm64` and does not under GCC 13 on `x86-64`, and the stub
+engine's kernels are what `scripts/layer-forward-golden.jsonl` is generated from (plan section 6,
+correction C15).
 
 `layer-forward-qualification` is opt-in and capable-only, in **neither** `HOSTED_CHECK_TARGETS` nor
 `CAPABLE_ONLY_CHECK_TARGETS` — the same footing as `alignpack-qualification` and
 `ggml-spike-qualification`. It prints exactly one `N/A` line and exits 0 when a required input is
 missing, the model or instrument is absent, or free space is under the pack's size plus 1 GiB; the
-line must be quoted as the `N/A` reason in the pull request. The plan (section 5.2) states the
-triggering conditions — the four environment variables above, the model, the instrument, and free
-space — but does not fix the print text verbatim the way `r4-5-external-buffer.md` did for its own
-arm; the lines below follow that arm's naming convention and are **not yet finalized — the exact
-wording is finalized with the implementation**, against the runner's real output:
+line must be quoted as the `N/A` reason in the pull request. These are the shipped lines, captured
+from `scripts/run-layer-forward` itself with each input removed in turn:
 
 ```text
-layer forward qualification: N/A (ALIGN_LLM_GGML_INCLUDE unset)
-layer forward qualification: N/A (ALIGN_LLM_GGML_INCLUDE holds no ggml.h)
-layer forward qualification: N/A (ALIGN_LLM_GGML_LIB unset)
-layer forward qualification: N/A (ALIGN_LLM_GGML_LIB is not a directory)
-layer forward qualification: N/A (ALIGN_LLM_GGUF_MODEL unset)
-layer forward qualification: N/A (ALIGN_LLM_GGUF_MODEL is absent)
-layer forward qualification: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)
-layer forward qualification: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is absent)
-layer forward qualification: N/A (insufficient free space: <avail> < <required>)
+layer forward qualification: N/A ALIGN_LLM_GGML_INCLUDE is unset
+layer forward qualification: N/A ALIGN_LLM_GGML_LIB is unset
+layer forward qualification: N/A ALIGN_LLM_GGUF_MODEL is unset
+layer forward qualification: N/A ALIGN_LLM_LLAMA_EVAL_CALLBACK is unset
+layer forward qualification: N/A ALIGN_LLM_GGML_INCLUDE is not a directory
+layer forward qualification: N/A ALIGN_LLM_GGML_LIB is not a directory
+layer forward qualification: N/A ALIGN_LLM_GGUF_MODEL is not a file
+layer forward qualification: N/A ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable
+layer forward qualification: N/A the scratch root <path> does not exist
+layer forward qualification: N/A free space under <path> is <n> KiB, below the <n> KiB the pack needs
 ```
+
+The runner also restores the ordinary real shim from its `EXIT`/`HUP`/`INT`/`TERM` trap, so an early
+exit inside the forced-failure loop cannot leave a `-DALIGN_GGML_FORCE_*` library in `build/lib` for
+whatever runs next (plan section 6, correction C22).
 
 **Adding `layer-forward-smoke` to `HOSTED_CHECK_TARGETS` changes aggregate membership**, so
 `CLAUDE.md`'s verification rules select `make ci` for this capability's publication, independent of

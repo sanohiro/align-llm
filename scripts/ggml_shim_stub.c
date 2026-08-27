@@ -38,6 +38,19 @@
  * `src/ggml_ffi.align`'s single `match`. `docs/specs/r4-5-external-buffer.md` section 3.8 owns the
  * mapping and the validation order that reaches each one.
  */
+/* **Floating-point contraction is off, in the source and in the build flags** (section 6,
+ * correction C15). `a * b + c` may be contracted into one fused multiply-add, and whether it is
+ * depends on the compiler and the target: Apple clang on `arm64` contracts by default, GCC 13 on
+ * `x86-64` does not. The stub engine's kernels are the reference the checked-in golden documents
+ * are generated from, so a contraction difference is a twelve-of-forty-eight golden mismatch on a
+ * host that is otherwise correct. `scripts/build-ggml-shim` passes `-ffp-contract=off` and defines
+ * `ALIGN_GGML_FP_CONTRACT_OFF`, and the pragma below makes the source say the same thing so a
+ * golden regenerated with a hand-run compiler is still the golden a flagged build reproduces.
+ */
+#if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 14)
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 #define ALIGN_GGML_OK           0
 #define ALIGN_GGML_UNAVAILABLE (-1)
 #define ALIGN_GGML_ABI         (-2)
@@ -260,6 +273,64 @@ static float align_ggml_bits_to_f32(int32_t bits) {
     float value = 0.0f;
     memcpy(&value, &bits, sizeof(value));
     return value;
+}
+
+/* `1` when this translation unit was compiled with floating-point contraction disabled, which is
+ * `scripts/build-ggml-shim`'s `-ffp-contract=off` plus `-DALIGN_GGML_FP_CONTRACT_OFF=1`. The
+ * document publishes it as `abi.fp_contract_off` and both runners assert it, so dropping the flag
+ * is a failing check rather than a golden corpus that only reproduces on one compiler.
+ */
+int32_t align_ggml_fp_contract_off(void) {
+#ifdef ALIGN_GGML_FP_CONTRACT_OFF
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+/* The highest occupied slot index plus one, `0` for an empty store, or `ALIGN_GGML_SLOT` for a
+ * window this file did not write. The document's `graph.slot_high_water` (section 6, correction
+ * C16): it was a constant derived from the node table, which could not disagree with the node
+ * table and therefore measured nothing. Scanned rather than tracked, because the store is the only
+ * thing that knows what was actually written into it.
+ */
+int64_t align_ggml_slots_high_water(const void *slots) {
+    int64_t capacity = align_ggml_slot_capacity(slots);
+    int64_t index = 0;
+    int64_t high = 0;
+    if (capacity < 0) {
+        return ALIGN_GGML_SLOT;
+    }
+    for (index = 0; index < capacity; index++) {
+        if (align_ggml_slot_load(slots, index) != NULL) {
+            high = index + 1;
+        }
+    }
+    return high;
+}
+
+/* `1` when an `int32_t` bit pattern names a float `ggml_rms_norm` will accept (section 6,
+ * correction C17). ggml asserts `eps >= 0.0f` internally and `GGML_ASSERT` is `abort()`, so a
+ * geometry document carrying `7fc00000` (NaN), `ff800000` (-inf), or `bf800000` (-1.0) would take
+ * the process down with no document, no error code, and no teardown — the one class of input the
+ * validation order cannot otherwise reach, because Align never interprets the pattern it forwards.
+ *
+ * `src/layer_qwen2.align` refuses the same patterns at step 7 with `R5_GEOMETRY`, so this is the
+ * fail-closed backstop for a caller that reaches the wrapper by another route. It lives in the
+ * shared region because both shims must answer it identically.
+ */
+static int32_t align_ggml_eps_ok(int32_t bits) {
+    float value = align_ggml_bits_to_f32(bits);
+    if (value != value) {
+        return 0;  /* NaN */
+    }
+    if (value - value != 0.0f) {
+        return 0;  /* an infinity */
+    }
+    if (value < 0.0f) {
+        return 0;
+    }
+    return 1;
 }
 /* --- END R4.5 SHARED SHIM CONTRACT --- */
 
@@ -996,8 +1067,19 @@ int32_t align_ggml_slot_mark_output(void *slots, int64_t index) {
     if (t == NULL) {
         return ALIGN_GGML_SLOT;
     }
+#ifdef ALIGN_GGML_FORCE_NO_MARK_OUTPUT
+    /* Section 4.6, added by the review repair: the mark is silently dropped, which is what a node
+     * table that forgets `node_oracle` would do. The allocator below then hands an oracle node's
+     * bytes to a later node and the readback is not the node computed — the failure section 5.6
+     * names and that the hosted owner previously could not observe. The macro is never defined in
+     * an ordinary build.
+     */
+    (void) t;
+    return ALIGN_GGML_OK;
+#else
     t->is_output = 1;
     return ALIGN_GGML_OK;
+#endif
 }
 
 static int32_t align_stub_bind(void *slots, int64_t out, align_stub_tensor *t,
@@ -1030,6 +1112,12 @@ int32_t align_ggml_op_rms_norm(void *ctx, void *slots, int64_t out, int64_t a, i
     align_stub_tensor *t = NULL;
     if (sa == NULL) {
         return ALIGN_GGML_SLOT;
+    }
+    /* The same refusal the real shim makes, for the same reason: the engine must not accept a
+     * pattern the linked library would abort on.
+     */
+    if (!align_ggml_eps_ok(eps_bits)) {
+        return ALIGN_GGML_SHAPE;
     }
     t = align_stub_new(ctx, ALIGN_STUB_TYPE_F32, sa->ne[0], sa->ne[1], sa->ne[2], sa->ne[3]);
     if (t == NULL) {
@@ -1282,12 +1370,116 @@ void *align_ggml_gallocr_new(void *backend) {
     return NULL;
 }
 
+/* The reuse plan, which is the whole reason `reserve` and `alloc` are two passes over one
+ * algorithm (section 6, correction C18).
+ *
+ * The engine used to bump-allocate one block per node and never reuse one. That made the hosted
+ * owner blind to the single most consequential mistake this design can make: an oracle node that
+ * `mark_outputs` forgets is, under a real `ggml_gallocr`, handed to a later node and the bytes read
+ * back are not the bytes computed. Section 5.6 names that risk and the probe hit it for real, but
+ * with a bump allocator every golden still passed.
+ *
+ * So the engine does what `ggml_gallocr` does. A node's block is returned to a free list once its
+ * last consumer has run, unless `ggml_set_output` marked it, and the next node that fits takes it.
+ * Allocation happens **before** the frees for that node, so a node never aliases its own source.
+ * First fit by lowest offset keeps the plan deterministic, which the golden corpus requires.
+ *
+ * `base == NULL` measures and returns the peak; a non-NULL base assigns `t->data` from the same
+ * walk, so the number `align_ggml_gallocr_bytes` publishes is the number that was allocated.
+ * A negative return is a refusal: too many nodes, too many live blocks, or an empty tensor.
+ */
+#define ALIGN_STUB_MAX_FREE 256
+
+static int64_t align_stub_plan(align_stub_graph *g, unsigned char *base) {
+    static int64_t last_use[ALIGN_STUB_MAX_TENSORS];
+    static int64_t block_offset[ALIGN_STUB_MAX_TENSORS];
+    static int64_t block_size[ALIGN_STUB_MAX_TENSORS];
+    static int64_t free_offset[ALIGN_STUB_MAX_FREE];
+    static int64_t free_size[ALIGN_STUB_MAX_FREE];
+    int32_t free_count = 0;
+    int64_t peak = 0;
+    int32_t i = 0;
+    int32_t j = 0;
+    int32_t k = 0;
+    if (g->count > ALIGN_STUB_MAX_TENSORS) {
+        return -1;
+    }
+    for (i = 0; i < g->count; i++) {
+        last_use[i] = -1;
+        block_offset[i] = -1;
+        block_size[i] = 0;
+    }
+    for (j = 0; j < g->count; j++) {
+        for (k = 0; k < 2; k++) {
+            align_stub_tensor *source = g->nodes[j]->src[k];
+            if (source == NULL) {
+                continue;
+            }
+            for (i = 0; i < j; i++) {
+                if (g->nodes[i] == source) {
+                    last_use[i] = j;
+                    break;
+                }
+            }
+        }
+    }
+    for (i = 0; i < g->count; i++) {
+        align_stub_tensor *t = g->nodes[i];
+        int64_t need = (align_stub_nbytes(t) + 63) / 64 * 64;
+        int32_t pick = -1;
+        if (t->data != NULL) {
+            continue;
+        }
+        if (need <= 0) {
+            return -1;
+        }
+        for (j = 0; j < free_count; j++) {
+            if (free_size[j] < need) {
+                continue;
+            }
+            if (pick < 0 || free_offset[j] < free_offset[pick]) {
+                pick = j;
+            }
+        }
+        if (pick >= 0) {
+            block_offset[i] = free_offset[pick];
+            if (free_size[pick] > need) {
+                free_offset[pick] += need;
+                free_size[pick] -= need;
+            } else {
+                free_offset[pick] = free_offset[free_count - 1];
+                free_size[pick] = free_size[free_count - 1];
+                free_count--;
+            }
+        } else {
+            block_offset[i] = peak;
+            peak += need;
+        }
+        block_size[i] = need;
+        if (base != NULL) {
+            t->data = base + block_offset[i];
+        }
+        for (j = 0; j < i; j++) {
+            if (last_use[j] != i || block_offset[j] < 0 || g->nodes[j]->is_output) {
+                continue;
+            }
+            if (free_count >= ALIGN_STUB_MAX_FREE) {
+                return -1;
+            }
+            free_offset[free_count] = block_offset[j];
+            free_size[free_count] = block_size[j];
+            free_count++;
+            block_offset[j] = -1;
+        }
+    }
+    return peak;
+}
+
 /* `reserve` measures and `alloc` assigns, so the two are not one bump allocation counted twice and
  * `align_ggml_gallocr_bytes` is a number the golden document can carry.
  */
 int32_t align_ggml_gallocr_reserve(void *galloc, void *graph) {
     align_stub_graph *g = (align_stub_graph *) graph;
-    int32_t i = 0;
     int64_t total = 0;
     if (galloc == NULL || g == NULL) {
         return ALIGN_GGML_INIT;
@@ -1295,8 +1487,9 @@ int32_t align_ggml_gallocr_reserve(void *galloc, void *graph) {
 #ifdef ALIGN_GGML_FORCE_ALLOC_FAILURE
     return ALIGN_GGML_ALLOC;
 #endif
-    for (i = 0; i < g->count; i++) {
-        total += (align_stub_nbytes(g->nodes[i]) + 63) / 64 * 64;
+    total = align_stub_plan(g, NULL);
+    if (total < 0) {
+        return ALIGN_GGML_ALLOC;
     }
     ((align_stub_gallocr *) galloc)->bytes = total;
     return ALIGN_GGML_OK;
@@ -1304,18 +1497,21 @@ int32_t align_ggml_gallocr_reserve(void *galloc, void *graph) {
 
 int32_t align_ggml_gallocr_alloc(void *galloc, void *graph) {
     align_stub_graph *g = (align_stub_graph *) graph;
-    int32_t i = 0;
+    unsigned char *base = NULL;
+    int64_t total = 0;
     if (galloc == NULL || g == NULL) {
         return ALIGN_GGML_INIT;
     }
-    for (i = 0; i < g->count; i++) {
-        if (g->nodes[i]->data != NULL) {
-            continue;
-        }
-        g->nodes[i]->data = align_stub_reserve(align_stub_nbytes(g->nodes[i]));
-        if (g->nodes[i]->data == NULL) {
-            return ALIGN_GGML_ALLOC;
-        }
+    total = align_stub_plan(g, NULL);
+    if (total < 0) {
+        return ALIGN_GGML_ALLOC;
+    }
+    base = align_stub_reserve(total);
+    if (base == NULL) {
+        return ALIGN_GGML_ALLOC;
+    }
+    if (align_stub_plan(g, base) < 0) {
+        return ALIGN_GGML_ALLOC;
     }
     return ALIGN_GGML_OK;
 }

@@ -52,8 +52,17 @@ if [ "${free_kib}" -lt "${need_kib}" ]; then
 fi
 
 work_dir=$(mktemp -d "${scratch_root%/}/align-r5a-XXXXXX")
+# `build/lib/libalign_ggml_shim` is shared state outside the work tree: the forced-failure loop
+# below replaces it, and an early exit — a failed assertion, a signal, an unexpected error code —
+# used to leave a `-DALIGN_GGML_FORCE_*` library in place for whatever ran next. The trap restores
+# the ordinary real shim before it removes the work directory, so the exit path is total
+# (`docs/specs/r5a-dense-layer-forward.md` section 6, correction C22).
+shim_built=0
 cleanup() {
   status=$?
+  if [ "${shim_built}" = 1 ]; then
+    ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null 2>&1 || true
+  fi
   rm -rf "${work_dir}"
   exit "${status}"
 }
@@ -73,6 +82,7 @@ echo "layer forward qualification: capturing the transcript with -fa off -ctk f3
   > "${work_dir}/transcript.txt" 2> "${work_dir}/transcript.log"
 
 shim_dir=$(ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim")
+shim_built=1
 (
   cd "${root_dir}"
   LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}" \
@@ -149,9 +159,14 @@ want("graph.node_count", graph["node_count"], 32)
 want("graph.weight_bytes", graph["weight_bytes"], 149139456)
 want("graph.activation_bytes", graph["activation_bytes"], 2453376)
 want("graph.slot_capacity", graph["slot_capacity"], 128)
+# Scanned from the store rather than derived from the node table: 13 weights + 3 inputs + 32 nodes.
+want("graph.slot_high_water", graph["slot_high_water"], 48)
 want("abi.tensor_alignment", d["abi"]["tensor_alignment"], 32)
 want("abi.table_drift", d["abi"]["table_drift"], -1)
 want("abi.slot_magic_ok", d["abi"]["slot_magic_ok"], True)
+# The real shim does no floating-point arithmetic of its own, but the flag is one build rule for
+# both C files and dropping it silently would make the stub engine's goldens compiler-dependent.
+want("abi.fp_contract_off", d["abi"]["fp_contract_off"], True)
 
 reference = d["reference"]
 want("reference.verdict", reference["verdict"], "IDENTICAL")
@@ -237,7 +252,7 @@ for force in init compute; do
   fi
   echo "layer forward qualification: forced ${force} reached ${code}"
 done
-ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null
+ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null   # the trap repeats this
 
 # The checked-in excerpt is swept from here, which is what keeps it from going stale.
 if [ "${ALIGN_LLM_LAYER_FORWARD_EXCERPT_UPDATE:-}" = 1 ]; then

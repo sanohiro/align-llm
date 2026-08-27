@@ -17,9 +17,9 @@ set -euo pipefail
 #   ALIGN_LLM_GGML_FORCE    the section 4.6 forced-failure builds. `init`, `compute`, and
 #                           `reference` need the real shim; `engine`, `engine+init`,
 #                           `engine+alloc`, `engine+compute`, `engine+reference`,
-#                           `engine+slot-range`, and `engine+slot-empty` select the ggml-free
-#                           deterministic engine of `docs/specs/r5a-dense-layer-forward.md`
-#                           section 5.1 and need the stub
+#                           `engine+slot-range`, `engine+slot-empty`, and
+#                           `engine+no-mark-output` select the ggml-free deterministic engine of
+#                           `docs/specs/r5a-dense-layer-forward.md` section 5.1 and need the stub
 #   ALIGN_LLM_GGML_SHIM_DIR output directory; defaults to `build/lib` inside the work tree
 #   CC                      C compiler; defaults to `cc`
 #
@@ -112,6 +112,9 @@ else
                        flavour="stub+engine+force-slot-range" ;;
     engine+slot-empty) include_flags+=("${engine}" "-DALIGN_GGML_FORCE_SLOT_EMPTY=1")
                        flavour="stub+engine+force-slot-empty" ;;
+    engine+no-mark-output)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_NO_MARK_OUTPUT=1")
+                       flavour="stub+engine+force-no-mark-output" ;;
     *)
       printf '%s\n' "build-ggml-shim: unknown stub ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
       exit 1
@@ -132,7 +135,17 @@ case "${OSTYPE:-}" in
   *)       name_flags=("-Wl,-soname,${library}") ;;
 esac
 
-"${compiler}" -O2 -fPIC -shared -Wall -Wextra -Werror \
+# `-ffp-contract=off` is a **correctness** flag here, not an optimisation preference
+# (`docs/specs/r5a-dense-layer-forward.md` section 6, correction C15). `a * b + c` may be
+# contracted into one fused multiply-add, and whether it is depends on the compiler and the
+# target: Apple clang on arm64 contracts by default, GCC 13 on x86-64 does not. The stub engine's
+# kernels are what `scripts/layer-forward-golden.jsonl` is generated from, so a contraction
+# difference is twelve of forty-eight goldens disagreeing on a host that is otherwise correct.
+# Both C files also carry `#pragma STDC FP_CONTRACT OFF`; the flag is what covers a compiler that
+# does not honour the pragma, and `-DALIGN_GGML_FP_CONTRACT_OFF=1` is what lets the two runners
+# assert that the library they loaded was built this way.
+"${compiler}" -O2 -ffp-contract=off -DALIGN_GGML_FP_CONTRACT_OFF=1 \
+  -fPIC -shared -Wall -Wextra -Werror \
   "${include_flags[@]+"${include_flags[@]}"}" \
   -o "${library}" "${source_file}" \
   "${name_flags[@]}" \

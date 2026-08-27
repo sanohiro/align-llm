@@ -105,7 +105,7 @@ hide that two of the three stages are not this capability's.
 | 単一layer — a single layer | **Dischargeable, CPU and dense.** All eighteen oracle nodes of Qwen2 `blk.0` agree with `llama-eval-callback` to the last digit it prints, and the same graph over ggml-owned weights is byte-identical | Section 2.3 (max sampled `\|Δ\|` = 5.0e-5, the print-rounding bound), section 2.4 (20 of 20 node dumps byte-identical) |
 | 最小モデル — a smallest model | **Deferred.** R5A stops at `l_out-0` | Section 5.4; a model needs `output_norm`, `output`, and a KV cache, which is stage 3's own consumer boundary |
 | required microbenchmark A — transfer + GPU compute | **Deferred.** No GPU arm and no transfer tier exist here | Section 5.4, inheriting `r4-5-external-buffer.md` section 2.5 |
-| required microbenchmark B — CPU compute | **Dischargeable.** 15.5 ms median for one dense layer, six tokens, warm | Section 2.5, section 5.3 |
+| required microbenchmark B — CPU compute | **Discharged at 13.4 ms typical** for one dense layer, six tokens, warm, by the shipped arm: 12.970, 13.350, 13.379, 15.048 ms over four qualification runs. The probe's own harness measured 15.5 ms median | Section 7.7 (shipped), section 2.5 (probe), section 5.3 |
 | required microbenchmark C — async prefetch + GPU compute | **Deferred.** Prefetch is a loader property and the loader is R5B's | Section 5.4 |
 
 The honest summary is: **R5A discharges stage 2 of three on the CPU for a dense layer, and
@@ -563,36 +563,68 @@ the middle and the tolerance oracle would silently compare fewer elements while 
 refuses. Section 5.4 records lifting the cap as R5B work, where a KV cache makes longer prefills
 meaningful and the oracle needs a different instrument anyway.
 
-The summary block, in this exact order, printed only in the six-, seven-, and eight-operand forms:
+The summary block, in this exact order, printed exactly when a real document path is given
+(section 6, correction C11). **Each label and its value are printed on their own line** — R4.5's
+shape, inherited verbatim, because `print` writes one line and the arm adds no column formatting of
+its own. Section 6, correction C23 records that this document originally drew it as an aligned
+two-column table it never was:
 
 ```text
 layer forward:
-status:              OK | ERROR
-verdict:             EXTERNAL | COPIED | UNAVAILABLE
-pack path:           <sanitized path>
-schema:              1
-arch:                qwen2
-layer:               <integer>
-tokens:              <comma-separated ids>
-weight bytes:        <integer>          # the Align-owned window, all members
-activation bytes:    <integer>          # the ggml-owned gallocr buffer
-graph nodes:         <integer>
-backend:             <name>
-pread ns:            <integer>
-build ns:            <integer>
-compute ns:          <integer>          # warm mean
-l_out sha256:        <64 hex characters>
-l_out bit sum:       <integer>
-reference:           IDENTICAL | MISMATCH | -
-reference nodes:     <matched>/<total>, or -
-transcript:          PASS | FAIL | -
-transcript nodes:    <matched>/<total>, or -
-max abs diff:        <integer>          # ten-thousandths; see section 3.6
-max sum diff:        <integer>          # millionths
-released:            <integer>
-error:               <code>             # only when status is ERROR
-detail:              <identifier>       # only when status is ERROR
+status:
+OK | ERROR
+verdict:
+EXTERNAL | COPIED | UNAVAILABLE
+pack path:
+<sanitized path>
+schema:
+1
+arch:
+qwen2
+layer:
+<integer>
+tokens:
+<comma-separated ids>
+weight bytes:
+<integer>                     # the Align-owned window, all members
+activation bytes:
+<integer>                     # the ggml-owned gallocr buffer
+graph nodes:
+<integer>
+backend:
+<name>
+pread ns:
+<integer>
+build ns:
+<integer>
+compute ns:
+<integer>                     # warm mean
+l_out sha256:
+<64 hex characters>
+l_out bit sum:
+<integer>
+reference:
+IDENTICAL | MISMATCH | -
+reference nodes:
+<matched>/<total>, or -
+transcript:
+PASS | FAIL | -
+transcript nodes:
+<matched>/<total>, or -
+max abs diff:
+<integer>                     # ten-thousandths; see section 3.6
+max sum diff:
+<integer>                     # millionths
+released:
+<integer>
+error:
+<code>                        # only when status is ERROR
+detail:
+<identifier>                  # only when status is ERROR
 ```
+
+The block is read positionally, by line ordinal rather than by splitting on a colon, which is what
+makes a sanitized path containing a colon unambiguous.
 
 `verdict` retains R4.5's meaning and is `EXTERNAL` only when **every** weight tensor's data pointer
 lies at its own window offset. Exit is R0's mapping, reused verbatim. Both output forms emit
@@ -775,7 +807,7 @@ nothing is the failure mode this design most needs to avoid.
 | Comparison | Threshold | Justification |
 | --- | --- | --- |
 | element | `\|Δ\| <= 1.0e-4`, evaluated as `\|round(x * 10^4) - printed_ten_thousandths\| <= 1` | `%12.4f` rounds to ten-thousandths, so a printed value carries an inherent ±5.0e-5. Section 2.3 measured max `\|Δ\|` = **5.0e-5** over 1,116 elements and 18 nodes: every element agreed to the last digit printed. The threshold is 2× the print bound and 2× the measured worst case |
-| sum | `\|Δ\| <= max(1.0e-3, 1.0e-5 × \|Σ\|)`, evaluated in millionths as `i64` | The sum is compared against a **sequential f32 accumulation in element order**, which section 2.3 showed makes three of five checked nodes bit-identical. The worst residual measured was 1.3e-5 absolute / **1.5e-6 relative** (`l_out-0`). The threshold is ~7× the measured worst relative case, with an absolute floor for near-zero sums |
+| sum | `\|Δ\| <= max(1.0e-3, 1.0e-5 × \|Σ\|)`, evaluated in millionths as `i64` | The sum is compared against a **sequential f32 accumulation in element order**, which section 2.3 showed makes three of five checked nodes bit-identical. The worst **relative** residual measured was **1.5e-6** (`l_out-0`, 1.3e-5 absolute); the worst **absolute** residual measured was **3.9e-3** (`ffn_gate-0`, whose sum is -64,545, so 6.1e-8 relative). They are different nodes, and that is precisely why the rule is relative with a floor rather than absolute: the threshold is ~7× the measured worst relative case |
 
 **Both comparisons are integer comparisons and neither renders a float.**
 `r4-alignpack-layer-major.md` section 2.3 records that this repository has no float formatting
@@ -831,7 +863,8 @@ timings     pread_ns, build_ns, reserve_ns, compute_ns, reference_compute_ns,
 lifetime    ggml_buffers_created, ggml_buffers_freed, contexts_created, contexts_freed,
             backends_created, backends_freed, graphs_created, gallocrs_created,
             gallocrs_freed, released_before_owner_scope_end (bool)
-abi         tensor_alignment, table_drift, slot_magic_ok (bool), graph_context_bytes
+abi         tensor_alignment, table_drift, slot_magic_ok (bool), fp_contract_off (bool),
+            graph_context_bytes
 ```
 
 **`members[].ne0` and `.ne1` are the dims of the tensor R5A *built*, not of the member record.** For
@@ -1169,7 +1202,10 @@ rope.type 2   rope.dim_count 4   rope.freq_base 10000.0   rms_eps 1e-05   scalin
 ```
 
 Every member is F32, so the pack is 5,376 bytes of payload and every expected value is computable by
-hand or by a twenty-line NumPy reference in the fixture script. Three tokens, so the mask is `{3,3}`.
+hand or by the fixture script's own independent forward pass — **pure Python**, importing only
+`json`, `math`, `os`, `struct`, and `sys`, so the owner's expected numbers come from a second
+implementation and the hosted runner takes on no third-party dependency (section 6, correction
+C24). Three tokens, so the mask is `{3,3}`.
 The pack has three blocks and thirteen members, and one mutation per reader fixture is produced by a
 single byte edit on a copy.
 
@@ -1179,9 +1215,11 @@ eighteen oracle nodes at the tiny geometry. This is what makes steps 28 and 29 �
 reachable with no ggml and no llama.cpp. Three mutated copies produce `R5_ORACLE_MISSING`,
 `R5_ORACLE_SHAPE`, and the `FAIL` verdict.
 
-**A checked-in real-model transcript excerpt**, `eval/fixtures/qwen2-blk0-6tok.txt`: the eighteen
-`blk.0` records of section 2.2's transcript, verbatim, about 330 lines and 24 KiB, with the exact
-command and the six token ids in a header comment. It is swept from the pack-and-model qualification
+**A checked-in real-model transcript excerpt**, `eval/fixtures/qwen2-blk0-6tok.txt`: the **twenty**
+`blk.0` records of section 2.2's transcript — the eighteen oracle nodes plus `kq-0` and
+`kq_soft_max-0`, which are matched and then excluded from element comparison by contract —
+verbatim, **460 lines and 33,883 bytes**, with the exact command and the six token ids in a header
+comment (section 6, correction C24). It is swept from the pack-and-model qualification
 so a change to the oracle's *parsing* is caught hosted, against real formatting, without a 4.7 GB
 model. It is compared only for grammar and node identity in the owner test; its numbers are the
 qualification's.
@@ -1193,6 +1231,8 @@ regressions rather than intentions.
 Four assertions are not about a fixture:
 
 - `grep -c malloc scripts/ggml_shim*.c` is `0` in both files.
+- `abi.fp_contract_off` is `true` in every document the corpus produces, so the goldens cannot
+  quietly become a property of one compiler on one target (section 6, correction C15).
 - the `unsafe {` and `extern "C"` scans over `src/` each name exactly `src/ggml_ffi.align`.
 - no `raw` appears as a struct field or array element anywhere in `src/`.
 - the shared-contract marker block is byte-identical between the two C files.
@@ -1250,7 +1290,8 @@ and asserts, against the recorded values of section 2:
 | `oracle.max_sum_diff_millionths` | within section 3.6's relative bound for every node |
 | `oracle.tolerance_ten_thousandths` | `1` — asserted so a widened threshold fails here, not silently |
 | `lifetime.*_created == *_freed`, `released_before_owner_scope_end` | equal, `true` |
-| `abi.tensor_alignment`, `abi.table_drift` | `32`, `-1` |
+| `abi.tensor_alignment`, `abi.table_drift`, `abi.fp_contract_off` | `32`, `-1`, `true` |
+| `graph.slot_high_water` | `48` — scanned from the store: 13 weights, 3 inputs, 32 nodes |
 
 Then the two ggml-only fixtures of section 4.6, then it removes the pack, the transcript, and the
 tree.
@@ -1265,7 +1306,7 @@ diagnostics that name *which* node moved when one of them fails.
 
 | Metric | Definition | Baseline on this host |
 | --- | --- | --- |
-| microbenchmark **B**, CPU compute | one dense layer, six tokens, mean of five after one warm-up | **15.5 ms** median (15.3–16.6), 32 nodes |
+| microbenchmark **B**, CPU compute | one dense layer, six tokens, mean of five after one warm-up | **12.97–15.05 ms** over four shipped qualification runs, 13.4 ms typical (section 7.7); the probe harness measured 15.5 ms median (15.3–16.6), 32 nodes |
 | `pread_ns` | six embedding rows plus two blocks | 19.5–20.9 ms for 149,139,456 B, warm cache |
 | weight bytes per layer | the Align-owned window | 149,139,456 B, of which 12,096 B is embedding |
 | activation bytes | `ggml_gallocr_get_buffer_size` | 2,453,376 B |
@@ -1275,9 +1316,9 @@ diagnostics that name *which* node moved when one of them fails.
 | microbenchmark **C** | async prefetch + GPU compute | **N/A** — prefetch is the loader's. Section 5.4 |
 
 These are secondary metrics. R5A makes **no** claim on time to a passing patch. They exist so R5B can
-size a loader against a measured layer rather than a guess: at 15.5 ms per layer and 28 layers, a
-whole-model prefill of six tokens on this CPU is on the order of 0.43 s of compute over roughly 3.9
-GiB of weights, which is the number that makes residency worth designing.
+size a loader against a measured layer rather than a guess: at the shipped ~13.4 ms per layer and 28
+layers, a whole-model prefill of six tokens on this CPU is on the order of 0.38 s of compute over
+roughly 3.9 GiB of weights, which is the number that makes residency worth designing.
 
 ### 5.4 Deferred surfaces
 
@@ -1310,8 +1351,15 @@ GiB of weights, which is the number that makes residency worth designing.
 
 ### 5.5 Candidate Align capability requests
 
-**No new request.** Every gap R5A hit is already recorded, and R5A is new client evidence for three
-of them:
+**Two new requests, both raised by the implementation rather than by the design.** The design's own
+probes hit no gap `docs/align-requests.md` did not already carry, and this section originally said
+"no new request" on that basis. The implementation then hit two more, filed as **Request 36** — an
+owned `array<i64>` struct field cannot be replaced in place and a nested struct field cannot be
+moved out of its parent (section 6, correction C9) — and **Request 37** — per-function check time is
+superlinear in body length, and a `match` on a `Result` inside a loop costs roughly 45× the same loop
+with `?` (section 6, correction C8). Both are `PROPOSED`, neither is blocking, and section 6,
+correction C25 records this heading's own change. R5A is additionally new client evidence for three
+requests that already existed:
 
 - **Request 34 — `Result` ok payloads beyond scalars (`raw`, `buffer`, records).** R5A is its first
   *architecturally load-bearing* client. Request 34's evidence today is that a constructor cannot
@@ -1333,8 +1381,8 @@ of them:
 - **Request 21 — a read-only open**, and **Request 35 — observable `buffer` capacity**, both gain a
   client with no change to their text.
 
-None is blocking. R5A ships entirely on the pinned surface, and section 2.6 compiled every case that
-says so.
+None of the five is blocking. R5A ships entirely on the pinned surface, and section 2.6 compiled
+every case that says so.
 
 ### 5.6 Risks
 
@@ -1343,12 +1391,13 @@ says so.
 | **A llama.cpp default changes again and the oracle silently compares a different graph.** Section 2.2 found three such defaults in one build | The four flags are contractual in section 5.2; the document records `oracle.instrument` and the qualification asserts `nodes_matched == nodes_expected == 18` | A future build could rename a node *and* keep the shape. `R5_ORACLE_MISSING` catches the rename; the risk is a rename that collides with another node's name, which no check can see |
 | **`node_NN` positional names.** Section 2.2 fact 3 | The attention-output node is matched by its source weight name | If a future build stops printing source names, that match breaks loudly (`R5_ORACLE_MISSING`), not quietly |
 | **The tolerance is widened to make a failure go away** | `oracle.tolerance_ten_thousandths` is a document field asserted in golden files and in the qualification | A deliberate change is a visible diff in three places |
-| **`ggml_gallocr` reuses an oracle node's memory and the readback is not the node computed** | `ggml_set_output` on every oracle node, section 3.5; the probe hit exactly this before adding it | A node added to the table without `node_oracle` set is not marked; `node-table-shape` asserts every oracle row is marked |
+| **`ggml_gallocr` reuses an oracle node's memory and the readback is not the node computed** | `ggml_set_output` on every oracle node, section 3.5; the probe hit exactly this before adding it. The stub engine's `gallocr` reuses dead intermediates the same way, so the hosted owner sees a dropped mark: `lf-force-no-mark-output` turns the oracle to `FAIL` (section 6, correction C18) | A node added to the table without `node_oracle` set is not marked; `node-table-shape` asserts every oracle row is marked, and the forced build proves the failure is observable rather than argued |
 | **ggml kernel change moves the numbers** | The bit-exact oracle is version-independent; the tolerance oracle compares against the *same* build's transcript | A ggml/llama.cpp version skew between the linked library and the instrument would show as a tolerance failure. The document records both versions so the message is diagnosable |
 | **The shim grows into a second implementation.** Twenty-five new symbols is a lot | Every one is one ggml call plus validation; section 4.3's "one op per wrapper" cell is asserted by review, and no wrapper composes two ops | The `rope_neox` wrapper compiles in five constants; step 9 validates the precondition that makes them correct |
 | **ABI drift in the operand table** | R4.5's `align_ggml_table_drift` over all 25 rows, now exercised by two more types (Q6_K appears for the first time) | Unchanged from R4.5 |
 | **The slot store is a pointer array in Align memory** | Magic, capacity, 8-alignment, and per-index bounds validated in C before every write; `R5_SLOT` | A caller could hand a *different* buffer of the right shape. The magic makes that a refusal, not a corruption |
 | **`ggml_abort`** | Section 3.9 | Unchanged from R4.5, and now across thirty-two nodes instead of one |
+| **The goldens become a property of one compiler on one target** | Both C files carry `#pragma STDC FP_CONTRACT OFF`, the build passes `-ffp-contract=off`, and `abi.fp_contract_off` is asserted `true` on every document (section 6, correction C15) | Contraction is not the only source of a per-compiler difference; a future kernel using a libm function whose last bit differs between platforms would not be caught by this flag, and the golden corpus would have to name the tolerance instead |
 | **The checked-in transcript excerpt goes stale** | It is swept from the qualification, which regenerates it; the owner test uses it only for grammar and node identity | A stale excerpt cannot produce a false `PASS` because its numbers are never asserted hosted |
 
 ---
@@ -1363,19 +1412,30 @@ un-refuted by execution is a plan that has not been tested.
 | # | Section 3 said | The implementation found | What ships |
 | --- | --- | --- | --- |
 | **C1** | The geometry input is an `R1_QWEN_MODEL_IR` document at `schema_version: 1`, and `rms_eps_bits` / `rope.freq_base_bits` are the fields to read | R1 ships no such kind. `src/model_ir.align` emits `kind: "R1_MODEL_IR"` at `schema_version: 2`, and both `_bits` fields are **lowercase eight-character hex strings**, not integers | `src/layer_qwen2.align` validates `kind == "R1_MODEL_IR"` and `schema_version == 2` and parses the two hex strings to `u32`. Step 6's detail vocabulary (`kind`, `schema_version`) is unchanged. The plan named a document that does not exist; the qualification feeds `main --model-ir` straight into the arm, which is what section 3.2 actually wanted |
-| **C2** | Step 17 is "where the stub shim stops", and section 4.6 nevertheless marks twenty-four codes and both oracles stub-reachable | Both cannot hold. Behind an unavailable shim, steps 18 to 29 are unreachable, so fourteen codes, the reference oracle, and the transcript oracle would all have been `Q`-only — and section 5.1's claim that the synthetic transcript makes "the entire oracle" reachable hosted would have been false | `scripts/ggml_shim_stub.c` gains a **deterministic single-precision engine** selected by `ALIGN_LLM_GGML_FORCE=engine`. The default stub is unchanged and still stops at step 17, which is what `R5_GGML_UNAVAILABLE` and `ggml-spike-smoke` need. The engine implements the eleven f32 ops of one node table over the tiny geometry, materializes every view, allocates from one static arena, and refuses everything else. `scripts/run-layer-forward-smoke` uses eight shim builds |
+| **C2** | Step 17 is "where the stub shim stops", and section 4.6 nevertheless marks twenty-four codes and both oracles stub-reachable | Both cannot hold. Behind an unavailable shim, steps 18 to 29 are unreachable, so fourteen codes, the reference oracle, and the transcript oracle would all have been `Q`-only — and section 5.1's claim that the synthetic transcript makes "the entire oracle" reachable hosted would have been false | `scripts/ggml_shim_stub.c` gains a **deterministic single-precision engine** selected by `ALIGN_LLM_GGML_FORCE=engine`. The default stub is unchanged and still stops at step 17, which is what `R5_GGML_UNAVAILABLE` and `ggml-spike-smoke` need. The engine implements the eleven f32 ops of one node table over the tiny geometry, materializes every view, allocates from one static arena, and refuses everything else. `scripts/run-layer-forward-smoke` uses nine shim builds |
 | **C3** | The thirteen weights and the three inputs are created through the same `new_tensor` entry points | `inp_tokens` and `inp_pos` are `I32`, and the checked-in operand table is the `mul_mat` **left-operand** predicate, which deliberately omits the integer storage types. Routing an index vector through it would have meant widening a table that means something else | `align_ggml_slot_new_i32_1d` is its own entry point and does not consult the table. The table keeps its meaning and `R5_TYPE_UNSUPPORTED` keeps being about weights |
 | **C4** | The op set includes `cont_2d` | The transposed V is genuinely three-dimensional (`{T, head_dim, n_head_kv}`), so `cont_2d` cannot express it, and `kqv_out` is the same call with `ne2 = 1` | One wrapper, `align_ggml_op_cont_3d`. `ggml_cont_3d` is `ggml_cont_4d` with `ne3 = 1` and produces the same single `CONT` node, so the graph is unchanged at thirty-two nodes |
 | **C5** | Section 3.9's module table gives `src/ggml_spike.align` "both arms, the validation order, the documents, the teardown" | One file holding both arms is 2,700 lines and two unrelated validation orders, and the R4.5 arm has nothing to gain from it | `src/layer_forward.align` owns the R5A arm; `src/ggml_spike.align` keeps arm selection and both CLIs. The boundary costs one import and no contract |
 | **C6** | The transcript is scanned "reusing `src/expert_trace.align`'s scanner" | The reuse is not available. `scan` is module-private, its `TranscriptScan` carries no element values and no `sum`, and `parse_header` never captures a node's **source** names — which is precisely how the attention output projection is matched (section 2.2 fact 3). R2A needed none of the three | `src/layer_forward.align` carries a focused parser for the same grammar, read from `r2a-expert-trace.md` section 2.4. It is the only new duplication in the capability and section 7 names the cells it owns |
 | **C7** | `ALIGN_GGML_FORCE_REFERENCE_PERTURBATION` perturbs the bytes copied **out** of a tensor, as R4.5 does | R5A reads both arms back through the same entry point, so perturbing the read perturbs both and the comparison still passes. The forced failure would have proved nothing | The macro moves to `align_ggml_slot_set`, which the primary arm never calls on a weight — it *places* its thirteen and copies none — so slots 0 to 12 of a store are exactly the reference weights. One bit of one reference weight is flipped after it lands in ggml's memory, and the comparison names `node[embd]@0`. R4.5's own `tensor_get` perturbation is untouched, and `align_ggml_slot_get` no longer routes through it |
-| **C8** | Nothing; the design is silent on how the arm is shaped | The checker's per-function cost is superlinear in body length and, separately, a `match` on a `Result` with block arms **inside a loop** is far more expensive than the same loop with `?`. Measured on this host at this pin: a 400-line body checks in 40 s and a 900-line one does not finish in 600 s; one stage function with two in-loop `match`es takes 90 s and the same function with `?` takes 2 s | The arm is fourteen functions, none over two hundred lines; every fallible call inside a loop propagates with `?`; the dozen top-level ones route through one two-line `take`. `check-per-unit src/layer_forward.align` is **6 s** and `make check` is 86 s for 29 units. Section 5.5 records this as new client evidence rather than a new request: it is a compiler performance property, not a missing surface |
+| **C8** | Nothing; the design is silent on how the arm is shaped | The checker's per-function cost is superlinear in body length and, separately, a `match` on a `Result` with block arms **inside a loop** is far more expensive than the same loop with `?`. Measured on this host at this pin: a 400-line body checks in 40 s and a 900-line one does not finish in 600 s; one stage function with two in-loop `match`es takes 90 s and the same function with `?` takes 2 s | The arm is fourteen functions, none over two hundred lines; every fallible call inside a loop propagates with `?`; the dozen top-level ones route through one two-line `take`. `check-per-unit src/layer_forward.align` is **6 s** and `make check` is 86 s for 29 units. Filed as **Request 37** and recorded in section 5.5. It was first written up as new client evidence rather than a request — a compiler performance property is not a missing surface — but a 45× cost that dictates how a module is decomposed is a requirement on the toolchain, and section 6, correction C25 records that reclassification |
 | **C9** | The document's columns live in the one `Outcome` record each stage fills in | At this pin an owned `array<i64>` field **cannot be replaced in place** — `error: field replacement of array<i64> is not supported yet ... replace the whole struct` — and a nested struct field cannot be moved out of a struct either | The columns live in six small records (`TokenColumns`, `MemberColumns`, `Layout`, `ReadColumns`, `AbiColumns`, `PlacementColumns`, `NodeColumns`, `OracleStates`), each assigned exactly once and as a whole by the stage that produces it. `Outcome` keeps only scalars and names. Section 5.5 records the gap |
 | **C10** | `nodes[].f32_sum_millionths` is the sequential f32 accumulation "truncated to `i64`" | Truncation loses up to one millionth for no benefit and makes the field disagree with the transcript by a unit that is not a disagreement | The accumulation is widened to `f64` and **rounded** to the nearest millionth. The tolerance is unaffected: section 3.6's floor is a thousand millionths |
 | **C11** | Section 3.3's CLI table shows an eight-operand form ending in `TRANSCRIPT.txt` and says the summary block is printed "in the six-, seven-, and eight-operand forms" | `-` in the document position is R0's machine form and must not print a summary beside the document it emits | The summary is printed exactly when a real document path is given, which is R4.5's rule verbatim. `-` selects the document alone in every form |
 | **C12** | Step 12's `R5_BLOCK_MISSING` fixture is "a pack with no `MlpBlock` at the layer" | A block record declaring zero members is a container defect that `alignpack_read` refuses first, with `R4_PACK_HEADER`, and it is right to | The fixture omits the block from the table entirely. `R5_BLOCK_MISSING` stays about a block that is not there, which is the only thing it can honestly be about |
 | **C13** | `R5_SLOT`'s empty-slot fixture empties a weight slot | A weight slot is size-checked against the pack's `nbytes` immediately after creation, so the run stops at `R5_SHAPE` before anything reads it | The forced build empties `inp_pos`, the one slot no size check guards. The first use of it is `R5_SLOT`, which is the code the fixture exists for |
 | **C14** | `R4_PACK_LENGTH` is the truncated-pack code | The reader's own code for a file shorter than its header claims is `R4_PACK_TRUNCATED` | The fixture expects what the reader emits. `R4_PACK_*` is surfaced verbatim, exactly as section 3.8 says |
+| **C15** | Nothing; the design is silent on how the shim is compiled | The stub engine's kernels are the reference the checked-in golden documents are generated from, and `a * b + c` may be contracted into one fused multiply-add. Whether it is depends on the compiler and the target: Apple clang on `arm64` contracts, GCC 13 on `x86-64` does not, and **twelve of the forty-eight goldens then in the corpus differ between the two**. A hosted check that only reproduces on the machine that generated it is not a check | Both C files carry `#pragma STDC FP_CONTRACT OFF`, `scripts/build-ggml-shim` passes `-ffp-contract=off` and defines `ALIGN_GGML_FP_CONTRACT_OFF`, `align_ggml_fp_contract_off()` exports the macro, and the document publishes `abi.fp_contract_off`. Both runners assert it `true` on every document. **Cases:** every one of the seventy-four `S` rows, and `Q` `abi.fp_contract_off` |
+| **C16** | `graph.slot_high_water` is a document field | It was assigned `SLOT_NODE_BASE + node_table.count` — a constant derived from the node table, which cannot disagree with the node table. The field measured nothing | `align_ggml_slots_high_water` scans the store for the highest occupied index. **Cases:** `S` every engine row asserts `48`; `Q` asserts `48` (13 weights + 3 inputs + 32 nodes) |
+| **C17** | Section 3.5's scalars cross as `i32` bit patterns and "the shim reinterprets, it does not decide" | Reinterpretation without a predicate is a crash. `rms_eps_bits` reaches `ggml_rms_norm`, which asserts `eps >= 0.0f`, and `GGML_ASSERT` is `abort()`: `7fc00000` (NaN), `ff800000` (-inf), `bf800000` (-1.0), and `ffffffff` are all legal eight-hex-digit strings that took the process down with **exit 134, no document, no error code, and no teardown**. Align never interprets the pattern it forwards, so no other step could see it | Step 7 refuses a pattern whose sign bit is set or whose exponent field is `0xff`, for `rms_eps_bits` **and** `rope.freq_base_bits`, and additionally refuses `freq_base` `00000000` because a RoPE base must be positive — `R5_GEOMETRY`, detail the field. `align_ggml_eps_ok` is the same refusal inside both C files, returning `ALIGN_GGML_SHAPE` before the call that would assert. **Cases:** `S` `lf-geometry-eps-nan`, `-eps-neg-inf`, `-eps-negative`, `-eps-all-ones`, `-rope-base-nan`, `-rope-base-inf`, `-rope-base-negative`, `-rope-base-zero` |
+| **C18** | `ggml_set_output` is "mandatory for every oracle node", and section 5.6 carries the risk that a node the table forgets is overwritten by `ggml_gallocr` | The hosted owner could not observe that risk at all. The stub engine bump-allocated one block per node and never reused one, so a build with `mark_outputs` removed produced **byte-identical output and a `PASS` verdict**. The one contract that most needs a hosted regression had none | The engine's `align_stub_plan` does what `ggml_gallocr` does: a node's block returns to a free list once its last consumer has run unless it is an output, and the next node that fits takes it. Allocation precedes the frees for that node, so a node never aliases its own source, and first fit by lowest offset keeps the plan deterministic for the goldens. `ALIGN_LLM_GGML_FORCE=engine+no-mark-output` drops the mark. **Cases:** `S` `lf-force-no-mark-output` — `status: "ok"`, `oracle.verdict: "FAIL"`, `worst_node: "norm"`, `max_abs_diff_ten_thousandths` 19,615, against `PASS` and `0` under the old allocator |
+| **C19** | "`R5_ORACLE_MISSING` … reporting `PASS` for zero compared nodes is the failure this design most needs to make impossible" | It was possible. A node was "matched" when its **header** was found and its declared shape agreed; nothing required its value block to have been parsed. A transcript of headers alone reported `PASS` over `elements_compared: 0`, and one with a single value block deleted reported `PASS` over 300 of 318 elements | Every compared node must contribute exactly `Π printed_count(ne_d)` elements — each axis prints at most six positions, so the product is what a well-formed record yields. A shortfall is `R5_ORACLE_MISSING` with detail `node[<id>]<got>/<expected>`, and a zero total is refused as a backstop. **Cases:** `S` `lf-engine-transcript-headers` (`node[embd]0/18`), `lf-engine-transcript-novalues` (`node[l_out]0/18`); `Q` `elements_compared == 1116` |
+| **C20** | Section 4.1's "a missing field" cell is covered by "one fixture per consumed field, absent" | The fifteen `geometry-missing-*` documents were written by the fixture script on every run and **no case referenced one**. The cell's evidence was a file on disk, not a result | `scripts/run-layer-forward-smoke` carries fifteen `lf-geometry-missing-*` rows, one per consumed `model` field including the four under `rope`, each asserting `R5_GEOMETRY` beside its golden. **Cases:** the fifteen rows; the golden corpus grows from 48 to 74 documented cases with C17's eight and C19's two |
+| **C21** | Section 2.2 fact 3: the attention output projection has no stable name and is matched by its source weight | `scripts/sweep-layer-forward-excerpt.py`, which regenerates the checked-in excerpt, matched it as the literal `node_31`. A build that renumbered the node would make the excerpt unregenerable for a reason that has nothing to do with the excerpt — the exact failure fact 3 exists to prevent | The sweep matches the record whose op is `MUL_MAT` and whose first source matches `blk.\d+.attn_output.weight`, keyed as `@attn_output`. **Cases:** re-sweeping the checked-in `eval/fixtures/qwen2-blk0-6tok.txt` through the new matcher reproduces it byte for byte |
+| **C22** | Nothing; the design does not say what the qualification leaves behind | `scripts/run-layer-forward`'s forced-failure loop replaces `build/lib/libalign_ggml_shim`, which lives outside the work directory the trap removes. Any early exit inside the loop — a failed assertion, a signal — left a `-DALIGN_GGML_FORCE_*` library in place for whatever ran next | The `EXIT`/`HUP`/`INT`/`TERM` trap rebuilds the ordinary real shim before removing the work directory, guarded by a flag so it does not run before the first build. **Cases:** `Q` the trap is on the same exit path as the pack removal the qualification already proves |
+| **C23** | Section 3.3 prints the summary block as an aligned two-column table | The arm prints each label and its value on **separate lines**. That is R4.5's shape inherited verbatim — `print` writes one line — and the block is read by line ordinal, which is what makes a sanitized path containing a colon unambiguous | Section 3.3 shows the shipped shape. No code changed: the document was wrong about the code, not the other way round |
+| **C24** | Section 5.1 describes a "twenty-line NumPy reference" and an excerpt of "about 330 lines and 24 KiB" | The fixture's reference forward is pure Python importing only `json`, `math`, `os`, `struct`, and `sys` — the hosted owner takes on no third-party dependency — and the shipped excerpt is **twenty** records, 460 lines, 33,883 bytes | Section 5.1 carries the shipped numbers and names the real reference implementation |
+| **C25** | Section 5.5 is headed "No new request", and correction C8 records its own finding as "new client evidence rather than a new request" | Two requests were filed from the implementation: **Request 36** (C9's `array<i64>` field replacement and nested-struct move) and **Request 37** (C8's check-time cost). A heading that says none exists is wrong about the register it points at | Section 5.5 names both, keeps the three existing requests R5A strengthens, and C8's row records the reclassification: a 45× cost that dictates how a module is decomposed is a requirement on the toolchain, not only an observation about it |
 
 Three of section 3's claims were **confirmed** by the implementation rather than corrected, and they
 are worth recording because each was a risk when it was written: `f32` never had to cross the FFI
@@ -1390,18 +1450,19 @@ call per row for both arms, and the reference arm is the same table walked twice
 Every applicable cell of section 4, mapped to the function that implements it and the case that
 covers it. `S` cases are rows of `scripts/run-layer-forward-smoke`; `Q` cases are assertions in
 `scripts/run-layer-forward`. Golden-file rows are additionally covered byte for byte by
-`scripts/layer-forward-golden.jsonl`, which carries all forty-eight documented cases.
+`scripts/layer-forward-golden.jsonl`, which carries all **seventy-four** documented cases.
 
 ### 7.1 `src/layer_qwen2.align`
 
 | Cell | Implementation | Evidence |
 | --- | --- | --- |
-| Node table well-formed | `node_table`, `output_slot` | `S` every engine case: `graph.node_count == 32`, and `graph.slot_high_water == 48` |
+| Node table well-formed | `node_table`, `output_slot` | `S` every engine case: `graph.node_count == 32`, and `graph.slot_high_water == 48` — the latter **scanned from the store** by `align_ggml_slots_high_water`, so it can disagree with the node table (section 6, correction C16); `Q` the same two numbers |
 | Geometry parse | `parse_geometry`, `parse_bits32` | `S` `lf-geometry-not-json`, `lf-geometry-kind`, `lf-geometry-version` |
 | Shapes derived | `member_table`, `member_ne0_of`, `member_ne1_of` | `S` `lf-shape`; `Q` the thirteen `members[].ne0`/`ne1` against the real geometry |
-| A missing field | `geometry_fault` per consumed field | `S` fifteen `geometry-missing-*` documents in the corpus; `lf-geometry-*` rows assert the code |
+| A missing field | `geometry_fault` per consumed field | `S` fifteen `lf-geometry-missing-*` rows, one per consumed `model` field, each asserting `R5_GEOMETRY` beside its golden (section 6, correction C20) |
 | Self-inconsistent | step 8's three relations | `S` `lf-geometry-inconsistent`, `lf-geometry-head-kv`, `lf-geometry-expert` |
 | Malformed input | `json.doc` `Err`, kind, version | `S` `lf-geometry-not-json`, `lf-geometry-kind`, `lf-geometry-version` |
+| A bit pattern that is not a usable float | `bits32_finite_nonnegative`, and `align_ggml_eps_ok` as the shim-side backstop | `S` eight rows: `lf-geometry-eps-nan`, `-eps-neg-inf`, `-eps-negative`, `-eps-all-ones`, `-rope-base-nan`, `-rope-base-inf`, `-rope-base-negative`, `-rope-base-zero`, all `R5_GEOMETRY` (section 6, correction C17) |
 | Unsupported arch or rope | step 9 | `S` `lf-geometry-arch`, `lf-geometry-rope-type`, `lf-geometry-rope-scaled`, `lf-geometry-rope-dims` |
 | Mask image, attention scale | `write_mask`, `attn_scale_bits` | `S` the oracle `PASS` at `max_abs_diff == 0` is the mask and the scale being right; `Q` `model.attn_scale_bits` |
 | Cleanup | no handle, no file, no `unsafe` | `S` the `unsafe {` / `extern "C"` scans name only `src/ggml_ffi.align` |
@@ -1428,6 +1489,8 @@ covers it. `S` cases are rows of `scripts/run-layer-forward-smoke`; `Q` cases ar
 | Bit patterns | `align_ggml_bits_to_f32`, `memcpy` and never a cast | `Q` `attn_scale_bits`, `rms_eps_bits`, `rope_freq_base_bits` all round-trip and the oracle passes |
 | Alignment | R4.5's pre-check on all thirteen placements | `S` `lf-engine-alignment` on the `block_align = 1` pack |
 | No `malloc` | neither file allocates | `S` `grep -q malloc` over both files |
+| Contraction is off | `#pragma STDC FP_CONTRACT OFF` in both files plus `-ffp-contract=off` and `-DALIGN_GGML_FP_CONTRACT_OFF=1` in `scripts/build-ggml-shim` | `S` `abi.fp_contract_off` asserted `true` on every one of the seventy-four documents; `Q` the same (section 6, correction C15) |
+| A `gallocr` that reuses | `align_stub_plan`, allocate-then-free with a free list | `S` `lf-force-no-mark-output`: dropping `ggml_set_output` makes the oracle `FAIL` at `worst_node: "norm"`, and with the previous bump allocator the same build reported `PASS` (section 6, correction C18) |
 | Rope constants | five compiled in, `mode` validated `== 2` | `S` `lf-geometry-rope-type`; `Q` the two `ROPE` nodes agree with the instrument |
 
 ### 7.4 `src/layer_forward.align` — the arm
@@ -1453,6 +1516,7 @@ covers it. `S` cases are rows of `scripts/run-layer-forward-smoke`; `Q` cases ar
 | Reference — nodes identical | `stage_reference_weights`, `stage_reference_compare` | `S` 20/20 identical on the synthetic pack, and `lf-force-reference` naming `node[embd]@0`; `Q` 20/20 on the real model |
 | Transcript — grammar | `scan_transcript`, `parse_header`, `parse_fixed` | `S` `lf-engine-transcript-garbage` → `R5_TRANSCRIPT` |
 | Transcript — a node absent | step 28 | `S` `lf-engine-transcript-missing` → `R5_ORACLE_MISSING` |
+| Transcript — a node matched but not compared | the per-node printed-element count, step 28 | `S` `lf-engine-transcript-headers` → `R5_ORACLE_MISSING`, detail `node[embd]0/18`, and `lf-engine-transcript-novalues` → detail `node[l_out]0/18`. Before the repair both were `PASS`, the first over **zero** compared elements and the second over 300 of 318 (section 6, correction C19) |
 | Transcript — a shape disagreeing | step 28 | `S` `lf-engine-transcript-shape`, and `lf-engine-transcript-excerpt`, which parses the **real** instrument's twenty records and disagrees only about the shape |
 | Transcript — excluded nodes | `oracle.compared` | `S` asserted as `["kq", "kq_soft_max"]` in every engine case; `Q` the same |
 | Transcript — a tolerance breach | step 29 | `S` `lf-engine-transcript-perturbed`: `status: "ok"`, `oracle.verdict: "FAIL"`, `worst_node: "l_out"` |
@@ -1468,7 +1532,7 @@ covers it. `S` cases are rows of `scripts/run-layer-forward-smoke`; `Q` cases ar
 | `R5_INDEX` | `lf-index-negative`, `-nonnumeric`, `-leading-zero`, `-plus`, `-oob` | `S` |
 | `R5_TOKENS` | `lf-tokens-empty`, `-trailing`, `-space`, `-seven`, `-oob` | `S` |
 | `R5_GEOMETRY_UNREADABLE` | `lf-geometry-unreadable` | `S` |
-| `R5_GEOMETRY` | ten `lf-geometry-*` rows | `S` |
+| `R5_GEOMETRY` | thirty-three `lf-geometry-*` rows: ten preconditions, fifteen `-missing-*`, eight bit patterns | `S` |
 | `R4_PACK_*` | `lf-pack-truncated` → `R4_PACK_TRUNCATED` | `S` |
 | `R4_PACK_UNREADABLE` | `lf-pack-missing` | `S` |
 | `R5_BLOCK_MISSING` | `lf-block-missing`, `lf-engine-layer-1` | `S` |
@@ -1487,7 +1551,7 @@ covers it. `S` cases are rows of `scripts/run-layer-forward-smoke`; `Q` cases ar
 | `R5_SOURCE_DIVERGED` | `lf-engine-source-diverged` | `S` |
 | `R5_REFERENCE_MISMATCH` | `lf-force-reference` | `S` |
 | `R5_TRANSCRIPT` | `lf-engine-transcript-garbage` | `S` |
-| `R5_ORACLE_MISSING` | `lf-engine-transcript-missing` | `S` |
+| `R5_ORACLE_MISSING` | `lf-engine-transcript-missing`, `lf-engine-transcript-headers`, `lf-engine-transcript-novalues` | `S` |
 | `R5_ORACLE_SHAPE` | `lf-engine-transcript-shape`, `lf-engine-transcript-excerpt` | `S` |
 
 **Twenty-four of the twenty-six codes are reached by `make layer-forward-smoke`** — twenty-two in a
@@ -1527,12 +1591,16 @@ llama.cpp's; at the precision the instrument publishes, it is the same layer.
 of 645,453 millionths. Section 3.6's relative rule is what makes a number that looks large a number
 that is not, and the document publishes both so a reader does not have to take that on trust.
 
-**`compute` is 12.970 ms against section 5.3's 15.5 ms baseline.** The probe's harness and the
+**`compute` is 12.970 ms against the probe harness's 15.5 ms.** The probe's harness and the
 shipped arm build the same thirty-two-node graph over the same bytes, so the 16% is the shipped
 arm's own `gallocr` reuse plan and warm-up discipline rather than a different computation — the
-self-reference oracle proves the output is byte-identical. Section 5.3's **microbenchmark B** is
-therefore discharged at **12.97 ms per dense layer, six tokens, warm, CPU**, and the earlier figure
-stands as the probe's, not as a regression. `pread` is 55.2 ms against the probe's 19.5–20.9 ms
+self-reference oracle proves the output is byte-identical. Three further qualification runs at the
+review-repaired head measured **15.048, 13.350, and 13.379 ms** with the same `l_out` sha256,
+`bit_sum`, oracle verdicts, and 3,907-millionth worst sum, so section 5.3's **microbenchmark B** is
+discharged at **12.97–15.05 ms per dense layer, six tokens, warm, CPU — 13.4 ms typical over four
+runs** rather than at a single number, and the probe's 15.5 ms stands as the probe's, not as a
+regression. The run-to-run spread is this host's, not the arm's: every checksum is identical across
+all four runs. `pread` is 55.2 ms against the probe's 19.5–20.9 ms
 because the qualification reads a pack written seconds earlier on a 95%-full volume rather than a
 warm-cached GGUF; it is a cache-state difference, not a read-shape one, and the byte count —
 149,139,456 — is identical to the value section 2.5 measured.

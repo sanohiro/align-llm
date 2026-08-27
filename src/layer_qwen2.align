@@ -172,6 +172,24 @@ fn parse_bits32(text: str) -> i64 {
   return value
 }
 
+// The float a bit pattern names, judged before ggml ever sees it (section 6, correction C17).
+//
+// `rms_eps_bits` reaches `ggml_rms_norm`, which asserts `eps >= 0.0f` inside ggml, and
+// `GGML_ASSERT` is `abort()`: no unwinding, no `Drop`, no document, no error code. A geometry
+// document carrying `7fc00000` (NaN), `ff800000` (-inf), `bf800000` (-1.0), or `ffffffff` is a
+// legal eight-hex-digit string that would take the process down at step 24. Align never
+// interprets the pattern it forwards, so nothing else in the validation order can see it.
+//
+// `true` only for a finite, non-negative float: the sign bit clear and the exponent field not
+// `0xff`, which is what an infinity and a NaN share.
+fn bits32_finite_nonnegative(bits: i64) -> bool {
+  if bits < 0 { return false }
+  if bits >= 2147483648 { return false }
+  exponent := (bits / 8388608) % 256
+  if exponent == 255 { return false }
+  return true
+}
+
 fn geometry_fault(borrow mut g: Geometry, detail: str) {
   if g.code.len() == 0 {
     g.code = "R5_GEOMETRY".clone()
@@ -277,6 +295,15 @@ pub fn parse_geometry(text: str) -> Geometry {
   if g.code.len() > 0 { return g }
   if g.rms_eps_bits < 0 { geometry_fault(g, "rms_eps_bits") }
   if g.rope_freq_base_bits < 0 { geometry_fault(g, "rope.freq_base_bits") }
+  if g.code.len() > 0 { return g }
+  // The two patterns that become floats ggml computes with, refused here rather than at a
+  // `GGML_ASSERT`. `freq_base` must additionally be positive: `00000000` is `+0.0`, which is a
+  // legal pattern and not a legal RoPE base.
+  if !bits32_finite_nonnegative(g.rms_eps_bits) { geometry_fault(g, "rms_eps_bits") }
+  if !bits32_finite_nonnegative(g.rope_freq_base_bits) {
+    geometry_fault(g, "rope.freq_base_bits")
+  }
+  if g.rope_freq_base_bits == 0 { geometry_fault(g, "rope.freq_base_bits") }
   if g.code.len() > 0 { return g }
 
   // Step 7's ranges, then step 8's self-consistency, then step 9's architecture preconditions.
