@@ -266,8 +266,9 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > R5C-METAL-PREFILL-ARM (`docs/specs/r5c-metal-prefill.md`) is now the active capability,
 > handing R5B's same Align-owned window to Metal through
 > `ggml_backend_dev_buffer_from_host_ptr` and checking the whole-model result against
-> R5B's byte-identical CPU logits vector. **Implementation is complete in the working
-> tree.** The probe record (section 2) refuted
+> R5B's byte-identical CPU logits vector. **Implementation, both review repairs, and the
+> qualification are complete and committed, and the branch is rebased onto R5B's PR #128
+> head.** The probe record (section 2) refuted
 > six of the plan's own assumptions before section 3 was written: Metal is
 > **bit-deterministic** (five consecutive full-model runs byte-identical) rather than
 > nondeterministic, needs **no** 16 KB alignment rule (the buffer-type alignment is 32,

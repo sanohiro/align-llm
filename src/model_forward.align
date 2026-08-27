@@ -110,7 +110,7 @@ TOLERANCE_TEN_THOUSANDTHS := 1
 SUM_TOLERANCE_MILLIONTHS := 1000
 SUM_TOLERANCE_RELATIVE_PPM := 10
 
-// Section 6, correction C19. The transcript oracle's sum comparison scales an f32 accumulation with
+// R5C section 6, correction C19. The transcript oracle's sum comparison scales an f32 accumulation with
 // `((v as f64) * 1000000.0).round() as i64`, which is `LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS`'s problem
 // at a different scale: an infinity saturates, a NaN becomes `0`, and either one against a
 // transcript sum near zero makes `0 - difference` wrap to a magnitude no `>` test can see. The
@@ -469,7 +469,7 @@ pub Outcome {
   device_buffer_max_size: i64,
   device_memory_free: i64,
   device_memory_total: i64,
-  // Section 6, correction C14. Both are **tri-state**: `-1` is "not evaluated", which is what an
+  // R5C section 6, correction C14. Both are **tri-state**: `-1` is "not evaluated", which is what an
   // error document produced before step 21 or step 21a carries. Publishing `0`/`false` there would
   // have read as a device that declares no alignment and a window that does not fit, which is a
   // measurement the run never made.
@@ -1722,7 +1722,7 @@ fn compare_transcript_graph(
         if spot < 0 || spot * 4 + 4 > span {
           return Err(ffi_fault("R5_ORACLE_SHAPE", layer_named(spec.layer, "node", id)))
         }
-        // Section 6, correction C19: the computed activation crosses the same range-checked
+        // R5C section 6, correction C19: the computed activation crosses the same range-checked
         // conversion the logits oracle uses and the transcript's own value is range-checked beside
         // it, so the subtraction, the absolute value, and every comparison below are in range by
         // construction. An unrepresentable operand takes the scale limit as its magnitude, which is
@@ -1756,7 +1756,7 @@ fn compare_transcript_graph(
         mut index := 0
         loop {
           if index >= span / 4 { break }
-          // Section 6, correction C19: the same exponent test `digest_region` uses, taken while the
+          // R5C section 6, correction C19: the same exponent test `digest_region` uses, taken while the
           // node is already being walked. An infinity or a NaN anywhere in the node makes its f32
           // accumulation meaningless, and it is the elements the transcript never printed — the
           // ones the element comparison above cannot reach — that this covers.
@@ -2693,7 +2693,7 @@ fn compare_logits(
   // non-zero difference, so a GPU run reporting it would mean the device produced the CPU's bytes
   // exactly. Removing the verdict would make a surprising-but-correct result unrepresentable.
   //
-  // Section 6, correction C13: it is reachable on **that arm only**. `--model-forward`'s contract
+  // R5C section 6, correction C13: it is reachable on **that arm only**. `--model-forward`'s contract
   // is `r5b-model-prefill-forward.md` section 3.7's two-row table, whose runtime row is `WITHIN`
   // and nothing else; letting byte-identity short-circuit to `IDENTICAL` there would have made an
   // arm R5C promises not to touch report a verdict its own document does not define at that width.
@@ -3188,7 +3188,7 @@ pub fn execute(
   // reader, the geometry, every block, coverage, member, shape, and window check — has run for real
   // without ggml, without a model, and without a transcript.
   // R5C section 3.9 keeps step 20 exactly as R5B wrote it, on **both** arms: "no ggml at all" is
-  // `R5_GGML_UNAVAILABLE` and this is still where the default stub stops. Section 6, correction C6
+  // `R5_GGML_UNAVAILABLE` and this is still where the default stub stops. R5C section 6, correction C6
   // records why the GPU arm does not rename it — a code called `R5C_GPU_UNAVAILABLE` that fired for
   // a host with no ggml would name the wrong cause, and step 20a below is where the GPU arm's own
   // vocabulary begins.

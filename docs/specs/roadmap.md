@@ -150,8 +150,8 @@ The current forward delivery order is:
     qualification runs; the design-stage probe harness measured 15.5 ms). Reviewed, repaired,
     preflighted, and merged; R5B (item 16) is stacked on it and rebased onto its merged result.
 16. **R5B-MODEL-PREFILL-FORWARD — a whole Qwen2 prefill computed from an Align-owned alignpack.
-    Publication in progress.** On branch `agent/r5b-model-prefill-forward`, rebased onto the merged
-    R5A at `main` `ccbd8ae`.
+    Published as PR #128, open.** On branch `agent/r5b-model-prefill-forward` at `3470646`, rebased
+    onto the merged R5A at `main` `ccbd8ae`.
     [`r5b-model-prefill-forward.md`](r5b-model-prefill-forward.md) is the authoritative plan and owns
     the probe record, the contract ledger, the closure matrix, and the fixtures, qualification,
     metrics, deferrals, risks, and candidate-request sections. `ggml-spike --model-forward` is a new
@@ -171,11 +171,11 @@ The current forward delivery order is:
     at 1.07-1.12 s wall, and the shipped arm measures 484-620 ms compute and 515-648 ms `pread` at
     1,141-1,275 ms wall on one reused 447,086,592 B window, warm. Implementation complete and
     committed; two complementary reviews and one final review are done and repaired in the
-    consolidated repair commit `b5b2db8` and the final-review commit `5ab2ad0`, with the branch
-    rebased onto the merged R5A and publication in progress.
-17. **R5C-METAL-PREFILL-ARM — the same Align-owned window, handed to Metal. Active.** On branch
-    `agent/r5c-metal-prefill` at the final-review repair on top of `ca541bf`, itself on the
-    implementation `5663d8f`, continuing R5B.
+    consolidated repair commit `b5b2db8` and the final-review commit `5ab2ad0`, and the branch is
+    rebased onto the merged R5A and open as align-llm PR #128 at head `3470646`.
+17. **R5C-METAL-PREFILL-ARM — the same Align-owned window, handed to Metal. Awaiting publication
+    behind item 16.** On branch `agent/r5c-metal-prefill` at the final-review repair `df055a7`, on
+    the review repair `eda2794` and the implementation `e4c53d5`, rebased onto R5B at `3470646`.
     [`r5c-metal-prefill.md`](r5c-metal-prefill.md) is the authoritative plan and owns the probe
     record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
     deferrals, risks, and candidate-request sections. `ggml-spike --model-forward-gpu` is a new arm
@@ -183,8 +183,8 @@ The current forward delivery order is:
     same Align-owned weight window to the Metal device through
     `ggml_backend_dev_buffer_from_host_ptr` instead of to the CPU backend, emitting a new
     `R5_MODEL_FORWARD_GPU`, `schema_version: 1` document. **Implementation, both review repairs, and the
-    qualification on a Metal host are complete** (ledger section 7); publication awaits the same
-    rebase onto `ccbd8ae` that R5B needs. Required microbenchmark A (section R5 below) is
+    qualification on a Metal host are complete** (ledger section 7); the branch is rebased onto
+    R5B's PR #128 head and publication follows that merge. Required microbenchmark A (section R5 below) is
     discharged on unified memory: Metal is bit-deterministic (two consecutive shipped-arm runs and
     five probe runs byte-identical), the whole-model logits reach max `|Δ|` 2,936 of 6,000
     ten-thousandths against R5B's byte-identical CPU vector with `argmax` 671, the whole top ten
