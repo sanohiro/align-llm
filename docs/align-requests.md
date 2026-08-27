@@ -73,7 +73,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-27): Requests 1–20 are CLOSED and Requests 21–40 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
+> **Status (2026-08-27): Requests 1–20 are CLOSED and Requests 21–43 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
 > R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
 > parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
 > `borrow t: GgufTable` accessors in `src/gguf.align` get the by-value warning even though no call
@@ -221,10 +221,10 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > seconds rather than minutes. It is non-blocking — the refactor is in place and `check-per-unit
 > src/layer_forward.align` is 6 s — with all of R5A-DENSE-LAYER-FORWARD as independent work. None of
 > this is blocking: R5A ships entirely on the pinned surface, with all of R5A-DENSE-LAYER-FORWARD as
-> independent work. R5B-MODEL-PREFILL-FORWARD (`docs/specs/r5b-model-prefill-forward.md`) is now the
-> active capability, streaming the whole twenty-eight-layer Qwen2 model through one reused
-> Align-owned window and checking it against llama.cpp's own final logits. **Implementation is
-> complete in the working tree.** Design believed no new request was needed (section 5.5); as with
+> independent work. R5B-MODEL-PREFILL-FORWARD (`docs/specs/r5b-model-prefill-forward.md`) merged as
+> align-llm PR #128 (`3470646` -> `870bf31`), streaming the whole twenty-eight-layer Qwen2 model
+> through one reused Align-owned window and checking it against llama.cpp's own final logits. It
+> consumed no `PROPOSED` request. Design believed no new request was needed (section 5.5); as with
 > R5A, implementation refuted that belief (section 6, corrections C1-C16) and adds three requests.
 > Design-time client evidence for Requests 21, 32, 33, 34, and 36 stands unchanged in kind: the
 > read-only pack open (Request 21) gets its fifth client, holding the file across fifty-eight `pread`
@@ -263,6 +263,64 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > `src/model_forward.align`: every conditional expression there selects a Copy scalar or view, never
 > an already-bound owned Move local. Both are recorded as investigated-and-not-found in `HANDOFF.md`
 > rather than as requests, since neither has align-llm consequence evidence to cite.
+> R5C-METAL-PREFILL-ARM (`docs/specs/r5c-metal-prefill.md`) is now the active capability,
+> handing R5B's same Align-owned window to Metal through
+> `ggml_backend_dev_buffer_from_host_ptr` and checking the whole-model result against
+> R5B's byte-identical CPU logits vector. **Implementation, both review repairs, and the
+> qualification are complete and committed, the branch is rebased onto the merged R5B at `main`
+> `870bf31`, and publication is in progress.** The probe record (section 2) refuted
+> six of the plan's own assumptions before section 3 was written: Metal is
+> **bit-deterministic** (five consecutive full-model runs byte-identical) rather than
+> nondeterministic, needs **no** 16 KB alignment rule (the buffer-type alignment is 32,
+> identical to the CPU's), the 447 MB window is **4.7%** of the device's 9,534,832,640 B
+> buffer limit rather than needing a split, an oversize wrap **segfaults instead of
+> returning null** (forcing a pre-wrap validation step, `R5C_DEVICE_BUFFER_LIMIT`), the
+> per-layer residual comparison the plan intended to gate on is **dominated by one
+> massive-activation channel** (row 2570) and is recorded but never gated, and the
+> no-copy transfer R4.5 recorded as free costs a measured **354.8 ms over thirty wraps**
+> (11.8 ms per 447 MB window, roughly 26 microseconds per MB, linear in length) against
+> the CPU's 0.075 ms. Against the byte-identical `d2e48620…` vector, Metal's whole-model
+> logits reach max `|Δ|` **2,937 ten-thousandths** (0.293651), `argmax` 671, the whole
+> top ten identical in order, and zero elements over 0.5 — the measurement section 3.7's
+> **6,000 ten-thousandths** tolerance bound is derived from (twice the measured worst
+> case, rounded up to the next thousand). GPU compute is 523.3 ms against the CPU's 500.7
+> ms — 2.07× faster on the head and 1.58× slower on the narrowed last layer — and end to
+> end the GPU arm is a measured **1.20× slower**, a negative result recorded as the cost
+> ceiling before implementation and reported as microbenchmark A's honest outcome rather
+> than absorbed. R5C discharges required microbenchmark A on unified memory; required
+> microbenchmark C (async prefetch of the next layer's window while the current graph
+> computes) cannot be written at this pin and is deferred with Request 41 named. R5C's
+> design also set out to file "impure/I-O work inside `task_group`" as a candidate
+> request and instead measured that it already works — `spawn` accepts `fs` I/O and
+> `extern "C"` FFI cleanly, and purity binds `par_map` alone
+> (`docs/guide/10-closures-and-parallelism.md`, `docs/language-spec.md`) — so it adds
+> Request 41 instead, non-`Copy` capture in `spawn` closures: a prefetch task must own
+> (or exclusively borrow) the Align-owned window it fills, and neither capturing it nor
+> returning a filled `buffer` from a spawned task compiles at this pin. It is
+> non-blocking for R5C itself — the arm ships on microbenchmark A alone — and blocks only
+> R5 microbenchmark C, which stays deferred rather than worked around, since the
+> compiling `i64`-address alternative is deliberately not proposed (it would put the
+> window's bounds outside Align's view). R5C's implementation then met a fourth gap, in
+> the region checker rather than in `spawn`: the plan's module split —
+> `src/gpu_forward.align` calling `src/model_forward.align`'s `execute` and reading its
+> four `borrow mut` column-set out-parameters itself — checked clean and failed only at
+> `alignc build`, with `use of invalidated borrow 'schedule': its source 'tokens' was
+> moved or reassigned` for the direct read and `cannot return a view that borrows local
+> storage` for the alternative of returning the columns bundled in one record (section 6
+> correction C5). This adds Request 42, `alignc check` (and `check-per-unit`) not being a
+> superset of `alignc build` for region-checker diagnostics — reproduced fresh in a
+> minimal two-module probe under the pinned compiler — and Request 43, the specific
+> cross-module `borrow mut` record out-parameter gap C5 hit. Neither blocks R5C: the
+> shipped shape is `model_forward.render_parts` (`src/model_forward.align:3226-3253`),
+> which renders each column set to a `string` inside the module that produces it and
+> returns those strings beside `Outcome`, the one shape all three of C5's refusals allow.
+> R5C is additionally new client evidence for five
+> existing requests, none of them newly blocking: Request 37 (per-function check time)
+> shapes the module boundary again, putting the GPU arm in a new `src/gpu_forward.align`;
+> Request 34 (`Result` ok payloads beyond scalars) is now also the mechanism behind
+> Request 41's second half; Request 33 (aligned heap allocation) is paid once rather than
+> R5A's thirteen times; Request 32 (FFI by-value structs and `bool`) gets three more
+> wrapped call sites; and Request 21 (a read-only open) gets its sixth client.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -8320,6 +8378,353 @@ own owner.
    parameter; `make layer-forward-smoke` and `make model-forward-qualification` pass unchanged in
    outcome.
 
+---
+
+## Request 41 — Non-`Copy` capture in `spawn` closures (`task_group`)
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: R5 microbenchmark C only. R5C-METAL-PREFILL-ARM
+  (`docs/specs/r5c-metal-prefill.md` section 1.4) discharges required microbenchmark A on unified
+  memory without it; required microbenchmark C (async prefetch of the next layer's window while the
+  current graph computes) cannot be written at all at this pin and stays deferred with this gap
+  named rather than worked around.
+Independent work that may continue: all of R5C-METAL-PREFILL-ARM.
+Resume condition: an Align release admits an owned-value (or exclusive-borrow) capture into a
+  `spawn` closure, and/or an owned task result, sufficient to hand a prefetch task the Align-owned
+  window it must fill.
+Align commit or pull request: none
+align-llm verification: pending — implement a `--model-forward-gpu --prefetch` arm that overlaps
+  layer `L+1`'s read with layer `L`'s compute and pass a new `prefetch-forward-qualification`.
+```
+
+### Motivation and current sibling evidence
+
+R5C-METAL-PREFILL-ARM's design set out to file "impure/I-O work inside `task_group`" as a candidate
+request and instead measured that it already works. Verified against the sibling checkout at
+`/Users/hiro/Projects/align`, pinned at `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2` (`git rev-parse
+HEAD` confirms the checkout is exactly this commit):
+
+- **Purity binds `par_map` alone, not `task_group`/`spawn`.**
+  `docs/guide/10-closures-and-parallelism.md:47` defines Pure as "no I/O, no rng, no FFI, and no
+  mutation of external state it does not own", and its `par_map` example at lines 55-56 shows that
+  requirement enforced only there (`error: 'par_map' requires a Pure function`); the
+  `task_group`/`spawn` section (heading at line 84, `spawn`/`wait`/`get` described at line 101)
+  carries no such restriction. `docs/language-spec.md:521` states the same division directly:
+  "Effects restrict optimization legality, while explicit `par_map` still requires Pure callables" —
+  naming `par_map` alone. A four-line probe (`task_group { a := spawn(fn { readsome(p) }) ... }`,
+  `fs.open_rw` + `f.pread` inside the spawned task, and a second probe with an `unsafe`/`extern "C"`
+  call inside a spawned task) both `alignc check`s clean and runs.
+- **The blocker is closure capture, not purity.** A spawned task that must write into a caller-owned
+  `buffer` fails at check time:
+
+  ```text
+  tg2.align:14:20: error: a lambda cannot capture the owned value 'w' yet
+                          (capture supports copy values like int/float/bool/char)
+  tg2.align:14:33: error: the exclusive borrowed argument to 'fill' must be rooted in mutable storage
+  ```
+
+  the generic capture diagnostic (`crates/align_sema/src/lib.rs:48950`, `"a lambda cannot capture
+  the owned value '{cname}' yet (capture supports copy values like int/float/bool/char)"`) and the
+  companion rooting diagnostic (`crates/align_sema/src/lib.rs:43724`, `"the exclusive borrowed
+  argument to '{display}' must be rooted in mutable storage"`).
+- **The task cannot return a filled buffer either**, which is Request 34's own gap reached from a
+  second direction: `fn make_buf() -> Result<buffer, i32> { return Ok(buffer(16)) }` is rejected by
+  the unconditional `Ty::Buffer` exclusion inside `scalar_arg`
+  (`crates/align_sema/src/lib.rs:60819`) with `error: Result ok payload cannot be \`buffer\` — an
+  owned I/O handle/buffer is bound to one local, not collected into an array/slice/box (bind it to a
+  local)`. So both halves of the prefetch shape are closed: the task cannot **capture** the window
+  and cannot **return** a filled buffer.
+
+**Consequence for the client.** `docs/specs/r5c-metal-prefill.md` section 2.10 records the forced
+conclusion: R5's required microbenchmark C — a task that reads layer `L+1`'s bytes into the
+Align-owned window while the device computes layer `L` — cannot be written at this pin, because the
+prefetch task must own (or exclusively capture) the window's `buffer` for the duration of the read.
+An `i64`-address workaround through the existing `align_ggml_window_copy` FFI symbol would compile —
+a `Copy` `i64` captures and runs correctly — but it is **deliberately not proposed**: `CLAUDE.md`
+forbids building a compatibility layer around a language-owned gap, and it would put the window's
+bounds outside Align's view, precisely what `r5b-model-prefill-forward.md` correction C20 removed
+when it replaced a caller-computed `window_bytes` with the borrow's own `slice.len()`.
+
+### Requested capability
+
+Align-consistent and deliberately minimal: allow a `spawn` closure to capture an **exclusive
+`borrow mut`** of caller-owned storage that the enclosing `task_group` provably outlives. The
+lifetime argument is already the language's own — leaving a `task_group`, including by early return
+or error propagation, joins its tasks before captured frame-owned locals or enclosing-arena storage
+are released — and exclusivity is already what `borrow mut` proves. Disjointness between two spawned
+tasks is the open question; the natural bound is **one exclusive capture per spawn**, rejecting two
+spawns that capture the same root.
+
+### Acceptance criteria
+
+1. A `task_group` in which one spawned task fills a caller-owned `buffer` via `f.pread` while the
+   main thread computes checks and runs at the pin.
+2. Two spawns capturing the same root are rejected at check time.
+3. `align-llm` verification: a `--model-forward-gpu --prefetch` arm overlaps layer `L+1`'s read with
+   layer `L`'s compute and publishes microbenchmark C against `r5c-metal-prefill.md` section 5.3's
+   1,423.8 ms of `pread`; passes a new `prefetch-forward-qualification`.
+
+## Request 42 — `alignc check` as a superset of `alignc build` (region checking parity)
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none. R5C-METAL-PREFILL-ARM (`docs/specs/r5c-metal-prefill.md` section 6
+  correction C5, section 7.3 item 1) treated a clean `make check` as insufficient evidence of a
+  compiling checkpoint and ran `make build` before trusting any candidate module split.
+Independent work that may continue: all of R5C-METAL-PREFILL-ARM and every capability that uses
+  `make check` (the narrow owner run after a coherent batch) as its compiling-checkpoint signal.
+Resume condition: an Align release makes `alignc check` and `alignc check-per-unit` report every
+  region-checker (borrow/lifetime) error that `alignc build` reports for the same source, or
+  documents an explicit, checkable list of diagnostic classes `check` intentionally defers to
+  `build`.
+Align commit or pull request: none
+align-llm verification: `make check` on `src/gpu_forward.align` plus `src/model_forward.align`
+  with a seeded region error (a `borrow mut` out-parameter read by a caller in another module after
+  a sibling out-parameter is reassigned, the exact C5 shape) fails with the same diagnostic
+  `make build` already reports, instead of passing clean.
+```
+
+### Motivation and current sibling evidence
+
+R5C-METAL-PREFILL-ARM's design first split `--model-forward-gpu` into its own module
+(`src/gpu_forward.align`) calling `src/model_forward.align`'s `execute` directly. Section 6
+correction C5 (`docs/specs/r5c-metal-prefill.md:1296-1319`) records that this module split checked
+clean and failed only at `alignc build`, in the region checker, with two distinct diagnostics for
+two distinct shapes:
+
+```text
+src/gpu_forward.align:556:36: error: use of invalidated borrow 'schedule': its source 'tokens' was
+                                    moved or reassigned (or its storage was reallocated)
+```
+
+for the direct out-parameter form, and `cannot return a view that borrows local storage` for the
+alternative that returns the four column sets bundled inside one record instead. Section 7.3 item 1
+(`docs/specs/r5c-metal-prefill.md:1549-1556`) states the general conclusion: "`alignc check` is not
+a superset of `alignc build`. Three separate programs in this capability checked clean and failed to
+build, all in the region checker. A per-module `check` is therefore not sufficient evidence that a
+module compiles, which matters because `make check` is the narrow owner this repository runs after
+a coherent batch."
+
+Reproduced fresh against the pinned managed compiler (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`,
+`alignc 0.5.0`) with a minimal two-module probe in a scratch directory, isolating the same shape as
+the first diagnostic above — a callee reassigning one `borrow mut` out-parameter (`tokens`) while a
+caller in another module later reads a sibling out-parameter (`schedule`):
+
+```text
+// callee.align
+module callee
+
+pub Cols { count: i64, ids: array<i64> }
+
+fn inner(borrow mut tokens: Cols) {
+  mut b: array_builder<i64> := array_builder()
+  b.push(1)
+  b.push(2)
+  tokens = Cols { count: 2, ids: b.build() }
+}
+
+pub fn fill(borrow mut tokens: Cols, borrow mut schedule: Cols) {
+  inner(tokens)
+  mut c: array_builder<i64> := array_builder()
+  c.push(3)
+  schedule = Cols { count: 1, ids: c.build() }
+}
+
+// main.align
+module main
+import callee
+
+fn empty_i64_array() -> array<i64> {
+  mut b: array_builder<i64> := array_builder()
+  return b.build()
+}
+
+fn main() -> i32 {
+  mut tokens := callee.Cols { count: 0, ids: empty_i64_array() }
+  mut schedule := callee.Cols { count: 0, ids: empty_i64_array() }
+  callee.fill(tokens, schedule)
+  return schedule.ids[0] as i32
+}
+```
+
+```text
+$ alignc check main.align
+main.align:13:10: warning: lossy conversion: `i64 as i32` truncates the high bits — this is defined
+                            behavior, not an error
+ok: checked 4 function(s)
+
+$ alignc build main.align
+main.align:13:10: error: use of invalidated borrow 'schedule': its source 'tokens' was moved or
+                          reassigned (or its storage was reallocated); create a new view from the
+                          current source
+main.align:13:10: error: value snapshot was invalidated before the enclosing operation: owner
+                          'tokens' was moved, reassigned, or reallocated by a later eager operand
+```
+
+`check` reports the probe clean (exit 0, "ok: checked 4 function(s)"); `build` rejects the identical
+source (exit 1) with the same diagnostic family C5 recorded from the real module split. The
+diagnostic text is generated at `crates/align_sema/src/lib.rs:34422-34427` (the `BorrowEnd::Consumed`
+arm of the invalidated-borrow message builder); `cannot return a view that borrows local storage`,
+the second C5 diagnostic, is generated at `crates/align_sema/src/lib.rs:18595` and is reachable from
+the same region-checking machinery.
+
+One asymmetry the probe also surfaced, worth recording precisely rather than smoothing over:
+`alignc check-per-unit` — the command this repository's `make check` actually invokes
+(`Makefile:39-41`) — **does** reject this specific minimal probe with the identical diagnostic,
+unlike the real C5 module split, which checked clean under the repository's actual `make check`.
+`check-per-unit`'s own doc comment (`crates/align_driver/src/main.rs:1301-1303`) states why this is
+expected rather than contradictory: it is "an additive capability that proves the separate-compilation
+seam; it does not replace the whole-program `check`/`build` path" — its per-unit, interface-summary
+walk is a different, narrower analysis than either whole-program `check` or `build`'s full MIR-level
+region pass, and the three shapes disagree with each other about which of these two-file programs it
+accepts. The minimal probe is offered as fresh, independently reproducible evidence of the same
+underlying gap (no diagnostic class is a strict superset of another across `check`,
+`check-per-unit`, and `build`), not as a byte-for-byte replay of the real C5 module split, whose
+`execute`/`stage_geometry` call chain is larger and checked clean under all of `check` and
+`check-per-unit` before failing only at `build`.
+
+### Requested capability
+
+Make `alignc check` (and, if it remains a distinct verb, `alignc check-per-unit`) run the same
+region/borrow-checking pass `alignc build` runs, so that a program rejected by `build` for a
+region-checker reason is also rejected by `check` — or, if the two verbs are deliberately allowed to
+diverge for performance reasons, document the exact diagnostic classes `check` defers to `build` so
+a caller can decide whether a clean `check` is sufficient evidence for its purpose.
+
+### Acceptance criteria
+
+1. A compiler test pins a program that `alignc build` rejects with an invalidated-borrow or
+   return-provenance region-checker diagnostic and asserts `alignc check` rejects it with an
+   equivalent diagnostic (same diagnostic family, not necessarily identical wording).
+2. A compiler test pins the same requirement for `alignc check-per-unit`.
+3. `align-llm` verification: `make check` on `src/gpu_forward.align` and `src/model_forward.align`
+   with a seeded region error matching the C5 shape (a `borrow mut` out-parameter read after a
+   sibling is reassigned, across a module boundary) fails identically to `make build`, instead of
+   passing clean.
+
+---
+
+## Request 43 — Cross-module `borrow mut` record out-parameters
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. `model_forward.render_parts` (`src/model_forward.align:3226-3253`)
+  ships as the shape all three refusals in section 6 correction C5 allow; R5C's originally planned
+  module split, where `src/gpu_forward.align` would call `src/model_forward.align`'s `execute`
+  directly and read its four `borrow mut` column-set out-parameters itself, collapsed into
+  `render_parts` returning rendered `string`s instead.
+Independent work that may continue: all of R5C-METAL-PREFILL-ARM.
+Resume condition: an Align release admits a caller in one module to read a `borrow mut` record
+  out-parameter filled by a callee in a different module, without the checker merging that
+  out-parameter's validity to an unrelated sibling out-parameter's later reassignment.
+Align commit or pull request: none
+align-llm verification: restore the module split R5C originally planned —
+  `src/gpu_forward.align` calling `src/model_forward.align`'s `execute` directly and reading
+  `TokenColumns`/`ScheduleColumns`/`GraphColumns`/`TopColumns` itself instead of going through
+  `render_parts` — and pass `make layer-forward-smoke`.
+```
+
+### Motivation and current sibling evidence
+
+R5C-METAL-PREFILL-ARM's plan put the `--model-forward-gpu` arm in its own module
+(`src/gpu_forward.align`) calling `src/model_forward.align`'s existing `execute`, which reports its
+work through four `borrow mut` record out-parameters (`TokenColumns`, `ScheduleColumns`,
+`GraphColumns`, `TopColumns`; the signature is `src/model_forward.align:2963-2977`). Section 6
+correction C5 (`docs/specs/r5c-metal-prefill.md:1296-1330`) records that this does not compile as
+written, and names three separately refused forms:
+
+1. **Reading the out-parameters directly**, as the plan wrote it: `alignc build` reports `use of
+   invalidated borrow 'schedule': its source 'tokens' was moved or reassigned (or its storage was
+   reallocated)` at the caller's read, even though the identical call-then-read sequence inside
+   `src/model_forward.align` itself (the same module that owns `execute`) both checks and builds —
+   C5's own words: "The identical sequence inside `src/model_forward.align` checks *and builds*,
+   which is why R5B never met it." Request 42, filed alongside this one, records that `alignc check`
+   also missed this in the real module split (only `build` caught it).
+2. **Returning the four owners bundled inside one record instead**, refused for a second, different
+   reason: `cannot return a view that borrows local storage` — the checker treats the caller's own
+   local (the one the four builders write into inside `stage_geometry`/`schedule_model`) as a view
+   over storage local to those functions, and only a `Bundle` carrying `Outcome` alone (no column
+   set) builds.
+3. **Assembling the return record field by field** instead of in one literal, refused by a third,
+   unrelated diagnostic: `field replacement of model_forward$Outcome is not supported yet (owned
+   field replacement currently supports only string and Option<string> leaves)` — this is Request
+   36's already-registered gap (owned `array<T>` field replacement), re-encountered here from a third
+   angle rather than a new one.
+
+**Consequence for the client.** All three obvious shapes for handing four filled-in-a-callee
+records back across a module boundary are refused, each for a different reason. The shape that
+compiles is the one C5 names as shipped: `model_forward.render_parts`
+(`src/model_forward.align:3226-3253`) calls `execute` and renders each column set to a `string`
+*inside the module that owns the data*, returning a `Parts` record whose fields are the already-
+rendered `head`, `schedule`, `graph`, and `output` strings (plus `outcome` and `token_list`) rather
+than the typed column-set records themselves:
+
+```text
+pub fn render_parts(
+  pack_path: str, geometry_path: str, tokens_text: str, width_text: str, width_declared: bool,
+  reference_path: str, transcript_path: str, logits_path: str,
+  borrow selection: DeviceSelection, schedule_suffix: str,
+) -> Parts {
+  mut tokens := empty_tokens()
+  mut schedule := empty_schedule()
+  mut graphs := empty_graphs()
+  mut top := empty_top()
+  outcome := execute(
+    pack_path, geometry_path, tokens_text, width_text, width_declared, reference_path,
+    transcript_path, logits_path, selection, tokens, schedule, graphs, top)
+  return Parts {
+    outcome: outcome,
+    head: render_head(outcome, tokens),
+    schedule: render_schedule_with(schedule, schedule_suffix),
+    graph: render_graph_object(outcome, graphs),
+    output: render_output(outcome, top),
+    token_list: render_token_list(tokens),
+  }
+}
+```
+
+`src/gpu_forward.align:501-521` calls `render_parts` and works only with `parts.outcome` (a plain
+`Outcome`, unaffected by this gap) and the pre-rendered `string`s, never with the typed column-set
+records `execute` produces. The GPU document's three extra per-layer field names travel back into
+`model_forward` as a `schedule_suffix: str` parameter instead (`src/gpu_forward.align:94-...`,
+`schedule_suffix()`), so the field list the `R5_MODEL_FORWARD_GPU` document needs stays owned by the
+module that defines that document, and `--model-forward` is unchanged, still calling `execute`
+directly within the same module. This is architecturally load-bearing, not a preference: the planned
+module split (a `gpu_forward` that computes nothing and delegates every column set to
+`model_forward`, reading the typed records itself to build its own device-specific document) is
+unavailable at this pin, and `render_parts` returning strings is the substitute R5C shipped instead.
+
+### Requested capability
+
+Admit a caller in one module to read the fields of a `borrow mut` record out-parameter after the
+callee (in the same or a different module) has filled it, without the checker's validity tracking
+merging that out-parameter to an unrelated sibling out-parameter of the same call that was
+separately reassigned — the cross-module case of the region behavior that already works when caller
+and callee share a module. This does not require solving Request 36 (in-place field replacement) or
+Request 34 (`Result` payloads beyond scalars); it is specifically about a caller's read access to an
+already-filled `borrow mut` out-parameter surviving a call whose *other* out-parameters were
+reassigned, once that call crosses a module boundary.
+
+### Acceptance criteria
+
+1. A compiler test declares a callee in module A taking two or more `borrow mut record` parameters,
+   reassigning each with a whole-struct literal; a caller in module B invokes it with two owned
+   locals and reads every out-parameter's fields after the call returns. The program checks and
+   builds.
+2. The same test, run with caller and callee merged into one module (the working case today),
+   continues to check and build unchanged, confirming the fix is additive to the cross-module case
+   and does not change the single-module behavior R5B already relies on.
+3. `align-llm` verification: restore the originally planned module split —
+   `src/gpu_forward.align` calling `src/model_forward.align`'s `execute` directly and reading
+   `TokenColumns`/`ScheduleColumns`/`GraphColumns`/`TopColumns` itself instead of routing through
+   `render_parts`'s rendered strings — and pass `make layer-forward-smoke`.
 ---
 
 ## Not requested (respecting Align's design)

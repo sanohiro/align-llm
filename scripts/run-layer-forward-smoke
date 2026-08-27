@@ -11,9 +11,9 @@ set -euo pipefail
 # section 4.6. Twenty-four of the twenty-six error codes are reached for real, **and both oracle
 # verdicts**, without ggml, without a model, without a network, and without a reference tool.
 #
-# Nine shim builds are used and each one is a real contract: the default stub is unavailable and
-# stops the arm at step 17, and the eight `ALIGN_LLM_GGML_FORCE=engine*` builds turn on the
-# deterministic single-precision engine of section 5.1 so steps 18 to 29 are reachable at all.
+# Ten shim builds are used by this block and each one is a real contract: the default stub is
+# unavailable and stops the arm at step 17, and the nine `ALIGN_LLM_GGML_FORCE=engine*` builds turn
+# on the deterministic single-precision engine of section 5.1 so steps 18 to 29 are reachable at all.
 #
 # `ALIGN_LLM_GGML_INCLUDE` is unset deliberately and unconditionally: this runner's contract is that
 # it exercises the ggml-free build, so a developer's exported include path must not silently turn it
@@ -35,8 +35,19 @@ root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
 
 work_dir=$(mktemp -d)
+# All three Python blocks below rebuild the shim with `ALIGN_LLM_GGML_FORCE=...` flavours, and each
+# restores the ordinary stub on its own success path. An unhandled exception, a failed assertion, or
+# a signal inside a forced-failure loop would otherwise leave a `-DALIGN_GGML_FORCE_*` library in
+# place for whatever ran next — `r5a-dense-layer-forward.md` section 6, correction C22's rule,
+# applied to this runner's own trap rather than only to `scripts/run-metal-forward`'s. This runner
+# builds into `${work_dir}/lib` (below), so the trap is the second line of defence behind
+# `rm -rf`; the guard keeps an exit that never built a shim from paying for a rebuild.
+shim_built=0
 cleanup() {
   status=$?
+  if [ "${shim_built}" = 1 ]; then
+    ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null 2>&1 || true
+  fi
   rm -rf "${work_dir}"
   exit "${status}"
 }
@@ -119,6 +130,7 @@ SCAN
 # the one file it does create in the work tree is moved out in the same step.
 shim_dir=$(ALIGN_LLM_GGML_SHIM_DIR="${work_dir}/lib" "${root_dir}/scripts/build-ggml-shim")
 export ALIGN_LLM_GGML_SHIM_DIR="${work_dir}/lib"
+shim_built=1
 # The compiler's warnings are captured rather than streamed **under the fresh worker**, exactly as
 # `Makefile`'s own `check` and `build` targets do. `src/ggml_spike.align` now imports
 # `src/layer_forward.align` and `src/layer_qwen2.align`, so one build of it writes ~22 KB of
@@ -326,6 +338,15 @@ FORCED_CASES = [
     # before it is read back. The run stays `ok` — a wrong number is data — and the oracle must say
     # `FAIL` (section 6, correction C18).
     ("lf-force-no-mark-output", "engine+no-mark-output",
+     [ARM, PACK, "0", GEOM, TOKENS, "-", SOURCE, TRANSCRIPT], ""),
+    # `r5c-metal-prefill.md` section 6, correction C19: a **computed** activation with no
+    # ten-thousandths value, which no operand can produce because every fixture's inputs are finite
+    # and the engine's kernels are closed over them. The shim makes the first element of every
+    # readback `+inf` and leaves the tensor data alone, so the graph still computes what it computed
+    # and only the bytes the oracle reads back carry the value. Before C19 the conversion saturated,
+    # `0 - difference` wrapped to `i64`'s minimum against a transcript value of zero, and the run
+    # reported `PASS` over an element that is not a number.
+    ("lf-force-inf-readback", "engine+inf-readback",
      [ARM, PACK, "0", GEOM, TOKENS, "-", SOURCE, TRANSCRIPT], ""),
 ]
 
@@ -603,6 +624,21 @@ if unmarked is not None and unmarked["oracle"]["verdict"] != "FAIL":
                     "this owner cannot see a missing mark_outputs"
                     % unmarked["oracle"]["verdict"])
 
+# `r5c-metal-prefill.md` section 6, correction C19. Both halves of the class are asserted: the
+# element comparison resolves an unrepresentable activation to the scale limit, and the sum
+# comparison — which covers the elements the transcript never printed — resolves it to the sentinel.
+# Either one alone would leave the other's wrap unobserved.
+SCALE_LIMIT_TEN_THOUSANDTHS = 1000000000000000
+UNREPRESENTABLE = 9223372036854775807
+infinite = forced_documents.get("lf-force-inf-readback")
+if infinite is not None:
+    oracle = infinite["oracle"]
+    if infinite["status"] != "ok" or oracle["verdict"] != "FAIL" \
+            or oracle["max_abs_diff_ten_thousandths"] != SCALE_LIMIT_TEN_THOUSANDTHS \
+            or oracle["max_sum_diff_millionths"] != UNREPRESENTABLE:
+        failures.append("lf-force-inf-readback: a +inf activation resolved to %r -- a saturating "
+                        "`as i64` is back and a non-finite element can pass" % oracle)
+
 REQUIRED_CODES = {
     "R5_INDEX", "R5_TOKENS", "R5_GEOMETRY_UNREADABLE", "R5_GEOMETRY", "R4_PACK_UNREADABLE",
     "R5_BLOCK_MISSING", "R5_MEMBER_MISSING", "R5_SHAPE", "R5_GGML_UNAVAILABLE",
@@ -809,16 +845,17 @@ ENGINE_CASES = [
      "R5_LOGITS_UNREADABLE"),
     ("mf-logits-perturbed",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-perturbed.bin")], ""),
-    # Section 6, correction C23. A reference carrying an infinity or a NaN is a malformed **input**
-    # and is refused with its own code before any difference is taken; a reference that is finite
-    # and beyond the representable magnitude is not an input error and resolves as a magnitude no
-    # tolerance admits. All three corrupted the published magnitude before C23.
+    # `r5b-model-prefill-forward.md` section 6, correction C23, on the arm that shares `compare_logits`.
+    # A reference carrying an infinity or a NaN is a malformed **input** and is refused with its own
+    # code before any difference is taken; a reference that is finite and beyond the representable
+    # magnitude is not an input error and resolves as a magnitude no tolerance admits. All three
+    # aborted the process before C23.
     # `MODEL_ABORT_TOKENS` and an `-inf` in element 0: the one input pair whose primary rounds to
     # exactly zero ten-thousandths against a saturated reference, which is what made
-    # `0 - difference` wrap to `i64`'s minimum. Measured at `5ab2ad0`: `status: ok`,
-    # `max_abs_diff_ten_thousandths` **257**, a magnitude neither vector supports. The transcript
-    # position is `-` because this token list is not the one the checked-in transcript was captured
-    # for.
+    # `0 - difference` wrap to `i64`'s minimum and index the histogram with it. Measured at
+    # `5663d8f`: `exit 134`, no document, `index out of bounds: the len is 65537 but the index is
+    # -9223372036854775808`, on this arm and on the other one. The transcript position is `-`
+    # because this token list is not the one the checked-in transcript was captured for.
     ("mf-logits-nonfinite",
      [ARM, PACK, GEOM, "1,25,5", "-", SOURCE, "-", "3", path("model-logits-neg-inf.bin")],
      "R5_LOGITS_NONFINITE"),
@@ -844,6 +881,13 @@ FORCED_CASES = [
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH], "R5_SHAPE"),
     ("mf-force-no-mark-output", "engine+no-mark-output",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH], ""),
+    # `r5c-metal-prefill.md` section 6, correction C19, on the module that owns both oracles at
+    # whole-model scale. The runtime width is deliberate: the logits comparison is then the
+    # **tolerance** path rather than the byte-identity one, so a non-finite element of the arm's own
+    # vector — the `primary` branch section 3.8 promises is reported and never refused — is what
+    # drives the verdict.
+    ("mf-force-inf-readback", "engine+inf-readback",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", RUNTIME_LOGITS], ""),
 ]
 
 # Section 6, correction C25, and the R5A block above's repair for the same reason: a golden
@@ -899,6 +943,48 @@ PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
                "logits_path": "<logits>"}
 
 
+# `r5c-metal-prefill.md` section 6, correction C21: a digest over a NaN is not a portable golden.
+# The forced readback injects one `+inf` into every readback, and this arm hands a readback to the
+# next graph, so every element computed from that infinity is a NaN rather than an infinity.
+# IEEE-754 fixes an infinity's encoding and does **not** fix a NaN's sign or payload: an invalid
+# operation delivers x86-64 SSE's "real indefinite" `0xffc00000` and arm64's default NaN
+# `0x7fc00000`. A `bit_sum` over such a tensor therefore differs by 2**31 per NaN element and a
+# `sha256` differs outright between two conforming hosts, while every count, verdict, and code
+# agrees -- which is what the x86-64 run of this corpus reported and the aarch64 run did not.
+#
+# Mask the digests over the arm's **own** NaN-bearing tensors and nothing else. `nonfinite_count`,
+# every verdict, `reference.*` (the runtime and reconciliation passes still have to agree bit for
+# bit on one host) and `oracle_logits.reference_*` (file bytes, not a computed value) stay in the
+# golden, and the forced case asserts below that the masked fields are still present and are still
+# digests. The threshold is one and not zero because exactly one non-finite element in a readback
+# is the injected `+inf` itself, whose encoding is portable: the R5A corpus is twenty-one such
+# tensors and stays byte-identical.
+NONFINITE = "<nonfinite>"
+
+
+def is_nan_bits(bits):
+    return bits & 0x7FFFFFFF > 0x7F800000
+
+
+def mask_nonfinite_digests(document):
+    # An error document carries an empty schedule and a zeroed output, so every branch here is
+    # guarded rather than assumed: the mask is applied to every document normalize sees.
+    schedule = document["schedule"]
+    for row in schedule:
+        if row["nonfinite_count"] > 1:
+            row["l_out_sha256"] = NONFINITE
+            row["l_out_bit_sum"] = NONFINITE
+    if schedule and schedule[-1]["nonfinite_count"] > 1:
+        document["head"]["result_norm_sha256"] = NONFINITE
+        document["head"]["result_norm_bit_sum"] = NONFINITE
+    if document["output"]["nonfinite_count"] > 1:
+        document["output"]["sha256"] = NONFINITE
+        document["output"]["bit_sum"] = NONFINITE
+    for entry in document["output"]["top_k"]:
+        if is_nan_bits(entry["bits"]):
+            entry["bits"] = NONFINITE
+
+
 def normalize(text):
     document = json.loads(text)
     for key in document["timings"]:
@@ -908,6 +994,7 @@ def normalize(text):
         row["compute_ns"] = 0
     document["head"]["pread_ns"] = 0
     document["head"]["compute_ns"] = 0
+    mask_nonfinite_digests(document)
     for key, placeholder in PLACEHOLDER.items():
         if document[key]:
             document[key] = placeholder
@@ -1091,6 +1178,30 @@ if within["compared_pass"] != "runtime" or within["verdict"] != "WITHIN" \
         or within["argmax_primary"] != within["argmax_reference"] \
         or within["top_k_agreement"] != 10 or within["tolerance_ten_thousandths"] != 5000:
     failures.append("mf-engine-runtime-width: %r" % within)
+# `r5c-metal-prefill.md` section 6, correction C13: the runtime row of R5B's section 3.7 table is
+# `WITHIN` and nothing else, so agreement to four decimal places is `WITHIN` here rather than
+# `IDENTICAL`. Byte-identity itself is not constructible hosted for correction C9's reason — a
+# pure-Python second implementation does not share the engine's `expf`, `sinf`, and `cosf` — and
+# `byte_identical` is asserted false so a fixture that ever became byte-identical is a diff here
+# rather than a silently changed verdict.
+if within["byte_identical"] or within["max_abs_diff_ten_thousandths"] != 0:
+    failures.append("mf-engine-runtime-width: %r is no longer C9's near-miss reference" % within)
+
+# Correction C12's three references. The two malformed ones are refused with a document and the
+# out-of-range one is a `FAIL` with `status: ok`, so neither can wrap into a false `WITHIN`.
+for case in ("mf-logits-nonfinite", "mf-logits-nan"):
+    document = json.loads(produced[case])
+    if document["error_detail"] != "elements[1]":
+        failures.append("%s: detail %r, not the count of non-finite reference elements"
+                        % (case, document["error_detail"]))
+# `R5_MODEL_FORWARD`'s block carries no distribution fields — those are R5C's additions to
+# `R5_MODEL_FORWARD_GPU` (section 3.8) — so the CPU arm asserts the verdict and the magnitude, and
+# `gf-logits-huge` below asserts the mean and the count of elements over half a unit.
+huge = json.loads(produced["mf-logits-huge"])
+if huge["status"] != "ok" or huge["oracle_logits"]["verdict"] != "FAIL" \
+        or huge["oracle_logits"]["max_abs_diff_ten_thousandths"] \
+        <= huge["oracle_logits"]["tolerance_ten_thousandths"]:
+    failures.append("mf-logits-huge: %r" % huge["oracle_logits"])
 
 # Section 6, correction C23's three references. The two malformed ones are refused with a document
 # and the out-of-range one is a `FAIL` with `status: ok`, so neither can wrap into a false `WITHIN`
@@ -1163,6 +1274,43 @@ if unmarked is not None and unmarked["oracle"]["verdict"] != "FAIL":
     failures.append("mf-force-no-mark-output: ggml_set_output was dropped and the oracle still "
                     "reported %r" % unmarked["oracle"]["verdict"])
 
+# `r5c-metal-prefill.md` section 6, correction C19, all three branches at once: the transcript
+# oracle's element comparison, its sum comparison, and the logits comparison's non-finite `primary`.
+# The document still has `status: ok` — a non-finite element of the arm's own output is reported and
+# never refused (section 3.8) — and every verdict that can see it says so.
+SCALE_LIMIT_TEN_THOUSANDTHS = 1000000000000000
+UNREPRESENTABLE = 9223372036854775807
+infinite = forced_documents.get("mf-force-inf-readback")
+if infinite is not None:
+    oracle = infinite["oracle"]
+    logits = infinite["oracle_logits"]
+    if infinite["status"] != "ok" or oracle["verdict"] != "FAIL" \
+            or oracle["max_abs_diff_ten_thousandths"] != SCALE_LIMIT_TEN_THOUSANDTHS \
+            or oracle["max_sum_diff_millionths"] != UNREPRESENTABLE:
+        failures.append("mf-force-inf-readback: a +inf activation resolved to %r -- a saturating "
+                        "`as i64` is back and a non-finite element can pass" % oracle)
+    if logits["verdict"] != "FAIL" \
+            or logits["max_abs_diff_ten_thousandths"] != SCALE_LIMIT_TEN_THOUSANDTHS \
+            or infinite["output"]["nonfinite_count"] < 1:
+        failures.append("mf-force-inf-readback: a +inf logit resolved to %r with %d non-finite "
+                        "elements" % (logits, infinite["output"]["nonfinite_count"]))
+    # Correction C21: the golden carries `<nonfinite>` where a digest covers a NaN, so the digest
+    # itself is asserted here instead -- it must still be produced, still be a digest, and the
+    # runtime and reconciliation passes must still agree over the NaN-bearing tensors on this host.
+    reference = infinite["reference"]
+    if reference["verdict"] != "IDENTICAL" \
+            or reference["nodes_identical"] != reference["nodes_compared"] \
+            or reference["nodes_compared"] < 1:
+        failures.append("mf-force-inf-readback: the runtime and reconciliation passes disagree "
+                        "over a NaN-bearing tensor: %r" % reference)
+    for label, value in (("output.sha256", infinite["output"]["sha256"]),
+                         ("head.result_norm_sha256", infinite["head"]["result_norm_sha256"]),
+                         ("schedule[-1].l_out_sha256",
+                          infinite["schedule"][-1]["l_out_sha256"])):
+        if len(value) != 64 or value.strip("0123456789abcdef") != "":
+            failures.append("mf-force-inf-readback: %s is %r, not a digest"
+                            % (label, value))
+
 REQUIRED_CODES = {
     "R5_TOKENS", "R5_KV_WIDTH", "R5_GEOMETRY_UNREADABLE", "R5_GEOMETRY", "R4_PACK_UNREADABLE",
     "R4_PACK_TRUNCATED", "R5_BLOCK_MISSING", "R5_BLOCK_AMBIGUOUS", "R5_LAYER_COVERAGE",
@@ -1206,5 +1354,662 @@ if failures:
 
 print("model forward smoke: %d no-document cases (R5_ARITY, R5_PATH), %d documented cases, "
       "%d of the 33 codes reached, three oracles, and the whole two-layer model PASS"
+      % (len(NO_DOCUMENT), len(ORDER), len(codes - {""}) + 2))
+PY
+
+# ---------------------------------------------------------------------------------------------
+# R5C-METAL-PREFILL-ARM — the `--model-forward-gpu` arm over the same synthetic two-layer model
+#
+# `docs/specs/r5c-metal-prefill.md` section 5.1. This block extends the existing runner rather than
+# adding a target: `layer-forward-smoke` is already a member of HOSTED_CHECK_TARGETS, so R5C adds
+# rows to it and changes no aggregate membership and no check topology.
+#
+# Hosted, ggml-free, **GPU-free**, model-free, llama.cpp-free. The default stub is unavailable and
+# stops the arm at step 20 exactly as it stops `--model-forward`; the `engine` build is available
+# and has no GPU device, which is `R5C_GPU_UNAVAILABLE` at step 20a; and three `engine+gpu*` builds
+# give it one, take its host-pointer capability away, and shrink its maximum buffer length, so all
+# three of the arm's new codes and its whole successful path are reached on a host with no GPU.
+# ---------------------------------------------------------------------------------------------
+
+DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+python3 - "${root_dir}" "${work_dir}" <<'PY'
+import json
+import os
+import re
+import subprocess
+import sys
+
+root_dir, work_dir = sys.argv[1:3]
+# R5C section 6, correction C20. The executable is the one this runner built into `work_dir` above,
+# not a `ggml-spike` left in the work tree by `make ggml-spike`. `root_dir` here made this block
+# depend on a developer's stale binary: it failed outright on a clean checkout, tested a build that
+# is not the source under test when one did exist, and — measured under the Linux preflight worker
+# from a macOS work tree — died with `OSError: [Errno 8] Exec format error` after the R5A and R5B
+# blocks had already passed. `r5b-model-prefill-forward.md` section 6, correction C24 and
+# `r5a-dense-layer-forward.md` section 6, correction C23 are the same rule for the same reason; both
+# blocks above already follow it and this one now does too.
+binary = os.path.join(work_dir, "ggml-spike")
+builder = os.path.join(root_dir, "scripts", "build-ggml-shim")
+golden_path = os.path.join(root_dir, "scripts", "gpu-forward-golden.jsonl")
+model_golden = os.path.join(root_dir, "scripts", "model-forward-golden.jsonl")
+layer_golden = os.path.join(root_dir, "scripts", "layer-forward-golden.jsonl")
+update = os.environ.get("ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE") == "1"
+
+ARM = "--model-forward-gpu"
+
+
+def path(name):
+    return os.path.join(work_dir, name)
+
+
+def geom(name):
+    return os.path.join(work_dir, name + ".json")
+
+
+PACK = path("model-pack.alignpack")
+GEOM = path("geometry.json")
+TOKENS = "3,17,5"
+SOURCE = path("model-source.bin")
+WIDE = path("model-transcript.txt")
+NARROW = path("model-transcript-runtime.txt")
+LOGITS = path("model-logits.bin")
+RUNTIME_LOGITS = path("model-logits-runtime.bin")
+WIDTH = "8"
+
+# Section 3.3's arity set, verbatim from R5B: exactly four, five, six, eight, or nine operands, and
+# **seven is `R5_ARITY`**. Section 3.1 is why the gap is load-bearing here too — a trailing
+# `--backend` operand would have made every one of those counts ambiguous by one.
+NO_DOCUMENT = [
+    ("gf-arity-3", [ARM, PACK, GEOM]),
+    ("gf-arity-7", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE]),
+    ("gf-arity-10", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH, LOGITS, "extra"]),
+    ("gf-path-pack-empty", [ARM, "", GEOM, TOKENS]),
+    ("gf-path-geometry-empty", [ARM, PACK, "", TOKENS]),
+    ("gf-path-long", [ARM, "/" + ("a" * 5000), GEOM, TOKENS]),
+    ("gf-path-doc-empty", [ARM, PACK, GEOM, TOKENS, ""]),
+    ("gf-arm-unknown-flag", ["--model-forward-metal", PACK, GEOM, TOKENS]),
+]
+
+# The default stub: steps 1 to 19, and step 20 stopping the arm exactly as it stops
+# `--model-forward`. Section 6, correction C6 records why the availability gate keeps R5B's code.
+#
+# This list is deliberately **five** rows and not R5B's twenty-seven. Steps 1 to 19 are the *same*
+# `model_forward.execute` on both arms — section 3.1's whole point — and the block above this one
+# already drives every one of those rules through it. What is unproven until it runs here is that
+# the new arm reaches that path at all, with its own operand grammar and its own document kind, and
+# one row per operand class settles it. Re-running twenty-seven identical validations against
+# identical code would cost `make layer-forward-smoke` about two seconds and assert nothing the
+# `--model-forward` block has not already asserted (section 5.1's budget).
+STUB_CASES = [
+    ("gf-stub-unavailable", [ARM, PACK, GEOM, TOKENS], "R5_GGML_UNAVAILABLE"),
+    ("gf-tokens-oob", [ARM, PACK, GEOM, "1,32"], "R5_TOKENS"),
+    ("gf-kv-width-below", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, "2"], "R5_KV_WIDTH"),
+    ("gf-geometry-unreadable", [ARM, PACK, path("absent.json"), TOKENS],
+     "R5_GEOMETRY_UNREADABLE"),
+    ("gf-geometry-arch", [ARM, PACK, geom("geometry-arch"), TOKENS], "R5_GEOMETRY"),
+    ("gf-pack-missing", [ARM, path("absent.alignpack"), GEOM, TOKENS], "R4_PACK_UNREADABLE"),
+]
+
+# Available, and no device of type GPU in the registry: section 3.9 step 20a, the arm's own first
+# code. Section 4.3's `gf-no-gpu` cell.
+NO_GPU_CASES = [
+    ("gf-no-gpu", [ARM, PACK, GEOM, TOKENS], "R5C_GPU_UNAVAILABLE"),
+]
+
+# A stub GPU device that otherwise behaves as R5B's engine: the arm's whole successful path, its
+# three oracles, and R5B's own codes still reachable through it (section 4.2's fourth cell).
+GPU_CASES = [
+    ("gf-gpu-ok", [ARM, PACK, GEOM, TOKENS], ""),
+    ("gf-gpu-reference", [ARM, PACK, GEOM, TOKENS, "-", SOURCE], ""),
+    ("gf-gpu-transcript", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH], ""),
+    ("gf-gpu-logits", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH, LOGITS], ""),
+    ("gf-gpu-runtime-width",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", RUNTIME_LOGITS], ""),
+    ("gf-gpu-alignment", [ARM, path("model-pack-tight.alignpack"), GEOM, TOKENS],
+     "R5_ALIGNMENT"),
+    ("gf-source-diverged",
+     [ARM, PACK, GEOM, TOKENS, "-", path("model-source-diverged.bin")], "R5_SOURCE_DIVERGED"),
+    # Section 3.7: the transcript's grammar, its matched node set, its element-count rule, and
+    # `kq-L`'s declared `ne0` are errors on this arm exactly as they are on R5B's. Only the element
+    # comparison is disabled, and section 4.4 asserts that below.
+    ("gf-transcript-missing-layer",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-transcript-missing.txt"), WIDTH],
+     "R5_ORACLE_MISSING"),
+    ("gf-transcript-kv-width",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-transcript-kv-width.txt"), WIDTH],
+     "R5_ORACLE_SHAPE"),
+    ("gf-transcript-garbage",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-transcript-garbage.txt"), WIDTH],
+     "R5_TRANSCRIPT"),
+    # A transcript whose `l_out-0` values are perturbed. On R5B this is an `oracle.verdict` of
+    # `FAIL`; here it must stay `N/A_DEVICE` with `status: ok`, which is the assertion that a future
+    # silent re-enable of the element comparison is a diff (section 4.4).
+    ("gf-transcript-perturbed",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-transcript-perturbed.txt"), WIDTH], ""),
+    ("gf-logits-short",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH, path("model-logits-short.bin")],
+     "R5_LOGITS_SHAPE"),
+    ("gf-logits-missing",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH, path("absent.bin")],
+     "R5_LOGITS_UNREADABLE"),
+    # Section 4.4's "a real failure is not `WITHIN`" cell: a reference blob shifted by 1.0 keeps the
+    # argmax and the whole top ten and is `FAIL` anyway, so the 6,000-ten-thousandth bound alone
+    # cannot pass it.
+    ("gf-logits-perturbed",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-perturbed.bin")], ""),
+    # Section 6, correction C12, on the arm the tolerance belongs to. `compare_logits` is shared, so
+    # these three cover the same code as the `mf-logits-*` rows above; they run here because the
+    # verdict they produce is the one this arm's 6,000-ten-thousandth bound would otherwise have
+    # been asked to absorb, and because a wrapped magnitude aborted **both** arms before C12.
+    # `MODEL_ABORT_TOKENS` and an `-inf` in element 0: the one input pair whose primary rounds to
+    # exactly zero ten-thousandths against a saturated reference, which is what made
+    # `0 - difference` wrap to `i64`'s minimum and index the histogram with it. Measured at
+    # `5663d8f`: `exit 134`, no document, `index out of bounds: the len is 65537 but the index is
+    # -9223372036854775808`, on this arm and on the other one. The transcript position is `-`
+    # because this token list is not the one the checked-in transcript was captured for.
+    ("gf-logits-nonfinite",
+     [ARM, PACK, GEOM, "1,25,5", "-", SOURCE, "-", "3", path("model-logits-neg-inf.bin")],
+     "R5_LOGITS_NONFINITE"),
+    ("gf-logits-nan",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-nan.bin")],
+     "R5_LOGITS_NONFINITE"),
+    ("gf-logits-huge",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-huge.bin")], ""),
+]
+
+# The two remaining new codes, each from its own shim build (section 4.5).
+FORCED_CASES = [
+    ("gf-no-host-ptr", "engine+gpu+no-host-ptr", [ARM, PACK, GEOM, TOKENS], "R5C_NO_HOST_PTR"),
+    ("gf-device-limit", "engine+gpu+max-buffer", [ARM, PACK, GEOM, TOKENS],
+     "R5C_DEVICE_BUFFER_LIMIT"),
+    # Section 4.3's cleanup cell: a failure inside the schedule still runs the full per-graph
+    # teardown and the counters balance, which on Metal is the difference between a document and a
+    # `SIGABRT` at exit (section 2.6).
+    ("gf-teardown-partial", "engine+gpu+compute", [ARM, PACK, GEOM, TOKENS], "R5_COMPUTE"),
+    # Section 6, correction C19, on the arm the tolerance belongs to. The transcript oracle's
+    # element half is `N/A_DEVICE` here (section 3.7), so what this case covers that its `mf-` twin
+    # cannot is the tolerance verdict's own non-finite `primary` branch under a bound that is meant
+    # to admit a device's rounding and must not admit an infinity.
+    ("gf-force-inf-readback", "engine+gpu+inf-readback",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", RUNTIME_LOGITS], ""),
+]
+
+PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
+               "reference_path": "<reference>", "transcript_path": "<transcript>",
+               "logits_path": "<logits>"}
+
+
+# `r5c-metal-prefill.md` section 6, correction C21: a digest over a NaN is not a portable golden.
+# The forced readback injects one `+inf` into every readback, and this arm hands a readback to the
+# next graph, so every element computed from that infinity is a NaN rather than an infinity.
+# IEEE-754 fixes an infinity's encoding and does **not** fix a NaN's sign or payload: an invalid
+# operation delivers x86-64 SSE's "real indefinite" `0xffc00000` and arm64's default NaN
+# `0x7fc00000`. A `bit_sum` over such a tensor therefore differs by 2**31 per NaN element and a
+# `sha256` differs outright between two conforming hosts, while every count, verdict, and code
+# agrees -- which is what the x86-64 run of this corpus reported and the aarch64 run did not.
+#
+# Mask the digests over the arm's **own** NaN-bearing tensors and nothing else. `nonfinite_count`,
+# every verdict, `reference.*` (the runtime and reconciliation passes still have to agree bit for
+# bit on one host) and `oracle_logits.reference_*` (file bytes, not a computed value) stay in the
+# golden, and the forced case asserts below that the masked fields are still present and are still
+# digests. The threshold is one and not zero because exactly one non-finite element in a readback
+# is the injected `+inf` itself, whose encoding is portable: the R5A corpus is twenty-one such
+# tensors and stays byte-identical.
+NONFINITE = "<nonfinite>"
+
+
+def is_nan_bits(bits):
+    return bits & 0x7FFFFFFF > 0x7F800000
+
+
+def mask_nonfinite_digests(document):
+    # An error document carries an empty schedule and a zeroed output, so every branch here is
+    # guarded rather than assumed: the mask is applied to every document normalize sees.
+    schedule = document["schedule"]
+    for row in schedule:
+        if row["nonfinite_count"] > 1:
+            row["l_out_sha256"] = NONFINITE
+            row["l_out_bit_sum"] = NONFINITE
+    if schedule and schedule[-1]["nonfinite_count"] > 1:
+        document["head"]["result_norm_sha256"] = NONFINITE
+        document["head"]["result_norm_bit_sum"] = NONFINITE
+    if document["output"]["nonfinite_count"] > 1:
+        document["output"]["sha256"] = NONFINITE
+        document["output"]["bit_sum"] = NONFINITE
+    for entry in document["output"]["top_k"]:
+        if is_nan_bits(entry["bits"]):
+            entry["bits"] = NONFINITE
+
+
+def normalize(text):
+    document = json.loads(text)
+    for key in document["timings"]:
+        document["timings"][key] = 0
+    for row in document["schedule"]:
+        row["pread_ns"] = 0
+        row["compute_ns"] = 0
+    document["head"]["pread_ns"] = 0
+    document["head"]["compute_ns"] = 0
+    # The wrap is a measurement, not a golden: it is nanoseconds. `wrap_count` is asserted below
+    # and stays in the golden, because how many times the window was handed to the device is a
+    # contract and how long that took is not.
+    document["window"]["wrap_ns"] = 0
+    mask_nonfinite_digests(document)
+    for key, placeholder in PLACEHOLDER.items():
+        if document[key]:
+            document[key] = placeholder
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+def build_shim(force):
+    environment = dict(os.environ)
+    environment.pop("ALIGN_LLM_GGML_INCLUDE", None)
+    environment.pop("ALIGN_LLM_GGML_LIB", None)
+    if force:
+        environment["ALIGN_LLM_GGML_FORCE"] = force
+    else:
+        environment.pop("ALIGN_LLM_GGML_FORCE", None)
+    subprocess.run([builder], check=True, capture_output=True, env=environment)
+
+
+def run(operands):
+    return subprocess.run([binary] + operands, capture_output=True, cwd=work_dir)
+
+
+failures = []
+produced = {}
+codes = set()
+
+
+def record(name, operands, expected):
+    result = run(operands)
+    if result.stdout == b"":
+        failures.append("%s: no document (exit %d): %s"
+                        % (name, result.returncode,
+                           result.stderr.decode("utf-8", "replace")[-400:]))
+        return None
+    try:
+        document = json.loads(result.stdout.decode("utf-8"))
+    except Exception as error:  # noqa: BLE001 - the document is the thing under test
+        failures.append("%s: the document is not valid JSON: %s" % (name, error))
+        return None
+    produced[name] = normalize(result.stdout.decode("utf-8"))
+    codes.add(document["error_code"])
+    if document["error_code"] != expected:
+        failures.append("%s: expected error_code %r, got %r (%r)"
+                        % (name, expected, document["error_code"], document["error_detail"]))
+    expected_exit = 0 if document["status"] == "ok" else 1
+    if (result.returncode == 0) != (expected_exit == 0):
+        failures.append("%s: status %r but exit %d"
+                        % (name, document["status"], result.returncode))
+    if document["kind"] != "R5_MODEL_FORWARD_GPU" or document["schema_version"] != 1:
+        failures.append("%s: wrong document identity %r/%r"
+                        % (name, document["kind"], document["schema_version"]))
+    if not document["abi"]["fp_contract_off"]:
+        failures.append("%s: the shim was not built with -ffp-contract=off" % name)
+    # Section 3.8: `device.*` is read once, before the window is validated, so **every** document
+    # carries the block — including an error document produced at step 21a.
+    if "device" not in document or document["device"]["kind"] != "gpu":
+        failures.append("%s: the device block is missing or not a gpu arm" % name)
+    return document
+
+
+for name, operands in NO_DOCUMENT:
+    result = run(operands)
+    if result.returncode == 0:
+        failures.append("%s: expected a non-zero exit, got 0" % name)
+    if result.stdout != b"":
+        failures.append("%s: expected no document, got %d bytes" % (name, len(result.stdout)))
+
+# Section 4.2's first cell, `arm-r5b-unchanged`, in three parts: the R5B arm still answers to its own
+# flag, it still emits its own kind, and **its checked-in goldens are byte-identical** — which is the
+# mechanical form of sections 3.1 and 3.2's promise that adding a device arm moves nothing in the arm
+# it shares a schedule with. The two blocks above this one compare every one of those goldens; this
+# asserts the files themselves have not been regenerated to make them agree.
+r5b = run(["--model-forward", PACK, GEOM, TOKENS])
+if r5b.stdout == b"":
+    failures.append("arm-r5b-unchanged: the R5B arm produced no document")
+else:
+    r5b_document = json.loads(r5b.stdout.decode("utf-8"))
+    if r5b_document["kind"] != "R5_MODEL_FORWARD" or r5b_document["schema_version"] != 1:
+        failures.append("arm-r5b-unchanged: the R5B arm emitted %r/%r"
+                        % (r5b_document["kind"], r5b_document["schema_version"]))
+    for field in ("wrap_count", "wrap_ns"):
+        if field in r5b_document["window"]:
+            failures.append("arm-r5b-unchanged: window.%s leaked into R5_MODEL_FORWARD" % field)
+    if "device" in r5b_document:
+        failures.append("arm-r5b-unchanged: a device block leaked into R5_MODEL_FORWARD")
+    if r5b_document["oracle_logits"]["tolerance_ten_thousandths"] != 5000:
+        failures.append("arm-r5b-unchanged: R5B's logits tolerance moved to %d"
+                        % r5b_document["oracle_logits"]["tolerance_ten_thousandths"])
+for name, corpus in (("model-forward-golden.jsonl", model_golden),
+                     ("layer-forward-golden.jsonl", layer_golden)):
+    with open(corpus, "r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        failures.append("arm-r5b-unchanged: %s is empty" % name)
+    for row in rows:
+        document = json.loads(row["document"])
+        if "device" in document or "wrap_count" in document.get("window", {}):
+            failures.append("arm-r5b-unchanged: %s case %s carries a device-arm field"
+                            % (name, row["case"]))
+
+for name, operands, expected in STUB_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    lifetime = document["lifetime"]
+    for key in ("ggml_buffers_created", "contexts_created", "backends_created",
+                "gallocrs_created"):
+        if lifetime[key] != 0:
+            failures.append("%s: lifetime.%s is %d in a default stub build, not 0"
+                            % (name, key, lifetime[key]))
+    if document["window"]["wrap_count"] != 0:
+        failures.append("%s: the window was wrapped %d times without a device"
+                        % (name, document["window"]["wrap_count"]))
+
+build_shim("engine")
+for name, operands, expected in NO_GPU_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    if document["error_detail"] != "device":
+        failures.append("%s: detail %r, not 'device'" % (name, document["error_detail"]))
+    if document["verdict"] != "UNAVAILABLE":
+        failures.append("%s: verdict %r" % (name, document["verdict"]))
+
+build_shim("engine+gpu")
+for name, operands, expected in GPU_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    device = document["device"]
+    if device["name"] != "stub-gpu" or device["type_id"] != 1:
+        failures.append("%s: device %r" % (name, device))
+    if not device["buffer_from_host_ptr"] or device["buffer_alignment"] != 32:
+        failures.append("%s: device capabilities %r" % (name, device))
+    # Section 6, correction C14: `window_fits` is tri-state. An error document raised before step
+    # 21a carries `-1`, "not evaluated", and only a run that reached the check carries `0` or `1`.
+    if device["window_fits"] not in (-1, 0, 1):
+        failures.append("%s: window_fits %r is not the tri-state -1/0/1"
+                        % (name, device["window_fits"]))
+    if document["status"] != "ok":
+        continue
+    graph = document["graph"]
+    if document["verdict"] != "EXTERNAL":
+        failures.append("%s: verdict %r, not EXTERNAL" % (name, document["verdict"]))
+    if graph["graph_count"] != 4 or graph["node_count_total"] != 68:
+        failures.append("%s: graph %r" % (name, graph))
+    if graph["slot_high_water"] != 52 or graph["slot_capacity"] != 128:
+        failures.append("%s: slots %d/%d, not 52/128"
+                        % (name, graph["slot_high_water"], graph["slot_capacity"]))
+    if graph["backend_name"] != "stub-gpu":
+        failures.append("%s: the backend came from the wrong device: %r"
+                        % (name, graph["backend_name"]))
+    window = document["window"]
+    if window["member_placements"] != 27 or window["pointer_identity_failures"] != 0:
+        failures.append("%s: %d placements, %d identity failures"
+                        % (name, window["member_placements"],
+                           window["pointer_identity_failures"]))
+    # Section 4.3: the transfer is measured, and section 6 correction C7 is why the count is not
+    # simply `graph_count`. The window is filled once per block — `reuse_count` — but it is wrapped
+    # once per **graph run**, and at the reconciliation width every layer and the head run twice:
+    # once at the runtime width and once at the declared one. One wrap per graph run is what the
+    # deferred wrap-once optimization of section 5.4 would change and what section 3.10's per-graph
+    # free keeps safe.
+    selection = document["selection"]
+    wide = selection["reconciliation_width"] > selection["attention_width"]
+    layers = document["model"]["n_layer"]
+    expected_wraps = 1 + 2 * (layers + 1) if wide else layers + 2
+    if window["wrap_count"] != expected_wraps:
+        failures.append("%s: %d wraps, not the %d graph runs this pass makes"
+                        % (name, window["wrap_count"], expected_wraps))
+    if window["reuse_count"] != 4:
+        failures.append("%s: the window was filled %d times, not once per block"
+                        % (name, window["reuse_count"]))
+    if device["window_fits"] != 1 or window["bytes"] > device["buffer_max_size"]:
+        failures.append("%s: window_fits %r against max %d"
+                        % (name, device["window_fits"], device["buffer_max_size"]))
+    if len(document["schedule"]) != 2:
+        failures.append("%s: %d schedule rows, not 2" % (name, len(document["schedule"])))
+    # Section 2.5: recorded, never gated. Hosted they are -1 and no case fails on them.
+    for row in document["schedule"]:
+        for field in ("l_out_max_abs_diff_ten_thousandths", "l_out_max_rel_diff_ppm",
+                      "l_out_worst_index"):
+            if row[field] != -1:
+                failures.append("%s: schedule[%d].%s is %r, not the unmeasured -1"
+                                % (name, row["layer"], field, row[field]))
+    lifetime = document["lifetime"]
+    if not lifetime["released_before_owner_scope_end"]:
+        failures.append("%s: the teardown did not balance" % name)
+    # Section 3.10: on Metal an unfreed device buffer is a process abort, not a leak, so the
+    # per-graph balance is load-bearing rather than tidy.
+    if lifetime["graph_balance_failures"] != 0:
+        failures.append("%s: %d graph boundaries left a ggml object alive"
+                        % (name, lifetime["graph_balance_failures"]))
+    if lifetime["ggml_buffers_created"] != lifetime["ggml_buffers_freed"]:
+        failures.append("%s: %d device buffers created, %d freed"
+                        % (name, lifetime["ggml_buffers_created"],
+                           lifetime["ggml_buffers_freed"]))
+
+# Section 4.4's oracle cells.
+reference = json.loads(produced["gf-gpu-reference"])["reference"]
+if reference["verdict"] != "IDENTICAL" or reference["graphs_compared"] != 4 \
+        or reference["nodes_identical"] != 37 or reference["nodes_compared"] != 37:
+    failures.append("gf-gpu-reference: oracle 1 is bit-exact on a device arm too: %r" % reference)
+
+# Oracle 2's structural half runs and its element half does not, and both halves are asserted so a
+# future silent re-enable is a diff.
+for case in ("gf-gpu-transcript", "gf-transcript-perturbed"):
+    oracle = json.loads(produced[case])["oracle"]
+    if oracle["verdict"] != "N/A_DEVICE" or oracle["elements_compared"] != 0:
+        failures.append("%s: oracle %r" % (case, oracle))
+    if oracle["layers_matched"] != 2 or oracle["layers_expected"] != 2:
+        failures.append("%s: %d/%d layers matched by the pre-schedule scan"
+                        % (case, oracle["layers_matched"], oracle["layers_expected"]))
+if json.loads(produced["gf-transcript-perturbed"])["status"] != "ok":
+    failures.append("gf-transcript-perturbed: a perturbed transcript must not fail a device arm")
+
+# Section 3.7's tolerance, at both widths, and the guard that makes it something other than slack.
+for case in ("gf-gpu-logits", "gf-gpu-runtime-width"):
+    logits = json.loads(produced[case])["oracle_logits"]
+    if logits["tolerance_ten_thousandths"] != 6000:
+        failures.append("%s: the tolerance moved to %d"
+                        % (case, logits["tolerance_ten_thousandths"]))
+    if logits["verdict"] not in ("WITHIN", "IDENTICAL"):
+        failures.append("%s: %r" % (case, logits))
+    if logits["argmax_primary"] != logits["argmax_reference"] or logits["top_k_agreement"] != 10:
+        failures.append("%s: argmax/top-k %r" % (case, logits))
+    if logits["elements_over_half"] != 0:
+        failures.append("%s: %d elements over half a unit"
+                        % (case, logits["elements_over_half"]))
+# Unlike R5B, the reconciliation width is a tolerance here and not byte-identity (section 3.2).
+strict = json.loads(produced["gf-gpu-logits"])["oracle_logits"]
+if strict["compared_pass"] != "reconciliation" or strict["verdict"] != "WITHIN":
+    failures.append("gf-gpu-logits: the reconciliation pass must be a tolerance here: %r" % strict)
+broken = json.loads(produced["gf-logits-perturbed"])
+if broken["status"] != "ok" or broken["oracle_logits"]["verdict"] != "FAIL" \
+        or broken["oracle_logits"]["argmax_primary"] \
+        != broken["oracle_logits"]["argmax_reference"] \
+        or broken["oracle_logits"]["top_k_agreement"] != 10:
+    failures.append("gf-logits-perturbed: %r" % broken["oracle_logits"])
+
+# Section 6, correction C12: an unrepresentable element can never be `WITHIN`, and a malformed
+# reference is an input error with a document rather than a verdict.
+for case in ("gf-logits-nonfinite", "gf-logits-nan"):
+    document = json.loads(produced[case])
+    if document["error_detail"] != "elements[1]":
+        failures.append("%s: detail %r, not the count of non-finite reference elements"
+                        % (case, document["error_detail"]))
+    if document["oracle_logits"]["verdict"] != "-":
+        failures.append("%s: a refused reference must publish no verdict, got %r"
+                        % (case, document["oracle_logits"]["verdict"]))
+huge = json.loads(produced["gf-logits-huge"])["oracle_logits"]
+if huge["verdict"] != "FAIL" or huge["max_abs_diff_ten_thousandths"] <= 6000 \
+        or huge["elements_over_half"] != 2 or huge["mean_abs_diff_ten_thousandths"] < 0:
+    failures.append("gf-logits-huge: an out-of-range reference must not be WITHIN: %r" % huge)
+
+# Both output forms emit byte-identical document bytes, and three consecutive runs agree — which is
+# the hosted half of section 3.7's determinism contract.
+document_path = os.path.join(work_dir, "model-gpu.json")
+stdout_form = run([ARM, PACK, GEOM, TOKENS]).stdout.decode("utf-8").rstrip("\n")
+run([ARM, PACK, GEOM, TOKENS, document_path])
+with open(document_path, "r", encoding="utf-8") as handle:
+    file_form = handle.read()
+if normalize(stdout_form) != normalize(file_form):
+    failures.append("gf-doc-stdout-identical: the stdout and file forms differ")
+dash_form = run([ARM, PACK, GEOM, TOKENS, "-"]).stdout.decode("utf-8").rstrip("\n")
+if normalize(dash_form) != normalize(stdout_form):
+    failures.append("gf-doc-stdout-identical: the `-` form differs from the four-operand form")
+# `gf-gpu-logits` above is the first of the three runs, so this costs two invocations rather than
+# three and still compares three independent computations of the same 32 logits.
+digests = {json.loads(produced["gf-gpu-logits"])["output"]["sha256"]}
+digests |= {json.loads(run([ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH, LOGITS])
+                      .stdout.decode("utf-8"))["output"]["sha256"] for _ in range(2)}
+if len(digests) != 1:
+    failures.append("gf-determinism: three consecutive runs produced %d distinct logits digests"
+                    % len(digests))
+
+forced_documents = {}
+for name, force, operands, expected in FORCED_CASES:
+    build_shim(force)
+    forced_documents[name] = record(name, operands, expected)
+
+build_shim(None)
+
+limit = forced_documents.get("gf-device-limit")
+if limit is not None:
+    if not re.fullmatch(r"window\[\d+\]/max\[1024\]", limit["error_detail"]):
+        failures.append("gf-device-limit: detail %r does not name the window and the limit"
+                        % limit["error_detail"])
+    # Section 2.6: the check runs **before the first wrap**, because an oversize wrap segfaults
+    # instead of returning null. A document that reports the refusal after wrapping once would mean
+    # the guard is in the wrong place.
+    if limit["window"]["wrap_count"] != 0:
+        failures.append("gf-device-limit: the window was wrapped %d times before the limit check"
+                        % limit["window"]["wrap_count"])
+    if limit["device"]["window_fits"] != 0:
+        failures.append("gf-device-limit: window_fits %r, not the evaluated 0 for a window over "
+                        "the limit" % limit["device"]["window_fits"])
+no_host = forced_documents.get("gf-no-host-ptr")
+if no_host is not None:
+    if no_host["device"]["buffer_from_host_ptr"]:
+        failures.append("gf-no-host-ptr: the capability flag is still true")
+    # Correction C14, and this case is what forced it: step 20b returns before step 21 reads the
+    # alignment and before step 21a compares the window, so both fields must say so.
+    if no_host["device"]["buffer_alignment"] != -1 or no_host["device"]["window_fits"] != -1:
+        failures.append("gf-no-host-ptr: a step 20b document claims alignment %r and window_fits "
+                        "%r, neither of which it evaluated"
+                        % (no_host["device"]["buffer_alignment"],
+                           no_host["device"]["window_fits"]))
+gpu_absent = json.loads(produced["gf-no-gpu"])
+if gpu_absent["device"]["buffer_alignment"] != -1 \
+        or gpu_absent["device"]["window_fits"] != -1:
+    failures.append("gf-no-gpu: a step 20a document claims device values it never read: %r"
+                    % gpu_absent["device"])
+teardown = forced_documents.get("gf-teardown-partial")
+if teardown is not None:
+    lifetime = teardown["lifetime"]
+    if lifetime["ggml_buffers_created"] != lifetime["ggml_buffers_freed"] \
+            or lifetime["contexts_created"] != lifetime["contexts_freed"] \
+            or lifetime["gallocrs_created"] != lifetime["gallocrs_freed"]:
+        failures.append("gf-teardown-partial: a compute failure left a ggml object alive: %r"
+                        % lifetime)
+
+# Section 6, correction C19. The tolerance verdict is not slack for an infinity: a non-finite
+# element of the arm's **own** vector is reported by `output.nonfinite_count` and never refused
+# (section 3.8), and it resolves to a magnitude fifteen orders above the 6,000-ten-thousandth bound
+# rather than to a saturated difference the histogram cannot index.
+infinite = forced_documents.get("gf-force-inf-readback")
+if infinite is not None:
+    logits = infinite["oracle_logits"]
+    if infinite["status"] != "ok" or logits["verdict"] != "FAIL" \
+            or logits["max_abs_diff_ten_thousandths"] != 1000000000000000 \
+            or logits["elements_over_half"] < 1 \
+            or logits["mean_abs_diff_ten_thousandths"] < 0 \
+            or infinite["output"]["nonfinite_count"] < 1:
+        failures.append("gf-force-inf-readback: a +inf logit resolved to %r with %d non-finite "
+                        "elements" % (logits, infinite["output"]["nonfinite_count"]))
+    # Correction C21: the golden carries `<nonfinite>` where a digest covers a NaN, so the digest
+    # itself is asserted here instead -- it must still be produced, still be a digest, and the
+    # runtime and reconciliation passes must still agree over the NaN-bearing tensors on this host.
+    reference = infinite["reference"]
+    if reference["verdict"] != "IDENTICAL" \
+            or reference["nodes_identical"] != reference["nodes_compared"] \
+            or reference["nodes_compared"] < 1:
+        failures.append("gf-force-inf-readback: the runtime and reconciliation passes disagree "
+                        "over a NaN-bearing tensor: %r" % reference)
+    for label, value in (("output.sha256", infinite["output"]["sha256"]),
+                         ("head.result_norm_sha256", infinite["head"]["result_norm_sha256"]),
+                         ("schedule[-1].l_out_sha256",
+                          infinite["schedule"][-1]["l_out_sha256"])):
+        if len(value) != 64 or value.strip("0123456789abcdef") != "":
+            failures.append("gf-force-inf-readback: %s is %r, not a digest"
+                            % (label, value))
+
+# Section 4.1's `gf-status-map` cell: every negative shim status maps to exactly one R5 code, and
+# the mapping is total. The scan is over `src/ggml_ffi.align`'s own declarations, so a status added
+# without a branch is a failure here rather than a silent `R5_ABI` at run time.
+#
+# `STATUS_OK` is success and `STATUS_ABI` is deliberately the fall-through: a status this repository
+# does not know is `R5_ABI` rather than a silent success, which is precisely the drift the code
+# exists to name. That fall-through is asserted to exist, so totality is a checked property and not
+# a comment.
+ffi = open(os.path.join(root_dir, "src", "ggml_ffi.align"), "r", encoding="utf-8").read()
+statuses = set(re.findall(r"^pub (STATUS_[A-Z_]+) := (-?\d+)$", ffi, re.M))
+if len(statuses) < 8:
+    failures.append("gf-status-map: only %d shim statuses found; is the scan stale?"
+                    % len(statuses))
+mapper = ffi.split("pub fn r5_code_for(")[1].split("\n}")[0]
+unmapped = sorted(name for name, _ in statuses
+                  if name not in ("STATUS_OK", "STATUS_ABI") and name not in mapper)
+if unmapped:
+    failures.append("gf-status-map: %s have no branch in r5_code_for" % ", ".join(unmapped))
+if not mapper.rstrip().endswith('return "R5_ABI"'):
+    failures.append("gf-status-map: r5_code_for is not total; an unknown status would fall through "
+                    "to something other than R5_ABI")
+
+REQUIRED_CODES = {
+    "R5_TOKENS", "R5_KV_WIDTH", "R5_GEOMETRY_UNREADABLE", "R5_GEOMETRY", "R4_PACK_UNREADABLE",
+    "R5_GGML_UNAVAILABLE", "R5_ALIGNMENT", "R5_COMPUTE", "R5_SOURCE_DIVERGED", "R5_TRANSCRIPT",
+    "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE", "R5_LOGITS_UNREADABLE", "R5_LOGITS_SHAPE",
+    "R5_LOGITS_NONFINITE",
+    "R5C_GPU_UNAVAILABLE", "R5C_NO_HOST_PTR", "R5C_DEVICE_BUFFER_LIMIT",
+}
+missing_codes = REQUIRED_CODES - codes
+if missing_codes:
+    failures.append("codes never reached: %s" % ", ".join(sorted(missing_codes)))
+
+ORDER = ([name for name, _, _ in STUB_CASES]
+         + [name for name, _, _ in NO_GPU_CASES]
+         + [name for name, _, _ in GPU_CASES]
+         + [name for name, _, _, _ in FORCED_CASES])
+
+if update:
+    with open(golden_path, "w", encoding="utf-8") as handle:
+        for name in ORDER:
+            handle.write(json.dumps({"case": name, "document": produced[name]},
+                                    separators=(",", ":"), ensure_ascii=False) + "\n")
+    print("gpu forward smoke: golden rewritten with %d cases" % len(produced))
+else:
+    with open(golden_path, "r", encoding="utf-8") as handle:
+        golden = [json.loads(line) for line in handle if line.strip()]
+    if [row["case"] for row in golden] != ORDER:
+        failures.append("the golden case list does not match the runner's case list")
+    else:
+        for row in golden:
+            if produced.get(row["case"]) != row["document"]:
+                failures.append("golden mismatch for %s:\n  expected %s\n  actual   %s"
+                                % (row["case"], row["document"], produced.get(row["case"])))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("gpu forward smoke: FAIL %s\n" % line)
+    raise SystemExit(1)
+
+print("gpu forward smoke: %d no-document cases (R5_ARITY, R5_PATH), %d documented cases, "
+      "%d codes reached including all three R5C_*, three oracles, arm-r5b-unchanged, and the whole "
+      "two-layer model on a stub GPU device PASS"
       % (len(NO_DOCUMENT), len(ORDER), len(codes - {""}) + 2))
 PY

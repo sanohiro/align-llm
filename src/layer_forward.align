@@ -62,6 +62,21 @@ TOLERANCE_TEN_THOUSANDTHS := 1
 SUM_TOLERANCE_MILLIONTHS := 1000
 SUM_TOLERANCE_RELATIVE_PPM := 10
 
+// `docs/specs/r5c-metal-prefill.md` section 6, correction C19. Both comparisons below scale an
+// f32 activation into a fixed-point integer with `((v as f64) * S).round() as i64`, and `as i64`
+// **saturates**: an infinity becomes `i64`'s minimum or maximum and a NaN becomes `0`. Against a
+// transcript value near zero the first wraps `0 - difference` back to `i64`'s minimum — a negative
+// magnitude that no `>` test can see — and the second compares *equal*. Either one is a silent
+// `PASS` over an element that is not a number. `ORACLE_SCALE_LIMIT_TEN_THOUSANDTHS` is the largest
+// magnitude the element comparison represents and `SUM_SCALE_LIMIT_MILLIONTHS` the largest the sum
+// comparison does; anything at or beyond either — including every non-finite value — is a mismatch
+// by construction rather than an arithmetic accident. The limits are 10^11 units and 10^12 units
+// respectively, eleven and twelve orders above anything this oracle has measured, and low enough
+// that the difference of two of them cannot overflow.
+ORACLE_SCALE_LIMIT_TEN_THOUSANDTHS := 1000000000000000
+SUM_SCALE_LIMIT_MILLIONTHS := 1000000000000000000
+UNREPRESENTABLE := 9223372036854775807
+
 // The transcript's own print structure. `llama-eval-callback` prints at most three leading and
 // three trailing positions on every axis, with `...` between them, so a sampled ordinal maps back
 // to a real index through `axis_index` and never through its own position.
@@ -2234,6 +2249,21 @@ fn stage_reference_compare(
   return Ok(())
 }
 
+// `r5c-metal-prefill.md` section 6, correction C19. One computed activation, in ten-thousandths,
+// or `UNREPRESENTABLE` when it has no such value. The exponent test is `digest_region`'s — an
+// all-ones exponent field is an infinity or a NaN — so one definition of "non-finite" serves the
+// published node counts and this oracle, and a NaN is caught by the bits rather than by its `as i64`, which is `0`. A finite
+// magnitude beyond the limit is refused by the same route, so no caller has to know which of the
+// two it met.
+fn oracle_ten_thousandths(borrow region: slice<u8>, at: i64) -> i64 {
+  bits := region.u32_le(at * 4) as i64
+  if (bits / 8388608) % 256 == 255 { return UNREPRESENTABLE }
+  scaled := ((region.f32_le(at * 4) as f64) * 10000.0).round() as i64
+  if scaled > ORACLE_SCALE_LIMIT_TEN_THOUSANDTHS { return UNREPRESENTABLE }
+  if scaled < 0 - ORACLE_SCALE_LIMIT_TEN_THOUSANDTHS { return UNREPRESENTABLE }
+  return scaled
+}
+
 // Steps 28 and 29. A named node the transcript does not carry is `R5_ORACLE_MISSING` and a declared
 // shape that disagrees is `R5_ORACLE_SHAPE` — both **errors**, while a tolerance breach is not. The
 // asymmetry is deliberate: a breach is the measurement this capability exists to make, and
@@ -2322,9 +2352,25 @@ fn stage_oracle(
         fail(o, "R5_ORACLE_SHAPE", named("node", layer_qwen2.oracle_id(oracle, row)))
         break
       }
-      computed := ((window.f32_le(spot * 4) as f64) * 10000.0).round() as i64
-      difference := computed - scan.element_value[element_at]
-      magnitude := if difference < 0 { 0 - difference } else { difference }
+      // `r5c-metal-prefill.md` section 6, correction C19: the computed activation crosses the
+      // range-checked conversion and the transcript's own value is range-checked beside it, so the
+      // subtraction, the absolute value, and every comparison below are in range by construction.
+      // An unrepresentable operand takes the scale limit as its magnitude, which is above
+      // `TOLERANCE_TEN_THOUSANDTHS` by fifteen orders, so it is an `ORACLE_FAIL` and never a
+      // wrapped pass.
+      computed := oracle_ten_thousandths(window, spot)
+      expected := scan.element_value[element_at]
+      unrepresentable := computed == UNREPRESENTABLE
+        || expected > ORACLE_SCALE_LIMIT_TEN_THOUSANDTHS
+        || expected < 0 - ORACLE_SCALE_LIMIT_TEN_THOUSANDTHS
+      difference := if unrepresentable { 0 } else { computed - expected }
+      magnitude := if unrepresentable {
+        ORACLE_SCALE_LIMIT_TEN_THOUSANDTHS
+      } else if difference < 0 {
+        0 - difference
+      } else {
+        difference
+      }
       o.oracle_elements = o.oracle_elements + 1
       if magnitude > o.oracle_max_abs {
         o.oracle_max_abs = magnitude
@@ -2341,14 +2387,28 @@ fn stage_oracle(
     if oracle.compared[sum_at] == 1 && scan.sum_present[sum_at] == 1 {
       expected := scan.sum_millionths[sum_at]
       computed := nodes.sum_millionths[sum_at]
-      difference := computed - expected
-      magnitude := if difference < 0 { 0 - difference } else { difference }
-      scale := if expected < 0 { 0 - expected } else { expected }
-      mut bound := SUM_TOLERANCE_MILLIONTHS
-      relative := scale / (1000000 / SUM_TOLERANCE_RELATIVE_PPM)
-      if relative > bound { bound = relative }
-      if magnitude > o.oracle_max_sum { o.oracle_max_sum = magnitude }
-      if magnitude > bound { breach = true }
+      // `r5c-metal-prefill.md` section 6, correction C19, the sum half of the same class.
+      // `nodes.nonfinite` is the count the digest already published for this node, so a node
+      // holding an infinity or a NaN — whose f32 accumulation has no millionths value at all, and
+      // whose saturated or zeroed conversion is what wraps the subtraction below — is a breach
+      // here rather than an arithmetic accident.
+      // It covers the elements the transcript never printed, which the element comparison above
+      // cannot reach.
+      if nodes.nonfinite[sum_at] > 0
+        || computed > SUM_SCALE_LIMIT_MILLIONTHS
+        || computed < 0 - SUM_SCALE_LIMIT_MILLIONTHS {
+        o.oracle_max_sum = UNREPRESENTABLE
+        breach = true
+      } else {
+        difference := computed - expected
+        magnitude := if difference < 0 { 0 - difference } else { difference }
+        scale := if expected < 0 { 0 - expected } else { expected }
+        mut bound := SUM_TOLERANCE_MILLIONTHS
+        relative := scale / (1000000 / SUM_TOLERANCE_RELATIVE_PPM)
+        if relative > bound { bound = relative }
+        if magnitude > o.oracle_max_sum { o.oracle_max_sum = magnitude }
+        if magnitude > bound { breach = true }
+      }
     }
     sum_at = sum_at + 1
   }

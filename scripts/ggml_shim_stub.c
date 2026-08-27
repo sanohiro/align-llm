@@ -407,6 +407,73 @@ int32_t align_ggml_window_copy(void *window, int64_t window_bytes, int64_t offse
     return ALIGN_GGML_OK;
 }
 
+
+/* R5C-METAL-PREFILL-ARM (`docs/specs/r5c-metal-prefill.md` sections 3.4, 3.8, and 3.9). The device
+ * selector, the property selector, and the one clamp, shared byte-for-byte by both files so that a
+ * stub GPU and a real Metal device answer the same questions with the same field ids.
+ *
+ * The two device kinds are `GGML_BACKEND_DEVICE_TYPE_CPU` and `..._GPU` (section 3.4): the arm
+ * names no Metal-specific entry point and includes no `ggml-metal.h`, because
+ * `r4-5-external-buffer.md` section 2.5 established that Metal exposes no backend-specific
+ * host-pointer function and that the device-generic capability flag is the whole surface.
+ */
+#define ALIGN_GGML_DEVICE_CPU 0
+#define ALIGN_GGML_DEVICE_GPU 1
+
+/* The numeric device properties, selected by field id rather than returned in one record, because
+ * a `layout(C)` struct cannot cross this boundary by value at this pin (section 3.1, and
+ * `docs/align-requests.md` Request 32). Every field crosses as an `int64_t`, and the two capability
+ * flags cross as `0` or `1` for the same reason `bool` is not an FFI type here.
+ */
+#define ALIGN_GGML_DEV_TYPE_ID       0
+#define ALIGN_GGML_DEV_HOST_PTR      1
+#define ALIGN_GGML_DEV_HOST_BUFFER   2
+#define ALIGN_GGML_DEV_ALIGNMENT     3
+#define ALIGN_GGML_DEV_MEMORY_FREE   4
+#define ALIGN_GGML_DEV_MEMORY_TOTAL  5
+
+/* `align_ggml_device_text`'s selector. `ggml_backend_dev_name` and `ggml_backend_dev_description`
+ * both return a `const char *`, and a `str` cannot be formed over foreign memory at this pin, so
+ * each is copied into an Align-owned byte range exactly as `align_ggml_backend_name` already copies
+ * the backend's.
+ */
+#define ALIGN_GGML_DEV_TEXT_NAME        0
+#define ALIGN_GGML_DEV_TEXT_DESCRIPTION 1
+
+/* `ggml_backend_buft_get_max_size` reports `SIZE_MAX` for the CPU buffer type, which is not
+ * representable as an `int64_t`. Both files clamp rather than truncate, so section 3.9 step 21a
+ * compares two numbers Align can hold and a device that declares "no limit" reads as the largest
+ * limit instead of as a negative one.
+ */
+#define ALIGN_GGML_MAX_BUFFER_CLAMP ((int64_t) 0x7fffffffffffffffLL)
+
+static int64_t align_ggml_clamp_size(size_t value) {
+    if (value > (size_t) ALIGN_GGML_MAX_BUFFER_CLAMP) {
+        return ALIGN_GGML_MAX_BUFFER_CLAMP;
+    }
+    return (int64_t) value;
+}
+
+/* R5C-METAL-PREFILL-ARM section 6, correction C17. The directory the backend plugins are
+ * `dlopen`ed from, named by the environment and read at **run** time by whichever of the two files
+ * owns a registry.
+ *
+ * `ggml_backend_load_all` searches the working directory, the executable's directory, and the
+ * `GGML_BACKEND_DIR` compiled into libggml, and ggml's own `GGML_BACKEND_PATH` variable only
+ * **adds** one library file to that set. Measured on the 0.21.0 this host links against: a bogus
+ * `libggml-metal.so` named by `GGML_BACKEND_PATH` fails to load and the registry still reports
+ * `MTL0` from the compiled-in directory, so a qualification that names one install could exercise
+ * another. `ggml_backend_load_all_from_path(dir)` **replaces** the search path with `dir` alone,
+ * which is the scoping a named input needs: the named directory is what runs, and a directory
+ * holding no loadable backend leaves the registry empty — which section 3.9 step 20a reports as
+ * `R5C_GPU_UNAVAILABLE`, a document with a verdict rather than a silent substitution.
+ *
+ * Reading it at **run** time is correction C3's rule kept: no shim behaviour depends on the
+ * environment the library was compiled in. The stub declares the same name and loads nothing,
+ * because it has no registry to load into.
+ */
+#define ALIGN_GGML_BACKEND_DIR_ENV "ALIGN_GGML_BACKEND_DIR"
+
 /* --- END R4.5 SHARED SHIM CONTRACT --- */
 
 /* ---------------------------------------------------------------------------------------------
@@ -852,20 +919,131 @@ void *align_ggml_device_open(void) {
     return (void *) &align_stub_device_token;
 }
 
+/* R5C-METAL-PREFILL-ARM section 5.1. The stub has **no GPU device** unless it is built with
+ * `ALIGN_GGML_STUB_GPU`, which is what makes `R5C_GPU_UNAVAILABLE` at section 3.9 step 20a the GPU
+ * arm's hosted baseline: every step from 1 to 20 runs for real on a host with no ggml, no Metal, no
+ * model, and no llama.cpp, and the arm then stops with a document and a verdict.
+ *
+ * `ALIGN_GGML_STUB_GPU` selects a second device token that otherwise behaves exactly as the
+ * engine's CPU device, so the GPU arm's *successful* path — the window, the thirty wraps, the
+ * placements, the self-reference oracle, the logits verdict — is reachable hosted too.
+ */
+#ifdef ALIGN_GGML_STUB_GPU
+static int32_t align_stub_gpu_token = 0;
+#endif
+
+void *align_ggml_device_by_kind(int32_t kind) {
+    if (kind == ALIGN_GGML_DEVICE_CPU) {
+        return align_ggml_device_open();
+    }
+#ifdef ALIGN_GGML_STUB_GPU
+    if (kind == ALIGN_GGML_DEVICE_GPU) {
+        align_stub_gpu_token = 1;
+        return (void *) &align_stub_gpu_token;
+    }
+#endif
+    return NULL;
+}
+
+/* One fixed device memory figure for both `memory_free` and `memory_total`, so the golden documents
+ * are reproducible: a stub that reported the host's real free memory would make every golden
+ * machine-dependent. */
+#define ALIGN_STUB_DEVICE_MEMORY ((int64_t) 4294967296)
+
+static int align_stub_is_gpu(const void *device) {
+#ifdef ALIGN_GGML_STUB_GPU
+    return device == (const void *) &align_stub_gpu_token;
+#else
+    (void) device;
+    return 0;
+#endif
+}
+
+int64_t align_ggml_device_props(void *device, int32_t field) {
+    if (device == NULL) {
+        return ALIGN_GGML_UNAVAILABLE;
+    }
+    switch (field) {
+    case ALIGN_GGML_DEV_TYPE_ID:
+        return align_stub_is_gpu(device) ? ALIGN_GGML_DEVICE_GPU : ALIGN_GGML_DEVICE_CPU;
+    case ALIGN_GGML_DEV_HOST_PTR:
+#ifdef ALIGN_GGML_FORCE_NO_HOST_PTR
+        /* Section 4.5's `R5C_NO_HOST_PTR` fixture. Never defined in an ordinary build. */
+        return 0;
+#else
+        return 1;
+#endif
+    case ALIGN_GGML_DEV_HOST_BUFFER:
+        return 0;
+    case ALIGN_GGML_DEV_ALIGNMENT:
+        return ALIGN_GGML_TENSOR_ALIGNMENT;
+    case ALIGN_GGML_DEV_MEMORY_FREE:
+    case ALIGN_GGML_DEV_MEMORY_TOTAL:
+        return align_ggml_clamp_size((size_t) ALIGN_STUB_DEVICE_MEMORY);
+    default:
+        break;
+    }
+    return ALIGN_GGML_ABI;
+}
+
+int64_t align_ggml_device_buft_max_size(void *device) {
+    if (device == NULL) {
+        return ALIGN_GGML_UNAVAILABLE;
+    }
+#ifdef ALIGN_GGML_FORCE_MAX_BUFFER_SIZE
+    /* Section 4.3's `gf-device-limit` fixture: a maximum buffer length the computed window exceeds,
+     * so section 3.9 step 21a is reached hosted. Never defined in an ordinary build. */
+    return (int64_t) (ALIGN_GGML_FORCE_MAX_BUFFER_SIZE);
+#else
+    return align_ggml_clamp_size((size_t) ALIGN_STUB_DEVICE_MEMORY);
+#endif
+}
+
+int32_t align_ggml_device_text(void *device, int32_t which, void *out, int32_t cap) {
+    static const char cpu_name[] = "stub-cpu";
+    static const char gpu_name[] = "stub-gpu";
+    static const char description[] = "align stub device";
+    const char *text = NULL;
+    size_t length = 0;
+    if (device == NULL || out == NULL || cap <= 0) {
+        return 0;
+    }
+    if (which == ALIGN_GGML_DEV_TEXT_NAME) {
+        text = align_stub_is_gpu(device) ? gpu_name : cpu_name;
+    } else if (which == ALIGN_GGML_DEV_TEXT_DESCRIPTION) {
+        text = description;
+    }
+    if (text == NULL) {
+        return 0;
+    }
+    length = strlen(text);
+    if (length > (size_t) cap) {
+        length = (size_t) cap;
+    }
+    memcpy(out, text, length);
+    return (int32_t) length;
+}
+
 void *align_ggml_backend_open(void *device) {
     if (device == NULL) {
         return NULL;
     }
-    align_stub_backend_token = 1;
+    /* The token records which device the backend came from, so `graph.backend_name` names the
+     * device the run actually used rather than the only one the stub used to have. */
+    align_stub_backend_token = align_stub_is_gpu(device) ? 2 : 1;
     return (void *) &align_stub_backend_token;
 }
 
 int32_t align_ggml_backend_name(void *backend, void *out, int32_t cap) {
-    static const char name[] = "stub-cpu";
-    int32_t length = (int32_t) (sizeof(name) - 1);
+    static const char cpu_name[] = "stub-cpu";
+    static const char gpu_name[] = "stub-gpu";
+    const char *name = NULL;
+    int32_t length = 0;
     if (backend == NULL || out == NULL || cap <= 0) {
         return 0;
     }
+    name = (*(const int32_t *) backend == 2) ? gpu_name : cpu_name;
+    length = (int32_t) strlen(name);
     if (length > cap) {
         length = cap;
     }
@@ -939,6 +1117,16 @@ void *align_ggml_buffer_from_host(void *device, void *ptr, int64_t size) {
     }
     if (align_ptr_align_mod(ptr, (int64_t) ALIGN_GGML_TENSOR_ALIGNMENT) != 0) {
         return NULL;
+    }
+    /* R5C section 2.6's second gate, in the same shape as the real shim's: an oversize wrap
+     * segfaults there, so both files refuse the length rather than letting it reach the backend.
+     * Section 6, correction C15: a non-positive limit is a negative status or no limit at all, and
+     * this gate refuses on it rather than failing open. */
+    {
+        int64_t max_size = align_ggml_device_buft_max_size(device);
+        if (max_size <= 0 || size > max_size) {
+            return NULL;
+        }
     }
     for (i = 0; i < ALIGN_STUB_MAX_BUFFERS; i++) {
         if (!align_stub_buffers[i].used) {
@@ -1212,7 +1400,26 @@ int32_t align_ggml_slot_get(void *slots, int64_t index, void *bytes, int64_t off
     if (t == NULL) {
         return ALIGN_GGML_SLOT;
     }
+#ifdef ALIGN_GGML_FORCE_INF_READBACK
+    /* R5C section 6, correction C19. A **computed** activation with no ten-thousandths value is a
+     * condition no operand can produce: every fixture's inputs are finite and the engine's eleven
+     * kernels are closed over them, so the oracle's own conversion of a non-finite activation — and
+     * the logits comparison's non-finite *primary* branch — were argued rather than run. This build
+     * makes the first element of every readback `+inf` and changes nothing else: the tensor data is
+     * untouched, so the graph still computes what it computed and only the bytes the arm reads back
+     * carry the value. Never defined in an ordinary build.
+     */
+    {
+        int32_t status = align_ggml_tensor_get((void *) t, bytes, off, n);
+        static const unsigned char positive_infinity[4] = { 0x00u, 0x00u, 0x80u, 0x7fu };
+        if (status == ALIGN_GGML_OK && bytes != NULL && off == 0 && n >= 4) {
+            memcpy(bytes, positive_infinity, sizeof(positive_infinity));
+        }
+        return status;
+    }
+#else
     return align_ggml_tensor_get((void *) t, bytes, off, n);
+#endif
 }
 
 int32_t align_ggml_slot_mark_output(void *slots, int64_t index) {
