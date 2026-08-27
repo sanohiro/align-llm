@@ -178,6 +178,21 @@ extern "C" link("align_ggml_shim") {
     ctx: raw, slots: slice<u8>, out: i64, a: i64, mask: i64,
     scale_bits: i32, max_bias_bits: i32) -> i32
   fn align_ggml_op_swiglu_split(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
+
+  // R5B-MODEL-PREFILL-FORWARD (`docs/specs/r5b-model-prefill-forward.md` section 3.6). The **one**
+  // new symbol: `ggml_pad`, which widens K and V to the reference instrument's declared attention
+  // width. The plan named a second, `cont_2d`; section 6 correction C1 records that
+  // `align_ggml_op_cont_3d` already covers the narrowed `kqv_out` at `ne2 = 1`, exactly as
+  // `r5a-dense-layer-forward.md` correction C4 established, so it was never written.
+  fn align_ggml_op_pad(
+    ctx: raw, slots: slice<u8>, out: i64, a: i64, p0: i32, p1: i32, p2: i32, p3: i32) -> i32
+
+  // The second new symbol, and section 6 correction C4's whole subject: a bounded `memcpy` between
+  // two Align-owned ranges. Align's `buffer` is append-only and `pread` overwrites from index 0, so
+  // a window that is allocated once and refilled thirty times cannot be refilled from Align.
+  fn align_ggml_window_copy(
+    window: slice<u8>, window_bytes: i64, offset: i64,
+    source: slice<u8>, source_bytes: i64, n: i64) -> i32
   fn align_ggml_graph_context_bytes(node_capacity: i64) -> i64
   fn align_ggml_graph_new(ctx: raw) -> raw
   fn align_ggml_graph_expand(graph: raw, slots: slice<u8>, index: i64) -> i32
@@ -726,6 +741,38 @@ pub fn op_swiglu_split(
   ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, b: i64, label: str) -> Result<(), Fault> {
   unsafe {
     return r5_result(align_ggml_op_swiglu_split(ctx, slots, out, a, b) as i64, label)
+  }
+}
+
+// R5B section 3.6. `ggml_pad` appends zeroes at the **end** of each axis, so the source occupies
+// the leading positions and the padded lanes are zero. Each `p` is validated non-negative and
+// bounded by the shim, and the result's element count is validated against the shim's own cap
+// before the handle is stored, so a malformed width cannot ask ggml for a terabyte.
+pub fn op_pad(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64,
+  p0: i64, p1: i64, p2: i64, p3: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(
+      align_ggml_op_pad(ctx, slots, out, a, p0 as i32, p1 as i32, p2 as i32, p3 as i32) as i64,
+      label)
+  }
+}
+
+// R5B section 6, correction C4. `n` bytes from `source` into `window` at `offset`, with every bound
+// checked in C before the copy. This is how the one reused weight window is filled thirty times.
+pub fn window_copy(
+  borrow window: slice<u8>,
+  window_bytes: i64,
+  offset: i64,
+  borrow source: slice<u8>,
+  source_bytes: i64,
+  n: i64,
+  label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(
+      align_ggml_window_copy(window, window_bytes, offset, source, source_bytes, n) as i64, label)
   }
 }
 

@@ -938,6 +938,126 @@ whatever runs next (plan section 6, correction C22).
 whatever selects it for a `.align-revision` change. `layer-forward-qualification` joins no aggregate
 and is named explicitly in the pull request instead, exactly as `ggml-spike-qualification` is.
 
+## Model prefill forward development
+
+R5B-MODEL-PREFILL-FORWARD is the **active** capability on branch `agent/r5b-model-prefill-forward`,
+design complete with probe evidence and implementation in progress; its authoritative plan is
+`docs/specs/r5b-model-prefill-forward.md`, which owns the probe record, the contract ledger, the
+closure matrix, and the fixtures, qualification, metrics, deferrals, risks, and candidate-request
+sections. It answers the third of R5's three gate stages — a smallest model, CPU only, dense,
+prefill only — one prefill of at most six tokens through the whole twenty-eight-layer Qwen2 model,
+computed by ggml over weights that live in **one reused Align-owned window**, carrying the residual
+stream in **Align-owned buffers** between per-layer graphs, and checked against llama.cpp's own
+final logits for the same tokens.
+
+It ships as a **new arm of the existing `ggml-spike` executable**, `--model-forward`, for
+`r5a-dense-layer-forward.md` section 3.1's reasons, unchanged: one link boundary, a discharged
+prologue, and an `align-runtime` name the roadmap's loader-bearing product claims later. R5A's
+promised rename to `align-runtime` "at the R5B boundary, where the loader arrives" is deferred
+again: R5B owns a window, not a loader, and the rename now triggers when the executable gains a
+residency policy.
+
+```sh
+gmake ggml-spike                    # unchanged; also builds the --model-forward arm
+gmake layer-forward-smoke           # extended with model-forward rows; unchanged aggregate membership
+gmake model-forward-qualification   # the opt-in real-ggml, real-model, real-instrument qualification
+```
+
+The R4.5 and R5A arms are unchanged. `--model-forward` is selected by its exact first operand,
+takes no `LAYER` operand (R5B computes every layer, in order), and is exactly four, five, six,
+eight, or nine operands — **seven is `R5_ARITY`**, because `KV_WIDTH` is not optional metadata
+beside the transcript, it is what makes the comparison against that transcript meaningful, so it
+travels with it:
+
+```sh
+./ggml-spike --model-forward PACK GEOM.json TOKENS                                          # to stdout
+./ggml-spike --model-forward PACK GEOM.json TOKENS DOC.json                                 # to DOC.json
+./ggml-spike --model-forward PACK GEOM.json TOKENS DOC.json REF.gguf                        # + self-reference oracle
+./ggml-spike --model-forward PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH             # + transcript oracle
+./ggml-spike --model-forward PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin  # + logits oracle
+./ggml-spike --model-forward PACK GEOM.json TOKENS -        REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin  # document to stdout
+```
+
+`GEOM.json` is the same **`R1_MODEL_IR` document at `schema_version: 2`** R5A reads, `MAX_PATH_BYTES`,
+the `-` document convention, `TOKENS` (1 to 6 comma-separated ids, `MAX_PREFILL_TOKENS = 6`), and
+arm selection are `r5a-dense-layer-forward.md` section 3.3's, verbatim. `KV_WIDTH` is new: the
+attention width the reference instrument used, a non-negative decimal integer in
+`[token_count, 4096]`. It is a fail-closed **operand**, never derived from the transcript — the file
+being used as an oracle must not be allowed to silently change the computation it verifies — and the
+transcript's own `kq-L` `ne0` is instead validated to equal it (`R5_KV_WIDTH` on the operand,
+`R5_ORACLE_SHAPE` on a mismatch).
+
+**Env vars, all read by `scripts/run-model-forward` and reused unchanged from R5A where named:**
+
+```sh
+ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include \       # selects the REAL shim; unset selects the stub
+ALIGN_LLM_GGML_LIB=/opt/homebrew/lib \               # where libggml / libggml-base are
+ALIGN_LLM_GGUF_MODEL=/path/to/model.gguf \           # the model to pack and use as the reference
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \   # the transcript-oracle instrument
+ALIGN_LLM_LLAMA_DEBUG=/path/to/llama-debug \                   # new: the logits-oracle instrument
+ALIGN_LLM_MODEL_FORWARD_TMPDIR=/path/to/scratch \    # where the pack is written; defaults to TMPDIR
+  gmake model-forward-qualification
+```
+
+`ALIGN_LLM_LLAMA_DEBUG` is the only new environment input R5B adds. It must resolve to a
+`llama-debug` build that supports `--save-logits --logits-output-dir`.
+
+**The instrument flag set is contractual across both instruments, not an invocation detail**, and
+R5B extends R5A's finding by one clause: the `-nr` (no-repack) flag matters on `llama-debug` too,
+not only on `llama-eval-callback`. Without it, `llama-debug`'s logits differ from the pinned run by
+0.30 of a logit even though the argmax survives — an oracle whose chosen token agrees while every
+logit is wrong by 0.3 is an oracle that would pass a broken implementation:
+
+```sh
+-p "def add(a, b):" -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512
+```
+
+The qualification runs both instruments with this exact flag set (plus `--save-logits
+--logits-output-dir` for `llama-debug`), asserts they agree with each other **before** running the
+arm — the f32 sequential sum of the logits file must equal the transcript's own printed
+`result_output` sum, and `llama-debug`'s `-tokens.bin` must equal the six token ids — so an
+instrument skew is reported as an instrument skew and not as a failing oracle.
+
+**The shim is built with `-ffp-contract=off`**, inherited unchanged from R5A, and both runners
+assert `abi.fp_contract_off` is `true`.
+
+`model-forward-qualification` is opt-in and capable-only, in **neither** `HOSTED_CHECK_TARGETS` nor
+`CAPABLE_ONLY_CHECK_TARGETS` — the same footing as `layer-forward-qualification`. It prints exactly
+one `N/A` line and exits 0 when a required input is missing, the model or either instrument is
+absent, or free space under the scratch root is under the pack's size plus 1 GiB. The plan (section
+5.2) names the required inputs as data rather than as captured runner text — `scripts/run-model-forward`
+does not exist yet — so the exact shipped `N/A` line wording is **to be finalized with the
+implementation**, following R5A's precedent of quoting the runner's own text once it is written:
+
+```text
+model forward qualification: N/A ALIGN_LLM_GGML_INCLUDE is unset
+model forward qualification: N/A ALIGN_LLM_GGML_LIB is unset
+model forward qualification: N/A ALIGN_LLM_GGUF_MODEL is unset
+model forward qualification: N/A ALIGN_LLM_LLAMA_EVAL_CALLBACK is unset
+model forward qualification: N/A ALIGN_LLM_LLAMA_DEBUG is unset               # new
+model forward qualification: N/A ALIGN_LLM_GGML_INCLUDE is not a directory
+model forward qualification: N/A ALIGN_LLM_GGML_LIB is not a directory
+model forward qualification: N/A ALIGN_LLM_GGUF_MODEL is not a file
+model forward qualification: N/A ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable
+model forward qualification: N/A ALIGN_LLM_LLAMA_DEBUG is not executable      # new
+model forward qualification: N/A the scratch root <path> does not exist
+model forward qualification: N/A free space under <path> is <n> KiB, below the <n> KiB the pack needs
+```
+
+(shape and reasons per the plan's section 5.2 list; wording finalized with the implementation, as
+R5A's section 5.1 wording was).
+
+`R4_WINDOW_UNAVAILABLE` stays the one error code the closure matrix records as `N/A` for this arm
+too (section 4.5): it is not input-reachable, as both R5A and Request 35 already record, because
+`buffer(n)` is an advisory reservation that never fails.
+
+**Adding rows to the existing `layer-forward-smoke` target changes no aggregate membership and no
+check topology** — unlike R5A, which added the target itself and thereby selected `make ci`, R5B
+only extends an existing `HOSTED_CHECK_TARGETS` member. `scripts/verification_scope.py` is the
+shared classifier of record and its verdict, not this paragraph, is the evidence.
+`model-forward-qualification` joins no aggregate and is named explicitly in the pull request
+instead, exactly as `layer-forward-qualification` and `ggml-spike-qualification` are.
+
 ## The aarch64 platform-profile gates
 
 C7 evidence is target-bound, so each required non-x86 environment has its own reviewed profile.

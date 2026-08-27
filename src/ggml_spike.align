@@ -8,6 +8,7 @@ import std.time
 import alignpack_read
 import ggml_ffi
 import layer_forward
+import model_forward
 
 // R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md`). The whole arm: the CLI, the
 // validation order of section 3.8, the deterministic activation, the reference oracle, the
@@ -1488,6 +1489,10 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   // everything else is R4.5's arm with R4.5's arity rules unchanged.
   if args.len() >= 2 && args[1] == "--layer-forward" {
     return layer_forward.run(args)
+  }
+  // R5B section 3.3: the whole-model arm, selected by the first operand and nothing else.
+  if args.len() >= 2 && args[1] == "--model-forward" {
+    return model_forward.run(args)
   }
   if args.len() >= 2 && args[1].starts_with("--") {
     return Err(Error.Invalid)

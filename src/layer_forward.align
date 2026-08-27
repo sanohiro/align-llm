@@ -546,6 +546,10 @@ fn empty_array() -> array<i64> {
   return b.build()
 }
 
+// R5B imports this module's scanner rather than copying it, and needs a value to bind before the
+// scan runs. It is the same empty record `empty_scan` builds, published.
+pub fn empty_transcript_scan() -> TranscriptScan = empty_scan("", "".clone())
+
 fn empty_scan(code: str, detail: string) -> TranscriptScan {
   return TranscriptScan {
     code: code.clone(),

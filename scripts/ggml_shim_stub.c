@@ -362,6 +362,51 @@ static int32_t align_ggml_eps_ok(int32_t bits) {
     }
     return 1;
 }
+
+/* R5B-MODEL-PREFILL-FORWARD (`docs/specs/r5b-model-prefill-forward.md` section 3.6). The `pad`
+ * wrapper's two bounds, shared so both files refuse the same input. `MAX_PAD` is
+ * `MAX_ATTENTION_WIDTH`, the ceiling `src/layer_qwen2.align` validates `KV_WIDTH` against;
+ * `MAX_PAD_ELEMENTS` bounds the result so a malformed width cannot ask for a terabyte of
+ * activation.
+ */
+#define ALIGN_GGML_MAX_PAD 4096
+#define ALIGN_GGML_MAX_PAD_ELEMENTS ((int64_t) 16777216)
+
+
+/* R5B-MODEL-PREFILL-FORWARD section 6, correction C4. A bounded `memcpy` between two Align-owned
+ * byte ranges, and the reason the window can be **reused** at all.
+ *
+ * Align's `buffer` is append-only: `put_*` and `append` write at the logical length, and `pread`
+ * overwrites from index 0 and always requests the buffer's whole capacity. A 447 MB window that is
+ * allocated once and refilled thirty times is therefore not expressible from Align — refilling by
+ * `pread` would read the whole window from the pack on every layer, and refilling by reallocation
+ * would fault in 447 MB of fresh pages thirty times. `docs/align-requests.md` owns the language
+ * half of that; this is the application-side answer and it consumes no hypothetical surface.
+ *
+ * It allocates nothing, opens nothing, and reads no byte the caller did not hand over, so rule 2 of
+ * this file is unchanged. Both ranges are the caller's, both lengths are the caller's, and every
+ * bound is checked before the copy.
+ */
+int32_t align_ggml_window_copy(void *window, int64_t window_bytes, int64_t offset,
+                               const void *source, int64_t source_bytes, int64_t n) {
+    if (window == NULL || source == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    if (offset < 0 || n < 0 || window_bytes < 0 || source_bytes < 0) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (offset > window_bytes || n > window_bytes - offset) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (n > source_bytes) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (n > 0) {
+        memcpy((unsigned char *) window + offset, source, (size_t) n);
+    }
+    return ALIGN_GGML_OK;
+}
+
 /* --- END R4.5 SHARED SHIM CONTRACT --- */
 
 /* ---------------------------------------------------------------------------------------------
@@ -493,6 +538,7 @@ int64_t align_ptr_offset(const void *a, const void *b) {
 #define ALIGN_STUB_OP_ROPE       9
 #define ALIGN_STUB_OP_SOFT_MAX  10
 #define ALIGN_STUB_OP_SWIGLU    11
+#define ALIGN_STUB_OP_PAD       12
 
 typedef struct align_stub_tensor {
     int32_t type;
@@ -512,6 +558,13 @@ typedef struct align_stub_graph {
     int32_t count;
     int32_t used;
 } align_stub_graph;
+
+/* R5B: the engine is now driven thirty times per run rather than once, so its fixed pools have to
+ * be **recycled**. Every ggml object a graph creates is freed before the next block's read begins
+ * (`docs/specs/r5b-model-prefill-forward.md` section 3.10), which means the moment no context and
+ * no buffer is live the whole engine is unreachable and can be reset. Without this the tensor pool,
+ * the graph pool, and the arena are exhausted after the eighth graph. */
+static void align_stub_reset_if_idle(void);
 
 typedef struct align_stub_buffer {
     unsigned char *base;
@@ -765,6 +818,26 @@ static void align_stub_run(align_stub_tensor *t) {
             d[i0] = (x[i0] / (1.0f + expf(-x[i0]))) * y[i0];
         }
     } break;
+    /* R5B section 3.6. `ggml_pad` appends zeroes at the end of each axis; the source keeps the
+     * leading positions. The destination is zeroed first because `gallocr` reuses a dead block and
+     * the padded lanes must be zero, not whatever the previous tenant left.
+     */
+    case ALIGN_STUB_OP_PAD: {
+        int64_t count = align_stub_nelements(t);
+        for (i0 = 0; i0 < count; i0++) {
+            d[i0] = 0.0f;
+        }
+        for (i3 = 0; i3 < a->ne[3]; i3++) {
+            for (i2 = 0; i2 < a->ne[2]; i2++) {
+                for (i1 = 0; i1 < a->ne[1]; i1++) {
+                    for (i0 = 0; i0 < a->ne[0]; i0++) {
+                        d[i0 + t->ne[0] * (i1 + t->ne[1] * (i2 + t->ne[2] * i3))] =
+                            x[i0 + a->ne[0] * (i1 + a->ne[1] * (i2 + a->ne[2] * i3))];
+                    }
+                }
+            }
+        }
+    } break;
     default:
         break;
     }
@@ -827,6 +900,30 @@ void align_ggml_context_close(void *ctx) {
     if (index >= 0) {
         align_stub_context_used[index] = 0;
     }
+    align_stub_reset_if_idle();
+}
+
+/* The whole engine, reclaimed once nothing points into it. A caller that leaks a context or a
+ * buffer simply never triggers it and exhausts a pool instead, which is the failure this file
+ * should report rather than hide. */
+static void align_stub_reset_if_idle(void) {
+    int32_t i = 0;
+    for (i = 0; i < ALIGN_STUB_MAX_CONTEXTS; i++) {
+        if (align_stub_context_used[i]) {
+            return;
+        }
+    }
+    for (i = 0; i < ALIGN_STUB_MAX_BUFFERS; i++) {
+        if (align_stub_buffers[i].used) {
+            return;
+        }
+    }
+    for (i = 0; i < ALIGN_STUB_MAX_GRAPHS; i++) {
+        align_stub_graphs[i].used = 0;
+        align_stub_graphs[i].count = 0;
+    }
+    align_stub_tensor_count = 0;
+    align_stub_arena_used = 0;
 }
 
 /* Validates identically to the real shim — the alignment rule is the one that keeps `abort()`
@@ -857,6 +954,7 @@ void *align_ggml_buffer_from_host(void *device, void *ptr, int64_t size) {
 void align_ggml_buffer_free(void *buffer) {
     if (buffer != NULL) {
         ((align_stub_buffer *) buffer)->used = 0;
+        align_stub_reset_if_idle();
     }
 }
 
@@ -987,6 +1085,15 @@ int64_t align_ggml_slot_nbytes(const void *slots, int64_t index) {
     if (t == NULL) {
         return -1;
     }
+#ifdef ALIGN_GGML_FORCE_SHORT_READBACK
+    /* R5B section 4.5: `R5_RESIDUAL` is the carried activation's length disagreeing with the next
+     * graph's declared input, which no input can produce because both come from the same node
+     * table. The layer table's `l_out` is slot 51; under-reporting it by one element makes the
+     * residual invariant refuse for real. Never defined in an ordinary build. */
+    if (index == 51) {
+        return align_stub_nbytes(t) - 4;
+    }
+#endif
     return align_stub_nbytes(t);
 }
 
@@ -1050,6 +1157,19 @@ int32_t align_ggml_slot_new_i32_1d(void *ctx, void *slots, int64_t out, int64_t 
         return ALIGN_GGML_OK;
     }
 #endif
+#ifdef ALIGN_GGML_FORCE_SLOT_EMPTY_POS
+    /* R5B section 4.5: the same refusal, at the slot the whole-model arm's position vector uses.
+     * R5A's `ALIGN_GGML_FORCE_SLOT_EMPTY` targets slot 14, which is R5A's `inp_pos` and R5B's
+     * `kq_mask` — a tensor R5B creates through `slot_new_tensor_2d`, so that macro never fires for
+     * the model arm. Never defined in an ordinary build.
+     */
+    if (out == 13) {
+        (void) ctx;
+        (void) ne0;
+        (void) slots;
+        return ALIGN_GGML_OK;
+    }
+#endif
     align_stub_tensor *t = align_stub_new(ctx, ALIGN_STUB_TYPE_I32, ne0, 1, 1, 1);
     if (t == NULL) {
         return ALIGN_GGML_INIT;
@@ -1077,7 +1197,10 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
     }
     status = align_ggml_tensor_set((void *) t, bytes, off, n);
 #ifdef ALIGN_GGML_FORCE_REFERENCE_PERTURBATION
-    if (status == ALIGN_GGML_OK && index >= 0 && index <= 12) {
+    /* Slots 0 to 11 are the reference arm's weights in both arms' slot maps; R5B's slot 12 is the
+     * Align-owned residual **input**, which the primary arm also writes through `slot_set`, so the
+     * range stops at 11 (R5B section 6, correction C7). */
+    if (status == ALIGN_GGML_OK && index >= 0 && index <= 11) {
         t->data[off] = (unsigned char) (t->data[off] ^ 0x01u);
     }
 #endif
@@ -1313,6 +1436,55 @@ int32_t align_ggml_op_soft_max_ext(
 
 int32_t align_ggml_op_swiglu_split(void *ctx, void *slots, int64_t out, int64_t a, int64_t b) {
     return align_stub_elementwise(ctx, slots, out, a, b, ALIGN_STUB_OP_SWIGLU);
+}
+
+/* R5B section 3.6's one new op, answered from the engine. The two forced builds below are section
+ * 4.2's `pad` bounds cells: neither a negative pad nor an oversized result is producible from an
+ * input, because `KV_WIDTH` is validated in `[token_count, MAX_ATTENTION_WIDTH]` before the table
+ * is built, so the refusals are exercised by a build rather than reasoned about. Neither macro is
+ * ever defined in an ordinary build.
+ */
+int32_t align_ggml_op_pad(void *ctx, void *slots, int64_t out, int64_t a,
+                          int32_t p0, int32_t p1, int32_t p2, int32_t p3) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    align_stub_tensor *t = NULL;
+    int64_t ne[4];
+    int i = 0;
+#ifdef ALIGN_GGML_FORCE_PAD_NEGATIVE
+    p1 = -1;
+#endif
+#ifdef ALIGN_GGML_FORCE_PAD_OVERSIZE
+    p0 = ALIGN_GGML_MAX_PAD;
+    p1 = ALIGN_GGML_MAX_PAD;
+    p2 = ALIGN_GGML_MAX_PAD;
+#endif
+    if (sa == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (p0 < 0 || p1 < 0 || p2 < 0 || p3 < 0) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (p0 > ALIGN_GGML_MAX_PAD || p1 > ALIGN_GGML_MAX_PAD
+        || p2 > ALIGN_GGML_MAX_PAD || p3 > ALIGN_GGML_MAX_PAD) {
+        return ALIGN_GGML_SHAPE;
+    }
+    ne[0] = sa->ne[0] + p0;
+    ne[1] = sa->ne[1] + p1;
+    ne[2] = sa->ne[2] + p2;
+    ne[3] = sa->ne[3] + p3;
+    for (i = 0; i < 4; i++) {
+        if (ne[i] <= 0) {
+            return ALIGN_GGML_SHAPE;
+        }
+    }
+    if (ne[0] * ne[1] * ne[2] * ne[3] > ALIGN_GGML_MAX_PAD_ELEMENTS) {
+        return ALIGN_GGML_SHAPE;
+    }
+    t = align_stub_new(ctx, ALIGN_STUB_TYPE_F32, ne[0], ne[1], ne[2], ne[3]);
+    if (t == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    return align_stub_bind(slots, out, t, sa, NULL, ALIGN_STUB_OP_PAD);
 }
 
 int64_t align_ggml_graph_context_bytes(int64_t node_capacity) {

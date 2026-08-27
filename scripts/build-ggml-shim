@@ -17,8 +17,9 @@ set -euo pipefail
 #   ALIGN_LLM_GGML_FORCE    the section 4.6 forced-failure builds. `init`, `compute`, and
 #                           `reference` need the real shim; `engine`, `engine+init`,
 #                           `engine+alloc`, `engine+compute`, `engine+reference`,
-#                           `engine+slot-range`, `engine+slot-empty`, and
-#                           `engine+no-mark-output` select the ggml-free deterministic engine of
+#                           `engine+slot-range`, `engine+slot-empty`,
+#                           `engine+no-mark-output`, `engine+pad-negative`, and
+#                           `engine+pad-oversize` select the ggml-free deterministic engine of
 #                           `docs/specs/r5a-dense-layer-forward.md` section 5.1 and need the stub
 #   ALIGN_LLM_GGML_SHIM_DIR output directory; defaults to `build/lib` inside the work tree
 #   CC                      C compiler; defaults to `cc`
@@ -112,9 +113,21 @@ else
                        flavour="stub+engine+force-slot-range" ;;
     engine+slot-empty) include_flags+=("${engine}" "-DALIGN_GGML_FORCE_SLOT_EMPTY=1")
                        flavour="stub+engine+force-slot-empty" ;;
+    engine+slot-empty-pos)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_SLOT_EMPTY_POS=1")
+                       flavour="stub+engine+force-slot-empty-pos" ;;
     engine+no-mark-output)
                        include_flags+=("${engine}" "-DALIGN_GGML_FORCE_NO_MARK_OUTPUT=1")
                        flavour="stub+engine+force-no-mark-output" ;;
+    engine+pad-negative)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_PAD_NEGATIVE=1")
+                       flavour="stub+engine+force-pad-negative" ;;
+    engine+short-readback)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_SHORT_READBACK=1")
+                       flavour="stub+engine+force-short-readback" ;;
+    engine+pad-oversize)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_PAD_OVERSIZE=1")
+                       flavour="stub+engine+force-pad-oversize" ;;
     *)
       printf '%s\n' "build-ggml-shim: unknown stub ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
       exit 1

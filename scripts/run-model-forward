@@ -1,0 +1,385 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# R5B-MODEL-PREFILL-FORWARD named focused qualification (`docs/specs/r5b-model-prefill-forward.md`
+# section 5.2). **Opt-in and capable-only.** It is in neither HOSTED_CHECK_TARGETS nor
+# CAPABLE_ONLY_CHECK_TARGETS and in no aggregate, exactly as `layer-forward-qualification` is not.
+#
+#   ALIGN_LLM_GGML_INCLUDE          directory holding ggml.h, ggml-alloc.h, ggml-backend.h
+#   ALIGN_LLM_GGML_LIB              directory holding libggml and libggml-base
+#   ALIGN_LLM_GGUF_MODEL            the Qwen2 GGUF this prefill is read from
+#   ALIGN_LLM_LLAMA_EVAL_CALLBACK   path to `llama-eval-callback`
+#   ALIGN_LLM_LLAMA_DEBUG           path to `llama-debug`                          # new
+#   ALIGN_LLM_MODEL_FORWARD_TMPDIR  where the pack is written; defaults to TMPDIR
+#   ALIGN_LLM_MODEL_FORWARD_EXCERPT_UPDATE=1  rewrite eval/fixtures/qwen2-model-6tok.txt
+#
+# `ALIGN_LLM_LLAMA_DEBUG` is the only new environment input. When any is unset, or the model or
+# either instrument is absent, or the free space under the scratch root is under the pack's size
+# plus 1 GiB, it prints one explicit N/A line naming the missing input and exits 0.
+#
+# It packs the real model into a temporary directory **outside the work tree**, derives the geometry
+# with `main --model-ir`, captures **both** instrument outputs with the exact same flag set section
+# 2.2 established, cross-checks the two instruments against each other *before* running the arm — so
+# an instrument skew is reported as an instrument skew and not as a failing oracle — runs
+# `ggml-spike --model-forward` twice, once at the instrument's declared attention width and once at
+# the runtime's own, asserts every recorded value of section 5.2, and removes the pack, both
+# instrument outputs, and the tree on every exit path including a signal.
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+
+na() {
+  printf '%s\n' "model forward qualification: N/A $1"
+  exit 0
+}
+
+[ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ] || na "ALIGN_LLM_GGML_INCLUDE is unset"
+[ -n "${ALIGN_LLM_GGML_LIB:-}" ] || na "ALIGN_LLM_GGML_LIB is unset"
+[ -n "${ALIGN_LLM_GGUF_MODEL:-}" ] || na "ALIGN_LLM_GGUF_MODEL is unset"
+[ -n "${ALIGN_LLM_LLAMA_EVAL_CALLBACK:-}" ] || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is unset"
+[ -n "${ALIGN_LLM_LLAMA_DEBUG:-}" ] || na "ALIGN_LLM_LLAMA_DEBUG is unset"
+[ -d "${ALIGN_LLM_GGML_INCLUDE}" ] || na "ALIGN_LLM_GGML_INCLUDE is not a directory"
+[ -d "${ALIGN_LLM_GGML_LIB}" ] || na "ALIGN_LLM_GGML_LIB is not a directory"
+[ -f "${ALIGN_LLM_GGUF_MODEL}" ] || na "ALIGN_LLM_GGUF_MODEL is not a file"
+command -v "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" >/dev/null 2>&1 \
+  || [ -x "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" ] \
+  || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable"
+command -v "${ALIGN_LLM_LLAMA_DEBUG}" >/dev/null 2>&1 \
+  || [ -x "${ALIGN_LLM_LLAMA_DEBUG}" ] \
+  || na "ALIGN_LLM_LLAMA_DEBUG is not executable"
+
+model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
+scratch_root="${ALIGN_LLM_MODEL_FORWARD_TMPDIR:-${TMPDIR:-/tmp}}"
+[ -d "${scratch_root}" ] || na "the scratch root ${scratch_root} does not exist"
+free_kib=$(df -Pk "${scratch_root}" | awk 'NR == 2 { print $4 }')
+need_kib=$(( model_bytes / 1024 + 1048576 ))
+if [ "${free_kib}" -lt "${need_kib}" ]; then
+  na "free space under ${scratch_root} is ${free_kib} KiB, below the ${need_kib} KiB the pack needs"
+fi
+
+work_dir=$(mktemp -d "${scratch_root%/}/align-r5b-XXXXXX")
+# `build/lib/libalign_ggml_shim` is shared state outside the work tree: the forced-failure loop
+# below replaces it, and an early exit used to leave a `-DALIGN_GGML_FORCE_*` library in place for
+# whatever ran next. The trap restores the ordinary real shim before it removes the work directory,
+# so the exit path is total (R5A section 6, correction C22).
+shim_built=0
+cleanup() {
+  status=$?
+  if [ "${shim_built}" = 1 ]; then
+    ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null 2>&1 || true
+  fi
+  rm -rf "${work_dir}"
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+echo "model forward qualification: packing ${ALIGN_LLM_GGUF_MODEL} into ${work_dir}"
+"${root_dir}/main" --pack "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/model.alignpack" \
+  "${work_dir}/pack.json" >/dev/null
+"${root_dir}/main" --model-ir "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/geometry.json" >/dev/null
+
+# Section 2.2's finding, and the reason this is one flag set rather than two: `llama-debug` has the
+# same `--repack` default as `llama-eval-callback`, and with repacking enabled its logits are a
+# different answer — 0.30 of a logit, with the **argmax unchanged**. An oracle whose chosen token
+# agrees while every logit is wrong by 0.3 is an oracle that would pass a broken implementation.
+FLAGS_P="def add(a, b):"
+echo "model forward qualification: capturing both instruments with -fa off -ctk f32 -ctv f32 -nr"
+"${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" -m "${ALIGN_LLM_GGUF_MODEL}" -p "${FLAGS_P}" \
+  -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 \
+  > "${work_dir}/transcript.txt" 2> "${work_dir}/transcript.log"
+"${ALIGN_LLM_LLAMA_DEBUG}" -m "${ALIGN_LLM_GGUF_MODEL}" -p "${FLAGS_P}" \
+  -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 \
+  --save-logits --logits-output-dir "${work_dir}/lg" \
+  > "${work_dir}/debug.log" 2>&1
+
+logits_bin=$(ls "${work_dir}"/lg/*.bin 2>/dev/null | grep -v -- '-tokens\.bin$' | head -1 || true)
+tokens_bin=$(ls "${work_dir}"/lg/*-tokens.bin 2>/dev/null | head -1 || true)
+[ -n "${logits_bin}" ] || na "llama-debug wrote no logits file under ${work_dir}/lg"
+
+# The instrument cross-check, **before** the arm runs.
+python3 - "${work_dir}/transcript.txt" "${logits_bin}" "${tokens_bin}" <<'PY'
+import struct
+import sys
+
+transcript, logits_path, tokens_path = sys.argv[1:4]
+with open(logits_path, "rb") as handle:
+    raw = handle.read()
+count = len(raw) // 4
+values = struct.unpack("<%df" % count, raw)
+total = 0.0
+for value in values:
+    total = struct.unpack("<f", struct.pack("<f", total + value))[0]
+
+printed = None
+seen = False
+with open(transcript, "r", encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        if line.startswith("common_debug_cb_eval:") and " result_output = " in line:
+            seen = True
+            continue
+        if seen and line.strip().startswith("sum ="):
+            printed = float(line.strip().split("=")[1])
+            break
+if printed is None:
+    raise SystemExit("model forward qualification: FAIL the transcript has no result_output sum")
+if abs(printed - total) > 1e-3:
+    raise SystemExit(
+        "model forward qualification: FAIL instrument skew: llama-debug sums to %.6f and "
+        "llama-eval-callback printed %.6f" % (total, printed))
+if tokens_path:
+    with open(tokens_path, "rb") as handle:
+        ids = struct.unpack("<%di" % (len(handle.read()) // 4), open(tokens_path, "rb").read())
+    if list(ids) != [750, 912, 2877, 11, 293, 1648]:
+        raise SystemExit(
+            "model forward qualification: FAIL llama-debug tokenized %r" % (list(ids),))
+print("model forward qualification: instruments agree, f32 sequential sum %.6f over %d logits"
+      % (total, count))
+PY
+
+shim_dir=$(ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim")
+shim_built=1
+(
+  cd "${root_dir}"
+  LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}" \
+  DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+  LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  "${compiler}" build src/ggml_spike.align >/dev/null
+  mv -f ggml_spike ggml-spike
+)
+
+export DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+echo "model forward qualification: prefill at the instrument's declared attention width (256)"
+/usr/bin/time -l "${root_dir}/ggml-spike" --model-forward "${work_dir}/model.alignpack" \
+  "${work_dir}/geometry.json" 750,912,2877,11,293,1648 \
+  "${work_dir}/model.json" "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/transcript.txt" 256 \
+  "${logits_bin}" 2> "${work_dir}/rss.txt" || {
+    echo "model forward qualification: FAIL the reconciliation run exited non-zero" >&2
+    cat "${work_dir}/rss.txt" >&2
+    exit 1
+  }
+grep -E 'maximum resident set size|peak memory footprint' "${work_dir}/rss.txt" || true
+
+echo "model forward qualification: prefill at the runtime's own attention width (6)"
+"${root_dir}/ggml-spike" --model-forward "${work_dir}/model.alignpack" \
+  "${work_dir}/geometry.json" 750,912,2877,11,293,1648 \
+  "${work_dir}/runtime.json" "${ALIGN_LLM_GGUF_MODEL}" - 6 \
+  "${logits_bin}" >/dev/null
+
+python3 - "${root_dir}" "${work_dir}" "${logits_bin}" <<'PY'
+import hashlib
+import json
+import os
+import sys
+
+root_dir, work_dir, logits_path = sys.argv[1:4]
+with open(os.path.join(work_dir, "model.json"), "r", encoding="utf-8") as handle:
+    d = json.load(handle)
+with open(os.path.join(work_dir, "runtime.json"), "r", encoding="utf-8") as handle:
+    r = json.load(handle)
+
+failures = []
+
+
+def want(label, got, expected):
+    if got != expected:
+        failures.append("%s: %r, expected %r" % (label, got, expected))
+
+
+def at_most(label, got, bound):
+    if got > bound:
+        failures.append("%s: %r, expected at most %r" % (label, got, bound))
+
+
+want("status", d["status"], "ok")
+want("verdict", d["verdict"], "EXTERNAL")
+model = d["model"]
+want("model.n_layer", model["n_layer"], 28)
+want("model.n_embd", model["n_embd"], 3584)
+want("model.n_head", model["n_head"], 28)
+want("model.n_head_kv", model["n_head_kv"], 4)
+want("model.head_dim", model["head_dim"], 128)
+want("model.n_ff", model["n_ff"], 18944)
+want("model.n_vocab", model["n_vocab"], 152064)
+want("model.context_length", model["context_length"], 131072)
+want("model.rope_type", model["rope_type"], 2)
+want("model.rms_eps_bits", "%08x" % model["rms_eps_bits"], "358637bd")
+want("model.rope_freq_base_bits", "%08x" % model["rope_freq_base_bits"], "49742400")
+# Section 2.1 fact 1: the plan assumed a tied embedding, which would have made the head free.
+want("model.output_tied", model["output_tied"], False)
+want("model.output_ggml_type", model["output_ggml_type"], 14)
+
+selection = d["selection"]
+want("selection.embedding_block_index", selection["embedding_block_index"], 0)
+want("selection.output_block_index", selection["output_block_index"], 57)
+want("selection.narrow_layer", selection["narrow_layer"], 27)
+want("selection.narrow_index", selection["narrow_index"], 5)
+want("selection.attention_width", selection["attention_width"], 6)
+want("selection.reconciliation_width", selection["reconciliation_width"], 256)
+
+schedule = d["schedule"]
+want("schedule length", len(schedule), 28)
+if schedule:
+    want("schedule[0] block bytes",
+         schedule[0]["attention_bytes"] + schedule[0]["mlp_bytes"], 149112832)
+# Section 2.1 fact 3: `Q4_K_M` quantizes `attn_v` and `ffn_down` as Q6_K in exactly these layers,
+# which is why the window is a sweep of the block table and not a product of the geometry.
+Q6K_V = {0, 1, 2, 5, 9, 11, 14, 17, 20, 23, 24, 25, 26, 27}
+Q6K_D = {0, 1, 2, 5, 7, 12, 14, 17, 20, 23, 24, 25, 26, 27}
+want("attn_v Q6_K layers", {row["layer"] for row in schedule if row["attn_v_ggml_type"] == 14},
+     Q6K_V)
+want("ffn_down Q6_K layers",
+     {row["layer"] for row in schedule if row["ffn_down_ggml_type"] == 14}, Q6K_D)
+want("layer 27 narrows", [schedule[27]["l_out_ne0"], schedule[27]["l_out_ne1"]], [3584, 1])
+want("layer 26 does not narrow", [schedule[26]["l_out_ne0"], schedule[26]["l_out_ne1"]],
+     [3584, 6])
+
+window = d["window"]
+want("window.peak_block_layer", window["peak_block_layer"], -1)
+want("window.reuse_count", window["reuse_count"], 30)
+want("window.pointer_identity_failures", window["pointer_identity_failures"], 0)
+want("window.member_placements", window["member_placements"], 339)
+
+graph = d["graph"]
+want("graph.graph_count", graph["graph_count"], 30)
+want("graph.node_count_total", graph["node_count_total"], 874)
+want("graph.reconciliation_node_count", graph["reconciliation_node_count"], 958)
+want("graph.slot_high_water", graph["slot_high_water"], 52)
+want("graph.slot_capacity", graph["slot_capacity"], 128)
+
+want("output.element_count", d["output"]["element_count"], 152064)
+want("output.argmax", d["output"]["argmax"], 671)
+
+reference = d["reference"]
+want("reference.verdict", reference["verdict"], "IDENTICAL")
+want("reference.graphs_compared", reference["graphs_compared"], 30)
+want("reference.nodes_identical", reference["nodes_identical"], reference["nodes_compared"])
+
+oracle = d["oracle"]
+want("oracle.verdict", oracle["verdict"], "PASS")
+want("oracle.layers_matched", oracle["layers_matched"], 28)
+want("oracle.nodes_matched", oracle["nodes_matched"], oracle["nodes_expected"])
+at_most("oracle.max_abs_diff_ten_thousandths", oracle["max_abs_diff_ten_thousandths"], 1)
+want("oracle.tolerance_ten_thousandths", oracle["tolerance_ten_thousandths"], 1)
+want("oracle.sum_tolerance_millionths", oracle["sum_tolerance_millionths"], 1000)
+want("oracle.sum_tolerance_relative_ppm", oracle["sum_tolerance_relative_ppm"], 10)
+
+# Section 2.7: at the instrument's declared attention width the 152,064 final logits are
+# **byte-identical**. Anything less is a regression, not a tolerance.
+logits = d["oracle_logits"]
+want("oracle_logits.compared_pass", logits["compared_pass"], "reconciliation")
+want("oracle_logits.verdict", logits["verdict"], "IDENTICAL")
+want("oracle_logits.byte_identical", logits["byte_identical"], True)
+with open(logits_path, "rb") as handle:
+    digest = hashlib.sha256(handle.read()).hexdigest()
+want("the reference logits' own sha256", logits["reference_sha256"], digest)
+
+# The runtime pass, from the second invocation: a characterization of section 1.3's declared
+# non-goal, not an acceptance criterion.
+runtime = r["oracle_logits"]
+want("runtime compared_pass", runtime["compared_pass"], "runtime")
+want("runtime verdict", runtime["verdict"], "WITHIN")
+want("runtime argmax", runtime["argmax_primary"], runtime["argmax_reference"])
+want("runtime top_k_agreement", runtime["top_k_agreement"], 10)
+at_most("runtime max_abs_diff_ten_thousandths", runtime["max_abs_diff_ten_thousandths"], 5000)
+want("runtime tolerance_ten_thousandths", runtime["tolerance_ten_thousandths"], 5000)
+
+lifetime = d["lifetime"]
+for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                       ("contexts_created", "contexts_freed"),
+                       ("backends_created", "backends_freed"),
+                       ("gallocrs_created", "gallocrs_freed")):
+    want("lifetime.%s == %s" % (created, freed), lifetime[created], lifetime[freed])
+want("lifetime.graph_balance_failures", lifetime["graph_balance_failures"], 0)
+want("lifetime.released_before_owner_scope_end", lifetime["released_before_owner_scope_end"], True)
+want("abi.tensor_alignment", d["abi"]["tensor_alignment"], 32)
+want("abi.table_drift", d["abi"]["table_drift"], -1)
+want("abi.slot_magic_ok", d["abi"]["slot_magic_ok"], True)
+want("abi.fp_contract_off", d["abi"]["fp_contract_off"], True)
+
+million = 1e6
+print("model forward qualification: backend %s, window %d B, peak block %d (kind %d, layer %d)"
+      % (graph["backend_name"], window["bytes"], window["peak_block_index"],
+         window["peak_block_kind"], window["peak_block_layer"]))
+print("model forward qualification: %d graphs, %d nodes runtime, %d nodes reconciliation, "
+      "slot high-water %d/%d, activation peak %d B, residual %d B, logits %d B"
+      % (graph["graph_count"], graph["node_count_total"], graph["reconciliation_node_count"],
+         graph["slot_high_water"], graph["slot_capacity"], graph["activation_bytes_peak"],
+         window["residual_bytes"], window["logits_bytes"]))
+print("model forward qualification: pread %.1f ms over %d B in %d groups, compute %.1f ms runtime, "
+      "%.1f ms reconciliation, reference %.1f ms, oracle %.1f ms, wall %.1f ms"
+      % (d["timings"]["pread_ns"] / million, d["pack"]["reader_bytes_read"],
+         d["pack"]["reader_pread_count"], d["timings"]["compute_ns"] / million,
+         d["timings"]["reconciliation_compute_ns"] / million,
+         d["timings"]["reference_compute_ns"] / million, d["timings"]["oracle_ns"] / million,
+         d["timings"]["elapsed_ns"] / million))
+per_layer = sorted(row["compute_ns"] for row in schedule)
+if per_layer:
+    print("model forward qualification: per-layer pread median %.2f ms, compute median %.2f ms, "
+          "layer 27 compute %.2f ms, head pread %.1f ms, head compute %.2f ms"
+          % (sorted(row["pread_ns"] for row in schedule)[len(schedule) // 2] / million,
+             per_layer[len(per_layer) // 2] / million, schedule[27]["compute_ns"] / million,
+             d["head"]["pread_ns"] / million, d["head"]["compute_ns"] / million))
+print("model forward qualification: self-reference %s (%d/%d nodes byte-identical over %d graphs)"
+      % (reference["verdict"], reference["nodes_identical"], reference["nodes_compared"],
+         reference["graphs_compared"]))
+print("model forward qualification: transcript %s, %d/%d layers, %d/%d nodes, %d elements, "
+      "max |d| %d ten-thousandths, max |dsum| %d millionths"
+      % (oracle["verdict"], oracle["layers_matched"], oracle["layers_expected"],
+         oracle["nodes_matched"], oracle["nodes_expected"], oracle["elements_compared"],
+         oracle["max_abs_diff_ten_thousandths"], oracle["max_sum_diff_millionths"]))
+print("model forward qualification: logits %s at the reconciliation width (sha256 %s, bit_sum %d, "
+      "argmax %d)" % (logits["verdict"], d["output"]["sha256"], d["output"]["bit_sum"],
+                      d["output"]["argmax"]))
+print("model forward qualification: logits %s at the runtime width (max |d| %d ten-thousandths, "
+      "argmax %d, top-%d agreement)"
+      % (runtime["verdict"], runtime["max_abs_diff_ten_thousandths"], runtime["argmax_primary"],
+         runtime["top_k_agreement"]))
+print("model forward qualification: top ten %r"
+      % [row["index"] for row in d["output"]["top_k"]])
+for row in schedule:
+    print("model forward qualification: layer %-2d blocks %d/%d %d+%d B types %d/%d "
+          "pread %6.2f ms compute %6.2f ms nodes %d l_out %s sum %d"
+          % (row["layer"], row["attention_block_index"], row["mlp_block_index"],
+             row["attention_bytes"], row["mlp_bytes"], row["attn_v_ggml_type"],
+             row["ffn_down_ggml_type"], row["pread_ns"] / million, row["compute_ns"] / million,
+             row["node_count"], row["l_out_sha256"][:16], row["l_out_f32_sum_millionths"]))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("model forward qualification: FAIL %s\n" % line)
+    raise SystemExit(1)
+print("model forward qualification: every section 5.2 assertion PASS")
+PY
+
+# The two forced builds that no input can produce, run against the **real** shim so the failure
+# paths are exercised rather than reasoned about.
+for force in init compute; do
+  ALIGN_LLM_GGML_FORCE="${force}" "${root_dir}/scripts/build-ggml-shim" >/dev/null
+  set +e
+  "${root_dir}/ggml-spike" --model-forward "${work_dir}/model.alignpack" \
+    "${work_dir}/geometry.json" 750,912,2877,11,293,1648 - > "${work_dir}/forced.json"
+  status=$?
+  set -e
+  code=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["error_code"])' \
+    "${work_dir}/forced.json")
+  expected="R5_GGML_INIT"
+  [ "${force}" = compute ] && expected="R5_COMPUTE"
+  if [ "${code}" != "${expected}" ] || [ "${status}" = 0 ]; then
+    echo "model forward qualification: FAIL forced ${force} produced ${code} (exit ${status})" >&2
+    exit 1
+  fi
+  echo "model forward qualification: forced ${force} reached ${code}"
+done
+ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null   # the trap repeats this
+
+# The checked-in excerpt is swept from here, which is what keeps it from going stale.
+if [ "${ALIGN_LLM_MODEL_FORWARD_EXCERPT_UPDATE:-}" = 1 ]; then
+  python3 "${root_dir}/scripts/sweep-model-forward-excerpt.py" \
+    "${work_dir}/transcript.txt" "${root_dir}/eval/fixtures/qwen2-model-6tok.txt" 28
+  echo "model forward qualification: eval/fixtures/qwen2-model-6tok.txt rewritten"
+fi
+
+echo "model forward qualification: removing the pack, both instrument outputs, and the tree"

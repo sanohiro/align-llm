@@ -1387,3 +1387,327 @@ here.
 | **`schedule[]` replaces per-node digests and could hide which node moved** | The transcript oracle publishes `worst_layer`, `worst_node`, and `worst_element_index`, and the reference oracle publishes `first_difference_graph` and `first_difference_node` | A failure with **no** oracle running reports only the layer. That is the six-operand form, which no acceptance path uses |
 | **The goldens become a property of one compiler on one target** | R5A correction C15's `#pragma STDC FP_CONTRACT OFF`, `-ffp-contract=off`, and the asserted `abi.fp_contract_off` | Unchanged from R5A, and now across a whole model's worth of stub-engine kernels |
 | **`make layer-forward-smoke` grows past its budget** | Section 5.5's module split and its stated acceptance target | If the split is insufficient, the owner test itself splits — which changes check topology and re-selects `make ci`. Section 5.1's classifier verdict is what decides, not this table |
+
+---
+
+## 6. Implementation-forced corrections
+
+Section 3 was written after the probes of section 2 and before the implementation. Sixteen of its
+statements were refuted by writing the arm, and each one is recorded here rather than quietly edited
+above. Six are Align-owned limitations, five are contract changes the plan could not have known
+about, and five are measurements that moved.
+
+### C1 — the plan's second new shim symbol was never needed
+
+Section 3.6 declared two new symbols, `align_ggml_op_pad` and `align_ggml_op_cont_2d`. The second
+does not exist: `align_ggml_op_cont_3d` already covers the narrowed `kqv_out` at `ne2 = 1` **and**
+the reconciliation pass's contiguous K, exactly as `r5a-dense-layer-forward.md` section 6 correction
+C4 established for R5A and for the same reason. `pad` is the only new *op*. The symbol count is
+still two, because correction C5 needed one the plan did not predict.
+
+### C2 — `node_when` alone cannot express a conditional operand
+
+Section 3.6's `node_when` column selects which **rows** a graph issues. It cannot say what the plan
+also needs it to say: a condition that adds a row also moves the *operand* of the row that consumes
+it. The reconciliation rows produce a padded K and a padded V, and `kq` and `kqv` must read those
+instead of the unpadded ones; the two narrowing rows produce a narrowed `attn_out` and a narrowed
+residual, and `ffn_inp` must read those instead.
+
+Rewriting the consumer's `node_out` to overwrite its source's slot was rejected: it would make
+"every `node_out` written once" — the property section 4.1's `mf-node-table-shape` asserts —
+false. The table therefore gains three columns, `node_alt_when`, `node_alt_a`, and `node_alt_b`:
+a row whose `alt_when` condition holds reads `alt_a`/`alt_b` instead of `a`/`b`, and `-1` leaves
+that operand alone. Exactly three of the thirty-six rows use them.
+
+### C3 — `norm-L` is `{n_embd, T_in}` at **every** layer, including the last
+
+Section 3.7 states that `norm-L` is `{n_embd, 1}` at the last layer, from the `norm-27` record
+section 2.3 quotes. That record is the **second** `norm-27`: llama.cpp's `build_norm` emits
+`cb(cur, "norm", il)` for the attention norm *and* for the feed-forward norm, so every layer
+prints two `norm-L` records, and R5A's first-match rule — inherited unchanged — matches the
+attention one. Confirmed against the instrument: `norm-27` contributes **36** printed elements,
+which is `{3584, 6}`, not the six of `{3584, 1}`.
+
+The narrowing is visible from `ffn_inp-L` onward and nowhere earlier. The seven nodes that are
+`{*, 1}` at the last layer are `ffn_inp-27`, `ffn_norm-27`, `ffn_gate-27`, `ffn_up-27`,
+`ffn_swiglu-27`, `ffn_out-27`, and `l_out-27`. Section 4.1's `mf-narrow-shapes` cell is discharged
+against those and not against `norm-27`.
+
+### C4 — the transcript is scanned before the schedule, not after it
+
+Section 3.9 puts the transcript arm at steps 30 and 31, after the whole schedule. It cannot be
+there. A layer's seventeen oracle nodes live in a `ggml_gallocr` buffer that is freed when that
+layer's graph is torn down, and holding thirty graphs alive to compare them at the end is the exact
+opposite of the ownership section 3.10 defines — it would cost thirty graphs' activations instead
+of one.
+
+The transcript is therefore **scanned once before the first graph** — grammar, the matched set, the
+element-count rule of `r5a-dense-layer-forward.md` correction C19, and `kq-L`'s `ne0` against
+`KV_WIDTH` — and **compared inside each graph**, against the pre-scanned elements, before that
+graph's teardown. The only visible consequence is precedence: a `R5_TRANSCRIPT`,
+`R5_ORACLE_MISSING`, or `R5_ORACLE_SHAPE` from the scan now precedes a `R5_COMPUTE` from the
+schedule. Steps 30 and 31 are otherwise unchanged, and step 31's tolerance breach is still not an
+error code.
+
+### C5 — the reused window cannot be refilled from Align, and that is the second new shim symbol
+
+Section 3.5's "one window, reused thirty times" is not expressible in Align at this pin, and this is
+the largest single correction.
+
+An Align `buffer` is append-only. `put_*` and `append` write at the logical length; there is no
+offset write, no truncate, and no reset. `f.pread` is the only operation that rewrites a buffer's
+contents, and it overwrites **from index 0** and always requests the buffer's **whole capacity**. A
+447 MB window that is allocated once and refilled thirty times therefore has exactly three
+implementations available, and two of them are wrong:
+
+- refill by `pread` — reads the entire 447 MB window from the pack on **every** layer, 12.5 GB of
+  I/O for 3.9 GB of weights;
+- refill by reallocation — faults in 447 MB of fresh pages thirty times, and briefly holds two
+  windows;
+- refill by copying from a bounded transient, which needs a write into the middle of an
+  Align-owned range.
+
+The third is what ships. `align_ggml_window_copy(window, window_bytes, offset, source,
+source_bytes, n)` is a bounded `memcpy` between two Align-owned byte ranges, added to the shim's
+**shared** region so both C files answer it identically. It allocates nothing, opens nothing, and
+reads no byte the caller did not hand over, so rule 2 of `scripts/ggml_shim.c` is unchanged. It is
+the second of the two new symbols section 3.6 predicted — just not the one it named.
+
+### C6 — the read shape is one group per member, and the transient is one mebibyte
+
+Section 3.4 reads each block whole, "one `pread` of `block.pack_bytes` each, 56 times". With C5 in
+force a block image would have to be read into a 132 MB temporary and copied out, which doubles the
+resident set for the one graph that already sizes the window. Each **member** is read instead,
+straight into its own window slot: the same bytes, in the same order, with a bounded transient.
+`window.reuse_count` is still 30 and `bytes_read` is still 4,370,571,072 plus the 36,960 bytes of
+member records the reader itself reads.
+
+Two measurements forced the shape of that transient.
+
+**`alignpack_read.read_exact` rebinds its window to a fresh `buffer(n)` on every call**, and at 339
+members those allocations are not returned to the process while the caller's frame lives: peak
+resident set measured **3,442,016,256 to 4,262,133,760 B** for a 447 MB window. Reading through one
+buffer that `f.pread` refills in place brings it to **507,969,536 B** — below section 3.10's
+predicted 513,638,400.
+
+**`f.pread` always requests the buffer's whole capacity**, so an oversized transient over-reads the
+tail of every member. At 32 MiB that is 5.4 GB of wasted I/O and 2.4 s of `pread`; at 1 MiB it is
+339 MB and **515 ms**, which is section 5.3's number. `CHUNK_BYTES` is 1,048,576 for that reason
+and no other.
+
+### C7 — `output_tied` is derived from source-tensor identity, not from decoded names
+
+Section 3.4 derives `model.output_tied` from the two members' **names**. Reading a name needs
+`alignpack_read.member_at` and then `alignpack_read.member_name`, and at this pin the region checker
+refuses to hold the first call's `PackMember` across the second while both take the same
+`borrow mut Counters`: *"cannot retain a shorter-lived view through this mutable borrow; copy it
+into the destination region first"*. Moving the pair into its own function did not help, because the
+refusal is about the two calls, not about the caller.
+
+`output_tied` is the two members' `source_offset` and `nbytes` agreeing instead. That is the same
+fact and a stronger one — two members that are the same GGUF tensor carry the same source range
+whatever they are called — and it costs two fewer file reads.
+
+### C8 — the reference perturbation stops at slot 11
+
+`ALIGN_GGML_FORCE_REFERENCE_PERTURBATION` flips one bit of every `slot_set` on slots 0 to 12,
+which in R5A's slot map is exactly the thirteen reference weights. R5B's slot 12 is the
+**Align-owned residual input**, which the primary arm also writes through `slot_set`, so the
+unchanged macro would perturb both arms identically and the oracle would see nothing. The range now
+stops at 11. R5A is unaffected in outcome: its first differing node is `embd`, which depends on slot
+0, and `scripts/layer-forward-golden.jsonl` is byte-unchanged.
+
+### C9 — the hosted logits oracle cannot exercise `IDENTICAL`, and exercises something better
+
+Section 4.4 expects the synthetic model's logits blob to produce `IDENTICAL`. It cannot. The blob
+comes from the generator's pure-Python second implementation, and byte-identity would require Python
+and the stub engine to agree on `expf`, `sinf`, `cosf`, and `sqrtf` to the last bit, which no
+portable pair of libm implementations does. The measured hosted difference is **zero
+ten-thousandths** over all thirty-two logits, with the argmax and the whole top ten equal — and the
+verdict is still `FAIL`.
+
+That is the stronger hosted assertion, and `scripts/run-layer-forward-smoke` makes it one: at the
+reconciliation width a reference that agrees to four decimal places, on the argmax, and on the whole
+top ten is refused, which is exactly section 3.7's *"anything less is a regression, not a
+tolerance"*. `IDENTICAL` remains `Q`-only, where both sides are ggml and section 5.2 measures it.
+
+### C10 — `-` in the transcript position, or the logits oracle is unreachable at the runtime width
+
+Section 5.2's second invocation runs at `KV_WIDTH` 6 to obtain the `WITHIN` verdict. It cannot: the
+nine- and ten-operand forms require a transcript, `KV_WIDTH` travels with it, the transcript's
+`kq-L` `ne0` is validated against `KV_WIDTH`, and the instrument only ever produces a transcript at
+**its** width. `--model-forward PACK GEOM TOKENS DOC REF TRANSCRIPT 6 LOGITS` refuses itself with
+`R5_ORACLE_SHAPE`, correctly.
+
+The transcript position accepts `-` — "no transcript" — exactly as the document position already
+does. `KV_WIDTH` keeps its own operand position and stays fail-closed with no default; seven
+operands is still `R5_ARITY`.
+
+### C11 — `R5_WINDOW_BUDGET` is not input-reachable
+
+Section 4.5 lists it as stub-reachable from "a member record declaring 2^40 bytes". It is not:
+`alignpack_read.member_at` validates a member against its own block's byte range, and the block
+against the file, so a member claiming 2^40 bytes is `R4_PACK_OFFSET` long before the window sweep
+sees it. The residual and logits bounds are unreachable for the same reason — every dimension they
+are computed from is checked against the geometry first.
+
+`R5_WINDOW_BUDGET` joins `R4_WINDOW_UNAVAILABLE` and `R5_ABI` as a fail-closed guard over a
+condition no input can produce. **Twenty-nine of the thirty-two codes are stub-reachable**, not
+thirty, and section 7 records that as a measurement the runner prints.
+
+### C12 — the transcript oracle compares 479 nodes and 30,078 elements
+
+Section 2.8 measured 478 nodes and 30,042 elements because the probe narrowed its `attn_out` handle
+before dumping it, so `attn_out-27` was a shape disagreement the probe skipped. R5B's oracle row
+points at the attention output projection **before** the two narrowing rows, which is where the
+transcript's `node_1084` is, so it is compared like every other layer's: **479 of 479 nodes, 30,078
+elements, max 0 ten-thousandths.** The self-reference oracle's 479 is unchanged.
+
+### C13 — `output_norm`'s shape is checked by its row count
+
+The plan checks `output_norm` is "1-D at `n_embd`". A container's `n_dims` is the packer's choice —
+`scripts/layer_forward_fixture.py` writes `2` for every member, and R5A's member table never reads
+it — so the check is `dim0 == n_embd && dim1 == 1`, which is the same claim about the same tensor
+and does not depend on how a packer counted axes.
+
+### C14 — the stub engine's fixed pools are recycled
+
+`scripts/ggml_shim_stub.c`'s engine was written for R5A's single graph: its tensor pool, graph pool,
+and arena are bump-allocated and never released. Thirty graphs times two passes times two arms
+exhausts all three. The engine now resets itself the moment no context and no buffer is live, which
+is precisely the boundary section 3.10 already requires the arm to reach after every graph — so a
+caller that leaks one exhausts a pool and is told, rather than being hidden.
+
+### C15 — both passes run in one invocation, and `member_placements` counts one of them
+
+Section 5.2 asserts `graph.node_count_total` 874 **and** `graph.reconciliation_node_count` 958 in the
+same run, which only holds if the runtime pass and the reconciliation pass both execute. They do:
+one window fill feeds both, two Align-owned residuals are carried in parallel (section 3.10's
+memory table lists both), and the reference arm mirrors whichever pass section 3.7 names as
+compared. `timings.compute_ns` and `timings.reconciliation_compute_ns` are the two measurements
+this makes possible, and section 5.3 now carries them from the arm rather than from the probe.
+
+`window.member_placements` is counted for the compared pass only. Both passes place the same members
+at the same offsets in the same window, so counting both would report 678 where section 5.2 expects
+339 and would measure nothing extra.
+
+### C16 — the per-layer lifetime balance is a document field
+
+Section 5.1 requires `lifetime.*_created == *_freed` "at every layer boundary", which a document
+reporting only final totals cannot express. `lifetime.graph_balance_failures` counts the graph
+boundaries at which any counter was unequal, and `released_before_owner_scope_end` requires it to be
+zero. On every passing run, hosted and qualified, it is `0`.
+
+---
+
+## 7. Closure-matrix evidence
+
+Every cell of section 4, mapped to the case that discharges it and the value it produced. `S` cases
+run in `make layer-forward-smoke` (11.0 s, three consecutive identical runs); `Q` cases run in
+`make model-forward-qualification` (34.7 s end to end, scratch removed).
+
+### 7.1 `src/layer_qwen2.align`
+
+| Cell | Evidence |
+| --- | --- |
+| Three tables well-formed | `S` every `mf-engine-*` case: `graph.slot_high_water` 52 against `slot_capacity` 128, `node_count_total` 68 = 1 + 31 + 33 + 3 |
+| Conditional rows form a graph at each condition | `S` `mf-engine-ok` (31 rows), `mf-engine-transcript` (`reconciliation_node_count` 74 = 1 + 34 + 36 + 3); `Q` 874 and 958 |
+| Shapes derived per layer | `S` the synthetic model's 27 members; `Q` all 339, `R5_SHAPE` never raised |
+| The last layer's shapes differ | `S` `schedule[0].l_out_ne1` 3 and `schedule[1].l_out_ne1` 1; `Q` `schedule[26]` `{3584, 6}` and `schedule[27]` `{3584, 1}` — **not** `norm-27`, correction C3 |
+| A missing or inconsistent geometry field | `S` `mf-geometry-missing-n_layer`, `-n_vocab`, `mf-geometry-arch`, `mf-geometry-rope-scaled` → `R5_GEOMETRY` |
+| An unusable bit pattern | `S` `mf-geometry-eps-nan` → `R5_GEOMETRY` |
+| Early exit — unsupported arch or rope | `S` `mf-geometry-arch`, `mf-geometry-rope-scaled` |
+| Scalars — mask at two widths | `S` `mf-engine-runtime-width` (3 x 3) and `mf-engine-transcript` (8 x 3); `Q` 6 x 6 and 256 x 6 |
+| Cleanup — no handle, no file, no `unsafe` | `S` the `unsafe {` and `extern "C"` scans name `src/ggml_ffi.align` alone |
+
+### 7.2 `src/ggml_ffi.align` and the two C files
+
+| Cell | Evidence |
+| --- | --- |
+| Construction — `pad` | `S` `mf-engine-transcript`'s three `WHEN_WIDE` rows; `Q` 84 padded nodes across 28 layers. `cont_2d` was never written (C1) |
+| Construction — `window_copy` | `S` every fill; `Q` 339 members, 4,370,571,072 B (C5) |
+| Success — status `0` | `S` `mf-status-map` is discharged by the 29 codes the runner reaches; no status reached `R5_ABI` by default |
+| Failure — `pad` bounds | `S` `mf-force-pad-negative`, `mf-force-pad-oversize` → `R5_SHAPE` |
+| Malformed input — slots | `S` `mf-force-slot-range`, `mf-force-slot-empty` → `R5_SLOT` |
+| Move in/out — no aggregate holds `raw` | `S` the record-declaration scan over `src/` |
+| Cleanup — per graph | `S` `mf-force-compute` tears down fully; `lifetime.graph_balance_failures` 0 on every run |
+| The two C files agree | `S` the shared-contract byte-identity assertion |
+| No `malloc` | `S` `grep -c malloc scripts/ggml_shim*.c` is `0` |
+| Contraction off | `S` `abi.fp_contract_off` asserted `true` on all 55 documents; `Q` asserted `true` |
+
+### 7.3 `src/model_forward.align`
+
+| Cell | Evidence |
+| --- | --- |
+| Arm selection | `S` `mf-arm-unknown-flag` (no document), `arm-r5a-unchanged` still emits `R5_LAYER_FORWARD` |
+| Role-qualified block selection | `S` `mf-block-ambiguous` → `R5_BLOCK_AMBIGUOUS`, `mf-block-missing-output` → `R5_BLOCK_MISSING`, `selection` 0/5; `Q` **0 and 57** |
+| Layer coverage | `S` `mf-coverage-gap` → `R5_LAYER_COVERAGE`, detail `layer[1]` |
+| Window sizing | `S` `window.peak_block_bytes == window.bytes`; `Q` **447,086,592 B**, peak block 57, `peak_block_layer` -1. `mf-window-budget` is `N/A` (C11) |
+| The read schedule | `S` `window.reuse_count` 4; `Q` **30** fills, 9,111 read groups over 8,741,179,104 B including the reference arm's own 4.37 GB |
+| The residual carry | `S` `schedule[].l_out_ne1` 3 then 1; `mf-force-residual` → `R5_RESIDUAL` |
+| The narrowing | `S` `selection.narrow_layer` 1, `narrow_index` 2; `Q` **27 and 5**, layer 27 compute 7.28 ms against a 26.55 ms median |
+| The head | `S` `output.element_count` 32; `Q` **152,064**, argmax **671** |
+| Window reuse is safe | `S` `lifetime.graph_balance_failures` 0; `Q` 0, and the self-reference oracle is `IDENTICAL` over 30 graphs |
+| Each error code | section 7.5 |
+| `-` document destination | `S` `mf-doc-stdout-identical`: the four-operand, `-`, and file forms are byte-identical |
+| Exit mapping | `S` every case asserts `status == "ok"` iff exit 0 |
+| Cleanup | `S` `released_before_owner_scope_end` true; `Q` true, peak RSS **507,969,536 B** shipped and **938,655,744 B** with the self-reference arm |
+
+### 7.4 The three oracles
+
+| Cell | Evidence |
+| --- | --- |
+| Reference — bytes equal, per block | `S` `mf-engine-source-diverged` → `R5_SOURCE_DIVERGED`; `Q` all 339 members equal |
+| Reference — nodes identical, per graph | `S` 37 of 37 over 4 graphs; `mf-force-reference` names the node; `Q` **479 of 479 over 30 graphs** |
+| Transcript — grammar | `S` `mf-transcript-garbage` → `R5_TRANSCRIPT` |
+| Transcript — every layer matched | `S` `mf-transcript-missing-layer` → `R5_ORACLE_MISSING`; `Q` `layers_matched` **28** |
+| Transcript — the element-count rule | `S` `mf-transcript-headers`, `mf-transcript-novalues`; `Q` `elements_compared` **30,078** (C12) |
+| Transcript — `kq-L` `ne0` against `KV_WIDTH` | `S` `mf-transcript-kv-width` → `R5_ORACLE_SHAPE`; `Q` 28 `kq-L` and 28 `kq_soft_max-L` all declaring 256 |
+| Transcript — excluded nodes | `S` the two per layer are matched and never element-compared: `nodes_expected` is 1 + 17L + 2 |
+| Transcript — a tolerance breach | `S` `mf-transcript-perturbed` → `FAIL`, `worst_layer` 0, `worst_node` `l_out`, `status` `ok` |
+| Transcript — an exact pass | `S` max 0 over 546 elements; `Q` **max 0 over 30,078 elements**, max sum diff 1 millionth |
+| Logits — file shape | `S` `mf-logits-short` → `R5_LOGITS_SHAPE`, `mf-logits-missing` → `R5_LOGITS_UNREADABLE` |
+| Logits — byte-identical at the reconciliation width | `Q` **`IDENTICAL`**, `byte_identical` true, `sha256` `d2e48620ae3e31e2066a6172aa32c19c974d996d232ab91b118335e3d245bf74`, `bit_sum` 425,868,724,161,277. `S` asserts the rule's strictness instead (C9) |
+| Logits — the runtime width verdict | `S` `mf-engine-runtime-width` → `WITHIN`; `Q` **`WITHIN`, max 2,739 ten-thousandths, argmax 671 both, top-10 agreement 10** |
+| Logits — a real failure is not `WITHIN` | `S` `mf-logits-perturbed`: a blob shifted by 1.0 keeps the argmax and the whole top ten and is `FAIL` |
+| Tolerances not silently widened | `S` `1`, `1000`, `10`, and `5000` asserted; `Q` the same four |
+
+### 7.5 Error-code evidence
+
+Twenty-seven codes are reached inside a document by `make layer-forward-smoke`'s model block, and
+`R5_ARITY` and `R5_PATH` are reached as the absence of one — **29 of 32**. The three that are not:
+`R5_WINDOW_BUDGET` (C11), `R4_WINDOW_UNAVAILABLE`, and `R5_ABI`, each a fail-closed guard over a
+condition no input can produce, exactly as `r5a-dense-layer-forward.md` section 4.6 records for the
+last two. `R5_GGML_INIT` and `R5_COMPUTE` are additionally reached against the **real** shim in the
+qualification.
+
+### 7.6 Measured metrics, from the arm
+
+Section 5.3's table was the probe's. These are `ggml-spike --model-forward`'s own, on the same host,
+warm, six-token prefill, `qwen2.5-coder-7b-instruct-q4_k_m.gguf`.
+
+| Metric | Probe (section 5.3) | The shipped arm |
+| --- | --- | --- |
+| wall, shipped arm, no oracles | 1,071–1,121 ms | **1,141–1,275 ms** |
+| `pread`, whole model | 532.9 ms | **515–648 ms** for 4,370,608,032 B in 4,729 groups |
+| compute, runtime width | 349.6 ms | **484–620 ms** |
+| compute, reconciliation width | 394.1 ms | **668–841 ms** |
+| per-layer compute, median | 13.50 ms | **20.6–26.6 ms** |
+| layer 27 compute | 4.30 ms | **6.5–7.3 ms** |
+| head compute | 9.5–11.2 ms | **10.7–11.9 ms** |
+| head `pread` | 63.0 ms | **184–209 ms** |
+| reused window | 447,082,496 B | **447,086,592 B** at `MAX_TENSOR_ALIGNMENT` |
+| activation peak | 2,437,120 B | **2,437,120 B** |
+| residual carry | 86,016 B | **86,016 B** |
+| peak RSS, shipped arm | 513,638,400 B | **507,969,536 B** |
+| peak RSS, self-reference arm | 960,626,688 B | **938,655,744 B** |
+| qualification wall, both passes, three oracles | — | **6.4–6.7 s**; the whole target 34.7 s including packing and both instruments |
+
+The arm is slower than the C probe at compute because it runs the reference arm's `ggml_set_output`
+marks on seventeen nodes per graph — which the probe only did under `ALIGN_R5B_DUMP` — and because
+correction C5's transient copies 4.37 GB that the probe read straight into its window. Both costs
+are named rather than absorbed. **The conclusion section 5.3 exists for is unchanged and now
+measured by the product: `pread` is comparable to compute at the runtime width and below it at the
+reconciliation width, so a six-token prefill of this model on this CPU is within a factor of two of
+I/O bound with the whole file in page cache, and a residency policy has half a second per prefill to
+compete for.**
