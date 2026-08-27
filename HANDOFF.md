@@ -41,6 +41,16 @@ file records durable project state.
   then verified to be **independent of the `-ffp-contract=off` build flag** by rebuilding the shim
   without it and re-running; dropping the matching `-DALIGN_GGML_FP_CONTRACT_OFF` define instead
   fails all 74 cases on the new `abi.fp_contract_off` assertion, which is the guard working.
+- **Fresh-worker portability of the owner, repaired before preflight** (ledger section 6,
+  corrections **C26** and **C27**, the same two classes R4.5 hit as C22 and C23). The owner used
+  `sort` for its two static scans, and the fresh worker image ships a curated tool set
+  (`image/fresh/Dockerfile`) with no `sort`; it now sorts through a `python3` helper. It also built
+  its nine shims into `build/lib` and its executable into `./ggml-spike`, inside the work tree, and
+  the fresh worker permits the whole aggregate to leave exactly one file, `main`, in `/workspace`;
+  both now go into the runner's own `mktemp -d` tree. Verified on Linux (aarch64, clang 22) with
+  `PATH` restricted to exactly the curated set: `make layer-forward-smoke gate-topology-check`
+  PASS in 23 s, all 74 goldens reproduced — which is also the first cross-compiler evidence that the
+  corpus is portable — and `git status --porcelain --ignored` names nothing the runner created.
 - **Named qualification, against `qwen2.5-coder-7b-instruct-q4_k_m.gguf`, layer 0, tokens
   `750,912,2877,11,293,1648`** (`docs/specs/r5a-dense-layer-forward.md` section 7.7):
   - self-reference oracle: **IDENTICAL**, 20 of 20 dumped node tensors byte-identical;
