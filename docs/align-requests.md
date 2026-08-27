@@ -221,10 +221,10 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > seconds rather than minutes. It is non-blocking — the refactor is in place and `check-per-unit
 > src/layer_forward.align` is 6 s — with all of R5A-DENSE-LAYER-FORWARD as independent work. None of
 > this is blocking: R5A ships entirely on the pinned surface, with all of R5A-DENSE-LAYER-FORWARD as
-> independent work. R5B-MODEL-PREFILL-FORWARD (`docs/specs/r5b-model-prefill-forward.md`) is now the
-> active capability, streaming the whole twenty-eight-layer Qwen2 model through one reused
-> Align-owned window and checking it against llama.cpp's own final logits. **Implementation is
-> complete in the working tree.** Design believed no new request was needed (section 5.5); as with
+> independent work. R5B-MODEL-PREFILL-FORWARD (`docs/specs/r5b-model-prefill-forward.md`) merged as
+> align-llm PR #128 (`3470646` -> `870bf31`), streaming the whole twenty-eight-layer Qwen2 model
+> through one reused Align-owned window and checking it against llama.cpp's own final logits. It
+> consumed no `PROPOSED` request. Design believed no new request was needed (section 5.5); as with
 > R5A, implementation refuted that belief (section 6, corrections C1-C16) and adds three requests.
 > Design-time client evidence for Requests 21, 32, 33, 34, and 36 stands unchanged in kind: the
 > read-only pack open (Request 21) gets its fifth client, holding the file across fifty-eight `pread`
@@ -267,8 +267,8 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > handing R5B's same Align-owned window to Metal through
 > `ggml_backend_dev_buffer_from_host_ptr` and checking the whole-model result against
 > R5B's byte-identical CPU logits vector. **Implementation, both review repairs, and the
-> qualification are complete and committed, and the branch is rebased onto R5B's PR #128
-> head.** The probe record (section 2) refuted
+> qualification are complete and committed, the branch is rebased onto the merged R5B at `main`
+> `870bf31`, and publication is in progress.** The probe record (section 2) refuted
 > six of the plan's own assumptions before section 3 was written: Metal is
 > **bit-deterministic** (five consecutive full-model runs byte-identical) rather than
 > nondeterministic, needs **no** 16 KB alignment rule (the buffer-type alignment is 32,

@@ -5,16 +5,18 @@ file records durable project state.
 
 ## Active: R5C-METAL-PREFILL-ARM — the same Align-owned window, handed to Metal (2026-08-27)
 
-- Branch `agent/r5c-metal-prefill`, **rebased onto the published R5B-MODEL-PREFILL-FORWARD work**:
-  its four commits — the design ledger `90ef398`, the implementation `e4c53d5` ("feat: run the
-  whole-model prefill on the Metal device"), the review repair `eda2794`, and the final-review
-  repair `df055a7` — now sit on `agent/r5b-model-prefill-forward` at `3470646`, which is itself on
-  `main` at `ccbd8ae` (the PR #127 merge of R5A head `0397228`) and open as **PR #128**. The
-  authoritative design ledger is `docs/specs/r5c-metal-prefill.md`. Nothing is intentionally
-  uncommitted.
-- **Status: implemented, reviewed twice, both repairs committed, and rebased; awaiting publication
-  behind R5B's PR #128.** The rebase carried conflicts in `HANDOFF.md`, `docs/specs/roadmap.md`,
-  `src/model_forward.align`, `scripts/run-layer-forward-smoke`, and
+- Branch `agent/r5c-metal-prefill`, **rebased onto the merged R5B-MODEL-PREFILL-FORWARD work**: its
+  four commits — the design ledger `2bf5bf2`, the implementation `e3d94d9` ("feat: run the
+  whole-model prefill on the Metal device"), the review repair `31cd1d5`, and the final-review
+  repair `9ac28bb` — now sit directly on `main` at `870bf31`, the **PR #128 merge of R5B head
+  `3470646`**, which itself continues the merged R5A (PR #127, merge `ccbd8ae`), R4.5 (PR #126,
+  merge `fa567b1`), and R4 (PR #125, merge `991eab1`) chain. They are followed by the first
+  reconciliation commit `eb710d2`, recorded while R5B was still open, and by this second one, which
+  reconciles the branch with R5B's merge. The authoritative design ledger is
+  `docs/specs/r5c-metal-prefill.md`. Nothing is intentionally uncommitted.
+- **Status: implemented, reviewed twice, both repairs committed, rebased onto the merged R5B, and
+  publication is in progress.** The first rebase carried conflicts in `HANDOFF.md`,
+  `docs/specs/roadmap.md`, `src/model_forward.align`, `scripts/run-layer-forward-smoke`, and
   `scripts/layer_forward_fixture.py`, all resolved keeping both sides: R5B's published head already
   carries the non-finite-reference half of R5C's correction C12 as its own **C23**, so exactly one
   copy of `logit_ten_thousandths`, `R5_LOGITS_NONFINITE`, and the three `mf-logits-*` fixtures and
@@ -22,7 +24,10 @@ file records durable project state.
   overflow bucket, the strict-reconciliation gate, the tri-state device fields, correction C19's
   `oracle_ten_thousandths`, and the `inf-readback` flavour. Every R5C-added `Section 6` reference
   in `src/model_forward.align` is now qualified as **R5C section 6**, because that module's
-  unqualified references belong to R5B's ledger. R5C discharges
+  unqualified references belong to R5B's ledger. The second rebase, onto the PR #128 merge
+  `870bf31`, replayed **all five commits cleanly with no conflict**: R5B merged exactly the head
+  `3470646` this branch was already sitting on, so the merge added no content the first rebase had
+  not already reconciled. R5C discharges
   `docs/specs/roadmap.md` section R5's required microbenchmark A (transfer + GPU compute) on
   unified memory: the same thirty graphs, the same alignpack, and the **same Align-owned weight
   window** R5B already streams, handed to the Metal device through
@@ -184,7 +189,8 @@ file records durable project state.
   `libggml-metal.so` produces `metal forward qualification: FAIL … the registry scoped to it still
   reports no device of type GPU`, where before C17's rewrite the same input silently qualified
   Homebrew's `MTL0`. Both scratch trees were removed.
-- **Owner results and both qualifications, rerun once against the rebased head, this reconciliation commit.**
+- **Owner results and both qualifications, rerun once against the first rebased head, at the first
+  reconciliation commit `eb710d2`.**
   `gmake check` — clean, 29 units, 88 s. `gmake build` — clean. `gmake ggml-spike` (stub and real)
   — both clean. `gmake ggml-spike-smoke` — clean. `gmake layer-forward-smoke` — **3 runs,
   identical output** apart from each run's own `mktemp` path, 18.3-19.2 s; 75 R5A, 59 R5B, and 28
@@ -200,16 +206,29 @@ file records durable project state.
   (Apple M1), self-reference `IDENTICAL` 479/479, logits `WITHIN` at max `|Δ|` **2,936 of 6,000**
   with argmax 671 and the top ten identical, determinism `b6e473e8…` on both passes, 59 wraps with
   0 pointer-identity failures, and all four forced flavours reached. Both scratch trees were
-  removed. No baseline chain and no preflight were recorded: the base moves when PR #128 merges.
+  removed. No baseline chain and no preflight were recorded: the base moved when PR #128 merged.
+- **Owner verification rerun against the second rebased head, this reconciliation commit, on the
+  Metal host.** `gmake check` — clean, **29 units, 89 s**. `gmake build` — clean. `gmake
+  ggml-spike` — clean with the **stub** shim and clean with the **real** shim
+  (`ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include`). `gmake layer-forward-smoke` — **3 runs,
+  byte-identical output** once each run's own `mktemp` path is normalized (18.2, 18.2, 18.6 s):
+  75 documented R5A cases with 24 of 26 codes, 59 documented R5B cases with 30 of 33 codes, and 28
+  documented R5C cases with 20 codes including all three `R5C_*`, `arm-r5b-unchanged`, and the whole
+  two-layer model on a stub GPU device, all `PASS`. `gmake gate-topology-check` — `check gate
+  topology: PASS`. `gmake format-check` — clean. `gmake fmt` — no diff. `git diff --check` —
+  clean. The two named qualifications (`model-forward-qualification` and
+  `metal-forward-qualification`) are not rerun here: the second rebase replayed every commit
+  unchanged, so their inputs are the bytes already qualified at `eb710d2` above.
 - **Next actions, in order.**
-  1. When R5B's PR #128 merges, rebase this branch onto that merge, rerun owner verification and
-     both named qualifications against the new head, and record the baseline chain there — no
-     baseline was recorded at this rebase because the base still moves.
-  2. Exact-head preflight (`python3 scripts/pre-pr`) against the final base, including the
+  1. Record the canonical baseline chain against this head if any of the twenty recorded artifacts
+     changed against `main` at `870bf31`; skip it if none did.
+  2. Exact-head preflight (`python3 scripts/pre-pr --owner-test metal-forward -- make
+     layer-forward-smoke gate-topology-check`) against `main` at `870bf31`, including the
      DinD-capable installed profile check; do not substitute a Docker skip or an ambient
      `DOCKER_HOST` endpoint.
-  3. Publish the English pull request, stacked behind R5B's PR #128, with both review envelopes,
-     the finding dispositions, and the two repair commits.
+  3. Publish the English pull request against `main`, with both review envelopes, the finding
+     dispositions, and the two repair commits. R5B's PR #128, R5A's PR #127, R4.5's PR #126, and
+     R4's PR #125 are all merged.
 - **Three pending user decisions, consolidated into one list** (previously tracked separately
   across earlier checkpoints; this is the current, authoritative statement).
   1. Small MoE GGUF (1-4 GB): unlocks the R2 roadmap gate (a real MoE activation-locality
@@ -234,7 +253,7 @@ file records durable project state.
   decision 1, the gpt-oss half of R1B's gate needs decision 2, and R5's own microbenchmark C needs
   Request 41 to ship at all, independent of any of the three decisions.
 
-## Publication in progress: R5B-MODEL-PREFILL-FORWARD — a whole Qwen2 prefill computed from an Align-owned alignpack (2026-08-27)
+## Merged checkpoint: R5B-MODEL-PREFILL-FORWARD — a whole Qwen2 prefill computed from an Align-owned alignpack (2026-08-27)
 
 - Branch `agent/r5b-model-prefill-forward`, **rebased onto the merged R5A-DENSE-LAYER-FORWARD
   work**: it now sits directly on `main` at `ccbd8ae` (the PR #127 merge of R5A head `0397228`),
@@ -254,7 +273,8 @@ file records durable project state.
   `src/layer_forward.align` merged without conflict, keeping `main`'s R5A repairs — the
   `abi.fp_contract_off` probe, the fresh-worker tool set, the supervisor stream bound, the writable
   excerpt copy, and the named-field golden diagnostics — beside R5B's additions.
-- **Status: published as align-llm PR #128, open at head `3470646`; R5C (above) is stacked on it.**
+- **Status: merged as PR #128** (head `3470646`, merge commit `870bf31` on `main`); R5C (above) is
+  rebased onto that merge.
   Implementation is complete and committed; two complementary reviews and one final review are
   complete and repaired in the consolidated repair commit `b5b2db8` and the final-review commit
   `5ab2ad0`, and the branch has since taken the R5C-discovered non-finite-reference repair as its
@@ -394,17 +414,16 @@ file records durable project state.
   changed against the R5A chain; the other eighteen hashes, `src/main.align` included, are unchanged
   and the twenty paths are identical. `make baseline-check` on Linux: PASS, ending
   `baseline chain: PASS`.
-- **Next actions, in order.**
-  1. Watch PR #128 to green and merge it; owner verification, the named qualification, the baseline
-     chain, and the exact-head preflight are already recorded against `3470646`.
-  2. Do **not** rely on `layer-forward-smoke`'s existing `HOSTED_CHECK_TARGETS` membership as an
-     exemption: `python3 scripts/verification_scope.py --base ccbd8ae --head <head>` classifies this
-     diff as `scope: fresh-image` (`fresh_focused` and `fresh_installed` both true) because the
-     `Makefile` gains the `model-forward-qualification` recipe. No *aggregate membership* changed
-     and the new target joins no aggregate, but the fresh-image scope is selected. Run the
-     classifier against the exact head rather than reasoning about it.
-  3. After the merge, rebase R5C (above) onto it and publish R5C. R5A's PR #127, R4.5's PR #126,
-     and R4's PR #125 are all merged.
+- **No next actions: this capability is closed.** Owner verification, the named qualification, the
+  baseline chain, and the exact-head preflight were all recorded against `3470646`, PR #128 went
+  green and merged as `870bf31`, and R5C (above) is rebased onto that merge. One publication note
+  is retained because R5C inherits it: do **not** rely on `layer-forward-smoke`'s existing
+  `HOSTED_CHECK_TARGETS` membership as an exemption. `python3 scripts/verification_scope.py --base
+  ccbd8ae --head 3470646` classified R5B's diff as `scope: fresh-image` (`fresh_focused` and
+  `fresh_installed` both true) because the `Makefile` gained the `model-forward-qualification`
+  recipe; no *aggregate membership* changed and the new target joined no aggregate, but the
+  fresh-image scope was still selected. Run the classifier against the exact head rather than
+  reasoning about it. R5A's PR #127, R4.5's PR #126, and R4's PR #125 are all merged.
 - **Pending user decisions and the "last capability reachable without one" status are now tracked
   in one place, in the R5C-METAL-PREFILL-ARM section above**, superseding the two separate bullets
   this entry previously carried. The R3 (Cache Simulator) blocker below still applies unchanged.
@@ -415,8 +434,8 @@ file records durable project state.
   host. Resume condition: the small-MoE-GGUF decision is made, the model's architecture is
   identified, an R1C frontend is built if that architecture is not already `qwen2`/`gpt-oss`, and
   R2A's `moe: true` path is exercised against a real transcript from it. Independent work that may
-  continue: R5B's PR #128 (its stage-3 dense CPU gate needs no MoE trace) and R5C's publication
-  behind it.
+  continue: R5C's publication (its unified-memory microbenchmark A needs no MoE trace), now that
+  R5B's PR #128 has merged.
 
 ## Merged checkpoint: R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack (2026-08-27)
 
@@ -1193,21 +1212,25 @@ boundary is next changed.
 
 ## Resume in another environment
 
-1. Fetch `origin`, check out `agent/r5b-model-prefill-forward`, and read `CLAUDE.md`, then
-   `docs/specs/r5b-model-prefill-forward.md` in full (committed at `516f963`, corrections applied)
-   — it is the plan of record — and `docs/specs/r5a-dense-layer-forward.md` and
-   `docs/specs/r4-5-external-buffer.md` for the layer arm and the external-buffer surface it
-   consumes. R5A-DENSE-LAYER-FORWARD merged as PR #127 (`0397228` -> `ccbd8ae`); this branch is
-   rebased onto that merge.
+1. Fetch `origin`, check out `agent/r5c-metal-prefill`, and read `CLAUDE.md`, then
+   `docs/specs/r5c-metal-prefill.md` in full (committed at `2bf5bf2`, corrections applied) — it is
+   the plan of record — and `docs/specs/r5b-model-prefill-forward.md`,
+   `docs/specs/r5a-dense-layer-forward.md`, and `docs/specs/r4-5-external-buffer.md` for the CPU
+   model arm, the layer arm, and the external-buffer surface it consumes.
+   R5B-MODEL-PREFILL-FORWARD merged as PR #128 (`3470646` -> `870bf31`) and
+   R5A-DENSE-LAYER-FORWARD as PR #127 (`0397228` -> `ccbd8ae`); this branch is rebased onto the
+   PR #128 merge.
 2. Materialize the pinned toolchain with `scripts/align-toolchain ensure compiler`; on macOS use
    `gmake` and the recorded `LLVM_CONFIG`/`LIBRARY_PATH` environment. Confirm `.align-revision`
-   still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R5B requires no pin change.
-3. Resume at the first unfinished next action in the R5B-MODEL-PREFILL-FORWARD capability above:
-   the implementation (`dbe646e`), both reviews, and both repairs (`b5b2db8`, `5ab2ad0`) are done
-   and every owner passes, so what remains is the re-recorded baseline chain, exact-head preflight,
-   and publication.
+   still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R5C requires no pin change.
+   `metal-forward-qualification` additionally needs a Metal host and
+   `ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include`; it reports `N/A` elsewhere.
+3. Resume at the first unfinished next action in the R5C-METAL-PREFILL-ARM capability above: the
+   implementation (`e3d94d9`), both reviews, and both repairs (`31cd1d5`, `9ac28bb`) are done and
+   every owner passes, so what remains is the baseline chain if any recorded artifact changed,
+   exact-head preflight, and publication.
 4. Do not open another Align request unless implementation exposes a further genuine shipped-language,
-   compiler/runtime, or standard-library gap under the register rules. Requests 21-40 are
+   compiler/runtime, or standard-library gap under the register rules. Requests 21-43 are
    `PROPOSED` and non-blocking.
 5. Two user decisions are pending and must not be silently dropped: whether to download
    `gpt-oss-20b-mxfp4.gguf` (12.1 GB) for the carried-forward gpt-oss `model-ir-parity`

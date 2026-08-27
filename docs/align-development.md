@@ -940,8 +940,8 @@ and is named explicitly in the pull request instead, exactly as `ggml-spike-qual
 
 ## Model prefill forward development
 
-R5B-MODEL-PREFILL-FORWARD is the **active** capability on branch `agent/r5b-model-prefill-forward`,
-design complete with probe evidence and implementation in progress; its authoritative plan is
+R5B-MODEL-PREFILL-FORWARD is **implemented, owner-verified, qualified against the real model, and
+merged** (PR #128, merge commit `870bf31` on `main`); its authoritative plan is
 `docs/specs/r5b-model-prefill-forward.md`, which owns the probe record, the contract ledger, the
 closure matrix, and the fixtures, qualification, metrics, deferrals, risks, and candidate-request
 sections. It answers the third of R5's three gate stages — a smallest model, CPU only, dense,
@@ -1080,8 +1080,9 @@ reasoning from either paragraph.
 
 ## GPU prefill forward development
 
-R5C-METAL-PREFILL-ARM is the **active** capability on branch `agent/r5c-metal-prefill`, design
-complete with probe evidence and implementation in progress; its authoritative plan is
+R5C-METAL-PREFILL-ARM is the **active** capability on branch `agent/r5c-metal-prefill`, rebased onto
+the merged R5B at `main` `870bf31`; it is implemented, reviewed twice, repaired, qualified on a
+Metal host, and publication is in progress. Its authoritative plan is
 `docs/specs/r5c-metal-prefill.md`, which owns the probe record, the contract ledger, the closure
 matrix, and the fixtures, qualification, metrics, deferrals, risks, and candidate-request sections.
 It answers `docs/specs/roadmap.md` section R5's required microbenchmark A (transfer + GPU compute)

@@ -1502,7 +1502,7 @@ thing:
    it is refused before any difference is taken — new error code **`R5_LOGITS_NONFINITE`**, detail
    `elements[<n>]`, raised at step 32 beside `R5_LOGITS_SHAPE`'s length rule and reachable from
    **both** arms. R5B's code count is therefore **thirty-three**, not thirty-two. R5B took this
-   half of the repair into its own published head before R5C rebased onto it, as
+   half of the repair into its own head before it merged as PR #128 and R5C rebased onto it, as
    `r5b-model-prefill-forward.md` section 6, **correction C23** — the reference rule,
    `logit_ten_thousandths`, `LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS`, `R5_LOGITS_NONFINITE`, and the
    `mf-logits-nonfinite` / `-nan` / `-huge` fixtures and goldens. That ledger owns the CPU arm's
