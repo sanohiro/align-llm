@@ -130,9 +130,11 @@ The current forward delivery order is:
     emits an `R4_5_EXTERNAL_BUFFER`, `schema_version: 1` document saying, as data, whether ggml
     computed over our bytes or over a copy. It answers R4.5's gate for the DRAM half and for unified
     memory; section R4.5 below records clause by clause what that discharges and what it defers.
-    Implemented, reviewed, and repaired; R4's PR #125 has merged and PR #126 is open on top of it.
+    Implemented, reviewed, repaired, and merged; R4's PR #125 merged first and PR #126 landed on top
+    of it.
 15. **R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack.
-    Active.** On branch `agent/r5a-dense-layer-forward`, continuing R4.5.
+    Publication in progress.** On branch `agent/r5a-dense-layer-forward`, rebased onto the merged
+    R4.5 at `main` `fa567b1`.
     [`r5a-dense-layer-forward.md`](r5a-dense-layer-forward.md) is the authoritative plan and owns the
     probe record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
     deferrals, risks, and candidate-request sections. `ggml-spike --layer-forward` is a new arm of
@@ -145,7 +147,8 @@ The current forward delivery order is:
     model:** all eighteen oracle nodes agree with the transcript at `max |Δ| == 0` ten-thousandths
     over 1,116 sampled elements, the self-reference arm is 20 of 20 tensors byte-identical, and
     microbenchmark B measures **13.4 ms typical** for one dense layer (12.97-15.05 ms over four
-    qualification runs; the design-stage probe harness measured 15.5 ms). Under review.
+    qualification runs; the design-stage probe harness measured 15.5 ms). Reviewed, repaired, and
+    awaiting publication.
 
 **I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
 prove its value on an existing model, and the merged C6-MEASURED wave (align-llm PR #103, `c9a510d`)

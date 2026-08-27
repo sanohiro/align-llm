@@ -3,13 +3,25 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active capability: R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack (2026-08-27)
+## Awaiting publication: R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack (2026-08-27)
 
-- Branch `agent/r5a-dense-layer-forward`, ledger commit `01e8df4` ("docs: add R5A dense layer
-  forward design ledger"), continuing from R4.5-EXTERNAL-BUFFER-SPIKE (branch
-  `agent/r4-5-external-buffer` at `d46fce6`, PR #126 open above). The authoritative design ledger is
-  `docs/specs/r5a-dense-layer-forward.md`.
-- **Status: reviewed and repaired in the working tree; ready to publish.** R5A is stage 2 of
+- Branch `agent/r5a-dense-layer-forward`, **rebased onto the merged R4.5-EXTERNAL-BUFFER-SPIKE
+  work**: it now sits directly on `main` at `fa567b1` (the PR #126 merge of R4.5 head `d46fce6`),
+  which itself continues the merged R4-ALIGNPACK-LAYER-MAJOR chain (PR #125, head `a7e72dc`, merge
+  `991eab1`). The authoritative design ledger is `docs/specs/r5a-dense-layer-forward.md`, committed
+  at `03de1a4` ("docs: add R5A dense layer forward design ledger"). The branch is four commits on
+  `fa567b1`: the ledger `03de1a4`, the implementation `b6c7162` ("feat: compute one Qwen2 layer over
+  Align-owned alignpack windows"), the consolidated repair for both reviewers' findings `0878eab`
+  ("fix: close dense layer forward review findings"), and the final-review repair `82af318`
+  ("docs: close dense layer forward final review findings"), followed by the reconciliation commit
+  that records this rebase. Nothing is intentionally uncommitted. The rebase carried three content
+  conflicts, all resolved keeping both sides: `scripts/build-ggml-shim`'s environment table
+  (`main`'s `ALIGN_LLM_GGML_SHIM_DIR` line beside R5A's expanded `ALIGN_LLM_GGML_FORCE` list),
+  `docs/specs/roadmap.md`'s forward-order items 13 and 14 (`main`'s merged R4/R4.5 truth), and this
+  file's R4.5 and R4 sections, where `main`'s final content supersedes the branch's older
+  "publication in progress" text while R5A's own section is kept intact.
+- **Status: implemented, verified, reviewed twice, both review repairs committed, and rebased onto
+  the merged R4.5; awaiting publication.** R5A is stage 2 of
   `docs/specs/roadmap.md`
   section R5's three-stage gate — a single dense layer, CPU only — computed by ggml over Qwen2
   weights that live in Align-owned buffers, checked against `llama-eval-callback`'s own numbers for
@@ -128,8 +140,7 @@ file records durable project state.
   loop with `?`, so the arm is split into fourteen functions purely to keep `make check` fast. Both
   are non-blocking. See `docs/align-requests.md` for the full text.
 - **Next actions, in order.**
-  1. Rebase `agent/r5a-dense-layer-forward` onto `main` now that R4.5's PR #126 is merged, and
-     re-record the canonical baseline chain on Linux because the branch changes `Makefile`.
+  1. Re-record the canonical baseline chain on Linux, because the branch changes `Makefile`.
   2. At publication, run **`make ci`**, not only the narrower classifier path — adding
      `layer-forward-smoke` to `HOSTED_CHECK_TARGETS` changes aggregate membership, which is one of
      `CLAUDE.md`'s explicit triggers for the full integration graph.
@@ -153,25 +164,24 @@ file records durable project state.
   already records that no such trace exists on this host. Resume condition: the small-MoE-GGUF
   decision is made, the model's architecture is identified, an R1C frontend is built if that
   architecture is not already `qwen2`/`gpt-oss`, and R2A's `moe: true` path is exercised against a
-  real transcript from it. Independent work that may continue: R4.5's PR #126, R5A's publication (its
-  stage-2 dense CPU gate needs no MoE trace), and the next eligible roadmap capability.
+  real transcript from it. Independent work that may continue: R5A's publication (its stage-2 dense
+  CPU gate needs no MoE trace) and the next eligible roadmap capability.
 
-## Awaiting publication: R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer (2026-08-27)
+## Merged checkpoint: R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer (2026-08-27)
 
 - Branch `agent/r4-5-external-buffer`, **rebased onto the merged R4-ALIGNPACK-LAYER-MAJOR work**:
   it now sits directly on `main` at `991eab1` (the PR #125 merge of R4 head `a7e72dc`). The
   authoritative design ledger is `docs/specs/r4-5-external-buffer.md`, committed at `7bd7d0d`
   ("docs: add R4.5 external buffer spike design ledger").
-- **Status: implemented, verified, reviewed twice, both review repairs committed, and rebased onto
-  the merged R4; awaiting publication.** The branch is five commits on `991eab1`: the design ledger
+- **Status: merged as PR #126** (head `d46fce6`, merge commit `fa567b1` on `main`). Implemented,
+  verified, reviewed twice, both review repairs committed, preflight recorded, and merged. The
+  branch was ten commits on `991eab1`, ending at `d46fce6`: the design ledger
   `7bd7d0d`, the implementation `de86c58` ("feat: compute a ggml matmul over an Align-owned
   alignpack block"), the consolidated repair for both reviewers' findings `bf7f10b` ("fix: close
   external buffer spike review findings"), the final-review repair `049a5cc` ("docs: close external
-  buffer spike final review findings"), and the reconciliation commit that records this rebase.
-  Nothing is intentionally uncommitted. The rebase carried one content conflict, resolved keeping
-  both sides: this file's R4 status bullet, where `main`'s final R4 content (the re-recorded
-  baseline chain and the two review repairs) supersedes the branch's older "publication in
-  progress" text, while R4.5's own section is kept intact.
+  buffer spike final review findings"), the reconciliation commit `45cdc55`, the three-commit
+  re-recorded baseline chain `8b3b161`/`eece7a1`/`77acbb1`, and the two preflight repairs `7a2be4e`
+  and `d46fce6`.
 - **What is on the branch.** `src/alignpack_read.align`, `src/ggml_ffi.align`, `src/ggml_spike.align`,
   `scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`, `scripts/build-ggml-shim`,
   `scripts/ggml_spike_fixture.py`, `scripts/run-ggml-spike-smoke`, `scripts/run-ggml-spike`, and
@@ -304,14 +314,8 @@ file records durable project state.
   `ggml-spike-qualification` targets. `src/main.align`, the other artifact R4 moved, is **unchanged**
   by R4.5, and the twenty paths are identical with every other hash unchanged.
   `make baseline-check` on Linux: PASS, ending `baseline chain: PASS`.
-- **Next actions, in order.**
-  1. Exact-head preflight —
-     `python3 scripts/pre-pr --owner-test ggml-spike -- make ggml-spike-smoke gate-topology-check`.
-     Do not replace the required installed profile with a Docker skip or an ambient `DOCKER_HOST`
-     endpoint.
-  2. Publish the English pull request against `main` at `991eab1` or later, recording the
-     qualification numbers above, the baseline chain, the review envelope, and the finding
-     dispositions.
+- **Next action.** None; merged. The qualification numbers, baseline chain, review envelope, and
+  finding dispositions are recorded on PR #126.
 - **Two pending user decisions, carried forward verbatim.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
      gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented

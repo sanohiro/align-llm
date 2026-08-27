@@ -147,8 +147,8 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > and to Request 23 — `PackPlan`, another wide columns-plus-stream record read through `borrow`
 > accessors, is a fourth client of the same false-positive huge-struct-copy lint, with its concrete
 > source line to be cited at implementation.
-> R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md`) is the active capability,
-> awaiting publication on `agent/r4-5-external-buffer` rebased onto that merge; it computes a real
+> R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md`) merged as align-llm PR #126
+> (`d46fce6` -> `fa567b1`), on `agent/r4-5-external-buffer` rebased onto that merge; it computes a real
 > ggml matmul over an Align-owned quantized buffer, it consumes no `PROPOSED` request
 > and added Requests 32 and 33. Request 32, FFI v1 by-value struct ABI (AAPCS64 and SysV MEMORY
 > class) and `bool` FFI type: `ggml_init`'s 24-byte-by-value `struct ggml_init_params` and
@@ -184,8 +184,9 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > It is non-blocking — the observable-consequence guards are in place — with all of R0-GGUF-INSPECT,
 > R4-ALIGNPACK-LAYER-MAJOR, and R4.5-EXTERNAL-BUFFER-SPIKE as independent work.
 > R5A-DENSE-LAYER-FORWARD (`docs/specs/r5a-dense-layer-forward.md`) is the active capability,
-> computing one Qwen2 dense layer through ggml over Align-owned weights and checking it against
-> `llama-eval-callback`'s own numbers. **Implementation is complete in the working tree.** Design set
+> awaiting publication on `agent/r5a-dense-layer-forward` rebased onto that merge; it computes one
+> Qwen2 dense layer through ggml over Align-owned weights and checks it against
+> `llama-eval-callback`'s own numbers. **Implementation is complete, reviewed, and repaired.** Design set
 > out believing no new request was needed — section 5.5 of the plan states this explicitly ("No new
 > request. Every gap R5A hit is already recorded") — and implementation confirmed that for every
 > design-time gap, but refuted it twice more (section 6, corrections C8 and C9), adding Requests 36
