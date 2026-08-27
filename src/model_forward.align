@@ -110,6 +110,15 @@ TOLERANCE_TEN_THOUSANDTHS := 1
 SUM_TOLERANCE_MILLIONTHS := 1000
 SUM_TOLERANCE_RELATIVE_PPM := 10
 
+// Section 6, correction C19. The transcript oracle's sum comparison scales an f32 accumulation with
+// `((v as f64) * 1000000.0).round() as i64`, which is `LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS`'s problem
+// at a different scale: an infinity saturates, a NaN becomes `0`, and either one against a
+// transcript sum near zero makes `0 - difference` wrap to a magnitude no `>` test can see. The
+// limit is 10^12 units — twelve orders above anything measured here — and the sentinel is
+// `LOGIT_UNREPRESENTABLE`'s value under the name the sum comparison publishes it as.
+SUM_SCALE_LIMIT_MILLIONTHS := 1000000000000000000
+SUM_UNREPRESENTABLE := 9223372036854775807
+
 TRUNCATION_PRINTED := 6
 TRUNCATION_HALF := 3
 
@@ -1713,9 +1722,25 @@ fn compare_transcript_graph(
         if spot < 0 || spot * 4 + 4 > span {
           return Err(ffi_fault("R5_ORACLE_SHAPE", layer_named(spec.layer, "node", id)))
         }
-        computed := ((window.f32_le(spot * 4) as f64) * 10000.0).round() as i64
-        difference := computed - scan.element_value[element]
-        magnitude := if difference < 0 { 0 - difference } else { difference }
+        // Section 6, correction C19: the computed activation crosses the same range-checked
+        // conversion the logits oracle uses and the transcript's own value is range-checked beside
+        // it, so the subtraction, the absolute value, and every comparison below are in range by
+        // construction. An unrepresentable operand takes the scale limit as its magnitude, which is
+        // above `TOLERANCE_TEN_THOUSANDTHS` by fifteen orders, so it is an `ORACLE_FAIL` and never
+        // a wrapped pass.
+        computed := logit_ten_thousandths(window, spot)
+        expected := scan.element_value[element]
+        unrepresentable := computed == LOGIT_UNREPRESENTABLE
+          || expected > LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS
+          || expected < 0 - LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS
+        difference := if unrepresentable { 0 } else { computed - expected }
+        magnitude := if unrepresentable {
+          LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS
+        } else if difference < 0 {
+          0 - difference
+        } else {
+          difference
+        }
         o.oracle_elements = o.oracle_elements + 1
         if magnitude > o.oracle_max_abs {
           o.oracle_max_abs = magnitude
@@ -1727,22 +1752,37 @@ fn compare_transcript_graph(
       }
       if scan.sum_present[row] == 1 {
         mut accumulator: f32 := 0.0 as f32
+        mut nonfinite_seen := 0
         mut index := 0
         loop {
           if index >= span / 4 { break }
+          // Section 6, correction C19: the same exponent test `digest_region` uses, taken while the
+          // node is already being walked. An infinity or a NaN anywhere in the node makes its f32
+          // accumulation meaningless, and it is the elements the transcript never printed — the
+          // ones the element comparison above cannot reach — that this covers.
+          if ((window.u32_le(index * 4) as i64) / 8388608) % 256 == 255 {
+            nonfinite_seen = nonfinite_seen + 1
+          }
           accumulator = accumulator + window.f32_le(index * 4)
           index = index + 1
         }
         computed := ((accumulator as f64) * 1000000.0).round() as i64
         expected := scan.sum_millionths[row]
-        difference := computed - expected
-        magnitude := if difference < 0 { 0 - difference } else { difference }
-        scale := if expected < 0 { 0 - expected } else { expected }
-        mut bound := SUM_TOLERANCE_MILLIONTHS
-        relative := scale / (1000000 / SUM_TOLERANCE_RELATIVE_PPM)
-        if relative > bound { bound = relative }
-        if magnitude > o.oracle_max_sum { o.oracle_max_sum = magnitude }
-        if magnitude > bound { breach = true }
+        if nonfinite_seen > 0
+          || computed > SUM_SCALE_LIMIT_MILLIONTHS
+          || computed < 0 - SUM_SCALE_LIMIT_MILLIONTHS {
+          o.oracle_max_sum = SUM_UNREPRESENTABLE
+          breach = true
+        } else {
+          difference := computed - expected
+          magnitude := if difference < 0 { 0 - difference } else { difference }
+          scale := if expected < 0 { 0 - expected } else { expected }
+          mut bound := SUM_TOLERANCE_MILLIONTHS
+          relative := scale / (1000000 / SUM_TOLERANCE_RELATIVE_PPM)
+          if relative > bound { bound = relative }
+          if magnitude > o.oracle_max_sum { o.oracle_max_sum = magnitude }
+          if magnitude > bound { breach = true }
+        }
       }
     }
     at = at + 1

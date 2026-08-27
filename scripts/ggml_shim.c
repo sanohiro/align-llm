@@ -28,6 +28,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ggml.h"
@@ -461,6 +462,26 @@ static int64_t align_ggml_clamp_size(size_t value) {
     return (int64_t) value;
 }
 
+/* R5C-METAL-PREFILL-ARM section 6, correction C17. The directory the backend plugins are
+ * `dlopen`ed from, named by the environment and read at **run** time by whichever of the two files
+ * owns a registry.
+ *
+ * `ggml_backend_load_all` searches the working directory, the executable's directory, and the
+ * `GGML_BACKEND_DIR` compiled into libggml, and ggml's own `GGML_BACKEND_PATH` variable only
+ * **adds** one library file to that set. Measured on the 0.21.0 this host links against: a bogus
+ * `libggml-metal.so` named by `GGML_BACKEND_PATH` fails to load and the registry still reports
+ * `MTL0` from the compiled-in directory, so a qualification that names one install could exercise
+ * another. `ggml_backend_load_all_from_path(dir)` **replaces** the search path with `dir` alone,
+ * which is the scoping a named input needs: the named directory is what runs, and a directory
+ * holding no loadable backend leaves the registry empty — which section 3.9 step 20a reports as
+ * `R5C_GPU_UNAVAILABLE`, a document with a verdict rather than a silent substitution.
+ *
+ * Reading it at **run** time is correction C3's rule kept: no shim behaviour depends on the
+ * environment the library was compiled in. The stub declares the same name and loads nothing,
+ * because it has no registry to load into.
+ */
+#define ALIGN_GGML_BACKEND_DIR_ENV "ALIGN_GGML_BACKEND_DIR"
+
 /* --- END R4.5 SHARED SHIM CONTRACT --- */
 
 /* ---------------------------------------------------------------------------------------------
@@ -477,11 +498,23 @@ int32_t align_ggml_available(void) {
  * and BLAS backends as `dlopen`ed plugins, so `ggml_backend_cpu_init` is not linkable and the
  * registry path is the only one that works. It is also the backend-agnostic one, which is why
  * section 2.5's GPU probe was three lines different rather than a second implementation.
+ *
+ * Correction C17: when `ALIGN_GGML_BACKEND_DIR_ENV` names a directory, that directory is the
+ * **only** place a backend is loaded from. `ggml_backend_load_all` would search the compiled-in
+ * `GGML_BACKEND_DIR` first and `GGML_BACKEND_PATH` only adds to that search, so neither can make a
+ * named install authoritative; `ggml_backend_load_all_from_path` replaces the search path, so a
+ * caller that names a directory gets the devices in it and nothing else. An empty or unset variable
+ * keeps the ordinary search, which is what every other caller in this repository uses.
  */
 static void align_ggml_registry_ready(void) {
     static int loaded = 0;
     if (!loaded) {
-        ggml_backend_load_all();
+        const char *backend_dir = getenv(ALIGN_GGML_BACKEND_DIR_ENV);
+        if (backend_dir != NULL && backend_dir[0] != '\0') {
+            ggml_backend_load_all_from_path(backend_dir);
+        } else {
+            ggml_backend_load_all();
+        }
         loaded = 1;
     }
 }

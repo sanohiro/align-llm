@@ -8,7 +8,8 @@ set -euo pipefail
 #
 #   ALIGN_LLM_GGML_INCLUDE          directory holding ggml.h, ggml-alloc.h, ggml-backend.h
 #   ALIGN_LLM_GGML_LIB              directory holding libggml and libggml-base
-#   ALIGN_LLM_GGML_BACKEND_DIR      directory the backend plugins are dlopened from
+#   ALIGN_LLM_GGML_BACKEND_DIR      the **only** directory the backend plugins are dlopened from;
+#                                   exported to the shim as ALIGN_GGML_BACKEND_DIR (correction C17)
 #   ALIGN_LLM_GGUF_MODEL            the Qwen2 GGUF this prefill is read from
 #   ALIGN_LLM_LLAMA_DEBUG           path to `llama-debug`
 #   ALIGN_LLM_LLAMA_EVAL_CALLBACK   path to `llama-eval-callback`
@@ -18,11 +19,13 @@ set -euo pipefail
 # while its own assertion table requires `oracle.layers_matched == 28`, which needs a transcript.
 # The transcript instrument is therefore a declared input here.
 #
-# When any is unset, or the model or either instrument is absent, or **the registry reports no
-# device of type GPU**, or the free space under the scratch root is under the pack's size plus 1 GiB,
-# it prints one explicit N/A line naming the missing input and exits 0. Hosted CI is Linux with no
-# Metal device, so this target is N/A there by the device check — which is the intended behaviour
-# and not a skip: the N/A line names the device as the missing input.
+# When any is unset, or the model or either instrument is absent, or **the declared backend
+# directory holds no Metal plugin**, or the free space under the scratch root is under the pack's
+# size plus 1 GiB, it prints one explicit N/A line naming the missing input and exits 0. Hosted CI
+# is Linux, where no Metal plugin is built, so this target is N/A there by the backend-directory
+# check — which is the intended behaviour and not a skip: the N/A line names the missing plugin.
+# Once that directory does hold one, a registry scoped to it that reports no GPU device is a
+# **FAIL**, not an N/A (section 6, correction C17).
 #
 # Otherwise it builds the real shim, probes the registry with the **synthetic** two-layer fixture
 # before packing anything, packs the real model into a temporary directory outside the work tree,
@@ -67,13 +70,20 @@ executable "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" \
   || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable"
 
 # `ALIGN_LLM_GGML_BACKEND_DIR` was declared as an input and then never used: `ggml_backend_load_all`
-# searches the executable's directory, the working directory, and the `GGML_BACKEND_DIR` compiled
+# searches the working directory, the executable's directory, and the `GGML_BACKEND_DIR` compiled
 # into libggml, none of which this variable reaches, so the qualification could silently exercise a
-# different install than the one it names. ggml's own hook is the `GGML_BACKEND_PATH` environment
-# variable, which names **one backend library file** rather than a directory (`ggml_backend_load_all`
-# passes it to `ggml_backend_load`), so the directory is resolved to the Metal plugin inside it and
-# exported. Nothing in the shim changes: `align_ggml_available` already calls `ggml_backend_load_all`
-# and reads the variable from the environment this script exports.
+# different install than the one it names. ggml's own `GGML_BACKEND_PATH` does **not** close that:
+# measured on the 0.21.0 this host links against, it only *adds* one library file to the ordinary
+# search, and a bogus `libggml-metal.so` named by it fails to load while the registry still reports
+# `MTL0` from the compiled-in directory. The entry point that scopes is
+# `ggml_backend_load_all_from_path`, which replaces the search path; the shim calls it when
+# `ALIGN_GGML_BACKEND_DIR` is set (section 6, correction C17), reading it at run time from the
+# environment this script exports, so no shim behaviour depends on the environment at build time.
+#
+# The Metal plugin is still resolved inside the declared directory, for two reasons: a directory
+# that holds none is an honest `N/A` naming it — which is the Linux CI path, where no Metal plugin
+# is ever built — and finding one is what makes the device probe below a **failure** rather than an
+# absence when the scoped registry then reports no GPU.
 metal_backend=""
 for candidate in "${ALIGN_LLM_GGML_BACKEND_DIR%/}"/libggml-metal.so \
                  "${ALIGN_LLM_GGML_BACKEND_DIR%/}"/libggml-metal.dylib; do
@@ -84,7 +94,7 @@ for candidate in "${ALIGN_LLM_GGML_BACKEND_DIR%/}"/libggml-metal.so \
 done
 [ -n "${metal_backend}" ] \
   || na "ALIGN_LLM_GGML_BACKEND_DIR (${ALIGN_LLM_GGML_BACKEND_DIR}) holds no libggml-metal library"
-export GGML_BACKEND_PATH="${metal_backend}"
+export ALIGN_GGML_BACKEND_DIR="${ALIGN_LLM_GGML_BACKEND_DIR%/}"
 
 model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
 scratch_root="${ALIGN_LLM_METAL_FORWARD_TMPDIR:-${TMPDIR:-/tmp}}"
@@ -128,7 +138,8 @@ export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 # `scripts/run-layer-forward-smoke` already uses costs a second and reaches section 3.9 step 20a
 # against the real registry, so "is there a GPU device here" is answered by the registry itself
 # rather than by guessing from the host's name.
-echo "metal forward qualification: loading the device backend from ${GGML_BACKEND_PATH}"
+echo "metal forward qualification: loading every backend from ${ALIGN_GGML_BACKEND_DIR} and" \
+  "nowhere else (${metal_backend} is the Metal plugin in it)"
 python3 "${root_dir}/scripts/layer_forward_fixture.py" "${work_dir}/probe" --model >/dev/null
 set +e
 "${root_dir}/ggml-spike" --model-forward-gpu "${work_dir}/probe/model-pack.alignpack" \
@@ -142,7 +153,15 @@ fi
 probe_code=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["error_code"])' \
   "${work_dir}/probe.json")
 if [ "${probe_code}" = "R5C_GPU_UNAVAILABLE" ]; then
-  na "the ggml registry reports no device of type GPU on this host"
+  # Section 6, correction C17. The registry is now scoped to the declared directory, and that
+  # directory was already shown to hold a Metal plugin, so "no GPU device" here is not the absence
+  # this target reports as `N/A` — it is the named install failing to produce the device it is named
+  # for. The `N/A` path for a host with no Metal backend at all is the directory check above, which
+  # is the one hosted CI takes.
+  echo "metal forward qualification: FAIL ${ALIGN_GGML_BACKEND_DIR} holds ${metal_backend} and the" \
+    "registry scoped to it still reports no device of type GPU" >&2
+  tail -20 "${work_dir}/probe.log" >&2 || true
+  exit 1
 fi
 python3 - "${work_dir}/probe.json" <<'PY'
 import json
@@ -406,8 +425,12 @@ if narrowed >= 0:
 per_layer = sorted(row["compute_ns"] for row in d["schedule"][:narrowed])
 cpu_layer = sorted(row["compute_ns"] for row in cpu["schedule"][:narrowed])
 if per_layer and cpu_layer:
-    print("metal forward qualification: layers 0-26 compute median %.2f ms GPU against %.2f ms CPU"
-          % (per_layer[len(per_layer) // 2] / million, cpu_layer[len(cpu_layer) // 2] / million))
+    # The label is the slice, not the number 26: `schedule[:narrowed]` is every row before the
+    # narrowed one, and a model with a different layer count prints its own range (correction C16's
+    # rule, applied to the print as well as to the assertions).
+    print("metal forward qualification: layers %d-%d compute median %.2f ms GPU against %.2f ms CPU"
+          % (d["schedule"][0]["layer"], d["schedule"][narrowed - 1]["layer"],
+             per_layer[len(per_layer) // 2] / million, cpu_layer[len(cpu_layer) // 2] / million))
 print("metal forward qualification: self-reference %s (%d/%d nodes byte-identical over %d graphs)"
       % (reference["verdict"], reference["nodes_identical"], reference["nodes_compared"],
          reference["graphs_compared"]))

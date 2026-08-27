@@ -11,9 +11,9 @@ set -euo pipefail
 # section 4.6. Twenty-four of the twenty-six error codes are reached for real, **and both oracle
 # verdicts**, without ggml, without a model, without a network, and without a reference tool.
 #
-# Nine shim builds are used and each one is a real contract: the default stub is unavailable and
-# stops the arm at step 17, and the eight `ALIGN_LLM_GGML_FORCE=engine*` builds turn on the
-# deterministic single-precision engine of section 5.1 so steps 18 to 29 are reachable at all.
+# Ten shim builds are used by this block and each one is a real contract: the default stub is
+# unavailable and stops the arm at step 17, and the nine `ALIGN_LLM_GGML_FORCE=engine*` builds turn
+# on the deterministic single-precision engine of section 5.1 so steps 18 to 29 are reachable at all.
 #
 # `ALIGN_LLM_GGML_INCLUDE` is unset deliberately and unconditionally: this runner's contract is that
 # it exercises the ggml-free build, so a developer's exported include path must not silently turn it
@@ -339,6 +339,15 @@ FORCED_CASES = [
     # `FAIL` (section 6, correction C18).
     ("lf-force-no-mark-output", "engine+no-mark-output",
      [ARM, PACK, "0", GEOM, TOKENS, "-", SOURCE, TRANSCRIPT], ""),
+    # `r5c-metal-prefill.md` section 6, correction C19: a **computed** activation with no
+    # ten-thousandths value, which no operand can produce because every fixture's inputs are finite
+    # and the engine's kernels are closed over them. The shim makes the first element of every
+    # readback `+inf` and leaves the tensor data alone, so the graph still computes what it computed
+    # and only the bytes the oracle reads back carry the value. Before C19 the conversion saturated,
+    # `0 - difference` wrapped to `i64`'s minimum against a transcript value of zero, and the run
+    # reported `PASS` over an element that is not a number.
+    ("lf-force-inf-readback", "engine+inf-readback",
+     [ARM, PACK, "0", GEOM, TOKENS, "-", SOURCE, TRANSCRIPT], ""),
 ]
 
 PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
@@ -615,6 +624,21 @@ if unmarked is not None and unmarked["oracle"]["verdict"] != "FAIL":
                     "this owner cannot see a missing mark_outputs"
                     % unmarked["oracle"]["verdict"])
 
+# `r5c-metal-prefill.md` section 6, correction C19. Both halves of the class are asserted: the
+# element comparison resolves an unrepresentable activation to the scale limit, and the sum
+# comparison — which covers the elements the transcript never printed — resolves it to the sentinel.
+# Either one alone would leave the other's wrap unobserved.
+SCALE_LIMIT_TEN_THOUSANDTHS = 1000000000000000
+UNREPRESENTABLE = 9223372036854775807
+infinite = forced_documents.get("lf-force-inf-readback")
+if infinite is not None:
+    oracle = infinite["oracle"]
+    if infinite["status"] != "ok" or oracle["verdict"] != "FAIL" \
+            or oracle["max_abs_diff_ten_thousandths"] != SCALE_LIMIT_TEN_THOUSANDTHS \
+            or oracle["max_sum_diff_millionths"] != UNREPRESENTABLE:
+        failures.append("lf-force-inf-readback: a +inf activation resolved to %r -- a saturating "
+                        "`as i64` is back and a non-finite element can pass" % oracle)
+
 REQUIRED_CODES = {
     "R5_INDEX", "R5_TOKENS", "R5_GEOMETRY_UNREADABLE", "R5_GEOMETRY", "R4_PACK_UNREADABLE",
     "R5_BLOCK_MISSING", "R5_MEMBER_MISSING", "R5_SHAPE", "R5_GGML_UNAVAILABLE",
@@ -857,6 +881,13 @@ FORCED_CASES = [
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH], "R5_SHAPE"),
     ("mf-force-no-mark-output", "engine+no-mark-output",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH], ""),
+    # `r5c-metal-prefill.md` section 6, correction C19, on the module that owns both oracles at
+    # whole-model scale. The runtime width is deliberate: the logits comparison is then the
+    # **tolerance** path rather than the byte-identity one, so a non-finite element of the arm's own
+    # vector — the `primary` branch section 3.8 promises is reported and never refused — is what
+    # drives the verdict.
+    ("mf-force-inf-readback", "engine+inf-readback",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", RUNTIME_LOGITS], ""),
 ]
 
 # Section 6, correction C25, and the R5A block above's repair for the same reason: a golden
@@ -1200,6 +1231,27 @@ if unmarked is not None and unmarked["oracle"]["verdict"] != "FAIL":
     failures.append("mf-force-no-mark-output: ggml_set_output was dropped and the oracle still "
                     "reported %r" % unmarked["oracle"]["verdict"])
 
+# `r5c-metal-prefill.md` section 6, correction C19, all three branches at once: the transcript
+# oracle's element comparison, its sum comparison, and the logits comparison's non-finite `primary`.
+# The document still has `status: ok` — a non-finite element of the arm's own output is reported and
+# never refused (section 3.8) — and every verdict that can see it says so.
+SCALE_LIMIT_TEN_THOUSANDTHS = 1000000000000000
+UNREPRESENTABLE = 9223372036854775807
+infinite = forced_documents.get("mf-force-inf-readback")
+if infinite is not None:
+    oracle = infinite["oracle"]
+    logits = infinite["oracle_logits"]
+    if infinite["status"] != "ok" or oracle["verdict"] != "FAIL" \
+            or oracle["max_abs_diff_ten_thousandths"] != SCALE_LIMIT_TEN_THOUSANDTHS \
+            or oracle["max_sum_diff_millionths"] != UNREPRESENTABLE:
+        failures.append("mf-force-inf-readback: a +inf activation resolved to %r -- a saturating "
+                        "`as i64` is back and a non-finite element can pass" % oracle)
+    if logits["verdict"] != "FAIL" \
+            or logits["max_abs_diff_ten_thousandths"] != SCALE_LIMIT_TEN_THOUSANDTHS \
+            or infinite["output"]["nonfinite_count"] < 1:
+        failures.append("mf-force-inf-readback: a +inf logit resolved to %r with %d non-finite "
+                        "elements" % (logits, infinite["output"]["nonfinite_count"]))
+
 REQUIRED_CODES = {
     "R5_TOKENS", "R5_KV_WIDTH", "R5_GEOMETRY_UNREADABLE", "R5_GEOMETRY", "R4_PACK_UNREADABLE",
     "R4_PACK_TRUNCATED", "R5_BLOCK_MISSING", "R5_BLOCK_AMBIGUOUS", "R5_LAYER_COVERAGE",
@@ -1408,6 +1460,12 @@ FORCED_CASES = [
     # teardown and the counters balance, which on Metal is the difference between a document and a
     # `SIGABRT` at exit (section 2.6).
     ("gf-teardown-partial", "engine+gpu+compute", [ARM, PACK, GEOM, TOKENS], "R5_COMPUTE"),
+    # Section 6, correction C19, on the arm the tolerance belongs to. The transcript oracle's
+    # element half is `N/A_DEVICE` here (section 3.7), so what this case covers that its `mf-` twin
+    # cannot is the tolerance verdict's own non-finite `primary` branch under a bound that is meant
+    # to admit a device's rounding and must not admit an infinity.
+    ("gf-force-inf-readback", "engine+gpu+inf-readback",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", RUNTIME_LOGITS], ""),
 ]
 
 PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
@@ -1748,6 +1806,21 @@ if teardown is not None:
             or lifetime["gallocrs_created"] != lifetime["gallocrs_freed"]:
         failures.append("gf-teardown-partial: a compute failure left a ggml object alive: %r"
                         % lifetime)
+
+# Section 6, correction C19. The tolerance verdict is not slack for an infinity: a non-finite
+# element of the arm's **own** vector is reported by `output.nonfinite_count` and never refused
+# (section 3.8), and it resolves to a magnitude fifteen orders above the 6,000-ten-thousandth bound
+# rather than to a saturated difference the histogram cannot index.
+infinite = forced_documents.get("gf-force-inf-readback")
+if infinite is not None:
+    logits = infinite["oracle_logits"]
+    if infinite["status"] != "ok" or logits["verdict"] != "FAIL" \
+            or logits["max_abs_diff_ten_thousandths"] != 1000000000000000 \
+            or logits["elements_over_half"] < 1 \
+            or logits["mean_abs_diff_ten_thousandths"] < 0 \
+            or infinite["output"]["nonfinite_count"] < 1:
+        failures.append("gf-force-inf-readback: a +inf logit resolved to %r with %d non-finite "
+                        "elements" % (logits, infinite["output"]["nonfinite_count"]))
 
 # Section 4.1's `gf-status-map` cell: every negative shim status maps to exactly one R5 code, and
 # the mapping is total. The scan is over `src/ggml_ffi.align`'s own declarations, so a status added

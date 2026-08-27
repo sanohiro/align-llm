@@ -454,6 +454,26 @@ static int64_t align_ggml_clamp_size(size_t value) {
     return (int64_t) value;
 }
 
+/* R5C-METAL-PREFILL-ARM section 6, correction C17. The directory the backend plugins are
+ * `dlopen`ed from, named by the environment and read at **run** time by whichever of the two files
+ * owns a registry.
+ *
+ * `ggml_backend_load_all` searches the working directory, the executable's directory, and the
+ * `GGML_BACKEND_DIR` compiled into libggml, and ggml's own `GGML_BACKEND_PATH` variable only
+ * **adds** one library file to that set. Measured on the 0.21.0 this host links against: a bogus
+ * `libggml-metal.so` named by `GGML_BACKEND_PATH` fails to load and the registry still reports
+ * `MTL0` from the compiled-in directory, so a qualification that names one install could exercise
+ * another. `ggml_backend_load_all_from_path(dir)` **replaces** the search path with `dir` alone,
+ * which is the scoping a named input needs: the named directory is what runs, and a directory
+ * holding no loadable backend leaves the registry empty — which section 3.9 step 20a reports as
+ * `R5C_GPU_UNAVAILABLE`, a document with a verdict rather than a silent substitution.
+ *
+ * Reading it at **run** time is correction C3's rule kept: no shim behaviour depends on the
+ * environment the library was compiled in. The stub declares the same name and loads nothing,
+ * because it has no registry to load into.
+ */
+#define ALIGN_GGML_BACKEND_DIR_ENV "ALIGN_GGML_BACKEND_DIR"
+
 /* --- END R4.5 SHARED SHIM CONTRACT --- */
 
 /* ---------------------------------------------------------------------------------------------
@@ -1380,7 +1400,26 @@ int32_t align_ggml_slot_get(void *slots, int64_t index, void *bytes, int64_t off
     if (t == NULL) {
         return ALIGN_GGML_SLOT;
     }
+#ifdef ALIGN_GGML_FORCE_INF_READBACK
+    /* R5C section 6, correction C19. A **computed** activation with no ten-thousandths value is a
+     * condition no operand can produce: every fixture's inputs are finite and the engine's eleven
+     * kernels are closed over them, so the oracle's own conversion of a non-finite activation — and
+     * the logits comparison's non-finite *primary* branch — were argued rather than run. This build
+     * makes the first element of every readback `+inf` and changes nothing else: the tensor data is
+     * untouched, so the graph still computes what it computed and only the bytes the arm reads back
+     * carry the value. Never defined in an ordinary build.
+     */
+    {
+        int32_t status = align_ggml_tensor_get((void *) t, bytes, off, n);
+        static const unsigned char positive_infinity[4] = { 0x00u, 0x00u, 0x80u, 0x7fu };
+        if (status == ALIGN_GGML_OK && bytes != NULL && off == 0 && n >= 4) {
+            memcpy(bytes, positive_infinity, sizeof(positive_infinity));
+        }
+        return status;
+    }
+#else
     return align_ggml_tensor_get((void *) t, bytes, off, n);
+#endif
 }
 
 int32_t align_ggml_slot_mark_output(void *slots, int64_t index) {

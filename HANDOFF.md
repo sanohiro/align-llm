@@ -5,12 +5,16 @@ file records durable project state.
 
 ## Active: R5C-METAL-PREFILL-ARM — the same Align-owned window, handed to Metal (2026-08-27)
 
-- Branch `agent/r5c-metal-prefill` at implementation commit `5663d8f` ("feat: run the whole-model
-  prefill on the Metal device"), on the design ledger `e375eec`, continuing
+- Branch `agent/r5c-metal-prefill` at the final-review repair commit on top of `ca541bf` ("fix:
+  close Metal prefill arm review findings"), itself on the implementation `5663d8f` ("feat: run the
+  whole-model prefill on the Metal device") and the design ledger `e375eec`, continuing
   R5B-MODEL-PREFILL-FORWARD (branch `agent/r5b-model-prefill-forward` at `556fced`, awaiting
   publication below). The authoritative design ledger is `docs/specs/r5c-metal-prefill.md`.
-- **Status: implementation committed at `5663d8f`; reviewed, and the consolidated review repair is
-  in the working tree (uncommitted).** R5C discharges
+- **Status: implemented, reviewed twice, and both repairs committed. Nothing is intentionally
+  uncommitted.** The branch is not yet published; it must be rebased first, because **R5A merged as
+  PR #127** while this work was in review (head `0397228`, merge `ccbd8ae`, now `main`) and R5A's
+  merged head carries two commits this stack does not — both in
+  `scripts/run-layer-forward-smoke`, which this capability also edits. R5C discharges
   `docs/specs/roadmap.md` section R5's required microbenchmark A (transfer + GPU compute) on
   unified memory: the same thirty graphs, the same alignpack, and the **same Align-owned weight
   window** R5B already streams, handed to the Metal device through
@@ -110,8 +114,8 @@ file records durable project state.
   - **B1/B2, medium.** `docs/align-development.md`'s GPU section was written from the plan rather
     than the shipped runner and is rewritten from it, with the sixteen exact `N/A` lines captured
     from the runner itself and peak RSS stated as `N/A` because no probe exists; and
-    `ALIGN_LLM_GGML_BACKEND_DIR` was validated and never used, now resolved to the Metal plugin and
-    exported as ggml's own `GGML_BACKEND_PATH` (C17).
+    `ALIGN_LLM_GGML_BACKEND_DIR` was validated and never used (C17; the first repair's
+    `GGML_BACKEND_PATH` did not actually scope the load, and the final review below corrected it).
   - **B3/B4, medium.** Ledger sections 1.4 and 1.5 and `docs/specs/roadmap.md` item 17 and its
     Japanese section R5 quoted the single-pass probe's 30 wraps, 354.8 ms, and "1.20x slower" as the
     result; all four now cite section 7.2's shipped figures and record the end-to-end ratio as
@@ -121,10 +125,62 @@ file records durable project state.
     rather than left against the linear claim; host-specific qualification assertions turned into
     printed measurements (C16); the instrument path check tightened to a regular executable file;
     and the owner's trap now restores the ordinary shim (C18).
+- **Final review envelope.** One fresh independent comprehensive review of the repaired candidate at
+  reviewed head `ca541bf` (base `main` `9bfa372`, merge base R5B's `556fced`) returned **changes
+  requested — 1 medium, 6 low**. Every finding was validated and accepted; none was rejected. All
+  seven are repaired in this commit, and the two contract changes they forced are ledger corrections
+  **C19** and the C17 rewrite.
+  - **Medium, C17 was not achieved.** ggml 0.21.0 loads the compiled-in `GGML_BACKEND_DIR` **first**
+    and `GGML_BACKEND_PATH` only *adds* to that search, so the first repair's export did not scope
+    anything: measured directly against the linked library, a bogus `libggml-metal.so` named by
+    `GGML_BACKEND_PATH` fails to load and the registry still reports Homebrew's `MTL0`. Repaired in
+    the **shim**: `align_ggml_registry_ready` now calls `ggml_backend_load_all_from_path` — exported
+    by libggml 0.21.0 and confirmed by `nm` — with the directory named by a new run-time
+    `ALIGN_GGML_BACKEND_DIR`, which *replaces* the search path. The runner exports the directory
+    instead of the file, and a scoped registry that then reports no GPU is now a **FAIL** rather
+    than an `N/A`, since the `N/A` for a host with no Metal plugin is the directory check above it.
+    Verified negatively: a scratch directory holding an empty `libggml-metal.so` reaches
+    `R5C_GPU_UNAVAILABLE` and fails the qualification.
+  - **Low, the same saturating `as i64` class survived in the transcript oracle** in both
+    `src/model_forward.align` and `src/layer_forward.align`, where the operand with no fixed-point
+    value is the **computed activation** rather than an input: a `±inf` against a printed `0.0000`
+    wrapped `0 - difference` to a magnitude no `>` test can see, and a NaN compared *equal*. Both
+    element comparisons now route through the range-checked conversion and both sum comparisons
+    refuse a node with a non-finite element (**C19**).
+  - **Low, three untested branches**, two of them now tested: a new forced shim build
+    (`ALIGN_GGML_FORCE_INF_READBACK`) makes a non-finite computed activation reachable hosted, and
+    `lf-force-inf-readback`, `mf-force-inf-readback`, and `gf-force-inf-readback` cover both the
+    transcript oracle's guard and `compare_logits`'s non-finite **`primary`** branch on all three
+    arms. `add_saturating`'s saturating branch needs more than 9,223 unrepresentable elements and no
+    fixture in this repository has them; it is recorded as an **untested guard** in C12.
+  - **Low, three documentation and reporting fixes.** The section 7 cell-to-case map said
+    `window_fits true` where C14 made it the integer `1`; the qualification printed a hard-coded
+    "layers 0-26" beside a dynamically sliced median; and this file and `docs/specs/roadmap.md`
+    named a stale commit and a stale next action.
+- **Owner results after the final repair**, this host, same session. `make check` — clean, 29 units.
+  `make build` — clean. `make ggml-spike` (stub and real) — both clean. `make layer-forward-smoke` —
+  **3 runs, identical output**; paired five-run medians **14.03 s at `ca541bf`** against **15.08 s
+  with C19's three cases**, so C19 costs **+1.05 s** (correction C11 records the split against the
+  15 s target). **Every one of the 74, 58, and 27 golden documents already checked in regenerates
+  byte-identically**; the three new cases are the only added lines. `make format-check` and `make
+  fmt` — clean, no diff. `git diff --check` — clean.
+- **Qualification, rerun once after the final repair.** `make metal-forward-qualification`: **every
+  section 5.2 assertion PASS**, the backend loaded from `/opt/homebrew/opt/ggml/libexec` **and
+  nowhere else**, device `MTL0`, self-reference `IDENTICAL` 479/479 over 30 graphs, logits `WITHIN`
+  at max `|Δ|` **2,936 of 6,000** with `argmax` 671 and the top ten identical, determinism
+  `b6e473e8…` on both passes, 59 wraps of the 447,086,592 B window with 0 pointer-identity failures,
+  and all four forced flavours reached against the real device. This run's wall figures are a cold
+  page cache (5,705 ms GPU against 4,814 ms CPU, 11.4 ms per wrap) and are **not** substituted for
+  ledger section 7.2's three paired runs, which remain the recorded measurement. The
+  **bogus-backend-directory** case was run separately: a scratch directory holding an empty
+  `libggml-metal.so` produces `metal forward qualification: FAIL … the registry scoped to it still
+  reports no device of type GPU`, where before C17's rewrite the same input silently qualified
+  Homebrew's `MTL0`. Both scratch trees were removed.
 - **Next actions, in order.**
-  1. Commit the consolidated repair and rerun the owner verification recorded above.
-  2. Publish the English pull request, stacked behind R5B, itself stacked behind R5A, with the
-     review envelope, the finding dispositions, and the consolidated repair commit.
+  1. Rebase this branch (and R5B beneath it) onto `main` at `ccbd8ae`, the merged R5A. Expect
+     conflicts in `scripts/run-layer-forward-smoke`, which R5A's two post-review commits also touch.
+  2. Publish the English pull request, stacked behind R5B, with both review envelopes, the finding
+     dispositions, and the two repair commits.
 - **Three pending user decisions, consolidated into one list** (previously tracked separately
   across earlier checkpoints; this is the current, authoritative statement).
   1. Small MoE GGUF (1-4 GB): unlocks the R2 roadmap gate (a real MoE activation-locality

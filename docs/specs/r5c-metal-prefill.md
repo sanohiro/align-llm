@@ -1027,7 +1027,9 @@ The stub shim reports **no GPU device**, so every hosted case reaches `R5C_GPU_U
 otherwise behaves as R5B's engine — make the arm's *successful* path reachable hosted too, over
 `r5b-model-prefill-forward.md` section 5.1's **synthetic two-layer, thirty-two-token-vocabulary
 model** with its pure-Python second implementation. No new fixture generator is needed: the same
-pack, geometry, transcript, and logits blob serve both arms.
+pack, geometry, transcript, and logits blob serve both arms. Correction C19 adds a fourth forced
+build, `ALIGN_GGML_FORCE_INF_READBACK`, which is what makes a non-finite **computed** activation —
+and therefore the arm's own non-finite logits — reachable on all three arms hosted.
 
 Every fixture's expected document is a checked-in golden compared **byte for byte**, and R5C adds one
 non-fixture assertion to R5B's five: **`arm-r5b-unchanged` asserts that every existing
@@ -1037,7 +1039,9 @@ sections 3.1 and 3.2's promise.
 The smoke writes into a `mktemp -d` tree outside the work tree and removes it on every exit path,
 with `r5a-dense-layer-forward.md` correction C22's shim-restoring trap.
 
-**Budget.** `make layer-forward-smoke` measures 11.0 s today. The acceptance target is **under 15 s**,
+**Budget.** `make layer-forward-smoke` measured 11.0 s when this plan was written; correction C11
+records every measurement since, including the host drift that now puts it at the target's edge. The
+acceptance target is **under 15 s**,
 `r5b-model-prefill-forward.md` section 5.5's stated bound, and section 5.5 records the module split
 that keeps it there.
 
@@ -1049,16 +1053,18 @@ prints one explicit `N/A` line naming the missing input and exits `0` when any o
 ```text
 ALIGN_LLM_GGML_INCLUDE            ggml headers
 ALIGN_LLM_GGML_LIB                ggml libraries
-ALIGN_LLM_GGML_BACKEND_DIR        where the backend plugins are dlopened from
+ALIGN_LLM_GGML_BACKEND_DIR        the only directory the backend plugins are dlopened from
 ALIGN_LLM_GGUF_MODEL              the Qwen2 GGUF
 ALIGN_LLM_LLAMA_DEBUG             path to llama-debug
 ALIGN_LLM_METAL_FORWARD_TMPDIR    where the pack is written; defaults to TMPDIR
 ```
 
-is unset, or **the registry reports no device of type GPU**, or the model or instrument is absent, or
-free space under the scratch root is below the pack's size plus 1 GiB. **Hosted CI is Linux with no
-Metal device, so this target is `N/A` there by its first check** — which is the intended behaviour
-and not a skip: the `N/A` line names the device as the missing input.
+is unset, or **the declared backend directory holds no Metal plugin**, or the model or instrument is
+absent, or free space under the scratch root is below the pack's size plus 1 GiB. **Hosted CI is
+Linux, where no Metal plugin is built, so this target is `N/A` there** — which is the intended
+behaviour and not a skip: the `N/A` line names the missing plugin. Once the directory does hold one,
+the registry is scoped to it (correction C17) and a run that then finds no device of type GPU is a
+**`FAIL`**, not an `N/A`.
 
 Otherwise it builds the real shim, packs the model, emits the geometry, captures `llama-debug`'s
 logits with `r5b-model-prefill-forward.md` section 2.2's **exact** contractual flag set, and runs the
@@ -1438,6 +1444,24 @@ are still stub-reachable, and `arm-r5b-unchanged` still runs hosted.
 C12: three consecutive runs at **16.37 / 13.46 / 13.50 s**, median **13.50 s**, inside the 15 s
 target. The first of the three rebuilt the shim and the executable and is the outlier.
 
+**Re-measured again after the final-review repair**, which adds three cases and three shim builds
+for correction C19. Paired and alternating in one session on this host, five runs each, the same
+method as the table above:
+
+| Quantity | Result |
+| --- | --- |
+| `make layer-forward-smoke` at `ca541bf` | **14.03 s** median (13.77–14.64) |
+| the same, with C19's three cases | **15.08 s** median (14.71–17.50) |
+| **C19's own cost** | **+1.05 s, +7%** — three shim rebuilds and three runs |
+
+**The target is exceeded on this host by 0.08 s and met against the baseline the target was set
+from**, which is the same split this correction already recorded and not a second excuse: the
+plan's session ran the unchanged runner in 11.0 s and this one runs it in 14.0 s, so 3.0 s of the
+overrun is the host and 1.05 s is C19; 11.0 + 1.05 = 12.05 s is inside 15 s. Both numbers are
+stated rather than one of them chosen. The three cases are not tradeable for the 0.08 s: each is the
+only reachable evidence that its module's oracle refuses a value that is not a number, and the
+alternative to a forced build is no case at all.
+
 ### C12 — a logits element with no ten-thousandth, and the abort it caused
 
 Section 3.7 defines both logits comparisons as integer comparisons in ten-thousandths and section
@@ -1502,6 +1526,20 @@ both finite, so neither is an input error — is `status: "ok"` with `verdict: "
 `max_abs_diff_ten_thousandths` above the bound, `elements_over_half` 2, and a **non-negative** mean.
 The negative element is the operand that made the subtraction wrap, which is why the fixture carries
 both signs.
+
+Two branches of this repair are **not** covered by those three fixtures, and both are named here
+rather than left to be rediscovered:
+
+- the **`primary`** side of the same rule — the arm's own logits carrying a non-finite element,
+  which section 3.8 promises is reported and never refused. No operand can produce it, because the
+  vector is computed. Correction C19's forced build now does, and `mf-force-inf-readback` and
+  `gf-force-inf-readback` are its cases;
+- `add_saturating`'s **saturating** branch. It needs a running total above
+  `i64::MAX - 10^15`, which takes more than 9,223 elements at the scale limit; the synthetic model's
+  `n_vocab` is 32 and the qualification's 152,064 elements are all in range, so no fixture in this
+  repository reaches it. It is an **untested guard**, kept because the alternative on a real
+  152,064-element vector of unrepresentable elements is a negative published mean — the exact defect
+  C12 exists to close — and it is one comparison on a path that already costs a division.
 
 ### C13 — `IDENTICAL` at the runtime width belongs to the device arm alone
 
@@ -1573,16 +1611,56 @@ and then ignored it: `ggml_backend_load_all` searches the executable's directory
 directory, and the `GGML_BACKEND_DIR` compiled into libggml, none of which this variable reaches.
 The qualification could therefore name one install and exercise another.
 
-ggml's own hook is the **`GGML_BACKEND_PATH`** environment variable, confirmed present in the
-0.21.0 library this host links against, and it names **one backend library file** rather than a
-directory. **Shipped:** `scripts/run-metal-forward` resolves `libggml-metal.so`/`.dylib` inside the
-declared directory, exports `GGML_BACKEND_PATH` for the shim's own `ggml_backend_load_all` call, and
-prints the file it loaded; a directory holding no Metal plugin is a new `N/A` line naming it. The
-shim is unchanged — it reads the variable from the environment this script exports, which keeps
-correction C3's rule that no shim behaviour depends on the environment at **build** time.
+The first repair reached for ggml's **`GGML_BACKEND_PATH`** environment variable, which names one
+backend library file, and that **does not scope the load** — measured directly on the 0.21.0 this
+host links against, with a throwaway harness linked against the same library the shim links:
+
+```text
+$ ./probe                                    # ggml_backend_load_all(), no variable
+load_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.21.0/libexec/libggml-metal.so
+devices=3   BLAS type=3   MTL0 type=1   CPU type=0        gpu=MTL0
+
+$ GGML_BACKEND_PATH=<bogus>/libggml-metal.so ./probe      # an empty file, named explicitly
+load_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.21.0/libexec/libggml-metal.so
+load_backend: failed to load <bogus>/libggml-metal.so: dlopen(...)
+devices=3   BLAS type=3   MTL0 type=1   CPU type=0        gpu=MTL0
+
+$ ./probe <bogus>                            # ggml_backend_load_all_from_path(<bogus>)
+devices=0                                                 gpu=(none)
+
+$ ./probe /opt/homebrew/opt/ggml/libexec     # ggml_backend_load_all_from_path(the named dir)
+load_backend: loaded MTL backend from /opt/homebrew/opt/ggml/libexec/libggml-metal.so
+devices=3   BLAS type=3   MTL0 type=1   CPU type=0        gpu=MTL0
+```
+
+`GGML_BACKEND_PATH` **adds** to the compiled-in search, which runs first: a bogus library named by
+it fails to load and the run still gets `MTL0` from `GGML_BACKEND_DIR`. The entry point that scopes
+is `ggml_backend_load_all_from_path`, exported by libggml 0.21.0 (`nm -gU libggml.dylib` shows
+`_ggml_backend_load_all_from_path` beside `_ggml_backend_load_all`), which **replaces** the search
+path with its argument.
+
+**Shipped**, and the shim does change after all:
+
+1. `align_ggml_registry_ready` reads `ALIGN_GGML_BACKEND_DIR` from the environment at **run** time
+   and calls `ggml_backend_load_all_from_path` with it when it is set and non-empty, and
+   `ggml_backend_load_all` otherwise. Reading it at run time is exactly correction C3's rule kept:
+   no shim behaviour depends on the environment the library was **compiled** in. The variable's name
+   is a `#define` in the shared fenced region, so both C files declare one contract and the stub —
+   which has no registry — documents that it loads nothing.
+2. `scripts/run-metal-forward` still resolves `libggml-metal.so`/`.dylib` inside the declared
+   directory, but exports the **directory** as `ALIGN_GGML_BACKEND_DIR` rather than the file as
+   `GGML_BACKEND_PATH`, and prints that it is loading from there and nowhere else.
+3. Finding the plugin is what lets the device probe change verdict: a declared directory with no
+   Metal plugin stays an `N/A` line naming it — the Linux CI path, where no Metal plugin is ever
+   built — while a directory that holds one and a registry scoped to it that still reports no GPU
+   device is now a **`FAIL`**, because the named install is then failing to produce the device it is
+   named for rather than being absent.
 
 No hosted case can assert this: `make layer-forward-smoke` runs the stub shim and loads no backend
-at all. The device probe the runner already performs before packing is what observes the result.
+at all. The evidence is the probe above plus the qualification's own device line, which names the
+directory it loaded from; and the negative case was run — `ALIGN_LLM_GGML_BACKEND_DIR` pointed at a
+scratch directory holding an empty `libggml-metal.so` reaches `R5C_GPU_UNAVAILABLE` and the runner
+fails, where before this correction it silently qualified Homebrew's `MTL0`.
 
 ### C18 — the owner's trap restores the shim, as the qualification's does
 
@@ -1594,6 +1672,68 @@ whatever ran next. **Shipped:** the runner's `EXIT`/`HUP`/`INT`/`TERM` trap rest
 shim before removing the work tree, guarded so an ordinary exit pays for no rebuild — which is
 `r5a-dense-layer-forward.md` correction C22's rule applied to the owner as well as to
 `scripts/run-metal-forward`.
+
+### C19 — the transcript oracle saturated where the logits oracle no longer does
+
+Correction C12 closed `((v as f64) * S).round() as i64` for the **logits** comparison and left the
+same conversion standing in the **transcript** oracle, in both files that own one:
+
+```text
+src/model_forward.align   computed := ((window.f32_le(spot * 4) as f64) * 10000.0).round() as i64
+src/layer_forward.align   computed := ((window.f32_le(spot * 4) as f64) * 10000.0).round() as i64
+```
+
+Here the operand that has no fixed-point value is the **computed activation**, not an input, so
+C12's refusal rule does not apply and cannot: an arm that refused its own non-finite activation
+would be refusing the measurement. The failure mode is the mirror image of C12's abort and worse
+than it. A `+inf` or `-inf` activation saturates to `i64`'s maximum or minimum; against a transcript
+value of `0` the subtraction gives `i64`'s minimum, `0 - difference` wraps that back to itself, and
+`magnitude > o.oracle_max_abs` is **false** — the element is silently dropped and the oracle can
+report `PASS` over a node that is not a number. A NaN does not even need the wrap: `NaN as i64` is
+`0`, which compares *equal* to a printed `0.0000`. Neither aborts, so neither was visible; C12's
+histogram index is what made the logits half loud.
+
+The same class runs a second time three lines below, in the **sum** comparison: a node whose f32
+accumulation is non-finite has no millionths value either, and it covers the elements the transcript
+never printed — `llama-eval-callback` prints at most six positions per axis, so the element
+comparison above can only ever see a corner of each node.
+
+**Shipped**, four changes and no new tolerance:
+
+1. `src/model_forward.align`'s transcript element comparison routes the computed activation through
+   `logit_ten_thousandths` — C12's own range-checked conversion, whose non-finite test is
+   `digest_region`'s exponent test — and range-checks the transcript's value beside it. An
+   unrepresentable operand takes `LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS` as its magnitude, which is
+   fifteen orders above `TOLERANCE_TEN_THOUSANDTHS`, so it is an `ORACLE_FAIL` by construction.
+2. `src/layer_forward.align` gains the same conversion under its own name, `oracle_ten_thousandths`,
+   with its own `ORACLE_SCALE_LIMIT_TEN_THOUSANDTHS`. The two modules keep their constants separate
+   exactly as they already keep `MAX_TENSOR_ALIGNMENT` and the two tolerances separate.
+3. Both sum comparisons refuse before subtracting: `src/model_forward.align` counts non-finite
+   elements with the same exponent test while it is already walking the node, and
+   `src/layer_forward.align` reads `nodes.nonfinite[]`, the count its own document already
+   publishes. Either count, or a `computed` beyond `SUM_SCALE_LIMIT_MILLIONTHS` (10^12 units, twelve
+   orders above anything measured), publishes `max_sum_diff_millionths` as the sentinel and sets the
+   breach.
+4. No published value changes for a finite node: **every one of the 74, 58, and 27 golden documents
+   already checked in regenerates byte-identically**, and the three cases below are the only added
+   lines in the three files.
+
+**Cases.** A non-finite *computed* activation needs a forced build for the same reason the `primary`
+branch does, and one build produces both: `ALIGN_LLM_GGML_FORCE=engine+inf-readback` (and
+`engine+gpu+inf-readback`) makes the first element of every readback `+inf` and leaves the tensor
+data untouched, so the graph still computes what it computed. Because the arms carry the residual
+through that same readback, the `+inf` propagates through the model exactly as a real one would, and
+every logit of the two-layer model's 32-element vector is non-finite by the head.
+
+| Case | Arm | Asserts |
+| --- | --- | --- |
+| `lf-force-inf-readback` | `--layer-forward` | `status: ok`, `oracle.verdict FAIL`, `max_abs_diff_ten_thousandths` **10^15**, `max_sum_diff_millionths` the sentinel |
+| `mf-force-inf-readback` | `--model-forward` | the same three, **and** `oracle_logits.verdict FAIL` at 10^15 with `output.nonfinite_count` 32 — the `primary` branch C12 could not reach |
+| `gf-force-inf-readback` | `--model-forward-gpu` | the tolerance verdict alone, because oracle 2's element half is `N/A_DEVICE` here: `FAIL` at 10^15, 32 elements over half a unit, a **non-negative** mean, `p99` at the histogram's overflow bucket |
+
+The runtime width is deliberate on the two model arms: the logits comparison is then the *tolerance*
+path rather than the byte-identity one, so the verdict is driven by the bound the device arm exists
+to publish rather than by a `sha256`.
 
 ### Cell-to-case map
 
@@ -1619,7 +1759,7 @@ that covers it. `S` runs in `make layer-forward-smoke`; `Q` runs in
 | 4.2 cleanup | section 3.10's order | `S` and `Q` `lifetime.graph_balance_failures` 0 on both arms |
 | 4.3 formation — arm selection | first operand, before path work | `S` `gf-arm-unknown-flag`, `gf-arity-7` → no document |
 | 4.3 formation — device through the registry | `execute` step 20a | `S` `gf-no-gpu`; `Q` `device.name == "MTL0"`, `type_id == 1` |
-| 4.3 construction — properties published | `execute`, `gpu_forward.render_device` | `S` the golden `device` block; `Q` `buffer_max_size 9534832640`, `window_fits true` |
+| 4.3 construction — properties published | `execute`, `gpu_forward.render_device` | `S` the golden `device` block; `Q` `buffer_max_size 9534832640`, `window_fits` **`1`** (correction C14: it is the tri-state integer, and `1` is the only value that means the check ran and passed) |
 | 4.3 construction — the limit, before the first wrap | `execute` step 21a | `S` `gf-device-limit`, asserting `wrap_count == 0` in the error document; `Q` forced `max-buffer` against the real device |
 | 4.3 success — every placement external | R5B's pointer-identity check | `S` `verdict: "EXTERNAL"`; `Q` **339 placements, 0 failures** |
 | 4.3 success — the transfer is measured | `run_graph`, `window.wrap_*` | `S` one wrap per graph run; `Q` **59 wraps, 775.5 ms** (C7) |
@@ -1629,11 +1769,13 @@ that covers it. `S` runs in `make layer-forward-smoke`; `Q` runs in
 | 4.4 reference — bytes equal, per block | `compare_source` | `S` `gf-source-diverged`; `Q` all 339 members equal |
 | 4.4 reference — nodes identical, bit-exact on the device | `stage_reference_graph` | `S` 37/37 on four synthetic graphs; `Q` **479 of 479 over 30 graphs** |
 | 4.4 transcript — grammar, coverage, element count | `scan_transcript`, `prepare_transcript` | `S` `gf-transcript-garbage`, `gf-transcript-missing-layer` |
+| 4.4 transcript — a computed element with no ten-thousandth (C19) | `logit_ten_thousandths` / `oracle_ten_thousandths` at the element comparison, the non-finite count at the sum comparison | `S` `mf-force-inf-readback` and `lf-force-inf-readback`: `FAIL` at 10^15 with the sentinel sum, where a saturating `as i64` reported `PASS` |
 | 4.4 transcript — `kq-L` `ne0` | step 30 | `S` `gf-transcript-kv-width` → `R5_ORACLE_SHAPE` |
 | 4.4 transcript — elements deliberately not compared | step 31 | `S` `gf-gpu-transcript` and `gf-transcript-perturbed` both `N/A_DEVICE`/0 with `status: ok`; `Q` the same |
 | 4.4 logits — file shape | step 32 | `S` `gf-logits-short`, `gf-logits-missing`; and C12's reference-element rule, `S` `gf-logits-nonfinite`, `gf-logits-nan` → `R5_LOGITS_NONFINITE`, and their `mf-` twins on the CPU arm |
 | 4.4 logits — the tolerance verdict | `compare_logits` | `S` `gf-gpu-logits`, `gf-gpu-runtime-width`; `Q` **`WITHIN`, max 2,936 tt, argmax 671 both, top-10, 0 over half** |
 | 4.4 logits — a real failure is not `WITHIN` | `compare_logits` | `S` `gf-logits-perturbed`: a 1.0 shift keeps the argmax and the whole top ten and is `FAIL`; `S` `gf-logits-huge` and `mf-logits-huge`: an out-of-range reference element is `FAIL` and never a wrapped pass (C12) |
+| 4.4 logits — the arm's **own** non-finite element (C12, C19) | `compare_logits`'s `primary` branch | `S` `gf-force-inf-readback` and `mf-force-inf-readback`: `FAIL` at 10^15 with `output.nonfinite_count` 32, `status: ok`, and a non-negative mean |
 | 4.4 determinism is asserted | `output.sha256` | `S` three consecutive runs agree; `Q` **two runs, `b6e473e8…` both** |
 | 4.4 per-layer recorded, never gated | `schedule[].l_out_max_*` | `S` all three fields `-1` on every row of every case; `Q` the same, and all 28 layers' digests differ with `status: ok` (C4) |
 | 4.4 tolerance not silently widened | `logits_tolerance` | `S` and `Q` assert `6000`; `arm-r5b-unchanged` asserts R5B's is still `5000` |

@@ -1149,21 +1149,27 @@ correction C8 adds it. `ALIGN_LLM_METAL_FORWARD_TMPDIR` is where the pack is wri
 independent variable.
 
 `ALIGN_LLM_GGML_BACKEND_DIR` is the one genuinely new environment input: R5B never `dlopen`s a
-device backend because the CPU backend is built in, while R5C's device is loaded through
-`ggml_backend_load_all()` (section 3.4). It names the **directory holding `libggml-metal`** — a
-Homebrew ggml keeps it in `libexec`, not in `lib` — and the runner resolves the plugin inside it and
-exports ggml's own `GGML_BACKEND_PATH`, which names one backend library file rather than a
-directory. A directory holding no Metal plugin is an `N/A` line naming it (correction C17).
+device backend because the CPU backend is built in, while R5C's device is loaded through the
+registry (section 3.4). It names the **directory holding `libggml-metal`** — a Homebrew ggml keeps
+it in `libexec`, not in `lib` — and it is the **only** directory the run loads a backend from: the
+runner exports it to the shim as `ALIGN_GGML_BACKEND_DIR`, and the shim then calls
+`ggml_backend_load_all_from_path` instead of `ggml_backend_load_all`, which replaces ggml's search
+path rather than adding to it. ggml's own `GGML_BACKEND_PATH` cannot do this — measured on 0.21.0,
+it only *adds* one library file, and a bogus one named by it fails to load while the registry still
+reports the `MTL0` from the compiled-in directory (correction C17). A directory holding no Metal
+plugin is an `N/A` line naming it; a directory that holds one and still yields no GPU device is a
+**FAIL**, because the named install is then failing to produce the device it is named for.
 
 `metal-forward-qualification` is opt-in and capable-only, in **neither** `HOSTED_CHECK_TARGETS` nor
 `CAPABLE_ONLY_CHECK_TARGETS` — the same footing as `model-forward-qualification`. It prints exactly
-one `N/A` line and exits 0 when a required input is missing, **the registry reports no device of
-type GPU**, the model or either instrument is absent, or free space under the scratch root is below
-the pack's size plus 1 GiB (section 5.2). **Hosted CI is Linux with no Metal device, so this target
-is `N/A` there by the device check** — the intended behaviour, not a skip. The device question is
-answered by running the arm over the synthetic two-layer fixture and reading its `error_code`,
-before four and a half gigabytes are packed (correction C8), so the registry answers it rather than
-the host's name.
+one `N/A` line and exits 0 when a required input is missing, **the declared backend directory holds
+no Metal plugin**, the model or either instrument is absent, or free space under the scratch root is
+below the pack's size plus 1 GiB (section 5.2). **Hosted CI is Linux, where no Metal plugin is
+built, so this target is `N/A` there by the backend-directory check** — the intended behaviour, not
+a skip. The device question is then answered by running the arm over the synthetic two-layer fixture
+and reading its `error_code`, before four and a half gigabytes are packed (correction C8), so the
+registry answers it rather than the host's name — and because that registry is scoped to the
+declared directory, `R5C_GPU_UNAVAILABLE` there is a failure rather than an absence.
 
 These are the shipped lines, captured from `scripts/run-metal-forward` itself with each input
 removed or made wrong in turn:
@@ -1184,7 +1190,14 @@ metal forward qualification: N/A ALIGN_LLM_LLAMA_DEBUG is not executable
 metal forward qualification: N/A ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable
 metal forward qualification: N/A the scratch root <path> does not exist
 metal forward qualification: N/A free space under <path> is <n> KiB, below the <n> KiB the pack needs
-metal forward qualification: N/A the ggml registry reports no device of type GPU on this host
+```
+
+The device probe no longer has an `N/A` line of its own: once the declared directory holds a Metal
+plugin and the registry is scoped to that directory, a missing GPU device is
+
+```text
+metal forward qualification: FAIL <dir> holds <dir>/libggml-metal.so and the registry scoped to it
+still reports no device of type GPU
 ```
 
 **No peak-RSS line is printed and none is asserted.** This runner has no RSS probe: bounded memory is

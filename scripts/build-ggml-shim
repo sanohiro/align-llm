@@ -155,6 +155,17 @@ else
                        include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
                                        "-DALIGN_GGML_FORCE_COMPUTE_FAILURE=1")
                        flavour="stub+engine+gpu+force-compute" ;;
+    # R5C section 6, correction C19. A non-finite **computed** activation, which no operand can
+    # produce: the first element of every readback is `+inf` and the tensor data is untouched. It is
+    # what makes the transcript oracle's saturating conversion and the logits comparison's
+    # non-finite *primary* branch reachable hosted, on both arms.
+    engine+inf-readback)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_INF_READBACK=1")
+                       flavour="stub+engine+force-inf-readback" ;;
+    engine+gpu+inf-readback)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GGML_FORCE_INF_READBACK=1")
+                       flavour="stub+engine+gpu+force-inf-readback" ;;
     *)
       printf '%s\n' "build-ggml-shim: unknown stub ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
       exit 1
