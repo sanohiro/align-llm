@@ -15,6 +15,7 @@ set -euo pipefail
 #   ALIGN_LLM_GGML_INCLUDE  directory holding `ggml.h` and `ggml-backend.h`  (selects the real shim)
 #   ALIGN_LLM_GGML_LIB      directory holding `libggml` and `libggml-base`   (real shim only)
 #   ALIGN_LLM_GGML_FORCE    init | compute | reference — the section 4.6 forced-failure builds
+#   ALIGN_LLM_GGML_SHIM_DIR output directory; defaults to `build/lib` inside the work tree
 #   CC                      C compiler; defaults to `cc`
 #
 # **Toolchain assumption, stated rather than assumed.** A working `cc` on `PATH` is already a
@@ -25,7 +26,8 @@ set -euo pipefail
 # caller names, and is never built on a host that does not name them. Both files compile clean under
 # `-Wall -Wextra -Werror` with Apple clang 21 and Homebrew LLVM 19, 21, and 22.
 #
-# The output goes to `build/lib/`, which `.gitignore` excludes: no binary is ever committed. The
+# The output goes to `build/lib/` by default, which `.gitignore` excludes: no binary is ever
+# committed. The
 # shim's install name / soname is its own absolute path, so an executable linked against it resolves
 # it at run time without `DYLD_LIBRARY_PATH` or `LD_LIBRARY_PATH` — the two runners set them anyway,
 # because a relocated build directory is a worse failure than a redundant variable.
@@ -34,7 +36,11 @@ set -euo pipefail
 # `LIBRARY_PATH` without knowing this script's layout.
 
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-out_dir="${root_dir}/build/lib"
+# `build/` is the ordinary destination and is `.gitignore`d. `ALIGN_LLM_GGML_SHIM_DIR` moves the
+# library out of the work tree entirely, which is what `scripts/run-ggml-spike-smoke` does: the
+# fresh worker permits the aggregate to leave exactly one file, `main`, in `/workspace`
+# (`scripts/fresh-align-compiler`), so an aggregate member may not write a build artifact there.
+out_dir="${ALIGN_LLM_GGML_SHIM_DIR:-${root_dir}/build/lib}"
 compiler="${CC:-cc}"
 
 # The platform test is bash's own `OSTYPE`, not `uname`. The fresh worker image ships a curated

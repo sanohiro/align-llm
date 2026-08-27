@@ -70,14 +70,20 @@ if [ "${extern_files}" != "src/ggml_ffi.align" ]; then
   exit 1
 fi
 
-shim_dir=$("${root_dir}/scripts/build-ggml-shim")
+# The shim and the executable are built **into the temporary tree**, not into the work tree. The
+# fresh worker permits the whole `capable-checks` aggregate to leave exactly one file, `main`, in
+# `/workspace` (`scripts/fresh-align-compiler`), and this runner is one of its members; a `build/`
+# directory or a `ggml-spike` binary left behind fails the aggregate after every check has passed,
+# with no output naming the cause. `alignc` writes its executable next to the invocation, so the
+# one file it does create in the work tree is moved out in the same step.
+shim_dir=$(ALIGN_LLM_GGML_SHIM_DIR="${work_dir}/lib" "${root_dir}/scripts/build-ggml-shim")
 (
   cd "${root_dir}"
   LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}" \
   DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
   LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
   "${compiler}" build src/ggml_spike.align >/dev/null
-  mv -f ggml_spike ggml-spike
+  mv -f ggml_spike "${work_dir}/ggml-spike"
 )
 
 python3 "${root_dir}/scripts/ggml_spike_fixture.py" "${work_dir}" >/dev/null
@@ -94,7 +100,7 @@ root_dir, work_dir = sys.argv[1:3]
 sys.path.insert(0, os.path.join(root_dir, "scripts"))
 import alignpack_reader  # noqa: E402  (the independent third opinion, section 3.5)
 
-binary = os.path.join(root_dir, "ggml-spike")
+binary = os.path.join(work_dir, "ggml-spike")
 golden_path = os.path.join(root_dir, "scripts", "ggml-spike-golden.jsonl")
 update = os.environ.get("ALIGN_LLM_GGML_SPIKE_GOLDEN_UPDATE") == "1"
 

@@ -25,8 +25,8 @@ file records durable project state.
   `scripts/ggml-spike-golden.jsonl`; `Makefile`, `scripts/check-gate-topology`, and `.gitignore` are
   wired for the `ggml-spike` / `ggml-spike-smoke` / `ggml-spike-qualification` targets.
   `docs/specs/r4-5-external-buffer.md` section 6 records twenty-two implementation-forced
-  corrections (C1-C22) against the design — C1-C13 from the implementation, C14-C21 from the review,
-  and C22 from preflight; section 7 is the delivered-surface record.
+  corrections (C1-C23) against the design — C1-C13 from the implementation, C14-C21 from the review,
+  and C22-C23 from preflight; section 7 is the delivered-surface record.
 - **Probe evidence (ledger section 2), gathered before the design was written.**
   - Pointer identity: `ggml_get_data(A)` equals the Align `weights` buffer's base plus the member's
     own interior offset, exactly `14336` bytes (`pack_offset - block.pack_offset`), and the output
@@ -135,6 +135,15 @@ file records durable project state.
   sort through a `python3` helper, and `scripts/build-ggml-shim` selects its suffix and
   install-name/soname flag from bash's `OSTYPE`. Verified by running the owner with `PATH`
   restricted to exactly that tool set — PASS — and unchanged on macOS.
+  The rerun at `7a2be4e` then failed the same phase again, at 1,306 s instead of 1,194 s and this
+  time with **no** captured child output even under the diagnostic, because every check inside the
+  aggregate had passed: the fresh worker lists the `/workspace` overlay's upper directory after the
+  aggregate exits and fails unless the only entry is `main`, and the owner had left `build/lib/` and
+  a `ggml-spike` binary there. Repaired as ledger correction C23: the owner builds the shim and the
+  executable into its own `mktemp -d` tree (`scripts/build-ggml-shim` gained
+  `ALIGN_LLM_GGML_SHIM_DIR`; `make ggml-spike` still writes `build/lib` and `./ggml-spike` for
+  developers). Verified with `git status --porcelain --ignored` before and after a run — the work
+  tree is unchanged — and with the restricted-`PATH` owner run, still PASS.
 - **Baseline chain**: `45cdc55` -> `8b3b161` -> `eece7a1` (source -> oracle -> finalization),
   identity-bound and re-recorded on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) after
   the rebase onto the merged R4. **Exactly one** of the twenty recorded artifacts changed against

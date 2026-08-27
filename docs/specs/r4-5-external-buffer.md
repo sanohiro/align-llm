@@ -1261,6 +1261,7 @@ being evidence of anything, and the difference between the two is the useful rec
 | C20 | 3.2 | `check-gate-topology` sees "one new hosted target and one new capable-only target" | There is no new capable-only target. `ggml-spike-qualification` is in **neither** `HOSTED_CHECK_TARGETS` nor `CAPABLE_ONLY_CHECK_TARGETS`, exactly as section 5.2 and the `Makefile` say and exactly as `alignpack-qualification` is not | One new hosted target, `ggml-spike-smoke`. The qualification is opt-in, in no list and no aggregate, and `ggml-spike` is a build target rather than a check |
 | C21 | 3.5, 3.8 | the reader raises eight `R4_PACK_*` codes; `R4_5_INDEX`'s detail is `block[<n>]` / `member[<n>]` | The reader also raises `R4_PACK_TRUNCATED` — for a file shorter than the header, for `f.len() != total_bytes`, and for every region-containment failure — which section 3.5's list omits. And a *parse* failure at step 3 has no index to name, so it emits the sanitized operand itself (`-1`, `1x`, `01`, `99999999999999999999`) | The reader's code set is the eight of section 3.5 plus `R4_PACK_TRUNCATED`, with `r4-alignpack-layer-major.md` section 2.8's meaning. `R4_5_INDEX`'s detail is the sanitized operand when the operand did not parse (step 3) and `block[<n>]` / `member[<n>]` when it parsed and was out of range (steps 5 and 6). Both forms are goldens |
 | C22 | 5.1, 3.2 | the owner runs anywhere `make` and a C compiler run | It did not run in the fresh worker image. That image ships a **curated tool set** (`image/fresh/Dockerfile`): 32 system binaries plus the toolchain forwarders, and neither `sort` nor `uname` is among them. `scripts/run-ggml-spike-smoke` sorted `grep -rl` output with `sort` and `scripts/build-ggml-shim` selected the library suffix with `uname -s`, so the aggregate died at `./scripts/run-ggml-spike-smoke: line 55: sort: command not found`, `make[1]: *** [Makefile:179: ggml-spike-smoke] Error 127` — the first `capable-checks` member of this capability to run under that PATH | The two static scans sort through a `sorted_paths` helper built on `python3`, which the curated set does ship, and compare against the path list without the trailing separator; the shim builder selects its suffix and its install-name/soname flag from bash's own `OSTYPE`, which needs no tool at all. Verified by running `make ggml-spike-smoke` with `PATH` restricted to exactly that tool set, and unchanged on macOS, where the `.dylib` and `-install_name` arm still ships |
+| C23 | 5.1, 3.2 | the owner may build its shim and its executable in the work tree, because both are `.gitignore`d | `.gitignore` is not the constraint. The fresh worker mounts `/workspace` over an overlay and, after the aggregate exits, lists the overlay's upper directory and fails unless the **only** entry is `main` (`scripts/fresh-align-compiler`: `if any(name != "main" for name in names): fail("CHILD", "aggregate")`). `build/lib/libalign_ggml_shim.so` and the `ggml-spike` binary were two more, so the aggregate failed **after every check inside it had passed**, with no captured stdout or stderr to name a cause — even under `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1`, because the child had succeeded | The owner builds into its own `mktemp -d` tree: `scripts/build-ggml-shim` takes `ALIGN_LLM_GGML_SHIM_DIR` (default `build/lib`, unchanged for `make ggml-spike`), and the executable `alignc` writes next to the invocation is moved to `${work_dir}/ggml-spike` in the same step, which is also where the fixtures already live. The work tree is byte-identical before and after a run, verified with `git status --porcelain --ignored` |
 
 **Net effect on section 4.6's count.** Ten of the fifteen codes are reachable in hosted CI without
 ggml, not nine: `R4_5_SOURCE_UNREADABLE` and `R4_5_SOURCE_DIVERGED` are gained from C5 and
@@ -1269,11 +1270,15 @@ each names its mechanism; the fifth, `R4_WINDOW_UNAVAILABLE`, is not reachable f
 adds three fixtures to `R4_5_SOURCE_UNREADABLE` without changing the count, and C14 does not change
 it either — it makes two of the ten deterministic rather than allocator-dependent.
 
-**How C22 was found.** Preflight, not review: the exact-head `scripts/pre-pr` run failed in its
-`fresh-installed` phase with the worker aggregate's output suppressed, and the failing command only
-became visible under `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1`. It is the one correction in this table that
-no host-side run could have produced, because every host this capability was developed on has a full
-coreutils.
+**How C22 and C23 were found.** Preflight, not review, and one at a time: the exact-head
+`scripts/pre-pr` run failed in its `fresh-installed` phase with the worker aggregate's output
+suppressed. C22's failing command became visible under `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1`; C23's did
+not, because with C22 repaired every check in the aggregate passed and the failure was the
+supervisor's own post-run workspace scan, which produces no child output at all. They are the two
+corrections in this table that no host-side run could have produced: every host this capability was
+developed on has a full coreutils and an ordinary writable work tree. Both are now checkable without
+a 26-minute preflight — `make ggml-spike-smoke` with `PATH` restricted to the curated tool set, and
+`git status --porcelain --ignored` before and after a run.
 
 **How C14 and C15 were found.** Both are review findings against the implementation at `6b19163`,
 not against the plan, and both were reproduced before they were repaired: 20 consecutive runs of
