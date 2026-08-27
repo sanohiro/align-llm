@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# R5A-DENSE-LAYER-FORWARD named focused qualification (`docs/specs/r5a-dense-layer-forward.md`
+# section 5.2). **Opt-in and capable-only.** It is in neither HOSTED_CHECK_TARGETS nor
+# CAPABLE_ONLY_CHECK_TARGETS and in no aggregate, exactly as `alignpack-qualification` and
+# `ggml-spike-qualification` are not.
+#
+#   ALIGN_LLM_GGML_INCLUDE          directory holding ggml.h, ggml-alloc.h, ggml-backend.h
+#   ALIGN_LLM_GGML_LIB              directory holding libggml and libggml-base
+#   ALIGN_LLM_GGUF_MODEL            the Qwen2 GGUF this layer is read from
+#   ALIGN_LLM_LLAMA_EVAL_CALLBACK   path to `llama-eval-callback`
+#   ALIGN_LLM_LAYER_FORWARD_TMPDIR  where the pack is written; defaults to TMPDIR
+#   ALIGN_LLM_LAYER_FORWARD_EXCERPT_UPDATE=1  rewrite eval/fixtures/qwen2-blk0-6tok.txt
+#
+# The first three are R4.5's, unchanged; the fourth is new and is the only new environment input.
+# When any is unset, or the model or the instrument is absent, or the free space is under the pack's
+# size plus 1 GiB, it prints one explicit N/A line naming the missing input and exits 0.
+#
+# It packs the real model into a temporary directory **outside the work tree**, derives the geometry
+# with `main --model-ir`, captures a transcript with the four contractual flags of section 2.2, runs
+# `ggml-spike --layer-forward` with both oracles, asserts every recorded value of section 5.2, and
+# removes the pack on every exit path.
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+
+na() {
+  printf '%s\n' "layer forward qualification: N/A $1"
+  exit 0
+}
+
+[ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ] || na "ALIGN_LLM_GGML_INCLUDE is unset"
+[ -n "${ALIGN_LLM_GGML_LIB:-}" ] || na "ALIGN_LLM_GGML_LIB is unset"
+[ -n "${ALIGN_LLM_GGUF_MODEL:-}" ] || na "ALIGN_LLM_GGUF_MODEL is unset"
+[ -n "${ALIGN_LLM_LLAMA_EVAL_CALLBACK:-}" ] || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is unset"
+[ -d "${ALIGN_LLM_GGML_INCLUDE}" ] || na "ALIGN_LLM_GGML_INCLUDE is not a directory"
+[ -d "${ALIGN_LLM_GGML_LIB}" ] || na "ALIGN_LLM_GGML_LIB is not a directory"
+[ -f "${ALIGN_LLM_GGUF_MODEL}" ] || na "ALIGN_LLM_GGUF_MODEL is not a file"
+command -v "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" >/dev/null 2>&1 \
+  || [ -x "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" ] \
+  || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable"
+
+model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
+scratch_root="${ALIGN_LLM_LAYER_FORWARD_TMPDIR:-${TMPDIR:-/tmp}}"
+[ -d "${scratch_root}" ] || na "the scratch root ${scratch_root} does not exist"
+free_kib=$(df -Pk "${scratch_root}" | awk 'NR == 2 { print $4 }')
+need_kib=$(( model_bytes / 1024 + 1048576 ))
+if [ "${free_kib}" -lt "${need_kib}" ]; then
+  na "free space under ${scratch_root} is ${free_kib} KiB, below the ${need_kib} KiB the pack needs"
+fi
+
+work_dir=$(mktemp -d "${scratch_root%/}/align-r5a-XXXXXX")
+cleanup() {
+  status=$?
+  rm -rf "${work_dir}"
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+echo "layer forward qualification: packing ${ALIGN_LLM_GGUF_MODEL} into ${work_dir}"
+"${root_dir}/main" --pack "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/model.alignpack" \
+  "${work_dir}/pack.json" >/dev/null
+"${root_dir}/main" --model-ir "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/geometry.json" >/dev/null
+
+# Section 2.2 fact 2: build 10566 defaults to `-fa auto`, an f16 KV cache, and repacked quantized
+# weights, and none of those three is the graph R5A computes. These four flags are part of the
+# qualification's contract, not an invocation detail.
+echo "layer forward qualification: capturing the transcript with -fa off -ctk f32 -ctv f32 -nr"
+"${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" -m "${ALIGN_LLM_GGUF_MODEL}" -p "def add(a, b):" \
+  -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 \
+  > "${work_dir}/transcript.txt" 2> "${work_dir}/transcript.log"
+
+shim_dir=$(ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim")
+(
+  cd "${root_dir}"
+  LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}" \
+  DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+  LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  "${compiler}" build src/ggml_spike.align >/dev/null
+  mv -f ggml_spike ggml-spike
+)
+
+export DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+"${root_dir}/ggml-spike" --layer-forward "${work_dir}/model.alignpack" 0 \
+  "${work_dir}/geometry.json" 750,912,2877,11,293,1648 \
+  "${work_dir}/layer.json" "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/transcript.txt"
+
+python3 - "${root_dir}" "${work_dir}" <<'PY'
+import json
+import os
+import sys
+
+root_dir, work_dir = sys.argv[1:3]
+with open(os.path.join(work_dir, "layer.json"), "r", encoding="utf-8") as handle:
+    d = json.load(handle)
+
+failures = []
+
+
+def want(label, got, expected):
+    if got != expected:
+        failures.append("%s: %r, expected %r" % (label, got, expected))
+
+
+def at_most(label, got, bound):
+    if got > bound:
+        failures.append("%s: %r, expected at most %r" % (label, got, bound))
+
+
+want("status", d["status"], "ok")
+want("verdict", d["verdict"], "EXTERNAL")
+model = d["model"]
+want("model.n_embd", model["n_embd"], 3584)
+want("model.n_head", model["n_head"], 28)
+want("model.n_head_kv", model["n_head_kv"], 4)
+want("model.head_dim", model["head_dim"], 128)
+want("model.n_ff", model["n_ff"], 18944)
+want("model.n_vocab", model["n_vocab"], 152064)
+want("model.context_length", model["context_length"], 131072)
+want("model.rope_type", model["rope_type"], 2)
+want("model.rms_eps_bits", "%08x" % model["rms_eps_bits"], "358637bd")
+want("model.rope_freq_base_bits", "%08x" % model["rope_freq_base_bits"], "49742400")
+
+members = d["members"]
+want("members count", len(members), 13)
+by_role = {m["role"]: m for m in members}
+if not all(m["pointer_identity"] for m in members):
+    failures.append("a weight tensor is not at its own window offset")
+want("token_embd.ne1", by_role["token_embd"]["ne1"], 6)
+want("token_embd.nbytes", by_role["token_embd"]["nbytes"], 12096)
+want("token_embd.pread_count", by_role["token_embd"]["pread_count"], 6)
+# Section 2.3 found two Q6_K members in this layer, which R4.5's single-member spike never
+# exercised; `14` is Q6_K's ggml type id.
+want("attn_v.ggml_type", by_role["attn_v"]["ggml_type"], 14)
+want("ffn_down.ggml_type", by_role["ffn_down"]["ggml_type"], 14)
+
+attention = ["attn_norm", "attn_q", "attn_q_bias", "attn_k", "attn_k_bias", "attn_v",
+             "attn_v_bias", "attn_output"]
+# R4.5 section 2.3 recorded 17,020,928 as the real pack's `AttentionBlock[0].pack_bytes`: the
+# container's block grouping and this layer's member set are the same set.
+want("attention member bytes", sum(by_role[r]["nbytes"] for r in attention), 17020928)
+
+graph = d["graph"]
+want("graph.node_count", graph["node_count"], 32)
+want("graph.weight_bytes", graph["weight_bytes"], 149139456)
+want("graph.activation_bytes", graph["activation_bytes"], 2453376)
+want("graph.slot_capacity", graph["slot_capacity"], 128)
+want("abi.tensor_alignment", d["abi"]["tensor_alignment"], 32)
+want("abi.table_drift", d["abi"]["table_drift"], -1)
+want("abi.slot_magic_ok", d["abi"]["slot_magic_ok"], True)
+
+reference = d["reference"]
+want("reference.verdict", reference["verdict"], "IDENTICAL")
+want("reference.nodes_compared", reference["nodes_compared"], 20)
+want("reference.nodes_identical", reference["nodes_identical"], 20)
+
+oracle = d["oracle"]
+want("oracle.verdict", oracle["verdict"], "PASS")
+want("oracle.nodes_expected", oracle["nodes_expected"], 18)
+want("oracle.nodes_matched", oracle["nodes_matched"], 18)
+want("oracle.elements_compared", oracle["elements_compared"], 1116)
+at_most("oracle.max_abs_diff_ten_thousandths", oracle["max_abs_diff_ten_thousandths"], 1)
+# Asserted so a widened threshold fails here, not silently.
+want("oracle.tolerance_ten_thousandths", oracle["tolerance_ten_thousandths"], 1)
+want("oracle.sum_tolerance_millionths", oracle["sum_tolerance_millionths"], 1000)
+want("oracle.sum_tolerance_relative_ppm", oracle["sum_tolerance_relative_ppm"], 10)
+
+excluded = [n["id"] for n in d["nodes"] if n["oracle"] == "shape_incomparable"]
+want("shape_incomparable nodes", excluded, ["kq", "kq_soft_max"])
+compared = [n["id"] for n in d["nodes"] if n["oracle"] == "compared"]
+want("compared node count", len(compared), 18)
+
+lifetime = d["lifetime"]
+for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                       ("contexts_created", "contexts_freed"),
+                       ("backends_created", "backends_freed"),
+                       ("gallocrs_created", "gallocrs_freed")):
+    want("lifetime.%s == %s" % (created, freed), lifetime[created], lifetime[freed])
+want("lifetime.released_before_owner_scope_end", lifetime["released_before_owner_scope_end"], True)
+
+print("layer forward qualification: backend %s" % graph["backend_name"])
+print("layer forward qualification: pread %.3f ms, build %.3f ms, compute %.3f ms (warm mean of 5)"
+      % (d["timings"]["pread_ns"] / 1e6, d["timings"]["build_ns"] / 1e6,
+         d["timings"]["compute_ns"] / 1e6))
+print("layer forward qualification: reference compute %.3f ms, oracle %.3f ms"
+      % (d["timings"]["reference_compute_ns"] / 1e6, d["timings"]["oracle_ns"] / 1e6))
+print("layer forward qualification: weight window %d B, activation %d B, graph nodes %d"
+      % (graph["weight_bytes"], graph["activation_bytes"], graph["node_count"]))
+print("layer forward qualification: self-reference %s (%d/%d nodes byte-identical)"
+      % (reference["verdict"], reference["nodes_identical"], reference["nodes_compared"]))
+print("layer forward qualification: transcript %s, %d/%d nodes, %d elements, "
+      "max |d| %d ten-thousandths, max |dsum| %d millionths"
+      % (oracle["verdict"], oracle["nodes_matched"], oracle["nodes_expected"],
+         oracle["elements_compared"], oracle["max_abs_diff_ten_thousandths"],
+         oracle["max_sum_diff_millionths"]))
+print("layer forward qualification: l_out sha256 %s bit_sum %d"
+      % (d["output"]["sha256"], d["output"]["bit_sum"]))
+print("layer forward qualification: lifetime buffers %d/%d contexts %d/%d backends %d/%d "
+      "gallocrs %d/%d released %s"
+      % (lifetime["ggml_buffers_created"], lifetime["ggml_buffers_freed"],
+         lifetime["contexts_created"], lifetime["contexts_freed"],
+         lifetime["backends_created"], lifetime["backends_freed"],
+         lifetime["gallocrs_created"], lifetime["gallocrs_freed"],
+         lifetime["released_before_owner_scope_end"]))
+for node in d["nodes"]:
+    print("layer forward qualification: node %-12s %-9s ne=[%d,%d,%d,%d] sum=%d sha=%s %s"
+          % (node["id"], node["op"], node["ne0"], node["ne1"], node["ne2"], node["ne3"],
+             node["f32_sum_millionths"], node["sha256"][:16], node["oracle"]))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("layer forward qualification: FAIL %s\n" % line)
+    raise SystemExit(1)
+print("layer forward qualification: every section 5.2 assertion PASS")
+PY
+
+# The two forced builds that no input can produce, run against the **real** shim so the failure
+# paths are exercised rather than reasoned about.
+for force in init compute; do
+  ALIGN_LLM_GGML_FORCE="${force}" "${root_dir}/scripts/build-ggml-shim" >/dev/null
+  set +e
+  "${root_dir}/ggml-spike" --layer-forward "${work_dir}/model.alignpack" 0 \
+    "${work_dir}/geometry.json" 750,912,2877,11,293,1648 - > "${work_dir}/forced.json"
+  status=$?
+  set -e
+  code=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["error_code"])' \
+    "${work_dir}/forced.json")
+  expected="R5_GGML_INIT"
+  [ "${force}" = compute ] && expected="R5_COMPUTE"
+  if [ "${code}" != "${expected}" ] || [ "${status}" = 0 ]; then
+    echo "layer forward qualification: FAIL forced ${force} produced ${code} (exit ${status})" >&2
+    exit 1
+  fi
+  echo "layer forward qualification: forced ${force} reached ${code}"
+done
+ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null
+
+# The checked-in excerpt is swept from here, which is what keeps it from going stale.
+if [ "${ALIGN_LLM_LAYER_FORWARD_EXCERPT_UPDATE:-}" = 1 ]; then
+  python3 "${root_dir}/scripts/sweep-layer-forward-excerpt.py" \
+    "${work_dir}/transcript.txt" "${root_dir}/eval/fixtures/qwen2-blk0-6tok.txt"
+  echo "layer forward qualification: eval/fixtures/qwen2-blk0-6tok.txt rewritten"
+fi
+
+echo "layer forward qualification: removing the pack"

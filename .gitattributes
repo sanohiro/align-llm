@@ -8,3 +8,7 @@ eval/prompt/canonical-v1/corpus-file-set.manifest -text
 # `docs/specs/r2a-expert-trace.md` section 2.2 finding 6 matches literally, so `git diff --check`
 # must not report it and no tool may strip it.
 eval/fixtures/expert-trace/*.txt -whitespace
+
+# The R5A checked-in blk.0 excerpt is the same instrument's byte-exact output and carries the same
+# significant trailing spaces (`docs/specs/r5a-dense-layer-forward.md` section 5.1).
+eval/fixtures/qwen2-blk0-6tok.txt -whitespace

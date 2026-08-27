@@ -837,6 +837,93 @@ interior offset that is not a multiple of the linked library's `tensor_alignment
 `buffer.weights_pad` / `buffer.output_pad` varying between runs of the same input is expected, not a
 defect.
 
+## Dense layer forward development
+
+R5A-DENSE-LAYER-FORWARD is in design (probes complete, implementation in progress) on branch
+`agent/r5a-dense-layer-forward`; its authoritative plan is
+`docs/specs/r5a-dense-layer-forward.md`, which owns the probe record, the contract ledger, the
+closure matrix, and the fixtures, qualification, metrics, deferrals, risks, and candidate requests.
+It answers the second of R5's three gate stages — a single Qwen2 dense layer, CPU only — computed by
+ggml over weights, topology, and scalars that Align owns, checked against `llama-eval-callback`'s
+own numbers for the same tokens, in an `R5_LAYER_FORWARD`, `schema_version: 1` document.
+
+It ships as a **new arm of the existing `ggml-spike` executable**, `--layer-forward`, not as a new
+`align-runtime` binary: the link boundary, the device/backend prologue, and the alignment pre-checks
+are `r4-5-external-buffer.md`'s and stay singular, and `align-runtime` remains a name the roadmap's
+loader-bearing product claims later, not a name this one-layer arm takes early.
+
+```sh
+gmake ggml-spike                    # unchanged; also builds the --layer-forward arm
+gmake layer-forward-smoke           # the hosted owner; in HOSTED_CHECK_TARGETS
+gmake layer-forward-qualification   # the opt-in real-ggml, real-model, real-instrument qualification
+```
+
+The R4.5 arms are unchanged. `--layer-forward` is selected by its exact first operand, five to eight
+operands, `LAYER` a non-negative index and `TOKENS` one to six comma-separated token ids
+(`MAX_PREFILL_TOKENS = 6`, an oracle limit — `llama-eval-callback` elides tensor rows past six —
+not an arithmetic one):
+
+```sh
+./ggml-spike --layer-forward PACK LAYER GEOM.json TOKENS                              # to stdout
+./ggml-spike --layer-forward PACK LAYER GEOM.json TOKENS DOC.json                     # to DOC.json
+./ggml-spike --layer-forward PACK LAYER GEOM.json TOKENS DOC.json REF.gguf            # + self-reference oracle
+./ggml-spike --layer-forward PACK LAYER GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt   # + tolerance oracle
+./ggml-spike --layer-forward PACK LAYER GEOM.json TOKENS -         REF.gguf TRANSCRIPT.txt   # document to stdout
+```
+
+`GEOM.json` is an `R1_QWEN_MODEL_IR` document (the alignpack carries no hyperparameters); only its
+`model` object is read, and only as the `_bits` fields for `eps`/`freq_base` — a rendered float is
+never trusted as the value.
+
+**Env vars, all read by `scripts/run-layer-forward` and reused unchanged from R4.5 where named:**
+
+```sh
+ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include \       # selects the REAL shim; unset selects the stub
+ALIGN_LLM_GGML_LIB=/opt/homebrew/lib \               # where libggml / libggml-base are
+ALIGN_LLM_GGUF_MODEL=/path/to/model.gguf \           # the model to pack and use as the reference
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \   # new: the tolerance-oracle instrument
+  gmake layer-forward-qualification
+```
+
+**The four instrument flags are contractual, not an invocation detail**, because three of the
+instrument's defaults compute a graph R5A does not (flash attention, an f16 KV cache, and CPU weight
+repacking):
+
+```sh
+-fa off -ctk f32 -ctv f32 -nr -c 512
+```
+
+The qualification captures the transcript with exactly these flags plus `-ngl 0`, and asserts
+`nodes_matched == nodes_expected == 18` so a future build that renames or reshapes a node fails
+loudly (`R5_ORACLE_MISSING`/`R5_ORACLE_SHAPE`) rather than silently comparing fewer elements.
+
+`layer-forward-qualification` is opt-in and capable-only, in **neither** `HOSTED_CHECK_TARGETS` nor
+`CAPABLE_ONLY_CHECK_TARGETS` — the same footing as `alignpack-qualification` and
+`ggml-spike-qualification`. It prints exactly one `N/A` line and exits 0 when a required input is
+missing, the model or instrument is absent, or free space is under the pack's size plus 1 GiB; the
+line must be quoted as the `N/A` reason in the pull request. The plan (section 5.2) states the
+triggering conditions — the four environment variables above, the model, the instrument, and free
+space — but does not fix the print text verbatim the way `r4-5-external-buffer.md` did for its own
+arm; the lines below follow that arm's naming convention and are **not yet finalized — the exact
+wording is finalized with the implementation**, against the runner's real output:
+
+```text
+layer forward qualification: N/A (ALIGN_LLM_GGML_INCLUDE unset)
+layer forward qualification: N/A (ALIGN_LLM_GGML_INCLUDE holds no ggml.h)
+layer forward qualification: N/A (ALIGN_LLM_GGML_LIB unset)
+layer forward qualification: N/A (ALIGN_LLM_GGML_LIB is not a directory)
+layer forward qualification: N/A (ALIGN_LLM_GGUF_MODEL unset)
+layer forward qualification: N/A (ALIGN_LLM_GGUF_MODEL is absent)
+layer forward qualification: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)
+layer forward qualification: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is absent)
+layer forward qualification: N/A (insufficient free space: <avail> < <required>)
+```
+
+**Adding `layer-forward-smoke` to `HOSTED_CHECK_TARGETS` changes aggregate membership**, so
+`CLAUDE.md`'s verification rules select `make ci` for this capability's publication, independent of
+whatever selects it for a `.align-revision` change. `layer-forward-qualification` joins no aggregate
+and is named explicitly in the pull request instead, exactly as `ggml-spike-qualification` is.
+
 ## The aarch64 platform-profile gates
 
 C7 evidence is target-bound, so each required non-x86 environment has its own reviewed profile.

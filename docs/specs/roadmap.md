@@ -120,8 +120,8 @@ The current forward delivery order is:
     is closed synthetically and stays **MOE-PREREQ**, pending the same small MoE GGUF decision R2
     names.
 14. **R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer.
-    Publication in progress.** On branch `agent/r4-5-external-buffer`, rebased onto the merged R4 at
-    `main` `991eab1`.
+    Merged as PR #126** (head `d46fce6`, merge `fa567b1`), from branch
+    `agent/r4-5-external-buffer`.
     [`r4-5-external-buffer.md`](r4-5-external-buffer.md) is the authoritative plan and owns the probe
     record, the contract ledger, the closure matrix, the fixture design, the correction ledger, and
     the cell-to-case map. `ggml-spike PACK BLOCK MEMBER [DOC.json [REF.gguf]]` is a **separate**
@@ -130,6 +130,22 @@ The current forward delivery order is:
     emits an `R4_5_EXTERNAL_BUFFER`, `schema_version: 1` document saying, as data, whether ggml
     computed over our bytes or over a copy. It answers R4.5's gate for the DRAM half and for unified
     memory; section R4.5 below records clause by clause what that discharges and what it defers.
+    Implemented, reviewed, and repaired; publication awaits R4's PR #125 merging, since this branch
+    continues from it.
+15. **R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack.
+    Active.** On branch `agent/r5a-dense-layer-forward`, continuing R4.5.
+    [`r5a-dense-layer-forward.md`](r5a-dense-layer-forward.md) is the authoritative plan and owns the
+    probe record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
+    deferrals, risks, and candidate-request sections. `ggml-spike --layer-forward` is a new arm of
+    R4.5's executable — not a third link boundary — that reads the embedding rows and the two layer
+    blocks a Qwen2 dense layer needs into Align-owned aligned windows, builds the layer's
+    thirty-two-node graph from an Align-owned node table, computes it on a real backend, and emits an
+    `R5_LAYER_FORWARD`, `schema_version: 1` document carrying per-node checksums and two independent
+    oracle verdicts (a bit-exact self-reference arm and a tolerance comparison against a checked-in
+    `llama-eval-callback` transcript). Design is complete with probe evidence: all eighteen oracle
+    nodes agree with the transcript to the instrument's own print-rounding bound (max `|Δ|` 5.0e-5
+    over 1,116 sampled elements), the self-reference arm is 20 of 20 tensors byte-identical, and
+    microbenchmark B measures 15.5 ms median for one dense layer. Implementation is in progress.
 
 **I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
 prove its value on an existing model, and the merged C6-MEASURED wave (align-llm PR #103, `c9a510d`)
@@ -667,6 +683,17 @@ C: async prefetch + GPU compute
 ### Gate
 
 単一block、単一layer、最小モデルの順に正しい出力を得ること。
+
+このgateは3段階を個別に判定する。単一block（単一Q4_K memberのDRAM実weight matmul）は
+R4.5-EXTERNAL-BUFFER-SPIKEが達成済み（上記R4.5節参照）。単一layer（CPU、dense）は
+R5A-DENSE-LAYER-FORWARDが対象とし、design段階でprobe evidenceにより達成可能と確認済み——
+`docs/specs/r5a-dense-layer-forward.md`が権威あるledgerで、transcript（tolerance）oracleは
+18ノード全一致（sampled 1,116要素、max`|Δ|` 5.0e-5、instrumentの印字精度上限）、bit-exact
+self-reference oracleは20/20 tensor byte一致、microbenchmark Bは15.5 ms中央値（1 dense layer、
+6 token、warm）。最小モデル（stage 3、KV cache付きの残り27層＋`output_norm`＋`output`）は
+R5B（未着手）にdeferされる。必須microbenchmarkのうちBのみR5Aが達成し、AとCはGPU armとloaderが
+R5Aのscopeに含まれないためR5Bにdeferされる（`r4-5-external-buffer.md` section 5.4、
+`r5a-dense-layer-forward.md` section 5.4）。
 
 ---
 

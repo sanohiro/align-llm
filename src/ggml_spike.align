@@ -7,6 +7,7 @@ import std.fs
 import std.time
 import alignpack_read
 import ggml_ffi
+import layer_forward
 
 // R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md`). The whole arm: the CLI, the
 // validation order of section 3.8, the deterministic activation, the reference oracle, the
@@ -1481,6 +1482,16 @@ fn print_summary(borrow o: Outcome, pack_path: str) {
 // it selects the machine form: the document alone, with no summary block to interleave with it
 // (section 6, correction C6).
 pub fn main(args: array<str>) -> Result<(), Error> {
+  // R5A section 3.3: **arm selection is the first operand and nothing else**, and it happens before
+  // any path work, so a wrong arm produces no output and no file. A first operand equal to
+  // `--layer-forward` selects the R5A arm; any other operand beginning with `--` is `R5_ARITY`;
+  // everything else is R4.5's arm with R4.5's arity rules unchanged.
+  if args.len() >= 2 && args[1] == "--layer-forward" {
+    return layer_forward.run(args)
+  }
+  if args.len() >= 2 && args[1].starts_with("--") {
+    return Err(Error.Invalid)
+  }
   if args.len() < 4 || args.len() > 6 {
     return Err(Error.Invalid)
   }

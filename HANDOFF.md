@@ -3,6 +3,111 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
+## Active capability: R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack (2026-08-27)
+
+- Branch `agent/r5a-dense-layer-forward`, ledger commit `01e8df4` ("docs: add R5A dense layer
+  forward design ledger"), continuing from R4.5-EXTERNAL-BUFFER-SPIKE (branch
+  `agent/r4-5-external-buffer` at `ecce870`, awaiting publication above). The authoritative design
+  ledger is `docs/specs/r5a-dense-layer-forward.md`.
+- **Status: implementation complete in the working tree.** R5A is stage 2 of `docs/specs/roadmap.md`
+  section R5's three-stage gate — a single dense layer, CPU only — computed by ggml over Qwen2
+  weights that live in Align-owned buffers, checked against `llama-eval-callback`'s own numbers for
+  the same six tokens. Design is complete with probe evidence (below), the arm
+  (`src/layer_qwen2.align`, `src/layer_forward.align`, the shim wrappers) is implemented and
+  committed to the working tree, and both owner and named-qualification verification have passed.
+  Next action is review.
+- **Owner verification, latest run.** `check` (29 units), `build`, `ggml-spike` (both the default
+  stub and the real linked library), `ggml-spike-smoke`, `layer-forward-smoke` (run three times,
+  identical results each time: eight shim builds plus the 48-case golden corpus, 24 of 26 error
+  codes reached and both oracles exercised, matching section 7.6's own count), `alignpack-smoke`,
+  `gate-topology-check`, `format-check`, and `fmt` idempotent on a second run — all pass.
+- **Named qualification, against `qwen2.5-coder-7b-instruct-q4_k_m.gguf`, layer 0, tokens
+  `750,912,2877,11,293,1648`** (`docs/specs/r5a-dense-layer-forward.md` section 7.7):
+  - self-reference oracle: **IDENTICAL**, 20 of 20 dumped node tensors byte-identical;
+  - transcript oracle: **PASS**, 18 of 18 nodes, 1,116 sampled elements, `max |Δ| == 0`
+    ten-thousandths;
+  - `l_out` sha256 `f601bf855d32ffa8faca2f50d98b2344df44e6b8aeb9b1e46b0d74b58685bdc6`;
+  - compute **12.970 ms** (warm mean of 5), pread **55.2 ms**;
+  - weight window **149,139,456 B**, activation **2,453,376 B**, 32 graph nodes;
+  - lifetime counters balanced (buffers 3/3, contexts 5/5, backends 1/1, gallocrs 2/2, released
+    true); the qualification's own temporary alignpack is deleted on exit (`scripts/run-layer-forward`
+    writes it under a work directory removed by an `EXIT`/`HUP`/`INT`/`TERM` trap).
+- **Probe evidence (ledger section 2), gathered before section 3's contract was written.**
+  - Transcript (tolerance) oracle: 18 oracle nodes, 1,116 sampled elements, worst `max|Δ|` **5.0e-5**
+    against `llama-eval-callback`, which is the instrument's own `%12.4f` print-rounding bound —
+    every sampled element agrees to the last digit printed.
+  - Re-accumulating in sequential f32 order (matching the instrument's own accumulation) makes
+    `norm-0`, `Qcur-0/ROPE`, and `kq-0` **bit-identical** to the transcript's printed sums; worst
+    residual 1.5e-6 relative (`ffn_gate-0`).
+  - Bit-exact self-reference oracle: the same graph, Align-owned weights vs. ggml-allocated weights,
+    **20 of 20** dumped node tensors byte-identical (the 18 oracle nodes plus `kq-0` and
+    `kq_soft_max-0`); two consecutive external-arm runs also byte-identical (deterministic on this
+    host at this thread count).
+  - Compute (microbenchmark B): **15.5 ms** median (15.3-16.6 ms range) for one dense layer, six
+    tokens, 32 graph nodes, warm.
+  - The embedding member must be row-gathered, not read whole: whole-member window
+    455,688,192 B / 87.0 ms read vs. row-gathered window **149,139,456 B** / 19.5-20.9 ms read, for a
+    byte-identical answer.
+  - The oracle instrument's default graph is not the one R5A computes; the qualification's flags are
+    contractual: `-fa off -ctk f32 -ctv f32 -nr -c 512` (disables flash attention/f16 KV cache/CPU
+    weight repacking, keeps everything on CPU). The transcript's first node is `embd`, not the
+    plan's assumed `inp_embd`; the attention output-projection node has no stable name across builds
+    (`node_31` under `-fa off`, `node_26` under flash attention) and is matched by its source weight
+    name (`blk.L.attn_output.weight`) instead.
+  - FFI surface verified at the pin: `f32` crosses by value in both directions (a nine-argument
+    mixed-scalar probe) and an unsuffixed float literal coerces at an `f32` parameter with no cast —
+    the design nonetheless passes every scalar as an `i32` bit pattern for GGUF bit-fidelity, not
+    because `f32` doesn't work. `bool` is still refused, so `ggml_gallocr_reserve` and
+    `ggml_gallocr_alloc_graph` needed shim wrappers, now shipped. `raw` cannot be a `layout(C)` struct field
+    (already known) **or an array element** (new), which is why the 32-node graph's `ggml_tensor *`
+    handles live in an Align-owned node-slot store addressed by `i64` index rather than in any Align
+    aggregate.
+- **Align capability requests.** Design believed **no new request** was needed — ledger section 5.5
+  verifies every gap the design's probes hit was already recorded in `docs/align-requests.md` — and
+  implementation confirmed that, but also hit two further gaps of its own (ledger section 6,
+  corrections C8 and C9), now **Requests 36 and 37, both PROPOSED**. Design-time work added new
+  client evidence to Request 34 (`raw` refused as an array element too, the reason the node-slot
+  store exists; now citable at `src/layer_qwen2.align:13-16,24-38`) and Request 32 (two more
+  `bool`-typed ggml entry points needing wrappers, now shipped at `src/ggml_ffi.align:744-754` and
+  `scripts/ggml_shim.c:1069-1090`, plus the positive `f32` measurement above), with no-text-change
+  client evidence to Requests 21 and 35, and a shipped citation strengthening Request 33 (the
+  per-member alignment compensation now paid thirteen times per run). Request 36: an owned
+  `array<i64>` struct field cannot be replaced in place and a nested struct field cannot be moved out
+  of its parent, so `src/layer_forward.align`'s document columns live in eight single-assignment
+  records instead of the one `Outcome` the design wrote down. Request 37: per-function check time is
+  superlinear in body length and a `match` on a `Result` inside a loop costs roughly 45x the same
+  loop with `?`, so the arm is split into fourteen functions purely to keep `make check` fast. Both
+  are non-blocking. See `docs/align-requests.md` for the full text.
+- **Next actions, in order.**
+  1. Two independent reviews (source; specification/register/handoff/runners), consolidated repair,
+     rerun of affected owner verification.
+  2. At publication, run **`make ci`**, not only the narrower classifier path — adding
+     `layer-forward-smoke` to `HOSTED_CHECK_TARGETS` changes aggregate membership, which is one of
+     `CLAUDE.md`'s explicit triggers for the full integration graph.
+  3. Exact-head preflight (`python3 scripts/pre-pr`), including the DinD-capable installed profile
+     check; do not substitute a Docker skip or an ambient `DOCKER_HOST` endpoint.
+  4. Publish the English pull request against `main`, once R4 (PR #125) and R4.5 (PR TBD-PR) are
+     both ahead of it in the merge chain or this branch is rebased onto their merged result.
+- **Two pending user decisions, carried forward verbatim.**
+  1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
+     gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
+     `N/A`.
+  2. Carried forward from R2A: whether to download a small MoE GGUF (1-4 GB) so
+     `scripts/run-expert-trace-parity` can exercise the `moe: true` path against a real MoE
+     transcript; until decided the R2 roadmap gate stays open on dense-only smoke evidence, R4's own
+     MoE case stays synthetic-only, and R3 stays blocked (below). Note: a small MoE GGUF chosen for
+     size will most likely not be gpt-oss architecture, so R3's real measurement would also need a
+     new R1C frontend for whatever architecture that model uses, not just the download itself.
+- **R3 (Cache Simulator) is blocked on pending decision 2 above.** R3's gate
+  ("対象ハードウェア条件で、baselineより有効なpolicyを特定できること", `docs/specs/roadmap.md` section
+  R3) needs a real MoE activation trace and a cache-policy comparison against it; R2A's design ledger
+  already records that no such trace exists on this host. Resume condition: the small-MoE-GGUF
+  decision is made, the model's architecture is identified, an R1C frontend is built if that
+  architecture is not already `qwen2`/`gpt-oss`, and R2A's `moe: true` path is exercised against a
+  real transcript from it. Independent work that may continue: R4's publication, R4.5's publication
+  once R4 merges, R5A's implementation (its stage-2 dense CPU gate needs no MoE trace), and the next
+  eligible roadmap capability.
+
 ## Awaiting publication: R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer (2026-08-27)
 
 - Branch `agent/r4-5-external-buffer`, **rebased onto the merged R4-ALIGNPACK-LAYER-MAJOR work**:

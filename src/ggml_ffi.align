@@ -37,6 +37,10 @@ pub STATUS_SHAPE := -4
 pub STATUS_ALIGNMENT := -5
 pub STATUS_INIT := -6
 pub STATUS_BOUNDS := -7
+// R5A-DENSE-LAYER-FORWARD (`docs/specs/r5a-dense-layer-forward.md` sections 3.5 and 3.8). Two more
+// shared values: a `ggml_gallocr` predicate that answered `false`, and a node-slot store refusal.
+pub STATUS_ALLOC := -8
+pub STATUS_SLOT := -9
 
 // Outside the `ggml_status` range (`-2 ..= 2`), so a null argument handed to the compute wrapper is
 // never mistaken for a backend verdict.
@@ -87,6 +91,22 @@ pub fn code_for(status: i64) -> str {
   return "R4_5_ABI"
 }
 
+// The same mapping for the R5A arm, which owns its own code vocabulary. It is a second `match`
+// rather than a parameterized one because the two arms' codes are two contracts: `R4_5_SHAPE` and
+// `R5_SHAPE` are different documents' fields, and a shared renderer would let one arm's rename
+// silently change the other's output (`docs/specs/r5a-dense-layer-forward.md` section 4.2).
+pub fn r5_code_for(status: i64) -> str {
+  if status == STATUS_UNAVAILABLE { return "R5_GGML_UNAVAILABLE" }
+  if status == STATUS_TYPE { return "R5_TYPE_UNSUPPORTED" }
+  if status == STATUS_SHAPE { return "R5_SHAPE" }
+  if status == STATUS_ALIGNMENT { return "R5_ALIGNMENT" }
+  if status == STATUS_INIT { return "R5_GGML_INIT" }
+  if status == STATUS_BOUNDS { return "R5_SHAPE" }
+  if status == STATUS_ALLOC { return "R5_ALLOC" }
+  if status == STATUS_SLOT { return "R5_SLOT" }
+  return "R5_ABI"
+}
+
 // ---------------------------------------------------------------------------------------------
 // The boundary
 // ---------------------------------------------------------------------------------------------
@@ -116,6 +136,56 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_tensor_get(tensor: raw, out: slice<u8>, offset: i64, size: i64) -> i32
   fn align_ggml_tensor_nbytes(tensor: raw) -> i64
   fn align_ggml_tensor_data_offset(tensor: raw, base: slice<u8>) -> i64
+
+  // R5A. The node-slot store, the one-op wrappers, and the graph. Section 2.6 is why the store
+  // exists: `raw` is refused as a struct field **and** as an array element at this pin, so a
+  // thirty-two-node graph's handles cannot live in Align and every node is addressed by `i64`.
+  fn align_ggml_slots_init(slots: slice<u8>, bytes: i64) -> i32
+  fn align_ggml_slots_capacity(slots: slice<u8>) -> i64
+  fn align_ggml_slots_ok(slots: slice<u8>) -> i32
+  fn align_ggml_slot_copy(destination: slice<u8>, to: i64, source: slice<u8>, from: i64) -> i32
+  fn align_ggml_slot_nbytes(slots: slice<u8>, index: i64) -> i64
+  fn align_ggml_slot_ne(slots: slice<u8>, index: i64, dim: i32) -> i64
+  fn align_ggml_slot_data_offset(slots: slice<u8>, index: i64, base: slice<u8>) -> i64
+  fn align_ggml_slot_new_tensor_1d(
+    ctx: raw, slots: slice<u8>, out: i64, kind: i32, ne0: i64) -> i32
+  fn align_ggml_slot_new_tensor_2d(
+    ctx: raw, slots: slice<u8>, out: i64, kind: i32, ne0: i64, ne1: i64) -> i32
+  fn align_ggml_slot_new_i32_1d(ctx: raw, slots: slice<u8>, out: i64, ne0: i64) -> i32
+  fn align_ggml_slot_place(handle: raw, slots: slice<u8>, index: i64, addr: slice<u8>) -> i32
+  fn align_ggml_slot_set(
+    slots: slice<u8>, index: i64, bytes: slice<u8>, offset: i64, size: i64) -> i32
+  fn align_ggml_slot_get(
+    slots: slice<u8>, index: i64, bytes: slice<u8>, offset: i64, size: i64) -> i32
+  fn align_ggml_slot_mark_output(slots: slice<u8>, index: i64) -> i32
+  fn align_ggml_op_get_rows(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
+  fn align_ggml_op_rms_norm(ctx: raw, slots: slice<u8>, out: i64, a: i64, eps_bits: i32) -> i32
+  fn align_ggml_op_mul(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
+  fn align_ggml_op_add(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
+  fn align_ggml_op_mul_mat(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
+  fn align_ggml_op_reshape_3d(
+    ctx: raw, slots: slice<u8>, out: i64, a: i64, ne0: i64, ne1: i64, ne2: i64) -> i32
+  fn align_ggml_op_permute(
+    ctx: raw, slots: slice<u8>, out: i64, a: i64, p0: i32, p1: i32, p2: i32, p3: i32) -> i32
+  fn align_ggml_op_cont_3d(
+    ctx: raw, slots: slice<u8>, out: i64, a: i64, ne0: i64, ne1: i64, ne2: i64) -> i32
+  fn align_ggml_op_rope_neox(
+    ctx: raw, slots: slice<u8>, out: i64, a: i64, pos: i64,
+    n_dims: i32, mode: i32, n_ctx_orig: i32, freq_base_bits: i32) -> i32
+  fn align_ggml_op_soft_max_ext(
+    ctx: raw, slots: slice<u8>, out: i64, a: i64, mask: i64,
+    scale_bits: i32, max_bias_bits: i32) -> i32
+  fn align_ggml_op_swiglu_split(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
+  fn align_ggml_graph_context_bytes(node_capacity: i64) -> i64
+  fn align_ggml_graph_new(ctx: raw) -> raw
+  fn align_ggml_graph_expand(graph: raw, slots: slice<u8>, index: i64) -> i32
+  fn align_ggml_graph_node_count(graph: raw) -> i32
+  fn align_ggml_gallocr_new(backend: raw) -> raw
+  fn align_ggml_gallocr_reserve(galloc: raw, graph: raw) -> i32
+  fn align_ggml_gallocr_alloc(galloc: raw, graph: raw) -> i32
+  fn align_ggml_gallocr_bytes(galloc: raw) -> i64
+  fn align_ggml_gallocr_free(galloc: raw) -> ()
+  fn align_ggml_graph_compute(backend: raw, graph: raw) -> i32
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -196,6 +266,17 @@ pub fn type_ok(kind: i64, ne0: i64) -> Result<(), Fault> {
       return Err(labelled_fault(code_for(status), "ne0", ne0))
     }
     return Err(labelled_fault(code_for(status), "type", kind))
+  }
+}
+
+// The `mul_mat` left-operand predicate as a bare status rather than a `Result`. The R5A arm checks
+// thirteen members inside one loop, and a `match` on a `Result` inside a loop is markedly more
+// expensive to check at this pin than a scalar comparison (`docs/specs/r5a-dense-layer-forward.md`
+// section 6, correction C8), so the caller — which already knows the role name — maps the status.
+pub fn type_ok_status(kind: i64, ne0: i64) -> i64 {
+  if !type_representable(kind) { return STATUS_TYPE }
+  unsafe {
+    return align_ggml_type_ok(kind as i32, ne0) as i64
   }
 }
 
@@ -355,5 +436,341 @@ pub fn tensor_nbytes(tensor: raw) -> i64 {
 pub fn tensor_data_offset(tensor: raw, borrow base: slice<u8>) -> i64 {
   unsafe {
     return align_ggml_tensor_data_offset(tensor, base)
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// R5A — the safe API over the node-slot store, the one-op wrappers, and the graph
+//
+// `docs/specs/r5a-dense-layer-forward.md` sections 3.5 and 4.2. Every function below is one
+// `unsafe` block containing one foreign call, and every one that can fail returns a `Result` whose
+// `Fault` carries an `R5_*` code and the caller's own label. No handle is ever aggregated, no view
+// over foreign memory is ever formed, and the slot store's bytes stay Align's throughout.
+// ---------------------------------------------------------------------------------------------
+
+// The one `Fault` constructor the R5A wrappers share: the shim's status, mapped once, plus the
+// label the caller already knows — the node id, the role, or the object being constructed.
+fn r5_fault(status: i64, label: str) -> Fault = fault(r5_code_for(status), label)
+
+fn r5_result(status: i64, label: str) -> Result<(), Fault> {
+  if status == STATUS_OK { return Ok(()) }
+  return Err(r5_fault(status, label))
+}
+
+pub fn slots_init(borrow slots: slice<u8>, bytes: i64, label: str) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_slots_init(slots, bytes) as i64, label)
+  }
+}
+
+// The store's own declared capacity, or a negative value for a window this file did not write.
+// Published so the document reports the capacity the *shim* believes in rather than the constant
+// Align asked for, which is the difference that makes the forced narrow-capacity build a real test.
+pub fn slots_capacity(borrow slots: slice<u8>) -> i64 {
+  unsafe {
+    return align_ggml_slots_capacity(slots)
+  }
+}
+
+pub fn slots_ok(borrow slots: slice<u8>) -> bool {
+  unsafe {
+    return align_ggml_slots_ok(slots) != 0
+  }
+}
+
+pub fn slot_copy(
+  borrow destination: slice<u8>,
+  to: i64,
+  borrow source: slice<u8>,
+  from: i64,
+  label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_slot_copy(destination, to, source, from) as i64, label)
+  }
+}
+
+pub fn slot_nbytes(borrow slots: slice<u8>, index: i64) -> i64 {
+  unsafe {
+    return align_ggml_slot_nbytes(slots, index)
+  }
+}
+
+// `ne[dim]` of the tensor in slot `index`, or `-1`. The document's `nodes[].ne0..ne3` come from
+// here rather than from the node table, so a shape the implementation computed and a shape the
+// design intended cannot silently be the same number.
+pub fn slot_ne(borrow slots: slice<u8>, index: i64, dim: i64) -> i64 {
+  if dim < 0 || dim > 3 { return -1 }
+  unsafe {
+    return align_ggml_slot_ne(slots, index, dim as i32)
+  }
+}
+
+pub fn slot_data_offset(borrow slots: slice<u8>, index: i64, borrow base: slice<u8>) -> i64 {
+  unsafe {
+    return align_ggml_slot_data_offset(slots, index, base)
+  }
+}
+
+pub fn slot_new_tensor_1d(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  out: i64,
+  kind: i64,
+  ne0: i64,
+  label: str,
+) -> Result<(), Fault> {
+  if !type_representable(kind) { return Err(r5_fault(STATUS_TYPE, label)) }
+  unsafe {
+    return r5_result(align_ggml_slot_new_tensor_1d(ctx, slots, out, kind as i32, ne0) as i64, label)
+  }
+}
+
+pub fn slot_new_tensor_2d(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  out: i64,
+  kind: i64,
+  ne0: i64,
+  ne1: i64,
+  label: str,
+) -> Result<(), Fault> {
+  if !type_representable(kind) { return Err(r5_fault(STATUS_TYPE, label)) }
+  unsafe {
+    return r5_result(
+      align_ggml_slot_new_tensor_2d(ctx, slots, out, kind as i32, ne0, ne1) as i64, label)
+  }
+}
+
+// The two index inputs. They do not go through the `mul_mat` operand table because that table is
+// the left-operand predicate and `I32` is deliberately not in it.
+pub fn slot_new_i32_1d(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  out: i64,
+  ne0: i64,
+  label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_slot_new_i32_1d(ctx, slots, out, ne0) as i64, label)
+  }
+}
+
+pub fn slot_place(
+  handle: raw,
+  borrow slots: slice<u8>,
+  index: i64,
+  borrow addr: slice<u8>,
+  label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_slot_place(handle, slots, index, addr) as i64, label)
+  }
+}
+
+pub fn slot_set(
+  borrow slots: slice<u8>,
+  index: i64,
+  borrow bytes: slice<u8>,
+  offset: i64,
+  size: i64,
+  label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_slot_set(slots, index, bytes, offset, size) as i64, label)
+  }
+}
+
+pub fn slot_get(
+  borrow slots: slice<u8>,
+  index: i64,
+  borrow bytes: slice<u8>,
+  offset: i64,
+  size: i64,
+  label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_slot_get(slots, index, bytes, offset, size) as i64, label)
+  }
+}
+
+// Mandatory for every oracle node. Without it `ggml_gallocr` reuses an intermediate's memory and
+// the bytes read back are not the node computed — section 5.6's recorded risk, hit by the probe.
+pub fn slot_mark_output(borrow slots: slice<u8>, index: i64, label: str) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_slot_mark_output(slots, index) as i64, label)
+  }
+}
+
+pub fn op_get_rows(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, b: i64, label: str) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_get_rows(ctx, slots, out, a, b) as i64, label)
+  }
+}
+
+pub fn op_rms_norm(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, eps_bits: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_rms_norm(ctx, slots, out, a, eps_bits as i32) as i64, label)
+  }
+}
+
+pub fn op_mul(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, b: i64, label: str) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_mul(ctx, slots, out, a, b) as i64, label)
+  }
+}
+
+pub fn op_add(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, b: i64, label: str) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_add(ctx, slots, out, a, b) as i64, label)
+  }
+}
+
+pub fn op_mul_mat(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, b: i64, label: str) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_mul_mat(ctx, slots, out, a, b) as i64, label)
+  }
+}
+
+pub fn op_reshape_3d(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64,
+  ne0: i64, ne1: i64, ne2: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_reshape_3d(ctx, slots, out, a, ne0, ne1, ne2) as i64, label)
+  }
+}
+
+pub fn op_permute(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64,
+  p0: i64, p1: i64, p2: i64, p3: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(
+      align_ggml_op_permute(ctx, slots, out, a, p0 as i32, p1 as i32, p2 as i32, p3 as i32) as i64,
+      label)
+  }
+}
+
+// `ggml_cont_3d` covers both shapes the layer needs: the transposed V is genuinely 3-D and
+// `kqv_out` is the `ne2 = 1` case the plan called `cont_2d` (section 6, correction C4).
+pub fn op_cont_3d(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64,
+  ne0: i64, ne1: i64, ne2: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_cont_3d(ctx, slots, out, a, ne0, ne1, ne2) as i64, label)
+  }
+}
+
+// Every float crosses as an `i32` bit pattern and the shim `memcpy`s it into a `float`. Section 2.6
+// verified that `f32` crosses this boundary correctly in both directions; the design still does not
+// use it, because `r1-qwen-model-ir.md` publishes the authoritative values as IEEE-754 hex and a
+// bit pattern is the only form in which "the same scalar the GGUF stores" is a checkable claim.
+pub fn op_rope_neox(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, pos: i64,
+  n_dims: i64, mode: i64, n_ctx_orig: i64, freq_base_bits: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(
+      align_ggml_op_rope_neox(
+        ctx, slots, out, a, pos, n_dims as i32, mode as i32, n_ctx_orig as i32,
+        freq_base_bits as i32) as i64,
+      label)
+  }
+}
+
+pub fn op_soft_max_ext(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, mask: i64,
+  scale_bits: i64, max_bias_bits: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(
+      align_ggml_op_soft_max_ext(
+        ctx, slots, out, a, mask, scale_bits as i32, max_bias_bits as i32) as i64,
+      label)
+  }
+}
+
+pub fn op_swiglu_split(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, b: i64, label: str) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_swiglu_split(ctx, slots, out, a, b) as i64, label)
+  }
+}
+
+// The context size a graph of `node_capacity` tensors needs, asked of the linked library so Align
+// never guesses one. A negative answer is an implausible capacity and the caller reports `R5_ABI`.
+pub fn graph_context_bytes(node_capacity: i64) -> i64 {
+  unsafe {
+    return align_ggml_graph_context_bytes(node_capacity)
+  }
+}
+
+pub fn graph_new(ctx: raw) -> raw {
+  unsafe {
+    return align_ggml_graph_new(ctx)
+  }
+}
+
+pub fn graph_expand(
+  graph: raw, borrow slots: slice<u8>, index: i64, label: str) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_graph_expand(graph, slots, index) as i64, label)
+  }
+}
+
+pub fn graph_node_count(graph: raw) -> i64 {
+  unsafe {
+    return align_ggml_graph_node_count(graph) as i64
+  }
+}
+
+pub fn gallocr_new(backend: raw) -> raw {
+  unsafe {
+    return align_ggml_gallocr_new(backend)
+  }
+}
+
+// Section 2.6's `bool` translation, and the reason two entry points had to be wrapped at all:
+// `ggml_gallocr_reserve` and `ggml_gallocr_alloc_graph` both return `bool`, which is not an FFI type
+// at this pin, so a `false` becomes `STATUS_ALLOC` and then `R5_ALLOC`.
+pub fn gallocr_reserve(galloc: raw, graph: raw, label: str) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_gallocr_reserve(galloc, graph) as i64, label)
+  }
+}
+
+pub fn gallocr_alloc(galloc: raw, graph: raw, label: str) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_gallocr_alloc(galloc, graph) as i64, label)
+  }
+}
+
+pub fn gallocr_bytes(galloc: raw) -> i64 {
+  unsafe {
+    return align_ggml_gallocr_bytes(galloc)
+  }
+}
+
+// Total and idempotent against a null handle, because the teardown of section 3.9 runs on every
+// exit path from construction onward.
+pub fn gallocr_free(galloc: raw) {
+  unsafe {
+    align_ggml_gallocr_free(galloc)
+  }
+}
+
+// Returns the `ggml_status` verbatim; `0` is success and section 3.8 step 24 maps anything else to
+// `R5_COMPUTE` with detail `status[<n>]`.
+pub fn graph_compute(backend: raw, graph: raw) -> i64 {
+  unsafe {
+    return align_ggml_graph_compute(backend, graph) as i64
   }
 }
