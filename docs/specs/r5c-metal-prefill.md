@@ -1740,6 +1740,37 @@ The runtime width is deliberate on the two model arms: the logits comparison is 
 path rather than the byte-identity one, so the verdict is driven by the bound the device arm exists
 to publish rather than by a `sha256`.
 
+### C20 — the GPU block ran the work tree's executable, not the one under test
+
+`scripts/run-layer-forward-smoke` builds `src/ggml_spike.align` into the temporary tree and moves
+the executable to `${work_dir}/ggml-spike`, for the reason section 5.1 records: the fresh trusted
+worker permits the whole `capable-checks` aggregate to leave exactly one file in `/workspace`, so a
+`ggml-spike` left behind fails the aggregate after every check has passed. The R5A and R5B blocks
+resolve their binary from `work_dir` accordingly — `r5a-dense-layer-forward.md` correction C23 and
+`r5b-model-prefill-forward.md` correction C24 are the same rule, filed twice for the same reason.
+R5C's new GPU block reintroduced it a third time:
+
+```text
+binary = os.path.join(root_dir, "ggml-spike")
+```
+
+On this Metal host it passed, because `make ggml-spike` had already left a working binary in the
+work tree — which is exactly the failure: the block was asserting against a **developer's stale
+build, not the source under test**. The preflight measured the rest of the class. Under the Linux
+worker, with a macOS work tree bind-mounted, the R5A and R5B blocks passed and the GPU block died
+with `OSError: [Errno 8] Exec format error` on `<root>/ggml-spike`; on a clean checkout with no such
+file it would have failed outright.
+
+**Shipped**, one line and its rule: the GPU block resolves `binary` from `work_dir`, like the two
+blocks above it. Nothing else moves — `builder`, the three golden paths, and the
+`src/ggml_ffi.align` source assertion are checked-in inputs and stay on `root_dir`. No published
+document changes and every `gf-*` golden regenerates byte-identically, because the executable the
+block *should* have been running is the one it now runs.
+
+This correction is a preflight finding rather than a review finding, and it is recorded here so the
+next arm added to this runner inherits the rule from one place instead of rediscovering it a fourth
+time.
+
 ### Cell-to-case map
 
 Every applicable closure cell of section 4, mapped to the implementing function and the exact case

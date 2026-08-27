@@ -219,6 +219,17 @@ file records durable project state.
   clean. The two named qualifications (`model-forward-qualification` and
   `metal-forward-qualification`) are not rerun here: the second rebase replayed every commit
   unchanged, so their inputs are the bytes already qualified at `eb710d2` above.
+- **One Linux-only preflight failure, found and repaired** (ledger section 6, correction **C20**).
+  R5C's new GPU block in `scripts/run-layer-forward-smoke` resolved its executable from `root_dir`
+  instead of the `work_dir` build the runner had just made — the third instance of the class R5A's
+  correction C23 and R5B's C24 already fixed for the two blocks above it. On this Metal host it
+  passed only because `make ggml-spike` had left a working binary in the work tree, which is the
+  failure: the block was asserting against a developer's stale build rather than the source under
+  test. Under the Linux preflight worker the R5A and R5B blocks passed and the GPU block died with
+  `OSError: [Errno 8] Exec format error` on the macOS `<root>/ggml-spike`. One line moved to
+  `work_dir`; on a clean work tree with no stale binary, `gmake layer-forward-smoke` passes twice
+  more with output byte-identical to the three runs above and leaves nothing behind. `Makefile` is
+  untouched, so the baseline chain below still binds.
 - **Canonical baseline chain, re-recorded on Linux.** R5C changes `Makefile` (the
   `metal-forward-qualification` recipe and its `.PHONY` entry), **one** of the twenty recorded
   baseline artifacts, so the chain that shipped with R5B no longer bound this head. The

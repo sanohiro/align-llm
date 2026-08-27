@@ -1322,7 +1322,15 @@ import subprocess
 import sys
 
 root_dir, work_dir = sys.argv[1:3]
-binary = os.path.join(root_dir, "ggml-spike")
+# R5C section 6, correction C20. The executable is the one this runner built into `work_dir` above,
+# not a `ggml-spike` left in the work tree by `make ggml-spike`. `root_dir` here made this block
+# depend on a developer's stale binary: it failed outright on a clean checkout, tested a build that
+# is not the source under test when one did exist, and — measured under the Linux preflight worker
+# from a macOS work tree — died with `OSError: [Errno 8] Exec format error` after the R5A and R5B
+# blocks had already passed. `r5b-model-prefill-forward.md` section 6, correction C24 and
+# `r5a-dense-layer-forward.md` section 6, correction C23 are the same rule for the same reason; both
+# blocks above already follow it and this one now does too.
+binary = os.path.join(work_dir, "ggml-spike")
 builder = os.path.join(root_dir, "scripts", "build-ggml-shim")
 golden_path = os.path.join(root_dir, "scripts", "gpu-forward-golden.jsonl")
 model_golden = os.path.join(root_dir, "scripts", "model-forward-golden.jsonl")
