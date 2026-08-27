@@ -46,6 +46,10 @@
  * host that is otherwise correct. `scripts/build-ggml-shim` passes `-ffp-contract=off` and defines
  * `ALIGN_GGML_FP_CONTRACT_OFF`, and the pragma below makes the source say the same thing so a
  * golden regenerated with a hand-run compiler is still the golden a flagged build reproduces.
+ * `align_ggml_fp_contract_off` reports a **behavioural** probe rather than the define, because a
+ * define is what the build asked for and not what the compiler did. Contraction is not the only
+ * way a host can disagree — the stub engine's kernels call libm — so the flag is diagnosis and the
+ * golden corpus is the detector.
  */
 #if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 14)
 #pragma STDC FP_CONTRACT OFF
@@ -275,14 +279,40 @@ static float align_ggml_bits_to_f32(int32_t bits) {
     return value;
 }
 
-/* `1` when this translation unit was compiled with floating-point contraction disabled, which is
- * `scripts/build-ggml-shim`'s `-ffp-contract=off` plus `-DALIGN_GGML_FP_CONTRACT_OFF=1`. The
- * document publishes it as `abi.fp_contract_off` and both runners assert it, so dropping the flag
- * is a failing check rather than a golden corpus that only reproduces on one compiler.
+/* A **behavioural** probe of this translation unit: `1` when `a * b + c` is rounded in two steps,
+ * `0` when the compiler contracts it into one fused multiply-add. The three operands are
+ * `volatile`, so each is loaded from memory rather than constant-folded, and `product` is
+ * `volatile` too, so `a * b` is rounded to `float` and stored before the addition. The triple is
+ * chosen so the two answers differ by exactly one ulp: `(1 + 2^-23) * (1 + 2^-22) - 1` is
+ * `3 * 2^-23` when the product is rounded first and `3 * 2^-23 + 2^-45` when it is not. This is
+ * well-defined C — no undefined behaviour, no libm, no reliance on a compiler flag being honest.
+ * Verified to answer `0` under Apple clang 17 on `arm64` and clang 22 on `aarch64-linux` with no
+ * flag, and `1` under `-ffp-contract=off` on both and under GCC 13/14 on `x86-64` either way.
+ */
+static int32_t align_ggml_fp_contract_probe(void) {
+    volatile float a = 0x1.000002p0f; /* 1 + 2^-23 */
+    volatile float b = 0x1.000004p0f; /* 1 + 2^-22 */
+    volatile float c = -1.0f;
+    float fused = a * b + c;
+    volatile float product = a * b;
+    float separate = product + c;
+    return fused == separate ? 1 : 0;
+}
+
+/* `1` when this translation unit was both *built* with floating-point contraction disabled —
+ * `scripts/build-ggml-shim`'s `-ffp-contract=off` plus `-DALIGN_GGML_FP_CONTRACT_OFF=1` — and is
+ * *observed* not to contract. The macro on its own is build provenance and nothing more: it says
+ * what the build intended, not what the compiler did, and `-ffp-contract=fast` overrides the
+ * pragma above without touching the define. Reporting the probe is what makes `abi.fp_contract_off`
+ * a statement about behaviour (section 6, correction C15). The document publishes it and both
+ * runners assert it, so dropping the flag is a failing check rather than a golden corpus that only
+ * reproduces on one compiler. The probe measures this function and not the kernels, and contraction
+ * is not the only per-compiler difference the kernels can have, so it is diagnosis: the goldens
+ * themselves remain the detector.
  */
 int32_t align_ggml_fp_contract_off(void) {
 #ifdef ALIGN_GGML_FP_CONTRACT_OFF
-    return 1;
+    return align_ggml_fp_contract_probe();
 #else
     return 0;
 #endif

@@ -164,8 +164,10 @@ want("graph.slot_high_water", graph["slot_high_water"], 48)
 want("abi.tensor_alignment", d["abi"]["tensor_alignment"], 32)
 want("abi.table_drift", d["abi"]["table_drift"], -1)
 want("abi.slot_magic_ok", d["abi"]["slot_magic_ok"], True)
-# The real shim does no floating-point arithmetic of its own, but the flag is one build rule for
+# The real shim does no floating-point arithmetic of its own, but the rule is one build rule for
 # both C files and dropping it silently would make the stub engine's goldens compiler-dependent.
+# The value is a behavioural probe of the loaded library rather than its build define, and it is
+# necessary and not sufficient: the stub kernels also call libm, which the goldens are what catch.
 want("abi.fp_contract_off", d["abi"]["fp_contract_off"], True)
 
 reference = d["reference"]

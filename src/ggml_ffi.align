@@ -489,10 +489,13 @@ pub fn slots_high_water(borrow slots: slice<u8>) -> i64 {
   }
 }
 
-// `true` when the loaded shim was compiled with floating-point contraction disabled. The engine's
-// kernels are what the checked-in golden documents were generated from, and whether `a * b + c`
-// becomes one fused multiply-add is a per-compiler, per-target choice, so the flag is part of the
-// ABI the document publishes rather than a build preference (section 6, correction C15).
+// `true` when the loaded shim was built with floating-point contraction disabled **and observed
+// not to contract**: the shim answers from a one-ulp behavioural probe, not from its build define.
+// The engine's kernels are what the checked-in golden documents were generated from, and whether
+// `a * b + c` becomes one fused multiply-add is a per-compiler, per-target choice, so this is part
+// of the ABI the document publishes rather than a build preference. It is necessary and not
+// sufficient — the kernels also call libm — and the goldens remain the detector (section 6,
+// correction C15).
 pub fn fp_contract_off() -> bool {
   unsafe {
     return align_ggml_fp_contract_off() != 0

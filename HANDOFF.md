@@ -16,8 +16,9 @@ file records durable project state.
   the same six tokens. Design is complete with probe evidence (below), the arm
   (`src/layer_qwen2.align`, `src/layer_forward.align`, the shim wrappers) is implemented and
   committed to the working tree, both owner and named-qualification verification have passed, two
-  complementary reviews are complete, and every finding is repaired in one consolidated commit.
-  Next action is publication.
+  complementary reviews are complete, one final comprehensive review of the repaired candidate
+  returned approve with four low findings, and every finding is repaired. Next action is
+  publication.
 - **Owner verification, latest run (after the review repair).** `check` (29 units, 88 s), `build`,
   `ggml-spike` (both the default stub and the real linked library), `ggml-spike-smoke` (33 documented
   cases), `layer-forward-smoke` (run three times, identical results each time: **nine** shim builds
@@ -90,7 +91,26 @@ file records durable project state.
   finding was an oracle that could report `PASS` over zero compared elements; the medium was that the
   hosted owner could not observe a missing `ggml_set_output` because the stub never reused memory.
   Ledger section 6 records all eleven contract changes as corrections **C15 to C25**, each with its
-  cases.
+  cases. One **final comprehensive review** of the repaired candidate at `0414ab9` returned
+  **approve** with four findings, all low or nit, every one validated and accepted: (1)
+  `-ffp-contract=off` is necessary but not sufficient, because the stub engine's kernels call libm
+  (`expf`, `sinf`, `cosf`, `powf`), whose last bit may differ between Apple libm and glibc; (2)
+  `abi.fp_contract_off` published build *provenance* rather than behaviour; (3) the
+  `slot_high_water` comment claimed more than a high-water mark can show; (4) correction C19 said
+  "shortfall" where the code refuses any inequality — an excess is reported as `R5_ORACLE_MISSING`
+  with `24/18`. All four are repaired in this commit: C15 and the owner's comment record the libm
+  dependency and that **the goldens are the detector** while the flag is the diagnosis (the
+  fixture's 770 libm calls over 73 distinct inputs were verified 0-divergent under glibc 2.39); both
+  shims gained `align_ggml_fp_contract_probe`, which compares `a * b + c` over `volatile` operands
+  against a separately rounded product and sum on a triple whose two answers differ by one ulp, and
+  `align_ggml_fp_contract_off` returns the probe under the build define, so the published field is
+  behaviour (verified 0 with no flag and 1 with it under Apple clang 17 on `arm64` and clang 22 on
+  `aarch64-linux`, and 1 either way under GCC 13/14 on `x86-64`; a stub built with
+  `-DALIGN_GGML_FP_CONTRACT_OFF=1` **and** `-ffp-contract=fast`, which clang honours over the
+  pragma, now reports `false`, which the define alone could not); the high-water claim is softened to
+  the missing top slot it can actually show; and `shortfall` is renamed `miscount` with the
+  either-direction rule stated in the code and in C19. The repair changes one exported value's
+  derivation and **no golden**, so it does not trigger another full review.
 - **Align capability requests.** Design believed **no new request** was needed — ledger section 5.5
   verifies every gap the design's probes hit was already recorded in `docs/align-requests.md` — and
   implementation confirmed that, but also hit two further gaps of its own (ledger section 6,
@@ -108,14 +128,15 @@ file records durable project state.
   loop with `?`, so the arm is split into fourteen functions purely to keep `make check` fast. Both
   are non-blocking. See `docs/align-requests.md` for the full text.
 - **Next actions, in order.**
-  1. Commit the consolidated review repair on `agent/r5a-dense-layer-forward`.
+  1. Rebase `agent/r5a-dense-layer-forward` onto `main` now that R4.5's PR #126 is merged, and
+     re-record the canonical baseline chain on Linux because the branch changes `Makefile`.
   2. At publication, run **`make ci`**, not only the narrower classifier path — adding
      `layer-forward-smoke` to `HOSTED_CHECK_TARGETS` changes aggregate membership, which is one of
      `CLAUDE.md`'s explicit triggers for the full integration graph.
   3. Exact-head preflight (`python3 scripts/pre-pr`), including the DinD-capable installed profile
      check; do not substitute a Docker skip or an ambient `DOCKER_HOST` endpoint.
-  4. Publish the English pull request against `main`, once R4.5's PR #126 is merged or this branch is
-     rebased onto its merged result. R4's PR #125 is already merged at `991eab1`.
+  4. Publish the English pull request against `main`. R4.5's PR #126 and R4's PR #125 are both
+     merged.
 - **Two pending user decisions, carried forward verbatim.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
      gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented

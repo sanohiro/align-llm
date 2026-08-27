@@ -342,7 +342,18 @@ def record(name, operands, expected):
     # contracted into one fused multiply-add is a per-compiler, per-target choice: Apple clang on
     # arm64 contracts, GCC 13 on x86-64 does not, and twelve of these documents differ between the
     # two. `scripts/build-ggml-shim` passes `-ffp-contract=off`; this asserts that the library the
-    # run actually loaded was built that way (section 6, correction C15).
+    # run actually loaded does not contract, which `align_ggml_fp_contract_off` answers from a
+    # behavioural probe rather than from the build define (section 6, correction C15).
+    #
+    # `-ffp-contract=off` is **necessary but not sufficient** for a portable golden corpus. The stub
+    # engine calls libm -- `expf` in soft-max and SiLU, `sinf`/`cosf` in RoPE, `powf` for the RoPE
+    # theta scale -- and none of those four is required to be correctly rounded, so Apple libm and
+    # glibc may differ in the last bit on some inputs. (`sqrtf` in RMS norm is exempt: IEEE-754
+    # requires square root to be correctly rounded, so it cannot differ between conforming hosts.) This fixture's shapes make 770 such
+    # calls over 73 distinct inputs, and every one of them was verified to agree bit for bit against
+    # glibc 2.39. That is a measured property of this corpus, not a guarantee about libm: the
+    # goldens below are the detector for any such divergence, and this flag is the diagnosis for the
+    # one cause it can name.
     if not document["abi"]["fp_contract_off"]:
         failures.append("%s: the shim was not built with -ffp-contract=off; the goldens are not "
                         "reproducible across compilers" % name)
@@ -404,8 +415,10 @@ for name, operands, expected in ENGINE_CASES:
             failures.append("%s: shape_incomparable nodes are %r" % (name, excluded))
         if not document["abi"]["slot_magic_ok"]:
             failures.append("%s: the slot store magic did not validate" % name)
-        # Measured by scanning the store, so it can disagree with the node table and a slot the
-        # walk failed to write is visible here (section 6, correction C16).
+        # Scanned from the store rather than derived from the node table, so it can disagree with
+        # it. What a high-water mark can show is a **missing top slot**: the scan returns the
+        # highest occupied index plus one, so a walk that skipped a slot below the top still leaves
+        # 48 here and the goldens are what catch it (section 6, correction C16).
         if document["graph"]["slot_high_water"] != 48:
             failures.append("%s: slot_high_water %d, not the 48 slots the layer writes"
                             % (name, document["graph"]["slot_high_water"]))

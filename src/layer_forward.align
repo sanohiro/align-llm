@@ -127,11 +127,13 @@ fn named(label: str, value: str) -> string {
   return b.to_string()
 }
 
-// `node[<id>]<got>/<expected>`: a compared node that carried fewer printed elements than its own
-// declared shape yields. The counts are in the detail because "the oracle compared nothing" and
-// "the oracle compared half" are different bugs and the document must say which (section 6,
-// correction C19).
-fn shortfall(node: str, got: i64, expected: i64) -> string {
+// `node[<id>]<got>/<expected>`: a compared node whose printed elements are not exactly what its own
+// declared shape yields. The refusal is on **inequality in either direction** — a count above the
+// expectation is a transcript that printed a record twice or a matcher that bound two records to
+// one node, which is no more comparable than a count below it. The counts are in the detail because
+// "the oracle compared nothing", "the oracle compared half", and "the oracle compared something
+// twice" are different bugs and the document must say which (section 6, correction C19).
+fn miscount(node: str, got: i64, expected: i64) -> string {
   b := builder()
   b.write("node[")
   b.write(node)
@@ -2274,7 +2276,9 @@ fn stage_oracle(
   // `(index, value)` pairs a well-formed record carries. A record whose value block was truncated,
   // deleted, or silently skipped matches by name and by shape and then compares **nothing**, and
   // the run would report `PASS` over an oracle that measured nothing — the one failure section 3.8
-  // says this design most needs to make impossible (section 6, correction C19).
+  // says this design most needs to make impossible. The test is `got != expected`, not
+  // `got < expected`: a count above the expectation is a double-bound record, which is not a
+  // measurement of the node either (section 6, correction C19).
   mut count_at := 0
   loop {
     if count_at >= oracle.count || o.code.len() > 0 { break }
@@ -2290,7 +2294,7 @@ fn stage_oracle(
       }
       if got != expected {
         fail(o, "R5_ORACLE_MISSING",
-          shortfall(layer_qwen2.oracle_id(oracle, count_at), got, expected))
+          miscount(layer_qwen2.oracle_id(oracle, count_at), got, expected))
         break
       }
     }
