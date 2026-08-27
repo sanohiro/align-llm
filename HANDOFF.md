@@ -16,18 +16,22 @@ measurement needs an R1C frontend for `olmoe` exactly as decision 1 predicted; t
 
 **The R2 gate is met, in the prefill direction.** `scripts/run-expert-locality-gate` over
 `eval/prompts/expert-locality-v1.txt` (40 prompts, all ≤ 6 tokens, md5
-`d7fff23f5a1d4f6237e6f848f3318d8b`), one invocation per prompt, 51.3 s:
+`d7fff23f5a1d4f6237e6f848f3318d8b`), one invocation per prompt, 51.8 s:
 
 ```text
 verdict=LOCALITY prompts=40 layers=15 layers_clearing=15 pairs=2280 hits=3924 trials=13680
-p0_per_mille=125 p_hat_per_mille=286 wilson_lo_per_mille=279 wilson_hi_per_mille=294
-ratio_per_mille=2288 entropy_per_mille=992 top8_mass_per_mille=180
+p0_per_mille=125 p_hat_per_mille=286 wilson_lo_per_mille=279 wilson_hi_per_mille=294 clusters=40
+deff_per_mille=10460 cluster_lo_per_mille=262 cluster_hi_per_mille=311 ratio_per_mille=2288
+entropy_per_mille=992 top8_mass_per_mille=180 truncated_documents=0 token_reduced_documents=40
+token_reduced_layers=15
 ```
 
-Adjacent-token expert reuse is 286 per mille against a 125 per mille null (`k/n` = 8/64), 95% Wilson
-`[279, 294]`, 2.29× the null against a 1.5× materiality threshold, and all 15 contributing layers
-clear the null on their own stratum. The router histogram is nearly uniform (entropy 992 per mille
-of uniform, all 64 experts used), so the effect is conditional structure rather than popularity.
+Adjacent-token expert reuse is 286 per mille against a 125 per mille null (`k/n` = 8/64), 2.29× the
+null against a 1.5× materiality threshold, and all 15 contributing layers clear the null on their
+own stratum. The trials are clustered by prompt, so the verdict is judged on the cluster-robust
+interval `[262, 311]` (design effect 10.460 over 40 prompt clusters), not on the naive Wilson
+`[279, 294]`. The router histogram is nearly uniform (entropy 992 per mille of uniform, all 64
+experts used), so the effect is conditional structure rather than popularity.
 Working sets grow sublinearly: 10.278 experts over two consecutive tokens where independence
 predicts 11.437, 16.495 over four where it predicts 20.830. **Prefill only** — build 10566 evaluates
 one graph per invocation, `phase_split.decode` is `null`, and nothing here licenses a decode or
@@ -41,18 +45,34 @@ build 10566 applies the output-token `GET_ROWS` reduction **before the last laye
 so `ffn_moe_topk-15` carries a shorter token axis than `embd` and the parser refused every real MoE
 transcript with `R2_TOKEN_COUNT`. Repaired as correction 20 — such a block is *token-reduced*, is
 parsed and validated but contributes no `selections[]` row, and its layer is listed in the new
-additive `moe.token_reduced_layers` field (`schema_version` stays 1).
+additive `moe.token_reduced_layers` field (`schema_version` stays 1). The exemption is bounded to
+the reduction the instrument performs: at most one layer per graph, and it must be the graph's
+highest layer index; an interior short axis stays `R2_TOKEN_COUNT`.
 
-**Uncommitted, intentional.** Everything in this capability is uncommitted in the worktree:
+**Committed on the branch.** Nothing in this capability is uncommitted: commit `19d91d1` carries
 `src/expert_trace.align`, `scripts/eval_callback_fixture.py`, `scripts/run-expert-trace-smoke`,
 `scripts/run-expert-trace-parity`, the new `scripts/run-expert-locality-gate`,
 `scripts/expert_locality_gate.py`, `eval/prompts/expert-locality-v1.txt`, and the four documents
-updated with the result. No `Makefile` change: the gate joins no aggregate.
+updated with the result; the review repair below is the second commit. No `Makefile` change: the
+gate joins no aggregate, so the classifier stays in hosted scope.
 
-**Verification.** `gmake expert-trace-smoke` PASS (97 fixtures, up from 95; two added for correction
-20; the new `locality-gate-aggregator` case owns the statistics with no model). `gmake fmt` clean.
-`git diff --check` clean. `scripts/run-expert-trace-parity` MoE half PASS.
-`scripts/run-expert-locality-gate` MEASURED / LOCALITY.
+**Review.** One comprehensive reviewer at `19d91d1` returned 1 major and 5 minor findings, all
+accepted and all repaired in the follow-up commit: (1) the `locality-gate-aggregator` unit was
+vacuous against the verdict rule — its two corpora failed or passed both halves at once, and six
+mutations of the rule survived it; (2) the gate never read `moe.token_reduced_layers` or
+`truncated_documents`; (3) the token-reduced exemption was broader than the instrument that
+motivates it, silently accepting an interior reduced layer; (4) the Wilson interval ignored
+(prompt, layer) clustering; (5) the truncation bias-direction claim was only half rigorous; (6) this
+file's "everything uncommitted" paragraph was false. The repair adds five hand-built aggregator
+cases that decide each half of the rule separately (all six mutants now fail), pools and prints both
+omission fields, restricts the exemption to the graph's highest layer index with a new
+`token-reduced-middle` refusal fixture, reports a cluster-robust interval and judges the verdict on
+its lower bound, and states only the `t`-side half of the bias claim.
+
+**Verification.** `gmake expert-trace-smoke` PASS (98 fixtures, up from 95; three added for
+correction 20; the `locality-gate-aggregator` case owns the statistics with no model). `gmake check`
+PASS. `gmake fmt` no diff. `git diff --check` clean. `scripts/run-expert-trace-parity` MoE half
+PASS. `scripts/run-expert-locality-gate` MEASURED / LOCALITY, rerun after the repair.
 
 **Next actions, in order.** (1) `python3 scripts/pre-pr` and publish. (2) R2b — the corpus-wide
 stratification section R2 still names (language別 / task別 / repo別偏り), which this corpus and this

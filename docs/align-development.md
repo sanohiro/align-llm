@@ -672,8 +672,18 @@ table and one machine-readable final line:
 ```text
 expert-locality-gate verdict=... prompts=... layers=... layers_clearing=... pairs=... hits=...
   trials=... p0_per_mille=... p_hat_per_mille=... wilson_lo_per_mille=... wilson_hi_per_mille=...
-  ratio_per_mille=... entropy_per_mille=... top8_mass_per_mille=...
+  clusters=... deff_per_mille=... cluster_lo_per_mille=... cluster_hi_per_mille=...
+  ratio_per_mille=... entropy_per_mille=... top8_mass_per_mille=... truncated_documents=...
+  token_reduced_documents=... token_reduced_layers=...
 ```
+
+**Two intervals are reported and the wider one decides.** The trials are clustered by prompt — one
+prompt supplies every layer and token position it has — so the naive Wilson interval assumes an
+independence the corpus does not have. The gate estimates the design effect with the prompt as the
+cluster, widens Wilson by deflating the sample size to `N / deff`, and judges the interval half of
+the verdict on the **cluster-robust** lower bound. The design effect is floored at 1, so clustering
+can only widen. `truncated_documents` and `token_reduced_layers` report what the instrument dropped
+before the gate saw it: a token-reduced layer contributes to no number in the result.
 
 **The prompt corpus is checked in and its order is part of its identity.** Every prompt in
 `eval/prompts/expert-locality-v1.txt` tokenizes to six tokens or fewer against the subject model,
@@ -689,11 +699,14 @@ takes about a minute with a warm page cache.
 **The aggregation is a separate importable module**, `scripts/expert_locality_gate.py`, so that the
 statistics have an owner test with no model and no network: `scripts/run-expert-trace-smoke`'s
 `locality-gate-aggregator` case pools the synthetic corpus's memoryless-router documents and
-requires `NO_LOCALITY`, pools a hand-built sticky router and requires `LOCALITY`, and requires that
-a document whose `locality` disagrees with a recomputation from its own `selections[]` is refused.
-Every number the module produces is an integer per mille; floating point appears only inside the
-Wilson bound and both of its outputs are floored before any comparison, so the verdict is a
-comparison of integers.
+requires `NO_LOCALITY`, then decides each half of the verdict rule on its own with routers it
+specifies exactly: a case that clears the null but is immaterial, one that is material but whose
+interval includes the null, one at exactly 2.0× the null, and one whose reuse is entirely
+between-prompt and must be refused by the cluster-robust bound after the naive interval accepts it.
+It also requires that a document whose `locality` disagrees with a recomputation from its own
+`selections[]` is refused. Every number the module produces is an integer per mille; floating point
+appears only inside the Wilson bound and the design effect, and every output is floored before any
+comparison, so the verdict is a comparison of integers.
 
 The gate joins no aggregate and no `Makefile` target: adding one would select the fresh-image
 preflight profile for a runner that cannot execute in CI anyway.

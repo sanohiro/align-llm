@@ -10,8 +10,14 @@ It is a pure function of a list of already-parsed documents, deliberately separa
 synthetic corpus with generator-known expert ids and no model, no network, and no instrument.
 
 Every number it produces is an integer per mille. Floating point appears only inside the Wilson
-bound, and its two outputs are floored to per mille before any comparison, so the verdict is a
-comparison of integers and is bit-reproducible.
+bound and the design effect, and every output is floored to per mille before any comparison, so the
+verdict is a comparison of integers and is bit-reproducible.
+
+The trials the interval is computed over are *not* independent: one prompt contributes every layer
+and every token position it has, and those observations share a prompt, a tokenization, and a
+router state. The gate therefore reports two intervals — the naive Wilson interval, and a
+cluster-robust interval that widens Wilson by the measured design effect with the prompt as the
+cluster — and the verdict uses the cluster-robust lower bound.
 """
 
 TRUNCATION_PRINTED = 6
@@ -50,6 +56,50 @@ def wilson_bounds(hits, trials, z=Z_95):
     margin = (z / denominator) * (
         (phat * (1.0 - phat) / trials + z2 / (4.0 * trials * trials)) ** 0.5)
     return (max(0.0, center - margin), min(1.0, center + margin))
+
+
+def design_effect(clusters, hits, trials):
+    """The design effect of clustering the Bernoulli trials by prompt, or `None` when it cannot be
+    estimated from the data.
+
+    `clusters` is a list of `(hits, trials)` pairs, one per cluster. `p^` is the ratio estimator
+    `sum(hits) / sum(trials)`, whose cluster-robust variance is the standard linearized form
+
+        var = C / ((C - 1) * N^2) * sum((h_c - p^ * n_c)^2)
+
+    and the design effect is that variance divided by the binomial variance `p^(1 - p^) / N` the
+    Wilson interval assumes. One cluster estimates no between-cluster variance, and a degenerate
+    proportion has no binomial variance to divide by; both return `None`.
+    """
+    usable = [(hits_c, trials_c) for hits_c, trials_c in clusters if trials_c > 0]
+    if len(usable) < 2 or trials <= 0:
+        return None
+    phat = hits / trials
+    binomial = phat * (1.0 - phat) / trials
+    if binomial <= 0.0:
+        return None
+    count = len(usable)
+    residual = sum((hits_c - phat * trials_c) ** 2 for hits_c, trials_c in usable)
+    return (count / ((count - 1) * float(trials) ** 2) * residual) / binomial
+
+
+def cluster_bounds(clusters, hits, trials, z=Z_95):
+    """The Wilson interval widened by the design effect, as `(low, high, deff, estimated)`.
+
+    Widening is done by deflating the sample size — `N_eff = N / deff`, `hits_eff = p^ * N_eff` —
+    rather than by scaling a Wald margin, so the interval keeps Wilson's asymmetry and stays inside
+    [0, 1]. The design effect is floored at 1: clustering is allowed to widen the interval and never
+    to narrow it, so an unestimable or negative intracluster correlation leaves the naive interval
+    unchanged and the verdict no easier to pass.
+    """
+    measured = design_effect(clusters, hits, trials)
+    effective = 1.0 if measured is None or measured < 1.0 else measured
+    if trials <= 0:
+        return (0.0, 1.0, effective, measured is not None)
+    phat = hits / trials
+    effective_trials = trials / effective
+    low, high = wilson_bounds(phat * effective_trials, effective_trials, z)
+    return (low, high, effective, measured is not None)
 
 
 def entropy_per_mille(counts, n_expert):
@@ -142,11 +192,20 @@ def aggregate(documents, labels=None):
     phase_groups = {"prefill": {}, "decode": {}}
     documents_with_pairs = 0
     truncated_documents = 0
+    token_reduced_layers = set()
+    documents_token_reduced = 0
     token_positions = 0
     for index, document in enumerate(documents):
         phases = {row["ordinal"]: row["phase"] for row in document["graphs"]}
         if any(row.get("tokens_truncated") for row in document["graphs"]):
             truncated_documents += 1
+        # Section 6 item 20's omission, pooled: every layer any document dropped as token-reduced,
+        # and how many documents dropped one. A layer listed here contributed no `selections[]` row
+        # and therefore nothing to any number below, which is exactly what has to stay visible.
+        reduced = document["moe"].get("token_reduced_layers") or []
+        if reduced:
+            documents_token_reduced += 1
+            token_reduced_layers.update(reduced)
         token_positions += sum(row["tokens_observed"] or 0 for row in document["graphs"])
         local = {}
         for row in document["selections"]:
@@ -187,13 +246,38 @@ def aggregate(documents, labels=None):
     low_per_mille = int(low * 1000)
     high_per_mille = int(high * 1000)
 
+    # The clusters. One prompt contributes every layer and every token position it has, so its
+    # trials share a tokenization and a router state and are not the independent draws Wilson
+    # assumes. A pair never spans two documents — both of its keys carry the same
+    # `(document, graph, layer)` stratum — so partitioning `all_groups` by document partitions the
+    # pairs, and the per-document triples sum to the pooled one.
+    document_groups = {}
+    layer_document_groups = {}
+    for key, experts in all_groups.items():
+        document_index, _, layer = key[0]
+        document_groups.setdefault(document_index, {})[key] = experts
+        layer_document_groups.setdefault(layer, {}).setdefault(document_index, {})[key] = experts
+
+    clusters = [_reuse_triple(groups)[1:] for groups in document_groups.values()]
+    cluster_low, cluster_high, deff, deff_estimated = cluster_bounds(clusters, numerator,
+                                                                    denominator)
+    cluster_low_per_mille = int(cluster_low * 1000)
+    cluster_high_per_mille = int(cluster_high * 1000)
+
     per_layer = []
     layers_clearing = 0
     for layer in sorted(layer_groups):
         l_pairs, l_numerator, l_denominator = _reuse_triple(layer_groups[layer])
         l_low, l_high = wilson_bounds(l_numerator, l_denominator)
         l_low_per_mille = int(l_low * 1000)
-        clears = bool(l_denominator and l_low_per_mille > null_per_mille)
+        l_clusters = [_reuse_triple(groups)[1:]
+                      for groups in layer_document_groups.get(layer, {}).values()]
+        l_cluster_low, l_cluster_high, l_deff, _ = cluster_bounds(l_clusters, l_numerator,
+                                                                  l_denominator)
+        l_cluster_low_per_mille = int(l_cluster_low * 1000)
+        # A stratum clears the null on the same rule the pooled verdict uses: the cluster-robust
+        # lower bound, not the naive one.
+        clears = bool(l_denominator and l_cluster_low_per_mille > null_per_mille)
         if clears:
             layers_clearing += 1
         histogram = layer_histogram.get(layer, {})
@@ -206,6 +290,9 @@ def aggregate(documents, labels=None):
             "reuse_per_mille": (l_numerator * 1000 // l_denominator) if l_denominator else None,
             "wilson_low_per_mille": l_low_per_mille if l_denominator else None,
             "wilson_high_per_mille": int(l_high * 1000) if l_denominator else None,
+            "cluster_low_per_mille": l_cluster_low_per_mille if l_denominator else None,
+            "cluster_high_per_mille": int(l_cluster_high * 1000) if l_denominator else None,
+            "design_effect_per_mille": int(l_deff * 1000) if l_denominator else None,
             "clears_null": clears,
             "distinct_experts": len(histogram),
             "entropy_per_mille": entropy_per_mille(counts, n_expert),
@@ -256,7 +343,9 @@ def aggregate(documents, labels=None):
     # The verdict, on integers only. Both halves must hold: the interval must exclude the null, and
     # the point estimate must be at least half again the null. The second half is what separates a
     # statistically detectable effect from one large enough to place an expert in a cache tier.
-    excludes_null = low_per_mille > null_per_mille
+    # The interval half is judged on the *cluster-robust* lower bound, which is never above the
+    # naive Wilson bound, so a verdict carried entirely by between-prompt variation cannot pass.
+    excludes_null = cluster_low_per_mille > null_per_mille
     materially_above = per_mille * 2 >= null_per_mille * 3
     verdict = "LOCALITY" if (excludes_null and materially_above) else "NO_LOCALITY"
 
@@ -267,6 +356,8 @@ def aggregate(documents, labels=None):
         "document_count": len(documents),
         "documents_with_pairs": documents_with_pairs,
         "truncated_documents": truncated_documents,
+        "documents_token_reduced": documents_token_reduced,
+        "token_reduced_layers": sorted(token_reduced_layers),
         "token_positions": token_positions,
         "n_expert": n_expert,
         "n_expert_used": n_expert_used,
@@ -280,6 +371,11 @@ def aggregate(documents, labels=None):
         "reuse_per_mille": per_mille,
         "wilson_low_per_mille": low_per_mille,
         "wilson_high_per_mille": high_per_mille,
+        "cluster_count": len(clusters),
+        "design_effect_per_mille": int(deff * 1000),
+        "design_effect_estimated": deff_estimated,
+        "cluster_low_per_mille": cluster_low_per_mille,
+        "cluster_high_per_mille": cluster_high_per_mille,
         "ratio_to_null_per_mille": per_mille * 1000 // null_per_mille,
         "layer_count": len(per_layer),
         "layers_clearing_null": layers_clearing,
@@ -298,11 +394,16 @@ CAVEATS = (
     "at most 6 token positions per prompt are ever printed; the corpus is authored to <= 6 tokens "
     "so that no observed position is hidden and every adjacency is real",
     "reuse is measured among OBSERVED slots only: the printer emits 3+3 of n_expert_used, so each "
-    "token contributes a printed subset of its experts and the estimate is biased low",
-    "the final layer is token-reduced by the instrument (the output-token GET_ROWS runs before its "
-    "feed-forward) and contributes nothing to any aggregate",
+    "token contributes a printed subset of its experts; restricting the t side can only remove "
+    "hits, so that half of the truncation biases p^ low, while the t+1 restriction moves numerator "
+    "and denominator together and its direction is not established here",
+    "the last layer of each graph is token-reduced by the instrument (the output-token GET_ROWS "
+    "runs before its feed-forward) and contributes nothing to any aggregate",
     "the printed slots within one token are drawn without replacement, so the Wilson interval's "
     "independence assumption is approximate",
+    "the trials are clustered by prompt: one prompt supplies every layer and token position it "
+    "has. The naive Wilson interval assumes independence; the cluster-robust interval widens it by "
+    "the measured design effect (prompt as cluster, floored at 1) and is the one the verdict uses",
     "the verdict is judged against k/n, the null for the full top-k set; the null for the printed "
     "subset is smaller, which makes the threshold conservative",
 )

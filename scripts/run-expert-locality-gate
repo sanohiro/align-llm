@@ -60,7 +60,9 @@ temp_dir=$(mktemp -d)
 cleanup() {
   rm -rf "$temp_dir"
 }
-trap cleanup EXIT
+# A signal must remove the transcript too: one transcript is tens of megabytes, and a run
+# interrupted at the terminal is the ordinary way this gate ends early.
+trap cleanup EXIT HUP INT TERM
 
 before=$(python3 - "$model" <<'PY'
 import os, sys
@@ -189,6 +191,12 @@ print("  router             n_expert %d, n_expert_used %d, %d slot(s) printed pe
       % (result["n_expert"], result["n_expert_used"], result["observed_slots_per_token"]))
 print("  observed           %d token position(s), %d adjacent pair(s), %d layer(s)"
       % (result["token_positions"], result["adjacent_pair_count"], result["layer_count"]))
+# What the instrument dropped before the gate ever saw it. Both are omissions, not measurements,
+# and a reader has to be able to see that they were counted rather than ignored.
+print("  omitted            %d document(s) with a truncated token axis; %d with a token-reduced "
+      "layer" % (result["truncated_documents"], result["documents_token_reduced"]))
+print("  token-reduced      layer(s) %s (contributed no selection anywhere)"
+      % (", ".join(str(layer) for layer in result["token_reduced_layers"]) or "none"))
 print()
 print("  pooled adjacent-token expert reuse")
 print("    null p0          %d per mille (k/n = %d/%d); printed-subset null %d per mille"
@@ -196,21 +204,30 @@ print("    null p0          %d per mille (k/n = %d/%d); printed-subset null %d p
          result["observed_null_per_mille"]))
 print("    observed p^      %d per mille (%d / %d)"
       % (result["reuse_per_mille"], result["reuse_numerator"], result["reuse_denominator"]))
-print("    95%% Wilson       [%d, %d] per mille"
+print("    95%% Wilson       [%d, %d] per mille (independent-trial assumption)"
       % (result["wilson_low_per_mille"], result["wilson_high_per_mille"]))
+print("    95%% clustered    [%d, %d] per mille over %d prompt cluster(s), design effect %d per "
+      "mille%s"
+      % (result["cluster_low_per_mille"], result["cluster_high_per_mille"],
+         result["cluster_count"], result["design_effect_per_mille"],
+         "" if result["design_effect_estimated"] else " (not estimable; floored at 1000)"))
 print("    p^ / p0          %d per mille (threshold for LOCALITY: 1500)"
       % result["ratio_to_null_per_mille"])
-print("    excludes null    %s" % ("yes" if result["excludes_null"] else "no"))
+print("    excludes null    %s (on the clustered lower bound)"
+      % ("yes" if result["excludes_null"] else "no"))
 print("    >= 1.5 x null    %s" % ("yes" if result["materially_above_null"] else "no"))
 print()
 print("  per-layer strata (%d of %d layers clear the null)"
       % (result["layers_clearing_null"], result["layer_count"]))
-print("    layer  pairs  reuse    p^    wilson lo/hi   clears  experts  entropy  top8 mass")
+print("    layer  pairs  reuse      p^   wilson lo/hi    deff  cluster lo/hi   clears  experts  "
+      "entropy  top8 mass")
 for row in result["per_layer"]:
-    print("    %5d  %5d  %3d/%-3d  %4s  %5s / %-5s  %-6s  %7d  %7s  %9s"
+    print("    %5d  %5d  %4d/%-4d  %4s  %5s / %-5s  %6s  %5s / %-5s  %-6s  %7d  %7s  %9s"
           % (row["layer"], row["adjacent_pair_count"], row["reuse_numerator"],
              row["reuse_denominator"], row["reuse_per_mille"], row["wilson_low_per_mille"],
-             row["wilson_high_per_mille"], "yes" if row["clears_null"] else "no",
+             row["wilson_high_per_mille"], row["design_effect_per_mille"],
+             row["cluster_low_per_mille"], row["cluster_high_per_mille"],
+             "yes" if row["clears_null"] else "no",
              row["distinct_experts"], row["entropy_per_mille"], row["top8_mass_per_mille"]))
 print("    pooled: %d distinct expert(s), entropy %s per mille of uniform, top-8 mass %s per mille"
       % (result["pooled_distinct_experts"], result["pooled_entropy_per_mille"],
@@ -243,13 +260,19 @@ print("  transcripts        deleted; the %d document(s) are the evidence" % resu
 print()
 print("expert-locality-gate verdict=%s prompts=%d layers=%d layers_clearing=%d pairs=%d "
       "hits=%d trials=%d p0_per_mille=%d p_hat_per_mille=%d wilson_lo_per_mille=%d "
-      "wilson_hi_per_mille=%d ratio_per_mille=%d entropy_per_mille=%s top8_mass_per_mille=%s"
+      "wilson_hi_per_mille=%d clusters=%d deff_per_mille=%d cluster_lo_per_mille=%d "
+      "cluster_hi_per_mille=%d ratio_per_mille=%d entropy_per_mille=%s top8_mass_per_mille=%s "
+      "truncated_documents=%d token_reduced_documents=%d token_reduced_layers=%s"
       % (result["verdict"], result["document_count"], result["layer_count"],
          result["layers_clearing_null"], result["adjacent_pair_count"], result["reuse_numerator"],
          result["reuse_denominator"], result["null_per_mille"], result["reuse_per_mille"],
          result["wilson_low_per_mille"], result["wilson_high_per_mille"],
+         result["cluster_count"], result["design_effect_per_mille"],
+         result["cluster_low_per_mille"], result["cluster_high_per_mille"],
          result["ratio_to_null_per_mille"], result["pooled_entropy_per_mille"],
-         result["pooled_top8_mass_per_mille"]))
+         result["pooled_top8_mass_per_mille"], result["truncated_documents"],
+         result["documents_token_reduced"],
+         ",".join(str(layer) for layer in result["token_reduced_layers"]) or "none"))
 PY
 
 printf '%s\n' "expert locality gate: model size and mtime unchanged (read-only proof)"

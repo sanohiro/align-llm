@@ -936,6 +936,10 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
   mut graph_index := 0
   mut graph_nodes := 0
   mut graph_tokens := -1
+  // The one layer of the current graph accepted as token-reduced, or -1. Section 6 item 20's
+  // exemption is the instrument's *tail* reduction, so at most one layer may claim it and it must
+  // be the graph's highest layer index.
+  mut graph_reduced_layer := -1
   mut graph_count := 0
   mut entry_name := -1
 
@@ -1242,6 +1246,7 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
         graph_index = graph_index + 1
         graph_nodes = 0
         graph_tokens = -1
+        graph_reduced_layer = -1
       }
       graph_nodes = graph_nodes + 1
       if graph_nodes > MAX_NODES_PER_GRAPH {
@@ -1277,6 +1282,16 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
         op_probe = (op_probe + 1) & SLOT_MASK
       }
       if !op_done { break }
+
+      // The exemption is bounded by the instrument it models. Build 10566 applies the output-token
+      // `GET_ROWS` reduction before the *last* layer's feed-forward, so a shorter token axis is
+      // explained only at the graph's highest layer index. A suffixed node at a higher layer,
+      // arriving after a layer was accepted as token-reduced, proves the reduction was not that
+      // tail reduction, and the disagreement returns to the `R2_TOKEN_COUNT` it came from.
+      if family_len >= 0 && graph_reduced_layer >= 0 && layer > graph_reduced_layer {
+        failure = fault("R2_TOKEN_COUNT", bounded_detail(name))
+        break
+      }
 
       family := if family_len >= 0 { name[0..family_len] } else { name }
       mut tokens_claim := -1
@@ -1339,6 +1354,13 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
         }
         topk_present = true
         if is_reduced {
+          // Two token-reduced layers in one graph cannot both be its highest, so the second one
+          // refutes the exemption for both.
+          if graph_reduced_layer >= 0 && graph_reduced_layer != layer {
+            failure = fault("R2_TOKEN_COUNT", bounded_detail(name))
+            break
+          }
+          graph_reduced_layer = layer
           reduced_layer_column.push(layer)
         } else {
           topk_layer_column.push(layer)

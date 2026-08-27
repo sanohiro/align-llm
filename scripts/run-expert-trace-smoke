@@ -655,48 +655,148 @@ if random_result["verdict"] != "NO_LOCALITY":
 if random_result["n_expert"] != shape[0] or random_result["n_expert_used"] != shape[1]:
     fail("locality-gate-aggregator: the pooled router shape was not carried through")
 
-# The other branch, on a document built here with known ids: a router that repeats its whole
-# selection at every token is perfect locality and must be reported as such. Both halves of the
-# verdict rule are exercised, and the reuse triple is the one the gate recomputes from
-# `selections[]` and cross-checks against `locality`.
-STICKY_EXPERTS = [0, 1, 2, 5, 6, 7]
-sticky_selections = []
-for layer in range(4):
-    for token in range(6):
-        for slot, expert in enumerate(STICKY_EXPERTS):
-            sticky_selections.append({"graph": 0, "layer": layer, "token": token,
-                                      "slot": slot, "expert": expert})
-sticky_pairs = 4 * 5
-sticky_document = {
-    "status": "ok", "error_code": "",
-    "moe": {"present": True, "n_expert": 64, "n_expert_used": 8, "n_expert_source": "ffn_moe_probs",
-            "topk_layers": [0, 1, 2, 3], "token_reduced_layers": [], "slots_truncated": True},
-    "graphs": [{"ordinal": 0, "n_tokens": 6, "phase": "prefill", "tokens_observed": 6,
-                "tokens_truncated": False, "node_count": 0}],
-    "selections": sticky_selections,
-    "locality": {"adjacent_pair_count": sticky_pairs,
-                 "reuse_numerator": sticky_pairs * len(STICKY_EXPERTS),
-                 "reuse_denominator": sticky_pairs * len(STICKY_EXPERTS),
-                 "working_set": [{"window": 1, "sample_count": 24, "unique_sum": 144},
-                                 {"window": 2, "sample_count": 20, "unique_sum": 120},
-                                 {"window": 4, "sample_count": 12, "unique_sum": 72}]},
-}
-sticky_result = aggregate([sticky_document], ["sticky"])
-if sticky_result["verdict"] != "LOCALITY":
-    fail("locality-gate-aggregator: a perfectly sticky router scored %s" % sticky_result["verdict"])
-if sticky_result["reuse_per_mille"] != 1000 or sticky_result["layers_clearing_null"] != 4:
-    fail("locality-gate-aggregator: a sticky router gave p^ %d per mille over %d clearing layer(s)"
-         % (sticky_result["reuse_per_mille"], sticky_result["layers_clearing_null"]))
-if sticky_result["pooled_top8_mass_per_mille"] != 1000:
-    fail("locality-gate-aggregator: a six-expert router reported top-8 mass %d per mille"
-         % sticky_result["pooled_top8_mass_per_mille"])
+# --- locality-gate hand-built cases (begin) ---
+# The generator's corpus supplies one end of the verdict rule and nothing else: a memoryless router
+# fails both halves at once, so it cannot tell a conjunction from a disjunction, a threshold of 1.5
+# from one of 3.0, or a 95% interval from a zero-width one. The cases below are built here, with a
+# router this file specifies exactly, so that each half of the rule is decided on its own.
+GATE_N_EXPERT = 64
+GATE_N_EXPERT_USED = 8
+GATE_SLOTS = 6
+
+
+def built_document(shares, n_expert=GATE_N_EXPERT, used=GATE_N_EXPERT_USED, slots=GATE_SLOTS):
+    """One `R2_ACTIVATION_TRACE` document whose adjacent-token reuse is exactly `shares`.
+
+    `shares[layer][t]` is how many of the `slots` experts selected at token `t + 1` were also
+    selected at token `t`; the remaining slots are drawn disjoint from token `t`. Every layer
+    carries `len(shares[layer]) + 1` token positions. `locality` is computed from the emitted
+    `selections[]`, so the gate's parser/recomputation cross-check passes and every number it
+    reports is a consequence of `shares` alone.
+    """
+    selections = []
+    groups = {}
+    for layer, layer_shares in enumerate(shares):
+        cursor = 0
+        previous = None
+        for token in range(len(layer_shares) + 1):
+            if previous is None:
+                chosen = list(range(slots))
+            else:
+                chosen = list(previous[:layer_shares[token - 1]])
+                while len(chosen) < slots:
+                    candidate = cursor % n_expert
+                    cursor += 1
+                    if candidate not in previous and candidate not in chosen:
+                        chosen.append(candidate)
+            for slot, expert in enumerate(chosen):
+                selections.append({"graph": 0, "layer": layer, "token": token,
+                                   "slot": slot, "expert": expert})
+            groups[(layer, token)] = chosen
+            previous = chosen
+
+    pairs = numerator = denominator = 0
+    for (layer, token), experts in sorted(groups.items()):
+        following = groups.get((layer, token + 1))
+        if following is None:
+            continue
+        pairs += 1
+        numerator += len(set(experts) & set(following))
+        denominator += len(following)
+
+    working_set = []
+    for width in (1, 2, 4):
+        samples = unique_sum = 0
+        for (layer, token) in sorted(groups):
+            run = [groups.get((layer, token + step)) for step in range(width)]
+            if any(entry is None for entry in run):
+                continue
+            samples += 1
+            unique_sum += len(set().union(*[set(entry) for entry in run]))
+        working_set.append({"window": width, "sample_count": samples, "unique_sum": unique_sum})
+
+    n_tokens = max(len(layer_shares) for layer_shares in shares) + 1
+    return {
+        "status": "ok", "error_code": "",
+        "moe": {"present": True, "n_expert": n_expert, "n_expert_used": used,
+                "n_expert_source": "ffn_moe_probs", "topk_layers": list(range(len(shares))),
+                "token_reduced_layers": [], "slots_truncated": used > slots},
+        "graphs": [{"ordinal": 0, "n_tokens": n_tokens, "phase": "prefill",
+                    "tokens_observed": n_tokens, "tokens_truncated": False, "node_count": 0}],
+        "selections": selections,
+        "locality": {"adjacent_pair_count": pairs, "reuse_numerator": numerator,
+                     "reuse_denominator": denominator, "working_set": working_set},
+    }
+
+
+def gate_case(label, documents, **expected):
+    result = aggregate(documents, ["%s-%d" % (label, index) for index in range(len(documents))])
+    for field, want in sorted(expected.items()):
+        if result[field] != want:
+            fail("locality-gate-aggregator: %s reported %s = %r, expected %r (verdict %s, p^ %d, "
+                 "wilson lo %d, cluster lo %d over %d cluster(s), deff %d)"
+                 % (label, field, result[field], want, result["verdict"],
+                    result["reuse_per_mille"], result["wilson_low_per_mille"],
+                    result["cluster_low_per_mille"], result["cluster_count"],
+                    result["design_effect_per_mille"]))
+    return result
+
+
+# The two nulls are constants of the router shape, not of the corpus, and the verdict is judged
+# against the larger of them. Asserting them here is what makes every ratio below meaningful.
+sticky_result = gate_case("sticky", [built_document([[6] * 5] * 4)],
+                          verdict="LOCALITY", null_per_mille=125, observed_null_per_mille=93,
+                          reuse_per_mille=1000, layers_clearing_null=4,
+                          pooled_top8_mass_per_mille=1000, excludes_null=True,
+                          materially_above_null=True, cluster_count=1,
+                          design_effect_estimated=False, design_effect_per_mille=1000,
+                          wilson_low_per_mille=968, cluster_low_per_mille=968)
 if sticky_result["working_set"][1]["deficit_per_mille"] != 11437 - 6000:
     fail("locality-gate-aggregator: the w=2 working-set deficit is %d per mille"
          % sticky_result["working_set"][1]["deficit_per_mille"])
 
+# Detectable but immaterial: one shared expert of six at every adjacent pair is 166 per mille, so
+# the interval clears the 125 per mille null on 1,200 trials while the point estimate is far below
+# 1.5 x null. Only a conjunction can call this NO_LOCALITY, and only the k/n null can: judged
+# against the printed-subset null of 93 per mille, 166 would be material.
+gate_case("half-detectable", [built_document([[1] * 5] * 5) for _ in range(8)],
+          verdict="NO_LOCALITY", excludes_null=True, materially_above_null=False,
+          reuse_per_mille=166, reuse_numerator=200, reuse_denominator=1200,
+          wilson_low_per_mille=146, cluster_low_per_mille=146, cluster_count=8,
+          design_effect_per_mille=1000, design_effect_estimated=True, layers_clearing_null=0)
+
+# Material but uncertain: three hits in twelve trials is 250 per mille, twice the null, but a
+# twelve-trial interval reaches down to 88 per mille and includes it. Only a conjunction can call
+# this NO_LOCALITY, and only a nonzero z: at z = 0 the interval collapses onto p^ and clears.
+gate_case("half-material", [built_document([[1, 2]])],
+          verdict="NO_LOCALITY", excludes_null=False, materially_above_null=True,
+          reuse_per_mille=250, reuse_numerator=3, reuse_denominator=12,
+          wilson_low_per_mille=88, cluster_low_per_mille=88, cluster_count=1,
+          design_effect_estimated=False, layers_clearing_null=0)
+
+# Between the two thresholds: 250 per mille on 1,200 trials is 2.0 x the null, above the shipped
+# 1.5 x materiality bar and below 3.0 x. It is also the shape of the real measurement, whose ratio
+# is 2.29 x, so a materiality threshold raised past 2 would silently reverse the shipped verdict.
+gate_case("material", [built_document([[1] * 5] * 4 + [[2] * 5] * 4) for _ in range(5)],
+          verdict="LOCALITY", excludes_null=True, materially_above_null=True,
+          reuse_per_mille=250, reuse_numerator=300, reuse_denominator=1200,
+          ratio_to_null_per_mille=2000, threshold_per_mille=187,
+          wilson_low_per_mille=226, cluster_low_per_mille=226, layers_clearing_null=4)
+
+# Clustering, which the naive interval cannot see. Six prompts: two perfectly sticky, four
+# memoryless. Pooled reuse is 333 per mille and the Wilson interval says [299, 368] — a decisive
+# LOCALITY on the independence assumption — but the effect lives entirely *between* prompts, the
+# measured design effect is 144, and the cluster-robust bound reaches 86 per mille, below the null.
+# The verdict must follow the clustered bound.
+gate_case("between-prompt", [built_document([[6] * 5] * 4) for _ in range(2)]
+          + [built_document([[0] * 5] * 4) for _ in range(4)],
+          verdict="NO_LOCALITY", excludes_null=False, materially_above_null=True,
+          reuse_per_mille=333, wilson_low_per_mille=299, cluster_low_per_mille=86,
+          cluster_count=6, design_effect_per_mille=143999, design_effect_estimated=True)
+
 # A disagreement between this module's recomputation and the parser's own aggregate is an
 # instrument problem, and the gate must refuse rather than average over it.
-corrupted = json.loads(json.dumps(sticky_document))
+corrupted = json.loads(json.dumps(built_document([[6] * 5] * 4)))
 corrupted["locality"]["reuse_numerator"] -= 1
 try:
     aggregate([corrupted], ["corrupted"])
@@ -704,6 +804,15 @@ except GateError:
     pass
 else:
     fail("locality-gate-aggregator: a parser/recomputation disagreement was not refused")
+
+# The pooled omission fields: a document that dropped a token-reduced layer must be counted and its
+# layer named, because that layer contributed nothing to any number above.
+reduced_document = json.loads(json.dumps(built_document([[6] * 5] * 4)))
+reduced_document["moe"]["token_reduced_layers"] = [4]
+reduced_document["graphs"][0]["tokens_truncated"] = True
+gate_case("token-reduced", [reduced_document],
+          token_reduced_layers=[4], documents_token_reduced=1, truncated_documents=1)
+# --- locality-gate hand-built cases (end) ---
 
 print("expert trace smoke: %d fixtures, %d error codes, the real build-10566 excerpt, both CLI "
       "forms, the aggregate oracle, the locality-gate aggregator, and CLI arity/isolation PASS"

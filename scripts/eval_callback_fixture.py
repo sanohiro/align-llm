@@ -179,17 +179,23 @@ class Router:
 
 
 def moe_graph(n_layer, n_tokens, router, graph_ordinal, embd=3584, probs=True, logits=True,
-              reduced_tail=0):
+              reduced_tail=0, reduced_layer=None):
     """`reduced_tail` models build 10566's real MoE shape: llama.cpp applies the output-token
     `GET_ROWS` reduction before the *last* layer's feed-forward, so that layer's `ffn_moe_topk`
     carries a shorter token axis than the graph and the leaf naming the retained tokens is never
-    printed."""
+    printed.
+
+    `reduced_layer` shortens a **middle** layer's axis instead, which no build 10566 reduction can
+    produce. The parser must refuse it with `R2_TOKEN_COUNT` rather than silently drop a whole
+    interior layer's routing (section 6, item 20)."""
     n_expert = router.n_expert
     used = router.n_expert_used
     blocks = [Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [embd, 152064, 1, 1]),
                     ("inp_tokens", [n_tokens, 1, 1, 1]), [embd, n_tokens, 1, 1])]
     for layer in range(n_layer):
         layer_tokens = reduced_tail if (reduced_tail and layer == n_layer - 1) else n_tokens
+        if reduced_layer is not None and layer == reduced_layer:
+            layer_tokens = 1
         blocks.append(Block("ffn_norm-%d" % layer, "f32", "RMS_NORM",
                             ("embd", [embd, n_tokens, 1, 1]), None, [embd, layer_tokens, 1, 1]))
         if logits:
@@ -234,7 +240,10 @@ def family_of(name):
 def token_axis(blocks):
     """The graph's token axis and the set of token-reduced layers, by the parser's own rule: the
     first `embd` or `ffn_moe_topk` block establishes the axis, and a later `ffn_moe_topk` whose
-    axis is strictly shorter is token-reduced (section 6, item 20)."""
+    axis is strictly shorter is token-reduced (section 6, item 20).
+
+    Only a *tail* reduction is representable here: a shorter axis at any layer the graph later
+    exceeds is `R2_TOKEN_COUNT`, so it never reaches an expected document."""
     axis = None
     reduced = set()
     for block in blocks:
@@ -771,6 +780,14 @@ def main():
     token_mismatch = render([moe_graph(1, 5, Router(2, 8, 2), 0)])
     token_mismatch = mutate(token_mismatch, "ffn_moe_topk-0 = (i32)      TOP_K(ffn_moe_probs-0{8, 5, 1, 1}, }) = {2, 5, 1, 1}",
                             "ffn_moe_topk-0 = (i32)      TOP_K(ffn_moe_probs-0{8, 5, 1, 1}, }) = {2, 6, 1, 1}")
+    # The token-reduced exemption is the instrument's *tail* reduction and nothing else. A middle
+    # layer whose token axis is short is not a reduction build 10566 can perform, and accepting it
+    # would drop an interior layer's whole routing from every aggregate without a refusal. The
+    # first suffixed node at a higher layer is what proves the reduced layer was not the last.
+    emit(cases, root, "token-reduced-middle",
+         render([moe_graph(3, 5, Router(23, 16, 4), 0, reduced_layer=1)]),
+         expect="error", code="R2_TOKEN_COUNT", detail="ffn_norm-2")
+
     emit(cases, root, "token-count", token_mismatch, expect="error", code="R2_TOKEN_COUNT",
          detail="ffn_moe_topk-0")
 
