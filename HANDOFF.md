@@ -44,8 +44,8 @@ file records durable project state.
   - MoE half: **N/A** — no gpt-oss GGUF on this host, closed synthetically only (ledger section 4.5).
 - **Verification, all at the unchanged pin `4b515f8d` on this working tree.**
   - `gmake check`: **29 units, PASS**. `gmake build`: PASS.
-  - `gmake alignpack-smoke`: **20 positive fixtures, 106 negative sources, 14,976 assertions, PASS**.
-  - `ALIGN_LLM_ALIGNPACK_ENOSPC=1 scripts/run-alignpack-smoke`: 14,987 assertions, PASS, including
+  - `gmake alignpack-smoke`: **20 positive fixtures, 106 negative sources, 14,996 assertions, PASS**.
+  - `ALIGN_LLM_ALIGNPACK_ENOSPC=1 scripts/run-alignpack-smoke`: 15,007 assertions, PASS, including
     `write-to-full-filesystem PASS (Code@13312)` and
     `qualification-skip insufficient-free-space PASS`.
   - `gmake model-ir-smoke`: PASS (49 qwen, 31 gpt-oss, 62 R0 fixtures), **and** a direct before/after
@@ -58,11 +58,17 @@ file records durable project state.
     `--pack` 456,015,872 → **419,037,184** bytes and `--pack-verify` 839,532,544 → **802,340,864**
     after the packing arms stopped rendering an `R1_MODEL_IR` document they discarded.
 - **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
-  the candidate at `ded98cb` (`4bc2b86` after the rebase onto `b8e1cb6`, same tree for every
-  reviewed file): **A** the Align source, **B** the specification, register, handoff, and
-  runners. A approved with 3 low-to-medium findings, 2 low, 2 informational, and 1 observation; B
-  requested changes with 4 medium and 5 low. **Every finding was accepted** and all were repaired as
-  one consolidated repair on top of `ded98cb`. The substantive ones are recorded as ledger section
+  the candidate at `ded98cb`, which the rebase onto `b8e1cb6` replayed as `4bc2b86`: **A** the Align
+  source, **B** the specification, register, handoff, and runners. A approved with 3 low-to-medium
+  findings, 2 low, 2 informational, and 1 observation; B requested changes with 4 medium and 5 low.
+  **The two commits are not the same tree.** `git diff ded98cb 4bc2b86` touches 10 files —
+  `HANDOFF.md`, `docs/align-development.md`, `docs/align-requests.md`, `docs/specs/r2a-expert-trace.md`,
+  `eval/baselines/coding-v1-reference.json`, `eval/expected/coding-v1-reference-oracle.json`,
+  `eval/expected/coding-v1-reference.sha256`, `scripts/run-expert-trace-parity`,
+  `scripts/run-expert-trace-smoke`, and `src/main.align` — and every one of those deltas is R2A-owned
+  upstream content that arrived with `b8e1cb6`, not R4 content. No file R4 introduces and no R4 risk
+  either reviewer examined changed across the rebase. **Every finding was accepted** and all were
+  repaired as one consolidated repair on top of `ded98cb`. The substantive ones are recorded as ledger section
   6.8: `--pack-verify` accepted a pack extended with trailing payload bytes whose `total_bytes` and
   `payload_bytes` had been raised to match (step 17 now cross-checks the header's whole region
   geometry against the planner, `R4_PACK_HEADER` naming the field); the section 2.9 allocation claim
@@ -73,6 +79,22 @@ file records durable project state.
   deleted the artifact it declined to overwrite — found by the new `qualification-skip` unit on its
   first run; and ledger section 7.2's claim that a loopback image needs root on darwin was simply
   wrong, so `write-to-full-filesystem` now ships opt-in behind `ALIGN_LLM_ALIGNPACK_ENOSPC=1`.
+- **Final review of the repair: one fresh comprehensive review at `cb116f4` returned approve**, with
+  3 low findings and 1 informational one. All four were accepted and repaired in the following
+  commit ("docs: close alignpack final review findings"); none changed a shipped behaviour of
+  `--pack` or `--pack-verify`, so no further full review was required. Recorded as ledger section
+  6.9: the qualification's `reclaim` removed `alignpack.json` and `alignpack-verify.json`
+  unconditionally while the refusal covered only the pack, so a caller's document in the temporary
+  directory was deleted (the refusal now covers all three paths, and `reclaim` therefore removes
+  only paths the run could have created); that refusal used `-e`, which follows a link, so a
+  **dangling** symlink at the destination was invisible to it while `--pack` followed it and wrote
+  the container at the link's target and `reclaim` then unlinked the symlink and reported bytes
+  reclaimed with the payload still on disk (the test is now `-e` **or** `-L`); section 2.8 did not
+  state `--pack`'s symlink behaviour at all (it now does, in both directions, with Request 30 named
+  as the fix and a `dest-symlink` smoke case pinning current behaviour); and section 4.4 did not say
+  that an already-contiguous container reports `(sequential read): FAIL` because no third "no
+  improvement available" outcome exists at v1 (documented, with the reason the third outcome is
+  deferred rather than added).
 - **Align capability requests.** R4 added Requests 29 (incremental `sha256` init/update/final), 30
   (`fs.create_rw_exclusive`), and 31 (file durability via `fsync`/`fdatasync`) to
   `docs/align-requests.md`. All three are PROPOSED and non-blocking: 29 because R4 ships the bounded

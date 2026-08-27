@@ -58,25 +58,40 @@ pack="$tmpdir/model.alignpack"
 pack_document="$tmpdir/alignpack.json"
 verify_document="$tmpdir/alignpack-verify.json"
 
-# Before the trap, deliberately. The reclaim trap removes whatever stands at `$pack`, so a runner
-# that installed it first and refused afterwards would delete the very artifact it refused to
-# overwrite. This is `--pack`'s own `R4_DEST_EXISTS` rule (section 2.8 step 5) applied to the
-# runner: an occupied destination costs nothing and touches nothing.
-if [ -e "$pack" ]; then
-  echo "alignpack qualification: N/A (the destination already exists: $pack)"
-  exit 0
-fi
+# Before the trap, deliberately, and for **all three** paths the run writes. The reclaim trap
+# removes whatever stands at them, so a runner that installed it first and refused afterwards would
+# delete the very artifact it refused to overwrite. This is `--pack`'s own `R4_DEST_EXISTS` rule
+# (section 2.8 step 5) applied to the runner: an occupied destination costs nothing and touches
+# nothing. The two documents are checked here for exactly the same reason as the pack — the trap
+# does not distinguish a caller's file from one this run created, so the only sound rule is that
+# reclaim removes only paths this run could have created, which is what refusing all three first
+# establishes.
+#
+# `-e` alone is not enough: it follows the link, so a **dangling** symlink at any of these paths is
+# invisible to it. That is the dangerous case rather than the harmless one — `--pack` follows the
+# link and writes the container at the link's target (section 2.8), and reclaim would then unlink
+# the symlink and report bytes reclaimed while the payload survives at the target. `-L` closes it.
+for path in "$pack" "$pack_document" "$verify_document"; do
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    echo "alignpack qualification: N/A (the destination already exists: $path)"
+    exit 0
+  fi
+done
 
 reclaim() {
   status=$?
+  # Every path below was proved absent before the trap was installed, so anything standing at one
+  # now was created by this run.
   if [ -f "$pack" ]; then
     size=$(wc -c <"$pack" | tr -d ' ')
     rm -f "$pack"
-    if [ -f "$pack" ]; then
+    if [ -e "$pack" ] || [ -L "$pack" ]; then
       echo "alignpack qualification: FAIL the pack could not be removed: $pack" >&2
       exit 1
     fi
     echo "alignpack qualification: reclaimed $size bytes"
+  elif [ -e "$pack" ] || [ -L "$pack" ]; then
+    rm -f "$pack"
   fi
   rm -f "$pack_document" "$verify_document"
   if [ "$owned_tmpdir" = 1 ]; then

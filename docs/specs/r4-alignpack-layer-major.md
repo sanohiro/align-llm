@@ -909,6 +909,20 @@ process could create the path, and this arm would then truncate it. The exposure
 one developer host writing to a caller-named path, and section 5.5.2 records the request that would
 close it. Hiding the race behind a silent overwrite would be worse than naming it.
 
+**A destination that is a symlink is followed, in both directions.** Neither step 5's `fs.exists`
+nor step 10's `fs.create_rw` distinguishes a link from a file at this pin, so `--pack` behaves
+exactly as it does for the link's target. A symlink pointing at an existing file is an occupied
+destination and yields `R4_DEST_EXISTS` with the **link's** path in `error_detail`. A **dangling**
+symlink is not: step 5 follows it, finds nothing, and step 10 creates the container at the link's
+target, reporting `destination: "WRITTEN"` for a path whose own name is still a symlink. The
+consequence worth stating is that a caller who removes the path it named has not removed the
+container — the same trap `scripts/run-alignpack-qualification` closes by testing `-L` as well as
+`-e` before it installs its reclaim trap (section 4.4). The `dest-symlink` case in
+`scripts/run-alignpack-smoke` pins both directions as **current behaviour, not desired behaviour**;
+section 5.5.2's Request 30 (`fs.create_rw_exclusive`) is the fix, because an exclusive positional
+create refuses an existing name rather than following it, and it closes this together with the
+check-then-create race above.
+
 **`R4_WRITE_FAILED` is where a full disk arrives.** `ENOSPC` reaches Align as an `Error` variant from
 `pwrite`; the arm records it, removes the partial pack (step 12), and exits nonzero. It is
 deliberately not a distinct code: the packer cannot distinguish "the disk is full" from "the quota
@@ -1259,10 +1273,15 @@ What it does, in order:
    the repository even by a mistyped variable or a symlink. Two logical paths cannot be compared by
    prefix: the guard's whole purpose is defeated if a symlink into the repository resolves to a name
    the prefix test does not match.
-3. **Refuses an occupied destination, before the reclaim trap is installed.** The trap removes
-   whatever stands at the pack's path, so a runner that installed it first and refused afterwards
-   would delete the artifact it declined to overwrite. This is `--pack`'s own step-5 rule applied to
-   the runner.
+3. **Refuses an occupied destination, before the reclaim trap is installed**, for **all three**
+   paths it writes — the pack, `alignpack.json`, and `alignpack-verify.json`. The trap removes
+   whatever stands at them and cannot tell a caller's file from one this run created, so a runner
+   that installed it first and refused afterwards would delete the artifact it declined to
+   overwrite. This is `--pack`'s own step-5 rule applied to the runner, and refusing all three first
+   is what makes the trap's own rule sound: it removes only paths this run could have created. The
+   test is `-e` **or** `-L`, because `-e` follows the link: a dangling symlink at any of the three is
+   invisible to `-e`, `--pack` writes the container at the link's target (section 2.8), and reclaim
+   would then unlink the symlink and report bytes reclaimed while the payload survives.
 4. Records the model's size and mtime.
 5. **Checks free space before writing anything.** It requires `model_size + 1 GiB` available on the
    temporary directory's filesystem and prints one exact `N/A` line if not. On this host the pack is
@@ -1283,14 +1302,18 @@ alignpack qualification: N/A (ALIGN_LLM_GGUF_MODEL unset)
 alignpack qualification: N/A (ALIGN_LLM_GGUF_MODEL is absent)
 alignpack qualification: N/A (ALIGN_LLM_ALIGNPACK_TMPDIR is not a directory)
 alignpack qualification: N/A (ALIGN_LLM_ALIGNPACK_TMPDIR resolves inside the work tree)
-alignpack qualification: N/A (the destination already exists: <pack>)
+alignpack qualification: N/A (the destination already exists: <path>)
 alignpack qualification: N/A (insufficient free space: <avail> < <required>)
 ```
 
+`<path>` is whichever of the three the runner found occupied, in the order pack, `alignpack.json`,
+`alignpack-verify.json`.
+
 `scripts/run-alignpack-smoke`'s `qualification-skip` unit drives the runner through the first five
-and asserts each line exactly, that the exit status is 0, and that an occupied destination is
-neither removed nor rewritten. The sixth needs a filesystem with less than a gibibyte free and is
-asserted by the opt-in `write-to-full-filesystem` case, which mounts one.
+and asserts each line exactly, that the exit status is 0, and that neither an occupied pack, an
+occupied `alignpack.json`, nor a dangling destination symlink is removed, rewritten, or written
+through. The sixth needs a filesystem with less than a gibibyte free and is asserted by the opt-in
+`write-to-full-filesystem` case, which mounts one.
 
 The verdicts it emits rather than the pull request authoring them:
 
@@ -1300,6 +1323,18 @@ alignpack qualification (sequential read): PASS  src 89 ranges / 11130544128 spa
                                                  pack 58 ranges / 4677120000 span / 1000000 ppm
 alignpack qualification (MoE): N/A - no gpt-oss GGUF on this host; see section 4.5.
 ```
+
+**The improvement verdict is strict, and a source that is already contiguous therefore reports
+`(sequential read): FAIL`.** The test is that the pack's range count, span, and amplification are
+each *strictly* smaller than the source's, so a GGUF already stored in Model IR block order — every
+block already one range at 1,000,000 ppm — leaves nothing to improve and fails the comparison
+rather than passing it. That is deliberate at v1: there is no third "no improvement available"
+outcome, because inventing one would need the qualification to decide when a layout is *optimal*
+rather than merely *unchanged*, and a source whose layout the packer cannot improve is not evidence
+for the gate this qualification exists to discharge (section 1.4). The measured reference model is
+far from contiguous (27 of 58 blocks, 2,379,786 ppm), so the case is hypothetical on this host; a
+future run against an already-packed-order source should read this outcome as "this model does not
+exercise the gate", not as a regression. Adding the third outcome is deferred, not overlooked.
 
 **Expected budget on this host**, from section 2.2's measurements and stated as a range because
 those measurements varied by a factor of two: the pack moves 4,677,120,000 payload bytes at a
@@ -1758,6 +1793,19 @@ peaks at 91,963,392 for a 31,885,872-byte document) and its removal is worth 37 
 peak, because the two phases did not overlap and the freed arena is not fully reused. The rest is
 the `R4_ALIGNPACK` document and the plan columns, which is what section 2.9 now says.
 
+### 6.9 Corrections found by the final review of the repair
+
+One fresh comprehensive review of the repaired candidate approved it with 3 low findings and 1
+informational one. All four were accepted; none changed a shipped behaviour of `--pack` or
+`--pack-verify`.
+
+| Contract | As shipped after the first repair | As corrected, and why | Closing case |
+| --- | --- | --- | --- |
+| 4.4 step 3 | The refusal covered the pack only, while `reclaim` removed `alignpack.json` and `alignpack-verify.json` **unconditionally** — the first repair moved the refusal before the trap but left two of the three paths on the old footing | The refusal covers all three paths, so `reclaim` removes only paths this run could have created | `qualification-skip`: a caller's `alignpack.json` in the temporary directory survives byte-for-byte and no pack is written |
+| 4.4 step 3 test | `-e`, which follows the link | `-e` **or** `-L`. A dangling symlink is invisible to `-e`; `--pack` follows it and writes the container at the link's target, and `reclaim` would then unlink the symlink and report bytes reclaimed while the payload survived | `qualification-skip`: the dangling link survives and its target is never created |
+| 2.8 | The symlink behaviour of `--pack` was unstated in either direction | Section 2.8 states it: both `fs.exists` and `fs.create_rw` follow a link, so a dangling link is written through and a link to an existing file is `R4_DEST_EXISTS`. Recorded as current behaviour, with Request 30 named as the fix | `dest-symlink`, both directions |
+| 4.4 improvement verdict | The strictness of the comparison was unstated | Section 4.4 states that an already-contiguous container reports `(sequential read): FAIL`, that no third "no improvement available" outcome exists at v1, and why adding one is deferred rather than overlooked | documentation; the reference model is far from contiguous, so the case is hypothetical on this host |
+
 ## 7. Cell-to-case map
 
 Every applicable cell of section 3 and its exact regression. Unless another runner is named the case
@@ -1792,7 +1840,7 @@ smoke runs over every positive fixture and against every mutation.
 | 3.3 Window boundary, final partial window, short read completed | `window-64/65/128/129/4096` through the lowered-window entry point: each pack is byte-identical to the 4 MiB reference and each verifies |
 | 3.3 Padding written / not sparse | `padding-is-zero` (`reader.check_padding` reads every unclaimed byte of the payload region) and `pack-not-sparse` (`st_blocks * 512` against the logical size) |
 | 3.3 No trailing padding, size assertion | `no-trailing-pad`: the reader requires the last member's end to equal `total_bytes`; the writer asserts its own cursor and then a live `f.len()` |
-| 3.3 Destination exists | `dest-exists`: the occupied file's bytes **and** mtime are unchanged, `destination: UNTOUCHED` |
+| 3.3 Destination exists | `dest-exists`: the occupied file's bytes **and** mtime are unchanged, `destination: UNTOUCHED`; `dest-symlink` pins both symlink directions of section 2.8 — a dangling link is followed and written through (`WRITTEN` at the link's target), a link to an existing file is `R4_DEST_EXISTS` with the link's own path in `error_detail` |
 | 3.3 Destination unwritable / directory | `dest-unwritable` (read-only directory; `N/A` under root) and `dest-is-directory` (section 6.5) |
 | 3.3 Compare fast path | `compare-fast-path`: `metrics.byte_scan_windows == 0` and `fast_path_windows == windows_compared` on every identical fixture |
 | 3.3 One flipped byte | `flip-first-byte`, `flip-last-byte`, `flip-window-boundary`, `flip-across-two-members`, each asserting the exact `<name>@<source_offset>+<delta>` detail, every field of `first_mismatch`, `verdict: "mismatch"`, and exactly one byte-scanned window |
@@ -1811,7 +1859,7 @@ smoke runs over every positive fixture and against every mutation.
 | 3.6 Independence, layout invariants, oracle, mutation detection | `scripts/alignpack_reader.py` over every fixture and against 40 mutations, each with `--expect-reject KIND`, which is what proves the reader is not vacuous |
 | 3.7 Target definition, aggregate membership, exclusion | `make gate-topology-check` — `alignpack-smoke` is in `HOSTED_CHECK_TARGETS`, `alignpack-qualification` is in no aggregate |
 | 3.7 Fixture cleanup, repository safety | The `EXIT` trap, the temp-root assertion, and a full-tree leak sweep comparing the repository before and after the run |
-| 3.7 Qualification cleanup and skip | `trap ... EXIT HUP INT TERM` reclaimed 4,677,222,400 bytes on the real run; `qualification-skip` drives the runner through five of the six `N/A` lines of section 4.4 and asserts each exactly, and the opt-in `write-to-full-filesystem` case asserts the sixth |
+| 3.7 Qualification cleanup and skip | `trap ... EXIT HUP INT TERM` reclaimed 4,677,222,400 bytes on the real run; `qualification-skip` drives the runner through five of the six `N/A` lines of section 4.4 and asserts each exactly — including an occupied `alignpack.json` and a dangling destination symlink, neither of which the run may remove, rewrite, or write through — and the opt-in `write-to-full-filesystem` case asserts the sixth |
 | 3.7 Preflight profile selection | `python3 scripts/pre-pr --plan` recorded before the run, then `python3 scripts/pre-pr --owner-test alignpack-smoke -- gmake alignpack-smoke` on the exact head, with the required installed profile and no Docker substitution. Recorded in the pull request |
 | 3.7 Documentation | `docs/specs/roadmap.md` section R4 and forward-order item 13; `HANDOFF.md`; `docs/align-development.md`'s alignpack section; `docs/align-requests.md` Request 21 and Request 23 client evidence and the section 5.5 candidates; `docs/specs/r1-qwen-model-ir.md` section 7's correction of the section 2.5.6 role-major sentence |
 

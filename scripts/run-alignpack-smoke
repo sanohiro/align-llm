@@ -564,6 +564,47 @@ def drive_destinations(sample_source):
     require(document["error_code"] == "R4_DEST_EXISTS", "dest-is-directory: code is %r"
             % document["error_code"])
 
+    # `dest-symlink`: what `--pack` does when the destination *is* a symlink. Neither step 5's
+    # `fs.exists` nor step 10's `fs.create_rw` distinguishes a link from a file at this pin, so the
+    # arm follows it in both directions, and this case exists to pin the current behaviour rather
+    # than to claim it is the desired one. Section 2.8 records it, and Request 30's
+    # `fs.create_rw_exclusive` is the fix: an exclusive positional create refuses an existing name
+    # instead of following it.
+    link_target = Path(work_dir) / "symlink-target.alignpack"
+    dangling = Path(work_dir) / "dangling-dest.alignpack"
+    if dangling.is_symlink() or dangling.exists():
+        dangling.unlink()
+    dangling.symlink_to(link_target)
+    require(not link_target.exists(), "dest-symlink: the link target already exists")
+    result = run(["--pack", sample_source, str(dangling)])
+    require(result.returncode == 0, "dest-dangling-symlink: --pack exited %d" % result.returncode)
+    document = as_dict(ordered(result.stdout))
+    require(document["status"] == "ok", "dest-dangling-symlink: status is %r" % document["status"])
+    require(document["destination"] == "WRITTEN",
+            "dest-dangling-symlink: destination is %r" % document["destination"])
+    # The container exists, and it is at the link's *target*: `fs.exists` followed the dangling link
+    # and reported absence, then `fs.create_rw` followed it and created the target. A reclaim step
+    # that unlinks the path it named would therefore leave the payload behind.
+    require(dangling.is_symlink(), "dest-dangling-symlink: the symlink was replaced by a file")
+    require(link_target.is_file(), "dest-dangling-symlink: nothing was written at the link target")
+    total_bytes = as_dict(document["pack"])["total_bytes"]
+    require(link_target.stat().st_size == total_bytes,
+            "dest-dangling-symlink: the link target holds %d bytes, the document claims %d"
+            % (link_target.stat().st_size, total_bytes))
+    # The other direction: once the target exists, the same link is an occupied destination, because
+    # `fs.exists` follows it too.
+    existing = run(["--pack", sample_source, str(dangling)])
+    failed(existing, "dest-symlink-to-existing")
+    document = as_dict(ordered(existing.stdout))
+    require(document["error_code"] == "R4_DEST_EXISTS",
+            "dest-symlink-to-existing: code is %r" % document["error_code"])
+    require(document["error_detail"] == str(dangling),
+            "dest-symlink-to-existing: detail is %r" % document["error_detail"])
+    require(document["destination"] == "UNTOUCHED",
+            "dest-symlink-to-existing: destination is %r" % document["destination"])
+    link_target.unlink()
+    dangling.unlink()
+
     if os.geteuid() != 0:
         locked = Path(work_dir) / "locked"
         locked.mkdir(exist_ok=True)
@@ -1144,6 +1185,15 @@ def drive_qualification_skips(sample_source):
     occupied_tmp = Path(work_dir) / "occupied-tmp"
     occupied_tmp.mkdir(exist_ok=True)
     (occupied_tmp / "model.alignpack").write_bytes(b"already here")
+    occupied_document_tmp = Path(work_dir) / "occupied-document-tmp"
+    occupied_document_tmp.mkdir(exist_ok=True)
+    (occupied_document_tmp / "alignpack.json").write_bytes(b"a caller's prior document")
+    dangling_tmp = Path(work_dir) / "dangling-tmp"
+    dangling_tmp.mkdir(exist_ok=True)
+    dangling_link = dangling_tmp / "model.alignpack"
+    if dangling_link.is_symlink() or dangling_link.exists():
+        dangling_link.unlink()
+    dangling_link.symlink_to(Path(work_dir) / "no-such-reclaim-target")
 
     def qualify(overrides):
         environment = dict(os.environ)
@@ -1185,6 +1235,31 @@ def drive_qualification_skips(sample_source):
             "qualification-skip: the occupied destination was removed or rewritten")
     require(not (occupied_tmp / "alignpack.json").exists(),
             "qualification-skip: a refusal wrote a document")
+    # The same rule for the two documents, which the reclaim trap also removes. A caller's
+    # `alignpack.json` standing in the temporary directory must survive untouched: the trap cannot
+    # tell it from one this run wrote, so refusing before the trap is the only sound answer.
+    lines = qualify({"ALIGN_LLM_GGUF_MODEL": sample_source,
+                     "ALIGN_LLM_ALIGNPACK_TMPDIR": str(occupied_document_tmp)})
+    require(lines == ["alignpack qualification: N/A (the destination already exists: %s)"
+                      % os.path.join(os.path.realpath(occupied_document_tmp), "alignpack.json")],
+            "qualification-skip: an occupied document printed %r" % lines)
+    require((occupied_document_tmp / "alignpack.json").read_bytes() == b"a caller's prior document",
+            "qualification-skip: the occupied document was removed or rewritten")
+    require(not (occupied_document_tmp / "model.alignpack").exists(),
+            "qualification-skip: a refusal wrote a pack")
+    # A **dangling** symlink at the pack's path is the dangerous shape rather than the harmless one:
+    # `-e` follows the link and reports absence, `--pack` follows it and writes the container at the
+    # link's target, and the trap would then unlink the symlink and report bytes reclaimed while the
+    # payload survives. The runner tests `-L` as well, so it refuses.
+    lines = qualify({"ALIGN_LLM_GGUF_MODEL": sample_source,
+                     "ALIGN_LLM_ALIGNPACK_TMPDIR": str(dangling_tmp)})
+    require(lines == ["alignpack qualification: N/A (the destination already exists: %s)"
+                      % os.path.join(os.path.realpath(dangling_tmp), "model.alignpack")],
+            "qualification-skip: a dangling destination symlink printed %r" % lines)
+    require(dangling_link.is_symlink(),
+            "qualification-skip: the dangling destination symlink was removed")
+    require(not (Path(work_dir) / "no-such-reclaim-target").exists(),
+            "qualification-skip: a refusal wrote through a dangling destination symlink")
     # The sixth line, `insufficient free space`, needs a filesystem with less than a gibibyte free
     # and is exercised by the opt-in `write-to-full-filesystem` case, which has one.
 
