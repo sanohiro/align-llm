@@ -572,7 +572,7 @@ uses the same `fs.open_rw` constructor for both frontends — so Request 21 in
 `docs/align-requests.md` covers this capability too, still `PROPOSED` and non-blocking.
 
 **The olmoe half is the R1C-OLMOE-MOE-IR capability, implemented** (branch
-`agent/r1c-olmoe-moe-ir`, design ledger commit `5a15fd7`, implementation `eb868ba` with its review
+`agent/r1c-olmoe-moe-ir`, design ledger commit `83361a9`, implementation `45e4ced` with its review
 repair on top; review is complete and publication is the remaining work), specified by
 `docs/specs/r1c-olmoe-moe-ir.md`. `--model-ir` dispatch becomes a three-way chain at
 `general.architecture`: `qwen2` (`src/frontend_qwen.align`), `gpt-oss`

@@ -1226,3 +1226,28 @@ not progress.
    builder, one arm at three dispatch sites, and an append plus a mirror for the role list. That
    document's section 5.5 now carries the result inline as well, so a reader of the claim meets its
    resolution.
+
+## 8. Publication reconciliation
+
+This branch was rebased onto `main` `546b5cc`, the merge of R2-LOCALITY-GATE (PR #131). The rebase
+renamed every commit: the design ledger `5a15fd7` became `83361a9`, the implementation `eb868ba`
+became `45e4ced`, and the review repair `58e9ba9` became `4c86336`. The review record names the
+pre-rebase head it actually read; every other reference in this repository names the post-rebase
+commit. That
+capability is the other consumer of the same downloaded `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`,
+and it measured the R2 locality gate as **met in the prefill direction** — observed adjacent-token
+expert reuse 286 per mille against a 125 per mille null, cluster-robust 95% interval
+`[262, 311]` over 40 prompt clusters, all 15 measurable layers clearing the null.
+
+The reconciliation is documentation-only. Nothing in the merged gate touches a surface this ledger
+owns: it changed `src/expert_trace.align`, `scripts/eval_callback_fixture.py`, the expert-trace
+runners, and the new locality-gate script and prompt corpus, none of which this capability reads or
+writes, and it changed no Model IR, Block IR, alignpack, or GGUF surface. The two capabilities meet
+only at the model file itself and at R3, which consumes this capability's Block IR and that
+capability's demand signal. The owner evidence in section 6 was produced before the rebase and
+re-run after it with identical results.
+
+The status prose that the rebase reconciled is in `HANDOFF.md`, `docs/specs/roadmap.md` items 18
+and 19 and its Japanese section R1/R2, `docs/align-requests.md`'s status header and narrative, and
+`docs/align-development.md`'s R1C paragraph: each described R2-LOCALITY-GATE as in progress and is
+now correct against the merged result.

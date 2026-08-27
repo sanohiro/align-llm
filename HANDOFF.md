@@ -34,21 +34,23 @@ of any kind). Both are recorded as corrections in `docs/specs/r1b-gptoss-moe-ir.
 are deliberately not repaired in the gpt-oss frontend, since no real gpt-oss file is present to
 settle it (decision (b) is infeasible on this host).
 
-**Committed on the branch.** Nothing is uncommitted: `5a15fd7` (design ledger), `eb868ba`
-(implementation), `58e9ba9` (review repair), plus the reconciliation commit that rebases onto the
-merged locality gate. No `Makefile` change, so the classifier stays in hosted scope.
+**Committed on the branch.** Nothing is uncommitted. After the rebase onto `546b5cc` the branch is
+`83361a9` (design ledger), `45e4ced` (implementation), `4c86336` (review repair), and the
+reconciliation commit on top; the same three commits were `5a15fd7`, `eb868ba`, and `58e9ba9`
+before the rebase, and the review record below names the pre-rebase head it read. No `Makefile`
+change, so the classifier stays in hosted scope.
 
-**Review envelope.** Two complementary reviewers covered the implementation head `eb868ba` for
-explicitly disjoint risks. Reviewer A: approve, three nit findings (the block-explosion guard always
-naming `olmoe.expert_count`; section 2.6's key-order sentence read across steps rather than within
+**Review envelope.** Two complementary reviewers covered the implementation head `eb868ba`
+(`45e4ced` after the rebase) for explicitly disjoint risks. Reviewer A: approve, three nit findings
+(the block-explosion guard always naming `olmoe.expert_count`; section 2.6's key-order sentence read across steps rather than within
 one; `role_required` ignoring its parameter). Reviewer B: approve with changes, three medium and one
 low (section 4.5 calling the real model's 2,097,152-byte `bytes_read` one window when it is two;
 `docs/align-requests.md` Request 23 carrying no R1C evidence block and the ledger calling the
 frontend a "third client"; `HANDOFF.md`, `docs/specs/roadmap.md` item 18 and its Japanese section R1,
 and `docs/align-development.md` still describing R1C as unimplemented; the parity runner's `ulimit -f`
 bounding the Metal shader cache). All seven findings were accepted, none rejected, and all are
-repaired in one consolidated commit on top of `eb868ba`. The repair is narrow — a diagnostic detail
-key with its fixture, one enumerated function, one runner limit, and documentation — so it does not
+repaired in one consolidated commit on top of it (`4c86336`). The repair is narrow — a diagnostic
+detail key with its fixture, one enumerated function, one runner limit, and documentation — so it does not
 trigger a second comprehensive review, and the reconciliation commit onto the merged locality gate
 is documentation-only.
 

@@ -336,14 +336,14 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > top-8 routing), which named two consumers at once: **R2-LOCALITY-GATE** ran the R2 locality
 > measurement against that real model and merged as align-llm PR #131 (`fff5806` -> `546b5cc`) with
 > the gate met in the prefill direction, and **R1C-OLMOE-MOE-IR**
-> (`docs/specs/r1c-olmoe-moe-ir.md`, design ledger commit `5a15fd7`) implemented a new
+> (`docs/specs/r1c-olmoe-moe-ir.md`, design ledger commit `83361a9`) implemented a new
 > `src/frontend_olmoe.align` and a three-way architecture dispatch and is now in publication.
 > Neither consumes a `PROPOSED`
 > request; R1C's design section 5.4 records that no new genuine Align gap is expected and that
 > `src/frontend_olmoe.align` becomes **the third frontend** at which the already-`PROPOSED`,
 > non-blocking Request 23 misfires — not a third client, since this register already carries four
 > (`GgufTable`, `BlockPlan`, `TranscriptScan`, `PackPlan`). R1C is now implemented at
-> `eb868ba`, and the shipped evidence is under Request 23 below: the warnings land on the
+> `45e4ced`, and the shipped evidence is under Request 23 below: the warnings land on the
 > frontend's three `borrow … : gguf.GgufTable` parameters, not on the `borrow BlockPlan` the
 > design ledger predicted, and no new genuine Align gap was encountered. `gpt-oss-20b-mxfp4.gguf` (12.1 GB) is now recorded **infeasible on this host** (disk
 > free ~16 GiB after the olmoe download) and remains the next consumer for R1B's real-model
@@ -6777,7 +6777,7 @@ legitimately owns is unaffected: `src/alignpack.align:1376:22` (`empty_header` r
 and `:498:20` (`empty_plan` returning the 480-byte `PackPlan`) are real owned returns and are
 correctly reported.
 
-**Fifth client — and the third *frontend* — from R1C-OLMOE-MOE-IR, now implemented at `eb868ba`.**
+**Fifth client — and the third *frontend* — from R1C-OLMOE-MOE-IR, now implemented at `45e4ced`.**
 `src/frontend_olmoe.align` is the olmoe Model IR frontend. It never declares a wide record of its
 own: it *builds* a `model_ir.BlockPlan` and moves it into `model_ir.Prepared`, so the design ledger's
 prediction that it would trip the lint on a `borrow BlockPlan` parameter was wrong

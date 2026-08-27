@@ -199,8 +199,8 @@ The current forward delivery order is:
     (async prefetch + GPU compute) cannot be written at this pin and is deferred with Request 41
     named (`docs/align-requests.md`).
 18. **R1C-OLMOE-MOE-IR — an olmoe frontend and the first Model IR/Block IR derived from a real MoE
-    model. Implemented; in review and publication.** On branch `agent/r1c-olmoe-moe-ir`, design
-    ledger merged at commit `5a15fd7`, implementation at `eb868ba` with its review repair on top.
+    model. Implemented and reviewed; in publication.** On branch `agent/r1c-olmoe-moe-ir`, design
+    ledger merged at commit `83361a9`, implementation at `45e4ced` with its review repair on top.
     [`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md) is the authoritative plan and owns the contract
     ledger and closure matrix. It turns the real, locally present
     `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (195 tensors = 3 global + 16 layers × 12 per-layer
@@ -637,16 +637,15 @@ gpt-oss実モデルに対する`model-ir-parity` qualificationのみ、`gpt-oss-
 **infeasible**として記録済み、`HANDOFF.md`参照）。
 
 **R1C-OLMOE-MOE-IR**（[`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md)、branch
-`agent/r1c-olmoe-moe-ir`、design ledger commit `5a15fd7`）は第三のR1 capabilityであり、実MoEモデル
+`agent/r1c-olmoe-moe-ir`、design ledger commit `83361a9`）は第三のR1 capabilityであり、実MoEモデル
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`に対する`src/frontend_olmoe.align`と三方向architecture
-dispatchは`eb868ba`で**実装完了**、review指摘の修正commitがその上に載っている（forward order
+dispatchは`45e4ced`で**実装完了**、review指摘の修正commitがその上に載っている（forward order
 item 18）。owner checkは4本ともPASS：`make check`（30 unit）、`make model-ir-smoke`（qwen 49、
 gpt-oss 31、olmoe 29、R0 62 fixtureの再実行）、`make alignpack-smoke`（positive 27、negative source
 128、assertion 20,280）、および実モデル2本に対する`make model-ir-parity`（olmoe 15行＋type census
 `f32` 81 / `q4_K` 97 / `q6_K` 17、qwen2 14行）。olmoeのparityはR1Bが`N/A`としか記録できなかった
 qualificationであり、実MoEモデルに対する初のPASSである。reviewも完了し、残作業はpublicationのみ。
-この実測は、R1Bのsection 2.5が`ASSUMED`としていた2行を**確認ではなく
-反証**した：stacked gate/up/down axis orderはR1Bの想定と逆であり、R1Bがrequiredとしていたsplit
+この実測は、R1Bのsection 2.5が`ASSUMED`としていた2行を**確認ではなく反証**した：stacked gate/up/down axis orderはR1Bの想定と逆であり、R1Bがrequiredとしていたsplit
 expert bias群は実MoEファイルに一切bias tensorが存在しないことで汎用規則としては反証された。
 どちらも実gpt-ossファイルがない以上gpt-oss frontend自体は変更せず、R1B section 7への訂正として
 記録される（`r1c-olmoe-moe-ir.md` section 2.9, 5.3）。
