@@ -1125,52 +1125,104 @@ promise. The GPU document reuses R5B's field layout everywhere it means the same
 `device` object, a tolerance-shaped `oracle_logits` block, and wrap timings that have no CPU
 meaning (section 3.8).
 
-**Env vars, all read by `scripts/run-metal-forward` and reused unchanged from
-`scripts/run-model-forward` where named, per `r5c-metal-prefill.md` section 5.2:**
+**Env vars, all read by `scripts/run-metal-forward`, per `r5c-metal-prefill.md` section 5.2 and its
+correction C8. All six are required — the runner prints one `N/A` line and exits 0 for any that is
+missing:**
 
 ```sh
-ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include \       # selects the REAL shim; unset selects the stub
-ALIGN_LLM_GGML_LIB=/opt/homebrew/lib \               # where libggml / libggml-base are
-ALIGN_LLM_GGML_BACKEND_DIR=/opt/homebrew/lib \       # new: where the backend plugins are dlopened from
-ALIGN_LLM_GGUF_MODEL=/path/to/model.gguf \           # the model to pack and use as the reference
-ALIGN_LLM_LLAMA_DEBUG=/path/to/llama-debug \         # the logits-oracle instrument
-ALIGN_LLM_METAL_FORWARD_TMPDIR=/path/to/scratch \    # new: where the pack is written; defaults to TMPDIR
+ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/opt/ggml/include \
+ALIGN_LLM_GGML_LIB=/opt/homebrew/opt/ggml/lib \
+ALIGN_LLM_GGML_BACKEND_DIR=/opt/homebrew/opt/ggml/libexec \
+ALIGN_LLM_GGUF_MODEL=/path/to/model.gguf \
+ALIGN_LLM_LLAMA_DEBUG=/path/to/llama-debug \
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \
+ALIGN_LLM_METAL_FORWARD_TMPDIR=/path/to/scratch \
   gmake metal-forward-qualification
 ```
 
+`ALIGN_LLM_GGML_INCLUDE` selects the **real** shim; unset selects the stub. `ALIGN_LLM_GGML_LIB` is
+where `libggml` and `libggml-base` are. `ALIGN_LLM_LLAMA_DEBUG` is the logits-oracle instrument and
+`ALIGN_LLM_LLAMA_EVAL_CALLBACK` is the transcript one — section 5.2's list omitted the second while
+its own assertion table asks for `oracle.layers_matched == 28`, which needs a transcript, and
+correction C8 adds it. `ALIGN_LLM_METAL_FORWARD_TMPDIR` is where the pack is written, defaulting to
+`TMPDIR`; it is R5B's `ALIGN_LLM_MODEL_FORWARD_TMPDIR` under this arm's own name, not a second,
+independent variable.
+
 `ALIGN_LLM_GGML_BACKEND_DIR` is the one genuinely new environment input: R5B never `dlopen`s a
-device backend because the CPU backend is built in, while R5C's device is loaded from `libexec`
-through `ggml_backend_load_all()` (section 3.4). `ALIGN_LLM_METAL_FORWARD_TMPDIR` is R5B's
-`ALIGN_LLM_MODEL_FORWARD_TMPDIR` under this arm's own name, not a second, independent variable.
+device backend because the CPU backend is built in, while R5C's device is loaded through
+`ggml_backend_load_all()` (section 3.4). It names the **directory holding `libggml-metal`** — a
+Homebrew ggml keeps it in `libexec`, not in `lib` — and the runner resolves the plugin inside it and
+exports ggml's own `GGML_BACKEND_PATH`, which names one backend library file rather than a
+directory. A directory holding no Metal plugin is an `N/A` line naming it (correction C17).
 
 `metal-forward-qualification` is opt-in and capable-only, in **neither** `HOSTED_CHECK_TARGETS` nor
 `CAPABLE_ONLY_CHECK_TARGETS` — the same footing as `model-forward-qualification`. It prints exactly
 one `N/A` line and exits 0 when a required input is missing, **the registry reports no device of
-type GPU**, the model or instrument is absent, or free space under the scratch root is below the
-pack's size plus 1 GiB (section 5.2). **Hosted CI is Linux with no Metal device, so this target is
-`N/A` there by its first device check** — the intended behaviour, not a skip.
+type GPU**, the model or either instrument is absent, or free space under the scratch root is below
+the pack's size plus 1 GiB (section 5.2). **Hosted CI is Linux with no Metal device, so this target
+is `N/A` there by the device check** — the intended behaviour, not a skip. The device question is
+answered by running the arm over the synthetic two-layer fixture and reading its `error_code`,
+before four and a half gigabytes are packed (correction C8), so the registry answers it rather than
+the host's name.
 
-The stub shim reports no GPU device, so every hosted `layer-forward-smoke` case reaches
-`R5C_GPU_UNAVAILABLE` and steps 1-19 stay fully covered without ggml, without Metal, without a
-model, and without llama.cpp; two more forced-failure environment variables,
-`ALIGN_GGML_FORCE_NO_HOST_PTR` and `ALIGN_GGML_FORCE_MAX_BUFFER_SIZE`, make the arm's two other new
-error codes (`R5C_NO_HOST_PTR`, `R5C_DEVICE_BUFFER_LIMIT`) reachable hosted too — all three new
-codes are stub-reachable (section 4.5).
+These are the shipped lines, captured from `scripts/run-metal-forward` itself with each input
+removed or made wrong in turn:
 
-**The shim is built with `-ffp-contract=off`**, inherited unchanged from R5A and R5B, and the
-runner asserts `abi.fp_contract_off` is `true`.
+```text
+metal forward qualification: N/A ALIGN_LLM_GGML_INCLUDE is unset
+metal forward qualification: N/A ALIGN_LLM_GGML_LIB is unset
+metal forward qualification: N/A ALIGN_LLM_GGML_BACKEND_DIR is unset
+metal forward qualification: N/A ALIGN_LLM_GGUF_MODEL is unset
+metal forward qualification: N/A ALIGN_LLM_LLAMA_DEBUG is unset
+metal forward qualification: N/A ALIGN_LLM_LLAMA_EVAL_CALLBACK is unset
+metal forward qualification: N/A ALIGN_LLM_GGML_INCLUDE is not a directory
+metal forward qualification: N/A ALIGN_LLM_GGML_LIB is not a directory
+metal forward qualification: N/A ALIGN_LLM_GGML_BACKEND_DIR is not a directory
+metal forward qualification: N/A ALIGN_LLM_GGML_BACKEND_DIR (<path>) holds no libggml-metal library
+metal forward qualification: N/A ALIGN_LLM_GGUF_MODEL is not a file
+metal forward qualification: N/A ALIGN_LLM_LLAMA_DEBUG is not executable
+metal forward qualification: N/A ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable
+metal forward qualification: N/A the scratch root <path> does not exist
+metal forward qualification: N/A free space under <path> is <n> KiB, below the <n> KiB the pack needs
+metal forward qualification: N/A the ggml registry reports no device of type GPU on this host
+```
 
-**This section describes the design ledger's contract, not yet a shipped runner.**
-`src/gpu_forward.align`, `scripts/run-metal-forward`, and the three new
-`scripts/ggml_shim.c`/`scripts/ggml_shim_stub.c` wrappers (`device_by_kind`,
-`device_buft_max_size`, `device_props`) are not yet implemented on this branch. The exact `N/A`
-line text `scripts/run-metal-forward` prints for each missing input, the precise peak-RSS reporting
-behavior, and the final classifier verdict for the diff that adds
-`metal-forward-qualification`'s `.PHONY` entry to the `Makefile` are **finalized with the
-implementation** — follow `r5b-model-prefill-forward.md`'s equivalent runner and this document's
-"Model prefill forward development" section above as the precedent shape, and update this section
-from the shipped runner's own output once it exists, exactly as that section was written from
-`scripts/run-model-forward`'s finished text rather than from its plan.
+**No peak-RSS line is printed and none is asserted.** This runner has no RSS probe: bounded memory is
+`r5b-model-prefill-forward.md` section 3.10's table, which R5C inherits unchanged because the device
+adds no host allocation the arm controls (section 3.10). Report peak RSS as `N/A` rather than looking
+for a number this target does not produce.
+
+The runner restores the ordinary real shim from its `EXIT`/`HUP`/`INT`/`TERM` trap, so an early exit
+inside its forced-failure loop cannot leave a `-DALIGN_GGML_FORCE_*` library in `build/lib` for
+whatever runs next; `scripts/run-layer-forward-smoke` does the same, from correction C18.
+
+**Hosted, the arm is exercised by shim build flavours, not by environment variables.** Every forced
+failure this repository ships is a compile-time `-D` macro selected by a named
+`scripts/build-ggml-shim` flavour (correction C3), because a shim whose behaviour changes with the
+environment is a shim whose golden documents are not reproducible:
+
+* the **default stub** has no ggml at all and stops the arm at step 20 with `R5_GGML_UNAVAILABLE`,
+  detail `stub`, exactly as it stops `--model-forward` (correction C6);
+* **`engine`** is available and has no GPU device, which is step 20a's `R5C_GPU_UNAVAILABLE`,
+  detail `device`. Only this build reaches step 20a; the default stub stops one step earlier;
+* **`engine+gpu`** gives it a stub GPU device and reaches the arm's whole successful path, its three
+  oracles, and R5B's own codes through it;
+* **`engine+gpu+no-host-ptr`**, **`engine+gpu+max-buffer`**, and **`engine+gpu+compute`** reach
+  `R5C_NO_HOST_PTR`, `R5C_DEVICE_BUFFER_LIMIT`, and the per-graph teardown cell.
+
+All three `R5C_*` codes are therefore stub-reachable on a host with no GPU (section 4.5), and steps
+1-19 stay fully covered without ggml, without Metal, without a model, and without llama.cpp. The
+qualification additionally forces `max-buffer` and `no-host-ptr` against the **real** Metal device.
+
+**The shim is built with `-ffp-contract=off`**, inherited unchanged from R5A and R5B, and the runner
+asserts `abi.fp_contract_off` is `true`.
+
+**Adding rows to the existing `layer-forward-smoke` target changes no aggregate membership and no
+check topology**, and `metal-forward-qualification` joins no aggregate. That is the whole claim and
+it is **not** a claim that R5C avoids the fresh-image scope: adding the recipe and its `.PHONY`
+entry edits the `Makefile`, an executable contract boundary, so `scripts/verification_scope.py` —
+the shared classifier of record, whose verdict is the evidence — is what selects the lane. Run it
+against the exact head rather than reasoning from this paragraph.
 
 ## The aarch64 platform-profile gates
 

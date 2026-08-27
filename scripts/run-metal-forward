@@ -57,12 +57,34 @@ na() {
 [ -d "${ALIGN_LLM_GGML_LIB}" ] || na "ALIGN_LLM_GGML_LIB is not a directory"
 [ -d "${ALIGN_LLM_GGML_BACKEND_DIR}" ] || na "ALIGN_LLM_GGML_BACKEND_DIR is not a directory"
 [ -f "${ALIGN_LLM_GGUF_MODEL}" ] || na "ALIGN_LLM_GGUF_MODEL is not a file"
-command -v "${ALIGN_LLM_LLAMA_DEBUG}" >/dev/null 2>&1 \
-  || [ -x "${ALIGN_LLM_LLAMA_DEBUG}" ] \
-  || na "ALIGN_LLM_LLAMA_DEBUG is not executable"
-command -v "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" >/dev/null 2>&1 \
-  || [ -x "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" ] \
+# `[ -x DIR ]` is true for every searchable directory, so the fallback tests for a **regular**
+# executable file; `command -v` already refuses a directory and covers a bare name on `PATH`.
+executable() {
+  command -v "$1" >/dev/null 2>&1 || { [ -f "$1" ] && [ -x "$1" ]; }
+}
+executable "${ALIGN_LLM_LLAMA_DEBUG}" || na "ALIGN_LLM_LLAMA_DEBUG is not executable"
+executable "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" \
   || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable"
+
+# `ALIGN_LLM_GGML_BACKEND_DIR` was declared as an input and then never used: `ggml_backend_load_all`
+# searches the executable's directory, the working directory, and the `GGML_BACKEND_DIR` compiled
+# into libggml, none of which this variable reaches, so the qualification could silently exercise a
+# different install than the one it names. ggml's own hook is the `GGML_BACKEND_PATH` environment
+# variable, which names **one backend library file** rather than a directory (`ggml_backend_load_all`
+# passes it to `ggml_backend_load`), so the directory is resolved to the Metal plugin inside it and
+# exported. Nothing in the shim changes: `align_ggml_available` already calls `ggml_backend_load_all`
+# and reads the variable from the environment this script exports.
+metal_backend=""
+for candidate in "${ALIGN_LLM_GGML_BACKEND_DIR%/}"/libggml-metal.so \
+                 "${ALIGN_LLM_GGML_BACKEND_DIR%/}"/libggml-metal.dylib; do
+  if [ -f "${candidate}" ]; then
+    metal_backend="${candidate}"
+    break
+  fi
+done
+[ -n "${metal_backend}" ] \
+  || na "ALIGN_LLM_GGML_BACKEND_DIR (${ALIGN_LLM_GGML_BACKEND_DIR}) holds no libggml-metal library"
+export GGML_BACKEND_PATH="${metal_backend}"
 
 model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
 scratch_root="${ALIGN_LLM_METAL_FORWARD_TMPDIR:-${TMPDIR:-/tmp}}"
@@ -106,6 +128,7 @@ export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 # `scripts/run-layer-forward-smoke` already uses costs a second and reaches section 3.9 step 20a
 # against the real registry, so "is there a GPU device here" is answered by the registry itself
 # rather than by guessing from the host's name.
+echo "metal forward qualification: loading the device backend from ${GGML_BACKEND_PATH}"
 python3 "${root_dir}/scripts/layer_forward_fixture.py" "${work_dir}/probe" --model >/dev/null
 set +e
 "${root_dir}/ggml-spike" --model-forward-gpu "${work_dir}/probe/model-pack.alignpack" \
@@ -231,14 +254,28 @@ want("schema_version", d["schema_version"], 1)
 want("status", d["status"], "ok")
 want("verdict", d["verdict"], "EXTERNAL")
 
+# Section 6, correction C16. The capability contract is asserted; the *host's* numbers are printed.
+# `MTL0` and `9,534,832,640 B` are section 2.1's readings of one Apple M1, and pinning them would
+# fail this qualification on a different Mac for a reason that is not a defect — while the three
+# properties R5C actually depends on (a GPU device, a borrowable host pointer, and a window the
+# device's own limit admits) hold on any of them and are asserted exactly.
 device = d["device"]
 want("device.kind", device["kind"], "gpu")
-want("device.name", device["name"], "MTL0")
 want("device.type_id", device["type_id"], 1)
 want("device.buffer_from_host_ptr", device["buffer_from_host_ptr"], True)
-want("device.window_fits", device["window_fits"], True)
-want("device.buffer_max_size", device["buffer_max_size"], 9534832640)
+# Correction C14: `window_fits` is tri-state, and `1` is the only value that means the check ran
+# **and** passed. `-1` — "step 21a was never reached" — must not read as truthy here.
+want("device.window_fits", device["window_fits"], 1)
 want("device.buffer_alignment", device["buffer_alignment"], 32)
+if not device["name"]:
+    failures.append("device.name is empty; the registry named no device")
+if device["buffer_max_size"] < d["window"]["bytes"]:
+    failures.append("device.buffer_max_size %d is below the %d B window"
+                    % (device["buffer_max_size"], d["window"]["bytes"]))
+print("metal forward qualification: device %s reports a %d B maximum buffer length against the "
+      "%d B window (%.1f%% of it)"
+      % (device["name"], device["buffer_max_size"], d["window"]["bytes"],
+         100.0 * d["window"]["bytes"] / max(device["buffer_max_size"], 1)))
 
 window = d["window"]
 want("window.bytes", window["bytes"], 447086592)
@@ -356,12 +393,18 @@ print("metal forward qualification: wall %.1f ms GPU against %.1f ms CPU (%.2fx)
       % (d["timings"]["elapsed_ns"] / million, cpu["timings"]["elapsed_ns"] / million,
          d["timings"]["elapsed_ns"] / max(cpu["timings"]["elapsed_ns"], 1),
          d["timings"]["pread_ns"] / million, cpu["timings"]["pread_ns"] / million))
-print("metal forward qualification: head compute %.2f ms GPU against %.2f ms CPU; layer 27 "
-      "%.2f ms against %.2f ms"
-      % (d["head"]["compute_ns"] / million, cpu["head"]["compute_ns"] / million,
-         d["schedule"][27]["compute_ns"] / million, cpu["schedule"][27]["compute_ns"] / million))
-per_layer = sorted(row["compute_ns"] for row in d["schedule"][:27])
-cpu_layer = sorted(row["compute_ns"] for row in cpu["schedule"][:27])
+# The narrowed layer is the **last** one, whichever index that is: section 2.9's decomposition is
+# about the graph whose `T` is 1, not about the number 27.
+narrowed = min(len(d["schedule"]), len(cpu["schedule"])) - 1
+if narrowed >= 0:
+    print("metal forward qualification: head compute %.2f ms GPU against %.2f ms CPU; the narrowed "
+          "layer %d %.2f ms against %.2f ms"
+          % (d["head"]["compute_ns"] / million, cpu["head"]["compute_ns"] / million,
+             d["schedule"][narrowed]["layer"],
+             d["schedule"][narrowed]["compute_ns"] / million,
+             cpu["schedule"][narrowed]["compute_ns"] / million))
+per_layer = sorted(row["compute_ns"] for row in d["schedule"][:narrowed])
+cpu_layer = sorted(row["compute_ns"] for row in cpu["schedule"][:narrowed])
 if per_layer and cpu_layer:
     print("metal forward qualification: layers 0-26 compute median %.2f ms GPU against %.2f ms CPU"
           % (per_layer[len(per_layer) // 2] / million, cpu_layer[len(cpu_layer) // 2] / million))

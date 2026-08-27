@@ -5,11 +5,12 @@ file records durable project state.
 
 ## Active: R5C-METAL-PREFILL-ARM — the same Align-owned window, handed to Metal (2026-08-27)
 
-- Branch `agent/r5c-metal-prefill` at ledger commit `e375eec` ("docs: add R5C Metal prefill arm
-  design ledger"), continuing R5B-MODEL-PREFILL-FORWARD (branch `agent/r5b-model-prefill-forward`
-  at `556fced`, awaiting publication below). The authoritative design ledger is
-  `docs/specs/r5c-metal-prefill.md`.
-- **Status: implementation complete in the working tree.** R5C discharges
+- Branch `agent/r5c-metal-prefill` at implementation commit `5663d8f` ("feat: run the whole-model
+  prefill on the Metal device"), on the design ledger `e375eec`, continuing
+  R5B-MODEL-PREFILL-FORWARD (branch `agent/r5b-model-prefill-forward` at `556fced`, awaiting
+  publication below). The authoritative design ledger is `docs/specs/r5c-metal-prefill.md`.
+- **Status: implementation committed at `5663d8f`; reviewed, and the consolidated review repair is
+  in the working tree (uncommitted).** R5C discharges
   `docs/specs/roadmap.md` section R5's required microbenchmark A (transfer + GPU compute) on
   unified memory: the same thirty graphs, the same alignpack, and the **same Align-owned weight
   window** R5B already streams, handed to the Metal device through
@@ -30,9 +31,10 @@ file records durable project state.
   width (`KV` 256): GPU **375 ms** vs CPU **486 ms**. End-to-end wall ratio across the three pairs —
   **0.99× / 1.05× / 1.31×** — is **not resolved** and is recorded as such rather than claimed: the
   spread is `pread`'s, which varies more between pairs than the compute difference the device
-  makes. Every forced-failure input (`R5C_DEVICE_BUFFER_LIMIT`, `R5_GGML_UNAVAILABLE`,
-  `R5C_GPU_UNAVAILABLE`) was reached; the qualification's scratch directory was removed after the
-  run.
+  makes. All four forced-failure shim flavours were reached against the **real** Metal device —
+  `max-buffer` → `R5C_DEVICE_BUFFER_LIMIT`, `no-host-ptr` → `R5C_NO_HOST_PTR`, `init` →
+  `R5_GGML_INIT`, `compute` → `R5_COMPUTE`, each with a document and a non-zero exit; the
+  qualification's scratch directory was removed after the run.
 - **Align capability requests filed this session** (`docs/align-requests.md`, Requests 41, 42, and
   43, all `PROPOSED`; header updated to "Requests 21–43 are PROPOSED"):
   - Request 41, non-`Copy` capture in `spawn` closures — a prefetch task for microbenchmark C must
@@ -81,9 +83,48 @@ file records durable project state.
     slower** end to end — while per-graph compute is **2.07× faster on the head** and 1.58×
     slower on the narrowed last layer (ledger section 2.9). The cost ceiling was recorded as
     negative before implementation (ledger section 1.5), so this is not a ceiling-estimation miss.
+- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks
+  of the diff at reviewed head `5663d8f` (base `main` `9bfa372`; the merge base is R5B's `556fced`
+  head, which this branch continues): **A** the Align source and the two C shims, **B** the
+  specification, the roadmap, the developer guide, and the handoff. **A returned changes requested**
+  — 1 blocker, 1 medium, 2 low. **B returned changes requested** — 4 medium, 6 low. **Every finding
+  was validated and accepted; none was rejected.** All fourteen are repaired in one consolidated
+  commit, and the six contract changes they forced are recorded as ledger corrections **C12 to
+  C18**.
+  - **A1, blocker.** `compare_logits` scaled each `f32` to ten-thousandths through a saturating
+    `as i64` and then subtracted, so a reference element of `±inf` — or a finite magnitude above
+    ~9.2e14 — wrapped, and when the primary at that index rounded to exactly `0` the absolute value
+    wrapped to `i64`'s minimum and indexed the histogram with it. Reproduced at `5663d8f` on **both**
+    arms: `exit 134`, no document, `index out of bounds: the len is 65537 but the index is
+    -9223372036854775808`. A `+3.4e38` reference also published a **negative** mean from an
+    overflowed total, and a NaN reference — whose `as i64` is `0` — published a difference of
+    **5,193 ten-thousandths, inside the 6,000 bound**. Repaired by a new input code
+    `R5_LOGITS_NONFINITE` for a malformed reference plus a range-checked scale, a saturating total,
+    and an overflow bucket for anything unrepresentable (C12).
+  - **A2, medium.** The early `IDENTICAL` return applied at the runtime width on `--model-forward`
+    too, a verdict R5B's section 3.7 does not define there; now gated on the strict flag (C13).
+  - **A3/A4, low.** `device.buffer_alignment` and `device.window_fits` published `0`/`false` when
+    the step that evaluates them never ran, now tri-state `-1` (C14); and both C shims' wrap gate
+    `max_size > 0 && size > max_size` failed open on a negative shim status, now `max_size <= 0 ||
+    ...` (C15).
+  - **B1/B2, medium.** `docs/align-development.md`'s GPU section was written from the plan rather
+    than the shipped runner and is rewritten from it, with the sixteen exact `N/A` lines captured
+    from the runner itself and peak RSS stated as `N/A` because no probe exists; and
+    `ALIGN_LLM_GGML_BACKEND_DIR` was validated and never used, now resolved to the Metal plugin and
+    exported as ggml's own `GGML_BACKEND_PATH` (C17).
+  - **B3/B4, medium.** Ledger sections 1.4 and 1.5 and `docs/specs/roadmap.md` item 17 and its
+    Japanese section R5 quoted the single-pass probe's 30 wraps, 354.8 ms, and "1.20x slower" as the
+    result; all four now cite section 7.2's shipped figures and record the end-to-end ratio as
+    unresolved.
+  - **B5–B10, low.** The dropped `gf-gpu-type` case removed from the section 7 map; this handoff's
+    forced-failure list corrected; section 2.7's 75.6 ms single wrap explained as first-touch cost
+    rather than left against the linear claim; host-specific qualification assertions turned into
+    printed measurements (C16); the instrument path check tightened to a regular executable file;
+    and the owner's trap now restores the ordinary shim (C18).
 - **Next actions, in order.**
-  1. Review (one comprehensive pass per `CLAUDE.md`), repair, rerun affected verification.
-  2. Publish the English pull request, stacked behind R5B, itself stacked behind R5A.
+  1. Commit the consolidated repair and rerun the owner verification recorded above.
+  2. Publish the English pull request, stacked behind R5B, itself stacked behind R5A, with the
+     review envelope, the finding dispositions, and the consolidated repair commit.
 - **Three pending user decisions, consolidated into one list** (previously tracked separately
   across earlier checkpoints; this is the current, authoritative statement).
   1. Small MoE GGUF (1-4 GB): unlocks the R2 roadmap gate (a real MoE activation-locality

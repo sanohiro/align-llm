@@ -175,8 +175,12 @@ fn render_device(borrow o: model_forward.Outcome) -> string {
   d.write_int(o.device_memory_free)
   d.write(",\"memory_total\":")
   d.write_int(o.device_memory_total)
+  // Section 6, correction C14: `buffer_alignment` and `window_fits` are tri-state integers, `-1`
+  // when the step that would have evaluated them was never reached. An error document from step 20b
+  // is the case that forced it — it names the device that refused and must not also claim a window
+  // verdict nobody computed.
   d.write(",\"window_fits\":")
-  d.write(model_forward.bool_text(o.device_window_fits))
+  d.write_int(o.device_window_fits)
   d.write("}")
   return d.to_string()
 }

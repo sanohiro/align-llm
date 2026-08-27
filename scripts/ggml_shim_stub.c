@@ -1099,10 +1099,12 @@ void *align_ggml_buffer_from_host(void *device, void *ptr, int64_t size) {
         return NULL;
     }
     /* R5C section 2.6's second gate, in the same shape as the real shim's: an oversize wrap
-     * segfaults there, so both files refuse the length rather than letting it reach the backend. */
+     * segfaults there, so both files refuse the length rather than letting it reach the backend.
+     * Section 6, correction C15: a non-positive limit is a negative status or no limit at all, and
+     * this gate refuses on it rather than failing open. */
     {
         int64_t max_size = align_ggml_device_buft_max_size(device);
-        if (max_size > 0 && size > max_size) {
+        if (max_size <= 0 || size > max_size) {
             return NULL;
         }
     }

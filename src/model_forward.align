@@ -61,14 +61,16 @@ HISTOGRAM_BUCKETS := 65536
 // Section 6, correction C23. The comparison below is integer ten-thousandths, and a `f32` element
 // exists that has no such integer: every infinity and NaN, and every finite magnitude above
 // `i64`'s range divided by 10,000. `((v as f64) * 10000.0).round() as i64` **saturates** on those,
-// after which `primary - reference` wraps and `0 - difference` wraps `i64`'s minimum to itself, so
-// `logits_max_abs` published a magnitude the run never computed and a NaN — whose `as i64` is `0`
-// rather than a saturation — could compare *within* the tolerance. Two constants close that:
+// after which `primary - reference` wraps, `0 - difference` wraps `i64`'s minimum to itself, the
+// histogram is indexed with a negative bucket — a `SIGABRT` with no document — and `logits_max_abs`
+// publishes a magnitude the run never computed, while a NaN — whose `as i64` is `0` rather than a
+// saturation — could compare *within* the tolerance. Two constants close that:
 // `LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS` is the largest magnitude the comparison represents, and
-// anything at or beyond it — including every non-finite element — is routed to a magnitude that no
-// tolerance can admit, so an unrepresentable element is a `FAIL` rather than a wrap. The limit is
-// 10^15, which is 10^11 logits: eleven orders of magnitude above the 28.927 range section 2.3
-// measured, and low enough that the difference of two of them cannot overflow.
+// anything at or beyond it — including every non-finite element — is routed to the overflow bucket
+// and to a magnitude that no tolerance can admit, so an unrepresentable element is a `FAIL` rather
+// than a wrap. The limit is 10^15, which is 10^11 logits: eleven orders of magnitude above the
+// 28.927 range section 2.3 measured, and low enough that the difference of two of them cannot
+// overflow.
 LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS := 1000000000000000
 LOGIT_UNREPRESENTABLE := 9223372036854775807
 
@@ -458,7 +460,11 @@ pub Outcome {
   device_buffer_max_size: i64,
   device_memory_free: i64,
   device_memory_total: i64,
-  device_window_fits: bool,
+  // Section 6, correction C14. Both are **tri-state**: `-1` is "not evaluated", which is what an
+  // error document produced before step 21 or step 21a carries. Publishing `0`/`false` there would
+  // have read as a device that declares no alignment and a window that does not fit, which is a
+  // measurement the run never made.
+  device_window_fits: i64,
   // The transfer, summed over every window wrap, and the number of wraps. On unified memory the
   // wrap copies zero bytes and still costs 26 us/MB (section 2.7), which is the measurement this
   // capability exists to make rather than to assume away.
@@ -619,11 +625,11 @@ pub fn empty_outcome() -> Outcome = Outcome {
   device_type_id: -1,
   device_host_ptr: false,
   device_host_buffer: false,
-  device_buffer_alignment: 0,
+  device_buffer_alignment: -1,
   device_buffer_max_size: 0,
   device_memory_free: 0,
   device_memory_total: 0,
-  device_window_fits: false,
+  device_window_fits: -1,
   wrap_ns: 0,
   wrap_count: 0,
   graph_count: 0,
@@ -2490,6 +2496,15 @@ fn logit_ten_thousandths(borrow region: slice<u8>, at: i64) -> i64 {
   return scaled
 }
 
+// The running sum of `n_vocab` magnitudes, each of which may be the scale limit. `152064 * 10^15`
+// does not fit in an `i64`, and a wrapped total publishes a negative mean; the sum saturates
+// instead, so `mean_abs_diff_ten_thousandths` stays a number the document can be read from even
+// when the distribution it summarizes is out of range. Both operands are non-negative.
+fn add_saturating(total: i64, magnitude: i64) -> i64 {
+  if total > LOGIT_UNREPRESENTABLE - magnitude { return LOGIT_UNREPRESENTABLE }
+  return total + magnitude
+}
+
 // Section 3.7's table. At the reconciliation width the contract is **byte-identity** over every one
 // of `n_vocab * 4` bytes — section 2.7 measured exactly that, twice — and at the runtime width the
 // verdict is `WITHIN` only when the bound, the `argmax`, and the whole top ten all agree.
@@ -2567,10 +2582,11 @@ fn compare_logits(
   loop {
     if at >= n_vocab { break }
     // Section 6, correction C23: both elements are scaled through the range-checked conversion
-    // before either is subtracted, so the subtraction and the absolute value are in range by
-    // construction. The reference is finite by the check above; a primary that is not — or that is
-    // finite and beyond the representable magnitude — takes the scale limit as its magnitude, which
-    // is above every tolerance this repository declares, so it is a `FAIL` and never a silent wrap.
+    // before either is subtracted, so the subtraction, the absolute value, the running total, and
+    // the histogram index are all in range by construction. The reference is finite by the check
+    // above; a primary that is not — or that is finite and beyond the representable magnitude —
+    // takes the scale limit as its magnitude, which is above every tolerance this repository
+    // declares and lands in the overflow bucket, so it is a `FAIL` and never a silent wrap.
     primary_scaled := logit_ten_thousandths(primary, at)
     reference_scaled := logit_ten_thousandths(view, at)
     unrepresentable := primary_scaled == LOGIT_UNREPRESENTABLE
@@ -2584,7 +2600,7 @@ fn compare_logits(
       difference
     }
     if magnitude > worst { worst = magnitude }
-    total = total + magnitude
+    total = add_saturating(total, magnitude)
     if magnitude > HALF_UNIT_TEN_THOUSANDTHS { over_half = over_half + 1 }
     bucket := if magnitude >= HISTOGRAM_BUCKETS { HISTOGRAM_BUCKETS } else { magnitude }
     histogram[bucket] = histogram[bucket] + 1
@@ -2636,7 +2652,13 @@ fn compare_logits(
   // `IDENTICAL` stays reachable on the device arm and is not expected: section 2.3 measured a
   // non-zero difference, so a GPU run reporting it would mean the device produced the CPU's bytes
   // exactly. Removing the verdict would make a surprising-but-correct result unrepresentable.
-  if o.logits_byte_identical {
+  //
+  // Section 6, correction C13: it is reachable on **that arm only**. `--model-forward`'s contract
+  // is `r5b-model-prefill-forward.md` section 3.7's two-row table, whose runtime row is `WITHIN`
+  // and nothing else; letting byte-identity short-circuit to `IDENTICAL` there would have made an
+  // arm R5C promises not to touch report a verdict its own document does not define at that width.
+  // The strict flag is what separates the two, in the one place it already separates them.
+  if !o.logits_strict_reconciliation && o.logits_byte_identical {
     o.logits_verdict = LOGITS_IDENTICAL
     return
   }
@@ -3191,8 +3213,9 @@ pub fn execute(
   // oversize length, so nothing downstream can observe the refusal. It runs after the window sweep
   // at step 16 and before step 23's backend init and step 24's first graph, which is the only
   // ordering that can report a too-large window as a document rather than as a signal.
-  o.device_window_fits = o.device_buffer_max_size > 0 && window_bytes <= o.device_buffer_max_size
-  if o.code.len() == 0 && selection.limit_code.len() > 0 && !o.device_window_fits {
+  window_fits := o.device_buffer_max_size > 0 && window_bytes <= o.device_buffer_max_size
+  o.device_window_fits = if window_fits { 1 } else { 0 }
+  if o.code.len() == 0 && selection.limit_code.len() > 0 && !window_fits {
     limit_view: str := selection.limit_code
     b := builder()
     b.write("window[")

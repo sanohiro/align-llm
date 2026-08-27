@@ -100,7 +100,7 @@ from section 2's measurement.
 
 | Gate item | Verdict | Evidence |
 | --- | --- | --- |
-| required microbenchmark **A** — transfer + GPU compute | **Discharged on unified memory.** The transfer is a pointer hand-off that copies **zero bytes** — 339 placements per pass, all external — and costs a measured **11.8 ms per 447 MB window wrap**, 354.8 ms over thirty wraps. GPU compute is **523.3 ms** against the CPU's **500.7 ms** on the same host in the same session | Section 2.7 (the wrap), section 2.9 (paired timings), section 5.3 |
+| required microbenchmark **A** — transfer + GPU compute | **Discharged on unified memory.** The transfer is a pointer hand-off that copies **zero bytes** — 339 placements per pass, all external — and costs a measured **12.4 ms per 447 MB window wrap**, **732 ms over the shipped arm's fifty-nine wraps** (correction C7). GPU compute at the reconciliation width is **375 ms** against the CPU's **486 ms** on the same host in the same session, and end to end the two arms are **within this host's `pread` variation** of each other | **Section 7.2 (the shipped arm)**; sections 2.7 and 2.9 are the single-pass probe the design was drawn from |
 | — its correctness half | **Discharged.** 152,064 logits within **0.2937** of the byte-identical CPU vector, `argmax` 671, top ten identical in order, **zero** elements over 0.5, and five consecutive runs **byte-identical to each other** | Section 2.3, section 2.4 |
 | required microbenchmark **B** — CPU compute | **Discharged by R5B.** Not re-litigated here | `r5b-model-prefill-forward.md` section 1.4 |
 | required microbenchmark **C** — async prefetch + GPU compute | **Deferred, with the blocker named and measured.** A spawned task cannot capture the Align-owned window: *"a lambda cannot capture the owned value 'w' yet (capture supports copy values like int/float/bool/char)"* | Section 2.10, section 5.5's candidate Request 41 |
@@ -108,8 +108,11 @@ from section 2's measurement.
 
 The honest summary is: **R5C closes R5's microbenchmark A on unified memory, for a dense CPU-packed
 model at prefill, and for nothing else.** Benchmark C remains open behind a named Align gap; discrete
-VRAM remains unanswerable here; and the measured performance result is that **this GPU arm is 1.20×
-slower end to end than the CPU arm it reproduces**.
+VRAM remains unanswerable here; and the measured performance result is that **the device choice does
+not move end-to-end prefill time on this host by more than the file read varies between runs** —
+three paired runs of the shipped arm at 1.31x, 0.99x, and 1.05x, median **1.05x**, recorded as
+unresolved rather than claimed (section 7.2). Section 2.9's 1.20x is the single-pass probe's figure
+on a colder cache and is not the shipped arm's.
 
 ### 1.5 The recorded cost ceiling
 
@@ -128,10 +131,10 @@ implementation:
 | What a perfect GPU arm could remove | the CPU arm's entire compute, **500.7 ms** of a 2,074.3 ms prefill — **241,400 ppm** of the arm's own wall |
 | What it cannot remove | `pread`, **1,423.8 ms**, 68.6% of the wall; the GPU does not read the file |
 | Recorded expectation | **negative.** R4.5 measured Metal 2.5× slower on one small Q4_K matmul, and a six-token prefill is the same memory-bound shape twenty-eight times |
-| Measured result (section 5.3) | **+22.6 ms compute and +354.7 ms wrap = +377.3 ms, or −181,900 ppm** — a regression, within the recorded expectation |
+| Measured result (**section 7.2**, the shipped arm) | **−110.7 ms compute and +732.3 ms wrap** at the reconciliation width — a net regression dominated by the transfer, within the recorded expectation. Section 5.3's `+22.6 ms compute and +354.7 ms wrap = +377.3 ms, or −181,900 ppm` is the single-pass probe's arithmetic and is left as the probe record it is |
 
-The ceiling was recorded as *negative* and the result is negative, so this is **not** a
-ceiling-estimation miss. **A "GPU slower" result is a legitimate outcome of microbenchmark A.** The
+The ceiling was recorded as *negative* and the result is between parity and 1.3x slower, so this is
+**not** a ceiling-estimation miss. **A "GPU slower" result is a legitimate outcome of microbenchmark A.** The
 primary acceptance criterion for R5C is correctness; the timing is the measurement the benchmark
 exists to publish, and publishing an unfavourable number is the benchmark working.
 
@@ -412,7 +415,18 @@ $ cmp mtl_once.bin mtl256_a.bin        # (no output)
 ```
 
 **One wrap costs 75.6 ms instead of 354.8, the logits are byte-identical, and 279 ms of wrap
-disappears.** Section 5.4 defers it deliberately rather than shipping it: hoisting the wrap out of
+disappears.**
+
+**75.6 ms for one wrap is not the 11.6 ms the 26 µs/MB line predicts, and the two are deliberately
+presented separately rather than reconciled.** They are not the same measurement: the scaling table
+above wraps **pre-faulted** allocations five times each and reports the steady state, while this
+variant's single wrap is the **first touch** of a 447 MB range — it pays the page-fault and
+residency-set work for the whole range once, where the thirty-wrap loop pays it on wrap 1 and then
+re-maps a range that is already resident (354.8 − 75.6 = 279.2 over the remaining 29 wraps is
+9.6 ms each, below the 11.8 ms average that includes the first). The probe did not isolate
+first-touch cost, so this is the reading the numbers support and not a decomposition it measured.
+**The figure that generalizes is the per-wrap steady-state one**, and section 7.2's shipped arm
+measures it at 12.4 ms over fifty-nine wraps, agreeing with this section's 11.8 ms. Section 5.4 defers it deliberately rather than shipping it: hoisting the wrap out of
 the per-graph loop removes the per-layer buffer free that R5B's window-reuse invariant asserts, and
 section 2.6 has just established that on Metal an unfreed buffer aborts the process. The optimization
 is real, measured, and belongs in the capability that also re-establishes the invariant it weakens.
@@ -1420,6 +1434,167 @@ reduced where the reduction cost no coverage:
 What was **not** reduced: every closure cell of section 4 still has a case, all three `R5C_*` codes
 are still stub-reachable, and `arm-r5b-unchanged` still runs hosted.
 
+**Re-measured after the review repair**, which adds six cases across the two arms for correction
+C12: three consecutive runs at **16.37 / 13.46 / 13.50 s**, median **13.50 s**, inside the 15 s
+target. The first of the three rebuilt the shim and the executable and is the outlier.
+
+### C12 — a logits element with no ten-thousandth, and the abort it caused
+
+Section 3.7 defines both logits comparisons as integer comparisons in ten-thousandths and section
+3.8 states that `nonfinite_count` "is reported and is never a failure condition". Neither sentence
+says what the *comparison* does with an element that has no ten-thousandth, and the implementation's
+answer was to wrap:
+
+```text
+difference := ((primary.f32_le(at * 4) as f64) * 10000.0).round() as i64
+            - ((view.f32_le(at * 4) as f64) * 10000.0).round() as i64
+```
+
+`as i64` **saturates**, so a reference element of `-inf` — or any finite `|v|` above roughly
+9.2e14 — becomes `i64`'s minimum or maximum. The arithmetic then has exactly one abort: when the
+*primary* element at that index rounds to `0` (against a saturated minimum) or to `-1` (against a
+saturated maximum), `primary - reference` wraps to `i64`'s minimum, `0 - difference` wraps that to
+itself, and `histogram[bucket]` is indexed with it. Measured at `5663d8f`, on **both** arms, since
+`compare_logits` is shared:
+
+```text
+$ ggml-spike --model-forward     PACK GEOM 1,25,5 - SOURCE - 3 model-logits-neg-inf.bin
+$ ggml-spike --model-forward-gpu PACK GEOM 1,25,5 - SOURCE - 3 model-logits-neg-inf.bin
+align: panic: index out of bounds: the len is 65537 but the index is -9223372036854775808
+exit 134, 0 bytes of document
+```
+
+The other two failures need no such coincidence and were measured on the same build: a `+3.4e38`
+reference published `max_abs_diff_ten_thousandths` **9,223,372,036,854,775,706** with a **negative**
+`mean_abs_diff_ten_thousandths` of **−46** from the overflowed total, and a NaN reference — whose
+`as i64` is `0`, not a saturation — published a difference of **5,193 ten-thousandths, inside this
+arm's 6,000 bound**, held off `WITHIN` only by the top-ten guard. On a vector where the NaN did not
+disturb the top ten, that is a **false pass**.
+
+**Shipped**, and it is two rules rather than one because the two inputs are not the same kind of
+thing:
+
+1. **The reference is an input.** A reference blob carrying an infinity or a NaN is malformed, and
+   it is refused before any difference is taken — new error code **`R5_LOGITS_NONFINITE`**, detail
+   `elements[<n>]`, raised at step 32 beside `R5_LOGITS_SHAPE`'s length rule and reachable from
+   **both** arms. R5B's code count is therefore **thirty-three**, not thirty-two;
+   `r5b-model-prefill-forward.md` is left as the record of its own head and this document owns the
+   addition.
+2. **The arm's own logits are not refused for the same condition**, because section 3.8 promises
+   they are not: `output.nonfinite_count` reports them. A non-finite primary — and any element of
+   either vector whose magnitude exceeds `LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS`, 10^15 — is instead
+   converted through one range-checked helper that returns "unrepresentable", takes the scale limit
+   as its magnitude, and lands in the histogram's overflow bucket. That magnitude is above every
+   tolerance this repository declares, so an unrepresentable element is a **`FAIL`** and can never
+   wrap into a pass. `total` accumulates saturatingly for the same reason.
+
+A NaN is handled by the same helper and not by the conversion: `NaN as i64` is `0`, which would have
+compared *within* any bound. The exponent test is `digest_region`'s, so one definition of
+"non-finite" serves the digest and the oracle.
+
+**Cases**, three fixtures each on both arms. `mf-logits-nonfinite` / `gf-logits-nonfinite` is the
+aborting pair above, verbatim — the token list and the `-inf`'s element index are chosen so the
+shipped fixture **is** the crashing input rather than a neighbour of it, swept out of the
+generator's own second implementation, which agrees with the engine to zero ten-thousandths. It and
+`mf-logits-nan` / `gf-logits-nan` now reach `R5_LOGITS_NONFINITE` with detail `elements[1]`, a
+document, and no verdict. `mf-logits-huge` / `gf-logits-huge` — one `+3.4e38` and one `-3.4e38`,
+both finite, so neither is an input error — is `status: "ok"` with `verdict: "FAIL"`,
+`max_abs_diff_ten_thousandths` above the bound, `elements_over_half` 2, and a **non-negative** mean.
+The negative element is the operand that made the subtraction wrap, which is why the fixture carries
+both signs.
+
+### C13 — `IDENTICAL` at the runtime width belongs to the device arm alone
+
+Section 3.3 keeps the `IDENTICAL` verdict reachable on `--model-forward-gpu` "because removing it
+would make a surprising-but-correct result unrepresentable". The implementation reached it through
+an early return that ran on **both** arms, so a byte-identical reference at the *runtime* width
+would have made `--model-forward` publish `IDENTICAL` — a verdict
+`r5b-model-prefill-forward.md` section 3.7's two-row table does not define at that width, where its
+only successful verdict is `WITHIN`. That is precisely the conditional weakening of R5B's contract
+that sections 3.1 and 3.2 exist to prevent, arrived at from the other direction.
+
+**Shipped:** the early return is gated on `!logits_strict_reconciliation`, the same flag that
+already separates the two arms' reconciliation rules, so `IDENTICAL` outside byte-identity at the
+matched width is the device arm's verdict and nobody else's.
+
+**Case:** byte-identity is not constructible hosted, for correction C9's reason in
+`r5b-model-prefill-forward.md` — a pure-Python second implementation does not share the engine's
+`expf`, `sinf`, and `cosf` — and the qualification's runtime-width reference is not byte-identical
+either (2,739 ten-thousandths). `mf-engine-runtime-width` therefore asserts the near-miss it *can*
+construct: `verdict: "WITHIN"` with `max_abs_diff_ten_thousandths` 0 and `byte_identical` **false**,
+so a fixture that ever became byte-identical is a diff here rather than a silently changed verdict.
+
+### C14 — `buffer_alignment` and `window_fits` are tri-state
+
+Section 3.8 declares `buffer_alignment` an integer and `window_fits` a boolean, and section 3.9
+reads the first at step 21 and computes the second at step 21a. An error document from step 20b —
+`R5C_NO_HOST_PTR`, which returns before either — published `0` and `false`, which read as a device
+declaring no alignment and a window that does not fit. Neither was measured.
+
+**Shipped:** both are `-1` until the step that evaluates them runs, exactly as `device.type_id`
+already is, and `window_fits` is therefore an **integer** `-1`/`0`/`1` in the document rather than a
+boolean. `1` is the only value that means the check ran and passed.
+
+**Cases:** `gf-no-gpu` (step 20a) and `gf-no-host-ptr` (step 20b) assert `-1` for both fields;
+`gf-device-limit` asserts the evaluated `0`; every successful `gf-gpu-*` case and the qualification
+assert `1`.
+
+### C15 — the shim's wrap gate refused only a limit it could read
+
+`align_ggml_buffer_from_host` is the fail-closed second gate over section 2.6's segfault, and its
+length rule was `if (max_size > 0 && size > max_size)`. `align_ggml_device_buft_max_size` returns a
+**negative shim status** for a null device or an ABI drift, and on a negative status that condition
+is false — the gate fell through to the call it exists to prevent.
+
+**Shipped:** `if (max_size <= 0 || size > max_size)` in both C files, which is the same fail-closed
+reading correction C1 gives a capability flag that is not exactly `1`: a limit this file cannot read
+is not a limit it will wrap past.
+
+### C16 — the qualification asserts the contract and prints the host
+
+Section 5.2's assertion table pins `device.name == "MTL0"` and
+`device.buffer_max_size == 9534832640`, both of which are section 2.1's readings of one Apple M1,
+and indexes `schedule[27]` by its literal position. A different Mac would fail this qualification
+for a reason that is not a defect, and a model with a different layer count would fail with an
+`IndexError`.
+
+**Shipped:** the three properties R5C actually depends on stay hard — a device of type GPU
+(`type_id == 1`), `buffer_from_host_ptr` true, and `window_fits == 1` — plus
+`buffer_alignment == 32` and `buffer_max_size >= window.bytes`, which is the bound step 21a checks.
+The device's name and its maximum buffer length are **printed** with the window's share of it, the
+narrowed layer is the last schedule row rather than row 27, and the two instrument paths are
+validated as regular executable files rather than by `[ -x ]`, which is true of every searchable
+directory.
+
+### C17 — `ALIGN_LLM_GGML_BACKEND_DIR` was declared and never used
+
+Section 5.2 declares it "where the backend plugins are dlopened from" and the runner validated it
+and then ignored it: `ggml_backend_load_all` searches the executable's directory, the working
+directory, and the `GGML_BACKEND_DIR` compiled into libggml, none of which this variable reaches.
+The qualification could therefore name one install and exercise another.
+
+ggml's own hook is the **`GGML_BACKEND_PATH`** environment variable, confirmed present in the
+0.21.0 library this host links against, and it names **one backend library file** rather than a
+directory. **Shipped:** `scripts/run-metal-forward` resolves `libggml-metal.so`/`.dylib` inside the
+declared directory, exports `GGML_BACKEND_PATH` for the shim's own `ggml_backend_load_all` call, and
+prints the file it loaded; a directory holding no Metal plugin is a new `N/A` line naming it. The
+shim is unchanged — it reads the variable from the environment this script exports, which keeps
+correction C3's rule that no shim behaviour depends on the environment at **build** time.
+
+No hosted case can assert this: `make layer-forward-smoke` runs the stub shim and loads no backend
+at all. The device probe the runner already performs before packing is what observes the result.
+
+### C18 — the owner's trap restores the shim, as the qualification's does
+
+`scripts/run-layer-forward-smoke` rebuilds `build/lib/libalign_ggml_shim` with
+`ALIGN_LLM_GGML_FORCE=...` flavours in all three of its blocks and restored the ordinary stub only
+on each block's success path. An unhandled exception, a failed assertion, or a signal inside a
+forced-failure loop left a `-DALIGN_GGML_FORCE_*` library in shared state outside the work tree for
+whatever ran next. **Shipped:** the runner's `EXIT`/`HUP`/`INT`/`TERM` trap restores the ordinary
+shim before removing the work tree, guarded so an ordinary exit pays for no rebuild — which is
+`r5a-dense-layer-forward.md` correction C22's rule applied to the owner as well as to
+`scripts/run-metal-forward`.
+
 ### Cell-to-case map
 
 Every applicable closure cell of section 4, mapped to the implementing function and the exact case
@@ -1440,7 +1615,7 @@ that covers it. `S` runs in `make layer-forward-smoke`; `Q` runs in
 | 4.2 formation — no stage reshaped | `DeviceSelection` threaded through `execute` | `S` `arm-r5b-unchanged`, and **every R5A and R5B golden regenerates byte-identically** |
 | 4.2 success — one schedule, two devices | `stage_read_block`, `carry_residual` untouched | `S` both arms' `schedule[]` agree on the synthetic model; `Q` 30 fills and 339 placements on both |
 | 4.2 success — window sizing device-independent | `stage_window` | `S` `window.bytes` equal across arms; `Q` `447086592` on both |
-| 4.2 failure — R5B's codes reachable from the GPU arm | `stage_*` | `S` `gf-gpu-type`, `gf-gpu-alignment`, `gf-source-diverged`, `gf-transcript-*`, `gf-logits-*` |
+| 4.2 failure — R5B's codes reachable from the GPU arm | `stage_*` | `S` `gf-gpu-alignment`, `gf-source-diverged`, `gf-transcript-*`, `gf-logits-*` (`gf-gpu-type` was dropped as a duplicate — C11) |
 | 4.2 cleanup | section 3.10's order | `S` and `Q` `lifetime.graph_balance_failures` 0 on both arms |
 | 4.3 formation — arm selection | first operand, before path work | `S` `gf-arm-unknown-flag`, `gf-arity-7` → no document |
 | 4.3 formation — device through the registry | `execute` step 20a | `S` `gf-no-gpu`; `Q` `device.name == "MTL0"`, `type_id == 1` |
@@ -1456,9 +1631,9 @@ that covers it. `S` runs in `make layer-forward-smoke`; `Q` runs in
 | 4.4 transcript — grammar, coverage, element count | `scan_transcript`, `prepare_transcript` | `S` `gf-transcript-garbage`, `gf-transcript-missing-layer` |
 | 4.4 transcript — `kq-L` `ne0` | step 30 | `S` `gf-transcript-kv-width` → `R5_ORACLE_SHAPE` |
 | 4.4 transcript — elements deliberately not compared | step 31 | `S` `gf-gpu-transcript` and `gf-transcript-perturbed` both `N/A_DEVICE`/0 with `status: ok`; `Q` the same |
-| 4.4 logits — file shape | step 32 | `S` `gf-logits-short`, `gf-logits-missing` |
+| 4.4 logits — file shape | step 32 | `S` `gf-logits-short`, `gf-logits-missing`; and C12's reference-element rule, `S` `gf-logits-nonfinite`, `gf-logits-nan` → `R5_LOGITS_NONFINITE`, and their `mf-` twins on the CPU arm |
 | 4.4 logits — the tolerance verdict | `compare_logits` | `S` `gf-gpu-logits`, `gf-gpu-runtime-width`; `Q` **`WITHIN`, max 2,936 tt, argmax 671 both, top-10, 0 over half** |
-| 4.4 logits — a real failure is not `WITHIN` | `compare_logits` | `S` `gf-logits-perturbed`: a 1.0 shift keeps the argmax and the whole top ten and is `FAIL` |
+| 4.4 logits — a real failure is not `WITHIN` | `compare_logits` | `S` `gf-logits-perturbed`: a 1.0 shift keeps the argmax and the whole top ten and is `FAIL`; `S` `gf-logits-huge` and `mf-logits-huge`: an out-of-range reference element is `FAIL` and never a wrapped pass (C12) |
 | 4.4 determinism is asserted | `output.sha256` | `S` three consecutive runs agree; `Q` **two runs, `b6e473e8…` both** |
 | 4.4 per-layer recorded, never gated | `schedule[].l_out_max_*` | `S` all three fields `-1` on every row of every case; `Q` the same, and all 28 layers' digests differ with `status: ok` (C4) |
 | 4.4 tolerance not silently widened | `logits_tolerance` | `S` and `Q` assert `6000`; `arm-r5b-unchanged` asserts R5B's is still `5000` |
@@ -1487,7 +1662,7 @@ its shipped operands — a reference GGUF, a transcript, `KV_WIDTH` 256, and the
 | Determinism | two consecutive runs, `output.sha256` **`b6e473e86ca903e2…` both** — section 2.3's digest, reproduced by the shipped arm |
 | Placement | **339 placements, 0 pointer-identity failures**, `verdict: "EXTERNAL"` |
 | Lifetime | `graph_balance_failures` 0, every counter balanced, **both runs exit 0** |
-| Device | `MTL0` (`Apple M1`), `type_id` 1, alignment **32**, `buffer_max_size` **9,534,832,640 B**, `buffer_from_host_ptr` true, `host_buffer` false, `window_fits` true |
+| Device | `MTL0` (`Apple M1`), `type_id` 1, alignment **32**, `buffer_max_size` **9,534,832,640 B**, `buffer_from_host_ptr` true, `host_buffer` false, `window_fits` **1** (correction C14) |
 
 The measured worst case is **2,936** ten-thousandths against section 2.3's 2,937 — one
 ten-thousandth, which is the last-place rounding of a `f64` product — so the bound section 3.7 fixed

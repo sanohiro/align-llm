@@ -35,8 +35,19 @@ root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
 
 work_dir=$(mktemp -d)
+# All three Python blocks below rebuild the shim with `ALIGN_LLM_GGML_FORCE=...` flavours, and each
+# restores the ordinary stub on its own success path. An unhandled exception, a failed assertion, or
+# a signal inside a forced-failure loop would otherwise leave a `-DALIGN_GGML_FORCE_*` library in
+# place for whatever ran next — `r5a-dense-layer-forward.md` section 6, correction C22's rule,
+# applied to this runner's own trap rather than only to `scripts/run-metal-forward`'s. This runner
+# builds into `${work_dir}/lib` (below), so the trap is the second line of defence behind
+# `rm -rf`; the guard keeps an exit that never built a shim from paying for a rebuild.
+shim_built=0
 cleanup() {
   status=$?
+  if [ "${shim_built}" = 1 ]; then
+    ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null 2>&1 || true
+  fi
   rm -rf "${work_dir}"
   exit "${status}"
 }
@@ -119,6 +130,7 @@ SCAN
 # the one file it does create in the work tree is moved out in the same step.
 shim_dir=$(ALIGN_LLM_GGML_SHIM_DIR="${work_dir}/lib" "${root_dir}/scripts/build-ggml-shim")
 export ALIGN_LLM_GGML_SHIM_DIR="${work_dir}/lib"
+shim_built=1
 # The compiler's warnings are captured rather than streamed **under the fresh worker**, exactly as
 # `Makefile`'s own `check` and `build` targets do. `src/ggml_spike.align` now imports
 # `src/layer_forward.align` and `src/layer_qwen2.align`, so one build of it writes ~22 KB of
@@ -809,16 +821,17 @@ ENGINE_CASES = [
      "R5_LOGITS_UNREADABLE"),
     ("mf-logits-perturbed",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-perturbed.bin")], ""),
-    # Section 6, correction C23. A reference carrying an infinity or a NaN is a malformed **input**
-    # and is refused with its own code before any difference is taken; a reference that is finite
-    # and beyond the representable magnitude is not an input error and resolves as a magnitude no
-    # tolerance admits. All three corrupted the published magnitude before C23.
+    # `r5b-model-prefill-forward.md` section 6, correction C23, on the arm that shares `compare_logits`.
+    # A reference carrying an infinity or a NaN is a malformed **input** and is refused with its own
+    # code before any difference is taken; a reference that is finite and beyond the representable
+    # magnitude is not an input error and resolves as a magnitude no tolerance admits. All three
+    # aborted the process before C23.
     # `MODEL_ABORT_TOKENS` and an `-inf` in element 0: the one input pair whose primary rounds to
     # exactly zero ten-thousandths against a saturated reference, which is what made
-    # `0 - difference` wrap to `i64`'s minimum. Measured at `5ab2ad0`: `status: ok`,
-    # `max_abs_diff_ten_thousandths` **257**, a magnitude neither vector supports. The transcript
-    # position is `-` because this token list is not the one the checked-in transcript was captured
-    # for.
+    # `0 - difference` wrap to `i64`'s minimum and index the histogram with it. Measured at
+    # `5663d8f`: `exit 134`, no document, `index out of bounds: the len is 65537 but the index is
+    # -9223372036854775808`, on this arm and on the other one. The transcript position is `-`
+    # because this token list is not the one the checked-in transcript was captured for.
     ("mf-logits-nonfinite",
      [ARM, PACK, GEOM, "1,25,5", "-", SOURCE, "-", "3", path("model-logits-neg-inf.bin")],
      "R5_LOGITS_NONFINITE"),
@@ -1091,6 +1104,30 @@ if within["compared_pass"] != "runtime" or within["verdict"] != "WITHIN" \
         or within["argmax_primary"] != within["argmax_reference"] \
         or within["top_k_agreement"] != 10 or within["tolerance_ten_thousandths"] != 5000:
     failures.append("mf-engine-runtime-width: %r" % within)
+# `r5c-metal-prefill.md` section 6, correction C13: the runtime row of R5B's section 3.7 table is
+# `WITHIN` and nothing else, so agreement to four decimal places is `WITHIN` here rather than
+# `IDENTICAL`. Byte-identity itself is not constructible hosted for correction C9's reason — a
+# pure-Python second implementation does not share the engine's `expf`, `sinf`, and `cosf` — and
+# `byte_identical` is asserted false so a fixture that ever became byte-identical is a diff here
+# rather than a silently changed verdict.
+if within["byte_identical"] or within["max_abs_diff_ten_thousandths"] != 0:
+    failures.append("mf-engine-runtime-width: %r is no longer C9's near-miss reference" % within)
+
+# Correction C12's three references. The two malformed ones are refused with a document and the
+# out-of-range one is a `FAIL` with `status: ok`, so neither can wrap into a false `WITHIN`.
+for case in ("mf-logits-nonfinite", "mf-logits-nan"):
+    document = json.loads(produced[case])
+    if document["error_detail"] != "elements[1]":
+        failures.append("%s: detail %r, not the count of non-finite reference elements"
+                        % (case, document["error_detail"]))
+# `R5_MODEL_FORWARD`'s block carries no distribution fields — those are R5C's additions to
+# `R5_MODEL_FORWARD_GPU` (section 3.8) — so the CPU arm asserts the verdict and the magnitude, and
+# `gf-logits-huge` below asserts the mean and the count of elements over half a unit.
+huge = json.loads(produced["mf-logits-huge"])
+if huge["status"] != "ok" or huge["oracle_logits"]["verdict"] != "FAIL" \
+        or huge["oracle_logits"]["max_abs_diff_ten_thousandths"] \
+        <= huge["oracle_logits"]["tolerance_ten_thousandths"]:
+    failures.append("mf-logits-huge: %r" % huge["oracle_logits"])
 
 # Section 6, correction C23's three references. The two malformed ones are refused with a document
 # and the out-of-range one is a `FAIL` with `status: ok`, so neither can wrap into a false `WITHIN`
@@ -1342,6 +1379,24 @@ GPU_CASES = [
     # cannot pass it.
     ("gf-logits-perturbed",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-perturbed.bin")], ""),
+    # Section 6, correction C12, on the arm the tolerance belongs to. `compare_logits` is shared, so
+    # these three cover the same code as the `mf-logits-*` rows above; they run here because the
+    # verdict they produce is the one this arm's 6,000-ten-thousandth bound would otherwise have
+    # been asked to absorb, and because a wrapped magnitude aborted **both** arms before C12.
+    # `MODEL_ABORT_TOKENS` and an `-inf` in element 0: the one input pair whose primary rounds to
+    # exactly zero ten-thousandths against a saturated reference, which is what made
+    # `0 - difference` wrap to `i64`'s minimum and index the histogram with it. Measured at
+    # `5663d8f`: `exit 134`, no document, `index out of bounds: the len is 65537 but the index is
+    # -9223372036854775808`, on this arm and on the other one. The transcript position is `-`
+    # because this token list is not the one the checked-in transcript was captured for.
+    ("gf-logits-nonfinite",
+     [ARM, PACK, GEOM, "1,25,5", "-", SOURCE, "-", "3", path("model-logits-neg-inf.bin")],
+     "R5_LOGITS_NONFINITE"),
+    ("gf-logits-nan",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-nan.bin")],
+     "R5_LOGITS_NONFINITE"),
+    ("gf-logits-huge",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-huge.bin")], ""),
 ]
 
 # The two remaining new codes, each from its own shim build (section 4.5).
@@ -1506,6 +1561,11 @@ for name, operands, expected in GPU_CASES:
         failures.append("%s: device %r" % (name, device))
     if not device["buffer_from_host_ptr"] or device["buffer_alignment"] != 32:
         failures.append("%s: device capabilities %r" % (name, device))
+    # Section 6, correction C14: `window_fits` is tri-state. An error document raised before step
+    # 21a carries `-1`, "not evaluated", and only a run that reached the check carries `0` or `1`.
+    if device["window_fits"] not in (-1, 0, 1):
+        failures.append("%s: window_fits %r is not the tri-state -1/0/1"
+                        % (name, device["window_fits"]))
     if document["status"] != "ok":
         continue
     graph = document["graph"]
@@ -1540,7 +1600,7 @@ for name, operands, expected in GPU_CASES:
     if window["reuse_count"] != 4:
         failures.append("%s: the window was filled %d times, not once per block"
                         % (name, window["reuse_count"]))
-    if not device["window_fits"] or window["bytes"] > device["buffer_max_size"]:
+    if device["window_fits"] != 1 or window["bytes"] > device["buffer_max_size"]:
         failures.append("%s: window_fits %r against max %d"
                         % (name, device["window_fits"], device["buffer_max_size"]))
     if len(document["schedule"]) != 2:
@@ -1607,6 +1667,21 @@ if broken["status"] != "ok" or broken["oracle_logits"]["verdict"] != "FAIL" \
         or broken["oracle_logits"]["top_k_agreement"] != 10:
     failures.append("gf-logits-perturbed: %r" % broken["oracle_logits"])
 
+# Section 6, correction C12: an unrepresentable element can never be `WITHIN`, and a malformed
+# reference is an input error with a document rather than a verdict.
+for case in ("gf-logits-nonfinite", "gf-logits-nan"):
+    document = json.loads(produced[case])
+    if document["error_detail"] != "elements[1]":
+        failures.append("%s: detail %r, not the count of non-finite reference elements"
+                        % (case, document["error_detail"]))
+    if document["oracle_logits"]["verdict"] != "-":
+        failures.append("%s: a refused reference must publish no verdict, got %r"
+                        % (case, document["oracle_logits"]["verdict"]))
+huge = json.loads(produced["gf-logits-huge"])["oracle_logits"]
+if huge["verdict"] != "FAIL" or huge["max_abs_diff_ten_thousandths"] <= 6000 \
+        or huge["elements_over_half"] != 2 or huge["mean_abs_diff_ten_thousandths"] < 0:
+    failures.append("gf-logits-huge: an out-of-range reference must not be WITHIN: %r" % huge)
+
 # Both output forms emit byte-identical document bytes, and three consecutive runs agree — which is
 # the hosted half of section 3.7's determinism contract.
 document_path = os.path.join(work_dir, "model-gpu.json")
@@ -1646,11 +1721,25 @@ if limit is not None:
     if limit["window"]["wrap_count"] != 0:
         failures.append("gf-device-limit: the window was wrapped %d times before the limit check"
                         % limit["window"]["wrap_count"])
-    if limit["device"]["window_fits"]:
-        failures.append("gf-device-limit: window_fits is true for a window over the limit")
+    if limit["device"]["window_fits"] != 0:
+        failures.append("gf-device-limit: window_fits %r, not the evaluated 0 for a window over "
+                        "the limit" % limit["device"]["window_fits"])
 no_host = forced_documents.get("gf-no-host-ptr")
-if no_host is not None and no_host["device"]["buffer_from_host_ptr"]:
-    failures.append("gf-no-host-ptr: the capability flag is still true")
+if no_host is not None:
+    if no_host["device"]["buffer_from_host_ptr"]:
+        failures.append("gf-no-host-ptr: the capability flag is still true")
+    # Correction C14, and this case is what forced it: step 20b returns before step 21 reads the
+    # alignment and before step 21a compares the window, so both fields must say so.
+    if no_host["device"]["buffer_alignment"] != -1 or no_host["device"]["window_fits"] != -1:
+        failures.append("gf-no-host-ptr: a step 20b document claims alignment %r and window_fits "
+                        "%r, neither of which it evaluated"
+                        % (no_host["device"]["buffer_alignment"],
+                           no_host["device"]["window_fits"]))
+gpu_absent = json.loads(produced["gf-no-gpu"])
+if gpu_absent["device"]["buffer_alignment"] != -1 \
+        or gpu_absent["device"]["window_fits"] != -1:
+    failures.append("gf-no-gpu: a step 20a document claims device values it never read: %r"
+                    % gpu_absent["device"])
 teardown = forced_documents.get("gf-teardown-partial")
 if teardown is not None:
     lifetime = teardown["lifetime"]
@@ -1686,6 +1775,7 @@ REQUIRED_CODES = {
     "R5_TOKENS", "R5_KV_WIDTH", "R5_GEOMETRY_UNREADABLE", "R5_GEOMETRY", "R4_PACK_UNREADABLE",
     "R5_GGML_UNAVAILABLE", "R5_ALIGNMENT", "R5_COMPUTE", "R5_SOURCE_DIVERGED", "R5_TRANSCRIPT",
     "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE", "R5_LOGITS_UNREADABLE", "R5_LOGITS_SHAPE",
+    "R5_LOGITS_NONFINITE",
     "R5C_GPU_UNAVAILABLE", "R5C_NO_HOST_PTR", "R5C_DEVICE_BUFFER_LIMIT",
 }
 missing_codes = REQUIRED_CODES - codes

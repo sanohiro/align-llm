@@ -174,22 +174,27 @@ The current forward delivery order is:
     consolidated repair commit `b5b2db8` and the final-review commit `5ab2ad0`, with the branch
     rebased onto the merged R5A and publication in progress.
 17. **R5C-METAL-PREFILL-ARM — the same Align-owned window, handed to Metal. Active.** On branch
-    `agent/r5c-metal-prefill` at ledger commit `e375eec`, continuing R5B.
+    `agent/r5c-metal-prefill` at implementation commit `5663d8f`, continuing R5B.
     [`r5c-metal-prefill.md`](r5c-metal-prefill.md) is the authoritative plan and owns the probe
     record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
     deferrals, risks, and candidate-request sections. `ggml-spike --model-forward-gpu` is a new arm
     of the same executable, taking R5B's schedule and operand grammar unchanged and handing the
     same Align-owned weight window to the Metal device through
     `ggml_backend_dev_buffer_from_host_ptr` instead of to the CPU backend, emitting a new
-    `R5_MODEL_FORWARD_GPU`, `schema_version: 1` document. **Design is complete with probe evidence;
-    implementation is in progress.** The probe record discharges required microbenchmark A (section
-    R5 below) on unified memory: Metal is bit-deterministic (five consecutive full-model runs
-    byte-identical), the whole-model logits reach max `|Δ|` 2,937 ten-thousandths against R5B's
-    byte-identical CPU vector with `argmax` 671 and the whole top ten identical in order, and the
-    end-to-end wall is a measured 1.20× slower than the CPU arm (2,491.3 ms against 2,074.3 ms) —
-    a negative result recorded as the cost ceiling before implementation, not a ceiling-estimation
-    miss. Required microbenchmark C (async prefetch + GPU compute) cannot be written at this pin and
-    is deferred with Request 41 named (`docs/align-requests.md`).
+    `R5_MODEL_FORWARD_GPU`, `schema_version: 1` document. **Implementation is committed and
+    qualified on a Metal host** (ledger section 7). Required microbenchmark A (section R5 below) is
+    discharged on unified memory: Metal is bit-deterministic (two consecutive shipped-arm runs and
+    five probe runs byte-identical), the whole-model logits reach max `|Δ|` 2,936 of 6,000
+    ten-thousandths against R5B's byte-identical CPU vector with `argmax` 671, the whole top ten
+    identical in order, and zero of 152,064 elements over half a unit, and the self-reference oracle
+    is byte-exact at 479 of 479 nodes over 30 graphs. The transfer copies **zero bytes** and costs
+    **12.4 ms per 447,086,592 B wrap, 732 ms over the shipped arm's 59 wraps**; GPU compute at the
+    reconciliation width is **375 ms against the CPU's 486 ms**. End to end the three paired runs
+    are 1.31×, 0.99×, and 1.05× (median **1.05×**) and that spread is `pread`'s, so the ratio is
+    **recorded as unresolved rather than claimed** — the cost ceiling was recorded as negative
+    before implementation, so this is not a ceiling-estimation miss. Required microbenchmark C
+    (async prefetch + GPU compute) cannot be written at this pin and is deferred with Request 41
+    named (`docs/align-requests.md`).
 
 **I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
 prove its value on an existing model, and the merged C6-MEASURED wave (align-llm PR #103, `c9a510d`)
@@ -747,15 +752,20 @@ microbenchmarkのうちBはR5Bが**whole-model scale**で達成（six-token pref
 wall 1.07-1.12 s、compute 349.6 ms、pread 533 ms/4,370,571,072 B。実装済みarmは
 wall 1,141-1,275 ms、compute 484-620 ms、pread 515-648 ms、447,086,592 Bのwindow 1つ、warm）。
 必須microbenchmarkのうちAはR5C-METAL-PREFILL-ARM（`docs/specs/r5c-metal-prefill.md`）が
-unified memory上で対象とし、designはprobe証跡付きで完了、実装は進行中である。R5Bと同一の
-Align-owned window（447,086,592 B）をMetal deviceへ`ggml_backend_dev_buffer_from_host_ptr`
-経由で渡す設計で、339配置すべてがexternalかつzero-byte copyだが、この「transfer」は
-wrap（`ggml_backend_dev_buffer_from_host_ptr`の呼び出し自体）として測定され、30 wrapで
-**354.8 ms**（CPU比0.075 ms）を要する。byte-identicalなCPU logits vector（`d2e48620…`）に対し
-max`|Δ|` 2,937 ten-thousandths、argmax 671、top-10完全一致で、6,000 ten-thousandthsの
-toleranceに収まる（測定値の2倍を切り上げ）。end-to-endではCPU比**1.20倍遅い**という結果を
-そのまま公開する——実装前に記録したcost ceilingが負の値だったため、GPUが遅いという結果は
-ceiling-estimation missではなく、microbenchmark Aの正直な結果として許容される。Cは`spawn`
+unified memory上で達成した。実装はcommit済みでMetal host上のqualificationも完了している
+（ledger section 7）。R5Bと同一のAlign-owned window（447,086,592 B）をMetal deviceへ
+`ggml_backend_dev_buffer_from_host_ptr`経由で渡し、339配置すべてがexternalかつzero-byte copyだが、
+この「transfer」はwrap（`ggml_backend_dev_buffer_from_host_ptr`の呼び出し自体）として測定され、
+実装されたarmは1 wrapあたり**12.4 ms**、runtime passとreconciliation passの両方を走らせるため
+59 wrapで**732 ms**を要する（correction C7。section 2.7のsingle-pass probeは30 wrapで354.8 ms、
+CPU比0.075 ms）。byte-identicalなCPU logits vector（`d2e48620…`）に対しmax`|Δ|`
+**2,936 ten-thousandths**、argmax 671、top-10完全一致、152,064要素中0.5超はゼロで、
+6,000 ten-thousandthsのtoleranceに収まる（測定値の2倍を切り上げ）。reconciliation幅のcompute
+自体はGPU **375 ms**対CPU **486 ms**だが、end-to-endのwall比は3組のpairで1.31倍／0.99倍／
+1.05倍（中央値**1.05倍**）と散らばり、その散らばりは`pread`由来であるため
+**未確定として記録し、結果としては主張しない**——実装前に記録したcost ceilingが負の値だったため、
+GPUが速くならないという結果はceiling-estimation missではなく、microbenchmark Aの正直な結果
+として許容される。Cは`spawn`
 closureが所有値（`buffer`）をcaptureできず、captureしたタスクが値を返すこともできないため
 この pinでは書けず、Request 41としてAlign capability requestに記録した上でdeferされる
 （`docs/align-requests.md`、`r5c-metal-prefill.md` section 2.10・5.5）。discrete VRAMは

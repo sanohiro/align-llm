@@ -806,9 +806,14 @@ void *align_ggml_buffer_from_host(void *device, void *ptr, int64_t size) {
     }
     /* R5C section 2.6 measured `exit 139`: an oversize wrap does not return `NULL`, it segfaults.
      * `src/model_forward.align` refuses the window at step 21a before the first wrap; this is the
-     * fail-closed second gate, in the same shape as the alignment rule above it. */
+     * fail-closed second gate, in the same shape as the alignment rule above it.
+     *
+     * Section 6, correction C15: a non-positive `max_size` is a **negative shim status** or a
+     * device that reports no limit at all, and either one is a limit this file cannot check. The
+     * gate refuses rather than passing the length through, which is the same fail-closed reading
+     * `device_flag` gives a capability that is not exactly `1` (correction C1). */
     max_size = align_ggml_device_buft_max_size(device);
-    if (max_size > 0 && size > max_size) {
+    if (max_size <= 0 || size > max_size) {
         return NULL;
     }
     return (void *) ggml_backend_dev_buffer_from_host_ptr(
