@@ -82,8 +82,17 @@ end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
 #
 # The wall-clock and log-size limits below are the belt to that suspenders: the observed failure
 # without `-st` was 461 MB of log and a 300 s hang, and a future reference build must not be able to
-# recreate it from inside this runner. Bash counts `ulimit -f` in 1024-byte blocks, so 8,192 caps
-# the log at 8 MiB and a run that exceeds it dies on SIGXFSZ; the recorded build writes 237 KB.
+# recreate it from inside this runner. Bash counts `ulimit -f` in 1024-byte blocks, so 262,144 caps
+# every file the reference writes at 256 MiB and a write past it dies on SIGXFSZ.
+#
+# The cap bounds *every* file the reference process creates, not only the log this runner redirects.
+# On a Metal host `llama-cli` also writes its compiled shader pipeline cache — 12-35 MB per file on
+# the recorded build (`0.2.0 (build 10566, commit bb4caa754)`) — and a cold cache is therefore the
+# larger writer by two orders of magnitude even though the log itself is 125 KB for the olmoe model
+# and 237 KB for the qwen one. An earlier 8,192-block (8 MiB) cap killed the reference with SIGXFSZ
+# mid-compile, reported here only as "the reference reader exited 153", on any run that found the
+# pipeline cache cold. 256 MiB clears the largest observed cache file with wide margin and still
+# sits far below the 461 MB runaway log the cap exists to prevent.
 # `timeout` is used when the host has it (GNU coreutils, `gtimeout` on Homebrew) and skipped
 # otherwise, because a missing optional utility must not turn a qualification into a false failure.
 # The 124 diagnostic below is therefore reported only when a wrapper was actually used: without one,
@@ -95,7 +104,7 @@ elif command -v gtimeout >/dev/null 2>&1; then
   reference_timeout="gtimeout 300"
 fi
 (
-  ulimit -f 8192
+  ulimit -f 262144
   exec $reference_timeout "$reference" -m "$model" -v -n 0 --no-warmup -st -p hi \
     </dev/null >"$temp_dir/reference.log" 2>&1
 ) || {

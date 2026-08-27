@@ -338,9 +338,14 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > the gate met in the prefill direction, and **R1C-OLMOE-MOE-IR**
 > (`docs/specs/r1c-olmoe-moe-ir.md`, design ledger commit `5a15fd7`) implemented a new
 > `src/frontend_olmoe.align` and a three-way architecture dispatch and is now in publication.
-> Neither consumes a `PROPOSED` request; R1C's design section 5.4 records that no new genuine Align gap is expected and that
-> `src/frontend_olmoe.align` becomes a third client of the already-`PROPOSED`, non-blocking
-> Request 23. `gpt-oss-20b-mxfp4.gguf` (12.1 GB) is now recorded **infeasible on this host** (disk
+> Neither consumes a `PROPOSED`
+> request; R1C's design section 5.4 records that no new genuine Align gap is expected and that
+> `src/frontend_olmoe.align` becomes **the third frontend** at which the already-`PROPOSED`,
+> non-blocking Request 23 misfires — not a third client, since this register already carries four
+> (`GgufTable`, `BlockPlan`, `TranscriptScan`, `PackPlan`). R1C is now implemented at
+> `eb868ba`, and the shipped evidence is under Request 23 below: the warnings land on the
+> frontend's three `borrow … : gguf.GgufTable` parameters, not on the `borrow BlockPlan` the
+> design ledger predicted, and no new genuine Align gap was encountered. `gpt-oss-20b-mxfp4.gguf` (12.1 GB) is now recorded **infeasible on this host** (disk
 > free ~16 GiB after the olmoe download) and remains the next consumer for R1B's real-model
 > `model-ir-parity` qualification whenever a host with more free space is available; a source build
 > of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch is still the next consumer for
@@ -6634,7 +6639,8 @@ Align commit or pull request: none
 align-llm verification: pending — `make check` emits no "huge struct copy" warning for a
   `borrow`/`borrow mut` parameter, specifically none for
   `src/expert_trace.align:1622` (`borrow t: TranscriptScan`), the ten
-  `borrow t: GgufTable` accessors in `src/gguf.align`, or the fourteen
+  `borrow t: GgufTable` accessors in `src/gguf.align`, the three
+  `borrow … : gguf.GgufTable` parameters in `src/frontend_olmoe.align`, or the fourteen
   `borrow p: PackPlan` sites in `src/alignpack.align` (`:1261:50`, `:1317:56`,
   `:1331:57` and eleven more), while the by-value warnings the lint
   legitimately owns are unchanged
@@ -6770,6 +6776,44 @@ Line 1261 is `fn encode_header(borrow mut b: buffer, borrow p: PackPlan)`, line 
 legitimately owns is unaffected: `src/alignpack.align:1376:22` (`empty_header` returning a 160-byte `PackHeader`)
 and `:498:20` (`empty_plan` returning the 480-byte `PackPlan`) are real owned returns and are
 correctly reported.
+
+**Fifth client — and the third *frontend* — from R1C-OLMOE-MOE-IR, now implemented at `eb868ba`.**
+`src/frontend_olmoe.align` is the olmoe Model IR frontend. It never declares a wide record of its
+own: it *builds* a `model_ir.BlockPlan` and moves it into `model_ir.Prepared`, so the design ledger's
+prediction that it would trip the lint on a `borrow BlockPlan` parameter was wrong
+(`docs/specs/r1c-olmoe-moe-ir.md` section 6 item 10). It trips it instead on the record it reads —
+`gguf.GgufTable`, 552 bytes — at all three of its `borrow` parameters, one private and two public.
+`gmake check` at the pinned toolchain emits, verbatim:
+
+```text
+src/frontend_olmoe.align:64:32: warning: huge struct copy: `gguf$GgufTable` (552 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+src/frontend_olmoe.align:182:37: warning: huge struct copy: `gguf$GgufTable` (552 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+src/frontend_olmoe.align:189:30: warning: huge struct copy: `gguf$GgufTable` (552 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+```
+
+Reproduction:
+
+```sh
+export LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib
+gmake check 2>&1 | grep 'frontend_olmoe.align.*huge struct copy'
+```
+
+Line 64 is `fn kv_text_decodable(borrow t: gguf.GgufTable, key: str) -> bool`, line 182 is
+`pub fn build_model_ir(borrow table: gguf.GgufTable, path: str) -> model_ir.ModelIr`, and line 189 is
+`pub fn prepare(borrow table: gguf.GgufTable) -> model_ir.Prepared`. None of the three copies the
+table: `src/main.align` reads it once per invocation into one local and borrows it into whichever
+frontend the architecture selects. The evidence value of this client is that the *same* struct type
+now demonstrates the defect from two independent modules — `src/gguf.align`'s own accessors and a
+consumer that only borrows it across a module boundary — so the misfire is a property of the lint's
+parameter loop and not of one module's style. The by-value branch the lint legitimately owns is
+correct in the same file and is quoted here only so it is not mistaken for evidence:
+`src/frontend_olmoe.align:182:67` (returning `model_ir$ModelIr`, 176 bytes) and `:189:49` (returning
+`model_ir$Prepared`, 568 bytes) are genuine owned returns.
+
+The count is now five clients across four wide records (`GgufTable`, `BlockPlan`, `TranscriptScan`,
+`PackPlan`) and every architecture frontend in the repository. The status stays `PROPOSED` and
+`Blocking: no`; no workaround is written, and none of these sites is restructured to silence a
+diagnostic that is wrong about them.
 
 ### Requested capability
 

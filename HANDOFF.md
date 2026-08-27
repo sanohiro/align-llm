@@ -22,8 +22,10 @@ and two roles appended to the frozen `role_id` list, `attn_q_norm` (27) and `att
 guarded by a three-list mirror regression. Per-expert claims tile the stacked tensors, including
 layers that mix Q4_K and Q6_K. The size-sum oracle closes at
 `1,781,760 + 4,211,730,432 = 4,213,512,192` on the real file, and the Block IR reaches 1,058 blocks
-/ 3,219 claims. `src/model_ir.align` and the GGUF reader need **no change**, proven by 284
-differential invocations rather than asserted.
+/ 3,219 claims. `src/model_ir.align` and `src/gguf.align` are **byte-unchanged**, proven by 284
+differential invocations rather than asserted. The ledger's section 3 closure matrix is discharged
+(section 6.1 maps every cell to its shipped case, and section 6 records eleven corrections to the
+plan).
 
 **R1B corrections 16-18.** The real model contradicts rather than confirms two of R1B's `ASSUMED`
 rows: the stacked gate/up/down axis order is reversed versus R1B's gpt-oss assumption, and R1B's
@@ -36,16 +38,39 @@ settle it (decision (b) is infeasible on this host).
 (implementation), `58e9ba9` (review repair), plus the reconciliation commit that rebases onto the
 merged locality gate. No `Makefile` change, so the classifier stays in hosted scope.
 
-**Review.** Two complementary reviewers covered disjoint risks at `eb868ba`. Reviewer A approved
-with 3 nits; reviewer B approved with changes, 3 medium and 1 low. All 7 findings were accepted and
-repaired in `58e9ba9`; no valid finding is open. The reconciliation commit is documentation-only.
+**Review envelope.** Two complementary reviewers covered the implementation head `eb868ba` for
+explicitly disjoint risks. Reviewer A: approve, three nit findings (the block-explosion guard always
+naming `olmoe.expert_count`; section 2.6's key-order sentence read across steps rather than within
+one; `role_required` ignoring its parameter). Reviewer B: approve with changes, three medium and one
+low (section 4.5 calling the real model's 2,097,152-byte `bytes_read` one window when it is two;
+`docs/align-requests.md` Request 23 carrying no R1C evidence block and the ledger calling the
+frontend a "third client"; `HANDOFF.md`, `docs/specs/roadmap.md` item 18 and its Japanese section R1,
+and `docs/align-development.md` still describing R1C as unimplemented; the parity runner's `ulimit -f`
+bounding the Metal shader cache). All seven findings were accepted, none rejected, and all are
+repaired in one consolidated commit on top of `eb868ba`. The repair is narrow — a diagnostic detail
+key with its fixture, one enumerated function, one runner limit, and documentation — so it does not
+trigger a second comprehensive review, and the reconciliation commit onto the merged locality gate
+is documentation-only.
 
-**Verification.** `gmake check` PASS (30 units). `gmake model-ir-smoke` PASS (49 / 31 / 29 / 62
-cases). `gmake alignpack-smoke` PASS (27 / 128 / 20,280 cases). `scripts/run-model-ir-parity` olmoe
-15 rows plus census PASS, qwen 14 rows PASS. `gmake build`, `gmake expert-trace-smoke`,
-`gmake gate-topology-check`, `gmake format-check` PASS; `gmake fmt` no diff; `git diff --check`
-clean. Host note: raise `ulimit -f` to at least 256 MiB before a build, or the Metal shader cache
-write fails.
+**Verification.** Durable owner evidence at the repaired head, all four PASS on this macOS host with
+the recorded Homebrew `LIBRARY_PATH` (`docs/align-development.md`):
+
+```text
+gmake check              ok: checked 30 unit(s) per-unit
+gmake model-ir-smoke     PASS — 49 qwen, 31 gpt-oss, 29 olmoe, 62 R0 fixtures re-run
+gmake alignpack-smoke    PASS — 27 positive fixtures, 128 negative sources, 20,280 assertions
+gmake model-ir-parity    PASS (olmoe) — 15 compared rows, type census f32 81 / q4_K 97 / q6_K 17,
+                         coverage 195 of 195 over 1,058 blocks, bytes_read 2,097,152
+                         PASS (qwen2) — 14 compared rows, coverage 339 of 339 over 58 blocks
+```
+
+Both parity runs point `ALIGN_LLM_LLAMA_CLI` at the Homebrew `llama-cli`, the recorded reference
+build `0.2.0 (build 10566, commit bb4caa754)`. The runner's `ulimit -f` is now 262,144 blocks
+(256 MiB) rather than 8,192: it bounds every file the reference writes, and on a Metal host that
+includes `llama-cli`'s 12-35 MB shader pipeline cache, which killed the reference with SIGXFSZ on any
+cold-cache run under the old 8 MiB cap (ledger section 6 item 9). `gmake build`,
+`gmake expert-trace-smoke`, `gmake gate-topology-check`, and `gmake format-check` also PASS after
+the rebase; `gmake fmt` leaves no diff and `git diff --check` is clean.
 
 **Observation, not a claim.** The real model produces 1,024 non-contiguous `ExpertBlock`s. That is
 recorded as an input to R3's residency simulation, not as a performance result; this capability
@@ -98,9 +123,10 @@ longer fits alongside the downloaded model and its alignpack space; R1B's real-m
 **Align capability requests.** Requests 1-20 CLOSED, Requests 21-43 PROPOSED and non-blocking; none
 has merged since R0; `.align-revision` stays pinned to `4b515f8d`. Top clients by reference count in
 `docs/align-requests.md` (grep-verified against the register): Request 34 (`Result` payloads beyond
-scalars, 9 mentions), Request 21 (read-only open, 7), Requests 33 and 32 (aligned allocation; FFI
-by-value structs, 6 each) and Request 23 (huge-struct-copy lint, 5); Requests 32, 33, and 37 are also
-R5's own named clients.
+scalars, 9 mentions), Requests 21 and 23 (read-only open; huge-struct-copy lint, 7 each — Request 23
+gained R1C's evidence block, making `src/frontend_olmoe.align` its fifth client and the third
+architecture frontend to trip it), and Requests 33 and 32 (aligned allocation; FFI by-value structs,
+6 each); Requests 32, 33, and 37 are also R5's own named clients.
 
 **R2-LOCALITY-GATE merged checkpoint (PR #131, head `fff5806`, merge `546b5cc`).** The R2 gate is
 **met in the prefill direction**. `scripts/run-expert-locality-gate` over

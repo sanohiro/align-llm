@@ -1194,6 +1194,9 @@ def qwen_build(out_dir):
 
 MAX_EXPERTS = 1024
 MAX_BLOCKS = 65536
+# Mirrors the per-frontend `MAX_LAYERS` threshold; used by the olmoe corpus below to state which
+# operand of the block-explosion product is the extreme one.
+MAX_LAYERS = 512
 
 GPTOSS_BASE = {
     "n_layer": 2, "n_embd": 256, "n_head": 8, "n_head_kv": 2,
@@ -2398,11 +2401,25 @@ def olmoe_build(out_dir):
              "R1_KEY_VALUE_IMPLAUSIBLE", "olmoe.expert_used_count", blocks_len=0)
 
     # `n_layer * (2 + n_expert) + 2 = 525,314`, well past MAX_BLOCKS, with both operands individually
-    # inside their own bounds. The guard is tested in non-wrapping form before the product.
+    # inside their own bounds. The guard is tested in non-wrapping form before the product. Both
+    # operands sit exactly at their own ceilings, so the extreme-operand tie-break falls to its
+    # `olmoe.expert_count` default.
     assert 512 * (2 + 1024) + 2 > MAX_BLOCKS
+    assert 512 * MAX_EXPERTS == 1024 * MAX_LAYERS
     negative("olmoe-block-explosion", "olmoe-block-explosion.gguf",
              bare(p={"n_layer": 512, "n_expert": 1024, "n_expert_used": 4}).bytes,
              "R1_KEY_VALUE_IMPLAUSIBLE", "olmoe.expert_count", blocks_len=0)
+
+    # The same guard with `n_layer` as the extreme operand: the layer count is at its ceiling while
+    # the expert count is an eighth of its own, so the diagnostic must name `olmoe.block_count`. This
+    # is the case that a guard hard-coding `olmoe.expert_count` would misreport, and it fails only on
+    # the product — 512 layers alone and 128 experts alone are both admissible.
+    assert 512 * (2 + 128) + 2 > MAX_BLOCKS
+    assert 512 * (2 + 128) + 2 <= 2 * MAX_BLOCKS
+    assert 512 * MAX_EXPERTS > 128 * MAX_LAYERS
+    negative("olmoe-block-explosion-layers", "olmoe-block-explosion-layers.gguf",
+             bare(p={"n_layer": 512, "n_expert": 128, "n_expert_used": 8}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "olmoe.block_count", blocks_len=0)
 
     negative("olmoe-zero-layer", "olmoe-zero-layer.gguf",
              bare(p={"n_layer": 0}).bytes,

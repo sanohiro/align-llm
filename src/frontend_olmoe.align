@@ -124,8 +124,19 @@ fn role_tensor_name(role: i64, layer: i64) -> string {
 // bias members no artifact names would add member slots that can never bind. A future olmoe-family
 // file carrying a bias therefore fails as `R1_UNASSIGNED_TENSOR` — the correct fail-closed outcome —
 // and admitting it is one row here plus a fixture.
+//
+// All fifteen roles are enumerated rather than answered by a bare `return 1`, for the reason
+// `expected_shape` below is enumerated: a function that ignores its argument cannot tell a role it
+// knows from a role that did not exist when it was written. A future **optional** role must be
+// listed here returning `0`; a sixteenth role appended to `role_label` without a line here falls
+// through to the `-1` sentinel, which is nonzero and therefore still required, and which pairs with
+// `expected_shape`'s `n_dims: -1` so the omission surfaces at step 10 as `R1_MISSING_TENSOR` or
+// `R1_TENSOR_SHAPE_UNEXPECTED` instead of being silently declared required.
 fn role_required(role: i64) -> i64 {
-  return 1
+  if role == 0 || role == 1 || role == 2 || role == 3 || role == 4 { return 1 }
+  if role == 5 || role == 6 || role == 7 || role == 8 || role == 9 { return 1 }
+  if role == 10 || role == 11 || role == 12 || role == 13 || role == 14 { return 1 }
+  return -1
 }
 
 // MEASURED shapes, asserted per member. The stacked-tensor rule is visible here: every sliced member
@@ -487,10 +498,23 @@ pub fn prepare(borrow table: gguf.GgufTable) -> model_ir.Prepared {
       detail = "olmoe.expert_used_count".clone()
       break
     }
+    //
+    // The product has two operands, so the detail names the extreme one rather than always naming
+    // the expert count: a file with sixteen experts and an absurd layer count would otherwise send a
+    // reader to the key it set correctly. "Extreme" is each operand measured as a fraction of its
+    // own independent ceiling — `n_layer / MAX_LAYERS` against `n_expert / MAX_EXPERTS` — because the
+    // two ceilings differ and the raw values are not comparable. The comparison is cross-multiplied
+    // so it needs no division and cannot wrap: both products are at most `512 * 1024`. A tie names
+    // `olmoe.expert_count`, which keeps the both-at-ceiling case on the expert count the guard
+    // exists for (section 6 item 11).
     per_layer := 2 + n_expert
     if n_layer > (MAX_BLOCKS - 2) / per_layer {
       code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
-      detail = "olmoe.expert_count".clone()
+      detail = if n_layer * MAX_EXPERTS > n_expert * MAX_LAYERS {
+        "olmoe.block_count".clone()
+      } else {
+        "olmoe.expert_count".clone()
+      }
       break
     }
     break

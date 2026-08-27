@@ -554,8 +554,11 @@ that a later measurement does not mistake it for a designed property.
 ### 2.6 Validation order and error codes
 
 The order is `docs/specs/r1b-gptoss-moe-ir.md` section 2.6's, unchanged. The first applicable row
-wins, tensors are examined in file order, and metadata keys in the fixed order of the section 2.5.1
-table. No document and no stdout is produced before the derivation completes.
+wins, tensors are examined in file order, and, **within a step**, metadata keys are examined in the
+fixed order of the section 2.5.1 table. The step order below is what orders keys across steps: a
+step-7 expert bound is reached only after every step-5 and step-6 row has passed, whatever the
+section 2.5.1 table's row order says about the two keys involved. No document and no stdout is
+produced before the derivation completes.
 
 Steps 1 and 2 (`src/main.align`), 3 (`gguf.read_table`), 8 and 8b (geometry, stacked-tensor rule),
 10 (block assembly), 11 (coverage and claim tiling), and 12 (size-sum oracle) are neutral and are
@@ -568,7 +571,11 @@ reached unchanged. The olmoe frontend owns steps 4 through 7 and 9:
 6. Hyperparameter plausibility and derivation, including `head_dim` selection and every divisibility
    requirement.
 7. Expert bounds and the block-explosion guard: `n_expert` in `[1, MAX_EXPERTS]`; `n_expert_used` in
-   `[1, n_expert]`; `n_layer * (2 + n_expert) + 2 <= MAX_BLOCKS`, tested in non-wrapping form.
+   `[1, n_expert]`; `n_layer * (2 + n_expert) + 2 <= MAX_BLOCKS`, tested in non-wrapping form. The
+   product has two operands, so the explosion detail names the extreme one — the operand that is the
+   larger fraction of its own ceiling, `n_layer / MAX_LAYERS` against `n_expert / MAX_EXPERTS`,
+   cross-multiplied — reporting `olmoe.block_count` or `olmoe.expert_count` accordingly, with a tie
+   naming `olmoe.expert_count` (section 6 item 11).
 9. `n_vocab` derivation, bound, and `tokenizer.ggml.tokens` cross-check.
 
 **No new error code is introduced.** Every olmoe defect maps onto a row
@@ -599,10 +606,12 @@ the exactness reason of section 2.5.4. No fixture is invented for it.
 | `Geometry` | `model_ir.size_tensors`, called by the frontend after its step 7 | unchanged | scope `Drop` |
 | final document | `builder` moved out by `to_string()` | one owned `string` | moved into `ModelIr.document` |
 
-`BlockPlan` is the same 440-byte record, so `src/frontend_olmoe.align` becomes a third align-llm
-site at which Request 23's spurious huge-struct-copy lint fires. That is additional evidence for an
-already-`PROPOSED`, non-blocking request; it changes no status and creates no new request. Section
-5.4.
+`BlockPlan` is the same 440-byte record, so `src/frontend_olmoe.align` becomes **the third frontend**
+at which Request 23's spurious huge-struct-copy lint fires — not the third align-llm site, since the
+register already carries `GgufTable`, `BlockPlan`, `TranscriptScan`, and `PackPlan`. That is
+additional evidence for an already-`PROPOSED`, non-blocking request; it changes no status and creates
+no new request. Section 5.4, and section 6 item 10 for the parameter and the exact sites the
+implementation actually produced.
 
 **Work stays bounded, and the real model is the first non-synthetic measurement of the bound.**
 `model_ir.build` is `O(n log n)` in tensor count and `O(m log m)` in claim count. Here `n = 195` and
@@ -728,7 +737,7 @@ corpora unchanged.
 | Success — mixed per-layer type | One role with two types across layers derives, sizes, and tiles correctly, and its blocks carry different `byte_size`s | none — neutral | `olmoe-mixed-quant` |
 | Success — tied embedding | An absent `output.weight` binds `output` to `token_embd.weight`, claimed whole by two blocks | optional lookup | `olmoe-tied` |
 | Failure — expert bounds | `n_expert` and `n_expert_used` outside their bounds are `R1_KEY_VALUE_IMPLAUSIBLE` with the key as the detail | step 7 | `olmoe-expert-zero`, `olmoe-expert-used-zero`, `olmoe-expert-used-high`, `olmoe-expert-huge` |
-| Failure — block explosion | `n_layer * (2 + n_expert) + 2 > MAX_BLOCKS`, tested non-wrappingly | step 7 | `olmoe-block-explosion` |
+| Failure — block explosion | `n_layer * (2 + n_expert) + 2 > MAX_BLOCKS`, tested non-wrappingly; the detail names the extreme operand | step 7 | `olmoe-block-explosion`, `olmoe-block-explosion-layers` |
 | Failure — `head_dim` indivisible | `n_embd % n_head != 0` with no declared key is `R1_KEY_VALUE_IMPLAUSIBLE`, and `n_head % n_head_kv != 0` is the earlier row | step 6 | `olmoe-headdim-indivisible` (`n_head = 3`, `n_head_kv = 1`) |
 | Failure — stacked shape | A sliced member whose last axis is not `n_expert`, or whose dimension count is not 3, is `R1_TENSOR_SHAPE_UNEXPECTED` | step 8b | `olmoe-stacked-axis`, `olmoe-stacked-ndims` |
 | Failure — transposed expert shape | Gate/up declared `[n_ff_exp, n_embd, n_expert]` — the gpt-oss order — is rejected, pinning section 2.5.3's axis-order decision as a contract rather than a comment | step 10 | `olmoe-stacked-transposed` |
@@ -850,7 +859,8 @@ Further positive variants:
 | `olmoe-expert-type` | `olmoe.expert_count` as `STRING` | `R1_KEY_TYPE_MISMATCH` |
 | `olmoe-expert-used-zero` | `expert_used_count = 0` | `R1_KEY_VALUE_IMPLAUSIBLE` |
 | `olmoe-expert-used-high` | `expert_used_count = n_expert + 1` | `R1_KEY_VALUE_IMPLAUSIBLE` |
-| `olmoe-block-explosion` | `n_layer = 512`, `n_expert = 1024` | `R1_KEY_VALUE_IMPLAUSIBLE`, detail `olmoe.expert_count` |
+| `olmoe-block-explosion` | `n_layer = 512`, `n_expert = 1024` | `R1_KEY_VALUE_IMPLAUSIBLE`, detail `olmoe.expert_count` — both operands at their ceilings, so the extreme-operand tie-break takes its default |
+| `olmoe-block-explosion-layers` | `n_layer = 512`, `n_expert = 128` | `R1_KEY_VALUE_IMPLAUSIBLE`, detail `olmoe.block_count` — the layer count is at its ceiling and the expert count is an eighth of its own, so the layer count is the extreme operand |
 | `olmoe-headdim-indivisible` | `n_head = 3`, `n_head_kv = 1`, no `key_length` | `R1_KEY_VALUE_IMPLAUSIBLE`, detail `olmoe.attention.head_count` |
 | `olmoe-keylength-mismatch` | `key_length = 64`, `value_length = 32` | `R1_KEY_VALUE_IMPLAUSIBLE`, detail `olmoe.attention.value_length` |
 | `olmoe-stacked-axis` | `ffn_gate_exps.weight` `[256, 64, 4]` against `n_expert = 8` | `R1_TENSOR_SHAPE_UNEXPECTED` |
@@ -991,8 +1001,11 @@ claims on the real model**.
 **Secondary — `bytes_read`.** Inherited unchanged and re-asserted, because a third dispatch arm at
 three verbs adds code paths that could start reading more:
 `bytes_read < data_offset + WINDOW_BYTES`, with `dispatch-single-read` asserting the qwen and
-gpt-oss values are numerically unchanged. On the real model `bytes_read` is 2,097,152 — one window,
-because `data_offset` (1,781,760) is inside it.
+gpt-oss values are numerically unchanged. On the real model `bytes_read` is 2,097,152 — **two**
+windows of `WINDOW_BYTES` (1,048,576) each, because `data_offset` (1,781,760) is past the end of the
+first one and the walk stops at the first window boundary at or beyond it. The general rule is that
+`bytes_read` is that boundary, capped by the file size; the one-window case of section 6 item 1 is
+the special case where `data_offset` happens to fall inside the first window.
 
 **R1C makes no performance claim.** The document grows to 1,058 blocks on the real model and the
 derivation does more work; no baseline is established and no threshold is asserted. `bounded-work`
@@ -1050,12 +1063,15 @@ correcting an assumption with a different assumption is not progress.
 
 No `PROPOSED` surface is consumed and no new genuine Align gap is expected: every operation is
 `i64` arithmetic, owned-`string` slicing, and `array<i64>` indexing over surfaces R1 and R1B already
-proved at this pin. `src/frontend_olmoe.align` becomes a third site at which Request 23's spurious
-huge-struct-copy lint fires on a `borrow BlockPlan` parameter; that is additional client evidence
-for an already-`PROPOSED`, non-blocking request, recorded in `docs/align-requests.md` by the
-implementation commit, and it changes no status. Request 22's migration note applies to the olmoe
-plan unchanged, for the same reason it applies to `GgufTable` and `BlockPlan`: the plan is a
-stream-plus-columns record precisely so that no `array<string>` is indexed.
+proved at this pin. `src/frontend_olmoe.align` becomes **the third frontend** at which Request 23's
+spurious huge-struct-copy lint fires — the register's client count is already four (`GgufTable`,
+`BlockPlan`, `TranscriptScan`, `PackPlan`), so "third" counts frontends, not sites — predicted here
+on a `borrow BlockPlan` parameter and shipped on `borrow GgufTable` ones (section 6 item 10). That is
+additional client evidence for an already-`PROPOSED`, non-blocking request, recorded in
+`docs/align-requests.md` by the review-repair commit, and it changes no status. Request 22's
+migration note applies to the olmoe plan unchanged, for the same reason it applies to `GgufTable` and
+`BlockPlan`: the plan is a stream-plus-columns record precisely so that no `array<string>` is
+indexed.
 
 If implementation discovers a genuine gap, it is classified under `CLAUDE.md`'s
 Align-capability-request rules before any workaround is written.
@@ -1101,7 +1117,7 @@ capability's binary over all 142 unchanged fixtures through both `--model-ir` an
 
 | # | Amends | Correction | Evidence | Owner |
 | --- | --- | --- | --- | --- |
-| 1 | 4.1 | **`olmoe-full.gguf` is 1,777,248 bytes, not "well under 1 MiB", and its `source.bytes_read` is therefore exactly one window.** Section 4.1's own arithmetic settles this against its own sentence: the row rule forces `ffn_down_exps` to F32 at `[64, 256, 8]`, which is 524,288 bytes per layer, so two layers exceed 1 MiB before a single attention tensor is counted. The load-bearing half of that sentence — every byte size, and for a sliced tensor every plane, a multiple of the 32-byte container alignment — is what the generator asserts per tensor; the size claim is dropped. The consequence is the one `docs/specs/r1b-gptoss-moe-ir.md` section 7 item 11(d) already records: a container larger than the 1 MiB window reports `bytes_read` of exactly one window, never the file size | the generator's own per-tensor alignment assertions and `len(full.bytes) == 1,777,248` | `olmoe-full` with `bytes_read` asserted exactly, plus the standing `bytes_read < data_offset + WINDOW_BYTES` bound |
+| 1 | 4.1 | **`olmoe-full.gguf` is 1,777,248 bytes, not "well under 1 MiB", and its `source.bytes_read` is therefore exactly one window.** Section 4.1's own arithmetic settles this against its own sentence: the row rule forces `ffn_down_exps` to F32 at `[64, 256, 8]`, which is 524,288 bytes per layer, so two layers exceed 1 MiB before a single attention tensor is counted. The load-bearing half of that sentence — every byte size, and for a sliced tensor every plane, a multiple of the 32-byte container alignment — is what the generator asserts per tensor; the size claim is dropped. The consequence is the one `docs/specs/r1b-gptoss-moe-ir.md` section 7 item 11(d) already records, stated in its narrow form: a container larger than the 1 MiB window **whose `data_offset` falls inside the first window** reports `bytes_read` of exactly one window, never the file size. It does not generalize to every oversized container — `bytes_read` is the first window boundary at or beyond `data_offset`, capped by the file size, which is why the real model reports two windows and not one (section 4.5) | the generator's own per-tensor alignment assertions and `len(full.bytes) == 1,777,248` | `olmoe-full` with `bytes_read` asserted exactly, plus the standing `bytes_read < data_offset + WINDOW_BYTES` bound |
 | 2 | 3.2, 4.1 | **`olmoe-stacked-transposed` declares an F32 `ffn_gate_exps`, because a Q4_K one at the transposed extents never reaches step 10.** The fixture's purpose is to pin the section 2.5.3 axis-order decision as a step-10 `R1_TENSOR_SHAPE_UNEXPECTED`. At the base extents the transposed shape is `[64, 256, 8]`, and `64 % 256 != 0`, so a Q4_K tensor is `R1_TENSOR_SHAPE_UNALIGNED` at step 8 and the shape rule is never consulted — the fixture would pass while testing the wrong row. The role is F32 in this fixture only; every other fixture keeps the section 4.1 type table | the row rule of `docs/specs/r1-qwen-model-ir.md`, which `src/model_ir.align`'s `size_tensors` applies before block assembly | `olmoe-stacked-transposed`, asserting `R1_TENSOR_SHAPE_UNEXPECTED` with detail `blk.0.ffn_gate_exps.weight` and three completed blocks |
 | 3 | 4.1 | **`olmoe-mixed-quant` cannot use the base extents and ships at `n_ff = 256`, `n_expert = 2`, `n_expert_used = 2`.** Section 4.1 describes it as the real model's pattern "at fixture scale" over `ffn_down_exps` and `attn_v`, but `ffn_down_exps` is `[n_ff_exp, n_embd, n_expert]`, so its first axis is `n_ff_exp`, and the base fixture's 64 is not a multiple of 256 — neither Q6_K nor Q4_K is representable there, which is the same constraint that makes the role F32 in the base fixture. Widening `n_ff` to 256 makes both K-quantizations legal and narrowing `n_expert` to 2 keeps the container under a megabyte. The pattern asserted is unchanged: `attn_v` and `ffn_down_exps` are Q6_K in layer 0 and Q4_K in layer 1 | `nbytes_of`'s `dims[0] % block_size == 0` assertion, which is `ggml_row_size`'s invariant | `olmoe-mixed-quant`, which asserts that exactly `attn_v` and `ffn_down_exps` carry two type ids and that both `AttentionBlock` and `ExpertBlock` have two distinct `byte_size` values |
 | 4 | 4.1 | **`olmoe-wide`'s extents are named here, and its expert weights are Q8_0 rather than F32.** Section 4.1 gives its block and claim counts and says "F32 everywhere but the expert weights so the file stays small" without extents. Shipped: `n_layer = 4`, `n_embd = 32`, `n_head = n_head_kv = 8`, `n_ff = 32`, `n_expert = 64`, `n_expert_used = 8`, with the three stacked roles at Q8_0 and everything else F32. F32 expert weights would be 3.1 MB; Q8_0 at `[32, 32, 64]` gives a 1,088-byte plane, which is both block-legal and container-aligned, and the whole file is 948,352 bytes. The counts are exactly as designed: 266 blocks and 807 claims | the generator's `block_count() == 266`, `claim_count() == 807`, and `len(bytes) < 1048576` assertions | `olmoe-wide` under `bounded-work` |
@@ -1109,8 +1125,9 @@ capability's binary over all 142 unchanged fixtures through both `--model-ir` an
 | 6 | 4.2 | **`role-list-mirror` compares three lists, not two.** Section 4.2 specifies extracting the label sequence from `src/alignpack.align`'s `role_id` and from `scripts/alignpack_reader.py`'s `ROLES` and requiring equality. Shipped, it also extracts `src/alignpack.align`'s `role_label` — the inverse function in the same file — and requires all three to agree, and it requires every role the olmoe plan actually emits to be named by the list. A one-sided edit inside Align is exactly as silent as a one-sided edit across languages, and the reader resolves a persisted `role_id` through the label direction, so leaving the inverse unchecked would have left the failure mode the case exists to prevent half-open. It also asserts that entries 27 and 28 are the two appended QK-norm roles by name, so a future append cannot displace them | the two functions are independent `if` chains in one file, and neither language rejects a disagreement | `role-list-mirror` in `model-ir-smoke` |
 | 7 | 4.4 | **The parity runner's three-entry lookup fails closed on a fourth architecture.** Section 4.4 says `build_rows`'s per-architecture extension "becomes a lookup with three entries". A lookup that silently fell through to the shared set for an unknown key would let a fourth frontend ship with its own rows unchecked, which is the failure `parity: UNPARSED` exists to prevent one level down. `ARCH_EXTENSIONS` is a three-entry dict and a missing key is a hard failure naming the architecture | the runner's own fail-closed contract for an uninterpretable value | the three synthetic row-set units — `UNIT_QWEN`, `UNIT_GPTOSS`, `UNIT_OLMOE` — which run before every comparison on a host with no model at all |
 | 8 | 2.5.1, 4.1 | **`R1_KEY_VALUE_IMPLAUSIBLE` for an inexact `head_dim` division names `olmoe.attention.head_count`, which differs from the sibling frontend.** Section 4.1 states the detail and it is implemented as stated; the divergence is recorded rather than silently inherited, because `src/frontend_gpt_oss.align` names `gpt-oss.embedding_length` for the same defect. Both are defensible — the division has two operands — and neither is a contract a consumer branches on, but a reader comparing the two frontends should find the difference recorded rather than discover it | `src/frontend_gpt_oss.align`'s step-6 fallback branch | `olmoe-headdim-indivisible` (`n_head = 3`, `n_head_kv = 1`), asserting the detail exactly |
-| 9 | 4.4 | **The parity qualification is not reachable on this host under `ulimit -f 8192` with a cold Metal pipeline cache, and this is a pre-existing host condition rather than an R1C regression.** `ulimit -f` bounds every file the reference process writes, not only its log. On this host the recorded build (`0.2.0 (build 10566, commit bb4caa754)`) dies with SIGXFSZ — reported by the runner as `the reference reader exited 153` — while compiling Metal pipelines, although its own log is 125 KB for the olmoe model and 237 KB for the qwen one, far below the 8 MiB cap. The olmoe run passes on every subsequent invocation; the qwen run fails repeatedly at `kernel_flash_attn_ext_vec_f16_dk128_dv128`. The cap is **not** changed: one incident is not a recurring failure class, the wrapper exists to bound the 461 MB runaway log R1B recorded, and raising it out of tree is enough to diagnose. This is a measurement risk on the qualification, recorded so a later failure is recognized rather than debugged | the unmodified runner at the base commit fails identically for both models, so nothing in this capability caused it; with the cap raised to 256 MiB as a one-off out-of-tree copy, the qwen comparison passes with all fourteen shared rows | `model-ir-parity` against the olmoe model, PASS and reproduced three times; the qwen comparison recorded as a diagnostic run in the pull request |
-| 10 | 2.7, 5.4 | **The new frontend is a third client of Request 23's spurious lint, but on `borrow GgufTable`, not on `borrow BlockPlan`.** Sections 2.7 and 5.4 predict the false positive on a `borrow BlockPlan` parameter. A frontend never borrows a plan — it *builds* one and moves it into `model_ir.Prepared` — so the three warnings `src/frontend_olmoe.align` emits are on its two public `borrow table: gguf.GgufTable` parameters and on `kv_text_decodable`'s, at 552 bytes each, beside two return-by-value warnings for `model_ir$ModelIr` (176 bytes) and `model_ir$Prepared` (568 bytes). The evidence value is unchanged and arguably higher: the lint fires on a parameter that is explicitly `borrow` and therefore copies nothing. The status stays `PROPOSED` and non-blocking, no new request is created, and the register is updated by the integration commit rather than by this document. **No genuine new Align gap was encountered**: every operation is `i64` arithmetic, owned-`string` slicing, `builder` writes, and `array<i64>` indexing over surfaces R1 and R1B already proved at this pin | `make check` emits `src/frontend_olmoe.align:64:32`, `:171:37`, and `:178:30` for `gguf$GgufTable`, and no `model_ir$BlockPlan` warning in that file | `make check`; `docs/align-requests.md` Request 23's evidence block, owned by the integration commit |
+| 9 | 4.4 | **`ulimit -f` in the parity runner is raised from 8,192 to 262,144 blocks (8 MiB to 256 MiB), because it bounds the reference's Metal shader pipeline cache and not only its log.** `ulimit -f` bounds every file the reference process writes. On a Metal host `llama-cli` writes its compiled pipeline cache as 12-35 MB files, two orders of magnitude above its own log (125 KB for the olmoe model, 237 KB for the qwen one), so an 8 MiB cap killed the recorded build (`0.2.0 (build 10566, commit bb4caa754)`) with SIGXFSZ mid-compile on any run that found the cache cold — surfacing only as `the reference reader exited 153`, with the qwen run failing repeatedly at `kernel_flash_attn_ext_vec_f16_dk128_dv128`. This is not "one incident": the cold-cache state recurs on every new host, after every reference upgrade, and after any cache eviction, and the writer is named rather than guessed. 256 MiB clears the largest observed cache file with wide margin and stays far below the 461 MB runaway log the wrapper exists to bound, so the guard's purpose is preserved | the unmodified runner at the base commit fails identically for both models under the old cap, and both comparisons pass under the new one; the runner's comment and `docs/align-development.md` now name the Metal cache as the bounded writer | `model-ir-parity` against the olmoe model and against the qwen model, both PASS under the shipped cap |
+| 10 | 2.7, 5.4 | **The new frontend is the third *frontend* — not the third client — at which Request 23's spurious lint fires, and it fires on `borrow GgufTable`, not on `borrow BlockPlan`.** Sections 2.7 and 5.4 predict the false positive on a `borrow BlockPlan` parameter and call it a "third site"; the register already carries four independent clients (`GgufTable`, `BlockPlan`, `TranscriptScan`, `PackPlan`), so both sections now say "the third frontend" and this row is the shipped detail. A frontend never borrows a plan — it *builds* one and moves it into `model_ir.Prepared` — so the three warnings `src/frontend_olmoe.align` emits are on its two public `borrow table: gguf.GgufTable` parameters and on `kv_text_decodable`'s, at 552 bytes each, beside two return-by-value warnings for `model_ir$ModelIr` (176 bytes) and `model_ir$Prepared` (568 bytes). The evidence value is unchanged and arguably higher: the lint fires on a parameter that is explicitly `borrow` and therefore copies nothing. The status stays `PROPOSED` and non-blocking, no new request is created, and the register is updated by the integration commit rather than by this document. **No genuine new Align gap was encountered**: every operation is `i64` arithmetic, owned-`string` slicing, `builder` writes, and `array<i64>` indexing over surfaces R1 and R1B already proved at this pin | `make check` emits `src/frontend_olmoe.align:64:32`, `:182:37`, and `:189:30` for `gguf$GgufTable`, and no `model_ir$BlockPlan` warning in that file | `make check`; `docs/align-requests.md` Request 23's evidence block, owned by the integration commit |
+| 11 | 2.6, 4.1 | **The block-explosion detail names the extreme operand rather than always naming `olmoe.expert_count`.** Section 2.6 step 7 defines the guard as one product and, as first implemented, it reported `olmoe.expert_count` unconditionally. The product has two operands with different ceilings (`MAX_LAYERS` 512, `MAX_EXPERTS` 1,024), so a file with a modest expert count and an absurd layer count was sent to the key it had set correctly — the same defect item 8 records for the `head_dim` division, and it is repaired here rather than only recorded because the guard, unlike that division, has an unambiguous answer. Shipped: the detail names whichever operand is the larger fraction of its own ceiling, compared as `n_layer * MAX_EXPERTS > n_expert * MAX_LAYERS` so no division is needed and neither product can wrap; a tie keeps `olmoe.expert_count`, which preserves the both-at-ceiling case. This is a diagnostic detail, not a new error code and not a new rejection: exactly the same inputs are rejected, with the same `R1_KEY_VALUE_IMPLAUSIBLE` code | `olmoe-block-explosion` is unchanged at `olmoe.expert_count` because `512 * 1024 == 1024 * 512`, and the new `olmoe-block-explosion-layers` (`n_layer = 512`, `n_expert = 128`) asserts `olmoe.block_count` | `olmoe-block-explosion` and `olmoe-block-explosion-layers` in `model-ir-smoke`, both asserting the detail exactly |
 
 ### 6.1 Closure cell to shipped case
 
@@ -1134,7 +1151,7 @@ rather than an implied match.
 | 3.2 Success — mixed per-layer type | `olmoe-mixed-quant`, asserting that exactly `attn_v` and `ffn_down_exps` carry two type ids and that both block kinds have two distinct `byte_size` values; section 6 item 3 records its extents |
 | 3.2 Success — tied embedding | `olmoe-tied`, which asserts `token_embd.weight` appears in two blocks with roles `output` and `token_embd` and that the tiling oracle takes its whole-tensor branch |
 | 3.2 Failure — expert bounds | `olmoe-expert-zero`, `olmoe-expert-used-zero`, `olmoe-expert-used-high`, `olmoe-expert-huge`, plus `olmoe-expert-missing` and `olmoe-expert-type` for the two earlier rows |
-| 3.2 Failure — block explosion | `olmoe-block-explosion` (`n_layer = 512`, `n_expert = 1024`, product 525,314) |
+| 3.2 Failure — block explosion | `olmoe-block-explosion` (`n_layer = 512`, `n_expert = 1024`, product 525,314, detail `olmoe.expert_count`) and `olmoe-block-explosion-layers` (`n_layer = 512`, `n_expert = 128`, product 66,562, detail `olmoe.block_count`); section 6 item 11 records the tie-break |
 | 3.2 Failure — `head_dim` indivisible | `olmoe-headdim-indivisible`; section 6 item 8 records the detail key |
 | 3.2 Failure — stacked shape | `olmoe-stacked-axis` and `olmoe-stacked-ndims`, both with three completed blocks |
 | 3.2 Failure — transposed expert shape | `olmoe-stacked-transposed`; section 6 item 2 records its type override |
@@ -1145,7 +1162,7 @@ rather than an implied match.
 | 3.2 Malformed | **inherited**: the whole R0 corpus re-run through `--model-ir`, 62 fixtures, unchanged |
 | 3.2 Early exit | `olmoe-ir-partial` is the `blocks_len` assertion carried by every step-10 negative: 3 completed blocks for the three stacked-shape cases, 2 for the router case, 1 for the two QK-norm cases, 0 for every pre-derivation failure |
 | 3.2 Loop joins | `olmoe-zero-layer` (`block_count = 0`) and `olmoe-expert-zero` (`expert_count = 0`), both rejected before any loop runs |
-| 3.2 Branch joins | `document-move` is the per-case assertion that the stdout form is byte-identical to the written document and that both forms agree on the exit status, applied to all 28 olmoe cases |
+| 3.2 Branch joins | `document-move` is the per-case assertion that the stdout form is byte-identical to the written document and that both forms agree on the exit status, applied to all 29 olmoe cases |
 | 3.2 Move-out | the same assertion, plus `make check`'s ownership analysis over the new module |
 | 3.2 Borrow discipline | `make check` (`check-per-unit`), which reports the new unit |
 | 3.2 Bounded work | `olmoe-wide`, timed against the 3-second budget |
@@ -1156,7 +1173,7 @@ rather than an implied match.
 | 3.3 Success — round trip | `pack-olmoe`: all seven positive olmoe fixtures now run through `--pack`, `--pack-verify`, and the independent reader in `alignpack-smoke`, and the QK-norm members of `olmoe-full` are asserted to carry exactly `role_id` 27 and 28. The reader independently requires each member's document `role` to equal `ROLES[role_id]` |
 | 3.3 Failure — unnamed role | **inherited**, unchanged: a role the list does not name is `DEFERRED_U32` and the reader accepts it as a stated absence |
 | 3.3 Bounded work | `pack-olmoe` over `olmoe-wide` (266 blocks) against `MAX_BLOCKS` 1,048,576 |
-| 3.3 Everything else | **inherited**: the R4 corpus re-run — 27 positive fixtures, 127 negative sources, 20,269 assertions |
+| 3.3 Everything else | **inherited**: the R4 corpus re-run — 27 positive fixtures, 128 negative sources, 20,280 assertions |
 | 3.4 Construction — dispatch | `dispatch-single-read`: the `bytes_read` values of the qwen and gpt-oss corpora are numerically unchanged, which the 284-invocation differential run proves byte for byte |
 | 3.4 Success — three architectures | `dispatch-qwen`, `dispatch-gptoss`, and `dispatch-olmoe` in `model-ir-smoke`, plus `dispatch-olmoe` at `--pack` and `--pack-verify` in `alignpack-smoke` |
 | 3.4 Failure — unknown architecture | `dispatch-unknown` over both `gptoss-wrong-arch` and `olmoe-wrong-arch`; `qwen2-wrong-arch`, `qwen2-arch-escapes`, and the R0 positive corpus, all byte-unchanged |

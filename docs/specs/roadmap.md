@@ -199,7 +199,8 @@ The current forward delivery order is:
     (async prefetch + GPU compute) cannot be written at this pin and is deferred with Request 41
     named (`docs/align-requests.md`).
 18. **R1C-OLMOE-MOE-IR — an olmoe frontend and the first Model IR/Block IR derived from a real MoE
-    model. Active.** On branch `agent/r1c-olmoe-moe-ir`, design ledger merged at commit `5a15fd7`.
+    model. Implemented; in review and publication.** On branch `agent/r1c-olmoe-moe-ir`, design
+    ledger merged at commit `5a15fd7`, implementation at `eb868ba` with its review repair on top.
     [`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md) is the authoritative plan and owns the contract
     ledger and closure matrix. It turns the real, locally present
     `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (195 tensors = 3 global + 16 layers × 12 per-layer
@@ -214,7 +215,16 @@ The current forward delivery order is:
     as a generic rule (the real file carries no bias tensor at all). Both are recorded as
     corrections to `docs/specs/r1b-gptoss-moe-ir.md` section 7 by this capability's implementation,
     not repaired in the gpt-oss frontend itself, since no real gpt-oss file is present to settle it.
-    Implementation and review are complete and publication is in progress; see `HANDOFF.md`.
+    Implementation is complete and all four owner checks PASS on the host that holds the model:
+    `make check` (30 units), `make model-ir-smoke` (49 qwen, 31 gpt-oss, 29 olmoe, 62 R0 fixtures
+    re-run), `make alignpack-smoke` (27 positive fixtures, 128 negative sources, 20,280 assertions),
+    and `make model-ir-parity` against **both** real models — olmoe PASS over 15 compared rows plus
+    the type census (`f32` 81, `q4_K` 97, `q6_K` 17), and qwen2 PASS over 14. The olmoe parity run
+    is the qualification R1B could only record as `N/A`, so this is the first `model-ir-parity`
+    discharged against a real MoE model. Section 6 of the ledger records eleven corrections to the
+    plan, including that the parity runner's `ulimit -f` had to rise to 256 MiB because it bounds
+    `llama-cli`'s Metal shader pipeline cache and not only its log. Review is complete and
+    publication is in progress; see `HANDOFF.md`.
 19. **R2-LOCALITY-GATE — the R2 locality gate, measured on a real MoE model. Merged as PR #131,
     merge commit `546b5cc` on `main`.** Was on branch `agent/r2-locality-gate` at the review repair
     `fff5806`; no design gate triggered. Discharged R2A's `MOE-PREREQ` deferral by running
@@ -235,8 +245,9 @@ The current forward delivery order is:
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
-`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked two capabilities, items 18
-and 19 below: item 19 is merged and its gate is met, and item 18 is in publication. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked two capabilities taken in
+parallel, items 18 and 19 above: item 19 is merged and its gate is met, and item 18 is implemented,
+reviewed, and in publication. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
 **infeasible on this host** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
 a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
@@ -626,9 +637,15 @@ gpt-oss実モデルに対する`model-ir-parity` qualificationのみ、`gpt-oss-
 **infeasible**として記録済み、`HANDOFF.md`参照）。
 
 **R1C-OLMOE-MOE-IR**（[`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md)、branch
-`agent/r1c-olmoe-moe-ir`、design ledger commit `5a15fd7`）が第三のR1 capabilityとしてActiveであり、
-実MoEモデル`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`に対する`src/frontend_olmoe.align`の実装とreviewを
-終えてpublication段階にある（forward order item 18）。この実測は、R1Bのsection 2.5が`ASSUMED`としていた2行を**確認ではなく
+`agent/r1c-olmoe-moe-ir`、design ledger commit `5a15fd7`）は第三のR1 capabilityであり、実MoEモデル
+`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`に対する`src/frontend_olmoe.align`と三方向architecture
+dispatchは`eb868ba`で**実装完了**、review指摘の修正commitがその上に載っている（forward order
+item 18）。owner checkは4本ともPASS：`make check`（30 unit）、`make model-ir-smoke`（qwen 49、
+gpt-oss 31、olmoe 29、R0 62 fixtureの再実行）、`make alignpack-smoke`（positive 27、negative source
+128、assertion 20,280）、および実モデル2本に対する`make model-ir-parity`（olmoe 15行＋type census
+`f32` 81 / `q4_K` 97 / `q6_K` 17、qwen2 14行）。olmoeのparityはR1Bが`N/A`としか記録できなかった
+qualificationであり、実MoEモデルに対する初のPASSである。reviewも完了し、残作業はpublicationのみ。
+この実測は、R1Bのsection 2.5が`ASSUMED`としていた2行を**確認ではなく
 反証**した：stacked gate/up/down axis orderはR1Bの想定と逆であり、R1Bがrequiredとしていたsplit
 expert bias群は実MoEファイルに一切bias tensorが存在しないことで汎用規則としては反証された。
 どちらも実gpt-ossファイルがない以上gpt-oss frontend自体は変更せず、R1B section 7への訂正として
