@@ -196,6 +196,24 @@ pub ClaimTable {
   member_nbytes: array<i64>,
 }
 
+// R4-ALIGNPACK-LAYER-MAJOR section 2.9. The result of the ordered derivation steps that follow block
+// assembly — coverage (step 11a), claim tiling (11b), and the size-sum oracle (step 12) — without
+// any rendering. `build` consumes it to fill the `coverage` object, and `derive_status` is the
+// status-only entry point the packing arms use so that they prove the same properties **without**
+// materializing an `R1_MODEL_IR` document they immediately discard.
+//
+// `unassigned` holds at most `MAX_UNASSIGNED_REPORTED` tensor indexes in ascending order, which is
+// exactly what the document's `coverage.unassigned_tensors` array names; the renderer resolves them
+// to names and this record stays free of presentation.
+pub Derivation {
+  code: string,
+  detail: string,
+  assigned: i64,
+  unassigned: array<i64>,
+  computed_end: i64,
+  size_sum_ok: bool,
+}
+
 pub fn int_text(value: i64) -> string {
   b := builder()
   b.write_int(value)
@@ -724,6 +742,224 @@ pub fn claim_ordinal(borrow plan: BlockPlan, slot: i64) -> i64 {
   return plan.member_slice_index[slot] + 1
 }
 
+// Steps 11a, 11b, and 12 as **data**, over an already-resolved claim table. This is the body the
+// renderer used to run inline, unchanged in order and in every guard: coverage, then claim tiling,
+// then the size-sum oracle, with the first applicable row winning.
+//
+// It resolves nothing about presentation, which is what lets `src/main.align`'s two packing arms
+// prove the whole ordered derivation through `derive_status` without building the `R1_MODEL_IR`
+// document. On a large mixture-of-experts container that document is hundreds of megabytes of
+// rendered JSON that the packing arms discard unread; the checks themselves are three sweeps over
+// columns the packer already needs.
+fn ordered_checks(
+  borrow t: gguf.GgufTable,
+  borrow g: Geometry,
+  borrow plan: BlockPlan,
+  borrow resolved: ClaimTable,
+) -> Derivation {
+  mut empty: array_builder<i64> := array_builder()
+  if resolved.failed {
+    return Derivation {
+      code: resolved.code.clone(),
+      detail: resolved.detail.clone(),
+      assigned: 0,
+      unassigned: empty.build(),
+      computed_end: -1,
+      size_sum_ok: false,
+    }
+  }
+
+  // Block assembly recorded what it took; sorting that record turns the coverage sweep below into
+  // one merge instead of a membership scan per tensor, and puts each tensor's claims in ascending
+  // slice order for the tiling sweep. A tensor named by two blocks — the tied-embedding case —
+  // appears twice here and is still counted once.
+  mut claim_column: array_builder<i64> := array_builder()
+  mut collect := 0
+  loop {
+    if collect >= resolved.member_count { break }
+    found := resolved.member_tensor[collect]
+    member_at := resolved.member_slot[collect]
+    claim_column.push((found << CLAIM_SLOT_BITS) | claim_ordinal(plan, member_at))
+    collect = collect + 1
+  }
+  claimed_raw := claim_column.build()
+  claimed := claimed_raw.sort()
+
+  // Step 11a. Every tensor in the table must be claimed by at least one block. A partial Block IR
+  // is not a Block IR, so an unassigned tensor is a failure and not a warning.
+  mut unassigned_column: array_builder<i64> := array_builder()
+  mut unassigned_rows := 0
+  mut assigned := 0
+  mut first_unassigned := -1
+  mut claimed_cursor := 0
+  mut scan := 0
+  loop {
+    if scan >= t.tensor_count { break }
+    loop {
+      if claimed_cursor >= claimed.len() { break }
+      if (claimed[claimed_cursor] >> CLAIM_SLOT_BITS) >= scan { break }
+      claimed_cursor = claimed_cursor + 1
+    }
+    mut is_claimed := false
+    if claimed_cursor < claimed.len() {
+      if (claimed[claimed_cursor] >> CLAIM_SLOT_BITS) == scan { is_claimed = true }
+    }
+    if is_claimed {
+      assigned = assigned + 1
+    } else {
+      if first_unassigned < 0 { first_unassigned = scan }
+      if unassigned_rows < MAX_UNASSIGNED_REPORTED {
+        unassigned_column.push(scan)
+        unassigned_rows = unassigned_rows + 1
+      }
+    }
+    scan = scan + 1
+  }
+  if first_unassigned >= 0 {
+    first_name := gguf.tensor_name(t, first_unassigned)
+    first_view: str := first_name
+    return Derivation {
+      code: "R1_UNASSIGNED_TENSOR".clone(),
+      detail: bounded_detail(first_view),
+      assigned: assigned,
+      unassigned: unassigned_column.build(),
+      computed_end: -1,
+      size_sum_ok: false,
+    }
+  }
+
+  // Step 11b, the claim-tiling oracle (section 4.3). Coverage alone asks only "was every tensor
+  // claimed"; with per-expert slicing a tensor can be claimed by every expert while the claims
+  // leave a gap or overlap, and the size-sum oracle would still hold. The rule is: the claims over
+  // one tensor either include a whole-tensor claim — the tied-embedding case, where two blocks
+  // claim the same whole tensor — or exactly partition its range. One sorted walk with one cursor
+  // closes it, so the sweep costs one pass and not a scan per tensor.
+  mut tiling_bad := -1
+  mut run_at := 0
+  loop {
+    if run_at >= claimed.len() { break }
+    subject := claimed[run_at] >> CLAIM_SLOT_BITS
+    mut whole := 0
+    mut expected := 0
+    mut run_end := run_at
+    mut broken := false
+    loop {
+      if run_end >= claimed.len() { break }
+      if (claimed[run_end] >> CLAIM_SLOT_BITS) != subject { break }
+      ordinal := (claimed[run_end] & CLAIM_SLOT_MASK) - 1
+      if ordinal < 0 {
+        whole = whole + 1
+      } else {
+        // Ordinals sort ascending within a tensor, so the first ordinal that is not the next one
+        // expected is a gap, an overlap, or a repeat — all of them the same defect.
+        if ordinal != expected { broken = true }
+        expected = expected + 1
+      }
+      run_end = run_end + 1
+    }
+    if whole > 0 {
+      // A whole-tensor claim beside a slice claim overlaps it by definition.
+      if whole != run_end - run_at { broken = true }
+    } else {
+      n_dims := t.tensor_n_dims[subject]
+      last := gguf.tensor_dim(t, subject, n_dims - 1)
+      if expected != last { broken = true }
+    }
+    if broken && tiling_bad < 0 { tiling_bad = subject }
+    run_at = run_end
+  }
+  if tiling_bad >= 0 {
+    return Derivation {
+      code: "R1_BLOCK_CLAIM_MISMATCH".clone(),
+      detail: tensor_detail(t, tiling_bad),
+      assigned: assigned,
+      unassigned: unassigned_column.build(),
+      computed_end: -1,
+      size_sum_ok: false,
+    }
+  }
+
+  // Step 12. The size-sum oracle: `data_offset + Σ nbytes == file_size`, summed over the tensor
+  // table and not over block membership, so a shared or sliced tensor is counted exactly once.
+  // "Too large to add" and "does not add up" are different facts, so an unrepresentable sum is an
+  // overflow, not a mismatch.
+  if g.total_bytes > I64_MAX - t.data_offset {
+    return Derivation {
+      code: "R1_SIZE_OVERFLOW".clone(),
+      detail: "data_offset".clone(),
+      assigned: assigned,
+      unassigned: unassigned_column.build(),
+      computed_end: -1,
+      size_sum_ok: false,
+    }
+  }
+  computed_end := t.data_offset + g.total_bytes
+  size_sum_ok := computed_end == t.file_size
+  if !size_sum_ok {
+    b := builder()
+    b.write_int(computed_end)
+    b.write("!=")
+    b.write_int(t.file_size)
+    return Derivation {
+      code: "R1_SIZE_SUM_MISMATCH".clone(),
+      detail: b.to_string(),
+      assigned: assigned,
+      unassigned: unassigned_column.build(),
+      computed_end: computed_end,
+      size_sum_ok: size_sum_ok,
+    }
+  }
+  return Derivation {
+    code: "".clone(),
+    detail: "".clone(),
+    assigned: assigned,
+    unassigned: unassigned_column.build(),
+    computed_end: computed_end,
+    size_sum_ok: size_sum_ok,
+  }
+}
+
+// R4-ALIGNPACK-LAYER-MAJOR section 2.8 steps 3 and 4, status only. The whole R1 ordered derivation —
+// the frontend's own result, the geometry pass, block assembly, coverage, claim tiling, and the
+// size-sum oracle — with **no** document rendered.
+//
+// It is the entry point `--pack` and `--pack-verify` use. They need the derivation to have passed
+// before a byte is written; they do not need the `R1_MODEL_IR` document, whose authoritative
+// producer is `--model-ir`. Calling `build` and dropping its document made the packing arms allocate
+// the rendered document of every block and every tensor, which on a large mixture-of-experts
+// container dominates the arm's peak resident set and is entirely unread.
+pub fn derive_status(
+  borrow t: gguf.GgufTable,
+  borrow g: Geometry,
+  borrow plan: BlockPlan,
+  in_code: str,
+  in_detail: str,
+) -> Derivation {
+  mut empty: array_builder<i64> := array_builder()
+  if in_code.len() > 0 {
+    return Derivation {
+      code: in_code.clone(),
+      detail: in_detail.clone(),
+      assigned: 0,
+      unassigned: empty.build(),
+      computed_end: -1,
+      size_sum_ok: false,
+    }
+  }
+  if g.failed {
+    return Derivation {
+      code: g.code.clone(),
+      detail: g.detail.clone(),
+      assigned: 0,
+      unassigned: empty.build(),
+      computed_end: -1,
+      size_sum_ok: false,
+    }
+  }
+  resolved := resolve_claims(t, g, plan)
+  return ordered_checks(t, g, plan, resolved)
+}
+
 // One `blocks[].tensors[]` record. It is returned as an owned `string` rather than accumulated
 // through a parameter because `builder` is not a parameter type at this pin.
 fn tensor_json(
@@ -870,8 +1106,6 @@ pub fn build(
     }
   }
 
-  mut claim_column: array_builder<i64> := array_builder()
-
   loop {
     if code.len() > 0 { break }
 
@@ -928,7 +1162,6 @@ pub fn build(
           }
           if member_end > end_abs { end_abs = member_end }
         }
-        claim_column.push((found << CLAIM_SLOT_BITS) | claim_ordinal(plan, member_at))
         member_count = member_count + 1
         resolved_at = resolved_at + 1
       }
@@ -965,122 +1198,28 @@ pub fn build(
       block_count = block_count + 1
       slot = slot + 1
     }
-    if resolved.failed {
-      code = resolved.code.clone()
-      detail = resolved.detail.clone()
-      break
-    }
-
-    // Block assembly recorded what it took; sorting that record turns the coverage sweep below into
-    // one merge instead of a membership scan per tensor, and puts each tensor's claims in ascending
-    // slice order for the tiling sweep. A tensor named by two blocks — the tied-embedding case —
-    // appears twice here and is still counted once.
-    claimed_raw := claim_column.build()
-    claimed := claimed_raw.sort()
-
-    // Step 11a. Every tensor in the table must be claimed by at least one block. A partial Block IR
-    // is not a Block IR, so an unassigned tensor is a failure and not a warning.
-    mut first_unassigned := -1
-    mut claimed_cursor := 0
-    mut scan := 0
+    // Steps 11a, 11b, and 12, in `ordered_checks` (section 2.9 of
+    // `docs/specs/r4-alignpack-layer-major.md`), so that the packing arms prove exactly these
+    // properties through `derive_status` without rendering a document they discard. The order, the
+    // guards, and the first-applicable-row rule are the ones this loop ran inline.
+    checks := ordered_checks(t, g, plan, resolved)
+    assigned = checks.assigned
+    computed_end = checks.computed_end
+    size_sum_ok = checks.size_sum_ok
+    mut unassigned_at := 0
     loop {
-      if scan >= t.tensor_count { break }
-      loop {
-        if claimed_cursor >= claimed.len() { break }
-        if (claimed[claimed_cursor] >> CLAIM_SLOT_BITS) >= scan { break }
-        claimed_cursor = claimed_cursor + 1
-      }
-      mut is_claimed := false
-      if claimed_cursor < claimed.len() {
-        if (claimed[claimed_cursor] >> CLAIM_SLOT_BITS) == scan { is_claimed = true }
-      }
-      if is_claimed {
-        assigned = assigned + 1
-      } else {
-        if first_unassigned < 0 { first_unassigned = scan }
-        if unassigned_rows < MAX_UNASSIGNED_REPORTED {
-          unassigned_name := gguf.tensor_name(t, scan)
-          unassigned_view: str := unassigned_name
-          if unassigned_rows > 0 { unassigned_body.write(",") }
-          unassigned_body.write(gguf.json_string(unassigned_view))
-          unassigned_rows = unassigned_rows + 1
-        }
-      }
-      scan = scan + 1
+      if unassigned_at >= checks.unassigned.len() { break }
+      unassigned_name := gguf.tensor_name(t, checks.unassigned[unassigned_at])
+      unassigned_view: str := unassigned_name
+      if unassigned_rows > 0 { unassigned_body.write(",") }
+      unassigned_body.write(gguf.json_string(unassigned_view))
+      unassigned_rows = unassigned_rows + 1
+      unassigned_at = unassigned_at + 1
     }
-    if first_unassigned >= 0 {
-      code = "R1_UNASSIGNED_TENSOR".clone()
-      first_name := gguf.tensor_name(t, first_unassigned)
-      first_view: str := first_name
-      detail = bounded_detail(first_view)
-      break
-    }
-
-    // Step 11b, the claim-tiling oracle (section 4.3). Coverage alone asks only "was every tensor
-    // claimed"; with per-expert slicing a tensor can be claimed by every expert while the claims
-    // leave a gap or overlap, and the size-sum oracle would still hold. The rule is: the claims over
-    // one tensor either include a whole-tensor claim — the tied-embedding case, where two blocks
-    // claim the same whole tensor — or exactly partition its range. One sorted walk with one cursor
-    // closes it, so the sweep costs one pass and not a scan per tensor.
-    mut tiling_bad := -1
-    mut run_at := 0
-    loop {
-      if run_at >= claimed.len() { break }
-      subject := claimed[run_at] >> CLAIM_SLOT_BITS
-      mut whole := 0
-      mut expected := 0
-      mut run_end := run_at
-      mut broken := false
-      loop {
-        if run_end >= claimed.len() { break }
-        if (claimed[run_end] >> CLAIM_SLOT_BITS) != subject { break }
-        ordinal := (claimed[run_end] & CLAIM_SLOT_MASK) - 1
-        if ordinal < 0 {
-          whole = whole + 1
-        } else {
-          // Ordinals sort ascending within a tensor, so the first ordinal that is not the next one
-          // expected is a gap, an overlap, or a repeat — all of them the same defect.
-          if ordinal != expected { broken = true }
-          expected = expected + 1
-        }
-        run_end = run_end + 1
-      }
-      if whole > 0 {
-        // A whole-tensor claim beside a slice claim overlaps it by definition.
-        if whole != run_end - run_at { broken = true }
-      } else {
-        n_dims := t.tensor_n_dims[subject]
-        last := gguf.tensor_dim(t, subject, n_dims - 1)
-        if expected != last { broken = true }
-      }
-      if broken && tiling_bad < 0 { tiling_bad = subject }
-      run_at = run_end
-    }
-    if tiling_bad >= 0 {
-      code = "R1_BLOCK_CLAIM_MISMATCH".clone()
-      detail = tensor_detail(t, tiling_bad)
-      break
-    }
-
-    // Step 12. The size-sum oracle: `data_offset + Σ nbytes == file_size`, summed over the tensor
-    // table and not over block membership, so a shared or sliced tensor is counted exactly once.
-    // "Too large to add" and "does not add up" are different facts, so an unrepresentable sum is an
-    // overflow, not a mismatch.
-    if total_bytes > I64_MAX - t.data_offset {
-      code = "R1_SIZE_OVERFLOW".clone()
-      detail = "data_offset".clone()
-      break
-    }
-    computed_end = t.data_offset + total_bytes
-    size_sum_ok = computed_end == t.file_size
-    if !size_sum_ok {
-      code = "R1_SIZE_SUM_MISMATCH".clone()
-      b := builder()
-      b.write_int(computed_end)
-      b.write("!=")
-      b.write_int(t.file_size)
-      detail = b.to_string()
-      break
+    checks_code: str := checks.code
+    if checks_code.len() > 0 {
+      code = checks.code.clone()
+      detail = checks.detail.clone()
     }
     break
   }

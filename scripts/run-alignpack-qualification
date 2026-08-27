@@ -17,7 +17,11 @@ set -euo pipefail
 unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
 export PYTHONDONTWRITEBYTECODE=1
 
-root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# `pwd -P` throughout. The work-tree guard below compares two directory strings, so both operands
+# must be physical: with logical paths a symlink pointing into the repository resolves to a name the
+# prefix test does not match, and a multi-gigabyte artifact would land inside the work tree exactly
+# in the case the guard exists to refuse.
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 
 model="${ALIGN_LLM_GGUF_MODEL:-}"
 if [ -z "$model" ]; then
@@ -28,7 +32,7 @@ if [ ! -f "$model" ]; then
   echo "alignpack qualification: N/A (ALIGN_LLM_GGUF_MODEL is absent)"
   exit 0
 fi
-model=$(CDPATH= cd -- "$(dirname -- "$model")" && pwd)/$(basename -- "$model")
+model=$(CDPATH= cd -- "$(dirname -- "$model")" && pwd -P)/$(basename -- "$model")
 
 owned_tmpdir=0
 tmpdir="${ALIGN_LLM_ALIGNPACK_TMPDIR:-}"
@@ -40,7 +44,7 @@ if [ ! -d "$tmpdir" ]; then
   echo "alignpack qualification: N/A (ALIGN_LLM_ALIGNPACK_TMPDIR is not a directory)"
   exit 0
 fi
-tmpdir=$(CDPATH= cd -- "$tmpdir" && pwd)
+tmpdir=$(CDPATH= cd -- "$tmpdir" && pwd -P)
 
 # A 4.36 GiB artifact must never land in the repository, even through a mistyped variable.
 case "$tmpdir/" in
@@ -53,6 +57,15 @@ esac
 pack="$tmpdir/model.alignpack"
 pack_document="$tmpdir/alignpack.json"
 verify_document="$tmpdir/alignpack-verify.json"
+
+# Before the trap, deliberately. The reclaim trap removes whatever stands at `$pack`, so a runner
+# that installed it first and refused afterwards would delete the very artifact it refused to
+# overwrite. This is `--pack`'s own `R4_DEST_EXISTS` rule (section 2.8 step 5) applied to the
+# runner: an occupied destination costs nothing and touches nothing.
+if [ -e "$pack" ]; then
+  echo "alignpack qualification: N/A (the destination already exists: $pack)"
+  exit 0
+fi
 
 reclaim() {
   status=$?
@@ -108,10 +121,6 @@ def run(args):
     result = subprocess.run([binary] + args, capture_output=True, cwd=tmpdir)
     return result, time.monotonic_ns() - started
 
-
-if os.path.exists(pack):
-    print("alignpack qualification: N/A (the destination already exists: %s)" % pack)
-    raise SystemExit(0)
 
 pack_result, pack_elapsed = run(["--pack", model, pack, pack_document])
 if pack_result.returncode != 0:

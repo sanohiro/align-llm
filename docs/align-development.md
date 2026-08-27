@@ -634,6 +634,108 @@ is a hard failure and never a skip. The runner also asserts the `bytes_read` bou
 model's size and modification time are unchanged, which is the read-only proof. The instrument runs
 under a 600-second `timeout` so a run that fails to terminate is a bounded failure.
 
+## alignpack development
+
+R4-ALIGNPACK-LAYER-MAJOR is implemented on branch `agent/r4-alignpack-layer-major`; its
+authoritative plan is `docs/specs/r4-alignpack-layer-major.md`, which owns the container format,
+the contract ledger, the closure matrix, the fixture design, the correction ledger, and the
+cell-to-case map. Two CLI arms, three or four operands each:
+
+```sh
+./main --pack MODEL.gguf OUT.alignpack                   # document to stdout
+./main --pack MODEL.gguf OUT.alignpack DOC.json          # document to DOC.json, summary to stdout
+./main --pack-verify MODEL.gguf PACK.alignpack           # document to stdout
+./main --pack-verify MODEL.gguf PACK.alignpack DOC.json  # document to DOC.json, summary to stdout
+```
+
+`--pack` writes an alignpack v1 container: the model's tensor bytes, unchanged and in the same
+order, relaid so that every Model IR block — an attention block, an MLP block, one expert — is a
+single contiguous range. **Both forms write the pack**; the optional third operand selects only
+where the document goes, and there is no dry-run form. `--pack-verify` re-opens both files, compares
+every claimed byte, reads every interior padding byte, and recomputes the sequential-read statistics
+from the pack's own tables. Both emit `schema_version: 1` documents, `R4_ALIGNPACK` and
+`R4_ALIGNPACK_VERIFY`.
+
+There is no `--force`, no `--arch`, and no `--align` flag: an occupied destination is
+`R4_DEST_EXISTS` rather than something a flag makes acceptable, the architecture is the container's
+own `general.architecture` exactly as `--model-ir` decides it, and the alignments are properties of
+the format recorded in its header. Neither arm reads any environment variable.
+
+**The model inherits the writable-by-the-invoking-user precondition.** `src/alignpack.align` opens
+it with `fs.open_rw`, the only random-access constructor Align ships at this pin, so a mode `0444`
+model cannot be opened at all — `docs/align-requests.md` Request 21, still `PROPOSED` and
+non-blocking, with R4 as its strongest client: this arm never writes the model and still needs
+`O_RDWR`.
+
+The narrow durable owner is `gmake alignpack-smoke`. It needs no model, no network, and no reference
+tool — `scripts/gguf_fixture.py` writes the same synthetic qwen2 and gpt-oss corpora
+`run-model-ir-smoke` drives — so it is in `HOSTED_CHECK_TARGETS`. It also runs
+`scripts/alignpack_reader.py`, an independent Python reader written from the specification rather
+than from `src/`, over every pack and against a 40-mutation corpus.
+
+One case inside it is **opt-in**, because it attaches a disk image:
+
+```sh
+ALIGN_LLM_ALIGNPACK_ENOSPC=1 scripts/run-alignpack-smoke
+```
+
+closes `write-to-full-filesystem` by mounting an 8 MiB case-sensitive APFS volume with `hdiutil`
+(no root required), filling it, and asserting that `--pack` reports `R4_WRITE_FAILED` and removes
+the partial pack. Without the variable, or on a host with no `hdiutil`, it prints one exact `N/A`
+line and the rest of the smoke is unaffected.
+
+The named opt-in qualification is `scripts/run-alignpack-qualification`, taking two environment
+variables read by the **runner** and never by `main`:
+
+```sh
+ALIGN_LLM_GGUF_MODEL=/path/to/model.gguf \
+ALIGN_LLM_ALIGNPACK_TMPDIR=/path/to/scratch \
+  scripts/run-alignpack-qualification
+```
+
+`ALIGN_LLM_GGUF_MODEL` names the model to pack and has no default. `ALIGN_LLM_ALIGNPACK_TMPDIR` is
+optional and defaults to a `mktemp -d`; it is resolved with `pwd -P` and **refused if it resolves
+inside the work tree**, because this is the only thing in the repository that writes a
+multi-gigabyte file and it must never land in a checkout. The runner checks that
+`model_size + 1 GiB` is free before writing anything, and removes the pack on every exit path —
+success, failure, or signal — then asserts the removal and prints the reclaimed byte count.
+
+A missing or unusable input prints exactly one of these lines, alone, and exits 0 without claiming a
+pass; the line must be named as the `N/A` reason in the pull request:
+
+```text
+alignpack qualification: N/A (ALIGN_LLM_GGUF_MODEL unset)
+alignpack qualification: N/A (ALIGN_LLM_GGUF_MODEL is absent)
+alignpack qualification: N/A (ALIGN_LLM_ALIGNPACK_TMPDIR is not a directory)
+alignpack qualification: N/A (ALIGN_LLM_ALIGNPACK_TMPDIR resolves inside the work tree)
+alignpack qualification: N/A (the destination already exists: <pack>)
+alignpack qualification: N/A (insufficient free space: <avail> < <required>)
+```
+
+They are checked in that order, so an unset variable is reported before an unusable one and an
+occupied destination before a headroom failure — and the destination check runs **before** the
+reclaim trap is installed, so a refusal never removes the file it declined to overwrite. A run that
+reaches the model emits its own verdicts rather than the pull request authoring them:
+
+```text
+alignpack qualification (identity): PASS
+alignpack qualification (sequential read): PASS  src 89 ranges / 11130544128 span / 2379786 ppm
+                                                 pack 58 ranges / 4677120000 span / 1000000 ppm
+alignpack qualification (MoE): N/A - no gpt-oss GGUF on this host; see
+docs/specs/r4-alignpack-layer-major.md section 4.5.
+```
+
+**The MoE half of the gate is closed only synthetically.** Per-expert contiguity — the case where
+this format is worth the most, since one expert's six planes are six scattered ranges in a GGUF and
+one range in a pack — is asserted over `scripts/gguf_fixture.py`'s gpt-oss corpus. It needs the same
+small MoE GGUF the R2 locality gate is waiting for.
+
+**The peak resident set is not `metrics.peak_window_bytes`.** That field measures the I/O windows
+only. Both arms also hold the plan columns and the rendered document, which are proportional to
+block and member count: on a synthetic 16,514-block container the document is 26.8 MB and the arm's
+peak is 419 MB (`--pack`) or 802 MB (`--pack-verify`) against a `peak_window_bytes` of 262,144. The
+specification's section 2.9 records this; do not quote `peak_window_bytes` as a memory bound.
+
 ## The aarch64 platform-profile gates
 
 C7 evidence is target-bound, so each required non-x86 environment has its own reviewed profile.

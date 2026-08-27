@@ -857,9 +857,14 @@ Order for `--pack-verify`: steps 1–4 unchanged, then:
     each table's `count * record_bytes` fits its region, `payload_offset` is `block_align`-aligned.
 16. Source identity: `header_region_bytes`, `source_file_size`, `source_data_offset`,
     `source_tensor_count`, then the recomputed region digest.
-17. Table validation and cross-check against the freshly derived Model IR: counts, then per block
-    kind/layer/expert/member span, then per member name/role/type/dims/slice/`source_offset`/`nbytes`,
-    then `pack_offset` alignment, containment, monotonicity, and the deferred fields' v1 values.
+17. Cross-check against the freshly derived Model IR. **The header's region geometry first** —
+    `total_bytes`, `name_stream_offset`, `name_stream_bytes`, `block_table_offset`,
+    `member_table_offset`, `source_record_offset`, `payload_offset` — each against the value the
+    planner derives, because every one of them is about to be used to address a record and because
+    `total_bytes` is otherwise unconstrained by anything but its own file (section 6.8). Then table
+    validation: counts, then per block kind/layer/expert/member span, then per member
+    name/role/type/dims/slice/`source_offset`/`nbytes`, then `pack_offset` alignment, containment,
+    monotonicity, and the deferred fields' v1 values.
 18. Streaming byte comparison, member by member in pack order.
 19. Padding verification: every interior padding run is read and asserted zero.
 20. Statistics for both containers.
@@ -885,7 +890,7 @@ Order for `--pack-verify`: steps 1–4 unchanged, then:
 | `R4_PACK_UNREADABLE` | open, `len`, or `pread` failed on the pack | 13 | the Align `Error` variant name |
 | `R4_PACK_MAGIC` | the first four bytes are not `ALGP` | 13 | the four bytes, hex-escaped |
 | `R4_PACK_VERSION` | `format_version != 1` | 13 | the version |
-| `R4_PACK_HEADER` | a header constant, alignment, flag, or reserved field is not its v1 value | 13 | the field name |
+| `R4_PACK_HEADER` | a header constant, alignment, flag, or reserved field is not its v1 value, or a header region field disagrees with the derived layout | 13, 17 | the field name |
 | `R4_PACK_TRUNCATED` | `f.len() != total_bytes`, or a region leaves the file | 14, 15 | the two decimal sizes, or the region name |
 | `R4_PACK_REGION` | regions overlap, or a table does not fit its region | 15 | the region name |
 | `R4_SOURCE_IDENTITY` | the header-region digest, `file_size`, `data_offset`, or `tensor_count` disagrees | 16 | the field name |
@@ -915,12 +920,22 @@ the failure path to be pleasant.
 the reason the padding is written rather than left as a hole: a hole reads as zero and would make
 the assertion vacuous on a filesystem that supports holes and non-vacuous on one that does not.
 
+**A pack that was written survives a failure to write its document.** Step 12's cleanup governs the
+destination pack and nothing else. In the four-operand form of `--pack` the document is written
+after the pack is complete and its size asserted, so a `write_file` failure on the caller's document
+path — an unwritable directory, a full filesystem, a path that became a directory — leaves the pack
+**in place** and returns `Err` with no document, no summary block, and a nonzero exit. That is the
+deliberate answer: the pack may be gigabytes, it is known good because step 11 asserted its size,
+and `--pack-verify` recovers everything the lost document would have said. Removing a verified
+artifact because a caller named an unwritable document path would be the worse outcome, and leaving
+it unstated would be worse still.
+
 ### 2.9 Ownership, allocation, and owner modules
 
 | Module | Owns | Imports |
 | --- | --- | --- |
 | `src/alignpack.align` | the v1 container codec (encode and decode), the layout planner, the streaming copy, the streaming verifier, the padding writer, the sequential-read statistics, both document renderers, every `R4_*` code | `core.json`, `std.crypto`, `std.encoding`, `std.fs`, `std.time`, `gguf`, `model_ir` |
-| `src/model_ir.align` | **unchanged responsibilities**, plus one new `pub fn resolve_claims(borrow t, borrow g, borrow plan) -> ClaimTable` extracted from the existing per-member claim pass, which `build` now calls | unchanged |
+| `src/model_ir.align` | **unchanged responsibilities**, plus one new `pub fn resolve_claims(borrow t, borrow g, borrow plan) -> ClaimTable` extracted from the existing per-member claim pass, which `build` now calls, and `pub fn derive_status(...) -> Derivation`, the status-only ordered derivation the packing arms run (section 6.8) | unchanged |
 | `src/main.align` | `--pack` and `--pack-verify` arity, path guards, summary blocks, exit mapping | `alignpack` |
 
 **`src/alignpack.align` imports the frontends indirectly, never directly.** The architecture
@@ -950,10 +965,30 @@ byte-identical before and after.
 | document | one `builder` in each renderer | accumulated once, in declaration order | moved out by `to_string()` |
 | final document | moved into `AlignPack.document` / `AlignPackVerify.document`, then to the caller | one owned `string` | move, never clone |
 
-The header-region buffer is the one allocation proportional to input rather than constant. It is
-`data_offset` bytes — 5,953,536 for the reference model — and `data_offset` is already bounded by
-R0's own walk before R4 sees it. It is scoped so it is released before the payload copy starts, so
-it never coexists with the copy window at peak.
+**The table above was incomplete about peak, and this paragraph replaces its claim.** Three
+allocations are proportional to the model rather than constant, and the third dominates:
+
+1. the header-region buffer, `data_offset` bytes — 5,953,536 for the reference model — already
+   bounded by R0's own walk, and scoped so it is released before the payload copy starts, so it
+   never coexists with the copy window;
+2. the `ClaimTable` and the `PackPlan` — six and twenty-two `array<i64>` columns over the member
+   and block counts plus one owned name stream, about 17 MB for a container with 16,514 blocks and
+   99,139 members, and twice the `PackPlan` for `--pack-verify`, which holds the expected layout and
+   the observed one at once;
+3. **the rendered `R4_ALIGNPACK` / `R4_ALIGNPACK_VERIFY` document**, one `builder` plus one owned
+   `string` per block and per member, which is `O(blocks + members)` and is the largest thing either
+   arm holds.
+
+`metrics.peak_window_bytes` measures **only** the I/O windows, and a reader must not take it for the
+arm's resident set. On the 16,514-block synthetic mixture-of-experts container of section 6.8 the
+document is 26,817,769 bytes and the arm's peak resident set is 419 MB for `--pack` and 802 MB for
+`--pack-verify`, against a `peak_window_bytes` of 262,144. That ratio is a property of building a
+document proportional to the model, not of the copy; R5's loader consumes the container, not the
+document, and section 5's deferred surfaces are where a streaming document renderer would belong if
+a consumer ever needs one.
+
+Section 6.8 records the one repair made here: the packing arms no longer render an `R1_MODEL_IR`
+document they discard, which removed 37 MB from each arm's peak on that container.
 
 **Work stays bounded.** Planning is `O(members)`. The copy is one pass over `payload_bytes` in both
 directions. The compare is one pass over `payload_bytes` in each container. The statistics sort one
@@ -964,18 +999,18 @@ count is bounded by the frontend. Nothing is quadratic and nothing rescans.
 
 | Dimension | Contract | Owner | Acceptance |
 | --- | --- | --- | --- |
-| Exact command/API | Section 2.3 (`--pack`, `--pack-verify`, two forms each, no flags); `pub fn build_pack(source: str, destination: str) -> alignpack.AlignPack`, `pub fn verify_pack(source: str, pack: str) -> alignpack.AlignPackVerify`; `alignpack.PackPlan`, `alignpack.AlignPack`, `alignpack.AlignPackVerify`; `model_ir.resolve_claims`, `model_ir.ClaimTable`. No aliases | `src/main.align`, `src/alignpack.align`, `src/model_ir.align` | `alignpack-smoke` CLI cases |
+| Exact command/API | Section 2.3 (`--pack`, `--pack-verify`, two forms each, no flags); `pub fn build_pack(source: str, destination: str) -> alignpack.AlignPack`, `pub fn verify_pack(source: str, pack: str) -> alignpack.AlignPackVerify`; `alignpack.PackPlan`, `alignpack.AlignPack`, `alignpack.AlignPackVerify`; `model_ir.resolve_claims`, `model_ir.ClaimTable`, `model_ir.derive_status`, `model_ir.Derivation`. No aliases | `src/main.align`, `src/alignpack.align`, `src/model_ir.align` | `alignpack-smoke` CLI cases |
 | Inputs and defaults | One source path, one pack path, one optional document path. No environment input, no ambient options, no default destination | `src/main.align` | `env-perturbation`, `cli-arity` |
 | Results and errors | `Ok` + `status: "ok"`; `Ok` + `status: "error"` for every container, model, layout, or comparison defect; `Err` only for argument or OS failure. Section 2.8's table is complete and ordered; `R0_*` and `R1_*` codes pass through verbatim | `src/alignpack.align` | one fixture per row |
 | Multi-invalid precedence | Section 2.8 is strictly ordered; the first applicable row wins | ordered guards | `precedence-*` cases |
 | Ownership and lifetime | Section 2.9. Handles and windows are bare locals; `ClaimTable`, `PackPlan`, and both documents are moved into their sole owners; no accessor returns a view derived from a `borrow` parameter | `src/alignpack.align` | `document-move`, ownership review |
-| Allocation | Section 2.9's table. Peak is one (pack) or two (verify) `COPY_WINDOW_BYTES` windows plus the plan; the header-region buffer is scoped so it never coexists with them | `src/alignpack.align` | `peak-allocation`, `descriptor-budget` |
+| Allocation | Section 2.9's table **and the paragraph that follows it**, which corrects this row: the windows are one (pack) or two (verify) `COPY_WINDOW_BYTES` buffers and the header-region buffer never coexists with them, but peak is dominated by the rendered document and, behind it, the `ClaimTable` and `PackPlan` columns — all three proportional to block and member count. `metrics.peak_window_bytes` measures the windows only and is not the resident set | `src/alignpack.align` | `peak-allocation` (`peak_window_bytes <= max(data_offset, COPY_WINDOW_BYTES)` per fixture; measured resident set on the section 6.8 synthetic), `descriptor-budget` |
 | Bounded work | One forward pass per container; `O(m log m)` per block for the statistics; every `MAX_*` checked before the work it protects, non-wrapping | `src/alignpack.align` | `bounded-work` over the oversize fixtures |
 | Owner module | Section 2.9's table. One producer of the container format; one producer of claim arithmetic | this document | `make check` (`check-per-unit`), import-graph review |
 | **Persisted identity** | **The alignpack v1 container is a persisted format.** Its identity is `magic` + `format_version`; its source binding is the section 2.4.6 record (`file_size`, `data_offset`, `tensor_count`, `metadata_kv_count`, `gguf_version`, `alignment`, and the `crypto.sha256` of `[0, data_offset)`). It is **not** content-addressed, **not** a cache, and has **no** garbage-collection or reuse policy: a pack is a caller-named artifact at a caller-named path. The whole-payload digest is reserved and zero | `src/alignpack.align` | `identity-mismatch`, `alignpack_reader.py` |
 | Schema version | **Container `format_version: 1`** and **document `schema_version: 1`**, independently versioned, with `document_schema_version` in the header binding a pack to the document vintage that described it. Any change to a record layout, a field, an alignment rule, or a reserved value requires `format_version: 2` | `src/alignpack.align` | golden container bytes; golden document bytes; field-order assertions |
 | Validation order | Section 2.8, deterministic. No destination file before step 10; no document before the derivation completes; a partial destination is removed and reported | `src/alignpack.align` | ordered malformed corpus, `untouched-destination`, `partial-pack-removed` |
-| Prerequisites | The pinned toolchain at `4b515f8d`; every consumed surface verified present (section 2.1). Requests 21–28 remain `PROPOSED`, non-blocking, unconsumed. **One capability prerequisite**: `model_ir.resolve_claims`, in the same commit. **One environmental prerequisite**: free space greater than the pack for the qualification only (section 4.4) | `src/alignpack.align` | `make check`, `make build` |
+| Prerequisites | The pinned toolchain at `4b515f8d`; every consumed surface verified present (section 2.1). Requests 21–28 remain `PROPOSED`, non-blocking, unconsumed. **Two capability prerequisites**: `model_ir.resolve_claims` and `model_ir.derive_status`, in the same commit. **One environmental prerequisite**: free space greater than the pack for the qualification only (section 4.4) | `src/alignpack.align` | `make check`, `make build` |
 | Acceptance evidence | `alignpack-smoke` for the format, the error corpus, byte identity, and the layout invariants; `scripts/alignpack_reader.py` as the independent reader; `alignpack-qualification` for the real-model gate | section 4 | sections 4.2, 4.3, 4.4 |
 | Metrics | Primary: byte identity and `range_count == 1` for every pack block. Secondary: `bytes_written`, `elapsed_ns`, verify `elapsed_ns`, range counts and spans before and after, padding and duplicated bytes, peak resident bytes. **No throughput claim**; section 4.6 | section 4.6 | oracle assertions |
 | Text/wire boundary | The container is LE binary with fixed-width records and an explicit-span name stream; only names that passed R0's UTF-8 validation enter the stream, and `--pack-verify` re-validates them. Documents are canonical UTF-8 JSON in declaration order; `error_detail` and every path in a summary block are escaped and bounded | `src/alignpack.align` | `wire-escapes`, `invalid-utf8-name`, golden container bytes |
@@ -1119,7 +1154,7 @@ closed synthetically and relisted in section 4.5.
 | Qualification cleanup | The pack is removed on **every** exit path, including a failed verify and a signal | `scripts/run-alignpack-qualification` | `trap ... EXIT HUP INT TERM`; the runner's final line asserts the pack is gone and prints the reclaimed byte count |
 | Qualification skip | An unset or absent `ALIGN_LLM_GGUF_MODEL`, or insufficient free space, prints one exact `N/A` line and exits 0 without claiming a pass | `scripts/run-alignpack-qualification` | a synthetic unit inside the runner |
 | Repository safety | Neither runner may write inside the repository; the qualification refuses a temporary directory that resolves inside the work tree | both runners | `repo-leak-sweep`; `qualification-refuses-repo-tmpdir` |
-| Documentation | `docs/specs/roadmap.md` section R4 and `HANDOFF.md` name this document; `docs/align-requests.md` receives the section 5.5 candidates and the new Request 21 and Request 23 client evidence; `docs/specs/r1-qwen-model-ir.md` section 2.5.6's role-major sentence is corrected per section 2.2 finding 1 | integration commit | the register and document edits are applied |
+| Documentation | `docs/specs/roadmap.md` section R4 and its forward order name this document, `HANDOFF.md` names it, `docs/align-development.md` gains an alignpack section; `docs/align-requests.md` receives the section 5.5 candidates and the new Request 21 and Request 23 client evidence; `docs/specs/r1-qwen-model-ir.md` section 2.5.6's role-major sentence is corrected per section 2.2 finding 1, recorded in that document's section 7 | integration commit | the register and document edits are applied |
 
 ## 4. Fixture and qualification design
 
@@ -1175,6 +1210,13 @@ Beyond the closure cells, the runner:
 - asserts `metrics.byte_scan_windows == 0` on every identical comparison, so the fast path is
   actually taken;
 - runs the reader's negative corpus, proving the reader rejects what it should;
+- asserts the section 3.4 single-producer claim structurally — no claim arithmetic in
+  `src/alignpack.align`, one definition and one caller of `member_claim` in `src/model_ir.align`;
+- asserts `usage-diff` over the help block;
+- drives `scripts/run-alignpack-qualification` through its refusals (`qualification-skip`) and
+  asserts each `N/A` line exactly, including that an occupied destination survives untouched;
+- with `ALIGN_LLM_ALIGNPACK_ENOSPC=1` on a host with `hdiutil`, mounts an 8 MiB volume and closes
+  `write-to-full-filesystem` and the qualification's headroom refusal (section 7.2);
 - keeps the repository leak sweep, the temp-root assertion, the descriptor budget,
   `env-perturbation`, and `repeat-pack`.
 
@@ -1212,28 +1254,43 @@ ALIGN_LLM_ALIGNPACK_TMPDIR  directory for the pack                       (option
 What it does, in order:
 
 1. Refuses to run if `ALIGN_LLM_GGUF_MODEL` is unset or absent, printing exactly one `N/A` line.
-2. Resolves the temporary directory and **refuses one that resolves inside the work tree**, so a
-   4.36 GiB artifact can never land in the repository even by a mistyped variable.
-3. Records the model's size and mtime.
-4. **Checks free space before writing anything.** It requires `model_size + 1 GiB` available on the
+2. Resolves the temporary directory — **physically, with `pwd -P`, as it resolves its own root** —
+   and **refuses one that resolves inside the work tree**, so a 4.36 GiB artifact can never land in
+   the repository even by a mistyped variable or a symlink. Two logical paths cannot be compared by
+   prefix: the guard's whole purpose is defeated if a symlink into the repository resolves to a name
+   the prefix test does not match.
+3. **Refuses an occupied destination, before the reclaim trap is installed.** The trap removes
+   whatever stands at the pack's path, so a runner that installed it first and refused afterwards
+   would delete the artifact it declined to overwrite. This is `--pack`'s own step-5 rule applied to
+   the runner.
+4. Records the model's size and mtime.
+5. **Checks free space before writing anything.** It requires `model_size + 1 GiB` available on the
    temporary directory's filesystem and prints one exact `N/A` line if not. On this host the pack is
-   4,677,177,344 bytes (4.36 GiB), so the requirement is 5.36 GiB against 27 GiB free.
-5. Runs `main --pack MODEL PACK DOC.json`, timing it.
-6. Runs `main --pack-verify MODEL PACK VERIFY.json`, timing it.
-7. Runs `scripts/alignpack_reader.py` over the real pack — the same invariants, at real scale.
-8. Asserts the model's size and mtime are **unchanged**.
-9. Prints the measured improvement from the verify document.
-10. **Removes the pack on every exit path** — success, failure, or signal — through
+   4,677,222,400 bytes (4.36 GiB), so the requirement is 5.36 GiB against 26 GiB free.
+6. Runs `main --pack MODEL PACK DOC.json`, timing it.
+7. Runs `main --pack-verify MODEL PACK VERIFY.json`, timing it.
+8. Runs `scripts/alignpack_reader.py` over the real pack — the same invariants, at real scale.
+9. Asserts the model's size and mtime are **unchanged**.
+10. Prints the measured improvement from the verify document.
+11. **Removes the pack on every exit path** — success, failure, or signal — through
     `trap ... EXIT HUP INT TERM`, then asserts it is gone and prints the reclaimed byte count.
 
-The `N/A` lines, in this order, each printed alone and exiting 0 without claiming a pass:
+**All six `N/A` lines, in the order the runner can emit them**, each printed alone and exiting 0
+without claiming a pass. The list is complete: a refusal this document does not name is a defect:
 
 ```text
 alignpack qualification: N/A (ALIGN_LLM_GGUF_MODEL unset)
 alignpack qualification: N/A (ALIGN_LLM_GGUF_MODEL is absent)
+alignpack qualification: N/A (ALIGN_LLM_ALIGNPACK_TMPDIR is not a directory)
 alignpack qualification: N/A (ALIGN_LLM_ALIGNPACK_TMPDIR resolves inside the work tree)
+alignpack qualification: N/A (the destination already exists: <pack>)
 alignpack qualification: N/A (insufficient free space: <avail> < <required>)
 ```
+
+`scripts/run-alignpack-smoke`'s `qualification-skip` unit drives the runner through the first five
+and asserts each line exactly, that the exit status is 0, and that an occupied destination is
+neither removed nor rewritten. The sixth needs a filesystem with less than a gibibyte free and is
+asserted by the opt-in `write-to-full-filesystem` case, which mounts one.
 
 The verdicts it emits rather than the pull request authoring them:
 
@@ -1528,7 +1585,7 @@ per-pad `mut pad := buffer(0)` fallback is **not shipped**. `write_padding` uses
 | 2.10, 2.9 | `pub fn build_pack(source: str, destination: str) -> AlignPack` | `build_pack(borrow t: gguf.GgufTable, borrow g: model_ir.Geometry, borrow plan: model_ir.BlockPlan, source, destination, in_code, in_detail, borrow limits) -> AlignPack`, and the same shape for `verify_pack`. The two-operand signature contradicts section 2.9's own rule that the packer imports no frontend: only a frontend can produce a `BlockPlan`, and the architecture dispatch lives in `src/main.align`. The arm hands the settled plan in |
 | 1.2 item 4 | Exactly one extraction, `model_ir.resolve_claims` | Two, and the second is forced by the first. `frontend_qwen.prepare` and `frontend_gpt_oss.prepare` now return the whole derivation as data and `build_model_ir` renders over exactly that value. The record is `model_ir.Prepared`, owned by the neutral builder rather than by each frontend, because `src/main.align` selects between the two in one conditional and two identically shaped per-frontend records are two types. `model-ir-smoke` re-runs unchanged and is the byte-identity regression |
 | 2.9 | `resolve_claims` alone | `resolve_claims` plus `pub fn claim_ordinal(borrow plan, slot) -> i64`. The duplication sweep needs `model_ir`'s own `(tensor, ordinal)` claim key and must not repeat the section 2.5.3 slice arithmetic, which is the whole point of the extraction |
-| 2.8 steps 3–4 | Container read, then architecture dispatch and the frontend | The **whole** R1 ordered derivation. Coverage (step 11a), claim tiling (11b), and the size-sum oracle (12) also have to pass before a byte is written, so each arm runs `model_ir.build` and passes its status to the packer. The `R1_MODEL_IR` document is discarded: its authoritative producer is `--model-ir`, and emitting a second copy from this arm would create two producers of one exchanged format |
+| 2.8 steps 3–4 | Container read, then architecture dispatch and the frontend | The **whole** R1 ordered derivation. Coverage (step 11a), claim tiling (11b), and the size-sum oracle (12) also have to pass before a byte is written, so each arm runs the whole derivation and passes its status to the packer. No `R1_MODEL_IR` document is produced: its authoritative producer is `--model-ir`, emitting a second copy from this arm would create two producers of one exchanged format, and section 6.8 replaces the first shipped shape — which rendered the document and dropped it — with `model_ir.derive_status` |
 | 4.1 | A `debug_limits` entry point, surface unnamed | `pub Limits`, `pub fn default_limits()`, `pub fn lowered_limits(...)`, and `src/alignpack_limits_smoke.align`, which the smoke drives with `alignc run`. `main` never constructs a `Limits`: both arms use `default_limits()`, so the shipped contract is the section 2.7 table |
 
 ### 6.3 The sequential-read metric applied to the pack
@@ -1569,6 +1626,13 @@ Two smaller corrections to section 2.6 follow:
   20-bit within-block member ordinal: `member_count <= 1_048_575` and every offset
   `<= I64_MAX >> 20`. Both are checked in step 7, before any offset reaches the sweep, and a
   violation is `R4_MEMBER_LIMIT` or `R4_LAYOUT_OVERFLOW`.
+- **The "counted once" rule rests on a precondition, and the precondition is R1's.** The sweep drops
+  a duplicate claim by comparing it against the previously accepted one, which is correct only if
+  two claims that share an offset also share a size. `src/model_ir.align`'s step 11b proves exactly
+  that: the claims over one tensor are either all whole-tensor claims or an exact partition of its
+  range, so no run of the form `(o,s) (o,t) (o,s)` exists and no duplicate can be separated from its
+  twin by a different claim. Both packing arms run that oracle before the planner (step 4), so the
+  adjacent test is sound; a caller that reached this sweep without it would need a block-local set.
 
 ### 6.4 The documents
 
@@ -1652,6 +1716,48 @@ Diagnostics, not thresholds and not a performance claim: `--pack` 7.68 s wall (7
 (3.54 s in-arm) reading 9,360,295,936 bytes and comparing 4,677,120,000. The pack was removed on
 exit and the runner reported 4,677,222,400 reclaimed bytes.
 
+**Re-run once after the section 6.8 repair**, on the same host and the same model: every measured
+quantity in the table above is unchanged, including the two range/span/ppm rows, the 27 → 58 of 58
+contiguous blocks, all three per-kind ppm figures, the 57,344 interior padding bytes, `duplicated 0`,
+the 4,677,222,400-byte pack, and the 5,953,536-byte peak window. The wall clocks moved, as wall
+clocks do: `--pack` 6.74 s (6.72 s in-arm) with the same 1,387 `pread`s and 1,420 `pwrite`s,
+`--pack-verify` 3.12 s (3.05 s in-arm) over the same byte counts. The pack was removed on exit and
+4,677,222,400 bytes were reported reclaimed.
+
+### 6.8 Corrections found by review of the implemented capability
+
+Two complementary reviewers read the shipped diff. Every finding they raised was accepted; the rows
+below are the ones that change a stated contract, each with the case that closes it. The remaining
+findings were comment, documentation, or test-strength repairs and are recorded in section 7.
+
+| Contract | As shipped at first | As corrected, and why | Closing case |
+| --- | --- | --- | --- |
+| 2.4.7 "no trailing padding"; 2.8 step 17 | Nothing compared the header's region geometry against the derived plan. A pack extended with real bytes whose `total_bytes` and `payload_bytes` were raised to match passed every step and verified as `identical` | Step 17 begins with `cross_check_header`: seven scalar comparisons against the planner, in header declaration order, reported as `R4_PACK_HEADER` naming the field. It runs after step 16 so that a pack verified against an unrelated model still reports `R4_SOURCE_IDENTITY` rather than a geometry defect it would not otherwise have | `header-total-bytes`, `header-name-stream-offset`, `header-name-stream-bytes`, `header-payload-offset`. `scripts/alignpack_reader.py` already rejected the trailing-bytes container as `TRUNCATED`, which is what made the writer's silence visible |
+| 2.8 error table, `R4_PACK_HEADER` | Step 13 only | Steps 13 **and 17**; the `error_detail` is still the field name, so the row's shape is unchanged | the four cases above |
+| 2.8 step 17 for the three table offsets | — | `block_table_offset`, `member_table_offset`, and `source_record_offset` are compared like the rest, but they cannot be reached by a single-field mutation: the name stream, both tables, the source record, and the payload are laid consecutively, so any relocation collides with a neighbour and step 15 owns it. Each field still gets its own case, asserting the exact region the collision names | `header-block-table-offset`, `header-member-table-offset`, `header-source-record-offset` |
+| 2.8, four-operand `--pack` | Unstated | A `write_file` failure on the document path keeps the pack and returns `Err`. Section 2.8's prose now states it | `--pack`'s own path guard refuses an over-long or NUL-bearing document operand before anything is opened (`long-document`, `cli-arity`); the surviving-pack case is stated, not asserted, because forcing a document write to fail after a successful pack needs a filesystem that fails on one path and not the other |
+| 2.9, 2.10 Allocation | "Peak is one or two `COPY_WINDOW_BYTES` windows plus the plan" | False for a large model. Peak is dominated by the rendered document, then the `ClaimTable` and `PackPlan` columns; `peak_window_bytes` measures the windows only. Section 2.9's paragraph states the real numbers | measured resident set on the section 6.8 synthetic, below |
+| 2.9, 2.8 steps 3–4 | Each packing arm ran `model_ir.build` and discarded the rendered `R1_MODEL_IR` document | `pub fn model_ir.derive_status(borrow t, borrow g, borrow plan, in_code, in_detail) -> Derivation` runs the same ordered checks — geometry, block assembly, coverage, claim tiling, size sum — and renders nothing. `build` and `derive_status` share one `ordered_checks`, so there is still exactly one producer of each rule | `make model-ir-smoke` unchanged, plus a direct comparison of all 142 fixture documents before and after the change: byte-identical |
+| 2.6 "counted once" | Stated without its precondition | Section 6.3's fourth bullet states R1's tiling precondition that makes the adjacent duplicate test sound | `make model-ir-smoke`'s claim-tiling oracle, which is the precondition |
+| 4.4 `N/A` lines | Four listed, six emitted | All six are listed in section 4.4 and five are asserted exactly by the smoke; the sixth is asserted by the opt-in full-filesystem case | `qualification-skip` |
+| 4.4 step order | The occupied-destination refusal ran after the reclaim trap was installed | It runs **before** the trap. The trap removes whatever stands at the pack's path, so the refusal was deleting the artifact it declined to overwrite — found by the new `qualification-skip` unit on its first run | `qualification-skip` asserts the occupied file's bytes survive |
+| 4.4 work-tree guard | `pwd` | `pwd -P` for the runner's root, the model, and the temporary directory. A prefix test over logical paths does not refuse a symlink into the repository | stated; the guard's own case (`ALIGN_LLM_ALIGNPACK_TMPDIR resolves inside the work tree`) is asserted with a physical path |
+| 7.2 `write-to-full-filesystem` | Recorded unreachable, "a loopback image needs root on darwin" | **Wrong.** `hdiutil create -size 8m -fs "Case-sensitive APFS"` needs no root, and the `ENOSPC` path works exactly as section 2.8 says. The case ships, opt-in behind `ALIGN_LLM_ALIGNPACK_ENOSPC=1`, because attaching and detaching a volume is a machine-visible side effect that does not belong in an aggregate that runs on every change | `write-to-full-filesystem`: `R4_WRITE_FAILED` with `Code@13312`, `destination: REMOVED`, and no surviving pack |
+
+**The measured resident set**, on a synthetic gpt-oss container built from `scripts/gguf_fixture.py`
+with 64 layers and 256 experts — 16,514 blocks, 99,139 members, a 268,737,824-byte source and a
+315,600,448-byte pack — measured with `/usr/bin/time -l`:
+
+| Arm | Before | After | `peak_window_bytes` | Document |
+| --- | --- | --- | --- | --- |
+| `--pack` | 456,015,872 | **419,037,184** | 262,144 | 26,817,769 |
+| `--pack-verify` | 839,532,544 | **802,340,864** | 262,144 | 26,818,004 |
+
+The discarded `R1_MODEL_IR` render was 92 MB of peak on its own (`--model-ir` on the same container
+peaks at 91,963,392 for a 31,885,872-byte document) and its removal is worth 37 MB of the arms'
+peak, because the two phases did not overlap and the freed arena is not fully reused. The rest is
+the `R4_ALIGNPACK` document and the plan columns, which is what section 2.9 now says.
+
 ## 7. Cell-to-case map
 
 Every applicable cell of section 3 and its exact regression. Unless another runner is named the case
@@ -1666,6 +1772,7 @@ smoke runs over every positive fixture and against every mutation.
 | 3.1 Failure — magic / version / header constants | `bad-magic`, `bad-version-{0,2,4294967295}`, `header_bytes`, `block_record_bytes`, `member_record_bytes`, `source_record_bytes`, `document_schema_version`, `block-align-odd`, `block-align-huge`, `member-align-odd`, `member-align-above-block`. Each asserts the exact code **and** the exact `error_detail` field name, and each is independently rejected by the reader |
 | 3.1 Failure — reserved | `flags-hotness`, `flags-prefetch`, `reserved-nonzero`, `prefetch-group-set`, `hotness-rank-set`, `block-reserved`, `member-reserved`, `payload-digest-present`, `payload-digest-reserved` |
 | 3.1 Failure — regions / truncation | `region-overlap`, `region-past-eof`, `pack-truncated-{one-byte,header-boundary,mid-payload}`, `declared-size-disagrees` |
+| 3.1 Failure — header geometry (section 6.8) | `header-total-bytes` (the pack extended by 4,096 real bytes with `total_bytes` and `payload_bytes` raised to match), `header-name-stream-offset`, `header-name-stream-bytes`, `header-payload-offset` — each asserting `R4_PACK_HEADER` and the exact field name — and `header-block-table-offset`, `header-member-table-offset`, `header-source-record-offset`, each asserting the `R4_PACK_REGION` collision that step 15 reports first |
 | 3.1 Malformed — name span / non-UTF-8 | `name-span-past-end`, `pack-name-invalid-utf8`; the reader decodes each span and rejects `NAME` |
 | 3.1 Bounded work | `block-limit`, `member-limit` through `src/alignpack_limits_smoke.align`; `decode_header` re-checks both counts before addressing a record |
 | 3.1 Endianness | `be-header` — a byte-swapped magic is `R4_PACK_MAGIC`, never silently read |
@@ -1680,7 +1787,7 @@ smoke runs over every positive fixture and against every mutation.
 | 3.2 Overlapping spans | `stats-overlap`: `qwen2-permuted` reports 26 source ranges for 6 blocks and its source span exceeds its payload; nothing is clamped |
 | 3.2 Planner bounds | `block-limit`, `member-limit`, `table-too-large`, `name-stream-too-large`, `name-too-long`, `pack-too-large`, each against lowered bounds, each asserting `destination: UNTOUCHED` and that no file was created |
 | 3.2 Source range | Every R0/R1 negative fixture through `--pack`, asserting the code passes through verbatim; `R4_SOURCE_RANGE` guards the same property inside the planner |
-| 3.3 Construction / descriptor budget | Both handles and every window are bare locals; `peak_window_bytes` is asserted `<= max(data_offset, COPY_WINDOW_BYTES)` per fixture and measured at 5,953,536 on the 4.68 GB model |
+| 3.3 Construction / descriptor budget / peak allocation | Both handles and every window are bare locals; `peak_window_bytes` is asserted `<= max(data_offset, COPY_WINDOW_BYTES)` per fixture and measured at 5,953,536 on the 4.68 GB model. The **resident set** is measured separately on the section 6.8 synthetic, because `peak_window_bytes` is not it |
 | 3.3 Exact copy | `byte-identity`: `--pack-verify` compares every claimed byte, and `reader.check_byte_identity` re-reads both containers and compares again without invoking `--pack-verify` |
 | 3.3 Window boundary, final partial window, short read completed | `window-64/65/128/129/4096` through the lowered-window entry point: each pack is byte-identical to the 4 MiB reference and each verifies |
 | 3.3 Padding written / not sparse | `padding-is-zero` (`reader.check_padding` reads every unclaimed byte of the payload region) and `pack-not-sparse` (`st_blocks * 512` against the logical size) |
@@ -1696,13 +1803,17 @@ smoke runs over every positive fixture and against every mutation.
 | 3.3 Early exit | `partial-verify`: `members_compared` equals the index of the failing member on all four flip cases |
 | 3.3 Determinism | `repeat-pack`: three packs of one source — twice to one path, once to another — are byte-identical by SHA-256, with no normalization |
 | 3.3 Concurrency, shared state | `N/A` with section 3.3's own reasons; `env-perturbation` asserts that five environment variables change neither the pack bytes nor the document bytes |
-| 3.4 Behaviour preservation, single producer, claim cells | `make model-ir-smoke` re-run unchanged: 49 qwen fixtures, 31 gpt-oss fixtures, 62 R0 fixtures, every `R1_MODEL_IR` document byte-identical |
+| 3.4 Behaviour preservation, claim cells | `make model-ir-smoke` re-run unchanged: 49 qwen fixtures, 31 gpt-oss fixtures, 62 R0 fixtures, every `R1_MODEL_IR` document byte-identical; and a direct before/after comparison of all 142 fixture documents across the section 6.8 extraction |
+| 3.4 Single producer | `single-producer`: no executable line of `src/alignpack.align` names `member_claim`, `plane_bytes`, `tensor_absolute_offsets`, `tensor_offsets`, `ggml_block_size`, `ggml_type_size`, or `tensor_dim(`, and `member_claim` appears exactly twice in `src/model_ir.align` — its definition and its one caller — and nowhere else in `src/` |
 | 3.5 Arity, both forms, summary block, path guard | `cli-arity` (ten argument shapes, each asserting a nonzero exit, empty stdout, and no destination), `form-parity`, `summary-order` (every fixed label of both summary blocks, positionally) |
 | 3.5 Failure mapping, selector isolation, architecture dispatch | `error-corpus` exits, `selector-as-operand`, `absent-source`, `absent-pack`; the gpt-oss corpus reaching the MoE frontend is the dispatch regression |
+| 3.5 Help text | `usage-diff`: the help block names both new lines verbatim and still names `--model-ir`, `--inspect-gguf`, `--expert-trace`, and `--persist-result` |
 | 3.6 Independence, layout invariants, oracle, mutation detection | `scripts/alignpack_reader.py` over every fixture and against 40 mutations, each with `--expect-reject KIND`, which is what proves the reader is not vacuous |
 | 3.7 Target definition, aggregate membership, exclusion | `make gate-topology-check` — `alignpack-smoke` is in `HOSTED_CHECK_TARGETS`, `alignpack-qualification` is in no aggregate |
 | 3.7 Fixture cleanup, repository safety | The `EXIT` trap, the temp-root assertion, and a full-tree leak sweep comparing the repository before and after the run |
-| 3.7 Qualification cleanup and skip | `trap ... EXIT HUP INT TERM` reclaimed 4,677,222,400 bytes on the real run; the four `N/A` lines were each exercised |
+| 3.7 Qualification cleanup and skip | `trap ... EXIT HUP INT TERM` reclaimed 4,677,222,400 bytes on the real run; `qualification-skip` drives the runner through five of the six `N/A` lines of section 4.4 and asserts each exactly, and the opt-in `write-to-full-filesystem` case asserts the sixth |
+| 3.7 Preflight profile selection | `python3 scripts/pre-pr --plan` recorded before the run, then `python3 scripts/pre-pr --owner-test alignpack-smoke -- gmake alignpack-smoke` on the exact head, with the required installed profile and no Docker substitution. Recorded in the pull request |
+| 3.7 Documentation | `docs/specs/roadmap.md` section R4 and forward-order item 13; `HANDOFF.md`; `docs/align-development.md`'s alignpack section; `docs/align-requests.md` Request 21 and Request 23 client evidence and the section 5.5 candidates; `docs/specs/r1-qwen-model-ir.md` section 7's correction of the section 2.5.6 role-major sentence |
 
 ### 7.2 Cells this host cannot reach
 
@@ -1710,11 +1821,33 @@ Each prints one exact line and never counts as a pass.
 
 | Cell | Line |
 | --- | --- |
-| 3.3 `write-to-full-filesystem` | `alignpack smoke: write-to-full-filesystem N/A (a file-size cap raises SIGXFSZ rather than surfacing ENOSPC through pwrite, and a loopback image needs root on darwin)` |
 | 3.3 `cleanup-failed` | `alignpack smoke: cleanup-failed N/A (a destination directory made read-only after fs.create_rw does not make fs.remove fail on this filesystem)` |
 | 3.3 `window-unavailable` | `alignpack smoke: window-unavailable N/A (truncating the source between the plan and the copy needs an injection point the arm does not expose)` |
 | 3.5 `read-only-source` | Covered by Request 21's client evidence rather than by a case: the arm cannot open a read-only model at all, which is the request, not a behaviour to assert |
 | 4.5 MoE on real weights | `alignpack qualification (MoE): N/A - no gpt-oss GGUF on this host` |
+
+**`write-to-full-filesystem` is reachable after all, and this table used to say it was not.** The
+claim that "a loopback image needs root on darwin" was wrong: `hdiutil create -size 8m -fs
+"Case-sensitive APFS"` needs no privilege, and the case ships. It is **opt-in** rather than default
+because attaching and detaching a volume is a machine-visible side effect that does not belong in an
+aggregate that runs on every change, and because `hdiutil` does not exist on the hosted Linux
+runners. Both paths print one exact line:
+
+```text
+alignpack smoke: write-to-full-filesystem N/A (opt-in: set ALIGN_LLM_ALIGNPACK_ENOSPC=1 on a host with hdiutil)
+alignpack smoke: write-to-full-filesystem N/A (ALIGN_LLM_ALIGNPACK_ENOSPC is set but this host has no hdiutil)
+```
+
+With `ALIGN_LLM_ALIGNPACK_ENOSPC=1` on this host the case mounts an 8 MiB case-sensitive APFS
+volume, grows a filler until the filesystem refuses and trims it back by 64 KiB, and asserts that
+`--pack` of an 847,424-byte pack reports `R4_WRITE_FAILED` naming the variant and the offset
+(`Code@13312`), `destination: "REMOVED"`, and no surviving pack. The same volume closes the
+qualification's `insufficient free space` line. Recorded evidence, one run:
+
+```text
+alignpack smoke: write-to-full-filesystem PASS (Code@13312)
+alignpack smoke: qualification-skip insufficient-free-space PASS
+```
 
 Section 4.3's `golden-container-bytes` is **not** shipped as a checked-in hex golden. The three
 properties it was meant to protect — field order, record stride, and the reserved values — are each

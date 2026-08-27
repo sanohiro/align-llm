@@ -6429,9 +6429,11 @@ Resume condition: Align ships the diagnostic fix
 Align commit or pull request: none
 align-llm verification: pending — `make check` emits no "huge struct copy" warning for a
   `borrow`/`borrow mut` parameter, specifically none for
-  `src/expert_trace.align:1622` (`borrow t: TranscriptScan`) or the ten
-  `borrow t: GgufTable` accessors in `src/gguf.align`, while the by-value
-  warnings the lint legitimately owns are unchanged
+  `src/expert_trace.align:1622` (`borrow t: TranscriptScan`), the ten
+  `borrow t: GgufTable` accessors in `src/gguf.align`, or the nine
+  `borrow p: PackPlan` sites in `src/alignpack.align` (`:1261:50`, `:1317:56`,
+  `:1331:57` and six more), while the by-value warnings the lint
+  legitimately owns are unchanged
 ```
 
 ### Motivation and current sibling evidence
@@ -6534,10 +6536,36 @@ columns-plus-name-stream record, read through `borrow` accessors by the same sha
 `BlockPlan`, and `TranscriptScan` before it (`docs/specs/r4-alignpack-layer-major.md`: "`array<i64>`
 columns behind `borrow` record accessors; `array_builder<i64>`; concatenated name stream with
 explicit `[start, end)` spans — Shipped, three prior instances (`GgufTable`, `BlockPlan`,
-`TranscriptScan`) … The layout plan is the same shape, fourth instance"). `src/alignpack.align` does
-not exist yet at this pin — R4 is designed, not implemented — so no verbatim compiler warning line
-can be quoted today; the concrete `src/alignpack.align:N` source line is to be cited at
-implementation, following the same `gmake check` reproduction used for the first three clients.
+`TranscriptScan`) … The layout plan is the same shape, fourth instance").
+
+**`src/alignpack.align` now exists and the warning is reproduced.** `PackPlan` is 480 bytes — one
+owned `string` name stream, twenty-two `array<i64>` columns, and twelve scalars — and every function
+that reads it takes it as `borrow p: PackPlan`. The three encoders are the clearest case: each one
+writes fixed-width fields out of the plan into a buffer and copies nothing. `gmake check` at the
+pinned toolchain emits, verbatim:
+
+```text
+src/alignpack.align:1261:50: warning: huge struct copy: `alignpack$PackPlan` (480 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+src/alignpack.align:1317:56: warning: huge struct copy: `alignpack$PackPlan` (480 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+src/alignpack.align:1331:57: warning: huge struct copy: `alignpack$PackPlan` (480 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+```
+
+Reproduction:
+
+```sh
+export LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib
+gmake check 2>&1 | grep 'alignpack.align.*huge struct copy'
+```
+
+Line 1261 is `fn encode_header(borrow mut b: buffer, borrow p: PackPlan)`, line 1317 is
+`fn encode_block_record(borrow mut b: buffer, borrow p: PackPlan, index: i64)`, and line 1331 is
+`fn encode_member_record(borrow mut b: buffer, borrow p: PackPlan, index: i64)`. Seven further
+`borrow`-mode sites in the same module report the same warning for `PackPlan`, and the module emits
+65 `huge struct copy` warnings in total against 454 for the whole repository — every one of the
+`PackPlan` rows is a `borrow` parameter that copies nothing. The by-value branch the lint
+legitimately owns is unaffected: `src/alignpack.align:1376:22` (`empty_header` returning a 160-byte `PackHeader`)
+and `:498:20` (`empty_plan` returning the 480-byte `PackPlan`) are real owned returns and are
+correctly reported.
 
 ### Requested capability
 

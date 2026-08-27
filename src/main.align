@@ -777,19 +777,20 @@ fn pack_demo(args: array<str>) -> Result<(), Error> {
   prepared_code: str := prepared.code
   prepared_detail: str := prepared.detail
   // The whole R1 ordered derivation, so coverage, claim tiling, and the size-sum oracle are proved
-  // before a single byte is written. The `R1_MODEL_IR` document itself is discarded here: its
-  // authoritative producer is `--model-ir` and emitting a second copy of one truth from this arm
-  // would create two producers of the same exchanged format.
-  ir := model_ir.build(
+  // before a single byte is written — through the status-only entry point, which runs exactly those
+  // checks and renders nothing. The `R1_MODEL_IR` document is not built here at all: its
+  // authoritative producer is `--model-ir`, emitting a second copy of one truth from this arm would
+  // create two producers of the same exchanged format, and rendering a document to drop it would
+  // put every block and every tensor of the model into this arm's peak resident set.
+  ir := model_ir.derive_status(
     table,
     prepared.geometry,
     prepared.plan,
-    args[2],
     prepared_code,
     prepared_detail,
   )
-  ir_code: str := ir.error_code
-  ir_detail: str := ir.error_detail
+  ir_code: str := ir.code
+  ir_detail: str := ir.detail
   limits := alignpack.default_limits()
   packed := alignpack.build_pack(
     table,
@@ -806,6 +807,12 @@ fn pack_demo(args: array<str>) -> Result<(), Error> {
     // The machine form: the document and one newline, and nothing else.
     print(document_view)
   } else {
+    // Section 2.8's step-12 cleanup governs the **pack**, not the document. A `write_file` failure
+    // here happens after a complete, verifiable pack has been written and its size asserted, so the
+    // pack is kept and this arm returns `Err` with no document and no summary: destroying a
+    // multi-gigabyte artifact that is known good because a caller named an unwritable document path
+    // would be the worse answer, and re-running `--pack-verify` recovers everything the lost
+    // document said. The spec's section 2.8 states it.
     fs.write_file(args[4], document_view)?
     // Section 2.3 stable summary. The JSON document remains the authoritative result.
     print("alignpack:")
@@ -905,16 +912,15 @@ fn pack_verify_demo(args: array<str>) -> Result<(), Error> {
   }
   prepared_code: str := prepared.code
   prepared_detail: str := prepared.detail
-  ir := model_ir.build(
+  ir := model_ir.derive_status(
     table,
     prepared.geometry,
     prepared.plan,
-    args[2],
     prepared_code,
     prepared_detail,
   )
-  ir_code: str := ir.error_code
-  ir_detail: str := ir.error_detail
+  ir_code: str := ir.code
+  ir_detail: str := ir.detail
   limits := alignpack.default_limits()
   verified := alignpack.verify_pack(
     table,

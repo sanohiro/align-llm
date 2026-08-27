@@ -48,16 +48,16 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   }
   prepared_code: str := prepared.code
   prepared_detail: str := prepared.detail
-  ir := model_ir.build(
+  // The status-only ordered derivation, exactly as `src/main.align`'s two arms run it.
+  ir := model_ir.derive_status(
     table,
     prepared.geometry,
     prepared.plan,
-    source,
     prepared_code,
     prepared_detail,
   )
-  ir_code: str := ir.error_code
-  ir_detail: str := ir.error_detail
+  ir_code: str := ir.code
+  ir_detail: str := ir.detail
   packed := alignpack.build_pack(
     table,
     prepared.geometry,
@@ -85,7 +85,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   print(packed.pack_bytes)
   print("bytes written:")
   print(packed.bytes_written)
-  print("pread count:")
+  print("bytes read:")
   print(packed.bytes_read)
   return Ok(())
 }

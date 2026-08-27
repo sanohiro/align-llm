@@ -874,6 +874,15 @@ Stats {
 // A claim is counted once even if two members of one block name the same tensor plane, which is
 // why the sweep drops a duplicate `(offset, nbytes)` pair rather than merging it into itself.
 //
+// **The duplicate test compares only the previously accepted claim, and that is sufficient because
+// of R1's tiling precondition.** The sort is by offset, so equal-offset claims are adjacent; and
+// `src/model_ir.align` step 11b has already proved that the claims over one tensor either are all
+// whole-tensor claims or exactly partition it, so two claims that share an offset necessarily share
+// a size. There is therefore no run of the form `(o,s) (o,t) (o,s)` in which the third claim's
+// duplicate has been displaced by a different one. A planner reaching this sweep without that
+// oracle would need a block-local set instead; both packing arms run the oracle first (section 2.8
+// step 4), so the cheaper adjacent test is the one that ships.
+//
 // `span_bytes_total` may exceed the container's size, because two blocks' spans may overlap. That
 // is not an error, it is the point: it is the number of bytes that would move if each block were
 // fetched independently in one read.
@@ -1024,6 +1033,12 @@ fn read_exact(
   at: i64,
   n: i64,
 ) -> Result<(), Fault> {
+  // This rebinds the caller's buffer, so the size `Counters.window_capacity` remembers no longer
+  // describes it. The cache is invalidated here rather than updated: `read_exact` and the streaming
+  // loops are given different buffers today, and one field cannot describe two, so the honest value
+  // is "unknown" and the next streaming window rebinds. Updating it instead would make a future
+  // caller that shares one buffer between the two silently read a stale capacity.
+  c.window_capacity = -1
   window = buffer(n)
   if n > c.peak_window_bytes { c.peak_window_bytes = n }
   count := match handle.pread(window, at) {
@@ -2032,6 +2047,45 @@ fn validate_regions(borrow h: PackHeader) -> Result<(), Fault> {
   return Ok(())
 }
 
+// Section 2.8 step 17, first. The header's **region geometry** against the geometry the planner
+// derives from the source it was given, field by field in header declaration order.
+//
+// Section 2.4.7 states `total_bytes = cursor` with no trailing padding, and section 2.4.2 fixes
+// every region offset as a function of the plan. Neither was checkable before: step 14 proves only
+// that the file is as long as its own header claims, so a container with extra bytes appended and
+// `total_bytes` / `payload_bytes` raised to match passed every later step — the tables, the members,
+// and the padding sweep all agreed, and the trailing bytes were never read. Comparing the declared
+// geometry against the derived geometry closes that, and it is the cheapest possible check: seven
+// scalar comparisons before any of the header's offsets is used to address a record.
+//
+// It runs **after** step 16. A pack verified against an unrelated model has a different derived
+// geometry, and reporting that as a geometry defect would name the wrong cause; the source-identity
+// row owns that case and fires first.
+fn cross_check_header(borrow h: PackHeader, borrow want: PackPlan) -> Result<(), Fault> {
+  if h.total_bytes != want.total_bytes {
+    return Err(fault("R4_PACK_HEADER", "total_bytes"))
+  }
+  if h.name_stream_offset != want.name_stream_offset {
+    return Err(fault("R4_PACK_HEADER", "name_stream_offset"))
+  }
+  if h.name_stream_bytes != want.name_stream_bytes {
+    return Err(fault("R4_PACK_HEADER", "name_stream_bytes"))
+  }
+  if h.block_table_offset != want.block_table_offset {
+    return Err(fault("R4_PACK_HEADER", "block_table_offset"))
+  }
+  if h.member_table_offset != want.member_table_offset {
+    return Err(fault("R4_PACK_HEADER", "member_table_offset"))
+  }
+  if h.source_record_offset != want.source_record_offset {
+    return Err(fault("R4_PACK_HEADER", "source_record_offset"))
+  }
+  if h.payload_offset != want.payload_offset {
+    return Err(fault("R4_PACK_HEADER", "payload_offset"))
+  }
+  return Ok(())
+}
+
 // Section 2.8 step 17. The decoded tables against the tables the planner would produce from the
 // source it was given. The order is the section's order and the first disagreement wins.
 fn cross_check(borrow got: PackPlan, borrow want: PackPlan, block_align: i64, member_align: i64) -> Result<(), Fault> {
@@ -2456,7 +2510,17 @@ fn inspect_pack(
     )
   }
 
-  // Step 17.
+  // Step 17. The header's own region geometry first: every offset below is used to address a
+  // record, and a `total_bytes` that outruns the plan is invisible to every later step.
+  match cross_check_header(header, expected) {
+    Ok(_) => {},
+    Err(failure) => {
+      return inspection_fault(
+        failure, header, expected_digest_view, observed_digest_view,
+        file_size_match, data_offset_match, tensor_count_match, header_region_match, found,
+      )
+    },
+  }
   mut observed := empty_plan()
   match decode_pack(pak, window, c, header, expected) {
     Ok(value) => { observed = value },

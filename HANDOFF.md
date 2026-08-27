@@ -5,30 +5,73 @@ file records durable project state.
 
 ## Active capability: R4-ALIGNPACK-LAYER-MAJOR — alignpack v1 container, layer-major layout, and verifier (2026-08-27)
 
-- Branch `agent/r4-alignpack-layer-major`, continuing directly on top of the still-unpublished
-  R2A-EXPERT-TRACE-CAPTURE work (design `b4dfb60`, "record the R1B merge and open the R2A
-  capability" `89e3ae1`, implementation `140e868`, review repair `e99bceb`), which itself sits on
-  the merged R1B-GPTOSS-MOE-IR chain (PR #123, head `3bf5c9c`, merge `d8d4ef6`) onto `main` at
-  `08492dc`. The authoritative design ledger is `docs/specs/r4-alignpack-layer-major.md`, committed
-  at `67de814`, which is also this worktree's current `HEAD` (`git log -1 --format=%h`).
-- **Status: design done, implementation in progress.** The design ledger discharges the
-  proportional design gate (new CLI surface, new persisted multi-gigabyte format, two new versioned
-  exchanged documents, a process boundary). No `src/alignpack.align` exists yet, but the design
-  ledger section 2.9 extraction (`pub fn resolve_claims`/`ClaimTable`, lifted out of `build`'s
-  per-member claim pass so the packer and the `R1_MODEL_IR` renderer share one producer) is **in
-  progress and intentionally uncommitted**, with active edits in `src/model_ir.align`,
-  `src/frontend_qwen.align`, and `src/frontend_gpt_oss.align` as of this writing. It has not yet been
-  run against `gmake check`, `gguf-smoke`, or `model-ir-smoke` in this session; do not commit it
-  until it passes all three and the `R1_MODEL_IR` document stays byte-identical to pre-extraction
-  output. The next actions below continue from that point.
-- **What it will deliver.** `main --pack MODEL.gguf OUT.alignpack [OUT.json]` and `main
-  --pack-verify MODEL.gguf PACK.alignpack [OUT.json]`: a byte-exact, streaming rewrite of one GGUF
-  file into the alignpack v1 container (magic, versioned header, name stream, block table, member
-  table, source-identity record, and a layer-major, layer-locally-grouped payload copied verbatim
-  from the Model IR's own block order), verified by re-reading both containers rather than trusted
-  from the writer's own bookkeeping. Deliberately out of scope for v1: expert hotness ordering,
-  prefetch groups, metadata rewrite, tokenizer, in-place update/append, compression, mmap, and any
-  runtime/loader/durability claim (design ledger section 1.3).
+- Branch `agent/r4-alignpack-layer-major`, continuing directly on top of the R2A-EXPERT-TRACE-CAPTURE
+  work (design `b4dfb60`, "record the R1B merge and open the R2A capability" `89e3ae1`,
+  implementation `140e868`, review repair `e99bceb`), which itself sits on the merged
+  R1B-GPTOSS-MOE-IR chain (PR #123, head `3bf5c9c`, merge `d8d4ef6`) onto `main` at `08492dc`. The
+  authoritative design ledger is `docs/specs/r4-alignpack-layer-major.md`, committed at `67de814`.
+- **Status: implemented, verified, and reviewed; the consolidated review repair is applied and
+  awaiting its commit.** The implementation is committed at `ded98cb` ("feat: pack GGUF models into
+  layer-major alignpack containers"). The repair for both reviewers' findings is **intentionally
+  uncommitted in this worktree** — `src/alignpack.align`, `src/model_ir.align`, `src/main.align`,
+  `src/alignpack_limits_smoke.align`, `scripts/run-alignpack-smoke`,
+  `scripts/run-alignpack-qualification`, `docs/specs/r4-alignpack-layer-major.md`,
+  `docs/specs/r1-qwen-model-ir.md`, `docs/specs/roadmap.md`, `docs/align-development.md`,
+  `docs/align-requests.md`, and this file — and must be committed as one consolidated repair before
+  preflight. Every command in "verification" below was run against that working tree.
+- **What it delivers.** `main --pack MODEL.gguf OUT.alignpack [DOC.json]` and
+  `main --pack-verify MODEL.gguf PACK.alignpack [DOC.json]`: a byte-exact streaming rewrite of one
+  GGUF file into the alignpack v1 container (magic, versioned 128-byte header, name stream, 64-byte
+  block records, 96-byte member records, 128-byte source-identity record, and a layer-major payload
+  copied verbatim in Model IR block order), plus a verifier that re-reads **both** containers and
+  compares every claimed byte rather than trusting the writer's bookkeeping. Two `schema_version: 1`
+  documents, `R4_ALIGNPACK` and `R4_ALIGNPACK_VERIFY`. `src/alignpack.align` imports no frontend: the
+  architecture dispatch stays in `src/main.align` and the packer receives a `BlockPlan`. Out of scope
+  for v1 (ledger section 1.3): expert hotness ordering, prefetch groups, metadata rewrite, tokenizer,
+  in-place update or append, compression, mmap, and any runtime/loader/durability claim.
+- **Gate result, from one real-model qualification run** (`ALIGN_LLM_GGUF_MODEL` =
+  Qwen2.5-Coder-7B Q4_K_M, 4,683,073,536 bytes). Both dischargeable halves are met on the dense case:
+  - identity **PASS** — `verdict: identical`, no first mismatch, header-region digest matches;
+  - sequential read **PASS** — src **89 ranges / 11,130,544,128 span / 2,379,786 ppm** to pack
+    **58 ranges / 4,677,120,000 span / 1,000,000 ppm exactly**, contiguous blocks **27/58 → 58/58**;
+    per kind, src `WeightBlock` 2,039,993 ppm, `AttentionBlock` 10,922,100 ppm, `MlpBlock`
+    1,291,478 ppm, all three 1,000,000 ppm in the pack;
+  - pack 4,677,222,400 bytes; layout payload 4,677,120,000, interior padding 57,344, duplicated 0;
+    `--pack` 6.74 s wall (6.72 s in-arm), 1,387 `pread`s, 1,420 `pwrite`s; `--pack-verify` 3.12 s
+    wall (3.05 s in-arm), 9,360,295,936 bytes read, 4,677,120,000 compared; peak window 5,953,536;
+  - the pack was **removed on exit** and 4,677,222,400 bytes reported reclaimed; the model's size and
+    mtime were unchanged.
+  - MoE half: **N/A** — no gpt-oss GGUF on this host, closed synthetically only (ledger section 4.5).
+- **Verification, all at the unchanged pin `4b515f8d` on this working tree.**
+  - `gmake check`: **29 units, PASS**. `gmake build`: PASS.
+  - `gmake alignpack-smoke`: **20 positive fixtures, 106 negative sources, 14,976 assertions, PASS**.
+  - `ALIGN_LLM_ALIGNPACK_ENOSPC=1 scripts/run-alignpack-smoke`: 14,987 assertions, PASS, including
+    `write-to-full-filesystem PASS (Code@13312)` and
+    `qualification-skip insufficient-free-space PASS`.
+  - `gmake model-ir-smoke`: PASS (49 qwen, 31 gpt-oss, 62 R0 fixtures), **and** a direct before/after
+    comparison of all **142** fixture `R1_MODEL_IR` documents across the `derive_status` extraction:
+    **byte-identical, 0 differing**.
+  - `gmake gguf-smoke`: PASS (62 fixtures). `gmake expert-trace-smoke`: PASS (95 fixtures).
+  - `gmake gate-topology-check`: PASS. `gmake format-check`: PASS. `gmake fmt`: no diff.
+    `git diff --check`: clean.
+  - Resident-set measurement on a synthetic 16,514-block / 99,139-member gpt-oss container:
+    `--pack` 456,015,872 → **419,037,184** bytes and `--pack-verify` 839,532,544 → **802,340,864**
+    after the packing arms stopped rendering an `R1_MODEL_IR` document they discarded.
+- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
+  the candidate at `ded98cb`: **A** the Align source, **B** the specification, register, handoff, and
+  runners. A approved with 3 low-to-medium findings, 2 low, 2 informational, and 1 observation; B
+  requested changes with 4 medium and 5 low. **Every finding was accepted** and all were repaired as
+  one consolidated repair on top of `ded98cb`. The substantive ones are recorded as ledger section
+  6.8: `--pack-verify` accepted a pack extended with trailing payload bytes whose `total_bytes` and
+  `payload_bytes` had been raised to match (step 17 now cross-checks the header's whole region
+  geometry against the planner, `R4_PACK_HEADER` naming the field); the section 2.9 allocation claim
+  was false for a large model (peak is the rendered document, not the copy windows, and
+  `peak_window_bytes` is not the resident set); both packing arms rendered and discarded an
+  `R1_MODEL_IR` document (`model_ir.derive_status` now runs the ordered checks and renders nothing);
+  the qualification refused an occupied destination **after** installing the reclaim trap, so it
+  deleted the artifact it declined to overwrite — found by the new `qualification-skip` unit on its
+  first run; and ledger section 7.2's claim that a loopback image needs root on darwin was simply
+  wrong, so `write-to-full-filesystem` now ships opt-in behind `ALIGN_LLM_ALIGNPACK_ENOSPC=1`.
 - **Align capability requests.** R4 added Requests 29 (incremental `sha256` init/update/final), 30
   (`fs.create_rw_exclusive`), and 31 (file durability via `fsync`/`fdatasync`) to
   `docs/align-requests.md`. All three are PROPOSED and non-blocking: 29 because R4 ships the bounded
@@ -37,30 +80,18 @@ file records durable project state.
   R4 makes no durability claim (a pack is a reproducible derivative of a source file that still
   exists). Requests 21 and 23 gained new R4 client evidence without a status change — 21 a third
   input class (sizing a read-only model still needs `O_RDWR` because Align ships no `fs.size`/`stat`,
-  alongside R0's model and R2A's transcript), 23 a fourth client (`PackPlan`, another wide
-  columns-plus-stream record read through `borrow` accessors, with its concrete source line to be
-  cited at implementation since `src/alignpack.align` does not exist yet). The header status line in
-  `docs/align-requests.md` now reads "21–31 are PROPOSED".
-- **Measured baseline (design ledger section 2.2, on the real local Qwen2.5-Coder-7B Q4_K_M
-  model).** 58 blocks occupy 89 maximal contiguous ranges; only 27 of 58 blocks are contiguous; a
-  one-read fetch of every block transfers 11,130,544,128 bytes to obtain 4,677,120,000 payload
-  bytes — **2,379,786 ppm** (2.38x read amplification). The pack's planned layout makes every block
-  exactly one range and its span exactly its payload: **58 ranges, 1,000,000 ppm exactly**, computed
-  from the same tensor table and to be re-measured from the written file once `--pack` exists.
+  alongside R0's model and R2A's transcript), 23 a fourth client, `PackPlan`, now with its verbatim
+  warnings quoted and reproducible: `src/alignpack.align:1261:50`, `:1317:56`, and `:1331:57`, the
+  three `borrow p: PackPlan` encoders, plus seven more `borrow` sites in the same module. The header
+  status line in `docs/align-requests.md` reads "21–31 are PROPOSED".
 - **Next actions, in order.**
-  1. Finish and verify the in-progress `resolve_claims`/`ClaimTable` extraction (design ledger
-     section 2.9): run `gmake check`, `gmake gguf-smoke`, and `gmake model-ir-smoke`, and confirm the
-     `R1_MODEL_IR` document is byte-identical to pre-extraction output before committing.
-  2. Implement `src/alignpack.align`: the container codec, layout planner, streaming copy, streaming
-     verifier, sequential-read statistics, both document renderers, and every `R4_*` error code.
-  3. Wire `--pack`/`--pack-verify` into `src/main.align`.
-  4. Add `scripts/run-alignpack-smoke`, `make alignpack-smoke`, and the independent
-     `scripts/alignpack_reader.py` layout-invariant checker; run narrow owner tests after each
-     coherent batch.
-  5. Add the opt-in `scripts/run-alignpack-qualification` / `make alignpack-qualification` and run it
-     once against the real model to re-measure the sequential-read improvement and discharge the
-     gate's dischargeable halves (content identity; sequential-read improvement on the dense case).
-  6. `python3 scripts/pre-pr` and one comprehensive review before publication.
+  1. Commit the consolidated review repair (message: `fix: close alignpack review findings`).
+  2. Exact-head preflight — `python3 scripts/pre-pr --plan` to confirm the `Makefile` change selects
+     the fresh-image installed profile, then
+     `python3 scripts/pre-pr --owner-test alignpack-smoke -- gmake alignpack-smoke`. Do not replace
+     the required installed profile with a Docker skip or an ambient `DOCKER_HOST` endpoint.
+  3. Publish the English pull request, recording the qualification numbers above, the review
+     envelope, and the finding dispositions.
 - **Two pending user decisions, carried forward verbatim.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
      gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
@@ -78,13 +109,15 @@ file records durable project state.
   already records that no such trace exists on this host. Resume condition: the small-MoE-GGUF
   decision is made, the model's architecture is identified, an R1C frontend is built if that
   architecture is not already `qwen2`/`gpt-oss`, and R2A's `moe: true` path is exercised against a
-  real transcript from it. Independent work that may continue: all of R4-ALIGNPACK-LAYER-MAJOR (its
-  dense-case gate needs no MoE trace).
+  real transcript from it. Independent work that may continue: R4's publication (its dense-case gate
+  needs no MoE trace) and the next eligible roadmap capability.
+
 
 ## Capability in publication: R2A-EXPERT-TRACE-CAPTURE — expert-trace capture (2026-08-27)
 
-- **Status: publication in progress (PR TBD-PR, preflight pending).** Implementation and review are
-  complete (below); the pull request has not yet been created.
+- **Status: PR #124 open, CI pending.** Implementation and review are complete (below), preflight
+  ran, and the pull request is published; it is waiting on required checks and merge. GitHub owns the
+  transient check and review metadata from here.
 - Branch `agent/r2a-expert-trace`, based on the merged R1B-GPTOSS-MOE-IR chain (PR #123, head
   `3bf5c9c`, merge `d8d4ef6`, onto `main` at `08492dc`). The authoritative design ledger is
   `docs/specs/r2a-expert-trace.md`, committed at `b4dfb60`; the implementation is committed at
@@ -194,12 +227,8 @@ file records durable project state.
   identical, every other hash unchanged. `make baseline-check` on Linux: PASS, ending `baseline
   chain: PASS`.
 - **Next actions, in order.**
-  1. Exact-head preflight — confirm with `scripts/pre-pr --plan` that the `Makefile` change selects
-     the fresh-image installed profile, then run
-     `python3 scripts/pre-pr --owner-test expert-trace -- make expert-trace-smoke
-     gate-topology-check`.
-  2. Publish the English pull request with the owner result, the parity result, the baseline chain,
-     and the review envelope.
+  1. None for R2A itself: PR #124 merged. The R4 branch below is rebased onto that merge and is
+     the active capability.
 - **Two pending user decisions, tracked and not to be lost.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
      gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented

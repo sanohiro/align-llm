@@ -37,6 +37,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -339,6 +340,7 @@ def drive_positive(case):
     total_payload = 0
     total_interior = 0
     total_gaps = 0
+    contiguous_blocks = 0
     for index, block in enumerate(pack_blocks):
         require(block["pack_span_bytes"] == block["pack_bytes"],
                 "%s: block %d pack span %d != pack_bytes %d"
@@ -368,6 +370,8 @@ def drive_positive(case):
         total_payload += block["payload_bytes"]
         total_interior += interior
         total_gaps += gaps
+        if gaps == 0:
+            contiguous_blocks += 1
     require(layout["payload_bytes"] == total_payload, "%s: layout payload accounting" % name)
     require(layout["block_order"] == "model_ir", "%s: layout block_order" % name)
 
@@ -436,9 +440,12 @@ def drive_positive(case):
     require(pack_stats["range_count"] == len(pack_blocks) + total_gaps,
             "%s: pack range count %d != %d blocks + %d padded runs"
             % (name, pack_stats["range_count"], len(pack_blocks), total_gaps))
-    require(pack_stats["contiguous_block_count"] == len(pack_blocks) - total_gaps
-            or total_gaps > 1,
-            "%s: contiguous block accounting" % name)
+    # A block is contiguous exactly when its own member offsets imply no padded run, so the
+    # aggregate is the number of blocks with zero gaps — not `blocks - total_gaps`, which is only
+    # the same number when no block needs two of them. It is asserted exactly, with no escape.
+    require(pack_stats["contiguous_block_count"] == contiguous_blocks,
+            "%s: %d contiguous pack blocks, its member offsets imply %d"
+            % (name, pack_stats["contiguous_block_count"], contiguous_blocks))
     if source_stats["contiguous_block_count"] < len(pack_blocks):
         require(pack_stats["span_bytes"] < source_stats["span_bytes"],
                 "%s: a non-contiguous source did not shrink its span" % name)
@@ -709,6 +716,51 @@ def drive_mutations(source, pack, document):
     expect_verify(source, target, "R4_PACK_RESERVED", lambda d: d == "reserved", "reserved-nonzero")
     reader_rejects(source, target, "RESERVED", "reserved-nonzero")
 
+    # `header-geometry-corpus`: the header's region geometry against the geometry the planner
+    # derives from the source. One case per field of section 2.4.2 that names a region.
+    #
+    # `total_bytes` is the field the rest of the validation cannot see: the pack is **extended** by
+    # a block of real bytes and `total_bytes` and `payload_bytes` are raised to match, so the file
+    # is as long as it claims, every region is inside it, every table and every member still agrees,
+    # and every padding run still reads zero. Before the geometry cross-check this container
+    # verified as `identical` with 4,096 bytes of payload nobody claimed.
+    trailing = Path(work_dir) / "mut-trailing.alignpack"
+    raw = bytearray(Path(pack).read_bytes())
+    raw += b"\x00" * 4096
+    raw[24:32] = u64(total + 4096)
+    raw[96:104] = u64(pack_object["payload_bytes"] + 4096)
+    trailing.write_bytes(bytes(raw))
+    expect_verify(source, str(trailing), "R4_PACK_HEADER", lambda d: d == "total_bytes",
+                  "header-total-bytes")
+    reader_rejects(source, str(trailing), "TRUNCATED", "header-total-bytes")
+
+    name_bytes = pack_object["name_stream_bytes"]
+    target = mutate(pack, "name-stream-moved",
+                    [(32, u64(name_stream + 8)), (40, u64(name_bytes - 8))])
+    expect_verify(source, target, "R4_PACK_HEADER", lambda d: d == "name_stream_offset",
+                  "header-name-stream-offset")
+    target = mutate(pack, "name-stream-short", [(40, u64(name_bytes - 8))])
+    expect_verify(source, target, "R4_PACK_HEADER", lambda d: d == "name_stream_bytes",
+                  "header-name-stream-bytes")
+    target = mutate(pack, "payload-offset",
+                    [(88, u64(pack_object["payload_offset"] + 4096)),
+                     (96, u64(pack_object["payload_bytes"] - 4096))])
+    expect_verify(source, target, "R4_PACK_HEADER", lambda d: d == "payload_offset",
+                  "header-payload-offset")
+
+    # The three table offsets cannot move at all: the name stream, the block table, the member
+    # table, the source record, and the payload are laid consecutively, so any relocation collides
+    # with a neighbour and step 15 owns it. Each is still given its own case rather than being
+    # assumed, and each asserts the exact region the collision names.
+    for label, offset, value, region in (
+        ("header-block-table-offset", 48, member_table, "member_table"),
+        ("header-member-table-offset", 64, block_table, "member_table"),
+        ("header-source-record-offset", 80, block_table, "source_record"),
+    ):
+        target = mutate(pack, label, [(offset, u64(value))])
+        expect_verify(source, target, "R4_PACK_REGION", lambda d, r=region: d == r, label)
+        reader_rejects(source, target, "REGION", label)
+
     # A big-endian header is refused by the magic, never silently read.
     be = bytearray(Path(pack).read_bytes())
     be[0:4] = b"PGLA"
@@ -955,6 +1007,188 @@ def drive_environment(source):
             "env-perturbation: the environment changed the document bytes")
 
 
+# ---------------------------------------------------------------------------------------------
+# `write-to-full-filesystem`, `single-producer`, `usage-diff`, and the qualification's skip lines
+# ---------------------------------------------------------------------------------------------
+
+def drive_full_filesystem(source):
+    """`write-to-full-filesystem`: a `pwrite` that runs out of space is `R4_WRITE_FAILED` naming the
+    variant and the offset, and step 12 removes the partial pack.
+
+    A file-size cap (`ulimit -f`) raises `SIGXFSZ` rather than surfacing `ENOSPC` through `pwrite`,
+    so it cannot close this cell. A small disk image can, and on darwin
+    `hdiutil create -size 8m -fs "Case-sensitive APFS"` needs **no** root — the earlier claim that it
+    did was wrong. It is opt-in rather than default because attaching and detaching a volume is a
+    machine-visible side effect that does not belong in an aggregate that runs on every change."""
+    if os.environ.get("ALIGN_LLM_ALIGNPACK_ENOSPC") != "1":
+        print("alignpack smoke: write-to-full-filesystem N/A "
+              "(opt-in: set ALIGN_LLM_ALIGNPACK_ENOSPC=1 on a host with hdiutil)")
+        return
+    if shutil.which("hdiutil") is None:
+        print("alignpack smoke: write-to-full-filesystem N/A "
+              "(ALIGN_LLM_ALIGNPACK_ENOSPC is set but this host has no hdiutil)")
+        return
+    image = Path(work_dir) / "enospc"
+    volume = "ALIGNPACKENOSPC"
+    subprocess.run(["hdiutil", "create", "-size", "8m", "-fs", "Case-sensitive APFS",
+                    "-volname", volume, "-quiet", str(image)], check=True)
+    attach = subprocess.run(["hdiutil", "attach", str(image) + ".dmg", "-nobrowse"],
+                            capture_output=True, check=True)
+    mount = None
+    for line in attach.stdout.decode("utf-8", "replace").splitlines():
+        for field in line.split("\t"):
+            if field.strip().startswith("/Volumes/"):
+                mount = field.strip()
+    require(mount is not None, "write-to-full-filesystem: hdiutil named no mount point")
+    try:
+        # Leave less room than the pack needs, so `fs.create_rw` succeeds and a `pwrite` inside the
+        # payload copy is the call that fails. A completely full volume would fail at creation
+        # instead, which is `R4_DEST_UNWRITABLE` and a different row.
+        # `f_bavail` over-reports on APFS, so the filler is grown until the filesystem itself says
+        # no and then trimmed back by the headroom. That is the only way to leave a known small
+        # remainder on a filesystem that reserves space behind the statistics.
+        headroom = 65536
+        filler_path = os.path.join(mount, "filler")
+        descriptor = os.open(filler_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        written = 0
+        try:
+            chunk = b"\0" * headroom
+            while True:
+                written += os.write(descriptor, chunk)
+        except OSError:
+            pass
+        finally:
+            os.close(descriptor)
+        require(written > headroom, "write-to-full-filesystem: the image took no filler")
+        os.truncate(filler_path, written - headroom)
+        destination = os.path.join(mount, "out.alignpack")
+        result = run(["--pack", source, destination])
+        failed(result, "write-to-full-filesystem")
+        document = as_dict(ordered(result.stdout))
+        require(document["error_code"] == "R4_WRITE_FAILED",
+                "write-to-full-filesystem: code is %r (%r)"
+                % (document["error_code"], document["error_detail"]))
+        require("@" in document["error_detail"],
+                "write-to-full-filesystem: detail %r names no offset" % document["error_detail"])
+        require(document["destination"] == "REMOVED",
+                "write-to-full-filesystem: destination is %r" % document["destination"])
+        require(not os.path.exists(destination),
+                "write-to-full-filesystem: the partial pack survived")
+        print("alignpack smoke: write-to-full-filesystem PASS (%s)" % document["error_detail"])
+
+        # The one qualification refusal a host with a gibibyte free cannot reach. This volume has
+        # eight mebibytes, so the headroom guard fires and prints its line alone.
+        os.remove(os.path.join(mount, "filler"))
+        environment = dict(os.environ)
+        environment["ALIGN_LLM_GGUF_MODEL"] = source
+        environment["ALIGN_LLM_ALIGNPACK_TMPDIR"] = mount
+        outcome = subprocess.run(
+            [str(Path(root_dir) / "scripts" / "run-alignpack-qualification")],
+            capture_output=True, env=environment, cwd=work_dir)
+        require(outcome.returncode == 0,
+                "qualification-skip: the headroom refusal exited %d" % outcome.returncode)
+        headroom_lines = outcome.stdout.decode("utf-8").splitlines()
+        require(len(headroom_lines) == 1
+                and headroom_lines[0].startswith(
+                    "alignpack qualification: N/A (insufficient free space: "),
+                "qualification-skip: the headroom refusal printed %r" % headroom_lines)
+        require(not os.path.exists(os.path.join(mount, "model.alignpack")),
+                "qualification-skip: the headroom refusal created a pack")
+        print("alignpack smoke: qualification-skip insufficient-free-space PASS")
+    finally:
+        subprocess.run(["hdiutil", "detach", mount, "-quiet"], capture_output=True)
+
+
+def drive_single_producer():
+    """`single-producer` (section 3.4): the packer computes no claim arithmetic of its own. The
+    claim is structural, so it is asserted structurally — `member_claim` has exactly one definition
+    and exactly one caller, both inside `src/model_ir.align`, and no executable line of
+    `src/alignpack.align` names a byte-size or plane computation."""
+    forbidden = ("member_claim", "plane_bytes", "tensor_absolute_offsets", "tensor_offsets",
+                 "ggml_block_size", "ggml_type_size", "tensor_dim(")
+    text = (Path(root_dir) / "src" / "alignpack.align").read_text(encoding="utf-8")
+    code = [line for line in text.splitlines() if not line.strip().startswith("//")]
+    for token in forbidden:
+        hits = [line.strip() for line in code if token in line]
+        require(not hits, "single-producer: src/alignpack.align computes claim arithmetic: %r"
+                % hits[:2])
+    for path in sorted((Path(root_dir) / "src").glob("*.align")):
+        body = path.read_text(encoding="utf-8")
+        occurrences = body.count("member_claim")
+        if path.name == "model_ir.align":
+            require(occurrences == 2,
+                    "single-producer: member_claim appears %d times in model_ir.align, expected a "
+                    "definition and one caller" % occurrences)
+        else:
+            require(occurrences == 0,
+                    "single-producer: %s names member_claim" % path.name)
+
+
+def drive_usage():
+    """`usage-diff`: the help block gains this capability's two lines and loses none of the others."""
+    help_text = run([]).stdout
+    for line in (b"main --pack <model.gguf> <out.alignpack> [alignpack.json]",
+                 b"main --pack-verify <model.gguf> <pack.alignpack> [alignpack-verify.json]"):
+        require(line in help_text, "usage-diff: the help block does not name %r" % line)
+    for line in (b"--model-ir", b"--inspect-gguf", b"--expert-trace", b"--persist-result"):
+        require(line in help_text, "usage-diff: an existing usage line disappeared: %r" % line)
+
+
+def drive_qualification_skips(sample_source):
+    """`qualification-skip` (section 3.7): every refusal of `scripts/run-alignpack-qualification`
+    prints exactly one `N/A` line and exits 0 without claiming a pass. The runner is driven here
+    rather than being trusted, and it writes nothing on any of these paths."""
+    runner = str(Path(root_dir) / "scripts" / "run-alignpack-qualification")
+    not_a_directory = Path(work_dir) / "not-a-directory"
+    not_a_directory.write_bytes(b"")
+    occupied_tmp = Path(work_dir) / "occupied-tmp"
+    occupied_tmp.mkdir(exist_ok=True)
+    (occupied_tmp / "model.alignpack").write_bytes(b"already here")
+
+    def qualify(overrides):
+        environment = dict(os.environ)
+        environment.pop("ALIGN_LLM_GGUF_MODEL", None)
+        environment.pop("ALIGN_LLM_ALIGNPACK_TMPDIR", None)
+        environment.update(overrides)
+        outcome = subprocess.run([runner], capture_output=True, env=environment, cwd=work_dir)
+        require(outcome.returncode == 0,
+                "qualification-skip: a refusal exited %d" % outcome.returncode)
+        return outcome.stdout.decode("utf-8").splitlines()
+
+    lines = qualify({})
+    require(lines == ["alignpack qualification: N/A (ALIGN_LLM_GGUF_MODEL unset)"],
+            "qualification-skip: unset model printed %r" % lines)
+    lines = qualify({"ALIGN_LLM_GGUF_MODEL": str(Path(work_dir) / "absent.gguf")})
+    require(lines == ["alignpack qualification: N/A (ALIGN_LLM_GGUF_MODEL is absent)"],
+            "qualification-skip: absent model printed %r" % lines)
+    lines = qualify({"ALIGN_LLM_GGUF_MODEL": sample_source,
+                     "ALIGN_LLM_ALIGNPACK_TMPDIR": str(not_a_directory)})
+    require(lines == ["alignpack qualification: N/A "
+                      "(ALIGN_LLM_ALIGNPACK_TMPDIR is not a directory)"],
+            "qualification-skip: a non-directory printed %r" % lines)
+    lines = qualify({"ALIGN_LLM_GGUF_MODEL": sample_source,
+                     "ALIGN_LLM_ALIGNPACK_TMPDIR": os.path.realpath(root_dir) + "/scripts"})
+    require(lines == ["alignpack qualification: N/A "
+                      "(ALIGN_LLM_ALIGNPACK_TMPDIR resolves inside the work tree)"],
+            "qualification-skip: an in-tree temporary directory printed %r" % lines)
+    # An occupied destination is refused **before** the reclaim trap is installed, so the file the
+    # runner declined to overwrite is still there afterwards. That ordering is the whole point of
+    # the case: a trap installed first removes whatever stands at the pack's path.
+    lines = qualify({"ALIGN_LLM_GGUF_MODEL": sample_source,
+                     "ALIGN_LLM_ALIGNPACK_TMPDIR": str(occupied_tmp)})
+    # The runner resolves its temporary directory physically (`pwd -P`), which is what makes the
+    # work-tree guard sound, so the expected line is built from the physical path too.
+    require(lines == ["alignpack qualification: N/A (the destination already exists: %s)"
+                      % os.path.join(os.path.realpath(occupied_tmp), "model.alignpack")],
+            "qualification-skip: an occupied destination printed %r" % lines)
+    require((occupied_tmp / "model.alignpack").read_bytes() == b"already here",
+            "qualification-skip: the occupied destination was removed or rewritten")
+    require(not (occupied_tmp / "alignpack.json").exists(),
+            "qualification-skip: a refusal wrote a document")
+    # The sixth line, `insufficient free space`, needs a filesystem with less than a gibibyte free
+    # and is exercised by the opt-in `write-to-full-filesystem` case, which has one.
+
+
 def leak_sweep(before):
     after = set()
     for path in Path(root_dir).rglob("*"):
@@ -1016,11 +1250,12 @@ drive_mutations(gptoss["source"], gptoss["pack"], gptoss["document"])
 drive_identity_mismatch(qwen["source"], qwen["pack"], results["qwen2-geometry"]["source"])
 drive_limits(qwen["source"])
 drive_environment(qwen["source"])
+drive_single_producer()
+drive_usage()
+drive_qualification_skips(qwen["source"])
+drive_full_filesystem(qwen["source"])
 
-# The three cells this host cannot reach, named rather than silently skipped.
-print("alignpack smoke: write-to-full-filesystem N/A "
-      "(a file-size cap raises SIGXFSZ rather than surfacing ENOSPC through pwrite, and a "
-      "loopback image needs root on darwin)")
+# The two cells this host cannot reach, named rather than silently skipped.
 print("alignpack smoke: cleanup-failed N/A "
       "(a destination directory made read-only after fs.create_rw does not make fs.remove fail on "
       "this filesystem)")
