@@ -19,6 +19,14 @@ file records durable project state.
   both sides: this file's R4 status bullet, where `main`'s final R4 content (the re-recorded
   baseline chain and the two review repairs) supersedes the branch's older "publication in
   progress" text, while R4.5's own section is kept intact.
+- **What is on the branch.** `src/alignpack_read.align`, `src/ggml_ffi.align`, `src/ggml_spike.align`,
+  `scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`, `scripts/build-ggml-shim`,
+  `scripts/ggml_spike_fixture.py`, `scripts/run-ggml-spike-smoke`, `scripts/run-ggml-spike`, and
+  `scripts/ggml-spike-golden.jsonl`; `Makefile`, `scripts/check-gate-topology`, and `.gitignore` are
+  wired for the `ggml-spike` / `ggml-spike-smoke` / `ggml-spike-qualification` targets.
+  `docs/specs/r4-5-external-buffer.md` section 6 records twenty-two implementation-forced
+  corrections (C1-C22) against the design — C1-C13 from the implementation, C14-C21 from the review,
+  and C22 from preflight; section 7 is the delivered-surface record.
 - **Probe evidence (ledger section 2), gathered before the design was written.**
   - Pointer identity: `ggml_get_data(A)` equals the Align `weights` buffer's base plus the member's
     own interior offset, exactly `14336` bytes (`pack_offset - block.pack_offset`), and the output
@@ -115,6 +123,18 @@ file records durable project state.
   except for this file, so no reviewed R4.5 risk changed across it, and
   `docs/specs/r4-5-external-buffer.md` keeps the pre-rebase hashes as the identities its
   measurements were actually taken at.
+- **Preflight, first attempt, and the repair it forced.** `python3 scripts/pre-pr --owner-test
+  ggml-spike -- make ggml-spike-smoke gate-topology-check` at `77acbb1` passed the `ggml-spike`
+  owner (7.5 s), `hosted-checks` (381.6 s), and `fresh-focused` (21.0 s), and failed
+  `fresh-installed` in the worker aggregate after 1,194 s. The worker's output is suppressed unless
+  `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1`; re-running only that phase with it showed
+  `./scripts/run-ggml-spike-smoke: line 55: sort: command not found` and
+  `make[1]: *** [Makefile:179: ggml-spike-smoke] Error 127`. The fresh worker image ships a curated
+  tool set (`image/fresh/Dockerfile`) with neither `sort` nor `uname`, and R4.5 is the first
+  capability whose hosted member used them. Repaired as ledger correction C22: the two static scans
+  sort through a `python3` helper, and `scripts/build-ggml-shim` selects its suffix and
+  install-name/soname flag from bash's `OSTYPE`. Verified by running the owner with `PATH`
+  restricted to exactly that tool set — PASS — and unchanged on macOS.
 - **Baseline chain**: `45cdc55` -> `8b3b161` -> `eece7a1` (source -> oracle -> finalization),
   identity-bound and re-recorded on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) after
   the rebase onto the merged R4. **Exactly one** of the twenty recorded artifacts changed against

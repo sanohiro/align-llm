@@ -37,9 +37,12 @@ root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 out_dir="${root_dir}/build/lib"
 compiler="${CC:-cc}"
 
-case "$(uname -s)" in
-  Darwin) suffix=dylib ;;
-  *)      suffix=so ;;
+# The platform test is bash's own `OSTYPE`, not `uname`. The fresh worker image ships a curated
+# tool set (`image/fresh/Dockerfile`) that has no `uname`, and this script runs inside that image
+# as part of `ggml-spike-smoke`; a shell variable needs no tool at all.
+case "${OSTYPE:-}" in
+  darwin*) suffix=dylib ;;
+  *)       suffix=so ;;
 esac
 library="${out_dir}/libalign_ggml_shim.${suffix}"
 
@@ -88,9 +91,9 @@ fi
 
 mkdir -p "${out_dir}"
 
-case "$(uname -s)" in
-  Darwin) name_flags=("-install_name" "${library}") ;;
-  *)      name_flags=("-Wl,-soname,${library}") ;;
+case "${OSTYPE:-}" in
+  darwin*) name_flags=("-install_name" "${library}") ;;
+  *)       name_flags=("-Wl,-soname,${library}") ;;
 esac
 
 "${compiler}" -O2 -fPIC -shared -Wall -Wextra -Werror \

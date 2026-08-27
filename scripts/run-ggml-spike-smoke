@@ -51,15 +51,21 @@ if grep -q "malloc" "${root_dir}/scripts/ggml_shim.c" "${root_dir}/scripts/ggml_
 fi
 # The keyword, not the word: `prompt_verifier_smoke.align` legitimately names an
 # `unsafe_workspace` parameter, and this capability's own modules discuss the boundary in prose.
+# `grep -rl` reports matches in directory order, so the comparison needs a deterministic sort. It
+# comes from `python3` rather than `sort`, because the fresh worker image ships a curated tool set
+# (`image/fresh/Dockerfile`) that has no `sort` and this runner is a `capable-checks` member there.
+sorted_paths() {
+  python3 -c 'import sys; sys.stdout.write(" ".join(sorted(sys.stdin.read().split())))'
+}
 unsafe_files=$(cd "${root_dir}" \
-  && grep -rlE '(^|[^A-Za-z_])unsafe[[:space:]]*\{' src/ | sort | tr '\n' ' ')
-if [ "${unsafe_files}" != "src/ggml_ffi.align " ]; then
+  && grep -rlE '(^|[^A-Za-z_])unsafe[[:space:]]*\{' src/ | sorted_paths)
+if [ "${unsafe_files}" != "src/ggml_ffi.align" ]; then
   echo "ggml spike smoke: FAIL an unsafe block appears outside src/ggml_ffi.align: ${unsafe_files}" >&2
   exit 1
 fi
 extern_files=$(cd "${root_dir}" \
-  && grep -rlE '^[[:space:]]*extern[[:space:]]+"C"' src/ | sort | tr '\n' ' ')
-if [ "${extern_files}" != "src/ggml_ffi.align " ]; then
+  && grep -rlE '^[[:space:]]*extern[[:space:]]+"C"' src/ | sorted_paths)
+if [ "${extern_files}" != "src/ggml_ffi.align" ]; then
   echo "ggml spike smoke: FAIL an extern block appears outside src/ggml_ffi.align: ${extern_files}" >&2
   exit 1
 fi

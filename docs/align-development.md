@@ -756,6 +756,12 @@ gmake ggml-spike-smoke              # the hosted owner; in HOSTED_CHECK_TARGETS
 gmake ggml-spike-qualification      # the opt-in real-ggml, real-model qualification
 ```
 
+Because `ggml-spike-smoke` is a hosted member, it also runs inside the fresh worker image, whose
+tool set is curated in `image/fresh/Dockerfile` — 32 system binaries plus the toolchain forwarders,
+with no `sort` and no `uname`. Anything the owner or `scripts/build-ggml-shim` shells out to must be
+in that set, or be `python3`, or be a shell builtin; see ledger correction C22. The cheap way to
+check a new dependency is to run the owner with `PATH` restricted to exactly that list.
+
 Four operand shapes, three to five operands, where `BLOCK` is a block-table index and `MEMBER` is
 the member's position **within that block**:
 
