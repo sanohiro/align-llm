@@ -601,10 +601,9 @@ ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \
 ```
 
 `ALIGN_LLM_GGUF_MODEL` names the model to run the callback instrument against; a dense model (e.g.
-the existing Qwen2.5-Coder-7B) exercises the `moe: false` path, and a small MoE GGUF (1-4 GB, not
-yet downloaded — a pending user decision) is required to exercise `moe: true` and close the R2
-roadmap gate's locality question. `ALIGN_LLM_LLAMA_EVAL_CALLBACK` names the callback instrument
-executable.
+the existing Qwen2.5-Coder-7B) exercises the `moe: false` path, and a MoE model exercises
+`moe: true`. Both halves are now discharged on this host: `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`
+is the MoE subject. `ALIGN_LLM_LLAMA_EVAL_CALLBACK` names the callback instrument executable.
 
 Neither variable has a default. A missing or unusable input prints exactly one of these lines and
 exits 0 without claiming a pass, and the line must be named as the `N/A` reason in the pull request:
@@ -633,6 +632,71 @@ Any disagreement fails closed with a nonzero exit; a parse failure against the i
 is a hard failure and never a skip. The runner also asserts the `bytes_read` bound and that the
 model's size and modification time are unchanged, which is the read-only proof. The instrument runs
 under a 600-second `timeout` so a run that fails to terminate is a bounded failure.
+
+### The R2 locality gate
+
+`scripts/run-expert-locality-gate` is the R2 roadmap gate's measurement: it captures one prefill
+transcript per prompt from a checked-in corpus, derives one `R2_ACTIVATION_TRACE` document from each
+with `main --expert-trace`, deletes the transcript, and pools every document into one verdict. The
+numbers it produced, and every caveat they carry, are recorded in `docs/specs/r2a-expert-trace.md`
+section 8; that section is authoritative for the result and this one for how to run it.
+
+```sh
+ALIGN_LLM_GGUF_MODEL=/path/to/moe-model.gguf \
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \
+  scripts/run-expert-locality-gate
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ALIGN_LLM_GGUF_MODEL` | none | a **MoE** GGUF; a dense model makes the gate refuse, because a dense graph has no router to measure |
+| `ALIGN_LLM_LLAMA_EVAL_CALLBACK` | none | the callback instrument executable |
+| `ALIGN_LLM_LOCALITY_PROMPTS` | `eval/prompts/expert-locality-v1.txt` | the prompt corpus, one prompt per line |
+| `ALIGN_LLM_LOCALITY_PROMPT_COUNT` | `40` | prompts to use, taken from the **top** of the corpus in file order |
+
+Neither model variable has a default. A missing or unusable input prints exactly one of these lines,
+in this order, and exits 0 without claiming a measurement:
+
+```text
+expert locality gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)
+expert locality gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable)
+expert locality gate: N/A (ALIGN_LLM_GGUF_MODEL unset)
+expert locality gate: N/A (ALIGN_LLM_GGUF_MODEL is absent)
+```
+
+**The gate is a measurement, not a pass/fail owner test.** It exits 0 on either verdict — `LOCALITY`
+and `NO_LOCALITY` are both answers to the roadmap question — and exits nonzero only when the
+instrument, the corpus, or the parser prevented a measurement from being taken. It prints a human
+table and one machine-readable final line:
+
+```text
+expert-locality-gate verdict=... prompts=... layers=... layers_clearing=... pairs=... hits=...
+  trials=... p0_per_mille=... p_hat_per_mille=... wilson_lo_per_mille=... wilson_hi_per_mille=...
+  ratio_per_mille=... entropy_per_mille=... top8_mass_per_mille=...
+```
+
+**The prompt corpus is checked in and its order is part of its identity.** Every prompt in
+`eval/prompts/expert-locality-v1.txt` tokenizes to six tokens or fewer against the subject model,
+verified with `llama-tokenize` before the file was frozen. That matters: the instrument prints at
+most six entries per axis, so a longer prompt hides token positions and breaks adjacency in the
+middle of the prefill. A new corpus must repeat that check. The runner prints the corpus name, md5,
+byte count, and prompt count with every result.
+
+**Transcripts are captured one at a time and deleted immediately**; only the documents are pooled.
+A 40-prompt run against a 16-layer MoE model writes and removes roughly 44 MB of transcript and
+takes about a minute with a warm page cache.
+
+**The aggregation is a separate importable module**, `scripts/expert_locality_gate.py`, so that the
+statistics have an owner test with no model and no network: `scripts/run-expert-trace-smoke`'s
+`locality-gate-aggregator` case pools the synthetic corpus's memoryless-router documents and
+requires `NO_LOCALITY`, pools a hand-built sticky router and requires `LOCALITY`, and requires that
+a document whose `locality` disagrees with a recomputation from its own `selections[]` is refused.
+Every number the module produces is an integer per mille; floating point appears only inside the
+Wilson bound and both of its outputs are floored before any comparison, so the verdict is a
+comparison of integers.
+
+The gate joins no aggregate and no `Makefile` target: adding one would select the fresh-image
+preflight profile for a runner that cannot execute in CI anyway.
 
 ## alignpack development
 

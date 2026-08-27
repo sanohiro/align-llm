@@ -151,6 +151,7 @@ def parse(path):
     ops = set()
     graphs = []
     selections = []
+    reduced_layers = set()
     callback_lines = 0
     skipped = 0
     line_count = 0
@@ -188,8 +189,18 @@ def parse(path):
                     plains.add(name)
                 if name == "embd":
                     current["n_tokens"] = ne[1]
-                block = {"name": name, "ne": ne, "layer": layer,
-                         "topk": bool(suffix) and suffix.group("family") == "ffn_moe_topk"}
+                topk = bool(suffix) and suffix.group("family") == "ffn_moe_topk"
+                # Build 10566 applies the output-token `GET_ROWS` reduction *before* the last
+                # layer's feed-forward, so that layer's `ffn_moe_topk` carries a shorter token axis
+                # than the graph and the leaf naming the retained tokens is never printed. Such a
+                # block yields no selection: its token indices are not recoverable and a fabricated
+                # one would corrupt every adjacency.
+                reduced = bool(topk and current["n_tokens"] is not None
+                               and ne[1] < current["n_tokens"])
+                if reduced:
+                    reduced_layers.add(layer)
+                block = {"name": name, "ne": ne, "layer": layer, "topk": topk,
+                         "reduced": reduced}
                 row_position = 0
                 continue
             if block is None:
@@ -210,6 +221,8 @@ def parse(path):
                         if not element:
                             fail("independent parse: %s element %r is not integral"
                                  % (block["name"], piece))
+                        if block["reduced"]:
+                            continue
                         selections.append({"graph": len(graphs), "layer": block["layer"],
                                            "token": token, "slot": slot,
                                            "expert": int(element.group("whole"))})
@@ -226,7 +239,8 @@ def parse(path):
         graphs.append(current)
     return {"families": sorted(families), "plains": sorted(plains), "ops": sorted(ops),
             "graphs": graphs, "selections": selections, "callback_lines": callback_lines,
-            "skipped": skipped, "line_count": line_count, "n_layer": n_layer}
+            "skipped": skipped, "line_count": line_count, "n_layer": n_layer,
+            "reduced_layers": sorted(reduced_layers)}
 
 
 reference = parse(transcript)
@@ -252,6 +266,8 @@ rows = [
     ("graph.unsuffixed_nodes", document["graph"]["unsuffixed_nodes"], reference["plains"]),
     ("graph.ops", document["graph"]["ops"], reference["ops"]),
     ("moe.present", document["moe"]["present"], bool(reference["selections"])),
+    ("moe.token_reduced_layers", document["moe"]["token_reduced_layers"],
+     reference["reduced_layers"]),
     ("selections", document["selections"], reference["selections"]),
 ]
 for label, ours, theirs in rows:
@@ -317,6 +333,18 @@ print("  layers             %s"
 print("  shape class        %s (%s)"
       % (document["graph"]["shape_class"], document["graph"]["shape_class_basis"]))
 print("  moe                %s" % ("true" if moe else "false"))
+if moe:
+    print("  n_expert           %s (%s)"
+          % (document["moe"]["n_expert"], document["moe"]["n_expert_source"]))
+    print("  n_expert_used      %s (slots_truncated %s)"
+          % (document["moe"]["n_expert_used"],
+             "true" if document["moe"]["slots_truncated"] else "false"))
+    print("  topk layers        %d indexable, token-reduced %r"
+          % (len(document["moe"]["topk_layers"]), document["moe"]["token_reduced_layers"]))
+    print("  reuse              %d/%d = %d per mille over %d adjacent pairs"
+          % (document["locality"]["reuse_numerator"], document["locality"]["reuse_denominator"],
+             document["locality"]["reuse_per_mille"],
+             document["locality"]["adjacent_pair_count"]))
 print("  selections         %d" % len(document["selections"]))
 print("  bytes / lines      %d / %d"
       % (document["source"]["file_size"], document["source"]["line_count"]))
