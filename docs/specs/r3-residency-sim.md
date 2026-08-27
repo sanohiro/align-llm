@@ -1,0 +1,1006 @@
+# R3-RESIDENCY-SIM: the expert residency replay simulator and the `R3_RESIDENCY_SIM` document
+
+Status: plan of record for the Track B R3 capability named by `docs/specs/roadmap.md` section R3
+("R3: Cache Simulator", `align-sim`). It is authoritative for the R3 public contract: the
+`main --simulate-residency` CLI arm, the `R3_RESIDENCY_SIM` document at `schema_version: 1`, the new
+`src/residency_sim.align` owner module, the demand-stream derivation from `R2_ACTIVATION_TRACE`, the
+policy set, the budget sweep, and the verdict rule that answers the roadmap gate numerically.
+
+`docs/specs/roadmap.md` remains authoritative for delivery order and for the R3 gate itself.
+`docs/specs/align-llm.md` remains authoritative for the architecture this simulation serves —
+section 6's VRAM / DRAM / NVMe tiers, section 7.1's prefill/decode split, section 7.4's score-based
+cache, and section 7.5's impact-driven prefetch. `docs/specs/r2a-expert-trace.md` is authoritative
+for the input document; R3 reads `R2_ACTIVATION_TRACE` and parses no transcript.
+`docs/specs/r1c-olmoe-moe-ir.md` is authoritative for the `ExpertBlock` whose `byte_size` is the
+only cost model R3 has; R3 emits no Block IR and reads no GGUF byte.
+
+This document triggers the `CLAUDE.md` proportional design gate on three counts: it adds a public
+CLI verb (`--simulate-residency`), it introduces a new versioned exchanged format
+(`R3_RESIDENCY_SIM` 1), and it introduces a coordinated invariant across three modules
+(`src/residency_sim.align`, `src/main.align`, and the new fixture, oracle, and qualification graph)
+plus a `Makefile` change whose preflight consequence is recorded in section 3.3.
+
+The capability is **designed, not implemented**. Section 5 records what it deliberately does not do,
+and section 4.5 records the probe run that grounds every expectation in this plan against the real
+40-prompt corpus rather than against an assumption.
+
+## 1. Purpose, scope, non-goals, and the gate
+
+### 1.1 Goal
+
+R2 answered *whether* conditional locality exists. R3 answers the only question that follows from a
+yes: **given a byte budget on real hardware, which residency policy moves the fewest bytes across
+the tier boundary, and by how much.** The unit of placement is the per-`(layer, expert)`
+`ExpertBlock`, because R1C measured that unit and R4 packs it.
+
+R3 is an offline replay simulator, not a cache. It consumes documents that already exist — a set of
+`R2_ACTIVATION_TRACE` documents and one `R1_MODEL_IR` — derives one deterministic demand stream from
+them, and replays that stream against a fixed policy set at a swept set of budgets. It links no
+runtime, runs no model, and moves no byte of weight.
+
+Three properties are load-bearing and each is argued below rather than assumed:
+
+- **The demand stream is a derivation, not a transcription.** The trace's own `selections[]` order
+  is prefill graph order (layer-major). The regime a residency cache serves is decode
+  (`docs/specs/align-llm.md` section 7.1), which is token-major. Section 2.2 defines both orders
+  exactly, and section 4.5 measures that the choice changes LRU's hit rate by up to 330 per mille —
+  which is why the document reports both and the verdict names one.
+- **Bytes, not hits, are the metric.** Experts are not the same size on the real model
+  (4,079,616 B against 3,538,944 B, `docs/specs/r1c-olmoe-moe-ir.md` section 2.5.5), and a prefetch
+  policy fetches bytes without a demand miss. A hit-rate comparison cannot charge a prefetch for its
+  traffic; a byte comparison can. Section 2.8.
+- **Every rate carries its denominator and its omissions.** The instrument prints six of eight
+  router slots on this model, so the stream is a 750-per-mille subsample of the true demand and
+  every rate is conditional on that. Section 2.2.4 makes this a first-class document field rather
+  than a footnote.
+
+### 1.2 In scope
+
+1. A new CLI arm `main --simulate-residency TRACE_LIST MODEL_IR.json BUDGET_BYTES [OUT.json]`, in
+   the two-form shape `--inspect-gguf`, `--model-ir`, and `--expert-trace` already use
+   (section 2.3).
+2. A new module `src/residency_sim.align` owning the trace-list reader, the two document decoders,
+   the cross-document agreement checks, the demand-stream builder, the packed-key counter tables,
+   every policy, the budget sweep, the verdict rule, and the whole document renderer.
+3. The demand-stream contract of section 2.2: what is replayed, in what order, what is skipped, and
+   how many documents pool into one stream with what cache lifetime.
+4. A policy set of ten rows (section 2.4): `null`, `compulsory`, `belady`, `lru`, `lfu`,
+   `recent_reuse` at three windows, and `topk_prefetch` at two prefetch degrees. `lru` is the
+   declared baseline.
+5. The `R3_RESIDENCY_SIM` document at `schema_version: 1`: input identity, stream accounting,
+   the per-order per-budget per-policy result matrix, the per-layer breakdown, the jackknife
+   stability result, and the verdict (section 2.5).
+6. A synthetic corpus built from `scripts/eval_callback_fixture.py`'s existing MoE generator and
+   `scripts/gguf_fixture.py`'s existing olmoe builder, plus an independent Python policy oracle
+   `scripts/residency_oracle.py` (section 4.1).
+7. The owner `scripts/run-residency-sim-smoke` and `make residency-sim-smoke`, and the opt-in
+   `scripts/run-residency-sim-qualification` and `make residency-sim-qualification`
+   (sections 4.2 and 4.3).
+
+### 1.3 Non-goals
+
+- **No inference, no model, no GGUF read, no transcript parse.** R3's inputs are JSON documents. It
+  does not invoke `llama-eval-callback`, does not open a `.gguf`, and does not re-derive anything
+  R2A or R1C already derived. A wrong `byte_size` in the Model IR is R1C's bug, not R3's to detect.
+- **No cache implementation.** R3 simulates policies; it installs none. The runtime that will hold
+  a real expert cache is R5 and later, and nothing in `src/residency_sim.align` is on any inference
+  path.
+- **No transfer-cost model, no time claim.** R3 counts bytes and events. It does not convert bytes
+  to seconds, because that needs the measured NVMe, PCIe, and unified-memory bandwidths R4.5 and R5
+  own. Every number in the document is a count; the word "faster" does not appear in it.
+  Section 5.3.
+- **No score-based policy and no impact-driven prefetch.** Both are named by section R3 and both are
+  deferred with reasons in section 5.1: `R2_ACTIVATION_TRACE` carries expert *identities* and no
+  router *scores*, and impact requires the transfer-cost model the previous item defers.
+- **No CPU-fallback policy.** Deferred in section 5.1 for the same reason: choosing between a
+  transfer and a CPU computation is `docs/specs/align-llm.md` section 7.3's explicit
+  "判断は実測microbenchmarkに基づく", and that microbenchmark does not exist yet.
+- **No decode-phase claim.** Every trace this host can produce is prefill-only
+  (`docs/specs/r2a-expert-trace.md` section 2.2, finding 7). R3 *replays* the prefill demand in
+  token-major order because that is the shape decode will have, and it says so in the document and
+  in every summary line. It does not claim to have measured decode. Section 5.2.
+- **No language, task, or repository stratification.** The corpus is 40 unlabelled prompts. Adding a
+  label axis is a corpus capability, not a simulator capability. Section 5.4.
+- **No policy tuning loop.** The three `recent_reuse` windows and two `topk_prefetch` degrees are
+  fixed constants chosen once from the section 4.5 probe and recorded in section 2.4. R3 does not
+  search a parameter space, because a policy selected by searching the same 40 prompts it is
+  evaluated on is not a measurement.
+
+### 1.4 Gate statement
+
+The roadmap gate for R3 is *対象ハードウェア条件で、baselineより有効なpolicyを特定できること* — that
+under a target hardware condition, a policy more effective than the baseline can be identified.
+
+R3 discharges it, and the discharge is a numeric verdict rather than an assertion:
+
+1. **The hardware condition is the `BUDGET_BYTES` operand.** It is the byte budget of the residency
+   tier being asked about, supplied by the caller. The document reports the swept context around it
+   so that a reader can see whether the answer is a plateau or a cliff.
+2. **The baseline is `lru`, declared, not inferred.** `docs/specs/align-llm.md` section 7.4 opens
+   with "LRUだけに依存しない", so LRU is the thing R3 must beat for the section to be justified.
+3. **The verdict rule is section 2.8**, stated before any measurement, on bytes fetched, with a
+   50-per-mille effect floor and a leave-one-document-out stability requirement.
+4. **`NO_POLICY_BEATS_BASELINE` and `NO_HEADROOM` are answers, not failures.** The gate asks whether
+   a better policy *can be identified*. "At this budget LRU is already within 5 per cent of the
+   offline optimum" is a numerically identified answer that would correctly stop investment, and the
+   section 4.5 probe returns one of the two non-winning verdicts at three of its eight swept
+   budgets.
+
+The gate is discharged by `make residency-sim-qualification` on the real corpus, which records the
+verdict. `make residency-sim-smoke` discharges correctness against an independent oracle and needs
+no model, no network, and no instrument.
+
+## 2. Public-contract ledger
+
+### 2.1 Verified Align surface at pin `4b515f8d`
+
+Every row was established in this repository at this pin. The three rows marked **probed for R3**
+were verified during this design, in the scratch worktree, against the real 1.19 MB `R1_MODEL_IR`
+and a real `R2_ACTIVATION_TRACE`; they are the rows the plan would otherwise have had to assume.
+
+| Surface | Status at the pin | Consequence for R3 |
+| --- | --- | --- |
+| `json.decode(view) -> Result<T, Error>` into a record with `array<Record>` fields | **Shipped.** `src/prompt_artifacts.align:2251`; `src/c6_json_recursive_graph_adoption.align:9` | Both input documents are decoded whole; R3 needs no parser of its own |
+| `json.decode` **ignores object members the target record does not declare** | **Shipped — probed for R3.** A four-field `BlockRow {kind, layer, expert, byte_size}` decoded the real `R1_MODEL_IR` and skipped `index`, `tensor_count`, `first_absolute_offset`, `end_absolute_offset`, `contiguous`, and the nested `tensors` array | This is the decision that makes the design simple. R3 declares only the fields it uses, so it never materializes the 3,219 nested tensor records and never depends on R1C's tensor schema |
+| `json.decode` on a 1.19 MB document with 1,058 array elements | **Shipped — probed for R3.** Decoded and summed to `3,900,702,720` in 0.5 s wall including compile | No bounded streaming JSON reader is needed, so R2A's `Cursor`/window line reader is **not** reused and section 2.4's argument is not repeated |
+| `fs.read_file(path) -> Result<string, Error>` | **Shipped.** `src/eval.align:82` | Whole-document read, bounded by `MAX_DOCUMENT_BYTES` (section 2.7) |
+| `array<i64>` field indexed through a `borrow` record parameter; `array_builder<i64>` as `borrow mut` | **Shipped.** `docs/specs/r1-qwen-model-ir.md` section 7 items 1 and 2 | Every counter table and every stream column is an `array<i64>`; section 2.7 |
+| `sort()` over `array<i64>` | **Shipped.** `docs/specs/r1-qwen-model-ir.md` section 2.7 | The token-major reordering is one sort of packed `i64` order-plus-payload words; section 2.2.2 |
+| `loop { if … { break } }`, `match`, integer `as`, `Result`, `Option` | **Shipped**, unchanged | `while` does not exist in Align; every replay is a `loop` with an explicit break |
+| `builder` local + `to_string()` move-out; owned-`string`-returning render helpers | **Shipped.** `src/model_ir.align` | The renderer is `model_ir`'s shape and passes no `builder` across a boundary |
+| Hand-rolled decimal integer parse | **Necessary, not preferred.** `docs/align-requests.md` Request 26 records the absent `str`-to-number surface; `docs/specs/r2a-expert-trace.md` section 2.1 records the same gap for the same reason | `BUDGET_BYTES` is a CLI operand string. R3 is Request 26's **second** client and reuses R2A's bounded private parser shape rather than a `json.decode` detour |
+| `str.split(...)` | **NOT available** as a `str` method at this pin | The trace list is scanned for `\n` explicitly, exactly as R2A's header parser composes `find` and `[a..b]` |
+
+**No `PROPOSED` request is consumed.** Three existing requests gain a client and none changes status:
+
+- **Request 23** (huge-struct-copy warning on `borrow` parameters): R3 is a **fourth** client. Its
+  `Simulation` record is another wide state-plus-columns record read through `borrow` accessors, so
+  the same spurious warning fires. Additional evidence, no status change.
+- **Request 26** (`str`-to-number): second client, as above.
+- **Request 21** (`fs.open_ro`): **not** a client. R3 reads through `fs.read_file`, which does not
+  demand `O_RDWR`, so the read-only-input precondition R0 and R2A both carry does not apply here.
+  Recording the *absence* of the constraint matters: it means a qualification may consume documents
+  from a read-only artifact directory, which R2A's arm cannot.
+
+**Three requests are foreseen as risks and each has a stated fallback**, because the plan must not
+be invalidated by one of them biting during implementation:
+
+- **Request 34** (`Result` ok payloads beyond scalars) and **Request 43** (cross-module `borrow mut`
+  record out-parameters). A replay naturally wants to return a wide result record from a fallible
+  function. The plan does not depend on either: `src/residency_sim.align` is **one** module, so no
+  record crosses a module boundary, and every fallible helper returns `Result<i64, Error>` with its
+  outputs written into `borrow mut` columns owned by the caller. If both requests later ship, the
+  code simplifies; nothing here waits on them.
+- **Request 40** (`array_builder<T>` as a struct field type). The stream columns are therefore built
+  as function locals and frozen once into `array<i64>` fields, which is exactly what
+  `src/model_ir.align` already does for `BlockPlan`. Non-blocking by construction.
+
+Genuine gaps discovered during implementation are recorded in `docs/align-requests.md` by the
+orchestrator; this document edits no register.
+
+### 2.2 The demand stream
+
+This is the contract that every number in the document depends on, so it is specified before the CLI
+that produces it.
+
+#### 2.2.1 What is admitted
+
+A `(layer, expert)` **demand** is derived from one row of one trace's `selections[]`. A trace
+document contributes demands only when all of the following hold; each failure is an error code in
+section 2.6, not a silent skip:
+
+| Condition | Failure |
+| --- | --- |
+| `kind == "R2_ACTIVATION_TRACE"` and `schema_version == 1` | `R3_TRACE_SCHEMA` |
+| `status == "ok"` | `R3_TRACE_STATUS` |
+| `moe.present == true` | `R3_TRACE_NOT_MOE` |
+| `moe.n_expert` and `moe.n_expert_used` equal every other admitted trace's | `R3_TRACE_DISAGREEMENT` |
+| `moe.n_expert` equals the Model IR's `model.n_expert`, and `moe.n_expert_used` equals `model.n_expert_used` | `R3_SHAPE_MISMATCH` |
+| every selection's `layer` is in `[0, model.n_layer)` and `expert` in `[0, model.n_expert)` | `R3_EXPERT_OUT_OF_RANGE` |
+| the Model IR declares an `ExpertBlock` for every demanded `(layer, expert)` | `R3_MISSING_EXPERT_BLOCK` |
+
+Within an admitted trace, a **graph is excluded when `graphs[g].tokens_truncated` is true**, and the
+count is reported as `omitted_truncated_graphs`. This is the decision the phrase *only adjacent
+observed tokens form a stream* resolves, and it is resolved by exclusion rather than by stitching:
+
+> When `n_tokens > 6` the instrument prints token indices `{0, 1, 2, n-3, n-2, n-1}`
+> (`docs/specs/r2a-expert-trace.md` finding 6). Between index 2 and index `n-3` there are `n-6`
+> token positions whose demands existed and were never printed. Replaying across that gap would
+> credit a policy with retaining an expert through an unknown number of unobserved evictions, which
+> **overstates** every hit rate by an amount the document cannot bound. Resetting the cache at the
+> gap instead **understates** it by an amount the document also cannot bound. Neither is a
+> measurement, so the graph is excluded and counted.
+
+On the section 4.5 corpus this costs nothing — the 40 prompts are five tokens or fewer by
+construction, so `tokens_truncated` is false on all 40 documents and 192 of 192 token positions are
+replayed. The rule exists so that a longer-prompt corpus fails visibly rather than quietly.
+
+A `(graph, token, layer)` triple that printed no `ffn_moe_topk` block contributes nothing and is
+counted in `omitted_layer_positions`. On the real model this is layer 15 of every prompt: the graph
+reduces to the last token before the final layer's FFN, so `moe.topk_layers` is `[0 .. 14]` and 15
+of 16 layers are ever demanded. That is an instrument property, not a model property, and the
+document reports `layers_demanded` explicitly so no reader infers a 15-layer model.
+
+#### 2.2.2 Replay order
+
+The trace lists `selections[]` in observation order, which is transcript order, which is ggml graph
+order: **layer-major** — every token of layer 0, then every token of layer 1. That is what prefill
+does. Decode issues, for one token, layer 0 through `n_layer-1` in turn: **token-major**.
+
+The document reports **both orders** over the same admitted demand set, because the section 4.5
+probe measured that the order changes the answer:
+
+| Budget | LRU hit per mille, token-major | LRU hit per mille, layer-major |
+| --- | --- | --- |
+| 6 per cent of expert bytes | 0 | 330 |
+| 12 per cent | 247 | 330 |
+| 25 per cent | 488 | 381 |
+
+Reporting one order and calling it *the* residency result would be a claim about a regime the
+document had not examined. The **verdict is defined on `token_major`** (section 2.8), because
+`docs/specs/align-llm.md` section 7.1 assigns "expert cache / token間reuse / prefetch" to decode and
+assigns "sequential layout / bandwidth" to prefill; `layer_major` is reported beside it as the
+prefill-regime sensitivity.
+
+Within one document, the token-major order is `(graph ordinal, token index, layer, slot)`, all
+ascending. It is produced by one `sort()` over packed `i64` words:
+
+```text
+word = order << 17 | key
+key   = layer * n_expert + expert                        17 bits, key < MAX_RESIDENCY_KEYS
+order = ((graph * MAX_TOKENS + token) * MAX_LAYERS + layer) * MAX_SLOTS + slot
+        graph  < MAX_GRAPHS = 4096      12 bits
+        token  < MAX_TOKENS = 262144    18 bits
+        layer  < MAX_LAYERS = 256        8 bits
+        slot   < MAX_SLOTS  = 128       7 bits                       45 bits
+```
+
+62 bits, so every word is a positive `i64` and the sort is the shipped `array<i64>` sort with no
+comparator. Documents are **not** merged before sorting: each document is sorted alone and the
+results are concatenated in trace-list order, which keeps the packed word inside 62 bits and makes
+the list order part of the input identity rather than an implicit detail.
+
+The `layer_major` order is the trace's own `selections[]` order, concatenated in the same list
+order, with no sort at all.
+
+#### 2.2.3 Pooling and cache lifetime
+
+The 40 prompts pool into **one continuing stream**: the cache is not reset between graphs and is not
+reset between documents. `pooling` is the document field recording this, and its only value at
+`schema_version: 1` is `"continuing"`.
+
+The argument is that this is the honest model of the thing being simulated. A residency tier in a
+serving process is not flushed between user requests; an expert resident because prompt 7 used it is
+genuinely still resident when prompt 8 arrives. The alternative — reset per document — models a cold
+process per request, which is the regime R3 is explicitly not optimizing.
+
+The section 4.5 probe measured both, and the difference is the single largest effect in the whole
+study:
+
+| Budget | Policy | Continuing hit per mille | Per-document reset hit per mille |
+| --- | --- | --- | --- |
+| 6 per cent | `lfu` | 226 | 95 |
+| 12 per cent | `lfu` | 376 | 241 |
+| 25 per cent | `lru` | 488 | 327 |
+| 25 per cent | `lfu` | 602 | 327 |
+| 25 per cent | `belady` | 782 | 330 |
+
+Under reset, an episode is roughly five token positions and 450 demands, the cache never fills at
+any budget above 6 per cent, and `lru`, `lfu`, and `belady` all collapse to the same number: the
+measurement stops discriminating between policies at all. That is not evidence that the policies are
+equivalent; it is evidence that a five-token episode is too short to exercise a cache. **The pooled
+continuing stream is what makes R3 a measurement rather than a compulsory-miss count**, and it is
+also, separately, the direct numeric evidence for cross-prompt expert reuse — the thing the R2 gate
+could only measure within a prompt.
+
+`reset` is recorded as a deferred second mode in section 5.5 with this table as the reason it is a
+different question rather than a variant.
+
+#### 2.2.4 Slot coverage, and what every rate is conditional on
+
+On this model `n_expert_used` is 8 and the instrument prints six slots, `{0, 1, 2, 5, 6, 7}`
+(`docs/specs/r2a-expert-trace.md` finding 6, reached for the first time on real data by the R2
+gate). Slots 3 and 4 of every token of every layer are **never observed**, so:
+
+- the replayed stream is a 750-per-mille subsample of the true demand;
+- `bytes_fetched` understates the true traffic;
+- hit rates are biased by an unknown sign — the two hidden experts would add both demands and cache
+  pressure.
+
+The document carries `slot_coverage_per_mille` (750 here), `observed_slots` (`[0,1,2,5,6,7]`), and
+`n_expert_used` (8) at top level, and every summary line prints the coverage. **No rate in the
+document is described as a hit rate without the qualifier "over printed slots".** This is not
+correctable by R3; it is correctable only by R2c's instrument patch, and section 5.2 says so.
+
+### 2.3 CLI surface
+
+```text
+main --simulate-residency TRACE_LIST MODEL_IR.json BUDGET_BYTES              # document to stdout
+main --simulate-residency TRACE_LIST MODEL_IR.json BUDGET_BYTES OUT.json     # to file, plus summary
+```
+
+The grammar, arity rules, `MAX_PATH_BYTES` guard on every path operand, byte-identical-document
+requirement across the two forms, and exit mapping are `--model-ir`'s and `--expert-trace`'s, reused
+verbatim (`src/main.align:531-617`): exit `0` on `status: "ok"`, `Err(Error.Invalid)` on
+`status: "error"`, and arity checked before any path or file work so an arity failure produces no
+output at all.
+
+**`TRACE_LIST` is a file of paths, one per line, and not a variadic operand list.** The alternative —
+`main --simulate-residency MODEL_IR.json BUDGET_BYTES TRACE.json ...` — makes the optional `OUT.json`
+ambiguous against a final trace path, which is exactly the arity failure the existing arms are built
+to reject before doing any work. A list file keeps the arity fixed at three or four, makes the pooled
+corpus an artifact that can be checked in and hashed, and makes the replay order of section 2.2.2
+explicit and reproducible rather than shell-glob-dependent. A single-trace run is a one-line list.
+The list is read with the same `MAX_PATH_BYTES` guard applied to every line, holds at most
+`MAX_TRACE_PATHS` entries, rejects an empty line, and rejects a duplicate path
+(`R3_TRACE_LIST_DUPLICATE`) — replaying the same prompt twice would fabricate reuse.
+
+Sniffing the first operand to accept *either* a document or a list is rejected: a JSON document whose
+first byte is not `{` and a list whose first path begins with `{` are both constructible, and a
+fail-open heuristic on the input that defines the whole measurement is the wrong place to save a
+line.
+
+**`BUDGET_BYTES` is a non-negative decimal integer, parsed by the bounded private parser of
+section 2.1**, and it is load-bearing rather than decorative even though the document reports a
+sweep. It is *the target hardware condition* of the roadmap gate: the sweep is context, and the
+verdict is answered at this budget. It appears in the sweep as a ninth point marked
+`requested: true`.
+
+**There is no `--policy` flag, no `--order` flag, and no `--window` flag.** A policy flag would let a
+caller select the policy that wins on their corpus and report it as a finding, which is the failure
+mode section 1.3's "no policy tuning loop" exists to prevent. An order flag is unnecessary because
+both orders are always reported. A window flag would make the three `recent_reuse` constants tunable
+against the evaluation corpus.
+
+The two-operand summary block, in this exact order:
+
+```text
+residency sim:
+status:            OK | ERROR
+traces:            <integer> admitted of <integer> listed
+demands:           <integer> over <integer> token position(s)
+slot coverage:     <integer> per mille (<integer> of <integer> slot(s))
+experts:           <integer> distinct of <integer>
+budget:            <integer> bytes (<integer> per mille of expert bytes)
+baseline:          lru <integer> bytes fetched
+best:              <policy> <integer> bytes fetched
+optimal:           belady <integer> bytes fetched
+verdict:           BEATS_BASELINE | NO_POLICY_BEATS_BASELINE | NO_HEADROOM
+error:             <code>          # only when status is ERROR
+detail:            <identifier>    # only when status is ERROR
+```
+
+Every ratio in the block is an integer per mille and every count is exact, reusing the R0 and R2A
+convention; `-` is reserved for a value the inputs do not supply.
+
+### 2.4 The policy set
+
+Ten rows. Each is a pure function of the stream, the budget, and the size table; none reads a router
+score, a clock, or a bandwidth. Ties in victim selection are broken by **least-recently-used, then
+lowest packed key**, uniformly, so every policy is deterministic and the document is reproducible.
+
+| `policy` | Role | Rule |
+| --- | --- | --- |
+| `null` | Floor | No cache. Every demand is a miss. `bytes_fetched` is the total demanded byte volume, and it is the denominator every saving is measured against |
+| `compulsory` | Floor | Unbounded capacity. Misses equal distinct demanded keys. The lower bound no policy at any budget can beat |
+| `belady` | Ceiling | Offline optimal: evict the resident key whose next use is furthest away, never-again first. The upper bound on what *any* online policy could achieve at this budget, and therefore the headroom term of section 2.8 |
+| `lru` | **Baseline** | Evict least recently used |
+| `lfu` | Candidate | Evict least frequently demanded so far; ties to LRU. Counts are never aged |
+| `recent_reuse_w2` | Candidate | Evict the key used in the fewest of the last **2** token positions; ties to LRU |
+| `recent_reuse_w8` | Candidate | The same at a window of **8** token positions |
+| `recent_reuse_w32` | Candidate | The same at a window of **32** token positions |
+| `topk_prefetch_k1` | Candidate | LRU eviction, plus: at each token boundary, for each layer, admit the **1** most frequently demanded expert of that layer so far if not resident. Every admission counts its bytes in `bytes_fetched` |
+| `topk_prefetch_k8` | Candidate | The same at **k = 8**, one full router width |
+
+Four choices in that table are decisions rather than defaults:
+
+**`lru` is the baseline because `docs/specs/align-llm.md` section 7.4 names it as the thing not to
+depend on.** Beating `null` would be trivial and would prove nothing.
+
+**`belady` is included even though it is unimplementable online**, because without it the document
+cannot distinguish "no candidate policy beat LRU because none is better" from "no candidate policy
+beat LRU because nothing could". Those two produce opposite investment decisions, and section 2.8's
+`NO_HEADROOM` verdict exists to separate them.
+
+**`recent_reuse` ships as three fixed windows rather than one tuned window** because the section 4.5
+probe showed the window is the dominant parameter — at 25 per cent of expert bytes the policy moves
+from exactly LRU's 488 per mille at `w=2` to 603 per mille at `w=32`. A single window would have
+hidden that; a searched window would have overfitted 40 prompts. Three fixed windows spanning
+sub-episode, episode, and multi-episode scale expose the trend and commit to nothing.
+
+**`topk_prefetch` charges its own traffic**, which is the entire point of including it. The document
+also reports `prefetch_fetches` and `prefetch_useful` per policy — prefetched keys later hit before
+eviction — so a prefetch that never pays for itself is visible as a ratio and not merely as a worse
+total.
+
+### 2.5 Exchanged document — `R3_RESIDENCY_SIM`, `schema_version: 1`
+
+#### 2.5.1 Top level
+
+```json
+{
+  "schema_version": 1,
+  "kind": "R3_RESIDENCY_SIM",
+  "trace_list_path": "eval/traces/olmoe-v1.txt",
+  "model_ir_path": "artifacts/olmoe-ir.json",
+  "status": "ok",
+  "error_code": "",
+  "error_detail": "",
+  "inputs": {},
+  "model": {},
+  "stream": {},
+  "budgets": [],
+  "orders": [],
+  "verdict": {}
+}
+```
+
+| Field | Type | Contract |
+| --- | --- | --- |
+| `schema_version` | integer | Always `1` |
+| `kind` | string | Always `"R3_RESIDENCY_SIM"` |
+| `trace_list_path`, `model_ir_path` | string | The operands verbatim, JSON-escaped. Never normalized, never absolutized |
+| `status` | string | `"ok"` or `"error"`. No third value |
+| `error_code` | string | `""` when ok; otherwise exactly one code from section 2.6 |
+| `error_detail` | string | `""` when ok; otherwise a bounded, JSON-escaped identifier — a list line ordinal, a `(layer, expert)` pair, or a bounded escaped path basename. Never free prose and never a full path |
+| `inputs` | object | Section 2.5.2 |
+| `model` | object | Section 2.5.3 |
+| `stream` | object | Section 2.5.4 |
+| `budgets` | array | Section 2.5.5, ascending, nine entries |
+| `orders` | array | Section 2.5.6, exactly two entries: `token_major` then `layer_major` |
+| `verdict` | object | Section 2.5.7 |
+
+On `status: "error"` the document is still written and every value derived before the failure is
+present and truthful, mirroring R0's failure-persistence behavior, R1's section 2.5.1, and R2A's.
+
+#### 2.5.2 `inputs`
+
+```json
+"inputs": {
+  "listed_trace_count": 40,
+  "admitted_trace_count": 40,
+  "trace_schema_version": 1,
+  "model_ir_schema_version": 2,
+  "bytes_read": 2675149,
+  "instrument_builds": [10566],
+  "instrument_build_source": "absent"
+}
+```
+
+`instrument_builds` is the ascending de-duplicated set of every admitted trace's `run.build`, and it
+is `[]` when every trace reports `null` — which is the ordinary case
+(`docs/specs/r2a-expert-trace.md` finding 8). A mixed set is **recorded, not rejected**, for exactly
+R2A's reason: the grammar is the check, the build number is provenance.
+
+#### 2.5.3 `model`
+
+```json
+"model": {
+  "arch": "olmoe",
+  "n_layer": 16,
+  "n_expert": 64,
+  "n_expert_used": 8,
+  "expert_block_count": 1024,
+  "total_expert_bytes": 3900702720,
+  "smallest_expert_bytes": 3538944,
+  "largest_expert_bytes": 4079616,
+  "uniform_expert_bytes": false
+}
+```
+
+`uniform_expert_bytes` is `false` here and it is the field that justifies section 2.8's byte metric:
+the real model's per-layer mixed quantization (`docs/specs/r1c-olmoe-moe-ir.md` section 2.5.5) makes
+two experts differ by 15 per cent, so a hit-rate tie can still be a byte win or loss.
+
+#### 2.5.4 `stream`
+
+```json
+"stream": {
+  "pooling": "continuing",
+  "demand_count": 17280,
+  "token_position_count": 192,
+  "distinct_key_count": 938,
+  "demanded_byte_total": 65512931328,
+  "distinct_key_bytes": 3555803136,
+  "layers_demanded": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14],
+  "n_expert_used": 8,
+  "observed_slots": [0,1,2,5,6,7],
+  "slot_coverage_per_mille": 750,
+  "one_token_working_set_keys": 90,
+  "one_token_working_set_bytes": 341213184,
+  "omitted_truncated_graphs": 0,
+  "omitted_layer_positions": 192,
+  "graph_phases": {"prefill": 40, "decode": 0, "single_token_first_graph": 0}
+}
+```
+
+`one_token_working_set_bytes` is the distinct byte volume demanded by a single token position, and it
+is in the document because it is the *explanatory* variable for the sharpest result in section 4.5:
+LRU's hit rate is exactly zero at every budget below it and rises immediately above it. A reader who
+has this number can predict the cliff without rerunning anything.
+
+`graph_phases` carries R2A's three-valued `phase` forward unchanged, so a document derived entirely
+from prefill graphs says so in a machine-readable field rather than only in prose.
+
+#### 2.5.5 `budgets`
+
+Eight or nine ascending entries. Eight are the swept context, defined without floats as
+
+```text
+sweep[i] = max(largest_expert_bytes, total_expert_bytes >> (7 - i))   for i in 0 .. 7
+```
+
+giving 1/128 through 1/1 of the model's expert byte footprint, and the ninth is the `BUDGET_BYTES`
+operand. When the operand coincides with a sweep point the entry is not duplicated; it is the same
+entry with `requested: true`.
+
+```json
+{"bytes": 975175680, "per_mille_of_expert_bytes": 250, "expert_equivalents": 256,
+ "requested": true}
+```
+
+`expert_equivalents` is `bytes / mean_expert_bytes`, an integer, present so a reader can think in
+experts rather than in gigabytes. The clamp to `largest_expert_bytes` is what makes the low end
+legal: a budget below the largest expert can hold nothing and is `R3_BUDGET_TOO_SMALL` as an
+operand, but as a *sweep* point it would be a silently degenerate row, so it is clamped and the
+clamp is reported as `clamped: true`.
+
+#### 2.5.6 `orders`
+
+```json
+"orders": [
+  {"order": "token_major", "verdict_bearing": true, "policies": [ ... ], "per_layer": [ ... ]},
+  {"order": "layer_major", "verdict_bearing": false, "policies": [ ... ], "per_layer": [ ... ]}
+]
+```
+
+`policies` holds one entry per policy per budget:
+
+```json
+{"policy": "lfu", "budget_bytes": 975175680,
+ "hits": 10410, "misses": 6870, "demands": 17280,
+ "hit_per_mille": 602,
+ "bytes_fetched": 26100006912, "demanded_byte_total": 65512931328,
+ "bytes_fetched_per_mille_of_null": 398,
+ "prefetch_fetches": 0, "prefetch_useful": 0,
+ "resident_key_high_water": 258}
+```
+
+Every rate carries both of its terms: `hits` and `demands` beside `hit_per_mille`, `bytes_fetched`
+and `demanded_byte_total` beside `bytes_fetched_per_mille_of_null`. A reader never has to trust a
+per-mille value the document could not reconstruct.
+
+`per_layer` holds one entry per layer per budget, with `layer`, `demands`, and `hit_per_mille` for
+each policy, so a policy that wins overall while losing on a layer is visible. The section 4.5 probe
+found exactly that case: at 25 per cent, `lfu` beats `lru` on 14 of the 15 demanded layers and loses
+on layer 1 (415 against 437 per mille).
+
+#### 2.5.7 `verdict`
+
+```json
+"verdict": {
+  "rule_version": 1,
+  "order": "token_major",
+  "budget_bytes": 975175680,
+  "baseline_policy": "lru",
+  "baseline_bytes_fetched": 33532231680,
+  "best_policy": "recent_reuse_w32",
+  "best_bytes_fetched": 26033848320,
+  "gain_per_mille": 223,
+  "margin_per_mille": 50,
+  "headroom_per_mille": 574,
+  "jackknife_folds": 40,
+  "jackknife_min_gain_per_mille": 213,
+  "jackknife_stable": true,
+  "result": "BEATS_BASELINE",
+  "sweep_best": [ ... ]
+}
+```
+
+`sweep_best` repeats `best_policy`, `gain_per_mille`, `headroom_per_mille`, and `result` for each budget
+entry, so the gate's answer is available across the sweep and not only at the requested
+point.
+
+### 2.6 Validation order and error codes
+
+Validation is ordered so that the cheapest and most diagnostic failure fires first, and so that no
+document is read before its path is guarded. The order is normative: an input failing two conditions
+reports the earlier code.
+
+1. Arity. Three or four operands, else `Err(Error.Invalid)` with **no output at all**.
+2. `MAX_PATH_BYTES` guard on `TRACE_LIST`, `MODEL_IR.json`, and `OUT.json` when present — empty,
+   over-long, or NUL-bearing is `R3_PATH`, with no output and no read.
+3. `BUDGET_BYTES` parse — `R3_BUDGET_MALFORMED` on a non-digit, a sign, an empty operand, or an
+   overflow past `i64`.
+4. Trace list read and scan — `R3_TRACE_LIST_UNREADABLE`, `R3_TRACE_LIST_EMPTY` (no non-empty line),
+   `R3_TRACE_LIST_TOO_MANY` (over `MAX_TRACE_PATHS`), `R3_TRACE_LIST_DUPLICATE`, and `R3_PATH` for a
+   guard failure on any line, whose `error_detail` is the one-based line ordinal.
+5. Model IR read and decode — `R3_IR_UNREADABLE`, `R3_IR_TOO_LARGE` (over `MAX_DOCUMENT_BYTES`),
+   `R3_IR_DECODE`, `R3_IR_SCHEMA` (`kind` not `R1_MODEL_IR`, or an unsupported `schema_version`),
+   `R3_IR_STATUS` (`status` not `"ok"`).
+6. Model IR shape — `R3_IR_NOT_MOE` when no `ExpertBlock` is declared, `R3_KEY_SPACE_TOO_LARGE` when
+   `n_layer * n_expert > MAX_RESIDENCY_KEYS`, `R3_EXPERT_BLOCK_DUPLICATE` when two `ExpertBlock`s
+   name the same `(layer, expert)`, `R3_EXPERT_BLOCK_RANGE` when one names a layer or expert outside
+   the declared hyperparameters.
+7. Budget floor — `R3_BUDGET_TOO_SMALL` when `BUDGET_BYTES < largest_expert_bytes`. This is checked
+   against the Model IR and therefore cannot be checked at step 3. A budget that cannot hold the
+   single largest expert makes every policy identical to `null`, so the run is refused rather than
+   reported.
+8. Each trace in list order — `R3_TRACE_UNREADABLE`, `R3_TRACE_TOO_LARGE`, `R3_TRACE_DECODE`,
+   `R3_TRACE_SCHEMA`, `R3_TRACE_STATUS`, `R3_TRACE_NOT_MOE`, `R3_TRACE_DISAGREEMENT`,
+   `R3_SHAPE_MISMATCH`. `error_detail` is the list ordinal.
+9. Selection admission — `R3_EXPERT_OUT_OF_RANGE`, `R3_MISSING_EXPERT_BLOCK`, whose `error_detail`
+   is the offending `(layer, expert)` pair; `R3_SELECTION_TOO_MANY` when the pooled stream exceeds
+   `MAX_DEMANDS`.
+10. Stream non-emptiness — `R3_EMPTY_STREAM` when every graph was excluded or every trace admitted
+    zero selections. A simulation over an empty stream would report a hit rate of zero for every
+    policy and a verdict of `NO_HEADROOM`, which is a confident wrong answer.
+11. Cost guard — `R3_SIMULATION_COST` when the bound of section 2.7 is exceeded.
+
+**A trace that fails admission fails the whole run; it is not skipped.** The alternative — pool the
+admissible subset and report the count — would let a corpus silently shrink to the traces that
+happen to parse, and the resulting verdict would be a measurement of an unnamed sub-corpus. The one
+exception is the *truncated graph* of section 2.2.1, which is excluded by an explicit, counted,
+documented rule rather than by a parse failure.
+
+### 2.7 Ownership, bounded memory, and the cost guard
+
+Every table is a pre-sized `array<i64>` indexed by a packed key; Align at this pin has no map type,
+and none is needed once the key space is dense and bounded.
+
+```text
+key       = layer * n_expert + expert
+key_space = n_layer * n_expert                            <= MAX_RESIDENCY_KEYS = 16384
+```
+
+`MAX_RESIDENCY_KEYS = 16384` admits 64 layers of 256 experts, which covers every announced MoE model
+this repository has planned for, and bounds each per-key table at 128 KB. Eight such tables —
+`resident`, `size`, `last_use`, `freq`, `recent_count`, `next_use`, `prefetched`, `resident_list` —
+bound the per-key state at 1 MB.
+
+```text
+demand_count <= MAX_DEMANDS = 262144
+```
+
+Two `i64` columns of `MAX_DEMANDS` — the packed sort words and the Belady next-use column — bound
+the stream state at 4 MB. `MAX_TRACE_PATHS = 4096` and `MAX_DOCUMENT_BYTES = 33554432` bound the
+input side; only one document is held decoded at a time, because each trace's selections are
+appended into the stream columns and the decoded record is dropped before the next path is opened.
+
+**The cost guard is a stated bound, not an optimism.** Victim selection scans the resident set, so
+one replay costs at most `demands * resident_high_water` element visits, and the document runs
+at most `2 orders * 9 budgets * 10 policies = 180` replays plus `jackknife_folds * 2` more at the requested
+budget. The run is refused with `R3_SIMULATION_COST` when
+
+```text
+demand_count * min(key_space, budget_bytes / smallest_expert_bytes) > MAX_SIMULATION_STEPS = 2^32
+```
+
+On the real corpus this evaluates to `17280 * 275 = 4,752,000`, three orders of magnitude inside the
+bound. The guard exists so that a pathological input — a large key space at a large budget with a
+long stream — is refused with a named code before it becomes an unbounded run, rather than
+discovered as a timeout in CI.
+
+A sorted or heap-ordered resident structure would remove the linear scan, and Align ships neither at
+this pin. Building one is not justified by a measurement that finishes in milliseconds; the guard is
+the honest alternative, and section 5.6 records the threshold at which the structure would become
+necessary.
+
+### 2.8 The verdict rule
+
+Stated before any measurement, and versioned in the document as `rule_version: 1`.
+
+**Metric.** `bytes_fetched` on the `token_major` order at the requested budget. Not hit rate:
+experts differ in size on the real model (section 2.5.3), and a prefetch policy moves bytes without
+a demand miss, so only a byte metric charges every policy for everything it does.
+
+**Effect floor.** A candidate policy `P` **beats** the baseline when
+
+```text
+1000 * bytes_fetched(P) <= (1000 - MARGIN) * bytes_fetched(lru),   MARGIN = 50 per mille
+```
+
+`MARGIN` is 50 per mille — 5 per cent. The simulation is deterministic, so the margin is not a noise
+allowance for the replay; it is a *generalization* allowance for the corpus. A 1-per-cent byte
+difference on 40 prompts is not a reason to prefer one eviction rule over another in a runtime.
+
+**Stability.** A win must survive leave-one-document-out resampling: the inequality above must hold
+on all `admitted_trace_count` streams formed by dropping one document. This is an integer comparison
+repeated `N` times and needs no distribution, no variance estimate, and no float — which is why it is
+the stability test rather than a confidence interval. The R2 gate needed a Wilson interval because it
+estimated a proportion from Bernoulli trials; R3 compares two deterministic totals over the same
+stream, and the only uncertainty is which prompts are in the corpus.
+
+**Result.** Exactly one of:
+
+| `result` | Condition |
+| --- | --- |
+| `BEATS_BASELINE` | At least one candidate meets the effect floor and is jackknife-stable. `best_policy` is the lowest-byte such candidate |
+| `NO_POLICY_BEATS_BASELINE` | No candidate qualifies, and `headroom_per_mille >= MARGIN` — a better policy may exist and none of these is it |
+| `NO_HEADROOM` | No candidate qualifies, and `headroom_per_mille < MARGIN` — `lru` is already within the effect floor of the offline optimum, so **no policy can beat it here** |
+
+with
+
+```text
+headroom_per_mille = 1000 * (bytes_fetched(lru) - bytes_fetched(belady)) / bytes_fetched(lru)
+```
+
+The `NO_HEADROOM` row is why `belady` is in the policy set. Without it, the two very different
+findings *"these candidates are wrong"* and *"nothing could do better"* would report the same value,
+and they imply opposite decisions about whether to build a score-based cache.
+
+`sweep_best` applies the same rule at each budget entry, so the gate is answered as a curve
+rather than as a point.
+
+## 3. Cross-cutting closure matrix
+
+### 3.1 The matrix
+
+`src/residency_sim.align` is one module by design (section 2.1), so the matrix has three affected
+units — the module, `src/main.align`'s dispatch, and the fixture/oracle graph — plus the shared
+`Makefile` and the document contract.
+
+| Cell | Implementation owner | Regression |
+| --- | --- | --- |
+| **Construction** — trace list read, path guard, duplicate rejection | `read_trace_list` | `list-empty`, `list-blank-line`, `list-duplicate`, `list-over-cap`, `list-path-too-long` |
+| **Construction** — Model IR decode into the subset record | `decode_model_ir` | `ir-unknown-fields-ignored` asserts the real-shaped document with `tensors[]` decodes and the ignored members are absent from every derived value |
+| **Formation/validation** — steps 1–11 of section 2.6, in order | `validate` | One fixture per code; `validation-order` asserts that an input failing two conditions reports the earlier one |
+| **Success** — demand stream, both orders | `build_stream` | `stream-token-major` and `stream-layer-major` assert the exact demand sequence for a generator-known synthetic trace |
+| **Success** — each of the ten policies | `replay` | `policy-oracle` asserts hits, misses, bytes, and prefetch counts against `scripts/residency_oracle.py` for every policy at every sweep budget |
+| **Success** — budget sweep, clamp, requested-point merge | `build_budgets` | `budget-clamp` (low end clamps and reports `clamped`), `budget-coincides` (operand equals a sweep point, eight entries not nine) |
+| **Success** — verdict, all three results | `decide` | `verdict-beats`, `verdict-no-policy`, `verdict-no-headroom`, each on a fixture constructed to produce that result |
+| **Success** — jackknife | `jackknife` | `jackknife-unstable` asserts a corpus where one document flips the sign reports `jackknife_stable: false` and does not report `BEATS_BASELINE` |
+| **Failure** — every code of section 2.6 | `validate` | One fixture each; `error-document-truthful` asserts the partial document carries every value derived before the failure |
+| **Malformed input** — non-JSON, truncated JSON, wrong `kind`, wrong `schema_version`, `status: "error"` trace | `decode_*` | `malformed-trace`, `malformed-ir`, `trace-status-error`, `schema-future` |
+| **Early exit** — arity failure produces no output; path guard failure produces no read | `main` dispatch | `arity-no-output` asserts an empty stdout and an untouched `OUT.json` |
+| **Move-in/out, source nulling, replacement** — each decoded document is dropped before the next is opened; stream columns are frozen once | `build_stream` | `stream-single-document-residency` asserts peak decoded-document count is one, by construction review plus a `bytes_read` accounting assertion |
+| **Cleanup** — `OUT.json` is written once, whole, and only on a completed render | `write_document` | `output-atomicity` asserts a failed render leaves no partial `OUT.json` |
+| **Bounded memory** — every cap of section 2.7 | `validate`, `replay` | `cap-key-space`, `cap-demands`, `cap-trace-paths`, `cap-document-bytes`, `cap-simulation-cost`, each with a fixture one past the cap |
+| **Both entrypoint forms** — three-operand and four-operand produce byte-identical documents | `main` dispatch | `two-form-identity`, the assertion `--model-ir` and `--expert-trace` already carry |
+| **Determinism** — the same inputs produce a byte-identical document | `replay`, `write_document` | `determinism` runs the smoke twice and diffs |
+| **`src/main.align` dispatch** — the new arm does not perturb the existing arms | `main` | The existing `--inspect-gguf`, `--model-ir`, `--expert-trace` smokes, unchanged, are the regression |
+| **Fixture/oracle agreement** — the Python oracle and the Align module implement the same policies | `scripts/residency_oracle.py` | `policy-oracle` above; the oracle is written from section 2.4 and never from the Align source |
+| **`Makefile`** — a new hosted target and a new opt-in target | `Makefile` | Section 3.3 |
+
+### 3.2 Deferred cells
+
+Three cells are **explicitly deferred** rather than closed, each to a named section: `pooling: "reset"` (section 5.5), the `layer_major` order bearing a verdict (section 2.2.2 fixes it at
+`verdict_bearing: false`), and an ordered resident structure replacing the linear victim scan
+(section 5.6).
+
+### 3.3 Preflight consequence
+
+`make residency-sim-smoke` joins `HOSTED_CHECK_TARGETS`. It qualifies on the same grounds that
+admitted `gguf-smoke`, `model-ir-smoke`, `expert-trace-smoke`, and `alignpack-smoke`: it needs no
+model, no network, no instrument, and no GPU; it writes well under a megabyte into a temporary tree
+and removes it on every exit path; and it is the only hosted owner of two new public surfaces (the
+CLI arm and the document). Adding a member to that list changes aggregate membership, so
+`CLAUDE.md`'s verification rule selects one fresh `make ci` for the implementation branch, and
+`scripts/pre-pr` selects executable preflight for the whole change.
+
+`make residency-sim-qualification` stays outside `HOSTED_CHECK_TARGETS`,
+`CAPABLE_ONLY_CHECK_TARGETS`, and every aggregate. It is opt-in through
+`ALIGN_LLM_GGUF_MODEL`, `ALIGN_LLM_LLAMA_EVAL_CALLBACK`, and `ALIGN_LLM_LOCALITY_PROMPTS`, prints one
+exact `N/A` line and exits 0 when any is absent, and follows `scripts/run-expert-locality-gate`'s
+rule that a qualification which silently passes when its subject is missing is worse than none.
+
+## 4. Verification
+
+### 4.1 Synthetic corpus
+
+The smoke needs a MoE trace with generator-known expert ids and a Model IR with generator-known
+`byte_size`s, and both generators already exist.
+
+`scripts/eval_callback_fixture.py` ships `moe_graph(n_layer, n_tokens, router, graph_ordinal, ...)`
+with a seeded `router` object that decides each `(graph, layer, token)` selection, and
+`expected_selections(graphs)` that names the answer independently. R3's fixture builds transcripts
+from it, converts them with the already-verified `main --expert-trace`, and gets traces whose every
+selection is known before the simulator runs. Cases:
+
+| Case | Shape | Asserts |
+| --- | --- | --- |
+| `sim-basic` | 4 layers, 8 experts, top-2, 6 tokens, 4 documents | Every policy against the oracle at every sweep budget |
+| `sim-cyclic` | A stream engineered so one token's working set exactly equals the budget | The LRU cliff, and that `belady` and `lfu` are above it |
+| `sim-uniform-bytes` | Every expert the same size | `uniform_expert_bytes: true`, and that hit-rate and byte orderings agree |
+| `sim-mixed-bytes` | The real model's per-layer Q6_K/Q4_K pattern | A hit-rate tie that is a byte win, which is section 2.8's whole justification |
+| `sim-truncated` | One graph with `n_tokens = 9`, so `tokens_truncated` is true | The graph is excluded and `omitted_truncated_graphs` is 1 |
+| `sim-single-trace` | A one-line trace list | Pooling of one is not a special case |
+| `sim-prefetch-useless` | A stream where the frequent experts are never re-demanded | `prefetch_useful: 0` and a `bytes_fetched` above `lru`'s |
+| `sim-no-headroom` | A stream whose working set fits the budget | `headroom_per_mille: 0` and `result: "NO_HEADROOM"` |
+| `sim-jackknife-unstable` | 5 documents, one carrying the entire LFU win | `jackknife_stable: false`, and not `BEATS_BASELINE` |
+| One fixture per error code | — | Section 2.6, plus `validation-order` |
+
+`scripts/gguf_fixture.py` already builds olmoe-shaped GGUFs (its `olmoe_kvs` / `olmoe_role_shape`
+helpers, added by R1C), so the synthetic Model IR is produced by running the already-verified
+`main --model-ir` over a small synthetic olmoe file rather than by hand-writing JSON. The fixture
+graph therefore contains no hand-authored `R1_MODEL_IR` and cannot drift from R1C's renderer.
+
+### 4.2 The owner: `residency-sim-smoke`
+
+`scripts/run-residency-sim-smoke`, `make residency-sim-smoke`. Builds the corpus, runs the arm over
+each case in both forms, and compares against `scripts/residency_oracle.py` — an independent Python
+implementation of section 2.4 written from this document, never from the Align source, in the
+tradition of `scripts/expert_locality_gate.py` and R2A's aggregate oracle. Every count in the
+document is compared exactly; no tolerance is used anywhere, because every value is an integer.
+
+### 4.3 The qualification: `residency-sim-qualification`
+
+`scripts/run-residency-sim-qualification`, `make residency-sim-qualification`. Captures the 40
+prefill transcripts of `eval/prompts/expert-locality-v1.txt` with the flags and safeguards
+`scripts/run-expert-locality-gate` established — `-fa off -ctk f32 -ctv f32 -nr -c 512`, a
+`ulimit -f` cap, a 600-second timeout, deletion of each transcript immediately after conversion, and
+a model size-and-mtime read-only proof — converts each with `main --expert-trace`, derives the Model
+IR once with `main --model-ir`, writes the trace list, and runs the arm. It records the corpus
+identity, the instrument version block, and the whole verdict, and it exits 0 on every one of the
+three `result` values because all three are answers to the roadmap gate. It exits nonzero only when
+the instrument, the corpus, or a parser prevented a measurement.
+
+### 4.4 What is not run
+
+No security, resource, race, fuzz, stress, platform, mutation, or benchmark suite is selected. R3
+adds no process, no thread, no socket, no subprocess, and no timing claim, so none of those owner
+boundaries changes. `make ci` is selected once, for the `HOSTED_CHECK_TARGETS` membership change of
+section 3.3, and not for anything else in this capability.
+
+### 4.5 Probe evidence
+
+An independent Python simulator was run during this design against the real corpus, so that every
+expectation above is grounded and the fixture shapes of section 4.1 are chosen against measured
+behavior rather than against a guess. **This is probe evidence, not the capability's verification;**
+it is recorded here because a plan whose expectations were never checked is a plan that will be
+corrected during review.
+
+Provenance: host as recorded in `docs/specs/r2a-expert-trace.md` section 2.2;
+`llama-eval-callback` build 10566; `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`;
+`eval/prompts/expert-locality-v1.txt` (40 prompts, md5 `d7fff23f5a1d4f6237e6f848f3318d8b`, 877 B);
+traces produced by `main --expert-trace` at `agent/r2-locality-gate`'s `src/expert_trace.align`;
+sizes from `main --model-ir` at `agent/r1c-olmoe-moe-ir`. All 40 transcripts were deleted after
+conversion.
+
+Stream: 40 documents, 40 admitted, 0 truncated graphs, 192 token positions, **17,280 demands**, 938
+distinct `(layer, expert)` keys of 1,024, layers 0–14 demanded, slots `{0,1,2,5,6,7}` — 750 per mille
+coverage. One token position demands 90 distinct experts and **341,213,184 bytes**.
+`total_expert_bytes` 3,900,702,720; `largest_expert_bytes` 4,079,616.
+
+Token-major, continuing. Each cell is `hit per mille / gigabytes fetched`:
+
+| Budget | %  | `null` | `compulsory` | `belady` | `lru` | `lfu` | `recent_w2` | `recent_w8` | `recent_w32` | `topk_k1` | `topk_k8` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 30,474,240 | 0 | 0 / 65.5 | 945 / 3.6 | 69 / 61.0 | 0 / 65.5 | 25 / 63.8 | 1 / 65.4 | 12 / 64.7 | 24 / 63.9 | 0 / 76.1 | 0 / 150.4 |
+| 60,948,480 | 1 | 0 / 65.5 | 945 / 3.6 | 139 / 56.3 | 0 / 65.5 | 59 / 61.6 | 6 / 65.1 | 44 / 62.6 | 56 / 61.8 | 0 / 75.7 | 0 / 147.8 |
+| 121,896,960 | 3 | 0 / 65.5 | 945 / 3.6 | 260 / 48.5 | 0 / 65.5 | 121 / 57.6 | 33 / 63.3 | 112 / 58.2 | 125 / 57.3 | 0 / 74.8 | 0 / 143.1 |
+| 243,793,920 | 6 | 0 / 65.5 | 945 / 3.6 | 409 / 38.7 | 0 / 65.5 | 226 / 50.7 | 103 / 58.7 | 210 / 51.7 | 229 / 50.5 | 0 / 73.0 | 0 / 133.2 |
+| 487,587,840 | 12 | 0 / 65.5 | 945 / 3.6 | 580 / 27.6 | 247 / 49.3 | 376 / 40.8 | 247 / 49.2 | 335 / 43.5 | 360 / 41.9 | 247 / 54.2 | 246 / 100.3 |
+| 975,175,680 | 25 | 0 / 65.5 | 945 / 3.6 | 782 / 14.3 | 488 / 33.5 | 602 / 26.1 | 488 / 33.5 | 520 / 31.4 | 603 / 26.0 | 488 / 35.8 | 488 / 57.7 |
+| 1,950,351,360 | 50 | 0 / 65.5 | 945 / 3.6 | 904 / 6.2 | 812 / 12.3 | 812 / 12.2 | 812 / 12.3 | 812 / 12.3 | 807 / 12.6 | 812 / 13.3 | 812 / 20.7 |
+| 3,900,702,720 | 100 | 0 / 65.5 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 |
+
+Applying section 2.8's rule:
+
+| Budget | % | Headroom | Best candidate | Gain | `result` |
+| --- | --- | --- | --- | --- | --- |
+| 30,474,240 | 0 | 68 | `lfu` | 25 | `NO_POLICY_BEATS_BASELINE` |
+| 60,948,480 | 1 | 139 | `lfu` | 59 | `BEATS_BASELINE` |
+| 121,896,960 | 3 | 259 | `recent_reuse_w32` | 124 | `BEATS_BASELINE` |
+| 243,793,920 | 6 | 409 | `recent_reuse_w32` | 229 | `BEATS_BASELINE` |
+| 487,587,840 | 12 | 440 | `lfu` | 171 | `BEATS_BASELINE` |
+| 975,175,680 | 25 | 574 | `recent_reuse_w32` | 223 | `BEATS_BASELINE` |
+| 1,950,351,360 | 50 | 493 | `lfu` | 2 | `NO_POLICY_BEATS_BASELINE` |
+| 3,900,702,720 | 100 | 0 | — | 0 | `NO_HEADROOM` |
+
+Six findings the design is built around:
+
+1. **LRU has a hard floor at the one-token working set.** Its hit rate is exactly 0 per mille at
+   every budget below 341,213,184 B and rises immediately above it (0 at 90 per cent of the working
+   set, 175 at 100 per cent, 246 at 110 per cent). This is the classic cyclic-reference pathology:
+   a token touches 15 layers before returning to layer 0, so LRU evicts every expert exactly before
+   it is needed again. It is the single strongest argument in the study for
+   `docs/specs/align-llm.md` section 7.4's "LRUだけに依存しない", and it is why
+   `one_token_working_set_bytes` is a document field.
+2. **Frequency wins across the whole practical range and the win is stable.** Leave-one-document-out
+   over 40 folds gives a minimum gain of 57 per mille at 1 per cent, 219 at 6 per cent, 164 at
+   12 per cent, and 213 at 25 per cent; every fold clears the 50-per-mille floor. At 50 per cent the
+   folds span −7 to +19 per mille and the win correctly fails the rule.
+3. **The `recent_reuse` window is the dominant parameter**, moving 25-per-cent behavior from exactly
+   LRU (488 per mille at `w=2`) to slightly past LFU (603 at `w=32`). Three fixed windows are in the
+   contract for this reason.
+4. **Top-k prefetch is uniformly harmful on this evidence.** Prefetch usefulness is 0–3 per mille at
+   every k and budget: at 25 per cent, `k=1` issues 600 prefetches of which 2 are later hit, and
+   `k=8` issues 6,355 of which 0 are. It adds 2.2 to 24.2 GB of traffic for no measurable hit gain.
+   The policy stays in the set because a documented negative is the finding, and because it is the
+   only row that exercises the `prefetch_fetches` / `prefetch_useful` accounting.
+5. **Optimal headroom stays large where the candidates win** — 574 per mille at 25 per cent, of
+   which `recent_reuse_w32` captures 223. Roughly 60 per cent of the achievable advantage is left on
+   the table by every online policy tested, which is direct evidence *for* section 5.1's score-based
+   and impact-driven work rather than against it.
+6. **Pooling and replay order both change the answer**, by the amounts tabulated in sections 2.2.2
+   and 2.2.3. Both are therefore contract fields, both are argued, and one of the two is reported in
+   duplicate rather than chosen silently.
+
+**The honest caveat, stated in the document and in every summary line.** This stream is thin and
+narrow: 192 token positions across 40 independent prompts of at most six tokens each; six of eight
+router slots printed; prefill graphs only, replayed in decode order because decode is the regime
+being modelled and not because decode was observed. Cross-prompt reuse carries most of the cache
+pressure (section 2.2.3), so the result is properly read as *"across a session of many short
+requests, frequency-aware residency beats recency"* and not as *"within a generation, expert reuse
+is high"*. The second statement needs the decode traces R2c's instrument patch would produce, and
+R3 does not have them. The `recent_reuse` window findings in particular are measured against
+episodes of about five tokens, and `w=32` spans multiple prompts — so at this corpus depth `w=32` is
+closer to a slowly-aged LFU than to a genuine recency window, and a decode corpus could separate
+them differently.
+
+## 5. Deferred, with reasons
+
+### 5.1 Score-based, impact-driven prefetch, and CPU fallback
+
+Section R3 names seven policies and R3 ships four families. The three it does not ship are deferred
+because their **inputs do not exist**, not because they are unimportant — and section 4.5 finding 5
+is the evidence that they matter.
+
+- **Score-based cache** (`docs/specs/align-llm.md` section 7.4) needs "router score" among its
+  terms. `R2_ACTIVATION_TRACE` records the `ffn_moe_topk` node, which is `ggml_top_k`'s output: the
+  expert **identities**, not the `ffn_moe_probs` weights. A score-based policy simulated without
+  scores would be an arbitrary reweighting of frequency and recency presented under a name that
+  implies more. The prerequisite is a trace that also captures `ffn_moe_weights-N`, which is an R2A
+  schema extension (a `schema_version: 2` with a per-selection weight column) and is named here as
+  R3's first follow-on.
+- **Impact-driven prefetch** (section 7.5) prioritizes blocks whose *miss penalty* is largest.
+  R3 has no penalty model: it counts bytes, and bytes are not a penalty until a bandwidth converts
+  them. The prerequisite is R4.5's and R5's measured transfer costs.
+- **CPU fallback** (section 7.3) chooses between transfer-and-GPU-compute and CPU-compute. That
+  choice is explicitly "判断は実測microbenchmarkに基づく" and the microbenchmark is R5's. Simulating
+  it against invented constants would produce a policy ranking that is a function of the constants.
+
+Each is a named follow-on with a named prerequisite, and none is a `PROPOSED` Align request.
+
+### 5.2 Decode-phase traces
+
+Every trace this host can produce is one prefill graph
+(`docs/specs/r2a-expert-trace.md` finding 7), and the instrument prints at most six token positions
+per axis (finding 6). R3 replays prefill demands in decode order and says so; it does not claim a
+decode measurement. R2c's minimal instrument patch — one graph evaluation per decode step reaching
+the callback, and an untruncated `ffn_moe_topk` row — is the prerequisite, and it is the same
+prerequisite R2's own gate carries forward. When it lands, R3's arm consumes the resulting traces
+with no change: `graph_phases` already distinguishes the three R2A phase values, and a decode graph
+is a one-token graph that the token-major order handles identically.
+
+### 5.3 Time, bandwidth, and any performance claim
+
+The document contains no seconds, no bandwidth, and no "faster". `bytes_fetched` is a count of bytes
+that would cross a tier boundary under a policy, and converting it to a time needs the measured NVMe,
+PCIe, and unified-memory numbers R4.5 and R5 own. `CLAUDE.md`'s performance row is therefore **not**
+selected for this capability: there is no optimization claim, no baseline timing, and no benchmark.
+
+### 5.4 Corpus stratification
+
+Section R2's "language別偏り", "task別偏り", and "repo別偏り" each need a labelled corpus.
+`eval/prompts/expert-locality-v1.txt` is 40 unlabelled lines that happen to span code, prose, and
+several natural languages. Adding a label column and a per-stratum verdict is a corpus capability
+that would consume R3's arm unchanged — the trace list would become several trace lists — and it is
+not blocked by anything in this design.
+
+### 5.5 `pooling: "reset"`
+
+Per-document cache reset is a real question — it models a cold serving process per request — and
+section 2.2.3's table is the reason it is a separate capability rather than a flag. Under reset the
+episodes are too short to fill the cache at any interesting budget and the policies stop
+discriminating, so a reset-mode document would need a different budget sweep, a different verdict
+rule, and probably a longer-prompt corpus. Adding it as a second value of an existing field would
+produce a document whose two halves are not comparable.
+
+### 5.6 An ordered resident structure
+
+Victim selection is a linear scan over the resident set, bounded by the cost guard of section 2.7.
+The guard fires at `demand_count * resident_high_water > 2^32`; the real corpus is at 4.75 million,
+three orders of magnitude inside it. A sorted or heap-ordered structure becomes necessary at roughly
+a million-demand stream over a full 16,384-key space — which is a decode corpus of a large model, and
+therefore the same moment section 5.2's prerequisite lands. Building it now would be optimizing a
+measurement that finishes in milliseconds.
+
+### 5.7 What R3 does not decide
+
+R3 produces a number and a verdict. It does not choose the policy the runtime will implement, does
+not write a residency configuration, and does not assign any expert to any tier. The decision that
+consumes this document belongs to R5 and to `docs/specs/align-llm.md` section 6, and it should
+consume the *curve* in `sweep_best` rather than the single `result`, because section 4.5 shows the
+answer changes three times across the sweep.
