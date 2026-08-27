@@ -166,11 +166,12 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > (the same 192-byte `buffer` measured 32-aligned on one run and 16-aligned on the next, correction
 > C9), and its review strengthened it again: correction C14 measured a rule that consults that base
 > refusing a legitimate member at interior offset **0** on 20 of 20 runs, so both device-visible
-> windows are now over-reserved by 64 bytes and the block is read in behind its pad — the cost of the
-> missing language feature, in bytes and in one copy per block. It also added two more requests. Request 34, `Result` ok payloads beyond
-> scalars (`raw`, `buffer`, records): a `Result` ok payload must be a scalar at this pin, `raw` and
-> `buffer` are both rejected (with two different diagnostics), and a plain struct cannot hold a `raw`
-> field either, so `src/ggml_ffi.align`'s constructors return a bare `raw` with a null sentinel and
+> windows are now over-reserved by 64 bytes and the block is read in behind its pad — the cost of
+> the missing language feature, in bytes and in one copy per block. It also added two more requests.
+> Request 34, `Result` ok payloads beyond scalars (`raw`, `buffer`, records): a `Result` ok payload
+> must be a scalar at this pin, `raw` and `buffer` are both rejected (with two different
+> diagnostics), and a plain struct cannot hold a `raw` field either, so `src/ggml_ffi.align`'s
+> constructors return a bare `raw` with a null sentinel and
 > `src/ggml_spike.align`'s reference reader threads its bytes out through a `borrow mut buffer`
 > parameter instead of an owned return. It is non-blocking — the sentinel/out-parameter pattern is in
 > place — with all of R4.5-EXTERNAL-BUFFER-SPIKE and R5 as independent work. Request 35, observable
@@ -7542,10 +7543,10 @@ Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c
   one-off: correction C9 (`docs/specs/r4-5-external-buffer.md` section 6.1) found the **same 192-byte
   `buffer`**, on the same host, for the same input, come back **32-byte aligned on one run and
   16-byte aligned on the next**. Correction C14 measured the same instability on the block window —
-  the arm's own `buffer.weights_pad` alternates between 16 and 48 across runs of one fixture — and
-  measured its consequence: a rule that consults the allocator's base rejects a legitimate member at
-  interior offset **0** on 20 of 20 runs on this host, and would have accepted it on a host whose
-  allocator answered differently. Nondeterministically, not merely occasionally.
+  the arm's own `buffer.weights_pad` varies run to run within `[1, 64]` across runs of one fixture —
+  and measured its consequence: a rule that consults the allocator's base rejects a legitimate
+  member at interior offset **0** on 20 of 20 runs on this host, and would have accepted it on a
+  host whose allocator answered differently. Nondeterministically, not merely occasionally.
 
 - **The shipped arm therefore compensates rather than refusing, and that compensation is this
   request's cost.** Both device-visible windows are over-reserved by `MAX_TENSOR_ALIGNMENT = 64`

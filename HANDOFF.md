@@ -240,7 +240,14 @@ file records durable project state.
   document; `tensor.blck_size` published the `-3` status sentinel as a size; `STATUS_BOUNDS` mapped
   to `R4_5_GGML_INIT` rather than `R4_5_SHAPE`; section 6.2 cited `make check` for five cells over
   modules `make check` never compiles; `docs/align-development.md` had no R4.5 section and
-  `docs/specs/roadmap.md` no R4.5 forward-order item or gate-clause pointer.
+  `docs/specs/roadmap.md` no R4.5 forward-order item or gate-clause pointer. A final review of the
+  repair delta at `ddc9bc6` returned **approve** with 3 low/nit findings, all documentation: the
+  section 6 correction table listed rows C1-C9, C14-C21, C10-C13 instead of running C1-C21
+  monotonically; a `docs/align-requests.md` blockquote line ran 136 characters against the
+  surrounding ~100-column width; and `scripts/run-ggml-spike-smoke` and `docs/align-requests.md`
+  both described `weights_pad` as alternating between 16 and 48, which is not reproducible
+  (measured `{16, 32}` under the stub and `{32, 48, 64}` under the real shim) rather than varying
+  run to run within `[1, 64]`. All three are repaired in this commit.
 - **Next action: preflight and publish**, alongside or after R4's own publication.
 - **Two pending user decisions, carried forward verbatim.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the

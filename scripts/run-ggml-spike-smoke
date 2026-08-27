@@ -168,7 +168,7 @@ SOURCE_PLACEHOLDER = "<source>"
 #   buffer.output_base_alignment, buffer.output_pad
 #                              the **allocator's** answer. Measured on this host, the same window
 #                              comes back 32-aligned on one run and 16-aligned on the next — this
-#                              runner sees `weights_pad` alternate between 16 and 48 for one
+#                              runner sees `weights_pad` vary run to run within `[1, 64]` for one
 #                              fixture. That variation is the whole of the recorded
 #                              aligned-allocation gap, it is why the arm pads instead of refusing,
 #                              and it is why these four are checked as an invariant below rather
