@@ -73,7 +73,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-27): Requests 1–20 are CLOSED and Requests 21–28 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
+> **Status (2026-08-27): Requests 1–20 are CLOSED and Requests 21–31 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
 > R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
 > parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
 > `borrow t: GgufTable` accessors in `src/gguf.align` get the by-value warning even though no call
@@ -124,6 +124,28 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > has already accumulated cannot use either and `src/expert_trace.align` accumulates into a
 > `buffer` plus pre-sized span columns instead. It is non-blocking — the `buffer` workaround is in
 > place — with all of R2A as independent work.
+> R4-ALIGNPACK-LAYER-MAJOR (`docs/specs/r4-alignpack-layer-major.md`) is the current active
+> capability; it consumes no `PROPOSED` request and added Requests 29, 30, and 31. Request 29, an
+> incremental digest: `crypto.sha256`/`sha512` are one-shot over exactly one byte view, so align-llm
+> cannot digest a file larger than memory; R4 wanted a whole-payload digest so a pack could certify
+> itself without re-reading the source and instead ships the bounded header-region digest of its own
+> container, reserving the payload digest field. It is non-blocking — the reservation stands in —
+> with all of R4 as independent work. Request 30, an exclusive random-access file constructor:
+> `fs.create_rw` truncates (`O_TRUNC`) and `fs.create_exclusive` returns a sequential `writer` with no
+> positional write, so a packer that must refuse an occupied multi-gigabyte destination and also write
+> at planned offsets has no single constructor with both properties and instead documents a
+> check-then-create race (`R4_DEST_EXISTS`) between `fs.exists` and `fs.create_rw`. It is
+> non-blocking — the documented race is accepted — with all of R4 as independent work. Request 31,
+> file durability: the runtime ships no `fsync`/`fdatasync`/`F_FULLFSYNC` at all, so no align-llm
+> artifact is guaranteed to survive a power loss; R4 states this as a non-goal because a pack is a
+> reproducible derivative of a file that still exists. It is non-blocking, low priority, with all of
+> R4 as independent work; the first client that would need it is roadmap R6's persistent KV cache.
+> R4-ALIGNPACK-LAYER-MAJOR also added new client evidence to Request 21 — opening a 4.68 GB model it
+> never writes needs `O_RDWR` because Align ships no `fs.size`/`stat`, so even *sizing* a read-only
+> model needs a writable descriptor, a third input class alongside R0's model and R2A's transcript —
+> and to Request 23 — `PackPlan`, another wide columns-plus-stream record read through `borrow`
+> accessors, is a fourth client of the same false-positive huge-struct-copy lint, with its concrete
+> source line to be cited at implementation.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -6203,6 +6225,16 @@ table (`draft.md:2717`) surfaces as `Error.Denied`. A workaround exists — copy
 its permissions — and it is precisely the kind of application workaround that must not hide a
 language-owned requirement.
 
+**R4-ALIGNPACK-LAYER-MAJOR is a third input class, and strengthens the request rather than merely
+repeating it.** R4 opens the source model read-only, in the sense that it never writes a byte back
+into it, but Align exposes no `fs.size` / `stat` / `metadata` call at all — verified by its absence
+from the ABI enumeration at the pinned commit `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2` — so the
+*only* way to learn the model's length before planning the pack's layout is to open it and call
+`f.len()`. Combined with the absence of a read-only random-access constructor (this request), even
+*sizing* a model align-llm will never write to requires an `O_RDWR` descriptor on it, exactly the
+same read-only-media failure this request already names for R0's inspection and R2A's transcript
+scan, now on a third distinct input.
+
 ### Requested capability
 
 One read-only sibling of the existing `file` constructors, following the established `_rw`/`_ro`
@@ -6397,9 +6429,11 @@ Resume condition: Align ships the diagnostic fix
 Align commit or pull request: none
 align-llm verification: pending — `make check` emits no "huge struct copy" warning for a
   `borrow`/`borrow mut` parameter, specifically none for
-  `src/expert_trace.align:1622` (`borrow t: TranscriptScan`) or the ten
-  `borrow t: GgufTable` accessors in `src/gguf.align`, while the by-value
-  warnings the lint legitimately owns are unchanged
+  `src/expert_trace.align:1622` (`borrow t: TranscriptScan`), the ten
+  `borrow t: GgufTable` accessors in `src/gguf.align`, or the fourteen
+  `borrow p: PackPlan` sites in `src/alignpack.align` (`:1261:50`, `:1317:56`,
+  `:1331:57` and eleven more), while the by-value warnings the lint
+  legitimately owns are unchanged
 ```
 
 ### Motivation and current sibling evidence
@@ -6495,6 +6529,43 @@ accessor; line 635 is the `borrow plan: BlockPlan` parameter of `pub fn build`, 
 frontend moves its plan exactly once per invocation. Neither call site copies the record, and
 `BlockPlan`'s Move fields — its three owned `string`s and seventeen `array<i64>` columns — are never
 duplicated at either boundary.
+
+**Fourth client, from the planned R4-ALIGNPACK-LAYER-MAJOR capability.**
+`docs/specs/r4-alignpack-layer-major.md` section 2.1 records `PackPlan` — the layout planner's
+columns-plus-name-stream record, read through `borrow` accessors by the same shape as `GgufTable`,
+`BlockPlan`, and `TranscriptScan` before it (`docs/specs/r4-alignpack-layer-major.md`: "`array<i64>`
+columns behind `borrow` record accessors; `array_builder<i64>`; concatenated name stream with
+explicit `[start, end)` spans — Shipped, three prior instances (`GgufTable`, `BlockPlan`,
+`TranscriptScan`) … The layout plan is the same shape, fourth instance").
+
+**`src/alignpack.align` now exists and the warning is reproduced.** `PackPlan` is 480 bytes — one
+owned `string` name stream, twenty-two `array<i64>` columns, and twelve scalars — and every function
+that reads it takes it as `borrow p: PackPlan`. The three encoders are the clearest case: each one
+writes fixed-width fields out of the plan into a buffer and copies nothing. `gmake check` at the
+pinned toolchain emits, verbatim:
+
+```text
+src/alignpack.align:1261:50: warning: huge struct copy: `alignpack$PackPlan` (480 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+src/alignpack.align:1317:56: warning: huge struct copy: `alignpack$PackPlan` (480 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+src/alignpack.align:1331:57: warning: huge struct copy: `alignpack$PackPlan` (480 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+```
+
+Reproduction:
+
+```sh
+export LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib
+gmake check 2>&1 | grep 'alignpack.align.*huge struct copy'
+```
+
+Line 1261 is `fn encode_header(borrow mut b: buffer, borrow p: PackPlan)`, line 1317 is
+`fn encode_block_record(borrow mut b: buffer, borrow p: PackPlan, index: i64)`, and line 1331 is
+`fn encode_member_record(borrow mut b: buffer, borrow p: PackPlan, index: i64)`. Eleven further
+`borrow`-mode sites in the same module report the same warning for `PackPlan`, and the module emits
+53 `huge struct copy` warnings in total against 454 for the whole repository — every one of the
+`PackPlan` rows is a `borrow` parameter that copies nothing. The by-value branch the lint
+legitimately owns is unaffected: `src/alignpack.align:1376:22` (`empty_header` returning a 160-byte `PackHeader`)
+and `:498:20` (`empty_plan` returning the 480-byte `PackPlan`) are real owned returns and are
+correctly reported.
 
 ### Requested capability
 
@@ -7126,6 +7197,193 @@ table can use.
 5. `align-llm` verification: `src/expert_trace.align` replaces its `buffer`-plus-pre-sized-column
    interning tables with the shipped accumulator, and `make check` and `make expert-trace-smoke`
    pass unchanged.
+
+---
+
+## Request 29 — Incremental digest (`sha256` init/update/final)
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. R4-ALIGNPACK-LAYER-MAJOR (`docs/specs/r4-alignpack-layer-major.md`
+  section 2.4.6) ships the bounded header-region digest and reserves the whole-payload
+  `payload_sha256` field as explicitly zero-valued in v1.
+Independent work that may continue: all of R4-ALIGNPACK-LAYER-MAJOR.
+Resume condition: an Align release ships an incremental digest handle; align-llm then fills
+  `payload_sha256` in `--pack` and checks it in `--pack-verify`.
+Align commit or pull request: none
+align-llm verification: pending — `alignpack-qualification` computes the reserved
+  `payload_sha256` in `--pack`, checks it in `--pack-verify`, and `make alignpack-smoke` passes
+  unchanged.
+```
+
+### Motivation and current sibling evidence
+
+R4-ALIGNPACK-LAYER-MAJOR rewrites one GGUF file into one alignpack v1 container and must certify the
+result without re-reading the multi-gigabyte source. A whole-payload digest computed once while
+streaming the copy would let `--pack-verify` (and any later consumer) check the pack's payload
+against a recorded value with no second full read of either file, but `crypto.sha256`/`sha512` are
+one-shot over exactly **one** byte view.
+
+Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`:
+
+- `crates/align_sema/src/lib.rs:54374` (`fn check_crypto_hash`) takes exactly one argument, checked
+  through the same `check_byte_view` used by `std.compress`, and returns one owned 32- or 64-byte
+  `array<u8>` in a single call. There is no `sha256_init`, `update`, `finish`, digest handle, or
+  streaming `Hasher` anywhere in the crate.
+- `hash64`/`hash128` (wyhash) are incremental in neither sense and are explicitly "not stable across
+  builds" (`../align/docs/impl/core-design/hash.md`), so they cannot bind a persisted artifact's
+  identity across a compiler upgrade.
+
+**Consequence for the client.** align-llm cannot digest a file larger than memory in one call, and
+has no way to fold a digest across the many `pwrite`d chunks of a streaming copy without holding the
+whole payload in one byte view — which is exactly the multi-gigabyte residency R4 is designed to
+avoid. R4 settled for the bounded header-region digest of section 2.4.6 (5,953,536 bytes on the
+reference model, about 2.6 ms at the measured 2.26 GB/s) and reserved the payload digest field.
+
+### Requested capability
+
+An Align-consistent Move-handle streaming digest, following the existing owned-handle/`Drop` idiom
+already used by `file`/`reader`/`writer`:
+
+```text
+crypto.sha256_stream() -> digest          // a Move handle, Drop-released
+d.update(data: str | string | slice<u8>)  // borrows the view, never consumes
+d.finish() -> array<u8>                   // consumes the handle, yields 32 bytes
+```
+
+### Acceptance criteria
+
+1. `finish()` over `n` `update` calls equals `crypto.sha256` over the concatenation, for `n` in
+   `{0, 1, 2, 1000}` and for chunk boundaries at every offset of a multi-megabyte input.
+2. The handle is Move, closes on `Drop`, and cannot be used after `finish()`; an `update` after
+   `finish()` is a compile error.
+3. The digest of the empty input (zero `update` calls) equals the known SHA-256 of the empty string.
+4. `align-llm` verification: `alignpack-qualification` fills `payload_sha256` while streaming the
+   copy in `--pack`, re-derives and checks it in `--pack-verify`, and asserts it against an
+   independent Python `hashlib.sha256` digest of the same payload bytes.
+
+---
+
+## Request 30 — `fs.create_rw_exclusive`
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. R4-ALIGNPACK-LAYER-MAJOR ships the documented check-then-create race
+  (`R4_DEST_EXISTS`: `fs.exists` then `fs.create_rw`) as its destination guard.
+Independent work that may continue: all of R4-ALIGNPACK-LAYER-MAJOR.
+Resume condition: an Align release ships an exclusive random-access constructor; align-llm then
+  replaces the exists-then-create sequence in `src/alignpack.align` with it.
+Align commit or pull request: none
+align-llm verification: pending — `alignpack-smoke`'s `dest-exists` case asserts the exclusive
+  failure directly, with no `fs.exists` preflight, and no window in which a competing creator can
+  win between check and create.
+```
+
+### Motivation and current sibling evidence
+
+R4-ALIGNPACK-LAYER-MAJOR writes a multi-gigabyte artifact and must refuse to overwrite an occupied
+destination path while still writing at planned offsets (the layout planner places each block at a
+computed absolute offset, not appended sequentially).
+
+Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`:
+
+- `crates/align_runtime/src/lib.rs:9890` (`align_rt_io_file_create`, backing `fs.create_rw`) opens
+  `O_RDWR|O_CREAT|O_TRUNC`, mode `0644` — its own doc comment calls it "the fresh-alignpack output
+  path" — so it silently destroys an occupied destination; there is no flag or sibling constructor
+  that both refuses an existing path and returns a positional-write handle.
+- `crates/align_sema/src/lib.rs:53164` (`fn check_fs_create_exclusive`) backs `fs.create_exclusive`,
+  which "never truncates, replaces, or removes an existing final entry" but returns
+  `Ty::Result(Scalar::Writer, ...)` — a sequential `writer`.
+- `crates/align_sema/src/lib.rs:55795` (`fn check_writer_method`) is the complete method set on that
+  `writer`: `write` and `flush` only. There is no positional `pwrite` on a `writer`, so a planned
+  layout with per-block absolute offsets cannot be realized through it — the two properties (refuse
+  an occupied destination; write at a planned offset) exist on two different, incompatible handle
+  types.
+
+**Consequence for the client.** align-llm's `R4_DEST_EXISTS` guard (`docs/specs/r4-alignpack-layer-major.md`
+section 2.8 step 5) is a check-then-create race: `fs.exists(path)` then `fs.create_rw(path)`, with a
+window in which another process could create the path, which is then truncated by `fs.create_rw`.
+The artifact at risk is multiple gigabytes.
+
+### Requested capability
+
+Mirroring the shipped `fs.create_rw` / `fs.create_exclusive` pair:
+
+```text
+fs.create_rw_exclusive(path: str) -> Result<file, Error>
+```
+
+`O_RDWR|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW`, mode `0644`, failing deterministically when the path
+exists, never truncating, never following a destination symlink, returning the same owned `file`
+handle with the same `Drop` contract as `fs.create_rw`.
+
+### Acceptance criteria
+
+1. Creation at an absent target succeeds and yields a working `pwrite`; an existing regular file,
+   directory, symlink, or FIFO at the target fails deterministically with the target unmodified; a
+   competing creator between preflight and create loses deterministically.
+2. The fd is `O_CLOEXEC` and closes on every `?`, `map_err`, branch join, early return, and `Drop`;
+   repeated create/free cycles leak no descriptors.
+3. `align-llm` verification: `src/alignpack.align` replaces its `fs.exists` + `fs.create_rw` sequence
+   with one `fs.create_rw_exclusive` call, and `alignpack-smoke`'s `dest-exists` case passes against
+   the new, race-free failure path.
+
+---
+
+## Request 31 — File durability (`fsync`/`fdatasync`)
+
+```text
+Status: PROPOSED
+Priority: low
+Blocking: no
+Blocked gate or slice: none. R4-ALIGNPACK-LAYER-MAJOR makes no durability claim (section 1.3 states
+  it as a non-goal: a pack is a reproducible derivative of a file that still exists, so the recovery
+  from a torn pack is to run `--pack` again, and `--pack-verify` detects a torn pack anyway).
+Independent work that may continue: all work.
+Resume condition: an Align release ships a sync operation with a stated per-platform guarantee.
+Align commit or pull request: none
+align-llm verification: none required for R4; the first consumer would be roadmap R6's persistent
+  KV cache, where losing the artifact loses the only copy.
+```
+
+### Motivation and current sibling evidence
+
+Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`:
+
+- `grep -rn "fsync|fdatasync|F_FULLFSYNC" crates/align_runtime/src/lib.rs crates/align_sema/src/lib.rs`
+  returns zero hits — the ABI exposes no sync primitive on `file` or `writer` at all.
+- `docs/impl/std-design/fs.md:75` states the omission as a deliberate design decision, listing "…
+  preflight existence check, cross-device copy, `fsync`, or crash-durability" among what the
+  publish/rename operation does not add. `draft.md:2892` likewise lists "rollback, durability, or
+  multi-file transaction" among what the constructors add none of.
+- A `writer`'s `flush` (`crates/align_sema/src/lib.rs:55795`) pushes buffered bytes to the kernel,
+  not to the device; `file` has no flush or sync method of any kind.
+
+**Consequence for the client.** align-llm cannot promise that any artifact — including a multi-
+gigabyte alignpack — survives a power loss. For R4 this is genuinely harmless: a pack is a
+deterministic derivative of a file (the source GGUF) that still exists, so a torn pack costs a rerun
+of `--pack`, and `--pack-verify` detects a torn or truncated pack rather than trusting it. It is
+recorded because the next client may be a persistent KV cache (roadmap R6), where the artifact is not
+a derivative of anything else and losing it loses the only copy.
+
+### Requested capability
+
+```text
+f.sync() -> Result<(), Error>   // on `file`, a real fsync/F_FULLFSYNC
+w.sync() -> Result<(), Error>   // on `writer`, the same
+```
+
+### Acceptance criteria
+
+Acceptance criteria must state exactly what is and is not promised on each supported filesystem,
+because a durability API that over-promises is worse than none: a compiler test asserts that after
+`sync()` returns `Ok`, a subsequent read (in-process or via a fresh open) observes the written bytes,
+and the platform-specific guarantee (e.g. `F_FULLFSYNC` on APFS vs. plain `fsync` elsewhere) is
+documented in `draft.md`/`docs/language-spec.md` rather than left implicit.
 
 ---
 

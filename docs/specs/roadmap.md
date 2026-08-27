@@ -95,13 +95,29 @@ The current forward delivery order is:
     open standing item**: the gpt-oss `model-ir-parity` qualification and real-model inspection
     against ledger section 2.5 remain the documented explicit `N/A` pending the user decision to
     download `gpt-oss-20b-mxfp4.gguf` (12.1 GB); the qwen half of the gate is real-model verified.
-12. **R2A-EXPERT-TRACE-CAPTURE — expert-trace capture from a callback transcript. Active.** The next
-    Track B capability, on branch `agent/r2a-expert-trace`. `docs/specs/r2a-expert-trace.md` is the
-    authoritative plan for R2a: `main --expert-trace CALLBACK_LOG [OUT.json]` consumes a
-    `llama-eval-callback` transcript (recorded instrument build 10566) into an
-    `R2_ACTIVATION_TRACE`, `schema_version: 1` document with per-(token, layer) expert ids and
-    locality aggregates; a dense transcript yields `moe: false`. The R2 roadmap gate needs a real MoE
-    transcript, which is a separate pending user decision (a small 1-4 GB MoE GGUF).
+12. **R2A-EXPERT-TRACE-CAPTURE — expert-trace capture from a callback transcript. Merged as
+    PR #124** (head `ab5f7d8`, merge `b8e1cb6`), from branch `agent/r2a-expert-trace`.
+    `docs/specs/r2a-expert-trace.md` is the authoritative plan for R2a: `main --expert-trace
+    CALLBACK_LOG [OUT.json]` consumes a `llama-eval-callback` transcript (recorded instrument
+    build 10566) into an `R2_ACTIVATION_TRACE`, `schema_version: 1` document with per-(token,
+    layer) expert ids and locality aggregates; a dense transcript yields `moe: false`. **The gate
+    is met for parser correctness** on the dense case — `scripts/run-expert-trace-parity` PASS,
+    `expert-trace-smoke` a hosted member — while **the R2 roadmap gate stays open** pending a real
+    MoE transcript, a separate pending user decision (a small 1-4 GB MoE GGUF).
+13. **R4-ALIGNPACK-LAYER-MAJOR — the alignpack v1 container, its layer-major writer, and its
+    verifier. Active.** On branch `agent/r4-alignpack-layer-major`.
+    [`r4-alignpack-layer-major.md`](r4-alignpack-layer-major.md) is the authoritative plan and owns
+    the contract ledger, closure matrix, fixture design, correction ledger, and cell-to-case map.
+    `main --pack MODEL OUT.alignpack [DOC.json]` writes a layer-major container whose every block is
+    one contiguous range, and `main --pack-verify MODEL PACK [DOC.json]` re-reads both files and
+    compares every claimed byte; both emit `schema_version: 1` documents
+    (`R4_ALIGNPACK`, `R4_ALIGNPACK_VERIFY`). It consumes R1's Block IR through
+    `model_ir.resolve_claims` and `model_ir.derive_status` and imports no frontend. **It discharges
+    the R4 gate on the qwen half with real weights**: one qualification run over
+    Qwen2.5-Coder-7B Q4_K_M reported byte identity and 89 → 58 ranges, 11,130,544,128 → 4,677,120,000
+    span bytes, 2,379,786 → 1,000,000 ppm, and 27 → 58 of 58 contiguous blocks. The per-expert half
+    is closed synthetically and stays **MOE-PREREQ**, pending the same small MoE GGUF decision R2
+    names.
 
 **I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
 prove its value on an existing model, and the merged C6-MEASURED wave (align-llm PR #103, `c9a510d`)
@@ -570,6 +586,12 @@ layer-major
 ### Gate
 
 元GGUFとのtensor内容一致と、連続read量の改善を確認できること。
+
+このgateはR4-ALIGNPACK-LAYER-MAJORが所有する。実装・contract ledger・closure
+matrix・fixture設計・correction ledgerはすべて
+[`r4-alignpack-layer-major.md`](r4-alignpack-layer-major.md)にある。qwen側は実weightで達成済み
+（89 → 58 range、2,379,786 → 1,000,000 ppm、27 → 58/58 contiguous、byte identity）。per-expert側は
+合成fixtureのみで、実MoE GGUFが前提（**MOE-PREREQ**）。
 
 ---
 

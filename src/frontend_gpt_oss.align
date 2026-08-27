@@ -241,7 +241,19 @@ fn expert_member_role(fused: bool, slot: i64) -> i64 {
 
 // The one public entry point. The container table is read once per invocation by `src/main.align`,
 // which dispatches on its `general.architecture` field, and is borrowed here.
+// R4-ALIGNPACK-LAYER-MAJOR section 2.9 requires the packer to receive a `BlockPlan`, and only a
+// frontend can build one. `prepare` is therefore this frontend's whole derivation as **data** —
+// the ordered validation result, the step-8 geometry, and the settled block plan — and
+// `build_model_ir` is the `R1_MODEL_IR` renderer over exactly that value. Nothing else moved, so
+// every `R1_MODEL_IR` document is byte-identical to the one produced before the extraction.
 pub fn build_model_ir(borrow table: gguf.GgufTable, path: str) -> model_ir.ModelIr {
+  prepared := prepare(table)
+  code_view: str := prepared.code
+  detail_view: str := prepared.detail
+  return model_ir.build(table, prepared.geometry, prepared.plan, path, code_view, detail_view)
+}
+
+pub fn prepare(borrow table: gguf.GgufTable) -> model_ir.Prepared {
   mut code := "".clone()
   mut detail := "".clone()
   mut n_layer := -1
@@ -945,7 +957,10 @@ pub fn build_model_ir(borrow table: gguf.GgufTable, path: str) -> model_ir.Model
     member_slice_count: member_slice_count_column.build(),
   }
 
-  code_view: str := code
-  detail_view: str := detail
-  return model_ir.build(table, geometry, plan, path, code_view, detail_view)
+  return model_ir.Prepared {
+    code: code.clone(),
+    detail: detail.clone(),
+    geometry: geometry,
+    plan: plan,
+  }
 }
