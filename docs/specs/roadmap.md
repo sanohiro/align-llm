@@ -173,19 +173,19 @@ The current forward delivery order is:
     committed; two complementary reviews and one final review are done and repaired in the
     consolidated repair commit `b5b2db8` and the final-review commit `5ab2ad0`; preflighted and
     merged. R5C (item 17) is stacked on it and rebased onto its merged result.
-17. **R5C-METAL-PREFILL-ARM — the same Align-owned window, handed to Metal. Publication in
-    progress.** On branch `agent/r5c-metal-prefill` at the final-review repair `9ac28bb`, on the
-    review repair `31cd1d5` and the implementation `e3d94d9`, rebased onto the merged R5B at `main`
-    `870bf31`.
+17. **R5C-METAL-PREFILL-ARM — the same Align-owned window, handed to Metal. Merged as PR #129, merge
+    commit `39c69a2` on `main`.** Was on branch `agent/r5c-metal-prefill` at the final-review
+    repair `9ac28bb`, on the review repair `31cd1d5` and the implementation `e3d94d9`, rebased onto
+    the merged R5B at `main` `870bf31`.
     [`r5c-metal-prefill.md`](r5c-metal-prefill.md) is the authoritative plan and owns the probe
     record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
     deferrals, risks, and candidate-request sections. `ggml-spike --model-forward-gpu` is a new arm
     of the same executable, taking R5B's schedule and operand grammar unchanged and handing the
     same Align-owned weight window to the Metal device through
     `ggml_backend_dev_buffer_from_host_ptr` instead of to the CPU backend, emitting a new
-    `R5_MODEL_FORWARD_GPU`, `schema_version: 1` document. **Implementation, both review repairs, and the
-    qualification on a Metal host are complete** (ledger section 7); the branch is rebased onto the
-    merged R5B and publication is in progress. Required microbenchmark A (section R5 below) is
+    `R5_MODEL_FORWARD_GPU`, `schema_version: 1` document. **Implementation, both review repairs, and
+    the qualification on a Metal host are complete** (ledger section 7); the branch was rebased onto
+    the merged R5B, preflighted, and merged. Required microbenchmark A (section R5 below) is
     discharged on unified memory: Metal is bit-deterministic (two consecutive shipped-arm runs and
     five probe runs byte-identical), the whole-model logits reach max `|Δ|` 2,936 of 6,000
     ten-thousandths against R5B's byte-identical CPU vector with `argmax` 671, the whole top ten
@@ -198,6 +198,18 @@ The current forward delivery order is:
     before implementation, so this is not a ceiling-estimation miss. Required microbenchmark C
     (async prefetch + GPU compute) cannot be written at this pin and is deferred with Request 41
     named (`docs/align-requests.md`).
+
+### Status (2026-08-28)
+
+Track B is complete on the dense local model from R0 through R5C (item 17), and no further roadmap
+item is startable without a user decision or an Align-side change: (a) a small MoE GGUF, 1-4 GB,
+unblocks R2's locality gate, R3, R4's per-expert half, and R4.5's expert matmul, and — because a
+size-chosen model is unlikely to be `gpt-oss` — also needs a new R1C frontend; (b)
+`gpt-oss-20b-mxfp4.gguf`, 12.1 GB, unblocks R1B's real-model `model-ir-parity` qualification; (c) a
+source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
+through it, R7-R9; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
+required microbenchmark C. See `HANDOFF.md`, "No active capability", for the full decision list and
+disk-space accounting.
 
 **I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
 prove its value on an existing model, and the merged C6-MEASURED wave (align-llm PR #103, `c9a510d`)
@@ -213,8 +225,8 @@ than by a separate align-coder capability.
 **ALIGN-ADOPTION is an internal prerequisite checkpoint, not a standalone capability.** Within the
 next consumer branch, batch its merged Align requests into one compiler-pin update, run every named
 focused real-client acceptance target, and then run one final fresh `make ci`. Preserve each
-request's lifecycle evidence without opening a pin-only pull request. As of
-R5C-METAL-PREFILL-ARM, no Align request has merged since R0; `.align-revision` stays pinned to
+request's lifecycle evidence without opening a pin-only pull request. As of R5C-METAL-PREFILL-ARM's
+merge (2026-08-28), no Align request has merged since R0; `.align-revision` stays pinned to
 `4b515f8d` and there is nothing to batch.
 
 Only design the next eligible capability in implementation detail; later ledger entries may retain
@@ -755,8 +767,9 @@ microbenchmarkのうちBはR5Bが**whole-model scale**で達成（six-token pref
 wall 1.07-1.12 s、compute 349.6 ms、pread 533 ms/4,370,571,072 B。実装済みarmは
 wall 1,141-1,275 ms、compute 484-620 ms、pread 515-648 ms、447,086,592 Bのwindow 1つ、warm）。
 必須microbenchmarkのうちAはR5C-METAL-PREFILL-ARM（`docs/specs/r5c-metal-prefill.md`）が
-unified memory上で達成した。実装はcommit済みでMetal host上のqualificationも完了している
-（ledger section 7）。R5Bと同一のAlign-owned window（447,086,592 B）をMetal deviceへ
+unified memory上で達成した。align-llm PR #129としてmergeされ、実装・両review repair・Metal host上の
+qualificationはすべて完了している（ledger section 7）。R5Bと同一のAlign-owned window
+（447,086,592 B）をMetal deviceへ
 `ggml_backend_dev_buffer_from_host_ptr`経由で渡し、339配置すべてがexternalかつzero-byte copyだが、
 この「transfer」はwrap（`ggml_backend_dev_buffer_from_host_ptr`の呼び出し自体）として測定され、
 実装されたarmは1 wrapあたり**12.4 ms**、runtime passとreconciliation passの両方を走らせるため
