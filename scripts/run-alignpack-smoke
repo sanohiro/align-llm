@@ -130,6 +130,7 @@ VERIFY_SUMMARY_LABELS = [
 ]
 
 checks = 0
+limits_binary = None
 
 
 def fail(message):
@@ -964,13 +965,33 @@ def drive_identity_mismatch(source_a, pack_a, source_b):
 DEFAULTS = [1048576, 1048576, 134217728, 16777216, 1024, 1099511627776, 4194304]
 
 
+def build_limits_entry():
+    """One compile, twelve runs. `alignc run` compiles its whole module graph on every invocation,
+    and `src/alignpack_limits_smoke.align` pulls in `src/alignpack.align` and the Model IR chain
+    behind it, so a cold compile of this entry point costs about a minute. This unit needs twelve
+    invocations, and `alignc run` would therefore spend twelve cold minutes wherever the compiler's
+    user cache is absent or unwritable — which is exactly the fresh worker's sandbox, where the
+    aggregate has a bounded budget and where this unit consumed it. Building once into the temporary
+    work directory and executing the resulting binary is the same coverage at one twelfth of the
+    compile cost, and it keeps the binary out of the work tree so the leak sweep still holds."""
+    result = subprocess.run(
+        [compiler, "build", str(Path(root_dir) / "src" / "alignpack_limits_smoke.align")],
+        capture_output=True, cwd=work_dir)
+    if result.returncode != 0:
+        fail("the lowered-limit entry point did not build: %s"
+             % result.stderr.decode("utf-8", "replace")[-800:])
+    binary = Path(work_dir) / "alignpack_limits_smoke"
+    if not binary.is_file():
+        fail("the lowered-limit build produced no %s" % binary)
+    return str(binary)
+
+
 def limits_run(source, destination, overrides):
     values = list(DEFAULTS)
     for index, value in overrides.items():
         values[index] = value
     result = subprocess.run(
-        [compiler, "run", str(Path(root_dir) / "src" / "alignpack_limits_smoke.align"),
-         source, destination] + [str(v) for v in values],
+        [limits_binary, source, destination] + [str(v) for v in values],
         capture_output=True, cwd=work_dir)
     if result.returncode != 0:
         fail("limits entry point exited %d: %s"
@@ -980,6 +1001,8 @@ def limits_run(source, destination, overrides):
 
 
 def drive_limits(source):
+    global limits_binary
+    limits_binary = build_limits_entry()
     destination = str(Path(work_dir) / "limited.alignpack")
     for label, overrides, code in (
         ("block-limit", {0: 2}, "R4_BLOCK_LIMIT"),

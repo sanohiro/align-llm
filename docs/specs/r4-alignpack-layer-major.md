@@ -1210,6 +1210,18 @@ invoked into it, then one embedded Python driver. No model, no network, no refer
 why it joins `HOSTED_CHECK_TARGETS`. The largest synthetic container is a few hundred kilobytes, so
 the whole run writes well under a megabyte.
 
+**The lowered-limit entry point is compiled once, not once per case.** `alignc run` compiles its
+whole module graph on every invocation, and `src/alignpack_limits_smoke.align` pulls in
+`src/alignpack.align` and the Model IR chain behind it: a **cold** compile of that graph measures
+**2 m 08 s** on the hosted Linux profile against **0.15 s** warm. The unit needs twelve invocations
+— six limit rows, the window reference, and five lowered windows — so `alignc run` cost twelve cold
+compiles wherever the compiler's artifact cache is absent or unwritable. That is exactly the fresh
+worker's sandbox, where `make ci` has a bounded budget, and it is where this unit exhausted it. The
+runner therefore issues one `alignc build` into its temporary work directory and executes the
+resulting binary twelve times: identical coverage and assertion count, one twelfth of the compile
+cost, and the binary stays outside the work tree so the leak sweep still holds. Warm, the entire
+owner runs in about five seconds on that profile.
+
 Beyond the closure cells, the runner:
 
 - asserts `schema_version == 1` and the exact top-level and nested field order on every document of
