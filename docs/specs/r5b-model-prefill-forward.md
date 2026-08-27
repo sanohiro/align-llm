@@ -1776,6 +1776,23 @@ appeared to fail against a binary that already contained the repair. It is `r5a-
 section 6, correction C23's rule (the owner builds and runs outside the work tree) applied to the one
 line that did not follow it.
 
+### C25 — the model-forward smoke block inherits R5A's two fresh-worker repairs
+
+Two repairs `main` made to R5A's block of `scripts/run-layer-forward-smoke` after R5B branched apply
+verbatim to R5B's block and were not there:
+
+- **the checked-in excerpt is read through a writable copy.** `model_forward` opens its transcript
+  with `fs.open_rw`, because Align ships no read-only random-access `file` constructor
+  (`docs/align-requests.md` Request 21), so the read-only checkout the fresh trusted worker mounts
+  refuses `eval/fixtures/qwen2-model-6tok.txt` with `R5_TRANSCRIPT` detail `Denied` before a byte is
+  parsed, and `mf-transcript-excerpt` — whose whole point is the parse count — becomes an open
+  failure. The block now copies the file into its own `work_dir` first. `transcript_path` is a
+  placeholder in every golden, so no case changes.
+- **a golden mismatch names the differing fields.** Printing both whole documents overruns the
+  supervisor's 65,536-byte-per-stream bound on the aggregate child, and the controller shows only
+  the last 8,192 bytes, so the line naming the case scrolls out of the diagnostic. R5B's documents
+  are larger than R5A's, so the same `describe_difference` walk is used here.
+
 ---
 
 ## 7. Closure-matrix evidence

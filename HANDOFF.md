@@ -146,6 +146,12 @@ file records durable project state.
   `--model-forward` block of `scripts/run-layer-forward-smoke` ran `root_dir/ggml-spike` rather than
   the `work_dir` executable it had just built, so `make layer-forward-smoke` failed outright on a
   clean checkout and otherwise tested a stale binary.
+- **Two of `main`'s R5A fresh-worker repairs applied to R5B's own smoke block** (ledger correction
+  C25), both landed on `main` after this branch left R5A: the checked-in whole-model excerpt is read
+  through a writable copy in `work_dir`, because `fs.open_rw` refuses the fresh worker's read-only
+  checkout (`R5_TRANSCRIPT` / `Denied`, Request 21), and a golden mismatch reports the differing
+  field paths through R5A's `describe_difference` walk instead of both whole documents, which
+  overruns the supervisor's 65,536-byte-per-stream bound.
 - **Canonical baseline chain, re-recorded on Linux.** R5B changes `Makefile` (the
   `model-forward-qualification` recipe and its `.PHONY` entry) and `.gitattributes` (the
   `-whitespace` rule for the checked-in whole-model excerpt), two of the twenty recorded baseline
