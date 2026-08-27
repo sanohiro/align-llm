@@ -151,7 +151,20 @@ root_dir, work_dir = sys.argv[1:3]
 binary = os.path.join(work_dir, "ggml-spike")
 builder = os.path.join(root_dir, "scripts", "build-ggml-shim")
 golden_path = os.path.join(root_dir, "scripts", "layer-forward-golden.jsonl")
-excerpt = os.path.join(root_dir, "eval", "fixtures", "qwen2-blk0-6tok.txt")
+# The arm is pointed at a **writable copy** of the checked-in excerpt, never at the checked-in path.
+# `layer_forward` opens its transcript with `fs.open_rw`, because Align ships no read-only
+# random-access `file` constructor (`docs/align-requests.md` Request 21). A read-only checkout --
+# which is exactly what the fresh trusted worker mounts, root-owned and read by an unprivileged uid,
+# and what a CI artifact directory normally is -- then refuses the open with `R5_TRANSCRIPT` detail
+# `Denied` before a byte is parsed. R2A hit the same wall on its own checked-in excerpt and fixed it
+# the same way. The copy changes nothing the case asserts: `transcript_path` is a placeholder in
+# every golden, and the bytes are the checked-in bytes.
+checked_in_excerpt = os.path.join(root_dir, "eval", "fixtures", "qwen2-blk0-6tok.txt")
+excerpt = os.path.join(work_dir, "qwen2-blk0-6tok.txt")
+with open(checked_in_excerpt, "rb") as handle:
+    excerpt_bytes = handle.read()
+with open(excerpt, "wb") as handle:
+    handle.write(excerpt_bytes)
 update = os.environ.get("ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE") == "1"
 
 ARM = "--layer-forward"

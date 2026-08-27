@@ -60,7 +60,17 @@ file records durable project state.
   child's last stderr being those warnings and no error line after them. Both
   `scripts/run-layer-forward-smoke` and `scripts/run-ggml-spike-smoke` now capture the compiler's
   stderr and print it only on failure, under `ALIGN_LLM_FRESH_COMPILER=1` only, which is the shape
-  `Makefile`'s `check` and `build` targets already use.
+  `Makefile`'s `check` and `build` targets already use. A **fourth** class then surfaced (ledger
+  correction **C29**): `lf-engine-transcript-excerpt` read the checked-in
+  `eval/fixtures/qwen2-blk0-6tok.txt` in place, the arm opens its transcript with `fs.open_rw`
+  because Align ships no read-only `file` constructor (Request 21), and the fresh worker mounts the
+  checkout root-owned and runs the aggregate as an unprivileged uid — so the case reported
+  `R5_TRANSCRIPT` detail `Denied` instead of `R5_ORACLE_SHAPE`. R2A hit the identical wall; the
+  runner now copies the excerpt into its temporary tree, verified on Linux with the checked-in file
+  left root-owned `0444` and the runner executed as an unprivileged uid. Correction **C30** is why
+  that took two preflight runs to see: a golden mismatch printed both whole documents, which the
+  8,192-byte worker diagnostic truncated past the line naming the case, and the runner now names the
+  differing field paths instead.
 - **Named qualification, against `qwen2.5-coder-7b-instruct-q4_k_m.gguf`, layer 0, tokens
   `750,912,2877,11,293,1648`** (`docs/specs/r5a-dense-layer-forward.md` section 7.7):
   - self-reference oracle: **IDENTICAL**, 20 of 20 dumped node tensors byte-identical;
