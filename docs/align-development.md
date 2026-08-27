@@ -1024,10 +1024,8 @@ assert `abi.fp_contract_off` is `true`.
 `model-forward-qualification` is opt-in and capable-only, in **neither** `HOSTED_CHECK_TARGETS` nor
 `CAPABLE_ONLY_CHECK_TARGETS` — the same footing as `layer-forward-qualification`. It prints exactly
 one `N/A` line and exits 0 when a required input is missing, the model or either instrument is
-absent, or free space under the scratch root is under the pack's size plus 1 GiB. The plan (section
-5.2) names the required inputs as data rather than as captured runner text — `scripts/run-model-forward`
-does not exist yet — so the exact shipped `N/A` line wording is **to be finalized with the
-implementation**, following R5A's precedent of quoting the runner's own text once it is written:
+absent, or free space under the scratch root is under the pack's size plus 1 GiB. These are
+`scripts/run-model-forward`'s own twelve lines, quoted from the shipped runner and final:
 
 ```text
 model forward qualification: N/A ALIGN_LLM_GGML_INCLUDE is unset
@@ -1044,19 +1042,41 @@ model forward qualification: N/A the scratch root <path> does not exist
 model forward qualification: N/A free space under <path> is <n> KiB, below the <n> KiB the pack needs
 ```
 
-(shape and reasons per the plan's section 5.2 list; wording finalized with the implementation, as
-R5A's section 5.1 wording was).
+**There is no thirteenth line, and the one that would have been is a failure.** `N/A` means "a
+required input is absent from this host", which the runner establishes before it starts either
+instrument. Once `llama-debug` has run, exited 0, and been asked for `--save-logits`, a missing
+logits blob — or a blob with no companion `-tokens.bin`, which would silently skip the token-id
+cross-check — is the instrument disagreeing with its own contract, so the runner prints a `FAIL`
+line and exits non-zero:
+
+```text
+model forward qualification: FAIL llama-debug exited 0 and wrote no logits file under <dir>
+model forward qualification: FAIL llama-debug wrote <blob> but no companion -tokens.bin, so the
+token-id cross-check cannot run
+```
+
+**Peak RSS is reported, not asserted, and its capture is best-effort.** BSD `time -l` and GNU
+`time -v` disagree on both the flag and the output label, and a host may have neither, so the arm
+runs directly and the runner probes for a usable wrapper. Where none exists it prints
+`model forward qualification: peak RSS not measured — no /usr/bin/time -l or -v on this host` and
+every assertion still runs.
 
 `R4_WINDOW_UNAVAILABLE` stays the one error code the closure matrix records as `N/A` for this arm
 too (section 4.5): it is not input-reachable, as both R5A and Request 35 already record, because
 `buffer(n)` is an advisory reservation that never fails.
 
 **Adding rows to the existing `layer-forward-smoke` target changes no aggregate membership and no
-check topology** — unlike R5A, which added the target itself and thereby selected `make ci`, R5B
-only extends an existing `HOSTED_CHECK_TARGETS` member. `scripts/verification_scope.py` is the
-shared classifier of record and its verdict, not this paragraph, is the evidence.
+check topology**: R5B extends an existing `HOSTED_CHECK_TARGETS` member rather than adding one, and
 `model-forward-qualification` joins no aggregate and is named explicitly in the pull request
 instead, exactly as `layer-forward-qualification` and `ggml-spike-qualification` are.
+
+That is the whole claim. **It is not a claim that R5B avoids the fresh-image scope**, and an earlier
+draft of this paragraph said so wrongly: adding the `model-forward-qualification` recipe and its
+`.PHONY` entry edits the `Makefile`, an executable contract boundary, so
+`scripts/verification_scope.py` — the shared classifier of record, whose verdict is the evidence —
+returns `{"docs_only": false, "hosted": true, "fresh_focused": true, "fresh_installed": true,
+"scope": "fresh-image"}` for the R5B diff. Run the classifier against the exact head rather than
+reasoning from either paragraph.
 
 ## The aarch64 platform-profile gates
 

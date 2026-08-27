@@ -95,7 +95,25 @@ echo "model forward qualification: capturing both instruments with -fa off -ctk 
 
 logits_bin=$(ls "${work_dir}"/lg/*.bin 2>/dev/null | grep -v -- '-tokens\.bin$' | head -1 || true)
 tokens_bin=$(ls "${work_dir}"/lg/*-tokens.bin 2>/dev/null | head -1 || true)
-[ -n "${logits_bin}" ] || na "llama-debug wrote no logits file under ${work_dir}/lg"
+# An `N/A` line means "a required input is absent from this host". `llama-debug` ran, exited 0, and
+# was asked for `--save-logits`: a missing blob is the instrument disagreeing with its own contract,
+# which is a failure of the qualification and not a reason to skip it.
+if [ -z "${logits_bin}" ]; then
+  echo "model forward qualification: FAIL llama-debug exited 0 and wrote no logits file under" \
+    "${work_dir}/lg" >&2
+  tail -20 "${work_dir}/debug.log" >&2 || true
+  exit 1
+fi
+# The token-id cross-check is one half of the instrument agreement assertion, so it is never skipped
+# silently. `--save-logits` writes `<stem>-tokens.bin` beside the blob; its absence is the same
+# contract failure.
+if [ -z "${tokens_bin}" ]; then
+  echo "model forward qualification: FAIL llama-debug wrote ${logits_bin} but no companion" \
+    "-tokens.bin, so the token-id cross-check cannot run" >&2
+  exit 1
+fi
+echo "model forward qualification: llama-debug wrote $(basename "${logits_bin}") and" \
+  "$(basename "${tokens_bin}")"
 
 # The instrument cross-check, **before** the arm runs.
 python3 - "${work_dir}/transcript.txt" "${logits_bin}" "${tokens_bin}" <<'PY'
@@ -127,14 +145,14 @@ if abs(printed - total) > 1e-3:
     raise SystemExit(
         "model forward qualification: FAIL instrument skew: llama-debug sums to %.6f and "
         "llama-eval-callback printed %.6f" % (total, printed))
-if tokens_path:
-    with open(tokens_path, "rb") as handle:
-        ids = struct.unpack("<%di" % (len(handle.read()) // 4), open(tokens_path, "rb").read())
-    if list(ids) != [750, 912, 2877, 11, 293, 1648]:
-        raise SystemExit(
-            "model forward qualification: FAIL llama-debug tokenized %r" % (list(ids),))
-print("model forward qualification: instruments agree, f32 sequential sum %.6f over %d logits"
-      % (total, count))
+with open(tokens_path, "rb") as handle:
+    token_bytes = handle.read()
+ids = list(struct.unpack("<%di" % (len(token_bytes) // 4), token_bytes))
+if ids != [750, 912, 2877, 11, 293, 1648]:
+    raise SystemExit(
+        "model forward qualification: FAIL llama-debug tokenized %r" % (ids,))
+print("model forward qualification: instruments agree, f32 sequential sum %.6f over %d logits, "
+      "and llama-debug tokenized %r" % (total, count, ids))
 PY
 
 shim_dir=$(ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim")
@@ -151,8 +169,21 @@ shim_built=1
 export DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
+# Peak RSS is a **reported** metric, not an assertion, and the two `time` implementations that can
+# report it disagree on both flag and output format: BSD `time -l` prints "maximum resident set
+# size" in bytes, GNU `time -v` prints "Maximum resident set size (kbytes)", and a host may have
+# neither. The arm therefore runs directly and the measurement is best-effort: a host without a
+# capable `time` prints one line saying so and the qualification is otherwise unaffected.
+rss_wrapper=""
+if /usr/bin/time -l true >/dev/null 2>&1; then
+  rss_wrapper="/usr/bin/time -l"
+elif /usr/bin/time -v true >/dev/null 2>&1; then
+  rss_wrapper="/usr/bin/time -v"
+fi
+
 echo "model forward qualification: prefill at the instrument's declared attention width (256)"
-/usr/bin/time -l "${root_dir}/ggml-spike" --model-forward "${work_dir}/model.alignpack" \
+# shellcheck disable=SC2086 - rss_wrapper is a deliberately word-split command prefix, or empty.
+${rss_wrapper} "${root_dir}/ggml-spike" --model-forward "${work_dir}/model.alignpack" \
   "${work_dir}/geometry.json" 750,912,2877,11,293,1648 \
   "${work_dir}/model.json" "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/transcript.txt" 256 \
   "${logits_bin}" 2> "${work_dir}/rss.txt" || {
@@ -160,7 +191,12 @@ echo "model forward qualification: prefill at the instrument's declared attentio
     cat "${work_dir}/rss.txt" >&2
     exit 1
   }
-grep -E 'maximum resident set size|peak memory footprint' "${work_dir}/rss.txt" || true
+if [ -n "${rss_wrapper}" ]; then
+  grep -E 'maximum resident set size|Maximum resident set size|peak memory footprint' \
+    "${work_dir}/rss.txt" || true
+else
+  echo "model forward qualification: peak RSS not measured — no /usr/bin/time -l or -v on this host"
+fi
 
 echo "model forward qualification: prefill at the runtime's own attention width (6)"
 "${root_dir}/ggml-spike" --model-forward "${work_dir}/model.alignpack" \
@@ -237,6 +273,10 @@ want("layer 26 does not narrow", [schedule[26]["l_out_ne0"], schedule[26]["l_out
      [3584, 6])
 
 window = d["window"]
+# Section 5.2's window row, corrected by section 6 correction C21: the sweep's 447,082,496 B is the
+# pack's `block_align` figure, and the shipped arm over-reserves by MAX_TENSOR_ALIGNMENT (4096) so
+# it can hand ggml an interior range that starts on a boundary. 447,086,592 is the measured value.
+want("window.bytes", window["bytes"], 447086592)
 want("window.peak_block_layer", window["peak_block_layer"], -1)
 want("window.reuse_count", window["reuse_count"], 30)
 want("window.pointer_identity_failures", window["pointer_identity_failures"], 0)
@@ -255,12 +295,19 @@ want("output.argmax", d["output"]["argmax"], 671)
 reference = d["reference"]
 want("reference.verdict", reference["verdict"], "IDENTICAL")
 want("reference.graphs_compared", reference["graphs_compared"], 30)
+# Section 4.4 and section 5.2: 479 of 479, not merely "as many as it happened to compare".
+want("reference.nodes_compared", reference["nodes_compared"], 479)
 want("reference.nodes_identical", reference["nodes_identical"], reference["nodes_compared"])
 
 oracle = d["oracle"]
 want("oracle.verdict", oracle["verdict"], "PASS")
 want("oracle.layers_matched", oracle["layers_matched"], 28)
 want("oracle.nodes_matched", oracle["nodes_matched"], oracle["nodes_expected"])
+# Section 6, correction C12 supersedes section 5.2's 30,042: the probe skipped `attn_out-27`, the
+# arm's oracle row points at the attention output projection *before* the two narrowing rows, and
+# the compared set is 479 nodes and 30,078 elements.
+want("oracle.nodes_expected", oracle["nodes_expected"], 479)
+want("oracle.elements_compared", oracle["elements_compared"], 30078)
 at_most("oracle.max_abs_diff_ten_thousandths", oracle["max_abs_diff_ten_thousandths"], 1)
 want("oracle.tolerance_ten_thousandths", oracle["tolerance_ten_thousandths"], 1)
 want("oracle.sum_tolerance_millionths", oracle["sum_tolerance_millionths"], 1000)

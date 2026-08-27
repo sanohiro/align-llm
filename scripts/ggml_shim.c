@@ -380,7 +380,7 @@ static int32_t align_ggml_eps_ok(int32_t bits) {
 #define ALIGN_GGML_MAX_PAD_ELEMENTS ((int64_t) 16777216)
 
 
-/* R5B-MODEL-PREFILL-FORWARD section 6, correction C4. A bounded `memcpy` between two Align-owned
+/* R5B-MODEL-PREFILL-FORWARD section 6, correction C5. A bounded `memcpy` between two Align-owned
  * byte ranges, and the reason the window can be **reused** at all.
  *
  * Align's `buffer` is append-only: `put_*` and `append` write at the logical length, and `pread`
@@ -948,7 +948,7 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
      */
     /* Slots 0 to 11 are the reference arm's weights in both arms' slot maps; R5B's slot 12 is the
      * Align-owned residual **input**, which the primary arm also writes through `slot_set`, so the
-     * range stops at 11 (R5B section 6, correction C7). */
+     * range stops at 11 (R5B section 6, correction C8). */
     if (status == ALIGN_GGML_OK && index >= 0 && index <= 11) {
         unsigned char victim = 0;
         ggml_backend_tensor_get((struct ggml_tensor *) tensor, &victim, (size_t) off, 1);

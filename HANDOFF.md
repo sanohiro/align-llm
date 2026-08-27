@@ -227,7 +227,8 @@ file records durable project state.
   decision is made, the model's architecture is identified, an R1C frontend is built if that
   architecture is not already `qwen2`/`gpt-oss`, and R2A's `moe: true` path is exercised against a
   real transcript from it. Independent work that may continue: R5A's publication (its stage-2 dense
-  CPU gate needs no MoE trace), R5B's implementation, and the next eligible roadmap capability.
+  CPU gate needs no MoE trace), R5B's review repair and publication, and the next eligible roadmap
+  capability.
 
 
 ## Publication in progress: R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack (2026-08-27)
@@ -236,14 +237,17 @@ file records durable project state.
   R4.5-EXTERNAL-BUFFER-SPIKE work: `main` is now at `fa567b1` (the PR #126 merge of R4.5 head
   `d46fce6`). Ledger commit `01e8df4` ("docs: add R5A dense layer forward design ledger"). The
   authoritative design ledger is `docs/specs/r5a-dense-layer-forward.md`.
-- **Status: awaiting publication (PR TBD-PR) at `0414ab9`, final review of the repair delta in
-  progress.** R5A is stage 2 of `docs/specs/roadmap.md` section R5's three-stage gate — a single
+- **Status: awaiting publication (no pull request opened yet) at `0414ab9`; final review of the
+  repair delta is complete, and the rebase, baseline capture, and exact-head preflight are in
+  progress.** R5B (below) is stacked on this branch, so R5A publishes first or R5B rebases onto its
+  merged result. R5A is stage 2 of `docs/specs/roadmap.md` section R5's three-stage gate — a single
   dense layer, CPU only — computed by ggml over Qwen2 weights that live in Align-owned buffers,
   checked against `llama-eval-callback`'s own numbers for the same six tokens. Design is complete
   with probe evidence (below), the arm (`src/layer_qwen2.align`, `src/layer_forward.align`, the shim
   wrappers) is implemented, both owner and named-qualification verification have passed, and the
-  consolidated repair for the first review's findings is committed at `0414ab9`; a final review of
-  that repair delta is in progress before publication.
+  consolidated repair for the first review's findings is committed at `0414ab9`; the final review of
+  that repair delta is complete. What remains is the rebase, the baseline, and the exact-head
+  preflight.
 - **Owner verification, latest run (after the review repair).** `check` (29 units, 88 s), `build`,
   `ggml-spike` (both the default stub and the real linked library), `ggml-spike-smoke` (33 documented
   cases), `layer-forward-smoke` (run three times, identical results each time: **nine** shim builds
@@ -360,22 +364,25 @@ file records durable project state.
   decision is made, the model's architecture is identified, an R1C frontend is built if that
   architecture is not already `qwen2`/`gpt-oss`, and R2A's `moe: true` path is exercised against a
   real transcript from it. Independent work that may continue: R5A's publication (its stage-2 dense
-  CPU gate needs no MoE trace), R5B's implementation, and the next eligible roadmap capability.
+  CPU gate needs no MoE trace), R5B's review repair and publication, and the next eligible roadmap
+  capability.
 
 ## Publication in progress: R5B-MODEL-PREFILL-FORWARD — a whole Qwen2 prefill computed from an Align-owned alignpack (2026-08-27)
 
-- Branch `agent/r5b-model-prefill-forward`, ledger commit `c0305dd` ("docs: add R5B model prefill
+- Branch `agent/r5b-model-prefill-forward` at head `019fa26` ("feat: compute a whole-model Qwen2
+  prefill over Align-owned windows"), ledger commit `c0305dd` ("docs: add R5B model prefill
   forward design ledger"), continuing from R5A-DENSE-LAYER-FORWARD (branch
   `agent/r5a-dense-layer-forward` at `0414ab9`, awaiting publication above). The authoritative
   design ledger is `docs/specs/r5b-model-prefill-forward.md`.
-- **Status: implementation complete in the working tree; review has not started.** R5B is stage 3 of
+- **Status: implementation complete and committed at `019fa26`; two complementary reviews are
+  complete and their consolidated repair is the next commit on this branch.** R5B is stage 3 of
   `docs/specs/roadmap.md` section R5's three-stage gate — a smallest model, CPU only, dense, prefill
   only — one prefill of at most six tokens through the whole twenty-eight-layer Qwen2 model,
   streamed one block pair at a time through one reused Align-owned window, carrying the residual
   stream in Align-owned buffers between per-layer graphs, and checked against llama.cpp's own final
   logits for the same tokens. `src/model_forward.align`, the new node tables and `node_when` column
   in `src/layer_qwen2.align`, the `pad` shim wrapper, the `--model-forward` arm, and the extended
-  fixture/golden files are all present in the working tree (uncommitted).
+  fixture/golden files are all committed at `019fa26`. Nothing is intentionally uncommitted.
 - **Probe evidence (ledger section 2), gathered before section 3's contract was written**, from a
   28-layer C harness that streams the real model through one reused window, R4.5's verified path at
   model scale — unchanged from the prior entry below (kept for continuity; superseded as evidence by
@@ -390,24 +397,43 @@ file records durable project state.
   - the prefill narrows *inside* layer 27, after the attention output projection, on both residual
     branches — not at layer 27's input, which is what the plan originally assumed;
   - `-nr` is contractual on both instruments (`llama-eval-callback` and `llama-debug`).
-- **Owner verification, latest run.**
-  - `check` (29 units, 104.7 s). `src/model_forward.align` is not yet imported from `src/main.align`'s
+- **Owner verification, latest run (after the review repair).**
+  - `check` (29 units). `src/model_forward.align` is not yet imported from `src/main.align`'s
     `ENTRY` graph, so this aggregate does not compile it; `check-per-unit src/model_forward.align`
     (5 units including its dependents: `alignpack_read`, `ggml_ffi`, `layer_qwen2`, `layer_forward`,
     `model_forward`) passes separately, warnings only, well under the section 5.5 ten-second budget.
-  - `layer-forward-smoke`, run three times, identical results each time: R5A's 74 cases unchanged
-    plus R5B's 10+55 new cases, 29/32 stub-reachable error codes, all three oracles (self-reference,
-    transcript, logits) exercised for real, ~11 s per run.
-  - `ggml-spike-smoke`, `alignpack-smoke`, `gate-topology-check`, `format-check`, and `fmt` all pass.
-- **Qualification (`make model-forward-qualification`, real Qwen2 model plus both instruments).**
+  - `layer-forward-smoke`, run three times, identical results each time (14.7 / 11.9 / 12.5 s):
+    R5A's 74 cases unchanged plus R5B's 10+55 new cases, 29/32 stub-reachable error codes, all three
+    oracles (self-reference, transcript, logits) exercised for real.
+  - `build`, `ggml-spike` against both the default stub and the real linked ggml, `ggml-spike-smoke`,
+    `alignpack-smoke`, `gate-topology-check`, `format-check`, `fmt` (no diff), and
+    `git diff --check` all pass.
+- **Qualification (`make model-forward-qualification`, real Qwen2 model plus both instruments),
+  rerun after the repair; every section 5.2 assertion PASS.**
+  - instrument cross-check before the arm: the logits file's f32 sequential sum -232073.906250 over
+    152,064 logits equals the transcript's printed `result_output` sum, and `llama-debug` tokenized
+    `[750, 912, 2877, 11, 293, 1648]` — now printed explicitly and a `FAIL` if either blob is
+    absent, never a silent skip or an `N/A`;
   - self-reference oracle: `IDENTICAL`, 479/479 nodes byte-identical over 30 graphs;
-  - transcript oracle: `PASS`, 28/28 layers, 30,078 elements, max `|Δ|` 0 ten-thousandths;
-  - logits at the reconciliation width (256): `IDENTICAL`, sha256 `d2e48620…bf74`, argmax 671;
-  - logits at the runtime width (6): `WITHIN`, max `|Δ|` 2,739 ten-thousandths, top-10 agreement
-    10/10;
-  - window 447,086,592 B; `pread` 1.62 s, compute 779 ms, wall 6.68 s including the reference arm;
-  - peak RSS 507,969,536 B;
+  - transcript oracle: `PASS`, 28/28 layers, 479/479 nodes, 30,078 elements, max `|Δ|` 0
+    ten-thousandths, max `|Δsum|` 1 millionth;
+  - logits at the reconciliation width (256): `IDENTICAL`, sha256
+    `d2e48620…d245bf74`, bit_sum 425,868,724,161,277, argmax 671;
+  - logits at the runtime width (6): `WITHIN`, max `|Δ|` 2,739 ten-thousandths, argmax 671,
+    top-10 agreement 10/10;
+  - window **447,086,592 B** (now asserted — ledger correction C21), peak block 57, 30 graphs,
+    874 runtime nodes / 958 reconciliation nodes, slot high-water 52/128, activation peak
+    2,437,120 B, residual 86,016 B, logits 608,256 B;
+  - `pack.reader_*` 4,370,608,032 B in 4,729 `pread` groups — the container alone, since ledger
+    correction C18 moved the reference oracle's own re-read of the GGUF into `reference.pread_count`
+    / `reference.bytes_read`. This run was cache-cold: `pread` 1,439.2 ms, compute 447.0 ms runtime
+    and 557.4 ms reconciliation, reference 615.4 ms, oracle 6.6 ms, wall 5,377.9 ms; ledger section
+    7.6's warm figures (515-648 ms `pread`) are unchanged and remain the recorded baseline;
+  - peak RSS 937,885,696 B for the self-reference arm the qualification runs (ledger section 7.6
+    records 938,655,744 B). RSS capture is now best-effort and portable — the arm runs directly and
+    the runner probes for BSD `time -l` or GNU `time -v`, printing one line if neither exists;
   - per-layer/per-graph lifetime balance: 0 failures — every counter equal at every graph boundary;
+  - the two forced builds against the **real** shim reached `R5_GGML_INIT` and `R5_COMPUTE`;
   - the scratch pack and both instrument outputs are removed on every exit path.
 - **Align capability requests filed this session** (`docs/align-requests.md`, Requests 38-40, all
   `PROPOSED`, none blocking; header updated to "Requests 1–20 are CLOSED and Requests 21–40 are
@@ -436,13 +462,28 @@ file records durable project state.
     `:69788`) but does not correspond to any site in the shipped `src/model_forward.align`: every
     conditional expression there selects a Copy scalar or view, never an already-bound owned Move
     local — no align-llm consequence to cite, so not filed.
+- **Review.** Two complementary reviewers covered the whole diff at `019fa26`: reviewer A (source)
+  approved with one medium, four low, and one informational finding; reviewer B (governance,
+  documentation, and runners) requested changes with five medium and five low findings. **All twelve
+  distinct findings were accepted and repaired in one consolidated commit on this branch**, with no
+  finding rejected. The medium ones: `graph_alignment` was never called, so step 25's Align-side
+  per-member pre-check did not run and its `layer[<n>]role[<name>]` detail was never produced;
+  `docs/align-development.md` still described `scripts/run-model-forward` as not existing and its
+  `N/A` wording as unfinalized; the "R5B does not select `make ci`" contrast was wrong, because the
+  `Makefile` edit puts the diff in fresh-image scope; three section 5.2 acceptance rows were never
+  implemented in the runner and one of them carried a wrong window size; `/usr/bin/time -l` made the
+  qualification macOS-only; and the roadmap, developer guide, and this file still described R5B as
+  uncommitted work in progress. The repair added five review-found corrections to ledger section 6
+  (C17 partial-run verdicts, C18 separated reference-read counters, C19 `min(TOP_K, n_vocab)`,
+  C20 view-bounded `window_copy`, C21 the 447,086,592 B window), each with its covering case.
 - **Next actions, in order.**
-  1. Two independent reviews per `CLAUDE.md`, consolidate findings, rerun owner and qualification
-     verification.
-  2. Confirm whether `layer-forward-smoke`'s existing `HOSTED_CHECK_TARGETS` membership (added by
-     R5A) is the only topology change R5B rides on; if R5B changes check topology further, run
-     `make ci` per `CLAUDE.md`'s aggregate-membership trigger, otherwise the narrower classifier
-     path applies.
+  1. Rerun owner verification and the named qualification against the repair commit.
+  2. Do **not** rely on `layer-forward-smoke`'s existing `HOSTED_CHECK_TARGETS` membership as an
+     exemption: `python3 scripts/verification_scope.py --base 0414ab9 --head <head>` classifies this
+     diff as `scope: fresh-image` (`fresh_focused` and `fresh_installed` both true) because the
+     `Makefile` gains the `model-forward-qualification` recipe. No *aggregate membership* changed
+     and the new target joins no aggregate, but the fresh-image scope is selected. Run the
+     classifier against the exact head rather than reasoning about it.
   3. Exact-head preflight (`python3 scripts/pre-pr`), including the DinD-capable installed profile
      check; do not substitute a Docker skip or an ambient `DOCKER_HOST` endpoint.
   4. Publish the English pull request, once R5A (above) is merged or this branch is rebased onto its

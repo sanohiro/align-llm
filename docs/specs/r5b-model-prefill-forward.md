@@ -113,7 +113,7 @@ deferred **individually**, with the probe that settles it named.
 | --- | --- | --- |
 | 単一block — a single block | **Discharged by R4.5.** Not re-litigated here | `r4-5-external-buffer.md` section 1.4 |
 | 単一layer — a single layer | **Discharged by R5A.** Not re-litigated here | `r5a-dense-layer-forward.md` section 1.4 |
-| 最小モデル — a smallest model | **Discharged, CPU, dense, prefill only.** At the instrument's declared attention width the 152,064 final logits are **byte-identical** to `llama-debug --save-logits`, and all **30,042** sampled elements of all twenty-eight layers plus the head agree with `llama-eval-callback` to the last digit it prints. At the runtime's own attention width the same forward gives `argmax` 671 and the same top ten, with max `\|Δ\|` = **0.274** — and section 2.7 shows that entire difference is one known cause | Section 2.7 (byte-identical), section 2.8 (30,042 elements at 0 ten-thousandths), section 2.6 (0.274 and the drift curve) |
+| 最小モデル — a smallest model | **Discharged, CPU, dense, prefill only.** At the instrument's declared attention width the 152,064 final logits are **byte-identical** to `llama-debug --save-logits`, and every sampled element of all twenty-eight layers plus the head agrees with `llama-eval-callback` to the last digit it prints — **30,042** in the probe, **30,078** in the shipped arm, which compares one node the probe skipped (correction C12). At the runtime's own attention width the same forward gives `argmax` 671 and the same top ten, with max `\|Δ\|` = **0.274** — and section 2.7 shows that entire difference is one known cause | Section 2.7 (byte-identical), section 2.8 (the probe's 30,042 at 0 ten-thousandths), section 7.4 (the arm's 30,078 at 0), section 2.6 (0.274 and the drift curve) |
 | required microbenchmark A — transfer + GPU compute | **Deferred.** No GPU arm and no transfer tier exist here | Section 5.4, inheriting `r4-5-external-buffer.md` section 2.5 |
 | required microbenchmark B — CPU compute | **Discharged at whole-model scale**: 1.07–1.12 s wall for a six-token prefill, of which **349.6 ms** is compute and **533–905 ms** is `pread` over 4,370,571,072 B, on one reused 447 MB window | Section 2.9, section 5.3 |
 | required microbenchmark C — async prefetch + GPU compute | **Deferred.** Prefetch is a residency policy and R5B ships none | Section 5.4 |
@@ -476,7 +476,7 @@ does not pin a thread count on `ggml-spike`.
 | `gmake check` today | 91.2 s for 29 units |
 | free space | 24 GiB, against a 4.68 GB model and a 4.68 GB pack |
 | whole transcript | 28,512 lines, 2,040,172 B — too large to check in |
-| `l_out`-only excerpt | 35 records, 436 lines, **30,192 B** — section 5.1's fixture |
+| `l_out`-only excerpt | 35 records, 460 lines, **31,665 B** — section 5.1's fixture |
 
 ### 2.10 What the probes settle
 
@@ -589,6 +589,7 @@ logits sha256:     <64 hex characters>
 logits bit sum:    <integer>
 logits argmax:     <integer>
 reference:         IDENTICAL | MISMATCH | -
+reference nodes:   <identical>/<compared> | -   # self-reference oracle, summed over every graph
 transcript:        PASS | FAIL | -
 logits oracle:     IDENTICAL | WITHIN | FAIL | -
 max abs diff:      <integer>      # ten-thousandths, transcript oracle
@@ -783,7 +784,7 @@ error_code, error_detail                                                 strings
 verdict           "EXTERNAL" | "COPIED" | "UNAVAILABLE"
 
 pack        format_version, block_align, member_align, block_count, member_count,
-            total_bytes, payload_offset
+            total_bytes, payload_offset, reader_pread_count, reader_bytes_read
 model       arch, n_layer, n_embd, n_head, n_head_kv, head_dim, n_ff, n_vocab,
             context_length, rms_eps_bits, rope_type, rope_dim_count, rope_freq_base_bits,
             attn_scale_bits, output_tied (bool), output_ggml_type
@@ -794,7 +795,8 @@ schedule[]  layer, attention_block_index, mlp_block_index, attention_bytes, mlp_
             l_out_sha256 (64 hex), l_out_bit_sum, l_out_f32_sum_millionths,
             l_out_ne0, l_out_ne1, nonfinite_count
 window      bytes, peak_block_index, peak_block_kind, peak_block_layer, peak_block_bytes,
-            reuse_count, pointer_identity_failures, member_placements
+            reuse_count, pointer_identity_failures, member_placements,
+            residual_bytes, logits_bytes
 graph       graph_count, node_count_total, reconciliation_node_count, slot_capacity,
             slot_high_water,
             activation_bytes_peak, activation_bytes_by_graph[], context_bytes, backend_name
@@ -804,12 +806,14 @@ output      sha256 (64 hex), bit_sum, element_count, nonfinite_count, argmax,
             top_k[] { index, bits }                                       # k = 10
 reference   present (bool), verdict, graphs_compared, nodes_compared, nodes_identical,
             first_difference_graph, first_difference_node, first_difference_index,
-            first_difference_primary_bits, first_difference_reference_bits
+            first_difference_primary_bits, first_difference_reference_bits,
+            pread_count, bytes_read
 oracle      present (bool), verdict, instrument, instrument_kv_width,
             layers_expected, layers_matched, nodes_expected, nodes_matched,
             elements_compared, max_abs_diff_ten_thousandths, max_sum_diff_millionths,
             tolerance_ten_thousandths, sum_tolerance_millionths, sum_tolerance_relative_ppm,
-            worst_layer, worst_node, worst_element_index
+            worst_layer, worst_node, worst_element_index,
+            transcript_lines, transcript_callback_lines
 oracle_logits present (bool), verdict, compared_pass, byte_identical (bool),
             max_abs_diff_ten_thousandths, tolerance_ten_thousandths,
             argmax_primary, argmax_reference, top_k_agreement, elements_compared,
@@ -832,6 +836,24 @@ comparison result, not a bulk field.
 
 `window.reuse_count` is `30` and `window.pointer_identity_failures` is `0` on a healthy run; the
 second is what makes `verdict: "EXTERNAL"` a measurement across 339 placements rather than a claim.
+Both `verdict` and `reference.verdict` are **conclusions about a completed run** and are reported
+only from one: an error document carries `verdict: "UNAVAILABLE"` and `reference.verdict: "-"`
+rather than a judgement extrapolated from the graphs that happened to run before the failure
+(correction C17).
+
+The reader counters are two independent pairs, because they measure two different files.
+`pack.reader_pread_count` and `pack.reader_bytes_read` are the container's — the window fills and
+the member records — and are the pair `timings.pread_ns` times. `reference.pread_count` and
+`reference.bytes_read` are the source GGUF's, read only by the self-reference oracle's byte-equality
+pre-check, and are excluded from `timings.pread_ns`. Summing them into one pair would report 8.7 GB
+against the 515–648 ms spent moving 4.37 GB and make every bandwidth figure derived from the pair
+twice the truth (correction C18).
+
+`window.residual_bytes` and `window.logits_bytes` publish the two Align-owned activation buffers
+section 3.10 sizes at step 18, so the bounded-memory claim is a document field rather than a
+paragraph. `oracle.transcript_lines` and `oracle.transcript_callback_lines` publish what the
+pre-schedule scan of correction C4 actually read, which is what lets a checked-in transcript fixture
+be regression-tested for having been *parsed* rather than merely for having produced a code.
 
 `schema_version` is `1` and nominal. A consumer keys on `kind` plus `schema_version`. Checksums are
 never floats: `sha256` is `crypto.sha256` over the exact little-endian f32 bytes, `bit_sum` is the
@@ -995,7 +1017,8 @@ per-graph activations are ggml-owned.**
 table, computed and checked at steps 16 and 18 before anything is reserved:
 
 ```text
-weight window     = section 3.5's sweep + MAX_TENSOR_ALIGNMENT     447,082,496 + 32 B
+weight window     = section 3.5's sweep                            447,086,592 B (C21)
+  the `buffer` behind it over-reserves by MAX_TENSOR_ALIGNMENT = 64 B, which `window.bytes` excludes
 residual, runtime = n_embd * T * 4                                          86,016 B
 residual, recon   = n_embd * T * 4                                          86,016 B
 logits            = n_vocab * 4                                            608,256 B
@@ -1085,7 +1108,7 @@ with the stub shim and its engine (`make layer-forward-smoke`), `Q` = requires t
 | Formation — arm selection | first operand, before path work | `S` `mf-arm-unknown-flag`, and `arm-r5a-unchanged` asserting `--layer-forward` still emits `R5_LAYER_FORWARD` |
 | Formation — role-qualified block selection | `find_block_with_role` | `S` `mf-block-ambiguous` (two blocks carrying `role_id` 12) → `R5_BLOCK_AMBIGUOUS`; `mf-block-missing-output` → `R5_BLOCK_MISSING`; `Q` `selection.embedding_block_index == 0` and `output_block_index == 57` |
 | Formation — layer coverage | `validate_coverage` | `S` `mf-coverage-gap` (a pack missing `MlpBlock` at layer 1) → `R5_LAYER_COVERAGE`, detail `layer[1]` |
-| Construction — window sizing | `size_window` | `S` `mf-window-peak`: `window.peak_block_kind` is the output block on the synthetic model too; `mf-window-budget` on a member record declaring 2^40 bytes → `R5_WINDOW_BUDGET`; `Q` `window.bytes == 447082528` and `peak_block_layer == -1` |
+| Construction — window sizing | `size_window` | `S` `mf-window-peak`: `window.peak_block_kind` is the output block on the synthetic model too; `mf-window-budget` on a member record declaring 2^40 bytes → `R5_WINDOW_BUDGET`; `Q` `window.bytes == 447082528` and `peak_block_layer == -1` — corrections C11 and C21: `mf-window-budget` is not input-reachable and the measured window is `447086592` |
 | Construction — the read schedule | `stage_read_block` | `S` `schedule[].pread_count` is `1` per block and `T` for the embedding; `Q` 58 `pread` groups over 30 window fills, 4,370,571,072 B |
 | Success — the residual carry | `carry_residual` | `S` `mf-residual` asserts `schedule[L].l_out_ne1` is `T` for `L < 27` and `1` for `L == 27`; `mf-force-residual-short` → `R5_RESIDUAL`, detail `layer[<n>]` |
 | Success — the narrowing | the two `node_when == 1` rows | `S` the synthetic model's golden document; `Q` `selection.narrow_layer == 27`, `narrow_index == 5` |
@@ -1165,10 +1188,19 @@ passing evidence, or to an explicit deferral in this document, before review.
 
 Hosted, ggml-free, model-free, llama.cpp-free. **`layer-forward-smoke` is already a member of
 `HOSTED_CHECK_TARGETS`, so R5B adds rows to an existing target and changes no aggregate membership
-and no check topology.** That is the difference from R5A, which added the target itself and thereby
-selected `make ci`; `scripts/verification_scope.py` is the shared classifier of record and its
-verdict, not this paragraph, is the evidence. `model-forward-qualification` joins no aggregate, as
+and no check topology**, and `model-forward-qualification` joins no aggregate, as
 `layer-forward-qualification` does not.
+
+That is the whole of the claim, and it is narrower than the one this section first made. R5B does
+**not** thereby avoid the fresh-image scope: adding the `model-forward-qualification` recipe and its
+`.PHONY` entry edits the `Makefile`, which is an executable contract boundary, and
+`scripts/verification_scope.py` classifies the R5B diff as
+`{"docs_only": false, "hosted": true, "fresh_focused": true, "fresh_installed": true, "scope":
+"fresh-image"}` (`--base 0414ab9 --head <R5B head>`). The classifier's verdict, not this paragraph,
+is the evidence, and what R5B inherits from R5A is a scope selection, not an exemption from one.
+The true difference from R5A is only that no *aggregate membership* changed and that the new
+qualification target is a member of neither `HOSTED_CHECK_TARGETS` nor
+`CAPABLE_ONLY_CHECK_TARGETS`.
 
 **A synthetic two-layer model, so the whole prefill is hand-checkable.**
 `scripts/layer_forward_fixture.py` gains a `--model` mode writing a pack, a geometry document, a
@@ -1193,10 +1225,12 @@ host with no model.
 The synthetic geometry is chosen so `n_vocab` (32) differs from `n_ff` (16) and from
 `n_head * head_dim` (8): a fixture whose dimensions collide cannot catch a transposed head.
 
-**A checked-in real-model transcript excerpt**, `eval/fixtures/qwen2-model-6tok.txt`: `embd`, the
-twenty-eight `l_out-L` records, `ffn_inp-27`, the three layer-27 narrowing records, `kq-0`,
-`result_norm`, and `result_output` — **35 records, 436 lines, 30,192 bytes**, against the whole
-transcript's 2,040,172. It is swept from the qualification by
+**A checked-in real-model transcript excerpt**, `eval/fixtures/qwen2-model-6tok.txt`: `embd`,
+`kq-0`, the twenty-eight `l_out-L` records, layer 27's attention output projection `node_1084`,
+`ffn_inp-27`, `ffn_norm-27`, `result_norm`, and `result_output` — **35 records, 460 lines,
+31,665 bytes**, against the whole transcript's 2,040,172. The two layer-27 records are the
+narrowing's first visible pair (correction C3), and `node_1084` is the node correction C12 turned
+into a compared one. It is swept from the qualification by
 `scripts/sweep-model-forward-excerpt.py`, which matches the attention output projection by its source
 weight name and never by `node_NN` (`r5a-dense-layer-forward.md` section 6, correction C21). It is
 compared hosted for **grammar, node identity, and layer coverage only**; its numbers are the
@@ -1255,14 +1289,14 @@ failing oracle. Then, against section 2's recorded values:
 | `selection.narrow_layer`, `narrow_index`, `attention_width`, `reconciliation_width` | `27`, `5`, `6`, `256` |
 | `schedule[]` length; `schedule[0].attention_bytes` + `mlp_bytes` | `28`; `149112832` |
 | `schedule[L].attn_v_ggml_type == 14` | for exactly the fourteen layers section 2.1 names |
-| `window.bytes`, `peak_block_layer`, `reuse_count`, `pointer_identity_failures` | `447082528`, `-1`, `30`, `0` |
+| `window.bytes`, `peak_block_layer`, `reuse_count`, `pointer_identity_failures` | `447086592` (correction C21), `-1`, `30`, `0` |
 | `window.member_placements` | `339` |
 | `graph.graph_count`, `node_count_total`, `reconciliation_node_count` | `30`, `874`, `958` |
 | `graph.slot_high_water`, `slot_capacity` | `52`, `128` |
 | `graph.activation_bytes_peak` | `2437120` |
 | `output.element_count`, `argmax` | `152064`, `671` |
-| `reference.verdict`, `graphs_compared`, `nodes_identical` | `IDENTICAL`, `30`, `479` |
-| `oracle.verdict`, `layers_matched`, `elements_compared` | `PASS`, `28`, `30042` |
+| `reference.verdict`, `graphs_compared`, `nodes_compared`, `nodes_identical` | `IDENTICAL`, `30`, `479`, `479` |
+| `oracle.verdict`, `layers_matched`, `nodes_expected`, `elements_compared` | `PASS`, `28`, `479`, `30078` (correction C12 supersedes this row's original `30042`) |
 | `oracle.max_abs_diff_ten_thousandths`, `tolerance_ten_thousandths` | `0`, `1` |
 | `oracle_logits.verdict`, `byte_identical`, `reference_sha256` | `IDENTICAL`, `true`, `d2e48620ae3e31e2066a6172aa32c19c974d996d232ab91b118335e3d245bf74` |
 | a second run at `KV_WIDTH` = `6`: `oracle_logits.verdict`, `max_abs_diff_ten_thousandths`, `argmax_primary`, `top_k_agreement` | `WITHIN`, `<= 5000`, `671`, `10` |
@@ -1396,6 +1430,10 @@ Section 3 was written after the probes of section 2 and before the implementatio
 statements were refuted by writing the arm, and each one is recorded here rather than quietly edited
 above. Six are Align-owned limitations, five are contract changes the plan could not have known
 about, and five are measurements that moved.
+
+**C17 to C21 were found by review**, not by writing the arm. They are recorded in the same list and
+by the same rule — the plan is corrected here rather than silently rewritten above — and each names
+the case that now covers it.
 
 ### C1 — the plan's second new shim symbol was never needed
 
@@ -1598,6 +1636,82 @@ reporting only final totals cannot express. `lifetime.graph_balance_failures` co
 boundaries at which any counter was unequal, and `released_before_owner_scope_end` requires it to be
 zero. On every passing run, hosted and qualified, it is `0`.
 
+### C17 — a partial run reports no verdict
+
+Section 3.3 defines `verdict` as `EXTERNAL` when every weight tensor of every graph landed at its
+own window offset, and section 3.7 defines `reference.verdict` as `IDENTICAL` when every oracle node
+of every graph is byte-identical. Both were computed unconditionally from whatever the run had
+accumulated when it stopped. An error document therefore claimed `EXTERNAL` and `IDENTICAL` from one
+graph of thirty — `mf-engine-alignment`'s golden carried `verdict: "EXTERNAL"` beside
+`graph_count: 4`, `node_count_total: 1`, and `status: "error"`.
+
+Both are now gated on the run having produced the measurement they report. `verdict` is
+`UNAVAILABLE` whenever an error code is set, and `reference.verdict` additionally requires
+`reference.graphs_compared == graph.graph_count`. `verdict` is still settled **before** the two
+oracle comparisons: a reference mismatch or a tolerance breach is a divergence in the arithmetic,
+not in where the weights landed, and the placement measurement that reached that point is complete.
+`mf-force-reference` therefore keeps `verdict: "EXTERNAL"` with `reference.verdict: "MISMATCH"`,
+while every early-exit golden now carries `UNAVAILABLE` and `-`.
+
+### C18 — the reference oracle's reads are their own pair of counters
+
+`compare_source` reads the whole model a second time, out of the source GGUF, to prove the pack's
+bytes are the model's bytes before any graph runs. It shared the window fills' `Counters`, so
+`pack.reader_bytes_read` reported 8,741,179,104 B — both files — while `timings.pread_ns` timed only
+the 4,370,608,032 B of window fills. Every bandwidth figure derived from that pair was 2× wrong, and
+section 7.3's own "9,111 read groups over 8,741,179,104 B including the reference arm's own 4.37 GB"
+is the sentence that had to explain it away.
+
+The source comparison keeps its own counters and publishes them as `reference.pread_count` and
+`reference.bytes_read`. `pack.reader_*` is now the container's alone and is the pair
+`timings.pread_ns` times. Section 7.6's figures are restated against the corrected pair.
+
+### C19 — `WITHIN` is `min(TOP_K, n_vocab)` ranks, not ten
+
+Section 3.7's `WITHIN` verdict requires "the top ten equal, in order". `top_k` can only yield
+`min(TOP_K, n_vocab)` ranks, so the implementation's `agreement >= TOP_K` made `WITHIN` unreachable
+by arithmetic — never by measurement — for any model with fewer than ten tokens in its vocabulary.
+The requirement is now `agreement >= min(TOP_K, n_vocab)`, which is the same claim ("the whole top
+ten, in order") for every vocabulary that has ten.
+
+**No fixture exercises the `n_vocab < 10` branch and this is a deliberate deferral.** Section 5.1's
+synthetic geometry picks `n_vocab` 32 precisely so it differs from `n_ff` (16) and from
+`n_head * head_dim` (8); a second synthetic model at `n_vocab` 8 would collide with the third of
+those and would cost a second pack, geometry, transcript, logits blob, and golden block to cover a
+branch that no shipped model reaches. The bound is correct by construction and the deferral is
+recorded here rather than implied by an absent case.
+
+### C20 — `window_copy` is bounded by the views, not by the caller's arithmetic
+
+Section 3.5's `align_ggml_window_copy(window, window_bytes, offset, source, source_bytes, n)` takes
+both lengths as operands, and `src/model_forward.align` threaded a separately computed
+`window_bytes` through `window_put`, `read_into_window`, and `fill_members` to supply the first. A
+declared length is a claim; the borrow's own `slice.len()` is the range that actually exists, and a
+`memcpy` bounded by the first writes outside the second the moment the two disagree — which is one
+arithmetic slip away in a function whose whole job is to compute interior offsets.
+
+The Align wrapper now passes `window.len()` and `source.len()` and no longer accepts either length,
+and `window_bytes` is no longer threaded through the read path at all. The C entry point's signature
+is unchanged, so both shim files are untouched: the bound is simply always the true one. Every
+`mf-engine-*` case is the regression, because every one of them fills the window through this path.
+
+### C21 — the reused window is 447,086,592 B, and the over-reservation is not part of it
+
+Section 3.10's memory table and section 5.2's acceptance row both predicted `447,082,496 + 32` and
+called the sum the window. Two things are wrong with that. `window.bytes` is section 3.5's sweep
+alone — `MAX_TENSOR_ALIGNMENT` over-reserves the *`buffer`* so the arm can hand ggml an interior
+range that starts on a boundary, and never enters the published figure — and `MAX_TENSOR_ALIGNMENT`
+is 64, not 32.
+
+The sweep's own maximum is the head, `output_norm.nbytes + align_up(output.nbytes, block_align)`
+against `r4-alignpack-layer-major.md` section 2.4's `block_align` of **4096**, which is
+**447,086,592 B**. The probe's 447,082,496 is the same tensor rounded to 32 instead. Sections 2.9,
+7.3, and 7.6 already carried the measured value; section 5.2's row did not, and because that row was
+never implemented as an assertion the disagreement survived to review. It is now the asserted value
+and `scripts/run-model-forward` checks it — which is also how sections 5.2's `reference.nodes_
+compared` and `oracle.elements_compared` rows, both unimplemented for the same reason, became
+assertions of 479 and 30,078 (correction C12).
+
 ---
 
 ## 7. Closure-matrix evidence
@@ -1631,6 +1745,8 @@ run in `make layer-forward-smoke` (11.0 s, three consecutive identical runs); `Q
 | Malformed input — slots | `S` `mf-force-slot-range`, `mf-force-slot-empty` → `R5_SLOT` |
 | Move in/out — no aggregate holds `raw` | `S` the record-declaration scan over `src/` |
 | Cleanup — per graph | `S` `mf-force-compute` tears down fully; `lifetime.graph_balance_failures` 0 on every run |
+| Alignment — per member, per layer, Align-side | `S` `mf-engine-alignment` → `R5_ALIGNMENT`, detail **`layer[0]role[attn_v]`** (C17's sibling: `graph_alignment` runs before `graph_weights`, so the detail is section 3.9's and not the shim's bare role name); `Q` never raised over 339 placements |
+| Copy bounds are the views' own | `S` every `mf-engine-*` fills the window through `window_copy`, now bounded by `slice.len()` (C20) |
 | The two C files agree | `S` the shared-contract byte-identity assertion |
 | No `malloc` | `S` `grep -c malloc scripts/ggml_shim*.c` is `0` |
 | Contraction off | `S` `abi.fp_contract_off` asserted `true` on all 55 documents; `Q` asserted `true` |
@@ -1642,8 +1758,8 @@ run in `make layer-forward-smoke` (11.0 s, three consecutive identical runs); `Q
 | Arm selection | `S` `mf-arm-unknown-flag` (no document), `arm-r5a-unchanged` still emits `R5_LAYER_FORWARD` |
 | Role-qualified block selection | `S` `mf-block-ambiguous` → `R5_BLOCK_AMBIGUOUS`, `mf-block-missing-output` → `R5_BLOCK_MISSING`, `selection` 0/5; `Q` **0 and 57** |
 | Layer coverage | `S` `mf-coverage-gap` → `R5_LAYER_COVERAGE`, detail `layer[1]` |
-| Window sizing | `S` `window.peak_block_bytes == window.bytes`; `Q` **447,086,592 B**, peak block 57, `peak_block_layer` -1. `mf-window-budget` is `N/A` (C11) |
-| The read schedule | `S` `window.reuse_count` 4; `Q` **30** fills, 9,111 read groups over 8,741,179,104 B including the reference arm's own 4.37 GB |
+| Window sizing | `S` `window.peak_block_bytes == window.bytes`; `Q` **447,086,592 B** asserted (C21), peak block 57, `peak_block_layer` -1. `mf-window-budget` is `N/A` (C11) |
+| The read schedule | `S` `window.reuse_count` 4; `Q` **30** fills, `pack.reader_*` 4,729 groups over 4,370,608,032 B, with the reference arm's own 4,382 groups over 4,370,571,072 B in `reference.*` (C18) |
 | The residual carry | `S` `schedule[].l_out_ne1` 3 then 1; `mf-force-residual` → `R5_RESIDUAL` |
 | The narrowing | `S` `selection.narrow_layer` 1, `narrow_index` 2; `Q` **27 and 5**, layer 27 compute 7.28 ms against a 26.55 ms median |
 | The head | `S` `output.element_count` 32; `Q` **152,064**, argmax **671** |
@@ -1651,17 +1767,19 @@ run in `make layer-forward-smoke` (11.0 s, three consecutive identical runs); `Q
 | Each error code | section 7.5 |
 | `-` document destination | `S` `mf-doc-stdout-identical`: the four-operand, `-`, and file forms are byte-identical |
 | Exit mapping | `S` every case asserts `status == "ok"` iff exit 0 |
+| No verdict from a partial run | `S` every early-exit golden now carries `verdict: "UNAVAILABLE"` and `reference.verdict: "-"`, `mf-engine-alignment` among them (C17) |
 | Cleanup | `S` `released_before_owner_scope_end` true; `Q` true, peak RSS **507,969,536 B** shipped and **938,655,744 B** with the self-reference arm |
 
 ### 7.4 The three oracles
 
 | Cell | Evidence |
 | --- | --- |
-| Reference — bytes equal, per block | `S` `mf-engine-source-diverged` → `R5_SOURCE_DIVERGED`; `Q` all 339 members equal |
-| Reference — nodes identical, per graph | `S` 37 of 37 over 4 graphs; `mf-force-reference` names the node; `Q` **479 of 479 over 30 graphs** |
+| Reference — bytes equal, per block | `S` `mf-engine-source-diverged` → `R5_SOURCE_DIVERGED`; `Q` all 339 members equal, `reference.pread_count`/`bytes_read` counted apart from the window fills (C18) |
+| Reference — nodes identical, per graph | `S` 37 of 37 over 4 graphs; `mf-force-reference` names the node and keeps `verdict: "EXTERNAL"` with `reference.verdict: "MISMATCH"` (C17); `Q` **479 of 479 over 30 graphs**, `nodes_compared` asserted |
 | Transcript — grammar | `S` `mf-transcript-garbage` → `R5_TRANSCRIPT` |
 | Transcript — every layer matched | `S` `mf-transcript-missing-layer` → `R5_ORACLE_MISSING`; `Q` `layers_matched` **28** |
-| Transcript — the element-count rule | `S` `mf-transcript-headers`, `mf-transcript-novalues`; `Q` `elements_compared` **30,078** (C12) |
+| Transcript — the element-count rule | `S` `mf-transcript-headers`, `mf-transcript-novalues`; `Q` `elements_compared` **30,078** and `nodes_expected` **479**, both asserted (C12, C21) |
+| Transcript — the real-model excerpt is parsed, not merely present | `S` `mf-transcript-excerpt` asserts `oracle.transcript_callback_lines == 35` over `transcript_lines == 460` before `R5_ORACLE_MISSING`, so an emptied or truncated fixture fails |
 | Transcript — `kq-L` `ne0` against `KV_WIDTH` | `S` `mf-transcript-kv-width` → `R5_ORACLE_SHAPE`; `Q` 28 `kq-L` and 28 `kq_soft_max-L` all declaring 256 |
 | Transcript — excluded nodes | `S` the two per layer are matched and never element-compared: `nodes_expected` is 1 + 17L + 2 |
 | Transcript — a tolerance breach | `S` `mf-transcript-perturbed` → `FAIL`, `worst_layer` 0, `worst_node` `l_out`, `status` `ok` |
@@ -1689,14 +1807,14 @@ warm, six-token prefill, `qwen2.5-coder-7b-instruct-q4_k_m.gguf`.
 | Metric | Probe (section 5.3) | The shipped arm |
 | --- | --- | --- |
 | wall, shipped arm, no oracles | 1,071–1,121 ms | **1,141–1,275 ms** |
-| `pread`, whole model | 532.9 ms | **515–648 ms** for 4,370,608,032 B in 4,729 groups |
+| `pread`, whole model | 532.9 ms | **515–648 ms** for 4,370,608,032 B in 4,729 groups (`pack.reader_*`; the reference oracle's own re-read of the GGUF is `reference.*` and is not in this figure — correction C18) |
 | compute, runtime width | 349.6 ms | **484–620 ms** |
 | compute, reconciliation width | 394.1 ms | **668–841 ms** |
 | per-layer compute, median | 13.50 ms | **20.6–26.6 ms** |
 | layer 27 compute | 4.30 ms | **6.5–7.3 ms** |
 | head compute | 9.5–11.2 ms | **10.7–11.9 ms** |
 | head `pread` | 63.0 ms | **184–209 ms** |
-| reused window | 447,082,496 B | **447,086,592 B** at `MAX_TENSOR_ALIGNMENT` |
+| reused window | 447,082,496 B | **447,086,592 B** — the sweep at the pack's `block_align` of 4096 (correction C21) |
 | activation peak | 2,437,120 B | **2,437,120 B** |
 | residual carry | 86,016 B | **86,016 B** |
 | peak RSS, shipped arm | 513,638,400 B | **507,969,536 B** |

@@ -774,11 +774,14 @@ ENGINE_CASES = [
      "R5_TRANSCRIPT"),
     ("mf-transcript-perturbed",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-transcript-perturbed.txt"), WIDTH], ""),
-    # The checked-in real-model excerpt: thirty-six records swept from the qualification. Every one
-    # is found by name, op, and — for the attention output projection — source weight name, so the
-    # only thing left to disagree is the shape, which is exactly what a tiny-geometry pack must
-    # disagree about. That makes this a hosted regression on the oracle's **parsing** against real
-    # instrument formatting at whole-model scale.
+    # The checked-in real-model excerpt: thirty-five records swept from the qualification, parsed
+    # for real against a two-layer fixture. Every record is found by name, op, and — for the
+    # attention output projection — source weight name, so the grammar, the shape declarations, and
+    # the element-count rule all run against real instrument formatting at whole-model scale. The
+    # expected code is `R5_ORACLE_MISSING` and not `R5_ORACLE_SHAPE`: a 28-layer excerpt cannot
+    # supply the seventeen oracle nodes a two-layer schedule asks for, and the missing-node rule is
+    # reached before any shape is compared. The parse-count assertion below is what makes that a
+    # test of the parser rather than of the file's existence.
     ("mf-transcript-excerpt",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, excerpt, "256"], "R5_ORACLE_MISSING"),
     ("mf-logits-short",
@@ -991,7 +994,7 @@ if wide["graph"]["reconciliation_node_count"] != 74:
 
 # Section 3.7's asymmetry, exercised in both directions. At the reconciliation width the contract
 # is byte-identity and nothing else: a reference that agrees to four decimal places, on the argmax,
-# and on the whole top ten is still `FAIL`. Section 6, correction C8 records why the hosted
+# and on the whole top ten is still `FAIL`. Section 6, correction C9 records why the hosted
 # reference cannot *be* byte-identical — a pure-Python second implementation does not share the
 # engine's `expf`, `sinf`, and `cosf` — and why that makes this the stronger hosted assertion.
 strict = json.loads(produced["mf-engine-logits"])["oracle_logits"]
@@ -1013,6 +1016,17 @@ if broken["status"] != "ok" or broken["oracle_logits"]["verdict"] != "FAIL" \
         or broken["oracle_logits"]["argmax_primary"] \
         != broken["oracle_logits"]["argmax_reference"]:
     failures.append("mf-logits-perturbed: %r" % broken["oracle_logits"])
+
+# The excerpt case asserts a *positive* parse count, not only its error code: an emptied or
+# truncated `eval/fixtures/qwen2-model-6tok.txt` would still produce `R5_ORACLE_MISSING` and would
+# otherwise pass silently. 35 callback records over 460 lines is the swept file, and the scan reads
+# every one of them before the missing-node rule fires.
+excerpt_oracle = json.loads(produced["mf-transcript-excerpt"])["oracle"]
+if excerpt_oracle["transcript_callback_lines"] != 35 or excerpt_oracle["transcript_lines"] != 460:
+    failures.append("mf-transcript-excerpt: the scan read %d callback records over %d lines, not "
+                    "35 over 460 — is eval/fixtures/qwen2-model-6tok.txt stale or truncated?"
+                    % (excerpt_oracle["transcript_callback_lines"],
+                       excerpt_oracle["transcript_lines"]))
 
 breached = json.loads(produced["mf-transcript-perturbed"])
 if breached["status"] != "ok" or breached["oracle"]["verdict"] != "FAIL" \

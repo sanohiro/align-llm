@@ -145,10 +145,13 @@ The current forward delivery order is:
     model:** all eighteen oracle nodes agree with the transcript at `max |Δ| == 0` ten-thousandths
     over 1,116 sampled elements, the self-reference arm is 20 of 20 tensors byte-identical, and
     microbenchmark B measures **13.4 ms typical** for one dense layer (12.97-15.05 ms over four
-    qualification runs; the design-stage probe harness measured 15.5 ms). Reviewed and repaired;
-    final review of the repair delta in progress before publication.
+    qualification runs; the design-stage probe harness measured 15.5 ms). Reviewed, repaired, and
+    the final review of the repair delta is complete; no pull request is open yet, and the rebase,
+    baseline, and exact-head preflight are what remain before publication. R5B (item 16) is stacked
+    on it.
 16. **R5B-MODEL-PREFILL-FORWARD — a whole Qwen2 prefill computed from an Align-owned alignpack.
-    Active.** On branch `agent/r5b-model-prefill-forward`, continuing R5A.
+    Awaiting publication.** On branch `agent/r5b-model-prefill-forward` at `019fa26`, continuing
+    R5A.
     [`r5b-model-prefill-forward.md`](r5b-model-prefill-forward.md) is the authoritative plan and owns
     the probe record, the contract ledger, the closure matrix, and the fixtures, qualification,
     metrics, deferrals, risks, and candidate-request sections. `ggml-spike --model-forward` is a new
@@ -156,14 +159,19 @@ The current forward delivery order is:
     one reused Align-owned window sized from the largest block in the pack, carrying the residual
     stream in an Align-owned buffer between per-layer graphs, narrowing to the last token inside
     layer 27 after the attention output projection, and emitting an `R5_MODEL_FORWARD`,
-    `schema_version: 1` document with three independent oracle verdicts. **Design complete with probe
-    evidence:** a 28-layer C harness streaming the real model reproduced all 152,064 final logits
-    byte-identical to `llama-debug --save-logits` at the instrument's declared attention width
-    (KV width 256), and 30,042 sampled elements across all twenty-eight layers plus the head at zero
-    ten-thousandths against `llama-eval-callback`; at the runtime's own six-token attention width the
-    max `|Δ|` is 0.2738 with argmax and the whole top ten unchanged. Microbenchmark B is discharged at
-    whole-model scale: 349.6 ms compute, 533 ms `pread` for 4,370,571,072 B, 1.07-1.12 s wall, warm.
-    Implementation in progress.
+    `schema_version: 1` document with three independent oracle verdicts. **Implemented,
+    owner-verified, and qualified against the real model:** the self-reference oracle is 479 of 479
+    nodes byte-identical over 30 graphs, the transcript oracle is `PASS` over 28 of 28 layers and
+    30,078 elements at max `|Δ|` 0 ten-thousandths, the 152,064 final logits are byte-identical to
+    `llama-debug --save-logits` at the instrument's declared attention width (KV width 256,
+    sha256 `d2e48620…`), and at the runtime's own six-token width the verdict is `WITHIN` at max
+    `|Δ|` 2,739 ten-thousandths with argmax 671 and the whole top ten unchanged — the difference
+    traces to the declared no-KV-cache non-goal. Microbenchmark B is discharged at whole-model
+    scale: the design-stage probe measured 349.6 ms compute and 533 ms `pread` for 4,370,571,072 B
+    at 1.07-1.12 s wall, and the shipped arm measures 484-620 ms compute and 515-648 ms `pread` at
+    1,141-1,275 ms wall on one reused 447,086,592 B window, warm. Implementation complete and
+    committed at `019fa26`; two complementary reviews are done and their consolidated repair is in
+    this commit, with publication next.
 
 **I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
 prove its value on an existing model, and the merged C6-MEASURED wave (align-llm PR #103, `c9a510d`)
@@ -709,14 +717,16 @@ R5A-DENSE-LAYER-FORWARDが対象とし、実装・owner検証・実modelでのqu
 instrumentの印字精度上限）、bit-exact
 self-reference oracleは20/20 tensor byte一致、microbenchmark Bは**13.4 ms前後**（1 dense layer、
 6 token、warm。実装済みarmの4 run計測で12.97-15.05 ms。design段階のprobe harnessは15.5 ms中央値）。最小モデル（stage 3、prefill専用・KV cacheなし、dense CPUで全28層＋`output_norm`＋`output`）は
-R5B-MODEL-PREFILL-FORWARDが対象とする（design完了、probe evidence取得済み、実装中）——
+R5B-MODEL-PREFILL-FORWARDが対象とし、実装・owner検証・実modelでのqualificationにより達成済み——
 `docs/specs/r5b-model-prefill-forward.md`が権威あるledgerで、instrumentの宣言attention幅（KV width
 256）ではfinal logits 152,064要素が`llama-debug --save-logits`とbyte-identical（sha256
-`d2e48620…`）、28層＋headの全oracleノード30,042要素が`llama-eval-callback`の印字精度で
-ten-thousandths 0一致。runtime自身のattention幅（prefillの6 token）ではmax`|Δ|` **0.2738**、
+`d2e48620…`）、28層＋headの全oracleノード30,078要素が`llama-eval-callback`の印字精度で
+ten-thousandths 0一致、bit-exact self-reference oracleは30 graphで479/479 node byte一致。
+runtime自身のattention幅（prefillの6 token）ではmax`|Δ|` **2,739 ten-thousandths**（0.2739）、
 argmax 671、top-10完全一致——差はKV cache非搭載という宣言済みnon-goalの帰結と測定済み。必須
-microbenchmarkのうちBはR5Bが**whole-model scale**で達成（six-token prefill、wall 1.07-1.12 s、
-compute 349.6 ms、pread 533 ms/4,370,571,072 B、warm）。AとCはGPU armとresidency policyがR5Bの
+microbenchmarkのうちBはR5Bが**whole-model scale**で達成（six-token prefill。design段階のprobeは
+wall 1.07-1.12 s、compute 349.6 ms、pread 533 ms/4,370,571,072 B。実装済みarmは
+wall 1,141-1,275 ms、compute 484-620 ms、pread 515-648 ms、447,086,592 Bのwindow 1つ、warm）。AとCはGPU armとresidency policyがR5Bの
 scopeに含まれないため引き続きdeferされる（`r4-5-external-buffer.md` section 5.4、
 `r5a-dense-layer-forward.md` section 5.4、`r5b-model-prefill-forward.md` section 5.4）。
 

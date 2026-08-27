@@ -439,6 +439,8 @@ pub Outcome {
   argmax: i64,
 
   reference_verdict: i64,
+  reference_pread_count: i64,
+  reference_bytes_read: i64,
   reference_graphs: i64,
   reference_compared: i64,
   reference_identical: i64,
@@ -569,6 +571,8 @@ pub fn empty_outcome() -> Outcome = Outcome {
   nonfinite_count: 0,
   argmax: -1,
   reference_verdict: REFERENCE_ABSENT,
+  reference_pread_count: 0,
+  reference_bytes_read: 0,
   reference_graphs: 0,
   reference_compared: 0,
   reference_identical: 0,
@@ -1703,9 +1707,12 @@ fn teardown_graph(
   }
 }
 
-// Every member's window offset must be `0 mod tensor_alignment`, re-checked at every layer because
-// the window is reused thirty times and a block whose members are not `block_align`-aligned would
-// otherwise reach `ggml_backend_cpu_buffer_from_ptr`, which is `abort()` on a misaligned pointer.
+// Step 25's Align-side pre-check. Every member's window offset must be `0 mod tensor_alignment`,
+// re-checked at every layer because the window is reused thirty times and a block whose members are
+// not `block_align`-aligned would otherwise reach `ggml_backend_cpu_buffer_from_ptr`, which is
+// `abort()` on a misaligned pointer. It runs **before** `graph_weights`, so the detail is the
+// section 3.9 `layer[<n>]role[<name>]` the plan promises rather than the shim's bare role name; the
+// shim's own check stays as the backstop for a pointer Align cannot see (section 6, correction C18).
 fn graph_alignment(
   borrow m: GraphMembers, borrow window: slice<u8>, alignment: i64, layer: i64,
   borrow mut o: Outcome,
@@ -1788,6 +1795,10 @@ fn run_graph(
     } else {
       o.ggml_buffers_created = o.ggml_buffers_created + 1
     }
+  }
+  if o.code.len() == 0 {
+    alignment := o.tensor_alignment
+    graph_alignment(m, window, alignment, spec.layer, o)
   }
   if o.code.len() == 0 {
     take(o, graph_weights(weight_ctx, weight_buffer, slot_view, window, m))
@@ -1944,13 +1955,13 @@ fn run_graph(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Filling the one reused window (section 3.4, and section 6 correction C4)
+// Filling the one reused window (section 3.4, and section 6 correction C5)
 // ---------------------------------------------------------------------------------------------
 
 // The largest read this arm ever issues, and the size of the **one** transient buffer every member
 // is read through. One mebibyte, measured: `f.pread` always requests the buffer's whole capacity,
 // so an oversized transient over-reads the tail of every member — at 32 MiB that is 5.4 GB of
-// wasted I/O across 339 members and 2.5 s of wall time, against 339 MB and 515 ms at 1 MiB. Section 6, correction C5: `alignpack_read.read_exact` rebinds its window to a
+// wasted I/O across 339 members and 2.5 s of wall time, against 339 MB and 515 ms at 1 MiB. Section 6, correction C6: `alignpack_read.read_exact` rebinds its window to a
 // fresh `buffer(n)` on every call, and at 339 members that is 4.4 GB of transient allocations the
 // process was measured retaining — a 3.4 GB peak resident set against a 447 MB window. `f.pread`
 // reuses the buffer's own reservation and overwrites its length from index 0, so one 32 MiB buffer
@@ -1974,15 +1985,16 @@ fn prime_window(borrow mut window: buffer, bytes: i64) {
   }
 }
 
+// Section 6, correction C20: the bound is the window view's own length, so `window_bytes` is no
+// longer threaded through the copy at all.
 fn window_put(
   borrow window: slice<u8>,
-  window_bytes: i64,
   offset: i64,
   borrow source: slice<u8>,
   n: i64,
   label: str,
 ) -> Result<(), alignpack_read.Fault> {
-  match ggml_ffi.window_copy(window, window_bytes, offset, source, source.len(), n, label) {
+  match ggml_ffi.window_copy(window, offset, source, n, label) {
     Ok(_) => { return Ok(()) },
     Err(f) => {
       code_view: str := f.code
@@ -1992,7 +2004,7 @@ fn window_put(
   }
 }
 
-// Section 6, correction C5. The plan's read shape was one `pread` of `block.pack_bytes` per block,
+// Section 6, correction C6. The plan's read shape was one `pread` of `block.pack_bytes` per block,
 // fifty-six times. A block image cannot be read into the reused window — Align's `pread` overwrites
 // from index 0 — so it would have to be read into a 132 MB temporary and copied out, which doubles
 // the resident set for no benefit. Each member is read instead, in `CHUNK_BYTES` rounds, straight
@@ -2006,7 +2018,6 @@ fn read_into_window(
   borrow handle: file,
   borrow mut temp: buffer,
   borrow window: slice<u8>,
-  window_bytes: i64,
   into: i64,
   at: i64,
   n: i64,
@@ -2027,7 +2038,7 @@ fn read_into_window(
     c.bytes_read = c.bytes_read + take
     view := temp.bytes()
     if view.len() < take { return Err(pack_fault(code, named("role", label))) }
-    window_put(window, window_bytes, into + done, view, take, label)?
+    window_put(window, into + done, view, take, label)?
     done = done + take
   }
   return Ok(())
@@ -2038,7 +2049,6 @@ fn fill_members(
   borrow m: GraphMembers,
   borrow tokens: TokenColumns,
   borrow window: slice<u8>,
-  window_bytes: i64,
   borrow mut temp: buffer,
   borrow mut c: alignpack_read.Counters,
 ) -> Result<(), alignpack_read.Fault> {
@@ -2056,7 +2066,7 @@ fn fill_members(
         m.pack[at]
       }
       read_into_window(
-        pak, temp, window, window_bytes, m.window[at] + piece * span, source_at, span,
+        pak, temp, window, m.window[at] + piece * span, source_at, span,
         "R4_PACK_UNREADABLE", label, c)?
       piece = piece + 1
     }
@@ -2181,7 +2191,7 @@ fn digest_region(borrow region: slice<u8>) -> Digest {
 // ---------------------------------------------------------------------------------------------
 // Oracle 2 — the transcript, scanned once before the schedule
 //
-// Section 6, correction C3. The plan put the transcript arm at step 30, after the whole schedule.
+// Section 6, correction C4. The plan put the transcript arm at step 30, after the whole schedule.
 // It cannot be there: the seventeen oracle nodes of a layer live in a `gallocr` buffer that is
 // freed when that layer's graph is torn down, and holding thirty graphs alive to compare them at
 // the end is the opposite of what section 3.10 owns. The transcript is therefore **scanned** before
@@ -2403,9 +2413,14 @@ fn compare_logits(
     o.logits_verdict = if o.logits_byte_identical { LOGITS_IDENTICAL } else { LOGITS_FAIL }
     return
   }
+  // Section 6, correction C19. `top_k` yields `min(TOP_K, n_vocab)` ranks, so a vocabulary smaller
+  // than ten can never reach an agreement of ten and `WITHIN` would be unreachable by arithmetic
+  // rather than by measurement. The requirement is "the whole top ten, in order", which for a
+  // vocabulary of `n` under ten is the whole vocabulary.
+  required := if n_vocab < TOP_K { n_vocab } else { TOP_K }
   within := worst <= LOGIT_TOLERANCE_TEN_THOUSANDTHS
     && o.argmax == o.logits_argmax_reference
-    && agreement >= TOP_K
+    && agreement >= required
   o.logits_verdict = if within { LOGITS_WITHIN } else { LOGITS_FAIL }
 }
 
@@ -2556,7 +2571,7 @@ fn stage_ends(
   if row_bytes <= 0 || row_bytes * g.n_vocab != embed_members.nbytes[embed_slot] {
     return Err(pack_fault("R5_SHAPE", layer_named(-1, "role", "token_embd")))
   }
-  // Section 6, correction C6. The plan derived `output_tied` from the two members' decoded
+  // Section 6, correction C7. The plan derived `output_tied` from the two members' decoded
   // **names**. Reading a name needs `member_at` and then `member_name`, and at this pin the region
   // checker refuses to hold the first call's `PackMember` across the second while both take the
   // same `borrow mut Counters` — "cannot retain a shorter-lived view through this mutable borrow".
@@ -2867,7 +2882,7 @@ pub fn execute(
   read_started := time.instant()
   mut transient: buffer := buffer(CHUNK_BYTES)
   take_pack(o, fill_members(
-      pak, embed_members, tokens, window_view, window_bytes, transient, counters))
+      pak, embed_members, tokens, window_view, transient, counters))
   o.pread_ns = o.pread_ns + (time.instant() - read_started)
   o.window_reuse_count = 1
   if o.code.len() > 0 {
@@ -2916,7 +2931,7 @@ pub fn execute(
     return o
   }
   schedule_model(
-    pak, g, table, plan, ends, tokens, embed_members, head_members, window_view, window_bytes,
+    pak, g, table, plan, ends, tokens, embed_members, head_members, window_view,
     context_bytes, residual_bytes, logits_bytes, readback_bytes,
     reference_path, transcript_path, logits_path, schedule, graphs, top, transient, counters, o)
   o.elapsed_ns = time.instant() - started
@@ -2937,7 +2952,6 @@ fn schedule_model(
   borrow embed_members: GraphMembers,
   borrow head_members: GraphMembers,
   borrow window: slice<u8>,
-  window_bytes: i64,
   context_bytes: i64,
   residual_bytes: i64,
   logits_bytes: i64,
@@ -3028,6 +3042,7 @@ fn schedule_model(
     declared := o.reconciliation_width
     prepare_transcript(transcript_path, oracle, g.n_layer, declared, scan, ranges, o)
   }
+  mut source_counters := alignpack_read.new_counters()
   mut breach := false
   mut schedule_rows := 0
   mut activation: array_builder<i64> := array_builder()
@@ -3069,7 +3084,7 @@ fn schedule_model(
   if o.code.len() == 0 {
     if o.reference_present {
       take_pack(o, compare_source_file(
-          reference_path, embed_members, tokens, window, -1, transient, counters))
+          reference_path, embed_members, tokens, window, -1, transient, source_counters))
     }
     spec := spec_for(
       GRAPH_EMBED, 0, -1, tokens.count, tokens.count, false, false, 0, 1,
@@ -3086,7 +3101,7 @@ fn schedule_model(
       o.graph_balance_failures = o.graph_balance_failures + 1
     }
     take_pack(o, window_put(
-        residual_rc_view, residual_bytes, 0, residual_rt_view, embed_result.out_bytes, "residual"))
+        residual_rc_view, 0, residual_rt_view, embed_result.out_bytes, "residual"))
   }
 
   mut layer := 0
@@ -3094,13 +3109,13 @@ fn schedule_model(
     if layer >= g.n_layer || o.code.len() > 0 { break }
     members := build_layer_members(table, plan, layer)
     read_started := time.instant()
-    take_pack(o, fill_members(pak, members, tokens, window, window_bytes, transient, counters))
+    take_pack(o, fill_members(pak, members, tokens, window, transient, counters))
     layer_pread := time.instant() - read_started
     o.pread_ns = o.pread_ns + layer_pread
     o.window_reuse_count = o.window_reuse_count + 1
     if o.code.len() == 0 && o.reference_present {
       take_pack(o, compare_source_file(
-          reference_path, members, tokens, window, layer, transient, counters))
+          reference_path, members, tokens, window, layer, transient, source_counters))
     }
     last := layer == g.n_layer - 1
     mut runtime := empty_graph_result()
@@ -3173,14 +3188,14 @@ fn schedule_model(
   if o.code.len() == 0 {
     read_started := time.instant()
     take_pack(o, fill_members(
-        pak, head_members, tokens, window, window_bytes, transient, counters))
+        pak, head_members, tokens, window, transient, counters))
     o.head_pread_ns = time.instant() - read_started
     o.pread_ns = o.pread_ns + o.head_pread_ns
     o.window_reuse_count = o.window_reuse_count + 1
   }
   if o.code.len() == 0 && o.reference_present {
     take_pack(o, compare_source_file(
-        reference_path, head_members, tokens, window, g.n_layer, transient, counters))
+        reference_path, head_members, tokens, window, g.n_layer, transient, source_counters))
   }
   head_base := layer_qwen2.mf_oracle_head_base(g.n_layer)
   if o.code.len() == 0 {
@@ -3253,12 +3268,22 @@ fn schedule_model(
     && o.backends_created == o.backends_freed
     && o.gallocrs_created == o.gallocrs_freed
     && o.graph_balance_failures == 0
-  o.verdict = if o.member_placements > 0 && o.pointer_identity_failures == 0 {
+  // Section 6, correction C17. Both verdicts are conclusions about the **whole** run, so neither is
+  // computed from a run that stopped early: an error document that placed one graph's members would
+  // otherwise claim `EXTERNAL` over 1 of 30 graphs, and a reference arm that compared one graph
+  // would claim `IDENTICAL` over the same 1 of 30. A partial measurement is `UNAVAILABLE` and `-`.
+  // `verdict` is settled **before** the two oracle blocks below on purpose: a reference mismatch or
+  // a tolerance breach is a divergence in the arithmetic, not in where the weights landed, and the
+  // placement measurement that reached that point is complete and worth publishing.
+  o.verdict = if o.code.len() > 0 {
+    VERDICT_UNAVAILABLE
+  } else if o.member_placements > 0 && o.pointer_identity_failures == 0 {
     VERDICT_EXTERNAL
   } else {
     VERDICT_COPIED
   }
-  if o.reference_present && o.reference_compared > 0 {
+  if o.reference_present && o.reference_compared > 0 && o.code.len() == 0
+    && o.reference_graphs == o.graph_count {
     if o.reference_identical == o.reference_compared {
       o.reference_verdict = REFERENCE_IDENTICAL
     } else {
@@ -3279,8 +3304,14 @@ fn schedule_model(
       }
     }
   }
+  // Section 6, correction C18. The reference arm re-reads the whole model out of the source GGUF,
+  // and `timings.pread_ns` measures only the window fills. Counting both through one `Counters`
+  // reported 8.7 GB against 515-648 ms and made every bandwidth figure derived from the pair twice
+  // the truth, so the source comparison keeps its own pair.
   o.reader_pread_count = counters.pread_count
   o.reader_bytes_read = counters.bytes_read
+  o.reference_pread_count = source_counters.pread_count
+  o.reference_bytes_read = source_counters.bytes_read
   graphs = GraphColumns { activation_bytes: activation.build() }
   schedule = ScheduleColumns {
     count: schedule_rows,
@@ -3541,6 +3572,12 @@ fn render_oracles(borrow o: Outcome) -> string {
   d.write_int(o.reference_first_primary_bits)
   d.write(",\"first_difference_reference_bits\":")
   d.write_int(o.reference_first_reference_bits)
+  // Section 6, correction C18: the reference GGUF's own reads, kept out of `pack.reader_*` so the
+  // window fills `timings.pread_ns` measures stay comparable with the bytes they moved.
+  d.write(",\"pread_count\":")
+  d.write_int(o.reference_pread_count)
+  d.write(",\"bytes_read\":")
+  d.write_int(o.reference_bytes_read)
   d.write("},\"oracle\":{\"present\":")
   d.write(bool_text(o.transcript_present))
   d.write(",\"verdict\":")
@@ -3862,7 +3899,7 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   if count >= 7 && !layer_forward.valid_path(args[6]) {
     return Err(Error.Invalid)
   }
-  // Section 6, correction C9. `-` in the transcript position means "no transcript", exactly as it
+  // Section 6, correction C10. `-` in the transcript position means "no transcript", exactly as it
   // already does in the document position. Without it the logits oracle is unreachable at the
   // runtime width: `KV_WIDTH` travels with the transcript, the transcript's `kq-L` `ne0` is
   // validated against `KV_WIDTH`, and the instrument only ever produces a transcript at **its**

@@ -187,7 +187,7 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_op_pad(
     ctx: raw, slots: slice<u8>, out: i64, a: i64, p0: i32, p1: i32, p2: i32, p3: i32) -> i32
 
-  // The second new symbol, and section 6 correction C4's whole subject: a bounded `memcpy` between
+  // The second new symbol, and section 6 correction C5's whole subject: a bounded `memcpy` between
   // two Align-owned ranges. Align's `buffer` is append-only and `pread` overwrites from index 0, so
   // a window that is allocated once and refilled thirty times cannot be refilled from Align.
   fn align_ggml_window_copy(
@@ -759,20 +759,23 @@ pub fn op_pad(
   }
 }
 
-// R5B section 6, correction C4. `n` bytes from `source` into `window` at `offset`, with every bound
+// R5B section 6, correction C5. `n` bytes from `source` into `window` at `offset`, with every bound
 // checked in C before the copy. This is how the one reused weight window is filled thirty times.
+//
+// The two lengths the shim bounds the copy against are the **views'** own lengths, never a caller's
+// declaration of them (section 6, correction C20). A declared length is a claim; `slice.len()` is
+// the range the borrow actually covers, and a `memcpy` bounded by the first would write outside the
+// second the moment the two disagree.
 pub fn window_copy(
   borrow window: slice<u8>,
-  window_bytes: i64,
   offset: i64,
   borrow source: slice<u8>,
-  source_bytes: i64,
   n: i64,
   label: str,
 ) -> Result<(), Fault> {
   unsafe {
     return r5_result(
-      align_ggml_window_copy(window, window_bytes, offset, source, source_bytes, n) as i64, label)
+      align_ggml_window_copy(window, window.len(), offset, source, source.len(), n) as i64, label)
   }
 }
 
