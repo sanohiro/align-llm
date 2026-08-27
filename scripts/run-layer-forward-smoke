@@ -943,6 +943,48 @@ PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
                "logits_path": "<logits>"}
 
 
+# `r5c-metal-prefill.md` section 6, correction C21: a digest over a NaN is not a portable golden.
+# The forced readback injects one `+inf` into every readback, and this arm hands a readback to the
+# next graph, so every element computed from that infinity is a NaN rather than an infinity.
+# IEEE-754 fixes an infinity's encoding and does **not** fix a NaN's sign or payload: an invalid
+# operation delivers x86-64 SSE's "real indefinite" `0xffc00000` and arm64's default NaN
+# `0x7fc00000`. A `bit_sum` over such a tensor therefore differs by 2**31 per NaN element and a
+# `sha256` differs outright between two conforming hosts, while every count, verdict, and code
+# agrees -- which is what the x86-64 run of this corpus reported and the aarch64 run did not.
+#
+# Mask the digests over the arm's **own** NaN-bearing tensors and nothing else. `nonfinite_count`,
+# every verdict, `reference.*` (the runtime and reconciliation passes still have to agree bit for
+# bit on one host) and `oracle_logits.reference_*` (file bytes, not a computed value) stay in the
+# golden, and the forced case asserts below that the masked fields are still present and are still
+# digests. The threshold is one and not zero because exactly one non-finite element in a readback
+# is the injected `+inf` itself, whose encoding is portable: the R5A corpus is twenty-one such
+# tensors and stays byte-identical.
+NONFINITE = "<nonfinite>"
+
+
+def is_nan_bits(bits):
+    return bits & 0x7FFFFFFF > 0x7F800000
+
+
+def mask_nonfinite_digests(document):
+    # An error document carries an empty schedule and a zeroed output, so every branch here is
+    # guarded rather than assumed: the mask is applied to every document normalize sees.
+    schedule = document["schedule"]
+    for row in schedule:
+        if row["nonfinite_count"] > 1:
+            row["l_out_sha256"] = NONFINITE
+            row["l_out_bit_sum"] = NONFINITE
+    if schedule and schedule[-1]["nonfinite_count"] > 1:
+        document["head"]["result_norm_sha256"] = NONFINITE
+        document["head"]["result_norm_bit_sum"] = NONFINITE
+    if document["output"]["nonfinite_count"] > 1:
+        document["output"]["sha256"] = NONFINITE
+        document["output"]["bit_sum"] = NONFINITE
+    for entry in document["output"]["top_k"]:
+        if is_nan_bits(entry["bits"]):
+            entry["bits"] = NONFINITE
+
+
 def normalize(text):
     document = json.loads(text)
     for key in document["timings"]:
@@ -952,6 +994,7 @@ def normalize(text):
         row["compute_ns"] = 0
     document["head"]["pread_ns"] = 0
     document["head"]["compute_ns"] = 0
+    mask_nonfinite_digests(document)
     for key, placeholder in PLACEHOLDER.items():
         if document[key]:
             document[key] = placeholder
@@ -1251,6 +1294,22 @@ if infinite is not None:
             or infinite["output"]["nonfinite_count"] < 1:
         failures.append("mf-force-inf-readback: a +inf logit resolved to %r with %d non-finite "
                         "elements" % (logits, infinite["output"]["nonfinite_count"]))
+    # Correction C21: the golden carries `<nonfinite>` where a digest covers a NaN, so the digest
+    # itself is asserted here instead -- it must still be produced, still be a digest, and the
+    # runtime and reconciliation passes must still agree over the NaN-bearing tensors on this host.
+    reference = infinite["reference"]
+    if reference["verdict"] != "IDENTICAL" \
+            or reference["nodes_identical"] != reference["nodes_compared"] \
+            or reference["nodes_compared"] < 1:
+        failures.append("mf-force-inf-readback: the runtime and reconciliation passes disagree "
+                        "over a NaN-bearing tensor: %r" % reference)
+    for label, value in (("output.sha256", infinite["output"]["sha256"]),
+                         ("head.result_norm_sha256", infinite["head"]["result_norm_sha256"]),
+                         ("schedule[-1].l_out_sha256",
+                          infinite["schedule"][-1]["l_out_sha256"])):
+        if len(value) != 64 or value.strip("0123456789abcdef") != "":
+            failures.append("mf-force-inf-readback: %s is %r, not a digest"
+                            % (label, value))
 
 REQUIRED_CODES = {
     "R5_TOKENS", "R5_KV_WIDTH", "R5_GEOMETRY_UNREADABLE", "R5_GEOMETRY", "R4_PACK_UNREADABLE",
@@ -1481,6 +1540,48 @@ PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
                "logits_path": "<logits>"}
 
 
+# `r5c-metal-prefill.md` section 6, correction C21: a digest over a NaN is not a portable golden.
+# The forced readback injects one `+inf` into every readback, and this arm hands a readback to the
+# next graph, so every element computed from that infinity is a NaN rather than an infinity.
+# IEEE-754 fixes an infinity's encoding and does **not** fix a NaN's sign or payload: an invalid
+# operation delivers x86-64 SSE's "real indefinite" `0xffc00000` and arm64's default NaN
+# `0x7fc00000`. A `bit_sum` over such a tensor therefore differs by 2**31 per NaN element and a
+# `sha256` differs outright between two conforming hosts, while every count, verdict, and code
+# agrees -- which is what the x86-64 run of this corpus reported and the aarch64 run did not.
+#
+# Mask the digests over the arm's **own** NaN-bearing tensors and nothing else. `nonfinite_count`,
+# every verdict, `reference.*` (the runtime and reconciliation passes still have to agree bit for
+# bit on one host) and `oracle_logits.reference_*` (file bytes, not a computed value) stay in the
+# golden, and the forced case asserts below that the masked fields are still present and are still
+# digests. The threshold is one and not zero because exactly one non-finite element in a readback
+# is the injected `+inf` itself, whose encoding is portable: the R5A corpus is twenty-one such
+# tensors and stays byte-identical.
+NONFINITE = "<nonfinite>"
+
+
+def is_nan_bits(bits):
+    return bits & 0x7FFFFFFF > 0x7F800000
+
+
+def mask_nonfinite_digests(document):
+    # An error document carries an empty schedule and a zeroed output, so every branch here is
+    # guarded rather than assumed: the mask is applied to every document normalize sees.
+    schedule = document["schedule"]
+    for row in schedule:
+        if row["nonfinite_count"] > 1:
+            row["l_out_sha256"] = NONFINITE
+            row["l_out_bit_sum"] = NONFINITE
+    if schedule and schedule[-1]["nonfinite_count"] > 1:
+        document["head"]["result_norm_sha256"] = NONFINITE
+        document["head"]["result_norm_bit_sum"] = NONFINITE
+    if document["output"]["nonfinite_count"] > 1:
+        document["output"]["sha256"] = NONFINITE
+        document["output"]["bit_sum"] = NONFINITE
+    for entry in document["output"]["top_k"]:
+        if is_nan_bits(entry["bits"]):
+            entry["bits"] = NONFINITE
+
+
 def normalize(text):
     document = json.loads(text)
     for key in document["timings"]:
@@ -1494,6 +1595,7 @@ def normalize(text):
     # and stays in the golden, because how many times the window was handed to the device is a
     # contract and how long that took is not.
     document["window"]["wrap_ns"] = 0
+    mask_nonfinite_digests(document)
     for key, placeholder in PLACEHOLDER.items():
         if document[key]:
             document[key] = placeholder
@@ -1829,6 +1931,22 @@ if infinite is not None:
             or infinite["output"]["nonfinite_count"] < 1:
         failures.append("gf-force-inf-readback: a +inf logit resolved to %r with %d non-finite "
                         "elements" % (logits, infinite["output"]["nonfinite_count"]))
+    # Correction C21: the golden carries `<nonfinite>` where a digest covers a NaN, so the digest
+    # itself is asserted here instead -- it must still be produced, still be a digest, and the
+    # runtime and reconciliation passes must still agree over the NaN-bearing tensors on this host.
+    reference = infinite["reference"]
+    if reference["verdict"] != "IDENTICAL" \
+            or reference["nodes_identical"] != reference["nodes_compared"] \
+            or reference["nodes_compared"] < 1:
+        failures.append("gf-force-inf-readback: the runtime and reconciliation passes disagree "
+                        "over a NaN-bearing tensor: %r" % reference)
+    for label, value in (("output.sha256", infinite["output"]["sha256"]),
+                         ("head.result_norm_sha256", infinite["head"]["result_norm_sha256"]),
+                         ("schedule[-1].l_out_sha256",
+                          infinite["schedule"][-1]["l_out_sha256"])):
+        if len(value) != 64 or value.strip("0123456789abcdef") != "":
+            failures.append("gf-force-inf-readback: %s is %r, not a digest"
+                            % (label, value))
 
 # Section 4.1's `gf-status-map` cell: every negative shim status maps to exactly one R5 code, and
 # the mapping is total. The scan is over `src/ggml_ffi.align`'s own declarations, so a status added

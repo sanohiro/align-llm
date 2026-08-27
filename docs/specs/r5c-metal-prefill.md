@@ -1771,6 +1771,69 @@ This correction is a preflight finding rather than a review finding, and it is r
 next arm added to this runner inherits the rule from one place instead of rediscovering it a fourth
 time.
 
+### C21 — a digest over a NaN is not a portable golden
+
+Correction C19 made the forced readback a case: the shim writes `+inf` into the first element of
+every readback and leaves the tensor data alone, so the arm reports a non-finite element it computed
+rather than one it was given. On the R5A arm each node is read back on its own and that infinity is
+the only non-finite element in it. On the R5B and R5C arms a readback is handed to the next graph,
+so the infinity is an **operand**: `inf - inf`, `inf / inf`, and `inf * 0` are invalid operations,
+and every element downstream of the first is a NaN rather than an infinity.
+
+IEEE-754 fixes the encoding of an infinity. It does **not** fix the sign or the payload of a NaN a
+processor delivers for an invalid operation, and the two hosts this repository builds on disagree:
+arm64 delivers the default NaN `0x7fc00000`, and x86-64 SSE delivers the "QNaN floating-point
+indefinite" `0xffc00000`, whose sign bit is set. `sha256` over such a tensor differs outright and
+`bit_sum`, a sum of `u32` encodings, differs by exactly `2**31` per NaN element.
+
+That is what CI reported. `mf-force-inf-readback` passed on aarch64 and failed on x86-64 — the
+hosted check and the `x86_64` installed profile — with:
+
+```text
+model forward smoke: FAIL golden mismatch for mf-force-inf-readback:
+expected != actual at .head.result_norm_bit_sum: 17142120448 != 32174505984
+```
+
+Both numbers decompose exactly over the eight elements of `result_norm`, one infinity and seven
+NaNs:
+
+```text
+aarch64  0x7f800000 + 7 * 0x7fc00000 = 2139095040 +  7 * 2143289344 = 17142120448
+x86-64   0x7f800000 + 7 * 0xffc00000 = 2139095040 +  7 * 4290772992 = 32174505984
+```
+
+The difference is `7 * 2**31` and nothing else: the same seven NaNs, the same infinity in the same
+place, one sign bit apart. Every count, verdict, tolerance, and error code in the document agreed
+across the two hosts, and `nonfinite_count` — the field the case exists to assert — agreed too. The
+golden was measuring the host's choice of NaN encoding, which is not a property of this arm.
+
+**Shipped**: the R5B and R5C golden normalization masks a digest that covers one of the arm's own
+NaN-bearing tensors with `"<nonfinite>"` before the comparison — `schedule[].l_out_sha256` and
+`l_out_bit_sum`, `head.result_norm_*`, `output.sha256` and `output.bit_sum`, and each
+`output.top_k[].bits` whose encoding is a NaN. The threshold is a `nonfinite_count` **above one**,
+because exactly one non-finite element in a readback is the injected infinity itself and its
+encoding is portable; the R5A corpus is twenty-one such tensors and regenerates byte-identically.
+`top_k[0]`, which is that infinity, keeps its `2139095040`.
+
+Nothing else is masked, and the case does not get weaker for it. `nonfinite_count`, both oracle
+verdicts, `oracle.max_abs_diff_ten_thousandths`, `oracle_logits.*` including the reference digests
+(file bytes, not a computed value), `argmax`, `status`, and every error code stay in the golden. The
+forced case additionally asserts, on the produced document, that each masked `sha256` is still
+present and is still a 64-character hex digest, and that `reference.verdict` is `IDENTICAL` with
+`nodes_identical == nodes_compared` — the runtime and reconciliation passes must still agree bit for
+bit over the NaN-bearing tensors on whichever host is running.
+
+Only `mf-force-inf-readback` and `gf-force-inf-readback` change; every other golden in all three
+corpora is byte-identical, which is the check that this correction masked a NaN and not a
+regression.
+
+The hypothesis could not be confirmed by running the arm on x86-64 from this host. A `gcc:13`
+container under `--platform linux/amd64` on Apple Silicon reports `0x7fc00000` for `inf - inf`,
+`inf / inf`, and `inf * 0`, because the translation layer lowers SSE onto NEON and NEON's default
+NaN is the one arm64 produces; the emulated run reproduces the host's answer, not the target's. The
+evidence is the arithmetic above, which is exact, together with the architectures' documented
+default NaN encodings.
+
 ### Cell-to-case map
 
 Every applicable closure cell of section 4, mapped to the implementing function and the exact case

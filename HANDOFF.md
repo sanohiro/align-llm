@@ -230,6 +230,36 @@ file records durable project state.
   `work_dir`; on a clean work tree with no stale binary, `gmake layer-forward-smoke` passes twice
   more with output byte-identical to the three runs above and leaves nothing behind. `Makefile` is
   untouched, so the baseline chain below still binds.
+- **One x86-64-only CI failure, diagnosed and repaired** (ledger section 6, correction **C21**).
+  With PR #129 open at head `140e442`, the hosted check and the `x86_64` installed profile failed
+  while `aarch64` passed: `model forward smoke: FAIL golden mismatch for mf-force-inf-readback:
+  expected != actual at .head.result_norm_bit_sum: 17142120448 != 32174505984`. Correction C19's
+  `inf-readback` flavour injects `+inf` into every readback, and the R5B/R5C arms hand a readback to
+  the next graph, so every element downstream of the first is a **NaN** — and IEEE-754 fixes an
+  infinity's encoding but not a NaN's sign or payload. Both numbers decompose exactly over the eight
+  elements of `result_norm`: `0x7f800000 + 7 * 0x7fc00000` (arm64's default NaN) against
+  `0x7f800000 + 7 * 0xffc00000` (x86-64 SSE's QNaN floating-point indefinite), a difference of
+  exactly `7 * 2**31` and nothing else. Every count, verdict, tolerance, and code agreed. The repair
+  masks, in the R5B and R5C golden normalization only, a digest that covers one of the arm's own
+  NaN-bearing tensors (`schedule[].l_out_*`, `head.result_norm_*`, `output.sha256`/`bit_sum`, and
+  each NaN-encoded `output.top_k[].bits`) with `"<nonfinite>"`, thresholded at a `nonfinite_count`
+  **above one** so the single injected infinity — whose encoding is portable — is still compared;
+  the R5A corpus's twenty-one such tensors stay byte-identical. The forced case now asserts on the
+  produced document that each masked `sha256` is still a 64-character hex digest and that
+  `reference.verdict` is `IDENTICAL` with `nodes_identical == nodes_compared`, so the runtime and
+  reconciliation passes must still agree bit for bit on whichever host runs. Only
+  `mf-force-inf-readback` and `gf-force-inf-readback` changed; every other golden in all three
+  corpora is byte-identical. The hypothesis could not be confirmed by running x86-64 from this host
+  — a `gcc:13` container under `--platform linux/amd64` on Apple Silicon reports `0x7fc00000` for
+  `inf - inf`, because the translation layer lowers SSE onto NEON — so the evidence is the exact
+  arithmetic above plus the two architectures' documented default NaN encodings.
+- **Verification of the C21 repair on the Metal host.** `gmake layer-forward-smoke` — 3 runs,
+  identical output, exit 0: 75 documented R5A cases with 24 of 26 codes, 59 documented R5B cases
+  with 30 of 33 codes, and 28 documented R5C cases with 20 codes including all three `R5C_*`,
+  `arm-r5b-unchanged`, and the whole two-layer model on a stub GPU device, all `PASS`. `gmake
+  format-check` — clean. `gmake fmt` — no diff. `git diff --check` — clean. `Makefile` is untouched
+  by this repair, so the baseline chain below still binds; `python3 scripts/check-baseline-chain`
+  re-run at this head ends `baseline chain: PASS`.
 - **Canonical baseline chain, re-recorded on Linux.** R5C changes `Makefile` (the
   `metal-forward-qualification` recipe and its `.PHONY` entry), **one** of the twenty recorded
   baseline artifacts, so the chain that shipped with R5B no longer bound this head. The
@@ -238,14 +268,14 @@ file records durable project state.
   one of the twenty artifacts changed against the R5B chain; the other nineteen hashes,
   `src/main.align` and `.gitattributes` included, are unchanged and the twenty paths are identical.
   `make baseline-check` on Linux: PASS, ending `baseline chain: PASS`.
-- **Next actions, in order.**
+- **Next actions, in order.** **PR #129 is open** against `main` at `870bf31` and carries both
+  review envelopes, the finding dispositions, and the repair commits.
   1. Exact-head preflight (`python3 scripts/pre-pr --owner-test metal-forward -- make
-     layer-forward-smoke gate-topology-check`) against `main` at `870bf31`, including the
-     DinD-capable installed profile check; do not substitute a Docker skip or an ambient
-     `DOCKER_HOST` endpoint.
-  2. Publish the English pull request against `main`, with both review envelopes, the finding
-     dispositions, and the two repair commits. R5B's PR #128, R5A's PR #127, R4.5's PR #126, and
-     R4's PR #125 are all merged.
+     layer-forward-smoke gate-topology-check`) at the C21 repair head, including the DinD-capable
+     installed profile check; do not substitute a Docker skip or an ambient `DOCKER_HOST` endpoint.
+  2. Push the repair and let PR #129 update, then confirm the hosted check and **both** installed
+     profiles — `aarch64` and `x86_64` — pass. The x86-64 profile is the one C21 was found by, so a
+     green `aarch64` alone is not evidence for this change.
 - **Three pending user decisions, consolidated into one list** (previously tracked separately
   across earlier checkpoints; this is the current, authoritative statement).
   1. Small MoE GGUF (1-4 GB): unlocks the R2 roadmap gate (a real MoE activation-locality
