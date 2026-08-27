@@ -219,14 +219,20 @@ file records durable project state.
   clean. The two named qualifications (`model-forward-qualification` and
   `metal-forward-qualification`) are not rerun here: the second rebase replayed every commit
   unchanged, so their inputs are the bytes already qualified at `eb710d2` above.
+- **Canonical baseline chain, re-recorded on Linux.** R5C changes `Makefile` (the
+  `metal-forward-qualification` recipe and its `.PHONY` entry), **one** of the twenty recorded
+  baseline artifacts, so the chain that shipped with R5B no longer bound this head. The
+  identity-bound chain is `e52908d` -> `067bb1c` -> `49945e6` (source -> immutable oracle ->
+  finalization), recorded on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3). Exactly that
+  one of the twenty artifacts changed against the R5B chain; the other nineteen hashes,
+  `src/main.align` and `.gitattributes` included, are unchanged and the twenty paths are identical.
+  `make baseline-check` on Linux: PASS, ending `baseline chain: PASS`.
 - **Next actions, in order.**
-  1. Record the canonical baseline chain against this head if any of the twenty recorded artifacts
-     changed against `main` at `870bf31`; skip it if none did.
-  2. Exact-head preflight (`python3 scripts/pre-pr --owner-test metal-forward -- make
+  1. Exact-head preflight (`python3 scripts/pre-pr --owner-test metal-forward -- make
      layer-forward-smoke gate-topology-check`) against `main` at `870bf31`, including the
      DinD-capable installed profile check; do not substitute a Docker skip or an ambient
      `DOCKER_HOST` endpoint.
-  3. Publish the English pull request against `main`, with both review envelopes, the finding
+  2. Publish the English pull request against `main`, with both review envelopes, the finding
      dispositions, and the two repair commits. R5B's PR #128, R5A's PR #127, R4.5's PR #126, and
      R4's PR #125 are all merged.
 - **Three pending user decisions, consolidated into one list** (previously tracked separately
@@ -1226,9 +1232,9 @@ boundary is next changed.
    `metal-forward-qualification` additionally needs a Metal host and
    `ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include`; it reports `N/A` elsewhere.
 3. Resume at the first unfinished next action in the R5C-METAL-PREFILL-ARM capability above: the
-   implementation (`e3d94d9`), both reviews, and both repairs (`31cd1d5`, `9ac28bb`) are done and
-   every owner passes, so what remains is the baseline chain if any recorded artifact changed,
-   exact-head preflight, and publication.
+   implementation (`e3d94d9`), both reviews, and both repairs (`31cd1d5`, `9ac28bb`) are done,
+   every owner passes, and the baseline chain is re-recorded (`e52908d` -> `067bb1c` -> `49945e6`),
+   so what remains is exact-head preflight and publication.
 4. Do not open another Align request unless implementation exposes a further genuine shipped-language,
    compiler/runtime, or standard-library gap under the register rules. Requests 21-43 are
    `PROPOSED` and non-blocking.
