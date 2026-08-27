@@ -130,6 +130,22 @@ file records durable project state.
   C20 view-bounded `window_copy`, C21 the 447,086,592 B window), each with its covering case.
   **A final review of the repair delta at `b5b2db8` approved** with three low and one
   informational finding, all four accepted and repaired in `5ab2ad0`.
+- **One shared-code defect ported in from R5C-METAL-PREFILL's review** (ledger correction C23). R5C
+  branched from `556fced` and its arm shares `compare_logits`; its review found that a reference
+  `LOGITS.bin` carrying `±inf`, a NaN, or a finite magnitude above about 9.2e14 has no value in
+  integer ten-thousandths, so `((v as f64) * 10000.0).round() as i64` saturates, `primary -
+  reference` wraps, and a NaN reads as `0`. On R5C's arm that indexes a 65,537-entry histogram with
+  `i64`'s minimum and aborts with no document; on R5B there is no histogram, so the same input
+  published a magnitude the run never computed — measured at `5ab2ad0`:
+  `max_abs_diff_ten_thousandths` **9223372036854775706** for a `±3.4e38` reference and **257** for an
+  `-inf` reference against the tokens `1,25,5` primary — and a NaN could have compared *within* the
+  bound. The repair is R5C's `logit_ten_thousandths` and the new `R5_LOGITS_NONFINITE` code, ported
+  unchanged apart from the correction number; R5C's `add_saturating` and `IDENTICAL`-verdict gate do
+  not apply here. Three new fixtures and smoke rows cover it (`mf-logits-nonfinite`, `mf-logits-nan`,
+  `mf-logits-huge`), the code count is 33, and verifying them exposed ledger correction **C24**: the
+  `--model-forward` block of `scripts/run-layer-forward-smoke` ran `root_dir/ggml-spike` rather than
+  the `work_dir` executable it had just built, so `make layer-forward-smoke` failed outright on a
+  clean checkout and otherwise tested a stale binary.
 - **Next actions, in order.**
   1. Rerun owner verification and the named qualification against the rebased head.
   2. Re-record the canonical baseline chain on Linux against the rebased head.

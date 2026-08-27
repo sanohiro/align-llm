@@ -662,7 +662,12 @@ import subprocess
 import sys
 
 root_dir, work_dir = sys.argv[1:3]
-binary = os.path.join(root_dir, "ggml-spike")
+# Section 6, correction C24. The executable is the one this runner built into `work_dir` above, not
+# a `ggml-spike` left in the work tree by `make ggml-spike`: `root_dir` here made the block depend
+# on a developer's stale binary, fail outright on a clean checkout, and — when one did exist — test
+# a build that is not the source under test. `r5a-dense-layer-forward.md` section 6, correction C23
+# is the same rule for the same reason; the R5A block above already follows it.
+binary = os.path.join(work_dir, "ggml-spike")
 builder = os.path.join(root_dir, "scripts", "build-ggml-shim")
 golden_path = os.path.join(root_dir, "scripts", "model-forward-golden.jsonl")
 excerpt = os.path.join(root_dir, "eval", "fixtures", "qwen2-model-6tok.txt")
@@ -792,6 +797,24 @@ ENGINE_CASES = [
      "R5_LOGITS_UNREADABLE"),
     ("mf-logits-perturbed",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-perturbed.bin")], ""),
+    # Section 6, correction C23. A reference carrying an infinity or a NaN is a malformed **input**
+    # and is refused with its own code before any difference is taken; a reference that is finite
+    # and beyond the representable magnitude is not an input error and resolves as a magnitude no
+    # tolerance admits. All three corrupted the published magnitude before C23.
+    # `MODEL_ABORT_TOKENS` and an `-inf` in element 0: the one input pair whose primary rounds to
+    # exactly zero ten-thousandths against a saturated reference, which is what made
+    # `0 - difference` wrap to `i64`'s minimum. Measured at `5ab2ad0`: `status: ok`,
+    # `max_abs_diff_ten_thousandths` **257**, a magnitude neither vector supports. The transcript
+    # position is `-` because this token list is not the one the checked-in transcript was captured
+    # for.
+    ("mf-logits-nonfinite",
+     [ARM, PACK, GEOM, "1,25,5", "-", SOURCE, "-", "3", path("model-logits-neg-inf.bin")],
+     "R5_LOGITS_NONFINITE"),
+    ("mf-logits-nan",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-nan.bin")],
+     "R5_LOGITS_NONFINITE"),
+    ("mf-logits-huge",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-huge.bin")], ""),
 ]
 
 FORCED_CASES = [
@@ -1009,6 +1032,24 @@ if within["compared_pass"] != "runtime" or within["verdict"] != "WITHIN" \
         or within["top_k_agreement"] != 10 or within["tolerance_ten_thousandths"] != 5000:
     failures.append("mf-engine-runtime-width: %r" % within)
 
+# Section 6, correction C23's three references. The two malformed ones are refused with a document
+# and the out-of-range one is a `FAIL` with `status: ok`, so neither can wrap into a false `WITHIN`
+# or publish a magnitude the run never computed.
+for case in ("mf-logits-nonfinite", "mf-logits-nan"):
+    refused = json.loads(produced[case])
+    if refused["error_detail"] != "elements[1]":
+        failures.append("%s: detail %r, not the count of non-finite reference elements"
+                        % (case, refused["error_detail"]))
+    if refused["oracle_logits"]["verdict"] != "-":
+        failures.append("%s: a refused reference must publish no verdict, got %r"
+                        % (case, refused["oracle_logits"]["verdict"]))
+huge = json.loads(produced["mf-logits-huge"])
+if huge["status"] != "ok" or huge["oracle_logits"]["verdict"] != "FAIL" \
+        or huge["oracle_logits"]["max_abs_diff_ten_thousandths"] \
+        != 1000000000000000:
+    failures.append("mf-logits-huge: an out-of-range reference must resolve at the scale limit: %r"
+                    % huge["oracle_logits"])
+
 # A real failure is not `WITHIN`: a blob shifted by 1.0 keeps the argmax and the whole top ten and
 # is refused anyway, so the tolerance alone cannot pass it.
 broken = json.loads(produced["mf-logits-perturbed"])
@@ -1069,6 +1110,7 @@ REQUIRED_CODES = {
     "R5_ALIGNMENT", "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE", "R5_RESIDUAL",
     "R5_SOURCE_UNREADABLE", "R5_SOURCE_DIVERGED", "R5_REFERENCE_MISMATCH", "R5_TRANSCRIPT",
     "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE", "R5_LOGITS_UNREADABLE", "R5_LOGITS_SHAPE",
+    "R5_LOGITS_NONFINITE",
 }
 missing_codes = REQUIRED_CODES - codes
 if missing_codes:
@@ -1101,6 +1143,6 @@ if failures:
     raise SystemExit(1)
 
 print("model forward smoke: %d no-document cases (R5_ARITY, R5_PATH), %d documented cases, "
-      "%d of the 32 codes reached, three oracles, and the whole two-layer model PASS"
+      "%d of the 33 codes reached, three oracles, and the whole two-layer model PASS"
       % (len(NO_DOCUMENT), len(ORDER), len(codes - {""}) + 2))
 PY

@@ -51,6 +51,20 @@ MAX_WINDOW_BYTES := 8589934592
 LOGIT_TOLERANCE_TEN_THOUSANDTHS := 5000
 TOP_K := 10
 
+// Section 6, correction C23. The comparison below is integer ten-thousandths, and a `f32` element
+// exists that has no such integer: every infinity and NaN, and every finite magnitude above
+// `i64`'s range divided by 10,000. `((v as f64) * 10000.0).round() as i64` **saturates** on those,
+// after which `primary - reference` wraps and `0 - difference` wraps `i64`'s minimum to itself, so
+// `logits_max_abs` published a magnitude the run never computed and a NaN — whose `as i64` is `0`
+// rather than a saturation — could compare *within* the tolerance. Two constants close that:
+// `LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS` is the largest magnitude the comparison represents, and
+// anything at or beyond it — including every non-finite element — is routed to a magnitude that no
+// tolerance can admit, so an unrepresentable element is a `FAIL` rather than a wrap. The limit is
+// 10^15, which is 10^11 logits: eleven orders of magnitude above the 28.927 range section 2.3
+// measured, and low enough that the difference of two of them cannot overflow.
+LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS := 1000000000000000
+LOGIT_UNREPRESENTABLE := 9223372036854775807
+
 VERDICT_UNAVAILABLE := 0
 VERDICT_EXTERNAL := 1
 VERDICT_COPIED := 2
@@ -2337,6 +2351,21 @@ fn top_k(borrow region: slice<u8>, borrow mut index: array_builder<i64>,
   }
 }
 
+// Section 6, correction C23. One element of a logits vector, in ten-thousandths, or
+// `LOGIT_UNREPRESENTABLE` when it has no such value. The exponent test is `digest_region`'s: an
+// all-ones exponent field is an infinity or a NaN, and neither has a ten-thousandths value — a NaN
+// converted through `as i64` would read as `0` and could then compare *within* any bound, which is
+// the false pass this function exists to prevent. A finite magnitude beyond the limit is refused
+// for the same reason and by the same route, so no caller has to know which of the two it met.
+fn logit_ten_thousandths(borrow region: slice<u8>, at: i64) -> i64 {
+  bits := region.u32_le(at * 4) as i64
+  if (bits / 8388608) % 256 == 255 { return LOGIT_UNREPRESENTABLE }
+  scaled := ((region.f32_le(at * 4) as f64) * 10000.0).round() as i64
+  if scaled > LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS { return LOGIT_UNREPRESENTABLE }
+  if scaled < 0 - LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS { return LOGIT_UNREPRESENTABLE }
+  return scaled
+}
+
 // Section 3.7's table. At the reconciliation width the contract is **byte-identity** over every one
 // of `n_vocab * 4` bytes — section 2.7 measured exactly that, twice — and at the runtime width the
 // verdict is `WITHIN` only when the bound, the `argmax`, and the whole top ten all agree.
@@ -2387,15 +2416,41 @@ fn compare_logits(
   o.logits_reference_sha256 = reference_digest.sha.clone()
   o.logits_reference_bit_sum = reference_digest.bit_sum
   o.logits_argmax_reference = reference_digest.argmax
+  // Section 6, correction C23, and this is a *reference* rule rather than an arm rule: the
+  // reference blob is an **input**, and an input carrying an infinity or a NaN is a malformed
+  // reference, not a failing oracle. It is refused here — after the digest fields are published, so
+  // the error document still names the file that was read — with its own code and the count as the
+  // detail, exactly as `R5_LOGITS_SHAPE` refuses a wrong length. The arm's *own* logits are not
+  // refused for the same condition: `output.nonfinite_count` reports them and section 3.8 keeps
+  // that "never a failure condition", so a non-finite primary reaches the comparison below and is
+  // resolved there as a magnitude no tolerance admits.
+  if reference_digest.nonfinite > 0 {
+    fail(o, "R5_LOGITS_NONFINITE", labelled("elements", reference_digest.nonfinite))
+    return
+  }
   o.logits_byte_identical = crypto.constant_time_equal(primary, view)
   o.logits_elements = n_vocab
   mut worst := 0
   mut at := 0
   loop {
     if at >= n_vocab { break }
-    difference := ((primary.f32_le(at * 4) as f64) * 10000.0).round() as i64
-      - ((view.f32_le(at * 4) as f64) * 10000.0).round() as i64
-    magnitude := if difference < 0 { 0 - difference } else { difference }
+    // Section 6, correction C23: both elements are scaled through the range-checked conversion
+    // before either is subtracted, so the subtraction and the absolute value are in range by
+    // construction. The reference is finite by the check above; a primary that is not — or that is
+    // finite and beyond the representable magnitude — takes the scale limit as its magnitude, which
+    // is above every tolerance this repository declares, so it is a `FAIL` and never a silent wrap.
+    primary_scaled := logit_ten_thousandths(primary, at)
+    reference_scaled := logit_ten_thousandths(view, at)
+    unrepresentable := primary_scaled == LOGIT_UNREPRESENTABLE
+      || reference_scaled == LOGIT_UNREPRESENTABLE
+    difference := if unrepresentable { 0 } else { primary_scaled - reference_scaled }
+    magnitude := if unrepresentable {
+      LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS
+    } else if difference < 0 {
+      0 - difference
+    } else {
+      difference
+    }
     if magnitude > worst { worst = magnitude }
     at = at + 1
   }

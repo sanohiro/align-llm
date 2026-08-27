@@ -820,6 +820,11 @@ def main(argv):
 # =============================================================================================
 
 MODEL_TOKENS = [3, 17, 5]
+# `r5b-model-prefill-forward.md` section 6, correction C23. The one token list whose runtime-width
+# logit 0 is -3.69e-05 — exactly zero ten-thousandths — which is the only primary value that makes
+# `primary - reference` wrap to `i64`'s minimum against a saturated reference. Swept out of the
+# generator's own second implementation, which agrees with the engine to zero ten-thousandths.
+MODEL_ABORT_TOKENS = [1, 25, 5]
 MODEL_KV_WIDTH = 8
 
 ROLE_OUTPUT_NORM = 13
@@ -1098,6 +1103,29 @@ def write_model_corpus(directory, emit):
     emit("model-logits-runtime.bin",
          struct.pack("<%df" % runtime_logits.count(), *runtime_logits.data))
     emit("model-transcript-runtime.txt", model_transcript(runtime_records, MODEL_TOKENS))
+
+    # `r5b-model-prefill-forward.md` section 6, correction C23. Three references whose elements have
+    # no integer in ten-thousandths, each one mixed into an otherwise ordinary runtime-width vector
+    # so the fixture is a *reference* defect and not a degenerate file. Before C23 the first two
+    # wrapped `i64` inside the difference and published a magnitude the run never computed, and the
+    # third read as `0.0` and could compare within the bound.
+    def logits_with(*pairs):
+        values = list(runtime_logits.data)
+        for index, value in pairs:
+            values[index] = value
+        return struct.pack("<%df" % len(values), *values)
+
+    #   finite, and beyond every magnitude the comparison represents. Both signs, because the
+    #   negative one is the operand that made `primary - reference` wrap.
+    emit("model-logits-huge.bin", logits_with((0, 3.4e38), (1, -3.4e38)))
+    #   an infinity in element **0**, which is where `MODEL_ABORT_TOKENS` puts a primary logit that
+    #   rounds to exactly zero ten-thousandths. `0 - i64::MIN` is `i64::MIN`, so before C23 this
+    #   exact pair published `max_abs_diff_ten_thousandths` 257 — a number no element of either
+    #   vector supports; the index and the token list are chosen so the fixture *is* that input
+    #   rather than a neighbour of it.
+    emit("model-logits-neg-inf.bin", logits_with((0, float("-inf"))))
+    #   a NaN, whose `as i64` conversion is `0` rather than a saturation.
+    emit("model-logits-nan.bin", logits_with((3, float("nan"))))
 
     lines = transcript.split("\n")
 

@@ -928,8 +928,9 @@ step 20, and nothing outside the process is ever written.**
     and is **not** an error code
 32. Logits arm (nine-operand form): open and size `LOGITS.bin`. → `R5_LOGITS_UNREADABLE`,
     `R5_LOGITS_SHAPE`
-33. Logits arm: compare per section 3.7. A breach sets `oracle_logits.verdict: "FAIL"` and is **not**
-    an error code
+33. Logits arm: compare per section 3.7. A reference element with no ten-thousandths value is a
+    malformed input and is refused. → `R5_LOGITS_NONFINITE`. A breach of the bound sets
+    `oracle_logits.verdict: "FAIL"` and is **not** an error code
 34. Teardown in section 3.10's order, then render, then write.
 
 | Code | Meaning | Step | Detail |
@@ -965,9 +966,10 @@ step 20, and nothing outside the process is ever written.**
 | `R5_ORACLE_SHAPE` | a declared shape disagrees, including `kq-L`'s `ne0` against `KV_WIDTH` | 30 | `layer[<n>]node[<id>]` |
 | `R5_LOGITS_UNREADABLE` | **new.** the reference logits file could not be opened or read | 32 | the path's failure |
 | `R5_LOGITS_SHAPE` | **new.** the file is not exactly `n_vocab * 4` bytes | 32 | `bytes[<n>]/<expected>` |
+| `R5_LOGITS_NONFINITE` | **new** (section 6, correction C23). the reference logits carry an infinity or a NaN, neither of which has a value in ten-thousandths | 33 | `elements[<n>]` |
 
-Thirty-two codes: **twenty-five inherited from R5A unchanged** — its twenty-six less `R5_INDEX`,
-which goes with the `LAYER` operand — and **seven new**. `R4_PACK_*` is one family row above and is
+Thirty-three codes: **twenty-five inherited from R5A unchanged** — its twenty-six less `R5_INDEX`,
+which goes with the `LAYER` operand — and **eight new**. `R4_PACK_*` is one family row above and is
 counted, as R5A counts it, alongside `R4_PACK_UNREADABLE`. Four of the seven —
 `R5_BLOCK_AMBIGUOUS`, `R5_LAYER_COVERAGE`, `R5_RESIDUAL`, `R5_WINDOW_BUDGET` — exist only because the
 arm computes a *whole model*: each is a way for a thirty-graph schedule to produce a plausible
@@ -1133,6 +1135,7 @@ with the stub shim and its engine (`make layer-forward-smoke`), `Q` = requires t
 | Transcript — a tolerance breach | step 31 | `S` `mf-transcript-perturbed`: one printed value at layer 1 moved by `0.0003` → `verdict: "FAIL"`, `worst_layer: 1`, `status: "ok"` |
 | Transcript — an exact pass | step 31 | `S` `max_abs_diff_ten_thousandths == 0`; `Q` `== 0` over 30,042 elements |
 | Logits — file shape | step 32 | `S` `mf-logits-short` (one byte) → `R5_LOGITS_SHAPE`, `mf-logits-missing` → `R5_LOGITS_UNREADABLE` |
+| Logits — an unrepresentable reference element | step 33 (correction C23) | `S` `mf-logits-nonfinite` (an `-inf`) and `mf-logits-nan` → `R5_LOGITS_NONFINITE` with detail `elements[1]` and no verdict; `mf-logits-huge` (`±3.4e38`) → `status: "ok"`, `verdict: "FAIL"` at the scale limit |
 | Logits — byte-identical at the reconciliation width | `compare_logits` | `S` the synthetic model's synthetic logits blob → `IDENTICAL`; `Q` `byte_identical: true`, `reference_sha256 == d2e48620…` |
 | Logits — the runtime width verdict | `compare_logits` | `S` `mf-logits-runtime-width` asserts `WITHIN` with `argmax` equal; `Q` `max_abs_diff_ten_thousandths <= 5000` with **2,738** recorded, `argmax_primary == argmax_reference == 671`, `top_k_agreement == 10` |
 | Logits — a real failure is not `WITHIN` | `compare_logits` | `S` `mf-logits-perturbed`: a reference blob shifted by 1.0 → `verdict: "FAIL"` with the argmax still equal, so the tolerance alone cannot pass it |
@@ -1174,8 +1177,9 @@ with the stub shim and its engine (`make layer-forward-smoke`), `Q` = requires t
 | `R5_ORACLE_SHAPE` | yes | a `kq-0` declaring the wrong `ne0` |
 | `R5_LOGITS_UNREADABLE` | yes | a path that does not exist |
 | `R5_LOGITS_SHAPE` | yes | a blob of 4 bytes |
+| `R5_LOGITS_NONFINITE` | yes | a reference with an infinity in element 0, and one with a NaN |
 
-**Thirty of the thirty-two codes are stub-reachable**, and all seven new ones are. The two that
+**Thirty-one of the thirty-three codes are stub-reachable**, and all eight new ones are. The two that
 are not are the two R5A already marked unreachable, both fail-closed guards over conditions no input
 can produce. The final matrix-to-diff pass maps every cell above to its implementing function and its
 passing evidence, or to an explicit deferral in this document, before review.
@@ -1431,7 +1435,8 @@ statements were refuted by writing the arm, and each one is recorded here rather
 above. Six are Align-owned limitations, five are contract changes the plan could not have known
 about, and five are measurements that moved.
 
-**C17 to C21 were found by review**, not by writing the arm. They are recorded in the same list and
+**C17 to C21 were found by review**, and **C23 and C24 after it** — C23 by R5C-METAL-PREFILL's own
+review of the shared `compare_logits`, C24 by verifying C23's new cases — not by writing the arm. They are recorded in the same list and
 by the same rule — the plan is corrected here rather than silently rewritten above — and each names
 the case that now covers it.
 
@@ -1590,8 +1595,8 @@ sees it. The residual and logits bounds are unreachable for the same reason — 
 are computed from is checked against the geometry first.
 
 `R5_WINDOW_BUDGET` joins `R4_WINDOW_UNAVAILABLE` and `R5_ABI` as a fail-closed guard over a
-condition no input can produce. **Twenty-nine of the thirty-two codes are stub-reachable**, not
-thirty, and section 7 records that as a measurement the runner prints.
+condition no input can produce. **Thirty of the thirty-three codes are stub-reachable**, not
+thirty-one, and section 7 records that as a measurement the runner prints.
 
 ### C12 — the transcript oracle compares 479 nodes and 30,078 elements
 
@@ -1726,6 +1731,51 @@ stays as defence — if `buffer_from_host`'s own check is ever relaxed or reorde
 loop below it must not silently assume an aligned base — and is now commented as unreachable rather
 than implied live.
 
+### C23 — a reference logit with no value in ten-thousandths is a malformed input, not a comparison
+
+Section 3.7 declares the logits comparison in integer ten-thousandths and assumed every `f32`
+element has one. Three classes do not: `+inf`, `-inf`, and NaN, and every finite magnitude above
+`i64`'s range divided by 10,000 (about 9.2e14). `((v as f64) * 10000.0).round() as i64` **saturates**
+on the finite ones and reads NaN as `0`, after which `primary - reference` wraps and `0 - difference`
+carries `i64`'s minimum through unchanged. Measured at `5ab2ad0` against the synthetic two-layer
+model: a reference with `±3.4e38` in elements 0 and 1 published
+`max_abs_diff_ten_thousandths: 9223372036854775706`, and a reference with `-inf` in element 0 against
+the primary of tokens `1,25,5` — whose logit 0 rounds to exactly zero ten-thousandths — published
+**257**, a magnitude neither vector supports. A NaN reading as `0` is the worse half: it can compare
+*within* any bound, so a malformed reference could have produced a `WITHIN` verdict.
+
+The repair is `logit_ten_thousandths` (`src/model_forward.align`), which tests the exponent field the
+way `digest_region` already does and range-checks the scaled value against
+`LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS` (10^15, eleven orders of magnitude above the 28.927 range section
+2.3 measured, and low enough that the difference of two of them cannot overflow). Both elements go
+through it before either is subtracted, so the subtraction and the absolute value are in range by
+construction, and an unrepresentable element takes the scale limit as its magnitude — above every
+tolerance this repository declares, so it is a `FAIL` and never a silent wrap.
+
+The **reference** is refused outright rather than compared: it is an input, and an input carrying an
+infinity or a NaN is malformed in the same way a wrong length is, so `R5_LOGITS_NONFINITE` is raised
+after the reference digest fields are published — the error document still names what was read — with
+`elements[<n>]` as the detail. The arm's *own* logits are not refused for the same condition;
+`output.nonfinite_count` reports them and section 3.8 keeps that "never a failure condition".
+
+The defect and its repair were found by the R5C-METAL-PREFILL arm's review (that plan's section 6,
+correction C12), which shares `compare_logits`. On R5C's device arm the same wrap indexes a 65,537-
+entry histogram with `i64`'s minimum and aborts the process with no document; R5B has no histogram,
+so the same input corrupts the published magnitude instead of aborting. The code is ported here
+unchanged apart from the correction number, and R5C's `add_saturating` and its `IDENTICAL`-verdict
+gate are not: R5B keeps no running total and already confines `IDENTICAL` to the reconciliation pass.
+
+### C24 — the model-forward smoke block must run the executable it built
+
+The `--model-forward` block of `scripts/run-layer-forward-smoke` resolved its executable as
+`root_dir/ggml-spike` while the runner builds into `work_dir/ggml-spike` (the R5A block above already
+does the latter). On a clean checkout `make layer-forward-smoke` therefore failed outright with
+`FileNotFoundError`, and on a developer's host it silently tested whatever `make ggml-spike` had left
+in the work tree rather than the source under test — which is how C23's three new cases first
+appeared to fail against a binary that already contained the repair. It is `r5a-dense-layer-forward.md`
+section 6, correction C23's rule (the owner builds and runs outside the work tree) applied to the one
+line that did not follow it.
+
 ---
 
 ## 7. Closure-matrix evidence
@@ -1799,6 +1849,7 @@ run in `make layer-forward-smoke` (11.0 s, three consecutive identical runs); `Q
 | Transcript — a tolerance breach | `S` `mf-transcript-perturbed` → `FAIL`, `worst_layer` 0, `worst_node` `l_out`, `status` `ok` |
 | Transcript — an exact pass | `S` max 0 over 546 elements; `Q` **max 0 over 30,078 elements**, max sum diff 1 millionth |
 | Logits — file shape | `S` `mf-logits-short` → `R5_LOGITS_SHAPE`, `mf-logits-missing` → `R5_LOGITS_UNREADABLE` |
+| Logits — an unrepresentable reference element | `S` `mf-logits-nonfinite`, `mf-logits-nan` → `R5_LOGITS_NONFINITE` `elements[1]`, `verdict` `-`; `mf-logits-huge` → `FAIL` at `max_abs_diff_ten_thousandths` 1,000,000,000,000,000 (correction C23) |
 | Logits — byte-identical at the reconciliation width | `Q` **`IDENTICAL`**, `byte_identical` true, `sha256` `d2e48620ae3e31e2066a6172aa32c19c974d996d232ab91b118335e3d245bf74`, `bit_sum` 425,868,724,161,277. `S` asserts the rule's strictness instead (C9) |
 | Logits — the runtime width verdict | `S` `mf-engine-runtime-width` → `WITHIN`; `Q` **`WITHIN`, max 2,739 ten-thousandths, argmax 671 both, top-10 agreement 10** |
 | Logits — a real failure is not `WITHIN` | `S` `mf-logits-perturbed`: a blob shifted by 1.0 keeps the argmax and the whole top ten and is `FAIL` |
