@@ -3,8 +3,88 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active capability: R2A-EXPERT-TRACE-CAPTURE — expert-trace capture (2026-08-27)
+## Active capability: R4-ALIGNPACK-LAYER-MAJOR — alignpack v1 container, layer-major layout, and verifier (2026-08-27)
 
+- Branch `agent/r4-alignpack-layer-major`, continuing directly on top of the still-unpublished
+  R2A-EXPERT-TRACE-CAPTURE work (design `b4dfb60`, "record the R1B merge and open the R2A
+  capability" `89e3ae1`, implementation `140e868`, review repair `e99bceb`), which itself sits on
+  the merged R1B-GPTOSS-MOE-IR chain (PR #123, head `3bf5c9c`, merge `d8d4ef6`) onto `main` at
+  `08492dc`. The authoritative design ledger is `docs/specs/r4-alignpack-layer-major.md`, committed
+  at `67de814`, which is also this worktree's current `HEAD` (`git log -1 --format=%h`).
+- **Status: design done, implementation in progress.** The design ledger discharges the
+  proportional design gate (new CLI surface, new persisted multi-gigabyte format, two new versioned
+  exchanged documents, a process boundary). No `src/alignpack.align` exists yet, but the design
+  ledger section 2.9 extraction (`pub fn resolve_claims`/`ClaimTable`, lifted out of `build`'s
+  per-member claim pass so the packer and the `R1_MODEL_IR` renderer share one producer) is **in
+  progress and intentionally uncommitted**, with active edits in `src/model_ir.align`,
+  `src/frontend_qwen.align`, and `src/frontend_gpt_oss.align` as of this writing. It has not yet been
+  run against `gmake check`, `gguf-smoke`, or `model-ir-smoke` in this session; do not commit it
+  until it passes all three and the `R1_MODEL_IR` document stays byte-identical to pre-extraction
+  output. The next actions below continue from that point.
+- **What it will deliver.** `main --pack MODEL.gguf OUT.alignpack [OUT.json]` and `main
+  --pack-verify MODEL.gguf PACK.alignpack [OUT.json]`: a byte-exact, streaming rewrite of one GGUF
+  file into the alignpack v1 container (magic, versioned header, name stream, block table, member
+  table, source-identity record, and a layer-major, layer-locally-grouped payload copied verbatim
+  from the Model IR's own block order), verified by re-reading both containers rather than trusted
+  from the writer's own bookkeeping. Deliberately out of scope for v1: expert hotness ordering,
+  prefetch groups, metadata rewrite, tokenizer, in-place update/append, compression, mmap, and any
+  runtime/loader/durability claim (design ledger section 1.3).
+- **Align capability requests.** R4 added Requests 29 (incremental `sha256` init/update/final), 30
+  (`fs.create_rw_exclusive`), and 31 (file durability via `fsync`/`fdatasync`) to
+  `docs/align-requests.md`. All three are PROPOSED and non-blocking: 29 because R4 ships the bounded
+  header-region digest and reserves the whole-payload `payload_sha256` field; 30 because R4 ships the
+  documented check-then-create race (`R4_DEST_EXISTS`: `fs.exists` then `fs.create_rw`); 31 because
+  R4 makes no durability claim (a pack is a reproducible derivative of a source file that still
+  exists). Requests 21 and 23 gained new R4 client evidence without a status change — 21 a third
+  input class (sizing a read-only model still needs `O_RDWR` because Align ships no `fs.size`/`stat`,
+  alongside R0's model and R2A's transcript), 23 a fourth client (`PackPlan`, another wide
+  columns-plus-stream record read through `borrow` accessors, with its concrete source line to be
+  cited at implementation since `src/alignpack.align` does not exist yet). The header status line in
+  `docs/align-requests.md` now reads "21–31 are PROPOSED".
+- **Measured baseline (design ledger section 2.2, on the real local Qwen2.5-Coder-7B Q4_K_M
+  model).** 58 blocks occupy 89 maximal contiguous ranges; only 27 of 58 blocks are contiguous; a
+  one-read fetch of every block transfers 11,130,544,128 bytes to obtain 4,677,120,000 payload
+  bytes — **2,379,786 ppm** (2.38x read amplification). The pack's planned layout makes every block
+  exactly one range and its span exactly its payload: **58 ranges, 1,000,000 ppm exactly**, computed
+  from the same tensor table and to be re-measured from the written file once `--pack` exists.
+- **Next actions, in order.**
+  1. Finish and verify the in-progress `resolve_claims`/`ClaimTable` extraction (design ledger
+     section 2.9): run `gmake check`, `gmake gguf-smoke`, and `gmake model-ir-smoke`, and confirm the
+     `R1_MODEL_IR` document is byte-identical to pre-extraction output before committing.
+  2. Implement `src/alignpack.align`: the container codec, layout planner, streaming copy, streaming
+     verifier, sequential-read statistics, both document renderers, and every `R4_*` error code.
+  3. Wire `--pack`/`--pack-verify` into `src/main.align`.
+  4. Add `scripts/run-alignpack-smoke`, `make alignpack-smoke`, and the independent
+     `scripts/alignpack_reader.py` layout-invariant checker; run narrow owner tests after each
+     coherent batch.
+  5. Add the opt-in `scripts/run-alignpack-qualification` / `make alignpack-qualification` and run it
+     once against the real model to re-measure the sequential-read improvement and discharge the
+     gate's dischargeable halves (content identity; sequential-read improvement on the dense case).
+  6. `python3 scripts/pre-pr` and one comprehensive review before publication.
+- **Two pending user decisions, carried forward verbatim.**
+  1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
+     gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
+     `N/A`.
+  2. Carried forward from R2A: whether to download a small MoE GGUF (1-4 GB) so
+     `scripts/run-expert-trace-parity` can exercise the `moe: true` path against a real MoE
+     transcript; until decided the R2 roadmap gate stays open on dense-only smoke evidence, R4's own
+     MoE case stays synthetic-only (design ledger section 1.4, item 3), and R3 stays blocked (below).
+     Note: a small MoE GGUF chosen for size will most likely not be gpt-oss architecture, so R3's
+     real measurement would also need a new R1C frontend for whatever architecture that model uses,
+     not just the download itself.
+- **R3 (Cache Simulator) is blocked on pending decision 2 above.** R3's gate
+  ("対象ハードウェア条件で、baselineより有効なpolicyを特定できること", `docs/specs/roadmap.md` section
+  R3) needs a real MoE activation trace and a cache-policy comparison against it; R2A's design ledger
+  already records that no such trace exists on this host. Resume condition: the small-MoE-GGUF
+  decision is made, the model's architecture is identified, an R1C frontend is built if that
+  architecture is not already `qwen2`/`gpt-oss`, and R2A's `moe: true` path is exercised against a
+  real transcript from it. Independent work that may continue: all of R4-ALIGNPACK-LAYER-MAJOR (its
+  dense-case gate needs no MoE trace).
+
+## Capability in publication: R2A-EXPERT-TRACE-CAPTURE — expert-trace capture (2026-08-27)
+
+- **Status: publication in progress (PR TBD-PR, preflight pending).** Implementation and review are
+  complete (below); the pull request has not yet been created.
 - Branch `agent/r2a-expert-trace`, based on the merged R1B-GPTOSS-MOE-IR chain (PR #123, head
   `3bf5c9c`, merge `d8d4ef6`, onto `main` at `08492dc`). The authoritative design ledger is
   `docs/specs/r2a-expert-trace.md`, committed at `b4dfb60`; the implementation is committed at

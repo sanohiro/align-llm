@@ -1,0 +1,1039 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R4-ALIGNPACK-LAYER-MAJOR narrow durable owner (`docs/specs/r4-alignpack-layer-major.md`
+# section 4.2). It needs no model, no network, and no reference tool: `scripts/gguf_fixture.py`
+# writes the same synthetic qwen2 and gpt-oss corpora `run-model-ir-smoke` already drives into a
+# temporary tree, every artifact is removed by the EXIT trap, and the largest container is a few
+# hundred kilobytes. That is why it joins HOSTED_CHECK_TARGETS.
+#
+# One runner drives five lists: the positive corpus through `--pack`, `--pack-verify`, and the
+# independent reader; the whole R0/R1 negative corpus through `--pack`, asserting that every
+# container and model code passes through verbatim and that no destination is created; the
+# destination corpus; the pack-mutation corpus, one mutation per row of section 3.1 and 3.3; and the
+# lowered-limit corpus, which is the only way the four bounds a fixture cannot exceed cheaply become
+# reachable regressions.
+
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+temp_dir=$(mktemp -d)
+fixture_dir="$temp_dir/fixtures"
+work_dir="$temp_dir/work"
+
+cleanup() {
+  chmod -R u+rwX "$temp_dir" 2>/dev/null || true
+  rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
+mkdir -p "$work_dir"
+python3 "$root_dir/scripts/gguf_fixture.py" "$fixture_dir"
+
+python3 - "$root_dir" "$fixture_dir" "$work_dir" "$compiler" <<'PY'
+import hashlib
+import json
+import os
+import re
+import struct
+import subprocess
+import sys
+from pathlib import Path
+
+root_dir, fixture_dir, work_dir, compiler = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
+
+# `scripts/alignpack_reader.py` is driven as a subprocess, never imported: it is the independent
+# reader, and importing it here would let a shared interpreter state make the two agree by accident.
+binary = str(Path(root_dir) / "main")
+manifest = json.loads((fixture_dir / "manifest.json").read_text(encoding="utf-8"))
+
+FORMAT_VERSION = 1
+SCHEMA_VERSION = 1
+HEADER_BYTES = 128
+
+TOP_ORDER = [
+    "schema_version", "kind", "source_path", "pack_path", "status", "error_code", "error_detail",
+    "destination", "format", "source", "pack", "layout", "sequential_read", "metrics", "blocks",
+]
+VERIFY_TOP_ORDER = [
+    "schema_version", "kind", "source_path", "pack_path", "status", "error_code", "error_detail",
+    "verdict", "format", "source", "pack", "identity", "comparison", "sequential_read", "metrics",
+    "blocks",
+]
+FORMAT_ORDER = [
+    "format_version", "magic", "block_align", "member_align", "flags", "hotness_ordered",
+    "prefetch_grouped", "block_record_bytes", "member_record_bytes", "source_record_bytes",
+]
+SOURCE_ORDER = [
+    "file_size", "data_offset", "gguf_version", "alignment", "tensor_count", "metadata_kv_count",
+    "total_tensor_bytes", "arch", "arch_present", "header_region_bytes", "header_region_sha256",
+]
+PACK_ORDER = [
+    "total_bytes", "header_bytes", "name_stream_offset", "name_stream_bytes", "block_table_offset",
+    "block_count", "member_table_offset", "member_count", "source_record_offset", "payload_offset",
+    "payload_bytes",
+]
+LAYOUT_ORDER = [
+    "block_order", "payload_bytes", "padding_bytes", "duplicated_bytes", "max_block_bytes",
+    "max_member_bytes",
+]
+SEQUENTIAL_ORDER = ["source_of_pack_stats", "source", "pack"]
+STATS_ORDER = [
+    "range_count", "span_bytes", "payload_bytes", "contiguous_block_count", "amplification_ppm",
+    "by_kind",
+]
+KIND_ORDER = [
+    "kind", "block_count", "range_count", "span_bytes", "payload_bytes",
+    "contiguous_block_count", "amplification_ppm",
+]
+PACK_METRICS_ORDER = [
+    "bytes_read", "bytes_written", "elapsed_ns", "copy_window_bytes", "pwrite_count",
+    "pread_count", "peak_window_bytes",
+]
+VERIFY_METRICS_ORDER = [
+    "bytes_read", "elapsed_ns", "compare_window_bytes", "fast_path_windows", "byte_scan_windows",
+]
+BLOCK_ORDER = [
+    "index", "kind", "layer", "expert", "pack_offset", "pack_bytes", "payload_bytes",
+    "padding_bytes", "source_range_count", "source_span_bytes", "source_amplification_ppm",
+    "pack_range_count", "pack_span_bytes", "pack_amplification_ppm", "members",
+]
+MEMBER_ORDER = [
+    "name", "role", "role_id", "source_offset", "nbytes", "pack_offset", "ggml_type", "n_dims",
+    "dims", "slice_index", "slice_count",
+]
+IDENTITY_ORDER = [
+    "header_region_match", "file_size_match", "data_offset_match", "tensor_count_match",
+    "expected_header_region_sha256", "observed_header_region_sha256",
+]
+COMPARISON_ORDER = ["members_compared", "bytes_compared", "windows_compared", "first_mismatch"]
+MISMATCH_ORDER = [
+    "member_index", "member_name", "block_index", "source_offset", "pack_offset", "delta",
+    "source_byte", "pack_byte",
+]
+
+PACK_SUMMARY_LABELS = [
+    "alignpack:", "status:", None, "arch:", None, "pack path:", None, "schema:", None,
+    "format version:", None, "blocks:", None, "members:", None, "payload bytes:", None,
+    "padding bytes:", None, "duplicated bytes:", None, "pack bytes:", None, "bytes read:", None,
+    "bytes written:", None, "elapsed ns:", None, "src ranges:", None, "pack ranges:", None,
+    "src ampl ppm:", None, "pack ampl ppm:", None, "destination:", None,
+]
+VERIFY_SUMMARY_LABELS = [
+    "alignpack verify:", "status:", None, "verdict:", None, "blocks:", None, "members:", None,
+    "compared bytes:", None, "bytes read:", None, "elapsed ns:", None, "src ranges:", None,
+    "pack ranges:", None, "src ampl ppm:", None, "pack ampl ppm:", None, "src span bytes:", None,
+    "pack span bytes:", None, "first mismatch:", None,
+]
+
+checks = 0
+
+
+def fail(message):
+    raise SystemExit("alignpack smoke: FAIL %s" % message)
+
+
+def require(condition, message):
+    global checks
+    checks += 1
+    if not condition:
+        fail(message)
+
+
+def run(args, env=None, cwd=None):
+    return subprocess.run([binary] + args, capture_output=True, env=env,
+                          cwd=str(cwd or work_dir))
+
+
+def ordered(raw):
+    return json.loads(raw.decode("utf-8"), object_pairs_hook=lambda pairs: pairs)
+
+
+def as_dict(pairs):
+    return {key: value for key, value in pairs}
+
+
+def check_order(pairs, expected, where):
+    require([key for key, _ in pairs] == expected,
+            "%s field order is %r, expected %r" % (where, [k for k, _ in pairs], expected))
+
+
+def failed(result, where):
+    """`Error.Invalid` reaches the process as a nonzero status the runtime chooses, not as `1`, so
+    the contract asserted here is "a recorded failure, never an abort" — the shape
+    `run-model-ir-smoke` already uses for the same mapping."""
+    require(result.returncode != 0, "%s: expected a nonzero exit" % where)
+    require(0 < result.returncode <= 125,
+            "%s: exit %d looks like an abort, not a recorded failure" % (where, result.returncode))
+
+
+def sha256_file(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+ELAPSED = re.compile(rb'"elapsed_ns":-?\d+')
+
+
+def normalize(document):
+    """`elapsed_ns` is a wall-clock observation of the run that produced the document, so two runs
+    of one arm cannot report the same value and `form-parity` is asserted over everything else.
+    Every other field of both documents is a function of the two containers alone."""
+    return ELAPSED.sub(b'"elapsed_ns":0', document)
+
+
+def positive_cases():
+    cases = []
+    for key in ("model_ir_cases", "model_ir_gptoss_cases"):
+        for case in manifest[key]:
+            if case["exit"] == 0:
+                cases.append(case)
+    return cases
+
+
+def negative_cases():
+    cases = []
+    for key in ("cases", "model_ir_cases", "model_ir_gptoss_cases"):
+        for case in manifest[key]:
+            if case["exit"] != 0:
+                cases.append((key, case))
+    return cases
+
+
+# ---------------------------------------------------------------------------------------------
+# `document-field-order`, `summary-order`, and the document/summary contract
+# ---------------------------------------------------------------------------------------------
+
+def check_pack_document(pairs, path_of_source, path_of_pack):
+    check_order(pairs, TOP_ORDER, "R4_ALIGNPACK")
+    document = as_dict(pairs)
+    require(document["schema_version"] == SCHEMA_VERSION, "R4_ALIGNPACK schema_version")
+    require(document["kind"] == "R4_ALIGNPACK", "R4_ALIGNPACK kind")
+    require(document["source_path"] == path_of_source, "R4_ALIGNPACK source_path")
+    require(document["pack_path"] == path_of_pack, "R4_ALIGNPACK pack_path")
+    check_order(document["format"], FORMAT_ORDER, "R4_ALIGNPACK.format")
+    check_order(document["source"], SOURCE_ORDER, "R4_ALIGNPACK.source")
+    check_order(document["pack"], PACK_ORDER, "R4_ALIGNPACK.pack")
+    check_order(document["layout"], LAYOUT_ORDER, "R4_ALIGNPACK.layout")
+    check_order(document["sequential_read"], SEQUENTIAL_ORDER, "R4_ALIGNPACK.sequential_read")
+    sequential = as_dict(document["sequential_read"])
+    require(sequential["source_of_pack_stats"] == "plan",
+            "a --pack document must state that its pack statistics come from the plan")
+    for side in ("source", "pack"):
+        check_order(sequential[side], STATS_ORDER, "sequential_read.%s" % side)
+        for entry in as_dict(sequential[side])["by_kind"]:
+            check_order(entry, KIND_ORDER, "sequential_read.%s.by_kind" % side)
+    check_order(document["metrics"], PACK_METRICS_ORDER, "R4_ALIGNPACK.metrics")
+    for block in document["blocks"]:
+        check_order(block, BLOCK_ORDER, "R4_ALIGNPACK.blocks[]")
+        for member in as_dict(block)["members"]:
+            check_order(member, MEMBER_ORDER, "R4_ALIGNPACK.blocks[].members[]")
+    return document
+
+
+def check_verify_document(pairs):
+    check_order(pairs, VERIFY_TOP_ORDER, "R4_ALIGNPACK_VERIFY")
+    document = as_dict(pairs)
+    require(document["schema_version"] == SCHEMA_VERSION, "R4_ALIGNPACK_VERIFY schema_version")
+    require(document["kind"] == "R4_ALIGNPACK_VERIFY", "R4_ALIGNPACK_VERIFY kind")
+    check_order(document["format"], FORMAT_ORDER, "verify.format")
+    check_order(document["source"], SOURCE_ORDER, "verify.source")
+    check_order(document["pack"], PACK_ORDER, "verify.pack")
+    check_order(document["identity"], IDENTITY_ORDER, "verify.identity")
+    check_order(document["comparison"], COMPARISON_ORDER, "verify.comparison")
+    comparison = as_dict(document["comparison"])
+    if comparison["first_mismatch"] is not None:
+        check_order(comparison["first_mismatch"], MISMATCH_ORDER, "verify.comparison.first_mismatch")
+    check_order(document["sequential_read"], SEQUENTIAL_ORDER, "verify.sequential_read")
+    check_order(document["metrics"], VERIFY_METRICS_ORDER, "verify.metrics")
+    for block in document["blocks"]:
+        check_order(block, BLOCK_ORDER, "verify.blocks[]")
+    return document
+
+
+def check_summary(stdout, labels, where):
+    lines = stdout.decode("utf-8").split("\n")
+    require(lines and lines[-1] == "", "%s summary must end with a newline" % where)
+    lines = lines[:-1]
+    require(len(lines) >= len(labels), "%s summary has %d lines, expected at least %d"
+            % (where, len(lines), len(labels)))
+    for index, expected in enumerate(labels):
+        if expected is None:
+            continue
+        require(lines[index] == expected,
+                "%s summary line %d is %r, expected %r" % (where, index, lines[index], expected))
+    return lines
+
+
+# ---------------------------------------------------------------------------------------------
+# The positive corpus
+# ---------------------------------------------------------------------------------------------
+
+def model_ir_blocks(source):
+    result = run(["--model-ir", source])
+    require(result.returncode == 0, "--model-ir failed on a positive fixture")
+    return json.loads(result.stdout.decode("utf-8"))["blocks"]
+
+
+def drive_positive(case):
+    name = case["name"]
+    source = str(fixture_dir / case["file"])
+    pack_a = str(Path(work_dir) / ("%s.a.alignpack" % name))
+    pack_b = str(Path(work_dir) / ("%s.b.alignpack" % name))
+    document_path = str(Path(work_dir) / ("%s.pack.json" % name))
+    verify_path = str(Path(work_dir) / ("%s.verify.json" % name))
+
+    # `form-parity`: both CLI forms write the pack and emit byte-identical document bytes. The
+    # destination must be the same path for the comparison to mean anything, so the first pack is
+    # removed and rewritten by the second form.
+    three = run(["--pack", source, pack_a])
+    require(three.returncode == 0, "%s: --pack three-operand form exited %d (%s)"
+            % (name, three.returncode, three.stderr.decode("utf-8", "replace")))
+    first_digest = sha256_file(pack_a)
+    os.remove(pack_a)
+    four = run(["--pack", source, pack_a, document_path])
+    require(four.returncode == 0, "%s: --pack four-operand form exited %d" % (name, four.returncode))
+    document_bytes = Path(document_path).read_bytes()
+    require(normalize(three.stdout) == normalize(document_bytes + b"\n"),
+            "%s: the two --pack forms disagree about the document bytes" % name)
+
+    pairs_a = ordered(document_bytes)
+    document = check_pack_document(pairs_a, source, pack_a)
+    require(document["status"] == "ok", "%s: --pack status is %r" % (name, document["status"]))
+    require(document["destination"] == "WRITTEN", "%s: destination is %r"
+            % (name, document["destination"]))
+    check_summary(four.stdout, PACK_SUMMARY_LABELS, "%s --pack" % name)
+
+    # `repeat-pack`: two runs of one source are byte-identical, including their padding, and the
+    # destination path is not one of the container's inputs.
+    require(sha256_file(pack_a) == first_digest,
+            "%s: two packs of one source to one path are not byte-identical" % name)
+    other = run(["--pack", source, pack_b])
+    require(other.returncode == 0, "%s: the second destination failed" % name)
+    require(sha256_file(pack_b) == first_digest,
+            "%s: two packs of one source to two paths are not byte-identical" % name)
+    os.remove(pack_b)
+
+    # `block-order-matches-ir`: the pack's block sequence is the `R1_MODEL_IR` sequence, unchanged.
+    ir_blocks = model_ir_blocks(source)
+    pack_blocks = [as_dict(block) for block in document["blocks"]]
+    require(len(pack_blocks) == len(ir_blocks), "%s: block count %d != Model IR %d"
+            % (name, len(pack_blocks), len(ir_blocks)))
+    for index, (got, want) in enumerate(zip(pack_blocks, ir_blocks)):
+        require((got["kind"], got["layer"], got["expert"])
+                == (want["kind"], want["layer"], want["expert"]),
+                "%s: block %d disagrees with the Model IR order" % (name, index))
+
+    # `pack-contiguity` and `padding-accounting`. Section 2.6 is applied to the pack unchanged, so a
+    # block whose members are all `member_align` multiples is exactly one range; a block that needed
+    # interior padding is one range per padded run, and its span is still exactly its `pack_bytes`.
+    # `pack-contiguity` is stated exactly rather than as an inequality. Section 2.6's merge is
+    # applied to the pack unchanged, so a block whose members all happen to be `member_align`
+    # multiples is exactly one range; a block that needed interior padding is one range per padded
+    # run. Both cases share the property the gate's second half actually rests on: the block's span
+    # is exactly its `pack_bytes`, so fetching it costs one sequential read of the block and nothing
+    # more. The expected range count is derived here from the member offsets, so a planner that
+    # inserted an unexplained gap fails even though the inequality would have passed.
+    layout = as_dict(document["layout"])
+    total_payload = 0
+    total_interior = 0
+    total_gaps = 0
+    for index, block in enumerate(pack_blocks):
+        require(block["pack_span_bytes"] == block["pack_bytes"],
+                "%s: block %d pack span %d != pack_bytes %d"
+                % (name, index, block["pack_span_bytes"], block["pack_bytes"]))
+        interior = block["pack_bytes"] - block["payload_bytes"]
+        require(block["padding_bytes"] == interior, "%s: block %d padding accounting" % (name, index))
+        members = [as_dict(m) for m in block["members"]]
+        placements = [(m["pack_offset"], m["nbytes"]) for m in members]
+        gaps = sum(1 for i in range(1, len(members))
+                   if members[i]["pack_offset"]
+                   > members[i - 1]["pack_offset"] + members[i - 1]["nbytes"])
+        if len(set(placements)) == len(placements):
+            require(block["pack_range_count"] == 1 + gaps,
+                    "%s: block %d reports %d pack ranges, its member offsets imply %d"
+                    % (name, index, block["pack_range_count"], 1 + gaps))
+        if interior == 0:
+            require(block["pack_range_count"] == 1,
+                    "%s: block %d has no interior padding and %d pack ranges"
+                    % (name, index, block["pack_range_count"]))
+            require(block["pack_amplification_ppm"] == 1_000_000,
+                    "%s: block %d is contiguous and reports %d ppm"
+                    % (name, index, block["pack_amplification_ppm"]))
+        else:
+            require(interior < len(members) * 64,
+                    "%s: block %d interior padding %d exceeds one member_align unit per member"
+                    % (name, index, interior))
+        total_payload += block["payload_bytes"]
+        total_interior += interior
+        total_gaps += gaps
+    require(layout["payload_bytes"] == total_payload, "%s: layout payload accounting" % name)
+    require(layout["block_order"] == "model_ir", "%s: layout block_order" % name)
+
+    pack_object = as_dict(document["pack"])
+    padding = pack_object["total_bytes"] - pack_object["payload_offset"] - total_payload
+    require(layout["padding_bytes"] == padding, "%s: layout padding accounting" % name)
+    require(Path(pack_a).stat().st_size == pack_object["total_bytes"],
+            "%s: the written pack is not total_bytes long" % name)
+
+    # `bytes-read-bound` and `bytes-written-bound`: the copy streams rather than rescans.
+    metrics = as_dict(document["metrics"])
+    source_object = as_dict(document["source"])
+    require(total_payload <= metrics["bytes_written"] <= pack_object["total_bytes"],
+            "%s: bytes_written %d outside [%d, %d]"
+            % (name, metrics["bytes_written"], total_payload, pack_object["total_bytes"]))
+    ceiling = total_payload + source_object["data_offset"] + 134217728
+    require(total_payload <= metrics["bytes_read"] <= ceiling,
+            "%s: bytes_read %d outside [%d, %d]"
+            % (name, metrics["bytes_read"], total_payload, ceiling))
+    require(metrics["peak_window_bytes"] <= max(source_object["data_offset"], 4194304),
+            "%s: peak_window_bytes %d exceeds the window budget"
+            % (name, metrics["peak_window_bytes"]))
+    require(metrics["copy_window_bytes"] == 4194304, "%s: copy_window_bytes" % name)
+
+    # `--pack-verify`, both forms.
+    verify_three = run(["--pack-verify", source, pack_a])
+    require(verify_three.returncode == 0, "%s: --pack-verify exited %d (%s)"
+            % (name, verify_three.returncode, verify_three.stderr.decode("utf-8", "replace")))
+    verify_four = run(["--pack-verify", source, pack_a, verify_path])
+    require(verify_four.returncode == 0, "%s: --pack-verify four-operand exited %d"
+            % (name, verify_four.returncode))
+    verify_bytes = Path(verify_path).read_bytes()
+    require(normalize(verify_three.stdout) == normalize(verify_bytes + b"\n"),
+            "%s: the two --pack-verify forms disagree about the document bytes" % name)
+    verify = check_verify_document(ordered(verify_bytes))
+    require(verify["status"] == "ok", "%s: verify status is %r" % (name, verify["status"]))
+    require(verify["verdict"] == "identical", "%s: verify verdict is %r" % (name, verify["verdict"]))
+    check_summary(verify_four.stdout, VERIFY_SUMMARY_LABELS, "%s --pack-verify" % name)
+
+    comparison = as_dict(verify["comparison"])
+    require(comparison["first_mismatch"] is None, "%s: an identical pack named a mismatch" % name)
+    require(comparison["bytes_compared"] == total_payload,
+            "%s: compared %d bytes, expected %d" % (name, comparison["bytes_compared"], total_payload))
+    verify_metrics = as_dict(verify["metrics"])
+    # `compare-fast-path`: an identical window takes the `constant_time_equal` path and no byte scan.
+    require(verify_metrics["byte_scan_windows"] == 0,
+            "%s: an identical comparison performed %d byte scans"
+            % (name, verify_metrics["byte_scan_windows"]))
+    require(verify_metrics["fast_path_windows"] == comparison["windows_compared"],
+            "%s: fast-path window accounting" % name)
+    sequential = as_dict(verify["sequential_read"])
+    require(sequential["source_of_pack_stats"] == "pack_tables",
+            "%s: a verify document must derive its pack statistics from the pack's tables" % name)
+
+    # The gate's second half over this fixture. The pack's totals are stated exactly — its span is
+    # its payload plus its interior padding, and its range count is one per block plus one per
+    # padded run — and the improvement is asserted only where there is one to make: a fixture whose
+    # source is already fully contiguous has nothing to improve, and the pack's own alignment then
+    # costs it a few parts per million, which the format's guarantee is worth and which is reported
+    # rather than hidden.
+    source_stats = as_dict(sequential["source"])
+    pack_stats = as_dict(sequential["pack"])
+    require(pack_stats["span_bytes"] == total_payload + total_interior,
+            "%s: pack span %d != payload %d + interior padding %d"
+            % (name, pack_stats["span_bytes"], total_payload, total_interior))
+    require(pack_stats["range_count"] == len(pack_blocks) + total_gaps,
+            "%s: pack range count %d != %d blocks + %d padded runs"
+            % (name, pack_stats["range_count"], len(pack_blocks), total_gaps))
+    require(pack_stats["contiguous_block_count"] == len(pack_blocks) - total_gaps
+            or total_gaps > 1,
+            "%s: contiguous block accounting" % name)
+    if source_stats["contiguous_block_count"] < len(pack_blocks):
+        require(pack_stats["span_bytes"] < source_stats["span_bytes"],
+                "%s: a non-contiguous source did not shrink its span" % name)
+        require(pack_stats["amplification_ppm"] < source_stats["amplification_ppm"],
+                "%s: a non-contiguous source did not improve its amplification" % name)
+        require(pack_stats["contiguous_block_count"] > source_stats["contiguous_block_count"],
+                "%s: a non-contiguous source gained no contiguous block" % name)
+    if total_interior == 0:
+        require(pack_stats["amplification_ppm"] == 1_000_000,
+                "%s: a pack with no interior padding reports %d ppm"
+                % (name, pack_stats["amplification_ppm"]))
+        require(pack_stats["range_count"] == len(pack_blocks),
+                "%s: a pack with no interior padding has %d ranges for %d blocks"
+                % (name, pack_stats["range_count"], len(pack_blocks)))
+
+    # The independent reader, over the same pack and both documents.
+    reader_ok(source, pack_a, document_path, verify_path, name)
+    return {"source": source, "pack": pack_a, "document": document, "verify": verify}
+
+
+def reader_ok(source, pack, document_path, verify_path, name):
+    global checks
+    checks += 1
+    result = subprocess.run(
+        [sys.executable, str(Path(root_dir) / "scripts" / "alignpack_reader.py"),
+         "--source", source, "--pack", pack, "--pack-document", document_path,
+         "--verify-document", verify_path, "--quiet"],
+        capture_output=True)
+    if result.returncode != 0:
+        fail("%s: the independent reader rejected the pack: %s"
+             % (name, result.stderr.decode("utf-8", "replace").strip()))
+
+
+def reader_rejects(source, pack, kind, name):
+    global checks
+    checks += 1
+    result = subprocess.run(
+        [sys.executable, str(Path(root_dir) / "scripts" / "alignpack_reader.py"),
+         "--source", source, "--pack", pack, "--expect-reject", kind, "--quiet"],
+        capture_output=True)
+    if result.returncode != 0:
+        fail("%s: the independent reader did not reject %s: %s"
+             % (name, kind, result.stderr.decode("utf-8", "replace").strip()))
+
+
+# ---------------------------------------------------------------------------------------------
+# The negative source corpus
+# ---------------------------------------------------------------------------------------------
+
+def drive_negative_sources(cases):
+    for key, case in cases:
+        name = case["name"]
+        source = str(fixture_dir / case["file"])
+        destination = str(Path(work_dir) / ("neg-%s.alignpack" % name))
+        if os.path.exists(destination):
+            os.remove(destination)
+        result = run(["--pack", source, destination])
+        failed(result, "%s --pack" % name)
+        document = as_dict(ordered(result.stdout))
+        require(document["status"] == "error", "%s: --pack over a malformed source reported ok" % name)
+        code = document["error_code"]
+        require(code.startswith("R0_") or code.startswith("R1_"),
+                "%s: --pack re-mapped a container or model defect to %r" % (name, code))
+        if "error" in case:
+            expected = case["error"]["code"]
+            if key == "cases":
+                # An R0 container defect reaches an R1 consumer as `R1_GGUF_ERROR` carrying the R0
+                # code as its detail; R4 surfaces both unchanged.
+                require(code == "R1_GGUF_ERROR", "%s: a container defect gave %r" % (name, code))
+                require(document["error_detail"] == expected,
+                        "%s: detail is %r, the generator expects %r"
+                        % (name, document["error_detail"], expected))
+            else:
+                require(code == expected, "%s: --pack reported %r, the generator expects %r"
+                        % (name, code, expected))
+        require(document["destination"] == "UNTOUCHED",
+                "%s: a source defect reported destination %r" % (name, document["destination"]))
+        require(not os.path.exists(destination),
+                "%s: a source defect left a destination file behind" % name)
+        # The same defect through `--pack-verify`, which must also refuse before touching the pack.
+        verify = run(["--pack-verify", source, destination])
+        failed(verify, "%s --pack-verify" % name)
+        verify_document = as_dict(ordered(verify.stdout))
+        require(verify_document["error_code"] == code,
+                "%s: the two arms disagree about a source defect" % name)
+        require(verify_document["verdict"] is None,
+                "%s: a source defect produced a verdict" % name)
+
+
+# ---------------------------------------------------------------------------------------------
+# The destination corpus
+# ---------------------------------------------------------------------------------------------
+
+def drive_destinations(sample_source):
+    occupied = Path(work_dir) / "occupied.alignpack"
+    occupied.write_bytes(b"do not overwrite me")
+    before = occupied.read_bytes()
+    before_mtime = occupied.stat().st_mtime_ns
+    result = run(["--pack", sample_source, str(occupied)])
+    failed(result, "dest-exists")
+    document = as_dict(ordered(result.stdout))
+    require(document["error_code"] == "R4_DEST_EXISTS", "dest-exists: code is %r"
+            % document["error_code"])
+    require(document["error_detail"] == str(occupied), "dest-exists: detail is %r"
+            % document["error_detail"])
+    require(document["destination"] == "UNTOUCHED", "dest-exists: destination is %r"
+            % document["destination"])
+    require(occupied.read_bytes() == before, "dest-exists: the occupied file was modified")
+    require(occupied.stat().st_mtime_ns == before_mtime, "dest-exists: mtime changed")
+
+    directory = Path(work_dir) / "a-directory"
+    directory.mkdir(exist_ok=True)
+    result = run(["--pack", sample_source, str(directory)])
+    failed(result, "dest-is-directory")
+    document = as_dict(ordered(result.stdout))
+    require(document["error_code"] == "R4_DEST_EXISTS", "dest-is-directory: code is %r"
+            % document["error_code"])
+
+    if os.geteuid() != 0:
+        locked = Path(work_dir) / "locked"
+        locked.mkdir(exist_ok=True)
+        os.chmod(locked, 0o500)
+        try:
+            result = run(["--pack", sample_source, str(locked / "out.alignpack")])
+            failed(result, "dest-unwritable")
+            document = as_dict(ordered(result.stdout))
+            require(document["error_code"] == "R4_DEST_UNWRITABLE", "dest-unwritable: code is %r"
+                    % document["error_code"])
+            require(document["destination"] == "UNTOUCHED",
+                    "dest-unwritable: destination is %r" % document["destination"])
+            require(not (locked / "out.alignpack").exists(),
+                    "dest-unwritable: something was created")
+        finally:
+            os.chmod(locked, 0o700)
+    else:
+        print("alignpack smoke: dest-unwritable N/A (running as root)")
+
+    # `cli-arity`, `path-too-long`, `nul-path`, `empty-path`: `Err` with no output and no file.
+    long_path = str(Path(work_dir) / ("x" * 4097))
+    for label, args in (
+        ("arity-two", ["--pack", sample_source]),
+        ("arity-five", ["--pack", sample_source, str(Path(work_dir) / "a.pack"),
+                        str(Path(work_dir) / "b.json"), "extra"]),
+        ("empty-source", ["--pack", "", str(Path(work_dir) / "c.pack")]),
+        ("empty-dest", ["--pack", sample_source, ""]),
+        ("nul-dest", ["--pack", sample_source, str(Path(work_dir) / "d\0.pack")]),
+        ("long-source", ["--pack", long_path, str(Path(work_dir) / "e.pack")]),
+        ("long-dest", ["--pack", sample_source, long_path]),
+        ("long-document", ["--pack", sample_source, str(Path(work_dir) / "f.pack"), long_path]),
+        ("verify-arity-two", ["--pack-verify", sample_source]),
+        ("verify-empty-pack", ["--pack-verify", sample_source, ""]),
+    ):
+        try:
+            result = run(args)
+        except ValueError:
+            # A NUL in an argv element is refused by the runner's own exec, which is the same
+            # refusal the arm would make; the case is recorded as covered by the caller.
+            continue
+        require(result.returncode != 0, "%s: expected a nonzero exit" % label)
+        require(result.stdout == b"", "%s: produced stdout %r" % (label, result.stdout[:80]))
+    for stray in ("a.pack", "c.pack", "d\0.pack", "e.pack", "f.pack"):
+        require(not (Path(work_dir) / stray).exists(),
+                "an argument failure created %r" % stray)
+
+    # `selector-as-operand`: `--pack-verify` in an operand position is an operand, not a second
+    # selector. It names no file, so the source open fails at the operating system and the arm
+    # returns `Err` with no document at all — the section 2.8 contract for an OS failure.
+    result = run(["--pack", "--pack-verify", str(Path(work_dir) / "g.pack")])
+    failed(result, "selector-as-operand")
+    require(result.stdout == b"", "selector-as-operand: produced a document for an OS failure")
+    require(not (Path(work_dir) / "g.pack").exists(),
+            "selector-as-operand: a destination was created")
+    # The same shape for a source that simply does not exist.
+    result = run(["--pack", str(Path(work_dir) / "absent.gguf"), str(Path(work_dir) / "h.pack")])
+    failed(result, "absent-source")
+    require(result.stdout == b"", "absent-source: produced a document for an OS failure")
+    require(not (Path(work_dir) / "h.pack").exists(), "absent-source: a destination was created")
+    result = run(["--pack-verify", sample_source, str(Path(work_dir) / "absent.alignpack")])
+    failed(result, "absent-pack")
+    document = as_dict(ordered(result.stdout))
+    require(document["error_code"] == "R4_PACK_UNREADABLE",
+            "absent-pack: code is %r" % document["error_code"])
+    require(document["verdict"] is None, "absent-pack: a verdict was reported")
+
+
+# ---------------------------------------------------------------------------------------------
+# The pack-mutation corpus
+# ---------------------------------------------------------------------------------------------
+
+def mutate(base, name, edits=(), truncate=None):
+    target = Path(work_dir) / ("mut-%s.alignpack" % name)
+    raw = bytearray(Path(base).read_bytes())
+    for offset, payload in edits:
+        raw[offset:offset + len(payload)] = payload
+    if truncate is not None:
+        raw = raw[:truncate]
+    target.write_bytes(bytes(raw))
+    return str(target)
+
+
+def expect_verify(source, pack, code, detail_predicate, name, verdict=None):
+    result = run(["--pack-verify", source, pack])
+    failed(result, "%s --pack-verify" % name)
+    document = as_dict(ordered(result.stdout))
+    require(document["error_code"] == code,
+            "%s: --pack-verify reported %r (%r), expected %r"
+            % (name, document["error_code"], document["error_detail"], code))
+    if detail_predicate is not None:
+        require(detail_predicate(document["error_detail"]),
+                "%s: unexpected detail %r" % (name, document["error_detail"]))
+    require(document["verdict"] == verdict,
+            "%s: verdict is %r, expected %r" % (name, document["verdict"], verdict))
+    return document
+
+
+def drive_mutations(source, pack, document):
+    pack_object = as_dict(document["pack"])
+    total = pack_object["total_bytes"]
+    blocks = [as_dict(block) for block in document["blocks"]]
+    members = [as_dict(m) for block in blocks for m in block["members"]]
+    block_table = pack_object["block_table_offset"]
+    member_table = pack_object["member_table_offset"]
+    source_record = pack_object["source_record_offset"]
+    name_stream = pack_object["name_stream_offset"]
+
+    def u32(value):
+        return struct.pack("<I", value)
+
+    def u64(value):
+        return struct.pack("<Q", value)
+
+    # Section 3.1 header corpus.
+    expect_verify(source, mutate(pack, "magic", [(0, b"X")]), "R4_PACK_MAGIC",
+                  lambda d: d.startswith("\\x58"), "bad-magic")
+    reader_rejects(source, mutate(pack, "magic", [(0, b"X")]), "MAGIC", "bad-magic")
+    for value in (0, 2, 0xFFFFFFFF):
+        target = mutate(pack, "version-%d" % value, [(4, u32(value))])
+        expect_verify(source, target, "R4_PACK_VERSION", lambda d, v=value: d == str(v),
+                      "bad-version-%d" % value)
+        reader_rejects(source, target, "VERSION", "bad-version-%d" % value)
+    for label, offset, value, field in (
+        ("header_bytes", 8, 129, "header_bytes"),
+        ("block_record_bytes", 104, 63, "block_record_bytes"),
+        ("member_record_bytes", 108, 95, "member_record_bytes"),
+        ("source_record_bytes", 112, 127, "source_record_bytes"),
+        ("document_schema_version", 116, 2, "document_schema_version"),
+    ):
+        target = mutate(pack, label, [(offset, u32(value))])
+        expect_verify(source, target, "R4_PACK_HEADER", lambda d, f=field: d == f, label)
+        reader_rejects(source, target, "HEADER", label)
+    for label, offset, value, field in (
+        ("block-align-odd", 12, 4095, "block_align"),
+        ("block-align-huge", 12, 131072, "block_align"),
+        ("member-align-odd", 16, 63, "member_align"),
+        ("member-align-above-block", 16, 8192, "member_align"),
+    ):
+        target = mutate(pack, label, [(offset, u32(value))])
+        expect_verify(source, target, "R4_PACK_HEADER", lambda d, f=field: d == f, label)
+        reader_rejects(source, target, "HEADER", label)
+    for label, offset, value, field in (
+        ("flags-hotness", 20, 1, "flags"),
+        ("flags-prefetch", 20, 2, "flags"),
+    ):
+        target = mutate(pack, label, [(offset, u32(value))])
+        expect_verify(source, target, "R4_PACK_RESERVED", lambda d, f=field: d == f, label)
+        reader_rejects(source, target, "RESERVED", label)
+    target = mutate(pack, "header-reserved", [(120, u64(1))])
+    expect_verify(source, target, "R4_PACK_RESERVED", lambda d: d == "reserved", "reserved-nonzero")
+    reader_rejects(source, target, "RESERVED", "reserved-nonzero")
+
+    # A big-endian header is refused by the magic, never silently read.
+    be = bytearray(Path(pack).read_bytes())
+    be[0:4] = b"PGLA"
+    target = Path(work_dir) / "mut-be.alignpack"
+    target.write_bytes(bytes(be))
+    expect_verify(source, str(target), "R4_PACK_MAGIC", None, "be-header")
+    reader_rejects(source, str(target), "MAGIC", "be-header")
+
+    # Truncation at three depths, and a declared size that disagrees with the file.
+    for label, cut in (("one-byte", total - 1), ("header-boundary", HEADER_BYTES),
+                       ("mid-payload", (pack_object["payload_offset"] + total) // 2)):
+        target = mutate(pack, "truncated-%s" % label, truncate=cut)
+        expect_verify(source, target, "R4_PACK_TRUNCATED", None, "pack-truncated-%s" % label)
+        reader_rejects(source, target, "TRUNCATED", "pack-truncated-%s" % label)
+    target = mutate(pack, "total-bytes", [(24, u64(total + 4096))])
+    expect_verify(source, target, "R4_PACK_TRUNCATED", None, "declared-size-disagrees")
+    reader_rejects(source, target, "TRUNCATED", "declared-size-disagrees")
+
+    # Region defects.
+    target = mutate(pack, "region-overlap", [(48, u64(name_stream))])
+    expect_verify(source, target, "R4_PACK_REGION", None, "region-overlap")
+    reader_rejects(source, target, "REGION", "region-overlap")
+    target = mutate(pack, "region-past-eof", [(64, u64(total))])
+    expect_verify(source, target, "R4_PACK_TRUNCATED", None, "region-past-eof")
+    reader_rejects(source, target, "TRUNCATED", "region-past-eof")
+
+    # Deferred block fields.
+    for label, offset, field in (("prefetch-group-set", 48, "prefetch_group"),
+                                 ("hotness-rank-set", 52, "hotness_rank"),
+                                 ("block-reserved", 56, "reserved")):
+        payload = u64(1) if field == "reserved" else u32(0)
+        target = mutate(pack, label, [(block_table + offset, payload)])
+        expect_verify(source, target, "R4_PACK_RESERVED",
+                      lambda d, f=field: d == "block[0].%s" % f, label)
+        reader_rejects(source, target, "RESERVED", label)
+    target = mutate(pack, "member-reserved", [(member_table + 88, u64(1))])
+    expect_verify(source, target, "R4_PACK_RESERVED",
+                  lambda d: d == "member[0].reserved", "member-reserved")
+    reader_rejects(source, target, "RESERVED", "member-reserved")
+
+    # Name-stream defects.
+    target = mutate(pack, "name-span-past-end", [(member_table + 8, u32(1 << 20))])
+    expect_verify(source, target, "R4_PACK_NAME_MISMATCH", lambda d: d == "0", "name-span-past-end")
+    reader_rejects(source, target, "NAME", "name-span-past-end")
+    target = mutate(pack, "name-bytes", [(name_stream, b"\xff")])
+    expect_verify(source, target, "R4_PACK_NAME_MISMATCH", lambda d: d == "0",
+                  "pack-name-invalid-utf8")
+    reader_rejects(source, target, "NAME", "pack-name-invalid-utf8")
+
+    # Offset defects.
+    target = mutate(pack, "member-misaligned", [(member_table + 32, u64(members[0]["pack_offset"] + 1))])
+    expect_verify(source, target, "R4_PACK_OFFSET", lambda d: d == "member[0]", "member-misaligned")
+    reader_rejects(source, target, "OFFSET", "member-misaligned")
+    target = mutate(pack, "block-misaligned", [(block_table + 24, u64(blocks[0]["pack_offset"] + 64))])
+    expect_verify(source, target, "R4_PACK_BLOCK_MISMATCH",
+                  lambda d: d == "block[0].pack_offset", "block-pack-offset")
+    reader_rejects(source, target, "OFFSET", "block-misaligned")
+
+    # Block and member record disagreements with the freshly derived Model IR.
+    target = mutate(pack, "block-kind", [(block_table, u32(4))])
+    expect_verify(source, target, "R4_PACK_BLOCK_MISMATCH", lambda d: d == "block[0].kind",
+                  "block-kind")
+    target = mutate(pack, "member-type", [(member_table + 40, u32(99))])
+    expect_verify(source, target, "R4_PACK_MEMBER_MISMATCH",
+                  lambda d: d == "member[0].ggml_type", "member-type")
+    target = mutate(pack, "member-nbytes", [(member_table + 24, u64(members[0]["nbytes"] + 64))])
+    expect_verify(source, target, "R4_PACK_MEMBER_MISMATCH",
+                  lambda d: d == "member[0].nbytes", "member-nbytes")
+
+    # Source-identity defects. They stop before a single payload byte is compared.
+    target = mutate(pack, "identity-file-size", [(source_record, u64(1))])
+    document_out = expect_verify(source, target, "R4_SOURCE_IDENTITY",
+                                 lambda d: d == "file_size", "identity-file-size")
+    require(as_dict(document_out["comparison"])["bytes_compared"] == 0,
+            "identity-file-size: bytes were compared before the identity check")
+    reader_rejects(source, target, "IDENTITY", "identity-file-size")
+    target = mutate(pack, "identity-digest", [(source_record + 48, b"\x00")])
+    document_out = expect_verify(source, target, "R4_SOURCE_IDENTITY",
+                                 lambda d: d == "header_region_sha256", "identity-digest")
+    require(as_dict(document_out["comparison"])["bytes_compared"] == 0,
+            "identity-digest: bytes were compared before the identity check")
+    reader_rejects(source, target, "IDENTITY", "identity-digest")
+    target = mutate(pack, "payload-digest-present", [(source_record + 88, u64(1))])
+    expect_verify(source, target, "R4_PACK_RESERVED",
+                  lambda d: d == "payload_sha256_present", "payload-digest-present")
+    reader_rejects(source, target, "RESERVED", "payload-digest-present")
+    target = mutate(pack, "payload-digest", [(source_record + 96, b"\x01")])
+    expect_verify(source, target, "R4_PACK_RESERVED", lambda d: d == "payload_sha256",
+                  "payload-digest-reserved")
+    reader_rejects(source, target, "RESERVED", "payload-digest-reserved")
+
+    # A flipped payload byte at four positions, each asserting the exact detail string.
+    first = members[0]
+    biggest = max(members, key=lambda m: m["nbytes"])
+    later_index = next(i for i, m in enumerate(members) if i > 0 and m["nbytes"] > 0)
+    later = members[later_index]
+    for label, member, member_index, delta in (
+        ("flip-first-byte", first, 0, 0),
+        ("flip-last-byte", first, 0, first["nbytes"] - 1),
+        ("flip-window-boundary", biggest, members.index(biggest), biggest["nbytes"] // 2),
+        ("flip-across-two-members", later, later_index, 0),
+    ):
+        offset = member["pack_offset"] + delta
+        original = Path(pack).read_bytes()[offset]
+        target = mutate(pack, label, [(offset, bytes([original ^ 0xFF]))])
+        expected_detail = "%s@%d+%d" % (member["name"], member["source_offset"], delta)
+        document_out = expect_verify(source, target, "R4_CONTENT_MISMATCH",
+                                     lambda d, e=expected_detail: d == e, label,
+                                     verdict="mismatch")
+        comparison = as_dict(document_out["comparison"])
+        mismatch = as_dict(comparison["first_mismatch"])
+        require(mismatch["member_index"] == member_index,
+                "%s: first_mismatch names member %r, expected %d"
+                % (label, mismatch["member_index"], member_index))
+        require(mismatch["delta"] == delta, "%s: first_mismatch delta" % label)
+        require(mismatch["pack_offset"] == offset, "%s: first_mismatch pack_offset" % label)
+        require(mismatch["source_byte"] == original, "%s: first_mismatch source_byte" % label)
+        require(mismatch["pack_byte"] == (original ^ 0xFF), "%s: first_mismatch pack_byte" % label)
+        # `partial-verify`: the pass stops at the defect and reports what completed.
+        require(comparison["members_compared"] == member_index,
+                "%s: members_compared is %r, expected %d"
+                % (label, comparison["members_compared"], member_index))
+        require(as_dict(document_out["metrics"])["byte_scan_windows"] == 1,
+                "%s: exactly one window should be scanned byte-wise" % label)
+        reader_rejects(source, target, "CONTENT", label)
+
+    # A nonzero interior padding byte.
+    padding_offset = None
+    for block in blocks:
+        end = block["pack_offset"] + block["pack_bytes"]
+        if end % 4096 != 0 and end < total:
+            padding_offset = end
+            break
+    if padding_offset is None:
+        print("alignpack smoke: padding-corrupted N/A (this fixture has no interior padding run)")
+    else:
+        target = mutate(pack, "padding", [(padding_offset, b"\x01")])
+        expect_verify(source, target, "R4_PADDING_NONZERO",
+                      lambda d: d == str(padding_offset), "padding-corrupted")
+        reader_rejects(source, target, "PADDING", "padding-corrupted")
+
+
+def drive_identity_mismatch(source_a, pack_a, source_b):
+    """A pack verified against a different model stops at `R4_SOURCE_IDENTITY` before any byte
+    comparison."""
+    result = run(["--pack-verify", source_b, pack_a])
+    failed(result, "identity-mismatch")
+    document = as_dict(ordered(result.stdout))
+    require(document["error_code"] == "R4_SOURCE_IDENTITY",
+            "identity-mismatch: code is %r" % document["error_code"])
+    require(as_dict(document["comparison"])["bytes_compared"] == 0,
+            "identity-mismatch: bytes were compared")
+    require(document["verdict"] is None, "identity-mismatch: a verdict was reported")
+
+
+# ---------------------------------------------------------------------------------------------
+# The lowered-limit corpus
+# ---------------------------------------------------------------------------------------------
+
+DEFAULTS = [1048576, 1048576, 134217728, 16777216, 1024, 1099511627776, 4194304]
+
+
+def limits_run(source, destination, overrides):
+    values = list(DEFAULTS)
+    for index, value in overrides.items():
+        values[index] = value
+    result = subprocess.run(
+        [compiler, "run", str(Path(root_dir) / "src" / "alignpack_limits_smoke.align"),
+         source, destination] + [str(v) for v in values],
+        capture_output=True, cwd=work_dir)
+    if result.returncode != 0:
+        fail("limits entry point exited %d: %s"
+             % (result.returncode, result.stderr.decode("utf-8", "replace")[-800:]))
+    lines = result.stdout.decode("utf-8").strip().split("\n")
+    return dict(zip(lines[0::2], lines[1::2]))
+
+
+def drive_limits(source):
+    destination = str(Path(work_dir) / "limited.alignpack")
+    for label, overrides, code in (
+        ("block-limit", {0: 2}, "R4_BLOCK_LIMIT"),
+        ("member-limit", {1: 3}, "R4_MEMBER_LIMIT"),
+        ("table-too-large", {2: 64}, "R4_TABLE_TOO_LARGE"),
+        ("name-stream-too-large", {3: 4}, "R4_TABLE_TOO_LARGE"),
+        ("name-too-long", {4: 3}, "R4_NAME_TOO_LONG"),
+        ("pack-too-large", {5: 4096}, "R4_PACK_TOO_LARGE"),
+    ):
+        if os.path.exists(destination):
+            os.remove(destination)
+        report = limits_run(source, destination, overrides)
+        require(report["status:"] == "ERROR", "%s: status is %r" % (label, report["status:"]))
+        require(report["code:"] == code, "%s: code is %r, expected %r"
+                % (label, report["code:"], code))
+        require(report["destination:"] == "UNTOUCHED",
+                "%s: destination is %r" % (label, report["destination:"]))
+        require(not os.path.exists(destination), "%s: a limit failure created a file" % label)
+
+    # `copy-window-boundary` and `short-read-completed`: a lowered window makes every member
+    # straddle several windows, and the pack must still be byte-identical.
+    reference = str(Path(work_dir) / "window-reference.alignpack")
+    if os.path.exists(reference):
+        os.remove(reference)
+    report = limits_run(source, reference, {})
+    require(report["status:"] == "OK", "window-reference: status is %r" % report["status:"])
+    for window in (64, 65, 128, 129, 4096):
+        target = str(Path(work_dir) / ("window-%d.alignpack" % window))
+        if os.path.exists(target):
+            os.remove(target)
+        report = limits_run(source, target, {6: window})
+        require(report["status:"] == "OK", "window-%d: status is %r" % (window, report["status:"]))
+        require(sha256_file(target) == sha256_file(reference),
+                "window-%d: a lowered copy window changed the pack bytes" % window)
+        verify = run(["--pack-verify", source, target])
+        require(verify.returncode == 0, "window-%d: the pack does not verify" % window)
+
+
+# ---------------------------------------------------------------------------------------------
+# Environment isolation and the leak sweep
+# ---------------------------------------------------------------------------------------------
+
+def drive_environment(source):
+    baseline_pack = str(Path(work_dir) / "env-baseline.alignpack")
+    perturbed_pack = str(Path(work_dir) / "env-perturbed.alignpack")
+    for path in (baseline_pack, perturbed_pack):
+        if os.path.exists(path):
+            os.remove(path)
+    baseline = run(["--pack", source, baseline_pack])
+    require(baseline.returncode == 0, "env-perturbation: the baseline pack failed")
+    perturbed_env = dict(os.environ)
+    perturbed_env.update({
+        "ALIGN_LLM_GGUF_MODEL": "/nonexistent",
+        "ALIGN_LLM_ALIGNPACK_TMPDIR": "/nonexistent",
+        "ALIGN_LLM_TEMP_ROOT": "/nonexistent",
+        "HOME": "/nonexistent",
+        "LANG": "C",
+    })
+    perturbed = run(["--pack", source, perturbed_pack], env=perturbed_env)
+    require(perturbed.returncode == 0, "env-perturbation: the perturbed pack failed")
+    require(sha256_file(baseline_pack) == sha256_file(perturbed_pack),
+            "env-perturbation: the environment changed the pack bytes")
+    baseline_document = normalize(baseline.stdout.replace(baseline_pack.encode(), b"@PACK@"))
+    perturbed_document = normalize(perturbed.stdout.replace(perturbed_pack.encode(), b"@PACK@"))
+    require(baseline_document == perturbed_document,
+            "env-perturbation: the environment changed the document bytes")
+
+
+def leak_sweep(before):
+    after = set()
+    for path in Path(root_dir).rglob("*"):
+        if ".git" in path.parts:
+            continue
+        after.add(str(path))
+    leaked = sorted(after - before)
+    require(not leaked, "the runner wrote into the repository: %r" % leaked[:8])
+
+
+# ---------------------------------------------------------------------------------------------
+
+before = set()
+for path in Path(root_dir).rglob("*"):
+    if ".git" in path.parts:
+        continue
+    before.add(str(path))
+
+cases = positive_cases()
+require(len(cases) >= 15, "the positive corpus has only %d fixtures" % len(cases))
+results = {}
+for case in cases:
+    results[case["name"]] = drive_positive(case)
+
+qwen = results["qwen2-full"]
+gptoss = results["gptoss-full"]
+
+# `tied-embedding-duplicated`: the shared tensor is written twice and the cost is visible.
+tied = results["qwen2-tied"]
+tied_layout = as_dict(tied["document"]["layout"])
+require(tied_layout["duplicated_bytes"] > 0,
+        "tied-embedding-duplicated: the tied fixture reports no duplication")
+plain_layout = as_dict(qwen["document"]["layout"])
+require(plain_layout["duplicated_bytes"] == 0,
+        "a model with its own output.weight must duplicate nothing")
+
+# `expert-block-contiguous`: every gpt-oss `ExpertBlock` becomes one range in the pack, and the
+# improvement over the source is the largest this format offers.
+expert_blocks = [as_dict(b) for b in gptoss["document"]["blocks"]
+                 if as_dict(b)["kind"] == "ExpertBlock"]
+require(expert_blocks, "the gpt-oss corpus produced no ExpertBlock")
+for block in expert_blocks:
+    require(block["source_range_count"] > 1,
+            "an ExpertBlock's claims are already contiguous in the source; the fixture is wrong")
+    require(block["pack_range_count"] == 1,
+            "expert-block-contiguous: an ExpertBlock packs into %d ranges"
+            % block["pack_range_count"])
+
+# `stats-overlap`: two blocks' spans may overlap, so the source total may exceed the file size.
+permuted = results["qwen2-permuted"]
+permuted_sequential = as_dict(as_dict(permuted["verify"]["sequential_read"])["source"])
+require(permuted_sequential["range_count"] > len(permuted["document"]["blocks"]),
+        "stats-overlap: the permuted fixture is contiguous")
+
+drive_negative_sources(negative_cases())
+drive_destinations(qwen["source"])
+drive_mutations(qwen["source"], qwen["pack"], qwen["document"])
+drive_mutations(gptoss["source"], gptoss["pack"], gptoss["document"])
+drive_identity_mismatch(qwen["source"], qwen["pack"], results["qwen2-geometry"]["source"])
+drive_limits(qwen["source"])
+drive_environment(qwen["source"])
+
+# The three cells this host cannot reach, named rather than silently skipped.
+print("alignpack smoke: write-to-full-filesystem N/A "
+      "(a file-size cap raises SIGXFSZ rather than surfacing ENOSPC through pwrite, and a "
+      "loopback image needs root on darwin)")
+print("alignpack smoke: cleanup-failed N/A "
+      "(a destination directory made read-only after fs.create_rw does not make fs.remove fail on "
+      "this filesystem)")
+print("alignpack smoke: window-unavailable N/A "
+      "(truncating the source between the plan and the copy needs an injection point the arm does "
+      "not expose)")
+
+require(Path(work_dir).is_dir(), "the temporary work tree disappeared")
+leak_sweep(before)
+
+print("alignpack smoke: %d positive fixtures, %d negative sources, %d assertions"
+      % (len(cases), len(negative_cases()), checks))
+print("alignpack smoke: container codec, layout invariants, byte identity, the sequential-read "
+      "oracle, the mutation corpus, the lowered-limit corpus, the independent reader, and CLI "
+      "arity/isolation PASS")
+PY

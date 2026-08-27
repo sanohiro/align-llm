@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R4-ALIGNPACK-LAYER-MAJOR focused qualification (`docs/specs/r4-alignpack-layer-major.md`
+# section 4.4). Opt-in, never in an aggregate, never in CI.
+#
+# It is the only thing in this repository that writes a multi-gigabyte file, and its contract is
+# written around that fact: it refuses a temporary directory that resolves inside the work tree, it
+# checks free space before writing anything, and it removes the pack on **every** exit path —
+# success, failure, or signal — then asserts the removal and prints the reclaimed byte count.
+#
+#   ALIGN_LLM_GGUF_MODEL        path to the model                      (required, no default)
+#   ALIGN_LLM_ALIGNPACK_TMPDIR  directory for the pack                 (optional; default mktemp -d)
+#
+# Every refusal prints exactly one `N/A` line and exits 0 without claiming a pass.
+
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+model="${ALIGN_LLM_GGUF_MODEL:-}"
+if [ -z "$model" ]; then
+  echo "alignpack qualification: N/A (ALIGN_LLM_GGUF_MODEL unset)"
+  exit 0
+fi
+if [ ! -f "$model" ]; then
+  echo "alignpack qualification: N/A (ALIGN_LLM_GGUF_MODEL is absent)"
+  exit 0
+fi
+model=$(CDPATH= cd -- "$(dirname -- "$model")" && pwd)/$(basename -- "$model")
+
+owned_tmpdir=0
+tmpdir="${ALIGN_LLM_ALIGNPACK_TMPDIR:-}"
+if [ -z "$tmpdir" ]; then
+  tmpdir=$(mktemp -d)
+  owned_tmpdir=1
+fi
+if [ ! -d "$tmpdir" ]; then
+  echo "alignpack qualification: N/A (ALIGN_LLM_ALIGNPACK_TMPDIR is not a directory)"
+  exit 0
+fi
+tmpdir=$(CDPATH= cd -- "$tmpdir" && pwd)
+
+# A 4.36 GiB artifact must never land in the repository, even through a mistyped variable.
+case "$tmpdir/" in
+  "$root_dir"/*)
+    echo "alignpack qualification: N/A (ALIGN_LLM_ALIGNPACK_TMPDIR resolves inside the work tree)"
+    exit 0
+    ;;
+esac
+
+pack="$tmpdir/model.alignpack"
+pack_document="$tmpdir/alignpack.json"
+verify_document="$tmpdir/alignpack-verify.json"
+
+reclaim() {
+  status=$?
+  if [ -f "$pack" ]; then
+    size=$(wc -c <"$pack" | tr -d ' ')
+    rm -f "$pack"
+    if [ -f "$pack" ]; then
+      echo "alignpack qualification: FAIL the pack could not be removed: $pack" >&2
+      exit 1
+    fi
+    echo "alignpack qualification: reclaimed $size bytes"
+  fi
+  rm -f "$pack_document" "$verify_document"
+  if [ "$owned_tmpdir" = 1 ]; then
+    rmdir "$tmpdir" 2>/dev/null || true
+  fi
+  exit "$status"
+}
+trap reclaim EXIT HUP INT TERM
+
+python3 - "$root_dir" "$model" "$tmpdir" "$pack" "$pack_document" "$verify_document" <<'PY'
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+root_dir, model, tmpdir, pack, pack_document, verify_document = sys.argv[1:7]
+binary = str(Path(root_dir) / "main")
+
+stat = os.stat(model)
+model_size = stat.st_size
+model_mtime = stat.st_mtime_ns
+
+# Step 4. Headroom is checked BEFORE anything is written, rather than relying on the `R4_WRITE_FAILED`
+# path to be pleasant.
+required = model_size + (1 << 30)
+usage = os.statvfs(tmpdir)
+available = usage.f_bavail * usage.f_frsize
+if available < required:
+    print("alignpack qualification: N/A (insufficient free space: %d < %d)" % (available, required))
+    raise SystemExit(0)
+
+print("alignpack qualification: model %s" % model)
+print("alignpack qualification: model bytes %d" % model_size)
+print("alignpack qualification: temporary directory %s" % tmpdir)
+print("alignpack qualification: free bytes %d, required %d" % (available, required))
+
+
+def run(args):
+    started = time.monotonic_ns()
+    result = subprocess.run([binary] + args, capture_output=True, cwd=tmpdir)
+    return result, time.monotonic_ns() - started
+
+
+if os.path.exists(pack):
+    print("alignpack qualification: N/A (the destination already exists: %s)" % pack)
+    raise SystemExit(0)
+
+pack_result, pack_elapsed = run(["--pack", model, pack, pack_document])
+if pack_result.returncode != 0:
+    sys.stderr.write(pack_result.stdout.decode("utf-8", "replace")[-4000:])
+    sys.stderr.write(pack_result.stderr.decode("utf-8", "replace")[-4000:])
+    raise SystemExit("alignpack qualification: FAIL --pack exited %d" % pack_result.returncode)
+document = json.loads(Path(pack_document).read_text(encoding="utf-8"))
+if document["status"] != "ok":
+    raise SystemExit("alignpack qualification: FAIL --pack reported %r"
+                     % document["error_code"])
+
+pack_size = os.path.getsize(pack)
+print("alignpack qualification: pack bytes %d" % pack_size)
+print("alignpack qualification: pack elapsed ns %d (arm %d)"
+      % (pack_elapsed, document["metrics"]["elapsed_ns"]))
+print("alignpack qualification: pack bytes read %d, written %d, preads %d, pwrites %d"
+      % (document["metrics"]["bytes_read"], document["metrics"]["bytes_written"],
+         document["metrics"]["pread_count"], document["metrics"]["pwrite_count"]))
+print("alignpack qualification: peak window bytes %d"
+      % document["metrics"]["peak_window_bytes"])
+
+verify_result, verify_elapsed = run(["--pack-verify", model, pack, verify_document])
+if verify_result.returncode != 0:
+    sys.stderr.write(verify_result.stdout.decode("utf-8", "replace")[-4000:])
+    raise SystemExit("alignpack qualification: FAIL --pack-verify exited %d"
+                     % verify_result.returncode)
+verify = json.loads(Path(verify_document).read_text(encoding="utf-8"))
+print("alignpack qualification: verify elapsed ns %d (arm %d)"
+      % (verify_elapsed, verify["metrics"]["elapsed_ns"]))
+print("alignpack qualification: verify bytes read %d, compared %d"
+      % (verify["metrics"]["bytes_read"], verify["comparison"]["bytes_compared"]))
+
+# Step 7. The independent reader, at real scale.
+reader = subprocess.run(
+    [sys.executable, str(Path(root_dir) / "scripts" / "alignpack_reader.py"),
+     "--source", model, "--pack", pack, "--pack-document", pack_document,
+     "--verify-document", verify_document, "--quiet"],
+    capture_output=True)
+if reader.returncode != 0:
+    raise SystemExit("alignpack qualification: FAIL the independent reader rejected the pack: %s"
+                     % reader.stderr.decode("utf-8", "replace").strip())
+
+# Step 8. The model is never written.
+after = os.stat(model)
+if after.st_size != model_size or after.st_mtime_ns != model_mtime:
+    raise SystemExit("alignpack qualification: FAIL the model changed underneath the run")
+
+source_stats = verify["sequential_read"]["source"]
+pack_stats = verify["sequential_read"]["pack"]
+identity_ok = (verify["status"] == "ok" and verify["verdict"] == "identical"
+               and verify["comparison"]["first_mismatch"] is None
+               and verify["identity"]["header_region_match"] is True)
+print("alignpack qualification (identity): %s" % ("PASS" if identity_ok else "FAIL"))
+if not identity_ok:
+    raise SystemExit(1)
+
+improved = (pack_stats["range_count"] < source_stats["range_count"]
+            and pack_stats["span_bytes"] < source_stats["span_bytes"]
+            and pack_stats["amplification_ppm"] < source_stats["amplification_ppm"])
+print("alignpack qualification (sequential read): %s  src %d ranges / %d span / %d ppm"
+      % ("PASS" if improved else "FAIL", source_stats["range_count"],
+         source_stats["span_bytes"], source_stats["amplification_ppm"]))
+print("                                                 pack %d ranges / %d span / %d ppm"
+      % (pack_stats["range_count"], pack_stats["span_bytes"], pack_stats["amplification_ppm"]))
+print("alignpack qualification: contiguous blocks src %d/%d, pack %d/%d"
+      % (source_stats["contiguous_block_count"], verify["pack"]["block_count"],
+         pack_stats["contiguous_block_count"], verify["pack"]["block_count"]))
+for side, stats in (("src", source_stats), ("pack", pack_stats)):
+    for entry in stats["by_kind"]:
+        print("alignpack qualification: %s %-15s %4d blocks %5d ranges %14d span %9d ppm"
+              % (side, entry["kind"], entry["block_count"], entry["range_count"],
+                 entry["span_bytes"], entry["amplification_ppm"]))
+print("alignpack qualification: layout payload %d, padding %d, duplicated %d"
+      % (document["layout"]["payload_bytes"], document["layout"]["padding_bytes"],
+         document["layout"]["duplicated_bytes"]))
+if not improved:
+    raise SystemExit(1)
+
+# The MoE half is verified synthetically only; no gpt-oss GGUF exists on this host.
+print("alignpack qualification (MoE): N/A - no gpt-oss GGUF on this host; see "
+      "docs/specs/r4-alignpack-layer-major.md section 4.5.")
+print("alignpack qualification: PASS")
+PY

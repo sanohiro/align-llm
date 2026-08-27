@@ -8,6 +8,8 @@ import gguf
 import frontend_qwen
 import frontend_gpt_oss
 import expert_trace
+import model_ir
+import alignpack
 import repair
 import model
 import provider
@@ -35,6 +37,8 @@ fn print_help() {
   print("       main --inspect-gguf <model.gguf> [inspection.json]")
   print("       main --model-ir <model.gguf> [model-ir.json]")
   print("       main --expert-trace <callback.log> [trace.json]")
+  print("       main --pack <model.gguf> <out.alignpack> [alignpack.json]")
+  print("       main --pack-verify <model.gguf> <pack.alignpack> [alignpack-verify.json]")
   print("       main prompt <experiment|generate|evaluate|accept|rollback> <request.json> <result.json>")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
 }
@@ -733,6 +737,256 @@ fn expert_trace_demo(args: array<str>) -> Result<(), Error> {
   }
 }
 
+// R4-ALIGNPACK-LAYER-MAJOR CLI adapter (`docs/specs/r4-alignpack-layer-major.md` section 2.3). Both
+// arms hold no container knowledge and no layout knowledge: they validate arity, validate every
+// operand lexically, read the container table exactly once, select the frontend from the
+// container's own `general.architecture` field, run the R1 derivation so that every `R0_*` and
+// `R1_*` code is surfaced verbatim, hand the settled plan to `alignpack`, write or print the
+// document, print the summary block, and map the status to the process exit.
+//
+// There is no `--force`, no `--arch`, and no `--align` flag. An occupied destination is an error,
+// not something a flag makes acceptable, because the artifact being overwritten may be gigabytes;
+// the architecture is the file's own, exactly as `--model-ir` decides it; and the alignments are
+// properties of the format recorded in its header, not caller options.
+//
+// One contract differs from every prior Track B arm and it is stated rather than inherited: for
+// `--pack`, **both** forms write the pack, and the optional third operand selects only where the
+// document goes. There is no dry-run form in v1 — a planner that computed a layout without writing
+// it would be a fourth code path with no consumer, and the document already contains the plan.
+fn pack_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() < 4 || args.len() > 5 {
+    return Err(Error.Invalid)
+  }
+  // The lexical path guard owns **every** operand, including the destination, before anything is
+  // opened: nothing below this arm ever sees the document path, so an over-long or NUL-bearing one
+  // has to be refused here or it would surface as a `write_file` failure after a whole model was
+  // copied.
+  if !valid_cli_path(args[2]) || !valid_cli_path(args[3]) {
+    return Err(Error.Invalid)
+  }
+  if args.len() == 5 && !valid_cli_path(args[4]) {
+    return Err(Error.Invalid)
+  }
+  table := gguf.read_table(args[2])?
+  architecture_view: str := table.architecture
+  prepared := if table.architecture_present && architecture_view == "gpt-oss" {
+    frontend_gpt_oss.prepare(table)
+  } else {
+    frontend_qwen.prepare(table)
+  }
+  prepared_code: str := prepared.code
+  prepared_detail: str := prepared.detail
+  // The whole R1 ordered derivation, so coverage, claim tiling, and the size-sum oracle are proved
+  // before a single byte is written. The `R1_MODEL_IR` document itself is discarded here: its
+  // authoritative producer is `--model-ir` and emitting a second copy of one truth from this arm
+  // would create two producers of the same exchanged format.
+  ir := model_ir.build(
+    table,
+    prepared.geometry,
+    prepared.plan,
+    args[2],
+    prepared_code,
+    prepared_detail,
+  )
+  ir_code: str := ir.error_code
+  ir_detail: str := ir.error_detail
+  limits := alignpack.default_limits()
+  packed := alignpack.build_pack(
+    table,
+    prepared.geometry,
+    prepared.plan,
+    args[2],
+    args[3],
+    ir_code,
+    ir_detail,
+    limits,
+  )
+  document_view: str := packed.document
+  if args.len() == 4 {
+    // The machine form: the document and one newline, and nothing else.
+    print(document_view)
+  } else {
+    fs.write_file(args[4], document_view)?
+    // Section 2.3 stable summary. The JSON document remains the authoritative result.
+    print("alignpack:")
+    print("status:")
+    match packed.status {
+      Ok => print("OK"),
+      Error => print("ERROR"),
+    }
+    print("arch:")
+    arch_view: str := packed.arch
+    if packed.arch_present {
+      sanitized := sanitize_summary_line(arch_view)
+      sanitized_view: str := sanitized
+      print(sanitized_view)
+    } else {
+      print("-")
+    }
+    print("pack path:")
+    pack_path_sanitized := sanitize_summary_line(args[3])
+    pack_path_view: str := pack_path_sanitized
+    print(pack_path_view)
+    print("schema:")
+    print(1)
+    print("format version:")
+    print(1)
+    print("blocks:")
+    print(packed.block_count)
+    print("members:")
+    print(packed.member_count)
+    print("payload bytes:")
+    print(packed.payload_bytes)
+    print("padding bytes:")
+    print(packed.padding_bytes)
+    print("duplicated bytes:")
+    print(packed.duplicated_bytes)
+    print("pack bytes:")
+    print(packed.pack_bytes)
+    print("bytes read:")
+    print(packed.bytes_read)
+    print("bytes written:")
+    print(packed.bytes_written)
+    print("elapsed ns:")
+    print(packed.elapsed_ns)
+    // Parts per million rather than a decimal: the summary block is a stable stdout contract and
+    // this repository has no float formatting contract. The JSON document carries the exact
+    // span/payload pair and is the authoritative result.
+    print("src ranges:")
+    print(packed.source_range_count)
+    print("pack ranges:")
+    print(packed.pack_range_count)
+    print("src ampl ppm:")
+    print(packed.source_amplification_ppm)
+    print("pack ampl ppm:")
+    print(packed.pack_amplification_ppm)
+    print("destination:")
+    print(alignpack.destination_label(packed.destination))
+    match packed.status {
+      Ok => {},
+      Error => {
+        print("error:")
+        error_view: str := packed.error_code
+        print(error_view)
+        print("detail:")
+        detail_view: str := packed.error_detail
+        // The detail names a container-supplied tensor name or a caller-supplied path, so it is
+        // escaped for the same reason `arch` is: the block is read positionally.
+        sanitized_detail := sanitize_summary_line(detail_view)
+        sanitized_detail_view: str := sanitized_detail
+        print(sanitized_detail_view)
+      },
+    }
+  }
+  // A layout or container defect is persisted and reported data; the CLI maps it to the existing
+  // `Error.Invalid` process exit after the document has been emitted.
+  match packed.status {
+    Ok => { return Ok(()) },
+    Error => { return Err(Error.Invalid) },
+  }
+}
+
+fn pack_verify_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() < 4 || args.len() > 5 {
+    return Err(Error.Invalid)
+  }
+  if !valid_cli_path(args[2]) || !valid_cli_path(args[3]) {
+    return Err(Error.Invalid)
+  }
+  if args.len() == 5 && !valid_cli_path(args[4]) {
+    return Err(Error.Invalid)
+  }
+  table := gguf.read_table(args[2])?
+  architecture_view: str := table.architecture
+  prepared := if table.architecture_present && architecture_view == "gpt-oss" {
+    frontend_gpt_oss.prepare(table)
+  } else {
+    frontend_qwen.prepare(table)
+  }
+  prepared_code: str := prepared.code
+  prepared_detail: str := prepared.detail
+  ir := model_ir.build(
+    table,
+    prepared.geometry,
+    prepared.plan,
+    args[2],
+    prepared_code,
+    prepared_detail,
+  )
+  ir_code: str := ir.error_code
+  ir_detail: str := ir.error_detail
+  limits := alignpack.default_limits()
+  verified := alignpack.verify_pack(
+    table,
+    prepared.geometry,
+    prepared.plan,
+    args[2],
+    args[3],
+    ir_code,
+    ir_detail,
+    limits,
+  )
+  document_view: str := verified.document
+  if args.len() == 4 {
+    print(document_view)
+  } else {
+    fs.write_file(args[4], document_view)?
+    print("alignpack verify:")
+    print("status:")
+    match verified.status {
+      Ok => print("OK"),
+      Error => print("ERROR"),
+    }
+    print("verdict:")
+    print(alignpack.verdict_label(verified.verdict))
+    print("blocks:")
+    print(verified.block_count)
+    print("members:")
+    print(verified.member_count)
+    print("compared bytes:")
+    print(verified.bytes_compared)
+    print("bytes read:")
+    print(verified.bytes_read)
+    print("elapsed ns:")
+    print(verified.elapsed_ns)
+    print("src ranges:")
+    print(verified.source_range_count)
+    print("pack ranges:")
+    print(verified.pack_range_count)
+    print("src ampl ppm:")
+    print(verified.source_amplification_ppm)
+    print("pack ampl ppm:")
+    print(verified.pack_amplification_ppm)
+    print("src span bytes:")
+    print(verified.source_span_bytes)
+    print("pack span bytes:")
+    print(verified.pack_span_bytes)
+    // `-` is the R0 convention for a value that does not exist, reused rather than reinvented.
+    print("first mismatch:")
+    first_view: str := verified.first_mismatch
+    sanitized_first := sanitize_summary_line(first_view)
+    sanitized_first_view: str := sanitized_first
+    print(sanitized_first_view)
+    match verified.status {
+      Ok => {},
+      Error => {
+        print("error:")
+        error_view: str := verified.error_code
+        print(error_view)
+        print("detail:")
+        detail_view: str := verified.error_detail
+        sanitized_detail := sanitize_summary_line(detail_view)
+        sanitized_detail_view: str := sanitized_detail
+        print(sanitized_detail_view)
+      },
+    }
+  }
+  match verified.status {
+    Ok => { return Ok(()) },
+    Error => { return Err(Error.Invalid) },
+  }
+}
+
 // A repair provider that declines to fix anything (always gives up). It lets the loop's control
 // exits be demonstrated without a model: an already-passing check needs no provider, and a
 // persistently failing check ends in GAVE_UP on the first iteration. A real provider (LLM + patch
@@ -870,6 +1124,10 @@ pub fn main(args: array<str>) -> Result<(), Error> {
                               model_ir_demo(args)?
                             } else if args[1] == "--expert-trace" {
                               expert_trace_demo(args)?
+                            } else if args[1] == "--pack" {
+                              pack_demo(args)?
+                            } else if args[1] == "--pack-verify" {
+                              pack_verify_demo(args)?
                             } else if c7_selector(args[1]) {
                               persisted_result_demo(args)?
                             } else {

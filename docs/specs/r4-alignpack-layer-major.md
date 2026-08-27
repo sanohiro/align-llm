@@ -1504,3 +1504,233 @@ real-model `model-ir-parity` qualification (`docs/specs/r1b-gptoss-moe-ir.md` se
 locality measurement and its MoE transcript (`docs/specs/r2a-expert-trace.md` section 4.5); every R3
 cache policy; and `docs/specs/align-llm.md` section 4.2's `model.alignidx` and `model.alignprof`
 companions, which are separate artifacts with separate consumers and no v1 surface here.
+
+## 6. Correction ledger
+
+Sections 1 to 5 were written before the capability was implemented. Every row below is a place
+where implementation proved one of them wrong, incomplete, or self-contradictory. The shipped
+behaviour is the right-hand column; sections 1 to 5 are left as written so the correction is
+visible, and section 7 maps every closure cell onto the regression that now closes it.
+
+### 6.1 The open decision of section 2.4.7 — **resolved on the primary path**
+
+`f.pwrite(pad.bytes()[0..n], off)` compiles **and runs correctly** at pin `4b515f8d`. A compile
+probe declared a 64-byte zero `buffer`, wrote `pad.bytes()[0..13]` at offset 24 of a fresh
+`fs.create_rw` destination, received `13` back, and observed `f.len() == 37` with the written region
+zero. Sub-slicing a `slice<u8>` argument to `pwrite` is therefore a shipped surface and the recorded
+per-pad `mut pad := buffer(0)` fallback is **not shipped**. `write_padding` uses the single prepared
+`BLOCK_ALIGN` zero buffer for every run.
+
+### 6.2 Public surface
+
+| Section | As designed | As shipped, and why |
+| --- | --- | --- |
+| 2.10, 2.9 | `pub fn build_pack(source: str, destination: str) -> AlignPack` | `build_pack(borrow t: gguf.GgufTable, borrow g: model_ir.Geometry, borrow plan: model_ir.BlockPlan, source, destination, in_code, in_detail, borrow limits) -> AlignPack`, and the same shape for `verify_pack`. The two-operand signature contradicts section 2.9's own rule that the packer imports no frontend: only a frontend can produce a `BlockPlan`, and the architecture dispatch lives in `src/main.align`. The arm hands the settled plan in |
+| 1.2 item 4 | Exactly one extraction, `model_ir.resolve_claims` | Two, and the second is forced by the first. `frontend_qwen.prepare` and `frontend_gpt_oss.prepare` now return the whole derivation as data and `build_model_ir` renders over exactly that value. The record is `model_ir.Prepared`, owned by the neutral builder rather than by each frontend, because `src/main.align` selects between the two in one conditional and two identically shaped per-frontend records are two types. `model-ir-smoke` re-runs unchanged and is the byte-identity regression |
+| 2.9 | `resolve_claims` alone | `resolve_claims` plus `pub fn claim_ordinal(borrow plan, slot) -> i64`. The duplication sweep needs `model_ir`'s own `(tensor, ordinal)` claim key and must not repeat the section 2.5.3 slice arithmetic, which is the whole point of the extraction |
+| 2.8 steps 3–4 | Container read, then architecture dispatch and the frontend | The **whole** R1 ordered derivation. Coverage (step 11a), claim tiling (11b), and the size-sum oracle (12) also have to pass before a byte is written, so each arm runs `model_ir.build` and passes its status to the packer. The `R1_MODEL_IR` document is discarded: its authoritative producer is `--model-ir`, and emitting a second copy from this arm would create two producers of one exchanged format |
+| 4.1 | A `debug_limits` entry point, surface unnamed | `pub Limits`, `pub fn default_limits()`, `pub fn lowered_limits(...)`, and `src/alignpack_limits_smoke.align`, which the smoke drives with `alignc run`. `main` never constructs a `Limits`: both arms use `default_limits()`, so the shipped contract is the section 2.7 table |
+
+### 6.3 The sequential-read metric applied to the pack
+
+**Section 2.4.7 consequence 1 and section 2.6's gate item 1 are too strong as written.** They assert
+`range_count == 1` for every block of every pack. Under section 2.6's own definition — sort the
+block's claims and merge any two that *touch or overlap* — a block whose member size is not a
+multiple of `member_align` leaves a 1-to-63-byte alignment gap between two consecutive members, and
+those two claims do not touch. Section 2.6 requires the definition to be applied to both containers
+unchanged, and it is; the consequence is that a padded block merges into more than one range.
+
+The shipped invariant, which is what the gate actually rests on and is asserted exactly rather than
+as an inequality:
+
+1. **`span_bytes == pack_bytes` for every block of every pack, always.** A consumer fetching the
+   block with one sequential read transfers exactly the block and nothing else. This is the property
+   section 2.6 calls "the sequential read bytes per block fetch" and it is unconditional.
+2. **`range_count == 1 + g`, where `g` is the number of member boundaries the layout had to pad.**
+   The smoke derives `g` from the member offsets in the document and asserts equality, so a planner
+   that inserted an unexplained gap fails a test the old inequality would have passed.
+3. **`range_count == 1` and `amplification_ppm == 1_000_000` exactly when the block's interior
+   padding is zero**, which is the case for every block whose member sizes are all `member_align`
+   multiples.
+
+Every member of the reference model is a multiple of 64, so section 2.2's predicted 58 ranges,
+4,677,120,000 span bytes, 58/58 contiguous blocks, and **1,000,000 ppm exactly** are what the
+qualification measured. `qwen2-geometry` is the fixture that exercises the padded case: its source
+is already fully contiguous, so its pack is 40 ppm *worse* — the price of the alignment guarantee,
+reported rather than hidden. The improvement is therefore asserted only over a source that is not
+already contiguous, and the exact identities above are asserted everywhere.
+
+Two smaller corrections to section 2.6 follow:
+
+- `amplification_ppm` of a block with `payload_bytes == 0` is `0`. Section 2.6 leaves it undefined;
+  `-` is not representable in a JSON integer field, so `0` beside `payload_bytes: 0` is the
+  discriminator.
+- The sweep needs two bounds section 2.7 does not name, because it packs a byte offset above a
+  20-bit within-block member ordinal: `member_count <= 1_048_575` and every offset
+  `<= I64_MAX >> 20`. Both are checked in step 7, before any offset reaches the sweep, and a
+  violation is `R4_MEMBER_LIMIT` or `R4_LAYOUT_OVERFLOW`.
+
+### 6.4 The documents
+
+Section 2.5 pins a field set but leaves several orders and one field open. The shipped schema 1 is:
+
+| Change | Reason |
+| --- | --- |
+| `sequential_read` order is `source_of_pack_stats`, `source`, `pack` | Section 2.5 names the field without placing it |
+| `by_kind` rows carry `kind` and `block_count` beside the five named fields | "The same five fields" needs a discriminator to say which kind a row is, and a denominator to make `contiguous_block_count` readable |
+| `blocks[]` gains `pack_span_bytes` and `pack_amplification_ppm` beside `pack_range_count` | Section 6.3 makes `pack_range_count` alone insufficient to state a block's result, and `span_bytes == pack_bytes` is the invariant a reader should be able to check from the document |
+| `blocks[].members[]` gains `role_id` | So a consumer can tell "the frontend supplied no role" (`0xFFFFFFFF`) from "this writer's frozen list does not name that role", which `role: null` alone cannot say |
+| `destination` is a top-level document field, after `error_detail` | Section 2.3 puts it in the summary and section 2.5 omits it. A machine reading the document must be able to learn whether a partial artifact survived a failure |
+| `--pack-verify` reports `source_of_pack_stats: "none"` when the pack's tables could not be decoded | `"pack_tables"` would claim an observation that did not happen |
+| `--pack-verify`'s `pack` object is decoded from the container's header, and `blocks` is empty when the tables could not be decoded | Section 2.5 requires the verify statistics to come from the pack's own tables. Reporting the expected layout under a field name that promises an observation would contradict that |
+
+**`role_id` is an index into a frozen list owned by `src/alignpack.align`, not by a frontend.**
+Section 2.4.4 names "its index in the frozen role list of `docs/specs/r1-qwen-model-ir.md` section
+2.5.6". That sentence lists fifteen roles, and the two shipped frontends number their own internal
+role enumerations differently and incompatibly (`token_embd` is `0` in `frontend_qwen`, and
+`frontend_gpt_oss` renumbers everything from index 9 onward), so an id taken from a frontend would
+mean two different things in two packs. The shipped list is entries 0 to 14 for section 2.5.6's
+fifteen roles **in that sentence's order**, then entries 15 to 26 for the roles
+`docs/specs/r1b-gptoss-moe-ir.md` adds, appended so the R1 indexes can never move. A role the list
+does not name is `0xFFFFFFFF`, which is a stated absence and never an index.
+`scripts/alignpack_reader.py` carries the same table, transcribed from this section.
+
+**`form-parity` is asserted over documents normalized on `elapsed_ns`.** Section 2.3 requires the
+two forms of an arm to emit byte-identical document bytes and section 2.5 puts `metrics.elapsed_ns`
+in the document; a wall-clock observation of the run that produced the document cannot be equal
+across two runs. Every other byte of both documents is a function of the two containers alone and is
+compared byte for byte. The **pack bytes themselves are compared with no normalization at all**, so
+`repeat-pack` remains an exact claim about the container.
+
+### 6.5 Error codes and process exits
+
+| Section | As designed | As shipped, and why |
+| --- | --- | --- |
+| 2.8 step 12, error table | `R4_CLEANUP_FAILED` as a code | The prose of step 12 is followed instead: the original failure keeps the `error_code` and `error_detail` becomes `R4_CLEANUP_FAILED`, with `destination: "WRITTEN"`. Promoting the cleanup failure to the code would lose the cause of the failure that made cleanup necessary |
+| 3.3 `dest-is-directory` | `R4_DEST_UNWRITABLE` | `R4_DEST_EXISTS`. Step 5's `fs.exists` is true for a directory and runs before `fs.create_rw`, so the occupied-destination guard fires first. That ordering is the safer answer and it is the one the section 2.8 order produces |
+| 2.8 step 17, 3.1 | A UTF-8 re-validation of each name span | Byte comparison against the expected name, whose bytes already passed R0's own UTF-8 validation, so byte equality is strictly stronger than re-decoding. `R4_PACK_NAME_MISMATCH` still fires, with the member index as its detail. `scripts/alignpack_reader.py` does decode every span, so the property is checked by a decoder as well |
+| 2.8 step 11 | One `R4_SIZE_MISMATCH` against `f.len()` | Two, both reporting the same code and the two decimal sizes: the writer's own cursor against `total_bytes` first, then the live `f.len()`. A planner/writer disagreement and a filesystem disagreement are different facts |
+| 2.3 | `Err(Error.Invalid)` | Unchanged in the source; the **runtime** maps it to process status 2, not 1. Every regression asserts "a recorded nonzero failure, never an abort", which is the shape `run-model-ir-smoke` already uses for the same mapping |
+| 2.8 step 13, 17 | `R4_PACK_RESERVED` at two steps | Unchanged, but a record's reserved and deferred fields are validated at the moment the record is decoded rather than after the whole cross-check, so `R4_PACK_RESERVED` precedes `R4_PACK_BLOCK_MISMATCH` for a record that is wrong in both ways. Failing closed on a field whose meaning is reserved before comparing fields whose meaning depends on it is the correct order |
+
+### 6.6 Shape corrections forced by the language
+
+Neither row is an application workaround for a missing capability; both are shapes the pin requires,
+and section 7.3 classifies them.
+
+- **The ordered guard chains are straight-line early returns, not `loop { … break }`.** An owned
+  aggregate assigned to an outer `mut` local from inside a loop body is dropped at the end of the
+  iteration that declared it at this pin (`use of invalidated borrow: its source was dropped at the
+  end of the loop iteration that declared it`), so the plan and the inspection could not be read
+  after the loop that produced them. `execute_pack` and `execute_verify` are therefore chains of
+  early returns that hand one owned record to the renderer, and every derived value is read out of
+  that record by borrow. `src/model_ir.align`'s `build` keeps its `loop { … break }` because
+  everything it assigns across the loop boundary is a `string`.
+- **`by_kind` is aggregated by one sweep per kind, `O(5B)` over the per-block columns.** An
+  `array<i64>` is not a mutable accumulator at this pin, so five scalar sweeps replace one indexed
+  one. The per-block sort of section 2.9 is unchanged.
+
+### 6.7 Measured result, against section 2.2's prediction
+
+`ALIGN_LLM_GGUF_MODEL=~/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf scripts/run-alignpack-qualification`
+on this host, one run:
+
+| Quantity | Section 2.2 predicted | Measured |
+| --- | --- | --- |
+| Source ranges / span / ppm | 89 / 11,130,544,128 / 2,379,786 | **89 / 11,130,544,128 / 2,379,786** |
+| Pack ranges / span / ppm | 58 / 4,677,120,000 / 1,000,000 | **58 / 4,677,120,000 / 1,000,000** |
+| Contiguous blocks | 27 → 58 of 58 | **27 → 58 of 58** |
+| `WeightBlock` source ppm | 2,039,993 | **2,039,993** |
+| `AttentionBlock` source ppm | 10,922,100 | **10,922,100** |
+| `MlpBlock` source ppm | 1,291,478 | **1,291,478** |
+| Interior alignment padding | 57,344 | **57,344**, and `duplicated_bytes` 0 |
+| Pack size | 4,677,177,344 (section 4.4) | **4,677,222,400** — section 4.4 omitted the 45,056-byte metadata prefix; the payload and padding are exactly as predicted |
+| Peak resident window | one `COPY_WINDOW_BYTES` plus the plan | **5,953,536** — the step-9 header-region buffer, which is larger than the 4 MiB copy window on this model and is released before the payload loop begins, exactly as section 2.9 says |
+
+Diagnostics, not thresholds and not a performance claim: `--pack` 7.68 s wall (7.39 s in-arm) moving
+4,677,120,000 payload bytes with 1,387 `pread`s and 1,420 `pwrite`s; `--pack-verify` 4.07 s wall
+(3.54 s in-arm) reading 9,360,295,936 bytes and comparing 4,677,120,000. The pack was removed on
+exit and the runner reported 4,677,222,400 reclaimed bytes.
+
+## 7. Cell-to-case map
+
+Every applicable cell of section 3 and its exact regression. Unless another runner is named the case
+is inside `scripts/run-alignpack-smoke`; `reader` means `scripts/alignpack_reader.py`, which the
+smoke runs over every positive fixture and against every mutation.
+
+### 7.1 Closed cells
+
+| Section 3 cell | Closing case |
+| --- | --- |
+| 3.1 Construction, round trip, fixed strides | `drive_positive` writes and `decode_pack` reads every field of every record on 20 fixtures; `reader.check_layout` re-derives `pack_bytes`, `payload_bytes`, and the whole cursor from the records and seeks to individual records to prove `table_offset + i * record_bytes` addressing |
+| 3.1 Failure — magic / version / header constants | `bad-magic`, `bad-version-{0,2,4294967295}`, `header_bytes`, `block_record_bytes`, `member_record_bytes`, `source_record_bytes`, `document_schema_version`, `block-align-odd`, `block-align-huge`, `member-align-odd`, `member-align-above-block`. Each asserts the exact code **and** the exact `error_detail` field name, and each is independently rejected by the reader |
+| 3.1 Failure — reserved | `flags-hotness`, `flags-prefetch`, `reserved-nonzero`, `prefetch-group-set`, `hotness-rank-set`, `block-reserved`, `member-reserved`, `payload-digest-present`, `payload-digest-reserved` |
+| 3.1 Failure — regions / truncation | `region-overlap`, `region-past-eof`, `pack-truncated-{one-byte,header-boundary,mid-payload}`, `declared-size-disagrees` |
+| 3.1 Malformed — name span / non-UTF-8 | `name-span-past-end`, `pack-name-invalid-utf8`; the reader decodes each span and rejects `NAME` |
+| 3.1 Bounded work | `block-limit`, `member-limit` through `src/alignpack_limits_smoke.align`; `decode_header` re-checks both counts before addressing a record |
+| 3.1 Endianness | `be-header` — a byte-swapped magic is `R4_PACK_MAGIC`, never silently read |
+| 3.1 Generic monomorphization | `N/A`: no generic type or function is declared |
+| 3.2 Layer-major order | `block-order-matches-ir`: the pack's `(kind, layer, expert)` sequence is diffed against the `R1_MODEL_IR` document's, per fixture |
+| 3.2 Alignment | `reader.check_layout` asserts every block `pack_offset` is `block_align`-aligned and every member `pack_offset` is `member_align`-aligned, on every fixture |
+| 3.2 Contiguity | Section 6.3's three exact identities, asserted per block and per model on every fixture, plus the reader's independent merge |
+| 3.2 Per-expert contiguity | `expert-block-contiguous`: every gpt-oss `ExpertBlock` has `source_range_count > 1` and `pack_range_count == 1`. **MOE-PREREQ** for real weights |
+| 3.2 Padding accounting | `padding-accounting`: `layout.padding_bytes == total_bytes - payload_offset - Σ payload`, cross-checked by the reader, and `total_bytes` equals the last member's end |
+| 3.2 Duplication | `tied-embedding-duplicated`: `qwen2-tied` reports `duplicated_bytes > 0` and `qwen2-full` reports `0`; the identity `payload == total_tensor_bytes + duplicated` is `R4_DUPLICATION_MISMATCH` when it fails |
+| 3.2 Statistics, both sides, and `by_kind` | `stats-oracle`: the reader recomputes every section 2.6 value with an explicit interval merge and compares against both documents, field by field, including every `by_kind` row |
+| 3.2 Overlapping spans | `stats-overlap`: `qwen2-permuted` reports 26 source ranges for 6 blocks and its source span exceeds its payload; nothing is clamped |
+| 3.2 Planner bounds | `block-limit`, `member-limit`, `table-too-large`, `name-stream-too-large`, `name-too-long`, `pack-too-large`, each against lowered bounds, each asserting `destination: UNTOUCHED` and that no file was created |
+| 3.2 Source range | Every R0/R1 negative fixture through `--pack`, asserting the code passes through verbatim; `R4_SOURCE_RANGE` guards the same property inside the planner |
+| 3.3 Construction / descriptor budget | Both handles and every window are bare locals; `peak_window_bytes` is asserted `<= max(data_offset, COPY_WINDOW_BYTES)` per fixture and measured at 5,953,536 on the 4.68 GB model |
+| 3.3 Exact copy | `byte-identity`: `--pack-verify` compares every claimed byte, and `reader.check_byte_identity` re-reads both containers and compares again without invoking `--pack-verify` |
+| 3.3 Window boundary, final partial window, short read completed | `window-64/65/128/129/4096` through the lowered-window entry point: each pack is byte-identical to the 4 MiB reference and each verifies |
+| 3.3 Padding written / not sparse | `padding-is-zero` (`reader.check_padding` reads every unclaimed byte of the payload region) and `pack-not-sparse` (`st_blocks * 512` against the logical size) |
+| 3.3 No trailing padding, size assertion | `no-trailing-pad`: the reader requires the last member's end to equal `total_bytes`; the writer asserts its own cursor and then a live `f.len()` |
+| 3.3 Destination exists | `dest-exists`: the occupied file's bytes **and** mtime are unchanged, `destination: UNTOUCHED` |
+| 3.3 Destination unwritable / directory | `dest-unwritable` (read-only directory; `N/A` under root) and `dest-is-directory` (section 6.5) |
+| 3.3 Compare fast path | `compare-fast-path`: `metrics.byte_scan_windows == 0` and `fast_path_windows == windows_compared` on every identical fixture |
+| 3.3 One flipped byte | `flip-first-byte`, `flip-last-byte`, `flip-window-boundary`, `flip-across-two-members`, each asserting the exact `<name>@<source_offset>+<delta>` detail, every field of `first_mismatch`, `verdict: "mismatch"`, and exactly one byte-scanned window |
+| 3.3 Length disagreement | `compare-length-mismatch`: two windows returning different counts is a fault, never a silent shorter compare — the guard is in `compare_member` and is reached by the truncation corpus |
+| 3.3 Padding corrupted | `padding-corrupted`: a nonzero interior padding byte is `R4_PADDING_NONZERO` with its absolute offset, asserted exactly |
+| 3.3 Identity | `identity-mismatch`, `identity-file-size`, `identity-digest`: each asserts `comparison.bytes_compared == 0` |
+| 3.3 `bytes_read` accounting | `bytes-read-bound`: `payload <= bytes_read <= payload + data_offset + MAX_TABLE_BYTES` and `payload <= bytes_written <= total_bytes`, per fixture |
+| 3.3 Early exit | `partial-verify`: `members_compared` equals the index of the failing member on all four flip cases |
+| 3.3 Determinism | `repeat-pack`: three packs of one source — twice to one path, once to another — are byte-identical by SHA-256, with no normalization |
+| 3.3 Concurrency, shared state | `N/A` with section 3.3's own reasons; `env-perturbation` asserts that five environment variables change neither the pack bytes nor the document bytes |
+| 3.4 Behaviour preservation, single producer, claim cells | `make model-ir-smoke` re-run unchanged: 49 qwen fixtures, 31 gpt-oss fixtures, 62 R0 fixtures, every `R1_MODEL_IR` document byte-identical |
+| 3.5 Arity, both forms, summary block, path guard | `cli-arity` (ten argument shapes, each asserting a nonzero exit, empty stdout, and no destination), `form-parity`, `summary-order` (every fixed label of both summary blocks, positionally) |
+| 3.5 Failure mapping, selector isolation, architecture dispatch | `error-corpus` exits, `selector-as-operand`, `absent-source`, `absent-pack`; the gpt-oss corpus reaching the MoE frontend is the dispatch regression |
+| 3.6 Independence, layout invariants, oracle, mutation detection | `scripts/alignpack_reader.py` over every fixture and against 40 mutations, each with `--expect-reject KIND`, which is what proves the reader is not vacuous |
+| 3.7 Target definition, aggregate membership, exclusion | `make gate-topology-check` — `alignpack-smoke` is in `HOSTED_CHECK_TARGETS`, `alignpack-qualification` is in no aggregate |
+| 3.7 Fixture cleanup, repository safety | The `EXIT` trap, the temp-root assertion, and a full-tree leak sweep comparing the repository before and after the run |
+| 3.7 Qualification cleanup and skip | `trap ... EXIT HUP INT TERM` reclaimed 4,677,222,400 bytes on the real run; the four `N/A` lines were each exercised |
+
+### 7.2 Cells this host cannot reach
+
+Each prints one exact line and never counts as a pass.
+
+| Cell | Line |
+| --- | --- |
+| 3.3 `write-to-full-filesystem` | `alignpack smoke: write-to-full-filesystem N/A (a file-size cap raises SIGXFSZ rather than surfacing ENOSPC through pwrite, and a loopback image needs root on darwin)` |
+| 3.3 `cleanup-failed` | `alignpack smoke: cleanup-failed N/A (a destination directory made read-only after fs.create_rw does not make fs.remove fail on this filesystem)` |
+| 3.3 `window-unavailable` | `alignpack smoke: window-unavailable N/A (truncating the source between the plan and the copy needs an injection point the arm does not expose)` |
+| 3.5 `read-only-source` | Covered by Request 21's client evidence rather than by a case: the arm cannot open a read-only model at all, which is the request, not a behaviour to assert |
+| 4.5 MoE on real weights | `alignpack qualification (MoE): N/A - no gpt-oss GGUF on this host` |
+
+Section 4.3's `golden-container-bytes` is **not** shipped as a checked-in hex golden. The three
+properties it was meant to protect — field order, record stride, and the reserved values — are each
+asserted directly and per field by `scripts/alignpack_reader.py`, which decodes every record at its
+declared stride and refuses any deviation, and by the 40-mutation corpus, which fires one named
+error per field. A hex golden of one fixture's first 4 KiB would additionally pin the fixture
+generator's output, which is not R4's contract.
+
+### 7.3 Align observations
+
+None blocks R4 and none is raised as a register request here; the orchestrator owns
+`docs/align-requests.md`. Sections 5.5.1 to 5.5.4 are unchanged and were re-confirmed against the
+implementation: the bounded header-region digest is what shipped, `fs.exists` plus `fs.create_rw` is
+what shipped, and no durability claim is made. Two further observations are **application concerns**,
+not language gaps: an owned aggregate assigned inside a loop body cannot be read after the loop
+(section 6.6), and an `array<i64>` is not a mutable accumulator. Both have idiomatic shapes at this
+pin — a straight-line chain of early returns and a sweep per bucket — which is why they are recorded
+as shapes rather than as requests. Request 21 gains the client evidence section 5.5.4 describes and
+Request 23 gains `PackPlan` as its fourth client, both confirmed by the shipped code.

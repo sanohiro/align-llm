@@ -1,0 +1,91 @@
+module alignpack_limits_smoke
+
+import core.json
+import gguf
+import model_ir
+import frontend_qwen
+import frontend_gpt_oss
+import alignpack
+
+// `alignpack-smoke`'s `planner-limit-corpus` and `copy-window-boundary` entry point
+// (`docs/specs/r4-alignpack-layer-major.md` section 4.1).
+//
+// `R4_BLOCK_LIMIT`, `R4_MEMBER_LIMIT`, `R4_TABLE_TOO_LARGE`, and `R4_PACK_TOO_LARGE` guard values a
+// fixture cannot exceed cheaply — a container with more than 1,048,576 members, or a pack above one
+// tebibyte — so they are closed here instead, by driving the shipped planner with lowered bounds
+// against the ordinary synthetic corpus. `COPY_WINDOW_BYTES` is lowered the same way, which is what
+// makes the window-boundary and short-read cells reachable on a few-hundred-kilobyte fixture.
+//
+// This entry point exists only in the smoke's build. `main` never constructs a `Limits`: both of
+// its arms use `alignpack.default_limits()`, so the shipped contract is the section 2.7 table.
+
+fn parse_i64(value: str) -> Result<i64, Error> {
+  number: i64 := json.decode(value)?
+  return Ok(number)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 10 {
+    return Err(Error.Invalid)
+  }
+  source := args[1]
+  destination := args[2]
+  limits := alignpack.lowered_limits(
+    parse_i64(args[3])?,
+    parse_i64(args[4])?,
+    parse_i64(args[5])?,
+    parse_i64(args[6])?,
+    parse_i64(args[7])?,
+    parse_i64(args[8])?,
+    parse_i64(args[9])?,
+  )
+  table := gguf.read_table(source)?
+  architecture_view: str := table.architecture
+  prepared := if table.architecture_present && architecture_view == "gpt-oss" {
+    frontend_gpt_oss.prepare(table)
+  } else {
+    frontend_qwen.prepare(table)
+  }
+  prepared_code: str := prepared.code
+  prepared_detail: str := prepared.detail
+  ir := model_ir.build(
+    table,
+    prepared.geometry,
+    prepared.plan,
+    source,
+    prepared_code,
+    prepared_detail,
+  )
+  ir_code: str := ir.error_code
+  ir_detail: str := ir.error_detail
+  packed := alignpack.build_pack(
+    table,
+    prepared.geometry,
+    prepared.plan,
+    source,
+    destination,
+    ir_code,
+    ir_detail,
+    limits,
+  )
+  print("status:")
+  match packed.status {
+    Ok => print("OK"),
+    Error => print("ERROR"),
+  }
+  print("code:")
+  code_view: str := packed.error_code
+  print(code_view)
+  print("detail:")
+  detail_view: str := packed.error_detail
+  print(detail_view)
+  print("destination:")
+  print(alignpack.destination_label(packed.destination))
+  print("pack bytes:")
+  print(packed.pack_bytes)
+  print("bytes written:")
+  print(packed.bytes_written)
+  print("pread count:")
+  print(packed.bytes_read)
+  return Ok(())
+}
