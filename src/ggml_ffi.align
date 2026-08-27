@@ -51,6 +51,31 @@ pub COMPUTE_NULL := -1000
 // Align-owned byte range and decoded there.
 pub MAX_BACKEND_NAME_BYTES := 64
 
+// R5C-METAL-PREFILL-ARM (`docs/specs/r5c-metal-prefill.md` sections 3.4 and 3.8). The device
+// selector, the numeric-property selector, and the text selector, shared byte-for-byte with both C
+// files. `DEVICE_KIND_GPU` is `GGML_BACKEND_DEVICE_TYPE_GPU`: the arm names no Metal-specific entry
+// point and includes no `ggml-metal.h`, because the device-generic capability flag is the whole
+// host-pointer surface Metal exposes (`r4-5-external-buffer.md` section 2.5).
+pub DEVICE_KIND_CPU := 0
+pub DEVICE_KIND_GPU := 1
+
+// One field per call rather than one record, because a `layout(C)` struct cannot cross this
+// boundary by value at this pin and `bool` is not an FFI type (`docs/align-requests.md` Request 32).
+pub DEVICE_PROP_TYPE_ID := 0
+pub DEVICE_PROP_HOST_PTR := 1
+pub DEVICE_PROP_HOST_BUFFER := 2
+pub DEVICE_PROP_ALIGNMENT := 3
+pub DEVICE_PROP_MEMORY_FREE := 4
+pub DEVICE_PROP_MEMORY_TOTAL := 5
+
+pub DEVICE_TEXT_NAME := 0
+pub DEVICE_TEXT_DESCRIPTION := 1
+
+// The longest device name or description this capability carries. `MTL0` and `Apple M1` are the
+// two this host produces; the bound exists because the shim writes at most the capacity the caller
+// declares and never NUL-terminates.
+pub MAX_DEVICE_TEXT_BYTES := 128
+
 pub Fault { code: string, detail: string }
 
 fn fault(code: str, detail: str) -> Fault =
@@ -120,6 +145,12 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_type_ok(kind: i32, ne0: i64) -> i32
   fn align_ptr_align_mod(p: slice<u8>, modulus: i64) -> i64
   fn align_ggml_device_open() -> raw
+  // R5C section 3.4. The registry's own device selection for either kind, its numeric properties,
+  // its buffer type's maximum length, and its two names.
+  fn align_ggml_device_by_kind(kind: i32) -> raw
+  fn align_ggml_device_props(device: raw, field: i32) -> i64
+  fn align_ggml_device_buft_max_size(device: raw) -> i64
+  fn align_ggml_device_text(device: raw, which: i32, out: slice<u8>, cap: i32) -> i32
   fn align_ggml_backend_open(device: raw) -> raw
   fn align_ggml_backend_name(backend: raw, out: slice<u8>, cap: i32) -> i32
   fn align_ggml_backend_close(backend: raw) -> ()
@@ -320,6 +351,69 @@ pub fn device_open() -> raw {
 pub fn backend_open(device: raw) -> raw {
   unsafe {
     return align_ggml_backend_open(device)
+  }
+}
+
+// R5C section 3.4. A null handle is "the registry has no device of that kind", which the GPU arm
+// reports as `R5C_GPU_UNAVAILABLE` at section 3.9 step 20a — a document with a verdict, not a
+// signal. It returns a bare `raw` for the same reason every constructor here does: a `Result` ok
+// payload must be a scalar at this pin and `raw` is refused.
+pub fn device_by_kind(kind: i64) -> raw {
+  if kind != DEVICE_KIND_CPU && kind != DEVICE_KIND_GPU { return null_handle() }
+  unsafe {
+    return align_ggml_device_by_kind(kind as i32)
+  }
+}
+
+// One numeric property of one device. Negative answers are the shim's own status vocabulary, so a
+// caller that reads a capability flag as a truth value must range-check it first — which is why
+// `device_flag` below is a separate function rather than a comparison at each call site.
+pub fn device_props(device: raw, field: i64) -> i64 {
+  if field < DEVICE_PROP_TYPE_ID || field > DEVICE_PROP_MEMORY_TOTAL { return STATUS_ABI }
+  unsafe {
+    return align_ggml_device_props(device, field as i32)
+  }
+}
+
+// A capability flag as a `bool`. `1` is true and **everything else** — `0`, a negative status, an
+// unknown field — is false, so an ABI drift that made the shim answer with a status reads as
+// "the device does not advertise it" rather than as "it does" (section 3.9 step 20b is fail-closed).
+pub fn device_flag(device: raw, field: i64) -> bool {
+  return device_props(device, field) == 1
+}
+
+// Section 3.5's one new bound. `ggml_backend_buft_get_max_size` reports `SIZE_MAX` for the CPU
+// buffer type, which both C files clamp to `i64`'s maximum rather than truncating, so a device that
+// declares no limit reads as the largest limit instead of as a negative one.
+pub fn device_buft_max_size(device: raw) -> i64 {
+  unsafe {
+    return align_ggml_device_buft_max_size(device)
+  }
+}
+
+// The device's name or description, copied into caller memory and decoded there, in the same shape
+// as `backend_name`: `buffer(n)` reserves capacity without publishing length, so the range is
+// written before the call and the shim writes at most the capacity the caller declares.
+pub fn device_text(device: raw, which: i64) -> string {
+  if which != DEVICE_TEXT_NAME && which != DEVICE_TEXT_DESCRIPTION { return "".clone() }
+  mut window: buffer := buffer(MAX_DEVICE_TEXT_BYTES)
+  mut i := 0
+  loop {
+    if i >= MAX_DEVICE_TEXT_BYTES { break }
+    window.put_u8(0 as u8)
+    i = i + 1
+  }
+  unsafe {
+    written := align_ggml_device_text(
+      device, which as i32, window.bytes(), MAX_DEVICE_TEXT_BYTES as i32) as i64
+    if written <= 0 || written > MAX_DEVICE_TEXT_BYTES {
+      return "".clone()
+    }
+    view := window.bytes()
+    return match view[0..written].as_str() {
+      Ok(text) => text.clone(),
+      Err(_) => "".clone(),
+    }
   }
 }
 

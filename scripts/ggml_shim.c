@@ -414,6 +414,53 @@ int32_t align_ggml_window_copy(void *window, int64_t window_bytes, int64_t offse
     return ALIGN_GGML_OK;
 }
 
+
+/* R5C-METAL-PREFILL-ARM (`docs/specs/r5c-metal-prefill.md` sections 3.4, 3.8, and 3.9). The device
+ * selector, the property selector, and the one clamp, shared byte-for-byte by both files so that a
+ * stub GPU and a real Metal device answer the same questions with the same field ids.
+ *
+ * The two device kinds are `GGML_BACKEND_DEVICE_TYPE_CPU` and `..._GPU` (section 3.4): the arm
+ * names no Metal-specific entry point and includes no `ggml-metal.h`, because
+ * `r4-5-external-buffer.md` section 2.5 established that Metal exposes no backend-specific
+ * host-pointer function and that the device-generic capability flag is the whole surface.
+ */
+#define ALIGN_GGML_DEVICE_CPU 0
+#define ALIGN_GGML_DEVICE_GPU 1
+
+/* The numeric device properties, selected by field id rather than returned in one record, because
+ * a `layout(C)` struct cannot cross this boundary by value at this pin (section 3.1, and
+ * `docs/align-requests.md` Request 32). Every field crosses as an `int64_t`, and the two capability
+ * flags cross as `0` or `1` for the same reason `bool` is not an FFI type here.
+ */
+#define ALIGN_GGML_DEV_TYPE_ID       0
+#define ALIGN_GGML_DEV_HOST_PTR      1
+#define ALIGN_GGML_DEV_HOST_BUFFER   2
+#define ALIGN_GGML_DEV_ALIGNMENT     3
+#define ALIGN_GGML_DEV_MEMORY_FREE   4
+#define ALIGN_GGML_DEV_MEMORY_TOTAL  5
+
+/* `align_ggml_device_text`'s selector. `ggml_backend_dev_name` and `ggml_backend_dev_description`
+ * both return a `const char *`, and a `str` cannot be formed over foreign memory at this pin, so
+ * each is copied into an Align-owned byte range exactly as `align_ggml_backend_name` already copies
+ * the backend's.
+ */
+#define ALIGN_GGML_DEV_TEXT_NAME        0
+#define ALIGN_GGML_DEV_TEXT_DESCRIPTION 1
+
+/* `ggml_backend_buft_get_max_size` reports `SIZE_MAX` for the CPU buffer type, which is not
+ * representable as an `int64_t`. Both files clamp rather than truncate, so section 3.9 step 21a
+ * compares two numbers Align can hold and a device that declares "no limit" reads as the largest
+ * limit instead of as a negative one.
+ */
+#define ALIGN_GGML_MAX_BUFFER_CLAMP ((int64_t) 0x7fffffffffffffffLL)
+
+static int64_t align_ggml_clamp_size(size_t value) {
+    if (value > (size_t) ALIGN_GGML_MAX_BUFFER_CLAMP) {
+        return ALIGN_GGML_MAX_BUFFER_CLAMP;
+    }
+    return (int64_t) value;
+}
+
 /* --- END R4.5 SHARED SHIM CONTRACT --- */
 
 /* ---------------------------------------------------------------------------------------------
@@ -431,13 +478,135 @@ int32_t align_ggml_available(void) {
  * registry path is the only one that works. It is also the backend-agnostic one, which is why
  * section 2.5's GPU probe was three lines different rather than a second implementation.
  */
-static ggml_backend_dev_t align_ggml_cpu_device(void) {
+static void align_ggml_registry_ready(void) {
     static int loaded = 0;
     if (!loaded) {
         ggml_backend_load_all();
         loaded = 1;
     }
-    return ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+}
+
+/* R5C section 3.4. Device selection for either kind, through the registry and nothing else, after
+ * the same one-time load. A `NULL` answer is "the registry has no device of that type", which
+ * section 3.9 step 20a reports as `R5C_GPU_UNAVAILABLE` — a document with a verdict, not a signal.
+ */
+void *align_ggml_device_by_kind(int32_t kind) {
+    align_ggml_registry_ready();
+    if (kind == ALIGN_GGML_DEVICE_CPU) {
+        return (void *) ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    }
+    if (kind == ALIGN_GGML_DEVICE_GPU) {
+        return (void *) ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+    }
+    return NULL;
+}
+
+static ggml_backend_dev_t align_ggml_cpu_device(void) {
+    return (ggml_backend_dev_t) align_ggml_device_by_kind(ALIGN_GGML_DEVICE_CPU);
+}
+
+/* R5C section 3.4. One numeric device property, selected by field id. `ALIGN_GGML_DEV_ALIGNMENT`
+ * comes from the device's **own** buffer type rather than from the CPU's, which is section 3.9
+ * step 21's whole change: the arm validates the alignment of the device it is about to hand the
+ * window to.
+ */
+int64_t align_ggml_device_props(void *device, int32_t field) {
+    struct ggml_backend_dev_props props;
+    if (device == NULL) {
+        return ALIGN_GGML_UNAVAILABLE;
+    }
+    if (field == ALIGN_GGML_DEV_ALIGNMENT) {
+        ggml_backend_buffer_type_t buft =
+            ggml_backend_dev_buffer_type((ggml_backend_dev_t) device);
+        size_t alignment = 0;
+        if (buft == NULL) {
+            return ALIGN_GGML_ABI;
+        }
+        alignment = ggml_backend_buft_get_alignment(buft);
+        if (alignment == 0 || alignment > (size_t) 65536) {
+            return ALIGN_GGML_ABI;
+        }
+        return (int64_t) alignment;
+    }
+    memset(&props, 0, sizeof(props));
+    ggml_backend_dev_get_props((ggml_backend_dev_t) device, &props);
+    switch (field) {
+    case ALIGN_GGML_DEV_TYPE_ID:
+        return (int64_t) props.type;
+    case ALIGN_GGML_DEV_HOST_PTR:
+#ifdef ALIGN_GGML_FORCE_NO_HOST_PTR
+        /* Section 4.5: a device that does not advertise `buffer_from_host_ptr` is a condition no
+         * input can produce on a host whose only devices do. The macro is never defined in an
+         * ordinary build. */
+        return 0;
+#else
+        return props.caps.buffer_from_host_ptr ? 1 : 0;
+#endif
+    case ALIGN_GGML_DEV_HOST_BUFFER:
+        return props.caps.host_buffer ? 1 : 0;
+    case ALIGN_GGML_DEV_MEMORY_FREE:
+        return align_ggml_clamp_size(props.memory_free);
+    case ALIGN_GGML_DEV_MEMORY_TOTAL:
+        return align_ggml_clamp_size(props.memory_total);
+    default:
+        break;
+    }
+    return ALIGN_GGML_ABI;
+}
+
+/* R5C section 3.5's one new bound, and section 2.6 is why it is a *pre*-check rather than a null
+ * check on the wrap: `ggml_backend_dev_buffer_from_host_ptr` on Metal logs a failure and then
+ * segfaults for an oversize length, so nothing downstream can observe the refusal.
+ */
+int64_t align_ggml_device_buft_max_size(void *device) {
+    if (device == NULL) {
+        return ALIGN_GGML_UNAVAILABLE;
+    }
+#ifdef ALIGN_GGML_FORCE_MAX_BUFFER_SIZE
+    /* Section 4.3's `gf-device-limit` cell: a device whose maximum buffer length the computed
+     * window exceeds. No real device here has one small enough, so the qualification and the owner
+     * both reach the check through this macro. */
+    return (int64_t) (ALIGN_GGML_FORCE_MAX_BUFFER_SIZE);
+#else
+    {
+        ggml_backend_buffer_type_t buft =
+            ggml_backend_dev_buffer_type((ggml_backend_dev_t) device);
+        size_t max_size = 0;
+        if (buft == NULL) {
+            return ALIGN_GGML_ABI;
+        }
+        max_size = ggml_backend_buft_get_max_size(buft);
+        if (max_size == 0) {
+            return ALIGN_GGML_ABI;
+        }
+        return align_ggml_clamp_size(max_size);
+    }
+#endif
+}
+
+/* The device's name and description, copied into caller memory exactly as the backend's name is.
+ * Returns the copied length, never NUL-terminates, and never writes more than `cap`.
+ */
+int32_t align_ggml_device_text(void *device, int32_t which, void *out, int32_t cap) {
+    const char *text = NULL;
+    size_t length = 0;
+    if (device == NULL || out == NULL || cap <= 0) {
+        return 0;
+    }
+    if (which == ALIGN_GGML_DEV_TEXT_NAME) {
+        text = ggml_backend_dev_name((ggml_backend_dev_t) device);
+    } else if (which == ALIGN_GGML_DEV_TEXT_DESCRIPTION) {
+        text = ggml_backend_dev_description((ggml_backend_dev_t) device);
+    }
+    if (text == NULL) {
+        return 0;
+    }
+    length = strlen(text);
+    if (length > (size_t) cap) {
+        length = (size_t) cap;
+    }
+    memcpy(out, text, length);
+    return (int32_t) length;
 }
 
 /* The alignment ggml will assert on, asked of the linked library rather than assumed.
@@ -621,15 +790,25 @@ void align_ggml_context_close(void *ctx) {
  * caller skips the step.
  */
 void *align_ggml_buffer_from_host(void *device, void *ptr, int64_t size) {
-    int32_t alignment = 0;
+    int64_t alignment = 0;
+    int64_t max_size = 0;
     if (device == NULL || ptr == NULL || size <= 0) {
         return NULL;
     }
-    alignment = align_ggml_tensor_alignment();
+    /* R5C section 3.5: the **device's** own alignment, not the CPU's. On this host both are 32, and
+     * asking the device is what keeps the gate meaningful when they differ. */
+    alignment = align_ggml_device_props(device, ALIGN_GGML_DEV_ALIGNMENT);
     if (alignment <= 0) {
         return NULL;
     }
-    if (align_ptr_align_mod(ptr, (int64_t) alignment) != 0) {
+    if (align_ptr_align_mod(ptr, alignment) != 0) {
+        return NULL;
+    }
+    /* R5C section 2.6 measured `exit 139`: an oversize wrap does not return `NULL`, it segfaults.
+     * `src/model_forward.align` refuses the window at step 21a before the first wrap; this is the
+     * fail-closed second gate, in the same shape as the alignment rule above it. */
+    max_size = align_ggml_device_buft_max_size(device);
+    if (max_size > 0 && size > max_size) {
         return NULL;
     }
     return (void *) ggml_backend_dev_buffer_from_host_ptr(

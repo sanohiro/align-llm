@@ -8,6 +8,7 @@ import std.time
 import alignpack_read
 import ggml_ffi
 import layer_forward
+import gpu_forward
 import model_forward
 
 // R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md`). The whole arm: the CLI, the
@@ -1493,6 +1494,12 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   // R5B section 3.3: the whole-model arm, selected by the first operand and nothing else.
   if args.len() >= 2 && args[1] == "--model-forward" {
     return model_forward.run(args)
+  }
+  // R5C section 3.3: the whole-model arm on the registry's GPU device, selected by the first
+  // operand and nothing else. Section 3.1 records why this is a fourth arm rather than a trailing
+  // `--backend` operand on the third.
+  if args.len() >= 2 && args[1] == "--model-forward-gpu" {
+    return gpu_forward.run(args)
   }
   if args.len() >= 2 && args[1].starts_with("--") {
     return Err(Error.Invalid)

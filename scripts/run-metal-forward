@@ -1,0 +1,437 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# R5C-METAL-PREFILL-ARM named focused qualification (`docs/specs/r5c-metal-prefill.md` section 5.2).
+# **Opt-in and capable-only.** It is in neither HOSTED_CHECK_TARGETS nor CAPABLE_ONLY_CHECK_TARGETS
+# and in no aggregate, exactly as `model-forward-qualification` is not.
+#
+#   ALIGN_LLM_GGML_INCLUDE          directory holding ggml.h, ggml-alloc.h, ggml-backend.h
+#   ALIGN_LLM_GGML_LIB              directory holding libggml and libggml-base
+#   ALIGN_LLM_GGML_BACKEND_DIR      directory the backend plugins are dlopened from
+#   ALIGN_LLM_GGUF_MODEL            the Qwen2 GGUF this prefill is read from
+#   ALIGN_LLM_LLAMA_DEBUG           path to `llama-debug`
+#   ALIGN_LLM_LLAMA_EVAL_CALLBACK   path to `llama-eval-callback`
+#   ALIGN_LLM_METAL_FORWARD_TMPDIR  where the pack is written; defaults to TMPDIR
+#
+# Section 6, correction C8: section 5.2's environment list omits `ALIGN_LLM_LLAMA_EVAL_CALLBACK`
+# while its own assertion table requires `oracle.layers_matched == 28`, which needs a transcript.
+# The transcript instrument is therefore a declared input here.
+#
+# When any is unset, or the model or either instrument is absent, or **the registry reports no
+# device of type GPU**, or the free space under the scratch root is under the pack's size plus 1 GiB,
+# it prints one explicit N/A line naming the missing input and exits 0. Hosted CI is Linux with no
+# Metal device, so this target is N/A there by the device check — which is the intended behaviour
+# and not a skip: the N/A line names the device as the missing input.
+#
+# Otherwise it builds the real shim, probes the registry with the **synthetic** two-layer fixture
+# before packing anything, packs the real model into a temporary directory outside the work tree,
+# captures both instruments with section 2.2's exact contractual flag set, asserts the reference
+# blob's own `sha256` **before** running the arm — so an instrument change is reported as an
+# instrument change and not as a failing oracle — runs `--model-forward` once for the paired CPU
+# baseline and `--model-forward-gpu` twice for the determinism assertion, asserts every recorded
+# value of section 5.2, reports microbenchmark A, and removes everything on every exit path.
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+
+# Section 2.2's vector: the byte-identical CPU logits `r5b-model-prefill-forward.md` section 2.7
+# publishes, which is what makes the Metal comparison a comparison against llama.cpp rather than
+# against a sibling implementation.
+REFERENCE_SHA256=d2e48620ae3e31e2066a6172aa32c19c974d996d232ab91b118335e3d245bf74
+TOKENS=750,912,2877,11,293,1648
+RECONCILIATION_WIDTH=256
+
+na() {
+  printf '%s\n' "metal forward qualification: N/A $1"
+  exit 0
+}
+
+[ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ] || na "ALIGN_LLM_GGML_INCLUDE is unset"
+[ -n "${ALIGN_LLM_GGML_LIB:-}" ] || na "ALIGN_LLM_GGML_LIB is unset"
+[ -n "${ALIGN_LLM_GGML_BACKEND_DIR:-}" ] || na "ALIGN_LLM_GGML_BACKEND_DIR is unset"
+[ -n "${ALIGN_LLM_GGUF_MODEL:-}" ] || na "ALIGN_LLM_GGUF_MODEL is unset"
+[ -n "${ALIGN_LLM_LLAMA_DEBUG:-}" ] || na "ALIGN_LLM_LLAMA_DEBUG is unset"
+[ -n "${ALIGN_LLM_LLAMA_EVAL_CALLBACK:-}" ] || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is unset"
+[ -d "${ALIGN_LLM_GGML_INCLUDE}" ] || na "ALIGN_LLM_GGML_INCLUDE is not a directory"
+[ -d "${ALIGN_LLM_GGML_LIB}" ] || na "ALIGN_LLM_GGML_LIB is not a directory"
+[ -d "${ALIGN_LLM_GGML_BACKEND_DIR}" ] || na "ALIGN_LLM_GGML_BACKEND_DIR is not a directory"
+[ -f "${ALIGN_LLM_GGUF_MODEL}" ] || na "ALIGN_LLM_GGUF_MODEL is not a file"
+command -v "${ALIGN_LLM_LLAMA_DEBUG}" >/dev/null 2>&1 \
+  || [ -x "${ALIGN_LLM_LLAMA_DEBUG}" ] \
+  || na "ALIGN_LLM_LLAMA_DEBUG is not executable"
+command -v "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" >/dev/null 2>&1 \
+  || [ -x "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" ] \
+  || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable"
+
+model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
+scratch_root="${ALIGN_LLM_METAL_FORWARD_TMPDIR:-${TMPDIR:-/tmp}}"
+[ -d "${scratch_root}" ] || na "the scratch root ${scratch_root} does not exist"
+free_kib=$(df -Pk "${scratch_root}" | awk 'NR == 2 { print $4 }')
+need_kib=$(( model_bytes / 1024 + 1048576 ))
+if [ "${free_kib}" -lt "${need_kib}" ]; then
+  na "free space under ${scratch_root} is ${free_kib} KiB, below the ${need_kib} KiB the pack needs"
+fi
+
+work_dir=$(mktemp -d "${scratch_root%/}/align-r5c-XXXXXX")
+# `build/lib/libalign_ggml_shim` is shared state outside the work tree: the forced-failure loop
+# replaces it, and an early exit would otherwise leave a `-DALIGN_GGML_FORCE_*` library in place for
+# whatever ran next. The trap restores the ordinary real shim before it removes the work directory,
+# so the exit path is total (`r5a-dense-layer-forward.md` section 6, correction C22).
+shim_built=0
+cleanup() {
+  status=$?
+  if [ "${shim_built}" = 1 ]; then
+    ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null 2>&1 || true
+  fi
+  rm -rf "${work_dir}"
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+shim_dir=$(ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim")
+shim_built=1
+(
+  cd "${root_dir}"
+  LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}" \
+  DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+  LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  "${compiler}" build src/ggml_spike.align >/dev/null
+  mv -f ggml_spike ggml-spike
+)
+export DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+# The device probe, **before** four and a half gigabytes are packed. The synthetic two-layer fixture
+# `scripts/run-layer-forward-smoke` already uses costs a second and reaches section 3.9 step 20a
+# against the real registry, so "is there a GPU device here" is answered by the registry itself
+# rather than by guessing from the host's name.
+python3 "${root_dir}/scripts/layer_forward_fixture.py" "${work_dir}/probe" --model >/dev/null
+set +e
+"${root_dir}/ggml-spike" --model-forward-gpu "${work_dir}/probe/model-pack.alignpack" \
+  "${work_dir}/probe/geometry.json" 3,17,5 > "${work_dir}/probe.json" 2> "${work_dir}/probe.log"
+set -e
+if [ ! -s "${work_dir}/probe.json" ]; then
+  echo "metal forward qualification: FAIL the device probe produced no document" >&2
+  tail -20 "${work_dir}/probe.log" >&2 || true
+  exit 1
+fi
+probe_code=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["error_code"])' \
+  "${work_dir}/probe.json")
+if [ "${probe_code}" = "R5C_GPU_UNAVAILABLE" ]; then
+  na "the ggml registry reports no device of type GPU on this host"
+fi
+python3 - "${work_dir}/probe.json" <<'PY'
+import json
+import sys
+
+document = json.load(open(sys.argv[1]))
+device = document["device"]
+print("metal forward qualification: device %s (%s) type %d, alignment %d, max buffer %d B, "
+      "host-ptr %s, host-buffer %s, memory %d/%d B"
+      % (device["name"], device["description"], device["type_id"], device["buffer_alignment"],
+         device["buffer_max_size"], device["buffer_from_host_ptr"], device["host_buffer"],
+         device["memory_free"], device["memory_total"]))
+if not device["buffer_from_host_ptr"]:
+    raise SystemExit("metal forward qualification: FAIL the GPU device does not advertise "
+                     "buffer_from_host_ptr, so it cannot borrow an Align-owned window")
+PY
+
+echo "metal forward qualification: packing ${ALIGN_LLM_GGUF_MODEL} into ${work_dir}"
+"${root_dir}/main" --pack "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/model.alignpack" \
+  "${work_dir}/pack.json" >/dev/null
+"${root_dir}/main" --model-ir "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/geometry.json" >/dev/null
+
+# `r5b-model-prefill-forward.md` section 2.2's **exact** contractual flag set. `--repack` defaults to
+# on and with repacking enabled the logits are a different answer — 0.30 of a logit, with the argmax
+# unchanged — so the flags are part of the oracle, not a convenience.
+FLAGS_P="def add(a, b):"
+echo "metal forward qualification: capturing both instruments with -fa off -ctk f32 -ctv f32 -nr"
+"${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" -m "${ALIGN_LLM_GGUF_MODEL}" -p "${FLAGS_P}" \
+  -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 \
+  > "${work_dir}/transcript.txt" 2> "${work_dir}/transcript.log"
+"${ALIGN_LLM_LLAMA_DEBUG}" -m "${ALIGN_LLM_GGUF_MODEL}" -p "${FLAGS_P}" \
+  -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 \
+  --save-logits --logits-output-dir "${work_dir}/lg" \
+  > "${work_dir}/debug.log" 2>&1
+
+logits_bin=$(ls "${work_dir}"/lg/*.bin 2>/dev/null | grep -v -- '-tokens\.bin$' | head -1 || true)
+if [ -z "${logits_bin}" ]; then
+  echo "metal forward qualification: FAIL llama-debug exited 0 and wrote no logits file" >&2
+  tail -20 "${work_dir}/debug.log" >&2 || true
+  exit 1
+fi
+
+# The reference blob's own digest, asserted **before** the arm runs. An instrument change is then
+# reported as an instrument change and not as a failing tolerance oracle (section 5.2).
+actual_sha=$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' \
+  "${logits_bin}")
+if [ "${actual_sha}" != "${REFERENCE_SHA256}" ]; then
+  echo "metal forward qualification: FAIL the reference logits are ${actual_sha}, not the" \
+    "${REFERENCE_SHA256} section 2.2 established. This is an instrument change, not a failing" \
+    "oracle: re-establish the vector before reading the tolerance verdict below." >&2
+  exit 1
+fi
+echo "metal forward qualification: the reference vector is ${REFERENCE_SHA256}, as recorded"
+
+# The paired CPU arm, same host, same session, same page-cache state. Section 5.3: the pairing is
+# the method, because this repository makes no cross-document timing claim.
+echo "metal forward qualification: CPU arm at the reconciliation width (${RECONCILIATION_WIDTH})"
+"${root_dir}/ggml-spike" --model-forward "${work_dir}/model.alignpack" \
+  "${work_dir}/geometry.json" "${TOKENS}" "${work_dir}/cpu.json" "${ALIGN_LLM_GGUF_MODEL}" \
+  "${work_dir}/transcript.txt" "${RECONCILIATION_WIDTH}" "${logits_bin}" >/dev/null
+
+# Two consecutive GPU runs. Section 2.4 measured five byte-identical runs, and section 3.7 turns that
+# into a contract rather than discarding it: a ggml or driver change that introduces nondeterminism
+# becomes a visible failure instead of being absorbed into a bound that was sized for it.
+for pass in 1 2; do
+  echo "metal forward qualification: GPU arm pass ${pass} at the reconciliation width"
+  "${root_dir}/ggml-spike" --model-forward-gpu "${work_dir}/model.alignpack" \
+    "${work_dir}/geometry.json" "${TOKENS}" "${work_dir}/gpu${pass}.json" \
+    "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/transcript.txt" "${RECONCILIATION_WIDTH}" \
+    "${logits_bin}" >/dev/null
+  # Section 2.6 measured `exit 134` for an unfreed Metal host-pointer buffer. The exit code is the
+  # only check that can see a leak the counters missed, so it is asserted rather than assumed.
+  echo "metal forward qualification: GPU arm pass ${pass} exited 0"
+done
+
+python3 - "${work_dir}" "${logits_bin}" <<'PY'
+import hashlib
+import json
+import os
+import sys
+
+work_dir, logits_path = sys.argv[1:3]
+
+
+def load(name):
+    with open(os.path.join(work_dir, name), "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+d = load("gpu1.json")
+d2 = load("gpu2.json")
+cpu = load("cpu.json")
+
+failures = []
+
+
+def want(label, got, expected):
+    if got != expected:
+        failures.append("%s: %r, expected %r" % (label, got, expected))
+
+
+def at_most(label, got, bound):
+    if got > bound:
+        failures.append("%s: %r, expected at most %r" % (label, got, bound))
+
+
+want("kind", d["kind"], "R5_MODEL_FORWARD_GPU")
+want("schema_version", d["schema_version"], 1)
+want("status", d["status"], "ok")
+want("verdict", d["verdict"], "EXTERNAL")
+
+device = d["device"]
+want("device.kind", device["kind"], "gpu")
+want("device.name", device["name"], "MTL0")
+want("device.type_id", device["type_id"], 1)
+want("device.buffer_from_host_ptr", device["buffer_from_host_ptr"], True)
+want("device.window_fits", device["window_fits"], True)
+want("device.buffer_max_size", device["buffer_max_size"], 9534832640)
+want("device.buffer_alignment", device["buffer_alignment"], 32)
+
+window = d["window"]
+want("window.bytes", window["bytes"], 447086592)
+want("window.reuse_count", window["reuse_count"], 30)
+want("window.pointer_identity_failures", window["pointer_identity_failures"], 0)
+want("window.member_placements", window["member_placements"], 339)
+# Section 6, correction C7: section 5.2 expected 30 wraps because section 2.7's probe harness ran a
+# single pass. The shipped arm runs the runtime pass **and** the reconciliation pass for every layer
+# and the head, so the window is filled 30 times and handed to the device 1 + 2 * 29 = 59 times.
+want("window.wrap_count", window["wrap_count"], 59)
+want("the window fits the device", window["bytes"] <= device["buffer_max_size"], True)
+
+graph = d["graph"]
+want("graph.graph_count", graph["graph_count"], 30)
+want("graph.node_count_total", graph["node_count_total"], 874)
+want("graph.reconciliation_node_count", graph["reconciliation_node_count"], 958)
+want("graph.slot_high_water", graph["slot_high_water"], 52)
+want("graph.slot_capacity", graph["slot_capacity"], 128)
+
+want("output.element_count", d["output"]["element_count"], 152064)
+want("output.argmax", d["output"]["argmax"], 671)
+
+# Oracle 1. Section 2.8 measured it byte-identical on Metal: it compares two computations on the
+# same device, so it is a statement about bytes and pointers rather than kernels, and it is the only
+# check that catches a window reused before its previous tenant was freed.
+reference = d["reference"]
+want("reference.verdict", reference["verdict"], "IDENTICAL")
+want("reference.graphs_compared", reference["graphs_compared"], 30)
+want("reference.nodes_compared", reference["nodes_compared"], 479)
+want("reference.nodes_identical", reference["nodes_identical"], reference["nodes_compared"])
+
+# Oracle 2. The structural half runs; the element half is deliberately disabled (section 3.7), and
+# both halves are asserted so a future silent re-enable is a diff.
+oracle = d["oracle"]
+want("oracle.verdict", oracle["verdict"], "N/A_DEVICE")
+want("oracle.layers_matched", oracle["layers_matched"], 28)
+want("oracle.layers_expected", oracle["layers_expected"], 28)
+want("oracle.nodes_expected", oracle["nodes_expected"], 479)
+want("oracle.elements_compared", oracle["elements_compared"], 0)
+
+# Oracle 3, the tolerance fixed in section 3.7 from section 2.3's measurement before this
+# qualification was written.
+logits = d["oracle_logits"]
+want("oracle_logits.verdict", logits["verdict"], "WITHIN")
+want("oracle_logits.compared_pass", logits["compared_pass"], "reconciliation")
+want("oracle_logits.tolerance_ten_thousandths", logits["tolerance_ten_thousandths"], 6000)
+at_most("oracle_logits.max_abs_diff_ten_thousandths",
+        logits["max_abs_diff_ten_thousandths"], 6000)
+want("oracle_logits.argmax_primary == argmax_reference",
+     logits["argmax_primary"], logits["argmax_reference"])
+want("oracle_logits.argmax_reference", logits["argmax_reference"], 671)
+want("oracle_logits.top_k_agreement", logits["top_k_agreement"], 10)
+want("oracle_logits.elements_over_half", logits["elements_over_half"], 0)
+want("oracle_logits.elements_compared", logits["elements_compared"], 152064)
+with open(logits_path, "rb") as handle:
+    digest = hashlib.sha256(handle.read()).hexdigest()
+want("the reference logits' own sha256", logits["reference_sha256"], digest)
+
+# The determinism assertion. Section 2.4 measured five byte-identical runs, so the run-to-run
+# component of the tolerance is exactly zero and that becomes a contract rather than slack.
+want("two consecutive runs agree on output.sha256",
+     d["output"]["sha256"], d2["output"]["sha256"])
+want("two consecutive runs agree on output.bit_sum",
+     d["output"]["bit_sum"], d2["output"]["bit_sum"])
+want("two consecutive runs agree on the logits verdict",
+     d2["oracle_logits"]["max_abs_diff_ten_thousandths"],
+     logits["max_abs_diff_ten_thousandths"])
+
+lifetime = d["lifetime"]
+for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                       ("contexts_created", "contexts_freed"),
+                       ("backends_created", "backends_freed"),
+                       ("gallocrs_created", "gallocrs_freed")):
+    want("lifetime.%s == %s" % (created, freed), lifetime[created], lifetime[freed])
+want("lifetime.graph_balance_failures", lifetime["graph_balance_failures"], 0)
+want("lifetime.released_before_owner_scope_end", lifetime["released_before_owner_scope_end"], True)
+want("abi.tensor_alignment", d["abi"]["tensor_alignment"], 32)
+want("abi.table_drift", d["abi"]["table_drift"], -1)
+want("abi.fp_contract_off", d["abi"]["fp_contract_off"], True)
+
+# Sections 3.1 and 3.2: the CPU arm is byte-unchanged by this capability. Its kind, its `IDENTICAL`
+# verdict, and its 5,000-ten-thousandth bound are the same run's evidence, on the same host, in the
+# same session.
+want("the CPU arm still emits R5_MODEL_FORWARD", cpu["kind"], "R5_MODEL_FORWARD")
+want("the CPU arm's logits are still byte-identical", cpu["oracle_logits"]["verdict"], "IDENTICAL")
+want("the CPU arm's tolerance is unchanged",
+     cpu["oracle_logits"]["tolerance_ten_thousandths"], 5000)
+want("the CPU arm's transcript oracle still compares elements",
+     cpu["oracle"]["verdict"], "PASS")
+if "device" in cpu:
+    failures.append("a device block leaked into R5_MODEL_FORWARD")
+
+million = 1e6
+print("metal forward qualification: window %d B handed to %s %d times, %d fills, %d placements, "
+      "0 pointer-identity failures"
+      % (window["bytes"], device["name"], window["wrap_count"], window["reuse_count"],
+         window["member_placements"]))
+# The CPU arm's own wrap cost is **not** printed beside this one, and the omission is deliberate:
+# `R5_MODEL_FORWARD` publishes no `wrap_ns` (section 3.2 keeps its document byte-unchanged), so
+# quoting a zero here would be reporting a missing field as a measurement. Section 2.7 measured the
+# CPU's at 0.003 ms per wrap against this device's, on a paired run of the same harness.
+print("metal forward qualification: microbenchmark A -- transfer %.1f ms over %d wraps "
+      "(%.3f ms per %d B wrap, zero bytes copied); the CPU arm's document does not publish a wrap "
+      "cost, and section 2.7 measured it at 0.003 ms per wrap"
+      % (d["timings"]["wrap_ns"] / million, window["wrap_count"],
+         d["timings"]["wrap_ns"] / million / max(window["wrap_count"], 1), window["bytes"]))
+print("metal forward qualification: microbenchmark A -- GPU compute %.1f ms runtime / %.1f ms "
+      "reconciliation against the CPU arm's %.1f ms / %.1f ms"
+      % (d["timings"]["compute_ns"] / million,
+         d["timings"]["reconciliation_compute_ns"] / million,
+         cpu["timings"]["compute_ns"] / million,
+         cpu["timings"]["reconciliation_compute_ns"] / million))
+print("metal forward qualification: wall %.1f ms GPU against %.1f ms CPU (%.2fx), pread %.1f ms "
+      "against %.1f ms"
+      % (d["timings"]["elapsed_ns"] / million, cpu["timings"]["elapsed_ns"] / million,
+         d["timings"]["elapsed_ns"] / max(cpu["timings"]["elapsed_ns"], 1),
+         d["timings"]["pread_ns"] / million, cpu["timings"]["pread_ns"] / million))
+print("metal forward qualification: head compute %.2f ms GPU against %.2f ms CPU; layer 27 "
+      "%.2f ms against %.2f ms"
+      % (d["head"]["compute_ns"] / million, cpu["head"]["compute_ns"] / million,
+         d["schedule"][27]["compute_ns"] / million, cpu["schedule"][27]["compute_ns"] / million))
+per_layer = sorted(row["compute_ns"] for row in d["schedule"][:27])
+cpu_layer = sorted(row["compute_ns"] for row in cpu["schedule"][:27])
+if per_layer and cpu_layer:
+    print("metal forward qualification: layers 0-26 compute median %.2f ms GPU against %.2f ms CPU"
+          % (per_layer[len(per_layer) // 2] / million, cpu_layer[len(cpu_layer) // 2] / million))
+print("metal forward qualification: self-reference %s (%d/%d nodes byte-identical over %d graphs)"
+      % (reference["verdict"], reference["nodes_identical"], reference["nodes_compared"],
+         reference["graphs_compared"]))
+print("metal forward qualification: transcript %s, %d/%d layers matched, %d elements compared"
+      % (oracle["verdict"], oracle["layers_matched"], oracle["layers_expected"],
+         oracle["elements_compared"]))
+print("metal forward qualification: logits %s -- max |d| %d of %d ten-thousandths, mean %d, "
+      "p99 %d, %d over half a unit, argmax %d both, top-%d agreement"
+      % (logits["verdict"], logits["max_abs_diff_ten_thousandths"],
+         logits["tolerance_ten_thousandths"], logits["mean_abs_diff_ten_thousandths"],
+         logits["p99_abs_diff_ten_thousandths"], logits["elements_over_half"],
+         logits["argmax_reference"], logits["top_k_agreement"]))
+print("metal forward qualification: determinism -- two runs, output.sha256 %s == %s"
+      % (d["output"]["sha256"][:16], d2["output"]["sha256"][:16]))
+print("metal forward qualification: GPU top ten %r"
+      % [row["index"] for row in d["output"]["top_k"]])
+print("metal forward qualification: CPU top ten %r"
+      % [row["index"] for row in cpu["output"]["top_k"]])
+
+# Section 2.5, and section 6 correction C4: the per-layer residual is **recorded and never gated**.
+# The arm publishes `-1` for the three `l_out_max_*` fields because section 3.3's operand grammar
+# defines no operand that could carry a CPU reference document, so the comparison is made here,
+# between the two arms' own `schedule[]` digests, and printed rather than asserted.
+print("metal forward qualification: per-layer l_out, recorded and never gated --")
+for row, cpu_row in zip(d["schedule"], cpu["schedule"]):
+    same = row["l_out_sha256"] == cpu_row["l_out_sha256"]
+    print("metal forward qualification:   layer %-2d gpu %s cpu %s %s  sum %d vs %d"
+          % (row["layer"], row["l_out_sha256"][:12], cpu_row["l_out_sha256"][:12],
+             "identical" if same else "differs",
+             row["l_out_f32_sum_millionths"], cpu_row["l_out_f32_sum_millionths"]))
+    for field in ("l_out_max_abs_diff_ten_thousandths", "l_out_max_rel_diff_ppm",
+                  "l_out_worst_index"):
+        want("schedule[%d].%s is unmeasured" % (row["layer"], field), row[field], -1)
+
+if failures:
+    for line in failures:
+        sys.stderr.write("metal forward qualification: FAIL %s\n" % line)
+    raise SystemExit(1)
+print("metal forward qualification: every section 5.2 assertion PASS")
+PY
+
+# The failure paths no input can produce, against the **real** device. `max-buffer` is the one that
+# matters: section 2.6 measured that an oversize wrap on Metal logs a failure and then segfaults, so
+# step 21a is the only thing standing between a legal-looking window and `exit 139`.
+for force in max-buffer no-host-ptr init compute; do
+  ALIGN_LLM_GGML_FORCE="${force}" "${root_dir}/scripts/build-ggml-shim" >/dev/null
+  set +e
+  "${root_dir}/ggml-spike" --model-forward-gpu "${work_dir}/model.alignpack" \
+    "${work_dir}/geometry.json" "${TOKENS}" - > "${work_dir}/forced.json" 2>/dev/null
+  status=$?
+  set -e
+  case "${force}" in
+    max-buffer)  expected=R5C_DEVICE_BUFFER_LIMIT ;;
+    no-host-ptr) expected=R5C_NO_HOST_PTR ;;
+    init)        expected=R5_GGML_INIT ;;
+    compute)     expected=R5_COMPUTE ;;
+  esac
+  code=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["error_code"])' \
+    "${work_dir}/forced.json")
+  if [ "${code}" != "${expected}" ] || [ "${status}" = 0 ]; then
+    echo "metal forward qualification: FAIL forced ${force} produced ${code} (exit ${status}), " \
+      "expected ${expected} and a non-zero exit" >&2
+    exit 1
+  fi
+  echo "metal forward qualification: forced ${force} reached ${code} with a document and exit" \
+    "${status}"
+done
+ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null   # the trap repeats this
+
+echo "metal forward qualification: removing the pack, both instrument outputs, and the tree"

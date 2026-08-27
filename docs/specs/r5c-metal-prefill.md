@@ -1235,3 +1235,335 @@ a section 6 of this document, not in a quiet edit here.
 | **The qualification is `N/A` on hosted CI** and could rot unnoticed | The `N/A` line names the device as the missing input; the arm's own failure surface — all three new codes — is **fully stub-reachable** hosted, and `arm-r5b-unchanged` runs hosted too | Only the numeric agreement and the timings need a Metal host. That is the same shape as `model-forward-qualification` and is stated rather than implied |
 | **Timings are page-cache dependent**, and this session's `pread` was 2.7× R5B's | Every figure in section 5.3 is a **paired, alternating, same-session** measurement, and no cross-document timing claim is made | Absolute wall figures are not comparable to `r5b-model-prefill-forward.md` section 7.6's. The ratio is what R5C claims, and pairing is what makes it claimable |
 | **R5B's contract could drift** while R5C shares its schedule | `arm-r5b-unchanged` asserts every existing `R5_MODEL_FORWARD` golden is byte-identical, and sections 3.1 and 3.2 keep the arm, the kind, and the arity set separate | A change to the shared schedule still touches both arms by design. The golden assertion is what makes that visible in one line of the diff |
+
+---
+
+## 6. Corrections the implementation forced
+
+Section 5.5's closing rule applied: every item below is a place where the design of sections 1 to 5
+was refuted or under-specified by writing the code, and each records the measurement or the compiler
+diagnostic that forced it rather than being edited quietly into the sections above.
+
+### C1 — the wrappers are four, not three
+
+Section 1.2 names three new one-call wrappers: `device_by_kind`, `device_buft_max_size`, and
+`device_props`. Those three cover every **numeric** field of section 3.8's `device` object and none
+of its two textual ones. `ggml_backend_dev_name` and `ggml_backend_dev_description` return a
+`const char *`, and a `str` cannot be formed over foreign memory at this pin, so each name has to be
+copied into an Align-owned byte range and decoded there — the shape `align_ggml_backend_name`
+already has. A fourth symbol, `align_ggml_device_text(device, which, out, cap)`, carries both behind
+one selector rather than adding two.
+
+**Shipped:** four symbols in `src/ggml_ffi.align` and in both C files, and a `device_flag` helper
+above `device_props` so a capability flag is read as `== 1` in one place. Anything that is not
+exactly `1` — a zero, a negative shim status, an unknown field — is `false`, which keeps step 20b
+fail-closed against an ABI drift instead of reading a status as a truth value.
+
+### C2 — `SIZE_MAX` is not an `i64`
+
+`ggml_backend_buft_get_max_size` reports `SIZE_MAX` — `18446744073709551615` — for the **CPU**
+buffer type on this host, measured. Returned unclamped it is a negative `int64_t`, and step 21a's
+`window_bytes <= max_size` would then refuse every window on the arm that has no limit at all. Both
+C files clamp to `i64`'s maximum inside the shared contract region, so a device that declares no
+limit reads as the largest limit rather than as a negative one. Metal's own `9534832640` needs no
+clamp and is unaffected.
+
+### C3 — the forced-failure inputs are build flavours, not environment variables
+
+Section 5.1 calls `ALIGN_GGML_FORCE_NO_HOST_PTR` and `ALIGN_GGML_FORCE_MAX_BUFFER_SIZE`
+"forced-failure environment variables". Every forced failure this repository ships is a
+compile-time `-D` macro selected by a named `scripts/build-ggml-shim` flavour, for
+`r4-5-external-buffer.md` section 4.6's reason: a shim whose behaviour changes with the environment
+is a shim whose golden documents are not reproducible. R5C follows that discipline unchanged and
+adds five flavours — `engine+gpu`, `engine+gpu+no-host-ptr`, `engine+gpu+max-buffer`,
+`engine+gpu+compute` for the stub, and `max-buffer` and `no-host-ptr` for the real shim, so the
+qualification reaches both new device conditions against the **real** Metal device as well.
+
+### C4 — `schedule[].l_out_max_*` cannot be populated by this arm
+
+Section 3.8 says the three per-layer difference fields are "populated only when a CPU reference
+document is supplied to the qualification". **Section 3.3's operand grammar defines no operand that
+could carry one**, and sections 3.1 and 3.2 hold that grammar fixed at R5B's arity set on purpose —
+a tenth operand is exactly the change section 3.1 rejected. The fields therefore exist in the
+document, are always `-1`, and the comparison they describe is made by `scripts/run-metal-forward`
+between the two arms' own `schedule[]` digests and `l_out_f32_sum_millionths`, printed and never
+gated, which is what section 2.5 concluded it must be in either place.
+
+Measured on the real model: **all twenty-eight layers' `l_out` digests differ** between the two arms
+and every one of them is a successful run, which is section 2.5's finding restated as a shipped
+observation rather than a threshold.
+
+### C5 — a `borrow mut` column set cannot cross a module boundary and come back
+
+The plan's module split — `src/gpu_forward.align` calling `src/model_forward.align`'s `execute` —
+does not compile as written, and the diagnostic is not about the device:
+
+```text
+src/gpu_forward.align:556:36: error: use of invalidated borrow 'schedule': its source 'tokens' was
+                                    moved or reassigned (or its storage was reallocated)
+src/gpu_forward.align:556:20: error: value snapshot was invalidated before the enclosing operation:
+                                    owner 'tokens' was moved, reassigned, or reallocated by a later
+                                    eager operand
+```
+
+`execute` reports its four column sets through `borrow mut` out-parameters. A caller **in another
+module** cannot read them after the call: the checker merges the four owners into one region and
+invalidates all of them, naming `tokens` as the source of `schedule`'s invalidation. The identical
+sequence inside `src/model_forward.align` checks *and builds*, which is why R5B never met it.
+
+Returning them inside a record instead is refused for a second, different reason —
+`cannot return a view that borrows local storage` — and only for the four column sets: a `Bundle`
+carrying `Outcome` alone builds. The columns are assembled from builders local to `stage_geometry`
+and `schedule_model`, so the checker treats the caller's own local as a view over those. Assembling
+the record field by field is refused by a third:
+`field replacement of model_forward$Outcome is not supported yet (owned field replacement currently
+supports only string and Option<string> leaves)`.
+
+**Shipped:** `model_forward.render_parts` renders the four column sets where they are produced and
+returns them as `string`s beside the `Outcome` — the one shape all three refusals allow. The GPU
+document's three extra per-layer field names travel the other way, as a `schedule_suffix` string, so
+the `R5_MODEL_FORWARD_GPU` field list stays in the module that owns that document and section 3.10's
+ownership table holds. `--model-forward` keeps calling `execute` directly and its bytes are
+unchanged.
+
+**`alignc check` accepts all three forms that `alignc build` rejects.** Section 7 records that as
+the Align-side finding; the application-side answer above consumes no hypothetical surface.
+
+### C6 — step 20 keeps R5B's code on both arms
+
+Section 4.5 gives `R5C_GPU_UNAVAILABLE` the detail `stub`, and section 5.1 says the default stub
+reaches it at step 20a. It cannot: section 3.9 step 20 is `align_ggml_available()` and is declared
+**unchanged**, so a host with no ggml at all stops there, before any device is selected. Renaming
+that code for the GPU arm would also name the wrong cause — a code called `GPU_UNAVAILABLE` firing
+on a host that has no ggml is a worse diagnostic than `R5_GGML_UNAVAILABLE`.
+
+**Shipped:** step 20 is `R5_GGML_UNAVAILABLE` with detail `stub` on both arms, and step 20a is
+`R5C_GPU_UNAVAILABLE` with detail `device`, reached by the `engine` stub build — which is available
+and has no GPU device, which is exactly the condition the code names. All three new codes remain
+fully stub-reachable and the owner's coverage of steps 1 to 19 is unchanged.
+
+### C7 — the window is wrapped fifty-nine times, not thirty
+
+Section 5.2 asserts `window.wrap_count == 30`, from section 2.7's `WRAP calls=30`. That probe
+harness ran **one** pass. The shipped arm runs the runtime pass for every layer and the head **and**
+the reconciliation pass for each of them whenever `KV_WIDTH > token_count`, which is the width the
+qualification uses. The window is filled thirty times — `reuse_count` is 30, and section 3.5's
+sizing is untouched — and handed to the device `1 + 2 * (n_layer + 1)` = **59** times.
+
+The measured consequence is that microbenchmark A's transfer at the reconciliation width is
+**732.3 ms over 59 wraps** at the median of three pairs, 12.4 ms per 447 MB wrap, rather than
+section 2.7's 354.8 ms over 30. The per-wrap figure is the one that generalizes and it agrees with
+section 2.7's independently measured 11.8 ms; section 5.3's totals are single-pass figures and
+section 7.2 restates them for the shipped arm.
+
+### C8 — the qualification needs the transcript instrument
+
+Section 5.2's environment list omits `ALIGN_LLM_LLAMA_EVAL_CALLBACK` while its own assertion table
+requires `oracle.layers_matched == 28`, which is only reachable with a transcript.
+`scripts/run-metal-forward` declares it as a required input and prints an explicit `N/A` line naming
+it when it is absent, exactly as the other five.
+
+The same script also answers "is there a GPU device here" **before** packing four and a half
+gigabytes, by running the arm over the synthetic two-layer fixture the owner already uses and
+reading `error_code`. The registry answers the question rather than the host's name.
+
+### C9 — `oracle.nodes_matched` is zero on a device arm
+
+Section 3.7 disables the transcript oracle's element comparison, and the per-node match counter is
+incremented inside that comparison. On the GPU arm `oracle.nodes_expected` is 479 and
+`oracle.nodes_matched` is `0` while `layers_matched` is 28 and every structural rule has run and
+passed in the pre-schedule scan. The field is left as it is rather than being made to mean something
+else on one arm: `elements_compared: 0` and `verdict: "N/A_DEVICE"` already say that nothing was
+compared, and a matched-node count synthesized from the scan would be a number that looks like the
+CPU arm's and is not.
+
+### C10 — the naming the plan settled on
+
+Section 5.2 names the target `metal-forward-qualification` and the runner `scripts/run-metal-forward`
+while section 1.2 and section 3 name everything else after the device-generic `gpu`. Both are
+shipped as section 5.2 wrote them, and the Align module, the CLI arm, the document kind, the error
+prefix, and the golden corpus keep the generic name: the *capability* is device-generic and the
+*qualification* is the one part that genuinely requires Metal.
+
+### C11 — the owner's budget, measured rather than asserted
+
+Section 5.1 records `make layer-forward-smoke` at **11.0 s** and sets the acceptance target at
+**under 15 s**; section 5.5 adds `check-per-unit src/gpu_forward.align` under **10 s**. Both were
+measured, paired and alternating on the host of section 2.1, because a wall-clock target compared
+against a number from a different session is not a measurement.
+
+| Quantity | Result |
+| --- | --- |
+| `check` of `src/gpu_forward.align`'s own unit | **1.3–2.1 s** — the whole-graph check minus `src/model_forward.align`'s, paired. Well inside the 10 s target, which is what the new module bought (`docs/align-requests.md` Request 37) |
+| `make layer-forward-smoke`, **unchanged runner**, this host | **12.98 s** median (12.54–14.93) |
+| `make layer-forward-smoke`, with R5C's block | **15.70 s** median (14.50–16.12) |
+| **R5C's own cost** | **+2.2 s, +17%** |
+
+**The target is exceeded on this host and met against the baseline the target was set from.** The
+plan's session ran the unchanged runner in 11.0 s and this one runs it in 13.0 s, so 2.0 s of the
+overrun is the host and 2.2 s is this capability; 11.0 + 2.2 = 13.2 s is inside 15 s. Both numbers
+are stated rather than one of them chosen.
+
+Section 5.5's stated remedy — "the arm splits along the device/oracle boundary" — does **not**
+apply, and saying so is the point of recording this: that remedy reduces *checker* cost, which is
+already inside its target by a factor of five. The owner's cost is process launches, and it was
+reduced where the reduction cost no coverage:
+
+- the GPU arm's default-stub list is **five rows, not twenty-seven**. Steps 1 to 19 are the same
+  `model_forward.execute` on both arms, and the `--model-forward` block already drives every one of
+  those rules through it; one row per operand class proves the new arm reaches that path, which is
+  the only thing those rows can add.
+- `gf-gpu-type` was dropped as a duplicate of `gf-gpu-alignment` for section 4.2's "R5B's codes are
+  still reachable from the GPU arm" cell, which seven other rows also cover.
+- the determinism check reuses `gf-gpu-logits`'s own document as the first of its three runs.
+
+What was **not** reduced: every closure cell of section 4 still has a case, all three `R5C_*` codes
+are still stub-reachable, and `arm-r5b-unchanged` still runs hosted.
+
+### Cell-to-case map
+
+Every applicable closure cell of section 4, mapped to the implementing function and the exact case
+that covers it. `S` runs in `make layer-forward-smoke`; `Q` runs in
+`make metal-forward-qualification`.
+
+| Section 4 cell | Implementation | Evidence |
+| --- | --- | --- |
+| 4.1 construction — `device_by_kind` | `align_ggml_device_by_kind`, both C files | `S` `gf-no-gpu` (null on the engine stub); `Q` the device probe prints `MTL0` |
+| 4.1 construction — `device_buft_max_size`, `device_props`, `device_text` (C1) | three wrappers, both C files | `S` `gf-gpu-ok` asserts the stub's `32` / `4294967296`; `Q` asserts `9534832640`, `32`, `MTL0`, host-ptr true |
+| 4.1 success — status map | `ggml_ffi.r5_code_for` | `S` `gf-status-map`: every `STATUS_*` but `OK` and the `ABI` fall-through has a branch, and the fall-through is asserted to exist |
+| 4.1 failure — no GPU device | `execute` step 20a | `S` `gf-no-gpu` → `R5C_GPU_UNAVAILABLE`, detail `device` (C6) |
+| 4.1 failure — device lacks host-ptr | `execute` step 20b, `device_flag` | `S` `gf-no-host-ptr`; `Q` forced `no-host-ptr` against the real device |
+| 4.1 move in/out — no aggregate holds `raw` | named locals only | `S` the record-declaration scan over `src/`, unchanged |
+| 4.1 cleanup — per graph | `teardown_graph` | `S` `gf-teardown-partial` (a forced compute failure) balances every counter |
+| 4.1 the two C files agree | the fenced region | `S` byte-identity assertion, unchanged and extended by the R5C block |
+| 4.1 no `malloc`, contraction off | neither file allocates | `S` the `malloc` grep and `abi.fp_contract_off` on every document |
+| 4.2 formation — no stage reshaped | `DeviceSelection` threaded through `execute` | `S` `arm-r5b-unchanged`, and **every R5A and R5B golden regenerates byte-identically** |
+| 4.2 success — one schedule, two devices | `stage_read_block`, `carry_residual` untouched | `S` both arms' `schedule[]` agree on the synthetic model; `Q` 30 fills and 339 placements on both |
+| 4.2 success — window sizing device-independent | `stage_window` | `S` `window.bytes` equal across arms; `Q` `447086592` on both |
+| 4.2 failure — R5B's codes reachable from the GPU arm | `stage_*` | `S` `gf-gpu-type`, `gf-gpu-alignment`, `gf-source-diverged`, `gf-transcript-*`, `gf-logits-*` |
+| 4.2 cleanup | section 3.10's order | `S` and `Q` `lifetime.graph_balance_failures` 0 on both arms |
+| 4.3 formation — arm selection | first operand, before path work | `S` `gf-arm-unknown-flag`, `gf-arity-7` → no document |
+| 4.3 formation — device through the registry | `execute` step 20a | `S` `gf-no-gpu`; `Q` `device.name == "MTL0"`, `type_id == 1` |
+| 4.3 construction — properties published | `execute`, `gpu_forward.render_device` | `S` the golden `device` block; `Q` `buffer_max_size 9534832640`, `window_fits true` |
+| 4.3 construction — the limit, before the first wrap | `execute` step 21a | `S` `gf-device-limit`, asserting `wrap_count == 0` in the error document; `Q` forced `max-buffer` against the real device |
+| 4.3 success — every placement external | R5B's pointer-identity check | `S` `verdict: "EXTERNAL"`; `Q` **339 placements, 0 failures** |
+| 4.3 success — the transfer is measured | `run_graph`, `window.wrap_*` | `S` one wrap per graph run; `Q` **59 wraps, 775.5 ms** (C7) |
+| 4.3 early exit — `-` document | `gpu_forward.run` | `S` `gf-doc-stdout-identical` |
+| 4.3 return — exit mapping | R0's, verbatim | `S` every case asserts `status` against the exit code |
+| 4.3 cleanup — every device buffer freed | `teardown_graph` | `S` `graph_balance_failures` 0 and created == freed; **`Q` both runs exit 0**, which section 2.6 shows a leak would not |
+| 4.4 reference — bytes equal, per block | `compare_source` | `S` `gf-source-diverged`; `Q` all 339 members equal |
+| 4.4 reference — nodes identical, bit-exact on the device | `stage_reference_graph` | `S` 37/37 on four synthetic graphs; `Q` **479 of 479 over 30 graphs** |
+| 4.4 transcript — grammar, coverage, element count | `scan_transcript`, `prepare_transcript` | `S` `gf-transcript-garbage`, `gf-transcript-missing-layer` |
+| 4.4 transcript — `kq-L` `ne0` | step 30 | `S` `gf-transcript-kv-width` → `R5_ORACLE_SHAPE` |
+| 4.4 transcript — elements deliberately not compared | step 31 | `S` `gf-gpu-transcript` and `gf-transcript-perturbed` both `N/A_DEVICE`/0 with `status: ok`; `Q` the same |
+| 4.4 logits — file shape | step 32 | `S` `gf-logits-short`, `gf-logits-missing` |
+| 4.4 logits — the tolerance verdict | `compare_logits` | `S` `gf-gpu-logits`, `gf-gpu-runtime-width`; `Q` **`WITHIN`, max 2,936 tt, argmax 671 both, top-10, 0 over half** |
+| 4.4 logits — a real failure is not `WITHIN` | `compare_logits` | `S` `gf-logits-perturbed`: a 1.0 shift keeps the argmax and the whole top ten and is `FAIL` |
+| 4.4 determinism is asserted | `output.sha256` | `S` three consecutive runs agree; `Q` **two runs, `b6e473e8…` both** |
+| 4.4 per-layer recorded, never gated | `schedule[].l_out_max_*` | `S` all three fields `-1` on every row of every case; `Q` the same, and all 28 layers' digests differ with `status: ok` (C4) |
+| 4.4 tolerance not silently widened | `logits_tolerance` | `S` and `Q` assert `6000`; `arm-r5b-unchanged` asserts R5B's is still `5000` |
+| 4.5 `R5C_GPU_UNAVAILABLE` | step 20a | `S` `gf-no-gpu`, detail `device` (C6) |
+| 4.5 `R5C_NO_HOST_PTR` | step 20b | `S` `gf-no-host-ptr`; `Q` forced |
+| 4.5 `R5C_DEVICE_BUFFER_LIMIT` | step 21a | `S` `gf-device-limit`; `Q` forced |
+| discrete VRAM | — | `N/A`, section 1.3: no such device on this host and no equivalent entry point |
+| microbenchmark C | — | `N/A`, deferred behind section 5.5's Request 41 |
+
+---
+
+## 7. Measured result
+
+Every figure below is from one paired session on the host of section 2.1, with the shipped arm and
+its shipped operands — a reference GGUF, a transcript, `KV_WIDTH` 256, and the byte-identical
+`d2e48620…` logits — rather than from the single-pass probe harness of section 2. It is therefore
+**not** comparable to section 5.3's totals, and section 5.3 is left as the probe record it is.
+
+### 7.1 Correctness
+
+| Oracle | Result |
+| --- | --- |
+| Oracle 1, self-reference, **bit-exact on Metal** | `IDENTICAL`, **479 of 479 nodes byte-identical over 30 graphs** |
+| Oracle 2, transcript | `N/A_DEVICE`, 28 of 28 layers matched by the pre-schedule scan, 0 elements compared |
+| Oracle 3, logits vs `d2e48620…` | **`WITHIN`** — max `\|Δ\|` **2,936** of 6,000 ten-thousandths, mean 528, p99 1,656, **0 of 152,064 elements over half a unit**, `argmax` **671** on both arms, top ten `[671, 220, 470, 715, 2529, 256, 2303, 262, 257, 414]` identical in order |
+| Determinism | two consecutive runs, `output.sha256` **`b6e473e86ca903e2…` both** — section 2.3's digest, reproduced by the shipped arm |
+| Placement | **339 placements, 0 pointer-identity failures**, `verdict: "EXTERNAL"` |
+| Lifetime | `graph_balance_failures` 0, every counter balanced, **both runs exit 0** |
+| Device | `MTL0` (`Apple M1`), `type_id` 1, alignment **32**, `buffer_max_size` **9,534,832,640 B**, `buffer_from_host_ptr` true, `host_buffer` false, `window_fits` true |
+
+The measured worst case is **2,936** ten-thousandths against section 2.3's 2,937 — one
+ten-thousandth, which is the last-place rounding of a `f64` product — so the bound section 3.7 fixed
+before the qualification existed is **2.04×** the shipped arm's measured worst case, exactly as
+derived.
+
+### 7.2 Microbenchmark A, on the shipped arm
+
+**Three paired runs**, each one CPU arm then GPU arm, alternating, in the same invocation of
+`make metal-forward-qualification` on the same warm page cache. The pairing is the method, and three
+pairs rather than one is the finding: this host's wall-clock spread is larger than the difference
+being measured, so a single pair would have supported either conclusion.
+
+| Metric | Pair 1 | Pair 2 | Pair 3 | Median |
+| --- | --- | --- | --- | --- |
+| **transfer — total over 59 wraps** | 775.5 ms | 695.3 ms | 732.3 ms | **732.3 ms** |
+| **transfer — per 447,086,592 B wrap, zero bytes copied** | 13.14 ms | 11.79 ms | 12.41 ms | **12.41 ms** |
+| GPU compute, reconciliation width (`T` = 6, `KV` = 256) | 376.9 ms | 375.4 ms | 353.7 ms | **375.4 ms** |
+| CPU compute, same | 475.8 ms | 486.1 ms | 549.7 ms | **486.1 ms** |
+| GPU compute, runtime width (`KV` = 6) | 509.6 ms | 492.4 ms | 570.6 ms | **509.6 ms** |
+| CPU compute, same | 433.7 ms | 481.9 ms | 539.0 ms | **481.9 ms** |
+| layers 0–26 compute, median | 18.19 / 15.51 | 17.18 / 15.22 | 19.61 / 18.48 | **18.19 GPU / 15.51 CPU** |
+| layer 27, narrowed, `T` = 1 | 14.22 / 5.38 | 10.36 / 4.39 | 13.96 / 6.51 | **13.96 GPU / 5.38 CPU** |
+| head, `MUL_MAT` against 447 MB of Q6_K | 10.22 / 11.83 | 9.94 / 10.67 | 9.78 / 13.58 | **9.94 GPU / 11.83 CPU** |
+| `pread` | 1,686.9 / 1,503.8 | 1,483.9 / 1,584.0 | 1,588.7 / 1,619.9 | **1,588.7 / 1,584.0** |
+| wall | 6,474.2 / 4,946.9 | 5,899.8 / 5,951.0 | 6,338.9 / 6,064.1 | **6,338.9 / 5,951.0** |
+| **end-to-end ratio** | 1.31× slower | 0.99× | 1.05× slower | **1.05× slower** |
+
+**Three results, in decreasing order of how well they are resolved.**
+
+1. **The transfer costs 12.4 ms per 447 MB wrap and copies nothing.** This is the number
+   microbenchmark A exists to publish and it is the most stable one here: 11.8–13.1 ms across three
+   pairs, agreeing with section 2.7's independently measured 11.8 ms. The shipped arm pays it
+   **fifty-nine times** — 732 ms per prefill — because it runs both passes (correction C7). The CPU
+   arm's is 0.003 ms per wrap (section 2.7); its document does not publish the field, and quoting a
+   zero from a missing field would not be a measurement.
+2. **The GPU is faster where the work is large and slower where it is small**, and this holds in all
+   three pairs. GPU compute at the reconciliation width is **375 ms against the CPU's 486 ms —
+   1.29× faster** — while at the runtime width, where attention is six wide, it is 510 ms against
+   482 ms. Per graph: the head's `MUL_MAT` against 447 MB of Q6_K is **1.19× faster** on the device,
+   a full-width layer is 1.17× slower, and the narrowed last layer, whose `T` = 1 leaves the device
+   idle, is **2.6× slower**. That decomposition is what a residency policy needs: the transfer tax
+   scales with the **window**, the compute win scales with the **work**.
+3. **End to end the two arms are within noise of each other on this host**, at a median of 1.05×
+   with a spread from 0.99× to 1.31×. **This is not resolved and is not claimed as a result.** The
+   spread is `pread`'s: it varies by 140 ms between pairs and is 25–27% of either arm's wall, and
+   the whole compute difference the device makes is smaller than that variation. Section 2.9's
+   single-pass harness measured 1.20× on a colder cache; the shipped arm's honest statement is that
+   **the device choice does not move end-to-end prefill time on this host by more than the file read
+   varies between runs.**
+
+Section 1.5's recorded expectation was **negative**, and the measured result is between parity and
+1.3× slower, so this is not a ceiling-estimation miss. **R5C discharges microbenchmark A on unified
+memory and publishes an unfavourable-to-neutral number, which is the benchmark working.** The
+deferred optimizations of section 5.4 now have a larger target than section 2.7 recorded: wrapping
+once instead of fifty-nine times would remove most of 732 ms, and a per-block-class window would cut
+what remains roughly threefold.
+
+### 7.3 Align limitations this capability met
+
+All three are recorded here as client evidence. None is a blocker: the shipped arm works around each
+inside Align, with no compatibility layer and no hypothetical surface consumed.
+
+1. **`alignc check` is not a superset of `alignc build`.** Three separate programs in this
+   capability checked clean and failed to build, all in the region checker. A per-module `check` is
+   therefore not sufficient evidence that a module compiles, which matters because `make check` is
+   the narrow owner this repository runs after a coherent batch.
+2. **A `borrow mut` record out-parameter cannot be read by a caller in another module** (C5), and
+   the two obvious ways around it — returning the owners inside a record, and moving them into an
+   already-constructed one — are refused by two further rules. The shape that works is "render where
+   the data is produced and return `string`s", which is what `render_parts` does.
+3. **A `borrow mut` argument's own field cannot be passed as a `str` view to the same call**:
+   `borrowed argument 1 to 'fail' aliases argument 3, whose mode may invalidate the same owner`. The
+   fix is a `.clone()` at the one call site that names the device in its own error detail.
+
+Item 3 is ordinary aliasing discipline and is not a language gap. Items 1 and 2 are language-owned
+and belong in `docs/align-requests.md` as client evidence for the module-boundary and
+`Result`/return-payload requests already registered there; this capability records them and does not
+file a new blocking request, because microbenchmark A is discharged without one.

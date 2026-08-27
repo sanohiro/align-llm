@@ -3,6 +3,111 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
+## Active: R5C-METAL-PREFILL-ARM — the same Align-owned window, handed to Metal (2026-08-27)
+
+- Branch `agent/r5c-metal-prefill` at ledger commit `e375eec` ("docs: add R5C Metal prefill arm
+  design ledger"), continuing R5B-MODEL-PREFILL-FORWARD (branch `agent/r5b-model-prefill-forward`
+  at `556fced`, awaiting publication below). The authoritative design ledger is
+  `docs/specs/r5c-metal-prefill.md`.
+- **Status: implementation complete in the working tree.** R5C discharges
+  `docs/specs/roadmap.md` section R5's required microbenchmark A (transfer + GPU compute) on
+  unified memory: the same thirty graphs, the same alignpack, and the **same Align-owned weight
+  window** R5B already streams, handed to the Metal device through
+  `ggml_backend_dev_buffer_from_host_ptr` instead of to the CPU backend, and checked against R5B's
+  own byte-identical CPU logits vector (`d2e48620…`).
+- **Owner results.** `make check` — **92.7 s, 29 units**, clean. `make build` — clean. `make
+  ggml-spike` (stub and real) — both clean. `make ggml-spike-smoke` — clean. `make
+  layer-forward-smoke` — **3 runs, identical output, 15.7 s median** (+2.2 s R5C delta over the
+  unchanged runner's 13.0 s on this host; 24 GPU-arm goldens added). Every existing
+  `R5_MODEL_FORWARD` golden from R5A/R5B is **byte-unchanged**. `make alignpack-smoke` — clean.
+  `make gate-topology-check` — clean. `make format-check` and `make fmt` — clean, no diff.
+- **Qualification, `make metal-forward-qualification`, 3 paired runs on this Metal host.**
+  Oracle 1 (self-reference) `IDENTICAL`, **479 of 479 nodes byte-identical over 30 graphs**.
+  Oracle 3 (logits vs `d2e48620…`) `WITHIN`, max `|Δ|` **2,936 of 6,000** ten-thousandths, `argmax`
+  671 on both arms, top ten identical in order. `output.sha256` **`b6e473e8…`, equal across runs**.
+  Device `MTL0` (Apple M1), `buffer_max_size` **9,534,832,640 B**. Transfer: **59 wraps, 12.4 ms
+  each, 732 ms per prefill** (both passes run per correction C7). Compute at the reconciliation
+  width (`KV` 256): GPU **375 ms** vs CPU **486 ms**. End-to-end wall ratio across the three pairs —
+  **0.99× / 1.05× / 1.31×** — is **not resolved** and is recorded as such rather than claimed: the
+  spread is `pread`'s, which varies more between pairs than the compute difference the device
+  makes. Every forced-failure input (`R5C_DEVICE_BUFFER_LIMIT`, `R5_GGML_UNAVAILABLE`,
+  `R5C_GPU_UNAVAILABLE`) was reached; the qualification's scratch directory was removed after the
+  run.
+- **Align capability requests filed this session** (`docs/align-requests.md`, Requests 41, 42, and
+  43, all `PROPOSED`; header updated to "Requests 21–43 are PROPOSED"):
+  - Request 41, non-`Copy` capture in `spawn` closures — a prefetch task for microbenchmark C must
+    own (or exclusively capture) the Align-owned window's `buffer`, and neither capturing it nor
+    returning a filled buffer from a spawned task compiles at this pin
+    (`crates/align_sema/src/lib.rs:48950`, `:43724`, `:60819` in the sibling checkout).
+    `task_group` itself is **not** the gap — `spawn` already accepts `fs` I/O and `extern "C"` FFI
+    cleanly, and purity binds `par_map` alone. Blocks only R5's required microbenchmark C, which
+    stays deferred with the gap named rather than worked around; all of R5C ships without it.
+  - Request 42, `alignc check` (and `check-per-unit`) is not a superset of `alignc build` for
+    region-checker (borrow/lifetime) diagnostics: three forms in R5C's originally planned module
+    split checked clean and failed only at `build` (correction C5). Reproduced fresh in a minimal
+    two-module probe under the pinned compiler
+    (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`): `alignc check` reports the probe clean while
+    `alignc build` rejects it with `use of invalidated borrow 'schedule': its source 'tokens' was
+    moved or reassigned`. Non-blocking; `make check` is not sufficient evidence for a compiling
+    checkpoint, so R5C also ran `make build` before trusting any candidate.
+  - Request 43, a cross-module `borrow mut` record out-parameter cannot be read by a caller in
+    another module — the identical call-then-read sequence checks and builds inside the module that
+    owns it. R5C's planned `src/gpu_forward.align`/`src/model_forward.align` split therefore
+    collapsed into `model_forward.render_parts` (`src/model_forward.align:3226-3253`) returning
+    rendered `string`s beside `Outcome` instead of the typed column-set records. Non-blocking;
+    `render_parts` is in place and ships.
+- **Probe evidence (ledger section 2), gathered on `MacBookAir10,1` (Apple M1, 16 GiB, ~30 GiB
+  free) before section 3's contract was written**, from a 28-layer C harness that streams the real
+  model through the same reused window on the Metal device.
+  - Metal is **bit-deterministic**: five consecutive full-model runs, byte-identical, 5/5 (ledger
+    section 2.4). The plan assumed run-to-run nondeterminism; it does not exist here.
+  - the whole-model logits at the reconciliation width (KV width 256), against the byte-identical
+    `d2e48620…` CPU vector: max `|Δ|` **2,937 ten-thousandths** (0.293651), `argmax` 671, the whole
+    top ten identical in order, zero elements over 0.5 (ledger section 2.3).
+  - section 3.7's acceptance tolerance, **6,000 ten-thousandths**, is derived from that
+    measurement — twice the measured worst case, rounded up to the next multiple of 1,000 — not
+    argued for independently.
+  - the per-layer residual comparison the plan intended to gate on is **dominated by a single
+    massive-activation channel at row 2570**, whose relative error falls from 1.2% at layer 3 to
+    0.07% at layer 26; `schedule[]` publishes it **recorded, never gated** (ledger section 2.5).
+  - the Metal buffer type's alignment is **32**, identical to the CPU's, and its maximum buffer
+    length is **9,534,832,640 B** (8.88 GiB) — the 447 MB window is 4.7% of it, so no split is
+    required; an **oversize wrap segfaults rather than returning null** (`exit 139`), forcing a
+    pre-wrap validation step, `R5C_DEVICE_BUFFER_LIMIT` (ledger section 2.6).
+  - the no-copy transfer R4.5 recorded as free costs a measured **354.8 ms over thirty wraps** of
+    the 447 MB window (11.8 ms per wrap, ~26 µs/MB, linear in length) against the CPU's
+    **0.075 ms** (ledger section 2.7).
+  - paired, same-session timings: wall **2,491.3 ms** (GPU) against **2,074.3 ms** (CPU) — **1.20×
+    slower** end to end — while per-graph compute is **2.07× faster on the head** and 1.58×
+    slower on the narrowed last layer (ledger section 2.9). The cost ceiling was recorded as
+    negative before implementation (ledger section 1.5), so this is not a ceiling-estimation miss.
+- **Next actions, in order.**
+  1. Review (one comprehensive pass per `CLAUDE.md`), repair, rerun affected verification.
+  2. Publish the English pull request, stacked behind R5B, itself stacked behind R5A.
+- **Three pending user decisions, consolidated into one list** (previously tracked separately
+  across earlier checkpoints; this is the current, authoritative statement).
+  1. Small MoE GGUF (1-4 GB): unlocks the R2 roadmap gate (a real MoE activation-locality
+     judgment), unblocks R3 (Cache Simulator), closes R4's per-expert half beyond its synthetic
+     case, and gives R4.5's expert matmul a real MoE block to spike against. Note: a model chosen
+     for size will most likely not be `gpt-oss` architecture, so this decision also needs a new
+     R1C frontend for whatever architecture it is, not just the download.
+  2. `gpt-oss-20b-mxfp4.gguf` (12.1 GB): unlocks R1B's `model-ir-parity` real-model qualification,
+     the one standing `N/A` in its otherwise-closed gate. At this host's free space, downloading
+     and packing it uses roughly 24 GB of the ~26 GB available once the existing Qwen2 model, its
+     alignpack, and scratch headroom are accounted for — tight enough that it should not be
+     decided at the same time as decision 1 without rechecking free space first.
+  3. A source build of llama.cpp at `bb4caa754` (the pinned `llama-cli`/`llama-eval-callback`/
+     `llama-debug` commit) plus a minimal patch under R2's own R2c policy (`docs/specs/roadmap.md`
+     section R2: "不足時のみ最小patch" — a patch only when the shipped instrument is insufficient):
+     neither `llama-eval-callback` nor `llama-debug --save-logits` can observe a KV cache of more
+     than a handful of positions, so R6 (Persistent KV) needs this instrument named and built
+     before its own gate is attemptable, and R7/R8/R9 depend on R6.
+- **After R5C, remaining roadmap work on this host is dominated by these three decisions plus
+  Request 41 for microbenchmark C.** R5C is the last capability reachable without one: decode (R6)
+  needs decision 3's instrument, MoE (R2/R3, R4's per-expert half, R4.5's expert matmul) needs
+  decision 1, the gpt-oss half of R1B's gate needs decision 2, and R5's own microbenchmark C needs
+  Request 41 to ship at all, independent of any of the three decisions.
+
 ## Publication in progress: R5B-MODEL-PREFILL-FORWARD — a whole Qwen2 prefill computed from an Align-owned alignpack (2026-08-27)
 
 - Branch `agent/r5b-model-prefill-forward`, **rebased onto the merged R5A-DENSE-LAYER-FORWARD
@@ -173,33 +278,18 @@ file records durable project state.
      check; do not substitute a Docker skip or an ambient `DOCKER_HOST` endpoint.
   4. Publish the English pull request against `main`. R5A's PR #127, R4.5's PR #126, and R4's
      PR #125 are all merged.
-- **Two pending user decisions, carried forward verbatim.**
-  1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
-     gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
-     `N/A`.
-  2. Carried forward from R2A: whether to download a small MoE GGUF (1-4 GB) so
-     `scripts/run-expert-trace-parity` can exercise the `moe: true` path against a real MoE
-     transcript; until decided the R2 roadmap gate stays open on dense-only smoke evidence, R4's own
-     MoE case stays synthetic-only, and R3 stays blocked (below). Note: a small MoE GGUF chosen for
-     size will most likely not be gpt-oss architecture, so R3's real measurement would also need a
-     new R1C frontend for whatever architecture that model uses, not just the download itself.
-- **R3 (Cache Simulator) is blocked on pending decision 2 above.** R3's gate
-  ("対象ハードウェア条件で、baselineより有効なpolicyを特定できること", `docs/specs/roadmap.md` section
-  R3) needs a real MoE activation trace and a cache-policy comparison against it; R2A's design ledger
-  already records that no such trace exists on this host. Resume condition: the small-MoE-GGUF
-  decision is made, the model's architecture is identified, an R1C frontend is built if that
-  architecture is not already `qwen2`/`gpt-oss`, and R2A's `moe: true` path is exercised against a
-  real transcript from it. Independent work that may continue: R5B's publication (its stage-3 dense
-  CPU gate needs no MoE trace) and the next eligible roadmap capability.
-- **R5B is the last large capability reachable without a user decision.** After it, every remaining
-  roadmap direction on this host needs one: decode (R6) needs an instrument first — neither
-  `llama-eval-callback` nor `llama-debug --save-logits` can observe a KV cache of more than a
-  handful of positions, so the oracle has to be named before the cache is written, not after — MoE
-  (R3, and R4's per-expert half) needs the small MoE GGUF pending decision 2 above, and the GPU/Metal
-  arm needs a tolerance oracle with a justified bound, which R5B's own logits oracle at a matched
-  attention width is the instrument that arm will need but does not itself provide
-  (`r4-5-external-buffer.md` section 5.4, `r5a-dense-layer-forward.md` section 5.4, ledger section
-  5.4).
+- **Pending user decisions and the "last capability reachable without one" status are now tracked
+  in one place, in the R5C-METAL-PREFILL-ARM section above**, superseding the two separate bullets
+  this entry previously carried. The R3 (Cache Simulator) blocker below still applies unchanged.
+- **R3 (Cache Simulator) is blocked on decision 1 (small MoE GGUF) in the R5C-METAL-PREFILL-ARM
+  section above.** R3's gate ("対象ハードウェア条件で、baselineより有効なpolicyを特定できること",
+  `docs/specs/roadmap.md` section R3) needs a real MoE activation trace and a cache-policy
+  comparison against it; R2A's design ledger already records that no such trace exists on this
+  host. Resume condition: the small-MoE-GGUF decision is made, the model's architecture is
+  identified, an R1C frontend is built if that architecture is not already `qwen2`/`gpt-oss`, and
+  R2A's `moe: true` path is exercised against a real transcript from it. Independent work that may
+  continue: R5A's publication (its stage-2 dense CPU gate needs no MoE trace) and R5B's/R5C's
+  review and publication.
 
 ## Merged checkpoint: R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack (2026-08-27)
 
@@ -570,7 +660,6 @@ file records durable project state.
   real transcript from it. Independent work that may continue: R4.5's publication (its DRAM half
   needs no MoE trace) and the next eligible roadmap capability.
 
-
 ## Merged checkpoint: R4-ALIGNPACK-LAYER-MAJOR — alignpack v1 container, layer-major layout, and verifier (2026-08-27)
 
 - **Status: merged.** R4-ALIGNPACK-LAYER-MAJOR merged as align-llm PR #125, head `a7e72dc`, merge
@@ -681,7 +770,6 @@ file records durable project state.
   chain — `Makefile` and `src/main.align`, which carry the `alignpack-smoke` owner target and the
   `--pack` / `--pack-verify` arms — and the twenty paths are otherwise identical, every other hash
   unchanged. `make baseline-check` on Linux: PASS, ending `baseline chain: PASS`.
-
 
 ## Merged checkpoint: R2A-EXPERT-TRACE-CAPTURE — expert-trace capture (2026-08-27)
 

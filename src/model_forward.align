@@ -49,7 +49,14 @@ MAX_WINDOW_BYTES := 8589934592
 // ten-thousandths over a logit range of 28.927, and the `argmax` and the whole top ten must agree
 // as well.
 LOGIT_TOLERANCE_TEN_THOUSANDTHS := 5000
-TOP_K := 10
+pub TOP_K := 10
+
+// R5C section 3.8's recorded distribution. Half a unit in ten-thousandths, and the histogram the
+// p99 is read off: 65,536 exact buckets plus one overflow, which covers the whole measured support
+// (section 2.3's p999 is 2,089) with three orders of magnitude to spare and reports its ceiling
+// rather than a wrong number for anything wider.
+HALF_UNIT_TEN_THOUSANDTHS := 5000
+HISTOGRAM_BUCKETS := 65536
 
 // Section 6, correction C23. The comparison below is integer ten-thousandths, and a `f32` element
 // exists that has no such integer: every infinity and NaN, and every finite magnitude above
@@ -76,6 +83,14 @@ REFERENCE_MISMATCH := 2
 ORACLE_ABSENT := 0
 ORACLE_PASS := 1
 ORACLE_FAIL := 2
+// R5C-METAL-PREFILL-ARM (`docs/specs/r5c-metal-prefill.md` section 3.7). The transcript oracle's
+// grammar, coverage, and element-count rules run on the GPU arm exactly as they do here; its
+// **element comparison** does not, because section 2.5 measured that the residual stream's
+// massive-activation channel differs by up to 185,844 ten-thousandths against a threshold of one.
+// A bound wide enough to pass would assert nothing, so the arm publishes the reason instead of a
+// number that cannot fail. Unreachable on the CPU arm, which is why `--model-forward`'s goldens do
+// not move.
+ORACLE_NOT_APPLICABLE_DEVICE := 3
 
 LOGITS_ABSENT := 0
 LOGITS_IDENTICAL := 1
@@ -105,18 +120,18 @@ TextBox { v: str }
 // Text, numbers, and the lexical guards
 // ---------------------------------------------------------------------------------------------
 
-fn int_text(value: i64) -> string {
+pub fn int_text(value: i64) -> string {
   b := builder()
   b.write_int(value)
   return b.to_string()
 }
 
-fn bool_text(value: bool) -> string {
+pub fn bool_text(value: bool) -> string {
   if value { return "true".clone() }
   return "false".clone()
 }
 
-fn json_string(value: str) -> string {
+pub fn json_string(value: str) -> string {
   boxed := TextBox { v: value }
   encoded := json.encode(boxed)
   return encoded[5..encoded.len() - 1].clone()
@@ -195,7 +210,7 @@ fn shortfall(layer: i64, node: str, got: i64, expected: i64) -> string {
   return b.to_string()
 }
 
-fn sanitize_summary_line(value: str) -> string {
+pub fn sanitize_summary_line(value: str) -> string {
   b := builder()
   view := value.bytes()
   mut start := 0
@@ -244,25 +259,26 @@ fn error_name(e: Error) -> str = match e {
   Code(_) => "Code",
 }
 
-fn verdict_label(value: i64) -> str {
+pub fn verdict_label(value: i64) -> str {
   if value == VERDICT_EXTERNAL { return "EXTERNAL" }
   if value == VERDICT_COPIED { return "COPIED" }
   return "UNAVAILABLE"
 }
 
-fn reference_label(value: i64) -> str {
+pub fn reference_label(value: i64) -> str {
   if value == REFERENCE_IDENTICAL { return "IDENTICAL" }
   if value == REFERENCE_MISMATCH { return "MISMATCH" }
   return "-"
 }
 
-fn oracle_label(value: i64) -> str {
+pub fn oracle_label(value: i64) -> str {
   if value == ORACLE_PASS { return "PASS" }
   if value == ORACLE_FAIL { return "FAIL" }
+  if value == ORACLE_NOT_APPLICABLE_DEVICE { return "N/A_DEVICE" }
   return "-"
 }
 
-fn logits_label(value: i64) -> str {
+pub fn logits_label(value: i64) -> str {
   if value == LOGITS_IDENTICAL { return "IDENTICAL" }
   if value == LOGITS_WITHIN { return "WITHIN" }
   if value == LOGITS_FAIL { return "FAIL" }
@@ -283,7 +299,7 @@ fn printed_count(extent: i64) -> i64 {
   return TRUNCATION_PRINTED
 }
 
-fn column_at(borrow column: array<i64>, index: i64) -> i64 {
+pub fn column_at(borrow column: array<i64>, index: i64) -> i64 {
   if index < 0 || index >= column.len() { return 0 }
   return column[index]
 }
@@ -426,6 +442,29 @@ pub Outcome {
   pointer_identity_failures: i64,
   member_placements: i64,
 
+  // R5C section 3.8's `device` object and the two fields microbenchmark A exists to publish. The
+  // device block is read **once, before the window is sized**, so an error document produced at
+  // step 21a still names the device that refused. `--model-forward` fills these in too — the
+  // schedule is one schedule — and its renderer does not emit them, which is why sections 3.1 and
+  // 3.2's promise that every `R5_MODEL_FORWARD` golden is byte-unchanged is a mechanical fact
+  // rather than a claim.
+  device_kind: i64,
+  device_name: string,
+  device_description: string,
+  device_type_id: i64,
+  device_host_ptr: bool,
+  device_host_buffer: bool,
+  device_buffer_alignment: i64,
+  device_buffer_max_size: i64,
+  device_memory_free: i64,
+  device_memory_total: i64,
+  device_window_fits: bool,
+  // The transfer, summed over every window wrap, and the number of wraps. On unified memory the
+  // wrap copies zero bytes and still costs 26 us/MB (section 2.7), which is the measurement this
+  // capability exists to make rather than to assume away.
+  wrap_ns: i64,
+  wrap_count: i64,
+
   graph_count: i64,
   node_count_total: i64,
   reconciliation_node_count: i64,
@@ -482,6 +521,18 @@ pub Outcome {
   logits_compared_reconciliation: bool,
   logits_byte_identical: bool,
   logits_max_abs: i64,
+  // R5C section 3.8's tolerance block. The three distribution fields are **recorded** — section 2.3
+  // measured 529/468/1,655/2,089 ten-thousandths and zero elements over 0.5 — and only `max_abs`,
+  // the `argmax`, and the top ten gate. `logits_tolerance` is the arm's own bound rather than a
+  // module constant, so the two arms' numbers cannot be unified by accident: they characterize
+  // different causes (a missing KV cache there, GPU kernel accumulation order here) and forcing
+  // them to share a constant would make a later change to one silently move the other.
+  logits_mean_abs: i64,
+  logits_p99_abs: i64,
+  logits_over_half: i64,
+  logits_tolerance: i64,
+  logits_strict_reconciliation: bool,
+  compare_transcript_elements: bool,
   logits_argmax_reference: i64,
   logits_top_k_agreement: i64,
   logits_elements: i64,
@@ -562,6 +613,19 @@ pub fn empty_outcome() -> Outcome = Outcome {
   window_reuse_count: 0,
   pointer_identity_failures: 0,
   member_placements: 0,
+  device_kind: ggml_ffi.DEVICE_KIND_CPU,
+  device_name: "".clone(),
+  device_description: "".clone(),
+  device_type_id: -1,
+  device_host_ptr: false,
+  device_host_buffer: false,
+  device_buffer_alignment: 0,
+  device_buffer_max_size: 0,
+  device_memory_free: 0,
+  device_memory_total: 0,
+  device_window_fits: false,
+  wrap_ns: 0,
+  wrap_count: 0,
   graph_count: 0,
   node_count_total: 0,
   reconciliation_node_count: 0,
@@ -612,6 +676,12 @@ pub fn empty_outcome() -> Outcome = Outcome {
   logits_compared_reconciliation: false,
   logits_byte_identical: false,
   logits_max_abs: 0,
+  logits_mean_abs: 0,
+  logits_p99_abs: 0,
+  logits_over_half: 0,
+  logits_tolerance: LOGIT_TOLERANCE_TEN_THOUSANDTHS,
+  logits_strict_reconciliation: true,
+  compare_transcript_elements: true,
   logits_argmax_reference: -1,
   logits_top_k_agreement: 0,
   logits_elements: 0,
@@ -640,6 +710,46 @@ pub fn empty_outcome() -> Outcome = Outcome {
   table_drift: -1,
   slot_magic_ok: false,
   fp_contract_off: false,
+}
+
+// R5C-METAL-PREFILL-ARM sections 3.9 and 3.10. The device half of an arm's contract, as data.
+//
+// The **mechanism** — select through the registry, publish the properties, validate the capability,
+// read the alignment from the device's own buffer type, check the window against its maximum buffer
+// length — is one sequence and lives here, in the module that owns the schedule. The **vocabulary**
+// is the arm's: `--model-forward` reports a missing device as `R5_GGML_UNAVAILABLE` and asks for no
+// capability at all, and `--model-forward-gpu` reports `R5C_GPU_UNAVAILABLE`, `R5C_NO_HOST_PTR`,
+// and `R5C_DEVICE_BUFFER_LIMIT`. Section 3.9 gives the new codes an `R5C_` prefix deliberately —
+// they are conditions only the GPU arm can reach — and a shared renderer that chose them by
+// `device_kind` would let one arm's rename silently move the other's output.
+//
+// An empty code means the check does not apply to this arm, which is how the CPU arm keeps R5B's
+// thirty-four steps exactly as they were.
+// The acceptance rules travel with it for the same reason. R5B section 3.7's logits contract is
+// byte-identity at the reconciliation width and "anything less is a regression, not a tolerance";
+// R5C section 3.2's decisive argument for a separate document kind is that this sentence must not
+// become conditional on a field's value. Carrying the rule as data keeps one comparison routine and
+// two contracts, rather than one contract with a branch in it.
+pub DeviceSelection {
+  kind: i64,
+  unavailable_code: string,
+  no_host_ptr_code: string,
+  limit_code: string,
+  logit_tolerance: i64,
+  strict_reconciliation: bool,
+  compare_transcript_elements: bool,
+}
+
+// `--model-forward`'s selection: the CPU device, R5B's code, neither new check, and R5B's two
+// oracle rules unchanged.
+pub fn cpu_selection() -> DeviceSelection = DeviceSelection {
+  kind: ggml_ffi.DEVICE_KIND_CPU,
+  unavailable_code: "R5_GGML_UNAVAILABLE".clone(),
+  no_host_ptr_code: "".clone(),
+  limit_code: "".clone(),
+  logit_tolerance: LOGIT_TOLERANCE_TEN_THOUSANDTHS,
+  strict_reconciliation: true,
+  compare_transcript_elements: true,
 }
 
 fn fail(borrow mut o: Outcome, code: str, detail: str) {
@@ -1808,7 +1918,15 @@ fn run_graph(
     }
   }
   if o.code.len() == 0 {
+    // R5C section 2.7 and section 3.8. The window wrap is timed on **every** graph, on both arms,
+    // because "the transfer" of microbenchmark A is exactly this call: on unified memory it copies
+    // zero bytes and still costs 11.8 ms for a 447 MB window, against the CPU's 0.003 ms. Calling
+    // it free because nothing is copied would be the claim this repository's benchmark rules exist
+    // to prevent, so it is measured rather than argued about.
+    wrap_started := time.instant()
     weight_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
+    o.wrap_ns = o.wrap_ns + (time.instant() - wrap_started)
+    o.wrap_count = o.wrap_count + 1
     if ggml_ffi.handle_absent(weight_buffer) {
       fail(o, "R5_GGML_INIT", "weight_buffer")
     } else {
@@ -1897,7 +2015,13 @@ fn run_graph(
       result.norm_bit_sum = norm.bit_sum
     }
   }
-  if o.code.len() == 0 && spec.compare && o.transcript_present {
+  // R5C section 3.7. The transcript's grammar, its matched node set, its element-count rule, and
+  // `kq-L`'s declared `ne0` are all checked before the schedule runs and are errors on either arm.
+  // Only the **element comparison** is device-conditional, and section 2.5 is why: every layer's
+  // worst absolute difference is one massive-activation channel carrying values up to 3,267, so a
+  // per-element bound wide enough to pass a correct GPU run would be 185,000x R5B's and would
+  // assert nothing.
+  if o.code.len() == 0 && spec.compare && o.transcript_present && o.compare_transcript_elements {
     match compare_transcript_graph(
       slot_view, oracle, nodes, spec, scan, starts, lengths, node_window, breach, o) {
       Ok(_) => {},
@@ -2430,7 +2554,15 @@ fn compare_logits(
   }
   o.logits_byte_identical = crypto.constant_time_equal(primary, view)
   o.logits_elements = n_vocab
+  // R5C section 3.8's recorded distribution, in one pass plus one histogram walk. The bound, the
+  // `argmax`, and the top ten are what gate; the mean, the p99, and the count over half a unit are
+  // published so a later regression is diagnosable rather than only detectable. Every quantity is
+  // an integer count of ten-thousandths — no float is rendered anywhere
+  // (`r4-alignpack-layer-major.md` section 2.3).
+  mut histogram := zero_column(HISTOGRAM_BUCKETS + 1)
   mut worst := 0
+  mut total := 0
+  mut over_half := 0
   mut at := 0
   loop {
     if at >= n_vocab { break }
@@ -2452,9 +2584,32 @@ fn compare_logits(
       difference
     }
     if magnitude > worst { worst = magnitude }
+    total = total + magnitude
+    if magnitude > HALF_UNIT_TEN_THOUSANDTHS { over_half = over_half + 1 }
+    bucket := if magnitude >= HISTOGRAM_BUCKETS { HISTOGRAM_BUCKETS } else { magnitude }
+    histogram[bucket] = histogram[bucket] + 1
     at = at + 1
   }
   o.logits_max_abs = worst
+  o.logits_over_half = over_half
+  o.logits_mean_abs = if n_vocab > 0 { total / n_vocab } else { 0 }
+  // The 99th percentile as the smallest magnitude whose cumulative count reaches 99% of the
+  // elements. The last bucket is the overflow, so a distribution wider than the histogram reports
+  // its ceiling rather than a wrong number.
+  threshold := (n_vocab * 99) / 100
+  mut cumulative := 0
+  mut percentile := 0
+  mut bucket_at := 0
+  loop {
+    if bucket_at > HISTOGRAM_BUCKETS { break }
+    cumulative = cumulative + histogram[bucket_at]
+    if cumulative >= threshold {
+      percentile = bucket_at
+      break
+    }
+    bucket_at = bucket_at + 1
+  }
+  o.logits_p99_abs = percentile
   mut reference_index: array_builder<i64> := array_builder()
   mut reference_bits: array_builder<i64> := array_builder()
   top_k(view, reference_index, reference_bits)
@@ -2469,8 +2624,20 @@ fn compare_logits(
   }
   o.logits_top_k_agreement = agreement
   o.logits_compared_reconciliation = reconciliation
-  if reconciliation {
+  // R5B section 3.7's asymmetry, and R5C section 3.2's reason for a separate document kind: at the
+  // reconciliation width `--model-forward`'s contract is byte-identity over every one of
+  // `n_vocab * 4` bytes and anything less is a regression. `--model-forward-gpu` applies the same
+  // tolerance at both widths, because section 2.4 measured the two widths within one ten-thousandth
+  // of each other and section 2.3's difference is the device's kernels, which are present at either.
+  if reconciliation && o.logits_strict_reconciliation {
     o.logits_verdict = if o.logits_byte_identical { LOGITS_IDENTICAL } else { LOGITS_FAIL }
+    return
+  }
+  // `IDENTICAL` stays reachable on the device arm and is not expected: section 2.3 measured a
+  // non-zero difference, so a GPU run reporting it would mean the device produced the CPU's bytes
+  // exactly. Removing the verdict would make a surprising-but-correct result unrepresentable.
+  if o.logits_byte_identical {
+    o.logits_verdict = LOGITS_IDENTICAL
     return
   }
   // Section 6, correction C19. `top_k` yields `min(TOP_K, n_vocab)` ranks, so a vocabulary smaller
@@ -2478,7 +2645,7 @@ fn compare_logits(
   // rather than by measurement. The requirement is "the whole top ten, in order", which for a
   // vocabulary of `n` under ten is the whole vocabulary.
   required := if n_vocab < TOP_K { n_vocab } else { TOP_K }
-  within := worst <= LOGIT_TOLERANCE_TEN_THOUSANDTHS
+  within := worst <= o.logits_tolerance
     && o.argmax == o.logits_argmax_reference
     && agreement >= required
   o.logits_verdict = if within { LOGITS_WITHIN } else { LOGITS_FAIL }
@@ -2862,6 +3029,7 @@ pub fn execute(
   reference_path: str,
   transcript_path: str,
   logits_path: str,
+  borrow selection: DeviceSelection,
   borrow mut tokens: TokenColumns,
   borrow mut schedule: ScheduleColumns,
   borrow mut graphs: GraphColumns,
@@ -2869,6 +3037,10 @@ pub fn execute(
 ) -> Outcome {
   started := time.instant()
   mut o := empty_outcome()
+  o.device_kind = selection.kind
+  o.logits_tolerance = selection.logit_tolerance
+  o.logits_strict_reconciliation = selection.strict_reconciliation
+  o.compare_transcript_elements = selection.compare_transcript_elements
   o.fp_contract_off = ggml_ffi.fp_contract_off()
   o.reference_present = reference_path.len() > 0
   o.transcript_present = transcript_path.len() > 0
@@ -2953,13 +3125,59 @@ pub fn execute(
   // Step 20. Availability, and where the default stub shim stops: everything above — the whole
   // reader, the geometry, every block, coverage, member, shape, and window check — has run for real
   // without ggml, without a model, and without a transcript.
+  // R5C section 3.9 keeps step 20 exactly as R5B wrote it, on **both** arms: "no ggml at all" is
+  // `R5_GGML_UNAVAILABLE` and this is still where the default stub stops. Section 6, correction C6
+  // records why the GPU arm does not rename it — a code called `R5C_GPU_UNAVAILABLE` that fired for
+  // a host with no ggml would name the wrong cause, and step 20a below is where the GPU arm's own
+  // vocabulary begins.
   if !ggml_ffi.available() {
     fail(o, "R5_GGML_UNAVAILABLE", "stub")
     o.verdict = VERDICT_UNAVAILABLE
     o.elapsed_ns = time.instant() - started
     return o
   }
-  alignment := ggml_ffi.tensor_alignment()
+  // Step 20a. The device, selected through the registry and nothing else, and opened here rather
+  // than beside the first graph so that steps 21 and 21a can ask the device the two questions they
+  // are about. `--model-forward` selects the CPU device it always did; `--model-forward-gpu`
+  // selects the GPU one, and a registry with no such device is `R5C_GPU_UNAVAILABLE` — which the
+  // stub shim answers by construction, making the whole GPU arm's failure surface hosted.
+  device := ggml_ffi.device_by_kind(selection.kind)
+  if ggml_ffi.handle_absent(device) {
+    unavailable_view: str := selection.unavailable_code
+    fail(o, unavailable_view, "device")
+    o.verdict = VERDICT_UNAVAILABLE
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // Section 3.8: the `device` block is read **once, before the window is validated**, so an error
+  // document produced at step 21a still names the device that refused.
+  o.device_name = ggml_ffi.device_text(device, ggml_ffi.DEVICE_TEXT_NAME)
+  o.device_description = ggml_ffi.device_text(device, ggml_ffi.DEVICE_TEXT_DESCRIPTION)
+  o.device_type_id = ggml_ffi.device_props(device, ggml_ffi.DEVICE_PROP_TYPE_ID)
+  o.device_host_ptr = ggml_ffi.device_flag(device, ggml_ffi.DEVICE_PROP_HOST_PTR)
+  o.device_host_buffer = ggml_ffi.device_flag(device, ggml_ffi.DEVICE_PROP_HOST_BUFFER)
+  o.device_memory_free = ggml_ffi.device_props(device, ggml_ffi.DEVICE_PROP_MEMORY_FREE)
+  o.device_memory_total = ggml_ffi.device_props(device, ggml_ffi.DEVICE_PROP_MEMORY_TOTAL)
+  o.device_buffer_max_size = ggml_ffi.device_buft_max_size(device)
+  // Step 20b, and it applies only to an arm that asked for it. `r4-5-external-buffer.md` section
+  // 2.5 established that the device-generic capability flag is the whole host-pointer surface, so
+  // a device that does not advertise it cannot borrow the Align-owned window at all.
+  if selection.no_host_ptr_code.len() > 0 && !o.device_host_ptr {
+    no_host_ptr_view: str := selection.no_host_ptr_code
+    // The detail is a copy, not a view into `o.device_name`: `fail` takes `o` exclusively, and the
+    // region checker refuses an argument borrowed out of the same owner the call may invalidate.
+    name_copy := o.device_name.clone()
+    name_view: str := name_copy
+    fail(o, no_host_ptr_view, name_view)
+    o.verdict = VERDICT_UNAVAILABLE
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // Step 21, now read from the **device's** buffer type rather than the CPU's. On this host both
+  // are 32; asking the device is what keeps the check meaningful when they differ, and R5B's
+  // 64-byte member placement is strictly stronger than either (section 2.1 fact 1).
+  alignment := ggml_ffi.device_props(device, ggml_ffi.DEVICE_PROP_ALIGNMENT)
+  o.device_buffer_alignment = if alignment > 0 { alignment } else { 0 }
   o.tensor_alignment = if alignment > 0 { alignment } else { 0 }
   o.table_drift = ggml_ffi.table_drift()
   if alignment <= 0 || alignment > MAX_TENSOR_ALIGNMENT {
@@ -2967,6 +3185,28 @@ pub fn execute(
   }
   if o.code.len() == 0 && o.table_drift >= 0 {
     fail(o, "R5_ABI", labelled("type", o.table_drift))
+  }
+  // Step 21a, and section 2.6 is the whole reason it is a validation step rather than a null check:
+  // `ggml_backend_dev_buffer_from_host_ptr` on Metal logs a failure and then **segfaults** for an
+  // oversize length, so nothing downstream can observe the refusal. It runs after the window sweep
+  // at step 16 and before step 23's backend init and step 24's first graph, which is the only
+  // ordering that can report a too-large window as a document rather than as a signal.
+  o.device_window_fits = o.device_buffer_max_size > 0 && window_bytes <= o.device_buffer_max_size
+  if o.code.len() == 0 && selection.limit_code.len() > 0 && !o.device_window_fits {
+    limit_view: str := selection.limit_code
+    b := builder()
+    b.write("window[")
+    b.write_int(window_bytes)
+    b.write("]/max[")
+    b.write_int(o.device_buffer_max_size)
+    b.write("]")
+    rendered := b.to_string()
+    rendered_view: str := rendered
+    fail(o, limit_view, rendered_view)
+  }
+  if o.code.len() > 0 {
+    o.elapsed_ns = time.instant() - started
+    return o
   }
   if o.code.len() == 0 {
     stage_types(embed_members, -1, o)
@@ -2991,11 +3231,99 @@ pub fn execute(
     return o
   }
   schedule_model(
-    pak, g, table, plan, ends, tokens, embed_members, head_members, window_view,
+    pak, g, table, plan, ends, tokens, embed_members, head_members, window_view, device,
     context_bytes, residual_bytes, logits_bytes, readback_bytes,
     reference_path, transcript_path, logits_path, schedule, graphs, top, transient, counters, o)
   o.elapsed_ns = time.instant() - started
   return o
+}
+
+// R5C section 6, correction C5. Everything `execute` produces, as one owned record returned by
+// value.
+//
+// `execute` reports its four column sets through `borrow mut` out-parameters, and at this pin a
+// **caller in another module** cannot read them afterwards: the region checker reports
+// `use of invalidated borrow 'schedule': its source 'tokens' was moved or reassigned`, merging the
+// four owners into one and invalidating all of them at the call. The identical sequence inside this
+// module checks and builds, and `alignc check` accepts the cross-module form that `alignc build`
+// rejects. `docs/align-requests.md` owns the language half of that; this is the application-side
+// answer, and it consumes no hypothetical surface — a record returned by value has no out-parameter
+// to invalidate.
+//
+// `--model-forward` deliberately keeps calling `execute` directly. Its goldens are compared byte
+// for byte and section 3.1's promise is that they do not move, so the arm that already worked is
+// not rerouted through a new function to serve the arm that did not.
+pub Parts {
+  outcome: Outcome,
+  head: string,
+  schedule: string,
+  graph: string,
+  output: string,
+  token_list: string,
+}
+
+// The four column sets a run produces, already rendered, plus the `Outcome` itself.
+//
+// A caller in another module cannot read `execute`'s `borrow mut` column sets after the call at this
+// pin, and cannot be handed them either: the region checker reports
+// `use of invalidated borrow 'schedule': its source 'tokens' was moved or reassigned` at the reading
+// call site, and returning them inside a record is
+// `cannot return a view that borrows local storage` — the columns are assembled from builders local
+// to `stage_geometry` and `schedule_model`, so the checker treats the caller's own local as a view
+// over those. `Outcome` alone returns cleanly, and so does every `string` a renderer builds, which
+// is exactly the shape below. `alignc check` accepts the cross-module form that `alignc build`
+// rejects, so the constraint is only visible at build time. `docs/align-requests.md` owns the
+// language half; this is the application-side answer and it consumes no hypothetical surface.
+//
+// `schedule_suffix` is why this stays a device-independent function: the GPU document's three extra
+// per-layer fields are named and valued by `src/gpu_forward.align` and appended verbatim to each
+// row, so the `R5_MODEL_FORWARD_GPU` field list lives in the module that owns that document.
+// `--model-forward` passes `""` and its rows are byte-unchanged.
+//
+// `--model-forward` deliberately keeps calling `execute` directly: its goldens are compared byte for
+// byte and section 3.1's promise is that they do not move, so the arm that already worked is not
+// rerouted through a new function to serve the arm that did not.
+pub fn render_parts(
+  pack_path: str,
+  geometry_path: str,
+  tokens_text: str,
+  width_text: str,
+  width_declared: bool,
+  reference_path: str,
+  transcript_path: str,
+  logits_path: str,
+  borrow selection: DeviceSelection,
+  schedule_suffix: str,
+) -> Parts {
+  mut tokens := empty_tokens()
+  mut schedule := empty_schedule()
+  mut graphs := empty_graphs()
+  mut top := empty_top()
+  outcome := execute(
+    pack_path, geometry_path, tokens_text, width_text, width_declared, reference_path,
+    transcript_path, logits_path, selection, tokens, schedule, graphs, top)
+  return Parts {
+    outcome: outcome,
+    head: render_head(outcome, tokens),
+    schedule: render_schedule_with(schedule, schedule_suffix),
+    graph: render_graph_object(outcome, graphs),
+    output: render_output(outcome, top),
+    token_list: render_token_list(tokens),
+  }
+}
+
+// The comma-separated token ids the summary block prints, rendered here because the summary block of
+// another arm cannot hold the columns either.
+pub fn render_token_list(borrow tokens: TokenColumns) -> string {
+  ids := builder()
+  mut at := 0
+  loop {
+    if at >= tokens.ids.len() { break }
+    if at > 0 { ids.write(",") }
+    ids.write_int(tokens.ids[at])
+    at = at + 1
+  }
+  return ids.to_string()
 }
 
 // The thirty window fills and the two passes over each one. Section 3.7: **exactly one pass is
@@ -3012,6 +3340,7 @@ fn schedule_model(
   borrow embed_members: GraphMembers,
   borrow head_members: GraphMembers,
   borrow window: slice<u8>,
+  device: raw,
   context_bytes: i64,
   residual_bytes: i64,
   logits_bytes: i64,
@@ -3122,11 +3451,10 @@ fn schedule_model(
   mut ne1_column: array_builder<i64> := array_builder()
   mut nonfinite_column: array_builder<i64> := array_builder()
 
+  // The device is the caller's: `execute` selected it at step 20a and published its properties
+  // before the window was validated, so this function holds exactly one ggml object of its own —
+  // the backend — and every other one is created and freed inside `run_graph`.
   mut backend := ggml_ffi.null_handle()
-  device := ggml_ffi.device_open()
-  if o.code.len() == 0 && ggml_ffi.handle_absent(device) {
-    fail(o, "R5_GGML_UNAVAILABLE", "device")
-  }
   if o.code.len() == 0 {
     backend = ggml_ffi.backend_open(device)
     if ggml_ffi.handle_absent(backend) {
@@ -3354,7 +3682,13 @@ fn schedule_model(
     }
   }
   if o.transcript_present && o.code.len() == 0 {
-    if o.oracle_elements <= 0 {
+    if !o.compare_transcript_elements {
+      // Section 3.7: the element comparison is disabled on a device arm, and the verdict says so
+      // rather than reporting a `PASS` over zero elements or a bound that cannot fail. Every
+      // structural rule above — grammar, coverage, the element-count rule, `kq-L`'s `ne0` — has
+      // already run and is an error exactly as it is on the CPU arm.
+      o.oracle_verdict = ORACLE_NOT_APPLICABLE_DEVICE
+    } else if o.oracle_elements <= 0 {
       fail(o, "R5_ORACLE_MISSING", "elements[0]")
     } else {
       o.oracle_verdict = if o.oracle_max_abs <= TOLERANCE_TEN_THOUSANDTHS && !breach {
@@ -3397,7 +3731,7 @@ fn schedule_model(
 // The document (section 3.8)
 // ---------------------------------------------------------------------------------------------
 
-fn digest_at(borrow s: ScheduleColumns, index: i64) -> str {
+pub fn digest_at(borrow s: ScheduleColumns, index: i64) -> str {
   view: str := s.digests
   start := index * DIGEST_HEX_BYTES
   if start < 0 || start + DIGEST_HEX_BYTES > view.len() { return "" }
@@ -3408,6 +3742,12 @@ fn digest_at(borrow s: ScheduleColumns, index: i64) -> str {
 // **first layer** that moved, and twenty-eight `l_out` digests do that in one document while 874
 // per-node digests would be a forty-times larger document answering the same question.
 pub fn render_schedule(borrow s: ScheduleColumns) -> string {
+  return render_schedule_with(s, "")
+}
+
+// R5B's rows with a caller-supplied per-row suffix written just before each row's closing brace.
+// `--model-forward` passes the empty string and its rows are byte-unchanged.
+pub fn render_schedule_with(borrow s: ScheduleColumns, suffix: str) -> string {
   d := builder()
   mut at := 0
   loop {
@@ -3445,6 +3785,7 @@ pub fn render_schedule(borrow s: ScheduleColumns) -> string {
     d.write_int(column_at(s.ne1, at))
     d.write(",\"nonfinite_count\":")
     d.write_int(column_at(s.nonfinite, at))
+    d.write(suffix)
     d.write("}")
     at = at + 1
   }
@@ -3453,7 +3794,7 @@ pub fn render_schedule(borrow s: ScheduleColumns) -> string {
 
 // The `model` and `selection` objects, in the ledger's declaration order. The prologue and the
 // `pack` object are `render`'s, so this function starts and ends inside the document.
-fn render_head(borrow o: Outcome, borrow tokens: TokenColumns) -> string {
+pub fn render_head(borrow o: Outcome, borrow tokens: TokenColumns) -> string {
   d := builder()
   d.write("\"model\":{\"arch\":")
   arch_view: str := o.arch
@@ -3514,7 +3855,10 @@ fn render_head(borrow o: Outcome, borrow tokens: TokenColumns) -> string {
   return d.to_string()
 }
 
-fn render_window(borrow o: Outcome, borrow graphs: GraphColumns) -> string {
+// R5B's `window` object. The GPU arm writes its own, because section 3.8 adds `wrap_count` and
+// `wrap_ns` to it — the two fields microbenchmark A exists to publish — and a `backend` field on
+// R5B's document would make its `IDENTICAL` rule conditional on a value (section 3.2).
+fn render_window_object(borrow o: Outcome) -> string {
   d := builder()
   d.write("{\"bytes\":")
   d.write_int(o.window_bytes)
@@ -3536,7 +3880,15 @@ fn render_window(borrow o: Outcome, borrow graphs: GraphColumns) -> string {
   d.write_int(o.residual_bytes)
   d.write(",\"logits_bytes\":")
   d.write_int(o.logits_bytes)
-  d.write("},\"graph\":{\"graph_count\":")
+  d.write("}")
+  return d.to_string()
+}
+
+// The `graph` object, identical on both arms: section 3.6 is that `src/layer_qwen2.align` gains
+// nothing and no op was added, removed, or reordered for the device.
+pub fn render_graph_object(borrow o: Outcome, borrow graphs: GraphColumns) -> string {
+  d := builder()
+  d.write("{\"graph_count\":")
   d.write_int(o.graph_count)
   d.write(",\"node_count_total\":")
   d.write_int(o.node_count_total)
@@ -3565,7 +3917,19 @@ fn render_window(borrow o: Outcome, borrow graphs: GraphColumns) -> string {
   return d.to_string()
 }
 
-fn render_output(borrow o: Outcome, borrow top: TopColumns) -> string {
+fn render_window(borrow o: Outcome, borrow graphs: GraphColumns) -> string {
+  d := builder()
+  window := render_window_object(o)
+  window_view: str := window
+  graph := render_graph_object(o, graphs)
+  graph_view: str := graph
+  d.write(window_view)
+  d.write(",\"graph\":")
+  d.write(graph_view)
+  return d.to_string()
+}
+
+pub fn render_output(borrow o: Outcome, borrow top: TopColumns) -> string {
   d := builder()
   d.write("{\"output_norm_bytes\":")
   d.write_int(o.head_output_norm_bytes)
@@ -3609,7 +3973,12 @@ fn render_output(borrow o: Outcome, borrow top: TopColumns) -> string {
   return d.to_string()
 }
 
-fn render_oracles(borrow o: Outcome) -> string {
+// R5C section 3.2. The document's blocks are rendered one object at a time so that the GPU arm can
+// reuse the ones that mean the same thing — `reference` is bit-exact on Metal, `oracle`'s structural
+// fields are unchanged — and write its own for the two that differ. `render_oracles` below
+// concatenates them in R5B's order and with R5B's separators, so `--model-forward`'s bytes are
+// unchanged by construction rather than by inspection.
+pub fn render_reference(borrow o: Outcome) -> string {
   d := builder()
   d.write("{\"present\":")
   d.write(bool_text(o.reference_present))
@@ -3638,7 +4007,13 @@ fn render_oracles(borrow o: Outcome) -> string {
   d.write_int(o.reference_pread_count)
   d.write(",\"bytes_read\":")
   d.write_int(o.reference_bytes_read)
-  d.write("},\"oracle\":{\"present\":")
+  d.write("}")
+  return d.to_string()
+}
+
+pub fn render_oracle(borrow o: Outcome) -> string {
+  d := builder()
+  d.write("{\"present\":")
   d.write(bool_text(o.transcript_present))
   d.write(",\"verdict\":")
   d.write(json_string(oracle_label(o.oracle_verdict)))
@@ -3677,7 +4052,13 @@ fn render_oracles(borrow o: Outcome) -> string {
   d.write_int(o.oracle_lines)
   d.write(",\"transcript_callback_lines\":")
   d.write_int(o.oracle_callback_lines)
-  d.write("},\"oracle_logits\":{\"present\":")
+  d.write("}")
+  return d.to_string()
+}
+
+fn render_logits_oracle(borrow o: Outcome) -> string {
+  d := builder()
+  d.write("{\"present\":")
   d.write(bool_text(o.logits_present))
   d.write(",\"verdict\":")
   d.write(json_string(logits_label(o.logits_verdict)))
@@ -3689,7 +4070,7 @@ fn render_oracles(borrow o: Outcome) -> string {
   d.write(",\"max_abs_diff_ten_thousandths\":")
   d.write_int(o.logits_max_abs)
   d.write(",\"tolerance_ten_thousandths\":")
-  d.write_int(LOGIT_TOLERANCE_TEN_THOUSANDTHS)
+  d.write_int(o.logits_tolerance)
   d.write(",\"argmax_primary\":")
   d.write_int(o.argmax)
   d.write(",\"argmax_reference\":")
@@ -3707,7 +4088,24 @@ fn render_oracles(borrow o: Outcome) -> string {
   return d.to_string()
 }
 
-fn render_tail(borrow o: Outcome) -> string {
+// R5B's three oracle objects in R5B's order, with R5B's separators.
+fn render_oracles(borrow o: Outcome) -> string {
+  d := builder()
+  reference := render_reference(o)
+  reference_view: str := reference
+  oracle := render_oracle(o)
+  oracle_view: str := oracle
+  logits := render_logits_oracle(o)
+  logits_view: str := logits
+  d.write(reference_view)
+  d.write(",\"oracle\":")
+  d.write(oracle_view)
+  d.write(",\"oracle_logits\":")
+  d.write(logits_view)
+  return d.to_string()
+}
+
+pub fn render_timings(borrow o: Outcome) -> string {
   d := builder()
   d.write("{\"pread_ns\":")
   d.write_int(o.pread_ns)
@@ -3725,7 +4123,17 @@ fn render_tail(borrow o: Outcome) -> string {
   d.write_int(o.oracle_ns)
   d.write(",\"elapsed_ns\":")
   d.write_int(o.elapsed_ns)
-  d.write("},\"lifetime\":{\"ggml_buffers_created\":")
+  d.write("}")
+  return d.to_string()
+}
+
+// Section 3.10's lifetime counters and the ABI block. Both are R5B's, field for field, and on the
+// GPU arm `graph_balance_failures` is load-bearing rather than tidy: section 2.6 measured that an
+// unfreed Metal host-pointer buffer aborts the process at exit with `134`, so a missed free is a
+// `SIGABRT` with no document unless this count sees it first.
+pub fn render_lifetime_abi(borrow o: Outcome) -> string {
+  d := builder()
+  d.write("{\"ggml_buffers_created\":")
   d.write_int(o.ggml_buffers_created)
   d.write(",\"ggml_buffers_freed\":")
   d.write_int(o.ggml_buffers_freed)
@@ -3755,7 +4163,22 @@ fn render_tail(borrow o: Outcome) -> string {
   d.write(bool_text(o.slot_magic_ok))
   d.write(",\"fp_contract_off\":")
   d.write(bool_text(o.fp_contract_off))
-  d.write("}}")
+  d.write("}")
+  return d.to_string()
+}
+
+// R5B's `timings`, `lifetime`, and `abi`, in R5B's order and closing the document exactly as they
+// did before the split.
+fn render_tail(borrow o: Outcome) -> string {
+  d := builder()
+  timings := render_timings(o)
+  timings_view: str := timings
+  lifetime := render_lifetime_abi(o)
+  lifetime_view: str := lifetime
+  d.write(timings_view)
+  d.write(",\"lifetime\":")
+  d.write(lifetime_view)
+  d.write("}")
   return d.to_string()
 }
 
@@ -3844,7 +4267,7 @@ pub fn render(
 // The summary block and the CLI adapter (section 3.3)
 // ---------------------------------------------------------------------------------------------
 
-fn print_pair(left: i64, right: i64) {
+pub fn print_pair(left: i64, right: i64) {
   b := builder()
   b.write_int(left)
   b.write("/")
@@ -3980,9 +4403,10 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   mut schedule := empty_schedule()
   mut graphs := empty_graphs()
   mut top := empty_top()
+  selection := cpu_selection()
   outcome := execute(
     args[2], args[3], args[4], width_text, width_declared, reference_path, transcript_path,
-    logits_path, tokens, schedule, graphs, top)
+    logits_path, selection, tokens, schedule, graphs, top)
   schedule_json := render_schedule(schedule)
   window_json := render_window(outcome, graphs)
   head_json := render_output(outcome, top)

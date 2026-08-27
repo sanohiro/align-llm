@@ -87,6 +87,14 @@ if [ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ]; then
     compute)   include_flags+=("-DALIGN_GGML_FORCE_COMPUTE_FAILURE=1"); flavour="real+force-compute" ;;
     reference) include_flags+=("-DALIGN_GGML_FORCE_REFERENCE_PERTURBATION=1")
                flavour="real+force-reference" ;;
+    # R5C-METAL-PREFILL-ARM section 4.5, against a **real** device. Both new device conditions are
+    # stub-reachable, and these two builds let `metal-forward-qualification` reach them against the
+    # linked ggml as well, so the guard that stands between an oversize wrap and a `SIGSEGV`
+    # (section 2.6) is exercised on the device it protects.
+    max-buffer) include_flags+=("-DALIGN_GGML_FORCE_MAX_BUFFER_SIZE=1024")
+               flavour="real+force-max-buffer" ;;
+    no-host-ptr) include_flags+=("-DALIGN_GGML_FORCE_NO_HOST_PTR=1")
+               flavour="real+force-no-host-ptr" ;;
     *)
       printf '%s\n' "build-ggml-shim: unknown ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
       exit 1
@@ -128,6 +136,25 @@ else
     engine+pad-oversize)
                        include_flags+=("${engine}" "-DALIGN_GGML_FORCE_PAD_OVERSIZE=1")
                        flavour="stub+engine+force-pad-oversize" ;;
+    # R5C-METAL-PREFILL-ARM (`docs/specs/r5c-metal-prefill.md` sections 4.5 and 5.1). The stub has
+    # no GPU device by default, which is what makes `R5C_GPU_UNAVAILABLE` the GPU arm's hosted
+    # baseline; `engine+gpu` gives it one so the arm's whole successful path is reachable hosted,
+    # and the two `gpu+...` builds reach the other two new codes. All three are stub-reachable, so
+    # the GPU arm's own failure surface is fully covered on a host with no GPU.
+    engine+gpu)        include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1")
+                       flavour="stub+engine+gpu" ;;
+    engine+gpu+no-host-ptr)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GGML_FORCE_NO_HOST_PTR=1")
+                       flavour="stub+engine+gpu+force-no-host-ptr" ;;
+    engine+gpu+max-buffer)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GGML_FORCE_MAX_BUFFER_SIZE=1024")
+                       flavour="stub+engine+gpu+force-max-buffer" ;;
+    engine+gpu+compute)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GGML_FORCE_COMPUTE_FAILURE=1")
+                       flavour="stub+engine+gpu+force-compute" ;;
     *)
       printf '%s\n' "build-ggml-shim: unknown stub ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
       exit 1

@@ -1,0 +1,524 @@
+module gpu_forward
+
+import std.fs
+import ggml_ffi
+import layer_forward
+import model_forward
+
+// R5C-METAL-PREFILL-ARM (`docs/specs/r5c-metal-prefill.md`). The `--model-forward-gpu` arm: the
+// device selection of section 3.4, the device validation of section 3.9 steps 20a, 20b, and 21a,
+// the tolerance oracle of section 3.7, and the `R5_MODEL_FORWARD_GPU` document of section 3.8.
+//
+// **It computes nothing.** The schedule, the window, the thirty fills, the three node tables, the
+// residual carry, the narrowing, the head, the self-reference oracle, and the transcript scan are
+// `src/model_forward.align`'s, called with a different device handle and a different acceptance
+// rule. Section 3.1 is why that sharing is the design and not an economy: what differs between the
+// two arms is the CLI surface, the device, one validation step, one oracle, and the document — not
+// the computation. Section 4.2's `arm-r5b-unchanged` cell is the mechanical form of that promise.
+//
+// It is a **new module** rather than four hundred more lines of `src/model_forward.align` for
+// section 5.5's reason: at this pin the checker's per-function cost is superlinear in body length,
+// `src/model_forward.align` is already 4,000 lines and checks in ten seconds, and
+// `docs/align-requests.md` Request 37 owns the language half of that. The acceptance target this
+// module is written against is `check-per-unit src/gpu_forward.align` under ten seconds.
+//
+// It holds no `unsafe` and no `extern`: every foreign call crosses `src/ggml_ffi.align`.
+
+SCHEMA_VERSION := 1
+DOCUMENT_KIND := "R5_MODEL_FORWARD_GPU"
+
+// Section 3.7's bound, fixed from section 2.3's measurement **before** the qualification existed:
+// twice the measured worst case of 2,937 ten-thousandths, rounded up to the next multiple of a
+// thousand. It is 2.04x that worst case and 2.07% of the logits' 28.927 range, and it sits above
+// the entire measured distribution's support with a factor of two to spare — nothing reached 5,000.
+//
+// It is deliberately **not** unified with `--model-forward`'s numerically close 5,000: the two
+// characterize different causes — a missing KV cache there, GPU kernel accumulation order here —
+// and sharing a constant would make a later change to one silently move the other.
+//
+// Three guards make it something other than slack, and each is a contract of its own: the `argmax`
+// and the full top ten must agree in order; the qualification runs the arm twice and requires the
+// two `output.sha256` digests to be equal, because section 2.4 measured five byte-identical runs;
+// and the self-reference oracle stays bit-exact, which section 2.8 measured on Metal.
+GPU_LOGIT_TOLERANCE_TEN_THOUSANDTHS := 6000
+
+// Section 3.8. `schedule[].l_out_max_*` are declared and never populated by this arm. Section 6,
+// correction C4 records why: section 3.8 says they are filled "when a CPU reference document is
+// supplied to the qualification", and section 3.3's operand grammar — which sections 3.1 and 3.2
+// hold fixed at R5B's arity set — defines no operand that could carry one. Publishing `-1` and
+// letting `scripts/run-metal-forward` compare the two arms' `l_out_bit_sum` columns keeps the
+// measurement without inventing a tenth operand, and section 2.5's refutation is why the comparison
+// is recorded and never gated in either place.
+NOT_MEASURED := -1
+
+// ---------------------------------------------------------------------------------------------
+// The arm's device contract (sections 3.4 and 3.9)
+// ---------------------------------------------------------------------------------------------
+
+// The three codes take an `R5C_` prefix rather than `R5_` deliberately: they are conditions only
+// this arm can reach, and a shared prefix would suggest `--model-forward` can raise them.
+//
+// `R5C_GPU_UNAVAILABLE` is the whole owner test's baseline, exactly as `R5_GGML_UNAVAILABLE` is
+// R5B's: the stub shim has no Metal, so every hosted case reaches it at step 20a and steps 1 to 20
+// stay fully covered without ggml, without a device, without a model, and without llama.cpp.
+pub fn gpu_selection() -> model_forward.DeviceSelection = model_forward.DeviceSelection {
+  kind: ggml_ffi.DEVICE_KIND_GPU,
+  unavailable_code: "R5C_GPU_UNAVAILABLE".clone(),
+  no_host_ptr_code: "R5C_NO_HOST_PTR".clone(),
+  limit_code: "R5C_DEVICE_BUFFER_LIMIT".clone(),
+  logit_tolerance: GPU_LOGIT_TOLERANCE_TEN_THOUSANDTHS,
+  strict_reconciliation: false,
+  compare_transcript_elements: false,
+}
+
+fn device_kind_label(kind: i64) -> str {
+  if kind == ggml_ffi.DEVICE_KIND_GPU { return "gpu" }
+  if kind == ggml_ffi.DEVICE_KIND_CPU { return "cpu" }
+  return "-"
+}
+
+// ---------------------------------------------------------------------------------------------
+// The document (section 3.8)
+//
+// Every block this module does not write is `src/model_forward.align`'s, field for field, so a
+// consumer reads `R5_MODEL_FORWARD` and `R5_MODEL_FORWARD_GPU` with one reader: `pack`, `model`,
+// `selection`, `graph`, `head`, `output`, `reference`, `oracle`, `lifetime`, and `abi` come from
+// there unchanged. Three blocks are written here because three blocks genuinely differ.
+// ---------------------------------------------------------------------------------------------
+
+// `schedule[]` is R5B's row plus section 3.8's three recorded per-layer difference fields. Section
+// 2.5 is why they are recorded and never gated: every layer's worst absolute difference is the same
+// massive-activation channel, row 2570, carrying values three orders of magnitude above the typical
+// element, so an absolute ceiling would have to be >= 19 to pass and a relative one reaches 0.54 on
+// values near 1.0. A threshold that admits any defect in the other 21,495 elements asserts nothing.
+fn schedule_suffix() -> string {
+  d := builder()
+  d.write(",\"l_out_max_abs_diff_ten_thousandths\":")
+  d.write_int(NOT_MEASURED)
+  d.write(",\"l_out_max_rel_diff_ppm\":")
+  d.write_int(NOT_MEASURED)
+  d.write(",\"l_out_worst_index\":")
+  d.write_int(NOT_MEASURED)
+  return d.to_string()
+}
+
+// R5B's `window` object plus `wrap_count` and `wrap_ns` — **the two fields microbenchmark A exists
+// to publish**. Section 2.7: on M1's unified memory the transfer moves zero bytes and still costs
+// 11.8 ms per 447 MB wrap, 354.8 ms over thirty, against the CPU's 0.075 ms. Calling it a no-op
+// because nothing is copied would be the claim this repository's benchmark rules exist to prevent.
+fn render_window(borrow o: model_forward.Outcome) -> string {
+  d := builder()
+  d.write("{\"bytes\":")
+  d.write_int(o.window_bytes)
+  d.write(",\"peak_block_index\":")
+  d.write_int(o.peak_block_index)
+  d.write(",\"peak_block_kind\":")
+  d.write_int(o.peak_block_kind)
+  d.write(",\"peak_block_layer\":")
+  d.write_int(o.peak_block_layer)
+  d.write(",\"peak_block_bytes\":")
+  d.write_int(o.peak_block_bytes)
+  d.write(",\"reuse_count\":")
+  d.write_int(o.window_reuse_count)
+  d.write(",\"pointer_identity_failures\":")
+  d.write_int(o.pointer_identity_failures)
+  d.write(",\"member_placements\":")
+  d.write_int(o.member_placements)
+  d.write(",\"residual_bytes\":")
+  d.write_int(o.residual_bytes)
+  d.write(",\"logits_bytes\":")
+  d.write_int(o.logits_bytes)
+  d.write(",\"wrap_count\":")
+  d.write_int(o.wrap_count)
+  d.write(",\"wrap_ns\":")
+  d.write_int(o.wrap_ns)
+  d.write("}")
+  return d.to_string()
+}
+
+// The `window` object and the `graph` object that follows it, in section 3.8's order. The second is
+// `src/model_forward.align`'s unchanged, rendered there and handed over as a string.
+fn render_window_and_graph(borrow o: model_forward.Outcome, borrow graph_json: string) -> string {
+  d := builder()
+  window := render_window(o)
+  window_view: str := window
+  graph_view: str := graph_json
+  d.write(window_view)
+  d.write(",\"graph\":")
+  d.write(graph_view)
+  return d.to_string()
+}
+
+// Section 3.8's `device` object, read once before the window is validated so that an error document
+// produced at step 21a still names the device that refused.
+fn render_device(borrow o: model_forward.Outcome) -> string {
+  d := builder()
+  d.write("{\"kind\":")
+  d.write(model_forward.json_string(device_kind_label(o.device_kind)))
+  d.write(",\"name\":")
+  name_view: str := o.device_name
+  d.write(model_forward.json_string(name_view))
+  d.write(",\"description\":")
+  description_view: str := o.device_description
+  d.write(model_forward.json_string(description_view))
+  d.write(",\"type_id\":")
+  d.write_int(o.device_type_id)
+  d.write(",\"buffer_from_host_ptr\":")
+  d.write(model_forward.bool_text(o.device_host_ptr))
+  d.write(",\"host_buffer\":")
+  d.write(model_forward.bool_text(o.device_host_buffer))
+  d.write(",\"buffer_alignment\":")
+  d.write_int(o.device_buffer_alignment)
+  d.write(",\"buffer_max_size\":")
+  d.write_int(o.device_buffer_max_size)
+  d.write(",\"memory_free\":")
+  d.write_int(o.device_memory_free)
+  d.write(",\"memory_total\":")
+  d.write_int(o.device_memory_total)
+  d.write(",\"window_fits\":")
+  d.write(model_forward.bool_text(o.device_window_fits))
+  d.write("}")
+  return d.to_string()
+}
+
+// Section 3.7's tolerance block. `byte_identical` is retained and is not expected to be true; the
+// three distribution fields are recorded; `tolerance_ten_thousandths` is asserted `6000` by both the
+// owner and the qualification, so widening the bound is a diff in two places.
+fn render_logits_oracle(borrow o: model_forward.Outcome) -> string {
+  d := builder()
+  d.write("{\"present\":")
+  d.write(model_forward.bool_text(o.logits_present))
+  d.write(",\"verdict\":")
+  d.write(model_forward.json_string(model_forward.logits_label(o.logits_verdict)))
+  d.write(",\"compared_pass\":")
+  d.write(model_forward.json_string(
+      if o.logits_compared_reconciliation { "reconciliation" } else { "runtime" }))
+  d.write(",\"byte_identical\":")
+  d.write(model_forward.bool_text(o.logits_byte_identical))
+  d.write(",\"max_abs_diff_ten_thousandths\":")
+  d.write_int(o.logits_max_abs)
+  d.write(",\"tolerance_ten_thousandths\":")
+  d.write_int(o.logits_tolerance)
+  d.write(",\"mean_abs_diff_ten_thousandths\":")
+  d.write_int(o.logits_mean_abs)
+  d.write(",\"p99_abs_diff_ten_thousandths\":")
+  d.write_int(o.logits_p99_abs)
+  d.write(",\"elements_over_half\":")
+  d.write_int(o.logits_over_half)
+  d.write(",\"argmax_primary\":")
+  d.write_int(o.argmax)
+  d.write(",\"argmax_reference\":")
+  d.write_int(o.logits_argmax_reference)
+  d.write(",\"top_k_agreement\":")
+  d.write_int(o.logits_top_k_agreement)
+  d.write(",\"elements_compared\":")
+  d.write_int(o.logits_elements)
+  d.write(",\"reference_sha256\":")
+  sha_view: str := o.logits_reference_sha256
+  d.write(model_forward.json_string(sha_view))
+  d.write(",\"reference_bit_sum\":")
+  d.write_int(o.logits_reference_bit_sum)
+  d.write("}")
+  return d.to_string()
+}
+
+// R5B's `timings` object plus `wrap_ns`.
+fn render_timings(borrow o: model_forward.Outcome) -> string {
+  d := builder()
+  base := model_forward.render_timings(o)
+  base_view: str := base
+  d.write(base_view[0..base_view.len() - 1])
+  d.write(",\"wrap_ns\":")
+  d.write_int(o.wrap_ns)
+  d.write("}")
+  return d.to_string()
+}
+
+fn render_pack(borrow o: model_forward.Outcome) -> string {
+  d := builder()
+  d.write("{\"format_version\":")
+  d.write_int(o.format_version)
+  d.write(",\"block_align\":")
+  d.write_int(o.block_align)
+  d.write(",\"member_align\":")
+  d.write_int(o.member_align)
+  d.write(",\"block_count\":")
+  d.write_int(o.block_count)
+  d.write(",\"member_count\":")
+  d.write_int(o.member_count)
+  d.write(",\"total_bytes\":")
+  d.write_int(o.total_bytes)
+  d.write(",\"payload_offset\":")
+  d.write_int(o.payload_offset)
+  d.write(",\"reader_pread_count\":")
+  d.write_int(o.reader_pread_count)
+  d.write(",\"reader_bytes_read\":")
+  d.write_int(o.reader_bytes_read)
+  d.write("}")
+  return d.to_string()
+}
+
+// The prologue and the assembly. Canonical UTF-8 JSON in section 3.8's declaration order.
+pub fn render(
+  borrow o: model_forward.Outcome,
+  pack_path: str,
+  geometry_path: str,
+  reference_path: str,
+  transcript_path: str,
+  logits_path: str,
+  borrow pack_json: string,
+  borrow head_json: string,
+  borrow schedule_json: string,
+  borrow window_json: string,
+  borrow output_json: string,
+  borrow oracles_json: string,
+  borrow tail_json: string,
+) -> string {
+  failed := o.code.len() > 0
+  code_view: str := o.code
+  detail_view: str := o.detail
+  pack_view: str := pack_json
+  header_view: str := head_json
+  schedule_view: str := schedule_json
+  window_view: str := window_json
+  output_view: str := output_json
+  oracles_view: str := oracles_json
+  tail_view: str := tail_json
+
+  d := builder()
+  d.write("{\"schema_version\":")
+  d.write_int(SCHEMA_VERSION)
+  d.write(",\"kind\":")
+  d.write(model_forward.json_string(DOCUMENT_KIND))
+  d.write(",\"pack_path\":")
+  d.write(model_forward.json_string(pack_path))
+  d.write(",\"geometry_path\":")
+  d.write(model_forward.json_string(geometry_path))
+  d.write(",\"reference_path\":")
+  d.write(model_forward.json_string(reference_path))
+  d.write(",\"transcript_path\":")
+  d.write(model_forward.json_string(transcript_path))
+  d.write(",\"logits_path\":")
+  d.write(model_forward.json_string(logits_path))
+  d.write(",\"status\":")
+  d.write(model_forward.json_string(if failed { "error" } else { "ok" }))
+  d.write(",\"error_code\":")
+  d.write(model_forward.json_string(code_view))
+  d.write(",\"error_detail\":")
+  d.write(model_forward.json_string(detail_view))
+  d.write(",\"verdict\":")
+  d.write(model_forward.json_string(model_forward.verdict_label(o.verdict)))
+  d.write(",\"pack\":")
+  d.write(pack_view)
+  d.write(",")
+  d.write(header_view)
+  d.write(",\"schedule\":[")
+  d.write(schedule_view)
+  d.write("],\"window\":")
+  d.write(window_view)
+  d.write(",\"head\":")
+  d.write(output_view)
+  d.write(",\"reference\":")
+  d.write(oracles_view)
+  d.write(",\"timings\":")
+  d.write(tail_view)
+  return d.to_string()
+}
+
+// The `reference`, `oracle`, `device`, and `oracle_logits` objects, in section 3.8's order. The
+// first two are `src/model_forward.align`'s unchanged: section 2.8 measured oracle 1 byte-identical
+// on Metal, and oracle 2's structural rules are device-independent by construction.
+fn render_oracles(borrow o: model_forward.Outcome) -> string {
+  d := builder()
+  reference := model_forward.render_reference(o)
+  reference_view: str := reference
+  oracle := model_forward.render_oracle(o)
+  oracle_view: str := oracle
+  device := render_device(o)
+  device_view: str := device
+  logits := render_logits_oracle(o)
+  logits_view: str := logits
+  d.write(reference_view)
+  d.write(",\"oracle\":")
+  d.write(oracle_view)
+  d.write(",\"device\":")
+  d.write(device_view)
+  d.write(",\"oracle_logits\":")
+  d.write(logits_view)
+  return d.to_string()
+}
+
+fn render_tail(borrow o: model_forward.Outcome) -> string {
+  d := builder()
+  timings := render_timings(o)
+  timings_view: str := timings
+  lifetime := model_forward.render_lifetime_abi(o)
+  lifetime_view: str := lifetime
+  d.write(timings_view)
+  d.write(",\"lifetime\":")
+  d.write(lifetime_view)
+  d.write("}")
+  return d.to_string()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The summary block and the CLI adapter (section 3.3)
+// ---------------------------------------------------------------------------------------------
+
+// R5B's rows, in R5B's order, with `backend:` carrying the device name and four rows appended.
+fn print_summary(
+  borrow o: model_forward.Outcome,
+  borrow token_list: string,
+  pack_path: str,
+) {
+  failed := o.code.len() > 0
+  print("model forward gpu:")
+  print("status:")
+  if failed { print("ERROR") } else { print("OK") }
+  print("verdict:")
+  print(model_forward.verdict_label(o.verdict))
+  print("pack path:")
+  sanitized_path := model_forward.sanitize_summary_line(pack_path)
+  sanitized_path_view: str := sanitized_path
+  print(sanitized_path_view)
+  print("schema:")
+  print(SCHEMA_VERSION)
+  print("arch:")
+  arch_view: str := o.arch
+  sanitized_arch := model_forward.sanitize_summary_line(arch_view)
+  sanitized_arch_view: str := sanitized_arch
+  print(sanitized_arch_view)
+  print("layers:")
+  print(o.n_layer)
+  print("tokens:")
+  token_list_view: str := token_list
+  print(token_list_view)
+  print("window bytes:")
+  print(o.window_bytes)
+  print("window peak block:")
+  print(o.peak_block_index)
+  print("residual bytes:")
+  print(o.residual_bytes)
+  print("activation bytes:")
+  print(o.activation_bytes_peak)
+  print("graphs:")
+  print(o.graph_count)
+  print("graph nodes:")
+  print(o.node_count_total)
+  print("backend:")
+  backend_view: str := o.backend_name
+  sanitized_backend := model_forward.sanitize_summary_line(backend_view)
+  sanitized_backend_view: str := sanitized_backend
+  print(sanitized_backend_view)
+  print("pread ns:")
+  print(o.pread_ns)
+  print("compute ns:")
+  print(o.compute_ns)
+  print("elapsed ns:")
+  print(o.elapsed_ns)
+  print("logits sha256:")
+  sha_view: str := o.sha256
+  print(sha_view)
+  print("logits bit sum:")
+  print(o.bit_sum)
+  print("logits argmax:")
+  print(o.argmax)
+  print("reference:")
+  print(model_forward.reference_label(o.reference_verdict))
+  print("reference nodes:")
+  if o.reference_present {
+    model_forward.print_pair(o.reference_identical, o.reference_compared)
+  } else {
+    print("-")
+  }
+  print("transcript:")
+  print(model_forward.oracle_label(o.oracle_verdict))
+  print("logits oracle:")
+  print(model_forward.logits_label(o.logits_verdict))
+  print("max abs diff:")
+  print(o.oracle_max_abs)
+  print("logit max diff:")
+  print(o.logits_max_abs)
+  print("released:")
+  print(o.ggml_buffers_freed + o.contexts_freed + o.backends_freed + o.gallocrs_freed)
+  print("device:")
+  device_view: str := o.device_name
+  sanitized_device := model_forward.sanitize_summary_line(device_view)
+  sanitized_device_view: str := sanitized_device
+  print(sanitized_device_view)
+  print("device max buffer:")
+  print(o.device_buffer_max_size)
+  print("wrap ns:")
+  print(o.wrap_ns)
+  print("wrap count:")
+  print(o.wrap_count)
+  if failed {
+    print("error:")
+    code_view: str := o.code
+    print(code_view)
+    print("detail:")
+    detail_view: str := o.detail
+    sanitized_detail := model_forward.sanitize_summary_line(detail_view)
+    sanitized_detail_view: str := sanitized_detail
+    print(sanitized_detail_view)
+  }
+}
+
+// Section 3.3: R5B's operand positions, meanings, grammar, and bounds verbatim — exactly four,
+// five, six, eight, or nine operands, and **seven is `R5_ARITY`**. Section 3.1 is why this is a
+// separate arm rather than a trailing `--backend` flag: a tenth optional operand makes every one of
+// those counts ambiguous by one, and it would be validated eight steps after the point where the
+// device already decided which acceptance rule the first oracle applies.
+pub fn run(args: array<str>) -> Result<(), Error> {
+  count := args.len()
+  if count < 5 || count == 8 || count > 10 {
+    return Err(Error.Invalid)
+  }
+  if !layer_forward.valid_path(args[2]) || !layer_forward.valid_path(args[3]) {
+    return Err(Error.Invalid)
+  }
+  if count >= 6 && args[5] != "-" && !layer_forward.valid_path(args[5]) {
+    return Err(Error.Invalid)
+  }
+  if count >= 7 && !layer_forward.valid_path(args[6]) {
+    return Err(Error.Invalid)
+  }
+  if count >= 9 && args[7] != "-" && !layer_forward.valid_path(args[7]) {
+    return Err(Error.Invalid)
+  }
+  if count == 10 && !layer_forward.valid_path(args[9]) {
+    return Err(Error.Invalid)
+  }
+  reference_path := if count >= 7 { args[6] } else { "" }
+  transcript_path := if count >= 9 && args[7] != "-" { args[7] } else { "" }
+  width_text := if count >= 9 { args[8] } else { "" }
+  width_declared := count >= 9
+  logits_path := if count == 10 { args[9] } else { "" }
+  selection := gpu_selection()
+  // Section 6, correction C5: the run's four column sets are rendered where they are produced. This
+  // arm names the three fields section 3.8 adds to each `schedule[]` row and hands them over as a
+  // suffix, so the `R5_MODEL_FORWARD_GPU` field list stays in the module that owns that document.
+  suffix := schedule_suffix()
+  suffix_view: str := suffix
+  parts := model_forward.render_parts(
+    args[2], args[3], args[4], width_text, width_declared, reference_path, transcript_path,
+    logits_path, selection, suffix_view)
+  pack_json := render_pack(parts.outcome)
+  window_json := render_window_and_graph(parts.outcome, parts.graph)
+  oracles_json := render_oracles(parts.outcome)
+  tail_json := render_tail(parts.outcome)
+  document := render(
+    parts.outcome, args[2], args[3], reference_path, transcript_path, logits_path,
+    pack_json, parts.head, parts.schedule, window_json, parts.output, oracles_json, tail_json)
+  document_view: str := document
+  if count == 5 || args[5] == "-" {
+    print(document_view)
+  } else {
+    fs.write_file(args[5], document_view)?
+    print_summary(parts.outcome, parts.token_list, args[2])
+  }
+  if parts.outcome.code.len() > 0 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
