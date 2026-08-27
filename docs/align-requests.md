@@ -159,12 +159,15 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > the process unless its pointer is 32-byte aligned, but neither `buffer(n)` nor `raw.alloc(n)`
 > guarantees any alignment — measured: `buffer(4096)` came back off a 16384-byte boundary while
 > larger allocations happened to land page-aligned by this platform's `malloc`, not by any Align
-> promise — so the design validates alignment itself before every call that could assert and returns
-> `R4_5_ALIGNMENT` rather than relying on allocator luck. It is non-blocking — the
-> validate-and-fail-closed design stands in — with all of R4.5-EXTERNAL-BUFFER-SPIKE and R5's DRAM
-> and VRAM tiers as independent work. Implementing R4.5-EXTERNAL-BUFFER-SPIKE then strengthened
-> Request 33's evidence (the same 192-byte `buffer` measured 32-aligned on one run and 16-aligned on
-> the next, correction C9) and added two more requests. Request 34, `Result` ok payloads beyond
+> promise — so the design compensates for the allocator's base before every call that could assert,
+> rather than relying on allocator luck or refusing what luck did not provide. It is non-blocking —
+> the compensation stands in — with all of R4.5-EXTERNAL-BUFFER-SPIKE and R5's DRAM and VRAM tiers as
+> independent work. Implementing R4.5-EXTERNAL-BUFFER-SPIKE then strengthened Request 33's evidence
+> (the same 192-byte `buffer` measured 32-aligned on one run and 16-aligned on the next, correction
+> C9), and its review strengthened it again: correction C14 measured a rule that consults that base
+> refusing a legitimate member at interior offset **0** on 20 of 20 runs, so both device-visible
+> windows are now over-reserved by 64 bytes and the block is read in behind its pad — the cost of the
+> missing language feature, in bytes and in one copy per block. It also added two more requests. Request 34, `Result` ok payloads beyond
 > scalars (`raw`, `buffer`, records): a `Result` ok payload must be a scalar at this pin, `raw` and
 > `buffer` are both rejected (with two different diagnostics), and a plain struct cannot hold a `raw`
 > field either, so `src/ggml_ffi.align`'s constructors return a bare `raw` with a null sentinel and
@@ -7505,15 +7508,16 @@ Status: PROPOSED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none. R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md`
-  section 3.8 step 13) validates the buffer's base and the tensor's interior offset before every
-  call that could assert on alignment, and returns `R4_5_ALIGNMENT` rather than relying on the
-  allocator.
+  section 3.8 step 14, with corrections C9 and C14) **compensates** for the allocator's base rather
+  than depending on it: both device-visible windows are over-reserved by `MAX_TENSOR_ALIGNMENT = 64`
+  and the ranges handed to ggml start at an aligned interior offset of each.
 Independent work that may continue: all of R4.5-EXTERNAL-BUFFER-SPIKE; R5's DRAM and VRAM tiers.
 Resume condition: an Align release adds an alignment parameter to `raw.alloc` and/or `buffer`, or
   admits an `align(N)` prefix on a `buffer` binding.
 Align commit or pull request: none
-align-llm verification: allocate the block buffer with the new aligned surface, remove the
-  alignment-luck dependency from `src/ggml_spike.align`, and pass `make ggml-spike-qualification`.
+align-llm verification: allocate the block and output buffers with the new aligned surface, delete
+  the pad-and-copy compensation from `src/ggml_spike.align` (its `weights_pad`, `output_pad`, and
+  `alignpack_read.read_append`), and pass `make ggml-spike-qualification`.
 ```
 
 ### Motivation and current sibling evidence
@@ -7537,25 +7541,36 @@ Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c
 - The shipped implementation's own measurement is stronger than the design-time probe, and is not a
   one-off: correction C9 (`docs/specs/r4-5-external-buffer.md` section 6.1) found the **same 192-byte
   `buffer`**, on the same host, for the same input, come back **32-byte aligned on one run and
-  16-byte aligned on the next**. A rule that rejects a legitimate small tensor whenever the allocator
-  happens to land on the wrong 16-byte boundary would therefore reject it nondeterministically, not
-  merely occasionally. The shipped arm compensates rather than refusing: it over-reserves the weights
-  and output windows by `MAX_TENSOR_ALIGNMENT = 64` bytes and hands ggml an aligned **interior range**
-  of each buffer (`buffer.weights_pad` / `buffer.output_pad`, two document fields section 3.8 step 13
-  did not originally have), so `R4_5_ALIGNMENT` now survives only the one case no padding can fix — a
-  container-chosen interior offset whose own alignment does not divide `tensor_alignment` — which is
-  exactly what `spike-misaligned-member` (section 6.2, `4.5`) exercises. Both the weights-base and
-  output-base misaligned rows are consequently `N/A`, not reachable from any input, because the base
-  is the Align allocator's accident to compensate for, not the container's to be blamed for.
+  16-byte aligned on the next**. Correction C14 measured the same instability on the block window —
+  the arm's own `buffer.weights_pad` alternates between 16 and 48 across runs of one fixture — and
+  measured its consequence: a rule that consults the allocator's base rejects a legitimate member at
+  interior offset **0** on 20 of 20 runs on this host, and would have accepted it on a host whose
+  allocator answered differently. Nondeterministically, not merely occasionally.
+
+- **The shipped arm therefore compensates rather than refusing, and that compensation is this
+  request's cost.** Both device-visible windows are over-reserved by `MAX_TENSOR_ALIGNMENT = 64`
+  bytes; the output tensor is placed at `buffer.output_pad` inside its window, and the block is
+  **read in behind** `buffer.weights_pad` so block byte 0 itself lands on a boundary
+  (`alignpack_read.read_append` exists for that and nothing else). The price is 64 bytes of
+  over-reservation per device-visible window plus one copy of the block into the compensated window
+  — on the real model, 64 bytes on top of a 17,020,928-byte block and one 17 MB copy inside
+  `timings.pread_ns` — carried by every consumer that hands memory to a device, in exchange for a
+  verdict that no longer depends on the allocator. `R4_5_ALIGNMENT` survives for the one case no
+  padding can fix: a **container-chosen** interior offset whose own alignment does not divide
+  `tensor_alignment`, which is exactly what `spike-misaligned-member` (section 6.2, `4.5`) exercises
+  and is the same verdict on every host. Both the weights-base and output-base misaligned rows are
+  consequently `N/A`, not reachable from any input, because the base is the Align allocator's
+  accident to compensate for, not the container's to be blamed for.
 
 **Consequence for the client.** `ggml_backend_cpu_buffer_from_ptr` aborts the process
 (`GGML_ASSERT((uintptr_t)ptr % TENSOR_ALIGNMENT == 0 && "buffer pointer must be aligned")`) on a
 misaligned pointer, with no unwinding and no document. Because Align makes no alignment promise,
-R4.5-EXTERNAL-BUFFER-SPIKE cannot rely on it and instead validates the weights buffer's base, the
-tensor's interior offset, and the output buffer's base before any call that could assert
-(`docs/specs/r4-5-external-buffer.md` section 3.8 step 13), returning `R4_5_ALIGNMENT` on the
-platform-accident case rather than crashing. A legitimate input can still be rejected for a reason the
-program itself cannot fix.
+R4.5-EXTERNAL-BUFFER-SPIKE cannot rely on it: it pads to whatever base it is given, re-measures the
+exact range it is about to hand across the boundary, and refuses only what padding cannot fix
+(`docs/specs/r4-5-external-buffer.md` section 3.8 step 14, corrections C9 and C14). No legitimate
+input is rejected for the allocator's reasons any more — but every such client now carries the
+over-reservation, the interior offset, and the copy, in a language that could simply hand it an
+aligned allocation.
 
 ### Requested capability
 

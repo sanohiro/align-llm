@@ -174,7 +174,7 @@ ggml-spike:
 # synthetic alignpack corpus into a temporary tree, needs no model, no network, no ggml, and no
 # reference tool, and runs in seconds — the same justification that admitted gguf-smoke,
 # model-ir-smoke, expert-trace-smoke, and alignpack-smoke — so it joins HOSTED_CHECK_TARGETS. It
-# runs the whole CLI over every fixture and reaches nine of the fifteen error codes for real.
+# runs the whole CLI over every fixture and reaches ten of the fifteen error codes for real.
 ggml-spike-smoke:
 	./scripts/run-ggml-spike-smoke
 

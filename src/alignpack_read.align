@@ -263,6 +263,43 @@ pub fn read_exact(
   return Ok(())
 }
 
+// The same read, **appended** to whatever the window already holds instead of replacing it. It is
+// the twin `read_exact` needs because `read_exact` rebinds its window — which is exactly what a
+// caller compensating for the allocator's base must not have happen: `src/ggml_spike.align` writes
+// an alignment pad first and then reads the block in behind it, so the first byte of the block
+// lands on a boundary the allocator did not choose (section 6, corrections C9 and C14).
+//
+// The bytes go through one `tail` window per completion round rather than straight into `window`
+// because `pread` publishes from a window's start; the cost is one copy of the block into the
+// compensated window, and it is the whole price of the compensation.
+pub fn read_append(
+  borrow handle: file,
+  borrow mut window: buffer,
+  borrow mut c: Counters,
+  code: str,
+  at: i64,
+  n: i64,
+) -> Result<(), Fault> {
+  if at < 0 || n < 0 { return Err(fault_at(code, at)) }
+  if n > c.peak_window_bytes { c.peak_window_bytes = n }
+  mut have := 0
+  loop {
+    if have >= n { break }
+    mut tail := buffer(n - have)
+    extra := match handle.pread(tail, at + have) {
+      Ok(value) => value,
+      Err(failure) => { return Err(os_fault(code, failure)) },
+    }
+    c.pread_count = c.pread_count + 1
+    c.bytes_read = c.bytes_read + extra
+    if extra > n - have { return Err(fault_at("R4_PACK_UNREADABLE", at + have)) }
+    if extra == 0 { return Err(fault_at("R4_WINDOW_UNAVAILABLE", at + have)) }
+    window.append(tail.bytes())
+    have = have + extra
+  }
+  return Ok(())
+}
+
 // ---------------------------------------------------------------------------------------------
 // The header (section 2.4.2, read back)
 // ---------------------------------------------------------------------------------------------

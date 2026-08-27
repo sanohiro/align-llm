@@ -1,9 +1,12 @@
 module ggml_ffi
 
 // R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md` sections 3.4 and 3.9). The
-// **only** module in this repository that contains an `extern` declaration or an `unsafe` block:
-// `grep -rl unsafe src/` must name this file and nothing else, and
-// `scripts/run-ggml-spike-smoke` asserts it.
+// **only** module in this repository that contains an `extern` declaration or an `unsafe` block,
+// and `scripts/run-ggml-spike-smoke` asserts exactly that: it greps `src/` for an `unsafe {` block
+// opener and for an `extern "C"` line and requires each list to be this file alone. The assertion
+// is deliberately about the *block*, not about the word — the sibling modules discuss the boundary
+// in prose and `src/prompt_verifier_smoke.align` names an `unsafe_workspace` parameter, so a bare
+// `grep -rl unsafe src/` would name files that hold no unsafe code (section 6, correction C19).
 //
 // The block below names exactly one library — the repository's own shim — and that is the whole of
 // section 3.2's build-input decision. `src/main.align`'s import graph never reaches this module, so
@@ -75,7 +78,12 @@ pub fn code_for(status: i64) -> str {
   if status == STATUS_SHAPE { return "R4_5_SHAPE" }
   if status == STATUS_ALIGNMENT { return "R4_5_ALIGNMENT" }
   if status == STATUS_INIT { return "R4_5_GGML_INIT" }
-  if status == STATUS_BOUNDS { return "R4_5_GGML_INIT" }
+  // A bounds refusal is not a constructor failure: the shim returns it when a copy in or out would
+  // exceed `ggml_nbytes` of the tensor it was handed, which is the container's declared size and
+  // ggml's own size disagreeing. `R4_5_SHAPE` is that disagreement's own code — step 16's
+  // `ggml_nbytes(A) != member.nbytes` check reports the identical condition — and the wrapper's
+  // `label` names the object, so the detail stays specific (section 6, correction C18).
+  if status == STATUS_BOUNDS { return "R4_5_SHAPE" }
   return "R4_5_ABI"
 }
 
@@ -115,8 +123,9 @@ extern "C" link("align_ggml_shim") {
 // ---------------------------------------------------------------------------------------------
 
 // `raw.null()` and `p.is_null()` are the only pointer constructions in the capability, and they
-// live here for the same reason every `extern` does: `grep -rl unsafe src/` must name exactly one
-// file. `src/ggml_spike.align` holds handles as opaque values and never forms one itself.
+// live here for the same reason every `extern` does: the smoke's `unsafe {` block scan over `src/`
+// must name exactly one file. `src/ggml_spike.align` holds handles as opaque values and never
+// forms one itself.
 pub fn null_handle() -> raw {
   unsafe {
     return raw.null()
@@ -191,7 +200,7 @@ pub fn type_ok(kind: i64, ne0: i64) -> Result<(), Fault> {
 }
 
 // `(address) mod modulus` for the base of an Align byte range. Align has no `raw`-to-integer cast
-// and no `==` on `raw` (section 2.6), so section 3.8 step 12's alignment rule — the step that keeps
+// and no `==` on `raw` (section 2.6), so section 3.8 step 14's alignment rule — the step that keeps
 // `GGML_ASSERT` and `abort()` unreachable — is evaluated on this scalar.
 pub fn align_mod(borrow region: slice<u8>, modulus: i64) -> i64 {
   unsafe {

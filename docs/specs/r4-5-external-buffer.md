@@ -1247,7 +1247,15 @@ being evidence of anything, and the difference between the two is the useful rec
 | C6 | 3.3 | the summary block is printed "in the four- and five-operand forms" | `-` in the fourth position means "document to stdout", so the five-operand `- REF` form would interleave a positional summary with the machine form | The summary accompanies a document written to a **named path**. `-` selects the machine form: the document alone. `run-ggml-spike-smoke` asserts the three-operand, `-`, and file forms emit identical document bytes |
 | C7 | 3.9 | — | Two mechanics at the pin. `buffer` exposes no `.capacity()`. And a Borrow argument crossing an FFI wrapper must be a *stable named local or field*, not a temporary: `ggml_ffi.buffer_from_host(device, weights.bytes(), n)` is rejected | The arm takes `weights_view`, `output_view`, `activation_view`, and `member_span` **once**, immediately after the block `pread`, and passes those. That is also exactly section 4.3's replacement invariant — no buffer is rebound after a ggml object refers to it — enforced by the compiler rather than by review |
 | C8 | 3.8 step 8, 4.6 | `spike-window-huge` reaches `R4_WINDOW_UNAVAILABLE` from "a fixture header claiming a `pack_bytes` past any allocation" | `buffer(N)` at this pin is an **advisory** capacity hint that grows lazily. `buffer(4611686018427387904)` followed by one `put_u8` publishes length 1 and does not fail. No fixture can make a reservation degrade | `R4_WINDOW_UNAVAILABLE` is **not reachable from an input**. It is retained as `read_exact`'s fail-closed answer to a zero-length read at an offset already proved inside the file — a file that shrank underneath, or a genuine allocation failure. `spike-window-huge` is replaced by `spike-dimension-bound`, which refuses an implausible `ne0`/`ne1` with `R4_5_SHAPE` **before** any window loop starts, so work stays bounded for the reason the window check existed. `scripts/run-alignpack-smoke` already prints its own window-unavailable `N/A` line for the same class of reason |
-| C9 | 3.8 step 13, 4.5 | the weights base, `base + interior_offset`, and the output base are each `0 mod tensor_alignment`, or `R4_5_ALIGNMENT` | Section 2.4 measured `raw.alloc` returning 32-aligned addresses and concluded alignment was a platform accident. It is worse: a 192-byte Align `buffer` on this host comes back **32-aligned on one run and 16-aligned on the next**. The plan's rule refuses a legitimate small tensor for a reason the program can fix itself, and it refuses it nondeterministically | The arm **compensates** rather than refusing. The output window is over-reserved by `MAX_TENSOR_ALIGNMENT = 64`; ggml is handed an aligned **interior range** of each buffer, at `buffer.weights_pad` and `buffer.output_pad` — two new document fields. `R4_5_ALIGNMENT` survives for the one case no padding can fix: `(base_alignment + interior_offset) % tensor_alignment != 0`, where the interior offset is **container**-chosen. Section 4.5's "weights base misaligned" row joins its "output base misaligned" row as not input-reachable; `spike-misaligned-member`, a pack with the legal `member_align = 16`, is the reachable one. `buffer.base_alignment` and `buffer.output_base_alignment` are still emitted on **every** run, which is what section 4.5 asked them for |
+| C9 | 3.8 step 13, 4.5 | the weights base, `base + interior_offset`, and the output base are each `0 mod tensor_alignment`, or `R4_5_ALIGNMENT` | Section 2.4 measured `raw.alloc` returning 32-aligned addresses and concluded alignment was a platform accident. It is worse: a 192-byte Align `buffer` on this host comes back **32-aligned on one run and 16-aligned on the next**. The plan's rule refuses a legitimate small tensor for a reason the program can fix itself, and it refuses it nondeterministically | The arm **compensates** rather than refusing: both device-visible windows are over-reserved by `MAX_TENSOR_ALIGNMENT = 64` and ggml is handed an aligned **interior range** of each, at `buffer.weights_pad` and `buffer.output_pad` — two new document fields. **C14 corrects this row's own repair**, which compensated only the output side and left the gate `(base_alignment + interior_offset) % tensor_alignment != 0` — still the allocator's answer, not the container's. `buffer.base_alignment` and `buffer.output_base_alignment` are emitted on **every** run, which is what section 4.5 asked them for |
+| C14 | 3.8 step 13, 4.5, 6.1 C9 | C9's compensation makes `R4_5_ALIGNMENT` a container property | It did not. `weights_pad` was computed and published but nothing was placed at it: the block still began at the weights buffer's byte 0, so the gate `(base_alignment + interior_offset) % tensor_alignment != 0` still asked what the **allocator** returned. Measured at `6b19163`: `ggml-spike pack-minimal 0 0`, a member at interior offset **0** — as aligned as a container can make it — was refused `R4_5_ALIGNMENT`/`member` on 20 of 20 runs because the allocator handed back a 16-mod-32 base; so were interior 0 of block 2 and interior 64 of its second member. `spike-block-zero` and `spike-misaligned-member` were therefore goldens over an allocator accident, and a host whose base is 0 would have produced the opposite verdict for both | The block is **landed on a boundary** rather than measured against one. The weights window is over-reserved by `MAX_TENSOR_ALIGNMENT` too; one byte is published to make the base measurable, `weights_pad = MAX_TENSOR_ALIGNMENT - (base mod MAX_TENSOR_ALIGNMENT)` in `[1, 64]` is written as zeros, and the block is read in **behind** it by `alignpack_read.read_append` — the symmetric twin of `output_pad`, and the reason that reader function exists. The compensation modulus is `MAX_TENSOR_ALIGNMENT` because step 12 has not yet said what `tensor_alignment` is and every value step 12 admits divides it. The gate is then the container's own property and nothing else: **`interior_offset % tensor_alignment != 0`**, detail `member`, the same verdict on every host and every run. Detail `weights` and detail `output` survive as the fail-closed answer to a window that moved under its own pad — `align_mod` is re-measured on the exact ranges handed to ggml — and are **unreachable** by construction; nothing observed has ever produced one. `buffer.tensor_data_offset` is now measured from **block byte 0**, not from the buffer's base, so it remains the member's own interior offset (`14336` on the real model) whatever pad the allocator forced. The cost is one copy of the block into the compensated window, which is what `pread_ns` now includes |
+| C15 | 3.8 step 10, 4.6 | the reference read is `R4_5_SOURCE_UNREADABLE` | Only when the *open* failed. The read itself went to `alignpack_read.read_exact`, whose zero-length answer at an offset it was told is resident is `R4_WINDOW_UNAVAILABLE` — the container reader blaming this side's allocator. So an empty, short, or simply wrong reference file reported a window failure for a range the pack claimed about a file the caller merely named. Measured at `6b19163`: an empty reference, one truncated exactly at the member's `source_offset`, and one truncated mid-member all reported `R4_WINDOW_UNAVAILABLE` | `read_reference` bounds `source_offset + nbytes <= handle.len()` **before** the `pread` and reports `R4_5_SOURCE_UNREADABLE` with detail `source@<offset>+<bytes>/<file length>`, which tells the three cases apart without a second run. The fixtures are `spike-reference-empty`, `spike-reference-eof`, and `spike-reference-mid-member`, all stub-reachable, joining `spike-reference-missing` on section 4.6's row |
+| C16 | 3.7, 3.10 | `compute`/`output` are zeroed when `verdict` is `UNAVAILABLE` | `output.element_count` was not: it was published at the window reservation, so an `UNAVAILABLE` document carried a non-zero element count beside an empty digest and a zero bit sum — a description of an output that does not exist | `element_count` is published with the digest and the sums it counts, after the compute loop, and is `0` on every document that never computed. The count is carried as a local until then |
+| C17 | 3.4, 3.7 | `tensor.blck_size` / `type_size` and `abi.q4k_*` are sizes | A geometry query answers with a size **or** with a negative shim status, and `spike-type-unsupported`'s golden published `blck_size: -3` — `R4_5_TYPE_UNSUPPORTED`'s status value read as a block size. The same class covers `abi.tensor_alignment`, which the real shim answers with `-1` or `-2` when the CPU device or its buffer type is absent | A status is not a size: every geometry answer is read raw for the check that owns it and published through one clamp, so the document carries `0` for "not established" and never an `R4_5_*` value in a size field. `spike-type-unsupported` still reports `R4_5_TYPE_UNSUPPORTED`, with `blck_size: 0`; an implausible alignment is still `R4_5_ABI`, whose detail names the raw status |
+| C18 | 3.4, 3.8 | `STATUS_BOUNDS` is a shim status with its own meaning | `code_for` mapped it to `R4_5_GGML_INIT`, so a copy that would exceed `ggml_nbytes` was reported as a constructor returning `NULL` | It maps to `R4_5_SHAPE`, with the wrapper's `label` as the detail. A bounds refusal is the container's declared size and ggml's own size disagreeing, which is exactly what step 16's `ggml_nbytes(A) != member.nbytes` check reports under the same code |
+| C19 | 3.9, 5.1 | `grep -rl unsafe src/` names exactly `src/ggml_ffi.align` | It does not and cannot: the sibling modules discuss the boundary in prose and `src/prompt_verifier_smoke.align` names an `unsafe_workspace` parameter. The runner already asserted the right thing — an `unsafe {` block opener, and an `extern "C"` line — while two module headers claimed the word-level version | The assertion is block-level and the module headers say so. `scripts/run-ggml-spike-smoke` greps `src/` for `unsafe[[:space:]]*\{` and for `^[[:space:]]*extern[[:space:]]+"C"` and requires each list to be `src/ggml_ffi.align` alone. Sections 3.9, 4.3, and 5.1's wording is the plan's; this row is the correction |
+| C20 | 3.2 | `check-gate-topology` sees "one new hosted target and one new capable-only target" | There is no new capable-only target. `ggml-spike-qualification` is in **neither** `HOSTED_CHECK_TARGETS` nor `CAPABLE_ONLY_CHECK_TARGETS`, exactly as section 5.2 and the `Makefile` say and exactly as `alignpack-qualification` is not | One new hosted target, `ggml-spike-smoke`. The qualification is opt-in, in no list and no aggregate, and `ggml-spike` is a build target rather than a check |
+| C21 | 3.5, 3.8 | the reader raises eight `R4_PACK_*` codes; `R4_5_INDEX`'s detail is `block[<n>]` / `member[<n>]` | The reader also raises `R4_PACK_TRUNCATED` — for a file shorter than the header, for `f.len() != total_bytes`, and for every region-containment failure — which section 3.5's list omits. And a *parse* failure at step 3 has no index to name, so it emits the sanitized operand itself (`-1`, `1x`, `01`, `99999999999999999999`) | The reader's code set is the eight of section 3.5 plus `R4_PACK_TRUNCATED`, with `r4-alignpack-layer-major.md` section 2.8's meaning. `R4_5_INDEX`'s detail is the sanitized operand when the operand did not parse (step 3) and `block[<n>]` / `member[<n>]` when it parsed and was out of range (steps 5 and 6). Both forms are goldens |
 | C10 | 5.1 | "every fixture's expected document is a checked-in golden file compared byte for byte" | Three groups of fields are properties of the run and not of the contract: `timings.*`, the two `mktemp -d` paths, and — per C9 — the four allocator-dependent `buffer` fields | One golden, `scripts/ggml-spike-golden.jsonl`, one line per case holding the exact document string. The runner rewrites those values **in place** — never reordering, adding, or dropping a field — and compares the rest byte for byte, so field order, field presence, and the `-`/`false`/`0` conventions remain regressions. The four allocator fields get a separate exact invariant instead: each base is in `[0, tensor_alignment)`, each pad is the distance from it to the next boundary, and the member's absolute address is on a boundary whenever the run continued past step 14 |
 | C11 | 4.6 | `R4_5_REFERENCE_MISMATCH` is reached "against a GGUF with one flipped payload byte" | It is not producible by mutating an input. The byte-equality precheck of step 11 stops a divergent reference first and reports `R4_5_SOURCE_DIVERGED` — which is the **correct** cause, and is exactly why that check exists | `R4_5_REFERENCE_MISMATCH` is the code for a divergence the byte check cannot explain: a nondeterministic or mis-dispatched kernel. The qualification reaches it with `ALIGN_LLM_GGML_FORCE=reference`, a shim rebuilt to perturb one byte of the copied-out reference output, and asserts the comparison names the exact element. The plan's flipped-byte input is exercised too, as `R4_5_SOURCE_DIVERGED` |
 | C12 | 4.6 | `spike-path-nul` | `execve` cannot carry a NUL inside an argument, so the CLI's NUL rule has no process-boundary input | The NUL clause stays as a fail-closed lexical guard. The reachable `R4_5_PATH` fixtures are `spike-path-empty`, `spike-path-long`, `spike-doc-path-empty`, and `spike-reference-path-empty` |
@@ -1256,12 +1264,26 @@ being evidence of anything, and the difference between the two is the useful rec
 **Net effect on section 4.6's count.** Ten of the fifteen codes are reachable in hosted CI without
 ggml, not nine: `R4_5_SOURCE_UNREADABLE` and `R4_5_SOURCE_DIVERGED` are gained from C5 and
 `R4_WINDOW_UNAVAILABLE` is lost to C8. Four of the remaining five need a live foreign library and
-each names its mechanism; the fifth, `R4_WINDOW_UNAVAILABLE`, is not reachable from any input.
+each names its mechanism; the fifth, `R4_WINDOW_UNAVAILABLE`, is not reachable from any input. C15
+adds three fixtures to `R4_5_SOURCE_UNREADABLE` without changing the count, and C14 does not change
+it either — it makes two of the ten deterministic rather than allocator-dependent.
+
+**How C14 and C15 were found.** Both are review findings against the implementation at `6b19163`,
+not against the plan, and both were reproduced before they were repaired: 20 consecutive runs of
+three legal members at interior offsets 0, 0, and 64 all reported `R4_5_ALIGNMENT`/`member`, and
+three references that exist but cannot supply the member's range all reported
+`R4_WINDOW_UNAVAILABLE`. The repairs are verified the same way — the same inputs, the same runs.
 
 ### 6.2 Cell-to-case map
 
 Every cell of section 4, mapped to the case that exercises it or to an explicit `N/A` with its
 reason. `smoke` is `make ggml-spike-smoke`; `qual` is `make ggml-spike-qualification`.
+
+**A compile-only cell cites `smoke`, not `make check`.** `make check` checks `src/main.align`'s
+import graph, which does not reach `src/alignpack_read.align`, `src/ggml_ffi.align`, or
+`src/ggml_spike.align` — that is section 3.2's whole point. The build that compiles all three is the
+one `make ggml-spike-smoke` performs before it runs a fixture, so a cell whose evidence is "this
+compiles" names the smoke.
 
 **4.1 — `src/alignpack_read.align`**
 
@@ -1269,13 +1291,13 @@ reason. `smoke` is `make ggml-spike-smoke`; `qual` is `make ggml-spike-qualifica
 | --- | --- | --- |
 | Formation / validation | `pack-bad-magic`, `pack-bad-version`, `pack-bad-widths`, `pack-bad-align`, `pack-flags-set`, `pack-len-mismatch`, `pack-region-overlap` | smoke |
 | Construction | `spike-stub-unavailable` golden, plus the reader-parity block | smoke |
-| Success | `spike-stub-unavailable`, `spike-block-zero`; twenty-two fields compared to `scripts/alignpack_reader.py` | smoke |
+| Success | `spike-stub-unavailable` (interior offset 2304) and `spike-block-zero` (interior offset **0**, the case C14 made reachable); twenty-two fields compared to `scripts/alignpack_reader.py` | smoke |
 | Failure | the seven above plus `pack-reserved-block`, `pack-reserved-member`, `pack-missing` | smoke |
 | Malformed input | `pack-u64-highbit`, `pack-name-overrun`, `pack-offset-nonmonotonic` | smoke |
 | Early exit | `pack-len-mismatch` asserts `pack.reader_pread_count == 1` | smoke |
-| Move-in / out | `PackIndex` owns no name stream after C13; the block columns are frozen once from `array_builder<i64>` | `make check` |
+| Move-in / out | `PackIndex` owns no name stream after C13; the block columns are frozen once from `array_builder<i64>` | smoke (the build) |
 | Cleanup | fd closed by scope `Drop`; no explicit close exists at this pin | `N/A` — unchanged from the plan |
-| Fifth-instance column shape | `array<i64>` columns behind `borrow` accessors, no new mechanism | `make check` |
+| Fifth-instance column shape | `array<i64>` columns behind `borrow` accessors, no new mechanism | smoke (the build) |
 
 **4.2 — `src/ggml_ffi.align`**
 
@@ -1287,9 +1309,9 @@ reason. `smoke` is `make ggml-spike-smoke`; `qual` is `make ggml-spike-qualifica
 | Failure | `code_for` is one `match`; `spike-type-unsupported` and `spike-misaligned-member` drive two of its arms through the stub, `forced init` and `forced compute` two more | smoke, qual |
 | Malformed input | `N/A` — shapes and types are validated one layer up, at steps 7 and 13, so this module has no unvalidated input. Unchanged from the plan |  |
 | Early exit | `spike-stub-unavailable`: `available()` is `0` and nothing else runs | smoke |
-| Move-in / out | handles are Copy `raw`, never aggregated, never returned as views | `make check` |
+| Move-in / out | handles are Copy `raw`, never aggregated, never returned as views | smoke (the build) |
 | Cleanup | `close_*` / `free_*` are total against a null handle; the qualification asserts `lifetime` buffers 4/4, contexts 2/2, backends 1/1 | qual |
-| Purity | every function here contains `unsafe`, so all are inferred Impure | `make check` |
+| Purity | every function here contains `unsafe`, so all are inferred Impure | smoke (the build) |
 
 **4.3 — `src/ggml_spike.align`**
 
@@ -1298,11 +1320,11 @@ reason. `smoke` is `make ggml-spike-smoke`; `qual` is `make ggml-spike-qualifica
 | Formation | `spike-arity-2`, `spike-arity-3`, `spike-arity-6`, `spike-path-empty`, `spike-path-long`, `spike-doc-path-empty`, `spike-reference-path-empty`, `spike-index-negative`, `spike-index-nonnumeric`, `spike-index-leading-zero`, `spike-index-huge` | smoke |
 | Construction | `spike-block-oob`, `spike-member-oob`, `spike-shape-3d`, `spike-shape-zero`, `spike-dimension-bound` | smoke |
 | Success | the qualification's `blk.0.attn_q.weight` arm; `spike-stub-unavailable` to step 15 | smoke, qual |
-| Failure | ten codes in the smoke, four more in the qualification, one not input-reachable (C8) | smoke, qual |
+| Failure | ten codes in the smoke, four more in the qualification, one not input-reachable (C8); `R4_5_SOURCE_UNREADABLE`'s three bounded-range fixtures are C15's | smoke, qual |
 | Malformed input | `spike-type-unsupported`, `spike-ne0-not-multiple` — both against the stub's checked-in table | smoke |
-| Early exit | `spike-stub-unavailable` golden: `verdict: "UNAVAILABLE"`, `compute`/`output` zeroed, exit non-zero | smoke |
-| Branch joins | every documented case is a golden line; thirty of them | smoke |
-| Move-in / out | `weights`, `output`, `activation` are bare `mut` locals; the document is moved out by `to_string()` | `make check` |
+| Early exit | `spike-stub-unavailable` golden: `verdict: "UNAVAILABLE"`, `compute`/`output` zeroed — `element_count` included, after C16 — exit non-zero; and every documented case asserts `lifetime` is all zeros, because a stub build stops before the first constructor | smoke |
+| Branch joins | every documented case is a golden line; thirty-three of them | smoke |
+| Move-in / out | `weights`, `output`, `activation` are bare `mut` locals; the document is moved out by `to_string()` | smoke (the build) |
 | Replacement | the views are taken once (C7) and `tensor_data_offset` is re-read after the compute loop and compared to the value recorded before it | qual |
 | Cleanup | one convergent teardown from step 16 onward; `lifetime` counts in every document | qual |
 | Determinism | `output.sha256` asserted as an exact value; it matched section 2.3's probe digest exactly | qual |
@@ -1324,10 +1346,10 @@ reason. `smoke` is `make ggml-spike-smoke`; `qual` is `make ggml-spike-qualifica
 
 | Cell | Case | Where |
 | --- | --- | --- |
-| Weights base misaligned | `N/A` — not reachable from an input (C9). The base is the Align allocator's, not the container's, and the arm pads to it |  |
-| Member interior misaligned | `spike-misaligned-member`, a pack with the legal `member_align = 16` placing a member at interior offset 2320 | smoke |
-| Output base misaligned | `N/A` — not reachable from an input; the arm over-reserves and places the tensor at `output_pad`. The pad relation is asserted exactly on every documented case | smoke |
-| Alignment is a platform accident | `buffer.base_alignment` and `buffer.output_base_alignment` are emitted on every run. Measured **varying between 0 and 16 across runs of the same input**, which is stronger evidence than section 2.4 had | smoke, qual |
+| Weights base misaligned | `N/A` — not reachable from an input (C9, C14). The base is the Align allocator's, not the container's: the arm over-reserves the weights window and lands **block byte 0** at `weights_pad`, so no base this allocator can return is refused. Detail `weights` survives only for a window that moved under its own pad, re-measured with `align_mod` on the exact range handed to ggml, and has never been observed |  |
+| Member interior misaligned | `spike-misaligned-member`, a pack with the legal `member_align = 16` placing a member at interior offset 2320: `2320 % 32 = 16`, so it is `R4_5_ALIGNMENT`/`member` on every host and every run, independent of what the allocator returned (C14). The counter-case is `spike-block-zero`, interior offset `0`, which reaches step 15 on every run — it reported `R4_5_ALIGNMENT` on 20 of 20 runs before C14 | smoke |
+| Output base misaligned | `N/A` — not reachable from an input; the arm over-reserves and places the tensor at `output_pad`. Detail `output` is the same unreachable fail-closed re-measurement as the weights row | smoke |
+| Alignment is a platform accident | `buffer.base_alignment` and `buffer.output_base_alignment` are emitted on every run, and the pads with them. Measured **varying across runs of the same input** — `weights_pad` alternates between 16 and 48 for one fixture while its verdict does not move — which is stronger evidence than section 2.4 had, and is exactly why the verdict must not depend on it | smoke, qual |
 
 **4.6 — error code to fixture**
 
@@ -1342,10 +1364,10 @@ reason. `smoke` is `make ggml-spike-smoke`; `qual` is `make ggml-spike-qualifica
 | `R4_5_GGML_UNAVAILABLE` | `spike-stub-unavailable` | yes |
 | `R4_5_ABI` | qualification, by asserting the four recorded constants and the whole table | no |
 | `R4_5_TYPE_UNSUPPORTED` | `spike-type-unsupported` | yes |
-| `R4_5_ALIGNMENT` | `spike-misaligned-member` | yes |
+| `R4_5_ALIGNMENT` | `spike-misaligned-member`, deterministically after C14; details `weights` and `output` are not input-reachable | yes |
 | `R4_5_GGML_INIT` | qualification, `ALIGN_LLM_GGML_FORCE=init` | no |
 | `R4_5_COMPUTE` | qualification, `ALIGN_LLM_GGML_FORCE=compute` | no |
-| `R4_5_SOURCE_UNREADABLE` | `spike-reference-missing`; qualification, absent reference | yes (C5) |
+| `R4_5_SOURCE_UNREADABLE` | `spike-reference-missing`, `spike-reference-empty`, `spike-reference-eof`, `spike-reference-mid-member` (C15); qualification, absent reference | yes (C5) |
 | `R4_5_SOURCE_DIVERGED` | `spike-reference-diverged`; qualification, the pack as its own reference | yes (C5) |
 | `R4_5_REFERENCE_MISMATCH` | qualification, `ALIGN_LLM_GGML_FORCE=reference` (C11) | no |
 
@@ -1366,7 +1388,7 @@ reason. `smoke` is `make ggml-spike-smoke`; `qual` is `make ggml-spike-qualifica
 | `scripts/ggml_spike_fixture.py` | the synthetic alignpack corpus, encoded from the format document |
 | `scripts/run-ggml-spike-smoke` | the hosted owner |
 | `scripts/run-ggml-spike` | the opt-in qualification |
-| `scripts/ggml-spike-golden.jsonl` | thirty golden documents |
+| `scripts/ggml-spike-golden.jsonl` | thirty-three golden documents |
 | `Makefile`, `scripts/check-gate-topology`, `.gitignore` | `ggml-spike`, `ggml-spike-smoke`, `ggml-spike-qualification`; the hosted list in both places; `build/` and the two executable names |
 
 `src/main.align`, `src/alignpack.align`, `src/gguf.align`, and `src/model_ir.align` are **unmodified**.
@@ -1380,7 +1402,7 @@ reason. `smoke` is `make ggml-spike-smoke`; `qual` is `make ggml-spike-qualifica
 | `gmake build` | `built executable: main` — unchanged, no ggml on the link line |
 | `gmake ggml-spike` (stub) | built; `ALIGN_LLM_GGML_INCLUDE` unset selects `ggml_shim_stub.c` |
 | `gmake ggml-spike` (real) | built against `/opt/homebrew/include` and `/opt/homebrew/lib` |
-| `gmake ggml-spike-smoke` | `7 no-document cases, 30 documented cases, reader parity, shared shim contract, and lifetime PASS`; five consecutive runs identical |
+| `gmake ggml-spike-smoke` | `7 no-document cases, 33 documented cases, reader parity, shared shim contract, and lifetime PASS`; consecutive runs identical |
 | `gmake ggml-spike-qualification` | `PASS`; numbers in 7.3 |
 | `gmake alignpack-smoke` | `20 positive fixtures, 106 negative sources, 14979 assertions … PASS` |
 | `gmake gguf-smoke`, `model-ir-smoke`, `expert-trace-smoke` | `PASS`, unchanged |
@@ -1404,28 +1426,38 @@ by the trap. Selection: block 1, member 1 — `blk.0.attn_q.weight`, Q4_K, `3584
 | `verdict` | **`EXTERNAL`** |
 | `buffer.interior_offset` / `buffer.tensor_data_offset` | `14336` / `14336` — **the gate's no-silent-copy clause, discharged** |
 | `buffer.pointer_identity` / `output_pointer_identity` | `true` / `true` |
-| `buffer.base_alignment` / `weights_pad` / `output_base_alignment` / `output_pad` | `0` / `0` / `0` / `0` on this run |
+| `buffer.base_alignment` / `weights_pad` / `output_base_alignment` / `output_pad` | `0` / `64` / `0` / `0` on the post-C14 run — a page-aligned base, so the block was landed one full compensation window in |
 | `compute.backend_name` | `CPU`, reached through the registry (`load_all` → `dev_by_type` → `dev_init`) |
 | `output.sha256` | `2ccc7dc778108df3b626128895347f203795a2d82b502805806fb8472457e044` — **bit-identical to section 2.3's probe digest** |
 | `output.bit_sum` / `element_count` / `nonfinite_count` | `30595536514321` / `14336` / `0` |
 | `reference.verdict` / `bytes_equal` / `differing_elements` | `IDENTICAL` / `true` / **`0` of 14,336** — **quantized-layout-preserved, discharged** |
 | `abi` | `tensor_alignment 32`, `q4k_blck_size 256`, `q4k_type_size 144`, `table_drift -1` across all 25 rows |
-| `timings.pread_ns` | `5,080,833` for 17,020,928 B — 3.35 GB/s, warm cache |
-| `timings.compute_ns` | `550,308` — warm mean of five after one warm-up |
-| `timings.reference_pread_ns` / `reference_compute_ns` | `2,344,125` / `560,792` — the ggml-owned arm is **1.9% slower**, not faster |
-| `timings.elapsed_ns` | `213,751,541` end to end, including registry load and the reference arm |
+| `timings.pread_ns` | `6,829,084` for 17,020,928 B on the final post-C14 run — 2.49 GB/s, warm cache, and it now **includes** the copy of the block into the compensated window (C14). The pre-C14 number, one `pread` and no copy, was `5,080,833` — 3.35 GB/s |
+| `timings.compute_ns` | `435,075` — warm mean of five after one warm-up (`464,258` on the first post-C14 run, `550,308` pre-C14; the spread across runs is larger than any difference between them) |
+| `timings.reference_pread_ns` / `reference_compute_ns` | `2,387,125` / `584,292` — the ggml-owned arm is again the slower one |
+| `timings.elapsed_ns` | `316,991,959` end to end, including registry load and the reference arm; `133,918,250` and `149,779,625` on the other two post-C14 runs, and the spread is host load, not the boundary |
 | `lifetime` | buffers `4/4`, contexts `2/2`, backends `1/1`, `released_before_owner_scope_end true`; no abort at `exit` |
 | forced failures | `init -> R4_5_GGML_INIT`, `compute -> R4_5_COMPUTE`, `reference -> R4_5_REFERENCE_MISMATCH` |
 | named `N/A` lines | expert block, GPU arm, discrete VRAM — each printed with its reason and its section reference |
 
-The qualification was run twice, end to end, on the real model. The second run reproduced
-`sha256 2ccc7dc7…e044`, `interior_offset == tensor_data_offset == 14336`, `IDENTICAL` with
-`differing_elements 0`, and balanced lifetime counts, at `pread 6,287,208 ns`,
-`compute 517,075 ns`, `reference compute 538,125 ns`; both runs removed the pack and left no file
-behind in the caller-supplied temporary directory.
+The qualification was run twice before the review repair and three times after it, end to end, on
+the real model. Every run reproduced `sha256 2ccc7dc7…e044`, `interior_offset == tensor_data_offset ==
+14336`, `IDENTICAL` with `differing_elements 0`, and balanced lifetime counts; the pre-repair runs
+measured `pread 5,080,833 / 6,287,208 ns`, `compute 550,308 / 517,075 ns`, and
+`reference compute 560,792 / 538,125 ns`. Every run removed the pack — `reclaimed 4677222400
+bytes` — and left no file behind in the temporary directory.
 
-The external-versus-internal compute comparison is the answer the roadmap needed: **550,308 ns over
-Align-owned memory against 560,792 ns over ggml-owned memory.** There is no penalty for computing
+**C14's compensation costs one copy and does not move the answer.** `tensor_data_offset` is still
+`14336`, still equal to `interior_offset`, and still `EXTERNAL`, because the offset is measured from
+block byte 0 and block byte 0 is now the thing that was aligned. What it costs is visible in
+`pread_ns` and nowhere else: 6,829,084 and 6,997,417 ns against 5,080,833 ns for the same 17,020,928
+bytes, the difference being one 17 MB copy into the compensated window. The digest and the reference
+verdict are bit-identical across the change.
+
+The external-versus-internal compute comparison is the answer the roadmap needed: **435,075 ns over
+Align-owned memory against 584,292 ns over ggml-owned memory on the final run, 464,258 against
+750,625 ns on the first post-repair run, and 550,308 against 560,792 ns before it.** There is no
+penalty for computing
 out of caller memory, which is the expected result for a backend that was handed a pointer, and it
 is now measured by the shipped capability rather than by a probe.
 
@@ -1440,9 +1472,12 @@ document does not edit `docs/align-requests.md`; the orchestrator owns the regis
    unchanged at the pin. It is the whole reason `scripts/ggml_shim.c` exists.
 2. **An aligned heap allocation** — section 5.5.2's candidate Request 33, and the evidence is now
    **stronger than section 2.4's**. The same `buffer` reservation came back 32-aligned on one run
-   and 16-aligned on the next, on the same host, for the same input. Correction C9 is the shipped
-   workaround, and it costs an over-reservation and an interior offset in every consumer that hands
-   memory to a device.
+   and 16-aligned on the next, on the same host, for the same input; the shipped arm's own
+   `weights_pad` alternates between 16 and 48 across runs of one fixture. Corrections C9 and C14 are
+   the shipped workaround, and the price is now measured: an over-reservation and an interior offset
+   on **both** device-visible windows, plus one copy of the block into the aligned window, in every
+   consumer that hands memory to a device. C14 also records what the absence of the language feature
+   nearly cost — a verdict that depended on the allocator's mood rather than on the container.
 3. **A `Result` ok payload must be a scalar.** `Result<raw, Fault>` and `Result<buffer, Fault>` are
    both rejected at the pin. The consequence for an FFI wrapper is that a fallible constructor
    cannot return a handle *and* a reason; it must return a null sentinel and let the caller invent

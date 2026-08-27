@@ -26,7 +26,7 @@ import ggml_ffi
 // Two rules govern the ordering, and both come from a probe rather than from taste.
 //
 //  1. **Nothing is handed to ggml before it is validated.** `ggml_backend_cpu_buffer_from_ptr`
-//     calls `abort()` on a pointer that is not `TENSOR_ALIGNMENT`-aligned; step 12 exists so that
+//     calls `abort()` on a pointer that is not `TENSOR_ALIGNMENT`-aligned; step 14 exists so that
 //     input produces a document naming the pointer instead of a crash with no diagnosis.
 //  2. **Every ggml object is released before its owning `buffer` local leaves scope.** A ggml
 //     buffer that outlives process teardown aborted inside `exit` on the Metal backend. Steps 14
@@ -62,11 +62,14 @@ CONTEXT_BYTES := 16777216
 // activation and output windows at or under 1 GiB each.
 MAX_DIMENSION := 16777216
 
-// The largest `TENSOR_ALIGNMENT` this capability will compensate for. ggml's is 32 on every backend
-// measured; 64 is the cache line on both targets and is a value no tensor allocator has exceeded.
-// The output window is over-reserved by this many bytes so the arm can place its tensor at an
-// aligned interior offset whatever the allocator returns (section 6, correction C9), and a linked
-// library reporting more than this is `R4_5_ABI` rather than a silent under-alignment.
+// The largest `TENSOR_ALIGNMENT` this capability will compensate for, and the modulus it
+// compensates against. ggml's is 32 on every backend measured; 64 is the cache line on both targets
+// and is a value no tensor allocator has exceeded. **Both** device-visible windows — the block and
+// the output — are over-reserved by this many bytes so the arm can place block byte 0 and the
+// output tensor at an aligned interior offset whatever the allocator returns (section 6,
+// corrections C9 and C14), and a linked library reporting more than this is `R4_5_ABI` rather than
+// a silent under-alignment. Every admissible alignment divides it, which is what lets the pads be
+// computed at step 8, before the ABI probe of step 12 has said what the alignment is.
 MAX_TENSOR_ALIGNMENT := 64
 
 SCHEMA_VERSION := 1
@@ -262,6 +265,15 @@ fn int_text(value: i64) -> string {
   return b.to_string()
 }
 
+// A geometry query answers with a size or with a negative shim status, and a status is not a size.
+// The document publishes `0` — "not established" — and the caller keeps the status for the check it
+// belongs to, so no `R4_5_*` sentinel ever leaves through a `tensor.blck_size` or `abi.q4k_*` field
+// where a reader would take `-3` for a block size (section 6, correction C17).
+fn published_size(value: i64) -> i64 {
+  if value > 0 { return value }
+  return 0
+}
+
 fn bool_text(value: bool) -> string {
   if value {
     return "true".clone()
@@ -287,6 +299,21 @@ fn at_label(label: str, value: i64) -> string {
   b.write(label)
   b.write("@")
   b.write_int(value)
+  return b.to_string()
+}
+
+// `source@<offset>+<bytes>/<file length>`: the range the pack claimed, and the file that could not
+// supply it. All three numbers are in the detail because the three ways a reference fails this
+// check — empty, EOF before the member starts, EOF inside the member — are one code and are worth
+// telling apart without a second run.
+fn range_detail(at: i64, n: i64, size: i64) -> string {
+  b := builder()
+  b.write("source@")
+  b.write_int(at)
+  b.write("+")
+  b.write_int(n)
+  b.write("/")
+  b.write_int(size)
   return b.to_string()
 }
 
@@ -414,9 +441,38 @@ fn read_reference(
         })
     },
   }
+  // The reference file is **not** the container, and nothing has proved this range is inside it:
+  // `source_offset` and `nbytes` are the pack's claims about a file the caller merely named. An
+  // empty, short, or simply wrong reference must therefore be named as what it is — the reference
+  // is unreadable at that range — rather than reaching `read_exact`, whose zero-length answer is
+  // `R4_WINDOW_UNAVAILABLE` and blames this side's allocator (section 6, correction C15).
+  size := match handle.len() {
+    Ok(value) => value,
+    Err(failure) => {
+      return Err(alignpack_read.Fault {
+          code: "R4_5_SOURCE_UNREADABLE".clone(),
+          detail: error_name(failure).clone(),
+        })
+    },
+  }
+  if at < 0 || n < 0 || at > size || n > size - at {
+    return Err(alignpack_read.Fault {
+        code: "R4_5_SOURCE_UNREADABLE".clone(),
+        detail: range_detail(at, n, size),
+      })
+  }
   started := time.instant()
   alignpack_read.read_exact(handle, out, c, "R4_5_SOURCE_UNREADABLE", at, n)?
   return Ok(time.instant() - started)
+}
+
+// The allocator's base for a window still being filled, modulo `modulus`. A Borrow crossing an FFI
+// wrapper must be a stable named local rather than a temporary (section 6, correction C7), and the
+// window the caller is about to write more bytes into must not keep a live view — so the view is
+// taken, measured, and dropped here.
+fn base_mod(borrow b: buffer, modulus: i64) -> i64 {
+  view := b.bytes()
+  return ggml_ffi.align_mod(view, modulus)
 }
 
 fn fill_zero(borrow mut b: buffer, n: i64) {
@@ -614,23 +670,39 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
   }
   output_bytes := member.dim1 * ACTIVATION_COLUMNS * 4
   activation_bytes := member.dim0 * ACTIVATION_COLUMNS * 4
-  // Over-reserved so the output tensor can be placed at an aligned interior offset. Align has no
-  // aligned allocator (`docs/align-requests.md`'s recorded gap), and this host hands a 128-byte
-  // `buffer` a 16-byte-aligned base — so refusing an unaligned base would refuse a legitimate small
-  // tensor for a reason the program can fix itself. What must never happen is a misaligned pointer
-  // reaching ggml, and that is still enforced, one step below.
+  element_count := member.dim1 * ACTIVATION_COLUMNS
+  // Both device-visible windows are over-reserved by `MAX_TENSOR_ALIGNMENT` so the arm can hand ggml
+  // an **interior** range that starts on a boundary. Align has no aligned allocator
+  // (`docs/align-requests.md` Request 33), and this host answers the same reservation with a
+  // 32-aligned base on one run and a 16-aligned one on the next — so refusing an unaligned base
+  // would refuse a legitimate tensor nondeterministically, for a reason the program can fix itself
+  // (section 6, corrections C9 and C14). What must never happen is a misaligned pointer reaching
+  // ggml, and that is still enforced, at step 14.
   output_reserved := output_bytes + MAX_TENSOR_ALIGNMENT
+  weights_reserved := block.pack_bytes + MAX_TENSOR_ALIGNMENT
   o.output_bytes = output_bytes
-  o.element_count = member.dim1 * ACTIVATION_COLUMNS
 
   // Step 8. `buffer(N)` degrading to capacity 0 is R4's silent-allocation-failure case, and it is
   // checked for every window this arm reserves, not only the large one.
   // `buffer(N)` has no capacity accessor at this pin (section 6, correction C7), so a degraded
   // reservation is detected by what the buffer actually publishes after it is filled: a window that
   // could not be reserved accepts no bytes, and `bytes().len()` says so.
-  mut weights: buffer := buffer(block.pack_bytes)
+  mut weights: buffer := buffer(weights_reserved)
   mut output: buffer := buffer(output_reserved)
   mut activation: buffer := buffer(activation_bytes)
+  // The weights pad is written **before** the block, because block byte 0 is the address every
+  // interior offset is measured from and the allocator's base is the only thing standing between it
+  // and a boundary. One byte is published first because that is what makes the base measurable —
+  // `buffer(N)` publishes no length until something is written — so the pad is in
+  // `[1, MAX_TENSOR_ALIGNMENT]` rather than `[0, MAX_TENSOR_ALIGNMENT)`.
+  //
+  // The compensation modulus is `MAX_TENSOR_ALIGNMENT` and not the linked library's own
+  // `tensor_alignment`, which is not known until step 12: every alignment step 12 admits divides
+  // `MAX_TENSOR_ALIGNMENT`, so landing on a `MAX_TENSOR_ALIGNMENT` boundary lands on theirs too.
+  fill_zero(weights, 1)
+  weights_pad := MAX_TENSOR_ALIGNMENT - base_mod(weights, MAX_TENSOR_ALIGNMENT)
+  o.weights_pad = weights_pad
+  fill_zero(weights, weights_pad - 1)
   fill_zero(output, output_reserved)
   fill_activation(activation, member.dim0 * ACTIVATION_COLUMNS)
   if output.bytes().len() != output_reserved {
@@ -644,11 +716,11 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
     return o
   }
 
-  // Step 9. One `pread` of the whole block, short reads completed. This is the R4 contiguity
-  // property being consumed: one block is one byte range, and the member is addressed at an
-  // interior offset inside it.
+  // Step 9. One `pread` of the whole block, short reads completed, appended behind the pad. This is
+  // the R4 contiguity property being consumed: one block is one byte range, and the member is
+  // addressed at an interior offset inside it.
   pread_started := time.instant()
-  match alignpack_read.read_exact(
+  match alignpack_read.read_append(
     pak, weights, counters, "R4_PACK_UNREADABLE", block.pack_offset, block.pack_bytes) {
     Ok(_) => {},
     Err(f) => {
@@ -664,14 +736,24 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
   o.pread_ns = time.instant() - pread_started
   o.reader_pread_count = counters.pread_count
   o.reader_bytes_read = counters.bytes_read
+  if weights.bytes().len() != weights_pad + block.pack_bytes {
+    fail(o, "R4_WINDOW_UNAVAILABLE", "weights")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
 
   // Every borrow handed across the FFI boundary must be a stable named local, not a temporary
-  // (section 6, correction C7). Taking the three views once, here, is also the invariant section
+  // (section 6, correction C7). Taking the views once, here, is also the invariant section
   // 4.3's replacement cell names: no buffer is rebound after a ggml object refers to it.
+  //
+  // `block_view` is block byte 0 onward — the compensated window, and the base every offset in the
+  // `buffer` object is measured against, so `tensor_data_offset` stays the member's own interior
+  // offset whatever the allocator returned.
   weights_view := weights.bytes()
   output_view := output.bytes()
   activation_view := activation.bytes()
-  member_span := weights_view[o.interior_offset..o.interior_offset + member.nbytes]
+  block_view := weights_view[weights_pad..weights_pad + block.pack_bytes]
+  member_span := block_view[o.interior_offset..o.interior_offset + member.nbytes]
 
   // Steps 10 and 11 in the ledger's numbering, hoisted ahead of every ggml object so that neither
   // can leave one behind (section 6, correction C5). The reference bytes are read from the original
@@ -706,12 +788,17 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
   // Step 12. The ABI probe. `TENSOR_ALIGNMENT` is not a public constant in any shipped ggml header,
   // so the value reported here is the linked library's own device alignment; `table_drift` widens
   // section 5.6's guard from three Q4_K constants to every row of the checked-in operand table.
-  o.tensor_alignment = ggml_ffi.tensor_alignment()
-  o.q4k_blck_size = ggml_ffi.blck_size(12)
-  o.q4k_type_size = ggml_ffi.type_size(12)
+  // All three geometry answers are read raw and published clamped: a negative value here is a shim
+  // status, not an alignment or a size, and `R4_5_ABI` is the code that says so (correction C17).
+  alignment := ggml_ffi.tensor_alignment()
+  q4k_blck := ggml_ffi.blck_size(12)
+  q4k_type := ggml_ffi.type_size(12)
+  o.tensor_alignment = published_size(alignment)
+  o.q4k_blck_size = published_size(q4k_blck)
+  o.q4k_type_size = published_size(q4k_type)
   o.table_drift = ggml_ffi.table_drift()
-  if o.tensor_alignment <= 0 || o.q4k_blck_size <= 0 || o.q4k_type_size <= 0 {
-    fail(o, "R4_5_ABI", labelled("alignment", o.tensor_alignment))
+  if alignment <= 0 || q4k_blck <= 0 || q4k_type <= 0 {
+    fail(o, "R4_5_ABI", labelled("alignment", alignment))
     o.elapsed_ns = time.instant() - started
     return o
   }
@@ -727,9 +814,10 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
   }
 
   // Step 13. The type is a `mul_mat` left operand and the row is a whole number of blocks.
-  o.blck_size = ggml_ffi.blck_size(member.ggml_type)
-  o.type_size = ggml_ffi.type_size(member.ggml_type)
-  o.elements_per_row_ok = o.blck_size > 0 && member.dim0 % o.blck_size == 0
+  blck := ggml_ffi.blck_size(member.ggml_type)
+  o.blck_size = published_size(blck)
+  o.type_size = published_size(ggml_ffi.type_size(member.ggml_type))
+  o.elements_per_row_ok = blck > 0 && member.dim0 % blck == 0
   match ggml_ffi.type_ok(member.ggml_type, member.dim0) {
     Ok(_) => {},
     Err(f) => {
@@ -749,28 +837,41 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
   // rather than as a crash. The arm then hands ggml an aligned interior range of each buffer.
   o.base_alignment = ggml_ffi.align_mod(weights_view, o.tensor_alignment)
   o.output_base_alignment = ggml_ffi.align_mod(output_view, o.tensor_alignment)
-  o.weights_pad = (o.tensor_alignment - o.base_alignment) % o.tensor_alignment
-  o.output_pad = (o.tensor_alignment - o.output_base_alignment) % o.tensor_alignment
-  // The one alignment failure the program cannot fix, and the reason this step exists: the member's
-  // absolute address is the buffer base plus a **container-chosen** interior offset. A pack whose
-  // `member_align` is a valid power of two below `TENSOR_ALIGNMENT` can place a member 16 bytes
-  // into its block, and no amount of padding on this side moves it. Without this check that input
-  // reaches `GGML_ASSERT` and `abort()` — no document, no code, no diagnosis.
-  if (o.base_alignment + o.interior_offset) % o.tensor_alignment != 0 {
-    fail(o, "R4_5_ALIGNMENT", "member")
-    o.elapsed_ns = time.instant() - started
-    return o
-  }
-  if block.pack_bytes <= o.weights_pad || o.interior_offset < o.weights_pad {
+  o.output_pad = (MAX_TENSOR_ALIGNMENT
+      - ggml_ffi.align_mod(output_view, MAX_TENSOR_ALIGNMENT)) % MAX_TENSOR_ALIGNMENT
+  output_span := output_view[o.output_pad..o.output_pad + output_bytes]
+
+  // The two compensated addresses, measured on the ranges ggml is actually handed rather than
+  // recomputed from the base. Neither is reachable from an input: the base is the Align allocator's
+  // accident and the arm pads to it, so a failure here means the buffer moved under the pad — a
+  // reservation that reallocated between the measurement and the fill — and the answer is a
+  // document naming which window, not a `GGML_ASSERT` and `abort()` with no diagnosis.
+  if ggml_ffi.align_mod(block_view, o.tensor_alignment) != 0 {
     fail(o, "R4_5_ALIGNMENT", "weights")
     o.elapsed_ns = time.instant() - started
     return o
   }
-  weights_span := weights_view[o.weights_pad..block.pack_bytes]
-  output_span := output_view[o.output_pad..o.output_pad + output_bytes]
+  // The one alignment failure no padding can fix, and the reason this step exists: the member's
+  // address is block byte 0 — now on a boundary by construction — plus a **container-chosen**
+  // interior offset. A pack whose `member_align` is a valid power of two below the linked library's
+  // `tensor_alignment` can place a member 16 bytes into its block, and nothing on this side moves
+  // it. The condition is therefore the container's own property and nothing else: it is the same
+  // verdict on every host, on every run, whatever the allocator returned (section 6, correction
+  // C14). Without this check that input reaches `GGML_ASSERT` and `abort()` — no document, no code,
+  // no diagnosis.
+  if o.interior_offset % o.tensor_alignment != 0 {
+    fail(o, "R4_5_ALIGNMENT", "member")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  if ggml_ffi.align_mod(output_span, o.tensor_alignment) != 0 {
+    fail(o, "R4_5_ALIGNMENT", "output")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
 
   // Step 15. Availability. This is where the stub shim stops, and everything above it — the whole
-  // reader, every index and shape and alignment check, nine of the fifteen codes — has therefore
+  // reader, every index and shape and alignment check, ten of the fifteen codes — has therefore
   // run for real without ggml.
   if !ggml_ffi.available() {
     fail(o, "R4_5_GGML_UNAVAILABLE", "stub")
@@ -840,7 +941,7 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
     }
   }
   if o.code.len() == 0 {
-    weights_buffer = ggml_ffi.buffer_from_host(device, weights_span, block.pack_bytes - o.weights_pad)
+    weights_buffer = ggml_ffi.buffer_from_host(device, block_view, block.pack_bytes)
     if ggml_ffi.handle_absent(weights_buffer) {
       fail(o, "R4_5_GGML_INIT", "weights_buffer")
     } else {
@@ -899,7 +1000,7 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
   // Step 17. The identity verdict is recorded before the compute loop and re-checked after it, so
   // `EXTERNAL` is a property of the pointer ggml actually computed from.
   if o.code.len() == 0 {
-    o.tensor_data_offset = ggml_ffi.tensor_data_offset(weight_tensor, weights_view)
+    o.tensor_data_offset = ggml_ffi.tensor_data_offset(weight_tensor, block_view)
     o.pointer_identity = o.tensor_data_offset == o.interior_offset
     o.output_pointer_identity = ggml_ffi.tensor_data_offset(result_tensor, output_view) == o.output_pad
     o.verdict = if o.pointer_identity { VERDICT_EXTERNAL } else { VERDICT_COPIED }
@@ -937,11 +1038,16 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
   if o.code.len() == 0 {
     // Section 4.3's replacement cell: no buffer was rebound after a ggml object took a pointer into
     // it, and the offset is re-read to prove it.
-    if ggml_ffi.tensor_data_offset(weight_tensor, weights_view) != o.tensor_data_offset {
+    if ggml_ffi.tensor_data_offset(weight_tensor, block_view) != o.tensor_data_offset {
       fail(o, "R4_5_COMPUTE", "pointer_moved")
     }
   }
   if o.code.len() == 0 {
+    // `element_count` is published here, with the digest and the sums it counts, and not at the
+    // window reservation: a document whose `verdict` is `UNAVAILABLE` describes an output that does
+    // not exist, and a non-zero count beside an empty digest reads as one that does (section 6,
+    // correction C16).
+    o.element_count = element_count
     digest := crypto.sha256(output_span)
     o.sha256 = encoding.hex_encode(digest[0..digest.len()])
     view := output_span
@@ -949,7 +1055,7 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
     mut sum := 0
     mut nonfinite := 0
     loop {
-      if element >= o.element_count { break }
+      if element >= element_count { break }
       bits := view.u32_le(element * 4) as i64
       sum = sum + bits
       if (bits / 8388608) % 256 == 255 { nonfinite = nonfinite + 1 }
@@ -1049,7 +1155,7 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
       mut element := 0
       mut differing := 0
       loop {
-        if element >= o.element_count { break }
+        if element >= element_count { break }
         left := primary.u32_le(element * 4) as i64
         right := secondary.u32_le(element * 4) as i64
         if left != right {

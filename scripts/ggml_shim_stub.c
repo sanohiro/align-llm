@@ -9,7 +9,7 @@
  * the whole of section 3.8's pack reading, index validation, shape validation, ABI probe, type
  * predicate, and alignment validation runs against it exactly as it runs against the real shim,
  * answered from the shared checked-in table below. The run then stops at the availability gate with
- * `R4_5_GGML_UNAVAILABLE` and a `verdict` of `UNAVAILABLE`, having exercised nine of the fifteen
+ * `R4_5_GGML_UNAVAILABLE` and a `verdict` of `UNAVAILABLE`, having exercised ten of the fifteen
  * error codes for real.
  *
  * The region between the two `R4.5 SHARED SHIM CONTRACT` markers is byte-identical to

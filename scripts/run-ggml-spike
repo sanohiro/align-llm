@@ -61,6 +61,16 @@ tmpdir="${ALIGN_LLM_GGML_SPIKE_TMPDIR:-}"
 if [ -z "${tmpdir}" ]; then
   tmpdir=$(mktemp -d)
   owned_tmpdir=1
+  # A directory this runner created is this runner's to remove, from the moment it exists. The
+  # refusals below exit 0 without writing anything, and without this they would leave an empty
+  # `mktemp -d` behind on every skip. It removes **only** an empty directory it owns — `rmdir`, not
+  # `rm -rf` — so it cannot become the artifact-deleting trap the reclaim ordering below avoids.
+  discard_owned_tmpdir() {
+    status=$?
+    rmdir "${tmpdir}" 2>/dev/null || true
+    exit "${status}"
+  }
+  trap discard_owned_tmpdir EXIT HUP INT TERM
 fi
 if [ ! -d "${tmpdir}" ]; then
   echo "ggml spike qualification: N/A (ALIGN_LLM_GGML_SPIKE_TMPDIR is not a directory)"
@@ -80,8 +90,9 @@ pack="${tmpdir}/model.alignpack"
 pack_document="${tmpdir}/alignpack.json"
 spike_document="${tmpdir}/ggml-spike.json"
 
-# Before the trap, deliberately: a runner that installed the reclaim trap first and refused
-# afterwards would delete the very artifact it refused to overwrite.
+# Before the **reclaim** trap, deliberately: a runner that installed it first and refused afterwards
+# would delete the very artifact it refused to overwrite. (The trap installed above cannot: it only
+# `rmdir`s a directory this runner created, which by construction is empty and holds no pack.)
 if [ -e "${pack}" ]; then
   echo "ggml spike qualification: N/A (the destination already exists: ${pack})"
   exit 0
@@ -216,6 +227,20 @@ expect("buffer.interior_offset", document["buffer"]["interior_offset"], 14336)
 expect("buffer.tensor_data_offset", document["buffer"]["tensor_data_offset"], 14336)
 expect("buffer.pointer_identity", document["buffer"]["pointer_identity"], True)
 expect("buffer.output_pointer_identity", document["buffer"]["output_pointer_identity"], True)
+
+# The compensation, asserted against the real allocator rather than only the synthetic corpus: the
+# member's interior offset is the only thing the alignment gate may depend on, and the pads are the
+# arm's own answer to a base it does not control (section 6, correction C14).
+alignment = document["abi"]["tensor_alignment"]
+if alignment > 0:
+    if document["buffer"]["interior_offset"] % alignment != 0:
+        failures.append("buffer.interior_offset %d is not %d-aligned but the run continued"
+                        % (document["buffer"]["interior_offset"], alignment))
+    for key, low, high in (("weights_pad", 1, 64), ("output_pad", 0, 63)):
+        if not low <= document["buffer"][key] <= high:
+            failures.append("buffer.%s is %d, outside [%d, %d]"
+                            % (key, document["buffer"][key], low, high))
+
 expect("abi.tensor_alignment", document["abi"]["tensor_alignment"], 32)
 expect("abi.q4k_blck_size", document["abi"]["q4k_blck_size"], 256)
 expect("abi.q4k_type_size", document["abi"]["q4k_type_size"], 144)

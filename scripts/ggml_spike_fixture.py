@@ -273,6 +273,17 @@ def source_image(layout, corrupt_member=None):
     return bytes(raw)
 
 
+def truncated_source(layout, at):
+    """The reference image cut short, for the three ways a reference cannot supply the range.
+
+    `ggml-spike PACK 1 1 - REF` reads the member's `nbytes` at its recorded `source_offset` out of a
+    file the caller merely named. A file that is empty, that ends before the member starts, or that
+    ends inside it supplies no such range, and the arm must say the **reference** is unreadable at
+    that range rather than let a zero-length read reach the container reader's window answer.
+    """
+    return source_image(layout)[:at]
+
+
 def write_corpus(directory):
     os.makedirs(directory, exist_ok=True)
     written = []
@@ -282,8 +293,14 @@ def write_corpus(directory):
             handle.write(raw)
         written.append(path)
     _, layout = build()
+    # Member index 2 is `blk.0.attn_k.weight`, the member `PACK 1 1` selects.
+    selected = layout["members"][2]
     for name, raw in (("source-identical.bin", source_image(layout)),
-                      ("source-diverged.bin", source_image(layout, corrupt_member=2))):
+                      ("source-diverged.bin", source_image(layout, corrupt_member=2)),
+                      ("source-empty.bin", b""),
+                      ("source-eof.bin", truncated_source(layout, selected.source_offset)),
+                      ("source-mid-member.bin",
+                       truncated_source(layout, selected.source_offset + selected.nbytes // 2))):
         path = os.path.join(directory, name)
         with open(path, "wb") as handle:
             handle.write(raw)

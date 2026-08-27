@@ -149,14 +149,14 @@ file records durable project state.
 - Branch `agent/r4-5-external-buffer`, continuing from R4-ALIGNPACK-LAYER-MAJOR (not yet merged).
   Ledger commit `262c52d` ("docs: add R4.5 external buffer spike design ledger"). The authoritative
   design ledger is `docs/specs/r4-5-external-buffer.md`.
-- **Status: implementation complete in the working tree; next action is review.**
+- **Status: implemented, reviewed, and repaired; next action is preflight and publication.**
   `src/alignpack_read.align`, `src/ggml_ffi.align`, `src/ggml_spike.align`, `scripts/ggml_shim.c`,
   `scripts/ggml_shim_stub.c`, `scripts/build-ggml-shim`, `scripts/ggml_spike_fixture.py`,
   `scripts/run-ggml-spike-smoke`, `scripts/run-ggml-spike`, and `scripts/ggml-spike-golden.jsonl` all
   exist on the branch; `Makefile`, `scripts/check-gate-topology`, and `.gitignore` are wired for the
   `ggml-spike` / `ggml-spike-smoke` / `ggml-spike-qualification` targets. `docs/specs/r4-5-external-buffer.md`
-  section 6 records thirteen implementation-forced corrections (C1-C13) against the design; section 7
-  is the delivered-surface record below.
+  section 6 records twenty-one implementation-forced corrections (C1-C21) against the design — C1-C13
+  from the implementation, C14-C21 from the review below; section 7 is the delivered-surface record.
 - **Probe evidence (ledger section 2), gathered before the design was written.**
   - Pointer identity: `ggml_get_data(A)` equals the Align `weights` buffer's base plus the member's
     own interior offset, exactly `14336` bytes (`pack_offset - block.pack_offset`), and the output
@@ -175,22 +175,29 @@ file records durable project state.
 - **Owner verification (`docs/specs/r4-5-external-buffer.md` section 7.2), all passing.**
   `gmake check` — `ok: checked 29 unit(s) per-unit`; `gmake build` — links no ggml on the link line;
   `gmake ggml-spike` builds both against the stub (`ALIGN_LLM_GGML_INCLUDE` unset) and against the
-  real ggml headers/libs; `gmake ggml-spike-smoke` — 7 no-document cases, 30 documented cases, reader
-  parity, shared shim contract, and lifetime all PASS, five consecutive runs identical;
+  real ggml headers/libs; `gmake ggml-spike-smoke` — 7 no-document cases, **33** documented cases,
+  reader parity, shared shim contract, and lifetime all PASS, consecutive runs identical;
   `gmake alignpack-smoke`, `gmake gguf-smoke`, `gmake model-ir-smoke`, `gmake expert-trace-smoke` —
   unchanged PASS; `gmake gate-topology-check` — PASS; `gmake format-check` / `gmake fmt` — clean,
   `fmt` a no-op on the three new modules; `git diff --check` — clean.
-- **Qualification (`gmake ggml-spike-qualification`, section 7.3), run twice end to end on the real
-  model** (`qwen2.5-coder-7b-instruct-q4_k_m.gguf`, block 1 / member 1, `blk.0.attn_q.weight`, Q4_K,
-  3584x3584): `verdict EXTERNAL`; `buffer.interior_offset == buffer.tensor_data_offset == 14336`
-  (the no-silent-copy clause, discharged) on both runs; `output.sha256` reproduced
-  `2ccc7dc778108df3b626128895347f203795a2d82b502805806fb8472457e044` on both runs (bit-identical to
+- **Qualification (`gmake ggml-spike-qualification`, section 7.3), run twice before the review repair
+  and three times after it, end to end on the real model** (`qwen2.5-coder-7b-instruct-q4_k_m.gguf`, block 1
+  / member 1, `blk.0.attn_q.weight`, Q4_K, 3584x3584): `verdict EXTERNAL`;
+  `buffer.interior_offset == buffer.tensor_data_offset == 14336` (the no-silent-copy clause,
+  discharged) on every run — after the repair the offset is measured from block byte 0, so the value
+  is unchanged by the compensation; `output.sha256` reproduced
+  `2ccc7dc778108df3b626128895347f203795a2d82b502805806fb8472457e044` on every run (bit-identical to
   the section 2.3 probe digest); `reference.verdict IDENTICAL`, `differing_elements 0` of 14,336 on
-  both runs; `compute.backend_name CPU`; compute ~0.52-0.55 ms over Align-owned memory vs. ~0.54-0.56
-  ms over ggml-owned memory (no penalty for external memory — the roadmap's actual question); pread
-  5-6 ms for 17,020,928 B; lifetime counts balanced (buffers 4/4, contexts 2/2, backends 1/1,
-  `released_before_owner_scope_end true`), no abort at `exit`; the temporary pack (4,677,222,400
-  bytes) was removed and reclaimed on both runs, with no file left behind.
+  every run; `compute.backend_name CPU`; post-repair compute 435,075 ns over Align-owned memory vs.
+  584,292 ns over ggml-owned memory on the final run, pre-repair 550,308 vs. 560,792 ns (no penalty
+  for external memory — the roadmap's actual question); pread 6,829,084 ns for 17,020,928 B
+  post-repair against 5,080,833 ns before, the difference being the one copy into the
+  alignment-compensated window;
+  `base_alignment 0 / weights_pad 64 / output_base_alignment 0 / output_pad 0`; lifetime counts
+  balanced (buffers 4/4, contexts 2/2, backends 1/1, `released_before_owner_scope_end true`), no abort
+  at `exit`; forced failures `init -> R4_5_GGML_INIT`, `compute -> R4_5_COMPUTE`,
+  `reference -> R4_5_REFERENCE_MISMATCH`; the temporary pack (4,677,222,400 bytes) was removed and
+  reclaimed on every run, with no file left behind.
 - **Requests 32-35 in `docs/align-requests.md`, all PROPOSED and non-blocking.** Request 32, FFI v1
   by-value struct ABI (AAPCS64 and SysV MEMORY class) and `bool` FFI type: `ggml_init`'s 24-byte-by-
   value struct and `ggml_tallocr_new`'s by-value return are unreachable from Align by any route
@@ -199,8 +206,11 @@ file records durable project state.
   `ggml_backend_cpu_buffer_from_ptr` aborts on a misaligned pointer, but neither `buffer(n)` nor
   `raw.alloc(n)` guarantees any alignment; its evidence is now strengthened with correction C9's
   measurement that the same 192-byte `buffer` came back 32-aligned on one run and 16-aligned on the
-  next, so the shipped arm compensates by over-reserving by `MAX_TENSOR_ALIGNMENT = 64` bytes and
-  handing ggml an aligned interior range rather than relying on allocator luck. Request 34 (new),
+  next, and with correction C14's, that a rule consulting that base refused a legitimate member at
+  interior offset 0 on 20 of 20 runs. The shipped arm compensates on **both** device-visible windows
+  by over-reserving `MAX_TENSOR_ALIGNMENT = 64` bytes and handing ggml an aligned interior range;
+  the price, and the request's concrete cost, is that over-reservation plus one copy of each block
+  into its aligned window. Request 34 (new),
   `Result` ok payloads beyond scalars (`raw`, `buffer`, records): a `Result` ok payload must be a
   scalar at this pin — verified directly against the pinned compiler — so `src/ggml_ffi.align`'s
   constructors return a bare `raw` with a null sentinel and `src/ggml_spike.align`'s reference reader
@@ -211,9 +221,27 @@ file records durable project state.
   window-adjacent codes are untestable guards for an observable consequence rather than the
   reservation itself — R0, R4, and R4.5 each reached the same conclusion independently. The header
   status line in `docs/align-requests.md` now reads "21–35 are PROPOSED".
-- **Next action: one fresh independent review** of the implementation against the settled ledger
-  (section 6/7); consolidate any findings; then preflight and publish, alongside or after R4's own
-  publication.
+- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
+  the candidate at `6b19163`: **A** the Align source, **B** the specification, register, handoff,
+  runners, and `Makefile`. A requested changes with 2 major, 2 minor, and 2 nit findings; B requested
+  changes with 1 high, 3 medium, and 6 low. **Every finding was accepted** and all were repaired as
+  one consolidated commit on top of `6b19163`; the contract changes are ledger section 6.1 rows
+  C14-C21, each with its case in section 6.2. A's and B's highest findings were the **same root
+  cause**: the alignment gate `(base_alignment + interior_offset) % tensor_alignment` consulted the
+  Align allocator's base, so a legal member at interior offset 0 was refused `R4_5_ALIGNMENT` on 20
+  of 20 runs on this host while `weights_pad` compensated nothing, and two goldens
+  (`spike-block-zero`, `spike-misaligned-member`) were recordings of an allocator accident. The arm
+  now over-reserves the weights window too and reads the block in **behind** `weights_pad` through a
+  new `alignpack_read.read_append`, so block byte 0 lands on a boundary and the gate is the
+  container's own property, `interior_offset % tensor_alignment != 0`. The other substantive repairs:
+  a short, empty, or wrong reference file reported `R4_WINDOW_UNAVAILABLE` instead of
+  `R4_5_SOURCE_UNREADABLE` (`read_reference` now bounds the range against `f.len()` before the
+  `pread`, with three new fixtures); `output.element_count` was non-zero on an `UNAVAILABLE`
+  document; `tensor.blck_size` published the `-3` status sentinel as a size; `STATUS_BOUNDS` mapped
+  to `R4_5_GGML_INIT` rather than `R4_5_SHAPE`; section 6.2 cited `make check` for five cells over
+  modules `make check` never compiles; `docs/align-development.md` had no R4.5 section and
+  `docs/specs/roadmap.md` no R4.5 forward-order item or gate-clause pointer.
+- **Next action: preflight and publish**, alongside or after R4's own publication.
 - **Two pending user decisions, carried forward verbatim.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
      gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented

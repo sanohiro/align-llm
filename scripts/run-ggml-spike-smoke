@@ -16,7 +16,7 @@ set -euo pipefail
 #
 #   ALIGN_LLM_GGML_SPIKE_GOLDEN_UPDATE=1   rewrite the golden file instead of comparing to it
 
-unset ALIGN_LLM_GGML_INCLUDE ALIGN_LLM_GGML_LIB
+unset ALIGN_LLM_GGML_INCLUDE ALIGN_LLM_GGML_LIB ALIGN_LLM_GGML_FORCE
 export PYTHONDONTWRITEBYTECODE=1
 
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
@@ -33,8 +33,10 @@ trap cleanup EXIT HUP INT TERM
 # Static assertions that are not about a fixture (section 5.1).
 #
 # The two C files are one contract compiled twice; a drift between them would let this runner pass
-# against a contract the qualification never runs. `grep -rl unsafe src/` is the discipline
-# `../align/docs/guide/15-unsafe-and-ffi.md` asks for, and it is checkable rather than aspirational.
+# against a contract the qualification never runs. One `unsafe` block in one file is the discipline
+# `../align/docs/guide/15-unsafe-and-ffi.md` asks for, and the scan below is the block-level form of
+# it — the word alone appears in prose and in an `unsafe_workspace` parameter name elsewhere in
+# `src/`, so the keyword, not the word, is what is asserted (section 6, correction C19).
 real_region=$(sed -n '/BEGIN R4.5 SHARED SHIM CONTRACT/,/END R4.5 SHARED SHIM CONTRACT/p' \
   "${root_dir}/scripts/ggml_shim.c")
 stub_region=$(sed -n '/BEGIN R4.5 SHARED SHIM CONTRACT/,/END R4.5 SHARED SHIM CONTRACT/p' \
@@ -93,6 +95,9 @@ update = os.environ.get("ALIGN_LLM_GGML_SPIKE_GOLDEN_UPDATE") == "1"
 PACK = os.path.join(work_dir, "pack-minimal.alignpack")
 SOURCE_OK = os.path.join(work_dir, "source-identical.bin")
 SOURCE_BAD = os.path.join(work_dir, "source-diverged.bin")
+SOURCE_EMPTY = os.path.join(work_dir, "source-empty.bin")
+SOURCE_EOF = os.path.join(work_dir, "source-eof.bin")
+SOURCE_MID = os.path.join(work_dir, "source-mid-member.bin")
 
 
 def pack(name):
@@ -142,6 +147,12 @@ CASES = [
     ("spike-reference-identical", [PACK, "1", "1", "-", SOURCE_OK]),
     ("spike-reference-diverged", [PACK, "1", "1", "-", SOURCE_BAD]),
     ("spike-reference-missing", [PACK, "1", "1", "-", os.path.join(work_dir, "absent.bin")]),
+    # The three references that exist and still cannot supply the member's range. Each must be
+    # `R4_5_SOURCE_UNREADABLE` naming the range and the file's length, not the container reader's
+    # `R4_WINDOW_UNAVAILABLE` (section 6, correction C15).
+    ("spike-reference-empty", [PACK, "1", "1", "-", SOURCE_EMPTY]),
+    ("spike-reference-eof", [PACK, "1", "1", "-", SOURCE_EOF]),
+    ("spike-reference-mid-member", [PACK, "1", "1", "-", SOURCE_MID]),
 ]
 
 PLACEHOLDER = "<pack>"
@@ -155,11 +166,13 @@ SOURCE_PLACEHOLDER = "<source>"
 #   pack_path, reference_path  a `mktemp -d` tree;
 #   buffer.base_alignment, buffer.weights_pad,
 #   buffer.output_base_alignment, buffer.output_pad
-#                              the **allocator's** answer. Measured on this host, a 192-byte
-#                              `buffer` comes back 32-aligned on one run and 16-aligned on the
-#                              next. That variation is the whole of the recorded aligned-allocation
-#                              gap, it is why the arm pads instead of refusing, and it is why these
-#                              four are checked as an invariant below rather than as a constant.
+#                              the **allocator's** answer. Measured on this host, the same window
+#                              comes back 32-aligned on one run and 16-aligned on the next — this
+#                              runner sees `weights_pad` alternate between 16 and 48 for one
+#                              fixture. That variation is the whole of the recorded
+#                              aligned-allocation gap, it is why the arm pads instead of refusing,
+#                              and it is why these four are checked as an invariant below rather
+#                              than as a constant.
 #
 # Everything else stays a byte-for-byte regression: the normalizer rewrites values in place and
 # never reorders, adds, or drops a field.
@@ -179,33 +192,77 @@ def normalize(text):
     return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
 
 
+# `src/ggml_spike.align`'s `MAX_TENSOR_ALIGNMENT`: the compensation window both device-visible
+# buffers are over-reserved by, and the modulus the pads are computed against, because the linked
+# library's own `tensor_alignment` is not known until after the block is read.
+COMPENSATION = 64
+
+
 def check_alignment_invariant(name, document):
     """What the four allocator-dependent fields must satisfy on every run.
 
-    A pad is the distance from the allocator's base to the next `TENSOR_ALIGNMENT` boundary, and
-    nothing else; when the arm got past the alignment step, the member's absolute address is on a
-    boundary. Both are exact, and neither depends on what the allocator happened to return.
+    The arm **compensates** for the allocator's base rather than refusing it (section 6, correction
+    C14): each device-visible window is over-reserved by `COMPENSATION` bytes and the range handed
+    to ggml starts `pad` bytes into it, so `base + pad` is on a `tensor_alignment` boundary whatever
+    the allocator returned. The weights pad is at least one byte because publishing one byte is what
+    makes the base measurable at all; the output pad may be zero because it is only a slice offset.
+
+    The member's address is then block byte 0 — compensated — plus a **container-chosen** interior
+    offset, which is why `R4_5_ALIGNMENT` with detail `member` must mean exactly one thing: the
+    interior offset is not a multiple of the alignment. That verdict is the same on every host and
+    on every run, and this is where that is checked.
     """
     buffer = document["buffer"]
     alignment = document["abi"]["tensor_alignment"]
     problems = []
     if alignment <= 0:
         return problems
-    for base_key, pad_key in (("base_alignment", "weights_pad"),
-                              ("output_base_alignment", "output_pad")):
+    for base_key, pad_key, low, high in (("base_alignment", "weights_pad", 1, COMPENSATION),
+                                         ("output_base_alignment", "output_pad", 0,
+                                          COMPENSATION - 1)):
         base = buffer[base_key]
         pad = buffer[pad_key]
+        if pad != -1 and not low <= pad <= high:
+            problems.append("%s: %s is %d, outside [%d, %d]" % (name, pad_key, pad, low, high))
         if base < 0:
             continue
         if not 0 <= base < alignment:
             problems.append("%s: %s is %d, outside [0, %d)" % (name, base_key, base, alignment))
-        if pad != (alignment - base) % alignment:
-            problems.append("%s: %s is %d, not the distance to the next %d boundary from %d"
-                            % (name, pad_key, pad, alignment, base))
-    if document["error_code"] not in ("R4_5_ALIGNMENT",) and buffer["base_alignment"] >= 0:
-        if (buffer["base_alignment"] + buffer["interior_offset"]) % alignment != 0:
+        if pad < 0 or (base + pad) % alignment != 0:
+            problems.append("%s: %s %d does not carry %s %d onto a %d boundary"
+                            % (name, pad_key, pad, base_key, base, alignment))
+    interior = buffer["interior_offset"]
+    if document["error_code"] == "R4_5_ALIGNMENT" and document["error_detail"] == "member":
+        if interior % alignment == 0:
+            problems.append("%s: R4_5_ALIGNMENT/member on interior_offset %d, which is %d-aligned"
+                            % (name, interior, alignment))
+    elif document["error_code"] != "R4_5_ALIGNMENT" and buffer["base_alignment"] >= 0:
+        if interior % alignment != 0:
+            problems.append("%s: interior_offset %d is not %d-aligned but the run continued"
+                            % (name, interior, alignment))
+        if (buffer["base_alignment"] + buffer["weights_pad"] + interior) % alignment != 0:
             problems.append("%s: the member address is not %d-aligned but the run continued"
                             % (name, alignment))
+    return problems
+
+
+def check_stub_lifetime(name, document):
+    """No ggml object exists in a stub build, and the document says so rather than implying it.
+
+    The stub stops the arm at the availability gate, before the first constructor, so every
+    `lifetime` counter must still be zero — an unbalanced or non-zero count here would mean the arm
+    reached construction against a shim that cannot construct anything.
+    """
+    lifetime = document["lifetime"]
+    problems = []
+    for key in ("ggml_buffers_created", "ggml_buffers_freed", "contexts_created", "contexts_freed",
+                "backends_created", "backends_freed"):
+        if lifetime[key] != 0:
+            problems.append("%s: lifetime.%s is %d in a stub build, not 0"
+                            % (name, key, lifetime[key]))
+    if lifetime["released_before_owner_scope_end"]:
+        problems.append("%s: lifetime.released_before_owner_scope_end is true in a stub build, "
+                        "where the teardown is never reached" % name)
     return problems
 
 
@@ -237,6 +294,7 @@ for name, operands in CASES:
     produced[name] = rendered
     document = json.loads(result.stdout.decode("utf-8"))
     failures.extend(check_alignment_invariant(name, document))
+    failures.extend(check_stub_lifetime(name, document))
     expected_exit = 0 if document["status"] == "ok" else 1
     if (result.returncode == 0) != (expected_exit == 0):
         failures.append("%s: status %r but exit %d"
