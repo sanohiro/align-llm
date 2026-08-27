@@ -115,15 +115,19 @@ file records durable project state.
   except for this file, so no reviewed R4.5 risk changed across it, and
   `docs/specs/r4-5-external-buffer.md` keeps the pre-rebase hashes as the identities its
   measurements were actually taken at.
+- **Baseline chain**: `45cdc55` -> `8b3b161` -> `eece7a1` (source -> oracle -> finalization),
+  identity-bound and re-recorded on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) after
+  the rebase onto the merged R4. **Exactly one** of the twenty recorded artifacts changed against
+  the R4 chain — `Makefile`, which carries the `ggml-spike` / `ggml-spike-smoke` /
+  `ggml-spike-qualification` targets. `src/main.align`, the other artifact R4 moved, is **unchanged**
+  by R4.5, and the twenty paths are identical with every other hash unchanged.
+  `make baseline-check` on Linux: PASS, ending `baseline chain: PASS`.
 - **Next actions, in order.**
-  1. Re-record the canonical baseline chain on Linux. R4.5 changes `Makefile`, which is one of the
-     twenty recorded artifacts, so the chain that shipped with R4 no longer binds this head;
-     `src/main.align`, the other artifact R4 moved, is unchanged by R4.5.
-  2. Exact-head preflight —
+  1. Exact-head preflight —
      `python3 scripts/pre-pr --owner-test ggml-spike -- make ggml-spike-smoke gate-topology-check`.
      Do not replace the required installed profile with a Docker skip or an ambient `DOCKER_HOST`
      endpoint.
-  3. Publish the English pull request against `main` at `991eab1` or later, recording the
+  2. Publish the English pull request against `main` at `991eab1` or later, recording the
      qualification numbers above, the baseline chain, the review envelope, and the finding
      dispositions.
 - **Two pending user decisions, carried forward verbatim.**
@@ -564,8 +568,8 @@ boundary is next changed.
    still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R4.5 requires no pin change.
 3. Resume at the first unfinished next action in the R4.5-EXTERNAL-BUFFER-SPIKE capability above:
    the implementation (`de86c58`), both reviews, and both repairs (`bf7f10b`, `049a5cc`) are done
-   and every owner passes, so what remains is the re-recorded baseline chain, exact-head preflight,
-   and publication.
+   and every owner passes, and the baseline chain is re-recorded (`45cdc55` -> `8b3b161` ->
+   `eece7a1`), so what remains is exact-head preflight and publication.
 4. Do not open another Align request unless implementation exposes a further genuine shipped-language,
    compiler/runtime, or standard-library gap under the register rules. Requests 21-35 are
    `PROPOSED` and non-blocking.
