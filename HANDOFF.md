@@ -3,74 +3,178 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active capability: R1B-GPTOSS-MOE-IR — gpt-oss MoE frontend and per-expert Block IR (2026-08-27)
+## Active capability: R2A-EXPERT-TRACE-CAPTURE — expert-trace capture (2026-08-27)
 
-- Branch `agent/r1b-gptoss-moe-ir`, based on the merged R1-QWEN-MODEL-IR chain (PR #122, head
-  `85a3a97`, onto `main` at merge `08492dc`). The authoritative design ledger is
-  `docs/specs/r1b-gptoss-moe-ir.md`, committed at `2cd2cb4`. **Implementation is complete** at
-  `a46e19e`; the review repair follows it. Sections 6 and 7 of the ledger are applied and closed —
-  section 7 carries fifteen implementation corrections and section 7.1 maps every section 3 closure
-  cell to its shipped case.
-- **What it delivers.** The MoE half of the R1 roadmap gate: a new architecture-neutral
+- Branch `agent/r2a-expert-trace`, based on the merged R1B-GPTOSS-MOE-IR chain (PR #123, head
+  `3bf5c9c`, merge `d8d4ef6`, onto `main` at `08492dc`). The authoritative design ledger is
+  `docs/specs/r2a-expert-trace.md`, committed at `b4dfb60`; the implementation is committed at
+  `140e868` and the consolidated review repair sits on top of it.
+- **What it delivers.** The R2a slice of the R2 roadmap item: `main --expert-trace CALLBACK_LOG
+  [OUT.json]` consumes a `llama-eval-callback` transcript and produces an `R2_ACTIVATION_TRACE`
+  (`schema_version: 1`) document recording, per (token, layer), the selected expert ids and locality
+  aggregates. A dense (non-MoE) transcript yields `moe: false` rather than an error, so the arm is
+  exercisable before a real MoE transcript exists.
+- **Align capability requests.** R2A added Requests 25 (`std.process` streaming/redirecting child
+  stdout), 26 (`str`-to-integer parsing in the standard library), 27 (string sorting), and 28 (a
+  readable append-only accumulator) to `docs/align-requests.md`. All four are PROPOSED and
+  non-blocking:
+  - **25** does not block because R2A consumes a transcript *file* and never invokes
+    `llama-eval-callback` itself (the shell redirection already in `scripts/run-expert-trace-parity`
+    stands in).
+  - **26** does not block because `parse_uint` at `src/expert_trace.align:328` is a viable
+    workaround. Its evidence is *not* "four hand-rolled parsers": `src/main.align:71`,
+    `src/failure_memory.align:176`, and `src/c6f1_request11_adoption.align:6` are each a two-line
+    `json.decode` detour, and only `src/expert_trace.align:328` is a real parser — which is the
+    stronger argument, because those three route a plain decimal integer through a JSON decoder and
+    R2A cannot even do that (`     12.0000` is not a JSON integer and an expert id must not travel
+    through a float).
+  - **27** does not block because `sort_spans` sorts an index array by hand and `src/model_ir.align`
+    packs a 42-bit name hash (`name_hash`/`packed_entry`/`name_index`, lines 261-301). The request is
+    string *sorting*, not string ordering: `str` satisfies `Ord` and backs `<`/`<=`/`>`/`>=` and
+    `sort_by_key`'s `str`-key comparator at this pin, so `span_less`/`span_same` now use the shipped
+    `<` and the module's false "Align ships no string ordering" comment is gone. Three sort paths
+    were compiled and rejected in the module's own shape: `.sort()` ("needs a numeric element type,
+    got str"), `array_builder<str>` ("requires a Copy scalar, `string`, or a closed heap record"),
+    and `index.sort_by_key(fn i { span_text(...) })` ("a lambda cannot capture the owned value
+    'family_start' yet"; "field access is only supported on a local binding" for a `borrow`
+    parameter's column). `crates/align_sema/src/lib.rs:50616` is the `elem.is_numeric()` gate and
+    `:50601-50603` the "first cut … a `sort(cmp)` overload is a follow-up" comment.
+  - **28** does not block because the module accumulates interned name and operation text into a
+    `buffer` (readable through `.bytes()` while growing) plus pre-sized `array<i64>` span columns.
+    `builder` and `array_builder` are write-only until `build()`: `'.len()' is not defined on
+    array_builder<i64>`, `cannot index array_builder<i64>`, `'.len()' is not defined on builder`,
+    `'.bytes()' is not a method on builder`.
+
+  Requests 21 and 23 gained new R2A client evidence without a status change — 21 a second class of
+  read-only input (a transcript in a root-owned or read-only artifact directory; the `0444`
+  `read-only-transcript` smoke case exits 3 with no document), 23 the single `borrow`-parameter lint
+  line `src/expert_trace.align:1622`. Request 22 gained **none**: R2A holds no `array<string>` and
+  avoids that shape entirely. Requests 22 and 24 remain inherited, unconsumed, and unchanged.
+- **Owner and qualification.** `make expert-trace-smoke` is the new narrow Makefile owner; adding it
+  changes the `Makefile`, so preflight selects the fresh-image installed profile.
+  `scripts/run-expert-trace-parity` is the named opt-in qualification. The R2 roadmap gate stays open
+  until a real MoE transcript exists — a small MoE GGUF (1-4 GB) is a separate pending user decision
+  that would close it — with a dense-Qwen parity run (`moe: false` path) recorded below as smoke-level
+  evidence ahead of that decision.
+- **Implementation is complete and reviewed.** `--expert-trace` is implemented
+  (`src/expert_trace.align`, `src/main.align`), `docs/specs/r2a-expert-trace.md` is updated, and every
+  owner below passes at the unchanged pin `4b515f8d`:
+  - `gmake check`: 28 units, PASS. `gmake build`: PASS.
+  - `gmake expert-trace-smoke`: 95 fixtures plus a real transcript excerpt, PASS.
+  - `gmake gguf-smoke`: PASS. `gmake model-ir-smoke`: PASS.
+  - `gmake gate-topology-check`: PASS. `gmake format-check`: PASS. `gmake fmt`: no diff.
+  - `make expert-trace-smoke gate-topology-check` on **Linux** (aarch64, Python 3.12.3): PASS. The
+    first Linux run of the new owner failed in `destination-path-guard`, which probed a 4097-byte
+    destination with `Path.exists()`: `stat` answers `ENAMETOOLONG`, which Python 3.12 re-raises and
+    3.13 swallows, so the case passed on this macOS host and aborted in the container. The guard now
+    reads the working directory instead of probing the impossible name. The first *installed*
+    profile run then failed inside the fresh trusted worker with `expert trace smoke: FAIL
+    real-transcript: exit 3` (named by `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1`): that worker mounts the
+    checkout read-only and `fs.open_rw` demands `O_RDWR`, so the owner now scans a writable copy of
+    the checked-in excerpt. This is fresh Request 21 client evidence and is recorded there.
+  - `git diff --check` and `git diff --check d8d4ef6..HEAD`: clean. The checked-in excerpt's
+    truncation markers end in a significant space, so `eval/fixtures/expert-trace/*.txt -whitespace`
+    is now in `.gitattributes` (the `corpus-file-set.manifest` precedent) rather than the markers
+    being stripped.
+  - Dense-Qwen parity (`moe: false` path, `scripts/run-expert-trace-parity`): **PASS** — 1 graph, 958
+    nodes, 28 layers, `moe: false`, 16,633 lines, `bytes_read` 1,101,339.
+  - MoE parity: **N/A** (no small MoE GGUF downloaded yet; see the pending user decision below). The
+    runner now *emits* both verdict lines rather than leaving them for an author to compose, and
+    exactly one of them is a `PASS`: the dense half prints `N/A - moe.present is true` on a MoE run,
+    because its dense-only assertions never execute there.
+- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
+  the candidate at `140e868`: **A** the Align source, **B** the specification, register, handoff, and
+  fixtures. A returned 1 blocker class, 1 major, 2 minor, and 1 low; B returned 3 major, 5 moderate,
+  and 5 minor. **Every finding was accepted** and all repaired as one consolidated repair on top of
+  `140e868`. The two substantive ones were real and both are recorded as ledger corrections 15 and
+  16: five `str` slices at length-relative offsets aborted the process (exit 134, no document) on any
+  transcript carrying a multi-byte UTF-8 scalar at the offset — the whole class is now audited and
+  every `str[a..b]` uses an ASCII-matched offset — and the locality adjacency test compared packed
+  keys alone, so a token index at the top of its field carried into the layer field and manufactured
+  a cross-layer pair (measured: `adjacent_pair_count` 9 where the definition gives 8). A final
+  review of the repair delta at `e99bceb` returned **changes requested**: 3 medium and 3 low, every
+  one accepted and repaired in the commit that follows it. The medium class was
+  documentation accuracy against the shipped source — every `src/*.align:NNN` citation in the diff
+  was stale by the eleven lines the repair added, Request 27 mis-stated the `sort_by_key` blocker as
+  a missing `str` key when the real blocker is owned-value lambda capture plus `borrow`-parameter
+  field access, and Request 21 called `fs.open_rw` the *only* random-access constructor. The low
+  class was three assertions that could not fail: an unconditional dense parity verdict, a `-1`
+  printed for an underived layer count, and a `destination-path-guard` that accepted any nonzero
+  exit. Every `src/*.align` citation in the whole diff has since been re-resolved against `HEAD`,
+  the Request 23 lint block is a paste of this HEAD's `gmake check` output, and the Request 27 probe
+  block is a paste of a probe re-run at this HEAD. That review also swept **207,807 UTF-8 mutations**
+  of the real build-10566 excerpt through the arm with **0 aborts**, which is the durable evidence
+  that the multi-byte slicing class repaired at `e99bceb` is closed. The repair is narrow and bound
+  to the recorded findings, so it does not trigger another full review.
+- **Baseline chain**: `a2eefdf` -> `8cffdd4` -> `dd0b150` (source -> oracle -> finalization),
+  identity-bound and re-recorded on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) after
+  the final review repair. Exactly three of the twenty recorded artifacts changed against the R1B
+  chain — `Makefile` and `src/main.align` (the `--expert-trace` owner and arm) and `.gitattributes`
+  (the `eval/fixtures/expert-trace/*.txt -whitespace` rule) — and the twenty paths are otherwise
+  identical, every other hash unchanged. `make baseline-check` on Linux: PASS, ending `baseline
+  chain: PASS`.
+- **Next actions, in order.**
+  1. Exact-head preflight — confirm with `scripts/pre-pr --plan` that the `Makefile` change selects
+     the fresh-image installed profile, then run
+     `python3 scripts/pre-pr --owner-test expert-trace -- make expert-trace-smoke
+     gate-topology-check`.
+  2. Publish the English pull request with the owner result, the parity result, the baseline chain,
+     and the review envelope.
+- **Two pending user decisions, tracked and not to be lost.**
+  1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
+     gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
+     `N/A`.
+  2. New for R2A: whether to download a small MoE GGUF (1-4 GB) so
+     `scripts/run-expert-trace-parity` can exercise the `moe: true` path against a real MoE
+     transcript; until decided the R2 roadmap gate stays open on dense-only smoke evidence.
+
+## Merged checkpoint: R1B-GPTOSS-MOE-IR — gpt-oss MoE frontend and per-expert Block IR (2026-08-27)
+
+- R1B-GPTOSS-MOE-IR merged as align-llm PR #123 (head `3bf5c9c`, merge `d8d4ef6`) onto `main` at
+  `08492dc`, continuing the merged R1-QWEN-MODEL-IR chain (PR #122, `85a3a97` -> `08492dc`). Branch
+  was `agent/r1b-gptoss-moe-ir`; the design ledger is `docs/specs/r1b-gptoss-moe-ir.md`, committed at
+  `2cd2cb4`. Sections 6 and 7 of the ledger are applied and closed — section 7 carries fifteen
+  implementation corrections and section 7.1 maps every section 3 closure cell to its shipped case.
+- **What it delivered.** The MoE half of the R1 roadmap gate: a new architecture-neutral
   `src/model_ir.align` builder (`BlockPlan` -> `ModelIr` -> document, imported by both frontends), a
   new `src/frontend_gpt_oss.align` owning gpt-oss hyperparameters and block-plan construction, and
   `src/frontend_qwen.align` reduced to qwen2 knowledge alone. `--model-ir` dispatches on the
   container's own `general.architecture` field (`qwen2` or `gpt-oss`; no new flag, no new CLI verb).
-- **Contract decisions, settled in the plan.** `R1_MODEL_IR` becomes `schema_version: 2`, emitted by
-  both frontends: two additive fields on the block tensor record, `claimed_absolute_offset` and
-  `claimed_nbytes`, carry **per-expert** `ExpertBlock` byte sub-ranges (chosen over layer granularity
-  because every named R2/R3 consumer needs the individual expert, section 2.4.1). One new geometry
-  row, MXFP4 (GGML type id 39, block size 32, 17 bytes/block), is transcribed from `ggml.h` in the
-  named revision and verified against `libggml-base` of llama.cpp build 10566 by a library oracle
-  (`ggml_blck_size`/`ggml_type_size`), recorded "library-oracle verified; real-model verification
-  pending". One new error code, `R1_BLOCK_CLAIM_MISMATCH`, is a defensive, provably input-unreachable
-  claim-tiling guard. Requests 21-24 stay `PROPOSED` and unconsumed; `BlockPlan` is new client
-  evidence for Request 23's huge-struct-copy lint, now recorded against the shipped file and lines
-  (`src/model_ir.align:478` and `:635`, 36 fields / 440 bytes — **narrower** than `GgufTable`'s 41
-  fields / 552 bytes, which corrects the plan's original "wider" claim).
-- **Owner results at the review-repair head (unchanged pin `4b515f8d`).** `gmake check`: 27 units,
-  PASS. `gmake build`: PASS. `gmake gguf-smoke`: 62 fixtures, byte-identical to R0's, PASS.
-  `gmake model-ir-smoke`: 49 qwen + 31 gpt-oss (30 plus `gptoss-variant-fused-nobias`, added by the
-  review repair) + 62 R0 fixtures re-run, PASS. `gmake gate-topology-check`: PASS (the `Makefile` is
-  untouched). `gmake format-check`: PASS. `gmake fmt`: no diff. `git diff --check`: clean.
+  `R1_MODEL_IR` is `schema_version: 2`, emitted by both frontends: two additive fields on the block
+  tensor record, `claimed_absolute_offset` and `claimed_nbytes`, carry **per-expert** `ExpertBlock`
+  byte sub-ranges (chosen over layer granularity because every named R2/R3 consumer needs the
+  individual expert, section 2.4.1). One new geometry row, MXFP4 (GGML type id 39, block size 32, 17
+  bytes/block), is transcribed from `ggml.h` in the named revision and verified against
+  `libggml-base` of llama.cpp build 10566 by a library oracle (`ggml_blck_size`/`ggml_type_size`),
+  recorded "library-oracle verified; real-model verification pending". One new error code,
+  `R1_BLOCK_CLAIM_MISMATCH`, is a defensive, provably input-unreachable claim-tiling guard.
+- **Owner results at the merged head (unchanged pin `4b515f8d`).** `gmake check`: 27 units, PASS.
+  `gmake build`: PASS. `gmake gguf-smoke`: 62 fixtures, byte-identical to R0's, PASS.
+  `gmake model-ir-smoke`: 49 qwen + 31 gpt-oss + 62 R0 fixtures re-run, PASS. `gmake
+  gate-topology-check`: PASS (the `Makefile` is untouched). `gmake format-check`: PASS. `gmake fmt`:
+  no diff. `git diff --check`: clean.
 - **Qualifications.** The qwen `model-ir-parity` qualification was re-run against the local
-  Qwen2.5-Coder-7B Q4_K_M model and the local `llama-cli`: **PASS**, size-sum oracle
-  `computed_end` 4,683,073,536 equal to `file_size`. The gpt-oss half is the documented explicit
-  `N/A` (plan section 4.4) pending the user decision below. The MXFP4 geometry row rests on the
-  library oracle against `libggml-base` of llama.cpp build 10566: `ggml_blck_size` 32 and
-  `ggml_type_size` 17 for id 39, and the same probe reproduces all twenty existing rows — which is
-  how it caught the `q8_1` row R0 had transcribed as 40 rather than 36 (ledger section 7, item 6).
-- **The schema-1 to schema-2 byte-level differential was run out of tree** (ledger section 7, item
-  13, which records the exact four-step reproduction): the R1 binary built at base `08492dc` and the
-  R1B binary were each run over the 48 qwen fixtures whose container bytes are unchanged, through one
-  shared path so the documents' `path` field matches; applying only the two allowed edits reproduces
-  all 48 R1B documents exactly, with 0 identical before the edits, so the comparison is not vacuous.
-  `qwen2-geometry.gguf` is the one excluded fixture and the exclusion is recorded. The standing
-  in-runner owners of that promise are `claim-identity` and `field-order-qwen`.
+  Qwen2.5-Coder-7B Q4_K_M model and the local `llama-cli`: **PASS**, size-sum oracle `computed_end`
+  4,683,073,536 equal to `file_size`. **The gpt-oss half is a standing open qualification, not
+  discharged by the merge**: it stays the documented explicit `N/A` (plan section 4.4) pending the
+  user decision to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB, see below); until then no row of
+  ledger section 2.5 is settled by real-model inspection — every ASSUMED row still stands on its
+  assumption banner — and the gpt-oss half of the R1 roadmap gate rests on the synthetic corpus, the
+  size-sum and claim-tiling oracles, and the MXFP4 library oracle alone.
 - **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
   the candidate at `53f064f`: **A** the Align source and **B** the specification, register, and
   handoff. A returned **approve** with 2 low findings; B returned **approve** with 1 major, 2
   moderate, and 5 minor. **Every finding was accepted** and all eight were repaired as one
-  consolidated repair in the commit that follows `53f064f`. The two substantive ones were real: the
-  `role_required` comment justified the optional router bias with a regex
-  (`ffn_gate(_exps)?.bias`) that does not match `ffn_gate_inp.bias` at all, and the fused variant
-  required an `ffn_gate_up_exps.bias` that no installed artifact names — role 21 is now optional like
-  role 13, with `gptoss-variant-fused-nobias` as its positive fixture and the asymmetry recorded in
-  ledger section 2.5.4 and section 7, item 15. The rest corrected false ledger and register claims
-  and completed the section 7.1 mapping.
-- **Next actions, in order.**
-  1. Exact-head preflight: `python3 scripts/pre-pr --owner-test model-ir -- gmake model-ir-smoke`.
-     The `Makefile` is untouched, so ordinary hosted-checks scope is expected, not the fresh-image
-     installed profile; confirm with `--plan` first.
-  2. Publish the English pull request with the owner results, the qualification records, the
-     out-of-tree differential, and the review envelope above.
-- **User decision pending.** `gpt-oss-20b-mxfp4.gguf` (12.1 GB) is not downloaded, so the gpt-oss
-  `model-ir-parity` qualification is an explicit `N/A` by design (plan section 4.4) until the user
-  decides whether to fetch it; until then the gpt-oss half of the roadmap gate rests on the synthetic
-  corpus, the size-sum and claim-tiling oracles, and the MXFP4 library oracle alone. Ledger section 7
-  states the same limit: no row of section 2.5 was settled by real-model inspection, so every ASSUMED
-  row still stands on its assumption banner and the section 2.5.4 variant mechanism is retained
-  rather than reduced to a winning form.
+  consolidated repair, `3bf5c9c`. The two substantive ones were real: the `role_required` comment
+  justified the optional router bias with a regex (`ffn_gate(_exps)?.bias`) that does not match
+  `ffn_gate_inp.bias` at all, and the fused variant required an `ffn_gate_up_exps.bias` that no
+  installed artifact names — role 21 is now optional like role 13, with
+  `gptoss-variant-fused-nobias` as its positive fixture and the asymmetry recorded in ledger section
+  2.5.4 and section 7, item 15.
+- **Open item carried forward, not to be lost.** `gpt-oss-20b-mxfp4.gguf` (12.1 GB) remains
+  undownloaded. The gpt-oss `model-ir-parity` qualification and real-model inspection against ledger
+  section 2.5 stay open until the user decides whether to fetch it; see the pending decisions in the
+  active R2A capability below.
 
 ## Merged checkpoint: R1-QWEN-MODEL-IR — Qwen2 Model IR and Block IR (2026-08-27)
 
@@ -148,8 +252,9 @@ file records durable project state.
   gate. `docs/specs/roadmap.md` section R0 records these numbers as achieved.
 - **Align requests 21 and 22 are `PROPOSED` and non-blocking**, and both are inherited unchanged by
   the active R1-QWEN-MODEL-IR capability above; see `docs/align-requests.md` for the current
-  next-consumer framing. Request 21: `fs.open_rw` is the only random-access file constructor at pin
-  `4b515f8d`, so inspecting a model requires `O_RDWR` on a file that is never written. Request 22:
+  next-consumer framing. Request 21: both random-access `file` constructors at pin `4b515f8d`
+  (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a
+  file that is never written. Request 22:
   `array<string>` and arrays of a record with a Move field cannot be indexed (`check_index` rejects
   it); `src/gguf.align` carries tensor `absolute_offset` values as a NUL-separated prefix stream plus
   a parallel `array<i64>` instead.
@@ -193,25 +298,27 @@ boundary is next changed.
 
 ## Resume in another environment
 
-1. Fetch `origin`, check out `agent/r1b-gptoss-moe-ir`, and read `CLAUDE.md`, then
-   `docs/specs/r1b-gptoss-moe-ir.md` in full — it is the plan of record — and
-   `docs/specs/r1-qwen-model-ir.md` for everything it does not amend. R1-QWEN-MODEL-IR merged as PR
-   #122 (`85a3a97` -> `08492dc`); this branch continues from that chain.
+1. Fetch `origin`, check out `agent/r2a-expert-trace`, and read `CLAUDE.md`, then
+   `docs/specs/r2a-expert-trace.md` in full (committed at `b4dfb60`, corrections applied) — it is
+   the plan of record — and
+   `docs/specs/r1b-gptoss-moe-ir.md` for the Model IR/Block IR surface it consumes.
+   R1B-GPTOSS-MOE-IR merged as PR #123 (`3bf5c9c` -> `d8d4ef6`); this branch continues from that
+   chain.
 2. Materialize the pinned toolchain with `scripts/align-toolchain ensure compiler`; on macOS use
    `gmake` and the recorded `LLVM_CONFIG`/`LIBRARY_PATH` environment. Confirm `.align-revision`
-   still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R1B requires no pin change.
-3. Resume at the first unfinished next action in the active R1B-GPTOSS-MOE-IR capability above.
-   Implementation, the extended `gmake model-ir-smoke` owner, the qwen parity rerun, the out-of-tree
-   schema-2 differential, and the comprehensive review are all done; what remains is the exact-head
-   preflight and the pull request. Re-run the owner commands listed there before publishing if the
-   head moves.
+   still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R2A requires no pin change.
+3. Resume at the first unfinished next action in the active R2A-EXPERT-TRACE-CAPTURE capability
+   above: implementation (`140e868`), its comprehensive review, and the consolidated repair are
+   done and every owner passes, so the next action is exact-head preflight, then publication.
 4. Do not open another Align request unless implementation exposes a further genuine shipped-language,
-   compiler/runtime, or standard-library gap under the register rules. Requests 21-24 are inherited
-   `PROPOSED` and non-blocking; `BlockPlan` adds client evidence to Request 23 but does not change its
-   status.
-5. Before publishing, settle with the user whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to
-   run the gpt-oss `model-ir-parity` qualification; absent that decision the qualification stays the
-   documented `N/A`.
+   compiler/runtime, or standard-library gap under the register rules. Requests 21-28 are
+   `PROPOSED` and non-blocking.
+5. Two user decisions are pending and must not be silently dropped: whether to download
+   `gpt-oss-20b-mxfp4.gguf` (12.1 GB) for the carried-forward gpt-oss `model-ir-parity`
+   qualification, and whether to download a small MoE GGUF (1-4 GB) so
+   `scripts/run-expert-trace-parity` can exercise a real `moe: true` transcript and close the R2
+   roadmap gate. Absent either decision, the corresponding qualification/gate stays the documented
+   `N/A`/open.
 6. After merge, refresh `main` and take the next eligible roadmap item. C8 is closed; do not start a
    tenth C8 capability without a recorded cost ceiling above the 2,000 ppm floor.
 

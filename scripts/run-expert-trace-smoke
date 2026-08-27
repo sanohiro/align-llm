@@ -1,0 +1,647 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R2A-EXPERT-TRACE-CAPTURE narrow durable owner (`docs/specs/r2a-expert-trace.md` section 4.2). It
+# needs no model, no network, and no reference tool: `scripts/eval_callback_fixture.py` writes an
+# independent synthetic corpus into a temporary tree, and every fixture is removed by the EXIT trap.
+# That is why it joins HOSTED_CHECK_TARGETS.
+#
+# Provenance of the checked-in format-fidelity fixture
+# `eval/fixtures/expert-trace/qwen2-prefill-build10566.txt` (section 4.3), recorded here rather than
+# in the fixture so the fixture stays byte-exact instrument output:
+#
+#   instrument : llama-eval-callback, version: 0.2.0 (build 10566, commit bb4caa754)
+#   built with : AppleClang 21.0.0.21000101 for Darwin arm64
+#   command    : llama-eval-callback -m MODEL.gguf -p "Write a function" -n 1 -t 4 > transcript.txt
+#   model      : a dense qwen2 7B Q4_K_M GGUF (n_layer 28, n_embd 3584)
+#   full run   : 21110 lines / 1487718 bytes / 958 callback blocks
+#   excerpt    : 171 lines / 11764 bytes / 6 callback blocks, md5 81df3252be98a5e790e57fa77ba1e4b2
+#
+# The excerpt covers, in order: two operands and a full axis-1 print; the `, }` unary form with a
+# backend-prefixed operand; axis-1 truncation; a name containing spaces and parentheses; the `f16`
+# type with axis-2 truncation; and a single-row result. The model path appears only in the stderr
+# stream, which this fixture does not include, and both sanitization sweeps are re-run below on
+# every invocation so a future re-capture cannot smuggle a path in.
+
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+temp_dir=$(mktemp -d)
+fixture_dir="$temp_dir/fixtures"
+work_dir="$temp_dir/work"
+
+cleanup() {
+  rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
+if [ ! -x "$root_dir/main" ]; then
+  printf '%s\n' "expert trace smoke: the product executable is missing; run 'make build'" >&2
+  exit 1
+fi
+
+mkdir -p "$work_dir"
+python3 "$root_dir/scripts/eval_callback_fixture.py" "$fixture_dir"
+
+python3 - "$root_dir/main" "$fixture_dir" "$work_dir" "$root_dir" <<'PY'
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+binary, fixture_dir, work_dir, root_dir = (
+    sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]))
+manifest = json.loads((fixture_dir / "manifest.json").read_text(encoding="utf-8"))
+WINDOW_BYTES = manifest["window_bytes"]
+WINDOWS = manifest["windows"]
+SCHEMA_VERSION = 1
+
+TOP_ORDER = ["schema_version", "kind", "path", "status", "error_code", "error_detail",
+             "source", "run", "graph", "moe", "graphs", "selections", "locality"]
+SOURCE_ORDER = ["file_size", "line_count", "bytes_read", "callback_line_count",
+                "skipped_line_count"]
+RUN_ORDER = ["instrument", "build", "build_source", "contract_build", "build_matches_contract",
+             "version_line"]
+GRAPH_ORDER = ["graph_count", "n_layer", "node_families", "unsuffixed_nodes", "ops",
+               "shape_class", "shape_class_basis"]
+MOE_ORDER = ["present", "n_expert", "n_expert_used", "n_expert_source", "topk_layers",
+             "slots_truncated"]
+GRAPH_ROW_ORDER = ["ordinal", "n_tokens", "phase", "tokens_observed", "tokens_truncated",
+                   "observed_token_indices", "node_count"]
+SELECTION_ORDER = ["graph", "layer", "token", "slot", "expert"]
+LOCALITY_ORDER = ["adjacent_pair_count", "reuse_numerator", "reuse_denominator",
+                  "reuse_per_mille", "per_layer", "working_set", "phase_split"]
+PER_LAYER_ORDER = ["layer", "adjacent_pair_count", "reuse_numerator", "reuse_denominator",
+                   "reuse_per_mille", "histogram"]
+WORKING_SET_ORDER = ["window", "sample_count", "unique_sum", "unique_mean_per_mille"]
+TRIPLE_ORDER = ["adjacent_pair_count", "reuse_numerator", "reuse_denominator", "reuse_per_mille"]
+
+SUMMARY_LABELS = ["expert trace:", "status:", None, "graphs:", None, "layers:", None,
+                  "tokens observed:", None, "tokens total:", None, "moe:", None, "experts:", None,
+                  "experts used:", None, "selections:", None, "reuse:", None]
+
+# Every `R2_*` code the section 2.6 table defines. `R2_TRANSCRIPT_UNREADABLE` is an operating-system
+# fault, surfaced as `Err` with no document (section 6, item 1), so it is closed by the CLI cases
+# below rather than by a corpus fixture; `R2_LINE_LIMIT` has no economically constructible fixture
+# and is recorded as unclosed in section 7.
+CODES = {
+    "R2_TRANSCRIPT_EMPTY", "R2_TRANSCRIPT_TOO_LARGE", "R2_LINE_TOO_LONG", "R2_HEADER_GRAMMAR",
+    "R2_NODE_NAME_TOO_LONG", "R2_DIMS_INVALID", "R2_VALUE_GRAMMAR", "R2_SUM_MISSING",
+    "R2_GRAPH_LIMIT", "R2_NODE_LIMIT", "R2_LAYER_INDEX", "R2_ROW_COUNT", "R2_TOKEN_COUNT",
+    "R2_EXPERT_ID_NOT_INTEGRAL", "R2_EXPERT_BOUNDS", "R2_MOE_INCONSISTENT", "R2_SELECTION_LIMIT",
+}
+
+
+def fail(message):
+    raise SystemExit("expert trace smoke: FAIL %s" % message)
+
+
+def run(args, env=None):
+    return subprocess.run([binary] + args, capture_output=True, env=env, cwd=str(work_dir))
+
+
+def compare(expected, actual, where, context):
+    if isinstance(expected, dict) and len(expected) == 1 and "$bytes_read" in expected:
+        size = expected["$bytes_read"]
+        windows = max(1, (size + WINDOW_BYTES - 1) // WINDOW_BYTES)
+        upper = size + windows * WINDOW_BYTES
+        if not isinstance(actual, int) or not size <= actual <= upper:
+            fail("%s %s: bytes_read %r outside [%d, %d]" % (context, where, actual, size, upper))
+        return
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            fail("%s %s: expected an object, got %r" % (context, where, actual))
+        if list(expected.keys()) != list(actual.keys()):
+            fail("%s %s: field order/set %r, expected %r"
+                 % (context, where, list(actual.keys()), list(expected.keys())))
+        for key, value in expected.items():
+            compare(value, actual[key], "%s.%s" % (where, key), context)
+        return
+    if isinstance(expected, list):
+        if not isinstance(actual, list):
+            fail("%s %s: expected an array, got %r" % (context, where, actual))
+        if len(expected) != len(actual):
+            fail("%s %s: length %d, expected %d" % (context, where, len(actual), len(expected)))
+        for index, (want, got) in enumerate(zip(expected, actual)):
+            compare(want, got, "%s[%d]" % (where, index), context)
+        return
+    if isinstance(expected, bool) != isinstance(actual, bool) or expected != actual:
+        fail("%s %s: %r, expected %r" % (context, where, actual, expected))
+
+
+def field_order(name, document):
+    if list(document.keys()) != TOP_ORDER:
+        fail("%s: top-level field order %r" % (name, list(document.keys())))
+    for key, order in (("source", SOURCE_ORDER), ("run", RUN_ORDER), ("graph", GRAPH_ORDER),
+                       ("moe", MOE_ORDER), ("locality", LOCALITY_ORDER)):
+        if list(document[key].keys()) != order:
+            fail("%s: %s field order %r" % (name, key, list(document[key].keys())))
+    for row in document["graphs"]:
+        if list(row.keys()) != GRAPH_ROW_ORDER:
+            fail("%s: graphs entry field order %r" % (name, list(row.keys())))
+    for row in document["selections"]:
+        if list(row.keys()) != SELECTION_ORDER:
+            fail("%s: selections entry field order %r" % (name, list(row.keys())))
+    for row in document["locality"]["per_layer"]:
+        if list(row.keys()) != PER_LAYER_ORDER:
+            fail("%s: per_layer field order %r" % (name, list(row.keys())))
+    for row in document["locality"]["working_set"]:
+        if list(row.keys()) != WORKING_SET_ORDER:
+            fail("%s: working_set field order %r" % (name, list(row.keys())))
+    if list(document["locality"]["phase_split"].keys()) != ["prefill", "decode"]:
+        fail("%s: phase_split field order %r"
+             % (name, list(document["locality"]["phase_split"].keys())))
+    for side in document["locality"]["phase_split"].values():
+        if side is not None and list(side.keys()) != TRIPLE_ORDER:
+            fail("%s: phase_split triple field order %r" % (name, list(side.keys())))
+    if document["schema_version"] != SCHEMA_VERSION:
+        fail("%s: schema_version %r" % (name, document["schema_version"]))
+    if document["kind"] != "R2_ACTIVATION_TRACE":
+        fail("%s: kind %r" % (name, document["kind"]))
+
+
+def oracle_locality(selections, graph_phase, topk_layers):
+    """The section 4.3 aggregate oracle, recomputed here from the generator's own selection list
+    with deliberately naive nested loops, so the parser's single sorted sweep is checked against a
+    second implementation of the same definition rather than against itself."""
+    groups = {}
+    for row in selections:
+        groups.setdefault((row["graph"], row["layer"], row["token"]), set()).add(row["expert"])
+
+    def triple(keys):
+        pairs = numerator = denominator = 0
+        for key in sorted(keys):
+            following = (key[0], key[1], key[2] + 1)
+            if following not in keys:
+                continue
+            pairs += 1
+            numerator += len(groups[key] & groups[following])
+            denominator += len(groups[following])
+        return {
+            "adjacent_pair_count": pairs,
+            "reuse_numerator": numerator if pairs else None,
+            "reuse_denominator": denominator if pairs else None,
+            "reuse_per_mille": (numerator * 1000) // denominator if pairs and denominator else None,
+        }
+
+    keys = set(groups)
+    overall = triple(keys)
+    per_layer = []
+    for layer in sorted(set(topk_layers)):
+        entry = {"layer": layer}
+        entry.update(triple({key for key in keys if key[1] == layer}))
+        histogram = {}
+        for row in selections:
+            if row["layer"] == layer:
+                histogram[row["expert"]] = histogram.get(row["expert"], 0) + 1
+        entry["histogram"] = [[expert, histogram[expert]] for expert in sorted(histogram)]
+        per_layer.append(entry)
+    working_set = []
+    for width in WINDOWS:
+        samples = unique_sum = 0
+        for key in sorted(keys):
+            run_keys = [(key[0], key[1], key[2] - offset) for offset in range(width)]
+            if not all(entry in keys for entry in run_keys):
+                continue
+            samples += 1
+            union = set()
+            for entry in run_keys:
+                union |= groups[entry]
+            unique_sum += len(union)
+        working_set.append({"window": width, "sample_count": samples, "unique_sum": unique_sum,
+                            "unique_mean_per_mille":
+                            (unique_sum * 1000) // samples if samples else None})
+    phase_split = {}
+    for phase in ("prefill", "decode"):
+        if phase not in graph_phase.values():
+            phase_split[phase] = None
+        else:
+            phase_split[phase] = triple({k for k in keys if graph_phase.get(k[0]) == phase})
+    result = dict(overall)
+    result["per_layer"] = per_layer
+    result["working_set"] = working_set
+    result["phase_split"] = phase_split
+    return result
+
+
+documents = {}
+stripped = {}
+checked = 0
+codes_seen = set()
+
+for case in manifest["cases"]:
+    name = case["name"]
+    transcript = (fixture_dir / case["file"]).resolve()
+    destination = work_dir / (name + ".trace.json")
+    two_form = run(["--expert-trace", str(transcript), str(destination)])
+    one_form = run(["--expert-trace", str(transcript)])
+    if two_form.returncode < 0 or two_form.returncode > 125:
+        fail("%s: exit %d looks like an abort, not a recorded failure" % (name, two_form.returncode))
+    if not destination.exists():
+        fail("%s: the two-operand form wrote no document" % name)
+    written = destination.read_bytes()
+    # `form-parity`: both forms emit byte-identical document bytes.
+    if one_form.stdout != written + b"\n":
+        fail("%s: the one-operand form differs from the written document" % name)
+    if one_form.returncode != two_form.returncode:
+        fail("%s: the two forms disagree on the exit status" % name)
+    document = json.loads(written.decode("utf-8"))
+    documents[name] = document
+    field_order(name, document)
+
+    expect_ok = case["expect"] == "ok"
+    if expect_ok:
+        if document["status"] != "ok" or two_form.returncode != 0:
+            fail("%s: status %r exit %d, expected ok"
+                 % (name, document["status"], two_form.returncode))
+        if document["error_code"] or document["error_detail"]:
+            fail("%s: an ok document carries %r/%r"
+                 % (name, document["error_code"], document["error_detail"]))
+    else:
+        if document["status"] != "error" or two_form.returncode == 0:
+            fail("%s: status %r exit %d, expected error"
+                 % (name, document["status"], two_form.returncode))
+        if document["error_code"] != case["error_code"]:
+            fail("%s: error_code %r, expected %r" % (name, document["error_code"],
+                                                     case["error_code"]))
+        codes_seen.add(document["error_code"])
+        if "error_detail" in case and document["error_detail"] != case["error_detail"]:
+            fail("%s: error_detail %r, expected %r" % (name, document["error_detail"],
+                                                       case["error_detail"]))
+        # The failure document still reports every value derived before the failure.
+        if document["source"]["file_size"] <= 0 and case["error_code"] != "R2_TRANSCRIPT_EMPTY":
+            fail("%s: the failure document lost its file size" % name)
+
+    if "document" in case:
+        compare(case["document"], document, "", name)
+        # `aggregate-oracle`: the locality object is recomputed here, independently, from the
+        # generator's own selection list.
+        phases = {row["ordinal"]: row["phase"] for row in document["graphs"]}
+        topk = document["moe"]["topk_layers"]
+        if document["moe"]["present"]:
+            oracle = oracle_locality(case["document"]["selections"], phases, topk)
+            compare(oracle, document["locality"], ".locality", name + " (oracle)")
+        elif document["locality"]["adjacent_pair_count"] != 0:
+            fail("%s: a dense document reported adjacent pairs" % name)
+
+    asserts = case.get("asserts", {})
+    for key, want in asserts.items():
+        if key in ("same_document_as", "ignore_source"):
+            continue
+        if key == "straddles_window":
+            # `bytes-read-bound`: a line that runs off the window forces a re-read at its own first
+            # byte, so `bytes_read` must exceed `file_size` here and the upper bound is not vacuous.
+            if document["source"]["bytes_read"] <= document["source"]["file_size"]:
+                fail("%s: a straddling line did not force a re-read (bytes_read %d, file_size %d)"
+                     % (name, document["source"]["bytes_read"], document["source"]["file_size"]))
+            continue
+        if key == "build":
+            got = document["run"]["build"]
+            if document["run"]["build_source"] != "transcript" or \
+                    document["run"]["build_matches_contract"] is not True or \
+                    not document["run"]["version_line"]:
+                fail("%s: the version line did not reach `run`" % name)
+        elif key in ("graph_count", "n_layer"):
+            got = document["graph"][key]
+        elif key == "moe_present":
+            got = document["moe"]["present"]
+        elif key == "selection_count":
+            # `zero-selection`: the selection loop, the aggregate sweep, and the renderer all
+            # terminate on a zero count.
+            got = len(document["selections"])
+        else:
+            got = document["source"][key]
+        if got != want:
+            fail("%s: %s %r, expected %r" % (name, key, got, want))
+    reference = asserts.get("same_document_as")
+    if reference is not None:
+        if reference not in documents:
+            fail("%s: reference document %r has not been derived yet" % (name, reference))
+        # `path`, `source`, and `run` are properties of the capture, not of the graph; every
+        # derived fact must be identical.
+        skip = ("path", "source", "run")
+        left = {k: v for k, v in document.items() if k not in skip}
+        right = {k: v for k, v in documents[reference].items() if k not in skip}
+        if left != right:
+            fail("%s: the derived document differs from %r" % (name, reference))
+
+    # The section 4.6 secondary metric, asserted on every fixture.
+    size = document["source"]["file_size"]
+    windows = max(1, (size + WINDOW_BYTES - 1) // WINDOW_BYTES)
+    if not 0 <= document["source"]["bytes_read"] <= size + windows * WINDOW_BYTES:
+        fail("%s: bytes_read %d is outside its bound" % (name, document["source"]["bytes_read"]))
+    if size <= WINDOW_BYTES and document["source"]["bytes_read"] not in (0, size):
+        fail("%s: a single-window transcript read %d of %d bytes"
+             % (name, document["source"]["bytes_read"], size))
+
+    # `summary-order`: the section 2.3 lines appear in this exact order, and every
+    # transcript-controlled value occupies exactly one line.
+    summary = two_form.stdout.decode("utf-8").split("\n")
+    for position, label in enumerate(SUMMARY_LABELS):
+        if label is not None and summary[position] != label:
+            fail("%s: summary line %d %r, expected %r" % (name, position, summary[position], label))
+    if summary[2] != ("OK" if expect_ok else "ERROR"):
+        fail("%s: summary status %r" % (name, summary[2]))
+    # `dense-zero-layer`: an underived layer count prints the reserved `-`, never the `-1`
+    # sentinel the derivation carries and never a value a reader could mistake for a count.
+    n_layer = document["graph"]["n_layer"]
+    if summary[6] != ("-" if n_layer is None else str(n_layer)):
+        fail("%s: summary layers %r, document graph.n_layer %r" % (name, summary[6], n_layer))
+    if summary[12] != ("YES" if document["moe"]["present"] else "NO"):
+        fail("%s: summary moe %r" % (name, summary[12]))
+    if summary[18] != str(len(document["selections"])):
+        fail("%s: summary selections %r" % (name, summary[18]))
+    if expect_ok:
+        if summary[21] != "":
+            fail("%s: an ok summary printed %r after the reuse row" % (name, summary[21]))
+    else:
+        if summary[21] != "error:" or summary[22] != document["error_code"]:
+            fail("%s: summary error rows %r" % (name, summary[21:23]))
+        if summary[23] != "detail:":
+            fail("%s: summary detail label %r" % (name, summary[23]))
+        if summary[25] != "":
+            fail("%s: the detail value did not occupy exactly one line (%r)" % (name, summary[25]))
+    checked += 1
+
+if checked != len(manifest["cases"]):
+    fail("only %d of %d manifest cases ran" % (checked, len(manifest["cases"])))
+
+expected_codes = set(CODES)
+if not manifest["sparse_oversize"]:
+    # A dropped expectation is never silent: the code this run did *not* cover is named on its own
+    # line, so a reader of the log can tell an unexercised row from a passing one.
+    expected_codes.discard("R2_TRANSCRIPT_TOO_LARGE")
+    print("expert trace smoke: SKIPPED oversize-transcript / R2_TRANSCRIPT_TOO_LARGE - this "
+          "filesystem did not produce a sparse file above MAX_TRANSCRIPT_BYTES, so the code is "
+          "not covered by this run")
+missing = sorted(expected_codes - codes_seen)
+if missing:
+    fail("error-corpus: no fixture fired %s" % ", ".join(missing))
+
+# `fixture-determinism`: two runs of the generator produce byte-identical fixtures. The generator
+# takes no seed from the environment and no wall-clock value, so a difference here is a real
+# nondeterminism and not a tolerance question.
+second = work_dir / "regenerated"
+subprocess.run([sys.executable, str(root_dir / "scripts/eval_callback_fixture.py"), str(second)],
+               check=True, capture_output=True)
+for case in manifest["cases"]:
+    left = fixture_dir / case["file"]
+    right = second / case["file"]
+    if left.stat().st_size != right.stat().st_size:
+        fail("fixture-determinism: %s changed size between two runs" % case["file"])
+    if left.stat().st_size > WINDOW_BYTES * 2:
+        continue
+    if left.read_bytes() != right.read_bytes():
+        fail("fixture-determinism: %s differs between two runs" % case["file"])
+placeholder = json.dumps(manifest).replace(str(fixture_dir), "@")
+regenerated = json.loads((second / "manifest.json").read_text(encoding="utf-8"))
+if json.dumps(regenerated).replace(str(second), "@") != placeholder:
+    fail("fixture-determinism: the manifest differs between two runs")
+
+# ---------------------------------------------------------------------------------------------
+# The section 4.3 format-fidelity fixture: real output from build 10566 on this host.
+real = (root_dir / "eval/fixtures/expert-trace/qwen2-prefill-build10566.txt").resolve()
+raw = real.read_bytes()
+if hashlib.md5(raw).hexdigest() != "81df3252be98a5e790e57fa77ba1e4b2":
+    fail("real-transcript: the checked-in fixture changed; re-record its provenance")
+PATH_NEEDLES = (b"/Users/", b"/home/", b"/private/", b"/opt/", b"/var/", b"/tmp/", b"\\\\")
+for needle in PATH_NEEDLES:
+    if needle in raw:
+        fail("real-transcript: the fixture carries a path fragment %r" % needle)
+if re.search(rb"[A-Za-z]:\\", raw):
+    fail("real-transcript: the fixture carries a Windows drive prefix")
+# The operator's own account name, swept for the same reason the path fragments are: a future
+# re-capture must not smuggle one in. Names shorter than four bytes are skipped because they would
+# collide with the grammar's own vocabulary rather than detect anything.
+account_names = {os.environ.get("USER") or "", os.environ.get("LOGNAME") or "",
+                 Path.home().name if str(Path.home()) else ""}
+swept = sorted(name for name in account_names if len(name) >= 4)
+for name in swept:
+    if name.encode("utf-8") in raw:
+        fail("real-transcript: the fixture carries the operator's account name %r" % name)
+print("expert trace smoke: real-transcript sanitization swept %d path fragment(s), the Windows "
+      "drive prefix, every non-printable byte, and %d account name(s) %s"
+      % (len(PATH_NEEDLES), len(swept), swept))
+for byte in set(raw):
+    if byte != 10 and (byte < 32 or byte > 126):
+        fail("real-transcript: the fixture carries a non-printable byte %d" % byte)
+
+# The arm is pointed at a **writable copy**, never at the checked-in path. `expert_trace.scan`
+# opens its transcript with `fs.open_rw` (Request 21), so a read-only checkout — which is exactly
+# what the fresh trusted worker mounts, and what a CI artifact directory normally is — refuses the
+# scan with exit 3 before a byte is read. The sanitization sweep above still reads the checked-in
+# bytes, so nothing about the fixture's own contract is weakened.
+real_input = work_dir / "real-transcript.txt"
+real_input.write_bytes(raw)
+real_destination = work_dir / "real.trace.json"
+real_result = run(["--expert-trace", str(real_input), str(real_destination)])
+if real_result.returncode != 0:
+    fail("real-transcript: exit %d" % real_result.returncode)
+real_document = json.loads(real_destination.read_text(encoding="utf-8"))
+field_order("real-transcript", real_document)
+expected_real = {
+    "status": "ok",
+    "source": {"file_size": 11764, "line_count": 171, "bytes_read": 11764,
+               "callback_line_count": 6, "skipped_line_count": 5},
+    "run": {"instrument": "llama-eval-callback", "build": None, "build_source": "absent",
+            "contract_build": manifest["contract_build"], "build_matches_contract": None,
+            "version_line": None},
+    "graph": {"graph_count": 1, "n_layer": 1,
+              "node_families": ["Qcur", "norm"],
+              "unsuffixed_nodes": ["Qcur-0 (view) (permuted)", "cache_v_l0 (view)", "embd",
+                                   "result_output"],
+              "ops": ["GET_ROWS", "MUL_MAT", "PERMUTE", "RESHAPE", "RMS_NORM", "VIEW"],
+              "shape_class": "unknown",
+              "shape_class_basis": "ffn_moe_topk absent, no dense feed-forward family present"},
+    "moe": {"present": False, "n_expert": None, "n_expert_used": None, "n_expert_source": None,
+            "topk_layers": [], "slots_truncated": False},
+    "graphs": [{"ordinal": 0, "n_tokens": 5, "phase": "prefill", "tokens_observed": 5,
+                "tokens_truncated": False, "observed_token_indices": [0, 1, 2, 3, 4],
+                "node_count": 6}],
+    "selections": [],
+    "locality": {"adjacent_pair_count": 0, "reuse_numerator": None, "reuse_denominator": None,
+                 "reuse_per_mille": None, "per_layer": [], "working_set": [],
+                 "phase_split": {"prefill": None, "decode": None}},
+}
+for key, want in expected_real.items():
+    compare(want, real_document[key], "." + key, "real-transcript")
+# `value-shapes`: only the five blank separators were skipped, so every other line of the real
+# excerpt matched one of the recognized shapes.
+if real_document["source"]["skipped_line_count"] != 5:
+    fail("real-transcript: %d lines matched no recognized shape"
+         % real_document["source"]["skipped_line_count"])
+
+# ---------------------------------------------------------------------------------------------
+# CLI arity, path validation, and operating-system failures.
+sample = (fixture_dir / "dense-L2-T5.txt").resolve()
+sample_document = (work_dir / "dense-L2-T5.trace.json").read_bytes()
+
+no_args = run([])
+if no_args.returncode != 0 or b"--expert-trace" not in no_args.stdout:
+    fail("usage-diff: the no-argument help does not name --expert-trace")
+if b"--model-ir" not in no_args.stdout or b"--inspect-gguf" not in no_args.stdout:
+    fail("usage-diff: an existing usage line disappeared")
+missing_operand = run(["--expert-trace"])
+if missing_operand.returncode == 0 or missing_operand.stdout != b"":
+    fail("cli-arity: a zero-operand invocation must fail with no output")
+too_many = run(["--expert-trace", str(sample), "a.json", "b.json"])
+if too_many.returncode == 0 or too_many.stdout != b"":
+    fail("cli-arity: a three-operand invocation must fail with no output")
+if (work_dir / "a.json").exists():
+    fail("cli-arity: an over-arity invocation created a file")
+# `selector-as-operand`: the selector is recognized only at args[1].
+operand = run(["--expert-trace", "--expert-trace"])
+if operand.returncode == 0 or operand.stdout != b"":
+    fail("selector-as-operand: the second --expert-trace must be read as a path")
+
+for label, bad_path in (("empty", ""), ("over-length", "x" * 4097)):
+    bad = run(["--expert-trace", bad_path, str(work_dir / "bad-path.json")])
+    if bad.returncode == 0 or bad.stdout != b"":
+        fail("path-too-long: an %s path must fail with no output" % label)
+    if (work_dir / "bad-path.json").exists():
+        fail("path-too-long: an %s path created a destination file" % label)
+
+# `destination-path-guard`: section 2.6 step 2 owns *both* operands, and the guard runs before the
+# derivation, so an unusable destination produces no document, no summary block, and no scan.
+for label, bad_destination in (("empty", ""), ("over-length", "x" * 4097)):
+    bad = run(["--expert-trace", str(sample), bad_destination])
+    # Exit 2 is `Err(Error.Invalid)` from the lexical guard. A bare "nonzero" assertion would also
+    # accept a failure raised *after* the transcript was scanned, which is the thing this case
+    # exists to rule out.
+    if bad.returncode != 2 or bad.stdout != b"":
+        fail("destination-path-guard: an %s destination must exit 2 with no output (saw %d, %r)"
+             % (label, bad.returncode, bad.stdout[:80]))
+# Not `(work_dir / ("x" * 4097)).exists()`: a 4097-byte final component is longer than any
+# supported name, so `stat` answers `ENAMETOOLONG` rather than "absent" and `Path.exists` re-raises
+# it on Python 3.12 (3.13 swallows it). The guard is about a *created* entry, so read the directory
+# instead of probing the impossible name.
+if any(entry.name.startswith("x") for entry in work_dir.iterdir()):
+    fail("destination-path-guard: an over-length destination created a file")
+
+sentinel = work_dir / "sentinel.json"
+sentinel.write_bytes(b"SENTINEL")
+absent = run(["--expert-trace", str(fixture_dir / "absent.txt"), str(sentinel)])
+if absent.returncode == 0 or absent.stdout != b"":
+    fail("unreadable-transcript: an absent transcript must fail with no output")
+if sentinel.read_bytes() != b"SENTINEL":
+    fail("untouched-destination: an OS failure rewrote the destination")
+directory = run(["--expert-trace", str(fixture_dir), str(sentinel)])
+if directory.returncode == 0 or directory.stdout != b"":
+    fail("directory-operand: a directory operand must fail with no output")
+if sentinel.read_bytes() != b"SENTINEL":
+    fail("untouched-destination: a directory operand rewrote the destination")
+
+denied = work_dir / "denied.txt"
+denied.write_bytes(sample.read_bytes())
+denied.chmod(0o000)
+if hasattr(os, "geteuid") and os.geteuid() == 0:
+    print("expert trace smoke: denied-path SKIPPED (running as root)")
+else:
+    denied_result = run(["--expert-trace", str(denied), str(sentinel)])
+    if denied_result.returncode == 0 or denied_result.stdout != b"":
+        fail("unreadable-transcript: an unreadable transcript must fail with no output")
+    if sentinel.read_bytes() != b"SENTINEL":
+        fail("untouched-destination: an unreadable transcript rewrote the destination")
+denied.chmod(0o600)
+
+# `read-only-transcript`: the Request 21 client evidence, asserted rather than described. The
+# transcript below is readable by its owner and not writable by anyone, which is exactly a
+# CI-produced trace in a root-owned or read-only artifact directory. Align ships only `fs.open_rw`,
+# so the kernel refuses `O_RDWR` and the derivation cannot start at all — no document, untouched
+# destination, nonzero exit. This case is expected to FLIP to a successful derivation the day
+# `docs/align-requests.md` Request 21 ships `fs.open_ro` and `src/expert_trace.align` adopts it.
+read_only = work_dir / "read-only.txt"
+read_only.write_bytes(sample.read_bytes())
+read_only.chmod(0o444)
+if hasattr(os, "geteuid") and os.geteuid() == 0:
+    print("expert trace smoke: SKIPPED read-only-transcript - running as root, which may write a "
+          "mode 0444 file, so the writable-path precondition is not observable here")
+else:
+    read_only_result = run(["--expert-trace", str(read_only), str(sentinel)])
+    if read_only_result.returncode == 0 or read_only_result.stdout != b"":
+        fail("read-only-transcript: `fs.open_rw` unexpectedly opened a mode 0444 transcript; if "
+             "Align now ships a read-only open, adopt it and close Request 21")
+    if sentinel.read_bytes() != b"SENTINEL":
+        fail("untouched-destination: a read-only transcript rewrote the destination")
+    print("expert trace smoke: read-only-transcript exits %d with no document (Request 21 client "
+          "evidence: `fs.open_rw` requires O_RDWR on a transcript R2A never writes)"
+          % read_only_result.returncode)
+read_only.chmod(0o600)
+
+# A transcript defect replaces the destination with the complete document — never a partial write.
+structural = run(["--expert-trace", str((fixture_dir / "dims-invalid.txt").resolve()),
+                  str(sentinel)])
+if structural.returncode == 0:
+    fail("error-corpus: a transcript defect must exit nonzero")
+replaced = json.loads(sentinel.read_text(encoding="utf-8"))
+if replaced["error_code"] != "R2_DIMS_INVALID":
+    fail("error-corpus: the destination does not hold the complete failure document")
+if b"expert trace:" not in structural.stdout or b"R2_DIMS_INVALID" not in structural.stdout:
+    fail("error-corpus: the summary block does not report the error code")
+
+# `summary-control-bytes`: a control byte in a transcript-supplied identifier is escaped, so the
+# detail still occupies exactly one line, and the document stays valid JSON.
+control = work_dir / "control.txt"
+control.write_bytes((fixture_dir / "dense-L2-T5.txt").read_bytes()
+                    .replace(b"= {3584, 5, 1, 1}", b"= {3584, 5, 1}", 1)
+                    .replace(b"embd = ", b"em\x01d = ", 1))
+control_result = run(["--expert-trace", str(control.resolve()), str(work_dir / "control.json")])
+if control_result.returncode == 0:
+    fail("summary-control-bytes: a defective transcript must exit nonzero")
+control_document = json.loads((work_dir / "control.json").read_text(encoding="utf-8"))
+if "\x01" in json.dumps(control_document["error_detail"]):
+    fail("wire-escapes: a raw control byte reached the document")
+control_summary = control_result.stdout.decode("utf-8").split("\n")
+if control_summary[23] != "detail:" or "\x01" in control_summary[24]:
+    fail("summary-control-bytes: the summary detail was not sanitized")
+
+# `env-perturbation`: no environment variable changes one document byte.
+perturbed = dict(os.environ)
+perturbed.update({"LC_ALL": "tr_TR.UTF-8", "LANG": "tr_TR.UTF-8", "TZ": "Pacific/Kiritimati",
+                  "SOURCE_DATE_EPOCH": "1", "HOME": str(work_dir),
+                  "ALIGN_LLM_GGUF_MODEL": "/nonexistent",
+                  "ALIGN_LLM_LLAMA_EVAL_CALLBACK": "/nonexistent",
+                  "ALIGN_LLM_EXPERT_TRACE_BUILD": "10567"})
+env_result = run(["--expert-trace", str(sample)], env=perturbed)
+if env_result.returncode != 0 or env_result.stdout != sample_document + b"\n":
+    fail("env-perturbation: a perturbed environment changed the document")
+
+# `repeat-expert-trace`: repeated derivations do not drift and do not grow.
+for _ in range(64):
+    repeat = run(["--expert-trace", str(sample)])
+    if repeat.returncode != 0 or repeat.stdout != sample_document + b"\n":
+        fail("repeat-expert-trace: a repeated derivation diverged")
+
+# The neighbouring arms are untouched.
+inspect_still_works = run(["--inspect-gguf", str(work_dir / "absent.gguf")])
+if inspect_still_works.returncode == 0:
+    fail("selector-isolation: the --inspect-gguf arm changed")
+
+print("expert trace smoke: %d fixtures, %d error codes, the real build-10566 excerpt, both CLI "
+      "forms, the aggregate oracle, and CLI arity/isolation PASS" % (checked, len(codes_seen)))
+PY
+
+# A bounded descriptor budget: one derivation opens one transcript descriptor and nothing else.
+(
+  ulimit -n 64
+  "$root_dir/main" --expert-trace "$fixture_dir/dense-L28-T64.txt" >/dev/null
+  "$root_dir/main" --expert-trace "$fixture_dir/multi-graph.txt" >/dev/null
+)
+
+# The generator writes every fixture into the temporary tree and nothing into the repository.
+leaked=$(find "$root_dir" -name '.git' -prune -o -name 'manifest.json' -print 2>/dev/null || true)
+if [ -n "$leaked" ]; then
+  printf '%s\n' "expert trace smoke: a fixture leaked into the repository:" >&2
+  printf '%s\n' "$leaked" >&2
+  exit 1
+fi
+if [ ! -d "$temp_dir" ]; then
+  printf '%s\n' "expert trace smoke: the temporary fixture root vanished mid-run" >&2
+  exit 1
+fi
+
+printf '%s\n' "expert trace smoke: the build-10566 grammar, graph segmentation, the truncation rule, the selection table, the locality aggregates, the malformed corpora, the window-boundary and huge-line corpora, and CLI arity/isolation PASS"

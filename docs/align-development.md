@@ -465,8 +465,9 @@ section. The tokenizer and vocabulary are out of scope — R1 reads only the dec
 `tokenizer.ggml.tokens` and `tokenizer.ggml.merges`, never an element — so
 `docs/align-requests.md` Request 22 stays non-blocking.
 
-**The gpt-oss/MoE half is the active R1B-GPTOSS-MOE-IR capability**, specified by
-`docs/specs/r1b-gptoss-moe-ir.md`. `--model-ir` now dispatches on the container's own
+**The gpt-oss/MoE half is the merged R1B-GPTOSS-MOE-IR capability** (align-llm PR #123, head
+`3bf5c9c`, merge `d8d4ef6`), specified by `docs/specs/r1b-gptoss-moe-ir.md`. `--model-ir` dispatches
+on the container's own
 `general.architecture` field, accepting `qwen2` (`src/frontend_qwen.align`) and `gpt-oss`
 (`src/frontend_gpt_oss.align`, new); any other value, or a missing/non-UTF-8 architecture, is
 rejected exactly as before. A neutral `src/model_ir.align` module owns the geometry pass, block
@@ -563,6 +564,75 @@ claim-tiling oracles, and the MXFP4 library oracle above.
 The model path inherits R0's writable-by-the-invoking-user precondition unchanged — `read_table`
 uses the same `fs.open_rw` constructor for both frontends — so Request 21 in
 `docs/align-requests.md` covers this capability too, still `PROPOSED` and non-blocking.
+
+## Expert trace development
+
+R2A-EXPERT-TRACE-CAPTURE is implemented on branch `agent/r2a-expert-trace`; its authoritative plan
+is `docs/specs/r2a-expert-trace.md`. The instrument is llama.cpp's `llama-eval-callback` (recorded
+build 10566), used as a measurement device rather than adopted as a runtime dependency. The CLI arm:
+
+```sh
+./main --expert-trace CALLBACK_LOG.txt
+./main --expert-trace CALLBACK_LOG.txt OUT.json
+```
+
+consumes a `llama-eval-callback` transcript and produces an `R2_ACTIVATION_TRACE`
+(`schema_version: 1`) document with per-(token, layer) expert ids and locality aggregates; a dense
+(non-MoE) transcript yields `moe: false`. Both operands are validated lexically against
+`MAX_PATH_BYTES` (4096) and rejected for a NUL byte before any file work, so an unusable destination
+never costs a transcript scan.
+
+**The transcript inherits the same writable-by-the-invoking-user precondition the model path has.**
+`src/expert_trace.align` opens it with `fs.open_rw`, the only random-access constructor Align ships
+at this pin, so a transcript captured into a root-owned or read-only artifact directory — a mode
+`0444` file, for instance — cannot be opened at all and the arm exits nonzero with no document.
+`docs/align-requests.md` Request 21 records this as a second class of read-only input, still
+`PROPOSED` and non-blocking; `scripts/run-expert-trace-smoke`'s `read-only-transcript` case asserts
+the current behavior and is expected to flip the day `fs.open_ro` ships.
+
+The narrow durable owner is `gmake expert-trace-smoke`; adding it to the `Makefile` selects the
+fresh-image preflight profile at publication. The named opt-in qualification is
+`scripts/run-expert-trace-parity`, taking two environment variables:
+
+```sh
+ALIGN_LLM_GGUF_MODEL=/path/to/model.gguf \
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \
+  scripts/run-expert-trace-parity
+```
+
+`ALIGN_LLM_GGUF_MODEL` names the model to run the callback instrument against; a dense model (e.g.
+the existing Qwen2.5-Coder-7B) exercises the `moe: false` path, and a small MoE GGUF (1-4 GB, not
+yet downloaded — a pending user decision) is required to exercise `moe: true` and close the R2
+roadmap gate's locality question. `ALIGN_LLM_LLAMA_EVAL_CALLBACK` names the callback instrument
+executable.
+
+Neither variable has a default. A missing or unusable input prints exactly one of these lines and
+exits 0 without claiming a pass, and the line must be named as the `N/A` reason in the pull request:
+
+```text
+expert trace parity: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)
+expert trace parity: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable)
+expert trace parity: N/A (ALIGN_LLM_GGUF_MODEL unset)
+expert trace parity: N/A (ALIGN_LLM_GGUF_MODEL is absent)
+```
+
+They are checked in that order, so an unset variable is reported before an unusable one. A run that
+reaches the instrument also emits its own two-line verdict, one line per half, and exactly one of
+the two is a `PASS`: a dense model prints `expert trace parity (dense): PASS` with
+`expert trace parity (MoE): N/A - no MoE GGUF on this host; see section 4.5.`, and a MoE model
+prints `expert trace parity (MoE): PASS` with `expert trace parity (dense): N/A - moe.present is
+true`. A half whose branch never ran never claims a pass, so the pull-request record quotes lines
+the runner printed rather than lines an author composed.
+
+**The oracle is an independent Python re-parse, not a self-check.** The runner re-implements the
+section 2.2 grammar in Python inside itself and parses the same transcript a second time, then
+compares the node families, the operation set, the layer count, the graph count, every graph's token
+count and phase, the line censuses, `moe.present`, and — for a MoE model — every selection field for
+field, plus the locality reuse triple recomputed from its own selections with naive nested loops.
+Any disagreement fails closed with a nonzero exit; a parse failure against the instrument's output
+is a hard failure and never a skip. The runner also asserts the `bytes_read` bound and that the
+model's size and modification time are unchanged, which is the read-only proof. The instrument runs
+under a 600-second `timeout` so a run that fails to terminate is a bounded failure.
 
 ## The aarch64 platform-profile gates
 
