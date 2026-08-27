@@ -149,14 +149,23 @@ file records durable project state.
   superlinear in body length and a `match` on a `Result` inside a loop costs roughly 45x the same
   loop with `?`, so the arm is split into fourteen functions purely to keep `make check` fast. Both
   are non-blocking. See `docs/align-requests.md` for the full text.
+- **Canonical baseline chain, re-recorded on Linux.** R5A changes `Makefile` (the layer-forward
+  targets and the `HOSTED_CHECK_TARGETS` membership) and `.gitattributes` (the `-whitespace` rule
+  for the checked-in blk.0 excerpt), two of the twenty recorded baseline artifacts, so the chain
+  that shipped with R4.5 no longer bound this head. The identity-bound chain is
+  `a0b18ee` -> `823364c` -> `0f9bc64` (source -> immutable oracle -> finalization), recorded on
+  Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3). Exactly those two of the twenty artifacts
+  changed against the R4.5 chain; the other eighteen hashes, `src/main.align` included, are
+  unchanged and the twenty paths are identical. `make baseline-check` on Linux: PASS, ending
+  `baseline chain: PASS`, both at `0f9bc64` and again at the later portability repair `1897a79`,
+  which touches no recorded artifact.
 - **Next actions, in order.**
-  1. Re-record the canonical baseline chain on Linux, because the branch changes `Makefile`.
-  2. At publication, run **`make ci`**, not only the narrower classifier path — adding
+  1. At publication, run **`make ci`**, not only the narrower classifier path — adding
      `layer-forward-smoke` to `HOSTED_CHECK_TARGETS` changes aggregate membership, which is one of
      `CLAUDE.md`'s explicit triggers for the full integration graph.
-  3. Exact-head preflight (`python3 scripts/pre-pr`), including the DinD-capable installed profile
+  2. Exact-head preflight (`python3 scripts/pre-pr`), including the DinD-capable installed profile
      check; do not substitute a Docker skip or an ambient `DOCKER_HOST` endpoint.
-  4. Publish the English pull request against `main`. R4.5's PR #126 and R4's PR #125 are both
+  3. Publish the English pull request against `main`. R4.5's PR #126 and R4's PR #125 are both
      merged.
 - **Two pending user decisions, carried forward verbatim.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
