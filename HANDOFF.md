@@ -10,11 +10,13 @@ file records durable project state.
   which itself continues the merged R1B-GPTOSS-MOE-IR chain (PR #123, head `3bf5c9c`, merge
   `d8d4ef6`) onto `main` at `08492dc`. The authoritative design ledger is
   `docs/specs/r4-alignpack-layer-major.md`, committed at `d678485`.
-- **Status: implemented, verified, reviewed, and the consolidated review repair is committed.** The
-  branch is three commits on `b8e1cb6`: the design ledger `d678485`, the implementation `4bc2b86`
-  ("feat: pack GGUF models into layer-major alignpack containers"), and the consolidated repair for
-  both reviewers' findings `ab7d4a6` ("fix: close alignpack review findings"), followed by the
-  reconciliation commit that records this rebase. Nothing is intentionally uncommitted. The rebase
+- **Status: implemented, verified, reviewed twice, and both review repairs plus the re-recorded
+  baseline chain are committed.** The branch is seven commits on `b8e1cb6`: the design ledger
+  `d678485`, the implementation `4bc2b86` ("feat: pack GGUF models into layer-major alignpack
+  containers"), the consolidated repair for both reviewers' findings `ab7d4a6` ("fix: close
+  alignpack review findings"), the reconciliation commit `cb116f4` that records this rebase, the
+  final-review repair `de5e12d` ("docs: close alignpack final review findings"), and the baseline
+  chain `47ba089` and `cfd15e8`. Nothing is intentionally uncommitted. The rebase
   carried three content conflicts, all resolved keeping both sides: the `docs/align-requests.md`
   status header (R2A's corrected Request 21 text with "Requests 21–31 are PROPOSED"), Request 23's
   `align-llm verification` field (R2A's `src/expert_trace.align:1622` citation plus R4's `PackPlan`
@@ -107,13 +109,21 @@ file records durable project state.
   warnings quoted and reproducible: `src/alignpack.align:1261:50`, `:1317:56`, and `:1331:57`, the
   three `borrow p: PackPlan` encoders, plus eleven more `borrow` sites in the same module. The header
   status line in `docs/align-requests.md` reads "21–31 are PROPOSED".
+- **Baseline chain**: `de5e12d` -> `47ba089` -> `cfd15e8` (source -> oracle -> finalization),
+  identity-bound and re-recorded on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) after
+  the final review repair. Exactly two of the twenty recorded artifacts changed against the R2A
+  chain — `Makefile` and `src/main.align`, which carry the `alignpack-smoke` owner target and the
+  `--pack` / `--pack-verify` arms — and the twenty paths are otherwise identical, every other hash
+  unchanged. `make baseline-check` on Linux: PASS, ending `baseline chain: PASS`.
 - **Next actions, in order.**
   1. Exact-head preflight — `python3 scripts/pre-pr --plan` to confirm the `Makefile` change selects
      the fresh-image installed profile, then
-     `python3 scripts/pre-pr --owner-test alignpack-smoke -- gmake alignpack-smoke`. Do not replace
-     the required installed profile with a Docker skip or an ambient `DOCKER_HOST` endpoint.
+     `python3 scripts/pre-pr --owner-test alignpack -- make alignpack-smoke gate-topology-check`.
+     Do not replace the required installed profile with a Docker skip or an ambient `DOCKER_HOST`
+     endpoint.
   2. Publish the English pull request against `main` at `b8e1cb6` or later, recording the
-     qualification numbers above, the review envelope, and the finding dispositions.
+     qualification numbers above, the baseline chain, the review envelope, and the finding
+     dispositions.
 - **Two pending user decisions, carried forward verbatim.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
      gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
