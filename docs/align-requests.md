@@ -6430,9 +6430,9 @@ Align commit or pull request: none
 align-llm verification: pending — `make check` emits no "huge struct copy" warning for a
   `borrow`/`borrow mut` parameter, specifically none for
   `src/expert_trace.align:1622` (`borrow t: TranscriptScan`), the ten
-  `borrow t: GgufTable` accessors in `src/gguf.align`, or the nine
+  `borrow t: GgufTable` accessors in `src/gguf.align`, or the fourteen
   `borrow p: PackPlan` sites in `src/alignpack.align` (`:1261:50`, `:1317:56`,
-  `:1331:57` and six more), while the by-value warnings the lint
+  `:1331:57` and eleven more), while the by-value warnings the lint
   legitimately owns are unchanged
 ```
 
@@ -6559,9 +6559,9 @@ gmake check 2>&1 | grep 'alignpack.align.*huge struct copy'
 
 Line 1261 is `fn encode_header(borrow mut b: buffer, borrow p: PackPlan)`, line 1317 is
 `fn encode_block_record(borrow mut b: buffer, borrow p: PackPlan, index: i64)`, and line 1331 is
-`fn encode_member_record(borrow mut b: buffer, borrow p: PackPlan, index: i64)`. Seven further
+`fn encode_member_record(borrow mut b: buffer, borrow p: PackPlan, index: i64)`. Eleven further
 `borrow`-mode sites in the same module report the same warning for `PackPlan`, and the module emits
-65 `huge struct copy` warnings in total against 454 for the whole repository — every one of the
+53 `huge struct copy` warnings in total against 454 for the whole repository — every one of the
 `PackPlan` rows is a `borrow` parameter that copies nothing. The by-value branch the lint
 legitimately owns is unaffected: `src/alignpack.align:1376:22` (`empty_header` returning a 160-byte `PackHeader`)
 and `:498:20` (`empty_plan` returning the 480-byte `PackPlan`) are real owned returns and are

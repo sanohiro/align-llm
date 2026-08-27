@@ -95,13 +95,15 @@ The current forward delivery order is:
     open standing item**: the gpt-oss `model-ir-parity` qualification and real-model inspection
     against ledger section 2.5 remain the documented explicit `N/A` pending the user decision to
     download `gpt-oss-20b-mxfp4.gguf` (12.1 GB); the qwen half of the gate is real-model verified.
-12. **R2A-EXPERT-TRACE-CAPTURE — expert-trace capture from a callback transcript. PR #124 in
-    review.** On branch `agent/r2a-expert-trace`. `docs/specs/r2a-expert-trace.md` is the
-    authoritative plan for R2a: `main --expert-trace CALLBACK_LOG [OUT.json]` consumes a
-    `llama-eval-callback` transcript (recorded instrument build 10566) into an
-    `R2_ACTIVATION_TRACE`, `schema_version: 1` document with per-(token, layer) expert ids and
-    locality aggregates; a dense transcript yields `moe: false`. The R2 roadmap gate needs a real MoE
-    transcript, which is a separate pending user decision (a small 1-4 GB MoE GGUF).
+12. **R2A-EXPERT-TRACE-CAPTURE — expert-trace capture from a callback transcript. Merged as
+    PR #124** (head `ab5f7d8`, merge `b8e1cb6`), from branch `agent/r2a-expert-trace`.
+    `docs/specs/r2a-expert-trace.md` is the authoritative plan for R2a: `main --expert-trace
+    CALLBACK_LOG [OUT.json]` consumes a `llama-eval-callback` transcript (recorded instrument
+    build 10566) into an `R2_ACTIVATION_TRACE`, `schema_version: 1` document with per-(token,
+    layer) expert ids and locality aggregates; a dense transcript yields `moe: false`. **The gate
+    is met for parser correctness** on the dense case — `scripts/run-expert-trace-parity` PASS,
+    `expert-trace-smoke` a hosted member — while **the R2 roadmap gate stays open** pending a real
+    MoE transcript, a separate pending user decision (a small 1-4 GB MoE GGUF).
 13. **R4-ALIGNPACK-LAYER-MAJOR — the alignpack v1 container, its layer-major writer, and its
     verifier. Active.** On branch `agent/r4-alignpack-layer-major`.
     [`r4-alignpack-layer-major.md`](r4-alignpack-layer-major.md) is the authoritative plan and owns

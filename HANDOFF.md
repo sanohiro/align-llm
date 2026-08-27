@@ -5,20 +5,20 @@ file records durable project state.
 
 ## Active capability: R4-ALIGNPACK-LAYER-MAJOR — alignpack v1 container, layer-major layout, and verifier (2026-08-27)
 
-- Branch `agent/r4-alignpack-layer-major`, continuing directly on top of the R2A-EXPERT-TRACE-CAPTURE
-  work (design `b4dfb60`, "record the R1B merge and open the R2A capability" `89e3ae1`,
-  implementation `140e868`, review repair `e99bceb`), which itself sits on the merged
-  R1B-GPTOSS-MOE-IR chain (PR #123, head `3bf5c9c`, merge `d8d4ef6`) onto `main` at `08492dc`. The
-  authoritative design ledger is `docs/specs/r4-alignpack-layer-major.md`, committed at `67de814`.
-- **Status: implemented, verified, and reviewed; the consolidated review repair is applied and
-  awaiting its commit.** The implementation is committed at `ded98cb` ("feat: pack GGUF models into
-  layer-major alignpack containers"). The repair for both reviewers' findings is **intentionally
-  uncommitted in this worktree** — `src/alignpack.align`, `src/model_ir.align`, `src/main.align`,
-  `src/alignpack_limits_smoke.align`, `scripts/run-alignpack-smoke`,
-  `scripts/run-alignpack-qualification`, `docs/specs/r4-alignpack-layer-major.md`,
-  `docs/specs/r1-qwen-model-ir.md`, `docs/specs/roadmap.md`, `docs/align-development.md`,
-  `docs/align-requests.md`, and this file — and must be committed as one consolidated repair before
-  preflight. Every command in "verification" below was run against that working tree.
+- Branch `agent/r4-alignpack-layer-major`, **rebased onto the merged R2A-EXPERT-TRACE-CAPTURE
+  work**: it now sits directly on `main` at `b8e1cb6` (the PR #124 merge of R2A head `ab5f7d8`),
+  which itself continues the merged R1B-GPTOSS-MOE-IR chain (PR #123, head `3bf5c9c`, merge
+  `d8d4ef6`) onto `main` at `08492dc`. The authoritative design ledger is
+  `docs/specs/r4-alignpack-layer-major.md`, committed at `d678485`.
+- **Status: implemented, verified, reviewed, and the consolidated review repair is committed.** The
+  branch is three commits on `b8e1cb6`: the design ledger `d678485`, the implementation `4bc2b86`
+  ("feat: pack GGUF models into layer-major alignpack containers"), and the consolidated repair for
+  both reviewers' findings `ab7d4a6` ("fix: close alignpack review findings"), followed by the
+  reconciliation commit that records this rebase. Nothing is intentionally uncommitted. The rebase
+  carried three content conflicts, all resolved keeping both sides: the `docs/align-requests.md`
+  status header (R2A's corrected Request 21 text with "Requests 21–31 are PROPOSED"), Request 23's
+  `align-llm verification` field (R2A's `src/expert_trace.align:1622` citation plus R4's `PackPlan`
+  sites), and this file's R2A next actions.
 - **What it delivers.** `main --pack MODEL.gguf OUT.alignpack [DOC.json]` and
   `main --pack-verify MODEL.gguf PACK.alignpack [DOC.json]`: a byte-exact streaming rewrite of one
   GGUF file into the alignpack v1 container (magic, versioned 128-byte header, name stream, 64-byte
@@ -58,7 +58,8 @@ file records durable project state.
     `--pack` 456,015,872 → **419,037,184** bytes and `--pack-verify` 839,532,544 → **802,340,864**
     after the packing arms stopped rendering an `R1_MODEL_IR` document they discarded.
 - **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
-  the candidate at `ded98cb`: **A** the Align source, **B** the specification, register, handoff, and
+  the candidate at `ded98cb` (`4bc2b86` after the rebase onto `b8e1cb6`, same tree for every
+  reviewed file): **A** the Align source, **B** the specification, register, handoff, and
   runners. A approved with 3 low-to-medium findings, 2 low, 2 informational, and 1 observation; B
   requested changes with 4 medium and 5 low. **Every finding was accepted** and all were repaired as
   one consolidated repair on top of `ded98cb`. The substantive ones are recorded as ledger section
@@ -82,16 +83,15 @@ file records durable project state.
   input class (sizing a read-only model still needs `O_RDWR` because Align ships no `fs.size`/`stat`,
   alongside R0's model and R2A's transcript), 23 a fourth client, `PackPlan`, now with its verbatim
   warnings quoted and reproducible: `src/alignpack.align:1261:50`, `:1317:56`, and `:1331:57`, the
-  three `borrow p: PackPlan` encoders, plus seven more `borrow` sites in the same module. The header
+  three `borrow p: PackPlan` encoders, plus eleven more `borrow` sites in the same module. The header
   status line in `docs/align-requests.md` reads "21–31 are PROPOSED".
 - **Next actions, in order.**
-  1. Commit the consolidated review repair (message: `fix: close alignpack review findings`).
-  2. Exact-head preflight — `python3 scripts/pre-pr --plan` to confirm the `Makefile` change selects
+  1. Exact-head preflight — `python3 scripts/pre-pr --plan` to confirm the `Makefile` change selects
      the fresh-image installed profile, then
      `python3 scripts/pre-pr --owner-test alignpack-smoke -- gmake alignpack-smoke`. Do not replace
      the required installed profile with a Docker skip or an ambient `DOCKER_HOST` endpoint.
-  3. Publish the English pull request, recording the qualification numbers above, the review
-     envelope, and the finding dispositions.
+  2. Publish the English pull request against `main` at `b8e1cb6` or later, recording the
+     qualification numbers above, the review envelope, and the finding dispositions.
 - **Two pending user decisions, carried forward verbatim.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
      gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
@@ -113,15 +113,16 @@ file records durable project state.
   needs no MoE trace) and the next eligible roadmap capability.
 
 
-## Capability in publication: R2A-EXPERT-TRACE-CAPTURE — expert-trace capture (2026-08-27)
+## Merged checkpoint: R2A-EXPERT-TRACE-CAPTURE — expert-trace capture (2026-08-27)
 
-- **Status: PR #124 open, CI pending.** Implementation and review are complete (below), preflight
-  ran, and the pull request is published; it is waiting on required checks and merge. GitHub owns the
-  transient check and review metadata from here.
-- Branch `agent/r2a-expert-trace`, based on the merged R1B-GPTOSS-MOE-IR chain (PR #123, head
+- **Status: merged.** R2A-EXPERT-TRACE-CAPTURE merged as align-llm PR #124, head `ab5f7d8`, merge
+  commit `b8e1cb6` on `main`. Required checks passed before merge; GitHub owns that transient
+  check and review metadata.
+- Branch was `agent/r2a-expert-trace`, based on the merged R1B-GPTOSS-MOE-IR chain (PR #123, head
   `3bf5c9c`, merge `d8d4ef6`, onto `main` at `08492dc`). The authoritative design ledger is
   `docs/specs/r2a-expert-trace.md`, committed at `b4dfb60`; the implementation is committed at
-  `140e868` and the consolidated review repair sits on top of it.
+  `140e868`, the consolidated review repair at `e99bceb`, and the final portability and
+  writable-copy repairs at `aff1beb` and `ab5f7d8`.
 - **What it delivers.** The R2a slice of the R2 roadmap item: `main --expert-trace CALLBACK_LOG
   [OUT.json]` consumes a `llama-eval-callback` transcript and produces an `R2_ACTIVATION_TRACE`
   (`schema_version: 1`) document recording, per (token, layer), the selected expert ids and locality

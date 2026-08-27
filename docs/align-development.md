@@ -567,8 +567,8 @@ uses the same `fs.open_rw` constructor for both frontends — so Request 21 in
 
 ## Expert trace development
 
-R2A-EXPERT-TRACE-CAPTURE is implemented on branch `agent/r2a-expert-trace`; its authoritative plan
-is `docs/specs/r2a-expert-trace.md`. The instrument is llama.cpp's `llama-eval-callback` (recorded
+R2A-EXPERT-TRACE-CAPTURE is merged into `main` as PR #124 (head `ab5f7d8`, merge `b8e1cb6`); its
+authoritative plan is `docs/specs/r2a-expert-trace.md`. The instrument is llama.cpp's `llama-eval-callback` (recorded
 build 10566), used as a measurement device rather than adopted as a runtime dependency. The CLI arm:
 
 ```sh
