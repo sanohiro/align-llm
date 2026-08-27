@@ -77,12 +77,28 @@ fi
 # with no output naming the cause. `alignc` writes its executable next to the invocation, so the
 # one file it does create in the work tree is moved out in the same step.
 shim_dir=$(ALIGN_LLM_GGML_SHIM_DIR="${work_dir}/lib" "${root_dir}/scripts/build-ggml-shim")
+# The compiler's warnings are captured rather than streamed **under the fresh worker**, exactly as
+# `Makefile`'s own `check` and `build` targets do. `src/ggml_spike.align` now imports
+# `src/layer_forward.align` and `src/layer_qwen2.align`, so one build of it writes ~22 KB of
+# `huge struct copy` and `lossy conversion` warnings, and the supervisor bounds the whole
+# `capable-checks` child at 65,536 bytes per stream (`scripts/fresh-align-compiler`
+# `MAX_STREAM_BYTES`). Two runners building it is already two thirds of that budget, and an
+# overflow kills the child with no message naming the cause. Developers still see every warning.
 (
   cd "${root_dir}"
-  LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}" \
-  DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
-  LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
-  "${compiler}" build src/ggml_spike.align >/dev/null
+  export LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+  export DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+  export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  if [ "${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then
+    diagnostic="${work_dir}/alignc-diagnostic.txt"
+    if ! "${compiler}" build src/ggml_spike.align >/dev/null 2>"${diagnostic}"; then
+      cat "${diagnostic}" >&2
+      exit 1
+    fi
+    rm -f "${diagnostic}"
+  else
+    "${compiler}" build src/ggml_spike.align >/dev/null
+  fi
   mv -f ggml_spike "${work_dir}/ggml-spike"
 )
 

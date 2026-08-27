@@ -73,7 +73,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-27): Requests 1–20 are CLOSED and Requests 21–35 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
+> **Status (2026-08-27): Requests 1–20 are CLOSED and Requests 21–37 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
 > R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
 > parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
 > `borrow t: GgufTable` accessors in `src/gguf.align` get the by-value warning even though no call
@@ -147,8 +147,8 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > and to Request 23 — `PackPlan`, another wide columns-plus-stream record read through `borrow`
 > accessors, is a fourth client of the same false-positive huge-struct-copy lint, with its concrete
 > source line to be cited at implementation.
-> R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md`) is the active capability,
-> awaiting publication on `agent/r4-5-external-buffer` rebased onto that merge; it computes a real
+> R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md`) merged as align-llm PR #126
+> (`d46fce6` -> `fa567b1`), on `agent/r4-5-external-buffer` rebased onto that merge; it computes a real
 > ggml matmul over an Align-owned quantized buffer, it consumes no `PROPOSED` request
 > and added Requests 32 and 33. Request 32, FFI v1 by-value struct ABI (AAPCS64 and SysV MEMORY
 > class) and `bool` FFI type: `ggml_init`'s 24-byte-by-value `struct ggml_init_params` and
@@ -183,6 +183,45 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > rather than for the reservation itself — the same conclusion R0 and R4 each reached independently.
 > It is non-blocking — the observable-consequence guards are in place — with all of R0-GGUF-INSPECT,
 > R4-ALIGNPACK-LAYER-MAJOR, and R4.5-EXTERNAL-BUFFER-SPIKE as independent work.
+> R5A-DENSE-LAYER-FORWARD (`docs/specs/r5a-dense-layer-forward.md`) is the active capability,
+> awaiting publication on `agent/r5a-dense-layer-forward` rebased onto that merge; it computes one
+> Qwen2 dense layer through ggml over Align-owned weights and checks it against
+> `llama-eval-callback`'s own numbers. **Implementation is complete, reviewed, and repaired.** Design set
+> out believing no new request was needed — section 5.5 of the plan states this explicitly ("No new
+> request. Every gap R5A hit is already recorded") — and implementation confirmed that for every
+> design-time gap, but refuted it twice more (section 6, corrections C8 and C9), adding Requests 36
+> and 37. R5A added new client evidence to Request 34 — `raw` is refused not only as a struct field
+> but as an **array element** (`error: array element must be a scalar (composite payloads are not
+> supported yet), got raw`), which is why the thirty-two-node layer graph's `ggml_tensor *` handles
+> live in a node-slot store, now citable at `src/layer_qwen2.align:13-16,24-38`, rather than an Align
+> array of handles — and to Request 32 — two more `bool`-typed ggml entry points
+> (`ggml_gallocr_reserve`, `ggml_gallocr_alloc_graph`) needed shim wrappers, now shipped at
+> `src/ggml_ffi.align:744-754` and `scripts/ggml_shim.c:1069-1090`, and the same probe measured the
+> request's positive complement: `f32` crosses the FFI by value in both directions and an unsuffixed
+> float literal coerces at an `f32` parameter with no cast. It is also a new client, with no change to
+> either request's text, of Request 21 (a fourth input class needing a writable descriptor to read a
+> read-only model) and Request 35 (`buffer`'s advisory capacity, now paid per weight window), and it
+> strengthened Request 33 with a shipped citation: the per-member alignment compensation
+> (`src/layer_forward.align:1858`, `:1864`, `:2436-2439`) is paid thirteen times per run, once per
+> weight member packed inside one over-reserved window, rather than the two R4.5 pays across its
+> separate weight and output windows. Implementing R5A then added two requests of its own. Request 36,
+> in-place replacement of owned array record fields and moving out of nested fields: an owned
+> `array<i64>` struct field cannot be replaced in place and a nested struct field cannot be moved out
+> of its parent, so the document's columns that section 3.7 designed as one `Outcome` every stage
+> appends to instead live in eight single-assignment records (`src/layer_forward.align:898-1019`),
+> each assigned exactly once, as a whole, by the stage that produces it. It is non-blocking — the
+> eight-record shape compiles and ships — with all of R5A-DENSE-LAYER-FORWARD as independent work.
+> Request 37, compiler check-time scaling for long function bodies and `match` on `Result` inside
+> loops: per-function checking is superlinear in body length (a 400-line body checks in 40 s, a
+> 900-line one does not finish in 600 s, measured at the pin) and a `match` on a `Result` with block
+> arms inside a loop costs roughly 45 times the same loop written with `?` (90 s against 2 s), so
+> `src/layer_forward.align` is split into fourteen functions, none over two hundred lines, with every
+> in-loop fallible call routed through `?` and every top-level one through the two-line
+> `take`/`take_pack` helpers (`src/layer_forward.align:1218-1234`) purely to keep `make check` in
+> seconds rather than minutes. It is non-blocking — the refactor is in place and `check-per-unit
+> src/layer_forward.align` is 6 s — with all of R5A-DENSE-LAYER-FORWARD as independent work. None of
+> this is blocking: R5A ships entirely on the pinned surface, with all of R5A-DENSE-LAYER-FORWARD as
+> independent work.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -7472,6 +7511,30 @@ Verified in the sibling checkout at that pin:
   reject `bool` as an FFI type in either direction, removing `ggml_backend_dev_supports_op` and every
   other ggml predicate from direct reach.
 
+**Additional client evidence, from the R5A-DENSE-LAYER-FORWARD capability, now shipped.**
+`ggml_gallocr_reserve` and `ggml_gallocr_alloc_graph` are two more `bool`-returning ggml entry points
+R5A's design had to reach — the graph allocator's own reserve/alloc pair — and both are now wrapped
+by a shim function that translates the `bool` to `int32_t`: `src/ggml_ffi.align:741-754`
+(`gallocr_reserve`, `gallocr_alloc`) calls `align_ggml_gallocr_reserve`/`align_ggml_gallocr_alloc`,
+implemented at `scripts/ggml_shim.c:1069-1090`, each returning `int32_t` from a `bool` ggml call.
+Section 2.6 of the design plan also records the **positive** half of this request's surface, which is
+worth adding to the register alongside the negative one: `f32` crosses the FFI by value in both
+directions, verified with a nine-argument probe mixing `f32`/`f64`/`i32` parameters and an `f32`
+return value, and an unsuffixed float literal in an `f32` parameter position coerces with no cast
+required at the call site —
+
+```text
+$ alignc run f32probe.align
+1                 # C saw 1000000.0, 1.0, 0.0, 1.0, 32.0, 1.0 exactly, alongside three i32
+3.75              # probe_f64(1.5, 2.25f) — mixed f64/f32 arguments
+7.0               # probe_ret_f32(3.5f) — an f32 return value
+```
+
+R5A's shipped implementation nonetheless passes no float across the boundary for an unrelated reason
+(bit-pattern fidelity to the GGUF source), so this is a measured boundary of the gap, not a
+workaround for it. It is non-blocking — both new entry points are wrapped and shipped — with all of
+R5A-DENSE-LAYER-FORWARD as independent work.
+
 **Consequence for the client.** `ggml_init` is unreachable from Align at this pin by any route
 (by-value rejected; by-pointer impossible because `layout(C)` cannot hold a `raw` field), and every
 `bool` predicate needs an integer-translating shim function. `align-llm` therefore ships
@@ -7564,6 +7627,22 @@ Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c
   and is the same verdict on every host. Both the weights-base and output-base misaligned rows are
   consequently `N/A`, not reachable from any input, because the base is the Align allocator's
   accident to compensate for, not the container's to be blamed for.
+
+**Additional client evidence, from the R5A-DENSE-LAYER-FORWARD capability, now shipped.** R5A packs
+thirteen weight members into one Align-owned window instead of R4.5's separate weight and output
+windows, so the same compensation this request asks the language to make unnecessary is now paid
+once per member rather than once per window. `src/layer_forward.align:2436` allocates
+`buffer(layout.weight_bytes + MAX_TENSOR_ALIGNMENT)` — one over-reservation for the whole window —
+and `:2438-2439` pads it to a `MAX_TENSOR_ALIGNMENT`-aligned interior offset the same way R4.5 does.
+That single pad only guarantees the window's first byte is aligned; each of the thirteen members'
+own interior placement inside that window still has to be checked individually, because a
+`block_align`-packed offset (typically 32 bytes) does not necessarily divide `tensor_alignment` (up
+to 64 bytes): `src/layer_forward.align:1858` computes `layout.window_offsets[at] % alignment` for
+every member in a loop over all thirteen, and `:1864` tests it against zero to name the first
+misaligned one as `R5_ALIGNMENT`. Thirteen separate alignment checks and a per-member `R5_ALIGNMENT`
+failure surface exist only because Align's allocator makes no placement guarantee stronger than the
+window's own base — the same gap this request asks to close, now paid thirteen times per run instead
+of R4.5's two.
 
 **Consequence for the client.** `ggml_backend_cpu_buffer_from_ptr` aborts the process
 (`GGML_ASSERT((uintptr_t)ptr % TENSOR_ALIGNMENT == 0 && "buffer pointer must be aligned")`) on a
@@ -7664,6 +7743,34 @@ the one place that knows which object was requested). A reader that must return 
 return them as a `Result` payload either: `src/ggml_spike.align:401-419`'s `read_reference` returns
 `Result<i64, alignpack_read.Fault>` (elapsed nanoseconds) and threads the actual bytes out through a
 `borrow mut out: buffer` parameter (line 405) instead of an owned `Result<buffer, Fault>` return.
+
+**Additional client evidence, from the R5A-DENSE-LAYER-FORWARD capability, now shipped.**
+R5A (`docs/specs/r5a-dense-layer-forward.md` section 2.6) is this request's first
+**architecturally load-bearing** client: not a constructor that would merely prefer to return a
+handle and a reason, but a design that needed `raw` to live inside an aggregate and found the pin
+refuses both aggregate shapes. A thirty-two-node Qwen2 layer graph needs its `ggml_tensor *`
+handles held somewhere the topology loop can index, and the probe found `raw` rejected as a struct
+field (as Request 34 already records) **and, newly, as an array element**:
+
+```text
+rawagg.align:7:10:  error: struct field type is not supported here, got raw
+rawagg.align:11:13: error: array element must be a scalar (composite payloads are not supported
+                     yet), got raw
+```
+
+That second refusal is why R5A does not hold the graph as an Align array of handles: it holds a
+node-slot store instead, a `buffer`-backed byte window that the shim writes `ggml_tensor *` values
+into by `i64` index. The shipped topology module names the slots and their bounds at
+`src/layer_qwen2.align:13-16` ("this module never sees one [handle]" — every reference is an `i64`
+slot index) and `:24-38` (`MAX_NODE_SLOTS`, `SLOT_HEADER_BYTES`, `SLOT_BYTES`, `NODE_COUNT`,
+`MEMBER_COUNT`, `ORACLE_COUNT`, `SLOT_TOKENS`, `SLOT_POS`, `SLOT_MASK`, `SLOT_NODE_BASE`); the arm
+addresses it exclusively through `i64` indices (for example `layer_qwen2.SLOT_NODE_BASE + oracle.node[row]`
+at `src/layer_forward.align:1368`), and no `raw` value appears in any record field or array anywhere
+in `src/` (asserted by the owner test, `docs/specs/r5a-dense-layer-forward.md` section 6's closing
+paragraph). The register entry should gain the array-element refusal text above and an acceptance
+criterion that `array<raw>` compiles; the align-llm verification is then to delete the slot store and
+hold the graph's handles directly. It is non-blocking — R5A ships the slot store on the pinned
+surface — with all of R5A-DENSE-LAYER-FORWARD as independent work.
 
 ### Requested capability
 
@@ -7778,6 +7885,167 @@ b.cap() -> i64                             // the capacity actually reserved, in
    `b.cap()` check before the read that needs the window, each guard's fixture status (currently
    `N/A`/no-fixture) is re-evaluated now that the failure is input-reachable, and `make gguf-smoke`,
    `make alignpack-smoke`, and `make ggml-spike-smoke` all pass.
+
+---
+
+## Request 36 — In-place replacement of owned array record fields and moving out of nested fields
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. R5A-DENSE-LAYER-FORWARD (`docs/specs/r5a-dense-layer-forward.md`
+  section 6, correction C9) ships eight single-assignment records instead of the one `Outcome` its
+  own section 3.7 designed, each assigned exactly once, as a whole, by the stage that produces it.
+Independent work that may continue: all of R5A-DENSE-LAYER-FORWARD.
+Resume condition: an Align release admits in-place replacement of an owned `array<T>` struct field
+  (assigning a whole new array to an already-initialized field of an owned struct), and/or admits
+  moving a whole nested Move-typed struct field out of its parent struct.
+Align commit or pull request: none
+align-llm verification: collapse `src/layer_forward.align`'s eight column records (`TokenColumns`,
+  `MemberColumns`, `Layout`, `ReadColumns`, `AbiColumns`, `PlacementColumns`, `NodeColumns`,
+  `OracleStates`) into the one `Outcome` section 3.7 designed, with each stage replacing the fields
+  it produces in place; pass `make layer-forward-smoke`.
+```
+
+### Motivation and current sibling evidence
+
+R5A-DENSE-LAYER-FORWARD's document (`docs/specs/r5a-dense-layer-forward.md` section 3.7) was designed
+around one `Outcome` record that every stage function appends a column to as it runs. The
+implementation could not build that shape.
+
+Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`:
+
+- `crates/align_sema/src/lib.rs:40934` is the exact diagnostic hit replacing an already-populated
+  `array<i64>` field of an owned struct: "field replacement of {} is not supported yet (owned field
+  replacement currently supports only `string` and `Option<string>` leaves; replace the whole
+  struct)". Two sema regression tests already pin this exact text for `array<i64>` specifically
+  (`crates/align_sema/src/lib.rs:69774`, `:69783`), so the restriction is deliberate and tested, not
+  an incidental gap.
+- `crates/align_sema/src/lib.rs:35159` and `:38646` both carry the second half, reached from two
+  different move-checking paths (a direct field-move expression at `:35159`, and a `let`-bound place
+  read of a field at `:38646`): "moving a nested struct field out of a struct is not supported yet —
+  clone it, or move the whole struct". A nested Move-typed sub-struct field therefore cannot be
+  pulled out of its parent even to reassign it as a whole.
+
+**Consequence for the client.** `src/layer_forward.align:889-894` records the forced shape in-repo:
+"The document's columns live in one `Outcome`; its **columns** live in six small records, each
+assigned exactly once, as a whole, by the stage that produces it. That shape is forced rather than
+chosen: at this pin an owned `array<i64>` field cannot be replaced in place ... and a nested struct
+field cannot be moved out of a struct either" (the comment predates the final count; the shipped file
+holds eight — `TokenColumns` at `src/layer_forward.align:898`, `MemberColumns` at `:903-915`,
+`Layout` at `:940-946`, `ReadColumns` at `:959`, `AbiColumns` at `:966`, `PlacementColumns` at `:974`,
+`NodeColumns` at `:982-994`, and `OracleStates` at `:1010`). `Outcome` itself (`:1016` onward) keeps
+only scalars and names. Each record is constructed exactly once, as a whole struct literal, by the
+one stage function that owns it — for example `stage_members` (`src/layer_forward.align:1626-1745`)
+builds `MemberColumns` and `Layout` in one literal at the end of the function rather than field by
+field — because a struct built any other way would need either an in-place `array<i64>` field
+replacement or a nested-field move, and both are refused. The design's own single-record shape —
+simpler to read, and closer to what section 3.7 wrote down — is unavailable at this pin.
+
+### Requested capability
+
+Extending the existing owned-field-replacement surface the checker already carries for
+`string`/`Option<string>` leaves:
+
+1. Admit in-place replacement of an owned `array<T>` struct field (assigning a whole new array to an
+   already-initialized field of an owned struct), on the same footing as the existing `string`/
+   `Option<string>` leaf support.
+2. Admit moving a whole nested (Move-typed) struct field out of its parent struct — nulling the
+   parent's field the same way a top-level local's move already does — so a record whose fields are
+   nested owned structs can be constructed incrementally instead of atomically.
+
+### Acceptance criteria
+
+1. `o.column := new_ids` (or equivalent) compiles and correctly frees the previous `array<i64>` when
+   `o` is an owned struct whose `column: array<i64>` field was already initialized.
+2. `sub := parent.nested_field` compiles and moves `nested_field` out of `parent`, leaving `parent`'s
+   other fields readable and `parent.nested_field` unusable, when `nested_field` is itself a Move
+   struct.
+3. `align-llm` verification: `src/layer_forward.align`'s eight column records collapse into the one
+   `Outcome` `docs/specs/r5a-dense-layer-forward.md` section 3.7 designed; `make layer-forward-smoke`
+   passes unchanged in outcome.
+
+---
+
+## Request 37 — Compiler check-time scaling for long function bodies and `match` on `Result` inside loops
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. R5A-DENSE-LAYER-FORWARD (`docs/specs/r5a-dense-layer-forward.md`
+  section 6, correction C8) ships fourteen small functions instead of the wide arm its own design
+  was silent on, purely to keep `make check` in seconds rather than minutes.
+Independent work that may continue: all of R5A-DENSE-LAYER-FORWARD, and any other capability writing
+  a long checked function or a `match` on a `Result` inside a loop.
+Resume condition: an Align release bounds per-function check time (near-)linearly in body length,
+  and/or removes the disproportionate cost of a `match` on a `Result` with block arms inside a loop
+  relative to the same loop written with `?`.
+Align commit or pull request: none
+align-llm verification: recombine `src/layer_forward.align`'s fourteen `?`-propagating functions (a
+  representative merge, not necessarily back into section 3.7's single-`Outcome` shape, since Request
+  36 governs that data-shape question separately) and pass `make check` on the merged module in under
+  10 s.
+```
+
+### Motivation and current sibling evidence
+
+R5A-DENSE-LAYER-FORWARD's design (`docs/specs/r5a-dense-layer-forward.md` sections 3-4, and section
+6's own correction row C8) was silent on how the arm should be shaped: nothing there says a stage
+must be its own function, and nothing warns against a `match` on a `Result`. The implementation found
+both choices carry a real, measured compiler cost:
+
+- Per-function checking is superlinear in body length: a 400-line function body checks in 40 s and a
+  900-line one does not finish in 600 s, measured on the section 2.1 host at the pinned commit
+  `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2` (`docs/specs/r5a-dense-layer-forward.md` section 6, row
+  C8).
+- A `match` on a `Result` with block arms costs far more to check than the same control flow written
+  with `?`, and the difference compounds inside a loop: one stage function with two in-loop `match`
+  expressions took 90 s to check, and the identical function rewritten with `?` took 2 s — roughly a
+  45x difference for the same computation (same row).
+
+A grep of the sibling repository's own performance notes (`docs/open-questions.md`,
+`docs/impl/21-build-perf-plan.md`, and the rest of `docs/impl/*`) for this specific cost — per-function
+check-time scaling, or `match`-in-loop cost relative to `?` — returns nothing: no sibling note found;
+reproduced only in align-llm at `src/layer_forward.align`.
+
+**Consequence for the client.** `src/layer_forward.align:1218-1221` records the design forced by this
+measurement in-repo: "One `match` in one place. At this pin a `match` on a `Result` with block arms
+is markedly more expensive to check than a call — inside a loop the difference is minutes against
+seconds — so every one of the arm's fallible calls either propagates with `?` or routes through this
+two-line function (section 6, correction C8)." The arm is split across fourteen functions
+(`stage_geometry` through `stage_prepare`/`execute`, `src/layer_forward.align:1463-2467`, none over
+two hundred lines), every fallible call inside a loop (for example `build_nodes`,
+`src/layer_forward.align:1303-1358`, one `?` per graph-node op) propagates with `?`, and every
+top-level fallible call outside a loop routes through the two-line `take`/`take_pack` helpers
+(`src/layer_forward.align:1222-1234`) instead of a `match`. The result: `check-per-unit
+src/layer_forward.align` is 6 s and `make check` is 86 s for 29 units — a shape chosen purely to keep
+the compiler fast, not because it reads better than the one-`Outcome`-per-stage design that section
+3.7 originally wrote down (see Request 36).
+
+### Requested capability
+
+No specific mechanism is proposed — this is a compiler performance property, not a missing language
+surface. The register asks for:
+
+1. A compiler test or benchmark that bounds per-function check time (near-)linearly in body length,
+   so a single well-organized function does not force an artificial split purely for check-time
+   reasons.
+2. Investigation and, if warranted, a fix for the disproportionate cost of a `match` on a `Result`
+   with block arms inside a loop relative to the same loop expressed with `?`, so a `match` is not a
+   45x check-time tax over an equivalent `?` chain.
+
+### Acceptance criteria
+
+1. A compiler benchmark exists that measures check time against function body length and shows it
+   growing (near-)linearly — or documents and bounds any remaining superlinear factor — rather than
+   the unbounded-looking growth measured here (400 lines → 40 s, 900 lines → not finished at 600 s).
+2. The same benchmark class measures a `match` on a `Result` with block arms inside a loop against
+   the equivalent `?`-propagating loop and shows the ratio bounded well below the ~45x measured here,
+   or documents why the difference is inherent.
+3. `align-llm` verification: `src/layer_forward.align`'s fourteen functions are recombined (a
+   representative merge) and `make check` on the re-merged module finishes in under 10 s.
 
 ---
 

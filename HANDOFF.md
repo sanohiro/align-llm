@@ -3,22 +3,224 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Awaiting publication: R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer (2026-08-27)
+## Awaiting publication: R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack (2026-08-27)
+
+- Branch `agent/r5a-dense-layer-forward`, **rebased onto the merged R4.5-EXTERNAL-BUFFER-SPIKE
+  work**: it now sits directly on `main` at `fa567b1` (the PR #126 merge of R4.5 head `d46fce6`),
+  which itself continues the merged R4-ALIGNPACK-LAYER-MAJOR chain (PR #125, head `a7e72dc`, merge
+  `991eab1`). The authoritative design ledger is `docs/specs/r5a-dense-layer-forward.md`, committed
+  at `03de1a4` ("docs: add R5A dense layer forward design ledger"). The branch is four commits on
+  `fa567b1`: the ledger `03de1a4`, the implementation `b6c7162` ("feat: compute one Qwen2 layer over
+  Align-owned alignpack windows"), the consolidated repair for both reviewers' findings `0878eab`
+  ("fix: close dense layer forward review findings"), and the final-review repair `82af318`
+  ("docs: close dense layer forward final review findings"), followed by the reconciliation commit
+  that records this rebase. Nothing is intentionally uncommitted. The rebase carried three content
+  conflicts, all resolved keeping both sides: `scripts/build-ggml-shim`'s environment table
+  (`main`'s `ALIGN_LLM_GGML_SHIM_DIR` line beside R5A's expanded `ALIGN_LLM_GGML_FORCE` list),
+  `docs/specs/roadmap.md`'s forward-order items 13 and 14 (`main`'s merged R4/R4.5 truth), and this
+  file's R4.5 and R4 sections, where `main`'s final content supersedes the branch's older
+  "publication in progress" text while R5A's own section is kept intact.
+- **Status: implemented, verified, reviewed twice, both review repairs committed, and rebased onto
+  the merged R4.5; awaiting publication.** R5A is stage 2 of
+  `docs/specs/roadmap.md`
+  section R5's three-stage gate — a single dense layer, CPU only — computed by ggml over Qwen2
+  weights that live in Align-owned buffers, checked against `llama-eval-callback`'s own numbers for
+  the same six tokens. Design is complete with probe evidence (below), the arm
+  (`src/layer_qwen2.align`, `src/layer_forward.align`, the shim wrappers) is implemented and
+  committed to the working tree, both owner and named-qualification verification have passed, two
+  complementary reviews are complete, one final comprehensive review of the repaired candidate
+  returned approve with four low findings, and every finding is repaired. Next action is
+  publication.
+- **Owner verification, latest run (after the review repair).** `check` (29 units, 88 s), `build`,
+  `ggml-spike` (both the default stub and the real linked library), `ggml-spike-smoke` (33 documented
+  cases), `layer-forward-smoke` (run three times, identical results each time: **nine** shim builds
+  plus the **74**-case golden corpus, 24 of 26 error codes reached and both oracles exercised,
+  matching section 7.6's own count), `alignpack-smoke` (20 positive fixtures, 106 negative sources,
+  14,981 assertions), `gate-topology-check`, `format-check`, `fmt` idempotent, and
+  `git diff --check` clean — all pass. The golden corpus was regenerated once for the repair and
+  then verified to be **independent of the `-ffp-contract=off` build flag** by rebuilding the shim
+  without it and re-running; dropping the matching `-DALIGN_GGML_FP_CONTRACT_OFF` define instead
+  fails all 74 cases on the new `abi.fp_contract_off` assertion, which is the guard working.
+- **Fresh-worker portability of the owner, repaired before preflight** (ledger section 6,
+  corrections **C26** and **C27**, the same two classes R4.5 hit as C22 and C23). The owner used
+  `sort` for its two static scans, and the fresh worker image ships a curated tool set
+  (`image/fresh/Dockerfile`) with no `sort`; it now sorts through a `python3` helper. It also built
+  its nine shims into `build/lib` and its executable into `./ggml-spike`, inside the work tree, and
+  the fresh worker permits the whole aggregate to leave exactly one file, `main`, in `/workspace`;
+  both now go into the runner's own `mktemp -d` tree. Verified on Linux (aarch64, clang 22) with
+  `PATH` restricted to exactly the curated set: `make layer-forward-smoke gate-topology-check`
+  PASS in 23 s, all 74 goldens reproduced — which is also the first cross-compiler evidence that the
+  corpus is portable — and `git status --porcelain --ignored` names nothing the runner created.
+  A **third** class then appeared in preflight itself (ledger correction **C28**): the arm makes
+  `src/ggml_spike.align` import the two new modules, so one build of it writes **22,152 bytes** of
+  compiler warnings to stderr, two runners build it, and the supervisor bounds the whole
+  `capable-checks` child at **65,536 bytes per stream** (`scripts/fresh-align-compiler`,
+  `MAX_STREAM_BYTES`). Overflow kills the child and reports `ERROR CHILD aggregate` with no cause
+  named — the first preflight failed that way after 796 s in the `fresh-installed` phase, with the
+  child's last stderr being those warnings and no error line after them. Both
+  `scripts/run-layer-forward-smoke` and `scripts/run-ggml-spike-smoke` now capture the compiler's
+  stderr and print it only on failure, under `ALIGN_LLM_FRESH_COMPILER=1` only, which is the shape
+  `Makefile`'s `check` and `build` targets already use. A **fourth** class then surfaced (ledger
+  correction **C29**): `lf-engine-transcript-excerpt` read the checked-in
+  `eval/fixtures/qwen2-blk0-6tok.txt` in place, the arm opens its transcript with `fs.open_rw`
+  because Align ships no read-only `file` constructor (Request 21), and the fresh worker mounts the
+  checkout root-owned and runs the aggregate as an unprivileged uid — so the case reported
+  `R5_TRANSCRIPT` detail `Denied` instead of `R5_ORACLE_SHAPE`. R2A hit the identical wall; the
+  runner now copies the excerpt into its temporary tree, verified on Linux with the checked-in file
+  left root-owned `0444` and the runner executed as an unprivileged uid. Correction **C30** is why
+  that took two preflight runs to see: a golden mismatch printed both whole documents, which the
+  8,192-byte worker diagnostic truncated past the line naming the case, and the runner now names the
+  differing field paths instead.
+- **Named qualification, against `qwen2.5-coder-7b-instruct-q4_k_m.gguf`, layer 0, tokens
+  `750,912,2877,11,293,1648`** (`docs/specs/r5a-dense-layer-forward.md` section 7.7):
+  - self-reference oracle: **IDENTICAL**, 20 of 20 dumped node tensors byte-identical;
+  - transcript oracle: **PASS**, 18 of 18 nodes, 1,116 sampled elements, `max |Δ| == 0`
+    ten-thousandths, worst sum difference 3,907 millionths (`ffn_gate`, 6.1e-8 relative);
+  - `l_out` sha256 `f601bf855d32ffa8faca2f50d98b2344df44e6b8aeb9b1e46b0d74b58685bdc6`,
+    `bit_sum` 45,431,914,068,759 — identical across all four qualification runs;
+  - compute **12.970 ms** as first recorded, and **15.048 / 13.350 / 13.379 ms** on three re-runs at
+    the repaired head: microbenchmark B is **12.97-15.05 ms, 13.4 ms typical**, not one number.
+    pread **55.2 ms** first recorded, 59.3-60.7 ms on the re-runs;
+  - `graph.slot_high_water` **48** (13 weights + 3 inputs + 32 nodes), scanned from the slot store,
+    and `abi.fp_contract_off` **true**;
+  - weight window **149,139,456 B**, activation **2,453,376 B**, 32 graph nodes;
+  - lifetime counters balanced (buffers 3/3, contexts 5/5, backends 1/1, gallocrs 2/2, released
+    true); the qualification's own temporary alignpack is deleted on exit (`scripts/run-layer-forward`
+    writes it under a work directory removed by an `EXIT`/`HUP`/`INT`/`TERM` trap).
+- **Probe evidence (ledger section 2), gathered before section 3's contract was written.**
+  - Transcript (tolerance) oracle: 18 oracle nodes, 1,116 sampled elements, worst `max|Δ|` **5.0e-5**
+    against `llama-eval-callback`, which is the instrument's own `%12.4f` print-rounding bound —
+    every sampled element agrees to the last digit printed.
+  - Re-accumulating in sequential f32 order (matching the instrument's own accumulation) makes
+    `norm-0`, `Qcur-0/ROPE`, and `kq-0` **bit-identical** to the transcript's printed sums. The worst
+    **relative** residual is 1.5e-6 (`l_out-0`, 1.3e-5 absolute); the worst **absolute** residual is
+    3.9e-3 (`ffn_gate-0`, 6.1e-8 relative). They are different nodes, which is why the shipped sum
+    tolerance is relative with an absolute floor (ledger section 3.6).
+  - Bit-exact self-reference oracle: the same graph, Align-owned weights vs. ggml-allocated weights,
+    **20 of 20** dumped node tensors byte-identical (the 18 oracle nodes plus `kq-0` and
+    `kq_soft_max-0`); two consecutive external-arm runs also byte-identical (deterministic on this
+    host at this thread count).
+  - Compute (microbenchmark B), design-stage probe harness: **15.5 ms** median (15.3-16.6 ms range)
+    for one dense layer, six tokens, 32 graph nodes, warm. The shipped arm measures 12.97-15.05 ms.
+  - The embedding member must be row-gathered, not read whole: whole-member window
+    455,688,192 B / 87.0 ms read vs. row-gathered window **149,139,456 B** / 19.5-20.9 ms read, for a
+    byte-identical answer.
+  - The oracle instrument's default graph is not the one R5A computes; the qualification's flags are
+    contractual: `-fa off -ctk f32 -ctv f32 -nr -c 512` (disables flash attention/f16 KV cache/CPU
+    weight repacking, keeps everything on CPU). The transcript's first node is `embd`, not the
+    plan's assumed `inp_embd`; the attention output-projection node has no stable name across builds
+    (`node_31` under `-fa off`, `node_26` under flash attention) and is matched by its source weight
+    name (`blk.L.attn_output.weight`) instead.
+  - FFI surface verified at the pin: `f32` crosses by value in both directions (a nine-argument
+    mixed-scalar probe) and an unsuffixed float literal coerces at an `f32` parameter with no cast —
+    the design nonetheless passes every scalar as an `i32` bit pattern for GGUF bit-fidelity, not
+    because `f32` doesn't work. `bool` is still refused, so `ggml_gallocr_reserve` and
+    `ggml_gallocr_alloc_graph` needed shim wrappers, now shipped. `raw` cannot be a `layout(C)` struct field
+    (already known) **or an array element** (new), which is why the 32-node graph's `ggml_tensor *`
+    handles live in an Align-owned node-slot store addressed by `i64` index rather than in any Align
+    aggregate.
+- **Review envelope.** Two complementary independent reviewers covered explicitly disjoint risks of
+  the candidate at `1e4749a`: **A** the Align source, the C shims, and the runners; **B** the
+  specification, the register, this handoff, and the roadmap. A returned 2 blocker, 1 high, 1
+  medium, 2 low, and 1 info; B returned 2 medium and 8 low. **Every finding was validated and
+  accepted, and all are repaired in this single consolidated commit.** The two blockers were the
+  ones that mattered: a `rms_eps_bits` naming NaN, `-inf`, or a negative reached
+  `GGML_ASSERT(eps >= 0.0f)` and took the process down with exit 134, no document, and no error code
+  (now `R5_GEOMETRY` at step 7, with a shim-side backstop and eight fixtures); and the stub engine's
+  kernels contracted to FMA under Apple clang on `arm64` but not under GCC 13 on `x86-64`, so twelve
+  of the then forty-eight goldens disagreed on hosted CI (now `#pragma STDC FP_CONTRACT OFF` plus
+  `-ffp-contract=off`, an `abi.fp_contract_off` field, and an assertion on every document). The high
+  finding was an oracle that could report `PASS` over zero compared elements; the medium was that the
+  hosted owner could not observe a missing `ggml_set_output` because the stub never reused memory.
+  Ledger section 6 records all eleven contract changes as corrections **C15 to C25**, each with its
+  cases. One **final comprehensive review** of the repaired candidate at `0414ab9` returned
+  **approve** with four findings, all low or nit, every one validated and accepted: (1)
+  `-ffp-contract=off` is necessary but not sufficient, because the stub engine's kernels call libm
+  (`expf`, `sinf`, `cosf`, `powf`), whose last bit may differ between Apple libm and glibc; (2)
+  `abi.fp_contract_off` published build *provenance* rather than behaviour; (3) the
+  `slot_high_water` comment claimed more than a high-water mark can show; (4) correction C19 said
+  "shortfall" where the code refuses any inequality — an excess is reported as `R5_ORACLE_MISSING`
+  with `24/18`. All four are repaired in this commit: C15 and the owner's comment record the libm
+  dependency and that **the goldens are the detector** while the flag is the diagnosis (the
+  fixture's 770 libm calls over 73 distinct inputs were verified 0-divergent under glibc 2.39); both
+  shims gained `align_ggml_fp_contract_probe`, which compares `a * b + c` over `volatile` operands
+  against a separately rounded product and sum on a triple whose two answers differ by one ulp, and
+  `align_ggml_fp_contract_off` returns the probe under the build define, so the published field is
+  behaviour (verified 0 with no flag and 1 with it under Apple clang 17 on `arm64` and clang 22 on
+  `aarch64-linux`, and 1 either way under GCC 13/14 on `x86-64`; a stub built with
+  `-DALIGN_GGML_FP_CONTRACT_OFF=1` **and** `-ffp-contract=fast`, which clang honours over the
+  pragma, now reports `false`, which the define alone could not); the high-water claim is softened to
+  the missing top slot it can actually show; and `shortfall` is renamed `miscount` with the
+  either-direction rule stated in the code and in C19. The repair changes one exported value's
+  derivation and **no golden**, so it does not trigger another full review.
+- **Align capability requests.** Design believed **no new request** was needed — ledger section 5.5
+  verifies every gap the design's probes hit was already recorded in `docs/align-requests.md` — and
+  implementation confirmed that, but also hit two further gaps of its own (ledger section 6,
+  corrections C8 and C9), now **Requests 36 and 37, both PROPOSED**. Design-time work added new
+  client evidence to Request 34 (`raw` refused as an array element too, the reason the node-slot
+  store exists; now citable at `src/layer_qwen2.align:13-16,24-38`) and Request 32 (two more
+  `bool`-typed ggml entry points needing wrappers, now shipped at `src/ggml_ffi.align:744-754` and
+  `scripts/ggml_shim.c:1069-1090`, plus the positive `f32` measurement above), with no-text-change
+  client evidence to Requests 21 and 35, and a shipped citation strengthening Request 33 (the
+  per-member alignment compensation now paid thirteen times per run). Request 36: an owned
+  `array<i64>` struct field cannot be replaced in place and a nested struct field cannot be moved out
+  of its parent, so `src/layer_forward.align`'s document columns live in eight single-assignment
+  records instead of the one `Outcome` the design wrote down. Request 37: per-function check time is
+  superlinear in body length and a `match` on a `Result` inside a loop costs roughly 45x the same
+  loop with `?`, so the arm is split into fourteen functions purely to keep `make check` fast. Both
+  are non-blocking. See `docs/align-requests.md` for the full text.
+- **Canonical baseline chain, re-recorded on Linux.** R5A changes `Makefile` (the layer-forward
+  targets and the `HOSTED_CHECK_TARGETS` membership) and `.gitattributes` (the `-whitespace` rule
+  for the checked-in blk.0 excerpt), two of the twenty recorded baseline artifacts, so the chain
+  that shipped with R4.5 no longer bound this head. The identity-bound chain is
+  `a0b18ee` -> `823364c` -> `0f9bc64` (source -> immutable oracle -> finalization), recorded on
+  Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3). Exactly those two of the twenty artifacts
+  changed against the R4.5 chain; the other eighteen hashes, `src/main.align` included, are
+  unchanged and the twenty paths are identical. `make baseline-check` on Linux: PASS, ending
+  `baseline chain: PASS`, both at `0f9bc64` and again at the later portability repair `1897a79`,
+  which touches no recorded artifact.
+- **Next actions, in order.**
+  1. At publication, run **`make ci`**, not only the narrower classifier path — adding
+     `layer-forward-smoke` to `HOSTED_CHECK_TARGETS` changes aggregate membership, which is one of
+     `CLAUDE.md`'s explicit triggers for the full integration graph.
+  2. Exact-head preflight (`python3 scripts/pre-pr`), including the DinD-capable installed profile
+     check; do not substitute a Docker skip or an ambient `DOCKER_HOST` endpoint.
+  3. Publish the English pull request against `main`. R4.5's PR #126 and R4's PR #125 are both
+     merged.
+- **Two pending user decisions, carried forward verbatim.**
+  1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
+     gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
+     `N/A`.
+  2. Carried forward from R2A: whether to download a small MoE GGUF (1-4 GB) so
+     `scripts/run-expert-trace-parity` can exercise the `moe: true` path against a real MoE
+     transcript; until decided the R2 roadmap gate stays open on dense-only smoke evidence, R4's own
+     MoE case stays synthetic-only, and R3 stays blocked (below). Note: a small MoE GGUF chosen for
+     size will most likely not be gpt-oss architecture, so R3's real measurement would also need a
+     new R1C frontend for whatever architecture that model uses, not just the download itself.
+- **R3 (Cache Simulator) is blocked on pending decision 2 above.** R3's gate
+  ("対象ハードウェア条件で、baselineより有効なpolicyを特定できること", `docs/specs/roadmap.md` section
+  R3) needs a real MoE activation trace and a cache-policy comparison against it; R2A's design ledger
+  already records that no such trace exists on this host. Resume condition: the small-MoE-GGUF
+  decision is made, the model's architecture is identified, an R1C frontend is built if that
+  architecture is not already `qwen2`/`gpt-oss`, and R2A's `moe: true` path is exercised against a
+  real transcript from it. Independent work that may continue: R5A's publication (its stage-2 dense
+  CPU gate needs no MoE trace) and the next eligible roadmap capability.
+
+## Merged checkpoint: R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer (2026-08-27)
 
 - Branch `agent/r4-5-external-buffer`, **rebased onto the merged R4-ALIGNPACK-LAYER-MAJOR work**:
   it now sits directly on `main` at `991eab1` (the PR #125 merge of R4 head `a7e72dc`). The
   authoritative design ledger is `docs/specs/r4-5-external-buffer.md`, committed at `7bd7d0d`
   ("docs: add R4.5 external buffer spike design ledger").
-- **Status: implemented, verified, reviewed twice, both review repairs committed, and rebased onto
-  the merged R4; awaiting publication.** The branch is five commits on `991eab1`: the design ledger
+- **Status: merged as PR #126** (head `d46fce6`, merge commit `fa567b1` on `main`). Implemented,
+  verified, reviewed twice, both review repairs committed, preflight recorded, and merged. The
+  branch was ten commits on `991eab1`, ending at `d46fce6`: the design ledger
   `7bd7d0d`, the implementation `de86c58` ("feat: compute a ggml matmul over an Align-owned
   alignpack block"), the consolidated repair for both reviewers' findings `bf7f10b` ("fix: close
   external buffer spike review findings"), the final-review repair `049a5cc` ("docs: close external
-  buffer spike final review findings"), and the reconciliation commit that records this rebase.
-  Nothing is intentionally uncommitted. The rebase carried one content conflict, resolved keeping
-  both sides: this file's R4 status bullet, where `main`'s final R4 content (the re-recorded
-  baseline chain and the two review repairs) supersedes the branch's older "publication in
-  progress" text, while R4.5's own section is kept intact.
+  buffer spike final review findings"), the reconciliation commit `45cdc55`, the three-commit
+  re-recorded baseline chain `8b3b161`/`eece7a1`/`77acbb1`, and the two preflight repairs `7a2be4e`
+  and `d46fce6`.
 - **What is on the branch.** `src/alignpack_read.align`, `src/ggml_ffi.align`, `src/ggml_spike.align`,
   `scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`, `scripts/build-ggml-shim`,
   `scripts/ggml_spike_fixture.py`, `scripts/run-ggml-spike-smoke`, `scripts/run-ggml-spike`, and
@@ -151,14 +353,8 @@ file records durable project state.
   `ggml-spike-qualification` targets. `src/main.align`, the other artifact R4 moved, is **unchanged**
   by R4.5, and the twenty paths are identical with every other hash unchanged.
   `make baseline-check` on Linux: PASS, ending `baseline chain: PASS`.
-- **Next actions, in order.**
-  1. Exact-head preflight —
-     `python3 scripts/pre-pr --owner-test ggml-spike -- make ggml-spike-smoke gate-topology-check`.
-     Do not replace the required installed profile with a Docker skip or an ambient `DOCKER_HOST`
-     endpoint.
-  2. Publish the English pull request against `main` at `991eab1` or later, recording the
-     qualification numbers above, the baseline chain, the review envelope, and the finding
-     dispositions.
+- **Next action.** None; merged. The qualification numbers, baseline chain, review envelope, and
+  finding dispositions are recorded on PR #126.
 - **Two pending user decisions, carried forward verbatim.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
      gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented

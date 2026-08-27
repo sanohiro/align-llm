@@ -14,7 +14,12 @@ set -euo pipefail
 #
 #   ALIGN_LLM_GGML_INCLUDE  directory holding `ggml.h` and `ggml-backend.h`  (selects the real shim)
 #   ALIGN_LLM_GGML_LIB      directory holding `libggml` and `libggml-base`   (real shim only)
-#   ALIGN_LLM_GGML_FORCE    init | compute | reference — the section 4.6 forced-failure builds
+#   ALIGN_LLM_GGML_FORCE    the section 4.6 forced-failure builds. `init`, `compute`, and
+#                           `reference` need the real shim; `engine`, `engine+init`,
+#                           `engine+alloc`, `engine+compute`, `engine+reference`,
+#                           `engine+slot-range`, `engine+slot-empty`, and
+#                           `engine+no-mark-output` select the ggml-free deterministic engine of
+#                           `docs/specs/r5a-dense-layer-forward.md` section 5.1 and need the stub
 #   ALIGN_LLM_GGML_SHIM_DIR output directory; defaults to `build/lib` inside the work tree
 #   CC                      C compiler; defaults to `cc`
 #
@@ -22,7 +27,8 @@ set -euo pipefail
 # prerequisite of this repository: `alignc` links every executable through it, so `make build` does
 # not work without one and neither does any hosted target. This script needs nothing beyond that —
 # a freestanding C compiler, `-shared`, and libc headers. `scripts/ggml_shim_stub.c` includes only
-# `<stddef.h>` and `<stdint.h>`; `scripts/ggml_shim.c` additionally needs the ggml headers the
+# `<math.h>`, `<stddef.h>`, `<stdint.h>`, and `<string.h>` and links only libm;
+# `scripts/ggml_shim.c` additionally needs the ggml headers the
 # caller names, and is never built on a host that does not name them. Both files compile clean under
 # `-Wall -Wextra -Werror` with Apple clang 21 and Homebrew LLVM 19, 21, and 22.
 #
@@ -85,9 +91,36 @@ if [ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ]; then
       exit 1
       ;;
   esac
-elif [ -n "${ALIGN_LLM_GGML_FORCE:-}" ]; then
-  printf '%s\n' "build-ggml-shim: ALIGN_LLM_GGML_FORCE needs the real shim" >&2
-  exit 1
+else
+  # The stub's own forced builds. `engine` turns on the deterministic single-precision engine of
+  # `docs/specs/r5a-dense-layer-forward.md` section 5.1, which is what makes steps 18 to 29 — and
+  # therefore both oracle verdicts and fourteen more error codes — reachable on a host with no
+  # ggml, no model, and no llama.cpp. The default stub is unchanged and remains unavailable.
+  engine="-DALIGN_GGML_STUB_ENGINE=1"
+  case "${ALIGN_LLM_GGML_FORCE:-}" in
+    "") ;;
+    engine)            include_flags+=("${engine}"); flavour="stub+engine" ;;
+    engine+init)       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_INIT_FAILURE=1")
+                       flavour="stub+engine+force-init" ;;
+    engine+alloc)      include_flags+=("${engine}" "-DALIGN_GGML_FORCE_ALLOC_FAILURE=1")
+                       flavour="stub+engine+force-alloc" ;;
+    engine+compute)    include_flags+=("${engine}" "-DALIGN_GGML_FORCE_COMPUTE_FAILURE=1")
+                       flavour="stub+engine+force-compute" ;;
+    engine+reference)  include_flags+=("${engine}" "-DALIGN_GGML_FORCE_REFERENCE_PERTURBATION=1")
+                       flavour="stub+engine+force-reference" ;;
+    engine+slot-range) include_flags+=("${engine}" "-DALIGN_GGML_FORCE_SLOT_RANGE=1")
+                       flavour="stub+engine+force-slot-range" ;;
+    engine+slot-empty) include_flags+=("${engine}" "-DALIGN_GGML_FORCE_SLOT_EMPTY=1")
+                       flavour="stub+engine+force-slot-empty" ;;
+    engine+no-mark-output)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_NO_MARK_OUTPUT=1")
+                       flavour="stub+engine+force-no-mark-output" ;;
+    *)
+      printf '%s\n' "build-ggml-shim: unknown stub ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
+      exit 1
+      ;;
+  esac
+  link_flags+=("-lm")
 fi
 
 if ! command -v "${compiler}" >/dev/null 2>&1; then
@@ -102,7 +135,17 @@ case "${OSTYPE:-}" in
   *)       name_flags=("-Wl,-soname,${library}") ;;
 esac
 
-"${compiler}" -O2 -fPIC -shared -Wall -Wextra -Werror \
+# `-ffp-contract=off` is a **correctness** flag here, not an optimisation preference
+# (`docs/specs/r5a-dense-layer-forward.md` section 6, correction C15). `a * b + c` may be
+# contracted into one fused multiply-add, and whether it is depends on the compiler and the
+# target: Apple clang on arm64 contracts by default, GCC 13 on x86-64 does not. The stub engine's
+# kernels are what `scripts/layer-forward-golden.jsonl` is generated from, so a contraction
+# difference is twelve of forty-eight goldens disagreeing on a host that is otherwise correct.
+# Both C files also carry `#pragma STDC FP_CONTRACT OFF`; the flag is what covers a compiler that
+# does not honour the pragma, and `-DALIGN_GGML_FP_CONTRACT_OFF=1` is what lets the two runners
+# assert that the library they loaded was built this way.
+"${compiler}" -O2 -ffp-contract=off -DALIGN_GGML_FP_CONTRACT_OFF=1 \
+  -fPIC -shared -Wall -Wextra -Werror \
   "${include_flags[@]+"${include_flags[@]}"}" \
   -o "${library}" "${source_file}" \
   "${name_flags[@]}" \
