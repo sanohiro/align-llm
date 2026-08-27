@@ -51,6 +51,16 @@ file records durable project state.
   `PATH` restricted to exactly the curated set: `make layer-forward-smoke gate-topology-check`
   PASS in 23 s, all 74 goldens reproduced — which is also the first cross-compiler evidence that the
   corpus is portable — and `git status --porcelain --ignored` names nothing the runner created.
+  A **third** class then appeared in preflight itself (ledger correction **C28**): the arm makes
+  `src/ggml_spike.align` import the two new modules, so one build of it writes **22,152 bytes** of
+  compiler warnings to stderr, two runners build it, and the supervisor bounds the whole
+  `capable-checks` child at **65,536 bytes per stream** (`scripts/fresh-align-compiler`,
+  `MAX_STREAM_BYTES`). Overflow kills the child and reports `ERROR CHILD aggregate` with no cause
+  named — the first preflight failed that way after 796 s in the `fresh-installed` phase, with the
+  child's last stderr being those warnings and no error line after them. Both
+  `scripts/run-layer-forward-smoke` and `scripts/run-ggml-spike-smoke` now capture the compiler's
+  stderr and print it only on failure, under `ALIGN_LLM_FRESH_COMPILER=1` only, which is the shape
+  `Makefile`'s `check` and `build` targets already use.
 - **Named qualification, against `qwen2.5-coder-7b-instruct-q4_k_m.gguf`, layer 0, tokens
   `750,912,2877,11,293,1648`** (`docs/specs/r5a-dense-layer-forward.md` section 7.7):
   - self-reference oracle: **IDENTICAL**, 20 of 20 dumped node tensors byte-identical;
