@@ -7,6 +7,7 @@ import eval
 import gguf
 import frontend_qwen
 import frontend_gpt_oss
+import frontend_olmoe
 import expert_trace
 import model_ir
 import alignpack
@@ -529,9 +530,11 @@ fn inspect_gguf_demo(args: array<str>) -> Result<(), Error> {
 //
 // There is no `--arch` flag. A flag would be a second source of truth for a fact the file already
 // states, and a mismatch between the two would need an error code of its own; the file wins because
-// the file is the subject. `gpt-oss` selects the MoE frontend and every other value — including an
-// absent, non-STRING, or non-UTF-8 one — selects the qwen2 frontend, whose own step-4 re-check
-// rejects it as `R1_UNSUPPORTED_ARCH` with the architecture as the detail.
+// the file is the subject. `gpt-oss` and `olmoe` each select their own MoE frontend and every other
+// value — including an absent, non-STRING, or non-UTF-8 one — selects the qwen2 frontend, whose own
+// step-4 re-check rejects it as `R1_UNSUPPORTED_ARCH` with the architecture as the detail. The same
+// three-way chain is written at all three verbs: a two-way site would silently derive a real olmoe
+// file as qwen2 (`docs/specs/r1c-olmoe-moe-ir.md` section 2.2).
 fn model_ir_demo(args: array<str>) -> Result<(), Error> {
   if args.len() < 3 || args.len() > 4 {
     return Err(Error.Invalid)
@@ -540,6 +543,8 @@ fn model_ir_demo(args: array<str>) -> Result<(), Error> {
   architecture_view: str := table.architecture
   ir := if table.architecture_present && architecture_view == "gpt-oss" {
     frontend_gpt_oss.build_model_ir(table, args[2])
+  } else if table.architecture_present && architecture_view == "olmoe" {
+    frontend_olmoe.build_model_ir(table, args[2])
   } else {
     frontend_qwen.build_model_ir(table, args[2])
   }
@@ -771,6 +776,8 @@ fn pack_demo(args: array<str>) -> Result<(), Error> {
   architecture_view: str := table.architecture
   prepared := if table.architecture_present && architecture_view == "gpt-oss" {
     frontend_gpt_oss.prepare(table)
+  } else if table.architecture_present && architecture_view == "olmoe" {
+    frontend_olmoe.prepare(table)
   } else {
     frontend_qwen.prepare(table)
   }
@@ -907,6 +914,8 @@ fn pack_verify_demo(args: array<str>) -> Result<(), Error> {
   architecture_view: str := table.architecture
   prepared := if table.architecture_present && architecture_view == "gpt-oss" {
     frontend_gpt_oss.prepare(table)
+  } else if table.architecture_present && architecture_view == "olmoe" {
+    frontend_olmoe.prepare(table)
   } else {
     frontend_qwen.prepare(table)
   }

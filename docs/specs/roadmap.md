@@ -198,17 +198,50 @@ The current forward delivery order is:
     before implementation, so this is not a ceiling-estimation miss. Required microbenchmark C
     (async prefetch + GPU compute) cannot be written at this pin and is deferred with Request 41
     named (`docs/align-requests.md`).
+18. **R1C-OLMOE-MOE-IR — an olmoe frontend and the first Model IR/Block IR derived from a real MoE
+    model. Active.** On branch `agent/r1c-olmoe-moe-ir`, design ledger merged at commit `5a15fd7`.
+    [`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md) is the authoritative plan and owns the contract
+    ledger and closure matrix. It turns the real, locally present
+    `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (195 tensors = 3 global + 16 layers × 12 per-layer
+    patterns; 64 experts, top-8 routing) into `R1_MODEL_IR` at the unchanged `schema_version: 2`
+    through a new `src/frontend_olmoe.align` and a three-way architecture dispatch, and appends two
+    roles to the frozen `role_id` list (`attn_q_norm` 27, `attn_k_norm` 28). The size-sum oracle
+    closes at `1,781,760 + 4,211,730,432 = 4,213,512,192` and the Block IR reaches 1,058 blocks /
+    3,219 claims, measured on the real file. `src/model_ir.align` needs **no change**, confirming
+    R1B section 5.5's design intent for a second MoE architecture. The real model also **contradicts
+    rather than confirms** two of R1B's `ASSUMED` rows: the stacked gate/up/down axis order is
+    reversed versus R1B's gpt-oss assumption, and R1B's required split expert biases are falsified
+    as a generic rule (the real file carries no bias tensor at all). Both are recorded as
+    corrections to `docs/specs/r1b-gptoss-moe-ir.md` section 7 by this capability's implementation,
+    not repaired in the gpt-oss frontend itself, since no real gpt-oss file is present to settle it.
+    Implementation and review are complete and publication is in progress; see `HANDOFF.md`.
+19. **R2-LOCALITY-GATE — the R2 locality gate, measured on a real MoE model. Merged as PR #131,
+    merge commit `546b5cc` on `main`.** Was on branch `agent/r2-locality-gate` at the review repair
+    `fff5806`; no design gate triggered. Discharged R2A's `MOE-PREREQ` deferral by running
+    `--expert-trace` against `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` and added a multi-prompt
+    locality measurement script: 40 prompts of at most 6 tokens each, a null hypothesis
+    `p0 = 125` per mille, and a confidence interval judged against a 1.5× effect-size floor over
+    the null. **The gate is met in the prefill direction**: verdict `LOCALITY`, observed
+    `p^ = 286` per mille against the null's 125 (2.29×), 95% cluster-robust interval
+    `[262, 311]` per mille over 40 prompt clusters (design effect 10.460), and all 15 measurable
+    layers clearing the null on their own. The router histogram is near uniform (entropy 992 per
+    mille, all 64 experts used), so the effect is conditional structure between tokens rather than
+    popularity bias. The measurement is prefill-only at this instrument pin, and the real model's
+    top-8 routing reached R2A's `slots_truncated: true` branch for the first time on real data
+    (observed truncated slots 3 of 8 at each end). The R2 section below records the verdict, its
+    limits, and the R2b/R2c work that remains.
 
 ### Status (2026-08-28)
 
-Track B is complete on the dense local model from R0 through R5C (item 17), and no further roadmap
-item is startable without a user decision or an Align-side change: (a) a small MoE GGUF, 1-4 GB,
-unblocks R2's locality gate, R3, R4's per-expert half, and R4.5's expert matmul, and — because a
-size-chosen model is unlikely to be `gpt-oss` — also needs a new R1C frontend; (b)
-`gpt-oss-20b-mxfp4.gguf`, 12.1 GB, unblocks R1B's real-model `model-ir-parity` qualification; (c) a
-source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
+Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
+`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
+`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked two capabilities, items 18
+and 19 below: item 19 is merged and its gate is met, and item 18 is in publication. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+**infeasible on this host** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
+real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
+a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
 through it, R7-R9; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
-required microbenchmark C. See `HANDOFF.md`, "No active capability", for the full decision list and
+required microbenchmark C. See `HANDOFF.md`, "Active capabilities", for the full decision list and
 disk-space accounting.
 
 **I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
@@ -589,7 +622,17 @@ size-sum oracleは`data_offset` 5,953,536 + `total_tensor_bytes` 4,677,120,000 =
 gpt-oss/MoEの半分（`n_expert > 0`、per-expert `ExpertBlock`）はR1B-GPTOSS-MOE-IR（PR #123）で
 実装・mergeされ、合成corpusおよびsize-sum/claim-tiling oracle、MXFP4 library oracleで検証済み。
 gpt-oss実モデルに対する`model-ir-parity` qualificationのみ、`gpt-oss-20b-mxfp4.gguf`（12.1 GB）の
-ダウンロードに関するユーザー判断待ちのopen項目として残る。
+ダウンロードに関するユーザー判断待ちのopen項目として残る（決定(b)は本hostでは容量不足のため
+**infeasible**として記録済み、`HANDOFF.md`参照）。
+
+**R1C-OLMOE-MOE-IR**（[`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md)、branch
+`agent/r1c-olmoe-moe-ir`、design ledger commit `5a15fd7`）が第三のR1 capabilityとしてActiveであり、
+実MoEモデル`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`に対する`src/frontend_olmoe.align`の実装とreviewを
+終えてpublication段階にある（forward order item 18）。この実測は、R1Bのsection 2.5が`ASSUMED`としていた2行を**確認ではなく
+反証**した：stacked gate/up/down axis orderはR1Bの想定と逆であり、R1Bがrequiredとしていたsplit
+expert bias群は実MoEファイルに一切bias tensorが存在しないことで汎用規則としては反証された。
+どちらも実gpt-ossファイルがない以上gpt-oss frontend自体は変更せず、R1B section 7への訂正として
+記録される（`r1c-olmoe-moe-ir.md` section 2.9, 5.3）。
 
 ---
 

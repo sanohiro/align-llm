@@ -3,9 +3,9 @@ set -euo pipefail
 
 # R4-ALIGNPACK-LAYER-MAJOR narrow durable owner (`docs/specs/r4-alignpack-layer-major.md`
 # section 4.2). It needs no model, no network, and no reference tool: `scripts/gguf_fixture.py`
-# writes the same synthetic qwen2 and gpt-oss corpora `run-model-ir-smoke` already drives into a
-# temporary tree, every artifact is removed by the EXIT trap, and the largest container is a few
-# hundred kilobytes. That is why it joins HOSTED_CHECK_TARGETS.
+# writes the same synthetic qwen2, gpt-oss, and olmoe corpora `run-model-ir-smoke` already drives
+# into a temporary tree, every artifact is removed by the EXIT trap, and the largest container is a
+# couple of megabytes. That is why it joins HOSTED_CHECK_TARGETS.
 #
 # One runner drives five lists: the positive corpus through `--pack`, `--pack-verify`, and the
 # independent reader; the whole R0/R1 negative corpus through `--pack`, asserting that every
@@ -187,7 +187,7 @@ def normalize(document):
 
 def positive_cases():
     cases = []
-    for key in ("model_ir_cases", "model_ir_gptoss_cases"):
+    for key in ("model_ir_cases", "model_ir_gptoss_cases", "model_ir_olmoe_cases"):
         for case in manifest[key]:
             if case["exit"] == 0:
                 cases.append(case)
@@ -196,7 +196,7 @@ def positive_cases():
 
 def negative_cases():
     cases = []
-    for key in ("cases", "model_ir_cases", "model_ir_gptoss_cases"):
+    for key in ("cases", "model_ir_cases", "model_ir_gptoss_cases", "model_ir_olmoe_cases"):
         for case in manifest[key]:
             if case["exit"] != 0:
                 cases.append((key, case))
@@ -1335,6 +1335,32 @@ for block in expert_blocks:
             "expert-block-contiguous: an ExpertBlock packs into %d ranges"
             % block["pack_range_count"])
 
+# `pack-olmoe` (`docs/specs/r1c-olmoe-moe-ir.md` sections 3.3 and 3.4). The two roles appended to
+# the frozen list must survive the round trip as real ids — without the append both QK-norm members
+# of every layer would pack as `DEFERRED_U32`, a stated absence the reader accepts and R4.5 cannot
+# use — and the three verbs must agree about the same file. A two-way dispatch at `--pack` or
+# `--pack-verify` would silently derive a real olmoe file as qwen2, which the pack document's own
+# `source.arch` and block count are what expose.
+olmoe = results["olmoe-full"]
+olmoe_ir = json.loads(run(["--model-ir", olmoe["source"]]).stdout.decode("utf-8"))
+require(olmoe_ir["model"]["arch"] == "olmoe", "dispatch-olmoe: --model-ir reports %r"
+        % olmoe_ir["model"]["arch"])
+require(as_dict(olmoe["document"]["source"])["arch"] == "olmoe",
+        "dispatch-olmoe: --pack reports %r" % as_dict(olmoe["document"]["source"])["arch"])
+require(as_dict(olmoe["verify"]["source"])["arch"] == "olmoe",
+        "dispatch-olmoe: --pack-verify reports %r" % as_dict(olmoe["verify"]["source"])["arch"])
+require(len(olmoe["document"]["blocks"]) == len(olmoe_ir["blocks"])
+        == len(olmoe["verify"]["blocks"]) == olmoe_ir["coverage"]["block_count"],
+        "arm-consistency: the three verbs disagree about the olmoe block count")
+olmoe_qk = set()
+for block in olmoe["document"]["blocks"]:
+    for member in as_dict(block)["members"]:
+        entry = as_dict(member)
+        if entry["role"] in ("attn_q_norm", "attn_k_norm"):
+            olmoe_qk.add((entry["role"], entry["role_id"]))
+require(olmoe_qk == {("attn_q_norm", 27), ("attn_k_norm", 28)},
+        "pack-olmoe: the QK-norm members carry %r, expected the appended ids 27 and 28" % olmoe_qk)
+
 # `stats-overlap`: two blocks' spans may overlap, so the source total may exceed the file size.
 permuted = results["qwen2-permuted"]
 permuted_sequential = as_dict(as_dict(permuted["verify"]["sequential_read"])["source"])
@@ -1367,6 +1393,6 @@ leak_sweep(before)
 print("alignpack smoke: %d positive fixtures, %d negative sources, %d assertions"
       % (len(cases), len(negative_cases()), checks))
 print("alignpack smoke: container codec, layout invariants, byte identity, the sequential-read "
-      "oracle, the mutation corpus, the lowered-limit corpus, the independent reader, and CLI "
-      "arity/isolation PASS")
+      "oracle, the mutation corpus, the lowered-limit corpus, the appended QK-norm role ids, the "
+      "independent reader, and CLI arity/isolation PASS")
 PY

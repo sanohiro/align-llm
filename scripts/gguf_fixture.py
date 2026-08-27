@@ -1823,6 +1823,681 @@ def gptoss_build(out_dir):
     return cases
 
 
+# =================================================================================================
+# R1C-OLMOE-MOE-IR corpus (`docs/specs/r1c-olmoe-moe-ir.md` section 4.1).
+#
+# The generator is extended, not replaced: `GGML_GEOMETRY` and `GEOMETRY_TYPES` are untouched, so no
+# existing R0, R1, or R1B fixture's bytes change. Every expected `nbytes`, every per-expert claim,
+# and every block byte total is computed here in Python from the bytes this file writes, which is
+# what makes the claim-tiling oracle a differential check rather than a mirror of the derivation.
+#
+# **Every key name, tensor name, and shape below is MEASURED** on a real 3.92 GiB model (section
+# 2.1). The fixture deliberately mirrors the real model's shape *relationships* rather than its
+# extents: MHA (`n_head == n_head_kv`), no declared `attention.key_length`, no declared
+# `expert_feed_forward_length`, no bias of any kind, no `attn_sinks`, and no fused
+# `ffn_gate_up_exps`.
+# =================================================================================================
+
+OLMOE_BASE = {
+    "n_layer": 2, "n_embd": 256, "n_head": 8, "n_head_kv": 8,
+    "n_ff": 64, "n_expert": 8, "n_expert_used": 3,
+    "n_vocab": 32, "context_length": 512,
+}
+
+# `attn_output` is Q8_0, `attn_q` / `attn_k` / `token_embd` / the stacked gate and up projections are
+# Q4_K, `attn_v` and `output` are Q6_K, and every norm, both QK-norms, and the router are F32 — four
+# ascending `quant.type_counts` rows (ids 0, 8, 12, 14).
+#
+# `ffn_down_exps` is `[n_ff_exp, n_embd, n_expert]` = `[64, 256, 8]`, and `64 % 256 != 0`, so a K-
+# quantized `ffn_down_exps` is `R1_TENSOR_SHAPE_UNALIGNED` at these extents: the row rule bites. It
+# is therefore F32 in the base fixture, and the per-layer mixed-type pattern that matters is carried
+# by `olmoe-mixed-quant`, whose own extents make both K-quantizations representable.
+OLMOE_TYPES = {
+    "token_embd": 12, "output_norm": 0, "output": 14,
+    "attn_norm": 0, "attn_q": 12, "attn_q_norm": 0, "attn_k": 12, "attn_k_norm": 0,
+    "attn_v": 14, "attn_output": 8, "ffn_norm": 0, "router": 0,
+    "ffn_gate_exps": 12, "ffn_up_exps": 12, "ffn_down_exps": 0,
+}
+
+OLMOE_GLOBAL_ROLES = ["token_embd", "output_norm", "output"]
+# The emission order of section 2.5.3: both QK-norms ride in the `AttentionBlock`, beside the
+# projection whose output they normalize.
+OLMOE_ATTENTION_ROLES = [
+    "attn_norm", "attn_q", "attn_q_norm", "attn_k", "attn_k_norm", "attn_v", "attn_output",
+]
+OLMOE_ROUTER_ROLES = ["ffn_norm", "router"]
+OLMOE_EXPERT_ROLES = ["ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"]
+OLMOE_LAYER_ROLES = OLMOE_ATTENTION_ROLES + OLMOE_ROUTER_ROLES + OLMOE_EXPERT_ROLES
+# The roles the plan slices: their expert axis is the last declared one, with extent `n_expert`.
+OLMOE_SLICED = set(OLMOE_EXPERT_ROLES)
+
+OLMOE_SUFFIX = {
+    "attn_norm": "attn_norm.weight", "attn_q": "attn_q.weight",
+    "attn_q_norm": "attn_q_norm.weight", "attn_k": "attn_k.weight",
+    "attn_k_norm": "attn_k_norm.weight", "attn_v": "attn_v.weight",
+    "attn_output": "attn_output.weight", "ffn_norm": "ffn_norm.weight",
+    "router": "ffn_gate_inp.weight",
+    "ffn_gate_exps": "ffn_gate_exps.weight", "ffn_up_exps": "ffn_up_exps.weight",
+    "ffn_down_exps": "ffn_down_exps.weight",
+}
+
+
+def olmoe_head_dim(p):
+    if p.get("key_length") is not None:
+        return p["key_length"]
+    return p["n_embd"] // p["n_head"]
+
+
+def olmoe_ff_exp(p):
+    if p.get("n_ff_exp") is not None:
+        return p["n_ff_exp"]
+    return p["n_ff"]
+
+
+def olmoe_role_shape(role, p):
+    """The measured shape table of section 2.5.3: the dense convention of `src/frontend_qwen.align`
+    plus an expert axis, which is the reverse of the gpt-oss frontend's assumed order."""
+    head_dim = olmoe_head_dim(p)
+    ff = olmoe_ff_exp(p)
+    e, v, x = p["n_embd"], p["n_vocab"], p["n_expert"]
+    q, kv = p["n_head"] * head_dim, p["n_head_kv"] * head_dim
+    return {
+        "token_embd": [e, v], "output": [e, v], "output_norm": [e],
+        "attn_norm": [e], "attn_q": [e, q], "attn_q_norm": [e],
+        "attn_k": [e, kv], "attn_k_norm": [e], "attn_v": [e, kv],
+        "attn_output": [q, e], "ffn_norm": [e], "router": [e, x],
+        "ffn_gate_exps": [e, ff, x], "ffn_up_exps": [e, ff, x], "ffn_down_exps": [ff, e, x],
+    }[role]
+
+
+def olmoe_role_name(role, layer):
+    if layer is None:
+        return {"token_embd": "token_embd.weight", "output_norm": "output_norm.weight",
+                "output": "output.weight"}[role]
+    return "blk.%d.%s" % (layer, OLMOE_SUFFIX[role])
+
+
+def olmoe_kvs(p, arch="olmoe", drop=(), overrides=None, extra=None):
+    """The metadata block, in the order a converter plausibly writes it. Presence, type, and value
+    are all validated in the section 2.6 order, so the file order below is deliberately not that
+    order."""
+    overrides = overrides or {}
+    rows = [
+        ("general.architecture", strv(arch)),
+        ("general.file_type", u32v(15)),
+        ("general.quantization_version", u32v(2)),
+        ("olmoe.block_count", u32v(p["n_layer"])),
+        ("olmoe.context_length", u32v(p["context_length"])),
+        ("olmoe.embedding_length", u32v(p["n_embd"])),
+        ("olmoe.feed_forward_length", u32v(p["n_ff"])),
+        ("olmoe.expert_feed_forward_length",
+         u32v(p["n_ff_exp"]) if p.get("n_ff_exp") is not None else None),
+        ("olmoe.expert_count", u32v(p["n_expert"])),
+        ("olmoe.expert_used_count", u32v(p["n_expert_used"])),
+        ("olmoe.attention.head_count", u32v(p["n_head"])),
+        ("olmoe.attention.head_count_kv", u32v(p["n_head_kv"])),
+        ("olmoe.attention.key_length",
+         u32v(p["key_length"]) if p.get("key_length") is not None else None),
+        ("olmoe.attention.value_length",
+         u32v(p["value_length"]) if p.get("value_length") is not None else None),
+        ("olmoe.rope.freq_base", f32v(10000.0)),
+        ("olmoe.attention.layer_norm_rms_epsilon", f32v(1e-05)),
+        ("tokenizer.ggml.tokens", Array(STRING, [strv("t%d" % i) for i in range(p["n_vocab"])])),
+    ]
+    out = []
+    for key, value in rows:
+        if value is None or key in drop:
+            continue
+        out.append(Kv(key, overrides.get(key, value)))
+    for key, value in (extra or []):
+        out.append(Kv(key, value))
+    return out
+
+
+class OlmoeModel:
+    """A synthetic olmoe container plus every expected value of its `R1_MODEL_IR` document."""
+
+    def __init__(self, p=None, types=None, layer_types=None, tied=False, arch="olmoe", drop=(),
+                 overrides=None, extra=None, layout=None, trailing=0, mutate=None,
+                 drop_roles=()):
+        self.p = dict(OLMOE_BASE)
+        self.p.update(p or {})
+        self.types = dict(OLMOE_TYPES)
+        if types:
+            self.types.update(types)
+        # Section 2.5.5: the same role may carry a different GGML type in different layers, which is
+        # llama.cpp's ordinary `Q4_K_M` mixed-precision scheme and which neither the R1 nor the R1B
+        # corpus contains. `{role: {layer: type_id}}`.
+        self.layer_types = {role: dict(rows) for role, rows in (layer_types or {}).items()}
+        self.tied = tied
+        self.drop_roles = set(drop_roles)
+        head_dim = olmoe_head_dim(self.p)
+        self.head_dim = head_dim
+        self.head_dim_source = "metadata" if self.p.get("key_length") is not None else "derived"
+        self.ff_exp = olmoe_ff_exp(self.p)
+        self.ff_exp_source = "metadata" if self.p.get("n_ff_exp") is not None else "derived"
+
+        # ---- tensor table, in file order ------------------------------------------------------
+        self.entries = []          # (role, layer, name, dims, type_id)
+        for role in OLMOE_GLOBAL_ROLES:
+            if role == "output" and tied:
+                continue
+            if role in self.drop_roles:
+                continue
+            self.entries.append((role, None, olmoe_role_name(role, None),
+                                 olmoe_role_shape(role, self.p), self.type_of(role, None)))
+        for layer in range(self.p["n_layer"]):
+            for role in OLMOE_LAYER_ROLES:
+                if role in self.drop_roles:
+                    continue
+                self.entries.append((role, layer, olmoe_role_name(role, layer),
+                                     olmoe_role_shape(role, self.p), self.type_of(role, layer)))
+        if mutate:
+            self.entries = mutate(self.entries)
+
+        # ---- data-section layout --------------------------------------------------------------
+        # Every tensor's byte size is a multiple of the 32-byte container alignment, and for a
+        # sliced tensor so is every expert plane, or a contiguous placement could not also be
+        # alignment-correct and the size-sum oracle would be unsatisfiable.
+        sizes = [nbytes_of(dims, type_id) if type_id in GGML_GEOMETRY else 0
+                 for (_, _, _, dims, type_id) in self.entries]
+        order = layout(self.entries) if layout else list(range(len(self.entries)))
+        offsets = [0] * len(self.entries)
+        cursor = 0
+        for position in order:
+            assert cursor % DEFAULT_ALIGNMENT == 0, (position, cursor)
+            offsets[position] = cursor
+            cursor += sizes[position]
+        self.sizes = sizes
+        self.offsets = offsets
+        self.total_bytes = cursor
+
+        tensors = [Tensor(name, dims, type_id, offsets[index])
+                   for index, (_, _, name, dims, type_id) in enumerate(self.entries)]
+        kvs = olmoe_kvs(self.p, arch=arch, drop=drop, overrides=overrides, extra=extra)
+        self.container = Container(kvs, tensors, data_len=cursor + trailing)
+        self.bytes = self.container.bytes
+        self.arch = arch
+
+    def type_of(self, role, layer):
+        per_layer = self.layer_types.get(role)
+        if per_layer is not None and layer in per_layer:
+            return per_layer[layer]
+        return self.types[role]
+
+    def index_of(self, name):
+        for index, (_, _, entry_name, _, _) in enumerate(self.entries):
+            if entry_name == name:
+                return index
+        return -1
+
+    def absolute(self, index):
+        return self.container.data_offset + self.offsets[index]
+
+    def claim(self, index, slice_index):
+        """Section 2.5.4, computed in Python: the last declared axis is the outermost, so each of
+        its indices owns one contiguous byte plane."""
+        _, _, _, dims, _ = self.entries[index]
+        if slice_index is None:
+            return self.absolute(index), self.sizes[index]
+        last = dims[-1]
+        assert self.sizes[index] % last == 0, (dims, self.sizes[index], last)
+        plane = self.sizes[index] // last
+        return self.absolute(index) + plane * slice_index, plane
+
+    def tensor_expect(self, index, role, slice_index=None):
+        _, _, name, dims, type_id = self.entries[index]
+        elements = 1
+        for extent in dims:
+            elements *= extent
+        block_size, type_bytes = GGML_GEOMETRY[type_id]
+        claimed_offset, claimed_nbytes = self.claim(index, slice_index)
+        return {
+            "name": name,
+            "role": role,
+            "type": type_id,
+            "type_name": GGML_NAMES[type_id],
+            "n_dims": len(dims),
+            "dims": list(dims),
+            "n_elements": elements,
+            "block_size": block_size,
+            "type_bytes": type_bytes,
+            "nbytes": self.sizes[index],
+            "offset": self.offsets[index],
+            "absolute_offset": self.absolute(index),
+            "claimed_absolute_offset": claimed_offset,
+            "claimed_nbytes": claimed_nbytes,
+        }
+
+    def block_expect(self, block_index, kind, layer, expert, members):
+        """`members` is a list of (role, tensor index, slice index or None)."""
+        tensors = [self.tensor_expect(index, role, slice_index)
+                   for role, index, slice_index in members]
+        byte_size = sum(t["claimed_nbytes"] for t in tensors)
+        first = min(t["claimed_absolute_offset"] for t in tensors)
+        end = max(t["claimed_absolute_offset"] + t["claimed_nbytes"] for t in tensors)
+        return {
+            "index": block_index,
+            "kind": kind,
+            "layer": layer,
+            "expert": expert,
+            "tensor_count": len(tensors),
+            "byte_size": byte_size,
+            "first_absolute_offset": first,
+            "end_absolute_offset": end,
+            "contiguous": end - first == byte_size,
+            "tensors": tensors,
+        }
+
+    def blocks_expect(self):
+        blocks = []
+        index = 0
+        blocks.append(self.block_expect(index, "WeightBlock", -1, -1,
+                                        [("token_embd", self.index_of("token_embd.weight"), None)]))
+        index += 1
+        for layer in range(self.p["n_layer"]):
+            attention = [(role, self.index_of(olmoe_role_name(role, layer)), None)
+                         for role in OLMOE_ATTENTION_ROLES if role not in self.drop_roles]
+            blocks.append(self.block_expect(index, "AttentionBlock", layer, -1, attention))
+            index += 1
+            router = [(role, self.index_of(olmoe_role_name(role, layer)), None)
+                      for role in OLMOE_ROUTER_ROLES if role not in self.drop_roles]
+            blocks.append(self.block_expect(index, "RouterBlock", layer, -1, router))
+            index += 1
+            for expert in range(self.p["n_expert"]):
+                members = [(role, self.index_of(olmoe_role_name(role, layer)), expert)
+                           for role in OLMOE_EXPERT_ROLES if role not in self.drop_roles]
+                blocks.append(self.block_expect(index, "ExpertBlock", layer, expert, members))
+                index += 1
+        output_source = "token_embd.weight" if self.tied else "output.weight"
+        blocks.append(self.block_expect(
+            index, "WeightBlock", -1, -1,
+            [("output_norm", self.index_of("output_norm.weight"), None),
+             ("output", self.index_of(output_source), None)]))
+        return blocks
+
+    def block_count(self):
+        return self.p["n_layer"] * (2 + self.p["n_expert"]) + 2
+
+    def claim_count(self):
+        return 1 + self.p["n_layer"] * (7 + 2 + 3 * self.p["n_expert"]) + 2
+
+    def quant_expect(self):
+        rows = []
+        for type_id in sorted(set(entry[4] for entry in self.entries)):
+            members = [i for i, entry in enumerate(self.entries) if entry[4] == type_id]
+            rows.append({
+                "type": type_id,
+                "type_name": GGML_NAMES[type_id],
+                "tensor_count": len(members),
+                "bytes": sum(self.sizes[i] for i in members),
+            })
+        return {
+            "file_type": 15,
+            "file_type_present": True,
+            "type_counts": rows,
+            "total_tensor_bytes": self.total_bytes,
+        }
+
+    def model_expect(self, rope_dim=None, scaling=None):
+        """Section 2.4's normative olmoe field list: the gpt-oss list minus `expert_ffn_layout`,
+        `sliding_window`, and `sliding_window_pattern`, each omitted for a stated reason."""
+        return {
+            "arch": self.arch,
+            "n_layer": self.p["n_layer"],
+            "n_embd": self.p["n_embd"],
+            "n_head": self.p["n_head"],
+            "n_head_kv": self.p["n_head_kv"],
+            "head_dim": self.head_dim,
+            "head_dim_source": self.head_dim_source,
+            "n_ff": self.p["n_ff"],
+            "n_ff_exp": self.ff_exp,
+            "n_ff_exp_source": self.ff_exp_source,
+            "n_vocab": self.p["n_vocab"],
+            "n_expert": self.p["n_expert"],
+            "n_expert_used": self.p["n_expert_used"],
+            "context_length": self.p["context_length"],
+            "rms_eps": marker_f32(f32_bits(1e-05)),
+            "rms_eps_bits": "%08x" % f32_bits(1e-05),
+            "rope": {
+                "type": 2,
+                "type_name": "neox",
+                "type_source": "architecture",
+                "freq_base": marker_f32(f32_bits(10000.0)),
+                "freq_base_bits": "%08x" % f32_bits(10000.0),
+                "dim_count": self.head_dim if rope_dim is None else rope_dim,
+                "dim_count_source": "derived" if rope_dim is None else "metadata",
+                "scaling_type": scaling,
+            },
+        }
+
+    def coverage_expect(self):
+        return {
+            "tensor_count": len(self.entries),
+            "assigned_tensor_count": len(self.entries),
+            "unassigned_tensors": [],
+            "block_count": self.block_count(),
+            "data_offset": self.container.data_offset,
+            "total_tensor_bytes": self.total_bytes,
+            "computed_end": self.container.data_offset + self.total_bytes,
+            "file_size": len(self.bytes),
+            "size_sum_ok": True,
+        }
+
+    def source_expect(self):
+        return {
+            "gguf_version": 3,
+            "alignment": DEFAULT_ALIGNMENT,
+            "file_size": len(self.bytes),
+            "data_offset": self.container.data_offset,
+            "tensor_count": len(self.entries),
+            "metadata_kv_count": len(self.container.kvs),
+            "bytes_read": min(len(self.bytes), WINDOW_BYTES),
+        }
+
+    def positive(self, name, file_name, rope_dim=None, scaling=None, with_blocks=True, **extra):
+        case = {
+            "name": name,
+            "file": file_name,
+            "bytes": self.bytes,
+            "exit": 0,
+            "source": self.source_expect(),
+            "model": self.model_expect(rope_dim=rope_dim, scaling=scaling),
+            "quant": self.quant_expect(),
+            "coverage": self.coverage_expect(),
+            "arch": "olmoe",
+        }
+        if with_blocks:
+            case["blocks"] = self.blocks_expect()
+        case.update(extra)
+        return case
+
+
+def olmoe_build(out_dir):
+    """The section 4.1 olmoe corpus: the positive fixtures and one negative fixture per reachable
+    row of section 2.6."""
+    cases = []
+
+    def negative(name, file_name, payload, code, detail, **extra):
+        case = {"name": name, "file": file_name, "bytes": payload, "exit": 1,
+                "error": {"code": code, "detail": detail}, "arch": "olmoe"}
+        case.update(extra)
+        cases.append(case)
+        return case
+
+    # ---- positive: the complete synthetic olmoe container --------------------------------------
+    full = OlmoeModel()
+    assert full.container.data_offset + full.total_bytes == len(full.bytes)
+    # Section 4.1's arithmetic, asserted rather than assumed.
+    assert len(full.entries) == 27, len(full.entries)
+    assert full.block_count() == 22, full.block_count()
+    assert full.claim_count() == 69, full.claim_count()
+    assert sum(b["tensor_count"] for b in full.blocks_expect()) == 69
+    # `head_dim` is derived and the division is exact, which is the opposite of the gpt-oss fixture
+    # and is what the real model does (`2048 / 16 = 128`).
+    assert full.head_dim == 32 and full.head_dim_source == "derived"
+    assert full.ff_exp == OLMOE_BASE["n_ff"] and full.ff_exp_source == "derived"
+    assert [row["type"] for row in full.quant_expect()["type_counts"]] == [0, 8, 12, 14]
+    # Section 6's correction to section 4.1: the F32 `ffn_down_exps` the row rule forces is 524,288
+    # bytes per layer, so this container is ~1.7 MiB rather than "well under 1 MiB". The
+    # alignment-and-representability constraints are the load-bearing half of that sentence and are
+    # what is asserted here.
+    assert len(full.bytes) < 2 * 1048576, len(full.bytes)
+    for index, (role, _, _, dims, type_id) in enumerate(full.entries):
+        assert full.sizes[index] % DEFAULT_ALIGNMENT == 0, (role, dims, type_id)
+        if role in OLMOE_SLICED:
+            assert full.sizes[index] % (dims[-1] * DEFAULT_ALIGNMENT) == 0, (role, dims)
+    cases.append(full.positive(
+        "olmoe-full", "olmoe-full.gguf",
+        # The container is larger than one window, so the walk reads exactly one window and never
+        # the data section — which is the section 4.5 secondary metric, stated exactly.
+        bytes_read=min(len(full.bytes), WINDOW_BYTES),
+        field_order=True,
+        expert_tiling=True,
+        claim_count=69,
+        slice_declaration=True,
+    ))
+
+    # `attention.key_length` present and disagreeing with the division: the declared key wins and
+    # every attention width widens with it, so a frontend that always divided would fail here.
+    head_meta = OlmoeModel(p={"key_length": 64, "value_length": 64})
+    assert head_meta.head_dim == 64 and head_meta.p["n_embd"] // head_meta.p["n_head"] == 32
+    assert head_meta.head_dim_source == "metadata"
+    cases.append(head_meta.positive("olmoe-headdim-metadata", "olmoe-headdim-metadata.gguf",
+                                    expert_tiling=True))
+
+    # `expert_feed_forward_length` present and narrower than `n_ff`: every stacked shape narrows, so
+    # a frontend that ignored the key would fail.
+    ff_present = OlmoeModel(p={"n_ff_exp": 32})
+    assert ff_present.ff_exp == 32 and ff_present.ff_exp_source == "metadata"
+    cases.append(ff_present.positive("olmoe-ffexp-present", "olmoe-ffexp-present.gguf",
+                                     expert_tiling=True))
+
+    # Section 2.5.5, the real model's pattern at fixture scale: `attn_v` and `ffn_down_exps` are
+    # Q6_K in layer 0 and Q4_K in layer 1, so one role carries two types and two blocks of the same
+    # kind have different `byte_size`s. `n_ff` is 256 here because `ffn_down_exps` is
+    # `[n_ff_exp, n_embd, n_expert]` and a K-quantized first axis must be a multiple of 256.
+    mixed = OlmoeModel(
+        p={"n_ff": 256, "n_expert": 2, "n_expert_used": 2},
+        types={"ffn_down_exps": 14},
+        layer_types={"ffn_down_exps": {1: 12}, "attn_v": {1: 12}})
+    mixed_case = mixed.positive("olmoe-mixed-quant", "olmoe-mixed-quant.gguf",
+                                expert_tiling=True, mixed_quant=True)
+    mixed_blocks = mixed_case["blocks"]
+    assert len({b["byte_size"] for b in mixed_blocks if b["kind"] == "AttentionBlock"}) == 2
+    assert len({b["byte_size"] for b in mixed_blocks if b["kind"] == "ExpertBlock"}) == 2
+    assert len(mixed.bytes) < 1048576, len(mixed.bytes)
+    cases.append(mixed_case)
+
+    # Tied embeddings: `token_embd.weight` is claimed whole by two blocks, which is the branch of the
+    # claim-tiling rule a partition cannot express. The real model is untied; the rule costs one
+    # optional lookup and this is the fixture that keeps it honest.
+    tied = OlmoeModel(tied=True)
+    tied_case = tied.positive("olmoe-tied", "olmoe-tied.gguf", expert_tiling=True)
+    tied_case["tied"] = True
+    cases.append(tied_case)
+
+    # The data section grouped by role across layers, so an `AttentionBlock` and a `RouterBlock` are
+    # also non-contiguous while both oracles still hold.
+    def role_major(entries):
+        return sorted(range(len(entries)),
+                      key=lambda i: (entries[i][0],
+                                     entries[i][1] if entries[i][1] is not None else -1))
+
+    permuted = OlmoeModel(layout=role_major)
+    permuted_case = permuted.positive("olmoe-permuted", "olmoe-permuted.gguf", expert_tiling=True)
+    kinds = {block["kind"] for block in permuted_case["blocks"] if not block["contiguous"]}
+    assert {"AttentionBlock", "RouterBlock", "ExpertBlock"} <= kinds, kinds
+    cases.append(permuted_case)
+
+    # `bounded-work`: 4 layers and 64 experts give 266 blocks and 807 claims inside the existing
+    # budget. Everything is F32 but the stacked expert weights, which are Q8_0, so the container
+    # stays under a megabyte at 64 experts.
+    wide_types = {role: 0 for role in OLMOE_TYPES}
+    for role in OLMOE_EXPERT_ROLES:
+        wide_types[role] = 8
+    wide = OlmoeModel(
+        p={"n_layer": 4, "n_embd": 32, "n_head": 8, "n_head_kv": 8, "n_ff": 32,
+           "n_expert": 64, "n_expert_used": 8},
+        types=wide_types)
+    assert wide.block_count() == 266, wide.block_count()
+    assert wide.claim_count() == 807, wide.claim_count()
+    assert len(wide.bytes) < 1048576, len(wide.bytes)
+    cases.append(wide.positive("olmoe-wide", "olmoe-wide.gguf", with_blocks=False,
+                               bounded_work=True, expert_tiling=True,
+                               blocks_len=266, claim_count=807))
+
+    # ---- negative corpus: one fixture per reachable section 2.6 row -----------------------------
+    def bare(p=None, drop=(), overrides=None, extra=None):
+        """A container whose metadata is complete enough to reach the step under test and whose
+        tensor table is one tensor, so an implausible expert count does not have to be materialized
+        as half a million tensors."""
+        params = dict(OLMOE_BASE)
+        params.update(p or {})
+        return Container(
+            olmoe_kvs(params, drop=drop, overrides=overrides, extra=extra),
+            [Tensor("token_embd.weight", [256, 32], 0, 0)],
+            data_len=32768,
+        )
+
+    # `olmoe-ir-error-sentinels` rides this case: a derivation that failed at step 7 must still
+    # render every field of the olmoe `model` object explicitly, with `n_vocab` at its `-1`
+    # sentinel because step 9 never ran and with the values steps 5 and 6 did read reported as
+    # read. The field list and order are asserted strictly, so a failed derivation cannot emit a
+    # different object from a successful one.
+    negative("olmoe-expert-zero", "olmoe-expert-zero.gguf",
+             bare(p={"n_expert": 0, "n_expert_used": 0}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "olmoe.expert_count", blocks_len=0,
+             model={
+                 "arch": "olmoe",
+                 "n_layer": OLMOE_BASE["n_layer"],
+                 "n_embd": OLMOE_BASE["n_embd"],
+                 "n_head": OLMOE_BASE["n_head"],
+                 "n_head_kv": OLMOE_BASE["n_head_kv"],
+                 "head_dim": OLMOE_BASE["n_embd"] // OLMOE_BASE["n_head"],
+                 "head_dim_source": "derived",
+                 "n_ff": OLMOE_BASE["n_ff"],
+                 "n_ff_exp": OLMOE_BASE["n_ff"],
+                 "n_ff_exp_source": "derived",
+                 "n_vocab": -1,
+                 "n_expert": 0,
+                 "n_expert_used": 0,
+                 "context_length": OLMOE_BASE["context_length"],
+                 "rms_eps": marker_f32(f32_bits(1e-05)),
+                 "rms_eps_bits": "%08x" % f32_bits(1e-05),
+                 "rope": {
+                     "type": 2,
+                     "type_name": "neox",
+                     "type_source": "architecture",
+                     "freq_base": marker_f32(f32_bits(10000.0)),
+                     "freq_base_bits": "%08x" % f32_bits(10000.0),
+                     "dim_count": OLMOE_BASE["n_embd"] // OLMOE_BASE["n_head"],
+                     "dim_count_source": "derived",
+                     "scaling_type": None,
+                 },
+             })
+
+    negative("olmoe-expert-huge", "olmoe-expert-huge.gguf",
+             bare(p={"n_expert": 4096}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "olmoe.expert_count", blocks_len=0)
+
+    negative("olmoe-expert-missing", "olmoe-expert-missing.gguf",
+             bare(drop=("olmoe.expert_count",)).bytes,
+             "R1_MISSING_KEY", "olmoe.expert_count", blocks_len=0)
+
+    negative("olmoe-expert-type", "olmoe-expert-type.gguf",
+             bare(overrides={"olmoe.expert_count": strv("8")}).bytes,
+             "R1_KEY_TYPE_MISMATCH", "olmoe.expert_count", blocks_len=0)
+
+    negative("olmoe-expert-used-zero", "olmoe-expert-used-zero.gguf",
+             bare(p={"n_expert_used": 0}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "olmoe.expert_used_count", blocks_len=0)
+
+    negative("olmoe-expert-used-high", "olmoe-expert-used-high.gguf",
+             bare(p={"n_expert_used": OLMOE_BASE["n_expert"] + 1}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "olmoe.expert_used_count", blocks_len=0)
+
+    # `n_layer * (2 + n_expert) + 2 = 525,314`, well past MAX_BLOCKS, with both operands individually
+    # inside their own bounds. The guard is tested in non-wrapping form before the product.
+    assert 512 * (2 + 1024) + 2 > MAX_BLOCKS
+    negative("olmoe-block-explosion", "olmoe-block-explosion.gguf",
+             bare(p={"n_layer": 512, "n_expert": 1024, "n_expert_used": 4}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "olmoe.expert_count", blocks_len=0)
+
+    negative("olmoe-zero-layer", "olmoe-zero-layer.gguf",
+             bare(p={"n_layer": 0}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "olmoe.block_count", blocks_len=0)
+
+    # A derived `head_dim` that does not divide exactly. `n_head % n_head_kv == 0` still holds, so
+    # the earlier row does not fire and the head count is the divisor the diagnostic names.
+    negative("olmoe-headdim-indivisible", "olmoe-headdim-indivisible.gguf",
+             bare(p={"n_head": 3, "n_head_kv": 1}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "olmoe.attention.head_count", blocks_len=0)
+
+    negative("olmoe-keylength-mismatch", "olmoe-keylength-mismatch.gguf",
+             bare(p={"key_length": 64, "value_length": 32}).bytes,
+             "R1_KEY_VALUE_IMPLAUSIBLE", "olmoe.attention.value_length", blocks_len=0)
+
+    def reshape_dims(entries, name, dims):
+        return [(role, layer, entry_name, dims if entry_name == name else entry_dims, type_id)
+                for (role, layer, entry_name, entry_dims, type_id) in entries]
+
+    # The stacked-tensor rule: the expert axis must be the last declared axis with extent exactly
+    # `n_expert`. Blocks completed before the failure: embedding, attention 0, router 0.
+    stacked_axis = OlmoeModel(
+        mutate=lambda e: reshape_dims(e, "blk.0.ffn_gate_exps.weight", [256, 64, 4]))
+    negative("olmoe-stacked-axis", "olmoe-stacked-axis.gguf", stacked_axis.bytes,
+             "R1_TENSOR_SHAPE_UNEXPECTED", "blk.0.ffn_gate_exps.weight", blocks_len=3)
+
+    stacked_ndims = OlmoeModel(
+        mutate=lambda e: reshape_dims(e, "blk.0.ffn_gate_exps.weight", [256, 64]))
+    negative("olmoe-stacked-ndims", "olmoe-stacked-ndims.gguf", stacked_ndims.bytes,
+             "R1_TENSOR_SHAPE_UNEXPECTED", "blk.0.ffn_gate_exps.weight", blocks_len=3)
+
+    # Section 5.3: the gpt-oss axis order, declared on an olmoe file, is rejected. This pins section
+    # 2.5.3's axis-order decision as a contract rather than a comment, so the two frontends cannot
+    # drift into agreement by accident. The role is F32 in this fixture only, because a Q4_K
+    # `[64, 256, 8]` is `R1_TENSOR_SHAPE_UNALIGNED` at step 8 and would never reach step 10.
+    stacked_transposed = OlmoeModel(
+        types={"ffn_gate_exps": 0},
+        mutate=lambda e: reshape_dims(e, "blk.0.ffn_gate_exps.weight", [64, 256, 8]))
+    negative("olmoe-stacked-transposed", "olmoe-stacked-transposed.gguf", stacked_transposed.bytes,
+             "R1_TENSOR_SHAPE_UNEXPECTED", "blk.0.ffn_gate_exps.weight", blocks_len=3)
+
+    router_shape = OlmoeModel(
+        mutate=lambda e: reshape_dims(e, "blk.0.ffn_gate_inp.weight", [256, 4]))
+    negative("olmoe-router-shape", "olmoe-router-shape.gguf", router_shape.bytes,
+             "R1_TENSOR_SHAPE_UNEXPECTED", "blk.0.ffn_gate_inp.weight", blocks_len=2)
+
+    # The two appended roles are **required** members of every `AttentionBlock`: an absent one is
+    # `R1_MISSING_TENSOR` and never a silently smaller block.
+    qknorm_missing = OlmoeModel(drop_roles=("attn_q_norm",))
+    negative("olmoe-qknorm-missing", "olmoe-qknorm-missing.gguf", qknorm_missing.bytes,
+             "R1_MISSING_TENSOR", "blk.0.attn_q_norm.weight", blocks_len=1)
+
+    qknorm_shape = OlmoeModel(
+        mutate=lambda e: reshape_dims(e, "blk.0.attn_k_norm.weight", [128]))
+    negative("olmoe-qknorm-shape", "olmoe-qknorm-shape.gguf", qknorm_shape.bytes,
+             "R1_TENSOR_SHAPE_UNEXPECTED", "blk.0.attn_k_norm.weight", blocks_len=1)
+
+    # No bias role is declared, so a file that carries one is `R1_UNASSIGNED_TENSOR` — the correct
+    # fail-closed outcome for a tensor the plan cannot place — and never silently ignored.
+    extra_bias = OlmoeModel(mutate=lambda e: e + [
+        ("ffn_gate_exps_bias", 0, "blk.0.ffn_gate_exps.bias", [64, 8], 0)])
+    negative("olmoe-extra-bias", "olmoe-extra-bias.gguf", extra_bias.bytes,
+             "R1_UNASSIGNED_TENSOR", "blk.0.ffn_gate_exps.bias",
+             unassigned=["blk.0.ffn_gate_exps.bias"])
+
+    wrong_arch = OlmoeModel(arch="qwen2")
+    negative("olmoe-wrong-arch", "olmoe-wrong-arch.gguf", wrong_arch.bytes,
+             "R1_MISSING_KEY", "qwen2.block_count", blocks_len=0, arch="qwen2")
+
+    size_sum = OlmoeModel(trailing=64)
+    negative("olmoe-size-sum", "olmoe-size-sum.gguf", size_sum.bytes,
+             "R1_SIZE_SUM_MISMATCH",
+             "%d!=%d" % (size_sum.container.data_offset + size_sum.total_bytes,
+                         len(size_sum.bytes)))
+
+    # ---- precedence: the earlier section 2.6 row wins -------------------------------------------
+    precedence_key = OlmoeModel(
+        overrides={"olmoe.embedding_length": strv("256")},
+        mutate=lambda e: reshape_dims(e, "blk.0.ffn_gate_exps.weight", [256, 64, 4]))
+    negative("olmoe-precedence-key-shape", "olmoe-precedence-key-shape.gguf",
+             precedence_key.bytes, "R1_KEY_TYPE_MISMATCH", "olmoe.embedding_length", blocks_len=0)
+
+    # An out-of-bounds `expert_used_count` (step 7) and a zero vocabulary (step 9): the expert row.
+    precedence_expert = OlmoeModel(
+        p={"n_expert_used": OLMOE_BASE["n_expert"] + 1},
+        mutate=lambda e: reshape_dims(e, "token_embd.weight", [256, 0]))
+    negative("olmoe-precedence-expert-vocab", "olmoe-precedence-expert-vocab.gguf",
+             precedence_expert.bytes, "R1_KEY_VALUE_IMPLAUSIBLE", "olmoe.expert_used_count",
+             blocks_len=0)
+
+    for case in cases:
+        write(out_dir, case["file"], case.pop("bytes"))
+    return cases
+
+
 def build(out_dir):
     cases = []
 
@@ -2399,9 +3074,10 @@ def build(out_dir):
         "window_bytes": WINDOW_BYTES,
         "cases": cases,
         # The R1 corpus is a separate list so `run-gguf-smoke` keeps driving exactly the R0 cases
-        # while `run-model-ir-smoke` drives all three.
+        # while `run-model-ir-smoke` drives all four.
         "model_ir_cases": qwen_build(out_dir),
         "model_ir_gptoss_cases": gptoss_build(out_dir),
+        "model_ir_olmoe_cases": olmoe_build(out_dir),
     }
 
 

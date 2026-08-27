@@ -73,7 +73,14 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-28): Requests 1–20 are CLOSED and Requests 21–43 are PROPOSED. No request blocks another consumer. R5C-METAL-PREFILL-ARM merged as align-llm PR #129 and Track B has no active consumer; see the end of this narrative for the next consumer named for each pending user/Align decision.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
+> **Status (2026-08-28): Requests 1–20 are CLOSED and Requests 21–43 are PROPOSED. No request blocks
+> another consumer. R5C-METAL-PREFILL-ARM merged as align-llm PR #129, and following the user's
+> decision to download `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, Track B started two consumers on
+> that model: R2-LOCALITY-GATE merged as align-llm PR #131 (`fff5806` -> `546b5cc`) with the R2
+> locality gate met in the prefill direction, and R1C-OLMOE-MOE-IR (branch
+> `agent/r1c-olmoe-moe-ir`, an olmoe frontend and the first real-MoE Model IR/Block IR) is the
+> single active consumer, in publication; see the end of this narrative for the next consumer
+> named for each remaining pending user/Align decision.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
 > R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
 > parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
 > `borrow t: GgufTable` accessors in `src/gguf.align` get the by-value warning even though no call
@@ -323,17 +330,23 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > wrapped call sites; and Request 21 (a read-only open) gets its sixth client.
 > R5C-METAL-PREFILL-ARM then merged as align-llm PR #129 (`c025ee2` -> `39c69a2`), closing no
 > request and adding no new client evidence beyond the five requests named above. With R5C merged,
-> Track B has **no active consumer**: R0 through R5C are complete on the dense local model, and
-> every remaining roadmap item is blocked on a user decision or an Align-side change
-> (`HANDOFF.md`, "No active capability"). Each pending decision names its own next consumer: a
-> small MoE GGUF (1-4 GB) is the next consumer for R2's locality gate, R3's residency simulation,
-> R4's per-expert half, and R4.5's expert matmul, and — because a size-chosen model is unlikely to
-> be `gpt-oss` — for a new R1C frontend as well; `gpt-oss-20b-mxfp4.gguf` (12.1 GB) is the next
-> consumer for R1B's real-model `model-ir-parity` qualification; a source build of llama.cpp at
-> `bb4caa754` plus the R2c minimal instrument patch is the next consumer for R6 (Persistent KV) and,
-> through it, R7-R9; and Request 41 itself is the next consumer for R5's deferred required
-> microbenchmark C. None of these decisions changes any request's status; Requests 21-43 remain
-> PROPOSED and non-blocking, and none has merged since R0.
+> R0 through R5C are complete on the dense local model, and every remaining roadmap item was
+> blocked on a user decision or an Align-side change (`HANDOFF.md`). The user then took the small
+> MoE GGUF decision, downloading `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (3.92 GiB, 64 experts,
+> top-8 routing), which named two consumers at once: **R2-LOCALITY-GATE** ran the R2 locality
+> measurement against that real model and merged as align-llm PR #131 (`fff5806` -> `546b5cc`) with
+> the gate met in the prefill direction, and **R1C-OLMOE-MOE-IR**
+> (`docs/specs/r1c-olmoe-moe-ir.md`, design ledger commit `5a15fd7`) implemented a new
+> `src/frontend_olmoe.align` and a three-way architecture dispatch and is now in publication.
+> Neither consumes a `PROPOSED` request; R1C's design section 5.4 records that no new genuine Align gap is expected and that
+> `src/frontend_olmoe.align` becomes a third client of the already-`PROPOSED`, non-blocking
+> Request 23. `gpt-oss-20b-mxfp4.gguf` (12.1 GB) is now recorded **infeasible on this host** (disk
+> free ~16 GiB after the olmoe download) and remains the next consumer for R1B's real-model
+> `model-ir-parity` qualification whenever a host with more free space is available; a source build
+> of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch is still the next consumer for
+> R6 (Persistent KV) and, through it, R7-R9; and Request 41 itself is still the next consumer for
+> R5's deferred required microbenchmark C. None of these decisions changes any request's status;
+> Requests 21-43 remain PROPOSED and non-blocking, and none has merged since R0.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -6506,14 +6519,17 @@ exclusion unchanged: it reads no `array<string>` and builds no tokenizer. R2A-EX
 this entry anticipated: it holds no `array<string>` at all. Its distinct node names and operation
 names are one concatenated `string` addressed by explicit `[start, end)` spans in parallel
 `array<i64>` columns — the third instance of the `GgufTable`/`BlockPlan` shape — so it *avoids* the
-Move-array shape rather than exercising it, for the same reason those two did. The first consumer
+Move-array shape rather than exercising it, for the same reason those two did. The active
+R1C-OLMOE-MOE-IR (`docs/specs/r1c-olmoe-moe-ir.md` section 1.3 and section 5.4) inherits the same
+exclusion again, expected and confirmed at implementation: it materializes no tokenizer and reads
+no `array<string>`, so it adds no new client evidence here either. The first consumer
 that would make it blocking is a
 tokenizer/vocabulary-inspection capability, which needs `tokenizer.ggml.tokens` and
 `tokenizer.ggml.merges` as addressable data; per `CLAUDE.md`, this request reclassifies as blocking
 the moment that capability becomes the active consumer
-Independent work that may continue: all of R0, R1-QWEN-MODEL-IR, R1B-GPTOSS-MOE-IR, and
-R2A-EXPERT-TRACE-CAPTURE, all of which avoid indexing an `array<string>` or an array of a Move-field
-record
+Independent work that may continue: all of R0, R1-QWEN-MODEL-IR, R1B-GPTOSS-MOE-IR,
+R2A-EXPERT-TRACE-CAPTURE, and R1C-OLMOE-MOE-IR, all of which avoid indexing an `array<string>` or an
+array of a Move-field record
 Resume condition: Align ships borrow indexing for Move arrays. Section 5.2 of
 `docs/specs/r1-qwen-model-ir.md` names the resulting producer surface,
 `gguf.read_string_array(path, key) -> Result<array<string>, Error>`, owned by the future tokenizer

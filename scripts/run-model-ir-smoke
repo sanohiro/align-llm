@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# R1-QWEN-MODEL-IR / R1B-GPTOSS-MOE-IR narrow durable owner (`docs/specs/r1-qwen-model-ir.md`
-# section 4.2, `docs/specs/r1b-gptoss-moe-ir.md` section 4.2). It needs no model, no network, and no
-# reference tool: `scripts/gguf_fixture.py` writes independent synthetic qwen2 and gpt-oss corpora
+# R1-QWEN-MODEL-IR / R1B-GPTOSS-MOE-IR / R1C-OLMOE-MOE-IR narrow durable owner
+# (`docs/specs/r1-qwen-model-ir.md` section 4.2, `docs/specs/r1b-gptoss-moe-ir.md` section 4.2,
+# `docs/specs/r1c-olmoe-moe-ir.md` section 4.2). It needs no model, no network, and no reference
+# tool: `scripts/gguf_fixture.py` writes independent synthetic qwen2, gpt-oss, and olmoe corpora
 # into a temporary tree, and every fixture is removed by the EXIT trap. That is why it joins
 # HOSTED_CHECK_TARGETS.
 #
-# One runner drives three lists. The consumer surface is the same CLI, the fixtures share a
+# One runner drives four lists. The consumer surface is the same CLI, the fixtures share a
 # generator, and a second `make` target would fragment the aggregate for no failure-domain reason.
-# Besides the two Model IR corpora it re-runs the entire R0 corpus through `--model-ir`, which is
+# Besides the three Model IR corpora it re-runs the entire R0 corpus through `--model-ir`, which is
 # where the container error codes and the truncation sweep are re-proved against the second walk,
 # and it compares both CLI arms over every fixture, which is the `table-inspect-parity` regression
-# that keeps the two walks from drifting.
+# that keeps the two walks from drifting. It also owns `role-list-mirror`, the one guard that makes
+# the two-language frozen `role_id` list safe to append to.
 
 unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
 export PYTHONDONTWRITEBYTECODE=1
@@ -30,9 +32,10 @@ trap cleanup EXIT
 mkdir -p "$work_dir"
 python3 "$root_dir/scripts/gguf_fixture.py" "$fixture_dir"
 
-python3 - "$root_dir/main" "$fixture_dir" "$work_dir" <<'PY'
+python3 - "$root_dir/main" "$fixture_dir" "$work_dir" "$root_dir" <<'PY'
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -40,6 +43,7 @@ import time
 from pathlib import Path
 
 binary, fixture_dir, work_dir = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+root_dir = Path(sys.argv[4])
 manifest = json.loads((fixture_dir / "manifest.json").read_text(encoding="utf-8"))
 WINDOW_BYTES = manifest["window_bytes"]
 
@@ -68,7 +72,22 @@ MODEL_ORDER = {
         "expert_ffn_layout", "context_length", "sliding_window", "sliding_window_pattern",
         "rms_eps", "rms_eps_bits", "rope",
     ],
+    # The olmoe list is the gpt-oss list minus `expert_ffn_layout` — the layout is measured, so
+    # reporting it would report a constant — and minus both sliding-window fields, which name a
+    # concept this architecture does not have (`docs/specs/r1c-olmoe-moe-ir.md` section 2.4).
+    "olmoe": [
+        "arch", "n_layer", "n_embd", "n_head", "n_head_kv", "head_dim", "head_dim_source",
+        "n_ff", "n_ff_exp", "n_ff_exp_source", "n_vocab", "n_expert", "n_expert_used",
+        "context_length", "rms_eps", "rms_eps_bits", "rope",
+    ],
 }
+
+# The section 2.5.3 member sets, asserted verbatim on every positive olmoe document.
+OLMOE_ATTENTION_ROLES = [
+    "attn_norm", "attn_q", "attn_q_norm", "attn_k", "attn_k_norm", "attn_v", "attn_output",
+]
+OLMOE_ROUTER_ROLES = ["ffn_norm", "router"]
+OLMOE_EXPERT_ROLES = ["ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"]
 ROPE_ORDER = [
     "type", "type_name", "type_source", "freq_base", "freq_base_bits",
     "dim_count", "dim_count_source", "scaling_type",
@@ -94,7 +113,8 @@ BLOCK_TENSOR_ORDER = [
 # `O(n log n)`, and the claim sweep is one sorted pass rather than a scan per tensor. The
 # 50,015-tensor fixture derives in about 0.05 s with it and cost roughly 6.7 s without it — and a
 # 200,000-tensor file cost 87 s — so this budget is ~60x the measured time and still well under the
-# quadratic cost it guards against. The 530-block, 3,179-claim gpt-oss fixture shares it.
+# quadratic cost it guards against. The 530-block, 3,179-claim gpt-oss fixture and the 266-block,
+# 807-claim olmoe fixture share it.
 BOUNDED_WORK_SECONDS = 3.0
 
 SUMMARY_LABELS = [
@@ -461,6 +481,56 @@ def check_case(case, corpus):
                         fail("%s: expert block roles %r" % (name, roles))
                 if block["kind"] == "AttentionBlock" and "attn_sinks" not in roles:
                     fail("%s: attention block roles %r" % (name, roles))
+        # `olmoe-block-roles`: the member sets are stated exactly rather than as memberships. Both
+        # QK-norms ride in the `AttentionBlock` beside the projection whose output they normalize,
+        # `ffn_norm` belongs to the `RouterBlock`, and an `ExpertBlock` is exactly three stacked
+        # projections and nothing else.
+        if corpus == "olmoe":
+            for block in document["blocks"]:
+                roles = [t["role"] for t in block["tensors"]]
+                if block["kind"] == "AttentionBlock" and roles != OLMOE_ATTENTION_ROLES:
+                    fail("%s: attention block roles %r, expected %r"
+                         % (name, roles, OLMOE_ATTENTION_ROLES))
+                if block["kind"] == "RouterBlock" and roles != OLMOE_ROUTER_ROLES:
+                    fail("%s: router block roles %r, expected %r"
+                         % (name, roles, OLMOE_ROUTER_ROLES))
+                if block["kind"] == "ExpertBlock" and roles != OLMOE_EXPERT_ROLES:
+                    fail("%s: expert block roles %r, expected %r"
+                         % (name, roles, OLMOE_EXPERT_ROLES))
+                if block["kind"] == "WeightBlock" and roles not in (
+                        ["token_embd"], ["output_norm", "output"]):
+                    fail("%s: weight block roles %r" % (name, roles))
+                if any(role.endswith("_bias") or role == "attn_sinks" for role in roles):
+                    fail("%s: the olmoe plan declared %r" % (name, roles))
+
+    # `olmoe-slice-declaration`: exactly the three stacked expert roles claim a sub-range of their
+    # tensor, and no other member does. A member whose claim is the whole tensor declared no slice.
+    if case.get("slice_declaration"):
+        for block in document["blocks"]:
+            for tensor in block["tensors"]:
+                whole = (tensor["claimed_absolute_offset"] == tensor["absolute_offset"]
+                         and tensor["claimed_nbytes"] == tensor["nbytes"])
+                if (tensor["role"] in OLMOE_EXPERT_ROLES) == whole:
+                    fail("%s: %s (role %s) claims %s"
+                         % (name, tensor["name"], tensor["role"],
+                            "the whole tensor" if whole else "a sub-range"))
+
+    # `olmoe-mixed-quant` (section 2.5.5): one role carries two GGML types across layers, nothing
+    # keys a type to a role, and the consequence a layout planner meets is that two blocks of the
+    # same kind have different `byte_size`s.
+    if case.get("mixed_quant"):
+        types_by_role = {}
+        for block in document["blocks"]:
+            for tensor in block["tensors"]:
+                types_by_role.setdefault(tensor["role"], set()).add(tensor["type"])
+        multi = sorted(role for role, ids in types_by_role.items() if len(ids) > 1)
+        if multi != ["attn_v", "ffn_down_exps"]:
+            fail("%s: roles carrying more than one type are %r" % (name, multi))
+        for kind in ("AttentionBlock", "ExpertBlock"):
+            sizes = sorted({b["byte_size"] for b in document["blocks"] if b["kind"] == kind})
+            if len(sizes) != 2:
+                fail("%s: %s byte_size values %r, expected two distinct ones"
+                     % (name, kind, sizes))
 
     if case.get("tied"):
         claimed = [t["name"] for b in document["blocks"] for t in b["tensors"]]
@@ -550,6 +620,60 @@ if gptoss_checked != len(manifest["model_ir_gptoss_cases"]):
     fail("only %d of %d R1B cases ran"
          % (gptoss_checked, len(manifest["model_ir_gptoss_cases"])))
 
+olmoe_checked = 0
+for case in manifest["model_ir_olmoe_cases"]:
+    check_case(case, "olmoe")
+    olmoe_checked += 1
+if olmoe_checked != len(manifest["model_ir_olmoe_cases"]):
+    fail("only %d of %d R1C cases ran"
+         % (olmoe_checked, len(manifest["model_ir_olmoe_cases"])))
+
+# `role-list-mirror` (`docs/specs/r1c-olmoe-moe-ir.md` sections 2.5.2 and 4.2). The frozen
+# `role_id` list travels as a `u32` in every `.alignpack` member record and is duplicated across
+# Align and Python; a one-sided edit is a compile error in neither language and would silently
+# degrade a real role to `DEFERRED_U32` in a persisted artifact. Both lists are extracted from the
+# sources here and required to be equal, label for label and index for index.
+def align_role_list(source, function):
+    body = re.search(r"fn %s\(.*?\n\}\n" % re.escape(function), source, re.S)
+    if body is None:
+        fail("role-list-mirror: src/alignpack.align declares no %s" % function)
+    if function == "role_id":
+        pairs = re.findall(r'if label == "([^"]+)" \{ return (\d+) \}', body.group(0))
+    else:
+        pairs = re.findall(r'if id == (\d+) \{ return "([^"]+)" \}', body.group(0))
+        pairs = [(label, index) for index, label in pairs]
+    rows = [(int(index), label) for label, index in pairs]
+    if [index for index, _ in rows] != list(range(len(rows))):
+        fail("role-list-mirror: %s is not a dense 0..N list (%r)" % (function, rows))
+    return [label for _, label in rows]
+
+
+alignpack_source = (root_dir / "src" / "alignpack.align").read_text(encoding="utf-8")
+reader_source = (root_dir / "scripts" / "alignpack_reader.py").read_text(encoding="utf-8")
+align_ids = align_role_list(alignpack_source, "role_id")
+align_labels = align_role_list(alignpack_source, "role_label")
+reader_match = re.search(r"^ROLES = \[(.*?)^\]", reader_source, re.S | re.M)
+if reader_match is None:
+    fail("role-list-mirror: scripts/alignpack_reader.py declares no ROLES list")
+reader_roles = re.findall(r'"([^"]+)"', reader_match.group(1))
+if align_ids != align_labels:
+    fail("role-list-mirror: role_id and role_label disagree: %r vs %r" % (align_ids, align_labels))
+if align_ids != reader_roles:
+    fail("role-list-mirror: the Align list is %r and the Python mirror is %r"
+         % (align_ids, reader_roles))
+if align_ids[27:] != ["attn_q_norm", "attn_k_norm"]:
+    fail("role-list-mirror: entries 27 and 28 are %r, expected the two appended QK-norm roles"
+         % align_ids[27:])
+# Every role the olmoe plan emits must be named by the frozen list, or it would pack as a stated
+# absence and be silently useless to R4.5.
+olmoe_full_document = json.loads(
+    (work_dir / "olmoe-full.model-ir.json").read_text(encoding="utf-8"))
+emitted = sorted({t["role"] for b in olmoe_full_document["blocks"] for t in b["tensors"]})
+unnamed = [role for role in emitted if role not in reader_roles]
+if unnamed:
+    fail("role-list-mirror: the olmoe plan emits %r, which the frozen role list does not name"
+         % unnamed)
+
 # `dispatch-gptoss` / `dispatch-qwen`: the architecture selects the frontend, and neither is usable
 # on the other's file. A MoE qwen file is still `R1_UNSUPPORTED_MOE`, which is the regression that
 # keeps the two frontends from bleeding into each other.
@@ -562,6 +686,12 @@ if gptoss_full["model"]["arch"] != "gpt-oss" or gptoss_full["model"]["n_expert"]
 wrong = json.loads((work_dir / "gptoss-wrong-arch.model-ir.json").read_text(encoding="utf-8"))
 if wrong["model"]["arch"] != "qwen2":
     fail("dispatch-unknown: a qwen2-labelled file did not reach the qwen2 frontend")
+if olmoe_full_document["model"]["arch"] != "olmoe" or olmoe_full_document["model"]["n_expert"] <= 0:
+    fail("dispatch-olmoe: the olmoe frontend was not selected")
+olmoe_wrong = json.loads(
+    (work_dir / "olmoe-wrong-arch.model-ir.json").read_text(encoding="utf-8"))
+if olmoe_wrong["model"]["arch"] != "qwen2":
+    fail("dispatch-unknown: an olmoe-shaped qwen2-labelled file did not reach the qwen2 frontend")
 
 # The entire R0 corpus through `--model-ir`. Every container error code and the whole truncation
 # sweep are re-proved against the second walk, and the R0 positives all reach a non-container R1
@@ -591,6 +721,8 @@ full_model = fixture_dir / "qwen2-full.gguf"
 full_document = (work_dir / "qwen2-full.model-ir.json").read_bytes()
 gptoss_model = fixture_dir / "gptoss-full.gguf"
 gptoss_document = (work_dir / "gptoss-full.model-ir.json").read_bytes()
+olmoe_model = fixture_dir / "olmoe-full.gguf"
+olmoe_document = (work_dir / "olmoe-full.model-ir.json").read_bytes()
 
 # Option/environment isolation: no environment variable changes any document byte.
 perturbed = dict(os.environ)
@@ -601,7 +733,8 @@ perturbed.update({
     "ALIGN_LLM_MODEL_IR_ARCH": "gpt-oss", "ALIGN_LLM_MODEL_IR_EXPERTS": "4",
 })
 for label, target, expected in (("qwen", full_model, full_document),
-                                ("gptoss", gptoss_model, gptoss_document)):
+                                ("gptoss", gptoss_model, gptoss_document),
+                                ("olmoe", olmoe_model, olmoe_document)):
     env_result = run(["--model-ir", str(target)], env=perturbed)
     if env_result.returncode != 0 or env_result.stdout != expected + b"\n":
         fail("env-perturbation (%s): a perturbed environment changed the document" % label)
@@ -615,6 +748,10 @@ for _ in range(16):
     repeat = run(["--model-ir", str(gptoss_model)])
     if repeat.returncode != 0 or repeat.stdout != gptoss_document + b"\n":
         fail("repeat-model-ir (gptoss): a repeated derivation diverged")
+for _ in range(16):
+    repeat = run(["--model-ir", str(olmoe_model)])
+    if repeat.returncode != 0 or repeat.stdout != olmoe_document + b"\n":
+        fail("repeat-model-ir (olmoe): a repeated derivation diverged")
 
 # Arity. `--model-ir` is selected only at args[1], and arity is checked before any file work.
 no_args = run([])
@@ -677,8 +814,8 @@ if replaced["error_code"] != "R1_UNSUPPORTED_ARCH":
 if b"qwen model ir:" not in structural.stdout or b"R1_UNSUPPORTED_ARCH" not in structural.stdout:
     fail("error-corpus: the summary block does not report the error code")
 
-print("model ir smoke: %d qwen fixtures, %d gpt-oss fixtures, %d R0 fixtures re-run"
-      % (checked, gptoss_checked, r0_checked))
+print("model ir smoke: %d qwen fixtures, %d gpt-oss fixtures, %d olmoe fixtures, "
+      "%d R0 fixtures re-run" % (checked, gptoss_checked, olmoe_checked, r0_checked))
 PY
 
 # A bounded descriptor budget: one derivation opens one model descriptor and nothing else.
@@ -686,6 +823,7 @@ PY
   ulimit -n 64
   "$root_dir/main" --model-ir "$fixture_dir/qwen2-full.gguf" >/dev/null
   "$root_dir/main" --model-ir "$fixture_dir/gptoss-full.gguf" >/dev/null
+  "$root_dir/main" --model-ir "$fixture_dir/olmoe-full.gguf" >/dev/null
 )
 
 # The generator writes every fixture into the temporary tree and nothing into the repository.
@@ -701,4 +839,4 @@ if [ ! -d "$temp_dir" ]; then
   exit 1
 fi
 
-printf '%s\n' "model ir smoke: hyperparameters, block IR, architecture dispatch, per-expert claims, the MXFP4 geometry row, the quantization summary, the size-sum and claim-tiling oracles, the malformed corpora, table/inspect parity, and CLI arity/isolation PASS"
+printf '%s\n' "model ir smoke: hyperparameters, block IR, three-way architecture dispatch, per-expert claims, per-layer mixed quantization, the appended QK-norm roles and their two-language mirror, the MXFP4 geometry row, the quantization summary, the size-sum and claim-tiling oracles, the malformed corpora, table/inspect parity, and CLI arity/isolation PASS"

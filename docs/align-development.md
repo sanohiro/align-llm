@@ -565,6 +565,36 @@ The model path inherits R0's writable-by-the-invoking-user precondition unchange
 uses the same `fs.open_rw` constructor for both frontends — so Request 21 in
 `docs/align-requests.md` covers this capability too, still `PROPOSED` and non-blocking.
 
+**The olmoe half is the active R1C-OLMOE-MOE-IR capability** (branch `agent/r1c-olmoe-moe-ir`,
+design ledger commit `5a15fd7`, implementation and review complete and publication in progress),
+specified by
+`docs/specs/r1c-olmoe-moe-ir.md`. `--model-ir` dispatch becomes a three-way chain at
+`general.architecture`: `qwen2` (`src/frontend_qwen.align`), `gpt-oss`
+(`src/frontend_gpt_oss.align`), and now `olmoe` (`src/frontend_olmoe.align`, new); everything else
+still falls through to the qwen2 frontend, whose step-4 re-check produces `R1_UNSUPPORTED_ARCH`. No
+change to `src/model_ir.align` or to `R1_MODEL_IR`'s `schema_version: 2` is required — olmoe reuses
+the neutral geometry pass, block resolution, coverage, and size-sum oracle unchanged, and needs no
+new GGML geometry row (the model uses only `F32`, `Q4_K`, and `Q6_K`, all already sized). The one
+addition to the frozen `role_id` list in `src/alignpack.align` and its `scripts/alignpack_reader.py`
+mirror is two roles the qwen2 and gpt-oss frontends never needed: `attn_q_norm` (27) and
+`attn_k_norm` (28), the olmoe model's per-layer QK-norm tensors (`blk.N.attn_q_norm.weight` and
+`blk.N.attn_k_norm.weight`, each `[n_embd]` F32). They are a hard precondition for R4.5's expert
+matmul on this model: without them two of every seven attention block members would persist as
+`DEFERRED_U32` in a pack rather than as an addressable role.
+
+The parity row set gains a fourth architecture branch in `scripts/run-model-ir-parity`'s
+`build_rows`. The olmoe extension over the shared row set is exactly `["n_expert_used"]` — unlike
+gpt-oss it adds no `n_ff_exp` row, because the reference build prints one only for an architecture
+that declares `expert_feed_forward_length`, and olmoe does not — and it adds no `n_swa` row, because
+the olmoe Model IR has no `sliding_window` field to compare against the reference's architecture
+default. Both omissions are asserted rather than silently dropped. `ALIGN_LLM_GGUF_MODEL` continues
+to serve all three architectures; there is no third environment variable. Unlike the gpt-oss
+qualification, olmoe's is runnable today against
+`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (3.92 GiB, already downloaded locally): expected values are
+`arch: olmoe`, `n_layer: 16`, `n_embd: 2048`, `n_head`/`n_head_kv: 16`, `head_dim: 128`, `n_ff: 1024`,
+`n_expert: 64`, `n_expert_used: 8`, `n_vocab: 50304`, and a loader type census of `f32: 81`,
+`q4_K: 97`, `q6_K: 17`.
+
 ## Expert trace development
 
 R2A-EXPERT-TRACE-CAPTURE is merged into `main` as PR #124 (head `ab5f7d8`, merge `b8e1cb6`); its

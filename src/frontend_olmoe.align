@@ -1,0 +1,844 @@
+module frontend_olmoe
+
+import gguf
+import model_ir
+
+// R1C-OLMOE-MOE-IR (`docs/specs/r1c-olmoe-moe-ir.md` sections 2.5 and 2.6). The sole owner of olmoe
+// architecture knowledge: its metadata keys, bounds and derivations, expert bounds and the
+// block-explosion guard, the fifteen-role table, the shape table, the olmoe `model` object, and the
+// olmoe `BlockPlan`.
+//
+// It imports `gguf` and `model_ir` and no other frontend. It owns no byte-size computation, no
+// coverage sweep, no claim arithmetic, and no JSON brace outside its own `model` object: one
+// exchanged format has exactly one renderer, and adding an architecture must not be able to change
+// what that format means.
+//
+// **Every GGUF key name, tensor name, shape, and bound below is MEASURED** on
+// `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, a real 4,213,512,192-byte mixture-of-experts model with
+// 64 experts and top-8 routing (section 2.1). There is no assumption banner here: the file declares
+// no `attention.key_length`, no `expert_feed_forward_length`, no `rope.dimension_count`, no sliding
+// window, no MoE-gating key, no bias tensor of any kind, no `attn_sinks`, and no fused
+// `ffn_gate_up_exps`, and each of those absences is a design input recorded in the plan.
+
+// Section 2.3 thresholds, declared per frontend by value rather than by import: a bound is an
+// architecture's own plausibility claim, and two architectures agreeing on one today must not
+// couple them forever.
+MAX_LAYERS := 512
+MAX_EMBD := 1048576
+MAX_HEADS := 4096
+MAX_FF := 16777216
+MAX_CONTEXT := 134217728
+MAX_VOCAB := 4194304
+
+// An order of magnitude above any shipping MoE expert count. The real model uses 64.
+MAX_EXPERTS := 1024
+
+// The block-explosion guard. The real model needs 1,058 blocks.
+MAX_BLOCKS := 65536
+
+// MEASURED: the reference loader reports `rope type = 2` for this architecture and the file
+// declares no rope-type key, so the value is architecture-owned and is recorded together with its
+// source so a consumer can tell a derived constant from a declared one.
+ROPE_TYPE_NEOX := 2
+
+TYPE_UINT32 := 4
+TYPE_FLOAT32 := 6
+TYPE_STRING := 8
+
+// The derived hyperparameters, carried together so the shape table is one small parameter.
+Hyper {
+  n_embd: i64,
+  n_head: i64,
+  n_head_kv: i64,
+  head_dim: i64,
+  n_ff_exp: i64,
+  n_vocab: i64,
+  n_expert: i64,
+}
+
+// An expected tensor shape. Unused axes hold the multiplicative identity, exactly as
+// `src/gguf.align` records an undeclared axis. `sliced` marks a stacked expert tensor whose last
+// declared axis is the expert axis.
+Shape { n_dims: i64, d0: i64, d1: i64, d2: i64, d3: i64, sliced: bool }
+
+fn kv_text_decodable(borrow t: gguf.GgufTable, key: str) -> bool {
+  return match gguf.kv_string(t, key) {
+    Some(_) => true,
+    None => false,
+  }
+}
+
+// The stable, architecture-independent role names (section 2.5.2). Thirteen are spelled exactly as
+// the qwen2 and gpt-oss frontends spell them, because a consumer must not have to learn a second
+// vocabulary for the same function; `attn_q_norm` and `attn_k_norm` are new to the repository and
+// are appended to the frozen `role_id` list of `src/alignpack.align` as entries 27 and 28.
+fn role_label(role: i64) -> str {
+  if role == 0 { return "token_embd" }
+  if role == 1 { return "attn_norm" }
+  if role == 2 { return "attn_q" }
+  if role == 3 { return "attn_q_norm" }
+  if role == 4 { return "attn_k" }
+  if role == 5 { return "attn_k_norm" }
+  if role == 6 { return "attn_v" }
+  if role == 7 { return "attn_output" }
+  if role == 8 { return "ffn_norm" }
+  if role == 9 { return "router" }
+  if role == 10 { return "ffn_gate_exps" }
+  if role == 11 { return "ffn_up_exps" }
+  if role == 12 { return "ffn_down_exps" }
+  if role == 13 { return "output_norm" }
+  if role == 14 { return "output" }
+  return ""
+}
+
+fn role_suffix(role: i64) -> str {
+  if role == 1 { return "attn_norm.weight" }
+  if role == 2 { return "attn_q.weight" }
+  if role == 3 { return "attn_q_norm.weight" }
+  if role == 4 { return "attn_k.weight" }
+  if role == 5 { return "attn_k_norm.weight" }
+  if role == 6 { return "attn_v.weight" }
+  if role == 7 { return "attn_output.weight" }
+  if role == 8 { return "ffn_norm.weight" }
+  if role == 9 { return "ffn_gate_inp.weight" }
+  if role == 10 { return "ffn_gate_exps.weight" }
+  if role == 11 { return "ffn_up_exps.weight" }
+  if role == 12 { return "ffn_down_exps.weight" }
+  return ""
+}
+
+fn role_tensor_name(role: i64, layer: i64) -> string {
+  if role == 0 { return "token_embd.weight".clone() }
+  if role == 13 { return "output_norm.weight".clone() }
+  if role == 14 { return "output.weight".clone() }
+  b := builder()
+  b.write("blk.")
+  b.write_int(layer)
+  b.write(".")
+  b.write(role_suffix(role))
+  return b.to_string()
+}
+
+// **Every member is required, and no bias role is declared** (section 2.5.2). The real file carries
+// no bias tensor of any kind and OLMoE's published configuration sets none, so declaring optional
+// bias members no artifact names would add member slots that can never bind. A future olmoe-family
+// file carrying a bias therefore fails as `R1_UNASSIGNED_TENSOR` — the correct fail-closed outcome —
+// and admitting it is one row here plus a fixture.
+fn role_required(role: i64) -> i64 {
+  return 1
+}
+
+// MEASURED shapes, asserted per member. The stacked-tensor rule is visible here: every sliced member
+// declares its expert axis **last**, with extent exactly `n_expert`. The axis order is this
+// repository's dense convention plus an expert axis — `ffn_gate` / `ffn_up` as `[n_embd, n_ff]` and
+// `ffn_down` as `[n_ff, n_embd]` — which is what the real file declares (section 2.5.3).
+fn expected_shape(role: i64, h: Hyper) -> Shape {
+  q := h.n_head * h.head_dim
+  kv := h.n_head_kv * h.head_dim
+  if role == 0 || role == 14 {
+    return Shape { n_dims: 2, d0: h.n_embd, d1: h.n_vocab, d2: 1, d3: 1, sliced: false }
+  }
+  // The two QK-norm roles share the `[n_embd]` form with the three ordinary norms. The file cannot
+  // discriminate `n_embd` from `n_head * head_dim` or `n_head_kv * head_dim` — all three are 2,048
+  // on this model because it is MHA with `head_dim` 128 — and `[n_embd]` is chosen because the shape
+  // table then gains no new form and because it stays correct if a later olmoe-family file changes
+  // its head geometry without changing its normalization (section 2.5.3).
+  if role == 1 || role == 3 || role == 5 || role == 8 || role == 13 {
+    return Shape { n_dims: 1, d0: h.n_embd, d1: 1, d2: 1, d3: 1, sliced: false }
+  }
+  if role == 2 { return Shape { n_dims: 2, d0: h.n_embd, d1: q, d2: 1, d3: 1, sliced: false } }
+  if role == 4 || role == 6 {
+    return Shape { n_dims: 2, d0: h.n_embd, d1: kv, d2: 1, d3: 1, sliced: false }
+  }
+  if role == 7 { return Shape { n_dims: 2, d0: q, d1: h.n_embd, d2: 1, d3: 1, sliced: false } }
+  // A router whose second axis disagrees with `n_expert` is the clearest possible signal that the
+  // metadata and the tensors describe different models.
+  if role == 9 {
+    return Shape { n_dims: 2, d0: h.n_embd, d1: h.n_expert, d2: 1, d3: 1, sliced: false }
+  }
+  if role == 10 || role == 11 {
+    return Shape { n_dims: 3, d0: h.n_embd, d1: h.n_ff_exp, d2: h.n_expert, d3: 1, sliced: true }
+  }
+  if role == 12 {
+    return Shape { n_dims: 3, d0: h.n_ff_exp, d1: h.n_embd, d2: h.n_expert, d3: 1, sliced: true }
+  }
+  return Shape { n_dims: -1, d0: -1, d1: -1, d2: -1, d3: -1, sliced: false }
+}
+
+// The one public entry point pair, identical in signature to the other two frontends. The container
+// table is read once per invocation by `src/main.align`, which dispatches on its
+// `general.architecture` field, and is borrowed here.
+pub fn build_model_ir(borrow table: gguf.GgufTable, path: str) -> model_ir.ModelIr {
+  prepared := prepare(table)
+  code_view: str := prepared.code
+  detail_view: str := prepared.detail
+  return model_ir.build(table, prepared.geometry, prepared.plan, path, code_view, detail_view)
+}
+
+pub fn prepare(borrow table: gguf.GgufTable) -> model_ir.Prepared {
+  mut code := "".clone()
+  mut detail := "".clone()
+  mut n_layer := -1
+  mut n_embd := -1
+  mut n_head := -1
+  mut n_head_kv := -1
+  mut head_dim := -1
+  mut head_dim_source := "".clone()
+  mut n_ff := -1
+  mut n_ff_exp := -1
+  mut n_ff_exp_source := "".clone()
+  mut n_vocab := -1
+  mut n_expert := -1
+  mut n_expert_used := -1
+  mut context_length := -1
+  mut rms_eps_bits := -1
+  mut rms_eps_text := "null".clone()
+  mut freq_base_bits := -1
+  mut freq_base_text := "null".clone()
+  mut rope_type := -1
+  mut rope_dim_count := -1
+  mut rope_dim_source := "".clone()
+  mut rope_scaling_json := "null".clone()
+  mut file_type := -1
+  mut file_type_present := false
+
+  loop {
+    // Step 3. A container failure is data with the container's own code as the detail.
+    container_failed := match table.status {
+      Ok => false,
+      Error => true,
+    }
+    if container_failed {
+      code = "R1_GGUF_ERROR".clone()
+      container_code: str := table.error_code
+      detail = model_ir.bounded_detail(container_code)
+      break
+    }
+
+    // Step 4. The dispatch in `src/main.align` already chose this frontend; the re-check is what
+    // keeps it unusable on the wrong file.
+    architecture_view: str := table.architecture
+    if !table.architecture_present || architecture_view != "olmoe" {
+      code = "R1_UNSUPPORTED_ARCH".clone()
+      detail = if table.architecture_present {
+        model_ir.bounded_detail(architecture_view)
+      } else {
+        "".clone()
+      }
+      break
+    }
+    rope_type = ROPE_TYPE_NEOX
+
+    // Step 5, first pass: presence of every required key, in the section 2.5.1 order.
+    mut missing := ""
+    if gguf.kv_type(table, "olmoe.block_count") < 0 {
+      missing = "olmoe.block_count"
+    } else if gguf.kv_type(table, "olmoe.embedding_length") < 0 {
+      missing = "olmoe.embedding_length"
+    } else if gguf.kv_type(table, "olmoe.attention.head_count") < 0 {
+      missing = "olmoe.attention.head_count"
+    } else if gguf.kv_type(table, "olmoe.attention.head_count_kv") < 0 {
+      missing = "olmoe.attention.head_count_kv"
+    } else if gguf.kv_type(table, "olmoe.feed_forward_length") < 0 {
+      missing = "olmoe.feed_forward_length"
+    } else if gguf.kv_type(table, "olmoe.expert_count") < 0 {
+      missing = "olmoe.expert_count"
+    } else if gguf.kv_type(table, "olmoe.expert_used_count") < 0 {
+      missing = "olmoe.expert_used_count"
+    } else if gguf.kv_type(table, "olmoe.context_length") < 0 {
+      missing = "olmoe.context_length"
+    } else if gguf.kv_type(table, "olmoe.attention.layer_norm_rms_epsilon") < 0 {
+      missing = "olmoe.attention.layer_norm_rms_epsilon"
+    } else if gguf.kv_type(table, "olmoe.rope.freq_base") < 0 {
+      missing = "olmoe.rope.freq_base"
+    }
+    if missing.len() > 0 {
+      code = "R1_MISSING_KEY".clone()
+      detail = missing.clone()
+      break
+    }
+
+    // Step 5, second pass: the declared value type of every required key, then of every optional key
+    // that is present.
+    mut mistyped := ""
+    if gguf.kv_type(table, "olmoe.block_count") != TYPE_UINT32 {
+      mistyped = "olmoe.block_count"
+    } else if gguf.kv_type(table, "olmoe.embedding_length") != TYPE_UINT32 {
+      mistyped = "olmoe.embedding_length"
+    } else if gguf.kv_type(table, "olmoe.attention.head_count") != TYPE_UINT32 {
+      mistyped = "olmoe.attention.head_count"
+    } else if gguf.kv_type(table, "olmoe.attention.head_count_kv") != TYPE_UINT32 {
+      mistyped = "olmoe.attention.head_count_kv"
+    } else if gguf.kv_type(table, "olmoe.feed_forward_length") != TYPE_UINT32 {
+      mistyped = "olmoe.feed_forward_length"
+    } else if gguf.kv_type(table, "olmoe.expert_count") != TYPE_UINT32 {
+      mistyped = "olmoe.expert_count"
+    } else if gguf.kv_type(table, "olmoe.expert_used_count") != TYPE_UINT32 {
+      mistyped = "olmoe.expert_used_count"
+    } else if gguf.kv_type(table, "olmoe.context_length") != TYPE_UINT32 {
+      mistyped = "olmoe.context_length"
+    } else if gguf.kv_type(table, "olmoe.attention.layer_norm_rms_epsilon") != TYPE_FLOAT32 {
+      mistyped = "olmoe.attention.layer_norm_rms_epsilon"
+    } else if gguf.kv_type(table, "olmoe.rope.freq_base") != TYPE_FLOAT32 {
+      mistyped = "olmoe.rope.freq_base"
+    } else if gguf.kv_type(table, "olmoe.attention.key_length") >= 0
+      && gguf.kv_type(table, "olmoe.attention.key_length") != TYPE_UINT32 {
+      mistyped = "olmoe.attention.key_length"
+    } else if gguf.kv_type(table, "olmoe.attention.value_length") >= 0
+      && gguf.kv_type(table, "olmoe.attention.value_length") != TYPE_UINT32 {
+      mistyped = "olmoe.attention.value_length"
+    } else if gguf.kv_type(table, "olmoe.expert_feed_forward_length") >= 0
+      && gguf.kv_type(table, "olmoe.expert_feed_forward_length") != TYPE_UINT32 {
+      mistyped = "olmoe.expert_feed_forward_length"
+    } else if gguf.kv_type(table, "olmoe.rope.dimension_count") >= 0
+      && gguf.kv_type(table, "olmoe.rope.dimension_count") != TYPE_UINT32 {
+      mistyped = "olmoe.rope.dimension_count"
+    } else if gguf.kv_type(table, "olmoe.rope.scaling.type") >= 0
+      && gguf.kv_type(table, "olmoe.rope.scaling.type") != TYPE_STRING {
+      mistyped = "olmoe.rope.scaling.type"
+    } else if gguf.kv_type(table, "olmoe.rope.scaling.type") == TYPE_STRING
+      && !kv_text_decodable(table, "olmoe.rope.scaling.type") {
+      mistyped = "olmoe.rope.scaling.type"
+    }
+    if mistyped.len() > 0 {
+      code = "R1_KEY_TYPE_MISMATCH".clone()
+      detail = mistyped.clone()
+      break
+    }
+
+    n_layer = match gguf.kv_int(table, "olmoe.block_count") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_embd = match gguf.kv_int(table, "olmoe.embedding_length") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_head = match gguf.kv_int(table, "olmoe.attention.head_count") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_head_kv = match gguf.kv_int(table, "olmoe.attention.head_count_kv") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_ff = match gguf.kv_int(table, "olmoe.feed_forward_length") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_expert = match gguf.kv_int(table, "olmoe.expert_count") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_expert_used = match gguf.kv_int(table, "olmoe.expert_used_count") {
+      Some(value) => value,
+      None => -1,
+    }
+    context_length = match gguf.kv_int(table, "olmoe.context_length") {
+      Some(value) => value,
+      None => -1,
+    }
+    rms_eps_bits = match gguf.kv_float_bits(table, "olmoe.attention.layer_norm_rms_epsilon") {
+      Some(value) => value,
+      None => -1,
+    }
+    rms_eps_text = match gguf.kv_float_text(table, "olmoe.attention.layer_norm_rms_epsilon") {
+      Some(value) => value,
+      None => "null".clone(),
+    }
+    freq_base_bits = match gguf.kv_float_bits(table, "olmoe.rope.freq_base") {
+      Some(value) => value,
+      None => -1,
+    }
+    freq_base_text = match gguf.kv_float_text(table, "olmoe.rope.freq_base") {
+      Some(value) => value,
+      None => "null".clone(),
+    }
+    if gguf.kv_type(table, "general.file_type") == TYPE_UINT32 {
+      file_type = match gguf.kv_int(table, "general.file_type") {
+        Some(value) => value,
+        None => -1,
+      }
+      file_type_present = file_type >= 0
+    }
+    rope_scaling_json = match gguf.kv_string(table, "olmoe.rope.scaling.type") {
+      Some(value) => {
+        scaling_view: str := value
+        gguf.json_string(scaling_view)
+      },
+      None => "null".clone(),
+    }
+
+    // Step 6. Plausibility and derivation, in the section 2.5.1 order.
+    mut implausible := ""
+    if n_layer < 1 || n_layer > MAX_LAYERS {
+      implausible = "olmoe.block_count"
+    } else if n_embd < 1 || n_embd > MAX_EMBD {
+      implausible = "olmoe.embedding_length"
+    } else if n_head < 1 || n_head > MAX_HEADS {
+      implausible = "olmoe.attention.head_count"
+    } else if n_head_kv < 1 || n_head_kv > n_head || n_head % n_head_kv != 0 {
+      implausible = "olmoe.attention.head_count_kv"
+    }
+    if implausible.len() > 0 {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = implausible.clone()
+      break
+    }
+
+    // `head_dim` **is** `n_embd / n_head` for this architecture — `2048 / 16 = 128`, corroborated
+    // three ways by the reference (`n_rot`, `n_embd_head_k`, `n_embd_head_v`) — and the file
+    // declares no `attention.key_length`. This is the opposite of gpt-oss, where the division is
+    // wrong and the key must win, and it is why the rule is *prefer the key, fall back to the
+    // division* rather than *always divide* or *always read the key*: one rule now serves two
+    // measured architectures. `head_dim_source` reports which branch was taken.
+    key_length_present := gguf.kv_type(table, "olmoe.attention.key_length") >= 0
+    if key_length_present {
+      key_length := match gguf.kv_int(table, "olmoe.attention.key_length") {
+        Some(value) => value,
+        None => -1,
+      }
+      value_length := match gguf.kv_int(table, "olmoe.attention.value_length") {
+        Some(value) => value,
+        None => -1,
+      }
+      if gguf.kv_type(table, "olmoe.attention.value_length") < 0 || value_length != key_length {
+        code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+        detail = "olmoe.attention.value_length".clone()
+        break
+      }
+      if key_length < 1 || key_length > MAX_EMBD {
+        code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+        detail = "olmoe.attention.key_length".clone()
+        break
+      }
+      head_dim = key_length
+      head_dim_source = "metadata".clone()
+    } else {
+      // The head count is the divisor that does not fit, so it is the key the diagnostic names.
+      if n_embd % n_head != 0 {
+        code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+        detail = "olmoe.attention.head_count".clone()
+        break
+      }
+      head_dim = n_embd / n_head
+      head_dim_source = "derived".clone()
+    }
+
+    mut implausible2 := ""
+    if n_ff < 1 || n_ff > MAX_FF {
+      implausible2 = "olmoe.feed_forward_length"
+    } else if context_length < 1 || context_length > MAX_CONTEXT {
+      implausible2 = "olmoe.context_length"
+    }
+    if implausible2.len() > 0 {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = implausible2.clone()
+      break
+    }
+
+    // Unlike gpt-oss, `n_ff` is falsifiable on this architecture: `expert_feed_forward_length` is
+    // absent, so `n_ff_exp` **is** `n_ff` and every stacked expert shape asserts it. A wrong
+    // `olmoe.feed_forward_length` is `R1_TENSOR_SHAPE_UNEXPECTED`, not an unusable Model IR.
+    ff_exp_present := gguf.kv_type(table, "olmoe.expert_feed_forward_length") >= 0
+    n_ff_exp = if ff_exp_present {
+      match gguf.kv_int(table, "olmoe.expert_feed_forward_length") {
+        Some(value) => value,
+        None => -1,
+      }
+    } else {
+      n_ff
+    }
+    n_ff_exp_source = if ff_exp_present { "metadata".clone() } else { "derived".clone() }
+    if n_ff_exp < 1 || n_ff_exp > MAX_FF {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = if ff_exp_present {
+        "olmoe.expert_feed_forward_length".clone()
+      } else {
+        "olmoe.feed_forward_length".clone()
+      }
+      break
+    }
+
+    rope_dim_count = match gguf.kv_int(table, "olmoe.rope.dimension_count") {
+      Some(value) => value,
+      None => head_dim,
+    }
+    rope_dim_source = if gguf.kv_type(table, "olmoe.rope.dimension_count") >= 0 {
+      "metadata".clone()
+    } else {
+      "derived".clone()
+    }
+    if rope_dim_count < 1 || rope_dim_count > head_dim {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = "olmoe.rope.dimension_count".clone()
+      break
+    }
+
+    // Step 7. Expert bounds and the block-explosion guard. Every comparison is written in
+    // non-wrapping form and tested before the product it protects.
+    if n_expert < 1 || n_expert > MAX_EXPERTS {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = "olmoe.expert_count".clone()
+      break
+    }
+    if n_expert_used < 1 || n_expert_used > n_expert {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = "olmoe.expert_used_count".clone()
+      break
+    }
+    per_layer := 2 + n_expert
+    if n_layer > (MAX_BLOCKS - 2) / per_layer {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = "olmoe.expert_count".clone()
+      break
+    }
+    break
+  }
+
+  // Step 8. The tensor geometry pass, owned by the neutral builder and run here so that step 9 —
+  // which is the frontend's — keeps its place in the section 2.6 order.
+  geometry := if code.len() == 0 {
+    model_ir.size_tensors(table)
+  } else {
+    model_ir.empty_geometry()
+  }
+
+  mut names := builder()
+  mut names_at := 0
+  mut block_kind_column: array_builder<i64> := array_builder()
+  mut block_layer_column: array_builder<i64> := array_builder()
+  mut block_expert_column: array_builder<i64> := array_builder()
+  mut block_member_start_column: array_builder<i64> := array_builder()
+  mut block_member_end_column: array_builder<i64> := array_builder()
+  mut member_role_start_column: array_builder<i64> := array_builder()
+  mut member_role_end_column: array_builder<i64> := array_builder()
+  mut member_name_start_column: array_builder<i64> := array_builder()
+  mut member_name_end_column: array_builder<i64> := array_builder()
+  mut member_required_column: array_builder<i64> := array_builder()
+  mut member_n_dims_column: array_builder<i64> := array_builder()
+  mut member_dim0_column: array_builder<i64> := array_builder()
+  mut member_dim1_column: array_builder<i64> := array_builder()
+  mut member_dim2_column: array_builder<i64> := array_builder()
+  mut member_dim3_column: array_builder<i64> := array_builder()
+  mut member_slice_index_column: array_builder<i64> := array_builder()
+  mut member_slice_count_column: array_builder<i64> := array_builder()
+  mut plan_blocks := 0
+  mut plan_members := 0
+
+  loop {
+    if code.len() > 0 || geometry.failed { break }
+
+    // Step 9. `n_vocab` is `dims[1]` of `token_embd.weight`, bounded, then cross-checked against the
+    // declared length of `tokenizer.ggml.tokens`. Unchanged from R1.
+    embd_index := gguf.find_tensor(table, "token_embd.weight")
+    if embd_index < 0 {
+      code = "R1_MISSING_TENSOR".clone()
+      detail = "token_embd.weight".clone()
+      break
+    }
+    n_vocab = gguf.tensor_dim(table, embd_index, 1)
+    if n_vocab < 1 || n_vocab > MAX_VOCAB {
+      code = "R1_TENSOR_SHAPE_UNEXPECTED".clone()
+      detail = "token_embd.weight".clone()
+      break
+    }
+    mut vocab_mismatch := false
+    match gguf.kv_array_length(table, "tokenizer.ggml.tokens") {
+      Some(declared) => {
+        if declared != n_vocab {
+          code = "R1_VOCAB_MISMATCH".clone()
+          b := builder()
+          b.write_int(declared)
+          b.write("!=")
+          b.write_int(n_vocab)
+          detail = b.to_string()
+          vocab_mismatch = true
+        }
+      },
+      None => {},
+    }
+    if vocab_mismatch { break }
+
+    hyper := Hyper {
+      n_embd: n_embd,
+      n_head: n_head,
+      n_head_kv: n_head_kv,
+      head_dim: head_dim,
+      n_ff_exp: n_ff_exp,
+      n_vocab: n_vocab,
+      n_expert: n_expert,
+    }
+
+    // Pass 1: the block skeleton and one member request per (role, layer, expert) in the section
+    // 2.5.3 emission order, which is fixed and is not file order:
+    //   index 0                                       WeightBlock    layer -1
+    //   base, base + 1, base + 2 + e                  AttentionBlock, RouterBlock, ExpertBlock
+    //   index 1 + n_layer * (2 + n_expert)            WeightBlock    layer -1
+    mut request_role: array_builder<i64> := array_builder()
+    mut request_layer: array_builder<i64> := array_builder()
+    mut request_slice: array_builder<i64> := array_builder()
+
+    block_kind_column.push(0)
+    block_layer_column.push(-1)
+    block_expert_column.push(-1)
+    block_member_start_column.push(plan_members)
+    request_role.push(0)
+    request_layer.push(-1)
+    request_slice.push(-1)
+    plan_members = plan_members + 1
+    block_member_end_column.push(plan_members)
+    plan_blocks = plan_blocks + 1
+
+    mut layer := 0
+    loop {
+      if layer >= n_layer { break }
+      // The two QK-norm tensors ride in the `AttentionBlock` beside the projection whose output
+      // they normalize: they are per-layer attention state fetched with the attention weights,
+      // exactly as `attn_sinks` is in the gpt-oss plan.
+      block_kind_column.push(1)
+      block_layer_column.push(layer)
+      block_expert_column.push(-1)
+      block_member_start_column.push(plan_members)
+      mut attention_role := 1
+      loop {
+        if attention_role > 7 { break }
+        request_role.push(attention_role)
+        request_layer.push(layer)
+        request_slice.push(-1)
+        plan_members = plan_members + 1
+        attention_role = attention_role + 1
+      }
+      block_member_end_column.push(plan_members)
+      plan_blocks = plan_blocks + 1
+
+      // `ffn_norm` belongs to the `RouterBlock`, not to an `ExpertBlock`: it is applied once per
+      // token before routing, so attaching it to a single expert would be a lie about when it is
+      // needed and duplicating it into all 64 would break claim tiling. The `RouterBlock` is
+      // therefore "everything the layer needs before it knows which experts to fetch".
+      block_kind_column.push(4)
+      block_layer_column.push(layer)
+      block_expert_column.push(-1)
+      block_member_start_column.push(plan_members)
+      mut router_role := 8
+      loop {
+        if router_role > 9 { break }
+        request_role.push(router_role)
+        request_layer.push(layer)
+        request_slice.push(-1)
+        plan_members = plan_members + 1
+        router_role = router_role + 1
+      }
+      block_member_end_column.push(plan_members)
+      plan_blocks = plan_blocks + 1
+
+      mut expert := 0
+      loop {
+        if expert >= n_expert { break }
+        block_kind_column.push(3)
+        block_layer_column.push(layer)
+        block_expert_column.push(expert)
+        block_member_start_column.push(plan_members)
+        mut expert_role := 10
+        loop {
+          if expert_role > 12 { break }
+          request_role.push(expert_role)
+          request_layer.push(layer)
+          request_slice.push(expert)
+          plan_members = plan_members + 1
+          expert_role = expert_role + 1
+        }
+        block_member_end_column.push(plan_members)
+        plan_blocks = plan_blocks + 1
+        expert = expert + 1
+      }
+      layer = layer + 1
+    }
+
+    block_kind_column.push(0)
+    block_layer_column.push(-1)
+    block_expert_column.push(-1)
+    block_member_start_column.push(plan_members)
+    request_role.push(13)
+    request_layer.push(-1)
+    request_slice.push(-1)
+    plan_members = plan_members + 1
+    request_role.push(14)
+    request_layer.push(-1)
+    request_slice.push(-1)
+    plan_members = plan_members + 1
+    block_member_end_column.push(plan_members)
+    plan_blocks = plan_blocks + 1
+
+    // Pass 2: the text stream and the shape columns. Splitting the plan into a request pass and a
+    // rendering pass keeps one copy of the naming and shape logic, which is what a `builder`
+    // parameter would otherwise buy (Align Request 24, `PROPOSED` and unconsumed).
+    roles := request_role.build()
+    layers := request_layer.build()
+    slices := request_slice.build()
+    mut request := 0
+    loop {
+      if request >= roles.len() { break }
+      role := roles[request]
+      member_layer := layers[request]
+      slice_index := slices[request]
+
+      label := role_label(role)
+      role_start := names_at
+      names.write(label)
+      names_at = names_at + label.bytes().len()
+      member_role_start_column.push(role_start)
+      member_role_end_column.push(names_at)
+
+      wanted := role_tensor_name(role, member_layer)
+      wanted_view: str := wanted
+      // Tied embeddings: an absent `output.weight` puts `token_embd.weight` in two blocks, and the
+      // coverage accounting counts its bytes once. R1's rule, unchanged — this model is untied, but
+      // the rule costs one optional lookup and it is the one branch that produces the claim-tiling
+      // oracle's whole-tensor-claimed-twice case.
+      resolved := if role == 14 && gguf.find_tensor(table, wanted_view) < 0 {
+        "token_embd.weight".clone()
+      } else {
+        wanted.clone()
+      }
+      resolved_view: str := resolved
+      name_start := names_at
+      names.write(resolved_view)
+      names_at = names_at + resolved_view.bytes().len()
+      member_name_start_column.push(name_start)
+      member_name_end_column.push(names_at)
+
+      want := expected_shape(role, hyper)
+      member_required_column.push(role_required(role))
+      member_n_dims_column.push(want.n_dims)
+      member_dim0_column.push(want.d0)
+      member_dim1_column.push(want.d1)
+      member_dim2_column.push(want.d2)
+      member_dim3_column.push(want.d3)
+      if want.sliced {
+        member_slice_index_column.push(slice_index)
+        member_slice_count_column.push(n_expert)
+      } else {
+        member_slice_index_column.push(-1)
+        member_slice_count_column.push(-1)
+      }
+      request = request + 1
+    }
+    break
+  }
+
+  architecture_view: str := table.architecture
+  rms_eps_view: str := rms_eps_text
+  freq_base_view: str := freq_base_text
+  head_dim_source_view: str := head_dim_source
+  n_ff_exp_source_view: str := n_ff_exp_source
+  rope_dim_source_view: str := rope_dim_source
+  rope_scaling_view: str := rope_scaling_json
+
+  // The olmoe `model` object (section 2.4). It is the gpt-oss list minus `expert_ffn_layout`,
+  // `sliding_window`, and `sliding_window_pattern`: the expert layout is measured — split, with no
+  // fused tensor in the file — so reporting it would be reporting a constant, and both
+  // sliding-window keys are absent from a file whose reference `n_swa` is 0, so a `null` field for
+  // a concept this architecture does not have would be exactly the mistake the discriminated
+  // `model` object exists to avoid.
+  model := builder()
+  model.write("{\"arch\":")
+  model.write(model_ir.json_text_or_null(architecture_view, table.architecture_present))
+  model.write(",\"n_layer\":")
+  model.write_int(n_layer)
+  model.write(",\"n_embd\":")
+  model.write_int(n_embd)
+  model.write(",\"n_head\":")
+  model.write_int(n_head)
+  model.write(",\"n_head_kv\":")
+  model.write_int(n_head_kv)
+  model.write(",\"head_dim\":")
+  model.write_int(head_dim)
+  model.write(",\"head_dim_source\":")
+  model.write(model_ir.json_text_or_null(head_dim_source_view, head_dim_source_view.len() > 0))
+  model.write(",\"n_ff\":")
+  model.write_int(n_ff)
+  model.write(",\"n_ff_exp\":")
+  model.write_int(n_ff_exp)
+  model.write(",\"n_ff_exp_source\":")
+  model.write(model_ir.json_text_or_null(n_ff_exp_source_view, n_ff_exp_source_view.len() > 0))
+  model.write(",\"n_vocab\":")
+  model.write_int(n_vocab)
+  model.write(",\"n_expert\":")
+  model.write_int(n_expert)
+  model.write(",\"n_expert_used\":")
+  model.write_int(n_expert_used)
+  model.write(",\"context_length\":")
+  model.write_int(context_length)
+  model.write(",\"rms_eps\":")
+  model.write(rms_eps_view)
+  model.write(",\"rms_eps_bits\":")
+  rms_eps_hex := model_ir.hex32(rms_eps_bits)
+  rms_eps_hex_view: str := rms_eps_hex
+  model.write(model_ir.json_text_or_null(rms_eps_hex_view, rms_eps_bits >= 0))
+  model.write(",\"rope\":{\"type\":")
+  model.write_int(rope_type)
+  model.write(",\"type_name\":")
+  model.write(model_ir.json_text_or_null("neox", rope_type >= 0))
+  model.write(",\"type_source\":")
+  model.write(model_ir.json_text_or_null("architecture", rope_type >= 0))
+  model.write(",\"freq_base\":")
+  model.write(freq_base_view)
+  model.write(",\"freq_base_bits\":")
+  freq_base_hex := model_ir.hex32(freq_base_bits)
+  freq_base_hex_view: str := freq_base_hex
+  model.write(model_ir.json_text_or_null(freq_base_hex_view, freq_base_bits >= 0))
+  model.write(",\"dim_count\":")
+  model.write_int(rope_dim_count)
+  model.write(",\"dim_count_source\":")
+  model.write(model_ir.json_text_or_null(rope_dim_source_view, rope_dim_source_view.len() > 0))
+  model.write(",\"scaling_type\":")
+  model.write(rope_scaling_view)
+  model.write("}}")
+
+  plan := model_ir.BlockPlan {
+    arch: architecture_view.clone(),
+    arch_present: table.architecture_present,
+    model_json: model.to_string(),
+    n_layer: n_layer,
+    n_embd: n_embd,
+    n_head: n_head,
+    n_head_kv: n_head_kv,
+    head_dim: head_dim,
+    n_ff: n_ff,
+    n_vocab: n_vocab,
+    n_expert: n_expert,
+    context_length: context_length,
+    rope_freq_base_bits: freq_base_bits,
+    rms_eps_bits: rms_eps_bits,
+    file_type: file_type,
+    file_type_present: file_type_present,
+    names: names.to_string(),
+    block_count: plan_blocks,
+    block_kind: block_kind_column.build(),
+    block_layer: block_layer_column.build(),
+    block_expert: block_expert_column.build(),
+    block_member_start: block_member_start_column.build(),
+    block_member_end: block_member_end_column.build(),
+    member_count: plan_members,
+    member_role_start: member_role_start_column.build(),
+    member_role_end: member_role_end_column.build(),
+    member_name_start: member_name_start_column.build(),
+    member_name_end: member_name_end_column.build(),
+    member_required: member_required_column.build(),
+    member_n_dims: member_n_dims_column.build(),
+    member_dim0: member_dim0_column.build(),
+    member_dim1: member_dim1_column.build(),
+    member_dim2: member_dim2_column.build(),
+    member_dim3: member_dim3_column.build(),
+    member_slice_index: member_slice_index_column.build(),
+    member_slice_count: member_slice_count_column.build(),
+  }
+
+  return model_ir.Prepared {
+    code: code.clone(),
+    detail: detail.clone(),
+    geometry: geometry,
+    plan: plan,
+  }
+}
