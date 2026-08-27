@@ -1196,7 +1196,7 @@ That is the whole of the claim, and it is narrower than the one this section fir
 `.PHONY` entry edits the `Makefile`, which is an executable contract boundary, and
 `scripts/verification_scope.py` classifies the R5B diff as
 `{"docs_only": false, "hosted": true, "fresh_focused": true, "fresh_installed": true, "scope":
-"fresh-image"}` (`--base 0414ab9 --head <R5B head>`). The classifier's verdict, not this paragraph,
+"fresh-image"}` (`--base ccbd8ae --head <R5B head>`). The classifier's verdict, not this paragraph,
 is the evidence, and what R5B inherits from R5A is a scope selection, not an exemption from one.
 The true difference from R5A is only that no *aggregate membership* changed and that the new
 qualification target is a member of neither `HOSTED_CHECK_TARGETS` nor

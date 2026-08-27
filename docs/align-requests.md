@@ -183,8 +183,8 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > rather than for the reservation itself — the same conclusion R0 and R4 each reached independently.
 > It is non-blocking — the observable-consequence guards are in place — with all of R0-GGUF-INSPECT,
 > R4-ALIGNPACK-LAYER-MAJOR, and R4.5-EXTERNAL-BUFFER-SPIKE as independent work.
-> R5A-DENSE-LAYER-FORWARD (`docs/specs/r5a-dense-layer-forward.md`) is the active capability,
-> awaiting publication on `agent/r5a-dense-layer-forward` rebased onto that merge; it computes one
+> R5A-DENSE-LAYER-FORWARD (`docs/specs/r5a-dense-layer-forward.md`) merged as align-llm PR #127
+> (`0397228` -> `ccbd8ae`), rebased onto that merge; it computes one
 > Qwen2 dense layer through ggml over Align-owned weights and checks it against
 > `llama-eval-callback`'s own numbers. **Implementation is complete, reviewed, and repaired.** Design set
 > out believing no new request was needed — section 5.5 of the plan states this explicitly ("No new

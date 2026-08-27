@@ -113,7 +113,7 @@ The current forward delivery order is:
     one contiguous range, and `main --pack-verify MODEL PACK [DOC.json]` re-reads both files and
     compares every claimed byte; both emit `schema_version: 1` documents
     (`R4_ALIGNPACK`, `R4_ALIGNPACK_VERIFY`). It consumes R1's Block IR through
-    `model_ir.resolve_claims` and `model_ir.derive_status` and imports no frontend. **It discharges
+    `model_ir.resolve_claims` and `model_ir.derive_status` and imports no frontend. **It closes
     the R4 gate on the qwen half with real weights**: one qualification run over
     Qwen2.5-Coder-7B Q4_K_M reported byte identity and 89 → 58 ranges, 11,130,544,128 → 4,677,120,000
     span bytes, 2,379,786 → 1,000,000 ppm, and 27 → 58 of 58 contiguous blocks. The per-expert half
@@ -121,7 +121,7 @@ The current forward delivery order is:
     names.
 14. **R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer.
     Merged as PR #126, merge commit `fa567b1` on `main`.** Was on branch
-    `agent/r4-5-external-buffer`, continuing R4.
+    `agent/r4-5-external-buffer`.
     [`r4-5-external-buffer.md`](r4-5-external-buffer.md) is the authoritative plan and owns the probe
     record, the contract ledger, the closure matrix, the fixture design, the correction ledger, and
     the cell-to-case map. `ggml-spike PACK BLOCK MEMBER [DOC.json [REF.gguf]]` is a **separate**
@@ -129,10 +129,12 @@ The current forward delivery order is:
     Align-owned buffer, hands ggml a pointer *into* it, computes one `mul_mat` on a real backend, and
     emits an `R4_5_EXTERNAL_BUFFER`, `schema_version: 1` document saying, as data, whether ggml
     computed over our bytes or over a copy. It answers R4.5's gate for the DRAM half and for unified
-    memory; section R4.5 below records clause by clause what that discharges and what it defers. The
-    R4.5 gate is met and closed.
+    memory; section R4.5 below records clause by clause what that discharges and what it defers.
+    Implemented, reviewed, repaired, and merged; R4's PR #125 merged first and PR #126 landed on top
+    of it.
 15. **R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack.
-    Awaiting publication.** On branch `agent/r5a-dense-layer-forward`, continuing R4.5.
+    Merged as PR #127, merge commit `ccbd8ae` on `main`.** Was on branch
+    `agent/r5a-dense-layer-forward`, rebased onto the merged R4.5 at `main` `fa567b1`.
     [`r5a-dense-layer-forward.md`](r5a-dense-layer-forward.md) is the authoritative plan and owns the
     probe record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
     deferrals, risks, and candidate-request sections. `ggml-spike --layer-forward` is a new arm of
@@ -145,13 +147,11 @@ The current forward delivery order is:
     model:** all eighteen oracle nodes agree with the transcript at `max |Δ| == 0` ten-thousandths
     over 1,116 sampled elements, the self-reference arm is 20 of 20 tensors byte-identical, and
     microbenchmark B measures **13.4 ms typical** for one dense layer (12.97-15.05 ms over four
-    qualification runs; the design-stage probe harness measured 15.5 ms). Reviewed, repaired, and
-    the final review of the repair delta is complete; no pull request is open yet, and the rebase,
-    baseline, and exact-head preflight are what remain before publication. R5B (item 16) is stacked
-    on it.
+    qualification runs; the design-stage probe harness measured 15.5 ms). Reviewed, repaired,
+    preflighted, and merged; R5B (item 16) is stacked on it and rebased onto its merged result.
 16. **R5B-MODEL-PREFILL-FORWARD — a whole Qwen2 prefill computed from an Align-owned alignpack.
-    Awaiting publication.** On branch `agent/r5b-model-prefill-forward` at the consolidated repair
-    commit `556fced` and this follow-up (repairing feat commit `019fa26`), continuing R5A.
+    Publication in progress.** On branch `agent/r5b-model-prefill-forward`, rebased onto the merged
+    R5A at `main` `ccbd8ae`.
     [`r5b-model-prefill-forward.md`](r5b-model-prefill-forward.md) is the authoritative plan and owns
     the probe record, the contract ledger, the closure matrix, and the fixtures, qualification,
     metrics, deferrals, risks, and candidate-request sections. `ggml-spike --model-forward` is a new
@@ -171,7 +171,8 @@ The current forward delivery order is:
     at 1.07-1.12 s wall, and the shipped arm measures 484-620 ms compute and 515-648 ms `pread` at
     1,141-1,275 ms wall on one reused 447,086,592 B window, warm. Implementation complete and
     committed; two complementary reviews and one final review are done and repaired in the
-    consolidated repair commit `556fced` and this follow-up, with publication next.
+    consolidated repair commit `b5b2db8` and the final-review commit `5ab2ad0`, with the branch
+    rebased onto the merged R5A and publication in progress.
 
 **I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
 prove its value on an existing model, and the merged C6-MEASURED wave (align-llm PR #103, `c9a510d`)
@@ -641,7 +642,8 @@ layer-major
 
 元GGUFとのtensor内容一致と、連続read量の改善を確認できること。
 
-このgateはR4-ALIGNPACK-LAYER-MAJORが所有する。実装・contract ledger・closure
+このgateはR4-ALIGNPACK-LAYER-MAJORが所有し、PR #125（head `a7e72dc`、merge `991eab1`）で
+merge済みである。実装・contract ledger・closure
 matrix・fixture設計・correction ledgerはすべて
 [`r4-alignpack-layer-major.md`](r4-alignpack-layer-major.md)にある。qwen側は実weightで達成済み
 （89 → 58 range、2,379,786 → 1,000,000 ppm、27 → 58/58 contiguous、byte identity）。per-expert側は
