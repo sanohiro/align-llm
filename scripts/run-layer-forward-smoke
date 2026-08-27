@@ -19,7 +19,14 @@ set -euo pipefail
 # it exercises the ggml-free build, so a developer's exported include path must not silently turn it
 # into a different test.
 #
-#   ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE=1   rewrite the golden file instead of comparing to it
+# R5B-MODEL-PREFILL-FORWARD (`docs/specs/r5b-model-prefill-forward.md` section 5.1) extends this
+# runner rather than adding a target: `layer-forward-smoke` is already a member of
+# HOSTED_CHECK_TARGETS, so R5B adds rows to an existing target and changes no aggregate membership
+# and no check topology. The second block below drives `--model-forward` over a synthetic
+# **two-layer, thirty-two-token-vocabulary model** whose expected values come from the generator's
+# own pure-Python whole-model forward pass.
+#
+#   ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE=1   rewrite the golden files instead of comparing to them
 
 unset ALIGN_LLM_GGML_INCLUDE ALIGN_LLM_GGML_LIB ALIGN_LLM_GGML_FORCE
 export PYTHONDONTWRITEBYTECODE=1
@@ -137,7 +144,7 @@ export ALIGN_LLM_GGML_SHIM_DIR="${work_dir}/lib"
   mv -f ggml_spike "${work_dir}/ggml-spike"
 )
 
-python3 "${root_dir}/scripts/layer_forward_fixture.py" "${work_dir}" >/dev/null
+python3 "${root_dir}/scripts/layer_forward_fixture.py" "${work_dir}" --model >/dev/null
 
 DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
 LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
@@ -639,5 +646,565 @@ if failures:
 # observed in a document, and `R5_ARITY` and `R5_PATH` are observed as the absence of one.
 print("layer forward smoke: %d no-document cases (R5_ARITY, R5_PATH), %d documented cases, "
       "%d of the 26 codes reached, both oracles, and the shared shim contract PASS"
+      % (len(NO_DOCUMENT), len(ORDER), len(codes - {""}) + 2))
+PY
+
+# ---------------------------------------------------------------------------------------------
+# R5B-MODEL-PREFILL-FORWARD — the `--model-forward` arm over the synthetic two-layer model
+# ---------------------------------------------------------------------------------------------
+
+DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+python3 - "${root_dir}" "${work_dir}" <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+root_dir, work_dir = sys.argv[1:3]
+# Section 6, correction C24. The executable is the one this runner built into `work_dir` above, not
+# a `ggml-spike` left in the work tree by `make ggml-spike`: `root_dir` here made the block depend
+# on a developer's stale binary, fail outright on a clean checkout, and — when one did exist — test
+# a build that is not the source under test. `r5a-dense-layer-forward.md` section 6, correction C23
+# is the same rule for the same reason; the R5A block above already follows it.
+binary = os.path.join(work_dir, "ggml-spike")
+builder = os.path.join(root_dir, "scripts", "build-ggml-shim")
+golden_path = os.path.join(root_dir, "scripts", "model-forward-golden.jsonl")
+# Section 6, correction C25, and the R5A block above's rule for the same reason: `model_forward`
+# opens its transcript with `fs.open_rw`, because Align ships no read-only random-access `file`
+# constructor (`docs/align-requests.md` Request 21), so a read-only checkout — which is exactly what
+# the fresh trusted worker mounts, root-owned and read by an unprivileged uid — refuses the
+# checked-in path with `R5_TRANSCRIPT` detail `Denied` before a byte is parsed. The copy changes
+# nothing the case asserts: `transcript_path` is a placeholder in every golden, and the bytes are the
+# checked-in bytes.
+checked_in_excerpt = os.path.join(root_dir, "eval", "fixtures", "qwen2-model-6tok.txt")
+excerpt = os.path.join(work_dir, "qwen2-model-6tok.txt")
+with open(checked_in_excerpt, "rb") as handle:
+    excerpt_bytes = handle.read()
+with open(excerpt, "wb") as handle:
+    handle.write(excerpt_bytes)
+update = os.environ.get("ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE") == "1"
+
+ARM = "--model-forward"
+
+
+def path(name):
+    return os.path.join(work_dir, name)
+
+
+def geom(name):
+    return os.path.join(work_dir, name + ".json")
+
+
+PACK = path("model-pack.alignpack")
+GEOM = path("geometry.json")
+TOKENS = "3,17,5"
+SOURCE = path("model-source.bin")
+WIDE = path("model-transcript.txt")
+NARROW = path("model-transcript-runtime.txt")
+LOGITS = path("model-logits.bin")
+RUNTIME_LOGITS = path("model-logits-runtime.bin")
+WIDTH = "8"
+
+# Section 3.9 steps 1 and 2: no document exists, so neither code can carry a detail. **Seven
+# operands is `R5_ARITY`** and the gap is the contract — `KV_WIDTH` travels with the transcript.
+NO_DOCUMENT = [
+    ("mf-arity-3", [ARM, PACK, GEOM]),
+    ("mf-arity-7", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE]),
+    ("mf-arity-10", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH, LOGITS, "extra"]),
+    ("mf-path-pack-empty", [ARM, "", GEOM, TOKENS]),
+    ("mf-path-geometry-empty", [ARM, PACK, "", TOKENS]),
+    ("mf-path-long", [ARM, "/" + ("a" * 5000), GEOM, TOKENS]),
+    ("mf-path-doc-empty", [ARM, PACK, GEOM, TOKENS, ""]),
+    ("mf-path-reference-empty", [ARM, PACK, GEOM, TOKENS, "-", ""]),
+    ("mf-path-logits-empty", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH, ""]),
+    ("mf-arm-unknown-flag", ["--model-backward", PACK, GEOM, TOKENS]),
+]
+
+STUB_CASES = [
+    ("mf-stub-unavailable", [ARM, PACK, GEOM, TOKENS], "R5_GGML_UNAVAILABLE"),
+    ("mf-tokens-empty", [ARM, PACK, GEOM, ""], "R5_TOKENS"),
+    ("mf-tokens-trailing", [ARM, PACK, GEOM, "1,"], "R5_TOKENS"),
+    ("mf-tokens-space", [ARM, PACK, GEOM, "1, 2"], "R5_TOKENS"),
+    ("mf-tokens-seven", [ARM, PACK, GEOM, "1,2,3,4,5,6,7"], "R5_TOKENS"),
+    ("mf-tokens-oob", [ARM, PACK, GEOM, "1,32"], "R5_TOKENS"),
+    ("mf-kv-width-empty", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, ""], "R5_KV_WIDTH"),
+    ("mf-kv-width-negative", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, "-1"], "R5_KV_WIDTH"),
+    ("mf-kv-width-plus", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, "+8"], "R5_KV_WIDTH"),
+    ("mf-kv-width-below", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, "2"], "R5_KV_WIDTH"),
+    ("mf-kv-width-above", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, "4097"], "R5_KV_WIDTH"),
+    ("mf-geometry-unreadable", [ARM, PACK, path("absent.json"), TOKENS],
+     "R5_GEOMETRY_UNREADABLE"),
+    ("mf-geometry-not-json", [ARM, PACK, WIDE, TOKENS], "R5_GEOMETRY"),
+    ("mf-geometry-arch", [ARM, PACK, geom("geometry-arch"), TOKENS], "R5_GEOMETRY"),
+    ("mf-geometry-rope-scaled", [ARM, PACK, geom("geometry-rope-scaled"), TOKENS], "R5_GEOMETRY"),
+    ("mf-geometry-missing-n_layer", [ARM, PACK, geom("geometry-missing-n_layer"), TOKENS],
+     "R5_GEOMETRY"),
+    ("mf-geometry-missing-n_vocab", [ARM, PACK, geom("geometry-missing-n_vocab"), TOKENS],
+     "R5_GEOMETRY"),
+    ("mf-geometry-eps-nan", [ARM, PACK, geom("geometry-eps-nan"), TOKENS], "R5_GEOMETRY"),
+    ("mf-pack-missing", [ARM, path("absent.alignpack"), GEOM, TOKENS], "R4_PACK_UNREADABLE"),
+    ("mf-pack-truncated", [ARM, path("model-pack-truncated.alignpack"), GEOM, TOKENS],
+     "R4_PACK_TRUNCATED"),
+    ("mf-block-missing-output", [ARM, path("model-pack-no-output.alignpack"), GEOM, TOKENS],
+     "R5_BLOCK_MISSING"),
+    ("mf-block-ambiguous", [ARM, path("model-pack-ambiguous.alignpack"), GEOM, TOKENS],
+     "R5_BLOCK_AMBIGUOUS"),
+    ("mf-coverage-gap", [ARM, path("model-pack-coverage.alignpack"), GEOM, TOKENS],
+     "R5_LAYER_COVERAGE"),
+    ("mf-member-missing", [ARM, path("model-pack-member-missing.alignpack"), GEOM, TOKENS],
+     "R5_MEMBER_MISSING"),
+    ("mf-shape", [ARM, path("model-pack-shape.alignpack"), GEOM, TOKENS], "R5_SHAPE"),
+]
+
+ENGINE_CASES = [
+    ("mf-engine-ok", [ARM, PACK, GEOM, TOKENS], ""),
+    ("mf-engine-reference", [ARM, PACK, GEOM, TOKENS, "-", SOURCE], ""),
+    ("mf-engine-transcript", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH], ""),
+    ("mf-engine-logits", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH, LOGITS], ""),
+    ("mf-engine-runtime-width",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", RUNTIME_LOGITS], ""),
+    ("mf-engine-type", [ARM, path("model-pack-type.alignpack"), GEOM, TOKENS],
+     "R5_TYPE_UNSUPPORTED"),
+    ("mf-engine-alignment", [ARM, path("model-pack-tight.alignpack"), GEOM, TOKENS],
+     "R5_ALIGNMENT"),
+    ("mf-engine-source-diverged",
+     [ARM, PACK, GEOM, TOKENS, "-", path("model-source-diverged.bin")], "R5_SOURCE_DIVERGED"),
+    ("mf-engine-source-short",
+     [ARM, PACK, GEOM, TOKENS, "-", path("model-source-short.bin")], "R5_SOURCE_UNREADABLE"),
+    ("mf-engine-source-missing",
+     [ARM, PACK, GEOM, TOKENS, "-", path("absent.bin")], "R5_SOURCE_UNREADABLE"),
+    ("mf-transcript-missing-layer",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-transcript-missing.txt"), WIDTH],
+     "R5_ORACLE_MISSING"),
+    ("mf-transcript-kv-width",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-transcript-kv-width.txt"), WIDTH],
+     "R5_ORACLE_SHAPE"),
+    ("mf-transcript-headers",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-transcript-headers.txt"), WIDTH],
+     "R5_ORACLE_MISSING"),
+    ("mf-transcript-novalues",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-transcript-novalues.txt"), WIDTH],
+     "R5_ORACLE_MISSING"),
+    ("mf-transcript-garbage",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-transcript-garbage.txt"), WIDTH],
+     "R5_TRANSCRIPT"),
+    ("mf-transcript-perturbed",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-transcript-perturbed.txt"), WIDTH], ""),
+    # The checked-in real-model excerpt: thirty-five records swept from the qualification, parsed
+    # for real against a two-layer fixture. Every record is found by name, op, and — for the
+    # attention output projection — source weight name, so the grammar, the shape declarations, and
+    # the element-count rule all run against real instrument formatting at whole-model scale. The
+    # expected code is `R5_ORACLE_MISSING` and not `R5_ORACLE_SHAPE`: a 28-layer excerpt cannot
+    # supply the seventeen oracle nodes a two-layer schedule asks for, and the missing-node rule is
+    # reached before any shape is compared. The parse-count assertion below is what makes that a
+    # test of the parser rather than of the file's existence.
+    ("mf-transcript-excerpt",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, excerpt, "256"], "R5_ORACLE_MISSING"),
+    ("mf-logits-short",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH, path("model-logits-short.bin")],
+     "R5_LOGITS_SHAPE"),
+    ("mf-logits-missing",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH, path("absent.bin")],
+     "R5_LOGITS_UNREADABLE"),
+    ("mf-logits-perturbed",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-perturbed.bin")], ""),
+    # Section 6, correction C23. A reference carrying an infinity or a NaN is a malformed **input**
+    # and is refused with its own code before any difference is taken; a reference that is finite
+    # and beyond the representable magnitude is not an input error and resolves as a magnitude no
+    # tolerance admits. All three corrupted the published magnitude before C23.
+    # `MODEL_ABORT_TOKENS` and an `-inf` in element 0: the one input pair whose primary rounds to
+    # exactly zero ten-thousandths against a saturated reference, which is what made
+    # `0 - difference` wrap to `i64`'s minimum. Measured at `5ab2ad0`: `status: ok`,
+    # `max_abs_diff_ten_thousandths` **257**, a magnitude neither vector supports. The transcript
+    # position is `-` because this token list is not the one the checked-in transcript was captured
+    # for.
+    ("mf-logits-nonfinite",
+     [ARM, PACK, GEOM, "1,25,5", "-", SOURCE, "-", "3", path("model-logits-neg-inf.bin")],
+     "R5_LOGITS_NONFINITE"),
+    ("mf-logits-nan",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-nan.bin")],
+     "R5_LOGITS_NONFINITE"),
+    ("mf-logits-huge",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", path("model-logits-huge.bin")], ""),
+]
+
+FORCED_CASES = [
+    ("mf-force-init", "engine+init", [ARM, PACK, GEOM, TOKENS], "R5_GGML_INIT"),
+    ("mf-force-alloc", "engine+alloc", [ARM, PACK, GEOM, TOKENS], "R5_ALLOC"),
+    ("mf-force-compute", "engine+compute", [ARM, PACK, GEOM, TOKENS], "R5_COMPUTE"),
+    ("mf-force-reference", "engine+reference", [ARM, PACK, GEOM, TOKENS, "-", SOURCE],
+     "R5_REFERENCE_MISMATCH"),
+    ("mf-force-slot-range", "engine+slot-range", [ARM, PACK, GEOM, TOKENS], "R5_SLOT"),
+    ("mf-force-slot-empty", "engine+slot-empty-pos", [ARM, PACK, GEOM, TOKENS], "R5_SLOT"),
+    ("mf-force-residual", "engine+short-readback", [ARM, PACK, GEOM, TOKENS], "R5_RESIDUAL"),
+    ("mf-force-pad-negative", "engine+pad-negative",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH], "R5_SHAPE"),
+    ("mf-force-pad-oversize", "engine+pad-oversize",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH], "R5_SHAPE"),
+    ("mf-force-no-mark-output", "engine+no-mark-output",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH], ""),
+]
+
+# Section 6, correction C25, and the R5A block above's repair for the same reason: a golden
+# mismatch used to print both whole documents. One R5B document is larger than R5A's, the fresh
+# worker supervisor bounds the aggregate child at 65,536 bytes per stream, and the controller shows
+# only the last 8,192 bytes of a failed worker's stderr — so the one line naming the case scrolled
+# out of the diagnostic and the failure was unreadable exactly where it mattered. Report the field
+# paths that differ instead: it is what a reader needs, and it fits.
+def describe_difference(expected_text, actual_text, limit=8):
+    if actual_text is None:
+        return "no document was produced"
+    try:
+        expected = json.loads(expected_text)
+        actual = json.loads(actual_text)
+    except Exception as error:  # noqa: BLE001 - the document is the thing under test
+        return "the documents are not both JSON: %s" % error
+    differences = []
+
+    def walk(left, right, path):
+        if len(differences) >= limit:
+            return
+        if type(left) is not type(right):
+            differences.append("%s: %r != %r" % (path or ".", left, right))
+        elif isinstance(left, dict):
+            for key in sorted(set(left) | set(right)):
+                if len(differences) >= limit:
+                    return
+                if key not in left:
+                    differences.append("%s.%s: absent != %r" % (path, key, right[key]))
+                elif key not in right:
+                    differences.append("%s.%s: %r != absent" % (path, key, left[key]))
+                else:
+                    walk(left[key], right[key], "%s.%s" % (path, key))
+        elif isinstance(left, list):
+            if len(left) != len(right):
+                differences.append("%s: %d entries != %d" % (path, len(left), len(right)))
+                return
+            for index in range(len(left)):
+                if len(differences) >= limit:
+                    return
+                walk(left[index], right[index], "%s[%d]" % (path, index))
+        elif left != right:
+            differences.append("%s: %r != %r" % (path or ".", left, right))
+
+    walk(expected, actual, "")
+    if not differences:
+        return "the documents differ only in text form"
+    return "expected != actual at " + "; ".join(differences)
+
+
+PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
+               "reference_path": "<reference>", "transcript_path": "<transcript>",
+               "logits_path": "<logits>"}
+
+
+def normalize(text):
+    document = json.loads(text)
+    for key in document["timings"]:
+        document["timings"][key] = 0
+    for row in document["schedule"]:
+        row["pread_ns"] = 0
+        row["compute_ns"] = 0
+    document["head"]["pread_ns"] = 0
+    document["head"]["compute_ns"] = 0
+    for key, placeholder in PLACEHOLDER.items():
+        if document[key]:
+            document[key] = placeholder
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+def build_shim(force):
+    environment = dict(os.environ)
+    environment.pop("ALIGN_LLM_GGML_INCLUDE", None)
+    environment.pop("ALIGN_LLM_GGML_LIB", None)
+    if force:
+        environment["ALIGN_LLM_GGML_FORCE"] = force
+    else:
+        environment.pop("ALIGN_LLM_GGML_FORCE", None)
+    subprocess.run([builder], check=True, capture_output=True, env=environment)
+
+
+def run(operands):
+    return subprocess.run([binary] + operands, capture_output=True, cwd=work_dir)
+
+
+failures = []
+produced = {}
+codes = set()
+
+
+def record(name, operands, expected):
+    result = run(operands)
+    if result.stdout == b"":
+        failures.append("%s: no document (exit %d): %s"
+                        % (name, result.returncode,
+                           result.stderr.decode("utf-8", "replace")[-400:]))
+        return None
+    try:
+        document = json.loads(result.stdout.decode("utf-8"))
+    except Exception as error:  # noqa: BLE001 - the document is the thing under test
+        failures.append("%s: the document is not valid JSON: %s" % (name, error))
+        return None
+    produced[name] = normalize(result.stdout.decode("utf-8"))
+    codes.add(document["error_code"])
+    if document["error_code"] != expected:
+        failures.append("%s: expected error_code %r, got %r (%r)"
+                        % (name, expected, document["error_code"], document["error_detail"]))
+    expected_exit = 0 if document["status"] == "ok" else 1
+    if (result.returncode == 0) != (expected_exit == 0):
+        failures.append("%s: status %r but exit %d"
+                        % (name, document["status"], result.returncode))
+    if document["kind"] != "R5_MODEL_FORWARD" or document["schema_version"] != 1:
+        failures.append("%s: wrong document identity %r/%r"
+                        % (name, document["kind"], document["schema_version"]))
+    if not document["abi"]["fp_contract_off"]:
+        failures.append("%s: the shim was not built with -ffp-contract=off" % name)
+    return document
+
+
+for name, operands in NO_DOCUMENT:
+    result = run(operands)
+    if result.returncode == 0:
+        failures.append("%s: expected a non-zero exit, got 0" % name)
+    if result.stdout != b"":
+        failures.append("%s: expected no document, got %d bytes" % (name, len(result.stdout)))
+
+# The R5A arm is untouched: its own flag still selects it and it still emits its own document.
+r5a = run(["--layer-forward", os.path.join(work_dir, "pack.alignpack"), "0", GEOM, TOKENS])
+if r5a.stdout == b"":
+    failures.append("arm-r5a-unchanged: the R5A arm produced no document")
+elif json.loads(r5a.stdout.decode("utf-8"))["kind"] != "R5_LAYER_FORWARD":
+    failures.append("arm-r5a-unchanged: the R5A arm emitted the wrong kind")
+
+for name, operands, expected in STUB_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    lifetime = document["lifetime"]
+    for key in ("ggml_buffers_created", "contexts_created", "backends_created",
+                "gallocrs_created"):
+        if lifetime[key] != 0:
+            failures.append("%s: lifetime.%s is %d in a default stub build, not 0"
+                            % (name, key, lifetime[key]))
+
+build_shim("engine")
+for name, operands, expected in ENGINE_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    if document["status"] != "ok":
+        continue
+    graph = document["graph"]
+    if document["verdict"] != "EXTERNAL":
+        failures.append("%s: verdict %r, not EXTERNAL" % (name, document["verdict"]))
+    if graph["graph_count"] != 4:
+        failures.append("%s: graph_count %d, not 4" % (name, graph["graph_count"]))
+    if graph["node_count_total"] != 68:
+        failures.append("%s: node_count_total %d, not 1 + 31 + 33 + 3"
+                        % (name, graph["node_count_total"]))
+    if graph["slot_high_water"] != 52 or graph["slot_capacity"] != 128:
+        failures.append("%s: slots %d/%d, not 52/128"
+                        % (name, graph["slot_high_water"], graph["slot_capacity"]))
+    window = document["window"]
+    if window["member_placements"] != 27 or window["pointer_identity_failures"] != 0:
+        failures.append("%s: %d placements, %d identity failures"
+                        % (name, window["member_placements"],
+                           window["pointer_identity_failures"]))
+    if window["reuse_count"] != 4:
+        failures.append("%s: window reused %d times, not once per graph"
+                        % (name, window["reuse_count"]))
+    # Section 2.1 fact 1: the head sizes the sweep on the real model. On the synthetic one the
+    # largest layer pair does, and the field says which either way.
+    if window["peak_block_bytes"] != window["bytes"]:
+        failures.append("%s: the window is not the peak block" % name)
+    if len(document["schedule"]) != 2:
+        failures.append("%s: %d schedule rows, not 2" % (name, len(document["schedule"])))
+    if document["schedule"][0]["l_out_ne1"] != 3 or document["schedule"][1]["l_out_ne1"] != 1:
+        failures.append("%s: the narrowing is not inside the last layer" % name)
+    if document["schedule"][1]["node_count"] != 33:
+        failures.append("%s: layer 1 has %d nodes, not 33 (31 + two GET_ROWS)"
+                        % (name, document["schedule"][1]["node_count"]))
+    if document["selection"]["narrow_layer"] != 1 or document["selection"]["narrow_index"] != 2:
+        failures.append("%s: narrow_layer/narrow_index %r"
+                        % (name, document["selection"]))
+    if document["selection"]["embedding_block_index"] != 0 \
+            or document["selection"]["output_block_index"] != 5:
+        failures.append("%s: role-qualified block selection picked %r"
+                        % (name, document["selection"]))
+    if document["model"]["output_tied"]:
+        failures.append("%s: the synthetic model is untied and was reported tied" % name)
+    if document["output"]["element_count"] != 32:
+        failures.append("%s: %d logits, not n_vocab"
+                        % (name, document["output"]["element_count"]))
+    lifetime = document["lifetime"]
+    if not lifetime["released_before_owner_scope_end"]:
+        failures.append("%s: the teardown did not balance" % name)
+    # Window reuse is the one invariant a whole-run check cannot see, so the balance is asserted at
+    # **every** graph boundary and published as a count (section 5.1).
+    if lifetime["graph_balance_failures"] != 0:
+        failures.append("%s: %d graph boundaries left a ggml object alive"
+                        % (name, lifetime["graph_balance_failures"]))
+    for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                           ("contexts_created", "contexts_freed"),
+                           ("backends_created", "backends_freed"),
+                           ("gallocrs_created", "gallocrs_freed")):
+        if lifetime[created] != lifetime[freed]:
+            failures.append("%s: %s %d != %s %d"
+                            % (name, created, lifetime[created], freed, lifetime[freed]))
+
+# Section 4.4's oracle cells, asserted on the documents the cases above produced.
+reference = json.loads(produced["mf-engine-reference"])["reference"]
+if reference["verdict"] != "IDENTICAL" or reference["graphs_compared"] != 4 \
+        or reference["nodes_identical"] != 37 or reference["nodes_compared"] != 37:
+    failures.append("mf-engine-reference: %r" % reference)
+
+wide = json.loads(produced["mf-engine-transcript"])
+oracle = wide["oracle"]
+if oracle["verdict"] != "PASS" or oracle["max_abs_diff_ten_thousandths"] != 0:
+    failures.append("mf-engine-transcript: %r" % oracle)
+if oracle["layers_matched"] != 2 or oracle["nodes_matched"] != oracle["nodes_expected"]:
+    failures.append("mf-engine-transcript: %d/%d layers, %d/%d nodes"
+                    % (oracle["layers_matched"], oracle["layers_expected"],
+                       oracle["nodes_matched"], oracle["nodes_expected"]))
+if oracle["elements_compared"] <= 0:
+    failures.append("mf-engine-transcript: zero elements compared with a PASS verdict")
+if oracle["tolerance_ten_thousandths"] != 1 or oracle["sum_tolerance_millionths"] != 1000:
+    failures.append("mf-engine-transcript: a transcript tolerance was widened")
+if wide["graph"]["reconciliation_node_count"] != 74:
+    failures.append("mf-engine-transcript: reconciliation_node_count %d, not 1 + 34 + 36 + 3"
+                    % wide["graph"]["reconciliation_node_count"])
+
+# Section 3.7's asymmetry, exercised in both directions. At the reconciliation width the contract
+# is byte-identity and nothing else: a reference that agrees to four decimal places, on the argmax,
+# and on the whole top ten is still `FAIL`. Section 6, correction C9 records why the hosted
+# reference cannot *be* byte-identical — a pure-Python second implementation does not share the
+# engine's `expf`, `sinf`, and `cosf` — and why that makes this the stronger hosted assertion.
+strict = json.loads(produced["mf-engine-logits"])["oracle_logits"]
+if strict["compared_pass"] != "reconciliation" or strict["verdict"] != "FAIL" \
+        or strict["byte_identical"] or strict["max_abs_diff_ten_thousandths"] != 0 \
+        or strict["top_k_agreement"] != 10:
+    failures.append("mf-engine-logits: %r" % strict)
+
+within = json.loads(produced["mf-engine-runtime-width"])["oracle_logits"]
+if within["compared_pass"] != "runtime" or within["verdict"] != "WITHIN" \
+        or within["argmax_primary"] != within["argmax_reference"] \
+        or within["top_k_agreement"] != 10 or within["tolerance_ten_thousandths"] != 5000:
+    failures.append("mf-engine-runtime-width: %r" % within)
+
+# Section 6, correction C23's three references. The two malformed ones are refused with a document
+# and the out-of-range one is a `FAIL` with `status: ok`, so neither can wrap into a false `WITHIN`
+# or publish a magnitude the run never computed.
+for case in ("mf-logits-nonfinite", "mf-logits-nan"):
+    refused = json.loads(produced[case])
+    if refused["error_detail"] != "elements[1]":
+        failures.append("%s: detail %r, not the count of non-finite reference elements"
+                        % (case, refused["error_detail"]))
+    if refused["oracle_logits"]["verdict"] != "-":
+        failures.append("%s: a refused reference must publish no verdict, got %r"
+                        % (case, refused["oracle_logits"]["verdict"]))
+huge = json.loads(produced["mf-logits-huge"])
+if huge["status"] != "ok" or huge["oracle_logits"]["verdict"] != "FAIL" \
+        or huge["oracle_logits"]["max_abs_diff_ten_thousandths"] \
+        != 1000000000000000:
+    failures.append("mf-logits-huge: an out-of-range reference must resolve at the scale limit: %r"
+                    % huge["oracle_logits"])
+
+# A real failure is not `WITHIN`: a blob shifted by 1.0 keeps the argmax and the whole top ten and
+# is refused anyway, so the tolerance alone cannot pass it.
+broken = json.loads(produced["mf-logits-perturbed"])
+if broken["status"] != "ok" or broken["oracle_logits"]["verdict"] != "FAIL" \
+        or broken["oracle_logits"]["argmax_primary"] \
+        != broken["oracle_logits"]["argmax_reference"]:
+    failures.append("mf-logits-perturbed: %r" % broken["oracle_logits"])
+
+# The excerpt case asserts a *positive* parse count, not only its error code: an emptied or
+# truncated `eval/fixtures/qwen2-model-6tok.txt` would still produce `R5_ORACLE_MISSING` and would
+# otherwise pass silently. 35 callback records over 460 lines is the swept file, and the scan reads
+# every one of them before the missing-node rule fires.
+excerpt_oracle = json.loads(produced["mf-transcript-excerpt"])["oracle"]
+if excerpt_oracle["transcript_callback_lines"] != 35 or excerpt_oracle["transcript_lines"] != 460:
+    failures.append("mf-transcript-excerpt: the scan read %d callback records over %d lines, not "
+                    "35 over 460 — is eval/fixtures/qwen2-model-6tok.txt stale or truncated?"
+                    % (excerpt_oracle["transcript_callback_lines"],
+                       excerpt_oracle["transcript_lines"]))
+
+breached = json.loads(produced["mf-transcript-perturbed"])
+if breached["status"] != "ok" or breached["oracle"]["verdict"] != "FAIL" \
+        or breached["oracle"]["worst_layer"] != 0 or breached["oracle"]["worst_node"] != "l_out":
+    failures.append("mf-transcript-perturbed: status %r %r"
+                    % (breached["status"], breached["oracle"]))
+
+# Both output forms emit byte-identical document bytes, and three consecutive runs agree.
+document_path = os.path.join(work_dir, "model.json")
+stdout_form = run([ARM, PACK, GEOM, TOKENS]).stdout.decode("utf-8").rstrip("\n")
+run([ARM, PACK, GEOM, TOKENS, document_path])
+with open(document_path, "r", encoding="utf-8") as handle:
+    file_form = handle.read()
+if normalize(stdout_form) != normalize(file_form):
+    failures.append("mf-doc-stdout-identical: the stdout and file forms differ")
+dash_form = run([ARM, PACK, GEOM, TOKENS, "-"]).stdout.decode("utf-8").rstrip("\n")
+if normalize(dash_form) != normalize(stdout_form):
+    failures.append("mf-doc-stdout-identical: the `-` form differs from the four-operand form")
+repeats = {normalize(run([ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, WIDTH, LOGITS])
+                     .stdout.decode("utf-8")) for _ in range(3)}
+if len(repeats) != 1:
+    failures.append("three consecutive runs produced %d distinct documents" % len(repeats))
+
+forced_documents = {}
+for name, force, operands, expected in FORCED_CASES:
+    build_shim(force)
+    forced_documents[name] = record(name, operands, expected)
+
+build_shim(None)
+
+unmarked = forced_documents.get("mf-force-no-mark-output")
+if unmarked is not None and unmarked["oracle"]["verdict"] != "FAIL":
+    failures.append("mf-force-no-mark-output: ggml_set_output was dropped and the oracle still "
+                    "reported %r" % unmarked["oracle"]["verdict"])
+
+REQUIRED_CODES = {
+    "R5_TOKENS", "R5_KV_WIDTH", "R5_GEOMETRY_UNREADABLE", "R5_GEOMETRY", "R4_PACK_UNREADABLE",
+    "R4_PACK_TRUNCATED", "R5_BLOCK_MISSING", "R5_BLOCK_AMBIGUOUS", "R5_LAYER_COVERAGE",
+    "R5_MEMBER_MISSING", "R5_SHAPE", "R5_GGML_UNAVAILABLE", "R5_TYPE_UNSUPPORTED",
+    "R5_ALIGNMENT", "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE", "R5_RESIDUAL",
+    "R5_SOURCE_UNREADABLE", "R5_SOURCE_DIVERGED", "R5_REFERENCE_MISMATCH", "R5_TRANSCRIPT",
+    "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE", "R5_LOGITS_UNREADABLE", "R5_LOGITS_SHAPE",
+    "R5_LOGITS_NONFINITE",
+}
+missing_codes = REQUIRED_CODES - codes
+if missing_codes:
+    failures.append("codes never reached: %s" % ", ".join(sorted(missing_codes)))
+
+ORDER = ([name for name, _, _ in STUB_CASES]
+         + [name for name, _, _ in ENGINE_CASES]
+         + [name for name, _, _, _ in FORCED_CASES])
+
+if update:
+    with open(golden_path, "w", encoding="utf-8") as handle:
+        for name in ORDER:
+            handle.write(json.dumps({"case": name, "document": produced[name]},
+                                    separators=(",", ":"), ensure_ascii=False) + "\n")
+    print("model forward smoke: golden rewritten with %d cases" % len(produced))
+else:
+    with open(golden_path, "r", encoding="utf-8") as handle:
+        golden = [json.loads(line) for line in handle if line.strip()]
+    if [row["case"] for row in golden] != ORDER:
+        failures.append("the golden case list does not match the runner's case list")
+    else:
+        for row in golden:
+            if produced.get(row["case"]) != row["document"]:
+                failures.append("golden mismatch for %s: %s"
+                                % (row["case"],
+                                   describe_difference(row["document"],
+                                                       produced.get(row["case"]))))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("model forward smoke: FAIL %s\n" % line)
+    raise SystemExit(1)
+
+print("model forward smoke: %d no-document cases (R5_ARITY, R5_PATH), %d documented cases, "
+      "%d of the 33 codes reached, three oracles, and the whole two-layer model PASS"
       % (len(NO_DOCUMENT), len(ORDER), len(codes - {""}) + 2))
 PY

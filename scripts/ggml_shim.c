@@ -369,6 +369,51 @@ static int32_t align_ggml_eps_ok(int32_t bits) {
     }
     return 1;
 }
+
+/* R5B-MODEL-PREFILL-FORWARD (`docs/specs/r5b-model-prefill-forward.md` section 3.6). The `pad`
+ * wrapper's two bounds, shared so both files refuse the same input. `MAX_PAD` is
+ * `MAX_ATTENTION_WIDTH`, the ceiling `src/layer_qwen2.align` validates `KV_WIDTH` against;
+ * `MAX_PAD_ELEMENTS` bounds the result so a malformed width cannot ask for a terabyte of
+ * activation.
+ */
+#define ALIGN_GGML_MAX_PAD 4096
+#define ALIGN_GGML_MAX_PAD_ELEMENTS ((int64_t) 16777216)
+
+
+/* R5B-MODEL-PREFILL-FORWARD section 6, correction C5. A bounded `memcpy` between two Align-owned
+ * byte ranges, and the reason the window can be **reused** at all.
+ *
+ * Align's `buffer` is append-only: `put_*` and `append` write at the logical length, and `pread`
+ * overwrites from index 0 and always requests the buffer's whole capacity. A 447 MB window that is
+ * allocated once and refilled thirty times is therefore not expressible from Align — refilling by
+ * `pread` would read the whole window from the pack on every layer, and refilling by reallocation
+ * would fault in 447 MB of fresh pages thirty times. `docs/align-requests.md` owns the language
+ * half of that; this is the application-side answer and it consumes no hypothetical surface.
+ *
+ * It allocates nothing, opens nothing, and reads no byte the caller did not hand over, so rule 2 of
+ * this file is unchanged. Both ranges are the caller's, both lengths are the caller's, and every
+ * bound is checked before the copy.
+ */
+int32_t align_ggml_window_copy(void *window, int64_t window_bytes, int64_t offset,
+                               const void *source, int64_t source_bytes, int64_t n) {
+    if (window == NULL || source == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    if (offset < 0 || n < 0 || window_bytes < 0 || source_bytes < 0) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (offset > window_bytes || n > window_bytes - offset) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (n > source_bytes) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (n > 0) {
+        memcpy((unsigned char *) window + offset, source, (size_t) n);
+    }
+    return ALIGN_GGML_OK;
+}
+
 /* --- END R4.5 SHARED SHIM CONTRACT --- */
 
 /* ---------------------------------------------------------------------------------------------
@@ -846,6 +891,19 @@ int32_t align_ggml_slot_new_i32_1d(void *ctx, void *slots, int64_t out, int64_t 
         return ALIGN_GGML_OK;
     }
 #endif
+#ifdef ALIGN_GGML_FORCE_SLOT_EMPTY_POS
+    /* R5B section 4.5: the same refusal, at the slot the whole-model arm's position vector uses.
+     * R5A's `ALIGN_GGML_FORCE_SLOT_EMPTY` targets slot 14, which is R5A's `inp_pos` and R5B's
+     * `kq_mask` — a tensor R5B creates through `slot_new_tensor_2d`, so that macro never fires for
+     * the model arm. Never defined in an ordinary build.
+     */
+    if (out == 13) {
+        (void) ctx;
+        (void) ne0;
+        (void) slots;
+        return ALIGN_GGML_OK;
+    }
+#endif
     struct ggml_tensor *tensor = NULL;
     if (ctx == NULL || ne0 <= 0) {
         return ALIGN_GGML_INIT;
@@ -888,7 +946,10 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
      * after it lands in ggml's own memory and the comparison loop must name the exact node and
      * element. The macro is never defined in an ordinary build.
      */
-    if (status == ALIGN_GGML_OK && index >= 0 && index <= 12) {
+    /* Slots 0 to 11 are the reference arm's weights in both arms' slot maps; R5B's slot 12 is the
+     * Align-owned residual **input**, which the primary arm also writes through `slot_set`, so the
+     * range stops at 11 (R5B section 6, correction C8). */
+    if (status == ALIGN_GGML_OK && index >= 0 && index <= 11) {
         unsigned char victim = 0;
         ggml_backend_tensor_get((struct ggml_tensor *) tensor, &victim, (size_t) off, 1);
         victim = (unsigned char) (victim ^ 0x01u);
@@ -1120,6 +1181,35 @@ int32_t align_ggml_op_swiglu_split(void *ctx, void *slots, int64_t out, int64_t 
     result = ggml_swiglu_split((struct ggml_context *) ctx, sa, sb);
     if (result == NULL) {
         return ALIGN_GGML_INIT;
+    }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+/* R5B section 3.6's one new op. `ggml_pad` appends `p` zero elements to the end of each axis; the
+ * source keeps the leading positions, which is what makes the reconciliation pass's extra lanes
+ * both zero and masked while the f32 reduction *length* matches llama.cpp's padded KV cache
+ * (section 2.7).
+ *
+ * Rule 4 is kept: no `struct ggml_tensor` field is read here. The result's size is judged with
+ * `ggml_nelements` **after** construction, which is safe because the context is `no_alloc` and a
+ * refused tensor is metadata the caller never reaches.
+ */
+int32_t align_ggml_op_pad(void *ctx, void *slots, int64_t out, int64_t a,
+                          int32_t p0, int32_t p1, int32_t p2, int32_t p3) {
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (p0 < 0 || p1 < 0 || p2 < 0 || p3 < 0) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (p0 > ALIGN_GGML_MAX_PAD || p1 > ALIGN_GGML_MAX_PAD
+        || p2 > ALIGN_GGML_MAX_PAD || p3 > ALIGN_GGML_MAX_PAD) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_pad((struct ggml_context *) ctx, sa, p0, p1, p2, p3);
+    if (result == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    if (ggml_nelements(result) > ALIGN_GGML_MAX_PAD_ELEMENTS) {
+        return ALIGN_GGML_SHAPE;
     }
     return align_ggml_slot_store(slots, out, (void *) result);
 }

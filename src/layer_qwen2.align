@@ -53,6 +53,9 @@ pub OP_CONT_3D := 8
 pub OP_ROPE := 9
 pub OP_SOFT_MAX := 10
 pub OP_SWIGLU := 11
+// R5B section 3.6: the one new op. `ggml_pad` widens K and V to the instrument's declared
+// attention width so the f32 reduction length matches llama.cpp's padded KV cache.
+pub OP_PAD := 12
 
 // `r4-alignpack-layer-major.md` section 2.4.4's frozen role list, the thirteen entries this layer
 // needs. Members are located by `role_id` and never by name string and never by position.
@@ -69,6 +72,9 @@ pub ROLE_FFN_GATE := 9
 pub ROLE_FFN_UP := 10
 pub ROLE_FFN_DOWN := 11
 pub ROLE_TOKEN_EMBD := 12
+// R5B: the head's two roles, from the same frozen list.
+pub ROLE_OUTPUT_NORM := 13
+pub ROLE_OUTPUT := 14
 
 // `src/model_ir.align:212`'s block-kind encoding, unchanged. R5A invents no kind of its own.
 pub KIND_WEIGHT := 0
@@ -477,6 +483,18 @@ pub NodeTable {
   p2: array<i64>,
   p3: array<i64>,
   oracle: array<i64>,
+  // R5B (`docs/specs/r5b-model-prefill-forward.md` section 3.6). `when` is the condition column:
+  // `WHEN_ALWAYS` rows are issued by every graph, `WHEN_LAST` only by the last layer, `WHEN_WIDE`
+  // only when the declared attention width exceeds the token count. R5A's table is all
+  // `WHEN_ALWAYS` and its walk ignores the column.
+  //
+  // `alt_when`, `alt_a`, and `alt_b` are section 6 correction C2: a condition that adds a row also
+  // moves the *operand* of the row that consumes it, and `when` alone cannot say so. A row whose
+  // `alt_when` holds reads `alt_a`/`alt_b` instead of `a`/`b`; `-1` leaves that operand alone.
+  when: array<i64>,
+  alt_when: array<i64>,
+  alt_a: array<i64>,
+  alt_b: array<i64>,
 }
 
 // The thirty-two rows section 2.2's probe recorded, in the order `ggml_build_forward_expand`
@@ -495,6 +513,10 @@ pub fn node_table(borrow g: Geometry, tokens: i64) -> NodeTable {
   mut p2: array_builder<i64> := array_builder()
   mut p3: array_builder<i64> := array_builder()
   mut oracle: array_builder<i64> := array_builder()
+  mut when: array_builder<i64> := array_builder()
+  mut alt_when: array_builder<i64> := array_builder()
+  mut alt_a: array_builder<i64> := array_builder()
+  mut alt_b: array_builder<i64> := array_builder()
 
   n := SLOT_NODE_BASE
   eps := g.rms_eps_bits
@@ -737,6 +759,10 @@ pub fn node_table(borrow g: Geometry, tokens: i64) -> NodeTable {
     p2.push(r_p2)
     p3.push(r_p3)
     oracle.push(r_oracle)
+    when.push(WHEN_ALWAYS)
+    alt_when.push(WHEN_ALWAYS)
+    alt_a.push(-1)
+    alt_b.push(-1)
     row = row + 1
   }
   return NodeTable {
@@ -750,6 +776,10 @@ pub fn node_table(borrow g: Geometry, tokens: i64) -> NodeTable {
     p2: p2.build(),
     p3: p3.build(),
     oracle: oracle.build(),
+    when: when.build(),
+    alt_when: alt_when.build(),
+    alt_a: alt_a.build(),
+    alt_b: alt_b.build(),
   }
 }
 
@@ -980,6 +1010,848 @@ pub fn write_mask(borrow mut window: buffer, tokens: i64) {
     mut col := 0
     loop {
       if col >= tokens { break }
+      bits := if col <= row { MASK_ZERO_BITS } else { MASK_NEG_INFINITY_BITS }
+      window.put_u32_le(bits as u32)
+      col = col + 1
+    }
+    row = row + 1
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// R5B-MODEL-PREFILL-FORWARD — three topologies as data
+//
+// `docs/specs/r5b-model-prefill-forward.md` section 3.6. The whole-model prefill is three node
+// tables walked thirty times: a one-row embedding gather, a thirty-six-row layer table whose
+// `when` column makes the narrowing and the reconciliation rows conditional data rather than
+// control flow, and a three-row head. Section 2.4's probe measured the layer graph to be the
+// **same** table for all twenty-eight layers once the residual is an input rather than a node,
+// which is the property this section exists to make true.
+// ---------------------------------------------------------------------------------------------
+
+// Section 3.3. `KV_WIDTH` is an operand and this is its ceiling; R5B never contains the value the
+// instrument happens to use (section 5.6).
+pub MAX_ATTENTION_WIDTH := 4096
+
+// The three conditions of the `when` column.
+pub WHEN_ALWAYS := 0
+pub WHEN_LAST := 1
+pub WHEN_WIDE := 2
+
+// The slot map, shared by all three graphs. Twelve weights, four inputs, thirty-six nodes: a
+// high-water of 52 against `MAX_NODE_SLOTS` of 128. The embedding graph uses slot 0 for the
+// row-gathered `token_embd` window and `MF_SLOT_TOKENS` for its index vector; the head uses slots
+// 0 and 1 for `output_norm` and `output` and `MF_SLOT_CUR` for the narrowed residual.
+pub MF_SLOT_CUR := 12
+pub MF_SLOT_TOKENS := 12
+pub MF_SLOT_POS := 13
+pub MF_SLOT_MASK := 14
+pub MF_SLOT_OUT_IDS := 15
+pub MF_SLOT_NODE_BASE := 16
+
+pub MF_LAYER_NODE_COUNT := 36
+pub MF_EMBED_NODE_COUNT := 1
+pub MF_HEAD_NODE_COUNT := 3
+
+pub MF_LAYER_MEMBER_COUNT := 12
+pub MF_EMBED_MEMBER_COUNT := 1
+pub MF_HEAD_MEMBER_COUNT := 2
+
+// Nineteen rows per layer: the seventeen section 3.7 compares plus `kq-L` and `kq_soft_max-L`,
+// which are matched, shape-checked against `KV_WIDTH`, and excluded from element comparison.
+pub MF_LAYER_ORACLE_COUNT := 19
+pub MF_EMBED_ORACLE_COUNT := 1
+pub MF_HEAD_ORACLE_COUNT := 2
+
+// ---------------------------------------------------------------------------------------------
+// The member tables
+// ---------------------------------------------------------------------------------------------
+
+// Twelve members in slot order. `token_embd` is gone: it is the embedding graph's own member, and
+// removing it from the layer is what makes all twenty-eight layer graphs the same table.
+fn mf_layer_label_of(row: i64) -> str {
+  if row == 0 { return "attn_norm" }
+  if row == 1 { return "attn_q" }
+  if row == 2 { return "attn_q_bias" }
+  if row == 3 { return "attn_k" }
+  if row == 4 { return "attn_k_bias" }
+  if row == 5 { return "attn_v" }
+  if row == 6 { return "attn_v_bias" }
+  if row == 7 { return "attn_output" }
+  if row == 8 { return "ffn_norm" }
+  if row == 9 { return "ffn_gate" }
+  if row == 10 { return "ffn_up" }
+  return "ffn_down"
+}
+
+fn mf_layer_role_of(row: i64) -> i64 {
+  if row == 0 { return ROLE_ATTN_NORM }
+  if row == 1 { return ROLE_ATTN_Q }
+  if row == 2 { return ROLE_ATTN_Q_BIAS }
+  if row == 3 { return ROLE_ATTN_K }
+  if row == 4 { return ROLE_ATTN_K_BIAS }
+  if row == 5 { return ROLE_ATTN_V }
+  if row == 6 { return ROLE_ATTN_V_BIAS }
+  if row == 7 { return ROLE_ATTN_OUTPUT }
+  if row == 8 { return ROLE_FFN_NORM }
+  if row == 9 { return ROLE_FFN_GATE }
+  if row == 10 { return ROLE_FFN_UP }
+  return ROLE_FFN_DOWN
+}
+
+fn mf_layer_is_1d(row: i64) -> bool {
+  return row == 0 || row == 2 || row == 4 || row == 6 || row == 8
+}
+
+fn mf_layer_ne0_of(borrow g: Geometry, row: i64) -> i64 {
+  if row == 2 { return g.n_head * g.head_dim }
+  if row == 4 { return g.n_head_kv * g.head_dim }
+  if row == 6 { return g.n_head_kv * g.head_dim }
+  if row == 11 { return g.n_ff }
+  return g.n_embd
+}
+
+fn mf_layer_ne1_of(borrow g: Geometry, row: i64) -> i64 {
+  if mf_layer_is_1d(row) { return 1 }
+  if row == 1 { return g.n_head * g.head_dim }
+  if row == 3 { return g.n_head_kv * g.head_dim }
+  if row == 5 { return g.n_head_kv * g.head_dim }
+  if row == 7 { return g.n_embd }
+  if row == 9 { return g.n_ff }
+  if row == 10 { return g.n_ff }
+  return g.n_embd
+}
+
+pub fn mf_layer_member_table(borrow g: Geometry) -> MemberTable {
+  labels := builder()
+  mut names: array_builder<i64> := array_builder()
+  mut ends: array_builder<i64> := array_builder()
+  mut roles: array_builder<i64> := array_builder()
+  mut blocks: array_builder<i64> := array_builder()
+  mut d0: array_builder<i64> := array_builder()
+  mut d1: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  mut cursor := 0
+  mut row := 0
+  loop {
+    if row >= MF_LAYER_MEMBER_COUNT { break }
+    label := mf_layer_label_of(row)
+    labels.write(label)
+    names.push(cursor)
+    cursor = cursor + label.len()
+    ends.push(cursor)
+    roles.push(mf_layer_role_of(row))
+    blocks.push(if row <= 7 { KIND_ATTENTION } else { KIND_MLP })
+    d0.push(mf_layer_ne0_of(g, row))
+    d1.push(mf_layer_ne1_of(g, row))
+    dims.push(if mf_layer_is_1d(row) { 1 } else { 2 })
+    row = row + 1
+  }
+  return MemberTable {
+    count: MF_LAYER_MEMBER_COUNT,
+    names: labels.to_string(),
+    name_start: names.build(),
+    name_end: ends.build(),
+    role: roles.build(),
+    block: blocks.build(),
+    ne0: d0.build(),
+    ne1: d1.build(),
+    n_dims: dims.build(),
+  }
+}
+
+// One member: the embedding rows this prefill gathers. `ne1` is the container's `n_vocab`, which is
+// what the pack's member record must declare; the tensor the arm builds is `T` rows wide.
+pub fn mf_embed_member_table(borrow g: Geometry) -> MemberTable {
+  labels := builder()
+  mut names: array_builder<i64> := array_builder()
+  mut ends: array_builder<i64> := array_builder()
+  mut roles: array_builder<i64> := array_builder()
+  mut blocks: array_builder<i64> := array_builder()
+  mut d0: array_builder<i64> := array_builder()
+  mut d1: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  labels.write("token_embd")
+  names.push(0)
+  ends.push(10)
+  roles.push(ROLE_TOKEN_EMBD)
+  blocks.push(KIND_WEIGHT)
+  d0.push(g.n_embd)
+  d1.push(g.n_vocab)
+  dims.push(2)
+  return MemberTable {
+    count: MF_EMBED_MEMBER_COUNT,
+    names: labels.to_string(),
+    name_start: names.build(),
+    name_end: ends.build(),
+    role: roles.build(),
+    block: blocks.build(),
+    ne0: d0.build(),
+    ne1: d1.build(),
+    n_dims: dims.build(),
+  }
+}
+
+// Two members: `output_norm` is 1-D at `n_embd` and `output` is `[n_embd, n_vocab]`. Section 2.1
+// fact 1 measured this model as **untied**, and section 3.4 detects rather than assumes it.
+pub fn mf_head_member_table(borrow g: Geometry) -> MemberTable {
+  labels := builder()
+  mut names: array_builder<i64> := array_builder()
+  mut ends: array_builder<i64> := array_builder()
+  mut roles: array_builder<i64> := array_builder()
+  mut blocks: array_builder<i64> := array_builder()
+  mut d0: array_builder<i64> := array_builder()
+  mut d1: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  labels.write("output_norm")
+  names.push(0)
+  ends.push(11)
+  roles.push(ROLE_OUTPUT_NORM)
+  blocks.push(KIND_WEIGHT)
+  d0.push(g.n_embd)
+  d1.push(1)
+  dims.push(1)
+  labels.write("output")
+  names.push(11)
+  ends.push(17)
+  roles.push(ROLE_OUTPUT)
+  blocks.push(KIND_WEIGHT)
+  d0.push(g.n_embd)
+  d1.push(g.n_vocab)
+  dims.push(2)
+  return MemberTable {
+    count: MF_HEAD_MEMBER_COUNT,
+    names: labels.to_string(),
+    name_start: names.build(),
+    name_end: ends.build(),
+    role: roles.build(),
+    block: blocks.build(),
+    ne0: d0.build(),
+    ne1: d1.build(),
+    n_dims: dims.build(),
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The three node tables
+// ---------------------------------------------------------------------------------------------
+
+fn mf_zero_column(n: i64) -> array<i64> {
+  mut b: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= n { break }
+    b.push(0)
+    at = at + 1
+  }
+  return b.build()
+}
+
+// The one-node embedding graph: `GET_ROWS` over the gathered rows, addressed by position.
+pub fn mf_embed_node_table() -> NodeTable {
+  mut op: array_builder<i64> := array_builder()
+  mut a: array_builder<i64> := array_builder()
+  mut b: array_builder<i64> := array_builder()
+  mut out: array_builder<i64> := array_builder()
+  mut oracle: array_builder<i64> := array_builder()
+  op.push(OP_GET_ROWS)
+  a.push(0)
+  b.push(MF_SLOT_TOKENS)
+  out.push(MF_SLOT_NODE_BASE)
+  oracle.push(0)
+  return NodeTable {
+    count: MF_EMBED_NODE_COUNT,
+    op: op.build(),
+    a: a.build(),
+    b: b.build(),
+    out: out.build(),
+    p0: mf_zero_column(MF_EMBED_NODE_COUNT),
+    p1: mf_zero_column(MF_EMBED_NODE_COUNT),
+    p2: mf_zero_column(MF_EMBED_NODE_COUNT),
+    p3: mf_zero_column(MF_EMBED_NODE_COUNT),
+    oracle: oracle.build(),
+    when: mf_zero_column(MF_EMBED_NODE_COUNT),
+    alt_when: mf_zero_column(MF_EMBED_NODE_COUNT),
+    alt_a: mf_minus_one_column(MF_EMBED_NODE_COUNT),
+    alt_b: mf_minus_one_column(MF_EMBED_NODE_COUNT),
+  }
+}
+
+fn mf_minus_one_column(n: i64) -> array<i64> {
+  mut b: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= n { break }
+    b.push(-1)
+    at = at + 1
+  }
+  return b.build()
+}
+
+// `RMS_NORM`, `MUL(output_norm)`, `MUL_MAT(output)` — the three nodes the transcript names `norm`,
+// `result_norm`, and `result_output`, without a layer suffix (section 2.3).
+pub fn mf_head_node_table(borrow g: Geometry) -> NodeTable {
+  mut op: array_builder<i64> := array_builder()
+  mut a: array_builder<i64> := array_builder()
+  mut b: array_builder<i64> := array_builder()
+  mut out: array_builder<i64> := array_builder()
+  mut p0: array_builder<i64> := array_builder()
+  mut oracle: array_builder<i64> := array_builder()
+  n := MF_SLOT_NODE_BASE
+  op.push(OP_RMS_NORM)
+  a.push(MF_SLOT_CUR)
+  b.push(-1)
+  out.push(n + 0)
+  p0.push(g.rms_eps_bits)
+  oracle.push(-1)
+  op.push(OP_MUL)
+  a.push(n + 0)
+  b.push(0)
+  out.push(n + 1)
+  p0.push(0)
+  oracle.push(0)
+  op.push(OP_MUL_MAT)
+  a.push(1)
+  b.push(n + 1)
+  out.push(n + 2)
+  p0.push(0)
+  oracle.push(1)
+  return NodeTable {
+    count: MF_HEAD_NODE_COUNT,
+    op: op.build(),
+    a: a.build(),
+    b: b.build(),
+    out: out.build(),
+    p0: p0.build(),
+    p1: mf_zero_column(MF_HEAD_NODE_COUNT),
+    p2: mf_zero_column(MF_HEAD_NODE_COUNT),
+    p3: mf_zero_column(MF_HEAD_NODE_COUNT),
+    oracle: oracle.build(),
+    when: mf_zero_column(MF_HEAD_NODE_COUNT),
+    alt_when: mf_zero_column(MF_HEAD_NODE_COUNT),
+    alt_a: mf_minus_one_column(MF_HEAD_NODE_COUNT),
+    alt_b: mf_minus_one_column(MF_HEAD_NODE_COUNT),
+  }
+}
+
+// One row of the layer table. It is a record rather than nine `mut` locals because the builder loop
+// below assigns it once per row and pushes it once, which is the shape correction C9 of
+// `r5a-dense-layer-forward.md` forced on every column set in this repository.
+MfRow {
+  op: i64,
+  a: i64,
+  b: i64,
+  p0: i64,
+  p1: i64,
+  p2: i64,
+  p3: i64,
+  oracle: i64,
+  when: i64,
+  alt_when: i64,
+  alt_a: i64,
+  alt_b: i64,
+}
+
+fn mf_row(op: i64, a: i64, b: i64, oracle: i64) -> MfRow = MfRow {
+  op: op,
+  a: a,
+  b: b,
+  p0: 0,
+  p1: 0,
+  p2: 0,
+  p3: 0,
+  oracle: oracle,
+  when: WHEN_ALWAYS,
+  alt_when: WHEN_ALWAYS,
+  alt_a: -1,
+  alt_b: -1,
+}
+
+// Rows 0 to 13 of the layer: the norm, the three projections and their biases, the three reshapes,
+// and the two RoPEs. Every one of them is unconditional.
+fn mf_layer_row_head(borrow g: Geometry, tokens: i64, row: i64) -> MfRow {
+  n := MF_SLOT_NODE_BASE
+  if row == 0 {
+    mut r := mf_row(OP_RMS_NORM, MF_SLOT_CUR, -1, 0)
+    r.p0 = g.rms_eps_bits
+    return r
+  }
+  if row == 1 { return mf_row(OP_MUL, n + 0, 0, 1) }
+  if row == 2 { return mf_row(OP_MUL_MAT, 1, n + 1, -1) }
+  if row == 3 { return mf_row(OP_ADD, n + 2, 2, 2) }
+  if row == 4 { return mf_row(OP_MUL_MAT, 3, n + 1, -1) }
+  if row == 5 { return mf_row(OP_ADD, n + 4, 4, 3) }
+  if row == 6 { return mf_row(OP_MUL_MAT, 5, n + 1, -1) }
+  if row == 7 { return mf_row(OP_ADD, n + 6, 6, 4) }
+  if row == 8 {
+    mut r := mf_row(OP_RESHAPE_3D, n + 3, -1, -1)
+    r.p0 = g.head_dim
+    r.p1 = g.n_head
+    r.p2 = tokens
+    return r
+  }
+  if row == 9 {
+    mut r := mf_row(OP_RESHAPE_3D, n + 5, -1, -1)
+    r.p0 = g.head_dim
+    r.p1 = g.n_head_kv
+    r.p2 = tokens
+    return r
+  }
+  if row == 10 {
+    mut r := mf_row(OP_RESHAPE_3D, n + 7, -1, -1)
+    r.p0 = g.head_dim
+    r.p1 = g.n_head_kv
+    r.p2 = tokens
+    return r
+  }
+  mut r := mf_row(OP_ROPE, if row == 11 { n + 8 } else { n + 9 }, MF_SLOT_POS,
+    if row == 11 { 5 } else { 6 })
+  r.p0 = g.head_dim
+  r.p1 = ROPE_TYPE_NEOX
+  r.p2 = g.context_length
+  r.p3 = g.rope_freq_base_bits
+  return r
+}
+
+// Rows 14 to 24: the attention itself, including the three `WHEN_WIDE` rows that widen K and V to
+// the instrument's declared reduction length (section 2.7). `ggml_pad` writes the source at the
+// **start** of each padded axis and zeroes the rest, and the mask's extra columns are `-inf`, so
+// the padded lanes contribute nothing but the f32 reduction length matches llama.cpp's.
+fn mf_layer_row_attention(borrow g: Geometry, tokens: i64, width: i64, row: i64) -> MfRow {
+  n := MF_SLOT_NODE_BASE
+  if row == 13 {
+    mut r := mf_row(OP_PERMUTE, n + 11, -1, -1)
+    r.p1 = 2
+    r.p2 = 1
+    r.p3 = 3
+    return r
+  }
+  if row == 14 {
+    mut r := mf_row(OP_PERMUTE, n + 12, -1, -1)
+    r.p1 = 2
+    r.p2 = 1
+    r.p3 = 3
+    return r
+  }
+  if row == 15 {
+    mut r := mf_row(OP_CONT_3D, n + 14, -1, -1)
+    r.p0 = g.head_dim
+    r.p1 = tokens
+    r.p2 = g.n_head_kv
+    r.when = WHEN_WIDE
+    return r
+  }
+  if row == 16 {
+    mut r := mf_row(OP_PAD, n + 15, -1, -1)
+    r.p1 = width - tokens
+    r.when = WHEN_WIDE
+    return r
+  }
+  if row == 17 {
+    mut r := mf_row(OP_MUL_MAT, n + 14, n + 13, 7)
+    r.alt_when = WHEN_WIDE
+    r.alt_a = n + 16
+    return r
+  }
+  if row == 18 {
+    mut r := mf_row(OP_SOFT_MAX, n + 17, MF_SLOT_MASK, 8)
+    r.p0 = g.attn_scale_bits
+    r.p1 = MAX_BIAS_BITS
+    return r
+  }
+  if row == 19 {
+    mut r := mf_row(OP_PERMUTE, n + 10, -1, -1)
+    r.p0 = 1
+    r.p1 = 2
+    r.p2 = 0
+    r.p3 = 3
+    return r
+  }
+  if row == 20 {
+    mut r := mf_row(OP_CONT_3D, n + 19, -1, -1)
+    r.p0 = tokens
+    r.p1 = g.head_dim
+    r.p2 = g.n_head_kv
+    return r
+  }
+  if row == 21 {
+    mut r := mf_row(OP_PAD, n + 20, -1, -1)
+    r.p0 = width - tokens
+    r.when = WHEN_WIDE
+    return r
+  }
+  if row == 22 {
+    mut r := mf_row(OP_MUL_MAT, n + 20, n + 18, 9)
+    r.alt_when = WHEN_WIDE
+    r.alt_a = n + 21
+    return r
+  }
+  if row == 23 {
+    mut r := mf_row(OP_PERMUTE, n + 22, -1, -1)
+    r.p1 = 2
+    r.p2 = 1
+    r.p3 = 3
+    return r
+  }
+  mut r := mf_row(OP_CONT_3D, n + 23, -1, 10)
+  r.p0 = g.n_embd
+  r.p1 = tokens
+  r.p2 = 1
+  return r
+}
+
+// Rows 25 to 35: the attention output projection, the two `WHEN_LAST` narrowing rows, and the
+// feed-forward block. Section 2.3: the prefill narrows **inside** the last layer, after the output
+// projection, on **both** branches of the residual add — narrowing at the layer's input would be
+// wrong rather than merely different, because the attention needs every position's keys.
+fn mf_layer_row_tail(borrow g: Geometry, row: i64) -> MfRow {
+  n := MF_SLOT_NODE_BASE
+  if row == 25 { return mf_row(OP_MUL_MAT, 7, n + 24, 11) }
+  if row == 26 {
+    mut r := mf_row(OP_GET_ROWS, n + 25, MF_SLOT_OUT_IDS, -1)
+    r.when = WHEN_LAST
+    return r
+  }
+  if row == 27 {
+    mut r := mf_row(OP_GET_ROWS, MF_SLOT_CUR, MF_SLOT_OUT_IDS, -1)
+    r.when = WHEN_LAST
+    return r
+  }
+  if row == 28 {
+    mut r := mf_row(OP_ADD, n + 25, MF_SLOT_CUR, 12)
+    r.alt_when = WHEN_LAST
+    r.alt_a = n + 26
+    r.alt_b = n + 27
+    return r
+  }
+  if row == 29 {
+    mut r := mf_row(OP_RMS_NORM, n + 28, -1, -1)
+    r.p0 = g.rms_eps_bits
+    return r
+  }
+  if row == 30 { return mf_row(OP_MUL, n + 29, 8, 13) }
+  if row == 31 { return mf_row(OP_MUL_MAT, 9, n + 30, 14) }
+  if row == 32 { return mf_row(OP_MUL_MAT, 10, n + 30, 15) }
+  if row == 33 { return mf_row(OP_SWIGLU, n + 31, n + 32, 16) }
+  if row == 34 { return mf_row(OP_MUL_MAT, 11, n + 33, 17) }
+  return mf_row(OP_ADD, n + 34, n + 28, 18)
+}
+
+pub fn mf_layer_node_table(borrow g: Geometry, tokens: i64, width: i64) -> NodeTable {
+  mut op: array_builder<i64> := array_builder()
+  mut a: array_builder<i64> := array_builder()
+  mut b: array_builder<i64> := array_builder()
+  mut out: array_builder<i64> := array_builder()
+  mut p0: array_builder<i64> := array_builder()
+  mut p1: array_builder<i64> := array_builder()
+  mut p2: array_builder<i64> := array_builder()
+  mut p3: array_builder<i64> := array_builder()
+  mut oracle: array_builder<i64> := array_builder()
+  mut when: array_builder<i64> := array_builder()
+  mut alt_when: array_builder<i64> := array_builder()
+  mut alt_a: array_builder<i64> := array_builder()
+  mut alt_b: array_builder<i64> := array_builder()
+  mut row := 0
+  loop {
+    if row >= MF_LAYER_NODE_COUNT { break }
+    r := if row <= 12 {
+      mf_layer_row_head(g, tokens, row)
+    } else {
+      if row <= 24 { mf_layer_row_attention(g, tokens, width, row) } else { mf_layer_row_tail(g, row) }
+    }
+    op.push(r.op)
+    a.push(r.a)
+    b.push(r.b)
+    out.push(MF_SLOT_NODE_BASE + row)
+    p0.push(r.p0)
+    p1.push(r.p1)
+    p2.push(r.p2)
+    p3.push(r.p3)
+    oracle.push(r.oracle)
+    when.push(r.when)
+    alt_when.push(r.alt_when)
+    alt_a.push(r.alt_a)
+    alt_b.push(r.alt_b)
+    row = row + 1
+  }
+  return NodeTable {
+    count: MF_LAYER_NODE_COUNT,
+    op: op.build(),
+    a: a.build(),
+    b: b.build(),
+    out: out.build(),
+    p0: p0.build(),
+    p1: p1.build(),
+    p2: p2.build(),
+    p3: p3.build(),
+    oracle: oracle.build(),
+    when: when.build(),
+    alt_when: alt_when.build(),
+    alt_a: alt_a.build(),
+    alt_b: alt_b.build(),
+  }
+}
+
+// The last node of each graph, which is what `ggml_build_forward_expand` is called on.
+pub fn mf_layer_output_slot() -> i64 = MF_SLOT_NODE_BASE + MF_LAYER_NODE_COUNT - 1
+
+pub fn mf_embed_output_slot() -> i64 = MF_SLOT_NODE_BASE
+
+pub fn mf_head_output_slot() -> i64 = MF_SLOT_NODE_BASE + MF_HEAD_NODE_COUNT - 1
+
+// `true` when a row is issued for a graph with these two conditions. One loop in
+// `src/model_forward.align` walks the table and skips a row whose condition does not hold.
+pub fn mf_row_issued(condition: i64, last: bool, wide: bool) -> bool {
+  if condition == WHEN_ALWAYS { return true }
+  if condition == WHEN_LAST { return last }
+  return wide
+}
+
+// ---------------------------------------------------------------------------------------------
+// The oracle table for the whole prefill
+//
+// One flat table of `1 + 19 * n_layer + 2` rows: the embedding graph's `embd`, nineteen rows per
+// layer, and the head's `result_norm` and `result_output`. Row addressing is arithmetic —
+// `mf_oracle_layer_base(L)` — so no column has to carry the graph a row belongs to.
+// ---------------------------------------------------------------------------------------------
+
+pub fn mf_oracle_layer_base(layer: i64) -> i64 = 1 + MF_LAYER_ORACLE_COUNT * layer
+
+pub fn mf_oracle_head_base(n_layer: i64) -> i64 = 1 + MF_LAYER_ORACLE_COUNT * n_layer
+
+fn mf_oracle_id_of(row: i64) -> str {
+  if row == 0 { return "norm" }
+  if row == 1 { return "attn_norm" }
+  if row == 2 { return "q_bias" }
+  if row == 3 { return "k_bias" }
+  if row == 4 { return "v_bias" }
+  if row == 5 { return "q_rope" }
+  if row == 6 { return "k_rope" }
+  if row == 7 { return "kq" }
+  if row == 8 { return "kq_soft_max" }
+  if row == 9 { return "kqv" }
+  if row == 10 { return "kqv_out" }
+  if row == 11 { return "attn_out" }
+  if row == 12 { return "ffn_inp" }
+  if row == 13 { return "ffn_norm" }
+  if row == 14 { return "ffn_gate" }
+  if row == 15 { return "ffn_up" }
+  if row == 16 { return "ffn_swiglu" }
+  if row == 17 { return "ffn_out" }
+  return "l_out"
+}
+
+fn mf_oracle_stem_of(row: i64) -> str {
+  if row == 0 { return "norm" }
+  if row == 1 { return "attn_norm" }
+  if row == 2 { return "Qcur" }
+  if row == 3 { return "Kcur" }
+  if row == 4 { return "Vcur" }
+  if row == 5 { return "Qcur" }
+  if row == 6 { return "Kcur" }
+  if row == 7 { return "kq" }
+  if row == 8 { return "kq_soft_max" }
+  if row == 9 { return "kqv" }
+  if row == 10 { return "kqv_out" }
+  if row == 12 { return "ffn_inp" }
+  if row == 13 { return "ffn_norm" }
+  if row == 14 { return "ffn_gate" }
+  if row == 15 { return "ffn_up" }
+  if row == 16 { return "ffn_swiglu" }
+  if row == 17 { return "ffn_out" }
+  return "l_out"
+}
+
+fn mf_oracle_op_of(row: i64) -> str {
+  if row == 0 { return "RMS_NORM" }
+  if row == 1 { return "MUL" }
+  if row == 2 { return "ADD" }
+  if row == 3 { return "ADD" }
+  if row == 4 { return "ADD" }
+  if row == 5 { return "ROPE" }
+  if row == 6 { return "ROPE" }
+  if row == 7 { return "MUL_MAT" }
+  if row == 8 { return "SOFT_MAX" }
+  if row == 9 { return "MUL_MAT" }
+  if row == 10 { return "CONT" }
+  if row == 11 { return "MUL_MAT" }
+  if row == 12 { return "ADD" }
+  if row == 13 { return "MUL" }
+  if row == 14 { return "MUL_MAT" }
+  if row == 15 { return "MUL_MAT" }
+  if row == 16 { return "SWIGLU" }
+  if row == 17 { return "MUL_MAT" }
+  return "ADD"
+}
+
+// The node row each oracle row observes, in `mf_layer_node_table`'s own indexing.
+fn mf_oracle_node_of(row: i64) -> i64 {
+  if row == 0 { return 0 }
+  if row == 1 { return 1 }
+  if row == 2 { return 3 }
+  if row == 3 { return 5 }
+  if row == 4 { return 7 }
+  if row == 5 { return 11 }
+  if row == 6 { return 12 }
+  if row == 7 { return 17 }
+  if row == 8 { return 18 }
+  if row == 9 { return 22 }
+  if row == 10 { return 24 }
+  if row == 11 { return 25 }
+  if row == 12 { return 28 }
+  if row == 13 { return 30 }
+  if row == 14 { return 31 }
+  if row == 15 { return 32 }
+  if row == 16 { return 33 }
+  if row == 17 { return 34 }
+  return 35
+}
+
+// One index space for the whole prefill: `0` is the embedding row, `1 + 19 * L + r` is layer `L`'s
+// row `r`, and the last two rows are the head's. Six accessors answer one column each, so the
+// builder below is one loop with no per-graph branch inside it.
+fn mf_oracle_head_row(n_layer: i64, at: i64) -> i64 = at - mf_oracle_head_base(n_layer)
+
+fn mf_oracle_layer_of(n_layer: i64, at: i64) -> i64 {
+  if at <= 0 { return -1 }
+  if at >= mf_oracle_head_base(n_layer) { return -1 }
+  return (at - 1) / MF_LAYER_ORACLE_COUNT
+}
+
+fn mf_oracle_row_of(n_layer: i64, at: i64) -> i64 {
+  if at <= 0 { return -1 }
+  if at >= mf_oracle_head_base(n_layer) { return -1 }
+  return (at - 1) % MF_LAYER_ORACLE_COUNT
+}
+
+fn mf_oracle_id_at(n_layer: i64, at: i64) -> str {
+  if at == 0 { return "embd" }
+  head := mf_oracle_head_row(n_layer, at)
+  if head == 0 { return "result_norm" }
+  if head == 1 { return "result_output" }
+  return mf_oracle_id_of(mf_oracle_row_of(n_layer, at))
+}
+
+fn mf_oracle_op_at(n_layer: i64, at: i64) -> str {
+  if at == 0 { return "GET_ROWS" }
+  head := mf_oracle_head_row(n_layer, at)
+  if head == 0 { return "MUL" }
+  if head == 1 { return "MUL_MAT" }
+  return mf_oracle_op_of(mf_oracle_row_of(n_layer, at))
+}
+
+// The node row inside the graph this oracle row belongs to: the embedding graph's only node, the
+// layer table's row, or the head table's `result_norm` / `result_output`.
+fn mf_oracle_node_at(n_layer: i64, at: i64) -> i64 {
+  if at == 0 { return 0 }
+  head := mf_oracle_head_row(n_layer, at)
+  if head == 0 { return 1 }
+  if head == 1 { return 2 }
+  return mf_oracle_node_of(mf_oracle_row_of(n_layer, at))
+}
+
+// `kq-L` and `kq_soft_max-L` are matched and shape-checked and never element-compared: llama.cpp
+// reduces them over its padded KV width and section 3.7 makes that an operand rather than a
+// tolerance.
+fn mf_oracle_compared_at(n_layer: i64, at: i64) -> i64 {
+  row := mf_oracle_row_of(n_layer, at)
+  if row == 7 || row == 8 { return 0 }
+  return 1
+}
+
+// Section 2.3: the attention output projection prints as a positional `node_NNNN` that moves with
+// the layer and with the flags, so it is matched by its **source weight name** in every layer.
+fn mf_oracle_weight_at(n_layer: i64, at: i64) -> i64 {
+  if mf_oracle_row_of(n_layer, at) == 11 { return 1 }
+  return 0
+}
+
+fn mf_oracle_name_at(n_layer: i64, at: i64) -> string {
+  if at == 0 { return "embd".clone() }
+  head := mf_oracle_head_row(n_layer, at)
+  if head == 0 { return "result_norm".clone() }
+  if head == 1 { return "result_output".clone() }
+  layer := mf_oracle_layer_of(n_layer, at)
+  row := mf_oracle_row_of(n_layer, at)
+  b := builder()
+  if row == 11 {
+    b.write("blk.")
+    b.write_int(layer)
+    b.write(".attn_output.weight")
+    return b.to_string()
+  }
+  b.write(mf_oracle_stem_of(row))
+  b.write("-")
+  b.write_int(layer)
+  return b.to_string()
+}
+
+pub fn mf_oracle_table(n_layer: i64) -> OracleTable {
+  body := builder()
+  mut ids: array_builder<i64> := array_builder()
+  mut id_ends: array_builder<i64> := array_builder()
+  mut names: array_builder<i64> := array_builder()
+  mut name_ends: array_builder<i64> := array_builder()
+  mut ops: array_builder<i64> := array_builder()
+  mut op_ends: array_builder<i64> := array_builder()
+  mut nodes: array_builder<i64> := array_builder()
+  mut compared: array_builder<i64> := array_builder()
+  mut weighted: array_builder<i64> := array_builder()
+  count := mf_oracle_head_base(n_layer) + MF_HEAD_ORACLE_COUNT
+  mut cursor := 0
+  mut at := 0
+  loop {
+    if at >= count { break }
+    id := mf_oracle_id_at(n_layer, at)
+    operation := mf_oracle_op_at(n_layer, at)
+    name := mf_oracle_name_at(n_layer, at)
+    name_view: str := name
+    body.write(id)
+    ids.push(cursor)
+    cursor = cursor + id.len()
+    id_ends.push(cursor)
+    names.push(cursor)
+    body.write(name_view)
+    cursor = cursor + name_view.len()
+    name_ends.push(cursor)
+    ops.push(cursor)
+    body.write(operation)
+    cursor = cursor + operation.len()
+    op_ends.push(cursor)
+    nodes.push(mf_oracle_node_at(n_layer, at))
+    compared.push(mf_oracle_compared_at(n_layer, at))
+    weighted.push(mf_oracle_weight_at(n_layer, at))
+    at = at + 1
+  }
+  return OracleTable {
+    count: count,
+    text: body.to_string(),
+    id_start: ids.build(),
+    id_end: id_ends.build(),
+    name_start: names.build(),
+    name_end: name_ends.build(),
+    op_start: ops.build(),
+    op_end: op_ends.build(),
+    node: nodes.build(),
+    compared: compared.build(),
+    by_weight: weighted.build(),
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The causal mask at a declared width
+// ---------------------------------------------------------------------------------------------
+
+// A `{width, height}` f32 image. Columns at or beyond `height` are `-inf` for every row, which is
+// what makes the reconciliation pass's padded lanes contribute nothing: `ggml_pad` zeroes them and
+// the mask masks them, and only the f32 reduction *length* changes (section 2.7).
+pub fn mf_write_mask(borrow mut window: buffer, width: i64, height: i64) {
+  mut row := 0
+  loop {
+    if row >= height { break }
+    mut col := 0
+    loop {
+      if col >= width { break }
       bits := if col <= row { MASK_ZERO_BITS } else { MASK_NEG_INFINITY_BITS }
       window.put_u32_le(bits as u32)
       col = col + 1

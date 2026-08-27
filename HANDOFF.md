@@ -3,7 +3,205 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Awaiting publication: R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack (2026-08-27)
+## Publication in progress: R5B-MODEL-PREFILL-FORWARD — a whole Qwen2 prefill computed from an Align-owned alignpack (2026-08-27)
+
+- Branch `agent/r5b-model-prefill-forward`, **rebased onto the merged R5A-DENSE-LAYER-FORWARD
+  work**: it now sits directly on `main` at `ccbd8ae` (the PR #127 merge of R5A head `0397228`),
+  which itself continues the merged R4.5 (PR #126, merge `fa567b1`) and R4 (PR #125, merge
+  `991eab1`) chain. The authoritative design ledger is `docs/specs/r5b-model-prefill-forward.md`,
+  committed at `516f963` ("docs: add R5B model prefill forward design ledger"). The branch is four
+  commits on `ccbd8ae`: the ledger `516f963`, the implementation `dbe646e` ("feat: compute a
+  whole-model Qwen2 prefill over Align-owned windows"), the consolidated repair for both reviewers'
+  findings `b5b2db8` ("fix: close model prefill forward review findings"), and the final-review
+  repair `5ab2ad0` ("docs: close model prefill forward final review findings"), followed by the
+  reconciliation commit that records this rebase. Nothing is intentionally uncommitted. The rebase
+  carried two content conflicts, both resolved keeping both sides: `docs/specs/roadmap.md`'s
+  forward-order items 14 and 15 (`main`'s merged R4.5 and R5A truth beside R5B's new item 16), and
+  this file, where `main`'s final R5A, R4.5, and R4 content supersedes the branch's older text while
+  R5B's own section is kept intact. `scripts/build-ggml-shim`, `scripts/ggml_shim.c`,
+  `scripts/ggml_shim_stub.c`, `scripts/run-layer-forward-smoke`, `src/ggml_ffi.align`, and
+  `src/layer_forward.align` merged without conflict, keeping `main`'s R5A repairs — the
+  `abi.fp_contract_off` probe, the fresh-worker tool set, the supervisor stream bound, the writable
+  excerpt copy, and the named-field golden diagnostics — beside R5B's additions.
+- **Status: implementation complete and committed; two complementary reviews and one final review
+  are complete and repaired in the consolidated repair commit `b5b2db8` and the final-review commit
+  `5ab2ad0`; rebased onto the merged R5A and publication is in progress.**
+  R5B is stage 3 of
+  `docs/specs/roadmap.md` section R5's three-stage gate — a smallest model, CPU only, dense, prefill
+  only — one prefill of at most six tokens through the whole twenty-eight-layer Qwen2 model,
+  streamed one block pair at a time through one reused Align-owned window, carrying the residual
+  stream in Align-owned buffers between per-layer graphs, and checked against llama.cpp's own final
+  logits for the same tokens. `src/model_forward.align`, the new node tables and `node_when` column
+  in `src/layer_qwen2.align`, the `pad` shim wrapper, the `--model-forward` arm, and the extended
+  fixture/golden files are all committed. Nothing is intentionally uncommitted.
+- **Probe evidence (ledger section 2), gathered before section 3's contract was written**, from a
+  28-layer C harness that streams the real model through one reused window, R4.5's verified path at
+  model scale — unchanged from the prior entry below (kept for continuity; superseded as evidence by
+  the qualification run below).
+  - the 152,064 final logits are byte-identical to `llama-debug --save-logits` at the instrument's
+    declared attention width, KV width 256 — sha256 `d2e48620…`;
+  - 30,042 sampled elements across all twenty-eight layers plus the head agree with
+    `llama-eval-callback` to the last digit it prints, at zero ten-thousandths;
+  - at the runtime's own attention width (the prefill's own six positions), max `|Δ|` is
+    **0.2738**, argmax 671, and the whole top ten agree in the same order — the entire difference
+    traces to the one structural gap between R5B and llama.cpp (no KV cache), not to a bug;
+  - the prefill narrows *inside* layer 27, after the attention output projection, on both residual
+    branches — not at layer 27's input, which is what the plan originally assumed;
+  - `-nr` is contractual on both instruments (`llama-eval-callback` and `llama-debug`).
+- **Owner verification, latest run (after the review repair).**
+  - `check` (29 units). `src/model_forward.align` is not yet imported from `src/main.align`'s
+    `ENTRY` graph, so this aggregate does not compile it; `check-per-unit src/model_forward.align`
+    (5 units including its dependents: `alignpack_read`, `ggml_ffi`, `layer_qwen2`, `layer_forward`,
+    `model_forward`) passes separately, warnings only, well under the section 5.5 ten-second budget.
+  - `layer-forward-smoke`, run three times, identical results each time (14.7 / 11.9 / 12.5 s):
+    R5A's 74 cases unchanged plus R5B's 10+55 new cases, 29/32 stub-reachable error codes, all three
+    oracles (self-reference, transcript, logits) exercised for real.
+  - `build`, `ggml-spike` against both the default stub and the real linked ggml, `ggml-spike-smoke`,
+    `alignpack-smoke`, `gate-topology-check`, `format-check`, `fmt` (no diff), and
+    `git diff --check` all pass.
+- **Qualification (`make model-forward-qualification`, real Qwen2 model plus both instruments),
+  rerun after the repair; every section 5.2 assertion PASS.**
+  - instrument cross-check before the arm: the logits file's f32 sequential sum -232073.906250 over
+    152,064 logits equals the transcript's printed `result_output` sum, and `llama-debug` tokenized
+    `[750, 912, 2877, 11, 293, 1648]` — now printed explicitly and a `FAIL` if either blob is
+    absent, never a silent skip or an `N/A`;
+  - self-reference oracle: `IDENTICAL`, 479/479 nodes byte-identical over 30 graphs;
+  - transcript oracle: `PASS`, 28/28 layers, 479/479 nodes, 30,078 elements, max `|Δ|` 0
+    ten-thousandths, max `|Δsum|` 1 millionth;
+  - logits at the reconciliation width (256): `IDENTICAL`, sha256
+    `d2e48620…d245bf74`, bit_sum 425,868,724,161,277, argmax 671;
+  - logits at the runtime width (6): `WITHIN`, max `|Δ|` 2,739 ten-thousandths, argmax 671,
+    top-10 agreement 10/10;
+  - window **447,086,592 B** (now asserted — ledger correction C21), peak block 57, 30 graphs,
+    874 runtime nodes / 958 reconciliation nodes, slot high-water 52/128, activation peak
+    2,437,120 B, residual 86,016 B, logits 608,256 B;
+  - `pack.reader_*` 4,370,608,032 B in 4,729 `pread` groups — the container alone, since ledger
+    correction C18 moved the reference oracle's own re-read of the GGUF into `reference.pread_count`
+    / `reference.bytes_read`. This run was cache-cold: `pread` 1,439.2 ms, compute 447.0 ms runtime
+    and 557.4 ms reconciliation, reference 615.4 ms, oracle 6.6 ms, wall 5,377.9 ms; ledger section
+    7.6's warm figures (515-648 ms `pread`) are unchanged and remain the recorded baseline;
+  - peak RSS 937,885,696 B for the self-reference arm the qualification runs (ledger section 7.6
+    records 938,655,744 B). RSS capture is now best-effort and portable — the arm runs directly and
+    the runner probes for BSD `time -l` or GNU `time -v`, printing one line if neither exists;
+  - per-layer/per-graph lifetime balance: 0 failures — every counter equal at every graph boundary;
+  - the two forced builds against the **real** shim reached `R5_GGML_INIT` and `R5_COMPUTE`;
+  - the scratch pack and both instrument outputs are removed on every exit path.
+- **Align capability requests filed this session** (`docs/align-requests.md`, Requests 38-40, all
+  `PROPOSED`, none blocking; header updated to "Requests 1–20 are CLOSED and Requests 21–40 are
+  PROPOSED"):
+  - Request 38, positional write/reset and bounded-length `pread` for `buffer` — section 6
+    correction C5's forced `align_ggml_window_copy` shim workaround for the reused window.
+  - Request 39, release of rebound `buffer` allocations before frame exit — section 6 correction
+    C6's measured 3.4-4.3 GB peak RSS from `alignpack_read.read_exact`'s per-call `buffer(n)`
+    rebind at 339 members; the shipped arm avoids `read_exact` for the per-member read path
+    entirely rather than pay that cost.
+  - Request 40, `array_builder<T>` as a struct field type — `plan_layer_members` takes seven
+    separate `borrow mut array_builder<i64>` parameters (`src/model_forward.align:869-875`)
+    because the builders cannot be grouped into one record field.
+  - **Investigated and not filed.** Correction C7 (section 6) — the region checker refusing to hold
+    a `PackMember` across a second call taking the same `borrow mut Counters` — reproduces
+    `docs/language-spec.md`'s documented rule that `borrow mut x: T` "ends the previous generation"
+    on each call. This is expected borrow behavior, not a language gap; recorded here as an
+    application concern, not filed as a request. A suspected `check-per-unit`/whole-program `check`
+    disagreement on `src/model_forward.align` did not reproduce against the finished tree:
+    `alignc check-per-unit src/model_forward.align`, `alignc check src/model_forward.align`,
+    `alignc check-per-unit src/ggml_spike.align`, and `alignc check src/ggml_spike.align` all report
+    zero errors (warnings only), including after `alignc cache clear`. No diagnostic to cite, so not
+    filed — flag if this recurs during review or on a fresh clone. A suspected move-out-of-an-
+    `if`/`else`-expression restriction is real and sibling-documented
+    (`crates/align_sema/src/lib.rs:35095-35098`, test `move_owned_local_through_if_arm_rejected` at
+    `:69788`) but does not correspond to any site in the shipped `src/model_forward.align`: every
+    conditional expression there selects a Copy scalar or view, never an already-bound owned Move
+    local — no align-llm consequence to cite, so not filed.
+- **Review.** Two complementary reviewers covered the whole diff at `dbe646e` (pre-rebase
+  `019fa26`): reviewer A (source)
+  approved with one medium, four low, and one informational finding; reviewer B (governance,
+  documentation, and runners) requested changes with five medium and five low findings. **All twelve
+  distinct findings were accepted and repaired in one consolidated commit on this branch**, with no
+  finding rejected. The medium ones: `graph_alignment` was never called, so step 25's Align-side
+  per-member pre-check did not run and its `layer[<n>]role[<name>]` detail was never produced;
+  `docs/align-development.md` still described `scripts/run-model-forward` as not existing and its
+  `N/A` wording as unfinalized; the "R5B does not select `make ci`" contrast was wrong, because the
+  `Makefile` edit puts the diff in fresh-image scope; three section 5.2 acceptance rows were never
+  implemented in the runner and one of them carried a wrong window size; `/usr/bin/time -l` made the
+  qualification macOS-only; and the roadmap, developer guide, and this file still described R5B as
+  uncommitted work in progress. The repair added five review-found corrections to ledger section 6
+  (C17 partial-run verdicts, C18 separated reference-read counters, C19 `min(TOP_K, n_vocab)`,
+  C20 view-bounded `window_copy`, C21 the 447,086,592 B window), each with its covering case.
+  **A final review of the repair delta at `b5b2db8` approved** with three low and one
+  informational finding, all four accepted and repaired in `5ab2ad0`.
+- **One shared-code defect ported in from R5C-METAL-PREFILL's review** (ledger correction C23). R5C
+  branched from `556fced` and its arm shares `compare_logits`; its review found that a reference
+  `LOGITS.bin` carrying `±inf`, a NaN, or a finite magnitude above about 9.2e14 has no value in
+  integer ten-thousandths, so `((v as f64) * 10000.0).round() as i64` saturates, `primary -
+  reference` wraps, and a NaN reads as `0`. On R5C's arm that indexes a 65,537-entry histogram with
+  `i64`'s minimum and aborts with no document; on R5B there is no histogram, so the same input
+  published a magnitude the run never computed — measured at `5ab2ad0`:
+  `max_abs_diff_ten_thousandths` **9223372036854775706** for a `±3.4e38` reference and **257** for an
+  `-inf` reference against the tokens `1,25,5` primary — and a NaN could have compared *within* the
+  bound. The repair is R5C's `logit_ten_thousandths` and the new `R5_LOGITS_NONFINITE` code, ported
+  unchanged apart from the correction number; R5C's `add_saturating` and `IDENTICAL`-verdict gate do
+  not apply here. Three new fixtures and smoke rows cover it (`mf-logits-nonfinite`, `mf-logits-nan`,
+  `mf-logits-huge`), the code count is 33, and verifying them exposed ledger correction **C24**: the
+  `--model-forward` block of `scripts/run-layer-forward-smoke` ran `root_dir/ggml-spike` rather than
+  the `work_dir` executable it had just built, so `make layer-forward-smoke` failed outright on a
+  clean checkout and otherwise tested a stale binary.
+- **Two of `main`'s R5A fresh-worker repairs applied to R5B's own smoke block** (ledger correction
+  C25), both landed on `main` after this branch left R5A: the checked-in whole-model excerpt is read
+  through a writable copy in `work_dir`, because `fs.open_rw` refuses the fresh worker's read-only
+  checkout (`R5_TRANSCRIPT` / `Denied`, Request 21), and a golden mismatch reports the differing
+  field paths through R5A's `describe_difference` walk instead of both whole documents, which
+  overruns the supervisor's 65,536-byte-per-stream bound.
+- **Canonical baseline chain, re-recorded on Linux.** R5B changes `Makefile` (the
+  `model-forward-qualification` recipe and its `.PHONY` entry) and `.gitattributes` (the
+  `-whitespace` rule for the checked-in whole-model excerpt), two of the twenty recorded baseline
+  artifacts, so the chain that shipped with R5A no longer bound this head. The identity-bound chain
+  is `d07ba6a` -> `69ebfdb` -> `40a05e8` (source -> immutable oracle -> finalization), recorded on
+  Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3). Exactly those two of the twenty artifacts
+  changed against the R5A chain; the other eighteen hashes, `src/main.align` included, are unchanged
+  and the twenty paths are identical. `make baseline-check` on Linux: PASS, ending
+  `baseline chain: PASS`.
+- **Next actions, in order.**
+  1. Rerun owner verification and the named qualification against the rebased head.
+  2. Do **not** rely on `layer-forward-smoke`'s existing `HOSTED_CHECK_TARGETS` membership as an
+     exemption: `python3 scripts/verification_scope.py --base ccbd8ae --head <head>` classifies this
+     diff as `scope: fresh-image` (`fresh_focused` and `fresh_installed` both true) because the
+     `Makefile` gains the `model-forward-qualification` recipe. No *aggregate membership* changed
+     and the new target joins no aggregate, but the fresh-image scope is selected. Run the
+     classifier against the exact head rather than reasoning about it.
+  3. Exact-head preflight (`python3 scripts/pre-pr`), including the DinD-capable installed profile
+     check; do not substitute a Docker skip or an ambient `DOCKER_HOST` endpoint.
+  4. Publish the English pull request against `main`. R5A's PR #127, R4.5's PR #126, and R4's
+     PR #125 are all merged.
+- **Two pending user decisions, carried forward verbatim.**
+  1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
+     gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
+     `N/A`.
+  2. Carried forward from R2A: whether to download a small MoE GGUF (1-4 GB) so
+     `scripts/run-expert-trace-parity` can exercise the `moe: true` path against a real MoE
+     transcript; until decided the R2 roadmap gate stays open on dense-only smoke evidence, R4's own
+     MoE case stays synthetic-only, and R3 stays blocked (below). Note: a small MoE GGUF chosen for
+     size will most likely not be gpt-oss architecture, so R3's real measurement would also need a
+     new R1C frontend for whatever architecture that model uses, not just the download itself.
+- **R3 (Cache Simulator) is blocked on pending decision 2 above.** R3's gate
+  ("対象ハードウェア条件で、baselineより有効なpolicyを特定できること", `docs/specs/roadmap.md` section
+  R3) needs a real MoE activation trace and a cache-policy comparison against it; R2A's design ledger
+  already records that no such trace exists on this host. Resume condition: the small-MoE-GGUF
+  decision is made, the model's architecture is identified, an R1C frontend is built if that
+  architecture is not already `qwen2`/`gpt-oss`, and R2A's `moe: true` path is exercised against a
+  real transcript from it. Independent work that may continue: R5B's publication (its stage-3 dense
+  CPU gate needs no MoE trace) and the next eligible roadmap capability.
+- **R5B is the last large capability reachable without a user decision.** After it, every remaining
+  roadmap direction on this host needs one: decode (R6) needs an instrument first — neither
+  `llama-eval-callback` nor `llama-debug --save-logits` can observe a KV cache of more than a
+  handful of positions, so the oracle has to be named before the cache is written, not after — MoE
+  (R3, and R4's per-expert half) needs the small MoE GGUF pending decision 2 above, and the GPU/Metal
+  arm needs a tolerance oracle with a justified bound, which R5B's own logits oracle at a matched
+  attention width is the instrument that arm will need but does not itself provide
+  (`r4-5-external-buffer.md` section 5.4, `r5a-dense-layer-forward.md` section 5.4, ledger section
+  5.4).
+
+## Merged checkpoint: R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack (2026-08-27)
 
 - Branch `agent/r5a-dense-layer-forward`, **rebased onto the merged R4.5-EXTERNAL-BUFFER-SPIKE
   work**: it now sits directly on `main` at `fa567b1` (the PR #126 merge of R4.5 head `d46fce6`),
@@ -20,8 +218,11 @@ file records durable project state.
   `docs/specs/roadmap.md`'s forward-order items 13 and 14 (`main`'s merged R4/R4.5 truth), and this
   file's R4.5 and R4 sections, where `main`'s final content supersedes the branch's older
   "publication in progress" text while R5A's own section is kept intact.
-- **Status: implemented, verified, reviewed twice, both review repairs committed, and rebased onto
-  the merged R4.5; awaiting publication.** R5A is stage 2 of
+- **Status: merged as PR #127** (head `0397228`, merge commit `ccbd8ae` on `main`). Implemented,
+  verified, reviewed twice, both review repairs committed, rebased onto the merged R4.5, preflight
+  recorded, and merged; the branch ended at `0397228` after the baseline chain
+  (`823364c`/`0f9bc64`) and the four preflight repairs `1897a79`, `74b2b3c`, `79cc894`, and
+  `0397228`. R5A is stage 2 of
   `docs/specs/roadmap.md`
   section R5's three-stage gate — a single dense layer, CPU only — computed by ggml over Qwen2
   weights that live in Align-owned buffers, checked against `llama-eval-callback`'s own numbers for
@@ -179,14 +380,8 @@ file records durable project state.
   unchanged and the twenty paths are identical. `make baseline-check` on Linux: PASS, ending
   `baseline chain: PASS`, both at `0f9bc64` and again at the later portability repair `1897a79`,
   which touches no recorded artifact.
-- **Next actions, in order.**
-  1. At publication, run **`make ci`**, not only the narrower classifier path — adding
-     `layer-forward-smoke` to `HOSTED_CHECK_TARGETS` changes aggregate membership, which is one of
-     `CLAUDE.md`'s explicit triggers for the full integration graph.
-  2. Exact-head preflight (`python3 scripts/pre-pr`), including the DinD-capable installed profile
-     check; do not substitute a Docker skip or an ambient `DOCKER_HOST` endpoint.
-  3. Publish the English pull request against `main`. R4.5's PR #126 and R4's PR #125 are both
-     merged.
+- **Next action.** None; merged. The qualification numbers, baseline chain, review envelope, and
+  finding dispositions are recorded on PR #127.
 - **Two pending user decisions, carried forward verbatim.**
   1. Carried forward from R1B: whether to download `gpt-oss-20b-mxfp4.gguf` (12.1 GB) to run the
      gpt-oss `model-ir-parity` qualification; until decided that qualification stays the documented
@@ -203,7 +398,7 @@ file records durable project state.
   already records that no such trace exists on this host. Resume condition: the small-MoE-GGUF
   decision is made, the model's architecture is identified, an R1C frontend is built if that
   architecture is not already `qwen2`/`gpt-oss`, and R2A's `moe: true` path is exercised against a
-  real transcript from it. Independent work that may continue: R5A's publication (its stage-2 dense
+  real transcript from it. Independent work that may continue: R5B's publication (its stage-3 dense
   CPU gate needs no MoE trace) and the next eligible roadmap capability.
 
 ## Merged checkpoint: R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer (2026-08-27)
@@ -783,20 +978,21 @@ boundary is next changed.
 
 ## Resume in another environment
 
-1. Fetch `origin`, check out `agent/r4-5-external-buffer`, and read `CLAUDE.md`, then
-   `docs/specs/r4-5-external-buffer.md` in full (committed at `7bd7d0d`, corrections applied) — it
-   is the plan of record — and `docs/specs/r4-alignpack-layer-major.md` for the alignpack container
-   surface it consumes. R4-ALIGNPACK-LAYER-MAJOR merged as PR #125 (`a7e72dc` -> `991eab1`); this
-   branch is rebased onto that merge.
+1. Fetch `origin`, check out `agent/r5b-model-prefill-forward`, and read `CLAUDE.md`, then
+   `docs/specs/r5b-model-prefill-forward.md` in full (committed at `516f963`, corrections applied)
+   — it is the plan of record — and `docs/specs/r5a-dense-layer-forward.md` and
+   `docs/specs/r4-5-external-buffer.md` for the layer arm and the external-buffer surface it
+   consumes. R5A-DENSE-LAYER-FORWARD merged as PR #127 (`0397228` -> `ccbd8ae`); this branch is
+   rebased onto that merge.
 2. Materialize the pinned toolchain with `scripts/align-toolchain ensure compiler`; on macOS use
    `gmake` and the recorded `LLVM_CONFIG`/`LIBRARY_PATH` environment. Confirm `.align-revision`
-   still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R4.5 requires no pin change.
-3. Resume at the first unfinished next action in the R4.5-EXTERNAL-BUFFER-SPIKE capability above:
-   the implementation (`de86c58`), both reviews, and both repairs (`bf7f10b`, `049a5cc`) are done
-   and every owner passes, and the baseline chain is re-recorded (`45cdc55` -> `8b3b161` ->
-   `eece7a1`), so what remains is exact-head preflight and publication.
+   still selects `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; R5B requires no pin change.
+3. Resume at the first unfinished next action in the R5B-MODEL-PREFILL-FORWARD capability above:
+   the implementation (`dbe646e`), both reviews, and both repairs (`b5b2db8`, `5ab2ad0`) are done
+   and every owner passes, so what remains is the re-recorded baseline chain, exact-head preflight,
+   and publication.
 4. Do not open another Align request unless implementation exposes a further genuine shipped-language,
-   compiler/runtime, or standard-library gap under the register rules. Requests 21-35 are
+   compiler/runtime, or standard-library gap under the register rules. Requests 21-40 are
    `PROPOSED` and non-blocking.
 5. Two user decisions are pending and must not be silently dropped: whether to download
    `gpt-oss-20b-mxfp4.gguf` (12.1 GB) for the carried-forward gpt-oss `model-ir-parity`

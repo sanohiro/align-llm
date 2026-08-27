@@ -1,0 +1,4005 @@
+module model_forward
+
+import core.json
+import std.crypto
+import std.encoding
+import std.fs
+import std.time
+import alignpack_read
+import ggml_ffi
+import layer_forward
+import layer_qwen2
+
+// R5B-MODEL-PREFILL-FORWARD (`docs/specs/r5b-model-prefill-forward.md`). The `--model-forward` arm:
+// the thirty window fills of section 3.4, the one reused window of section 3.5, the three node
+// tables of section 3.6, the three oracles of section 3.7, the `R5_MODEL_FORWARD` document of
+// section 3.8, the thirty-four-step validation order of section 3.9, and the per-graph teardown of
+// section 3.10.
+//
+// It is a **new module** rather than four hundred more lines of `src/layer_forward.align` for
+// section 5.5's reason: at this pin the checker's per-function cost is superlinear in body length
+// and `src/layer_forward.align` is already 3,334 lines. Every function here is under two hundred
+// lines, every fallible call inside a loop propagates with `?`, and no loop body matches on a
+// `Result` (`r5a-dense-layer-forward.md` section 6, correction C8).
+//
+// It holds no `unsafe` and no `extern`. Every foreign call crosses `src/ggml_ffi.align`, and the
+// R5A arm is imported rather than copied: `layer_forward.scan_transcript`, `parse_tokens`,
+// `valid_path`, `MemberColumns`, and `Layout` are that module's public surface and this one reuses
+// them unchanged.
+
+MAX_PATH_BYTES := 4096
+MAX_DETAIL_BYTES := 256
+MAX_DIMENSION := 16777216
+MAX_INDEX_DIGITS := 18
+
+SCHEMA_VERSION := 1
+DOCUMENT_KIND := "R5_MODEL_FORWARD"
+
+// R4.5 section 3.9's compensation window, unchanged: Align has no aligned allocator
+// (`docs/align-requests.md` Request 33) and every admissible `tensor_alignment` divides 64.
+MAX_TENSOR_ALIGNMENT := 64
+
+// Section 3.5. `2^33`, refused before a single byte is reserved, so a malformed member record
+// cannot ask the process for a terabyte.
+MAX_WINDOW_BYTES := 8589934592
+
+// Section 3.7's logits thresholds, fixed by section 2.6's and 2.7's measurements **before** the
+// qualification existed. At the reconciliation width the contract is byte-identity and this bound
+// is not consulted; at the runtime width the bound is 1.8x the measured worst case of 2,738
+// ten-thousandths over a logit range of 28.927, and the `argmax` and the whole top ten must agree
+// as well.
+LOGIT_TOLERANCE_TEN_THOUSANDTHS := 5000
+TOP_K := 10
+
+// Section 6, correction C23. The comparison below is integer ten-thousandths, and a `f32` element
+// exists that has no such integer: every infinity and NaN, and every finite magnitude above
+// `i64`'s range divided by 10,000. `((v as f64) * 10000.0).round() as i64` **saturates** on those,
+// after which `primary - reference` wraps and `0 - difference` wraps `i64`'s minimum to itself, so
+// `logits_max_abs` published a magnitude the run never computed and a NaN — whose `as i64` is `0`
+// rather than a saturation — could compare *within* the tolerance. Two constants close that:
+// `LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS` is the largest magnitude the comparison represents, and
+// anything at or beyond it — including every non-finite element — is routed to a magnitude that no
+// tolerance can admit, so an unrepresentable element is a `FAIL` rather than a wrap. The limit is
+// 10^15, which is 10^11 logits: eleven orders of magnitude above the 28.927 range section 2.3
+// measured, and low enough that the difference of two of them cannot overflow.
+LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS := 1000000000000000
+LOGIT_UNREPRESENTABLE := 9223372036854775807
+
+VERDICT_UNAVAILABLE := 0
+VERDICT_EXTERNAL := 1
+VERDICT_COPIED := 2
+
+REFERENCE_ABSENT := 0
+REFERENCE_IDENTICAL := 1
+REFERENCE_MISMATCH := 2
+
+ORACLE_ABSENT := 0
+ORACLE_PASS := 1
+ORACLE_FAIL := 2
+
+LOGITS_ABSENT := 0
+LOGITS_IDENTICAL := 1
+LOGITS_WITHIN := 2
+LOGITS_FAIL := 3
+
+// The three graph kinds the schedule walks.
+GRAPH_EMBED := 0
+GRAPH_LAYER := 1
+GRAPH_HEAD := 2
+
+// R5A section 3.6's transcript thresholds, inherited **unchanged and unwidened**: section 2.8
+// measured `0` and `0` at whole-model scale over thirty thousand elements.
+TOLERANCE_TEN_THOUSANDTHS := 1
+SUM_TOLERANCE_MILLIONTHS := 1000
+SUM_TOLERANCE_RELATIVE_PPM := 10
+
+TRUNCATION_PRINTED := 6
+TRUNCATION_HALF := 3
+
+DIGEST_HEX_BYTES := 64
+SUMMARY_HEX := "0123456789abcdef"
+
+TextBox { v: str }
+
+// ---------------------------------------------------------------------------------------------
+// Text, numbers, and the lexical guards
+// ---------------------------------------------------------------------------------------------
+
+fn int_text(value: i64) -> string {
+  b := builder()
+  b.write_int(value)
+  return b.to_string()
+}
+
+fn bool_text(value: bool) -> string {
+  if value { return "true".clone() }
+  return "false".clone()
+}
+
+fn json_string(value: str) -> string {
+  boxed := TextBox { v: value }
+  encoded := json.encode(boxed)
+  return encoded[5..encoded.len() - 1].clone()
+}
+
+fn bounded_detail(value: str) -> string {
+  if value.len() <= MAX_DETAIL_BYTES { return value.clone() }
+  return value[0..MAX_DETAIL_BYTES].clone()
+}
+
+fn labelled(label: str, value: i64) -> string {
+  b := builder()
+  b.write(label)
+  b.write("[")
+  b.write_int(value)
+  b.write("]")
+  return b.to_string()
+}
+
+fn named(label: str, value: str) -> string {
+  b := builder()
+  b.write(label)
+  b.write("[")
+  b.write(value)
+  b.write("]")
+  return b.to_string()
+}
+
+// `layer[<n>]role[<name>]` and `layer[<n>]node[<id>]`, the two detail shapes section 3.9 names for
+// almost every code the schedule can raise.
+fn layer_named(layer: i64, label: str, value: str) -> string {
+  b := builder()
+  b.write("layer[")
+  b.write_int(layer)
+  b.write("]")
+  b.write(label)
+  b.write("[")
+  b.write(value)
+  b.write("]")
+  return b.to_string()
+}
+
+fn graph_node_at(graph: i64, node: str, index: i64) -> string {
+  b := builder()
+  b.write("graph[")
+  b.write_int(graph)
+  b.write("]node[")
+  b.write(node)
+  b.write("]@")
+  b.write_int(index)
+  return b.to_string()
+}
+
+fn block_detail(kind: i64, layer: i64, role: str) -> string {
+  b := builder()
+  b.write("kind[")
+  b.write_int(kind)
+  b.write("]layer[")
+  b.write_int(layer)
+  b.write("]role[")
+  b.write(role)
+  b.write("]")
+  return b.to_string()
+}
+
+fn shortfall(layer: i64, node: str, got: i64, expected: i64) -> string {
+  b := builder()
+  b.write("layer[")
+  b.write_int(layer)
+  b.write("]node[")
+  b.write(node)
+  b.write("]")
+  b.write_int(got)
+  b.write("/")
+  b.write_int(expected)
+  return b.to_string()
+}
+
+fn sanitize_summary_line(value: str) -> string {
+  b := builder()
+  view := value.bytes()
+  mut start := 0
+  mut index := 0
+  loop {
+    if index >= view.len() { break }
+    byte := view.u8(index) as i64
+    if byte < 32 || byte == 127 {
+      if index > start { b.write(value[start..index]) }
+      high := byte / 16
+      low := byte % 16
+      b.write("\\x")
+      b.write(SUMMARY_HEX[high..high + 1])
+      b.write(SUMMARY_HEX[low..low + 1])
+      start = index + 1
+    }
+    index = index + 1
+  }
+  if start < view.len() { b.write(value[start..view.len()]) }
+  return b.to_string()
+}
+
+// A non-negative decimal integer, no sign, no leading `+`, no whitespace, no leading zero beyond a
+// bare `0`. `-1` means "not a number this grammar produces".
+fn parse_index(value: str) -> i64 {
+  if value.len() == 0 || value.len() > MAX_INDEX_DIGITS { return -1 }
+  view := value.bytes()
+  if view.len() > 1 && view.u8(0) as i64 == 48 { return -1 }
+  mut total := 0
+  mut index := 0
+  loop {
+    if index >= view.len() { break }
+    byte := view.u8(index) as i64
+    if byte < 48 || byte > 57 { return -1 }
+    total = total * 10 + (byte - 48)
+    index = index + 1
+  }
+  return total
+}
+
+fn error_name(e: Error) -> str = match e {
+  NotFound => "NotFound",
+  Invalid => "Invalid",
+  Denied => "Denied",
+  Timeout => "Timeout",
+  Code(_) => "Code",
+}
+
+fn verdict_label(value: i64) -> str {
+  if value == VERDICT_EXTERNAL { return "EXTERNAL" }
+  if value == VERDICT_COPIED { return "COPIED" }
+  return "UNAVAILABLE"
+}
+
+fn reference_label(value: i64) -> str {
+  if value == REFERENCE_IDENTICAL { return "IDENTICAL" }
+  if value == REFERENCE_MISMATCH { return "MISMATCH" }
+  return "-"
+}
+
+fn oracle_label(value: i64) -> str {
+  if value == ORACLE_PASS { return "PASS" }
+  if value == ORACLE_FAIL { return "FAIL" }
+  return "-"
+}
+
+fn logits_label(value: i64) -> str {
+  if value == LOGITS_IDENTICAL { return "IDENTICAL" }
+  if value == LOGITS_WITHIN { return "WITHIN" }
+  if value == LOGITS_FAIL { return "FAIL" }
+  return "-"
+}
+
+fn align_up(value: i64, alignment: i64) -> i64 {
+  if alignment <= 1 { return value }
+  remainder := value % alignment
+  if remainder == 0 { return value }
+  return value + (alignment - remainder)
+}
+
+// The transcript prints at most six positions per axis. Both halves of that rule live here so a
+// sampled ordinal is never confused with a tensor index (R5A section 3.6, unchanged).
+fn printed_count(extent: i64) -> i64 {
+  if extent <= TRUNCATION_PRINTED { return extent }
+  return TRUNCATION_PRINTED
+}
+
+fn column_at(borrow column: array<i64>, index: i64) -> i64 {
+  if index < 0 || index >= column.len() { return 0 }
+  return column[index]
+}
+
+fn fill_zero(borrow mut b: buffer, n: i64) {
+  mut index := 0
+  loop {
+    if index >= n { break }
+    b.put_u8(0 as u8)
+    index = index + 1
+  }
+}
+
+fn base_mod(borrow b: buffer, modulus: i64) -> i64 {
+  view := b.bytes()
+  return ggml_ffi.align_mod(view, modulus)
+}
+
+// ---------------------------------------------------------------------------------------------
+// The columns (section 3.8)
+//
+// Each record is assigned exactly once, as a whole, by the stage that produces it: at this pin an
+// owned `array<i64>` field cannot be replaced in place (`r5a-dense-layer-forward.md` section 6,
+// correction C9), so a single wide record every stage appends to does not compile.
+// ---------------------------------------------------------------------------------------------
+
+fn empty_array() -> array<i64> {
+  mut b: array_builder<i64> := array_builder()
+  return b.build()
+}
+
+pub TokenColumns { count: i64, ids: array<i64> }
+
+pub fn empty_tokens() -> TokenColumns = TokenColumns { count: 0, ids: empty_array() }
+
+// One row per layer: the two blocks, their byte counts, the two members whose quantization varies
+// across layers (section 2.1 fact 3), and everything the run measured about that layer's graph.
+// `schedule[]` is the capability's real output and section 3.8 says why it is one row per layer
+// rather than one row per node.
+pub ScheduleColumns {
+  count: i64,
+  digests: string,
+  attention_block: array<i64>,
+  mlp_block: array<i64>,
+  attention_bytes: array<i64>,
+  mlp_bytes: array<i64>,
+  attn_v_type: array<i64>,
+  ffn_down_type: array<i64>,
+  pread_ns: array<i64>,
+  compute_ns: array<i64>,
+  node_count: array<i64>,
+  bit_sum: array<i64>,
+  sum_millionths: array<i64>,
+  ne0: array<i64>,
+  ne1: array<i64>,
+  nonfinite: array<i64>,
+}
+
+pub fn empty_schedule() -> ScheduleColumns = ScheduleColumns {
+  count: 0,
+  digests: "".clone(),
+  attention_block: empty_array(),
+  mlp_block: empty_array(),
+  attention_bytes: empty_array(),
+  mlp_bytes: empty_array(),
+  attn_v_type: empty_array(),
+  ffn_down_type: empty_array(),
+  pread_ns: empty_array(),
+  compute_ns: empty_array(),
+  node_count: empty_array(),
+  bit_sum: empty_array(),
+  sum_millionths: empty_array(),
+  ne0: empty_array(),
+  ne1: empty_array(),
+  nonfinite: empty_array(),
+}
+
+// The `gallocr` peak of every graph the run computed, in schedule order, so section 3.10's "one
+// graph's activations rather than thirty" is a published measurement.
+pub GraphColumns { activation_bytes: array<i64> }
+
+pub fn empty_graphs() -> GraphColumns = GraphColumns { activation_bytes: empty_array() }
+
+// The top ten logits, as `(index, bit pattern)` pairs. No float is rendered anywhere, for
+// `r4-alignpack-layer-major.md` section 2.3's reason.
+pub TopColumns { index: array<i64>, bits: array<i64> }
+
+pub fn empty_top() -> TopColumns = TopColumns { index: empty_array(), bits: empty_array() }
+
+// Everything the run learned that is a scalar or a name, whether or not it finished.
+pub Outcome {
+  code: string,
+  detail: string,
+  verdict: i64,
+  reference_present: bool,
+  transcript_present: bool,
+  logits_present: bool,
+
+  reader_pread_count: i64,
+  reader_bytes_read: i64,
+  format_version: i64,
+  block_align: i64,
+  member_align: i64,
+  block_count: i64,
+  member_count: i64,
+  total_bytes: i64,
+  payload_offset: i64,
+
+  arch: string,
+  n_layer: i64,
+  n_embd: i64,
+  n_head: i64,
+  n_head_kv: i64,
+  head_dim: i64,
+  n_ff: i64,
+  n_vocab: i64,
+  context_length: i64,
+  rms_eps_bits: i64,
+  rope_type: i64,
+  rope_dim_count: i64,
+  rope_freq_base_bits: i64,
+  attn_scale_bits: i64,
+  output_tied: bool,
+  output_ggml_type: i64,
+
+  token_count: i64,
+  embedding_block_index: i64,
+  output_block_index: i64,
+  narrow_layer: i64,
+  narrow_index: i64,
+  attention_width: i64,
+  reconciliation_width: i64,
+
+  window_bytes: i64,
+  peak_block_index: i64,
+  peak_block_kind: i64,
+  peak_block_layer: i64,
+  peak_block_bytes: i64,
+  window_reuse_count: i64,
+  pointer_identity_failures: i64,
+  member_placements: i64,
+
+  graph_count: i64,
+  node_count_total: i64,
+  reconciliation_node_count: i64,
+  slot_capacity: i64,
+  slot_high_water: i64,
+  activation_bytes_peak: i64,
+  graph_context_bytes: i64,
+  backend_name: string,
+
+  head_output_norm_bytes: i64,
+  head_output_bytes: i64,
+  head_pread_ns: i64,
+  head_compute_ns: i64,
+  head_node_count: i64,
+  result_norm_sha256: string,
+  result_norm_bit_sum: i64,
+
+  residual_bytes: i64,
+  logits_bytes: i64,
+
+  sha256: string,
+  bit_sum: i64,
+  element_count: i64,
+  nonfinite_count: i64,
+  argmax: i64,
+
+  reference_verdict: i64,
+  reference_pread_count: i64,
+  reference_bytes_read: i64,
+  reference_graphs: i64,
+  reference_compared: i64,
+  reference_identical: i64,
+  reference_first_graph: i64,
+  reference_first_node: string,
+  reference_first_index: i64,
+  reference_first_primary_bits: i64,
+  reference_first_reference_bits: i64,
+
+  oracle_verdict: i64,
+  oracle_layers_expected: i64,
+  oracle_layers_matched: i64,
+  oracle_expected: i64,
+  oracle_matched: i64,
+  oracle_elements: i64,
+  oracle_max_abs: i64,
+  oracle_max_sum: i64,
+  oracle_worst_layer: i64,
+  oracle_worst_node: string,
+  oracle_worst_element: i64,
+  oracle_lines: i64,
+  oracle_callback_lines: i64,
+
+  logits_verdict: i64,
+  logits_compared_reconciliation: bool,
+  logits_byte_identical: bool,
+  logits_max_abs: i64,
+  logits_argmax_reference: i64,
+  logits_top_k_agreement: i64,
+  logits_elements: i64,
+  logits_reference_sha256: string,
+  logits_reference_bit_sum: i64,
+
+  pread_ns: i64,
+  build_ns: i64,
+  reserve_ns: i64,
+  compute_ns: i64,
+  reconciliation_compute_ns: i64,
+  reference_compute_ns: i64,
+  oracle_ns: i64,
+  elapsed_ns: i64,
+
+  ggml_buffers_created: i64,
+  ggml_buffers_freed: i64,
+  contexts_created: i64,
+  contexts_freed: i64,
+  backends_created: i64,
+  backends_freed: i64,
+  graphs_created: i64,
+  gallocrs_created: i64,
+  gallocrs_freed: i64,
+  released_before_owner_scope_end: bool,
+  graph_balance_failures: i64,
+
+  tensor_alignment: i64,
+  table_drift: i64,
+  slot_magic_ok: bool,
+  fp_contract_off: bool,
+}
+
+pub fn empty_outcome() -> Outcome = Outcome {
+  code: "".clone(),
+  detail: "".clone(),
+  verdict: VERDICT_UNAVAILABLE,
+  reference_present: false,
+  transcript_present: false,
+  logits_present: false,
+  reader_pread_count: 0,
+  reader_bytes_read: 0,
+  format_version: 0,
+  block_align: 0,
+  member_align: 0,
+  block_count: 0,
+  member_count: 0,
+  total_bytes: 0,
+  payload_offset: 0,
+  arch: "".clone(),
+  n_layer: 0,
+  n_embd: 0,
+  n_head: 0,
+  n_head_kv: 0,
+  head_dim: 0,
+  n_ff: 0,
+  n_vocab: 0,
+  context_length: 0,
+  rms_eps_bits: 0,
+  rope_type: -1,
+  rope_dim_count: 0,
+  rope_freq_base_bits: 0,
+  attn_scale_bits: 0,
+  output_tied: false,
+  output_ggml_type: -1,
+  token_count: 0,
+  embedding_block_index: -1,
+  output_block_index: -1,
+  narrow_layer: -1,
+  narrow_index: -1,
+  attention_width: 0,
+  reconciliation_width: 0,
+  window_bytes: 0,
+  peak_block_index: -1,
+  peak_block_kind: -1,
+  peak_block_layer: -1,
+  peak_block_bytes: 0,
+  window_reuse_count: 0,
+  pointer_identity_failures: 0,
+  member_placements: 0,
+  graph_count: 0,
+  node_count_total: 0,
+  reconciliation_node_count: 0,
+  slot_capacity: 0,
+  slot_high_water: 0,
+  activation_bytes_peak: 0,
+  graph_context_bytes: 0,
+  backend_name: "".clone(),
+  head_output_norm_bytes: 0,
+  head_output_bytes: 0,
+  head_pread_ns: 0,
+  head_compute_ns: 0,
+  head_node_count: 0,
+  result_norm_sha256: "".clone(),
+  result_norm_bit_sum: 0,
+  residual_bytes: 0,
+  logits_bytes: 0,
+  sha256: "".clone(),
+  bit_sum: 0,
+  element_count: 0,
+  nonfinite_count: 0,
+  argmax: -1,
+  reference_verdict: REFERENCE_ABSENT,
+  reference_pread_count: 0,
+  reference_bytes_read: 0,
+  reference_graphs: 0,
+  reference_compared: 0,
+  reference_identical: 0,
+  reference_first_graph: -1,
+  reference_first_node: "".clone(),
+  reference_first_index: -1,
+  reference_first_primary_bits: 0,
+  reference_first_reference_bits: 0,
+  oracle_verdict: ORACLE_ABSENT,
+  oracle_layers_expected: 0,
+  oracle_layers_matched: 0,
+  oracle_expected: 0,
+  oracle_matched: 0,
+  oracle_elements: 0,
+  oracle_max_abs: 0,
+  oracle_max_sum: 0,
+  oracle_worst_layer: -1,
+  oracle_worst_node: "".clone(),
+  oracle_worst_element: -1,
+  oracle_lines: 0,
+  oracle_callback_lines: 0,
+  logits_verdict: LOGITS_ABSENT,
+  logits_compared_reconciliation: false,
+  logits_byte_identical: false,
+  logits_max_abs: 0,
+  logits_argmax_reference: -1,
+  logits_top_k_agreement: 0,
+  logits_elements: 0,
+  logits_reference_sha256: "".clone(),
+  logits_reference_bit_sum: 0,
+  pread_ns: 0,
+  build_ns: 0,
+  reserve_ns: 0,
+  compute_ns: 0,
+  reconciliation_compute_ns: 0,
+  reference_compute_ns: 0,
+  oracle_ns: 0,
+  elapsed_ns: 0,
+  ggml_buffers_created: 0,
+  ggml_buffers_freed: 0,
+  contexts_created: 0,
+  contexts_freed: 0,
+  backends_created: 0,
+  backends_freed: 0,
+  graphs_created: 0,
+  gallocrs_created: 0,
+  gallocrs_freed: 0,
+  released_before_owner_scope_end: false,
+  graph_balance_failures: 0,
+  tensor_alignment: 0,
+  table_drift: -1,
+  slot_magic_ok: false,
+  fp_contract_off: false,
+}
+
+fn fail(borrow mut o: Outcome, code: str, detail: str) {
+  if o.code.len() == 0 {
+    o.code = code.clone()
+    o.detail = bounded_detail(detail)
+  }
+}
+
+fn fault_into(borrow mut o: Outcome, borrow f: ggml_ffi.Fault) {
+  code_view: str := f.code
+  detail_view: str := f.detail
+  fail(o, code_view, detail_view)
+}
+
+fn pack_fault_into(borrow mut o: Outcome, borrow f: alignpack_read.Fault) {
+  code_view: str := f.code
+  detail_view: str := f.detail
+  fail(o, code_view, detail_view)
+}
+
+fn ffi_fault(code: str, detail: string) -> ggml_ffi.Fault =
+ggml_ffi.Fault { code: code.clone(), detail: detail }
+
+fn pack_fault(code: str, detail: string) -> alignpack_read.Fault =
+alignpack_read.Fault { code: code.clone(), detail: detail }
+
+// One `match` in one place: at this pin a `match` on a `Result` with block arms inside a loop is
+// markedly more expensive to check than a call (R5A section 6, correction C8).
+fn take(borrow mut o: Outcome, outcome: Result<(), ggml_ffi.Fault>) {
+  match outcome {
+    Ok(_) => {},
+    Err(f) => { fault_into(o, f) },
+  }
+}
+
+fn take_pack(borrow mut o: Outcome, outcome: Result<(), alignpack_read.Fault>) {
+  match outcome {
+    Ok(_) => {},
+    Err(f) => { pack_fault_into(o, f) },
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Container navigation (section 3.4)
+// ---------------------------------------------------------------------------------------------
+
+// Every member record of one block, read once. R5A's `find_member` re-reads the table for each
+// role, which is O(k^2) preads per block; at fifty-eight blocks and three hundred and thirty-nine
+// members that is the difference between twelve reads a block and fifty.
+MembersOfBlock {
+  count: i64,
+  role: array<i64>,
+  ggml_type: array<i64>,
+  nbytes: array<i64>,
+  pack_offset: array<i64>,
+  source_offset: array<i64>,
+  dim0: array<i64>,
+  dim1: array<i64>,
+  n_dims: array<i64>,
+}
+
+fn read_block_members(
+  borrow f: file,
+  borrow x: alignpack_read.PackIndex,
+  borrow b: alignpack_read.PackBlock,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<MembersOfBlock, alignpack_read.Fault> {
+  mut role: array_builder<i64> := array_builder()
+  mut kind: array_builder<i64> := array_builder()
+  mut nbytes: array_builder<i64> := array_builder()
+  mut pack_offset: array_builder<i64> := array_builder()
+  mut source_offset: array_builder<i64> := array_builder()
+  mut d0: array_builder<i64> := array_builder()
+  mut d1: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= b.member_count { break }
+    m := alignpack_read.member_at(f, x, b, at, c)?
+    role.push(m.role_id)
+    kind.push(m.ggml_type)
+    nbytes.push(m.nbytes)
+    pack_offset.push(m.pack_offset)
+    source_offset.push(m.source_offset)
+    d0.push(m.dim0)
+    d1.push(m.dim1)
+    dims.push(m.n_dims)
+    at = at + 1
+  }
+  return Ok(MembersOfBlock {
+      count: b.member_count,
+      role: role.build(),
+      ggml_type: kind.build(),
+      nbytes: nbytes.build(),
+      pack_offset: pack_offset.build(),
+      source_offset: source_offset.build(),
+      dim0: d0.build(),
+      dim1: d1.build(),
+      n_dims: dims.build(),
+    })
+}
+
+fn role_slot(borrow m: MembersOfBlock, role: i64) -> i64 {
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    if m.role[at] == role { return at }
+    at = at + 1
+  }
+  return -1
+}
+
+fn count_blocks(borrow x: alignpack_read.PackIndex, kind: i64, layer: i64) -> i64 {
+  mut total := 0
+  mut at := 0
+  loop {
+    if at >= x.block_count { break }
+    if x.block_kind[at] == kind && x.block_layer[at] == layer { total = total + 1 }
+    at = at + 1
+  }
+  return total
+}
+
+fn first_block(borrow x: alignpack_read.PackIndex, kind: i64, layer: i64) -> i64 {
+  mut at := 0
+  loop {
+    if at >= x.block_count { break }
+    if x.block_kind[at] == kind && x.block_layer[at] == layer { return at }
+    at = at + 1
+  }
+  return -1
+}
+
+// Section 2.1 fact 2: **two** blocks answer to `(kind 0, layer -1)` — the embedding and the head —
+// and only the required `role_id` distinguishes them. R5A's `find_block(index, KIND_WEIGHT, -1)`
+// returns the first, which is correct there by position and would have made R5B compute the head
+// against `token_embd`. Exactly one block must carry the role; none is `R5_BLOCK_MISSING` and more
+// than one is `R5_BLOCK_AMBIGUOUS`, each naming the kind, the layer, and the role.
+fn find_block_with_role(
+  borrow f: file,
+  borrow x: alignpack_read.PackIndex,
+  kind: i64,
+  layer: i64,
+  role: i64,
+  role_label: str,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<i64, alignpack_read.Fault> {
+  mut found := -1
+  mut hits := 0
+  mut at := 0
+  loop {
+    if at >= x.block_count { break }
+    if x.block_kind[at] == kind && x.block_layer[at] == layer {
+      block := alignpack_read.block_at(x, at)?
+      members := read_block_members(f, x, block, c)?
+      if role_slot(members, role) >= 0 {
+        hits = hits + 1
+        if found < 0 { found = at }
+      }
+    }
+    at = at + 1
+  }
+  if hits == 0 {
+    return Err(pack_fault("R5_BLOCK_MISSING", block_detail(kind, layer, role_label)))
+  }
+  if hits > 1 {
+    return Err(pack_fault("R5_BLOCK_AMBIGUOUS", block_detail(kind, layer, role_label)))
+  }
+  return Ok(found)
+}
+
+// Step 13. Every `L` in `[0, n_layer)` must have exactly one `AttentionBlock` and exactly one
+// `MlpBlock`. A model that silently skips a layer is the failure mode a whole-model arm most needs
+// to refuse, because its output is plausible.
+fn validate_coverage(
+  borrow x: alignpack_read.PackIndex, n_layer: i64) -> Result<(), alignpack_read.Fault> {
+  mut layer := 0
+  loop {
+    if layer >= n_layer { break }
+    if count_blocks(x, layer_qwen2.KIND_ATTENTION, layer) != 1
+      || count_blocks(x, layer_qwen2.KIND_MLP, layer) != 1 {
+      return Err(pack_fault("R5_LAYER_COVERAGE", labelled("layer", layer)))
+    }
+    layer = layer + 1
+  }
+  return Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// The plan (steps 12 to 16)
+// ---------------------------------------------------------------------------------------------
+
+// The whole read schedule as data: fifty-eight blocks, three hundred and thirty-nine members, and
+// the per-layer window layout the sweep of section 3.5 is taken over.
+pub Plan {
+  n_layer: i64,
+  attention_index: array<i64>,
+  mlp_index: array<i64>,
+  attention_offset: array<i64>,
+  attention_pack_bytes: array<i64>,
+  mlp_offset: array<i64>,
+  mlp_pack_bytes: array<i64>,
+  attention_member_bytes: array<i64>,
+  mlp_member_bytes: array<i64>,
+  layer_window_bytes: array<i64>,
+  m_type: array<i64>,
+  m_ne0: array<i64>,
+  m_ne1: array<i64>,
+  m_nbytes: array<i64>,
+  m_pack_offset: array<i64>,
+  m_source: array<i64>,
+  m_window: array<i64>,
+}
+
+pub fn empty_plan() -> Plan = Plan {
+  n_layer: 0,
+  attention_index: empty_array(),
+  mlp_index: empty_array(),
+  attention_offset: empty_array(),
+  attention_pack_bytes: empty_array(),
+  mlp_offset: empty_array(),
+  mlp_pack_bytes: empty_array(),
+  attention_member_bytes: empty_array(),
+  mlp_member_bytes: empty_array(),
+  layer_window_bytes: empty_array(),
+  m_type: empty_array(),
+  m_ne0: empty_array(),
+  m_ne1: empty_array(),
+  m_nbytes: empty_array(),
+  m_pack_offset: empty_array(),
+  m_source: empty_array(),
+  m_window: empty_array(),
+}
+
+// One layer's twelve members, validated against the geometry exactly and laid out in the window at
+// `block_align`-aligned offsets. Step 15's `R5_SHAPE` names the layer and the role, never a tensor
+// ggml is asked to build from a number the container invented.
+fn plan_layer_members(
+  borrow attention: MembersOfBlock,
+  borrow mlp: MembersOfBlock,
+  borrow table: layer_qwen2.MemberTable,
+  layer: i64,
+  block_align: i64,
+  borrow mut m_type: array_builder<i64>,
+  borrow mut m_ne0: array_builder<i64>,
+  borrow mut m_ne1: array_builder<i64>,
+  borrow mut m_nbytes: array_builder<i64>,
+  borrow mut m_pack_offset: array_builder<i64>,
+  borrow mut m_source: array_builder<i64>,
+  borrow mut m_window: array_builder<i64>,
+) -> Result<i64, alignpack_read.Fault> {
+  mut total := 0
+  mut row := 0
+  loop {
+    if row >= table.count { break }
+    label := layer_qwen2.member_label(table, row)
+    attention_side := table.block[row] == layer_qwen2.KIND_ATTENTION
+    slot := if attention_side {
+      role_slot(attention, table.role[row])
+    } else {
+      role_slot(mlp, table.role[row])
+    }
+    if slot < 0 {
+      return Err(pack_fault("R5_MEMBER_MISSING", layer_named(layer, "role", label)))
+    }
+    kind := if attention_side { attention.ggml_type[slot] } else { mlp.ggml_type[slot] }
+    ne0 := if attention_side { attention.dim0[slot] } else { mlp.dim0[slot] }
+    ne1 := if attention_side { attention.dim1[slot] } else { mlp.dim1[slot] }
+    nbytes := if attention_side { attention.nbytes[slot] } else { mlp.nbytes[slot] }
+    at := if attention_side { attention.pack_offset[slot] } else { mlp.pack_offset[slot] }
+    source := if attention_side { attention.source_offset[slot] } else { mlp.source_offset[slot] }
+    if ne0 != table.ne0[row] || ne1 != table.ne1[row] || nbytes < 1
+      || ne0 > MAX_DIMENSION || ne1 > MAX_DIMENSION {
+      return Err(pack_fault("R5_SHAPE", layer_named(layer, "role", label)))
+    }
+    m_type.push(kind)
+    m_ne0.push(ne0)
+    m_ne1.push(ne1)
+    m_nbytes.push(nbytes)
+    m_pack_offset.push(at)
+    m_source.push(source)
+    m_window.push(total)
+    total = total + align_up(nbytes, block_align)
+    row = row + 1
+  }
+  return Ok(total)
+}
+
+fn build_plan(
+  borrow f: file,
+  borrow x: alignpack_read.PackIndex,
+  borrow table: layer_qwen2.MemberTable,
+  n_layer: i64,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<Plan, alignpack_read.Fault> {
+  mut attention_index: array_builder<i64> := array_builder()
+  mut mlp_index: array_builder<i64> := array_builder()
+  mut attention_offset: array_builder<i64> := array_builder()
+  mut attention_pack_bytes: array_builder<i64> := array_builder()
+  mut mlp_offset: array_builder<i64> := array_builder()
+  mut mlp_pack_bytes: array_builder<i64> := array_builder()
+  mut attention_member_bytes: array_builder<i64> := array_builder()
+  mut mlp_member_bytes: array_builder<i64> := array_builder()
+  mut layer_window_bytes: array_builder<i64> := array_builder()
+  mut m_type: array_builder<i64> := array_builder()
+  mut m_ne0: array_builder<i64> := array_builder()
+  mut m_ne1: array_builder<i64> := array_builder()
+  mut m_nbytes: array_builder<i64> := array_builder()
+  mut m_pack_offset: array_builder<i64> := array_builder()
+  mut m_source: array_builder<i64> := array_builder()
+  mut m_window: array_builder<i64> := array_builder()
+  mut layer := 0
+  loop {
+    if layer >= n_layer { break }
+    a_index := first_block(x, layer_qwen2.KIND_ATTENTION, layer)
+    m_index := first_block(x, layer_qwen2.KIND_MLP, layer)
+    attention_block := alignpack_read.block_at(x, a_index)?
+    mlp_block := alignpack_read.block_at(x, m_index)?
+    attention := read_block_members(f, x, attention_block, c)?
+    mlp := read_block_members(f, x, mlp_block, c)?
+    total := plan_layer_members(
+      attention, mlp, table, layer, x.block_align,
+      m_type, m_ne0, m_ne1, m_nbytes, m_pack_offset, m_source, m_window)?
+    attention_index.push(a_index)
+    mlp_index.push(m_index)
+    attention_offset.push(attention_block.pack_offset)
+    attention_pack_bytes.push(attention_block.pack_bytes)
+    mlp_offset.push(mlp_block.pack_offset)
+    mlp_pack_bytes.push(mlp_block.pack_bytes)
+    attention_member_bytes.push(attention_block.payload_bytes)
+    mlp_member_bytes.push(mlp_block.payload_bytes)
+    layer_window_bytes.push(total)
+    layer = layer + 1
+  }
+  return Ok(Plan {
+      n_layer: n_layer,
+      attention_index: attention_index.build(),
+      mlp_index: mlp_index.build(),
+      attention_offset: attention_offset.build(),
+      attention_pack_bytes: attention_pack_bytes.build(),
+      mlp_offset: mlp_offset.build(),
+      mlp_pack_bytes: mlp_pack_bytes.build(),
+      attention_member_bytes: attention_member_bytes.build(),
+      mlp_member_bytes: mlp_member_bytes.build(),
+      layer_window_bytes: layer_window_bytes.build(),
+      m_type: m_type.build(),
+      m_ne0: m_ne0.build(),
+      m_ne1: m_ne1.build(),
+      m_nbytes: m_nbytes.build(),
+      m_pack_offset: m_pack_offset.build(),
+      m_source: m_source.build(),
+      m_window: m_window.build(),
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
+// One graph's members, and the two ends of the schedule
+// ---------------------------------------------------------------------------------------------
+
+// The members of exactly one graph, in slot order, with the window offsets this run chose. It is
+// built fresh for each of the thirty graphs, which is what the `array<i64>` replacement rule
+// forces and what keeps the layer table the same table twenty-eight times.
+pub GraphMembers {
+  count: i64,
+  names: string,
+  name_start: array<i64>,
+  name_end: array<i64>,
+  ggml_type: array<i64>,
+  ne0: array<i64>,
+  rows: array<i64>,
+  nbytes: array<i64>,
+  window: array<i64>,
+  n_dims: array<i64>,
+  source: array<i64>,
+  pack: array<i64>,
+  pieces: array<i64>,
+  stride: array<i64>,
+}
+
+pub fn empty_graph_members() -> GraphMembers = GraphMembers {
+  count: 0,
+  names: "".clone(),
+  name_start: empty_array(),
+  name_end: empty_array(),
+  ggml_type: empty_array(),
+  ne0: empty_array(),
+  rows: empty_array(),
+  nbytes: empty_array(),
+  window: empty_array(),
+  n_dims: empty_array(),
+  source: empty_array(),
+  pack: empty_array(),
+  pieces: empty_array(),
+  stride: empty_array(),
+}
+
+pub fn graph_member_label(borrow m: GraphMembers, index: i64) -> str {
+  view: str := m.names
+  if index < 0 || index >= m.count { return "" }
+  return view[m.name_start[index]..m.name_end[index]]
+}
+
+// The embedding and the head: the two `WeightBlock` members section 2.1 fact 2 made role-qualified,
+// plus the row stride the gather depends on and the tied-embedding answer section 3.4 derives
+// rather than assumes.
+pub Ends {
+  embed_block_index: i64,
+  output_block_index: i64,
+  row_bytes: i64,
+  embed_type: i64,
+  embed_nbytes: i64,
+  embed_pack_offset: i64,
+  embed_source: i64,
+  embed_window_bytes: i64,
+  norm_type: i64,
+  norm_nbytes: i64,
+  norm_pack_offset: i64,
+  norm_source: i64,
+  out_type: i64,
+  out_nbytes: i64,
+  out_pack_offset: i64,
+  out_source: i64,
+  out_window: i64,
+  head_window_bytes: i64,
+  tied: bool,
+}
+
+pub fn empty_ends() -> Ends = Ends {
+  embed_block_index: -1,
+  output_block_index: -1,
+  row_bytes: 0,
+  embed_type: -1,
+  embed_nbytes: 0,
+  embed_pack_offset: 0,
+  embed_source: 0,
+  embed_window_bytes: 0,
+  norm_type: -1,
+  norm_nbytes: 0,
+  norm_pack_offset: 0,
+  norm_source: 0,
+  out_type: -1,
+  out_nbytes: 0,
+  out_pack_offset: 0,
+  out_source: 0,
+  out_window: 0,
+  head_window_bytes: 0,
+  tied: false,
+}
+
+fn build_embed_members(borrow g: layer_qwen2.Geometry, borrow e: Ends, tokens: i64) -> GraphMembers {
+  names := builder()
+  names.write("token_embd")
+  mut name_start: array_builder<i64> := array_builder()
+  mut name_end: array_builder<i64> := array_builder()
+  mut kind: array_builder<i64> := array_builder()
+  mut ne0: array_builder<i64> := array_builder()
+  mut rows: array_builder<i64> := array_builder()
+  mut nbytes: array_builder<i64> := array_builder()
+  mut window: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  mut source: array_builder<i64> := array_builder()
+  mut pack: array_builder<i64> := array_builder()
+  mut pieces: array_builder<i64> := array_builder()
+  mut stride: array_builder<i64> := array_builder()
+  name_start.push(0)
+  name_end.push(10)
+  kind.push(e.embed_type)
+  ne0.push(g.n_embd)
+  rows.push(tokens)
+  nbytes.push(e.row_bytes * tokens)
+  window.push(0)
+  dims.push(2)
+  source.push(e.embed_source)
+  pack.push(e.embed_pack_offset)
+  pieces.push(tokens)
+  stride.push(e.row_bytes)
+  return GraphMembers {
+    count: 1,
+    names: names.to_string(),
+    name_start: name_start.build(),
+    name_end: name_end.build(),
+    ggml_type: kind.build(),
+    ne0: ne0.build(),
+    rows: rows.build(),
+    nbytes: nbytes.build(),
+    window: window.build(),
+    n_dims: dims.build(),
+    source: source.build(),
+    pack: pack.build(),
+    pieces: pieces.build(),
+    stride: stride.build(),
+  }
+}
+
+fn build_head_members(borrow g: layer_qwen2.Geometry, borrow e: Ends) -> GraphMembers {
+  names := builder()
+  names.write("output_norm")
+  names.write("output")
+  mut name_start: array_builder<i64> := array_builder()
+  mut name_end: array_builder<i64> := array_builder()
+  mut kind: array_builder<i64> := array_builder()
+  mut ne0: array_builder<i64> := array_builder()
+  mut rows: array_builder<i64> := array_builder()
+  mut nbytes: array_builder<i64> := array_builder()
+  mut window: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  mut source: array_builder<i64> := array_builder()
+  mut pack: array_builder<i64> := array_builder()
+  mut pieces: array_builder<i64> := array_builder()
+  mut stride: array_builder<i64> := array_builder()
+  name_start.push(0)
+  name_end.push(11)
+  kind.push(e.norm_type)
+  ne0.push(g.n_embd)
+  rows.push(1)
+  nbytes.push(e.norm_nbytes)
+  window.push(0)
+  dims.push(1)
+  source.push(e.norm_source)
+  pack.push(e.norm_pack_offset)
+  pieces.push(1)
+  stride.push(e.norm_nbytes)
+  name_start.push(11)
+  name_end.push(17)
+  kind.push(e.out_type)
+  ne0.push(g.n_embd)
+  rows.push(g.n_vocab)
+  nbytes.push(e.out_nbytes)
+  window.push(e.out_window)
+  dims.push(2)
+  source.push(e.out_source)
+  pack.push(e.out_pack_offset)
+  pieces.push(1)
+  stride.push(e.out_nbytes)
+  return GraphMembers {
+    count: 2,
+    names: names.to_string(),
+    name_start: name_start.build(),
+    name_end: name_end.build(),
+    ggml_type: kind.build(),
+    ne0: ne0.build(),
+    rows: rows.build(),
+    nbytes: nbytes.build(),
+    window: window.build(),
+    n_dims: dims.build(),
+    source: source.build(),
+    pack: pack.build(),
+    pieces: pieces.build(),
+    stride: stride.build(),
+  }
+}
+
+fn build_layer_members(
+  borrow table: layer_qwen2.MemberTable, borrow p: Plan, layer: i64) -> GraphMembers {
+  names := builder()
+  mut name_start: array_builder<i64> := array_builder()
+  mut name_end: array_builder<i64> := array_builder()
+  mut kind: array_builder<i64> := array_builder()
+  mut ne0: array_builder<i64> := array_builder()
+  mut rows: array_builder<i64> := array_builder()
+  mut nbytes: array_builder<i64> := array_builder()
+  mut window: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  mut source: array_builder<i64> := array_builder()
+  mut pack: array_builder<i64> := array_builder()
+  mut pieces: array_builder<i64> := array_builder()
+  mut stride: array_builder<i64> := array_builder()
+  base := layer * table.count
+  mut cursor := 0
+  mut row := 0
+  loop {
+    if row >= table.count { break }
+    label := layer_qwen2.member_label(table, row)
+    names.write(label)
+    name_start.push(cursor)
+    cursor = cursor + label.len()
+    name_end.push(cursor)
+    kind.push(p.m_type[base + row])
+    ne0.push(p.m_ne0[base + row])
+    rows.push(p.m_ne1[base + row])
+    nbytes.push(p.m_nbytes[base + row])
+    window.push(p.m_window[base + row])
+    dims.push(table.n_dims[row])
+    source.push(p.m_source[base + row])
+    pack.push(p.m_pack_offset[base + row])
+    pieces.push(1)
+    stride.push(p.m_nbytes[base + row])
+    row = row + 1
+  }
+  return GraphMembers {
+    count: table.count,
+    names: names.to_string(),
+    name_start: name_start.build(),
+    name_end: name_end.build(),
+    ggml_type: kind.build(),
+    ne0: ne0.build(),
+    rows: rows.build(),
+    nbytes: nbytes.build(),
+    window: window.build(),
+    n_dims: dims.build(),
+    source: source.build(),
+    pack: pack.build(),
+    pieces: pieces.build(),
+    stride: stride.build(),
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// One graph (steps 24, 25, 27, and 28)
+// ---------------------------------------------------------------------------------------------
+
+// Everything about one of the thirty graphs that is a scalar. The three tables differ only in these
+// fields, which is what makes one runner answer for the embedding gather, twenty-eight layers, and
+// the head.
+pub GraphSpec {
+  kind: i64,
+  index: i64,
+  layer: i64,
+  tokens_in: i64,
+  tokens_out: i64,
+  width: i64,
+  last: bool,
+  wide: bool,
+  oracle_base: i64,
+  oracle_count: i64,
+  output_slot: i64,
+  reference: bool,
+  compare: bool,
+  n_embd: i64,
+}
+
+// The walk. One loop, one shim call per issued row, and no control flow that depends on which node
+// this is: `when` selects the rows and `alt_when` selects the operands, both as data.
+fn build_nodes(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  borrow nodes: layer_qwen2.NodeTable,
+  last: bool,
+  wide: bool,
+) -> Result<(), ggml_ffi.Fault> {
+  mut row := 0
+  loop {
+    if row >= nodes.count { break }
+    if layer_qwen2.mf_row_issued(nodes.when[row], last, wide) {
+      op := nodes.op[row]
+      out := nodes.out[row]
+      swap := nodes.alt_when[row] != layer_qwen2.WHEN_ALWAYS
+        && layer_qwen2.mf_row_issued(nodes.alt_when[row], last, wide)
+      a := if swap && nodes.alt_a[row] >= 0 { nodes.alt_a[row] } else { nodes.a[row] }
+      b := if swap && nodes.alt_b[row] >= 0 { nodes.alt_b[row] } else { nodes.b[row] }
+      tag := labelled("node", row)
+      label: str := tag
+      if op == layer_qwen2.OP_GET_ROWS {
+        ggml_ffi.op_get_rows(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_qwen2.OP_RMS_NORM {
+        ggml_ffi.op_rms_norm(ctx, slots, out, a, nodes.p0[row], label)?
+      }
+      if op == layer_qwen2.OP_MUL {
+        ggml_ffi.op_mul(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_qwen2.OP_ADD {
+        ggml_ffi.op_add(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_qwen2.OP_MUL_MAT {
+        ggml_ffi.op_mul_mat(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_qwen2.OP_RESHAPE_3D {
+        ggml_ffi.op_reshape_3d(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], label)?
+      }
+      if op == layer_qwen2.OP_PERMUTE {
+        ggml_ffi.op_permute(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row], label)?
+      }
+      if op == layer_qwen2.OP_CONT_3D {
+        ggml_ffi.op_cont_3d(ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], label)?
+      }
+      if op == layer_qwen2.OP_ROPE {
+        ggml_ffi.op_rope_neox(
+          ctx, slots, out, a, b, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row], label)?
+      }
+      if op == layer_qwen2.OP_SOFT_MAX {
+        ggml_ffi.op_soft_max_ext(ctx, slots, out, a, b, nodes.p0[row], nodes.p1[row], label)?
+      }
+      if op == layer_qwen2.OP_SWIGLU {
+        ggml_ffi.op_swiglu_split(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_qwen2.OP_PAD {
+        ggml_ffi.op_pad(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row], label)?
+      }
+      row = row + 1
+    } else {
+      row = row + 1
+    }
+  }
+  return Ok(())
+}
+
+// `ggml_set_output` on every **compared** oracle node of this graph. Without it `ggml_gallocr`
+// reuses an intermediate's memory and the bytes read back are not the node computed. `kq-L` and
+// `kq_soft_max-L` are deliberately not marked: they are never read back, and marking them would
+// cost 900 kB of activation for a comparison section 3.7 excludes by contract.
+fn mark_outputs(
+  borrow slots: slice<u8>,
+  borrow oracle: layer_qwen2.OracleTable,
+  borrow nodes: layer_qwen2.NodeTable,
+  base: i64,
+  count: i64,
+) -> Result<(), ggml_ffi.Fault> {
+  mut at := 0
+  loop {
+    if at >= count { break }
+    row := base + at
+    if oracle.compared[row] == 1 {
+      id := layer_qwen2.oracle_id(oracle, row)
+      ggml_ffi.slot_mark_output(slots, nodes.out[oracle.node[row]], id)?
+    }
+    at = at + 1
+  }
+  return Ok(())
+}
+
+// The weight tensors, created in the weight context and **placed** at their own interior offsets in
+// the one reused Align-owned window. R4.5's contract, three hundred and thirty-nine times.
+fn graph_weights(
+  ctx: raw,
+  handle: raw,
+  borrow slots: slice<u8>,
+  borrow window: slice<u8>,
+  borrow m: GraphMembers,
+) -> Result<(), ggml_ffi.Fault> {
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    label := graph_member_label(m, at)
+    span := m.nbytes[at]
+    if m.n_dims[at] == 1 {
+      ggml_ffi.slot_new_tensor_1d(ctx, slots, at, m.ggml_type[at], m.ne0[at], label)?
+    } else {
+      ggml_ffi.slot_new_tensor_2d(ctx, slots, at, m.ggml_type[at], m.ne0[at], m.rows[at], label)?
+    }
+    if ggml_ffi.slot_nbytes(slots, at) != span {
+      return Err(ffi_fault("R5_SHAPE", named("role", label)))
+    }
+    offset := m.window[at]
+    region := window[offset..offset + span]
+    ggml_ffi.slot_place(handle, slots, at, region, label)?
+    at = at + 1
+  }
+  return Ok(())
+}
+
+// `verdict` is `EXTERNAL` only when **every** weight tensor of **every** graph landed at its own
+// window offset. `window.pointer_identity_failures` is what makes that a measurement across three
+// hundred and thirty-nine placements rather than a claim.
+fn graph_identity(
+  borrow slots: slice<u8>,
+  borrow window: slice<u8>,
+  borrow m: GraphMembers,
+  borrow mut o: Outcome,
+) {
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    landed := ggml_ffi.slot_data_offset(slots, at, window)
+    o.member_placements = o.member_placements + 1
+    if landed != m.window[at] {
+      o.pointer_identity_failures = o.pointer_identity_failures + 1
+    }
+    at = at + 1
+  }
+}
+
+// The inputs live in ggml's own memory: they are activations, not weights, and section 3.10 assigns
+// activation lifetime to ggml deliberately. The embedding graph takes one index vector; a layer
+// takes the Align-owned residual, the positions, the mask at the declared width, and the one-row
+// narrowing index; the head takes the narrowed residual alone.
+fn graph_inputs(
+  ctx: raw, borrow slots: slice<u8>, borrow spec: GraphSpec) -> Result<(), ggml_ffi.Fault> {
+  if spec.kind == GRAPH_EMBED {
+    ggml_ffi.slot_new_i32_1d(ctx, slots, layer_qwen2.MF_SLOT_TOKENS, spec.tokens_in, "inp_tokens")?
+    return Ok(())
+  }
+  ggml_ffi.slot_new_tensor_2d(
+    ctx, slots, layer_qwen2.MF_SLOT_CUR, layer_qwen2.GGML_TYPE_F32, spec.n_embd, spec.tokens_in,
+    "cur")?
+  if spec.kind == GRAPH_HEAD { return Ok(()) }
+  ggml_ffi.slot_new_i32_1d(ctx, slots, layer_qwen2.MF_SLOT_POS, spec.tokens_in, "inp_pos")?
+  ggml_ffi.slot_new_tensor_2d(
+    ctx, slots, layer_qwen2.MF_SLOT_MASK, layer_qwen2.GGML_TYPE_F32, spec.width, spec.tokens_in,
+    "kq_mask")?
+  ggml_ffi.slot_new_i32_1d(ctx, slots, layer_qwen2.MF_SLOT_OUT_IDS, 1, "out_ids")?
+  return Ok(())
+}
+
+fn graph_input_values(
+  borrow slots: slice<u8>,
+  borrow spec: GraphSpec,
+  borrow cur: slice<u8>,
+  borrow positions: slice<u8>,
+  borrow mask: slice<u8>,
+  borrow out_ids: slice<u8>,
+) -> Result<(), ggml_ffi.Fault> {
+  if spec.kind == GRAPH_EMBED {
+    ggml_ffi.slot_set(
+      slots, layer_qwen2.MF_SLOT_TOKENS, positions, 0, spec.tokens_in * 4, "inp_tokens")?
+    return Ok(())
+  }
+  ggml_ffi.slot_set(
+    slots, layer_qwen2.MF_SLOT_CUR, cur, 0, spec.n_embd * spec.tokens_in * 4, "cur")?
+  if spec.kind == GRAPH_HEAD { return Ok(()) }
+  ggml_ffi.slot_set(slots, layer_qwen2.MF_SLOT_POS, positions, 0, spec.tokens_in * 4, "inp_pos")?
+  ggml_ffi.slot_set(
+    slots, layer_qwen2.MF_SLOT_MASK, mask, 0, spec.width * spec.tokens_in * 4, "kq_mask")?
+  ggml_ffi.slot_set(slots, layer_qwen2.MF_SLOT_OUT_IDS, out_ids, 0, 4, "out_ids")?
+  return Ok(())
+}
+
+// The reference arm's weights: created in a second context, allocated by
+// `ggml_backend_alloc_ctx_tensors`, and filled from the same Align window, so ggml owns them. The
+// inputs are **shared, not rebuilt** — the arm must differ in where the weights live and in
+// nothing else.
+fn reference_weights(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  borrow primary: slice<u8>,
+  borrow window: slice<u8>,
+  borrow m: GraphMembers,
+  borrow spec: GraphSpec,
+  fill: bool,
+) -> Result<(), ggml_ffi.Fault> {
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    label := graph_member_label(m, at)
+    if fill {
+      offset := m.window[at]
+      region := window[offset..offset + m.nbytes[at]]
+      ggml_ffi.slot_set(slots, at, region, 0, m.nbytes[at], label)?
+    } else {
+      if m.n_dims[at] == 1 {
+        ggml_ffi.slot_new_tensor_1d(ctx, slots, at, m.ggml_type[at], m.ne0[at], label)?
+      } else {
+        ggml_ffi.slot_new_tensor_2d(ctx, slots, at, m.ggml_type[at], m.ne0[at], m.rows[at], label)?
+      }
+    }
+    at = at + 1
+  }
+  if !fill { return Ok(()) }
+  mut copy_at := layer_qwen2.MF_SLOT_CUR
+  last := if spec.kind == GRAPH_LAYER { layer_qwen2.MF_SLOT_OUT_IDS } else { layer_qwen2.MF_SLOT_CUR }
+  loop {
+    if copy_at > last { break }
+    ggml_ffi.slot_copy(slots, copy_at, primary, copy_at, "input")?
+    copy_at = copy_at + 1
+  }
+  return Ok(())
+}
+
+// Oracle 1. Every compared oracle node's bytes must be **byte-identical** between the two arms.
+// This oracle proves bytes: it is version- and kernel-independent, and at model scale it is the
+// only thing that catches a window reused before its previous tenant was done with it.
+fn compare_reference(
+  borrow primary: slice<u8>,
+  borrow reference: slice<u8>,
+  borrow oracle: layer_qwen2.OracleTable,
+  borrow nodes: layer_qwen2.NodeTable,
+  borrow spec: GraphSpec,
+  borrow left: slice<u8>,
+  borrow right: slice<u8>,
+  borrow mut o: Outcome,
+) -> Result<(), ggml_ffi.Fault> {
+  mut at := 0
+  loop {
+    if at >= spec.oracle_count { break }
+    row := spec.oracle_base + at
+    if oracle.compared[row] == 1 {
+      id := layer_qwen2.oracle_id(oracle, row)
+      index_of := nodes.out[oracle.node[row]]
+      span := ggml_ffi.slot_nbytes(primary, index_of)
+      if span <= 0 || span > left.len() || span > right.len() {
+        return Err(ffi_fault("R5_SLOT", graph_node_at(spec.index, id, -1)))
+      }
+      ggml_ffi.slot_get(primary, index_of, left, 0, span, id)?
+      ggml_ffi.slot_get(reference, index_of, right, 0, span, id)?
+      o.reference_compared = o.reference_compared + 1
+      mut element := 0
+      mut differed := false
+      loop {
+        if element >= span / 4 { break }
+        a := left.u32_le(element * 4) as i64
+        b := right.u32_le(element * 4) as i64
+        if a != b {
+          differed = true
+          if o.reference_first_index < 0 {
+            o.reference_first_graph = spec.index
+            o.reference_first_node = id.clone()
+            o.reference_first_index = element
+            o.reference_first_primary_bits = a
+            o.reference_first_reference_bits = b
+          }
+          break
+        }
+        element = element + 1
+      }
+      if !differed { o.reference_identical = o.reference_identical + 1 }
+    }
+    at = at + 1
+  }
+  return Ok(())
+}
+
+// Oracle 2, one graph's share. `norm-L` is `{n_embd, T_in}` at **every** layer including the last
+// (section 6, correction C3): the narrowing is after the attention output projection, so the seven
+// nodes from `ffn_inp-L` onward are `{*, 1}` at the last layer and nothing before them is.
+fn compare_transcript_graph(
+  borrow slots: slice<u8>,
+  borrow oracle: layer_qwen2.OracleTable,
+  borrow nodes: layer_qwen2.NodeTable,
+  borrow spec: GraphSpec,
+  borrow scan: layer_forward.TranscriptScan,
+  borrow starts: array<i64>,
+  borrow lengths: array<i64>,
+  borrow window: slice<u8>,
+  borrow mut breach: bool,
+  borrow mut o: Outcome,
+) -> Result<(), ggml_ffi.Fault> {
+  mut at := 0
+  loop {
+    if at >= spec.oracle_count { break }
+    row := spec.oracle_base + at
+    if oracle.compared[row] == 1 {
+      id := layer_qwen2.oracle_id(oracle, row)
+      index_of := nodes.out[oracle.node[row]]
+      span := ggml_ffi.slot_nbytes(slots, index_of)
+      if span <= 0 || span > window.len() {
+        return Err(ffi_fault("R5_SLOT", layer_named(spec.layer, "node", id)))
+      }
+      if scan.ne0[row] != ggml_ffi.slot_ne(slots, index_of, 0)
+        || scan.ne1[row] != ggml_ffi.slot_ne(slots, index_of, 1)
+        || scan.ne2[row] != ggml_ffi.slot_ne(slots, index_of, 2)
+        || scan.ne3[row] != ggml_ffi.slot_ne(slots, index_of, 3) {
+        return Err(ffi_fault("R5_ORACLE_SHAPE", layer_named(spec.layer, "node", id)))
+      }
+      ggml_ffi.slot_get(slots, index_of, window, 0, span, id)?
+      o.oracle_matched = o.oracle_matched + 1
+      mut element := starts[row]
+      last := starts[row] + lengths[row]
+      loop {
+        if element >= last { break }
+        spot := scan.element_index[element]
+        if spot < 0 || spot * 4 + 4 > span {
+          return Err(ffi_fault("R5_ORACLE_SHAPE", layer_named(spec.layer, "node", id)))
+        }
+        computed := ((window.f32_le(spot * 4) as f64) * 10000.0).round() as i64
+        difference := computed - scan.element_value[element]
+        magnitude := if difference < 0 { 0 - difference } else { difference }
+        o.oracle_elements = o.oracle_elements + 1
+        if magnitude > o.oracle_max_abs {
+          o.oracle_max_abs = magnitude
+          o.oracle_worst_layer = spec.layer
+          o.oracle_worst_node = id.clone()
+          o.oracle_worst_element = spot
+        }
+        element = element + 1
+      }
+      if scan.sum_present[row] == 1 {
+        mut accumulator: f32 := 0.0 as f32
+        mut index := 0
+        loop {
+          if index >= span / 4 { break }
+          accumulator = accumulator + window.f32_le(index * 4)
+          index = index + 1
+        }
+        computed := ((accumulator as f64) * 1000000.0).round() as i64
+        expected := scan.sum_millionths[row]
+        difference := computed - expected
+        magnitude := if difference < 0 { 0 - difference } else { difference }
+        scale := if expected < 0 { 0 - expected } else { expected }
+        mut bound := SUM_TOLERANCE_MILLIONTHS
+        relative := scale / (1000000 / SUM_TOLERANCE_RELATIVE_PPM)
+        if relative > bound { bound = relative }
+        if magnitude > o.oracle_max_sum { o.oracle_max_sum = magnitude }
+        if magnitude > bound { breach = true }
+      }
+    }
+    at = at + 1
+  }
+  return Ok(())
+}
+
+// What one graph measured. `schedule[]` is one row per layer and this is the row.
+pub GraphResult {
+  norm_sha: string,
+  norm_bit_sum: i64,
+  node_count: i64,
+  activation_bytes: i64,
+  compute_ns: i64,
+  reference_compute_ns: i64,
+  slot_high_water: i64,
+  out_ne0: i64,
+  out_ne1: i64,
+  out_bytes: i64,
+}
+
+pub fn empty_graph_result() -> GraphResult = GraphResult {
+  norm_sha: "".clone(),
+  norm_bit_sum: 0,
+  node_count: 0,
+  activation_bytes: 0,
+  compute_ns: 0,
+  reference_compute_ns: 0,
+  slot_high_water: 0,
+  out_ne0: 0,
+  out_ne1: 0,
+  out_bytes: 0,
+}
+
+// Section 3.10's per-graph teardown: `gallocr` -> graph context -> weight buffer -> weight context
+// -> reference buffer -> reference context -> input buffer -> input context. It runs on **every**
+// exit path from construction onward, which is why the steps above it are guards rather than early
+// returns, and the counters are asserted to balance at every layer boundary because window reuse is
+// the one invariant a whole-run check cannot see.
+fn teardown_graph(
+  galloc: raw,
+  reference_galloc: raw,
+  graph_ctx: raw,
+  reference_graph_ctx: raw,
+  weight_buffer: raw,
+  weight_ctx: raw,
+  reference_buffer: raw,
+  reference_ctx: raw,
+  input_buffer: raw,
+  input_ctx: raw,
+  borrow mut o: Outcome,
+) {
+  if !ggml_ffi.handle_absent(reference_galloc) {
+    ggml_ffi.gallocr_free(reference_galloc)
+    o.gallocrs_freed = o.gallocrs_freed + 1
+  }
+  if !ggml_ffi.handle_absent(galloc) {
+    ggml_ffi.gallocr_free(galloc)
+    o.gallocrs_freed = o.gallocrs_freed + 1
+  }
+  if !ggml_ffi.handle_absent(reference_graph_ctx) {
+    ggml_ffi.context_close(reference_graph_ctx)
+    o.contexts_freed = o.contexts_freed + 1
+  }
+  if !ggml_ffi.handle_absent(graph_ctx) {
+    ggml_ffi.context_close(graph_ctx)
+    o.contexts_freed = o.contexts_freed + 1
+  }
+  if !ggml_ffi.handle_absent(weight_buffer) {
+    ggml_ffi.buffer_free(weight_buffer)
+    o.ggml_buffers_freed = o.ggml_buffers_freed + 1
+  }
+  if !ggml_ffi.handle_absent(weight_ctx) {
+    ggml_ffi.context_close(weight_ctx)
+    o.contexts_freed = o.contexts_freed + 1
+  }
+  if !ggml_ffi.handle_absent(reference_buffer) {
+    ggml_ffi.buffer_free(reference_buffer)
+    o.ggml_buffers_freed = o.ggml_buffers_freed + 1
+  }
+  if !ggml_ffi.handle_absent(reference_ctx) {
+    ggml_ffi.context_close(reference_ctx)
+    o.contexts_freed = o.contexts_freed + 1
+  }
+  if !ggml_ffi.handle_absent(input_buffer) {
+    ggml_ffi.buffer_free(input_buffer)
+    o.ggml_buffers_freed = o.ggml_buffers_freed + 1
+  }
+  if !ggml_ffi.handle_absent(input_ctx) {
+    ggml_ffi.context_close(input_ctx)
+    o.contexts_freed = o.contexts_freed + 1
+  }
+}
+
+// Step 25's Align-side pre-check. Every member's window offset must be `0 mod tensor_alignment`,
+// re-checked at every layer because the window is reused thirty times and a block whose members are
+// not `block_align`-aligned would otherwise reach `ggml_backend_cpu_buffer_from_ptr`, which is
+// `abort()` on a misaligned pointer. It runs **before** `graph_weights`, so the detail is the
+// section 3.9 `layer[<n>]role[<name>]` the plan promises rather than the shim's bare role name; the
+// shim's own check stays as the backstop for a pointer Align cannot see (section 6, correction C18).
+fn graph_alignment(
+  borrow m: GraphMembers, borrow window: slice<u8>, alignment: i64, layer: i64,
+  borrow mut o: Outcome,
+) {
+  // Defence only: the caller only reaches this check once `ggml_ffi.buffer_from_host` has already
+  // succeeded on this same `window`, and that call already rejects a misaligned base by failing
+  // `R5_GGML_INIT`/`weight_buffer` before `graph_alignment` runs (ledger section 6, correction C22).
+  // This branch is therefore unreachable in the shipped arm; it stays so the per-member check below
+  // does not silently assume an aligned base if that ordering ever changes.
+  if ggml_ffi.align_mod(window, alignment) != 0 {
+    fail(o, "R5_ALIGNMENT", "window")
+    return
+  }
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    if m.window[at] % alignment != 0 {
+      fail(o, "R5_ALIGNMENT", layer_named(layer, "role", graph_member_label(m, at)))
+      return
+    }
+    at = at + 1
+  }
+}
+
+// Steps 24, 25, 27, and 28 for exactly one of the thirty graphs. Every ggml object is a bare local,
+// because `raw` cannot be aggregated, and every one of them is freed before this function returns —
+// which is what makes reusing the window for the next block safe.
+fn run_graph(
+  device: raw,
+  backend: raw,
+  context_bytes: i64,
+  borrow spec: GraphSpec,
+  borrow m: GraphMembers,
+  borrow nodes: layer_qwen2.NodeTable,
+  borrow oracle: layer_qwen2.OracleTable,
+  borrow window: slice<u8>,
+  borrow slot_view: slice<u8>,
+  borrow ref_slot_view: slice<u8>,
+  borrow cur: slice<u8>,
+  borrow positions: slice<u8>,
+  borrow mask: slice<u8>,
+  borrow out_ids: slice<u8>,
+  borrow node_window: slice<u8>,
+  borrow ref_window: slice<u8>,
+  borrow output_view: slice<u8>,
+  borrow scan: layer_forward.TranscriptScan,
+  borrow starts: array<i64>,
+  borrow lengths: array<i64>,
+  borrow mut breach: bool,
+  borrow mut result: GraphResult,
+  borrow mut o: Outcome,
+) {
+  mut weight_ctx := ggml_ffi.null_handle()
+  mut input_ctx := ggml_ffi.null_handle()
+  mut graph_ctx := ggml_ffi.null_handle()
+  mut reference_ctx := ggml_ffi.null_handle()
+  mut reference_graph_ctx := ggml_ffi.null_handle()
+  mut weight_buffer := ggml_ffi.null_handle()
+  mut input_buffer := ggml_ffi.null_handle()
+  mut reference_buffer := ggml_ffi.null_handle()
+  mut graph := ggml_ffi.null_handle()
+  mut reference_graph := ggml_ffi.null_handle()
+  mut galloc := ggml_ffi.null_handle()
+  mut reference_galloc := ggml_ffi.null_handle()
+
+  take(o, ggml_ffi.slots_init(slot_view, slot_view.len(), "slots"))
+  if spec.reference && o.code.len() == 0 {
+    take(o, ggml_ffi.slots_init(ref_slot_view, ref_slot_view.len(), "reference_slots"))
+  }
+  if o.code.len() == 0 {
+    weight_ctx = ggml_ffi.context_open(context_bytes)
+    input_ctx = ggml_ffi.context_open(context_bytes)
+    graph_ctx = ggml_ffi.context_open(context_bytes)
+    if ggml_ffi.handle_absent(weight_ctx) || ggml_ffi.handle_absent(input_ctx)
+      || ggml_ffi.handle_absent(graph_ctx) {
+      fail(o, "R5_GGML_INIT", "context")
+    } else {
+      o.contexts_created = o.contexts_created + 3
+    }
+  }
+  if o.code.len() == 0 {
+    weight_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
+    if ggml_ffi.handle_absent(weight_buffer) {
+      fail(o, "R5_GGML_INIT", "weight_buffer")
+    } else {
+      o.ggml_buffers_created = o.ggml_buffers_created + 1
+    }
+  }
+  if o.code.len() == 0 {
+    alignment := o.tensor_alignment
+    graph_alignment(m, window, alignment, spec.layer, o)
+  }
+  if o.code.len() == 0 {
+    take(o, graph_weights(weight_ctx, weight_buffer, slot_view, window, m))
+  }
+  // Counted for the **compared** pass only: both passes place the same members at the same offsets
+  // in the same window, so `member_placements` stays one per member per graph (339 on the real
+  // model) rather than doubling when the reconciliation pass runs.
+  if o.code.len() == 0 && spec.compare { graph_identity(slot_view, window, m, o) }
+  if o.code.len() == 0 { take(o, graph_inputs(input_ctx, slot_view, spec)) }
+  if o.code.len() == 0 {
+    input_buffer = ggml_ffi.alloc_remaining(input_ctx, backend)
+    if ggml_ffi.handle_absent(input_buffer) {
+      fail(o, "R5_GGML_INIT", "input_buffer")
+    } else {
+      o.ggml_buffers_created = o.ggml_buffers_created + 1
+    }
+  }
+  if o.code.len() == 0 {
+    take(o, graph_input_values(slot_view, spec, cur, positions, mask, out_ids))
+  }
+  if o.code.len() == 0 {
+    graph = ggml_ffi.graph_new(graph_ctx)
+    galloc = ggml_ffi.gallocr_new(backend)
+    if ggml_ffi.handle_absent(graph) || ggml_ffi.handle_absent(galloc) {
+      fail(o, "R5_GGML_INIT", "graph")
+    } else {
+      o.graphs_created = o.graphs_created + 1
+      o.gallocrs_created = o.gallocrs_created + 1
+    }
+  }
+  if o.code.len() == 0 {
+    take(o, build_nodes(graph_ctx, slot_view, nodes, spec.last, spec.wide))
+  }
+  if o.code.len() == 0 && spec.compare {
+    take(o, mark_outputs(slot_view, oracle, nodes, spec.oracle_base, spec.oracle_count))
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.graph_expand(graph, slot_view, spec.output_slot, "output"))
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.gallocr_reserve(galloc, graph, labelled("graph", spec.index)))
+    result.activation_bytes = ggml_ffi.gallocr_bytes(galloc)
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.gallocr_alloc(galloc, graph, labelled("graph", spec.index)))
+    result.node_count = ggml_ffi.graph_node_count(graph)
+    result.slot_high_water = ggml_ffi.slots_high_water(slot_view)
+  }
+  if o.code.len() == 0 {
+    started := time.instant()
+    status := ggml_ffi.graph_compute(backend, graph)
+    result.compute_ns = time.instant() - started
+    if status != 0 {
+      fail(o, "R5_COMPUTE", layer_named(spec.layer, "status", int_text(status)))
+    }
+  }
+  if o.code.len() == 0 {
+    span := ggml_ffi.slot_nbytes(slot_view, spec.output_slot)
+    result.out_ne0 = ggml_ffi.slot_ne(slot_view, spec.output_slot, 0)
+    result.out_ne1 = ggml_ffi.slot_ne(slot_view, spec.output_slot, 1)
+    result.out_bytes = span
+    if span <= 0 || span > output_view.len() {
+      fail(o, "R5_RESIDUAL", labelled("layer", spec.layer))
+    } else {
+      take(o, ggml_ffi.slot_get(slot_view, spec.output_slot, output_view, 0, span, "output"))
+    }
+  }
+  if o.code.len() == 0 && spec.kind == GRAPH_HEAD && spec.compare {
+    row := spec.oracle_base
+    index_of := nodes.out[oracle.node[row]]
+    span := ggml_ffi.slot_nbytes(slot_view, index_of)
+    if span > 0 && span <= node_window.len() {
+      take(o, ggml_ffi.slot_get(slot_view, index_of, node_window, 0, span, "result_norm"))
+      region := node_window[0..span]
+      norm := digest_region(region)
+      result.norm_sha = norm.sha.clone()
+      result.norm_bit_sum = norm.bit_sum
+    }
+  }
+  if o.code.len() == 0 && spec.compare && o.transcript_present {
+    match compare_transcript_graph(
+      slot_view, oracle, nodes, spec, scan, starts, lengths, node_window, breach, o) {
+      Ok(_) => {},
+      Err(f) => { fault_into(o, f) },
+    }
+  }
+  if o.code.len() == 0 && spec.reference {
+    reference_ctx = ggml_ffi.context_open(context_bytes)
+    reference_graph_ctx = ggml_ffi.context_open(context_bytes)
+    if ggml_ffi.handle_absent(reference_ctx) || ggml_ffi.handle_absent(reference_graph_ctx) {
+      fail(o, "R5_GGML_INIT", "reference_context")
+    } else {
+      o.contexts_created = o.contexts_created + 2
+    }
+    if o.code.len() == 0 {
+      take(o, reference_weights(reference_ctx, ref_slot_view, slot_view, window, m, spec, false))
+    }
+    if o.code.len() == 0 {
+      reference_buffer = ggml_ffi.alloc_remaining(reference_ctx, backend)
+      if ggml_ffi.handle_absent(reference_buffer) {
+        fail(o, "R5_GGML_INIT", "reference_buffer")
+      } else {
+        o.ggml_buffers_created = o.ggml_buffers_created + 1
+      }
+    }
+    if o.code.len() == 0 {
+      take(o, reference_weights(reference_ctx, ref_slot_view, slot_view, window, m, spec, true))
+    }
+    if o.code.len() == 0 {
+      reference_graph = ggml_ffi.graph_new(reference_graph_ctx)
+      reference_galloc = ggml_ffi.gallocr_new(backend)
+      if ggml_ffi.handle_absent(reference_graph) || ggml_ffi.handle_absent(reference_galloc) {
+        fail(o, "R5_GGML_INIT", "reference_graph")
+      } else {
+        o.graphs_created = o.graphs_created + 1
+        o.gallocrs_created = o.gallocrs_created + 1
+      }
+    }
+    if o.code.len() == 0 {
+      take(o, build_nodes(reference_graph_ctx, ref_slot_view, nodes, spec.last, spec.wide))
+    }
+    if o.code.len() == 0 {
+      take(o, mark_outputs(ref_slot_view, oracle, nodes, spec.oracle_base, spec.oracle_count))
+    }
+    if o.code.len() == 0 {
+      take(o, ggml_ffi.graph_expand(reference_graph, ref_slot_view, spec.output_slot, "output"))
+    }
+    if o.code.len() == 0 {
+      take(o, ggml_ffi.gallocr_reserve(
+          reference_galloc, reference_graph, labelled("graph", spec.index)))
+      take(o, ggml_ffi.gallocr_alloc(
+          reference_galloc, reference_graph, labelled("graph", spec.index)))
+    }
+    if o.code.len() == 0 {
+      started := time.instant()
+      status := ggml_ffi.graph_compute(backend, reference_graph)
+      result.reference_compute_ns = time.instant() - started
+      if status != 0 {
+        fail(o, "R5_COMPUTE", layer_named(spec.layer, "reference_status", int_text(status)))
+      }
+    }
+    if o.code.len() == 0 {
+      o.reference_graphs = o.reference_graphs + 1
+      match compare_reference(
+        slot_view, ref_slot_view, oracle, nodes, spec, node_window, ref_window, o) {
+        Ok(_) => {},
+        Err(f) => { fault_into(o, f) },
+      }
+    }
+  }
+  teardown_graph(
+    galloc, reference_galloc, graph_ctx, reference_graph_ctx, weight_buffer, weight_ctx,
+    reference_buffer, reference_ctx, input_buffer, input_ctx, o)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Filling the one reused window (section 3.4, and section 6 correction C5)
+// ---------------------------------------------------------------------------------------------
+
+// The largest read this arm ever issues, and the size of the **one** transient buffer every member
+// is read through. One mebibyte, measured: `f.pread` always requests the buffer's whole capacity,
+// so an oversized transient over-reads the tail of every member — at 32 MiB that is 5.4 GB of
+// wasted I/O across 339 members and 2.5 s of wall time, against 339 MB and 515 ms at 1 MiB. Section 6, correction C6: `alignpack_read.read_exact` rebinds its window to a
+// fresh `buffer(n)` on every call, and at 339 members that is 4.4 GB of transient allocations the
+// process was measured retaining — a 3.4 GB peak resident set against a 447 MB window. `f.pread`
+// reuses the buffer's own reservation and overwrites its length from index 0, so one 32 MiB buffer
+// serves every read of the run.
+CHUNK_BYTES := 1048576
+
+// `buffer(cap)` reserves capacity but publishes no length, and `bytes()` is `data[..len]`, so the
+// window has to be *written* to exist. Writing 447 MB one `put_u8` at a time is not a loop this
+// language wants; appending a 64 KiB zero block is one `memcpy` per round and stays inside the
+// reservation, so the base pointer never moves.
+fn prime_window(borrow mut window: buffer, bytes: i64) {
+  mut chunk: buffer := buffer(65536)
+  fill_zero(chunk, 65536)
+  view := chunk.bytes()
+  mut remaining := bytes
+  loop {
+    if remaining <= 0 { break }
+    take := if remaining > 65536 { 65536 } else { remaining }
+    window.append(view[0..take])
+    remaining = remaining - take
+  }
+}
+
+// Section 6, correction C20: the bound is the window view's own length, so `window_bytes` is no
+// longer threaded through the copy at all.
+fn window_put(
+  borrow window: slice<u8>,
+  offset: i64,
+  borrow source: slice<u8>,
+  n: i64,
+  label: str,
+) -> Result<(), alignpack_read.Fault> {
+  match ggml_ffi.window_copy(window, offset, source, n, label) {
+    Ok(_) => { return Ok(()) },
+    Err(f) => {
+      code_view: str := f.code
+      detail_view: str := f.detail
+      return Err(pack_fault(code_view, bounded_detail(detail_view)))
+    },
+  }
+}
+
+// Section 6, correction C6. The plan's read shape was one `pread` of `block.pack_bytes` per block,
+// fifty-six times. A block image cannot be read into the reused window — Align's `pread` overwrites
+// from index 0 — so it would have to be read into a 132 MB temporary and copied out, which doubles
+// the resident set for no benefit. Each member is read instead, in `CHUNK_BYTES` rounds, straight
+// into its own window slot: the same bytes, the same order, a bounded temporary, and one read group
+// per member rather than per block.
+// `n` bytes at `at`, copied into the window at `into`, through one reused transient. `f.pread`
+// publishes exactly what the syscall returned and a short read is completed here, in
+// `src/alignpack.align`'s discipline; a zero-length read at an offset already proved inside the
+// file is an allocation failure or a file that shrank underneath, never a truncation.
+fn read_into_window(
+  borrow handle: file,
+  borrow mut temp: buffer,
+  borrow window: slice<u8>,
+  into: i64,
+  at: i64,
+  n: i64,
+  code: str,
+  label: str,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  mut done := 0
+  loop {
+    if done >= n { break }
+    count := match handle.pread(temp, at + done) {
+      Ok(value) => value,
+      Err(_) => { return Err(pack_fault(code, named("role", label))) },
+    }
+    c.pread_count = c.pread_count + 1
+    if count <= 0 { return Err(pack_fault(code, named("role", label))) }
+    take := if count > n - done { n - done } else { count }
+    c.bytes_read = c.bytes_read + take
+    view := temp.bytes()
+    if view.len() < take { return Err(pack_fault(code, named("role", label))) }
+    window_put(window, into + done, view, take, label)?
+    done = done + take
+  }
+  return Ok(())
+}
+
+fn fill_members(
+  borrow pak: file,
+  borrow m: GraphMembers,
+  borrow tokens: TokenColumns,
+  borrow window: slice<u8>,
+  borrow mut temp: buffer,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    label := graph_member_label(m, at)
+    mut piece := 0
+    loop {
+      if piece >= m.pieces[at] { break }
+      span := m.stride[at]
+      source_at := if m.pieces[at] > 1 {
+        m.pack[at] + tokens.ids[piece] * span
+      } else {
+        m.pack[at]
+      }
+      read_into_window(
+        pak, temp, window, m.window[at] + piece * span, source_at, span,
+        "R4_PACK_UNREADABLE", label, c)?
+      piece = piece + 1
+    }
+    at = at + 1
+  }
+  return Ok(())
+}
+
+// Oracle 1's byte precondition. Before each graph runs, its members' pack bytes are compared
+// byte-for-byte against the source GGUF at `member.source_offset`; a difference is
+// `R5_SOURCE_DIVERGED` and stops the arm, because a numeric comparison between two different
+// tensors would report the wrong cause.
+//
+// The reference file is **not** the container and nothing has proved this range is inside it:
+// `source_offset` and `nbytes` are the pack's claims about a file the caller merely named.
+fn compare_source(
+  borrow handle: file,
+  size: i64,
+  borrow m: GraphMembers,
+  borrow tokens: TokenColumns,
+  borrow window: slice<u8>,
+  layer: i64,
+  borrow mut temp: buffer,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    label := graph_member_label(m, at)
+    mut piece := 0
+    loop {
+      if piece >= m.pieces[at] { break }
+      span := m.stride[at]
+      source_at := if m.pieces[at] > 1 {
+        m.source[at] + tokens.ids[piece] * span
+      } else {
+        m.source[at]
+      }
+      window_at := m.window[at] + piece * span
+      if source_at < 0 || span < 0 || source_at > size || span > size - source_at {
+        return Err(pack_fault("R5_SOURCE_UNREADABLE", layer_named(layer, "role", label)))
+      }
+      mut done := 0
+      loop {
+        if done >= span { break }
+        count := match handle.pread(temp, source_at + done) {
+          Ok(value) => value,
+          Err(_) => {
+            return Err(pack_fault("R5_SOURCE_UNREADABLE", layer_named(layer, "role", label)))
+          },
+        }
+        c.pread_count = c.pread_count + 1
+        if count <= 0 {
+          return Err(pack_fault("R5_SOURCE_UNREADABLE", layer_named(layer, "role", label)))
+        }
+        take := if count > span - done { span - done } else { count }
+        c.bytes_read = c.bytes_read + take
+        view := temp.bytes()
+        if view.len() < take {
+          return Err(pack_fault("R5_SOURCE_UNREADABLE", layer_named(layer, "role", label)))
+        }
+        packed := window[window_at + done..window_at + done + take]
+        source_region := view[0..take]
+        if !crypto.constant_time_equal(packed, source_region) {
+          return Err(pack_fault("R5_SOURCE_DIVERGED", layer_named(layer, "role", label)))
+        }
+        done = done + take
+      }
+      piece = piece + 1
+    }
+    at = at + 1
+  }
+  return Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Digests (section 3.8)
+// ---------------------------------------------------------------------------------------------
+
+// Checksums are never floats: `sha256` is over the exact little-endian f32 bytes, `bit_sum` is the
+// `i64` sum of the u32 bit patterns, and `f32_sum_millionths` is a **sequential f32 accumulation in
+// element order** — the instrument's own order — widened to `f64` and rounded.
+pub Digest {
+  sha: string,
+  bit_sum: i64,
+  sum_millionths: i64,
+  nonfinite: i64,
+  argmax: i64,
+}
+
+fn digest_region(borrow region: slice<u8>) -> Digest {
+  count := region.len() / 4
+  digest := crypto.sha256(region)
+  mut bits_total := 0
+  mut nonfinite_count := 0
+  mut accumulator: f32 := 0.0 as f32
+  mut best := 0
+  mut best_value: f32 := 0.0 as f32
+  mut element := 0
+  loop {
+    if element >= count { break }
+    bits := region.u32_le(element * 4) as i64
+    bits_total = bits_total + bits
+    if (bits / 8388608) % 256 == 255 { nonfinite_count = nonfinite_count + 1 }
+    value := region.f32_le(element * 4)
+    accumulator = accumulator + value
+    if element == 0 || value > best_value {
+      best = element
+      best_value = value
+    }
+    element = element + 1
+  }
+  return Digest {
+    sha: encoding.hex_encode(digest[0..digest.len()]),
+    bit_sum: bits_total,
+    sum_millionths: ((accumulator as f64) * 1000000.0).round() as i64,
+    nonfinite: nonfinite_count,
+    argmax: if count > 0 { best } else { -1 },
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Oracle 2 — the transcript, scanned once before the schedule
+//
+// Section 6, correction C4. The plan put the transcript arm at step 30, after the whole schedule.
+// It cannot be there: the seventeen oracle nodes of a layer live in a `gallocr` buffer that is
+// freed when that layer's graph is torn down, and holding thirty graphs alive to compare them at
+// the end is the opposite of what section 3.10 owns. The transcript is therefore **scanned** before
+// the schedule and **compared** inside each graph, so its grammar codes precede the schedule's
+// compute codes in the precedence order. Nothing else about step 30 or 31 changes.
+// ---------------------------------------------------------------------------------------------
+
+pub OracleRanges { start: array<i64>, length: array<i64> }
+
+pub fn empty_ranges() -> OracleRanges = OracleRanges {
+  start: empty_array(),
+  length: empty_array(),
+}
+
+fn zero_column(n: i64) -> array<i64> {
+  mut b: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= n { break }
+    b.push(0)
+    at = at + 1
+  }
+  return b.build()
+}
+
+fn oracle_layer_of(n_layer: i64, row: i64) -> i64 {
+  if row <= 0 { return -1 }
+  if row >= layer_qwen2.mf_oracle_head_base(n_layer) { return -1 }
+  return (row - 1) / layer_qwen2.MF_LAYER_ORACLE_COUNT
+}
+
+fn prepare_transcript(
+  transcript_path: str,
+  borrow oracle: layer_qwen2.OracleTable,
+  n_layer: i64,
+  kv_width: i64,
+  borrow mut scan: layer_forward.TranscriptScan,
+  borrow mut ranges: OracleRanges,
+  borrow mut o: Outcome,
+) {
+  started := time.instant()
+  scan = layer_forward.scan_transcript(transcript_path, oracle)
+  o.oracle_lines = scan.line_count
+  o.oracle_callback_lines = scan.callback_line_count
+  // The rows that are element-compared: `kq-L` and `kq_soft_max-L` are matched and shape-checked
+  // and never compared, so `nodes_expected` counts what an exact pass must match.
+  o.oracle_expected = 1 + 17 * n_layer + layer_qwen2.MF_HEAD_ORACLE_COUNT
+  if scan.code.len() > 0 {
+    code_view: str := scan.code
+    detail_view: str := scan.detail
+    fail(o, code_view, detail_view)
+    o.oracle_ns = time.instant() - started
+    return
+  }
+  mut starts := zero_column(oracle.count)
+  mut lengths := zero_column(oracle.count)
+  mut element := 0
+  loop {
+    if element >= scan.element_node.len() { break }
+    row := scan.element_node[element]
+    if lengths[row] == 0 { starts[row] = element }
+    lengths[row] = lengths[row] + 1
+    element = element + 1
+  }
+  ranges = OracleRanges { start: starts, length: lengths }
+  mut row := 0
+  loop {
+    if row >= oracle.count || o.code.len() > 0 { break }
+    id := layer_qwen2.oracle_id(oracle, row)
+    layer := oracle_layer_of(n_layer, row)
+    if scan.matched[row] == 0 {
+      fail(o, "R5_ORACLE_MISSING", layer_named(layer, "node", id))
+      break
+    }
+    // Section 3.3: the transcript's `kq-L` `ne0` **is** the instrument's reduction width, and it is
+    // validated against the operand rather than read as one. An oracle that configures the thing it
+    // verifies is the one property no amount of downstream checking repairs.
+    if oracle.compared[row] == 0 && scan.ne0[row] != kv_width {
+      fail(o, "R5_ORACLE_SHAPE", layer_named(layer, "node", id))
+      break
+    }
+    if oracle.compared[row] == 1 {
+      // R5A correction C19's element-count rule, inherited verbatim: every compared node must
+      // contribute exactly the number of elements its own declared shape prints. At whole-model
+      // scale the rule matters twenty-eight times more, because a transcript that lost one layer's
+      // value blocks would otherwise report `PASS` over twenty-nine of thirty layers.
+      expected := printed_count(scan.ne0[row]) * printed_count(scan.ne1[row])
+        * printed_count(scan.ne2[row]) * printed_count(scan.ne3[row])
+      if ranges.length[row] != expected {
+        fail(o, "R5_ORACLE_MISSING", shortfall(layer, id, ranges.length[row], expected))
+        break
+      }
+    }
+    row = row + 1
+  }
+  if o.code.len() == 0 { o.oracle_layers_matched = n_layer }
+  o.oracle_layers_expected = n_layer
+  o.oracle_ns = time.instant() - started
+}
+
+// ---------------------------------------------------------------------------------------------
+// Oracle 3 — the logits (section 3.7)
+// ---------------------------------------------------------------------------------------------
+
+fn top_k(borrow region: slice<u8>, borrow mut index: array_builder<i64>,
+  borrow mut bits: array_builder<i64>) {
+  count := region.len() / 4
+  mut taken := zero_column(if count < TOP_K { count } else { TOP_K })
+  mut picked := 0
+  loop {
+    if picked >= TOP_K || picked >= count { break }
+    mut best := -1
+    mut best_value: f32 := 0.0 as f32
+    mut at := 0
+    loop {
+      if at >= count { break }
+      mut used := false
+      mut seen := 0
+      loop {
+        if seen >= picked { break }
+        if taken[seen] == at { used = true }
+        seen = seen + 1
+      }
+      if !used {
+        value := region.f32_le(at * 4)
+        if best < 0 || value > best_value {
+          best = at
+          best_value = value
+        }
+      }
+      at = at + 1
+    }
+    if best < 0 { break }
+    taken[picked] = best
+    index.push(best)
+    bits.push(region.u32_le(best * 4) as i64)
+    picked = picked + 1
+  }
+}
+
+// Section 6, correction C23. One element of a logits vector, in ten-thousandths, or
+// `LOGIT_UNREPRESENTABLE` when it has no such value. The exponent test is `digest_region`'s: an
+// all-ones exponent field is an infinity or a NaN, and neither has a ten-thousandths value — a NaN
+// converted through `as i64` would read as `0` and could then compare *within* any bound, which is
+// the false pass this function exists to prevent. A finite magnitude beyond the limit is refused
+// for the same reason and by the same route, so no caller has to know which of the two it met.
+fn logit_ten_thousandths(borrow region: slice<u8>, at: i64) -> i64 {
+  bits := region.u32_le(at * 4) as i64
+  if (bits / 8388608) % 256 == 255 { return LOGIT_UNREPRESENTABLE }
+  scaled := ((region.f32_le(at * 4) as f64) * 10000.0).round() as i64
+  if scaled > LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS { return LOGIT_UNREPRESENTABLE }
+  if scaled < 0 - LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS { return LOGIT_UNREPRESENTABLE }
+  return scaled
+}
+
+// Section 3.7's table. At the reconciliation width the contract is **byte-identity** over every one
+// of `n_vocab * 4` bytes — section 2.7 measured exactly that, twice — and at the runtime width the
+// verdict is `WITHIN` only when the bound, the `argmax`, and the whole top ten all agree.
+fn compare_logits(
+  logits_path: str,
+  borrow primary: slice<u8>,
+  n_vocab: i64,
+  reconciliation: bool,
+  borrow mut top: TopColumns,
+  borrow mut o: Outcome,
+) {
+  handle := match fs.open_rw(logits_path) {
+    Ok(value) => value,
+    Err(failure) => {
+      fail(o, "R5_LOGITS_UNREADABLE", error_name(failure))
+      return
+    },
+  }
+  size := match handle.len() {
+    Ok(value) => value,
+    Err(failure) => {
+      fail(o, "R5_LOGITS_UNREADABLE", error_name(failure))
+      return
+    },
+  }
+  if size != n_vocab * 4 {
+    b := builder()
+    b.write("bytes[")
+    b.write_int(size)
+    b.write("]/")
+    b.write_int(n_vocab * 4)
+    rendered := b.to_string()
+    rendered_view: str := rendered
+    fail(o, "R5_LOGITS_SHAPE", rendered_view)
+    return
+  }
+  mut image: buffer := buffer(0)
+  mut counters := alignpack_read.new_counters()
+  take_pack(o, alignpack_read.read_exact(
+      handle, image, counters, "R5_LOGITS_UNREADABLE", 0, size))
+  if o.code.len() > 0 { return }
+  view := image.bytes()
+  if view.len() != size {
+    fail(o, "R5_LOGITS_UNREADABLE", "short")
+    return
+  }
+  reference_digest := digest_region(view)
+  o.logits_reference_sha256 = reference_digest.sha.clone()
+  o.logits_reference_bit_sum = reference_digest.bit_sum
+  o.logits_argmax_reference = reference_digest.argmax
+  // Section 6, correction C23, and this is a *reference* rule rather than an arm rule: the
+  // reference blob is an **input**, and an input carrying an infinity or a NaN is a malformed
+  // reference, not a failing oracle. It is refused here — after the digest fields are published, so
+  // the error document still names the file that was read — with its own code and the count as the
+  // detail, exactly as `R5_LOGITS_SHAPE` refuses a wrong length. The arm's *own* logits are not
+  // refused for the same condition: `output.nonfinite_count` reports them and section 3.8 keeps
+  // that "never a failure condition", so a non-finite primary reaches the comparison below and is
+  // resolved there as a magnitude no tolerance admits.
+  if reference_digest.nonfinite > 0 {
+    fail(o, "R5_LOGITS_NONFINITE", labelled("elements", reference_digest.nonfinite))
+    return
+  }
+  o.logits_byte_identical = crypto.constant_time_equal(primary, view)
+  o.logits_elements = n_vocab
+  mut worst := 0
+  mut at := 0
+  loop {
+    if at >= n_vocab { break }
+    // Section 6, correction C23: both elements are scaled through the range-checked conversion
+    // before either is subtracted, so the subtraction and the absolute value are in range by
+    // construction. The reference is finite by the check above; a primary that is not — or that is
+    // finite and beyond the representable magnitude — takes the scale limit as its magnitude, which
+    // is above every tolerance this repository declares, so it is a `FAIL` and never a silent wrap.
+    primary_scaled := logit_ten_thousandths(primary, at)
+    reference_scaled := logit_ten_thousandths(view, at)
+    unrepresentable := primary_scaled == LOGIT_UNREPRESENTABLE
+      || reference_scaled == LOGIT_UNREPRESENTABLE
+    difference := if unrepresentable { 0 } else { primary_scaled - reference_scaled }
+    magnitude := if unrepresentable {
+      LOGIT_SCALE_LIMIT_TEN_THOUSANDTHS
+    } else if difference < 0 {
+      0 - difference
+    } else {
+      difference
+    }
+    if magnitude > worst { worst = magnitude }
+    at = at + 1
+  }
+  o.logits_max_abs = worst
+  mut reference_index: array_builder<i64> := array_builder()
+  mut reference_bits: array_builder<i64> := array_builder()
+  top_k(view, reference_index, reference_bits)
+  reference_top := reference_index.build()
+  mut agreement := 0
+  mut rank := 0
+  loop {
+    if rank >= top.index.len() || rank >= reference_top.len() { break }
+    if top.index[rank] != reference_top[rank] { break }
+    agreement = agreement + 1
+    rank = rank + 1
+  }
+  o.logits_top_k_agreement = agreement
+  o.logits_compared_reconciliation = reconciliation
+  if reconciliation {
+    o.logits_verdict = if o.logits_byte_identical { LOGITS_IDENTICAL } else { LOGITS_FAIL }
+    return
+  }
+  // Section 6, correction C19. `top_k` yields `min(TOP_K, n_vocab)` ranks, so a vocabulary smaller
+  // than ten can never reach an agreement of ten and `WITHIN` would be unreachable by arithmetic
+  // rather than by measurement. The requirement is "the whole top ten, in order", which for a
+  // vocabulary of `n` under ten is the whole vocabulary.
+  required := if n_vocab < TOP_K { n_vocab } else { TOP_K }
+  within := worst <= LOGIT_TOLERANCE_TEN_THOUSANDTHS
+    && o.argmax == o.logits_argmax_reference
+    && agreement >= required
+  o.logits_verdict = if within { LOGITS_WITHIN } else { LOGITS_FAIL }
+}
+
+fn compare_source_file(
+  reference_path: str,
+  borrow m: GraphMembers,
+  borrow tokens: TokenColumns,
+  borrow window: slice<u8>,
+  layer: i64,
+  borrow mut temp: buffer,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  handle := match fs.open_rw(reference_path) {
+    Ok(value) => value,
+    Err(failure) => {
+      return Err(pack_fault("R5_SOURCE_UNREADABLE", error_name(failure).clone()))
+    },
+  }
+  size := match handle.len() {
+    Ok(value) => value,
+    Err(failure) => {
+      return Err(pack_fault("R5_SOURCE_UNREADABLE", error_name(failure).clone()))
+    },
+  }
+  return compare_source(handle, size, m, tokens, window, layer, temp, c)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Steps 3 to 16 (section 3.9)
+// ---------------------------------------------------------------------------------------------
+
+// Steps 3, 4, and 5 to 10: the token list, the declared attention width, the geometry document, and
+// the two range checks that need `n_vocab`. `KV_WIDTH` is fail-closed and has **no default**: it is
+// what makes the comparison against the transcript meaningful, so section 3.3 makes it travel with
+// the transcript rather than be derived from it.
+fn stage_geometry(
+  tokens_text: str,
+  width_text: str,
+  width_declared: bool,
+  geometry_path: str,
+  borrow mut tokens: TokenColumns,
+  borrow mut o: Outcome,
+) -> layer_qwen2.Geometry {
+  mut g := layer_qwen2.empty_geometry()
+  lexical := layer_forward.parse_tokens(tokens_text, 9223372036854775807)
+  if !lexical.ok {
+    detail_view: str := lexical.detail
+    fail(o, "R5_TOKENS", detail_view)
+    return g
+  }
+  o.attention_width = lexical.count
+  o.reconciliation_width = lexical.count
+  if width_declared {
+    width := parse_index(width_text)
+    if width < lexical.count || width > layer_qwen2.MAX_ATTENTION_WIDTH {
+      fail(o, "R5_KV_WIDTH", labelled("kv_width", width))
+      return g
+    }
+    o.reconciliation_width = width
+  }
+  geometry_text := match fs.read_file(geometry_path) {
+    Ok(value) => value,
+    Err(failure) => {
+      fail(o, "R5_GEOMETRY_UNREADABLE", error_name(failure))
+      return g
+    },
+  }
+  geometry_view: str := geometry_text
+  g = layer_qwen2.parse_geometry(geometry_view)
+  o.arch = g.arch.clone()
+  o.n_layer = g.n_layer
+  o.n_embd = g.n_embd
+  o.n_head = g.n_head
+  o.n_head_kv = g.n_head_kv
+  o.head_dim = g.head_dim
+  o.n_ff = g.n_ff
+  o.n_vocab = g.n_vocab
+  o.context_length = g.context_length
+  o.rms_eps_bits = g.rms_eps_bits
+  o.rope_type = g.rope_type
+  o.rope_dim_count = g.rope_dim_count
+  o.rope_freq_base_bits = g.rope_freq_base_bits
+  o.attn_scale_bits = g.attn_scale_bits
+  if g.code.len() > 0 {
+    code_view: str := g.code
+    detail_view: str := g.detail
+    fail(o, code_view, detail_view)
+    return g
+  }
+  parsed := layer_forward.parse_tokens(tokens_text, g.n_vocab)
+  if !parsed.ok {
+    detail_view: str := parsed.detail
+    fail(o, "R5_TOKENS", detail_view)
+    return g
+  }
+  mut ids: array_builder<i64> := array_builder()
+  mut copy_at := 0
+  loop {
+    if copy_at >= parsed.count { break }
+    ids.push(parsed.ids[copy_at])
+    copy_at = copy_at + 1
+  }
+  o.token_count = parsed.count
+  o.narrow_layer = g.n_layer - 1
+  o.narrow_index = parsed.count - 1
+  tokens = TokenColumns { count: parsed.count, ids: ids.build() }
+  return g
+}
+
+// Step 12, role-qualified, and steps 14 and 15 for the two `WeightBlock`s. Section 2.1 fact 2 is
+// why the third term exists, and section 3.4's tied-embedding rule is **derived** here rather than
+// assumed: when the output block's `role_id` 14 member names the same tensor as the embedding
+// block's `role_id` 12 member, the head's weight is read from that member's own `pack_offset` and
+// the document says so.
+fn stage_ends(
+  borrow pak: file,
+  borrow x: alignpack_read.PackIndex,
+  borrow g: layer_qwen2.Geometry,
+  borrow mut ends: Ends,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  embed_index := find_block_with_role(
+    pak, x, layer_qwen2.KIND_WEIGHT, -1, layer_qwen2.ROLE_TOKEN_EMBD, "token_embd", c)?
+  output_index := find_block_with_role(
+    pak, x, layer_qwen2.KIND_WEIGHT, -1, layer_qwen2.ROLE_OUTPUT, "output", c)?
+  embed_block := alignpack_read.block_at(x, embed_index)?
+  output_block := alignpack_read.block_at(x, output_index)?
+  embed_members := read_block_members(pak, x, embed_block, c)?
+  output_members := read_block_members(pak, x, output_block, c)?
+  embed_slot := role_slot(embed_members, layer_qwen2.ROLE_TOKEN_EMBD)
+  norm_slot := role_slot(output_members, layer_qwen2.ROLE_OUTPUT_NORM)
+  out_slot := role_slot(output_members, layer_qwen2.ROLE_OUTPUT)
+  if norm_slot < 0 {
+    return Err(pack_fault("R5_MEMBER_MISSING", layer_named(-1, "role", "output_norm")))
+  }
+  if embed_members.dim0[embed_slot] != g.n_embd || embed_members.dim1[embed_slot] != g.n_vocab {
+    return Err(pack_fault("R5_SHAPE", layer_named(-1, "role", "token_embd")))
+  }
+  // `output_norm` is one row: the container records `n_dims` as the packer chose to, so the row
+  // count is what the shape check uses, exactly as R5A's member table does.
+  if output_members.dim0[norm_slot] != g.n_embd || output_members.dim1[norm_slot] != 1 {
+    return Err(pack_fault("R5_SHAPE", layer_named(-1, "role", "output_norm")))
+  }
+  if output_members.dim0[out_slot] != g.n_embd || output_members.dim1[out_slot] != g.n_vocab {
+    return Err(pack_fault("R5_SHAPE", layer_named(-1, "role", "output")))
+  }
+  row_bytes := embed_members.nbytes[embed_slot] / g.n_vocab
+  if row_bytes <= 0 || row_bytes * g.n_vocab != embed_members.nbytes[embed_slot] {
+    return Err(pack_fault("R5_SHAPE", layer_named(-1, "role", "token_embd")))
+  }
+  // Section 6, correction C7. The plan derived `output_tied` from the two members' decoded
+  // **names**. Reading a name needs `member_at` and then `member_name`, and at this pin the region
+  // checker refuses to hold the first call's `PackMember` across the second while both take the
+  // same `borrow mut Counters` — "cannot retain a shorter-lived view through this mutable borrow".
+  // The source-tensor identity is the same fact and a stronger one: two members that are the same
+  // GGUF tensor carry the same `source_offset` and the same `nbytes`, whatever they are called.
+  tied := embed_members.source_offset[embed_slot] == output_members.source_offset[out_slot]
+    && embed_members.nbytes[embed_slot] == output_members.nbytes[out_slot]
+  norm_bytes := align_up(output_members.nbytes[norm_slot], x.block_align)
+  ends = Ends {
+    embed_block_index: embed_index,
+    output_block_index: output_index,
+    row_bytes: row_bytes,
+    embed_type: embed_members.ggml_type[embed_slot],
+    embed_nbytes: embed_members.nbytes[embed_slot],
+    embed_pack_offset: embed_members.pack_offset[embed_slot],
+    embed_source: embed_members.source_offset[embed_slot],
+    embed_window_bytes: 0,
+    norm_type: output_members.ggml_type[norm_slot],
+    norm_nbytes: output_members.nbytes[norm_slot],
+    norm_pack_offset: output_members.pack_offset[norm_slot],
+    norm_source: output_members.source_offset[norm_slot],
+    out_type: output_members.ggml_type[out_slot],
+    out_nbytes: output_members.nbytes[out_slot],
+    out_pack_offset: output_members.pack_offset[out_slot],
+    out_source: output_members.source_offset[out_slot],
+    out_window: norm_bytes,
+    head_window_bytes: norm_bytes + align_up(output_members.nbytes[out_slot], x.block_align),
+    tied: tied,
+  }
+  return Ok(())
+}
+
+// Step 16. The sweep of section 3.5, over the blocks this run will read, before anything is
+// reserved. Section 2.1 fact 3 is why it is a sweep and not a formula, and fact 1 is why the
+// maximum is the head: 447,082,496 B against 149,112,832 for the largest layer pair.
+fn stage_window(
+  borrow p: Plan,
+  borrow ends: Ends,
+  block_align: i64,
+  tokens: i64,
+  borrow mut o: Outcome,
+) -> i64 {
+  embed_bytes := align_up(ends.row_bytes * tokens, block_align)
+  mut peak := embed_bytes
+  o.peak_block_index = o.embedding_block_index
+  o.peak_block_kind = layer_qwen2.KIND_WEIGHT
+  o.peak_block_layer = -1
+  mut layer := 0
+  loop {
+    if layer >= p.n_layer { break }
+    if p.layer_window_bytes[layer] > peak {
+      peak = p.layer_window_bytes[layer]
+      o.peak_block_index = p.attention_index[layer]
+      o.peak_block_kind = layer_qwen2.KIND_ATTENTION
+      o.peak_block_layer = layer
+    }
+    layer = layer + 1
+  }
+  if ends.head_window_bytes > peak {
+    peak = ends.head_window_bytes
+    o.peak_block_index = o.output_block_index
+    o.peak_block_kind = layer_qwen2.KIND_WEIGHT
+    o.peak_block_layer = -1
+  }
+  o.peak_block_bytes = peak
+  o.window_bytes = peak
+  if peak <= 0 || peak > MAX_WINDOW_BYTES {
+    fail(o, "R5_WINDOW_BUDGET", labelled("window", peak))
+    return -1
+  }
+  return peak
+}
+
+// Step 22, and section 5.6's second risk: a Q6_K `output.weight` discovered unsupported after four
+// gigabytes of I/O is a failure this design refuses to be able to have. Every member of every block
+// the run will read is type-checked **before the first read**.
+fn stage_types(
+  borrow m: GraphMembers, layer: i64, borrow mut o: Outcome) {
+  mut at := 0
+  loop {
+    if at >= m.count || o.code.len() > 0 { break }
+    status := ggml_ffi.type_ok_status(m.ggml_type[at], m.ne0[at])
+    if status != 0 {
+      code := if status == ggml_ffi.STATUS_TYPE { "R5_TYPE_UNSUPPORTED" } else { "R5_SHAPE" }
+      fail(o, code, layer_named(layer, "role", graph_member_label(m, at)))
+    }
+    at = at + 1
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The schedule (steps 24 to 27)
+// ---------------------------------------------------------------------------------------------
+
+// One layer's row of `schedule[]`, produced by the two passes over one window fill.
+pub LayerRow {
+  digest: string,
+  pread_ns: i64,
+  compute_ns: i64,
+  node_count: i64,
+  bit_sum: i64,
+  sum_millionths: i64,
+  ne0: i64,
+  ne1: i64,
+  nonfinite: i64,
+}
+
+fn empty_layer_row() -> LayerRow = LayerRow {
+  digest: "".clone(),
+  pread_ns: 0,
+  compute_ns: 0,
+  node_count: 0,
+  bit_sum: 0,
+  sum_millionths: 0,
+  ne0: 0,
+  ne1: 0,
+  nonfinite: 0,
+}
+
+fn spec_for(
+  kind: i64,
+  index: i64,
+  layer: i64,
+  tokens_in: i64,
+  width: i64,
+  last: bool,
+  wide: bool,
+  base: i64,
+  count: i64,
+  output_slot: i64,
+  reference: bool,
+  compare: bool,
+  n_embd: i64,
+) -> GraphSpec = GraphSpec {
+  kind: kind,
+  index: index,
+  layer: layer,
+  tokens_in: tokens_in,
+  tokens_out: if last { 1 } else { tokens_in },
+  width: width,
+  last: last,
+  wide: wide,
+  oracle_base: base,
+  oracle_count: count,
+  output_slot: output_slot,
+  reference: reference,
+  compare: compare,
+  n_embd: n_embd,
+}
+
+// The per-graph bookkeeping every stage repeats: the activation peak, the slot high-water, the two
+// node-count totals, and the graph ordinal.
+fn account(
+  borrow r: GraphResult, primary: bool, borrow mut graphs: array_builder<i64>,
+  borrow mut o: Outcome) {
+  graphs.push(r.activation_bytes)
+  if r.activation_bytes > o.activation_bytes_peak { o.activation_bytes_peak = r.activation_bytes }
+  if r.slot_high_water > o.slot_high_water { o.slot_high_water = r.slot_high_water }
+  if primary {
+    o.node_count_total = o.node_count_total + r.node_count
+    o.compute_ns = o.compute_ns + r.compute_ns
+  } else {
+    o.reconciliation_node_count = o.reconciliation_node_count + r.node_count
+    o.reconciliation_compute_ns = o.reconciliation_compute_ns + r.compute_ns
+  }
+  o.reference_compute_ns = o.reference_compute_ns + r.reference_compute_ns
+}
+
+// Steps 11 to 16: the container, the coverage, the three hundred and thirty-nine member records,
+// and the window sweep. Nothing here touches ggml and nothing outside the process is written.
+fn stage_plan(
+  borrow pak: file,
+  borrow g: layer_qwen2.Geometry,
+  borrow table: layer_qwen2.MemberTable,
+  tokens: i64,
+  borrow mut plan: Plan,
+  borrow mut ends: Ends,
+  borrow mut o: Outcome,
+  borrow mut c: alignpack_read.Counters,
+) -> i64 {
+  index := match alignpack_read.open_pack(pak, c) {
+    Ok(value) => value,
+    Err(f) => {
+      pack_fault_into(o, f)
+      return -1
+    },
+  }
+  o.format_version = index.format_version
+  o.block_align = index.block_align
+  o.member_align = index.member_align
+  o.block_count = index.block_count
+  o.member_count = index.member_count
+  o.total_bytes = index.total_bytes
+  o.payload_offset = index.payload_offset
+  match stage_ends(pak, index, g, ends, c) {
+    Ok(_) => {},
+    Err(f) => { pack_fault_into(o, f) },
+  }
+  o.embedding_block_index = ends.embed_block_index
+  o.output_block_index = ends.output_block_index
+  o.output_tied = ends.tied
+  o.output_ggml_type = ends.out_type
+  o.head_output_norm_bytes = ends.norm_nbytes
+  o.head_output_bytes = ends.out_nbytes
+  if o.code.len() > 0 { return -1 }
+  take_pack(o, validate_coverage(index, g.n_layer))
+  if o.code.len() > 0 { return -1 }
+  plan = match build_plan(pak, index, table, g.n_layer, c) {
+    Ok(value) => value,
+    Err(f) => {
+      pack_fault_into(o, f)
+      return -1
+    },
+  }
+  o.reader_pread_count = c.pread_count
+  o.reader_bytes_read = c.bytes_read
+  return stage_window(plan, ends, index.block_align, tokens, o)
+}
+
+// Steps 20 to 34. Every ggml object below the backend is created and freed inside `run_graph`, so
+// this function holds exactly two: the device and the backend.
+pub fn execute(
+  pack_path: str,
+  geometry_path: str,
+  tokens_text: str,
+  width_text: str,
+  width_declared: bool,
+  reference_path: str,
+  transcript_path: str,
+  logits_path: str,
+  borrow mut tokens: TokenColumns,
+  borrow mut schedule: ScheduleColumns,
+  borrow mut graphs: GraphColumns,
+  borrow mut top: TopColumns,
+) -> Outcome {
+  started := time.instant()
+  mut o := empty_outcome()
+  o.fp_contract_off = ggml_ffi.fp_contract_off()
+  o.reference_present = reference_path.len() > 0
+  o.transcript_present = transcript_path.len() > 0
+  o.logits_present = logits_path.len() > 0
+
+  g := stage_geometry(tokens_text, width_text, width_declared, geometry_path, tokens, o)
+  if o.code.len() > 0 {
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  table := layer_qwen2.mf_layer_member_table(g)
+  pak := match fs.open_rw(pack_path) {
+    Ok(handle) => handle,
+    Err(failure) => {
+      fail(o, "R4_PACK_UNREADABLE", error_name(failure))
+      o.elapsed_ns = time.instant() - started
+      return o
+    },
+  }
+  mut counters := alignpack_read.new_counters()
+  mut plan := empty_plan()
+  mut ends := empty_ends()
+  window_bytes := stage_plan(pak, g, table, tokens.count, plan, ends, o, counters)
+  if window_bytes < 0 {
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // Step 18. Every allocation is a function of the geometry, the token count, and the block table,
+  // computed and checked before anything is reserved.
+  residual_bytes := g.n_embd * tokens.count * 4
+  logits_bytes := g.n_vocab * 4
+  readback_bytes := if g.n_ff * tokens.count * 4 > logits_bytes {
+    g.n_ff * tokens.count * 4
+  } else {
+    logits_bytes
+  }
+  o.residual_bytes = residual_bytes
+  o.logits_bytes = logits_bytes
+  if residual_bytes <= 0 || residual_bytes > MAX_WINDOW_BYTES {
+    fail(o, "R5_WINDOW_BUDGET", "residual")
+  }
+  if o.code.len() == 0 && (logits_bytes <= 0 || logits_bytes > MAX_WINDOW_BYTES) {
+    fail(o, "R5_WINDOW_BUDGET", "logits")
+  }
+  if o.code.len() > 0 {
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+
+  // The one Align-owned weight window, over-reserved by `MAX_TENSOR_ALIGNMENT` so the arm can hand
+  // ggml an **interior** range that starts on a boundary, allocated exactly once and reused thirty
+  // times. `buffer(n)` publishes no length, so the reservation is written before it is a view.
+  mut weights: buffer := buffer(window_bytes + MAX_TENSOR_ALIGNMENT)
+  fill_zero(weights, 1)
+  pad := MAX_TENSOR_ALIGNMENT - base_mod(weights, MAX_TENSOR_ALIGNMENT)
+  prime_window(weights, pad - 1 + window_bytes)
+  weights_view := weights.bytes()
+  if weights_view.len() != pad + window_bytes {
+    fail(o, "R4_WINDOW_UNAVAILABLE", "weights")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  window_view := weights_view[pad..pad + window_bytes]
+
+  embed_members := build_embed_members(g, ends, tokens.count)
+  head_members := build_head_members(g, ends)
+
+  // Step 19: the embedding read, one `pread` group per row. Section 2.5's measurement is inherited
+  // unchanged and at whole-model scale it matters more, not less: the whole member is 306,561,024 B
+  // against the 12,096 B this prefill uses.
+  read_started := time.instant()
+  mut transient: buffer := buffer(CHUNK_BYTES)
+  take_pack(o, fill_members(
+      pak, embed_members, tokens, window_view, transient, counters))
+  o.pread_ns = o.pread_ns + (time.instant() - read_started)
+  o.window_reuse_count = 1
+  if o.code.len() > 0 {
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+
+  // Step 20. Availability, and where the default stub shim stops: everything above — the whole
+  // reader, the geometry, every block, coverage, member, shape, and window check — has run for real
+  // without ggml, without a model, and without a transcript.
+  if !ggml_ffi.available() {
+    fail(o, "R5_GGML_UNAVAILABLE", "stub")
+    o.verdict = VERDICT_UNAVAILABLE
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  alignment := ggml_ffi.tensor_alignment()
+  o.tensor_alignment = if alignment > 0 { alignment } else { 0 }
+  o.table_drift = ggml_ffi.table_drift()
+  if alignment <= 0 || alignment > MAX_TENSOR_ALIGNMENT {
+    fail(o, "R5_ABI", labelled("alignment", alignment))
+  }
+  if o.code.len() == 0 && o.table_drift >= 0 {
+    fail(o, "R5_ABI", labelled("type", o.table_drift))
+  }
+  if o.code.len() == 0 {
+    stage_types(embed_members, -1, o)
+    mut probe := 0
+    loop {
+      if probe >= g.n_layer || o.code.len() > 0 { break }
+      probe_members := build_layer_members(table, plan, probe)
+      stage_types(probe_members, probe, o)
+      probe = probe + 1
+    }
+  }
+  if o.code.len() == 0 { stage_types(head_members, g.n_layer, o) }
+  if o.code.len() > 0 {
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  context_bytes := ggml_ffi.graph_context_bytes(layer_qwen2.MAX_NODE_SLOTS)
+  o.graph_context_bytes = context_bytes
+  if context_bytes <= 0 {
+    fail(o, "R5_ABI", labelled("graph_context_bytes", context_bytes))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  schedule_model(
+    pak, g, table, plan, ends, tokens, embed_members, head_members, window_view,
+    context_bytes, residual_bytes, logits_bytes, readback_bytes,
+    reference_path, transcript_path, logits_path, schedule, graphs, top, transient, counters, o)
+  o.elapsed_ns = time.instant() - started
+  return o
+}
+
+// The thirty window fills and the two passes over each one. Section 3.7: **exactly one pass is
+// compared** — the reconciliation pass when the declared width exceeds the token count, the runtime
+// pass otherwise — and the self-reference oracle mirrors whichever that is, so `reference.nodes`
+// counts each node once.
+fn schedule_model(
+  borrow pak: file,
+  borrow g: layer_qwen2.Geometry,
+  borrow table: layer_qwen2.MemberTable,
+  borrow plan: Plan,
+  borrow ends: Ends,
+  borrow tokens: TokenColumns,
+  borrow embed_members: GraphMembers,
+  borrow head_members: GraphMembers,
+  borrow window: slice<u8>,
+  context_bytes: i64,
+  residual_bytes: i64,
+  logits_bytes: i64,
+  readback_bytes: i64,
+  reference_path: str,
+  transcript_path: str,
+  logits_path: str,
+  borrow mut schedule: ScheduleColumns,
+  borrow mut graphs: GraphColumns,
+  borrow mut top: TopColumns,
+  borrow mut transient: buffer,
+  borrow mut counters: alignpack_read.Counters,
+  borrow mut o: Outcome,
+) {
+  wide := o.reconciliation_width > tokens.count
+  o.attention_width = tokens.count
+  slot_bytes := layer_qwen2.SLOT_HEADER_BYTES + layer_qwen2.SLOT_BYTES * layer_qwen2.MAX_NODE_SLOTS
+  mut slots: buffer := buffer(slot_bytes + 8)
+  fill_zero(slots, 1)
+  slot_pad := 8 - base_mod(slots, 8)
+  fill_zero(slots, slot_pad - 1 + slot_bytes)
+  mut reference_slots: buffer := buffer(slot_bytes + 8)
+  fill_zero(reference_slots, 1)
+  reference_pad := 8 - base_mod(reference_slots, 8)
+  fill_zero(reference_slots, reference_pad - 1 + slot_bytes)
+  mut mask_narrow: buffer := buffer(tokens.count * tokens.count * 4)
+  layer_qwen2.mf_write_mask(mask_narrow, tokens.count, tokens.count)
+  mut mask_wide: buffer := buffer(o.reconciliation_width * tokens.count * 4)
+  layer_qwen2.mf_write_mask(mask_wide, o.reconciliation_width, tokens.count)
+  // The gathered ids remapped to `0..T-1` — the embedding window holds only the rows this prefill
+  // needs — and the positions, which are the same vector.
+  mut index_image: buffer := buffer(tokens.count * 4)
+  mut out_ids_image: buffer := buffer(4)
+  mut image_at := 0
+  loop {
+    if image_at >= tokens.count { break }
+    index_image.put_u32_le(image_at as u32)
+    image_at = image_at + 1
+  }
+  out_ids_image.put_u32_le((tokens.count - 1) as u32)
+  mut residual_rt: buffer := buffer(residual_bytes)
+  prime_window(residual_rt, residual_bytes)
+  mut residual_rc: buffer := buffer(residual_bytes)
+  prime_window(residual_rc, residual_bytes)
+  mut logits_rt: buffer := buffer(logits_bytes)
+  prime_window(logits_rt, logits_bytes)
+  mut logits_rc: buffer := buffer(logits_bytes)
+  prime_window(logits_rc, logits_bytes)
+  mut node_window: buffer := buffer(readback_bytes)
+  prime_window(node_window, readback_bytes)
+  mut reference_window: buffer := buffer(readback_bytes)
+  prime_window(reference_window, readback_bytes)
+
+  slots_all := slots.bytes()
+  reference_slots_all := reference_slots.bytes()
+  mask_narrow_view := mask_narrow.bytes()
+  mask_wide_view := mask_wide.bytes()
+  index_view := index_image.bytes()
+  out_ids_view := out_ids_image.bytes()
+  residual_rt_view := residual_rt.bytes()
+  residual_rc_view := residual_rc.bytes()
+  logits_rt_view := logits_rt.bytes()
+  logits_rc_view := logits_rc.bytes()
+  node_view := node_window.bytes()
+  reference_view := reference_window.bytes()
+  if slots_all.len() < slot_pad + slot_bytes
+    || reference_slots_all.len() < reference_pad + slot_bytes
+    || mask_narrow_view.len() != tokens.count * tokens.count * 4
+    || mask_wide_view.len() != o.reconciliation_width * tokens.count * 4
+    || index_view.len() != tokens.count * 4 || out_ids_view.len() != 4
+    || residual_rt_view.len() != residual_bytes || residual_rc_view.len() != residual_bytes
+    || logits_rt_view.len() != logits_bytes || logits_rc_view.len() != logits_bytes
+    || node_view.len() != readback_bytes || reference_view.len() != readback_bytes {
+    fail(o, "R4_WINDOW_UNAVAILABLE", "slots")
+    return
+  }
+  slot_view := slots_all[slot_pad..slot_pad + slot_bytes]
+  ref_slot_view := reference_slots_all[reference_pad..reference_pad + slot_bytes]
+
+  oracle := layer_qwen2.mf_oracle_table(g.n_layer)
+  embed_nodes := layer_qwen2.mf_embed_node_table()
+  head_nodes := layer_qwen2.mf_head_node_table(g)
+  layer_nodes_rt := layer_qwen2.mf_layer_node_table(g, tokens.count, tokens.count)
+  layer_nodes_rc := layer_qwen2.mf_layer_node_table(g, tokens.count, o.reconciliation_width)
+  mut scan := layer_forward.empty_transcript_scan()
+  mut ranges := empty_ranges()
+  if o.transcript_present {
+    declared := o.reconciliation_width
+    prepare_transcript(transcript_path, oracle, g.n_layer, declared, scan, ranges, o)
+  }
+  mut source_counters := alignpack_read.new_counters()
+  mut breach := false
+  mut schedule_rows := 0
+  mut activation: array_builder<i64> := array_builder()
+  mut digests := builder()
+  mut attention_block: array_builder<i64> := array_builder()
+  mut mlp_block: array_builder<i64> := array_builder()
+  mut attention_bytes: array_builder<i64> := array_builder()
+  mut mlp_bytes: array_builder<i64> := array_builder()
+  mut attn_v_type: array_builder<i64> := array_builder()
+  mut ffn_down_type: array_builder<i64> := array_builder()
+  mut pread_column: array_builder<i64> := array_builder()
+  mut compute_column: array_builder<i64> := array_builder()
+  mut node_column: array_builder<i64> := array_builder()
+  mut bit_column: array_builder<i64> := array_builder()
+  mut sum_column: array_builder<i64> := array_builder()
+  mut ne0_column: array_builder<i64> := array_builder()
+  mut ne1_column: array_builder<i64> := array_builder()
+  mut nonfinite_column: array_builder<i64> := array_builder()
+
+  mut backend := ggml_ffi.null_handle()
+  device := ggml_ffi.device_open()
+  if o.code.len() == 0 && ggml_ffi.handle_absent(device) {
+    fail(o, "R5_GGML_UNAVAILABLE", "device")
+  }
+  if o.code.len() == 0 {
+    backend = ggml_ffi.backend_open(device)
+    if ggml_ffi.handle_absent(backend) {
+      fail(o, "R5_GGML_INIT", "backend")
+    } else {
+      o.backends_created = o.backends_created + 1
+      o.backend_name = ggml_ffi.backend_name(backend)
+    }
+  }
+  o.graph_count = g.n_layer + 2
+
+  // Graph 0: the embedding gather. It is its own graph, which is what makes all twenty-eight layer
+  // graphs the same table walked twenty-eight times with different weights (section 2.4).
+  mut embed_result := empty_graph_result()
+  if o.code.len() == 0 {
+    if o.reference_present {
+      take_pack(o, compare_source_file(
+          reference_path, embed_members, tokens, window, -1, transient, source_counters))
+    }
+    spec := spec_for(
+      GRAPH_EMBED, 0, -1, tokens.count, tokens.count, false, false, 0, 1,
+      layer_qwen2.mf_embed_output_slot(), o.reference_present, true, g.n_embd)
+    run_graph(
+      device, backend, context_bytes, spec, embed_members, embed_nodes, oracle, window,
+      slot_view, ref_slot_view, residual_rt_view, index_view, mask_narrow_view, out_ids_view,
+      node_view, reference_view, residual_rt_view, scan, ranges.start, ranges.length, breach,
+      embed_result, o)
+    account(embed_result, true, activation, o)
+    o.reconciliation_node_count = o.reconciliation_node_count + embed_result.node_count
+    if o.ggml_buffers_created != o.ggml_buffers_freed || o.contexts_created != o.contexts_freed
+      || o.gallocrs_created != o.gallocrs_freed {
+      o.graph_balance_failures = o.graph_balance_failures + 1
+    }
+    take_pack(o, window_put(
+        residual_rc_view, 0, residual_rt_view, embed_result.out_bytes, "residual"))
+  }
+
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer || o.code.len() > 0 { break }
+    members := build_layer_members(table, plan, layer)
+    read_started := time.instant()
+    take_pack(o, fill_members(pak, members, tokens, window, transient, counters))
+    layer_pread := time.instant() - read_started
+    o.pread_ns = o.pread_ns + layer_pread
+    o.window_reuse_count = o.window_reuse_count + 1
+    if o.code.len() == 0 && o.reference_present {
+      take_pack(o, compare_source_file(
+          reference_path, members, tokens, window, layer, transient, source_counters))
+    }
+    last := layer == g.n_layer - 1
+    mut runtime := empty_graph_result()
+    mut reconciliation := empty_graph_result()
+    if o.code.len() == 0 {
+      spec := spec_for(
+        GRAPH_LAYER, 1 + layer, layer, tokens.count, tokens.count, last, false,
+        layer_qwen2.mf_oracle_layer_base(layer), layer_qwen2.MF_LAYER_ORACLE_COUNT,
+        layer_qwen2.mf_layer_output_slot(), o.reference_present && !wide, !wide, g.n_embd)
+      run_graph(
+        device, backend, context_bytes, spec, members, layer_nodes_rt, oracle, window,
+        slot_view, ref_slot_view, residual_rt_view, index_view, mask_narrow_view, out_ids_view,
+        node_view, reference_view, residual_rt_view, scan, ranges.start, ranges.length, breach,
+        runtime, o)
+      account(runtime, true, activation, o)
+    }
+    if o.code.len() == 0 && wide {
+      spec := spec_for(
+        GRAPH_LAYER, 1 + layer, layer, tokens.count, o.reconciliation_width, last, true,
+        layer_qwen2.mf_oracle_layer_base(layer), layer_qwen2.MF_LAYER_ORACLE_COUNT,
+        layer_qwen2.mf_layer_output_slot(), o.reference_present, true, g.n_embd)
+      run_graph(
+        device, backend, context_bytes, spec, members, layer_nodes_rc, oracle, window,
+        slot_view, ref_slot_view, residual_rc_view, index_view, mask_wide_view, out_ids_view,
+        node_view, reference_view, residual_rc_view, scan, ranges.start, ranges.length, breach,
+        reconciliation, o)
+      account(reconciliation, false, activation, o)
+    }
+    if o.code.len() == 0 && !wide {
+      o.reconciliation_node_count = o.reconciliation_node_count + runtime.node_count
+    }
+    if o.ggml_buffers_created != o.ggml_buffers_freed || o.contexts_created != o.contexts_freed
+      || o.gallocrs_created != o.gallocrs_freed {
+      o.graph_balance_failures = o.graph_balance_failures + 1
+    }
+    if o.code.len() == 0 {
+      span := if wide { reconciliation.out_bytes } else { runtime.out_bytes }
+      expected := g.n_embd * (if last { 1 } else { tokens.count }) * 4
+      if span != expected {
+        fail(o, "R5_RESIDUAL", labelled("layer", layer))
+      } else {
+        compared := if wide { residual_rc_view[0..span] } else { residual_rt_view[0..span] }
+        digest := digest_region(compared)
+        sha_view: str := digest.sha
+        digests.write(sha_view)
+        bit_column.push(digest.bit_sum)
+        sum_column.push(digest.sum_millionths)
+        nonfinite_column.push(digest.nonfinite)
+        ne0_column.push(if wide { reconciliation.out_ne0 } else { runtime.out_ne0 })
+        ne1_column.push(if wide { reconciliation.out_ne1 } else { runtime.out_ne1 })
+        attention_block.push(plan.attention_index[layer])
+        mlp_block.push(plan.mlp_index[layer])
+        attention_bytes.push(plan.attention_member_bytes[layer])
+        mlp_bytes.push(plan.mlp_member_bytes[layer])
+        attn_v_type.push(plan.m_type[layer * table.count + 5])
+        ffn_down_type.push(plan.m_type[layer * table.count + 11])
+        pread_column.push(layer_pread)
+        compute_column.push(runtime.compute_ns)
+        node_column.push(runtime.node_count)
+        schedule_rows = schedule_rows + 1
+      }
+    }
+    layer = layer + 1
+  }
+
+  // Graph 29: the head. `output_norm`, `output`, and the one `MUL_MAT` against 447 MB of Q6_K that
+  // section 2.3's narrowing runs once instead of six times.
+  mut head_runtime := empty_graph_result()
+  mut head_reconciliation := empty_graph_result()
+  if o.code.len() == 0 {
+    read_started := time.instant()
+    take_pack(o, fill_members(
+        pak, head_members, tokens, window, transient, counters))
+    o.head_pread_ns = time.instant() - read_started
+    o.pread_ns = o.pread_ns + o.head_pread_ns
+    o.window_reuse_count = o.window_reuse_count + 1
+  }
+  if o.code.len() == 0 && o.reference_present {
+    take_pack(o, compare_source_file(
+        reference_path, head_members, tokens, window, g.n_layer, transient, source_counters))
+  }
+  head_base := layer_qwen2.mf_oracle_head_base(g.n_layer)
+  if o.code.len() == 0 {
+    spec := spec_for(
+      GRAPH_HEAD, 1 + g.n_layer, g.n_layer, 1, tokens.count, false, false, head_base,
+      layer_qwen2.MF_HEAD_ORACLE_COUNT, layer_qwen2.mf_head_output_slot(),
+      o.reference_present && !wide, !wide, g.n_embd)
+    run_graph(
+      device, backend, context_bytes, spec, head_members, head_nodes, oracle, window,
+      slot_view, ref_slot_view, residual_rt_view, index_view, mask_narrow_view, out_ids_view,
+      node_view, reference_view, logits_rt_view, scan, ranges.start, ranges.length, breach,
+      head_runtime, o)
+    account(head_runtime, true, activation, o)
+    if !wide { o.reconciliation_node_count = o.reconciliation_node_count + head_runtime.node_count }
+  }
+  if o.code.len() == 0 && wide {
+    spec := spec_for(
+      GRAPH_HEAD, 1 + g.n_layer, g.n_layer, 1, o.reconciliation_width, false, false, head_base,
+      layer_qwen2.MF_HEAD_ORACLE_COUNT, layer_qwen2.mf_head_output_slot(),
+      o.reference_present, true, g.n_embd)
+    run_graph(
+      device, backend, context_bytes, spec, head_members, head_nodes, oracle, window,
+      slot_view, ref_slot_view, residual_rc_view, index_view, mask_wide_view, out_ids_view,
+      node_view, reference_view, logits_rc_view, scan, ranges.start, ranges.length, breach,
+      head_reconciliation, o)
+    account(head_reconciliation, false, activation, o)
+  }
+  if o.ggml_buffers_created != o.ggml_buffers_freed || o.contexts_created != o.contexts_freed
+    || o.gallocrs_created != o.gallocrs_freed {
+    o.graph_balance_failures = o.graph_balance_failures + 1
+  }
+  if o.code.len() == 0 {
+    o.head_compute_ns = if wide { head_reconciliation.compute_ns } else { head_runtime.compute_ns }
+    o.head_node_count = if wide { head_reconciliation.node_count } else { head_runtime.node_count }
+    norm_view: str := if wide { head_reconciliation.norm_sha } else { head_runtime.norm_sha }
+    o.result_norm_sha256 = norm_view.clone()
+    o.result_norm_bit_sum =
+    if wide { head_reconciliation.norm_bit_sum } else { head_runtime.norm_bit_sum }
+    head_bytes := if wide { head_reconciliation.out_bytes } else { head_runtime.out_bytes }
+    logits := if wide { logits_rc_view } else { logits_rt_view }
+    if head_bytes != logits_bytes {
+      fail(o, "R5_RESIDUAL", labelled("layer", g.n_layer))
+    } else {
+      digest := digest_region(logits)
+      o.sha256 = digest.sha.clone()
+      o.bit_sum = digest.bit_sum
+      o.element_count = g.n_vocab
+      o.nonfinite_count = digest.nonfinite
+      o.argmax = digest.argmax
+      mut top_index: array_builder<i64> := array_builder()
+      mut top_bits: array_builder<i64> := array_builder()
+      top_k(logits, top_index, top_bits)
+      top = TopColumns { index: top_index.build(), bits: top_bits.build() }
+    }
+  }
+  if o.code.len() == 0 && o.logits_present {
+    logits := if wide { logits_rc_view } else { logits_rt_view }
+    compare_logits(logits_path, logits, g.n_vocab, wide, top, o)
+  }
+
+  if !ggml_ffi.handle_absent(backend) {
+    ggml_ffi.backend_close(backend)
+    o.backends_freed = o.backends_freed + 1
+  }
+  o.slot_capacity = ggml_ffi.slots_capacity(slot_view)
+  o.slot_magic_ok = ggml_ffi.slots_ok(slot_view)
+  o.released_before_owner_scope_end =
+  o.ggml_buffers_created == o.ggml_buffers_freed
+    && o.contexts_created == o.contexts_freed
+    && o.backends_created == o.backends_freed
+    && o.gallocrs_created == o.gallocrs_freed
+    && o.graph_balance_failures == 0
+  // Section 6, correction C17. Both verdicts are conclusions about the **whole** run, so neither is
+  // computed from a run that stopped early: an error document that placed one graph's members would
+  // otherwise claim `EXTERNAL` over 1 of 30 graphs, and a reference arm that compared one graph
+  // would claim `IDENTICAL` over the same 1 of 30. A partial measurement is `UNAVAILABLE` and `-`.
+  // `verdict` is settled **before** the two oracle blocks below on purpose: a reference mismatch or
+  // a tolerance breach is a divergence in the arithmetic, not in where the weights landed, and the
+  // placement measurement that reached that point is complete and worth publishing.
+  o.verdict = if o.code.len() > 0 {
+    VERDICT_UNAVAILABLE
+  } else if o.member_placements > 0 && o.pointer_identity_failures == 0 {
+    VERDICT_EXTERNAL
+  } else {
+    VERDICT_COPIED
+  }
+  if o.reference_present && o.reference_compared > 0 && o.code.len() == 0
+    && o.reference_graphs == o.graph_count {
+    if o.reference_identical == o.reference_compared {
+      o.reference_verdict = REFERENCE_IDENTICAL
+    } else {
+      o.reference_verdict = REFERENCE_MISMATCH
+      worst_view: str := o.reference_first_node
+      fail(o, "R5_REFERENCE_MISMATCH",
+        graph_node_at(o.reference_first_graph, worst_view, o.reference_first_index))
+    }
+  }
+  if o.transcript_present && o.code.len() == 0 {
+    if o.oracle_elements <= 0 {
+      fail(o, "R5_ORACLE_MISSING", "elements[0]")
+    } else {
+      o.oracle_verdict = if o.oracle_max_abs <= TOLERANCE_TEN_THOUSANDTHS && !breach {
+        ORACLE_PASS
+      } else {
+        ORACLE_FAIL
+      }
+    }
+  }
+  // Section 6, correction C18. The reference arm re-reads the whole model out of the source GGUF,
+  // and `timings.pread_ns` measures only the window fills. Counting both through one `Counters`
+  // reported 8.7 GB against 515-648 ms and made every bandwidth figure derived from the pair twice
+  // the truth, so the source comparison keeps its own pair.
+  o.reader_pread_count = counters.pread_count
+  o.reader_bytes_read = counters.bytes_read
+  o.reference_pread_count = source_counters.pread_count
+  o.reference_bytes_read = source_counters.bytes_read
+  graphs = GraphColumns { activation_bytes: activation.build() }
+  schedule = ScheduleColumns {
+    count: schedule_rows,
+    digests: digests.to_string(),
+    attention_block: attention_block.build(),
+    mlp_block: mlp_block.build(),
+    attention_bytes: attention_bytes.build(),
+    mlp_bytes: mlp_bytes.build(),
+    attn_v_type: attn_v_type.build(),
+    ffn_down_type: ffn_down_type.build(),
+    pread_ns: pread_column.build(),
+    compute_ns: compute_column.build(),
+    node_count: node_column.build(),
+    bit_sum: bit_column.build(),
+    sum_millionths: sum_column.build(),
+    ne0: ne0_column.build(),
+    ne1: ne1_column.build(),
+    nonfinite: nonfinite_column.build(),
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The document (section 3.8)
+// ---------------------------------------------------------------------------------------------
+
+fn digest_at(borrow s: ScheduleColumns, index: i64) -> str {
+  view: str := s.digests
+  start := index * DIGEST_HEX_BYTES
+  if start < 0 || start + DIGEST_HEX_BYTES > view.len() { return "" }
+  return view[start..start + DIGEST_HEX_BYTES]
+}
+
+// `schedule[]` is the capability's real output: a whole-model failure is diagnosed by finding the
+// **first layer** that moved, and twenty-eight `l_out` digests do that in one document while 874
+// per-node digests would be a forty-times larger document answering the same question.
+pub fn render_schedule(borrow s: ScheduleColumns) -> string {
+  d := builder()
+  mut at := 0
+  loop {
+    if at >= s.count { break }
+    if at > 0 { d.write(",") }
+    d.write("{\"layer\":")
+    d.write_int(at)
+    d.write(",\"attention_block_index\":")
+    d.write_int(column_at(s.attention_block, at))
+    d.write(",\"mlp_block_index\":")
+    d.write_int(column_at(s.mlp_block, at))
+    d.write(",\"attention_bytes\":")
+    d.write_int(column_at(s.attention_bytes, at))
+    d.write(",\"mlp_bytes\":")
+    d.write_int(column_at(s.mlp_bytes, at))
+    d.write(",\"attn_v_ggml_type\":")
+    d.write_int(column_at(s.attn_v_type, at))
+    d.write(",\"ffn_down_ggml_type\":")
+    d.write_int(column_at(s.ffn_down_type, at))
+    d.write(",\"pread_ns\":")
+    d.write_int(column_at(s.pread_ns, at))
+    d.write(",\"compute_ns\":")
+    d.write_int(column_at(s.compute_ns, at))
+    d.write(",\"node_count\":")
+    d.write_int(column_at(s.node_count, at))
+    d.write(",\"l_out_sha256\":")
+    d.write(json_string(digest_at(s, at)))
+    d.write(",\"l_out_bit_sum\":")
+    d.write_int(column_at(s.bit_sum, at))
+    d.write(",\"l_out_f32_sum_millionths\":")
+    d.write_int(column_at(s.sum_millionths, at))
+    d.write(",\"l_out_ne0\":")
+    d.write_int(column_at(s.ne0, at))
+    d.write(",\"l_out_ne1\":")
+    d.write_int(column_at(s.ne1, at))
+    d.write(",\"nonfinite_count\":")
+    d.write_int(column_at(s.nonfinite, at))
+    d.write("}")
+    at = at + 1
+  }
+  return d.to_string()
+}
+
+// The `model` and `selection` objects, in the ledger's declaration order. The prologue and the
+// `pack` object are `render`'s, so this function starts and ends inside the document.
+fn render_head(borrow o: Outcome, borrow tokens: TokenColumns) -> string {
+  d := builder()
+  d.write("\"model\":{\"arch\":")
+  arch_view: str := o.arch
+  d.write(json_string(arch_view))
+  d.write(",\"n_layer\":")
+  d.write_int(o.n_layer)
+  d.write(",\"n_embd\":")
+  d.write_int(o.n_embd)
+  d.write(",\"n_head\":")
+  d.write_int(o.n_head)
+  d.write(",\"n_head_kv\":")
+  d.write_int(o.n_head_kv)
+  d.write(",\"head_dim\":")
+  d.write_int(o.head_dim)
+  d.write(",\"n_ff\":")
+  d.write_int(o.n_ff)
+  d.write(",\"n_vocab\":")
+  d.write_int(o.n_vocab)
+  d.write(",\"context_length\":")
+  d.write_int(o.context_length)
+  d.write(",\"rms_eps_bits\":")
+  d.write_int(o.rms_eps_bits)
+  d.write(",\"rope_type\":")
+  d.write_int(o.rope_type)
+  d.write(",\"rope_dim_count\":")
+  d.write_int(o.rope_dim_count)
+  d.write(",\"rope_freq_base_bits\":")
+  d.write_int(o.rope_freq_base_bits)
+  d.write(",\"attn_scale_bits\":")
+  d.write_int(o.attn_scale_bits)
+  d.write(",\"output_tied\":")
+  d.write(bool_text(o.output_tied))
+  d.write(",\"output_ggml_type\":")
+  d.write_int(o.output_ggml_type)
+  d.write("},\"selection\":{\"token_count\":")
+  d.write_int(o.token_count)
+  d.write(",\"tokens\":[")
+  mut token_at := 0
+  loop {
+    if token_at >= tokens.ids.len() { break }
+    if token_at > 0 { d.write(",") }
+    d.write_int(tokens.ids[token_at])
+    token_at = token_at + 1
+  }
+  d.write("],\"embedding_block_index\":")
+  d.write_int(o.embedding_block_index)
+  d.write(",\"output_block_index\":")
+  d.write_int(o.output_block_index)
+  d.write(",\"narrow_layer\":")
+  d.write_int(o.narrow_layer)
+  d.write(",\"narrow_index\":")
+  d.write_int(o.narrow_index)
+  d.write(",\"attention_width\":")
+  d.write_int(o.attention_width)
+  d.write(",\"reconciliation_width\":")
+  d.write_int(o.reconciliation_width)
+  d.write("}")
+  return d.to_string()
+}
+
+fn render_window(borrow o: Outcome, borrow graphs: GraphColumns) -> string {
+  d := builder()
+  d.write("{\"bytes\":")
+  d.write_int(o.window_bytes)
+  d.write(",\"peak_block_index\":")
+  d.write_int(o.peak_block_index)
+  d.write(",\"peak_block_kind\":")
+  d.write_int(o.peak_block_kind)
+  d.write(",\"peak_block_layer\":")
+  d.write_int(o.peak_block_layer)
+  d.write(",\"peak_block_bytes\":")
+  d.write_int(o.peak_block_bytes)
+  d.write(",\"reuse_count\":")
+  d.write_int(o.window_reuse_count)
+  d.write(",\"pointer_identity_failures\":")
+  d.write_int(o.pointer_identity_failures)
+  d.write(",\"member_placements\":")
+  d.write_int(o.member_placements)
+  d.write(",\"residual_bytes\":")
+  d.write_int(o.residual_bytes)
+  d.write(",\"logits_bytes\":")
+  d.write_int(o.logits_bytes)
+  d.write("},\"graph\":{\"graph_count\":")
+  d.write_int(o.graph_count)
+  d.write(",\"node_count_total\":")
+  d.write_int(o.node_count_total)
+  d.write(",\"reconciliation_node_count\":")
+  d.write_int(o.reconciliation_node_count)
+  d.write(",\"slot_capacity\":")
+  d.write_int(o.slot_capacity)
+  d.write(",\"slot_high_water\":")
+  d.write_int(o.slot_high_water)
+  d.write(",\"activation_bytes_peak\":")
+  d.write_int(o.activation_bytes_peak)
+  d.write(",\"activation_bytes_by_graph\":[")
+  mut at := 0
+  loop {
+    if at >= graphs.activation_bytes.len() { break }
+    if at > 0 { d.write(",") }
+    d.write_int(graphs.activation_bytes[at])
+    at = at + 1
+  }
+  d.write("],\"context_bytes\":")
+  d.write_int(o.graph_context_bytes)
+  d.write(",\"backend_name\":")
+  backend_view: str := o.backend_name
+  d.write(json_string(backend_view))
+  d.write("}")
+  return d.to_string()
+}
+
+fn render_output(borrow o: Outcome, borrow top: TopColumns) -> string {
+  d := builder()
+  d.write("{\"output_norm_bytes\":")
+  d.write_int(o.head_output_norm_bytes)
+  d.write(",\"output_bytes\":")
+  d.write_int(o.head_output_bytes)
+  d.write(",\"pread_ns\":")
+  d.write_int(o.head_pread_ns)
+  d.write(",\"compute_ns\":")
+  d.write_int(o.head_compute_ns)
+  d.write(",\"node_count\":")
+  d.write_int(o.head_node_count)
+  d.write(",\"result_norm_sha256\":")
+  norm_view: str := o.result_norm_sha256
+  d.write(json_string(norm_view))
+  d.write(",\"result_norm_bit_sum\":")
+  d.write_int(o.result_norm_bit_sum)
+  d.write("},\"output\":{\"sha256\":")
+  sha_view: str := o.sha256
+  d.write(json_string(sha_view))
+  d.write(",\"bit_sum\":")
+  d.write_int(o.bit_sum)
+  d.write(",\"element_count\":")
+  d.write_int(o.element_count)
+  d.write(",\"nonfinite_count\":")
+  d.write_int(o.nonfinite_count)
+  d.write(",\"argmax\":")
+  d.write_int(o.argmax)
+  d.write(",\"top_k\":[")
+  mut at := 0
+  loop {
+    if at >= top.index.len() { break }
+    if at > 0 { d.write(",") }
+    d.write("{\"index\":")
+    d.write_int(top.index[at])
+    d.write(",\"bits\":")
+    d.write_int(column_at(top.bits, at))
+    d.write("}")
+    at = at + 1
+  }
+  d.write("]}")
+  return d.to_string()
+}
+
+fn render_oracles(borrow o: Outcome) -> string {
+  d := builder()
+  d.write("{\"present\":")
+  d.write(bool_text(o.reference_present))
+  d.write(",\"verdict\":")
+  d.write(json_string(reference_label(o.reference_verdict)))
+  d.write(",\"graphs_compared\":")
+  d.write_int(o.reference_graphs)
+  d.write(",\"nodes_compared\":")
+  d.write_int(o.reference_compared)
+  d.write(",\"nodes_identical\":")
+  d.write_int(o.reference_identical)
+  d.write(",\"first_difference_graph\":")
+  d.write_int(o.reference_first_graph)
+  d.write(",\"first_difference_node\":")
+  reference_node_view: str := o.reference_first_node
+  d.write(json_string(reference_node_view))
+  d.write(",\"first_difference_index\":")
+  d.write_int(o.reference_first_index)
+  d.write(",\"first_difference_primary_bits\":")
+  d.write_int(o.reference_first_primary_bits)
+  d.write(",\"first_difference_reference_bits\":")
+  d.write_int(o.reference_first_reference_bits)
+  // Section 6, correction C18: the reference GGUF's own reads, kept out of `pack.reader_*` so the
+  // window fills `timings.pread_ns` measures stay comparable with the bytes they moved.
+  d.write(",\"pread_count\":")
+  d.write_int(o.reference_pread_count)
+  d.write(",\"bytes_read\":")
+  d.write_int(o.reference_bytes_read)
+  d.write("},\"oracle\":{\"present\":")
+  d.write(bool_text(o.transcript_present))
+  d.write(",\"verdict\":")
+  d.write(json_string(oracle_label(o.oracle_verdict)))
+  d.write(",\"instrument\":")
+  d.write(json_string("llama-eval-callback"))
+  d.write(",\"instrument_kv_width\":")
+  d.write_int(o.reconciliation_width)
+  d.write(",\"layers_expected\":")
+  d.write_int(o.oracle_layers_expected)
+  d.write(",\"layers_matched\":")
+  d.write_int(o.oracle_layers_matched)
+  d.write(",\"nodes_expected\":")
+  d.write_int(o.oracle_expected)
+  d.write(",\"nodes_matched\":")
+  d.write_int(o.oracle_matched)
+  d.write(",\"elements_compared\":")
+  d.write_int(o.oracle_elements)
+  d.write(",\"max_abs_diff_ten_thousandths\":")
+  d.write_int(o.oracle_max_abs)
+  d.write(",\"max_sum_diff_millionths\":")
+  d.write_int(o.oracle_max_sum)
+  d.write(",\"tolerance_ten_thousandths\":")
+  d.write_int(TOLERANCE_TEN_THOUSANDTHS)
+  d.write(",\"sum_tolerance_millionths\":")
+  d.write_int(SUM_TOLERANCE_MILLIONTHS)
+  d.write(",\"sum_tolerance_relative_ppm\":")
+  d.write_int(SUM_TOLERANCE_RELATIVE_PPM)
+  d.write(",\"worst_layer\":")
+  d.write_int(o.oracle_worst_layer)
+  d.write(",\"worst_node\":")
+  worst_node_view: str := o.oracle_worst_node
+  d.write(json_string(worst_node_view))
+  d.write(",\"worst_element_index\":")
+  d.write_int(o.oracle_worst_element)
+  d.write(",\"transcript_lines\":")
+  d.write_int(o.oracle_lines)
+  d.write(",\"transcript_callback_lines\":")
+  d.write_int(o.oracle_callback_lines)
+  d.write("},\"oracle_logits\":{\"present\":")
+  d.write(bool_text(o.logits_present))
+  d.write(",\"verdict\":")
+  d.write(json_string(logits_label(o.logits_verdict)))
+  d.write(",\"compared_pass\":")
+  d.write(json_string(
+      if o.logits_compared_reconciliation { "reconciliation" } else { "runtime" }))
+  d.write(",\"byte_identical\":")
+  d.write(bool_text(o.logits_byte_identical))
+  d.write(",\"max_abs_diff_ten_thousandths\":")
+  d.write_int(o.logits_max_abs)
+  d.write(",\"tolerance_ten_thousandths\":")
+  d.write_int(LOGIT_TOLERANCE_TEN_THOUSANDTHS)
+  d.write(",\"argmax_primary\":")
+  d.write_int(o.argmax)
+  d.write(",\"argmax_reference\":")
+  d.write_int(o.logits_argmax_reference)
+  d.write(",\"top_k_agreement\":")
+  d.write_int(o.logits_top_k_agreement)
+  d.write(",\"elements_compared\":")
+  d.write_int(o.logits_elements)
+  d.write(",\"reference_sha256\":")
+  logits_sha_view: str := o.logits_reference_sha256
+  d.write(json_string(logits_sha_view))
+  d.write(",\"reference_bit_sum\":")
+  d.write_int(o.logits_reference_bit_sum)
+  d.write("}")
+  return d.to_string()
+}
+
+fn render_tail(borrow o: Outcome) -> string {
+  d := builder()
+  d.write("{\"pread_ns\":")
+  d.write_int(o.pread_ns)
+  d.write(",\"build_ns\":")
+  d.write_int(o.build_ns)
+  d.write(",\"reserve_ns\":")
+  d.write_int(o.reserve_ns)
+  d.write(",\"compute_ns\":")
+  d.write_int(o.compute_ns)
+  d.write(",\"reconciliation_compute_ns\":")
+  d.write_int(o.reconciliation_compute_ns)
+  d.write(",\"reference_compute_ns\":")
+  d.write_int(o.reference_compute_ns)
+  d.write(",\"oracle_ns\":")
+  d.write_int(o.oracle_ns)
+  d.write(",\"elapsed_ns\":")
+  d.write_int(o.elapsed_ns)
+  d.write("},\"lifetime\":{\"ggml_buffers_created\":")
+  d.write_int(o.ggml_buffers_created)
+  d.write(",\"ggml_buffers_freed\":")
+  d.write_int(o.ggml_buffers_freed)
+  d.write(",\"contexts_created\":")
+  d.write_int(o.contexts_created)
+  d.write(",\"contexts_freed\":")
+  d.write_int(o.contexts_freed)
+  d.write(",\"backends_created\":")
+  d.write_int(o.backends_created)
+  d.write(",\"backends_freed\":")
+  d.write_int(o.backends_freed)
+  d.write(",\"graphs_created\":")
+  d.write_int(o.graphs_created)
+  d.write(",\"gallocrs_created\":")
+  d.write_int(o.gallocrs_created)
+  d.write(",\"gallocrs_freed\":")
+  d.write_int(o.gallocrs_freed)
+  d.write(",\"graph_balance_failures\":")
+  d.write_int(o.graph_balance_failures)
+  d.write(",\"released_before_owner_scope_end\":")
+  d.write(bool_text(o.released_before_owner_scope_end))
+  d.write("},\"abi\":{\"tensor_alignment\":")
+  d.write_int(o.tensor_alignment)
+  d.write(",\"table_drift\":")
+  d.write_int(o.table_drift)
+  d.write(",\"slot_magic_ok\":")
+  d.write(bool_text(o.slot_magic_ok))
+  d.write(",\"fp_contract_off\":")
+  d.write(bool_text(o.fp_contract_off))
+  d.write("}}")
+  return d.to_string()
+}
+
+pub fn render(
+  borrow o: Outcome,
+  pack_path: str,
+  geometry_path: str,
+  reference_path: str,
+  transcript_path: str,
+  logits_path: str,
+  borrow tokens: TokenColumns,
+  borrow schedule_json: string,
+  borrow window_json: string,
+  borrow head_json: string,
+  borrow oracles_json: string,
+  borrow tail_json: string,
+) -> string {
+  failed := o.code.len() > 0
+  code_view: str := o.code
+  detail_view: str := o.detail
+  header := render_head(o, tokens)
+  header_view: str := header
+  schedule_view: str := schedule_json
+  window_view: str := window_json
+  head_view: str := head_json
+  oracles_view: str := oracles_json
+  tail_view: str := tail_json
+
+  d := builder()
+  d.write("{\"schema_version\":")
+  d.write_int(SCHEMA_VERSION)
+  d.write(",\"kind\":")
+  d.write(json_string(DOCUMENT_KIND))
+  d.write(",\"pack_path\":")
+  d.write(json_string(pack_path))
+  d.write(",\"geometry_path\":")
+  d.write(json_string(geometry_path))
+  d.write(",\"reference_path\":")
+  d.write(json_string(reference_path))
+  d.write(",\"transcript_path\":")
+  d.write(json_string(transcript_path))
+  d.write(",\"logits_path\":")
+  d.write(json_string(logits_path))
+  d.write(",\"status\":")
+  d.write(json_string(if failed { "error" } else { "ok" }))
+  d.write(",\"error_code\":")
+  d.write(json_string(code_view))
+  d.write(",\"error_detail\":")
+  d.write(json_string(detail_view))
+  d.write(",\"verdict\":")
+  d.write(json_string(verdict_label(o.verdict)))
+  d.write(",\"pack\":{\"format_version\":")
+  d.write_int(o.format_version)
+  d.write(",\"block_align\":")
+  d.write_int(o.block_align)
+  d.write(",\"member_align\":")
+  d.write_int(o.member_align)
+  d.write(",\"block_count\":")
+  d.write_int(o.block_count)
+  d.write(",\"member_count\":")
+  d.write_int(o.member_count)
+  d.write(",\"total_bytes\":")
+  d.write_int(o.total_bytes)
+  d.write(",\"payload_offset\":")
+  d.write_int(o.payload_offset)
+  d.write(",\"reader_pread_count\":")
+  d.write_int(o.reader_pread_count)
+  d.write(",\"reader_bytes_read\":")
+  d.write_int(o.reader_bytes_read)
+  d.write("},")
+  d.write(header_view)
+  d.write(",\"schedule\":[")
+  d.write(schedule_view)
+  d.write("],\"window\":")
+  d.write(window_view)
+  d.write(",\"head\":")
+  d.write(head_view)
+  d.write(",\"reference\":")
+  d.write(oracles_view)
+  d.write(",\"timings\":")
+  d.write(tail_view)
+  return d.to_string()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The summary block and the CLI adapter (section 3.3)
+// ---------------------------------------------------------------------------------------------
+
+fn print_pair(left: i64, right: i64) {
+  b := builder()
+  b.write_int(left)
+  b.write("/")
+  b.write_int(right)
+  rendered := b.to_string()
+  rendered_view: str := rendered
+  print(rendered_view)
+}
+
+fn print_summary(borrow o: Outcome, borrow tokens: TokenColumns, pack_path: str) {
+  failed := o.code.len() > 0
+  print("model forward:")
+  print("status:")
+  if failed { print("ERROR") } else { print("OK") }
+  print("verdict:")
+  print(verdict_label(o.verdict))
+  print("pack path:")
+  sanitized_path := sanitize_summary_line(pack_path)
+  sanitized_path_view: str := sanitized_path
+  print(sanitized_path_view)
+  print("schema:")
+  print(SCHEMA_VERSION)
+  print("arch:")
+  arch_view: str := o.arch
+  sanitized_arch := sanitize_summary_line(arch_view)
+  sanitized_arch_view: str := sanitized_arch
+  print(sanitized_arch_view)
+  print("layers:")
+  print(o.n_layer)
+  print("tokens:")
+  ids := builder()
+  mut token_at := 0
+  loop {
+    if token_at >= tokens.ids.len() { break }
+    if token_at > 0 { ids.write(",") }
+    ids.write_int(tokens.ids[token_at])
+    token_at = token_at + 1
+  }
+  rendered_ids := ids.to_string()
+  rendered_ids_view: str := rendered_ids
+  print(rendered_ids_view)
+  print("window bytes:")
+  print(o.window_bytes)
+  print("window peak block:")
+  print(o.peak_block_index)
+  print("residual bytes:")
+  print(o.residual_bytes)
+  print("activation bytes:")
+  print(o.activation_bytes_peak)
+  print("graphs:")
+  print(o.graph_count)
+  print("graph nodes:")
+  print(o.node_count_total)
+  print("backend:")
+  backend_view: str := o.backend_name
+  sanitized_backend := sanitize_summary_line(backend_view)
+  sanitized_backend_view: str := sanitized_backend
+  print(sanitized_backend_view)
+  print("pread ns:")
+  print(o.pread_ns)
+  print("compute ns:")
+  print(o.compute_ns)
+  print("elapsed ns:")
+  print(o.elapsed_ns)
+  print("logits sha256:")
+  sha_view: str := o.sha256
+  print(sha_view)
+  print("logits bit sum:")
+  print(o.bit_sum)
+  print("logits argmax:")
+  print(o.argmax)
+  print("reference:")
+  print(reference_label(o.reference_verdict))
+  print("reference nodes:")
+  if o.reference_present { print_pair(o.reference_identical, o.reference_compared) } else { print("-") }
+  print("transcript:")
+  print(oracle_label(o.oracle_verdict))
+  print("logits oracle:")
+  print(logits_label(o.logits_verdict))
+  print("max abs diff:")
+  print(o.oracle_max_abs)
+  print("logit max diff:")
+  print(o.logits_max_abs)
+  print("released:")
+  print(o.ggml_buffers_freed + o.contexts_freed + o.backends_freed + o.gallocrs_freed)
+  if failed {
+    print("error:")
+    code_view: str := o.code
+    print(code_view)
+    print("detail:")
+    detail_view: str := o.detail
+    sanitized_detail := sanitize_summary_line(detail_view)
+    sanitized_detail_view: str := sanitized_detail
+    print(sanitized_detail_view)
+  }
+}
+
+// Section 3.3: exactly four, five, six, eight, or nine operands. **Seven is `R5_ARITY`**, and the
+// gap is the contract: `KV_WIDTH` is not optional metadata beside the transcript, it is what makes
+// the comparison against that transcript meaningful, so it travels with it.
+pub fn run(args: array<str>) -> Result<(), Error> {
+  count := args.len()
+  if count < 5 || count == 8 || count > 10 {
+    return Err(Error.Invalid)
+  }
+  if !layer_forward.valid_path(args[2]) || !layer_forward.valid_path(args[3]) {
+    return Err(Error.Invalid)
+  }
+  if count >= 6 && args[5] != "-" && !layer_forward.valid_path(args[5]) {
+    return Err(Error.Invalid)
+  }
+  if count >= 7 && !layer_forward.valid_path(args[6]) {
+    return Err(Error.Invalid)
+  }
+  // Section 6, correction C10. `-` in the transcript position means "no transcript", exactly as it
+  // already does in the document position. Without it the logits oracle is unreachable at the
+  // runtime width: `KV_WIDTH` travels with the transcript, the transcript's `kq-L` `ne0` is
+  // validated against `KV_WIDTH`, and the instrument only ever produces a transcript at **its**
+  // width — so `--model-forward ... TRANSCRIPT 6 LOGITS` refuses itself. `KV_WIDTH` stays in its
+  // own operand position and stays fail-closed.
+  if count >= 9 && args[7] != "-" && !layer_forward.valid_path(args[7]) {
+    return Err(Error.Invalid)
+  }
+  if count == 10 && !layer_forward.valid_path(args[9]) {
+    return Err(Error.Invalid)
+  }
+  reference_path := if count >= 7 { args[6] } else { "" }
+  transcript_path := if count >= 9 && args[7] != "-" { args[7] } else { "" }
+  width_text := if count >= 9 { args[8] } else { "" }
+  width_declared := count >= 9
+  logits_path := if count == 10 { args[9] } else { "" }
+  mut tokens := empty_tokens()
+  mut schedule := empty_schedule()
+  mut graphs := empty_graphs()
+  mut top := empty_top()
+  outcome := execute(
+    args[2], args[3], args[4], width_text, width_declared, reference_path, transcript_path,
+    logits_path, tokens, schedule, graphs, top)
+  schedule_json := render_schedule(schedule)
+  window_json := render_window(outcome, graphs)
+  head_json := render_output(outcome, top)
+  oracles_json := render_oracles(outcome)
+  tail_json := render_tail(outcome)
+  document := render(
+    outcome, args[2], args[3], reference_path, transcript_path, logits_path, tokens,
+    schedule_json, window_json, head_json, oracles_json, tail_json)
+  document_view: str := document
+  if count == 5 || args[5] == "-" {
+    print(document_view)
+  } else {
+    fs.write_file(args[5], document_view)?
+    print_summary(outcome, tokens, args[2])
+  }
+  if outcome.code.len() > 0 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}

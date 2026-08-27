@@ -695,7 +695,7 @@ def geometry_corpus(g):
 # ---------------------------------------------------------------------------------------------
 
 
-def write_corpus(directory):
+def write_corpus(directory, model=False):
     os.makedirs(directory, exist_ok=True)
     written = []
 
@@ -788,17 +788,387 @@ def write_corpus(directory):
 
     emit("transcript-garbage.txt", bytes(range(256)) * 8)
 
+    if model:
+        write_model_corpus(directory, emit)
+
     return written
 
 
 def main(argv):
-    if len(argv) != 2:
-        sys.stderr.write("usage: layer_forward_fixture.py OUTDIR\n")
+    model = "--model" in argv[1:]
+    rest = [a for a in argv[1:] if a != "--model"]
+    if len(rest) != 1:
+        sys.stderr.write("usage: layer_forward_fixture.py OUTDIR [--model]\n")
         return 2
-    for path in write_corpus(argv[1]):
+    for path in write_corpus(rest[0], model=model):
         print(path)
     return 0
 
+
+
+# =============================================================================================
+# R5B-MODEL-PREFILL-FORWARD (`docs/specs/r5b-model-prefill-forward.md` section 5.1)
+#
+# The same generator, extended to a whole **two-layer, thirty-two-token-vocabulary model**: six
+# blocks, twenty-seven members, all F32, and a pure-Python forward pass over the entire prefill —
+# the embedding gather, both layers, the narrowing inside the last one, and the head — which is what
+# makes the logits oracle stub-reachable at all. A second implementation computing the same model is
+# the only way section 4.4's `IDENTICAL` cell can be checked on a host with no model.
+#
+# The geometry is chosen so `n_vocab` (32) differs from `n_ff` (16) and from `n_head * head_dim`
+# (8): a fixture whose dimensions collide cannot catch a transposed head.
+# =============================================================================================
+
+MODEL_TOKENS = [3, 17, 5]
+# `r5b-model-prefill-forward.md` section 6, correction C23. The one token list whose runtime-width
+# logit 0 is -3.69e-05 — exactly zero ten-thousandths — which is the only primary value that makes
+# `primary - reference` wrap to `i64`'s minimum against a saturated reference. Swept out of the
+# generator's own second implementation, which agrees with the engine to zero ten-thousandths.
+MODEL_ABORT_TOKENS = [1, 25, 5]
+MODEL_KV_WIDTH = 8
+
+ROLE_OUTPUT_NORM = 13
+ROLE_OUTPUT = 14
+
+LAYER_ROLES = [
+    ("attn_norm", 0, KIND_ATTENTION),
+    ("attn_q", 1, KIND_ATTENTION),
+    ("attn_q_bias", 2, KIND_ATTENTION),
+    ("attn_k", 3, KIND_ATTENTION),
+    ("attn_k_bias", 4, KIND_ATTENTION),
+    ("attn_v", 5, KIND_ATTENTION),
+    ("attn_v_bias", 6, KIND_ATTENTION),
+    ("attn_output", 7, KIND_ATTENTION),
+    ("ffn_norm", 8, KIND_MLP),
+    ("ffn_gate", 9, KIND_MLP),
+    ("ffn_up", 10, KIND_MLP),
+    ("ffn_down", 11, KIND_MLP),
+]
+
+
+def pad_tensor(a, p0, p1, p2, p3):
+    """`ggml_pad`: zeroes appended at the **end** of each axis, source at the leading positions."""
+    ne = [a.ne[0] + p0, a.ne[1] + p1, a.ne[2] + p2, a.ne[3] + p3]
+    out = [0.0] * (ne[0] * ne[1] * ne[2] * ne[3])
+    for i3 in range(a.ne[3]):
+        for i2 in range(a.ne[2]):
+            for i1 in range(a.ne[1]):
+                for i0 in range(a.ne[0]):
+                    out[i0 + ne[0] * (i1 + ne[1] * (i2 + ne[2] * i3))] = \
+                        a.data[i0 + a.ne[0] * (i1 + a.ne[1] * (i2 + a.ne[2] * i3))]
+    return Tensor(ne, out)
+
+
+def model_dims(role, g):
+    q = g["n_head"] * g["head_dim"]
+    kv = g["n_head_kv"] * g["head_dim"]
+    return {
+        "token_embd": (g["n_embd"], g["n_vocab"]),
+        "output_norm": (g["n_embd"], 1),
+        "output": (g["n_embd"], g["n_vocab"]),
+        "attn_norm": (g["n_embd"], 1),
+        "attn_q": (g["n_embd"], q),
+        "attn_q_bias": (q, 1),
+        "attn_k": (g["n_embd"], kv),
+        "attn_k_bias": (kv, 1),
+        "attn_v": (g["n_embd"], kv),
+        "attn_v_bias": (kv, 1),
+        "attn_output": (g["n_embd"], g["n_embd"]),
+        "ffn_norm": (g["n_embd"], 1),
+        "ffn_gate": (g["n_embd"], g["n_ff"]),
+        "ffn_up": (g["n_embd"], g["n_ff"]),
+        "ffn_down": (g["n_ff"], g["n_embd"]),
+    }[role]
+
+
+def model_tensor(role, layer, g):
+    dim0, dim1 = model_dims(role, g)
+    seed = role if layer < 0 else "%s@%d" % (role, layer)
+    return Tensor([dim0, dim1], weight_values(seed, dim0 * dim1))
+
+
+def model_layer(cur, weights, g, tokens, width, mask, last, records, layer):
+    """One layer of section 3.6's thirty-six-row table, in the order the walk issues it."""
+    t = len(tokens)
+    head_dim, n_head, n_head_kv = g["head_dim"], g["n_head"], g["n_head_kv"]
+    n_embd = g["n_embd"]
+    eps, freq_base = g["rms_eps"], g["rope_freq_base"]
+    positions = list(range(t))
+    suffix = "-%d" % layer
+
+    norm = rms_norm(cur, eps)
+    attn_norm = broadcast(norm, weights["attn_norm"], lambda x, y: x * y)
+    q = broadcast(mul_mat(weights["attn_q"], attn_norm), weights["attn_q_bias"],
+                  lambda x, y: x + y)
+    k = broadcast(mul_mat(weights["attn_k"], attn_norm), weights["attn_k_bias"],
+                  lambda x, y: x + y)
+    v = broadcast(mul_mat(weights["attn_v"], attn_norm), weights["attn_v_bias"],
+                  lambda x, y: x + y)
+    q3 = reshape(q, [head_dim, n_head, t])
+    k3 = reshape(k, [head_dim, n_head_kv, t])
+    v3 = reshape(v, [head_dim, n_head_kv, t])
+    qr = rope_neox(q3, positions, g["rope_dim_count"], freq_base)
+    kr = rope_neox(k3, positions, g["rope_dim_count"], freq_base)
+    qp = permute(qr, [0, 2, 1, 3])
+    kp = permute(kr, [0, 2, 1, 3])
+    if width > t:
+        kp = pad_tensor(cont(kp, [head_dim, t, n_head_kv]), 0, width - t, 0, 0)
+    kq = mul_mat(kp, qp)
+    scale = f32(1.0 / math.sqrt(head_dim))
+    kqs = soft_max_ext(kq, mask, scale)
+    vp = permute(v3, [1, 2, 0, 3])
+    vt = cont(vp, [t, head_dim, n_head_kv])
+    if width > t:
+        vt = pad_tensor(vt, width - t, 0, 0, 0)
+    kqv = mul_mat(vt, kqs)
+    kqvm = permute(kqv, [0, 2, 1, 3])
+    kqv_out = cont(kqvm, [n_embd, t, 1])
+    attn_out = mul_mat(weights["attn_output"], kqv_out)
+    residual = cur
+    narrowed = attn_out
+    if last:
+        narrowed = get_rows(attn_out, [t - 1])
+        residual = get_rows(cur, [t - 1])
+    ffn_inp = broadcast(narrowed, residual, lambda x, y: x + y)
+    ffn_norm = broadcast(rms_norm(ffn_inp, eps), weights["ffn_norm"], lambda x, y: x * y)
+    ffn_gate = mul_mat(weights["ffn_gate"], ffn_norm)
+    ffn_up = mul_mat(weights["ffn_up"], ffn_norm)
+    ffn_swiglu = swiglu_split(ffn_gate, ffn_up)
+    ffn_out = mul_mat(weights["ffn_down"], ffn_swiglu)
+    l_out = broadcast(ffn_out, ffn_inp, lambda x, y: x + y)
+
+    weight_name = "blk.%d.attn_output.weight" % layer
+    records.extend([
+        ("norm" + suffix, "RMS_NORM", "embd" if layer == 0 else "l_out-%d" % (layer - 1), norm),
+        ("attn_norm" + suffix, "MUL", "norm" + suffix, attn_norm),
+        ("Qcur" + suffix, "ADD", "Qcur" + suffix, q),
+        ("Vcur" + suffix, "ADD", "Vcur" + suffix, v),
+        ("Kcur" + suffix, "ADD", "Kcur" + suffix, k),
+        ("Qcur" + suffix, "ROPE", "Qcur" + suffix, qr),
+        ("Kcur" + suffix, "ROPE", "Kcur" + suffix, kr),
+        ("kq" + suffix, "MUL_MAT", "cache_k_l%d (view) (permuted)" % layer, kq),
+        ("kq_soft_max" + suffix, "SOFT_MAX", "kq" + suffix, kqs),
+        ("kqv" + suffix, "MUL_MAT", "cache_v_l%d (view) (permuted)" % layer, kqv),
+        ("kqv_out" + suffix, "CONT", "kqv%s (permuted)" % suffix, kqv_out),
+        ("node_%d" % (100 + layer), "MUL_MAT", weight_name, attn_out),
+        ("ffn_inp" + suffix, "ADD", "node_%d" % (100 + layer), ffn_inp),
+        ("ffn_norm" + suffix, "MUL", "norm" + suffix, ffn_norm),
+        ("ffn_gate" + suffix, "MUL_MAT", "blk.%d.ffn_gate.weight" % layer, ffn_gate),
+        ("ffn_up" + suffix, "MUL_MAT", "blk.%d.ffn_up.weight" % layer, ffn_up),
+        ("ffn_swiglu" + suffix, "SWIGLU", "ffn_gate" + suffix, ffn_swiglu),
+        ("ffn_out" + suffix, "MUL_MAT", "blk.%d.ffn_down.weight" % layer, ffn_out),
+        ("l_out" + suffix, "ADD", "ffn_out" + suffix, l_out),
+    ])
+    return l_out
+
+
+def model_forward(embed, layers, head, g, tokens, width):
+    """The whole prefill: one embedding graph, `n_layer` layer graphs, and the head."""
+    t = len(tokens)
+    mask = Tensor([width, t], [0.0 if c <= r else float("-inf")
+                               for r in range(t) for c in range(width)])
+    records = []
+    embd = get_rows(embed, tokens)
+    records.append(("embd", "GET_ROWS", "token_embd.weight", embd))
+    cur = embd
+    for layer in range(g["n_layer"]):
+        cur = model_layer(cur, layers[layer], g, tokens, width, mask, layer == g["n_layer"] - 1,
+                          records, layer)
+    norm = rms_norm(cur, g["rms_eps"])
+    result_norm = broadcast(norm, head["output_norm"], lambda x, y: x * y)
+    result_output = mul_mat(head["output"], result_norm)
+    records.append(("norm", "RMS_NORM", "l_out-%d" % (g["n_layer"] - 1), norm))
+    records.append(("result_norm", "MUL", "norm", result_norm))
+    records.append(("result_output", "MUL_MAT", "output.weight", result_output))
+    return records, result_output
+
+
+def model_transcript(records, tokens):
+    lines = [
+        "build: 10566 (bb4caa754) with cc for x86_64-unknown-linux-gnu",
+        "number of input tokens = %d" % len(tokens),
+    ]
+    for name, op, source, tensor in records:
+        lines.extend(transcript_block(name, op, source, tensor))
+    return "\n".join(lines) + "\n"
+
+
+def model_members(g):
+    """Twenty-seven members over six blocks, in the container's own order."""
+    out = []
+    embed = Member("token_embd.weight", "token_embd", 12, KIND_WEIGHT,
+                   *model_dims("token_embd", g), model_tensor("token_embd", -1, g).data)
+    out.append(("embed", embed))
+    for layer in range(g["n_layer"]):
+        for role, role_id, kind in LAYER_ROLES:
+            dim0, dim1 = model_dims(role, g)
+            out.append(("layer%d" % layer,
+                        Member("blk.%d.%s.weight" % (layer, role), role, role_id, kind,
+                               dim0, dim1, model_tensor(role, layer, g).data)))
+    out.append(("head", Member("output_norm.weight", "output_norm", ROLE_OUTPUT_NORM, KIND_WEIGHT,
+                               *model_dims("output_norm", g),
+                               model_tensor("output_norm", -1, g).data)))
+    out.append(("head", Member("output.weight", "output", ROLE_OUTPUT, KIND_WEIGHT,
+                               *model_dims("output", g), model_tensor("output", -1, g).data)))
+    return out
+
+
+def model_blocks(members, g, drop_mlp_layer=None, duplicate_embedding=False, drop_output=False):
+    grouped = {}
+    for tag, member in members:
+        grouped.setdefault(tag, []).append(member)
+    blocks = [Block(KIND_WEIGHT, -1, list(grouped["embed"]))]
+    if duplicate_embedding:
+        # Two blocks answering to `(kind 0, layer -1)` and **both** carrying `role_id` 12: section
+        # 2.1 fact 2's ambiguity, made reachable. The members are fresh records rather than the same
+        # ones: `build` assigns each member exactly one `pack_offset`, and sharing them would put
+        # the second block's records outside its own byte range, which is a container defect the
+        # reader refuses first.
+        blocks.append(Block(KIND_WEIGHT, -1,
+                            [Member(m.name, m.role, m.role_id, m.block_kind, m.dim0, m.dim1,
+                                    m.values) for m in grouped["embed"]]))
+    for layer in range(g["n_layer"]):
+        rows = grouped["layer%d" % layer]
+        blocks.append(Block(KIND_ATTENTION, layer,
+                            [m for m in rows if m.block_kind == KIND_ATTENTION]))
+        if layer != drop_mlp_layer:
+            blocks.append(Block(KIND_MLP, layer,
+                                [m for m in rows if m.block_kind == KIND_MLP]))
+    if not drop_output:
+        blocks.append(Block(KIND_WEIGHT, -1, list(grouped["head"])))
+    return blocks
+
+
+def model_geometry(g):
+    return geometry_document(g)
+
+
+def write_model_corpus(directory, emit):
+    """Section 5.1's whole-model corpus: the base pack, one mutation per new code, the transcript
+    at the reconciliation width, and the logits blob the third oracle compares against."""
+    g = GEOMETRY
+    members = model_members(g)
+    base, layout = build(model_blocks(members, g))
+    emit("model-pack.alignpack", base)
+
+    tight, _ = build(model_blocks(model_members(g), g), block_align=1, member_align=1)
+    emit("model-pack-tight.alignpack", tight)
+
+    ambiguous, _ = build(model_blocks(model_members(g), g, duplicate_embedding=True))
+    emit("model-pack-ambiguous.alignpack", ambiguous)
+
+    no_output, _ = build(model_blocks(model_members(g), g, drop_output=True))
+    emit("model-pack-no-output.alignpack", no_output)
+
+    coverage, _ = build(model_blocks(model_members(g), g, drop_mlp_layer=1))
+    emit("model-pack-coverage.alignpack", coverage)
+
+    partial = [(tag, m) for tag, m in model_members(g)
+               if not (tag == "layer1" and m.role == "attn_q_bias")]
+    member_missing, _ = build(model_blocks(partial, g))
+    emit("model-pack-member-missing.alignpack", member_missing)
+
+    # The `output` member is the last of the twenty-seven; its `ne1` and its ggml type are the two
+    # fields section 4.5 mutates, and both are refused before a single byte of the 447 MB member
+    # would be read on a real model.
+    output_index = len(layout["members"]) - 1
+    emit("model-pack-shape.alignpack",
+         patch(base, member_field(layout, output_index, 56), "<Q", g["n_vocab"] - 1))
+    emit("model-pack-type.alignpack",
+         patch(base, member_field(layout, output_index, 40), "<I", 4))
+    emit("model-pack-truncated.alignpack", base[:len(base) - 64])
+
+    emit("model-source.bin", source_image(layout))
+    emit("model-source-diverged.bin", source_image(layout, corrupt=14))
+    emit("model-source-short.bin", b"\0")
+
+    embed = model_tensor("token_embd", -1, g)
+    layers = [{role: model_tensor(role, layer, g) for role, _, _ in LAYER_ROLES}
+              for layer in range(g["n_layer"])]
+    head = {"output_norm": model_tensor("output_norm", -1, g),
+            "output": model_tensor("output", -1, g)}
+
+    records, logits = model_forward(embed, layers, head, g, MODEL_TOKENS, MODEL_KV_WIDTH)
+    transcript = model_transcript(records, MODEL_TOKENS)
+    emit("model-transcript.txt", transcript)
+    emit("model-logits.bin", struct.pack("<%df" % logits.count(), *logits.data))
+    emit("model-logits-short.bin", b"\0\0\0\0")
+    emit("model-logits-perturbed.bin",
+         struct.pack("<%df" % logits.count(), *[f32(v + 1.0) for v in logits.data]))
+
+    # The runtime-width forward, whose logits the `WITHIN` verdict is measured against. Section 2.6
+    # is why it differs at all: the reduction length, and nothing else.
+    runtime_records, runtime_logits = model_forward(
+        embed, layers, head, g, MODEL_TOKENS, len(MODEL_TOKENS))
+    emit("model-logits-runtime.bin",
+         struct.pack("<%df" % runtime_logits.count(), *runtime_logits.data))
+    emit("model-transcript-runtime.txt", model_transcript(runtime_records, MODEL_TOKENS))
+
+    # `r5b-model-prefill-forward.md` section 6, correction C23. Three references whose elements have
+    # no integer in ten-thousandths, each one mixed into an otherwise ordinary runtime-width vector
+    # so the fixture is a *reference* defect and not a degenerate file. Before C23 the first two
+    # wrapped `i64` inside the difference and published a magnitude the run never computed, and the
+    # third read as `0.0` and could compare within the bound.
+    def logits_with(*pairs):
+        values = list(runtime_logits.data)
+        for index, value in pairs:
+            values[index] = value
+        return struct.pack("<%df" % len(values), *values)
+
+    #   finite, and beyond every magnitude the comparison represents. Both signs, because the
+    #   negative one is the operand that made `primary - reference` wrap.
+    emit("model-logits-huge.bin", logits_with((0, 3.4e38), (1, -3.4e38)))
+    #   an infinity in element **0**, which is where `MODEL_ABORT_TOKENS` puts a primary logit that
+    #   rounds to exactly zero ten-thousandths. `0 - i64::MIN` is `i64::MIN`, so before C23 this
+    #   exact pair published `max_abs_diff_ten_thousandths` 257 — a number no element of either
+    #   vector supports; the index and the token list are chosen so the fixture *is* that input
+    #   rather than a neighbour of it.
+    emit("model-logits-neg-inf.bin", logits_with((0, float("-inf"))))
+    #   a NaN, whose `as i64` conversion is `0` rather than a saturation.
+    emit("model-logits-nan.bin", logits_with((3, float("nan"))))
+
+    lines = transcript.split("\n")
+
+    def header_at(name):
+        return next(i for i, line in enumerate(lines)
+                    if line.startswith("common_debug_cb_eval:") and (" %s = " % name) in line)
+
+    # `R5_ORACLE_MISSING`, detail `layer[1]node[norm]`: layer 1's `norm-1` record is deleted.
+    start = header_at("norm-1")
+    end = next(i for i, line in enumerate(lines[start:], start) if line.startswith("    sum = "))
+    emit("model-transcript-missing.txt", "\n".join(lines[:start] + lines[end + 1:]) + "\n")
+
+    # `R5_ORACLE_SHAPE`: `kq-0` declares a reduction width the operand does not name. This is the
+    # check that stops the oracle from configuring the thing it verifies (section 3.3).
+    kq = header_at("kq-0")
+    widened = list(lines)
+    widened[kq] = widened[kq].replace("= {%d, " % MODEL_KV_WIDTH, "= {%d, " % (MODEL_KV_WIDTH - 1))
+    emit("model-transcript-kv-width.txt", "\n".join(widened) + "\n")
+
+    # A tolerance breach at layer 0: one printed element of `l_out-0` moved by 0.0003, three times
+    # section 3.7's threshold, so `oracle.verdict` becomes `FAIL` with `worst_layer` 0 while
+    # `status` stays `ok`.
+    l_out = header_at("l_out-0")
+    perturbed = list(lines)
+    row = l_out + 3
+    original = perturbed[row]
+    first = original.index("[") + 1
+    value = float(original[first:first + 12])
+    perturbed[row] = original[:first] + ("%12.4f" % (value + 0.0003)) + original[first + 12:]
+    emit("model-transcript-perturbed.txt", "\n".join(perturbed) + "\n")
+
+    headers = [line for line in lines
+               if line.startswith("common_debug_cb_eval:") or line.startswith("build: ")
+               or line.startswith("number of input tokens")]
+    emit("model-transcript-headers.txt", "\n".join(headers) + "\n")
+
+    novalues_start = header_at("l_out-1")
+    novalues_end = next(i for i, line in enumerate(lines[novalues_start:], novalues_start)
+                        if line.startswith("    sum = "))
+    emit("model-transcript-novalues.txt",
+         "\n".join(lines[:novalues_start + 1] + lines[novalues_end:]) + "\n")
+
+    emit("model-transcript-garbage.txt", bytes(range(256)) * 8)
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))

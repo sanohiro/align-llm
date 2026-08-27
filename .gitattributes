@@ -12,3 +12,8 @@ eval/fixtures/expert-trace/*.txt -whitespace
 # The R5A checked-in blk.0 excerpt is the same instrument's byte-exact output and carries the same
 # significant trailing spaces (`docs/specs/r5a-dense-layer-forward.md` section 5.1).
 eval/fixtures/qwen2-blk0-6tok.txt -whitespace
+
+# The R5B checked-in whole-model excerpt is the same instrument's byte-exact output at whole-model
+# scale and carries the same significant trailing spaces
+# (`docs/specs/r5b-model-prefill-forward.md` section 5.1).
+eval/fixtures/qwen2-model-6tok.txt -whitespace

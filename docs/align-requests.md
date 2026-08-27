@@ -73,7 +73,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-27): Requests 1–20 are CLOSED and Requests 21–37 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
+> **Status (2026-08-27): Requests 1–20 are CLOSED and Requests 21–40 are PROPOSED. No request blocks another consumer.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
 > R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
 > parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
 > `borrow t: GgufTable` accessors in `src/gguf.align` get the by-value warning even though no call
@@ -183,8 +183,8 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > rather than for the reservation itself — the same conclusion R0 and R4 each reached independently.
 > It is non-blocking — the observable-consequence guards are in place — with all of R0-GGUF-INSPECT,
 > R4-ALIGNPACK-LAYER-MAJOR, and R4.5-EXTERNAL-BUFFER-SPIKE as independent work.
-> R5A-DENSE-LAYER-FORWARD (`docs/specs/r5a-dense-layer-forward.md`) is the active capability,
-> awaiting publication on `agent/r5a-dense-layer-forward` rebased onto that merge; it computes one
+> R5A-DENSE-LAYER-FORWARD (`docs/specs/r5a-dense-layer-forward.md`) merged as align-llm PR #127
+> (`0397228` -> `ccbd8ae`), rebased onto that merge; it computes one
 > Qwen2 dense layer through ggml over Align-owned weights and checks it against
 > `llama-eval-callback`'s own numbers. **Implementation is complete, reviewed, and repaired.** Design set
 > out believing no new request was needed — section 5.5 of the plan states this explicitly ("No new
@@ -221,7 +221,48 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > seconds rather than minutes. It is non-blocking — the refactor is in place and `check-per-unit
 > src/layer_forward.align` is 6 s — with all of R5A-DENSE-LAYER-FORWARD as independent work. None of
 > this is blocking: R5A ships entirely on the pinned surface, with all of R5A-DENSE-LAYER-FORWARD as
-> independent work.
+> independent work. R5B-MODEL-PREFILL-FORWARD (`docs/specs/r5b-model-prefill-forward.md`) is now the
+> active capability, streaming the whole twenty-eight-layer Qwen2 model through one reused
+> Align-owned window and checking it against llama.cpp's own final logits. **Implementation is
+> complete in the working tree.** Design believed no new request was needed (section 5.5); as with
+> R5A, implementation refuted that belief (section 6, corrections C1-C16) and adds three requests.
+> Design-time client evidence for Requests 21, 32, 33, 34, and 36 stands unchanged in kind: the
+> read-only pack open (Request 21) gets its fifth client, holding the file across fifty-eight `pread`
+> groups and 4.4 GB; `Result` ok payloads beyond scalars (Request 34) is unchanged in kind and larger
+> in degree, with 958 handles now passing through the slot store across thirty graphs; aligned heap
+> allocation (Request 33) is paid once rather than R5A's thirteen times, on a window over-reserved by
+> the same `MAX_TENSOR_ALIGNMENT` pad; FFI by-value structs and `bool` (Request 32) gets two more
+> wrapped call sites; and owned `array<i64>` field replacement (Request 36) gets a `schedule[]` built
+> the same one-record-per-column-set way correction C9 forced R5A's columns to be built. Request 37
+> (per-function check time) shaped the module boundary as planned: `src/model_forward.align` exists
+> as its own unit, and `check-per-unit src/model_forward.align` is under the section 5.5 budget.
+> Implementation then found three requests section 5.5 did not name. Correction C5 (section 6) — the
+> reused 447 MB window cannot be refilled through `buffer`'s append-only, always-full-capacity,
+> write-from-index-0 surface, forcing the shim entry point `align_ggml_window_copy` and a 1 MiB
+> transient — adds Request 38, positional write/reset and bounded-length `pread` for `buffer`.
+> Correction C6 — `alignpack_read.read_exact`'s per-call `buffer(n)` rebind retaining every prior
+> allocation for the caller's frame (peak resident set 3.4-4.3 GB against a 447 MB window, against
+> 508 MB read through one buffer refilled in place) — adds Request 39, release of rebound `buffer`
+> allocations before frame exit; the shipped arm avoids `read_exact` for the per-member read path
+> entirely rather than pay that cost at 339 members. Implementation also found a struct-field gap
+> section 6 does not separately name: `array_builder<T>`, unlike the plain-text `builder` Request 24
+> covers, is admitted as a `borrow mut` parameter type but refused as a struct field
+> (`error: struct field type is not supported here, got array_builder<i64>`), forcing
+> `plan_layer_members` (`src/model_forward.align:863-908`) to take seven separate
+> `borrow mut array_builder<i64>` parameters instead of one grouped record — Request 40. Correction
+> C7 (section 6) — the region checker refusing to hold a `PackMember` across a second call taking the
+> same `borrow mut Counters` — is *not* a request: it reproduces `docs/language-spec.md`'s documented
+> rule that `borrow mut x: T` "ends the previous generation" on each call, so it is expected borrow
+> behavior rather than a gap (recorded as an application concern in `HANDOFF.md`). Two further
+> candidates considered during implementation did not reach a filed request: a suspected
+> `check-per-unit`/whole-program `check` disagreement on `src/model_forward.align` did not reproduce
+> against the finished tree (both report zero errors, with or without a cleared codegen cache, on
+> `src/model_forward.align` alone and on the `ggml_spike.align` entry that imports it transitively),
+> and a suspected move-out-of-an-`if`/`else`-expression restriction — real and sibling-documented,
+> `crates/align_sema/src/lib.rs:35095-35098` — did not correspond to any site in the shipped
+> `src/model_forward.align`: every conditional expression there selects a Copy scalar or view, never
+> an already-bound owned Move local. Both are recorded as investigated-and-not-found in `HANDOFF.md`
+> rather than as requests, since neither has align-llm consequence evidence to cite.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -8046,6 +8087,238 @@ surface. The register asks for:
    or documents why the difference is inherent.
 3. `align-llm` verification: `src/layer_forward.align`'s fourteen functions are recombined (a
    representative merge) and `make check` on the re-merged module finishes in under 10 s.
+
+---
+
+## Request 38 — Positional write, reset, and bounded read length for `buffer`
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. R5B-MODEL-PREFILL-FORWARD (`docs/specs/r5b-model-prefill-forward.md`
+  section 6, correction C5) ships a bounded C `memcpy` shim entry point,
+  `align_ggml_window_copy`, and a 1 MiB transient buffer instead of positional writes into the
+  reused window.
+Independent work that may continue: all of R5B-MODEL-PREFILL-FORWARD.
+Resume condition: an Align release adds a positional/offset write to `buffer` (or a reset that
+  truncates a buffer to a chosen length without reallocating) and a bounded-length `pread` that
+  requests fewer bytes than the buffer's capacity.
+Align commit or pull request: none
+align-llm verification: replace `align_ggml_window_copy`'s bounded `memcpy` and the
+  `read_into_window`/`window_put` chunked-copy path (`src/model_forward.align`) with a direct
+  positional `buffer` write and/or a bounded `pread` into the reused window; delete the shim
+  symbol; pass `make layer-forward-smoke` and `make model-forward-qualification` unchanged in
+  outcome.
+```
+
+### Motivation and current sibling evidence
+
+R5B-MODEL-PREFILL-FORWARD streams the whole twenty-eight-layer Qwen2 model through one reused
+447 MB window rather than reallocating a window per layer (`docs/specs/r5b-model-prefill-forward.md`
+section 3.5, "one window, reused thirty times"). That shape needs the window's contents replaced at
+each layer's block offsets without changing the window's identity, and Align's `buffer` cannot do
+that.
+
+Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`:
+
+- `crates/align_runtime/src/lib.rs:10078-10085` (`prepare_uninit_window`, the shared entry both
+  `pread` and construction use to obtain a write destination) unconditionally calls
+  `self.data.clear()` (`:10079`) before returning a pointer into `spare_capacity_mut()` — every
+  write starts at index 0. There is no positional/offset write and no truncate-without-reallocate
+  reset anywhere in the file's `Buffer` method set (`align_rt_buffer_new`, `_bytes`, `_len`,
+  `_free`, `_put`, `_append`, and `align_rt_io_file_pread`/`_pwrite` are the complete set that
+  touches a `Buffer`).
+- `crates/align_runtime/src/lib.rs:9962-9990` (`align_rt_io_file_pread`) always requests exactly
+  `b.cap` bytes from the underlying `pread(2)` (`pread(fd, dst, b.cap, off)` at `:9976`) — there is
+  no length parameter narrower than the buffer's full capacity.
+- `docs/language-spec.md:651-660` (the `buffer` method table Request 35 also cites) lists only
+  `bytes`, `len`, `put_<scalar>`, and `append`; none accepts a destination offset.
+
+**Consequence for the client.** `docs/specs/r5b-model-prefill-forward.md` section 6 correction C5
+records the forced design in-repo: "An Align `buffer` is append-only. `put_*` and `append` write at
+the logical length; there is no offset write, no truncate, and no reset. `f.pread` is the only
+operation that rewrites a buffer's contents, and it overwrites from index 0 and always requests the
+buffer's whole capacity." Refilling a reused 447 MB window from a pack file has exactly three
+implementations, and the document names two of them wrong (12.5 GB of I/O to re-`pread` the whole
+window on every layer, or faulting in 447 MB of fresh pages thirty times while briefly holding two
+windows) — so the implementation adds `align_ggml_window_copy(window, window_bytes, offset,
+source, source_bytes, n)`, a bounded C `memcpy` between two Align-owned byte ranges, to the shim's
+shared region (`scripts/ggml_shim.c:367`, `scripts/ggml_shim_stub.c:360`, wired at
+`src/ggml_ffi.align:193,772`) purely so the window can be written at an offset. Correction C6
+further forces a 1 MiB transient (`CHUNK_BYTES := 1048576`, `src/model_forward.align:1958`) that
+reads each weight member's bytes through `handle.pread(temp, ...)` and then copies them into the
+target offset via `window_put`/`align_ggml_window_copy` (`src/model_forward.align:1975-2033`),
+because `pread`'s always-full-capacity read would otherwise over-read every member's tail if the
+transient were larger than the smallest member.
+
+### Requested capability
+
+```text
+b.pread_into(offset: i64, n: i64) -> i64   // write at most n bytes starting at `offset`, not index 0
+```
+
+or equivalent: a positional write on `buffer` (an offset parameter on `pread`, or a `put_at`/
+`write_at` that does not move the logical length), and a bounded-length `pread` overload that
+requests fewer than `b.cap()` bytes.
+
+### Acceptance criteria
+
+1. A `buffer` can be refilled at a chosen offset without changing its capacity or reallocating,
+   verified by writing two non-overlapping regions of one buffer with two positional writes and
+   reading both back.
+2. `f.pread` (or an equivalent) accepts a length shorter than the destination buffer's capacity and
+   reads at most that many bytes, verified against a buffer sized larger than the requested read.
+3. `align-llm` verification: `align_ggml_window_copy` (`scripts/ggml_shim.c:367`,
+   `scripts/ggml_shim_stub.c:360`, `src/ggml_ffi.align:193,772`) is deleted, `read_into_window`/
+   `window_put` (`src/model_forward.align`) read directly into the reused window at each member's
+   offset, and `make layer-forward-smoke` / `make model-forward-qualification` pass unchanged in
+   outcome.
+
+---
+
+## Request 39 — Release of rebound `buffer` allocations before frame exit
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. R5B-MODEL-PREFILL-FORWARD reads each weight member through one buffer
+  reused across the whole run instead of `alignpack_read.read_exact`'s per-call `buffer(n)` rebind,
+  to keep peak resident set at one window's size.
+Independent work that may continue: all of R5B-MODEL-PREFILL-FORWARD, R4-ALIGNPACK-LAYER-MAJOR, and
+  R4.5-EXTERNAL-BUFFER-SPIKE.
+Resume condition: an Align release frees (or makes reclaimable within the same frame) the storage a
+  `borrow mut buffer` parameter held before a rebinding assignment (`window = buffer(n)`) replaces
+  it, rather than retaining every prior allocation until the caller's frame exits.
+Align commit or pull request: none
+align-llm verification: `src/model_forward.align`'s `read_into_window`/`fill_members` collapse onto
+  `alignpack_read.read_exact` (removing the duplicated per-member read path built solely to avoid
+  the rebind-retention cost), and `make layer-forward-smoke` / `make model-forward-qualification`
+  pass with resident set unchanged from the reused-buffer baseline (507,969,536 B).
+```
+
+### Motivation and current sibling evidence
+
+`alignpack_read.read_exact` (`src/alignpack_read.align:230-238`) takes its window as a
+`borrow mut buffer` parameter and rebinds it on every call: `window = buffer(n)` (line 238) discards
+whatever the caller's binding pointed at and allocates a fresh buffer. Verified in the sibling
+checkout at the pinned commit `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`: nothing in
+`crates/align_runtime/src/lib.rs`'s `Buffer`/`align_rt_buffer_*` set frees the previous allocation
+at the point of a rebind — the old `Buffer`'s backing `Vec` is only dropped when the `Buffer` itself
+is (`align_rt_buffer_free`, run at the owning frame's cleanup), not when a `borrow mut` binding is
+reassigned mid-call. A `borrow mut` rebind therefore leaves the prior allocation live and
+unreachable from the caller until the caller's own frame ends.
+
+**Consequence for the client, measured directly.** `docs/specs/r5b-model-prefill-forward.md`
+section 6 correction C6: "`alignpack_read.read_exact` rebinds its window to a fresh `buffer(n)` on
+every call, and at 339 members those allocations are not returned to the process while the caller's
+frame lives: peak resident set measured 3,442,016,256 to 4,262,133,760 B for a 447 MB window.
+Reading through one buffer that `f.pread` refills in place brings it to 507,969,536 B." The
+implementation therefore does not use `alignpack_read.read_exact` for the per-member read path at
+all: `fill_members`/`read_into_window` (`src/model_forward.align:2005-2060`) take a
+`borrow mut temp: buffer` and refill it in place via `handle.pread(temp, ...)`, never rebinding it,
+to avoid the measured 6.8-8.5x resident-set inflation the rebind-per-call shape produces at this
+member count. `read_exact` itself is unchanged and remains R0/R4's shared reader for every caller
+that reads fewer times per run.
+
+### Requested capability
+
+Free (or make immediately reclaimable within the current frame) the storage backing a `borrow mut`
+handle-typed parameter (`buffer`, and any other Move handle in `MOVE_HANDLE_TYPES`) at the point a
+rebinding assignment replaces it, rather than deferring that free until the caller's own frame
+exits — the same early-free discipline an owned local's move/reassignment already gets, extended to
+a value reached only through a `borrow mut` parameter.
+
+### Acceptance criteria
+
+1. A function taking `borrow mut w: buffer` and rebinding it (`w = buffer(n)`) on each of N calls
+   from a loop in the caller shows peak resident set bounded near one buffer's size (not N buffers'
+   worth), verified for N large enough to make the difference measurable (a few hundred, matching
+   R5B's 339 members).
+2. `align-llm` verification: `src/alignpack_read.align:230-238`'s `read_exact` (used elsewhere in
+   the codebase, e.g. `src/gguf.align`, `src/layer_forward.align`) is unchanged in outcome, its
+   rebind-per-call peak resident set drops to the reused-buffer baseline, and
+   `src/model_forward.align`'s duplicated per-member read path collapses onto it; `make gguf-smoke`,
+   `make alignpack-smoke`, `make layer-forward-smoke`, and `make model-forward-qualification` all
+   pass.
+
+---
+
+## Request 40 — `array_builder<T>` as a struct field type
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. R5B-MODEL-PREFILL-FORWARD's per-layer member-plan builder
+  (`plan_layer_members`, `src/model_forward.align:863-908`) takes seven separate
+  `borrow mut array_builder<i64>` parameters instead of one `borrow mut` record grouping them.
+Independent work that may continue: all of R5B-MODEL-PREFILL-FORWARD.
+Resume condition: an Align release admits `array_builder<T>` as an ordinary struct field.
+Align commit or pull request: none
+align-llm verification: collapse `plan_layer_members`'s seven `array_builder<i64>` parameters
+  (`src/model_forward.align:869-875`) and the matching seven locals in `build_plan`
+  (`src/model_forward.align:930-936`) into one record parameter with `array_builder<i64>` fields;
+  pass `make layer-forward-smoke` and `make model-forward-qualification` unchanged in outcome.
+```
+
+### Motivation and current sibling evidence
+
+Request 24 established that the plain-text `builder` is admitted as a `borrow mut` parameter type
+but not as a struct field, and that `array_builder<T>` — unlike `builder` — *is* already admitted as
+a `borrow mut` parameter type at this pin. R5B's implementation hits the companion gap:
+`array_builder<T>` is not admitted as a struct field either, so a helper that must accumulate into
+several builders at once cannot group those builders into one record and pass it by `borrow mut` —
+it must take one parameter per builder.
+
+Verified directly against the pinned managed compiler (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`,
+`alignc 0.5.0`) with a two-line probe:
+
+```text
+Bag {
+  b: array_builder<i64>,
+}
+```
+
+`alignc check` on that probe (plus a trivial `pub fn main`) reports `error: struct field type is not
+supported here, got array_builder<i64>` — the same generic `is_field_ok` rejection Request 34 cites
+for `raw` (`crates/align_sema/src/lib.rs:6625-6628`), reached because `array_builder` is neither in
+`MOVE_HANDLE_TYPES` (`crates/align_sema/src/lib.rs:62004-62030`, which admits `buffer` at line
+`62007` but no builder type) nor any of the other admitted field shapes `is_field_ok`
+(`crates/align_sema/src/lib.rs:62044-62122`, catch-all `_ => return false` at `:62121`) enumerates.
+The bare `builder` text is rejected even earlier, as an unknown type name
+(`error: unknown type: 'builder'`), matching Request 24's own finding.
+
+**Consequence for the client.** `plan_layer_members` (`src/model_forward.align:863-908`) accumulates
+seven parallel `i64` columns — member type, `ne0`, `ne1`, `nbytes`, pack offset, source offset,
+window offset — one per column, and needs a `borrow mut array_builder<i64>` for each because there
+is no way to bundle them into one `borrow mut MemberBuilders` record: `array_builder<i64>` is
+refused as a field of `MemberBuilders` by the same diagnostic reproduced above. The signature at
+`src/model_forward.align:869-875` carries all seven as separate parameters, and `build_plan`
+(`src/model_forward.align:914-936`) declares and threads all seven as separate locals; the same
+seven-wide shape recurs for the embedding, head, and per-layer member-table builders elsewhere in
+the same file (`src/model_forward.align:1078-1089`, `:1124-1135`, `:1181-1192`).
+
+### Requested capability
+
+Admit `array_builder<T>` as an ordinary struct field, with the field making the enclosing struct
+Move (recursive `Drop` frees the builder's backing storage) and reachable through a `borrow mut`
+parameter on the same footing `array_builder<T>` already gets as a bare `borrow mut` parameter —
+`push` through the field, but no return/store/consume of the field's builder outside the struct's
+own owner.
+
+### Acceptance criteria
+
+1. A struct with an `array_builder<i64>` field compiles, and a helper taking that struct by
+   `borrow mut` can `push` into the field and observe every pushed element after the helper returns
+   (via `.to_array()` on the field, called by the caller).
+2. The struct's `Drop` frees the field's builder storage exactly once, verified by exercising both
+   the finished (`.to_array()` called) and unfinished (dropped mid-accumulation) paths.
+3. `align-llm` verification: `plan_layer_members`'s seven `array_builder<i64>` parameters
+   (`src/model_forward.align:869-875`) collapse into one `borrow mut MemberBuilders` record
+   parameter; `make layer-forward-smoke` and `make model-forward-qualification` pass unchanged in
+   outcome.
 
 ---
 
