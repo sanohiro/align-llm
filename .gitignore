@@ -4,3 +4,9 @@ main
 *.profdata
 *.profraw
 __pycache__/
+
+# R4.5 spike build outputs. The shim library and the `ggml-spike` executable are build
+# products of `scripts/build-ggml-shim` and `make ggml-spike`; no binary is ever committed.
+build/
+ggml-spike
+ggml_spike

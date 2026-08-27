@@ -636,7 +636,7 @@ under a 600-second `timeout` so a run that fails to terminate is a bounded failu
 
 ## alignpack development
 
-R4-ALIGNPACK-LAYER-MAJOR is implemented on branch `agent/r4-alignpack-layer-major`; its
+R4-ALIGNPACK-LAYER-MAJOR is merged into `main` as PR #125 (head `a7e72dc`, merge `991eab1`); its
 authoritative plan is `docs/specs/r4-alignpack-layer-major.md`, which owns the container format,
 the contract ledger, the closure matrix, the fixture design, the correction ledger, and the
 cell-to-case map. Two CLI arms, three or four operands each:
@@ -735,6 +735,107 @@ only. Both arms also hold the plan columns and the rendered document, which are 
 block and member count: on a synthetic 16,514-block container the document is 26.8 MB and the arm's
 peak is 419 MB (`--pack`) or 802 MB (`--pack-verify`) against a `peak_window_bytes` of 262,144. The
 specification's section 2.9 records this; do not quote `peak_window_bytes` as a memory bound.
+
+## External buffer spike development
+
+R4.5-EXTERNAL-BUFFER-SPIKE is implemented on branch `agent/r4-5-external-buffer`; its authoritative
+plan is `docs/specs/r4-5-external-buffer.md`, which owns the probe record, the contract ledger, the
+closure matrix, the fixture design, the correction ledger, and the cell-to-case map. It answers one
+question — can quantized weights living in a buffer Align owns be computed by the ggml backend? —
+and it answers it as data, in an `R4_5_EXTERNAL_BUFFER`, `schema_version: 1` document.
+
+It is **its own executable**, not an arm of `main`, and that is a contract rather than a
+convenience: a `link(...)` clause is compile-time and unconditional and Align has no conditional
+compilation, so a ggml dependency anywhere in `src/main.align`'s import graph would put `-lggml` on
+every link of `main` on every host. `make build` is untouched, and `make check` never compiles these
+three modules — `make ggml-spike-smoke` is what does.
+
+```sh
+gmake ggml-spike                    # build ggml-spike (stub shim unless ALIGN_LLM_GGML_INCLUDE is set)
+gmake ggml-spike-smoke              # the hosted owner; in HOSTED_CHECK_TARGETS
+gmake ggml-spike-qualification      # the opt-in real-ggml, real-model qualification
+```
+
+Because `ggml-spike-smoke` is a hosted member, it also runs inside the fresh worker image, whose
+tool set is curated in `image/fresh/Dockerfile` — 32 system binaries plus the toolchain forwarders,
+with no `sort` and no `uname`. Anything the owner or `scripts/build-ggml-shim` shells out to must be
+in that set, or be `python3`, or be a shell builtin; see ledger correction C22. The cheap way to
+check a new dependency is to run the owner with `PATH` restricted to exactly that list.
+
+Four operand shapes, three to five operands, where `BLOCK` is a block-table index and `MEMBER` is
+the member's position **within that block**:
+
+```sh
+./ggml-spike PACK.alignpack BLOCK MEMBER                     # document to stdout
+./ggml-spike PACK.alignpack BLOCK MEMBER DOC.json            # document to DOC.json, summary to stdout
+./ggml-spike PACK.alignpack BLOCK MEMBER DOC.json REF.gguf   # + the bit-exact reference arm
+./ggml-spike PACK.alignpack BLOCK MEMBER - REF.gguf          # reference arm, document to stdout
+```
+
+**Four environment variables, all read by the two runners and `scripts/build-ggml-shim`, none by any
+executable.** There is no third state and no probing of `/opt/homebrew`, because a build input that
+changes with the contents of a directory is not reproducible:
+
+```sh
+ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include \   # selects the REAL shim; unset selects the stub
+ALIGN_LLM_GGML_LIB=/opt/homebrew/lib \           # where libggml / libggml-base are
+ALIGN_LLM_GGUF_MODEL=/path/to/model.gguf \       # the model to pack and use as the reference
+  gmake ggml-spike-qualification
+```
+
+`ALIGN_LLM_GGML_FORCE` is the fourth, `init | compute | reference`: it rebuilds the **real** shim
+with one failure forced, which is the only way to reach `R4_5_GGML_INIT`, `R4_5_COMPUTE`, and
+`R4_5_REFERENCE_MISMATCH`. The qualification sets it itself; `scripts/build-ggml-shim` refuses it
+without the real shim, and `scripts/run-ggml-spike-smoke` unsets it along with the other two, because
+that runner's contract is that it exercises the ggml-free build whatever a developer has exported.
+
+**The stub is not a placeholder.** `scripts/ggml_shim_stub.c` includes no ggml header and names no
+ggml symbol, but it answers the ABI probe, the type table, and the alignment pre-check from the same
+checked-in data as the real shim — the fenced `R4.5 SHARED SHIM CONTRACT` region is byte-identical in
+both files and the smoke asserts that on every run. So `gmake ggml-spike-smoke` runs the whole CLI,
+the whole standalone pack reader, every index/shape/alignment check, and **ten of the fifteen error
+codes** for real, on a host that has never heard of ggml, against a synthetic corpus written by
+`scripts/ggml_spike_fixture.py`. Every case is a checked-in golden document in
+`scripts/ggml-spike-golden.jsonl`, compared byte for byte after the timings, the two `mktemp`
+paths, and the four allocator-dependent `buffer` fields are rewritten in place:
+
+```sh
+ALIGN_LLM_GGML_SPIKE_GOLDEN_UPDATE=1 scripts/run-ggml-spike-smoke   # rewrite the golden
+```
+
+The qualification takes an optional `ALIGN_LLM_GGML_SPIKE_TMPDIR` (default `mktemp -d`, refused if it
+resolves inside the work tree) and an optional `ALIGN_LLM_GGML_SPIKE_SHA256`. Like
+`run-alignpack-qualification` it writes a multi-gigabyte pack, checks `model_size + 1 GiB` of free
+space first, removes the pack on every exit path, and prints the reclaimed byte count. A missing or
+unusable input prints exactly one of these lines, alone, and exits 0 without claiming a pass; the
+line must be named as the `N/A` reason in the pull request:
+
+```text
+ggml spike qualification: N/A (ALIGN_LLM_GGML_INCLUDE unset)
+ggml spike qualification: N/A (ALIGN_LLM_GGML_INCLUDE holds no ggml.h)
+ggml spike qualification: N/A (ALIGN_LLM_GGML_LIB unset)
+ggml spike qualification: N/A (ALIGN_LLM_GGML_LIB is not a directory)
+ggml spike qualification: N/A (ALIGN_LLM_GGUF_MODEL unset)
+ggml spike qualification: N/A (ALIGN_LLM_GGUF_MODEL is absent)
+ggml spike qualification: N/A (ALIGN_LLM_GGML_SPIKE_TMPDIR is not a directory)
+ggml spike qualification: N/A (the temporary directory resolves inside the work tree)
+ggml spike qualification: N/A (the destination already exists: <pack>)
+ggml spike qualification: N/A (insufficient free space: <avail> < <required>)
+```
+
+A run that reaches the model prints three more `N/A` lines it will never stop printing, because each
+names a half of the gate this spike does **not** discharge — an expert block (this host's only model
+is dense), the GPU arm (measured working on Metal, but it needs a tolerance oracle and a different
+alignment rule), and discrete VRAM (unanswerable here). Quote them as they are printed.
+
+**Alignment is compensated, not assumed.** Align ships no aligned allocator, and this host answers
+the same reservation with a 32-aligned base on one run and a 16-aligned one on the next
+(`docs/align-requests.md` Request 33). The arm over-reserves both device-visible windows by 64 bytes,
+lands block byte 0 and the output tensor on a boundary inside them, and re-measures the exact ranges
+it hands across the boundary. `R4_5_ALIGNMENT` therefore reports one thing only — a container-chosen
+interior offset that is not a multiple of the linked library's `tensor_alignment` — and
+`buffer.weights_pad` / `buffer.output_pad` varying between runs of the same input is expected, not a
+defect.
 
 ## The aarch64 platform-profile gates
 

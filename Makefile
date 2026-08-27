@@ -11,10 +11,11 @@ override SHELL := /bin/sh
 override .SHELLFLAGS := -eu -c
 override PINNED_ALIGNC := $(abspath $(ALIGN_REPO)/target/release/alignc)
 ENTRY := src/main.align
+GGML_SPIKE_ENTRY := src/ggml_spike.align
 EVAL_CORPUS := eval/tasks/smoke-v1.json
 CODING_CORPUS := eval/tasks/coding-v1.json
 
-override HOSTED_CHECK_TARGETS := gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke c6e-request2-adoption persisted-result-smoke gguf-smoke model-ir-smoke expert-trace-smoke alignpack-smoke
+override HOSTED_CHECK_TARGETS := gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke c6e-request2-adoption persisted-result-smoke gguf-smoke model-ir-smoke expert-trace-smoke alignpack-smoke ggml-spike-smoke
 override CAPABLE_ONLY_CHECK_TARGETS := eval-coding baseline-check c6-evaluation-adoption
 override SERIAL_CHECK_AGGREGATES := hosted-checks capable-checks ci
 override REQUESTED_SERIAL_CHECK_AGGREGATES := \
@@ -33,7 +34,7 @@ $(error capable-checks requires the authenticated fresh worker)
 endif
 endif
 
-.PHONY: check run build fmt format-check gguf-smoke gguf-reference-parity model-ir-smoke model-ir-parity expert-trace-smoke expert-trace-parity alignpack-smoke alignpack-qualification eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-source-verifier-smoke prompt-snapshot-helper-smoke prompt-fixed-adapter-smoke prompt-evaluate-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke prompt-gate-check baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption c6e-request2-adoption c6f1-request11-adoption c6f2-request14-adoption c6-evaluation-adoption c7-owned-record-source-expiry-adoption c7-persisted-result-cli-smoke c7-persisted-result-lifetime-smoke c7-persisted-result-owned-move-smoke c7-persisted-result-wire-smoke c7-persisted-result-noncanonical-input-smoke c7-persisted-result-independent-destinations-smoke persisted-result-smoke persisted-result-qualification darwin-profile-gate ci
+.PHONY: check run build fmt format-check ggml-spike ggml-spike-smoke ggml-spike-qualification gguf-smoke gguf-reference-parity model-ir-smoke model-ir-parity expert-trace-smoke expert-trace-parity alignpack-smoke alignpack-qualification eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-source-verifier-smoke prompt-snapshot-helper-smoke prompt-fixed-adapter-smoke prompt-evaluate-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke prompt-gate-check baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption c6e-request2-adoption c6f1-request11-adoption c6f2-request14-adoption c6-evaluation-adoption c7-owned-record-source-expiry-adoption c7-persisted-result-cli-smoke c7-persisted-result-lifetime-smoke c7-persisted-result-owned-move-smoke c7-persisted-result-wire-smoke c7-persisted-result-noncanonical-input-smoke c7-persisted-result-independent-destinations-smoke persisted-result-smoke persisted-result-qualification darwin-profile-gate ci
 
 check:
 	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
@@ -150,6 +151,40 @@ alignpack-smoke: build
 # CAPABLE_ONLY_CHECK_TARGETS, and every aggregate.
 alignpack-qualification: build
 	./scripts/run-alignpack-qualification
+
+# docs/specs/r4-5-external-buffer.md section 3.2. A **separate** executable, deliberately: a
+# `link(...)` clause is compile-time and unconditional and Align has no conditional compilation, so
+# a ggml dependency anywhere in `src/main.align`'s import graph would put `-lggml` on every link of
+# `main` on every host. `src/ggml_spike.align` is its own entry, `src/ggml_ffi.align` names exactly
+# one library — the repository's own shim — and `make build` is untouched.
+#
+# `scripts/build-ggml-shim` selects the real shim when `ALIGN_LLM_GGML_INCLUDE` is set and the
+# ggml-free stub otherwise, writes it under `build/`, which is `.gitignore`d, and prints the
+# directory. The executable is renamed from the compiler's source-stem output to the CLI name the
+# design and both runners use.
+ggml-spike:
+	@shim_dir="$$(./scripts/build-ggml-shim)"; \
+	  LIBRARY_PATH="$$shim_dir$${LIBRARY_PATH:+:$$LIBRARY_PATH}" \
+	  DYLD_LIBRARY_PATH="$$shim_dir$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH}" \
+	  LD_LIBRARY_PATH="$$shim_dir$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" \
+	  $(ALIGNC) build $(GGML_SPIKE_ENTRY)
+	@mv -f ggml_spike ggml-spike
+
+# The section 5.1 narrow durable owner. It builds the **stub** shim and the spike, generates its own
+# synthetic alignpack corpus into a temporary tree, needs no model, no network, no ggml, and no
+# reference tool, and runs in seconds — the same justification that admitted gguf-smoke,
+# model-ir-smoke, expert-trace-smoke, and alignpack-smoke — so it joins HOSTED_CHECK_TARGETS. It
+# runs the whole CLI over every fixture and reaches ten of the fifteen error codes for real.
+ggml-spike-smoke:
+	./scripts/run-ggml-spike-smoke
+
+# The section 5.2 focused qualification. It is opt-in through ALIGN_LLM_GGML_INCLUDE,
+# ALIGN_LLM_GGML_LIB, and ALIGN_LLM_GGUF_MODEL, prints an explicit N/A line when any is absent or
+# the free space is insufficient, writes a multi-gigabyte pack into a temporary directory outside
+# the work tree and removes it on every exit path, and deliberately stays outside
+# HOSTED_CHECK_TARGETS, CAPABLE_ONLY_CHECK_TARGETS, and every aggregate.
+ggml-spike-qualification: build
+	./scripts/run-ggml-spike
 
 verify-loop-smoke: build
 	./scripts/run-verification-loop-smoke

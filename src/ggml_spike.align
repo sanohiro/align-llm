@@ -1,0 +1,1510 @@
+module ggml_spike
+
+import core.json
+import std.crypto
+import std.encoding
+import std.fs
+import std.time
+import alignpack_read
+import ggml_ffi
+
+// R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md`). The whole arm: the CLI, the
+// validation order of section 3.8, the deterministic activation, the reference oracle, the
+// `R4_5_EXTERNAL_BUFFER` document, the summary block, and every `R4_5_*` code.
+//
+// It answers one question — **can quantized weights living in a buffer Align owns be computed by
+// the ggml backend?** — and it answers it as data rather than as prose: `buffer.interior_offset`
+// and `buffer.tensor_data_offset` are emitted on every run, and `verdict` is `EXTERNAL` exactly
+// when they are equal. `COPIED` is a successful run, not a failure: a design that could only
+// report success could not report the answer the roadmap actually asked for.
+//
+// This module holds no `unsafe` and no `extern`. Every foreign call crosses `src/ggml_ffi.align`,
+// which names exactly one library — the repository's own shim — so `make build` and `src/main.align`
+// are untouched on a host without ggml, and the whole of steps 1 to 13 runs for real in hosted CI
+// against the ggml-free stub.
+//
+// Two rules govern the ordering, and both come from a probe rather than from taste.
+//
+//  1. **Nothing is handed to ggml before it is validated.** `ggml_backend_cpu_buffer_from_ptr`
+//     calls `abort()` on a pointer that is not `TENSOR_ALIGNMENT`-aligned; step 14 exists so that
+//     input produces a document naming the pointer instead of a crash with no diagnosis.
+//  2. **Every ggml object is released before its owning `buffer` local leaves scope.** A ggml
+//     buffer that outlives process teardown aborted inside `exit` on the Metal backend. Steps 14
+//     onward are therefore one block with no early return, converging on one teardown that runs on
+//     success and on every failure alike, and the document's `lifetime` object publishes the counts
+//     so the ordering is evidence rather than assertion.
+
+MAX_PATH_BYTES := 4096
+MAX_INDEX_DIGITS := 18
+MAX_DETAIL_BYTES := 256
+
+// Section 3.6. `N = 4` because one column is a degenerate matrix-vector shape whose kernel differs
+// from the batched one, and four exercises the batched path while keeping the output small enough
+// to digest and compare without a second window.
+ACTIVATION_COLUMNS := 4
+ACTIVATION_PERIOD := 17
+ACTIVATION_BIAS := 8
+ACTIVATION_SCALE := 8
+
+// Section 2.3 measured a first compute call costing about 4.6 ms against a steady-state 0.41 ms —
+// the CPU backend's thread-pool spin-up — so the warm-up call is contractual and `compute_ns` is
+// the mean of the timed calls that follow it.
+WARMUP_CALLS := 1
+TIMED_CALLS := 5
+
+// One `mul_mat` of one node needs a few kilobytes of context metadata; 16 MiB is the probe's value
+// and leaves room for the graph object without ever holding a tensor's bytes — `no_alloc` is always
+// true, so no weight ever lives in the context's arena.
+CONTEXT_BYTES := 16777216
+
+// The largest `ne0` or `ne1` this capability will build a window for: 2^24 rows or columns is two
+// orders of magnitude above any dimension in any GGUF this repository has seen, and it keeps the
+// activation and output windows at or under 1 GiB each.
+MAX_DIMENSION := 16777216
+
+// The largest `TENSOR_ALIGNMENT` this capability will compensate for, and the modulus it
+// compensates against. ggml's is 32 on every backend measured; 64 is the cache line on both targets
+// and is a value no tensor allocator has exceeded. **Both** device-visible windows — the block and
+// the output — are over-reserved by this many bytes so the arm can place block byte 0 and the
+// output tensor at an aligned interior offset whatever the allocator returns (section 6,
+// corrections C9 and C14), and a linked library reporting more than this is `R4_5_ABI` rather than
+// a silent under-alignment. Every admissible alignment divides it, which is what lets the pads be
+// computed at step 8, before the ABI probe of step 12 has said what the alignment is.
+MAX_TENSOR_ALIGNMENT := 64
+
+SCHEMA_VERSION := 1
+DOCUMENT_KIND := "R4_5_EXTERNAL_BUFFER"
+
+VERDICT_UNAVAILABLE := 0
+VERDICT_EXTERNAL := 1
+VERDICT_COPIED := 2
+
+REFERENCE_ABSENT := 0
+REFERENCE_IDENTICAL := 1
+REFERENCE_MISMATCH := 2
+
+SUMMARY_HEX := "0123456789abcdef"
+
+// The `src/model_ir.align:212` block-kind encoding, unchanged. R4.5 invents no kind of its own.
+KIND_WEIGHT := 0
+KIND_ATTENTION := 1
+KIND_MLP := 2
+KIND_EXPERT := 3
+KIND_ROUTER := 4
+
+DEFERRED_U32 := 4294967295
+
+TextBox { v: str }
+
+// Everything the run learned, whether or not it finished. One record because the arm's handles and
+// buffers must stay bare locals in one scope, and because an error document reports what was
+// observed rather than only what failed.
+Outcome {
+  code: string,
+  detail: string,
+  verdict: i64,
+
+  reader_pread_count: i64,
+  reader_bytes_read: i64,
+  format_version: i64,
+  block_align: i64,
+  member_align: i64,
+  block_count: i64,
+  member_count: i64,
+  total_bytes: i64,
+  payload_offset: i64,
+
+  block_index: i64,
+  member_index_in_block: i64,
+  member_index_global: i64,
+  name: string,
+  name_valid: bool,
+  block_kind: i64,
+  layer: i64,
+  expert: i64,
+  role_id: i64,
+
+  ggml_type: i64,
+  n_dims: i64,
+  ne0: i64,
+  ne1: i64,
+  nbytes: i64,
+  blck_size: i64,
+  type_size: i64,
+  elements_per_row_ok: bool,
+
+  block_pack_bytes: i64,
+  block_pack_offset: i64,
+  member_pack_offset: i64,
+  interior_offset: i64,
+  base_alignment: i64,
+  weights_pad: i64,
+  tensor_data_offset: i64,
+  pointer_identity: bool,
+  output_bytes: i64,
+  output_base_alignment: i64,
+  output_pad: i64,
+  output_pointer_identity: bool,
+
+  backend_name: string,
+  compute_status: i64,
+
+  sha256: string,
+  bit_sum: i64,
+  element_count: i64,
+  nonfinite_count: i64,
+
+  reference_present: bool,
+  reference_bytes_equal: bool,
+  reference_verdict: i64,
+  differing_elements: i64,
+  first_difference_index: i64,
+  first_difference_primary_bits: i64,
+  first_difference_reference_bits: i64,
+
+  pread_ns: i64,
+  compute_ns: i64,
+  reference_pread_ns: i64,
+  reference_compute_ns: i64,
+  elapsed_ns: i64,
+
+  ggml_buffers_created: i64,
+  ggml_buffers_freed: i64,
+  contexts_created: i64,
+  contexts_freed: i64,
+  backends_created: i64,
+  backends_freed: i64,
+  released_before_owner_scope_end: bool,
+
+  tensor_alignment: i64,
+  q4k_blck_size: i64,
+  q4k_type_size: i64,
+  table_drift: i64,
+}
+
+fn empty_outcome() -> Outcome = Outcome {
+  code: "".clone(),
+  detail: "".clone(),
+  verdict: VERDICT_UNAVAILABLE,
+  reader_pread_count: 0,
+  reader_bytes_read: 0,
+  format_version: 0,
+  block_align: 0,
+  member_align: 0,
+  block_count: 0,
+  member_count: 0,
+  total_bytes: 0,
+  payload_offset: 0,
+  block_index: -1,
+  member_index_in_block: -1,
+  member_index_global: -1,
+  name: "".clone(),
+  name_valid: false,
+  block_kind: -1,
+  layer: -1,
+  expert: -1,
+  role_id: -1,
+  ggml_type: -1,
+  n_dims: 0,
+  ne0: 0,
+  ne1: 0,
+  nbytes: 0,
+  blck_size: 0,
+  type_size: 0,
+  elements_per_row_ok: false,
+  block_pack_bytes: 0,
+  block_pack_offset: 0,
+  member_pack_offset: 0,
+  interior_offset: 0,
+  base_alignment: -1,
+  weights_pad: -1,
+  tensor_data_offset: -1,
+  pointer_identity: false,
+  output_bytes: 0,
+  output_base_alignment: -1,
+  output_pad: -1,
+  output_pointer_identity: false,
+  backend_name: "".clone(),
+  compute_status: 0,
+  sha256: "".clone(),
+  bit_sum: 0,
+  element_count: 0,
+  nonfinite_count: 0,
+  reference_present: false,
+  reference_bytes_equal: false,
+  reference_verdict: REFERENCE_ABSENT,
+  differing_elements: 0,
+  first_difference_index: -1,
+  first_difference_primary_bits: 0,
+  first_difference_reference_bits: 0,
+  pread_ns: 0,
+  compute_ns: 0,
+  reference_pread_ns: 0,
+  reference_compute_ns: 0,
+  elapsed_ns: 0,
+  ggml_buffers_created: 0,
+  ggml_buffers_freed: 0,
+  contexts_created: 0,
+  contexts_freed: 0,
+  backends_created: 0,
+  backends_freed: 0,
+  released_before_owner_scope_end: false,
+  tensor_alignment: 0,
+  q4k_blck_size: 0,
+  q4k_type_size: 0,
+  table_drift: -1,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Text, numbers, and the lexical guards
+// ---------------------------------------------------------------------------------------------
+
+fn int_text(value: i64) -> string {
+  b := builder()
+  b.write_int(value)
+  return b.to_string()
+}
+
+// A geometry query answers with a size or with a negative shim status, and a status is not a size.
+// The document publishes `0` — "not established" — and the caller keeps the status for the check it
+// belongs to, so no `R4_5_*` sentinel ever leaves through a `tensor.blck_size` or `abi.q4k_*` field
+// where a reader would take `-3` for a block size (section 6, correction C17).
+fn published_size(value: i64) -> i64 {
+  if value > 0 { return value }
+  return 0
+}
+
+fn bool_text(value: bool) -> string {
+  if value {
+    return "true".clone()
+  }
+  return "false".clone()
+}
+
+fn json_string(value: str) -> string {
+  boxed := TextBox { v: value }
+  encoded := json.encode(boxed)
+  return encoded[5..encoded.len() - 1].clone()
+}
+
+fn bounded_detail(value: str) -> string {
+  if value.len() <= MAX_DETAIL_BYTES {
+    return value.clone()
+  }
+  return value[0..MAX_DETAIL_BYTES].clone()
+}
+
+fn at_label(label: str, value: i64) -> string {
+  b := builder()
+  b.write(label)
+  b.write("@")
+  b.write_int(value)
+  return b.to_string()
+}
+
+// `source@<offset>+<bytes>/<file length>`: the range the pack claimed, and the file that could not
+// supply it. All three numbers are in the detail because the three ways a reference fails this
+// check — empty, EOF before the member starts, EOF inside the member — are one code and are worth
+// telling apart without a second run.
+fn range_detail(at: i64, n: i64, size: i64) -> string {
+  b := builder()
+  b.write("source@")
+  b.write_int(at)
+  b.write("+")
+  b.write_int(n)
+  b.write("/")
+  b.write_int(size)
+  return b.to_string()
+}
+
+fn labelled(label: str, value: i64) -> string {
+  b := builder()
+  b.write(label)
+  b.write("[")
+  b.write_int(value)
+  b.write("]")
+  return b.to_string()
+}
+
+// The summary block is a fixed sequence of logical lines a consumer reads positionally, and a
+// member name is arbitrary container bytes. Every control byte is escaped before it is printed;
+// the JSON document is unaffected because its encoder already escapes the same bytes. A control
+// byte is ASCII, so a run boundary is always a scalar boundary and `value[a..b]` cannot abort.
+fn sanitize_summary_line(value: str) -> string {
+  b := builder()
+  view := value.bytes()
+  mut start := 0
+  mut index := 0
+  loop {
+    if index >= view.len() { break }
+    byte := view.u8(index) as i64
+    if byte < 32 || byte == 127 {
+      if index > start {
+        b.write(value[start..index])
+      }
+      high := byte / 16
+      low := byte % 16
+      b.write("\\x")
+      b.write(SUMMARY_HEX[high..high + 1])
+      b.write(SUMMARY_HEX[low..low + 1])
+      start = index + 1
+    }
+    index = index + 1
+  }
+  if start < view.len() {
+    b.write(value[start..view.len()])
+  }
+  return b.to_string()
+}
+
+// Section 3.3. Non-empty, at most `MAX_PATH_BYTES`, no NUL, checked before anything is opened.
+fn valid_path(path: str) -> bool {
+  if path.len() == 0 || path.len() > MAX_PATH_BYTES { return false }
+  return !path.contains("\0")
+}
+
+// Section 3.3: a non-negative decimal integer, no sign, no leading `+`, no whitespace, no leading
+// zero beyond a bare `0`. `-1` means "not an index", which step 3 turns into `R4_5_INDEX`.
+fn parse_index(value: str) -> i64 {
+  if value.len() == 0 || value.len() > MAX_INDEX_DIGITS { return -1 }
+  view := value.bytes()
+  if view.len() > 1 && view.u8(0) as i64 == 48 { return -1 }
+  mut total := 0
+  mut index := 0
+  loop {
+    if index >= view.len() { break }
+    byte := view.u8(index) as i64
+    if byte < 48 || byte > 57 { return -1 }
+    total = total * 10 + (byte - 48)
+    index = index + 1
+  }
+  return total
+}
+
+fn error_name(e: Error) -> str = match e {
+  NotFound => "NotFound",
+  Invalid => "Invalid",
+  Denied => "Denied",
+  Timeout => "Timeout",
+  Code(_) => "Code",
+}
+
+fn block_kind_label(kind: i64) -> str {
+  if kind == KIND_WEIGHT { return "Weight" }
+  if kind == KIND_ATTENTION { return "AttentionBlock" }
+  if kind == KIND_MLP { return "MlpBlock" }
+  if kind == KIND_EXPERT { return "ExpertBlock" }
+  if kind == KIND_ROUTER { return "RouterBlock" }
+  return "Unknown"
+}
+
+fn verdict_label(value: i64) -> str {
+  if value == VERDICT_EXTERNAL { return "EXTERNAL" }
+  if value == VERDICT_COPIED { return "COPIED" }
+  return "UNAVAILABLE"
+}
+
+fn reference_label(value: i64) -> str {
+  if value == REFERENCE_IDENTICAL { return "IDENTICAL" }
+  if value == REFERENCE_MISMATCH { return "MISMATCH" }
+  return "-"
+}
+
+fn fail(borrow mut o: Outcome, code: str, detail: str) {
+  if o.code.len() == 0 {
+    o.code = code.clone()
+    o.detail = bounded_detail(detail)
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Reading
+// ---------------------------------------------------------------------------------------------
+
+// The reference arm's bytes, read and released before any ggml object exists. Section 3.8 places
+// the reference read and the byte-equality check ahead of construction (section 6, correction C5)
+// precisely so that a `R4_5_SOURCE_UNREADABLE` or `R4_5_SOURCE_DIVERGED` can never leave a ggml
+// buffer holding a pointer into an Align allocation that is about to be dropped.
+fn read_reference(
+  path: str,
+  at: i64,
+  n: i64,
+  borrow mut out: buffer,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<i64, alignpack_read.Fault> {
+  handle := match fs.open_rw(path) {
+    Ok(h) => h,
+    Err(failure) => {
+      return Err(alignpack_read.Fault {
+          code: "R4_5_SOURCE_UNREADABLE".clone(),
+          detail: error_name(failure).clone(),
+        })
+    },
+  }
+  // The reference file is **not** the container, and nothing has proved this range is inside it:
+  // `source_offset` and `nbytes` are the pack's claims about a file the caller merely named. An
+  // empty, short, or simply wrong reference must therefore be named as what it is — the reference
+  // is unreadable at that range — rather than reaching `read_exact`, whose zero-length answer is
+  // `R4_WINDOW_UNAVAILABLE` and blames this side's allocator (section 6, correction C15).
+  size := match handle.len() {
+    Ok(value) => value,
+    Err(failure) => {
+      return Err(alignpack_read.Fault {
+          code: "R4_5_SOURCE_UNREADABLE".clone(),
+          detail: error_name(failure).clone(),
+        })
+    },
+  }
+  if at < 0 || n < 0 || at > size || n > size - at {
+    return Err(alignpack_read.Fault {
+        code: "R4_5_SOURCE_UNREADABLE".clone(),
+        detail: range_detail(at, n, size),
+      })
+  }
+  started := time.instant()
+  alignpack_read.read_exact(handle, out, c, "R4_5_SOURCE_UNREADABLE", at, n)?
+  return Ok(time.instant() - started)
+}
+
+// The allocator's base for a window still being filled, modulo `modulus`. A Borrow crossing an FFI
+// wrapper must be a stable named local rather than a temporary (section 6, correction C7), and the
+// window the caller is about to write more bytes into must not keep a live view — so the view is
+// taken, measured, and dropped here.
+fn base_mod(borrow b: buffer, modulus: i64) -> i64 {
+  view := b.bytes()
+  return ggml_ffi.align_mod(view, modulus)
+}
+
+fn fill_zero(borrow mut b: buffer, n: i64) {
+  mut index := 0
+  loop {
+    if index >= n { break }
+    b.put_u8(0 as u8)
+    index = index + 1
+  }
+}
+
+// Section 3.6 step 3, exactly: `act[j] = ((j mod 17) - 8) / 8` as f32, in ggml's element order.
+// The formula is the whole of the run's determinism, which is why `output.sha256` is a value the
+// qualification can assert rather than a number that happens to come out.
+fn fill_activation(borrow mut b: buffer, elements: i64) {
+  mut index := 0
+  loop {
+    if index >= elements { break }
+    value: f32 := (((index % ACTIVATION_PERIOD) - ACTIVATION_BIAS) as f32) / (ACTIVATION_SCALE as f32)
+    b.put_f32_le(value)
+    index = index + 1
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The arm
+// ---------------------------------------------------------------------------------------------
+
+fn execute(pack_path: str, block_text: str, member_text: str, reference_path: str) -> Outcome {
+  started := time.instant()
+  mut o := empty_outcome()
+  o.reference_present = reference_path.len() > 0
+
+  // Step 3. Both indices parse as non-negative decimal integers.
+  block_index := parse_index(block_text)
+  if block_index < 0 {
+    fail(o, "R4_5_INDEX", bounded_detail(sanitize_summary_line(block_text)))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  member_index := parse_index(member_text)
+  if member_index < 0 {
+    fail(o, "R4_5_INDEX", bounded_detail(sanitize_summary_line(member_text)))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  o.block_index = block_index
+  o.member_index_in_block = member_index
+
+  // Step 4. Pack open, header decode, region validation — `R4_PACK_*` verbatim.
+  pak := match fs.open_rw(pack_path) {
+    Ok(handle) => handle,
+    Err(failure) => {
+      fail(o, "R4_PACK_UNREADABLE", error_name(failure))
+      o.elapsed_ns = time.instant() - started
+      return o
+    },
+  }
+  mut counters := alignpack_read.new_counters()
+  index := match alignpack_read.open_pack(pak, counters) {
+    Ok(value) => value,
+    Err(f) => {
+      code_view: str := f.code
+      detail_view: str := f.detail
+      fail(o, code_view, detail_view)
+      o.reader_pread_count = counters.pread_count
+      o.reader_bytes_read = counters.bytes_read
+      o.elapsed_ns = time.instant() - started
+      return o
+    },
+  }
+  o.format_version = index.format_version
+  o.block_align = index.block_align
+  o.member_align = index.member_align
+  o.block_count = index.block_count
+  o.member_count = index.member_count
+  o.total_bytes = index.total_bytes
+  o.payload_offset = index.payload_offset
+
+  // Step 5. `BLOCK < block_count`.
+  if block_index >= index.block_count {
+    fail(o, "R4_5_INDEX", labelled("block", block_index))
+    o.reader_pread_count = counters.pread_count
+    o.reader_bytes_read = counters.bytes_read
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  block := match alignpack_read.block_at(index, block_index) {
+    Ok(value) => value,
+    Err(f) => {
+      code_view: str := f.code
+      detail_view: str := f.detail
+      fail(o, code_view, detail_view)
+      o.reader_pread_count = counters.pread_count
+      o.reader_bytes_read = counters.bytes_read
+      o.elapsed_ns = time.instant() - started
+      return o
+    },
+  }
+  o.block_kind = block.kind
+  o.layer = block.layer
+  o.expert = block.expert
+  o.block_pack_bytes = block.pack_bytes
+  o.block_pack_offset = block.pack_offset
+
+  // Step 6. `MEMBER` is a position **within that block**, not a global member index. The block is
+  // the thing R4 built, and reading it whole with one `pread` is the property the spike exists to
+  // exercise, so a global index would have made the block invisible.
+  if member_index >= block.member_count {
+    fail(o, "R4_5_INDEX", labelled("member", member_index))
+    o.reader_pread_count = counters.pread_count
+    o.reader_bytes_read = counters.bytes_read
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  member := match alignpack_read.member_at(pak, index, block, member_index, counters) {
+    Ok(value) => value,
+    Err(f) => {
+      code_view: str := f.code
+      detail_view: str := f.detail
+      fail(o, code_view, detail_view)
+      o.reader_pread_count = counters.pread_count
+      o.reader_bytes_read = counters.bytes_read
+      o.elapsed_ns = time.instant() - started
+      return o
+    },
+  }
+  o.member_index_global = member.index_global
+  o.role_id = member.role_id
+  o.ggml_type = member.ggml_type
+  o.n_dims = member.n_dims
+  o.ne0 = member.dim0
+  o.ne1 = member.dim1
+  o.nbytes = member.nbytes
+  o.member_pack_offset = member.pack_offset
+  o.interior_offset = member.pack_offset - block.pack_offset
+  match alignpack_read.member_name(pak, index, member, counters) {
+    Ok(text) => {
+      o.name = text.text
+      o.name_valid = text.valid
+    },
+    Err(f) => {
+      code_view: str := f.code
+      detail_view: str := f.detail
+      fail(o, code_view, detail_view)
+    },
+  }
+  o.reader_pread_count = counters.pread_count
+  o.reader_bytes_read = counters.bytes_read
+  if o.code.len() > 0 {
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+
+  // Step 7. The member is a 2-D tensor whose bytes are inside its own block.
+  if member.n_dims != 2 {
+    fail(o, "R4_5_SHAPE", labelled("n_dims", member.n_dims))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  if member.dim0 < 1 {
+    fail(o, "R4_5_SHAPE", labelled("ne0", member.dim0))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  if member.dim1 < 1 {
+    fail(o, "R4_5_SHAPE", labelled("ne1", member.dim1))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  if member.dim2 != 1 || member.dim3 != 1 {
+    fail(o, "R4_5_SHAPE", "dim2_dim3")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  if member.nbytes < 1 {
+    fail(o, "R4_5_SHAPE", labelled("nbytes", member.nbytes))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // Bounded work, and it is a real refusal rather than an arithmetic formality. `buffer(N)` at this
+  // pin is an advisory capacity hint that grows lazily — a reservation of any size "succeeds" and
+  // publishes nothing (section 6, correction C8) — so a container declaring an implausible `ne0` or
+  // `ne1` cannot be caught by an allocation that fails. It is caught here, by refusing a dimension
+  // whose activation and output windows this capability will not build, before either loop starts.
+  if member.dim0 > MAX_DIMENSION {
+    fail(o, "R4_5_SHAPE", labelled("ne0_bound", member.dim0))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  if member.dim1 > MAX_DIMENSION {
+    fail(o, "R4_5_SHAPE", labelled("ne1_bound", member.dim1))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  output_bytes := member.dim1 * ACTIVATION_COLUMNS * 4
+  activation_bytes := member.dim0 * ACTIVATION_COLUMNS * 4
+  element_count := member.dim1 * ACTIVATION_COLUMNS
+  // Both device-visible windows are over-reserved by `MAX_TENSOR_ALIGNMENT` so the arm can hand ggml
+  // an **interior** range that starts on a boundary. Align has no aligned allocator
+  // (`docs/align-requests.md` Request 33), and this host answers the same reservation with a
+  // 32-aligned base on one run and a 16-aligned one on the next — so refusing an unaligned base
+  // would refuse a legitimate tensor nondeterministically, for a reason the program can fix itself
+  // (section 6, corrections C9 and C14). What must never happen is a misaligned pointer reaching
+  // ggml, and that is still enforced, at step 14.
+  output_reserved := output_bytes + MAX_TENSOR_ALIGNMENT
+  weights_reserved := block.pack_bytes + MAX_TENSOR_ALIGNMENT
+  o.output_bytes = output_bytes
+
+  // Step 8. `buffer(N)` degrading to capacity 0 is R4's silent-allocation-failure case, and it is
+  // checked for every window this arm reserves, not only the large one.
+  // `buffer(N)` has no capacity accessor at this pin (section 6, correction C7), so a degraded
+  // reservation is detected by what the buffer actually publishes after it is filled: a window that
+  // could not be reserved accepts no bytes, and `bytes().len()` says so.
+  mut weights: buffer := buffer(weights_reserved)
+  mut output: buffer := buffer(output_reserved)
+  mut activation: buffer := buffer(activation_bytes)
+  // The weights pad is written **before** the block, because block byte 0 is the address every
+  // interior offset is measured from and the allocator's base is the only thing standing between it
+  // and a boundary. One byte is published first because that is what makes the base measurable —
+  // `buffer(N)` publishes no length until something is written — so the pad is in
+  // `[1, MAX_TENSOR_ALIGNMENT]` rather than `[0, MAX_TENSOR_ALIGNMENT)`.
+  //
+  // The compensation modulus is `MAX_TENSOR_ALIGNMENT` and not the linked library's own
+  // `tensor_alignment`, which is not known until step 12: every alignment step 12 admits divides
+  // `MAX_TENSOR_ALIGNMENT`, so landing on a `MAX_TENSOR_ALIGNMENT` boundary lands on theirs too.
+  fill_zero(weights, 1)
+  weights_pad := MAX_TENSOR_ALIGNMENT - base_mod(weights, MAX_TENSOR_ALIGNMENT)
+  o.weights_pad = weights_pad
+  fill_zero(weights, weights_pad - 1)
+  fill_zero(output, output_reserved)
+  fill_activation(activation, member.dim0 * ACTIVATION_COLUMNS)
+  if output.bytes().len() != output_reserved {
+    fail(o, "R4_WINDOW_UNAVAILABLE", "output")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  if activation.bytes().len() != activation_bytes {
+    fail(o, "R4_WINDOW_UNAVAILABLE", "activation")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+
+  // Step 9. One `pread` of the whole block, short reads completed, appended behind the pad. This is
+  // the R4 contiguity property being consumed: one block is one byte range, and the member is
+  // addressed at an interior offset inside it.
+  pread_started := time.instant()
+  match alignpack_read.read_append(
+    pak, weights, counters, "R4_PACK_UNREADABLE", block.pack_offset, block.pack_bytes) {
+    Ok(_) => {},
+    Err(f) => {
+      code_view: str := f.code
+      detail_view: str := f.detail
+      fail(o, code_view, detail_view)
+      o.reader_pread_count = counters.pread_count
+      o.reader_bytes_read = counters.bytes_read
+      o.elapsed_ns = time.instant() - started
+      return o
+    },
+  }
+  o.pread_ns = time.instant() - pread_started
+  o.reader_pread_count = counters.pread_count
+  o.reader_bytes_read = counters.bytes_read
+  if weights.bytes().len() != weights_pad + block.pack_bytes {
+    fail(o, "R4_WINDOW_UNAVAILABLE", "weights")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+
+  // Every borrow handed across the FFI boundary must be a stable named local, not a temporary
+  // (section 6, correction C7). Taking the views once, here, is also the invariant section
+  // 4.3's replacement cell names: no buffer is rebound after a ggml object refers to it.
+  //
+  // `block_view` is block byte 0 onward — the compensated window, and the base every offset in the
+  // `buffer` object is measured against, so `tensor_data_offset` stays the member's own interior
+  // offset whatever the allocator returned.
+  weights_view := weights.bytes()
+  output_view := output.bytes()
+  activation_view := activation.bytes()
+  block_view := weights_view[weights_pad..weights_pad + block.pack_bytes]
+  member_span := block_view[o.interior_offset..o.interior_offset + member.nbytes]
+
+  // Steps 10 and 11 in the ledger's numbering, hoisted ahead of every ggml object so that neither
+  // can leave one behind (section 6, correction C5). The reference bytes are read from the original
+  // GGUF at the member's `source_offset` and compared to the pack's bytes with
+  // `crypto.constant_time_equal`; if they differ the arm stops, because a numeric comparison
+  // between two different tensors would report the wrong cause.
+  mut reference_bytes: buffer := buffer(0)
+  if o.reference_present {
+    match read_reference(reference_path, member.source_offset, member.nbytes, reference_bytes, counters) {
+      Ok(ns) => { o.reference_pread_ns = ns },
+      Err(f) => {
+        code_view: str := f.code
+        detail_view: str := f.detail
+        fail(o, code_view, detail_view)
+        o.reader_pread_count = counters.pread_count
+        o.reader_bytes_read = counters.bytes_read
+        o.elapsed_ns = time.instant() - started
+        return o
+      },
+    }
+    o.reader_pread_count = counters.pread_count
+    o.reader_bytes_read = counters.bytes_read
+    reference_view := reference_bytes.bytes()
+    o.reference_bytes_equal = crypto.constant_time_equal(member_span, reference_view)
+    if !o.reference_bytes_equal {
+      fail(o, "R4_5_SOURCE_DIVERGED", at_label("member", member.pack_offset))
+      o.elapsed_ns = time.instant() - started
+      return o
+    }
+  }
+
+  // Step 12. The ABI probe. `TENSOR_ALIGNMENT` is not a public constant in any shipped ggml header,
+  // so the value reported here is the linked library's own device alignment; `table_drift` widens
+  // section 5.6's guard from three Q4_K constants to every row of the checked-in operand table.
+  // All three geometry answers are read raw and published clamped: a negative value here is a shim
+  // status, not an alignment or a size, and `R4_5_ABI` is the code that says so (correction C17).
+  alignment := ggml_ffi.tensor_alignment()
+  q4k_blck := ggml_ffi.blck_size(12)
+  q4k_type := ggml_ffi.type_size(12)
+  o.tensor_alignment = published_size(alignment)
+  o.q4k_blck_size = published_size(q4k_blck)
+  o.q4k_type_size = published_size(q4k_type)
+  o.table_drift = ggml_ffi.table_drift()
+  if alignment <= 0 || q4k_blck <= 0 || q4k_type <= 0 {
+    fail(o, "R4_5_ABI", labelled("alignment", alignment))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  if o.tensor_alignment > MAX_TENSOR_ALIGNMENT {
+    fail(o, "R4_5_ABI", labelled("alignment_bound", o.tensor_alignment))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  if o.table_drift >= 0 {
+    fail(o, "R4_5_ABI", labelled("type", o.table_drift))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+
+  // Step 13. The type is a `mul_mat` left operand and the row is a whole number of blocks.
+  blck := ggml_ffi.blck_size(member.ggml_type)
+  o.blck_size = published_size(blck)
+  o.type_size = published_size(ggml_ffi.type_size(member.ggml_type))
+  o.elements_per_row_ok = blck > 0 && member.dim0 % blck == 0
+  match ggml_ffi.type_ok(member.ggml_type, member.dim0) {
+    Ok(_) => {},
+    Err(f) => {
+      code_view: str := f.code
+      detail_view: str := f.detail
+      fail(o, code_view, detail_view)
+      o.elapsed_ns = time.instant() - started
+      return o
+    },
+  }
+
+  // Step 14. **Alignment**, before any call that can assert. This is the step that turns a crash
+  // with no document into a document naming which pointer was wrong. On this host the condition has
+  // never been observed with a real block, which is exactly why the fixtures manufacture it.
+  // The two bases are the **allocator's** answer, not the container's, and they are emitted on
+  // every run — successful ones included — so a host where a base is 16 is visible in the evidence
+  // rather than as a crash. The arm then hands ggml an aligned interior range of each buffer.
+  o.base_alignment = ggml_ffi.align_mod(weights_view, o.tensor_alignment)
+  o.output_base_alignment = ggml_ffi.align_mod(output_view, o.tensor_alignment)
+  o.output_pad = (MAX_TENSOR_ALIGNMENT
+      - ggml_ffi.align_mod(output_view, MAX_TENSOR_ALIGNMENT)) % MAX_TENSOR_ALIGNMENT
+  output_span := output_view[o.output_pad..o.output_pad + output_bytes]
+
+  // The two compensated addresses, measured on the ranges ggml is actually handed rather than
+  // recomputed from the base. Neither is reachable from an input: the base is the Align allocator's
+  // accident and the arm pads to it, so a failure here means the buffer moved under the pad — a
+  // reservation that reallocated between the measurement and the fill — and the answer is a
+  // document naming which window, not a `GGML_ASSERT` and `abort()` with no diagnosis.
+  if ggml_ffi.align_mod(block_view, o.tensor_alignment) != 0 {
+    fail(o, "R4_5_ALIGNMENT", "weights")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // The one alignment failure no padding can fix, and the reason this step exists: the member's
+  // address is block byte 0 — now on a boundary by construction — plus a **container-chosen**
+  // interior offset. A pack whose `member_align` is a valid power of two below the linked library's
+  // `tensor_alignment` can place a member 16 bytes into its block, and nothing on this side moves
+  // it. The condition is therefore the container's own property and nothing else: it is the same
+  // verdict on every host, on every run, whatever the allocator returned (section 6, correction
+  // C14). Without this check that input reaches `GGML_ASSERT` and `abort()` — no document, no code,
+  // no diagnosis.
+  if o.interior_offset % o.tensor_alignment != 0 {
+    fail(o, "R4_5_ALIGNMENT", "member")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  if ggml_ffi.align_mod(output_span, o.tensor_alignment) != 0 {
+    fail(o, "R4_5_ALIGNMENT", "output")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+
+  // Step 15. Availability. This is where the stub shim stops, and everything above it — the whole
+  // reader, every index and shape and alignment check, ten of the fifteen codes — has therefore
+  // run for real without ggml.
+  if !ggml_ffi.available() {
+    fail(o, "R4_5_GGML_UNAVAILABLE", "stub")
+    o.verdict = VERDICT_UNAVAILABLE
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+
+  // Steps 16 to 19. One block, no early return, one convergent teardown.
+  mut backend := ggml_ffi.null_handle()
+  mut ctx := ggml_ffi.null_handle()
+  mut reference_ctx := ggml_ffi.null_handle()
+  mut weights_buffer := ggml_ffi.null_handle()
+  mut output_buffer := ggml_ffi.null_handle()
+  mut activation_buffer := ggml_ffi.null_handle()
+  mut reference_buffer := ggml_ffi.null_handle()
+
+  device := ggml_ffi.device_open()
+  if ggml_ffi.handle_absent(device) {
+    fail(o, "R4_5_GGML_UNAVAILABLE", "device")
+  }
+  if o.code.len() == 0 {
+    backend = ggml_ffi.backend_open(device)
+    if ggml_ffi.handle_absent(backend) {
+      fail(o, "R4_5_GGML_INIT", "backend")
+    } else {
+      o.backends_created = o.backends_created + 1
+      o.backend_name = ggml_ffi.backend_name(backend)
+    }
+  }
+  if o.code.len() == 0 {
+    ctx = ggml_ffi.context_open(CONTEXT_BYTES)
+    if ggml_ffi.handle_absent(ctx) {
+      fail(o, "R4_5_GGML_INIT", "context")
+    } else {
+      o.contexts_created = o.contexts_created + 1
+    }
+  }
+
+  mut weight_tensor := ggml_ffi.null_handle()
+  mut activation_tensor := ggml_ffi.null_handle()
+  mut result_tensor := ggml_ffi.null_handle()
+  if o.code.len() == 0 {
+    weight_tensor = ggml_ffi.new_tensor_2d(ctx, member.ggml_type, member.dim0, member.dim1)
+    if ggml_ffi.handle_absent(weight_tensor) {
+      fail(o, "R4_5_GGML_INIT", "weight_tensor")
+    }
+  }
+  if o.code.len() == 0 {
+    // The pack's recorded `nbytes` and `ggml_nbytes()` of the tensor ggml built from the recorded
+    // dims must agree. That equality is itself the check that the member table carries enough to
+    // size a member from the pack alone, which is the difference between a container and an index.
+    if ggml_ffi.tensor_nbytes(weight_tensor) != member.nbytes {
+      fail(o, "R4_5_SHAPE", labelled("nbytes", ggml_ffi.tensor_nbytes(weight_tensor)))
+    }
+  }
+  if o.code.len() == 0 {
+    activation_tensor = ggml_ffi.new_tensor_2d(ctx, 0, member.dim0, ACTIVATION_COLUMNS)
+    if ggml_ffi.handle_absent(activation_tensor) {
+      fail(o, "R4_5_GGML_INIT", "activation_tensor")
+    }
+  }
+  if o.code.len() == 0 {
+    result_tensor = ggml_ffi.mul_mat(ctx, weight_tensor, activation_tensor)
+    if ggml_ffi.handle_absent(result_tensor) {
+      fail(o, "R4_5_GGML_INIT", "result_tensor")
+    }
+  }
+  if o.code.len() == 0 {
+    weights_buffer = ggml_ffi.buffer_from_host(device, block_view, block.pack_bytes)
+    if ggml_ffi.handle_absent(weights_buffer) {
+      fail(o, "R4_5_GGML_INIT", "weights_buffer")
+    } else {
+      o.ggml_buffers_created = o.ggml_buffers_created + 1
+    }
+  }
+  if o.code.len() == 0 {
+    output_buffer = ggml_ffi.buffer_from_host(device, output_span, output_bytes)
+    if ggml_ffi.handle_absent(output_buffer) {
+      fail(o, "R4_5_GGML_INIT", "output_buffer")
+    } else {
+      o.ggml_buffers_created = o.ggml_buffers_created + 1
+    }
+  }
+  if o.code.len() == 0 {
+    // The whole point, in one line: the tensor is placed at an interior offset inside an allocation
+    // Align made and Align will free.
+    match ggml_ffi.tensor_place(weights_buffer, weight_tensor, member_span, "weights") {
+      Ok(_) => {},
+      Err(f) => {
+        code_view: str := f.code
+        detail_view: str := f.detail
+        fail(o, code_view, detail_view)
+      },
+    }
+  }
+  if o.code.len() == 0 {
+    match ggml_ffi.tensor_place(output_buffer, result_tensor, output_span, "output") {
+      Ok(_) => {},
+      Err(f) => {
+        code_view: str := f.code
+        detail_view: str := f.detail
+        fail(o, code_view, detail_view)
+      },
+    }
+  }
+  if o.code.len() == 0 {
+    activation_buffer = ggml_ffi.alloc_remaining(ctx, backend)
+    if ggml_ffi.handle_absent(activation_buffer) {
+      fail(o, "R4_5_GGML_INIT", "activation_buffer")
+    } else {
+      o.ggml_buffers_created = o.ggml_buffers_created + 1
+    }
+  }
+  if o.code.len() == 0 {
+    match ggml_ffi.tensor_set(activation_tensor, activation_view, 0, activation_bytes, "activation") {
+      Ok(_) => {},
+      Err(f) => {
+        code_view: str := f.code
+        detail_view: str := f.detail
+        fail(o, code_view, detail_view)
+      },
+    }
+  }
+
+  // Step 17. The identity verdict is recorded before the compute loop and re-checked after it, so
+  // `EXTERNAL` is a property of the pointer ggml actually computed from.
+  if o.code.len() == 0 {
+    o.tensor_data_offset = ggml_ffi.tensor_data_offset(weight_tensor, block_view)
+    o.pointer_identity = o.tensor_data_offset == o.interior_offset
+    o.output_pointer_identity = ggml_ffi.tensor_data_offset(result_tensor, output_view) == o.output_pad
+    o.verdict = if o.pointer_identity { VERDICT_EXTERNAL } else { VERDICT_COPIED }
+  }
+  if o.code.len() == 0 {
+    mut warmed := 0
+    loop {
+      if warmed >= WARMUP_CALLS { break }
+      status := ggml_ffi.compute(backend, ctx, result_tensor)
+      if status != 0 {
+        fail(o, "R4_5_COMPUTE", labelled("status", status))
+        o.compute_status = status
+        break
+      }
+      warmed = warmed + 1
+    }
+  }
+  if o.code.len() == 0 {
+    compute_started := time.instant()
+    mut repeat := 0
+    loop {
+      if repeat >= TIMED_CALLS { break }
+      status := ggml_ffi.compute(backend, ctx, result_tensor)
+      if status != 0 {
+        fail(o, "R4_5_COMPUTE", labelled("status", status))
+        o.compute_status = status
+        break
+      }
+      repeat = repeat + 1
+    }
+    if o.code.len() == 0 {
+      o.compute_ns = (time.instant() - compute_started) / TIMED_CALLS
+    }
+  }
+  if o.code.len() == 0 {
+    // Section 4.3's replacement cell: no buffer was rebound after a ggml object took a pointer into
+    // it, and the offset is re-read to prove it.
+    if ggml_ffi.tensor_data_offset(weight_tensor, block_view) != o.tensor_data_offset {
+      fail(o, "R4_5_COMPUTE", "pointer_moved")
+    }
+  }
+  if o.code.len() == 0 {
+    // `element_count` is published here, with the digest and the sums it counts, and not at the
+    // window reservation: a document whose `verdict` is `UNAVAILABLE` describes an output that does
+    // not exist, and a non-zero count beside an empty digest reads as one that does (section 6,
+    // correction C16).
+    o.element_count = element_count
+    digest := crypto.sha256(output_span)
+    o.sha256 = encoding.hex_encode(digest[0..digest.len()])
+    view := output_span
+    mut element := 0
+    mut sum := 0
+    mut nonfinite := 0
+    loop {
+      if element >= element_count { break }
+      bits := view.u32_le(element * 4) as i64
+      sum = sum + bits
+      if (bits / 8388608) % 256 == 255 { nonfinite = nonfinite + 1 }
+      element = element + 1
+    }
+    o.bit_sum = sum
+    o.nonfinite_count = nonfinite
+  }
+
+  // Steps 18 and 19. The reference arm: a second context in which **every** tensor is ggml's own
+  // memory, the same activation, and a bit-exact comparison as `i32` element pairs. The oracle is
+  // bit-exact and not tolerance-based because both arms run the same kernel on the same backend
+  // over the same bytes; section 2.5 measured that this stops being true across backends, which is
+  // why a GPU arm is deferred rather than flagged.
+  mut reference_output: buffer := buffer(0)
+  if o.code.len() == 0 && o.reference_present {
+    reference_ctx = ggml_ffi.context_open(CONTEXT_BYTES)
+    if ggml_ffi.handle_absent(reference_ctx) {
+      fail(o, "R4_5_GGML_INIT", "reference_context")
+    } else {
+      o.contexts_created = o.contexts_created + 1
+    }
+    mut reference_weights := ggml_ffi.null_handle()
+    mut reference_activation := ggml_ffi.null_handle()
+    mut reference_result := ggml_ffi.null_handle()
+    if o.code.len() == 0 {
+      reference_weights =
+      ggml_ffi.new_tensor_2d(reference_ctx, member.ggml_type, member.dim0, member.dim1)
+      reference_activation = ggml_ffi.new_tensor_2d(reference_ctx, 0, member.dim0, ACTIVATION_COLUMNS)
+      if ggml_ffi.handle_absent(reference_weights) || ggml_ffi.handle_absent(reference_activation) {
+        fail(o, "R4_5_GGML_INIT", "reference_tensor")
+      }
+    }
+    if o.code.len() == 0 {
+      reference_result = ggml_ffi.mul_mat(reference_ctx, reference_weights, reference_activation)
+      if ggml_ffi.handle_absent(reference_result) {
+        fail(o, "R4_5_GGML_INIT", "reference_result")
+      }
+    }
+    if o.code.len() == 0 {
+      reference_buffer = ggml_ffi.alloc_remaining(reference_ctx, backend)
+      if ggml_ffi.handle_absent(reference_buffer) {
+        fail(o, "R4_5_GGML_INIT", "reference_buffer")
+      } else {
+        o.ggml_buffers_created = o.ggml_buffers_created + 1
+      }
+    }
+    if o.code.len() == 0 {
+      reference_weight_view := reference_bytes.bytes()
+      match ggml_ffi.tensor_set(reference_weights, reference_weight_view, 0, member.nbytes, "reference_weights") {
+        Ok(_) => {},
+        Err(f) => {
+          code_view: str := f.code
+          detail_view: str := f.detail
+          fail(o, code_view, detail_view)
+        },
+      }
+    }
+    if o.code.len() == 0 {
+      match ggml_ffi.tensor_set(reference_activation, activation_view, 0, activation_bytes, "reference_activation") {
+        Ok(_) => {},
+        Err(f) => {
+          code_view: str := f.code
+          detail_view: str := f.detail
+          fail(o, code_view, detail_view)
+        },
+      }
+    }
+    if o.code.len() == 0 {
+      reference_started := time.instant()
+      status := ggml_ffi.compute(backend, reference_ctx, reference_result)
+      o.reference_compute_ns = time.instant() - reference_started
+      if status != 0 {
+        fail(o, "R4_5_COMPUTE", labelled("reference_status", status))
+      }
+    }
+    if o.code.len() == 0 {
+      reference_output = buffer(output_bytes)
+      fill_zero(reference_output, output_bytes)
+      reference_output_view := reference_output.bytes()
+      if reference_output_view.len() != output_bytes {
+        fail(o, "R4_WINDOW_UNAVAILABLE", "reference_output")
+      } else {
+        match ggml_ffi.tensor_get(reference_result, reference_output_view, 0, output_bytes, "reference_output") {
+          Ok(_) => {},
+          Err(f) => {
+            code_view: str := f.code
+            detail_view: str := f.detail
+            fail(o, code_view, detail_view)
+          },
+        }
+      }
+    }
+    if o.code.len() == 0 {
+      primary := output_span
+      secondary := reference_output.bytes()
+      mut element := 0
+      mut differing := 0
+      loop {
+        if element >= element_count { break }
+        left := primary.u32_le(element * 4) as i64
+        right := secondary.u32_le(element * 4) as i64
+        if left != right {
+          differing = differing + 1
+          if o.first_difference_index < 0 {
+            o.first_difference_index = element
+            o.first_difference_primary_bits = left
+            o.first_difference_reference_bits = right
+          }
+        }
+        element = element + 1
+      }
+      o.differing_elements = differing
+      if differing == 0 {
+        o.reference_verdict = REFERENCE_IDENTICAL
+      } else {
+        o.reference_verdict = REFERENCE_MISMATCH
+        fail(o, "R4_5_REFERENCE_MISMATCH", labelled("element", o.first_difference_index))
+      }
+    }
+  }
+
+  // Step 20. The teardown, in the contractual order: weights buffer, output buffer, activation
+  // buffer, reference buffer, contexts, backend. It runs on **every** exit path from construction
+  // onward, which is why the steps above are guards rather than early returns. Section 2.4 measured
+  // that a leaked ggml buffer is not a leak on this backend, it is a crash at `exit`.
+  if !ggml_ffi.handle_absent(weights_buffer) {
+    ggml_ffi.buffer_free(weights_buffer)
+    o.ggml_buffers_freed = o.ggml_buffers_freed + 1
+  }
+  if !ggml_ffi.handle_absent(output_buffer) {
+    ggml_ffi.buffer_free(output_buffer)
+    o.ggml_buffers_freed = o.ggml_buffers_freed + 1
+  }
+  if !ggml_ffi.handle_absent(activation_buffer) {
+    ggml_ffi.buffer_free(activation_buffer)
+    o.ggml_buffers_freed = o.ggml_buffers_freed + 1
+  }
+  if !ggml_ffi.handle_absent(reference_buffer) {
+    ggml_ffi.buffer_free(reference_buffer)
+    o.ggml_buffers_freed = o.ggml_buffers_freed + 1
+  }
+  if !ggml_ffi.handle_absent(reference_ctx) {
+    ggml_ffi.context_close(reference_ctx)
+    o.contexts_freed = o.contexts_freed + 1
+  }
+  if !ggml_ffi.handle_absent(ctx) {
+    ggml_ffi.context_close(ctx)
+    o.contexts_freed = o.contexts_freed + 1
+  }
+  if !ggml_ffi.handle_absent(backend) {
+    ggml_ffi.backend_close(backend)
+    o.backends_freed = o.backends_freed + 1
+  }
+  o.released_before_owner_scope_end =
+  o.ggml_buffers_created == o.ggml_buffers_freed
+    && o.contexts_created == o.contexts_freed
+    && o.backends_created == o.backends_freed
+  o.elapsed_ns = time.instant() - started
+  return o
+}
+
+// ---------------------------------------------------------------------------------------------
+// The document (section 3.7)
+// ---------------------------------------------------------------------------------------------
+
+fn render(borrow o: Outcome, pack_path: str, reference_path: str) -> string {
+  failed := o.code.len() > 0
+  code_view: str := o.code
+  detail_view: str := o.detail
+  name_view: str := o.name
+  backend_view: str := o.backend_name
+  sha_view: str := o.sha256
+
+  d := builder()
+  d.write("{\"schema_version\":")
+  d.write_int(SCHEMA_VERSION)
+  d.write(",\"kind\":")
+  d.write(json_string(DOCUMENT_KIND))
+  d.write(",\"pack_path\":")
+  d.write(json_string(pack_path))
+  d.write(",\"reference_path\":")
+  d.write(json_string(reference_path))
+  d.write(",\"status\":")
+  d.write(json_string(if failed { "error" } else { "ok" }))
+  d.write(",\"error_code\":")
+  d.write(json_string(code_view))
+  d.write(",\"error_detail\":")
+  d.write(json_string(detail_view))
+  d.write(",\"verdict\":")
+  d.write(json_string(verdict_label(o.verdict)))
+
+  d.write(",\"pack\":{\"format_version\":")
+  d.write_int(o.format_version)
+  d.write(",\"block_align\":")
+  d.write_int(o.block_align)
+  d.write(",\"member_align\":")
+  d.write_int(o.member_align)
+  d.write(",\"block_count\":")
+  d.write_int(o.block_count)
+  d.write(",\"member_count\":")
+  d.write_int(o.member_count)
+  d.write(",\"total_bytes\":")
+  d.write_int(o.total_bytes)
+  d.write(",\"payload_offset\":")
+  d.write_int(o.payload_offset)
+  d.write(",\"reader_pread_count\":")
+  d.write_int(o.reader_pread_count)
+  d.write(",\"reader_bytes_read\":")
+  d.write_int(o.reader_bytes_read)
+
+  d.write("},\"selection\":{\"block_index\":")
+  d.write_int(o.block_index)
+  d.write(",\"member_index_in_block\":")
+  d.write_int(o.member_index_in_block)
+  d.write(",\"member_index_global\":")
+  d.write_int(o.member_index_global)
+  d.write(",\"name\":")
+  d.write(json_string(name_view))
+  d.write(",\"name_valid\":")
+  d.write(bool_text(o.name_valid))
+  d.write(",\"kind\":")
+  d.write(json_string(block_kind_label(o.block_kind)))
+  d.write(",\"layer\":")
+  d.write_int(o.layer)
+  d.write(",\"expert\":")
+  d.write_int(o.expert)
+  d.write(",\"role_id\":")
+  d.write_int(o.role_id)
+
+  d.write("},\"tensor\":{\"ggml_type\":")
+  d.write_int(o.ggml_type)
+  d.write(",\"n_dims\":")
+  d.write_int(o.n_dims)
+  d.write(",\"ne0\":")
+  d.write_int(o.ne0)
+  d.write(",\"ne1\":")
+  d.write_int(o.ne1)
+  d.write(",\"nbytes\":")
+  d.write_int(o.nbytes)
+  d.write(",\"blck_size\":")
+  d.write_int(o.blck_size)
+  d.write(",\"type_size\":")
+  d.write_int(o.type_size)
+  d.write(",\"elements_per_row_ok\":")
+  d.write(bool_text(o.elements_per_row_ok))
+
+  d.write("},\"buffer\":{\"block_pack_bytes\":")
+  d.write_int(o.block_pack_bytes)
+  d.write(",\"block_pack_offset\":")
+  d.write_int(o.block_pack_offset)
+  d.write(",\"member_pack_offset\":")
+  d.write_int(o.member_pack_offset)
+  d.write(",\"interior_offset\":")
+  d.write_int(o.interior_offset)
+  d.write(",\"base_alignment\":")
+  d.write_int(o.base_alignment)
+  d.write(",\"weights_pad\":")
+  d.write_int(o.weights_pad)
+  d.write(",\"tensor_data_offset\":")
+  d.write_int(o.tensor_data_offset)
+  d.write(",\"pointer_identity\":")
+  d.write(bool_text(o.pointer_identity))
+  d.write(",\"output_bytes\":")
+  d.write_int(o.output_bytes)
+  d.write(",\"output_base_alignment\":")
+  d.write_int(o.output_base_alignment)
+  d.write(",\"output_pad\":")
+  d.write_int(o.output_pad)
+  d.write(",\"output_pointer_identity\":")
+  d.write(bool_text(o.output_pointer_identity))
+
+  d.write("},\"compute\":{\"backend_name\":")
+  d.write(json_string(backend_view))
+  d.write(",\"status\":")
+  d.write_int(o.compute_status)
+  d.write(",\"warmup_calls\":")
+  d.write_int(WARMUP_CALLS)
+  d.write(",\"timed_calls\":")
+  d.write_int(TIMED_CALLS)
+
+  d.write("},\"output\":{\"sha256\":")
+  d.write(json_string(sha_view))
+  d.write(",\"bit_sum\":")
+  d.write_int(o.bit_sum)
+  d.write(",\"element_count\":")
+  d.write_int(o.element_count)
+  d.write(",\"nonfinite_count\":")
+  d.write_int(o.nonfinite_count)
+
+  d.write("},\"reference\":{\"present\":")
+  d.write(bool_text(o.reference_present))
+  d.write(",\"bytes_equal\":")
+  d.write(bool_text(o.reference_bytes_equal))
+  d.write(",\"verdict\":")
+  d.write(json_string(reference_label(o.reference_verdict)))
+  d.write(",\"differing_elements\":")
+  d.write_int(o.differing_elements)
+  d.write(",\"first_difference_index\":")
+  d.write_int(o.first_difference_index)
+  d.write(",\"first_difference_primary_bits\":")
+  d.write_int(o.first_difference_primary_bits)
+  d.write(",\"first_difference_reference_bits\":")
+  d.write_int(o.first_difference_reference_bits)
+
+  d.write("},\"timings\":{\"pread_ns\":")
+  d.write_int(o.pread_ns)
+  d.write(",\"compute_ns\":")
+  d.write_int(o.compute_ns)
+  d.write(",\"reference_pread_ns\":")
+  d.write_int(o.reference_pread_ns)
+  d.write(",\"reference_compute_ns\":")
+  d.write_int(o.reference_compute_ns)
+  d.write(",\"elapsed_ns\":")
+  d.write_int(o.elapsed_ns)
+
+  d.write("},\"lifetime\":{\"ggml_buffers_created\":")
+  d.write_int(o.ggml_buffers_created)
+  d.write(",\"ggml_buffers_freed\":")
+  d.write_int(o.ggml_buffers_freed)
+  d.write(",\"contexts_created\":")
+  d.write_int(o.contexts_created)
+  d.write(",\"contexts_freed\":")
+  d.write_int(o.contexts_freed)
+  d.write(",\"backends_created\":")
+  d.write_int(o.backends_created)
+  d.write(",\"backends_freed\":")
+  d.write_int(o.backends_freed)
+  d.write(",\"released_before_owner_scope_end\":")
+  d.write(bool_text(o.released_before_owner_scope_end))
+
+  d.write("},\"abi\":{\"tensor_alignment\":")
+  d.write_int(o.tensor_alignment)
+  d.write(",\"q4k_blck_size\":")
+  d.write_int(o.q4k_blck_size)
+  d.write(",\"q4k_type_size\":")
+  d.write_int(o.q4k_type_size)
+  d.write(",\"table_drift\":")
+  d.write_int(o.table_drift)
+  d.write("}}")
+  return d.to_string()
+}
+
+// Section 3.3's stable summary block. The JSON document remains the authoritative result; this is
+// read positionally, which is why the member name goes through the escaper.
+fn print_summary(borrow o: Outcome, pack_path: str) {
+  failed := o.code.len() > 0
+  print("ggml spike:")
+  print("status:")
+  if failed { print("ERROR") } else { print("OK") }
+  print("verdict:")
+  print(verdict_label(o.verdict))
+  print("pack path:")
+  sanitized_path := sanitize_summary_line(pack_path)
+  sanitized_path_view: str := sanitized_path
+  print(sanitized_path_view)
+  print("schema:")
+  print(SCHEMA_VERSION)
+  print("block:")
+  print(o.block_index)
+  print("member:")
+  print(o.member_index_in_block)
+  print("name:")
+  name_view: str := o.name
+  sanitized_name := sanitize_summary_line(name_view)
+  sanitized_name_view: str := sanitized_name
+  print(sanitized_name_view)
+  print("ggml type:")
+  print(o.ggml_type)
+  print("dims:")
+  dims := builder()
+  dims.write_int(o.ne0)
+  dims.write("x")
+  dims.write_int(o.ne1)
+  rendered_dims := dims.to_string()
+  rendered_dims_view: str := rendered_dims
+  print(rendered_dims_view)
+  print("member bytes:")
+  print(o.nbytes)
+  print("block bytes:")
+  print(o.block_pack_bytes)
+  print("data offset:")
+  print(o.tensor_data_offset)
+  print("buffer align:")
+  print(o.base_alignment)
+  print("pread ns:")
+  print(o.pread_ns)
+  print("compute ns:")
+  print(o.compute_ns)
+  print("output sha256:")
+  sha_view: str := o.sha256
+  print(sha_view)
+  print("output bit sum:")
+  print(o.bit_sum)
+  print("reference:")
+  print(reference_label(o.reference_verdict))
+  print("first difference:")
+  if o.first_difference_index >= 0 {
+    print(o.first_difference_index)
+  } else {
+    print("-")
+  }
+  print("released:")
+  print(o.ggml_buffers_freed + o.contexts_freed + o.backends_freed)
+  if failed {
+    print("error:")
+    code_view: str := o.code
+    print(code_view)
+    print("detail:")
+    detail_view: str := o.detail
+    sanitized_detail := sanitize_summary_line(detail_view)
+    sanitized_detail_view: str := sanitized_detail
+    print(sanitized_detail_view)
+  }
+}
+
+// R4.5 CLI adapter. Arity is checked before any path or file work, so an arity failure produces no
+// output and no file; the lexical path guard owns every path operand for the same reason, because
+// nothing below this function ever sees the destination.
+//
+// `-` in the fourth position means "document to stdout" and is the R0 convention for a value that
+// does not exist. It exists so the reference arm is reachable without naming a document path, and
+// it selects the machine form: the document alone, with no summary block to interleave with it
+// (section 6, correction C6).
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() < 4 || args.len() > 6 {
+    return Err(Error.Invalid)
+  }
+  if !valid_path(args[1]) {
+    return Err(Error.Invalid)
+  }
+  if args.len() >= 5 && args[4] != "-" && !valid_path(args[4]) {
+    return Err(Error.Invalid)
+  }
+  if args.len() == 6 && !valid_path(args[5]) {
+    return Err(Error.Invalid)
+  }
+  reference_path := if args.len() == 6 { args[5] } else { "" }
+  outcome := execute(args[1], args[2], args[3], reference_path)
+  document := render(outcome, args[1], reference_path)
+  document_view: str := document
+  if args.len() == 4 || args[4] == "-" {
+    print(document_view)
+  } else {
+    fs.write_file(args[4], document_view)?
+    print_summary(outcome, args[1])
+  }
+  if outcome.code.len() > 0 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}

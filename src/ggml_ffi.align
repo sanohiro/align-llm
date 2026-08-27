@@ -1,0 +1,359 @@
+module ggml_ffi
+
+// R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md` sections 3.4 and 3.9). The
+// **only** module in this repository that contains an `extern` declaration or an `unsafe` block,
+// and `scripts/run-ggml-spike-smoke` asserts exactly that: it greps `src/` for an `unsafe {` block
+// opener and for an `extern "C"` line and requires each list to be this file alone. The assertion
+// is deliberately about the *block*, not about the word — the sibling modules discuss the boundary
+// in prose and `src/prompt_verifier_smoke.align` names an `unsafe_workspace` parameter, so a bare
+// `grep -rl unsafe src/` would name files that hold no unsafe code (section 6, correction C19).
+//
+// The block below names exactly one library — the repository's own shim — and that is the whole of
+// section 3.2's build-input decision. `src/main.align`'s import graph never reaches this module, so
+// `make build` is untouched on a host that has never heard of ggml; the shim is built from
+// `scripts/ggml_shim.c` when `ALIGN_LLM_GGML_INCLUDE` is set and from `scripts/ggml_shim_stub.c`
+// when it is not, and the Align source is byte-identical either way because a `link` clause is
+// compile-time and unconditional and Align has no conditional compilation.
+//
+// Section 3.1 is why a C shim is not a convenience: at this pin a `layout(C)` struct cannot cross by
+// value on `arm64-apple-darwin`, cannot contain a `raw` field, and `bool` is not an FFI type, so
+// `ggml_init`'s `struct ggml_init_params` is unreachable by every route. `docs/align-requests.md`
+// carries the language-owned half of that as a recorded gap; this module is the application-side
+// answer and consumes no hypothetical surface.
+//
+// Everything above the extern block is safe: every wrapper returns a `Result` or a scalar, every
+// handle is an opaque `raw`, no view over foreign memory is ever formed, and no handle is ever
+// aggregated into a record or returned as a view. A function containing `unsafe` is inferred
+// Impure, so nothing here can enter a `par_map` — the danger stays visible and traceable.
+
+// Section 3.4's status vocabulary, shared byte-for-byte with both C files. `0` is success; every
+// negative value maps to exactly one `R4_5_*` code in `code_for` below, which is the single place
+// the mapping exists.
+pub STATUS_OK := 0
+pub STATUS_UNAVAILABLE := -1
+pub STATUS_ABI := -2
+pub STATUS_TYPE := -3
+pub STATUS_SHAPE := -4
+pub STATUS_ALIGNMENT := -5
+pub STATUS_INIT := -6
+pub STATUS_BOUNDS := -7
+
+// Outside the `ggml_status` range (`-2 ..= 2`), so a null argument handed to the compute wrapper is
+// never mistaken for a backend verdict.
+pub COMPUTE_NULL := -1000
+
+// The longest backend name this capability will carry. `ggml_backend_name` returns a `const char *`
+// and a `str` cannot be formed over foreign memory at this pin, so the name is copied into an
+// Align-owned byte range and decoded there.
+pub MAX_BACKEND_NAME_BYTES := 64
+
+pub Fault { code: string, detail: string }
+
+fn fault(code: str, detail: str) -> Fault =
+Fault { code: code.clone(), detail: detail.clone() }
+
+fn int_text(value: i64) -> string {
+  b := builder()
+  b.write_int(value)
+  return b.to_string()
+}
+
+fn labelled_fault(code: str, label: str, value: i64) -> Fault {
+  b := builder()
+  b.write(label)
+  b.write("[")
+  b.write_int(value)
+  b.write("]")
+  rendered := b.to_string()
+  rendered_view: str := rendered
+  return fault(code, rendered_view)
+}
+
+// The one `match` section 4.2 asks for: every negative shim status becomes exactly one `R4_5_*`
+// code. A status this module does not know is `R4_5_ABI` rather than a silent success, because an
+// unknown value from a foreign library is precisely the drift the code exists to name.
+pub fn code_for(status: i64) -> str {
+  if status == STATUS_UNAVAILABLE { return "R4_5_GGML_UNAVAILABLE" }
+  if status == STATUS_TYPE { return "R4_5_TYPE_UNSUPPORTED" }
+  if status == STATUS_SHAPE { return "R4_5_SHAPE" }
+  if status == STATUS_ALIGNMENT { return "R4_5_ALIGNMENT" }
+  if status == STATUS_INIT { return "R4_5_GGML_INIT" }
+  // A bounds refusal is not a constructor failure: the shim returns it when a copy in or out would
+  // exceed `ggml_nbytes` of the tensor it was handed, which is the container's declared size and
+  // ggml's own size disagreeing. `R4_5_SHAPE` is that disagreement's own code — step 16's
+  // `ggml_nbytes(A) != member.nbytes` check reports the identical condition — and the wrapper's
+  // `label` names the object, so the detail stays specific (section 6, correction C18).
+  if status == STATUS_BOUNDS { return "R4_5_SHAPE" }
+  return "R4_5_ABI"
+}
+
+// ---------------------------------------------------------------------------------------------
+// The boundary
+// ---------------------------------------------------------------------------------------------
+
+extern "C" link("align_ggml_shim") {
+  fn align_ggml_available() -> i32
+  fn align_ggml_tensor_alignment() -> i32
+  fn align_ggml_blck_size(kind: i32) -> i32
+  fn align_ggml_type_size(kind: i32) -> i32
+  fn align_ggml_table_drift() -> i32
+  fn align_ggml_type_ok(kind: i32, ne0: i64) -> i32
+  fn align_ptr_align_mod(p: slice<u8>, modulus: i64) -> i64
+  fn align_ggml_device_open() -> raw
+  fn align_ggml_backend_open(device: raw) -> raw
+  fn align_ggml_backend_name(backend: raw, out: slice<u8>, cap: i32) -> i32
+  fn align_ggml_backend_close(backend: raw) -> ()
+  fn align_ggml_context_open(mem_bytes: i64) -> raw
+  fn align_ggml_context_close(ctx: raw) -> ()
+  fn align_ggml_buffer_from_host(device: raw, p: slice<u8>, size: i64) -> raw
+  fn align_ggml_buffer_free(buffer: raw) -> ()
+  fn align_ggml_new_tensor_2d(ctx: raw, kind: i32, ne0: i64, ne1: i64) -> raw
+  fn align_ggml_tensor_place(buffer: raw, tensor: raw, addr: slice<u8>) -> i32
+  fn align_ggml_alloc_remaining(ctx: raw, backend: raw) -> raw
+  fn align_ggml_tensor_set(tensor: raw, data: slice<u8>, offset: i64, size: i64) -> i32
+  fn align_ggml_mul_mat(ctx: raw, a: raw, b: raw) -> raw
+  fn align_ggml_compute(backend: raw, ctx: raw, result: raw) -> i32
+  fn align_ggml_tensor_get(tensor: raw, out: slice<u8>, offset: i64, size: i64) -> i32
+  fn align_ggml_tensor_nbytes(tensor: raw) -> i64
+  fn align_ggml_tensor_data_offset(tensor: raw, base: slice<u8>) -> i64
+}
+
+// ---------------------------------------------------------------------------------------------
+// The safe API above them
+// ---------------------------------------------------------------------------------------------
+
+// `raw.null()` and `p.is_null()` are the only pointer constructions in the capability, and they
+// live here for the same reason every `extern` does: the smoke's `unsafe {` block scan over `src/`
+// must name exactly one file. `src/ggml_spike.align` holds handles as opaque values and never
+// forms one itself.
+pub fn null_handle() -> raw {
+  unsafe {
+    return raw.null()
+  }
+}
+
+pub fn handle_absent(handle: raw) -> bool {
+  unsafe {
+    return handle.is_null()
+  }
+}
+
+pub fn available() -> bool {
+  unsafe {
+    return align_ggml_available() != 0
+  }
+}
+
+// Section 3.8's ABI probe. `TENSOR_ALIGNMENT` is not a public constant in any shipped ggml header
+// (section 6, correction C1), so the real shim reports the linked library's own
+// `ggml_backend_buft_get_alignment` for the CPU device and the stub reports the checked-in `32`.
+pub fn tensor_alignment() -> i64 {
+  unsafe {
+    return align_ggml_tensor_alignment() as i64
+  }
+}
+
+// A ggml type id is a `u32` container field, so it is bounded here before it is narrowed: a value
+// that does not fit `i32` would otherwise truncate into a different, possibly valid, type id.
+fn type_representable(kind: i64) -> bool {
+  return kind >= 0 && kind <= 2147483647
+}
+
+pub fn blck_size(kind: i64) -> i64 {
+  if !type_representable(kind) { return STATUS_TYPE }
+  unsafe {
+    return align_ggml_blck_size(kind as i32) as i64
+  }
+}
+
+pub fn type_size(kind: i64) -> i64 {
+  if !type_representable(kind) { return STATUS_TYPE }
+  unsafe {
+    return align_ggml_type_size(kind as i32) as i64
+  }
+}
+
+// `-1` when every row of the checked-in `mul_mat` operand table agrees with the linked ggml,
+// otherwise the first `ggml_type` that disagrees. Section 5.6's drift guard, widened from three
+// Q4_K constants to the whole table (section 6, correction C2).
+pub fn table_drift() -> i64 {
+  unsafe {
+    return align_ggml_table_drift() as i64
+  }
+}
+
+pub fn type_ok(kind: i64, ne0: i64) -> Result<(), Fault> {
+  if !type_representable(kind) {
+    return Err(labelled_fault("R4_5_TYPE_UNSUPPORTED", "type", kind))
+  }
+  unsafe {
+    status := align_ggml_type_ok(kind as i32, ne0) as i64
+    if status == STATUS_OK { return Ok(()) }
+    if status == STATUS_TYPE {
+      return Err(labelled_fault(code_for(status), "type", kind))
+    }
+    if status == STATUS_SHAPE {
+      return Err(labelled_fault(code_for(status), "ne0", ne0))
+    }
+    return Err(labelled_fault(code_for(status), "type", kind))
+  }
+}
+
+// `(address) mod modulus` for the base of an Align byte range. Align has no `raw`-to-integer cast
+// and no `==` on `raw` (section 2.6), so section 3.8 step 14's alignment rule — the step that keeps
+// `GGML_ASSERT` and `abort()` unreachable — is evaluated on this scalar.
+pub fn align_mod(borrow region: slice<u8>, modulus: i64) -> i64 {
+  unsafe {
+    return align_ptr_align_mod(region, modulus)
+  }
+}
+
+// Every constructor below returns a bare `raw` and reports failure as a null handle rather than as
+// `Result<raw, Fault>`: at this pin a `Result` ok payload must be a scalar and `raw` is refused
+// (section 6, correction C3). `src/ggml_spike.align` tests each handle with `.is_null()` at the one
+// place that knows which object it asked for, which is also the place section 3.8 step 13 names in
+// its detail.
+pub fn device_open() -> raw {
+  unsafe {
+    return align_ggml_device_open()
+  }
+}
+
+pub fn backend_open(device: raw) -> raw {
+  unsafe {
+    return align_ggml_backend_open(device)
+  }
+}
+
+// The backend's name, copied into caller memory and decoded there. The buffer is filled before the
+// call because `buffer(n)` reserves capacity without publishing length, and the shim writes at most
+// the capacity the caller declares.
+pub fn backend_name(backend: raw) -> string {
+  mut window: buffer := buffer(MAX_BACKEND_NAME_BYTES)
+  mut i := 0
+  loop {
+    if i >= MAX_BACKEND_NAME_BYTES { break }
+    window.put_u8(0 as u8)
+    i = i + 1
+  }
+  unsafe {
+    written := align_ggml_backend_name(backend, window.bytes(), MAX_BACKEND_NAME_BYTES as i32) as i64
+    if written <= 0 || written > MAX_BACKEND_NAME_BYTES {
+      return "".clone()
+    }
+    view := window.bytes()
+    return match view[0..written].as_str() {
+      Ok(text) => text.clone(),
+      Err(_) => "".clone(),
+    }
+  }
+}
+
+pub fn backend_close(backend: raw) {
+  unsafe {
+    align_ggml_backend_close(backend)
+  }
+}
+
+pub fn context_open(mem_bytes: i64) -> raw {
+  unsafe {
+    return align_ggml_context_open(mem_bytes)
+  }
+}
+
+pub fn context_close(ctx: raw) {
+  unsafe {
+    align_ggml_context_close(ctx)
+  }
+}
+
+// The call section 2.4 measured aborting on a misaligned pointer. The shim validates alignment and
+// size and returns `NULL` rather than letting `GGML_ASSERT` take the process down; `ggml_spike`
+// has already refused a misaligned base one step earlier, so this is the fail-closed second gate.
+pub fn buffer_from_host(device: raw, borrow region: slice<u8>, size: i64) -> raw {
+  unsafe {
+    return align_ggml_buffer_from_host(device, region, size)
+  }
+}
+
+// Total and idempotent against `raw.null()`, because the teardown of section 3.9 runs on every exit
+// path from construction onward, including the ones where only some handles exist.
+pub fn buffer_free(handle: raw) {
+  unsafe {
+    align_ggml_buffer_free(handle)
+  }
+}
+
+pub fn new_tensor_2d(ctx: raw, kind: i64, ne0: i64, ne1: i64) -> raw {
+  if !type_representable(kind) { return null_handle() }
+  unsafe {
+    return align_ggml_new_tensor_2d(ctx, kind as i32, ne0, ne1)
+  }
+}
+
+// The status-returning wrappers keep their `Fault`, because a placement or a copy can fail for more
+// than one reason and the caller must not have to guess which.
+pub fn tensor_place(handle: raw, tensor: raw, borrow addr: slice<u8>, label: str) -> Result<(), Fault> {
+  unsafe {
+    status := align_ggml_tensor_place(handle, tensor, addr) as i64
+    if status == STATUS_OK { return Ok(()) }
+    return Err(fault(code_for(status), label))
+  }
+}
+
+pub fn alloc_remaining(ctx: raw, backend: raw) -> raw {
+  unsafe {
+    return align_ggml_alloc_remaining(ctx, backend)
+  }
+}
+
+pub fn tensor_set(tensor: raw, borrow data: slice<u8>, offset: i64, size: i64, label: str) -> Result<(), Fault> {
+  unsafe {
+    status := align_ggml_tensor_set(tensor, data, offset, size) as i64
+    if status == STATUS_OK { return Ok(()) }
+    return Err(fault(code_for(status), label))
+  }
+}
+
+pub fn mul_mat(ctx: raw, a: raw, b: raw) -> raw {
+  unsafe {
+    return align_ggml_mul_mat(ctx, a, b)
+  }
+}
+
+// Returns the `ggml_status` verbatim. `0` is `GGML_STATUS_SUCCESS`; section 3.8 step 15 maps
+// anything else to `R4_5_COMPUTE` with detail `status[<n>]`.
+//
+// `ggml_abort` is `abort()`. A kernel that hits an internal assertion terminates the process with
+// no unwinding, no `Drop`, no document, and no error code, and no Align line runs after it. Section
+// 3.9 states that plainly; what this capability does about it is to make every *reachable* failure
+// unreachable — validated types, validated shapes, validated alignments, bounds-checked sizes, and
+// null-checked constructors — not to claim the boundary is safe.
+pub fn compute(backend: raw, ctx: raw, result: raw) -> i64 {
+  unsafe {
+    return align_ggml_compute(backend, ctx, result) as i64
+  }
+}
+
+pub fn tensor_get(tensor: raw, borrow out: slice<u8>, offset: i64, size: i64, label: str) -> Result<(), Fault> {
+  unsafe {
+    status := align_ggml_tensor_get(tensor, out, offset, size) as i64
+    if status == STATUS_OK { return Ok(()) }
+    return Err(fault(code_for(status), label))
+  }
+}
+
+pub fn tensor_nbytes(tensor: raw) -> i64 {
+  unsafe {
+    return align_ggml_tensor_nbytes(tensor)
+  }
+}
+
+// The gate's second clause as a number: how far into the Align-owned buffer ggml's own data pointer
+// lands. `EXTERNAL` is this value equalling the member's interior offset; anything else is
+// `COPIED`, which is a successful run reporting the answer the roadmap asked for.
+pub fn tensor_data_offset(tensor: raw, borrow base: slice<u8>) -> i64 {
+  unsafe {
+    return align_ggml_tensor_data_offset(tensor, base)
+  }
+}

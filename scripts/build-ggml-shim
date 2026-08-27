@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# R4.5-EXTERNAL-BUFFER-SPIKE shim builder (`docs/specs/r4-5-external-buffer.md` section 3.2).
+#
+# One library, `libalign_ggml_shim`, built from one of two checked-in C files and nothing else:
+#
+#   ALIGN_LLM_GGML_INCLUDE set -> scripts/ggml_shim.c      (compiled against that include tree)
+#   ALIGN_LLM_GGML_INCLUDE unset -> scripts/ggml_shim_stub.c  (ggml-free, links nothing)
+#
+# There is no third state and no probing of `/opt/homebrew`, because a build input that changes with
+# the contents of a directory is not reproducible.
+#
+#   ALIGN_LLM_GGML_INCLUDE  directory holding `ggml.h` and `ggml-backend.h`  (selects the real shim)
+#   ALIGN_LLM_GGML_LIB      directory holding `libggml` and `libggml-base`   (real shim only)
+#   ALIGN_LLM_GGML_FORCE    init | compute | reference — the section 4.6 forced-failure builds
+#   ALIGN_LLM_GGML_SHIM_DIR output directory; defaults to `build/lib` inside the work tree
+#   CC                      C compiler; defaults to `cc`
+#
+# **Toolchain assumption, stated rather than assumed.** A working `cc` on `PATH` is already a
+# prerequisite of this repository: `alignc` links every executable through it, so `make build` does
+# not work without one and neither does any hosted target. This script needs nothing beyond that —
+# a freestanding C compiler, `-shared`, and libc headers. `scripts/ggml_shim_stub.c` includes only
+# `<stddef.h>` and `<stdint.h>`; `scripts/ggml_shim.c` additionally needs the ggml headers the
+# caller names, and is never built on a host that does not name them. Both files compile clean under
+# `-Wall -Wextra -Werror` with Apple clang 21 and Homebrew LLVM 19, 21, and 22.
+#
+# The output goes to `build/lib/` by default, which `.gitignore` excludes: no binary is ever
+# committed. The
+# shim's install name / soname is its own absolute path, so an executable linked against it resolves
+# it at run time without `DYLD_LIBRARY_PATH` or `LD_LIBRARY_PATH` — the two runners set them anyway,
+# because a relocated build directory is a worse failure than a redundant variable.
+#
+# It prints one line, the directory the library was written to, so a caller can put it on
+# `LIBRARY_PATH` without knowing this script's layout.
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+# `build/` is the ordinary destination and is `.gitignore`d. `ALIGN_LLM_GGML_SHIM_DIR` moves the
+# library out of the work tree entirely, which is what `scripts/run-ggml-spike-smoke` does: the
+# fresh worker permits the aggregate to leave exactly one file, `main`, in `/workspace`
+# (`scripts/fresh-align-compiler`), so an aggregate member may not write a build artifact there.
+out_dir="${ALIGN_LLM_GGML_SHIM_DIR:-${root_dir}/build/lib}"
+compiler="${CC:-cc}"
+
+# The platform test is bash's own `OSTYPE`, not `uname`. The fresh worker image ships a curated
+# tool set (`image/fresh/Dockerfile`) that has no `uname`, and this script runs inside that image
+# as part of `ggml-spike-smoke`; a shell variable needs no tool at all.
+case "${OSTYPE:-}" in
+  darwin*) suffix=dylib ;;
+  *)       suffix=so ;;
+esac
+library="${out_dir}/libalign_ggml_shim.${suffix}"
+
+source_file="${root_dir}/scripts/ggml_shim_stub.c"
+flavour=stub
+include_flags=()
+link_flags=()
+if [ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ]; then
+  if [ ! -d "${ALIGN_LLM_GGML_INCLUDE}" ]; then
+    printf '%s\n' "build-ggml-shim: ALIGN_LLM_GGML_INCLUDE is not a directory: ${ALIGN_LLM_GGML_INCLUDE}" >&2
+    exit 1
+  fi
+  if [ ! -f "${ALIGN_LLM_GGML_INCLUDE}/ggml.h" ] || [ ! -f "${ALIGN_LLM_GGML_INCLUDE}/ggml-backend.h" ]; then
+    printf '%s\n' "build-ggml-shim: ggml.h and ggml-backend.h are not in ${ALIGN_LLM_GGML_INCLUDE}" >&2
+    exit 1
+  fi
+  source_file="${root_dir}/scripts/ggml_shim.c"
+  flavour=real
+  include_flags=("-I${ALIGN_LLM_GGML_INCLUDE}")
+  if [ -n "${ALIGN_LLM_GGML_LIB:-}" ]; then
+    link_flags=("-L${ALIGN_LLM_GGML_LIB}")
+  fi
+  link_flags+=("-lggml" "-lggml-base")
+  # Section 4.6's named mechanism for the three failures no input can produce. Only the real shim
+  # honours it, and only when the qualification asks: an ordinary build never defines a macro.
+  case "${ALIGN_LLM_GGML_FORCE:-}" in
+    "") ;;
+    init)      include_flags+=("-DALIGN_GGML_FORCE_INIT_FAILURE=1"); flavour="real+force-init" ;;
+    compute)   include_flags+=("-DALIGN_GGML_FORCE_COMPUTE_FAILURE=1"); flavour="real+force-compute" ;;
+    reference) include_flags+=("-DALIGN_GGML_FORCE_REFERENCE_PERTURBATION=1")
+               flavour="real+force-reference" ;;
+    *)
+      printf '%s\n' "build-ggml-shim: unknown ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
+      exit 1
+      ;;
+  esac
+elif [ -n "${ALIGN_LLM_GGML_FORCE:-}" ]; then
+  printf '%s\n' "build-ggml-shim: ALIGN_LLM_GGML_FORCE needs the real shim" >&2
+  exit 1
+fi
+
+if ! command -v "${compiler}" >/dev/null 2>&1; then
+  printf '%s\n' "build-ggml-shim: no C compiler (CC=${compiler}); alignc needs one to link too" >&2
+  exit 1
+fi
+
+mkdir -p "${out_dir}"
+
+case "${OSTYPE:-}" in
+  darwin*) name_flags=("-install_name" "${library}") ;;
+  *)       name_flags=("-Wl,-soname,${library}") ;;
+esac
+
+"${compiler}" -O2 -fPIC -shared -Wall -Wextra -Werror \
+  "${include_flags[@]+"${include_flags[@]}"}" \
+  -o "${library}" "${source_file}" \
+  "${name_flags[@]}" \
+  "${link_flags[@]+"${link_flags[@]}"}"
+
+if [ ! -f "${library}" ]; then
+  printf '%s\n' "build-ggml-shim: the library was not produced: ${library}" >&2
+  exit 1
+fi
+
+printf '%s\n' "build-ggml-shim: ${flavour} shim from $(basename -- "${source_file}") -> ${library}" >&2
+printf '%s\n' "${out_dir}"

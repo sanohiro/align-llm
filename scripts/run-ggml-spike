@@ -1,0 +1,331 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# R4.5-EXTERNAL-BUFFER-SPIKE focused qualification (`docs/specs/r4-5-external-buffer.md` section
+# 5.2). Opt-in, capable-only, never in an aggregate, never in CI. It is section 2's probe made
+# reproducible: a real Q4_K tensor, from a real pack, computed on a real backend, checked against
+# the original GGUF.
+#
+#   ALIGN_LLM_GGML_INCLUDE   directory holding `ggml.h` and `ggml-backend.h`   (required)
+#   ALIGN_LLM_GGML_LIB       directory holding `libggml` and `libggml-base`    (required)
+#   ALIGN_LLM_GGUF_MODEL     path to the model                                 (required)
+#   ALIGN_LLM_GGML_SPIKE_TMPDIR  directory for the pack        (optional; default `mktemp -d`)
+#   ALIGN_LLM_GGML_SPIKE_SHA256  the expected output digest    (optional; default the probe's)
+#
+# Every refusal prints exactly one `N/A` line and exits 0 without claiming a pass.
+#
+# Like `scripts/run-alignpack-qualification`, this writes a multi-gigabyte file, and its contract is
+# written around that fact: it refuses a temporary directory inside the work tree, checks free space
+# before writing anything, and removes the pack on **every** exit path, then asserts the removal and
+# prints the reclaimed byte count.
+
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+
+include_dir="${ALIGN_LLM_GGML_INCLUDE:-}"
+lib_dir="${ALIGN_LLM_GGML_LIB:-}"
+model="${ALIGN_LLM_GGUF_MODEL:-}"
+
+if [ -z "${include_dir}" ]; then
+  echo "ggml spike qualification: N/A (ALIGN_LLM_GGML_INCLUDE unset)"
+  exit 0
+fi
+if [ ! -d "${include_dir}" ] || [ ! -f "${include_dir}/ggml.h" ]; then
+  echo "ggml spike qualification: N/A (ALIGN_LLM_GGML_INCLUDE holds no ggml.h)"
+  exit 0
+fi
+if [ -z "${lib_dir}" ]; then
+  echo "ggml spike qualification: N/A (ALIGN_LLM_GGML_LIB unset)"
+  exit 0
+fi
+if [ ! -d "${lib_dir}" ]; then
+  echo "ggml spike qualification: N/A (ALIGN_LLM_GGML_LIB is not a directory)"
+  exit 0
+fi
+if [ -z "${model}" ]; then
+  echo "ggml spike qualification: N/A (ALIGN_LLM_GGUF_MODEL unset)"
+  exit 0
+fi
+if [ ! -f "${model}" ]; then
+  echo "ggml spike qualification: N/A (ALIGN_LLM_GGUF_MODEL is absent)"
+  exit 0
+fi
+model=$(CDPATH= cd -- "$(dirname -- "${model}")" && pwd -P)/$(basename -- "${model}")
+
+owned_tmpdir=0
+tmpdir="${ALIGN_LLM_GGML_SPIKE_TMPDIR:-}"
+if [ -z "${tmpdir}" ]; then
+  tmpdir=$(mktemp -d)
+  owned_tmpdir=1
+  # A directory this runner created is this runner's to remove, from the moment it exists. The
+  # refusals below exit 0 without writing anything, and without this they would leave an empty
+  # `mktemp -d` behind on every skip. It removes **only** an empty directory it owns — `rmdir`, not
+  # `rm -rf` — so it cannot become the artifact-deleting trap the reclaim ordering below avoids.
+  discard_owned_tmpdir() {
+    status=$?
+    rmdir "${tmpdir}" 2>/dev/null || true
+    exit "${status}"
+  }
+  trap discard_owned_tmpdir EXIT HUP INT TERM
+fi
+if [ ! -d "${tmpdir}" ]; then
+  echo "ggml spike qualification: N/A (ALIGN_LLM_GGML_SPIKE_TMPDIR is not a directory)"
+  exit 0
+fi
+tmpdir=$(CDPATH= cd -- "${tmpdir}" && pwd -P)
+
+# A multi-gigabyte artifact must never land in the repository, even through a mistyped variable.
+case "${tmpdir}/" in
+  "${root_dir}"/*)
+    echo "ggml spike qualification: N/A (the temporary directory resolves inside the work tree)"
+    exit 0
+    ;;
+esac
+
+pack="${tmpdir}/model.alignpack"
+pack_document="${tmpdir}/alignpack.json"
+spike_document="${tmpdir}/ggml-spike.json"
+
+# Before the **reclaim** trap, deliberately: a runner that installed it first and refused afterwards
+# would delete the very artifact it refused to overwrite. (The trap installed above cannot: it only
+# `rmdir`s a directory this runner created, which by construction is empty and holds no pack.)
+if [ -e "${pack}" ]; then
+  echo "ggml spike qualification: N/A (the destination already exists: ${pack})"
+  exit 0
+fi
+
+reclaim() {
+  status=$?
+  if [ -f "${pack}" ]; then
+    size=$(wc -c <"${pack}" | tr -d ' ')
+    rm -f "${pack}"
+    if [ -f "${pack}" ]; then
+      echo "ggml spike qualification: FAIL the pack could not be removed: ${pack}" >&2
+      exit 1
+    fi
+    echo "ggml spike qualification: reclaimed ${size} bytes"
+  fi
+  # Every file this runner creates, not only the two named ones: a caller-supplied temporary
+  # directory is not ours to leave litter in, and `forced-*.json` is litter.
+  rm -f "${pack_document}" "${spike_document}" "${tmpdir}/spike.err" \
+    "${tmpdir}/absent.json" "${tmpdir}/diverged.json" \
+    "${tmpdir}/forced-init.json" "${tmpdir}/forced-compute.json" \
+    "${tmpdir}/forced-reference.json"
+  if [ "${owned_tmpdir}" = 1 ]; then
+    rmdir "${tmpdir}" 2>/dev/null || true
+  fi
+  exit "${status}"
+}
+trap reclaim EXIT HUP INT TERM
+
+available=$(python3 -c 'import os,sys; u=os.statvfs(sys.argv[1]); print(u.f_bavail*u.f_frsize)' "${tmpdir}")
+model_size=$(wc -c <"${model}" | tr -d ' ')
+required=$((model_size + 1073741824))
+if [ "${available}" -lt "${required}" ]; then
+  echo "ggml spike qualification: N/A (insufficient free space: ${available} < ${required})"
+  exit 0
+fi
+echo "ggml spike qualification: model ${model} (${model_size} bytes)"
+echo "ggml spike qualification: temporary directory ${tmpdir}"
+echo "ggml spike qualification: free ${available} bytes, required ${required}"
+
+build_shim() {
+  ALIGN_LLM_GGML_INCLUDE="${include_dir}" \
+  ALIGN_LLM_GGML_LIB="${lib_dir}" \
+  ALIGN_LLM_GGML_FORCE="${1:-}" \
+  "${root_dir}/scripts/build-ggml-shim"
+}
+
+shim_dir=$(build_shim "")
+(
+  cd "${root_dir}"
+  LIBRARY_PATH="${shim_dir}:${lib_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}" \
+  "${compiler}" build src/ggml_spike.align >/dev/null
+  mv -f ggml_spike ggml-spike
+)
+
+"${root_dir}/main" --pack "${model}" "${pack}" "${pack_document}" >/dev/null
+pack_size=$(wc -c <"${pack}" | tr -d ' ')
+echo "ggml spike qualification: pack ${pack_size} bytes"
+
+run_spike() {
+  DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+  LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  "${root_dir}/ggml-spike" "$@"
+}
+
+# The primary arm: block 1, member 1 — `blk.0.attn_q.weight` — with the original GGUF as the
+# reference oracle.
+set +e
+run_spike "${pack}" 1 1 "${spike_document}" "${model}" >/dev/null 2>"${tmpdir}/spike.err"
+primary_status=$?
+set -e
+if [ "${primary_status}" != 0 ]; then
+  echo "ggml spike qualification: FAIL the primary arm exited ${primary_status}" >&2
+  tail -c 2000 "${tmpdir}/spike.err" >&2 || true
+  exit 1
+fi
+
+# The four failures no input can produce, each with the shim rebuilt exactly as section 4.6 names.
+# The executable is not rebuilt: the shim's install name is its own absolute path, so replacing the
+# library replaces the boundary under the same binary.
+declare -a forced_codes=()
+for flavour in init compute reference; do
+  build_shim "${flavour}" >/dev/null
+  set +e
+  run_spike "${pack}" 1 1 "${tmpdir}/forced-${flavour}.json" "${model}" >/dev/null 2>&1
+  set -e
+  code=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["error_code"])' \
+    "${tmpdir}/forced-${flavour}.json")
+  forced_codes+=("${flavour}=${code}")
+done
+build_shim "" >/dev/null
+
+# `R4_5_SOURCE_UNREADABLE` and `R4_5_SOURCE_DIVERGED`: an absent reference, and a reference whose
+# bytes at the member's `source_offset` are not the member's bytes. The pack itself is the second
+# one — a file of the right length holding entirely different bytes there — which costs nothing and
+# proves the byte check reports the divergence rather than a numeric difference.
+set +e
+run_spike "${pack}" 1 1 "${tmpdir}/absent.json" "${tmpdir}/no-such-model.gguf" >/dev/null 2>&1
+run_spike "${pack}" 1 1 "${tmpdir}/diverged.json" "${pack}" >/dev/null 2>&1
+set -e
+
+python3 - "${spike_document}" "${tmpdir}" "${pack_size}" "${forced_codes[@]}" <<'PY'
+import json
+import sys
+
+document_path, tmpdir, pack_size = sys.argv[1:4]
+forced = dict(entry.split("=", 1) for entry in sys.argv[4:])
+document = json.load(open(document_path, encoding="utf-8"))
+
+import os
+expected_sha = os.environ.get(
+    "ALIGN_LLM_GGML_SPIKE_SHA256",
+    "2ccc7dc778108df3b626128895347f203795a2d82b502805806fb8472457e044")
+
+failures = []
+
+
+def expect(label, got, want):
+    if got != want:
+        failures.append("%s: got %r, expected %r" % (label, got, want))
+
+
+expect("status", document["status"], "ok")
+expect("verdict", document["verdict"], "EXTERNAL")
+expect("selection.name", document["selection"]["name"], "blk.0.attn_q.weight")
+expect("tensor.ggml_type", document["tensor"]["ggml_type"], 12)
+expect("tensor.ne0", document["tensor"]["ne0"], 3584)
+expect("tensor.ne1", document["tensor"]["ne1"], 3584)
+expect("tensor.nbytes", document["tensor"]["nbytes"], 7225344)
+expect("tensor.elements_per_row_ok", document["tensor"]["elements_per_row_ok"], True)
+expect("buffer.interior_offset", document["buffer"]["interior_offset"], 14336)
+expect("buffer.tensor_data_offset", document["buffer"]["tensor_data_offset"], 14336)
+expect("buffer.pointer_identity", document["buffer"]["pointer_identity"], True)
+expect("buffer.output_pointer_identity", document["buffer"]["output_pointer_identity"], True)
+
+# The compensation, asserted against the real allocator rather than only the synthetic corpus: the
+# member's interior offset is the only thing the alignment gate may depend on, and the pads are the
+# arm's own answer to a base it does not control (section 6, correction C14).
+alignment = document["abi"]["tensor_alignment"]
+if alignment > 0:
+    if document["buffer"]["interior_offset"] % alignment != 0:
+        failures.append("buffer.interior_offset %d is not %d-aligned but the run continued"
+                        % (document["buffer"]["interior_offset"], alignment))
+    for key, low, high in (("weights_pad", 1, 64), ("output_pad", 0, 63)):
+        if not low <= document["buffer"][key] <= high:
+            failures.append("buffer.%s is %d, outside [%d, %d]"
+                            % (key, document["buffer"][key], low, high))
+
+expect("abi.tensor_alignment", document["abi"]["tensor_alignment"], 32)
+expect("abi.q4k_blck_size", document["abi"]["q4k_blck_size"], 256)
+expect("abi.q4k_type_size", document["abi"]["q4k_type_size"], 144)
+expect("abi.table_drift", document["abi"]["table_drift"], -1)
+expect("reference.present", document["reference"]["present"], True)
+expect("reference.bytes_equal", document["reference"]["bytes_equal"], True)
+expect("reference.verdict", document["reference"]["verdict"], "IDENTICAL")
+expect("reference.differing_elements", document["reference"]["differing_elements"], 0)
+expect("output.element_count", document["output"]["element_count"], 14336)
+
+lifetime = document["lifetime"]
+for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                       ("contexts_created", "contexts_freed"),
+                       ("backends_created", "backends_freed")):
+    if lifetime[created] != lifetime[freed]:
+        failures.append("lifetime %s %d != %s %d"
+                        % (created, lifetime[created], freed, lifetime[freed]))
+expect("lifetime.released_before_owner_scope_end",
+       lifetime["released_before_owner_scope_end"], True)
+
+# The digest is asserted as an exact value and that is a deliberate, narrow claim: it is correct for
+# this model, this member, this activation, this ggml version, and this CPU backend. It is not a
+# portable golden value. A failure here means the kernel or the model changed — see
+# docs/specs/r4-5-external-buffer.md section 5.2 — and is not a corruption report.
+if document["output"]["sha256"] != expected_sha:
+    failures.append("output.sha256 is %s, not %s — the ggml kernel, the model, or the activation "
+                    "changed; see docs/specs/r4-5-external-buffer.md section 5.2"
+                    % (document["output"]["sha256"], expected_sha))
+
+expect("forced init", forced.get("init"), "R4_5_GGML_INIT")
+expect("forced compute", forced.get("compute"), "R4_5_COMPUTE")
+expect("forced reference", forced.get("reference"), "R4_5_REFERENCE_MISMATCH")
+
+absent = json.load(open(tmpdir + "/absent.json", encoding="utf-8"))
+expect("absent reference", absent["error_code"], "R4_5_SOURCE_UNREADABLE")
+diverged = json.load(open(tmpdir + "/diverged.json", encoding="utf-8"))
+expect("diverged reference", diverged["error_code"], "R4_5_SOURCE_DIVERGED")
+expect("diverged bytes_equal", diverged["reference"]["bytes_equal"], False)
+
+print("ggml spike qualification: verdict %s, name %s, type %d, dims %dx%d, nbytes %d"
+      % (document["verdict"], document["selection"]["name"], document["tensor"]["ggml_type"],
+         document["tensor"]["ne0"], document["tensor"]["ne1"], document["tensor"]["nbytes"]))
+print("ggml spike qualification: interior_offset %d, tensor_data_offset %d, pointer_identity %s"
+      % (document["buffer"]["interior_offset"], document["buffer"]["tensor_data_offset"],
+         document["buffer"]["pointer_identity"]))
+print("ggml spike qualification: base_alignment %d, weights_pad %d, output_base_alignment %d, "
+      "output_pad %d" % (document["buffer"]["base_alignment"], document["buffer"]["weights_pad"],
+                         document["buffer"]["output_base_alignment"],
+                         document["buffer"]["output_pad"]))
+print("ggml spike qualification: backend %s, sha256 %s, bit_sum %d, nonfinite %d"
+      % (document["compute"]["backend_name"], document["output"]["sha256"],
+         document["output"]["bit_sum"], document["output"]["nonfinite_count"]))
+print("ggml spike qualification: reference %s, differing_elements %d, bytes_equal %s"
+      % (document["reference"]["verdict"], document["reference"]["differing_elements"],
+         document["reference"]["bytes_equal"]))
+timings = document["timings"]
+print("ggml spike qualification: pread %d ns for %d bytes, compute %d ns (warm mean of %d), "
+      "reference pread %d ns, reference compute %d ns, elapsed %d ns"
+      % (timings["pread_ns"], document["buffer"]["block_pack_bytes"], timings["compute_ns"],
+         document["compute"]["timed_calls"], timings["reference_pread_ns"],
+         timings["reference_compute_ns"], timings["elapsed_ns"]))
+print("ggml spike qualification: lifetime buffers %d/%d, contexts %d/%d, backends %d/%d, "
+      "released_before_owner_scope_end %s"
+      % (lifetime["ggml_buffers_created"], lifetime["ggml_buffers_freed"],
+         lifetime["contexts_created"], lifetime["contexts_freed"],
+         lifetime["backends_created"], lifetime["backends_freed"],
+         lifetime["released_before_owner_scope_end"]))
+print("ggml spike qualification: forced failures %s"
+      % ", ".join("%s -> %s" % (k, v) for k, v in sorted(forced.items())))
+
+# Deliberately named as N/A rather than left silent (section 5.4).
+print("ggml spike qualification (expert block): N/A - this host's only model is dense; the CLI "
+      "already addresses an ExpertBlock by its block index with no new surface. See "
+      "docs/specs/r4-5-external-buffer.md section 5.4 and "
+      "docs/specs/r4-alignpack-layer-major.md section 4.5.")
+print("ggml spike qualification (GPU arm): N/A - deliberately not shipped. Section 2.5 measured the "
+      "Metal backend taking the same host pointer with no copy, and also measured that its output "
+      "differs from the CPU's in every element; a GPU arm needs a tolerance oracle and a different "
+      "alignment rule, which is a different acceptance contract. See section 5.4.")
+print("ggml spike qualification (discrete VRAM): N/A - unanswerable on this host; "
+      "`ggml-cuda.h` has no `buffer_from_host_ptr` counterpart. See section 5.4.")
+
+if failures:
+    for line in failures:
+        sys.stderr.write("ggml spike qualification: FAIL %s\n" % line)
+    raise SystemExit(1)
+print("ggml spike qualification: PASS")
+PY

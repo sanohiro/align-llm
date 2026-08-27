@@ -105,19 +105,31 @@ The current forward delivery order is:
     `expert-trace-smoke` a hosted member — while **the R2 roadmap gate stays open** pending a real
     MoE transcript, a separate pending user decision (a small 1-4 GB MoE GGUF).
 13. **R4-ALIGNPACK-LAYER-MAJOR — the alignpack v1 container, its layer-major writer, and its
-    verifier. Active.** On branch `agent/r4-alignpack-layer-major`.
+    verifier. Merged as PR #125** (head `a7e72dc`, merge `991eab1`), from branch
+    `agent/r4-alignpack-layer-major`.
     [`r4-alignpack-layer-major.md`](r4-alignpack-layer-major.md) is the authoritative plan and owns
     the contract ledger, closure matrix, fixture design, correction ledger, and cell-to-case map.
     `main --pack MODEL OUT.alignpack [DOC.json]` writes a layer-major container whose every block is
     one contiguous range, and `main --pack-verify MODEL PACK [DOC.json]` re-reads both files and
     compares every claimed byte; both emit `schema_version: 1` documents
     (`R4_ALIGNPACK`, `R4_ALIGNPACK_VERIFY`). It consumes R1's Block IR through
-    `model_ir.resolve_claims` and `model_ir.derive_status` and imports no frontend. **It discharges
+    `model_ir.resolve_claims` and `model_ir.derive_status` and imports no frontend. **It closes
     the R4 gate on the qwen half with real weights**: one qualification run over
     Qwen2.5-Coder-7B Q4_K_M reported byte identity and 89 → 58 ranges, 11,130,544,128 → 4,677,120,000
     span bytes, 2,379,786 → 1,000,000 ppm, and 27 → 58 of 58 contiguous blocks. The per-expert half
     is closed synthetically and stays **MOE-PREREQ**, pending the same small MoE GGUF decision R2
     names.
+14. **R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer.
+    Publication in progress.** On branch `agent/r4-5-external-buffer`, rebased onto the merged R4 at
+    `main` `991eab1`.
+    [`r4-5-external-buffer.md`](r4-5-external-buffer.md) is the authoritative plan and owns the probe
+    record, the contract ledger, the closure matrix, the fixture design, the correction ledger, and
+    the cell-to-case map. `ggml-spike PACK BLOCK MEMBER [DOC.json [REF.gguf]]` is a **separate**
+    executable — `make build` links no ggml on any host — that reads one alignpack block into one
+    Align-owned buffer, hands ggml a pointer *into* it, computes one `mul_mat` on a real backend, and
+    emits an `R4_5_EXTERNAL_BUFFER`, `schema_version: 1` document saying, as data, whether ggml
+    computed over our bytes or over a copy. It answers R4.5's gate for the DRAM half and for unified
+    memory; section R4.5 below records clause by clause what that discharges and what it defers.
 
 **I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
 prove its value on an existing model, and the merged C6-MEASURED wave (align-llm PR #103, `c9a510d`)
@@ -587,7 +599,8 @@ layer-major
 
 元GGUFとのtensor内容一致と、連続read量の改善を確認できること。
 
-このgateはR4-ALIGNPACK-LAYER-MAJORが所有する。実装・contract ledger・closure
+このgateはR4-ALIGNPACK-LAYER-MAJORが所有し、PR #125（head `a7e72dc`、merge `991eab1`）で
+merge済みである。実装・contract ledger・closure
 matrix・fixture設計・correction ledgerはすべて
 [`r4-alignpack-layer-major.md`](r4-alignpack-layer-major.md)にある。qwen側は実weightで達成済み
 （89 → 58 range、2,379,786 → 1,000,000 ppm、27 → 58/58 contiguous、byte identity）。per-expert側は
@@ -609,6 +622,27 @@ alignが所有するDRAM/VRAM buffer上の量子化weightを、ggml backendで�
 ```
 
 失敗時はruntime設計を見直す。
+
+このgateはR4.5-EXTERNAL-BUFFER-SPIKEが所有する。実装・contract ledger・closure
+matrix・fixture設計・correction ledgerはすべて
+[`r4-5-external-buffer.md`](r4-5-external-buffer.md)にある。同ledger section 1.4がgate 4節を1節ずつ
+判定しており、現状は次のとおり:
+
+- `align owns buffer lifetime` — **達成**。bytesはAlignの`buffer` localが所有し、ggml objectは
+  所有scope終了前にすべて明示的に解放される（実測 buffers 4/4、contexts 2/2、backends 1/1、
+  `released_before_owner_scope_end true`、`exit`でのabortなし）。
+- `no silent copy` — **達成（DRAM実weight）**。`ggml_get_data(A)`がAlign buffer内のmember interior
+  offsetと厳密に一致（`14336 == 14336`、`verdict: EXTERNAL`）。
+- `quantized layout preserved` — **達成**。実Q4_K tensorの出力が元GGUFをggml所有memoryに読んだ
+  reference armとbit一致（`differing_elements 0` / 14,336 f32）。
+- `one expert matmul succeeds` — **dense blockのみ達成**。この環境の実modelはdenseで、expert block
+  は**MOE-PREREQ**（R2/R4と同じ小型MoE GGUF決定待ち）。CLIはExpertBlockをblock indexで既に指定でき、
+  新surfaceは不要。
+
+**未達として明示的にdeferしているもの**（ledger section 5.4）: GPU/Metal arm（unified memoryでは
+no-copyで動作することを実測済みだが、CPU出力とbit一致しないためtolerance oracleと別のalignment
+ruleが必要＝別のacceptance contract）、discrete VRAM（`ggml-cuda.h`に`buffer_from_host_ptr`相当が
+存在せず、この環境では原理的に回答不能）、およびR5のloader（residency・eviction・prefetch）。
 
 ---
 
