@@ -369,20 +369,22 @@ file records durable project state.
 
 ## Publication in progress: R5B-MODEL-PREFILL-FORWARD — a whole Qwen2 prefill computed from an Align-owned alignpack (2026-08-27)
 
-- Branch `agent/r5b-model-prefill-forward` at head `019fa26` ("feat: compute a whole-model Qwen2
-  prefill over Align-owned windows"), ledger commit `c0305dd` ("docs: add R5B model prefill
+- Branch `agent/r5b-model-prefill-forward` at head the consolidated repair commit `556fced` and
+  this follow-up (repairing feat commit `019fa26` "compute a whole-model Qwen2 prefill over
+  Align-owned windows"), ledger commit `c0305dd` ("docs: add R5B model prefill
   forward design ledger"), continuing from R5A-DENSE-LAYER-FORWARD (branch
   `agent/r5a-dense-layer-forward` at `0414ab9`, awaiting publication above). The authoritative
   design ledger is `docs/specs/r5b-model-prefill-forward.md`.
-- **Status: implementation complete and committed at `019fa26`; two complementary reviews are
-  complete and their consolidated repair is the next commit on this branch.** R5B is stage 3 of
+- **Status: implementation complete and committed; two complementary reviews and one final review
+  are complete and repaired in the consolidated repair commit `556fced` and this follow-up.**
+  R5B is stage 3 of
   `docs/specs/roadmap.md` section R5's three-stage gate — a smallest model, CPU only, dense, prefill
   only — one prefill of at most six tokens through the whole twenty-eight-layer Qwen2 model,
   streamed one block pair at a time through one reused Align-owned window, carrying the residual
   stream in Align-owned buffers between per-layer graphs, and checked against llama.cpp's own final
   logits for the same tokens. `src/model_forward.align`, the new node tables and `node_when` column
   in `src/layer_qwen2.align`, the `pad` shim wrapper, the `--model-forward` arm, and the extended
-  fixture/golden files are all committed at `019fa26`. Nothing is intentionally uncommitted.
+  fixture/golden files are all committed. Nothing is intentionally uncommitted.
 - **Probe evidence (ledger section 2), gathered before section 3's contract was written**, from a
   28-layer C harness that streams the real model through one reused window, R4.5's verified path at
   model scale — unchanged from the prior entry below (kept for continuity; superseded as evidence by
@@ -476,6 +478,8 @@ file records durable project state.
   uncommitted work in progress. The repair added five review-found corrections to ledger section 6
   (C17 partial-run verdicts, C18 separated reference-read counters, C19 `min(TOP_K, n_vocab)`,
   C20 view-bounded `window_copy`, C21 the 447,086,592 B window), each with its covering case.
+  **A final review of the repair delta at `556fced` approved** with three low and one
+  informational finding, all four accepted and repaired in this commit.
 - **Next actions, in order.**
   1. Rerun owner verification and the named qualification against the repair commit.
   2. Do **not** rely on `layer-forward-smoke`'s existing `HOSTED_CHECK_TARGETS` membership as an

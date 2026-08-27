@@ -273,9 +273,10 @@ want("layer 26 does not narrow", [schedule[26]["l_out_ne0"], schedule[26]["l_out
      [3584, 6])
 
 window = d["window"]
-# Section 5.2's window row, corrected by section 6 correction C21: the sweep's 447,082,496 B is the
-# pack's `block_align` figure, and the shipped arm over-reserves by MAX_TENSOR_ALIGNMENT (4096) so
-# it can hand ggml an interior range that starts on a boundary. 447,086,592 is the measured value.
+# Section 5.2's window row, corrected by section 6 correction C21: window.bytes is 447,086,592 B,
+# `output_norm.nbytes + align_up(output.nbytes, block_align=4096)`. 447,082,496 is the same tensor
+# rounded to 32 instead. The buffer's 64-byte (MAX_TENSOR_ALIGNMENT) over-reservation, which lets
+# the shipped arm hand ggml an interior range that starts on a boundary, is excluded from window.bytes.
 want("window.bytes", window["bytes"], 447086592)
 want("window.peak_block_layer", window["peak_block_layer"], -1)
 want("window.reuse_count", window["reuse_count"], 30)

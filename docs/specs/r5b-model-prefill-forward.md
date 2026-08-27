@@ -115,7 +115,7 @@ deferred **individually**, with the probe that settles it named.
 | 単一layer — a single layer | **Discharged by R5A.** Not re-litigated here | `r5a-dense-layer-forward.md` section 1.4 |
 | 最小モデル — a smallest model | **Discharged, CPU, dense, prefill only.** At the instrument's declared attention width the 152,064 final logits are **byte-identical** to `llama-debug --save-logits`, and every sampled element of all twenty-eight layers plus the head agrees with `llama-eval-callback` to the last digit it prints — **30,042** in the probe, **30,078** in the shipped arm, which compares one node the probe skipped (correction C12). At the runtime's own attention width the same forward gives `argmax` 671 and the same top ten, with max `\|Δ\|` = **0.274** — and section 2.7 shows that entire difference is one known cause | Section 2.7 (byte-identical), section 2.8 (the probe's 30,042 at 0 ten-thousandths), section 7.4 (the arm's 30,078 at 0), section 2.6 (0.274 and the drift curve) |
 | required microbenchmark A — transfer + GPU compute | **Deferred.** No GPU arm and no transfer tier exist here | Section 5.4, inheriting `r4-5-external-buffer.md` section 2.5 |
-| required microbenchmark B — CPU compute | **Discharged at whole-model scale**: 1.07–1.12 s wall for a six-token prefill, of which **349.6 ms** is compute and **533–905 ms** is `pread` over 4,370,571,072 B, on one reused 447 MB window | Section 2.9, section 5.3 |
+| required microbenchmark B — CPU compute | **Discharged at whole-model scale**: **1.07–1.12 s** wall in the probe, of which **349.6 ms** is compute and **533–905 ms** is `pread` over 4,370,571,072 B on one reused 447 MB window; the shipped arm's own qualification measures **515–648 ms** `pread` over 4,370,608,032 B, compute **779 ms** runtime / **841 ms** reconciliation, and **6.68 s** wall including the reference arm | Section 2.9, section 5.3, section 7.6 |
 | required microbenchmark C — async prefetch + GPU compute | **Deferred.** Prefetch is a residency policy and R5B ships none | Section 5.4 |
 
 The honest summary is: **R5B discharges stage 3 of three on the CPU for a dense model at prefill,
@@ -953,7 +953,7 @@ step 20, and nothing outside the process is ever written.**
 | `R5_TYPE_UNSUPPORTED` | a member's ggml type is not a `mul_mat` left operand | 22 | `layer[<n>]role[type]` |
 | `R5_GGML_INIT` | a ggml constructor returned `NULL`, or the slot store failed to init | 23 | the object |
 | `R5_SLOT` | a slot index out of range, or a read of an empty slot | 24, 25, 27 | `graph[<n>]node[<id>]` |
-| `R5_ALIGNMENT` | a pointer handed to ggml would violate `TENSOR_ALIGNMENT` | 24, 25, 27 | `layer[<n>]role[<name>]` |
+| `R5_ALIGNMENT` | a pointer handed to ggml would violate `TENSOR_ALIGNMENT` | 24, 25, 27 | `layer[<n>]role[<name>]` — step 25's per-member loop only; `graph_alignment`'s window-level branch is unreachable defence, section 6 correction C22 |
 | `R5_ALLOC` | `ggml_gallocr_reserve` or `_alloc_graph` returned false | 24, 25, 27 | `graph[<n>]reserve` / `alloc` |
 | `R5_COMPUTE` | `ggml_backend_graph_compute` returned non-success | 24, 25, 27 | `layer[<n>]status[<n>]` |
 | `R5_RESIDUAL` | **new.** the carried activation's length disagrees with the next graph's declared input | 26 | `layer[<n>]` |
@@ -1711,6 +1711,20 @@ never implemented as an assertion the disagreement survived to review. It is now
 and `scripts/run-model-forward` checks it — which is also how sections 5.2's `reference.nodes_
 compared` and `oracle.elements_compared` rows, both unimplemented for the same reason, became
 assertions of 479 and 30,078 (correction C12).
+
+### C22 — `graph_alignment`'s window-level check is unreachable defence
+
+`graph_alignment` (`src/model_forward.align:1716-1733`) checks the window's own base, then every
+member's window offset, both against `alignment` (0 mod `tensor_alignment`). Only the per-member
+loop can actually fire in the shipped arm: `graph_alignment` runs only after `o.code.len() == 0`
+following `ggml_ffi.buffer_from_host(device, window, window.len())` at line 1792, and that call
+already rejects a misaligned `window` base by failing `R5_GGML_INIT`/`weight_buffer` before
+`graph_alignment` is ever reached. The window-level `R5_ALIGNMENT`/`window` branch therefore cannot
+be exercised by any reachable input; section 3.9 step 25's `R5_ALIGNMENT` row (window offset check,
+detail `layer[<n>]role[<name>]`) is the per-member branch, never the window-level one. The branch
+stays as defence — if `buffer_from_host`'s own check is ever relaxed or reordered, the per-member
+loop below it must not silently assume an aligned base — and is now commented as unreachable rather
+than implied live.
 
 ---
 

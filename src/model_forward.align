@@ -1717,6 +1717,11 @@ fn graph_alignment(
   borrow m: GraphMembers, borrow window: slice<u8>, alignment: i64, layer: i64,
   borrow mut o: Outcome,
 ) {
+  // Defence only: the caller only reaches this check once `ggml_ffi.buffer_from_host` has already
+  // succeeded on this same `window`, and that call already rejects a misaligned base by failing
+  // `R5_GGML_INIT`/`weight_buffer` before `graph_alignment` runs (ledger section 6, correction C22).
+  // This branch is therefore unreachable in the shipped arm; it stays so the per-member check below
+  // does not silently assume an aligned base if that ordering ever changes.
   if ggml_ffi.align_mod(window, alignment) != 0 {
     fail(o, "R5_ALIGNMENT", "window")
     return

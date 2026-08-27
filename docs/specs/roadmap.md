@@ -150,8 +150,8 @@ The current forward delivery order is:
     baseline, and exact-head preflight are what remain before publication. R5B (item 16) is stacked
     on it.
 16. **R5B-MODEL-PREFILL-FORWARD — a whole Qwen2 prefill computed from an Align-owned alignpack.
-    Awaiting publication.** On branch `agent/r5b-model-prefill-forward` at `019fa26`, continuing
-    R5A.
+    Awaiting publication.** On branch `agent/r5b-model-prefill-forward` at the consolidated repair
+    commit `556fced` and this follow-up (repairing feat commit `019fa26`), continuing R5A.
     [`r5b-model-prefill-forward.md`](r5b-model-prefill-forward.md) is the authoritative plan and owns
     the probe record, the contract ledger, the closure matrix, and the fixtures, qualification,
     metrics, deferrals, risks, and candidate-request sections. `ggml-spike --model-forward` is a new
@@ -170,8 +170,8 @@ The current forward delivery order is:
     scale: the design-stage probe measured 349.6 ms compute and 533 ms `pread` for 4,370,571,072 B
     at 1.07-1.12 s wall, and the shipped arm measures 484-620 ms compute and 515-648 ms `pread` at
     1,141-1,275 ms wall on one reused 447,086,592 B window, warm. Implementation complete and
-    committed at `019fa26`; two complementary reviews are done and their consolidated repair is in
-    this commit, with publication next.
+    committed; two complementary reviews and one final review are done and repaired in the
+    consolidated repair commit `556fced` and this follow-up, with publication next.
 
 **I0 is substantively covered and is not scheduled as its own capability.** I0 asks that align-coder
 prove its value on an existing model, and the merged C6-MEASURED wave (align-llm PR #103, `c9a510d`)
