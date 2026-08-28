@@ -48,7 +48,7 @@ smoke, qualification, and documentation.
 | Patch | `patches/llama.cpp/r2c-decode-instrument.patch`, LF zero-context unified diff, applies with `git apply --unidiff-zero` to a clean checkout at the pin |
 | Patch scope | Exactly `common/debug.cpp` and `examples/eval-callback/eval-callback.cpp`; no third tracked path and no untracked source path is admitted |
 | Patch identity | SHA-256 `fcab7ca9b6bbdc760da19e075a2c66d670d4737d7f7f07074676ec67dbd7d0ab`, 2,170 bytes |
-| Cache generation | `r2c-v1`. A generation change is required for any incompatible cache layout, build recipe/flags, or verification rule |
+| Cache generation | `r2c-v2`. A generation change is required for any incompatible cache layout, build recipe/flags, or verification rule; v2 adds the explicit Metal-off recipe and HEAD-relative tracked-source admission |
 | Effective cache identity | generation + full upstream SHA + full patch SHA-256. Two patches at one upstream commit cannot alias |
 | Instrument contract | llama.cpp build number 10566 and short commit `bb4caa7`; both are passed explicitly to CMake because a one-commit fetch cannot derive the historical build count |
 
@@ -153,6 +153,7 @@ new materialization. `path`, `verify`, and `attest` never fetch. The build is CP
 -DCMAKE_BUILD_TYPE=Release
 -DBUILD_SHARED_LIBS=OFF
 -DGGML_NATIVE=OFF
+-DGGML_METAL=OFF
 -DGGML_OPENMP=OFF
 -DGGML_CCACHE=OFF
 -DLLAMA_CURL=OFF
@@ -163,12 +164,13 @@ new materialization. `path`, `verify`, and `attest` never fetch. The build is CP
 ```
 
 Only target `llama-eval-callback` is built. `GGML_NATIVE=OFF` avoids silently binding the cache to
-the machine that first materialized it; the cache remains platform-local because compilers, ABIs,
-and system libraries are not asserted portable.
+the machine that first materialized it, and `GGML_METAL=OFF` keeps the CPU-only promise on Apple as
+well as other hosts. The cache remains platform-local because compilers, ABIs, and system libraries
+are not asserted portable.
 
 ### 2.6 Ownership, allocation, and cleanup
 
-The selected cache base owns one `r2c-v1` directory. Under it, one advisory lock file per effective
+The selected cache base owns one `r2c-v2` directory. Under it, one advisory lock file per effective
 identity serializes creators. A completed entry owns sibling `source/` and `build/` directories;
 the executable is `build/bin/llama-eval-callback` (with `.exe` on Windows, although Windows is not a
 qualified platform in this capability). The tool never writes inside align-llm.
@@ -179,9 +181,9 @@ verification failure recursively removes only that resolved staging directory. I
 an existing cache entry. A destination appearing before rename is a controlled failure. Lock files
 may persist and carry no build state.
 
-An existing entry is never repaired in place. Wrong revision, patch drift, extra source files,
-missing/non-regular output, a symlinked source/build boundary, or version drift fails closed so a
-caller cannot mistake mutable local state for the pinned instrument.
+An existing entry is never repaired in place. Wrong revision, staged or unstaged patch drift, extra
+source files, missing/non-regular output, a symlinked source/build boundary, or version drift fails
+closed so a caller cannot mistake mutable local state for the pinned instrument.
 
 ### 2.7 Validation order
 
@@ -240,15 +242,18 @@ It then runs two halves:
 
 1. **Dense decode half (required).** It uses upstream's SHA-256-pinned
    `tinyllamas/stories15M-q4_0.gguf`, downloading it through the pinned checkout's
-   `cmake/download-models.cmake` only when absent. With prompt `hello`, seed 42, CPU execution, and
+   `cmake/download-models.cmake` only when absent. The download targets a unique temporary sibling
+   and is hash-validated before atomic rename, so interruption cannot publish a partial cache file.
+   With prompt `hello`, seed 42, CPU execution, and
    `-n 2`, the parser must report one prefill graph followed by two decode graphs. Omitted `-n`,
    `-n 0`, and `-n -1` must each report exactly one prefill graph. Model hash, instrument version,
    attestation, graph rows, time bound, transcript size bound, and transcript cleanup are asserted.
 2. **MoE full-axis half (capable-host).** `ALIGN_LLM_GGUF_MODEL` names a real MoE GGUF. Unset or
    absent prints one exact N/A line and exits zero after the dense half passes. When present, the
    fixed prompt/seed and `-n 2` capture must parse as `moe: true`, contain at least one decode graph,
-   report `slots_truncated: false`, and observe `n_expert_used` slots for every retained
-   `(graph, layer, token)` selection group. The model size and mtime must be unchanged.
+   report `slots_truncated: false`, observe `n_expert_used` slots for every retained
+   `(graph, layer, token)` selection group, and exercise at least one retained router slot or token
+   axis with extent greater than six. The model size and mtime must be unchanged.
 
 Any attempted half that cannot build, download, execute, parse, or meet its assertions fails
 nonzero; it never becomes N/A. The qualification makes no latency or locality claim. Its elapsed
@@ -272,7 +277,7 @@ time is diagnostic.
 | Patch identity drift | refuse before cache resolution/build | smoke digest and byte-count cases |
 | Unsafe cache/repository/CMake input | refuse before subprocess launch | smoke environment cases |
 | Symlink or non-directory boundary | refuse before Git/output inspection | smoke boundary cases |
-| Dirty or extra source | refuse before output/version admission | smoke tracked-diff and untracked cases |
+| Dirty or extra source | compare the whole tracked tree to `HEAD`, including staged changes, and refuse extra paths before output/version admission | smoke staged/unstaged tracked-diff and untracked cases |
 | Missing/non-regular/non-executable instrument | refuse before running version | smoke output cases |
 | Version mismatch | refuse after file admission, before hashing/attestation | smoke version cases |
 | Legacy prefill success | omitted/nonpositive `-n` evaluates prompt once | dense qualification omitted, zero, and negative runs |
@@ -281,11 +286,12 @@ time is diagnostic.
 | Decode failure | upstream example returns nonzero with decode-step diagnostic | source review; N/A to input-driven qualification because no stable GGUF forces this path |
 | Historical prefill gates | R2 locality and R3 residency remain one prefill graph per prompt under the patched instrument | tool smoke exact `-n 0` source assertions; residency wrapper admission case |
 | Non-router tensor | upstream print limit remains three | smoke patch semantic assertion; dense transcript remains truncated in the ordinary way |
-| Router tensor | all axes printed, no middle slot or token omitted | MoE capable qualification; new R2A full-axis synthetic fixtures |
+| Router tensor | all axes printed, no middle slot or token omitted, with at least one applicable extent above the old six-value threshold | MoE capable qualification threshold; new R2A full-axis synthetic fixtures |
 | Compact parser input | six values plus exact ellipsis maps to first/last indices; existing document bytes do not change | complete existing expert-trace corpus |
 | Full parser input | extent values, no ellipsis, direct indices, false truncation fields | full-slot/full-token fixtures and independent expected documents |
 | Mixed/malformed parser input | misplaced marker, short/long full axis, non-router full axis, or inconsistent routing form is `R2_ROW_COUNT` | focused malformed fixtures |
 | Transcript overflow / timeout | bounded capture fails nonzero and temporary transcript is removed | qualification implementation review; successful qualification reports both files below the bound |
+| Tiny-model download failure | partial bytes remain only below a unique temporary sibling and are removed; the final cache path stays absent and a retry can succeed | smoke interrupted-download then retry case |
 | Normal cleanup | every transcript/document temp tree removed; managed cache retained | qualification post-run assertion |
 | Signal / early exit | qualification temporary context removes its tree; tool preparation `finally` removes staging | smoke injected `KeyboardInterrupt` cleanup; qualification source review |
 | Attestation | only admitted entry hashed; JSON includes every ledger field | smoke attestation case; compiled qualification records output |

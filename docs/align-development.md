@@ -701,14 +701,14 @@ scripts/llama-eval-callback-toolchain attest instrument
 ```
 
 `path` is read-only and need not name an existing entry. `ensure` performs a one-commit fetch, exact
-patch application, a fixed CPU CMake build with llama/ggml shared libraries disabled, admission,
-and atomic publication. `verify` rejects
-source revision/diff drift, untracked source, symlink boundaries, missing or non-executable output,
-and anything whose version is not build 10566 / commit `bb4caa7`. `attest instrument` emits the
-source and patch identities plus the platform-local instrument digest.
+patch application, a fixed CPU CMake build with Metal and llama/ggml shared libraries disabled,
+admission, and atomic publication. `verify` rejects source revision or staged/unstaged diff drift
+from `HEAD`, untracked source, symlink boundaries, missing or non-executable output, and anything
+whose version is not build 10566 / commit `bb4caa7`. `attest instrument` emits the source and patch
+identities plus the platform-local instrument digest.
 
-The cache root is `ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT/r2c-v1` when explicitly set, otherwise
-`$XDG_CACHE_HOME/align-llm/llama.cpp/r2c-v1` or `$HOME/.cache/align-llm/llama.cpp/r2c-v1`.
+The cache root is `ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT/r2c-v2` when explicitly set, otherwise
+`$XDG_CACHE_HOME/align-llm/llama.cpp/r2c-v2` or `$HOME/.cache/align-llm/llama.cpp/r2c-v2`.
 `ALIGN_LLM_LLAMA_REPOSITORY` overrides the public upstream URL for an offline/local source, `CMAKE`
 selects one CMake command, and `CMAKE_BUILD_PARALLEL_LEVEL` controls build scheduling. Unsafe,
 relative, whitespace-containing, or semantically drifted inputs fail; no ambient llama.cpp checkout
@@ -725,8 +725,9 @@ make residency-sim-smoke
 ```
 
 The compiled focused qualification materializes the instrument, downloads upstream's SHA-pinned
-15M dense test model into that cache when needed, and proves legacy one-prefill versus patched
-one-prefill-plus-two-decode behavior through `main --expert-trace`:
+15M dense test model into a temporary sibling, atomically publishes it only after hash validation,
+and proves legacy one-prefill versus patched one-prefill-plus-two-decode behavior through
+`main --expert-trace`:
 
 ```sh
 scripts/run-r2c-instrument-qualification
@@ -738,9 +739,10 @@ ALIGN_LLM_GGUF_MODEL=/path/to/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf \
 The first command must pass the dense half, proving omitted, zero, and negative `-n` each retain
 one prefill graph while `-n 2` adds two decode graphs, and prints exact N/A for the optional MoE
 half. The second additionally requires `moe.present: true`, at least one decode graph, no slot/token
-truncation, and every observed routing group to contain all `n_expert_used` slots. Any selected
-model/instrument failure is a hard failure, transcripts are bounded to 256 MiB and removed, and no
-latency or locality claim is made.
+truncation, every observed routing group to contain all `n_expert_used` slots, and at least one
+retained router axis extent above six so the changed full-axis branch is actually exercised. Any
+selected model/instrument failure is a hard failure, transcripts are bounded to 256 MiB and removed,
+and no latency or locality claim is made.
 
 ### The R2 locality gate
 

@@ -88,7 +88,14 @@ def ensure_tiny_model(source: Path, build: Path) -> Path:
     descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
-        if model.is_file():
+        model.parent.mkdir(parents=True, exist_ok=True)
+        parent_metadata = model.parent.lstat()
+        if not stat.S_ISDIR(parent_metadata.st_mode) or stat.S_ISLNK(parent_metadata.st_mode):
+            raise QualificationError("tiny model cache parent is not a real directory")
+        if model.exists() or model.is_symlink():
+            model_metadata = model.lstat()
+            if not stat.S_ISREG(model_metadata.st_mode) or stat.S_ISLNK(model_metadata.st_mode):
+                raise QualificationError("cached tiny model is not a regular non-symlink file")
             if sha256(model) != TINY_SHA256:
                 raise QualificationError("cached tiny model has the wrong SHA-256")
             return model
@@ -97,19 +104,22 @@ def ensure_tiny_model(source: Path, build: Path) -> Path:
         if not cmake or any(character.isspace() or character == "\0" for character in cmake):
             raise QualificationError("CMAKE must be one non-empty command without whitespace")
         download = source / "cmake" / "download-models.cmake"
-        command(
-            (
-                cmake,
-                f"-DDEST={model}",
-                f"-DNAME={TINY_NAME}",
-                f"-DHASH=SHA256={TINY_SHA256}",
-                "-P",
-                os.fspath(download),
-            ),
-            timeout=INSTRUMENT_TIMEOUT,
-        )
-        if not model.is_file() or sha256(model) != TINY_SHA256:
-            raise QualificationError("tiny model download did not produce the pinned bytes")
+        with tempfile.TemporaryDirectory(prefix=f".{model.name}.tmp-", dir=model.parent) as temporary:
+            candidate = Path(temporary) / model.name
+            command(
+                (
+                    cmake,
+                    f"-DDEST={candidate}",
+                    f"-DNAME={TINY_NAME}",
+                    f"-DHASH=SHA256={TINY_SHA256}",
+                    "-P",
+                    os.fspath(download),
+                ),
+                timeout=INSTRUMENT_TIMEOUT,
+            )
+            if not candidate.is_file() or candidate.is_symlink() or sha256(candidate) != TINY_SHA256:
+                raise QualificationError("tiny model download did not produce the pinned bytes")
+            os.replace(candidate, model)
         return model
     finally:
         os.close(descriptor)
@@ -218,7 +228,7 @@ def assert_dense(
         raise QualificationError("tiny dense model was reported as MoE")
 
 
-def assert_moe(document: dict[str, object]) -> tuple[int, int, int]:
+def assert_moe(document: dict[str, object]) -> tuple[int, int, int, int]:
     moe = document.get("moe", {})
     if not isinstance(moe, dict) or moe.get("present") is not True:
         raise QualificationError("capable model did not produce a MoE trace")
@@ -234,6 +244,7 @@ def assert_moe(document: dict[str, object]) -> tuple[int, int, int]:
         raise QualificationError("patched MoE trace still reports a truncated token axis")
 
     groups: dict[tuple[int, int, int], set[int]] = {}
+    tokens_by_layer: dict[tuple[int, int], set[int]] = {}
     selections = document.get("selections", [])
     if not isinstance(selections, list) or not selections:
         raise QualificationError("patched MoE trace contains no selections")
@@ -243,11 +254,15 @@ def assert_moe(document: dict[str, object]) -> tuple[int, int, int]:
         if not all(isinstance(value, int) for value in (*key, slot)):
             raise QualificationError("patched MoE trace contains a non-integer selection key")
         groups.setdefault(key, set()).add(slot)
+        tokens_by_layer.setdefault((key[0], key[1]), set()).add(key[2])
     expected_slots = set(range(used))
     for key, slots in groups.items():
         if slots != expected_slots:
             raise QualificationError(f"selection group {key!r} has slots {sorted(slots)!r}")
-    return len(graphs), len(groups), len(selections)
+    full_axis_extent = max(used, *(len(tokens) for tokens in tokens_by_layer.values()))
+    if full_axis_extent <= 6:
+        raise QualificationError("MoE trace did not exercise a full router axis above six")
+    return len(graphs), len(groups), len(selections), full_axis_extent
 
 
 def main() -> int:
@@ -319,7 +334,7 @@ def main() -> int:
         moe_transcript = work / "moe-decode.txt"
         moe_ns = capture(instrument, model, moe_transcript, work / "moe-decode.log", decode_steps=2)
         moe_document = parse_trace(moe_transcript, work / "moe-decode.json")
-        graph_count, group_count, selection_count = assert_moe(moe_document)
+        graph_count, group_count, selection_count, full_axis_extent = assert_moe(moe_document)
         after = model.stat()
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             raise QualificationError("MoE model size or mtime changed during qualification")
@@ -328,6 +343,7 @@ def main() -> int:
         print(f"  graphs             {graph_count}, including decode")
         print(f"  selection groups   {group_count}, all full-width")
         print(f"  selections         {selection_count}")
+        print(f"  full-axis extent   {full_axis_extent} (> 6)")
         print(f"  transcript bytes   {moe_transcript.stat().st_size}")
         print(f"  elapsed            {moe_ns / 1e9:.3f} s (diagnostic only)")
     return 0

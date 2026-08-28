@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -44,6 +45,20 @@ def load_tool() -> object:
 
 
 tool = load_tool()
+
+
+def load_qualification() -> object:
+    path = ROOT / "scripts" / "run-r2c-instrument-qualification"
+    loader = importlib.machinery.SourceFileLoader("r2c_qualification", os.fspath(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise SmokeFailure("cannot create the qualification module spec")
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+qualification = load_qualification()
 case_count = 0
 
 
@@ -130,11 +145,11 @@ def cache_contract() -> None:
     explicit = tool.cache_root({"ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT": "/cache"})
     xdg = tool.cache_root({"XDG_CACHE_HOME": "/xdg"})
     home = tool.cache_root({"HOME": "/home/test"})
-    if explicit != Path("/cache/r2c-v1"):
+    if explicit != Path("/cache/r2c-v2"):
         raise SmokeFailure(f"wrong explicit root {explicit}")
-    if xdg != Path("/xdg/align-llm/llama.cpp/r2c-v1"):
+    if xdg != Path("/xdg/align-llm/llama.cpp/r2c-v2"):
         raise SmokeFailure(f"wrong XDG root {xdg}")
-    if home != Path("/home/test/.cache/align-llm/llama.cpp/r2c-v1"):
+    if home != Path("/home/test/.cache/align-llm/llama.cpp/r2c-v2"):
         raise SmokeFailure(f"wrong HOME root {home}")
     entry = tool.entry_path(explicit, EXPECTED_REVISION, EXPECTED_PATCH_SHA256)
     if tool.selected_path(entry, "source") != entry / "source":
@@ -154,6 +169,7 @@ def cmake_contract() -> None:
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_SHARED_LIBS=OFF",
         "-DGGML_NATIVE=OFF",
+        "-DGGML_METAL=OFF",
         "-DGGML_OPENMP=OFF",
         "-DGGML_CCACHE=OFF",
         "-DLLAMA_CURL=OFF",
@@ -283,6 +299,27 @@ def verify_patch_drift() -> None:
             )
 
 
+def verify_staged_drift() -> None:
+    with admitted_entry() as (entry, _, _, fake_git):
+        saw_head = False
+
+        def staged(source: Path, *arguments: str) -> bytes:
+            nonlocal saw_head
+            if arguments[:2] == ("diff", "--no-ext-diff"):
+                saw_head = "HEAD" in arguments
+                return tool.read_identity()[1] + b"staged drift"
+            return fake_git(source, *arguments)
+
+        with mock.patch.object(tool, "git", side_effect=staged):
+            expect_tool_error(
+                "verify-staged-drift-inner",
+                lambda: tool.verify_entry(entry, EXPECTED_REVISION, tool.read_identity()[1]),
+                "source diff differs",
+            )
+        if not saw_head:
+            raise SmokeFailure("source verification did not compare staged state to HEAD")
+
+
 def verify_output_refusals() -> None:
     patch = tool.read_identity()[1]
     with admitted_entry() as (entry, _, _, fake_git):
@@ -356,7 +393,7 @@ def attestation_contract() -> None:
             document = tool.attest(entry, EXPECTED_REVISION, tool.read_identity()[1], EXPECTED_PATCH_SHA256)
         expected = {
             "attestation_schema_version": 1,
-            "generation": "r2c-v1",
+            "generation": "r2c-v2",
             "revision": EXPECTED_REVISION,
             "patch_sha256": EXPECTED_PATCH_SHA256,
             "patch_bytes": EXPECTED_PATCH_BYTES,
@@ -540,6 +577,77 @@ def prepare_interruption() -> None:
             raise SmokeFailure("interrupted prepare retained staging")
 
 
+def tiny_model_atomic_download() -> None:
+    good = b"pinned tiny model"
+    digest = hashlib.sha256(good).hexdigest()
+    with tempfile.TemporaryDirectory(prefix="r2c-tiny-model-") as temporary:
+        root = Path(temporary)
+        source = root / "source"
+        build = root / "build"
+        (source / "cmake").mkdir(parents=True)
+        (source / "cmake" / "download-models.cmake").write_text("fixture\n", encoding="utf-8")
+
+        def interrupted(arguments: tuple[str, ...], **kwargs: object) -> object:
+            del kwargs
+            destination = Path(next(value[7:] for value in arguments if value.startswith("-DDEST=")))
+            destination.write_bytes(b"partial")
+            raise qualification.QualificationError("injected download failure")
+
+        with mock.patch.object(qualification, "TINY_SHA256", digest), mock.patch.object(
+            qualification, "command", side_effect=interrupted
+        ):
+            try:
+                qualification.ensure_tiny_model(source, build)
+            except qualification.QualificationError as error:
+                if "injected download failure" not in str(error):
+                    raise
+            else:
+                raise SmokeFailure("interrupted tiny-model download succeeded")
+        model = build / qualification.TINY_NAME
+        if model.exists() or any(path.name.startswith(f".{model.name}.tmp-") for path in model.parent.iterdir()):
+            raise SmokeFailure("interrupted tiny-model download poisoned the cache")
+
+        def succeeded(arguments: tuple[str, ...], **kwargs: object) -> object:
+            del kwargs
+            destination = Path(next(value[7:] for value in arguments if value.startswith("-DDEST=")))
+            destination.write_bytes(good)
+            return subprocess.CompletedProcess(arguments, 0)
+
+        with mock.patch.object(qualification, "TINY_SHA256", digest), mock.patch.object(
+            qualification, "command", side_effect=succeeded
+        ):
+            selected = qualification.ensure_tiny_model(source, build)
+        if selected != model or model.read_bytes() != good:
+            raise SmokeFailure("successful tiny-model download was not atomically published")
+        if any(path.name.startswith(f".{model.name}.tmp-") for path in model.parent.iterdir()):
+            raise SmokeFailure("successful tiny-model download retained staging")
+
+
+def moe_full_axis_threshold() -> None:
+    def document(used: int, tokens: int) -> dict[str, object]:
+        return {
+            "moe": {"present": True, "n_expert_used": used, "slots_truncated": False},
+            "graphs": [{"phase": "decode", "tokens_truncated": False}],
+            "selections": [
+                {"graph": 0, "layer": 0, "token": token, "slot": slot}
+                for token in range(tokens)
+                for slot in range(used)
+            ],
+        }
+
+    for used, tokens in ((7, 1), (4, 7)):
+        evidence = qualification.assert_moe(document(used, tokens))
+        if evidence[3] != 7:
+            raise SmokeFailure(f"wrong full-axis extent evidence {evidence!r}")
+    try:
+        qualification.assert_moe(document(4, 2))
+    except qualification.QualificationError as error:
+        if "above six" not in str(error):
+            raise
+    else:
+        raise SmokeFailure("compact-only MoE trace satisfied the full-axis qualification")
+
+
 checked("pin-patch-contract", patch_contract)
 checked("identity-refusals", identity_refusals)
 checked("cache-contract", cache_contract)
@@ -558,6 +666,7 @@ checked("verify-success", verify_success)
 checked("verify-wrong-revision", verify_wrong_revision)
 checked("verify-untracked", verify_untracked)
 checked("verify-patch-drift", verify_patch_drift)
+checked("verify-staged-drift", verify_staged_drift)
 checked("verify-output-refusals", verify_output_refusals)
 checked("verify-boundary-refusals", verify_boundary_refusals)
 checked("attestation", attestation_contract)
@@ -565,5 +674,7 @@ checked("prepare-success-reuse", prepare_success_and_reuse)
 checked("prepare-failures", prepare_failures)
 checked("prepare-collision", prepare_collision)
 checked("prepare-interruption", prepare_interruption)
+checked("tiny-model-atomic-download", tiny_model_atomic_download)
+checked("moe-full-axis-threshold", moe_full_axis_threshold)
 
 print(f"r2c instrument smoke: PASS - {case_count} contract groups")

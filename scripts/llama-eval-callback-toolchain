@@ -20,7 +20,7 @@ from typing import Mapping, Sequence
 
 PROJECT = Path(__file__).resolve().parent.parent
 DEFAULT_REPOSITORY = "https://github.com/ggml-org/llama.cpp.git"
-GENERATION = "r2c-v1"
+GENERATION = "r2c-v2"
 REVISION_PATTERN = re.compile(rb"[0-9a-f]{40}\n")
 PATCH_PATH = Path("patches/llama.cpp/r2c-decode-instrument.patch")
 PATCH_SHA256 = "fcab7ca9b6bbdc760da19e075a2c66d670d4737d7f7f07074676ec67dbd7d0ab"
@@ -175,6 +175,20 @@ def instrument_version(path: Path) -> str:
     return version
 
 
+def tracked_diff_from_head(source: Path) -> bytes:
+    return git(
+        source,
+        "diff",
+        "--no-ext-diff",
+        "--binary",
+        "--unified=0",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "HEAD",
+        "--",
+    )
+
+
 def verify_entry(entry: Path, revision: str, patch: bytes) -> str:
     source = entry / "source"
     build = entry / "build"
@@ -189,15 +203,9 @@ def verify_entry(entry: Path, revision: str, patch: bytes) -> str:
     # contract admits only the pinned checkout plus the exact tracked patch.
     if git(source, "ls-files", "--others"):
         raise ToolchainError("managed llama.cpp source has untracked paths")
-    actual_patch = git(
-        source,
-        "diff",
-        "--no-ext-diff",
-        "--binary",
-        "--unified=0",
-        "--src-prefix=a/",
-        "--dst-prefix=b/",
-    )
+    # Diff from HEAD, not the mutable index: staged and unstaged tracked drift are both part of the
+    # source tree that the build can consume.
+    actual_patch = tracked_diff_from_head(source)
     if actual_patch != patch:
         raise ToolchainError("managed llama.cpp source diff differs from the checked-in R2c patch")
 
@@ -269,6 +277,7 @@ def cmake_arguments(cmake: str, source: Path, build: Path) -> tuple[str, ...]:
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_SHARED_LIBS=OFF",
         "-DGGML_NATIVE=OFF",
+        "-DGGML_METAL=OFF",
         "-DGGML_OPENMP=OFF",
         "-DGGML_CCACHE=OFF",
         "-DLLAMA_CURL=OFF",
@@ -313,15 +322,7 @@ def prepare(root: Path, revision: str, patch: bytes, patch_digest: str) -> Path:
         git(source, "apply", "--unidiff-zero", "--check", os.fspath(PROJECT / PATCH_PATH))
         git(source, "apply", "--unidiff-zero", os.fspath(PROJECT / PATCH_PATH))
 
-        actual_patch = git(
-            source,
-            "diff",
-            "--no-ext-diff",
-            "--binary",
-            "--unified=0",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-        )
+        actual_patch = tracked_diff_from_head(source)
         if actual_patch != patch:
             raise ToolchainError("applied llama.cpp diff differs from the checked-in R2c patch")
 

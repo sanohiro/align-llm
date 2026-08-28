@@ -310,8 +310,11 @@ The current forward delivery order is:
     Positive `-n` values now emit bounded one-token decode graphs while omitted/nonpositive `-n`
     retains one prefill graph; only `ffn_moe_topk` prints every slot and token. Existing R2/R3
     measurement wrappers now pass explicit `-n 0`, preserving their historical prefill-only
-    semantics. The deterministic and dense compiled owners pass; real-MoE full-axis qualification,
-    comprehensive review, publication, and merge remain before R6 may consume the instrument.
+    semantics. The deterministic owner, dense qualification, and real OLMoE qualification pass;
+    the latter records three graphs including decode, 48 full-width groups, 384 selections, and a
+    router extent of eight above the old six-value threshold. The first comprehensive review found
+    four valid cache/recipe/qualification defects, all consolidated and owner-tested. Final repair
+    review, publication, and merge remain before R6 may consume the instrument.
 
 ### Status (2026-08-28)
 
