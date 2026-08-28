@@ -131,13 +131,39 @@ head. See the pull request for the re-recorded identity-bound chain (clean sourc
 baseline-check` there ending `baseline chain: PASS`. **This pull request must merge with a merge
 commit**; squash and rebase merges would make the recorded commits unreachable.
 
-**Next action.** Merge the pull request. `main` moved twice during publication — PR #139 (R5D) and
-then PR #141 (R2D-DECODE-LOCALITY-GATE, a parallel session) — and this branch **merges** both rather
-than rebasing over them; R2D took roadmap item **24**, so R5E is item **25**. `make ci` is **not** selected: `HOSTED_CHECK_TARGETS`
+**Next action.** Merge the pull request. `main` moved three times during publication — PR #139
+(R5D), PR #141 (R2D-DECODE-LOCALITY-GATE) and PR #142 (R3-DECODE-RESIDENCY), the last two from a
+parallel session — and this branch **merges** all three rather than rebasing over them. R2D took
+roadmap item **24** and R3-DECODE-RESIDENCY item **25**, so R5E is item **26**. `make ci` is **not** selected: `HOSTED_CHECK_TARGETS`
 membership is unchanged because R5E's owner is `layer-forward-smoke`'s fifth block, already a member,
 and the one new Makefile target, `moe-model-forward-qualification`, joins no aggregate. The `Makefile`
 edit is still an executable-contract boundary, so publication takes the **fresh-image
 (Docker-in-Docker)** installed profile, not the documentation lane.
+
+## Merged checkpoint: R3-DECODE-RESIDENCY (2026-08-29)
+
+Branch `agent/r3-decode-residency` merged as PR #142, merge commit `76246f3` on `main`, by a
+**parallel session**. It is the residency consumer of R2D's capture and closes the **decode half of
+the R3 roadmap gate**; no design gate, no Align source change, no `Makefile` change, no aggregate
+membership change, so R5E's baseline chain is unaffected by it.
+
+`scripts/run-decode-residency-gate` replays `main --simulate-residency` four times at section 7.4's
+975,175,680 B budget over the same 40-prompt corpus: mixed, decode-only, a prefill-only coverage
+control, and a head-4 stream-length control. **The gate is met in the decode direction but the
+answer is narrower than the prefill one**: `recent_reuse` beats `lru` by 59 to 238 per mille at
+budgets of 15/31/62/125 per mille of the expert footprint, and at 250 and 500 per mille **no
+candidate beats the baseline at all** on any decode arm. The prefill-only control at the same
+250-per-mille budget is still `BEATS_BASELINE`, and the head-4 control — eleven per cent *fewer*
+demands than that winning arm — is not, so what removes the win is the presence of decode demands
+rather than coverage, working-set ratio, or stream length. R4B's decode-corpus resume condition is
+discharged **negatively**, and R6's KV tiering is ordered ahead of a runtime expert-residency policy.
+`docs/specs/r3-residency-sim.md` section 8 is the authoritative record.
+
+**What it means for R5E.** R5E defers any residency policy because a single prefill has 343 demands
+and 343 distinct keys. Item 25 is the first measurement of a policy in the decode regime that
+deferral names, and it says the policy question is open at realistic budgets rather than settled —
+which is the reason R5E ships the per-layer union curve (`schedule[].routed`) as an input to that
+work instead of a policy of its own.
 
 ## Merged checkpoint: R2D-DECODE-LOCALITY-GATE (2026-08-29)
 
@@ -585,13 +611,15 @@ non-finite-readback goldens, masked in golden normalization alone. Full ledger:
 `agent/r5e-moe-model-prefill` and read `docs/specs/r5e-moe-model-prefill.md` in full (and
 `docs/specs/r5d-moe-layer-forward.md` for the layer half) before touching `src/layer_olmoe.align`,
 `src/moe_model_forward.align`, or `scripts/run-moe-model-forward`. R5E's only remaining step is the
-merge. After it merges, **no capability is active**: R2D merged as PR #141, so the next eligible roadmap
-work is **R6 (Persistent KV)**, which decision (c)'s merged instrument now unblocks and which owes
-its first task — naming the decode oracle — before anything else. R5's deferred microbenchmark C
-stays blocked on Align Request 41. Decision 1 is taken; R2's
+merge. After it merges, **no capability is active** here: R2D merged as PR #141 and R3-DECODE-RESIDENCY
+as PR #142, and item 25 explicitly orders **R6 (Persistent KV)** ahead of a runtime
+expert-residency policy. R6 is the next eligible roadmap work — decision (c)'s merged instrument
+unblocks it, and its first task is naming the decode oracle. A separate worktree on
+`agent/r6-decode-kv-step1` already exists in this session's scratchpad. R5's deferred microbenchmark
+C stays blocked on Align Request 41. Decision 1 is taken; R2's
 gate, R1C's frontend, R4's per-expert half, R4.5's expert matmul, C8's optional targeted stage, R3's
-residency simulator, R2c's decode instrument, R5D's routed layer, and R2D's decode locality gate are all
-merged, so R5E waits on no further decision. For the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1);
+residency simulator, R2c's decode instrument, R5D's routed layer, R2D's decode locality gate, and R3's
+decode residency gate are all merged, so R5E waits on no further decision. For the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1);
 decision 3 is **taken and merged** as item 22, and its first consumer, item 24's decode locality
 gate, is merged too, so R6 (section R6) and R7-R9 are unblocked; decision 4 -> R5's deferred
 microbenchmark C (section R5).
@@ -605,9 +633,9 @@ exists by the time work resumes; otherwise rebuild from the CLAUDE.md rules (the
 ## Merged checkpoints
 
 Track B, dense local model (R0 → R5C), plus the merged R2 locality gate, the R1C olmoe frontend, the
-MoE prerequisite discharge, the R3 residency simulator, the R2c decode instrument, R5D's routed
-layer, and R2D's decode locality gate; C8's optional targeted stage is the one merged Track A re-entry. The R2D, R5D, R2C, R3-RESIDENCY-SIM,
-MOE-PREREQ-DISCHARGE, R2, and R5C checkpoints are above; the rest, newest first:
+MoE prerequisite discharge, the R3 residency simulator and its decode half, the R2c decode
+instrument, R5D's routed layer, and R2D's decode locality gate; C8's optional targeted stage is the one merged Track A re-entry. The R3-DECODE-RESIDENCY, R2D, R5D, R2C,
+R3-RESIDENCY-SIM, MOE-PREREQ-DISCHARGE, R2, and R5C checkpoints are above; the rest, newest first:
 
 - **GCC14-FP-CONTRACT-PORTABILITY** (PR #136, merge `aad872f`): `#pragma STDC FP_CONTRACT OFF` is
   Clang-only, and GCC 14.2 diagnoses it as unknown while `scripts/build-ggml-shim` compiles with
