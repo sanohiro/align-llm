@@ -177,6 +177,16 @@ else
     engine+moe-view-extent)
                        include_flags+=("${engine}" "-DALIGN_GGML_FORCE_VIEW_EXTENT=1")
                        flavour="stub+engine+force-moe-view-extent" ;;
+    # R5E-MOE-MODEL-PREFILL (`docs/specs/r5e-moe-model-prefill.md` section 4.5). Two carried
+    # lengths no input can produce, because both come from the same node table: the routed layer's
+    # `l_out` under-reported by one element, which makes the residual invariant refuse for real, and
+    # the phase-A `ffn_norm` under-reported by one, which makes `R5E_CARRY`'s length arm reachable.
+    engine+moe-residual-short)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_MOE_RESIDUAL_SHORT=1")
+                       flavour="stub+engine+force-moe-residual-short" ;;
+    engine+moe-carry-short)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_MOE_CARRY_SHORT=1")
+                       flavour="stub+engine+force-moe-carry-short" ;;
     engine+inf-readback)
                        include_flags+=("${engine}" "-DALIGN_GGML_FORCE_INF_READBACK=1")
                        flavour="stub+engine+force-inf-readback" ;;

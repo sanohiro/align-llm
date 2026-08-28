@@ -1982,3 +1982,243 @@ here.**
 | **The goldens become a property of one compiler on one target** | R5A correction C15's `#pragma STDC FP_CONTRACT OFF`, `-ffp-contract=off`, and the asserted `abi.fp_contract_off` | Unchanged from R5A/R5B/R5D, now across a whole routed model's worth of stub-engine kernels |
 
 ---
+
+## 6. Implementation-forced corrections
+
+Every row below is a place where the implementation refuted section 3, 4, or 5 and the ledger is
+corrected rather than the code bent to match it. Nothing here is a preference; each one names the
+measurement or the language constraint that forced it.
+
+**C1 — `n_expert_used`'s ceiling is 32 at R5E's slot base, not R5D's 34.** Section 3.9 step 8 says
+R5D correction C1 is "inherited verbatim: the ceiling is `n_expert_used <= 34`". R5D's phase-B table
+starts at slot 52; R5E's starts at 56, because an R5E layer carries nine dense members, four
+attention inputs, three compact stacks and five carried values where R5D's carries ten and eight.
+`MM_B_NODE_BASE + 2·u + 8 <= MAX_NODE_SLOTS` therefore gives `u <= 32`. The arm checks **its own**
+bound at step 8, naming the field, rather than reaching the node walk and reporting `R5_SLOT` on a
+row that is not at fault; `layer_olmoe.parse_geometry`'s R5D bound is untouched, because R5D's arm
+still has R5D's store layout. Fixture `mm-geometry-expert-used-huge`.
+
+**C2 — `residency.model_bytes` is the container's `total_bytes`, not the GGUF's file size.** Section
+5.2 expects `4,213,512,192`, which is the size of the model **file**; the arm opens the alignpack and
+on the ordinary path never opens the GGUF at all. The field is `pack.total_bytes`
+(`4,212,193,280` on this model) and `total_bytes_read_ppm` is taken against it, which moves the
+whole-prefill figure from 36.90% of the file to **36.91% of the container**. The qualification
+asserts the equality rather than a literal, so a repacked model cannot silently move it.
+
+**C3 — the read-group count is 495, and `pack.reader_pread_count` is neither 382 nor 495.** Section
+3.4 counts `token_count + 2·n_layer + Σ U_L + 1 = 382` groups on the premise that a layer's
+attention and router blocks are each read as one `pread` of `block.pack_bytes`. They are not:
+`r5b-model-prefill-forward.md` section 6 correction C6 established that a block image cannot be read
+into the reused window — Align's `pread` overwrites from index 0 — so it would have to be staged in a
+separate 11 MB temporary and copied out. Dense members are therefore read **individually** into their
+own window slots, exactly as R5B reads them, giving `6 + 144 + 2 = 152` dense groups; the claims stay
+**block**-shaped at `343` groups, through one reused transient sized to the largest `ExpertBlock`,
+with each returned chunk intersected against the three claims' spans and scattered. Total: **495
+groups carrying the same 1,554,531,072 bytes.** `pack.reader_pread_count` is R5B's counter and is
+larger again — **3,939** measured — because it also counts the 3,219 member-record reads of steps 12
+to 17 and the header and table reads. The qualification prints the counter and asserts
+`residency.total_bytes_read`, which is the figure the residency claim rests on.
+
+**C4 — step 17 gains a per-layer plane-consistency rule.** The ledger validates each claim's shape
+and its `slice` pair. The implementation additionally requires every expert of a layer to declare the
+**same** plane byte count and the same ggml type, because `mul_mat_id` reads plane `u` at
+`u · plane` and one stride serves the whole compact stack: a single dissenting expert would make the
+stack read the wrong bytes for every plane after it. A disagreement is `R5_SHAPE` with
+`layer[<L>]expert[<e>]role[<name>]`. This is the same class as the claim `ggml_type` consistency
+check R5D's review repair adds, and it is deliberately the same semantics. Fixture
+`mm-claim-plane-mixed`; the all-experts mutation `mm-engine-claim-type` still reaches
+`R5_TYPE_UNSUPPORTED`.
+
+**C5 — `R5E_CARRY`'s two id-range arms are not input-reachable; only its length arm is.** Section 4.5
+gives the code three fixtures. Step 28's `layer_olmoe.decide` already refuses every id outside
+`[0, n_expert)` and verifies the compaction is a bijection onto `[0, U_L)` **before** step 31 runs, so
+a `topk_ids` entry `== n_expert` and a `compact_ids` entry `== U_L` are `R5D_EXPERT_ID` at step 28 and
+can never reach step 31. The two range checks stay as fail-closed defence — the arm does not depend on
+having been called in order — and the **length** arm is what makes the code stub-reachable, through
+one new stub force flavour. `R5E_CLAIM_OVERFLOW` remains not input-reachable exactly as section 4.5
+already records.
+
+**C6 — two stub force flavours are added.** `ALIGN_GGML_FORCE_SHORT_READBACK` under-reports R5B's
+slot 51; R5E's `l_out` is slot 69 at the synthetic corpus's `n_expert_used = 3`, so
+`engine+moe-residual-short` is a new flavour rather than a reuse, and `engine+moe-carry-short`
+under-reports the phase-A `ffn_norm` at slot 52. Section 4.2's no-new-symbol claim stands: the shared
+contract region of `scripts/ggml_shim.c` and `scripts/ggml_shim_stub.c` is unchanged and still
+byte-identical, no declaration moved, and both macros exist only in the stub and only under a `-D`
+the ordinary build never passes.
+
+**C7 — `mm-id-table-swap` is a fixture property, not a forced build.** Section 4.3 asks for "a forced
+build that passes `compact_ids` to `get_rows`". The two id tables are two rows of
+`layer_olmoe.mm_b_node_table` naming two different slots, so swapping them is a source edit and there
+is no build the runner can select. What is shipped is the **detection**: the generator's pure-Python
+reference gathers probabilities by *global* id, and the transcript oracle compares
+`ffn_moe_weights-L` in every layer, so a swapped table fails `mm-engine-transcript` at
+`ffn_moe_weights` while `ffn_moe_gate` still passes — section 2.3's exact signature. That was
+**measured** during implementation, not argued: pointing `mm_b_row`'s row 1 at `MM_SLOT_COMPACT`
+instead of `MM_SLOT_TOPK` and rebuilding gives `status: ok`, `oracle.verdict: FAIL`,
+`worst_node: ffn_moe_weights`, `worst_layer: 0`, `max_abs_diff_ten_thousandths: 956`, and
+`routing_oracle.verdict: MATCH` — a model whose routing decision is right, whose gate, up, swiglu
+and down nodes all agree with the reference, and whose mixing weights are garbage. It is recorded
+here rather than checked in, because a case that requires editing the module under test is not a
+regression a runner can own.
+
+**C8 — the synthetic corpus's dense-window peak is the layer pair, not the head.** Section 4.3's `S`
+cell expects `window.dense_peak_block_kind` to be the head "on the synthetic model too". At
+`block_align` 4,096 the head's two members round to 8,192 B while a layer's nine round to 36,864 B,
+so the peak is layer 0's `AttentionBlock`. The head-peak property is the **real model's** and is
+asserted there: `dense_bytes == 84,520,960` with `dense_peak_block_layer == -1`.
+`r5b-model-prefill-forward.md`'s synthetic corpus has the same shape for the same reason.
+
+**C9 — `IDENTICAL` is not stub-reachable.** Section 4.4's logits cell expects `S` byte-identity
+against the synthetic blob. The generator's pure-Python second implementation agrees with the stub
+engine to **zero ten-thousandths** and not bit-for-bit — exactly as `--model-forward`'s own synthetic
+case does, whose golden records the same `verdict: FAIL`, `byte_identical: false`,
+`max_abs_diff_ten_thousandths: 0`. The hosted case asserts the zero, the argmax, and the bound;
+`IDENTICAL` stays the real model's `Q` cell, where it is measured against `llama-debug --save-logits`
+and passes.
+
+**C10 — the oracle table is seventeen rows per layer, and there is no `nodes[]` to publish them in.**
+Section 3.7 lists fourteen element-compared rows. The table also needs `kq-L` and `kq_soft_max-L`
+(matched, and their declared `ne0` validated against `KV_WIDTH` in every layer) and
+`ffn_moe_topk-L`, which oracle 3 reads and oracle 2 must neither compare against a tolerance nor
+width-check. That is `1 + 17·n_layer + 2 = 275` rows of which `1 + 14·n_layer + 2 = 227` are
+compared, which is the number section 3.7 publishes and `elements_compared == 21,372` confirms. The
+third class is a new `ORACLE_ROUTING` value in `src/layer_olmoe.align`; R5D's tables never emit it,
+so R5D's scan is unchanged. Section 4.4's "excluded classes are fields" cell names `nodes[].oracle`,
+and `R5_MOE_MODEL_FORWARD` has no `nodes[]` array **by design** — 275 rows over sixteen layers is
+exactly the per-node dump section 3.8 rejects — so the cell is discharged by `oracle.nodes_expected`
+plus `mm-transcript-kv-width`, which proves the `shape_incomparable` rows are matched and
+shape-checked.
+
+**C11 — the corpus's token list is `[3, 17, 16]`, not `[3, 17, 5]`.** Section 5.1's list routes **all
+eight** experts at layer 0 of the synthetic model, which makes `U == n_expert`,
+`compact_ids == expert_ids`, and that layer's residency fraction 1 — the three properties the corpus
+exists to exercise. `[3, 17, 16]`, swept out of the generator's own forward, routes six of eight at
+layer 0 with three distinct per-token slot orders and three of eight at the narrowed layer 1.
+
+**C12 — `lifetime.phase_balance_failures` is a document field.** Section 3.8's `lifetime` object does
+not list it and section 5.1 requires `lifetime.*` asserted balanced at every **phase** boundary. A
+per-phase assertion needs a counter; this is `r5b-model-prefill-forward.md`'s `graph_balance_failures`
+one scope finer, and `released_before_owner_scope_end` is `false` when it is non-zero.
+
+**C13 — the checked-in excerpt carries `attn_norm-0` as well as section 5.1's list.** Without it the
+first unmatched oracle row is `attn_norm-0` and the hosted excerpt case is `R5_ORACLE_MISSING`; with
+it the first failing row is `kq-0`, whose declared `ne0` is 256 against the synthetic corpus's
+`KV_WIDTH` 8, which is the `R5_ORACLE_SHAPE` the case exists to observe.
+
+**C14 — the dense source comparison runs before each layer's graphs and the claim source comparison
+after them.** Section 3.9 step 35 lists both inside the reference arm. The claims are read inside
+`run_layer`, and threading the reference path, a second transient and a second counter set into a
+function that already takes thirty parameters buys nothing: the reference *node* comparison computes
+from the same window bytes and cannot disagree about them, so a pack/GGUF divergence is still
+`R5_SOURCE_DIVERGED` and still stops the run. Verified by `mm-source-diverged-claim`, whose mutation
+is placed on a plane the schedule actually reads.
+
+**C15 — `residency.expert_bytes_read_ppm` is 333,644, not section 2.9's 333,647.**
+`1,301,446,656 · 10^6 / 3,900,702,720` is `333,644` in the integer arithmetic the document publishes.
+The percentage the capability claims — **33.36%** — is unchanged; the last digit of the probe's ppm
+rendering did not survive.
+
+**C16 — the shipped arm's timings are single runs against a cold page cache, not the probe's warm
+median, and they vary by 2.3x between two consecutive qualifications.** Section 5.3 records
+microbenchmark B at **121.3 ms**, a median of five warm runs of a C harness reading the GGUF. The
+same qualification, run twice on this host minutes apart with the self-reference arm's 34 extra
+graphs competing for the same cores, measured **252.8 ms** and then **109.9 ms** of graph compute for
+the same six-token prefill; claim `pread` measured **612.0 ms** and then **519.9 ms**, dense `pread`
+160.9 ms and then 106.1 ms, and peak RSS 404,258,816 B and then 358,432,768 B. Section 5.3's baseline
+is therefore **not** restated as met or missed on one run. What the two runs do establish, and what
+the capability's claim actually rests on, is the *shape*: the claim read is **2.4x and 4.7x compute**
+respectively, so on this CPU a six-token routed prefill is I/O bound even with the pack in page
+cache, and that is the number a residency policy has to beat. The exact-integer half —
+`expert_bytes_read`, `planes_read`, `keys_demanded`, the per-layer union curve — carries no
+measurement risk at all and is identical in both runs. A warm repeated-run median is R6's to take.
+
+---
+
+## 7. Cell-to-case map
+
+Every applicable cell of section 4 against its implementing function and its passing evidence.
+`S` is `gmake layer-forward-smoke`'s fifth block, `Q` is `gmake moe-model-forward-qualification`.
+
+### 7.1 `src/layer_olmoe.align` (section 4.1)
+
+| Cell | Implementation | Evidence |
+| --- | --- | --- |
+| Four tables well-formed | `mm_embed_node_table`, `mm_a_node_table`, `mm_b_node_table`, `mm_head_node_table`, all through one `mm_table` loop | `S` every `mm-engine-*` case builds all six graphs; `graph.table_rows_a/b` = 35/14 asserted, `Q` 35/24 |
+| Conditional rows form a graph at each condition | `mm_row_issued` + `build_nodes`' `when`/`alt_when` walk | `S` `node_count_a` is 33 at layer 0 and 35 at the last, asserted as a difference of exactly two; phase B is asserted equal at both. `Q` 33/35 over sixteen layers |
+| The `LAYER` operand | `mm_oracle_table(g, n_layer)` renders `stem-L`; `build_layer_members(table, plan, layer)` reads layer `L`'s member records; `T_out(L)` is the caller's `spec.t_out` | `S` 31 of 31 names matched at two layers; `Q` **227 of 227** matched in the real transcript |
+| Per-layer mixed quantization | `plan_layer_experts` records `plane_bytes`/`plane_type` per `(layer, role)` from the member record | `Q` `ffn_down_exps_ggml_type == 14` for exactly layers 0,1,4,7,10,13,14,15 and `dense_bytes` 11,075,584/9,994,240 accordingly |
+| The last layer's shapes differ | the two `WHEN_LAST` rows and `spec.t_out` | `S` `schedule[1].t_in == 3`, `t_out == 1`; `Q` `schedule[15].t_in == 6`, `t_out == 1`, `routed_count == 8` |
+| The routing decision | `layer_olmoe.decide`, unchanged from R5D | `S` `schedule[].routed/expert_ids/compact_ids` equal the generator's at both layers; `Q` all sixteen, and the bijection re-derived per layer |
+| A missing or inconsistent geometry field | `layer_olmoe.parse_geometry` + step 8's R5E ceiling (C1) | `S` sixteen `mm-geometry-missing-*` and fifteen `mm-geometry-*` cases |
+| An unusable bit pattern | `bits32_finite_nonnegative` | `S` `mm-geometry-eps-nan`, `eps-negative`, `rope-base-zero`, `rope-base-inf` |
+| Unsupported arch or rope | step 9 | `S` `mm-geometry-arch`, `mm-geometry-rope-scaled`, `mm-geometry-rope-type`, `mm-geometry-rope-dims` |
+| Scalars — the mask at two widths | `mm_write_mask(width, height)`, `attn_scale_bits` | `S` `KV_WIDTH` 8 against `T` 3 exercises the wide mask and the three `WHEN_WIDE` rows; `Q` `attn_scale_bits == 3db504f3` |
+| Cleanup — no handle, no file, no `unsafe` | the module holds none | `S` the `unsafe`/`extern` scan names only `src/ggml_ffi.align` |
+
+### 7.2 `src/ggml_ffi.align` and the two C files (section 4.2)
+
+| Cell | Implementation | Evidence |
+| --- | --- | --- |
+| Every op R5E needs already exists | `build_nodes` calls R5A's 25 + R5B's `pad`/`cont` + R5D's `argsort`/`mul_mat_id`/`view_2d`/`slot_new_tensor_3d`/`slot_new_i32_2d` | `S` the shared-contract byte-identity assertion at the top of the runner; **no declaration was added** |
+| Status mapping | `ggml_ffi.r5_code_for`, unchanged | `S` every negative status reached by a forced build maps to an `R5*` code |
+| The two C files agree | the shared-contract marker block | `S` unchanged; the two new macros (C6) are stub-only and outside it |
+| No `malloc` | neither file allocates | `S` `grep -c malloc` is 0, unchanged |
+| Contraction off | `-ffp-contract=off` | `S` `abi.fp_contract_off` asserted `true` on every one of the 93 documents |
+| Malformed slots | bounds-checked as R5A | `S` `mm-force-slot-range` |
+| Cleanup per graph | `teardown_layer`, total against null | `S` every forced case still balances `lifetime.*` and reports `phase_balance_failures: 0` |
+
+### 7.3 `src/moe_model_forward.align` (section 4.3)
+
+| Cell | Implementation | Evidence |
+| --- | --- | --- |
+| Arm selection | `src/ggml_spike.align`'s first-operand dispatch | `S` `mm-arm-unknown-flag`, and `arm-r5a/r5b/r5d-unchanged` assert the three earlier arms still emit their own `kind` |
+| Arity, five to nine | `run` | `S` `mm-arity-four`, `mm-arity-ten` → no document, non-zero exit |
+| Role-qualified block selection | `find_block_with_role` | `S` `mm-block-missing`, `mm-block-ambiguous`; `Q` `embedding_block_index == 0`, `output_block_index == 1057` |
+| Layer and expert coverage | `validate_layer_coverage`, `validate_expert_coverage` | `S` `mm-coverage-gap-router` → `layer[1]`, `mm-coverage-gap-expert` → `layer[1]expert[5]`; `Q` `expert_block_count == 1024` |
+| Dense window sizing | `size_dense_window` | `S` the peak is layer 0's pair (C8); `Q` `dense_bytes == 84520960`, `dense_peak_block_layer == -1` |
+| Claim window sizing at `U_max` | `size_claim_window` | `S` `claim_u_max == 8 == min(n_expert, n_expert_used·T)`, `claim_bytes == 12288`; `Q` `195821568`, `48`, peak use `101990400` at layer 0 |
+| The read schedule | `fill_members` + `stage_claims`/`read_block_scatter` | `S` 6 window fills; `Q` **495 read groups** (C3) carrying `total_bytes_read == 1554531072` |
+| The residual carry | `run_layer`'s step-33 block | `S` `l_out_ne1` 3 then 1; `mm-force-residual-short` → `R5_RESIDUAL` `layer[0]` |
+| The five carried inputs and two id ranges | `stage_carry` | `S` `mm-force-carry-short` → `R5E_CARRY` `layer[0]input[ffn_norm]`; the two range arms are fail-closed (C5); `Q` `carried_bytes == 100224` |
+| Global ids feed `get_rows`, compact ids feed `mul_mat_id` | `mm_b_row` rows 1 and 3/4/6 | C7; `S`/`Q` the transcript oracle compares `ffn_moe_weights-L` in every layer at 0 ten-thousandths |
+| The narrowing | the two `WHEN_LAST` rows | `S` golden; `Q` `narrow_layer == 15`, `narrow_index == 5` |
+| The head | `mm_head_node_table`, `run_end_graph(GRAPH_HEAD)` | `S` `output.element_count == 32`; `Q` `== 50304`, `head.output_bytes == 84510720` |
+| Window reuse is safe | every ggml buffer freed before the next read | `S` `phase_balance_failures == 0` per phase; `Q` the self-reference oracle at 227/227 |
+| The residency accounting | `schedule_model`'s per-layer accumulation, `render_residency` | `S` equal to the generator's; `Q` `1301446656 / 3900702720 = 333644 ppm`, `planes_read == 1029`, `keys_demanded == keys_distinct == 343` |
+| Each error code | `stage_*` | section 7.5 |
+| `-` document destination | `run` | `S` `mm-doc-stdout-identical` compares the five-operand, `-`, and file forms |
+| Exit mapping | R0's, verbatim | `S` every case asserts `status` against the exit code |
+| Cleanup | `teardown_layer` in section 3.10's order | `S`/`Q` counters balance, `released_before_owner_scope_end: true` |
+
+### 7.4 The four oracles (section 4.4)
+
+| Cell | Implementation | Evidence |
+| --- | --- | --- |
+| Reference — bytes equal per block and per claim | `compare_source_members`, `compare_claim_source` | `S` `mm-source-diverged-claim` → `layer[0]expert[1]role[ffn_gate_exps]`; `Q` every dense member and all 343 read claims equal, 2,426 preads for 1,554,531,072 bytes |
+| Reference — nodes identical per graph | `compare_reference_rows` | `S` all 31 nodes of all six synthetic graphs; `mm-force-reference` → `graph[1]layer[0]node[attn_norm]@0`; `Q` **227 of 227 over 34 graphs**, and byte-identical logits |
+| Transcript — grammar | `moe_layer_forward.scan_transcript`, reused unchanged | `S` `mm-transcript-garbage` → `R5_TRANSCRIPT` |
+| Transcript — every layer matched | `prepare_transcript` | `S` `mm-transcript-missing-layer` → `layer[1]node[l_out]`; `Q` `layers_matched == 16` |
+| Transcript — matched by `(name, shape)` | `compare_transcript_rows`' four-`ne` check | `Q` the real transcript's duplicate `norm-15` at two shapes is never sought, and every compared row's declared shape equals the computed one |
+| Transcript — the element-count rule | `prepare_transcript`'s `printed_count` product | `S` `mm-transcript-headers` (`0/18`), `mm-transcript-novalues` (`0/6`); `Q` `elements_compared == 21372` |
+| Transcript — `kq-L` `ne0` against `KV_WIDTH` | `prepare_transcript`'s `ORACLE_SHAPE_INCOMPARABLE` branch | `S` `mm-transcript-kv-width` → `layer[1]node[kq]`, and `mm-transcript-excerpt` → `layer[0]node[kq]` on real instrument formatting |
+| Transcript — excluded classes | the three classes in `mm_oracle_table` | C10; `oracle.nodes_expected == 31` hosted and `== 227` on the model |
+| Transcript — a tolerance breach | `compare_transcript_elements` | `S` `mm-transcript-perturbed` → `verdict: FAIL`, `worst_layer: 0`, `worst_node: l_out`, `status: ok`, routing still `MATCH` |
+| Transcript — an exact pass | `compare_transcript_rows` | `S` `max_abs_diff == 0`; `Q` `== 0` over 21,372 elements, `max_sum_diff_millionths == 0` |
+| Routing — success per layer | `compare_routing_layer` | `S` `MATCH` at both layers with **full** element-wise coverage (12/12) at `n_expert_used = 3`; `Q` `MATCH`, `ids_printed_compared == 546`, `ids_total == 728`, `sums_matched == 16` |
+| Routing — failure is data | `schedule_model`'s verdict block | `S` `mm-routing-mismatch` → `MISMATCH` on a `status: ok` run with `first_difference_layer: 1`, oracle 2 still evaluated |
+| Routing — a wrong id refused before use | step 28 | `S` `mm-force-routing-id-range` → `layer[0]token[0]slot[0]`, `mm-force-routing-id-repeat` → `layer[0]token[0]slot[1]` |
+| Logits — file shape | step 39 | `S` `mm-logits-short` → `R5_LOGITS_SHAPE`, `mm-logits-missing` → `R5_LOGITS_UNREADABLE` |
+| Logits — an unrepresentable reference element | `logit_ten_thousandths` + the `nonfinite` refusal | `S` `mm-logits-nonfinite`, `mm-logits-nan` → `R5_LOGITS_NONFINITE elements[1]`; `mm-logits-huge` → `status: ok`, `verdict: FAIL` |
+| Logits — byte-identical at the reconciliation width | `compare_logits` | C9; `Q` `byte_identical: true`, `sha256 a56195da…`, `verdict: IDENTICAL` |
+| Logits — the runtime width verdict | `compare_logits` | `S` `mm-logits-runtime-width` → `WITHIN`; `Q` `max_abs_diff == 3477 <= 5000`, `argmax 2262 == 2262`, `top_k_set_agreement == 10` |
+| Logits — a real failure is not `WITHIN` | `compare_logits` | `S` `mm-logits-perturbed` at the runtime width → `FAIL` with the argmax still equal |
+| Logits — the order clause is reported, not required | `compare_logits` | `S` `mm-logits-order-swap` → `WITHIN`, set 10, order 3; `Q` set 10, **order 2** |
+| Tolerances not silently widened | four document fields | `S` `1`, `1000`, `10`, `5000` asserted; a change is a diff in four places |
+
+### 7.5 Error-code coverage
+
+`gmake layer-forward-smoke`'s fifth block reaches **34 of the 36** codes section 3.9 declares, for
+real, with no ggml, no model, and no network. The two it does not are `R5_ABI` (`Q`-only, and only if
+the linked ggml drifts) and `R5E_CLAIM_OVERFLOW` (not input-reachable, section 4.5, with the
+arithmetic that makes it so). Every other code in section 3.9's table has a named case above.
+`R5E_CARRY` is reached through its length arm; C5 records why its two range arms are not.

@@ -18,6 +18,11 @@ eval/fixtures/qwen2-blk0-6tok.txt -whitespace
 # (`docs/specs/r5b-model-prefill-forward.md` section 5.1).
 eval/fixtures/qwen2-model-6tok.txt -whitespace
 
+# The R5E checked-in whole-routed-model excerpt is the same instrument's byte-exact output over all
+# sixteen layers and the head, and carries the same significant trailing spaces
+# (`docs/specs/r5e-moe-model-prefill.md` section 5.1).
+eval/fixtures/olmoe-model-6tok.txt -whitespace
+
 # R5D-MOE-LAYER-FORWARD (`docs/specs/r5d-moe-layer-forward.md` section 5.2). The routed
 # excerpt, for the same reason: the instrument writes a trailing space on every `..., `
 # truncation marker and the oracle parses the bytes it was given.

@@ -1,0 +1,5422 @@
+module moe_model_forward
+
+import core.json
+import std.crypto
+import std.encoding
+import std.fs
+import std.time
+import alignpack_read
+import ggml_ffi
+import layer_olmoe
+import moe_layer_forward
+
+// R5E-MOE-MODEL-PREFILL (`docs/specs/r5e-moe-model-prefill.md`). The `--moe-model-forward` arm: the
+// thirty-four window fills of section 3.4, the **two** reused Align-owned windows of section 3.5,
+// the four node tables of section 3.6, the four oracles of section 3.7, the
+// `R5_MOE_MODEL_FORWARD` document of section 3.8, the forty-step validation order of section 3.9,
+// and the per-phase teardown of section 3.10.
+//
+// It is a **new module** rather than four thousand more lines of `src/moe_layer_forward.align`, for
+// section 5.5's reason: at this pin the checker's per-function cost is superlinear in body length
+// and that module is already 4,660 lines. Every function here keeps
+// `r5a-dense-layer-forward.md` section 6 correction C8's discipline — no function over two hundred
+// lines, every fallible call inside a loop propagating with `?`, never a `match` on a `Result`
+// inside a loop.
+//
+// It holds no `unsafe` and no `extern`. Every foreign call crosses `src/ggml_ffi.align`, and the
+// R5D arm is **imported rather than copied**: `moe_layer_forward.parse_tokens`, `valid_path`,
+// `scan_transcript`, and `TranscriptScan` are that module's public surface and this one reuses them
+// unchanged.
+//
+// The capability in one sentence: **a whole model's weight demand is decided sixteen times over,
+// each decision depending on every decision before it, and one reused window has to hold whatever
+// each decision names.** Everything unusual here follows from that — two windows refilled 34 times,
+// two id tables that are never one, a claim window reserved for an arithmetic bound rather than an
+// observation, and a residency curve published per layer because the whole-model number hides where
+// the win comes from.
+
+MAX_PATH_BYTES := 4096
+MAX_DETAIL_BYTES := 256
+MAX_DIMENSION := 16777216
+MAX_INDEX_DIGITS := 18
+
+SCHEMA_VERSION := 1
+DOCUMENT_KIND := "R5_MOE_MODEL_FORWARD"
+
+// R4.5 section 3.9's compensation window, unchanged: Align has no aligned allocator
+// (`docs/align-requests.md` Request 33) and every admissible `tensor_alignment` divides 64. R5E
+// pays it **twice**, because there are two windows.
+MAX_TENSOR_ALIGNMENT := 64
+
+// Section 3.5. `2^33`, refused before a single byte is reserved, so a malformed member record
+// cannot ask the process for a terabyte.
+MAX_WINDOW_BYTES := 8589934592
+
+// Section 3.7's logits bound, R5B's reused rather than re-derived: section 2.8 measured
+// 3,086-3,491 ten-thousandths across four prompts against R5B's 5,000, and section 3.7 pre-commits
+// that a fifth prompt breaching it is a finding to record rather than a number to raise.
+LOGIT_TOLERANCE_TEN_THOUSANDTHS := 5000
+TOP_K := 10
+
+// R5A's transcript thresholds, inherited **unchanged and unwidened**: section 2.5 measured `0` over
+// 21,372 elements and 227 nodes of a whole routed model.
+TOLERANCE_TEN_THOUSANDTHS := 1
+SUM_TOLERANCE_MILLIONTHS := 1000
+SUM_TOLERANCE_RELATIVE_PPM := 10
+
+// `r5c-metal-prefill.md` section 6 correction C19 and `r5b-model-prefill-forward.md` correction
+// C23, re-raised verbatim: `as i64` **saturates**, so an infinity becomes `i64`'s extreme and a NaN
+// becomes `0`, and either one can wrap a subtraction into a magnitude no `>` test can see.
+SCALE_LIMIT_TEN_THOUSANDTHS := 1000000000000000
+SUM_SCALE_LIMIT_MILLIONTHS := 1000000000000000000
+UNREPRESENTABLE := 9223372036854775807
+
+TRUNCATION_PRINTED := 6
+
+// The one reused staging buffer for the dense reads and the source comparison, in the shape R5B
+// correction C6 established: `f.pread` requests the buffer's whole capacity, so an oversized
+// transient over-reads the tail of every member.
+CHUNK_BYTES := 1048576
+PRIME_CHUNK_BYTES := 65536
+
+DIGEST_HEX_BYTES := 64
+SUMMARY_HEX := "0123456789abcdef"
+
+VERDICT_UNAVAILABLE := 0
+VERDICT_EXTERNAL := 1
+VERDICT_COPIED := 2
+
+REFERENCE_ABSENT := 0
+REFERENCE_IDENTICAL := 1
+REFERENCE_MISMATCH := 2
+
+ORACLE_ABSENT := 0
+ORACLE_PASS := 1
+ORACLE_FAIL := 2
+
+ROUTING_ABSENT := 0
+ROUTING_MATCH := 1
+ROUTING_MISMATCH := 2
+
+LOGITS_ABSENT := 0
+LOGITS_IDENTICAL := 1
+LOGITS_WITHIN := 2
+LOGITS_FAIL := 3
+
+// The three graph kinds the schedule walks; a layer is two graphs and is its own case.
+GRAPH_EMBED := 0
+GRAPH_HEAD := 1
+
+TextBox { v: str }
+
+// ---------------------------------------------------------------------------------------------
+// Text, numbers, and the lexical guards
+// ---------------------------------------------------------------------------------------------
+
+fn int_text(value: i64) -> string {
+  b := builder()
+  b.write_int(value)
+  return b.to_string()
+}
+
+fn bool_text(value: bool) -> string {
+  if value { return "true".clone() }
+  return "false".clone()
+}
+
+// The one place a `str` becomes a JSON scalar. `json.encode` escapes every byte a document may not
+// carry raw; the slice drops the one-field object wrapper the encoder puts around it.
+fn json_string(value: str) -> string {
+  boxed := TextBox { v: value }
+  encoded := json.encode(boxed)
+  return encoded[5..encoded.len() - 1].clone()
+}
+
+fn bounded_detail(value: str) -> string {
+  if value.len() <= MAX_DETAIL_BYTES { return value.clone() }
+  return value[0..MAX_DETAIL_BYTES].clone()
+}
+
+fn labelled(label: str, value: i64) -> string {
+  b := builder()
+  b.write(label)
+  b.write("[")
+  b.write_int(value)
+  b.write("]")
+  return b.to_string()
+}
+
+fn named(label: str, value: str) -> string {
+  b := builder()
+  b.write(label)
+  b.write("[")
+  b.write(value)
+  b.write("]")
+  return b.to_string()
+}
+
+// `layer[<n>]role[<name>]` and `layer[<n>]node[<id>]`, the two detail shapes section 3.9 names for
+// almost every code the schedule can raise.
+fn layer_named(layer: i64, label: str, value: str) -> string {
+  b := builder()
+  b.write("layer[")
+  b.write_int(layer)
+  b.write("]")
+  b.write(label)
+  b.write("[")
+  b.write(value)
+  b.write("]")
+  return b.to_string()
+}
+
+fn layer_numbered(layer: i64, label: str, value: i64) -> string {
+  b := builder()
+  b.write("layer[")
+  b.write_int(layer)
+  b.write("]")
+  b.write(label)
+  b.write("[")
+  b.write_int(value)
+  b.write("]")
+  return b.to_string()
+}
+
+fn layer_expert_role(layer: i64, expert: i64, role: str) -> string {
+  b := builder()
+  b.write("layer[")
+  b.write_int(layer)
+  b.write("]expert[")
+  b.write_int(expert)
+  b.write("]role[")
+  b.write(role)
+  b.write("]")
+  return b.to_string()
+}
+
+fn graph_node_at(graph: i64, layer: i64, node: str, index: i64) -> string {
+  b := builder()
+  b.write("graph[")
+  b.write_int(graph)
+  b.write("]layer[")
+  b.write_int(layer)
+  b.write("]node[")
+  b.write(node)
+  b.write("]@")
+  b.write_int(index)
+  return b.to_string()
+}
+
+fn block_detail(kind: i64, layer: i64, role: str) -> string {
+  b := builder()
+  b.write("kind[")
+  b.write_int(kind)
+  b.write("]layer[")
+  b.write_int(layer)
+  b.write("]role[")
+  b.write(role)
+  b.write("]")
+  return b.to_string()
+}
+
+fn shortfall(layer: i64, node: str, got: i64, expected: i64) -> string {
+  b := builder()
+  b.write("layer[")
+  b.write_int(layer)
+  b.write("]node[")
+  b.write(node)
+  b.write("]")
+  b.write_int(got)
+  b.write("/")
+  b.write_int(expected)
+  return b.to_string()
+}
+
+fn sanitize_summary_line(value: str) -> string {
+  b := builder()
+  view := value.bytes()
+  mut start := 0
+  mut index := 0
+  loop {
+    if index >= view.len() { break }
+    byte := view.u8(index) as i64
+    if byte < 32 || byte == 127 {
+      if index > start { b.write(value[start..index]) }
+      high := byte / 16
+      low := byte % 16
+      b.write("\\x")
+      b.write(SUMMARY_HEX[high..high + 1])
+      b.write(SUMMARY_HEX[low..low + 1])
+      start = index + 1
+    }
+    index = index + 1
+  }
+  if start < view.len() { b.write(value[start..view.len()]) }
+  return b.to_string()
+}
+
+// A non-negative decimal integer, no sign, no leading `+`, no whitespace, no leading zero beyond a
+// bare `0`. `-1` means "not a number this grammar produces".
+fn parse_index(value: str) -> i64 {
+  if value.len() == 0 || value.len() > MAX_INDEX_DIGITS { return -1 }
+  view := value.bytes()
+  if view.len() > 1 && view.u8(0) as i64 == 48 { return -1 }
+  mut total := 0
+  mut index := 0
+  loop {
+    if index >= view.len() { break }
+    byte := view.u8(index) as i64
+    if byte < 48 || byte > 57 { return -1 }
+    total = total * 10 + (byte - 48)
+    index = index + 1
+  }
+  return total
+}
+
+fn error_name(e: Error) -> str = match e {
+  NotFound => "NotFound",
+  Invalid => "Invalid",
+  Denied => "Denied",
+  Timeout => "Timeout",
+  Code(_) => "Code",
+}
+
+fn verdict_label(value: i64) -> str {
+  if value == VERDICT_EXTERNAL { return "EXTERNAL" }
+  if value == VERDICT_COPIED { return "COPIED" }
+  return "UNAVAILABLE"
+}
+
+fn reference_label(value: i64) -> str {
+  if value == REFERENCE_IDENTICAL { return "IDENTICAL" }
+  if value == REFERENCE_MISMATCH { return "MISMATCH" }
+  return "-"
+}
+
+fn oracle_label(value: i64) -> str {
+  if value == ORACLE_PASS { return "PASS" }
+  if value == ORACLE_FAIL { return "FAIL" }
+  return "-"
+}
+
+fn routing_label(value: i64) -> str {
+  if value == ROUTING_MATCH { return "MATCH" }
+  if value == ROUTING_MISMATCH { return "MISMATCH" }
+  return "-"
+}
+
+fn logits_label(value: i64) -> str {
+  if value == LOGITS_IDENTICAL { return "IDENTICAL" }
+  if value == LOGITS_WITHIN { return "WITHIN" }
+  if value == LOGITS_FAIL { return "FAIL" }
+  return "-"
+}
+
+fn align_up(value: i64, alignment: i64) -> i64 {
+  if alignment <= 1 { return value }
+  remainder := value % alignment
+  if remainder == 0 { return value }
+  return value + (alignment - remainder)
+}
+
+fn larger(a: i64, b: i64) -> i64 {
+  if a > b { return a }
+  return b
+}
+
+fn printed_count(extent: i64) -> i64 {
+  if extent <= TRUNCATION_PRINTED { return extent }
+  return TRUNCATION_PRINTED
+}
+
+fn column_at(borrow column: array<i64>, index: i64) -> i64 {
+  if index < 0 || index >= column.len() { return 0 }
+  return column[index]
+}
+
+fn fill_zero(borrow mut b: buffer, n: i64) {
+  mut index := 0
+  loop {
+    if index >= n { break }
+    b.put_u8(0 as u8)
+    index = index + 1
+  }
+}
+
+// `buffer(cap)` reserves capacity but publishes no length, and `bytes()` is `data[..len]`, so a
+// window has to be **written** to exist. Appending a 64 KiB zero block is one `memcpy` per round
+// and stays inside the reservation, so the base pointer never moves (R5B's `prime_window`).
+fn prime_window(borrow mut window: buffer, bytes: i64) {
+  mut chunk: buffer := buffer(PRIME_CHUNK_BYTES)
+  fill_zero(chunk, PRIME_CHUNK_BYTES)
+  view := chunk.bytes()
+  mut remaining := bytes
+  loop {
+    if remaining <= 0 { break }
+    take := if remaining > PRIME_CHUNK_BYTES { PRIME_CHUNK_BYTES } else { remaining }
+    window.append(view[0..take])
+    remaining = remaining - take
+  }
+}
+
+fn base_mod(borrow b: buffer, modulus: i64) -> i64 {
+  view := b.bytes()
+  return ggml_ffi.align_mod(view, modulus)
+}
+
+fn empty_array() -> array<i64> {
+  mut b: array_builder<i64> := array_builder()
+  return b.build()
+}
+
+fn zero_column(n: i64) -> array<i64> {
+  mut b: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= n { break }
+    b.push(0)
+    at = at + 1
+  }
+  return b.build()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The columns (section 3.8)
+//
+// Each record is assigned exactly once, as a whole, by the stage that produces it: at this pin an
+// owned `array<i64>` field cannot be replaced in place (R5A correction C9). `schedule[]` is thirty
+// columns wide, three of them nested integer matrices, so it is rendered **as it is produced** into
+// one string rather than carried as thirty parallel arrays that would each have to be rebuilt.
+// ---------------------------------------------------------------------------------------------
+
+pub TokenColumns { count: i64, ids: array<i64> }
+
+pub fn empty_tokens() -> TokenColumns = TokenColumns { count: 0, ids: empty_array() }
+
+pub ScheduleRows { count: i64, text: string }
+
+pub fn empty_schedule() -> ScheduleRows = ScheduleRows { count: 0, text: "".clone() }
+
+pub GraphColumns { activation_bytes: array<i64> }
+
+pub fn empty_graphs() -> GraphColumns = GraphColumns { activation_bytes: empty_array() }
+
+pub CurveColumns { cumulative: array<i64> }
+
+pub fn empty_curve() -> CurveColumns = CurveColumns { cumulative: empty_array() }
+
+// The top ten logits, as `(index, bit pattern)` pairs. No float is rendered anywhere, for
+// `r4-alignpack-layer-major.md` section 2.3's reason.
+pub TopColumns { index: array<i64>, bits: array<i64> }
+
+pub fn empty_top() -> TopColumns = TopColumns { index: empty_array(), bits: empty_array() }
+
+pub Outcome {
+  code: string,
+  detail: string,
+  verdict: i64,
+  reference_present: bool,
+  transcript_present: bool,
+  logits_present: bool,
+
+  reader_pread_count: i64,
+  reader_bytes_read: i64,
+  format_version: i64,
+  block_align: i64,
+  member_align: i64,
+  block_count: i64,
+  member_count: i64,
+  total_bytes: i64,
+  payload_offset: i64,
+
+  arch: string,
+  n_layer: i64,
+  n_embd: i64,
+  n_head: i64,
+  n_head_kv: i64,
+  head_dim: i64,
+  n_ff_exp: i64,
+  n_vocab: i64,
+  n_expert: i64,
+  n_expert_used: i64,
+  context_length: i64,
+  rms_eps_bits: i64,
+  rope_type: i64,
+  rope_dim_count: i64,
+  rope_freq_base_bits: i64,
+  attn_scale_bits: i64,
+  output_tied: bool,
+  output_ggml_type: i64,
+
+  token_count: i64,
+  embedding_block_index: i64,
+  output_block_index: i64,
+  narrow_layer: i64,
+  narrow_index: i64,
+  attention_width: i64,
+  expert_block_count: i64,
+
+  expert_bytes_read: i64,
+  expert_bytes_in_model: i64,
+  planes_read: i64,
+  planes_in_model: i64,
+  keys_demanded: i64,
+  keys_distinct: i64,
+  dense_bytes_read: i64,
+  head_bytes_read: i64,
+  embedding_bytes_read: i64,
+  model_bytes: i64,
+
+  dense_window_bytes: i64,
+  dense_peak_block_index: i64,
+  dense_peak_block_kind: i64,
+  dense_peak_block_layer: i64,
+  dense_peak_block_bytes: i64,
+  claim_window_bytes: i64,
+  claim_u_max: i64,
+  claim_peak_use_bytes: i64,
+  claim_peak_use_layer: i64,
+  window_reuse_count: i64,
+  pointer_identity_failures: i64,
+  member_placements: i64,
+  claim_placements: i64,
+  residual_bytes: i64,
+  carried_bytes: i64,
+  logits_bytes: i64,
+
+  graph_count: i64,
+  node_count_total: i64,
+  embed_node_count: i64,
+  head_node_count: i64,
+  table_rows_a: i64,
+  table_rows_b: i64,
+  slot_capacity: i64,
+  slot_high_water: i64,
+  activation_bytes_peak: i64,
+  graph_context_bytes: i64,
+  backend_name: string,
+
+  head_output_norm_bytes: i64,
+  head_output_bytes: i64,
+  head_pread_ns: i64,
+  head_compute_ns: i64,
+  result_norm_sha256: string,
+  result_norm_bit_sum: i64,
+
+  sha256: string,
+  bit_sum: i64,
+  element_count: i64,
+  nonfinite_count: i64,
+  argmax: i64,
+
+  reference_verdict: i64,
+  reference_graphs: i64,
+  reference_compared: i64,
+  reference_identical: i64,
+  reference_first_graph: i64,
+  reference_first_layer: i64,
+  reference_first_node: string,
+  reference_first_index: i64,
+  reference_first_primary_bits: i64,
+  reference_first_reference_bits: i64,
+  reference_pread_count: i64,
+  reference_bytes_read: i64,
+
+  routing_verdict: i64,
+  routing_layers_expected: i64,
+  routing_layers_matched: i64,
+  routing_ids_total: i64,
+  routing_ids_printed: i64,
+  routing_ids_matched: i64,
+  routing_sums_expected: i64,
+  routing_sums_matched: i64,
+  routing_first_layer: i64,
+  routing_first_token: i64,
+  routing_first_slot: i64,
+
+  oracle_verdict: i64,
+  oracle_layers_expected: i64,
+  oracle_layers_matched: i64,
+  oracle_expected: i64,
+  oracle_matched: i64,
+  oracle_elements: i64,
+  oracle_max_abs: i64,
+  oracle_max_sum: i64,
+  oracle_worst_layer: i64,
+  oracle_worst_node: string,
+  oracle_worst_element: i64,
+  oracle_lines: i64,
+  oracle_callback_lines: i64,
+
+  logits_verdict: i64,
+  logits_reconciliation: bool,
+  logits_byte_identical: bool,
+  logits_max_abs: i64,
+  logits_argmax_reference: i64,
+  logits_top_k_set: i64,
+  logits_top_k_order: i64,
+  logits_elements: i64,
+  logits_reference_sha256: string,
+  logits_reference_bit_sum: i64,
+
+  pread_ns: i64,
+  claim_pread_ns: i64,
+  decide_ns: i64,
+  build_ns: i64,
+  reserve_ns: i64,
+  compute_ns: i64,
+  reference_compute_ns: i64,
+  oracle_ns: i64,
+  elapsed_ns: i64,
+
+  ggml_buffers_created: i64,
+  ggml_buffers_freed: i64,
+  contexts_created: i64,
+  contexts_freed: i64,
+  backends_created: i64,
+  backends_freed: i64,
+  graphs_created: i64,
+  gallocrs_created: i64,
+  gallocrs_freed: i64,
+  released_before_owner_scope_end: bool,
+  phase_balance_failures: i64,
+
+  tensor_alignment: i64,
+  table_drift: i64,
+  slot_magic_ok: bool,
+  fp_contract_off: bool,
+}
+
+pub fn empty_outcome() -> Outcome = Outcome {
+  code: "".clone(),
+  detail: "".clone(),
+  verdict: VERDICT_UNAVAILABLE,
+  reference_present: false,
+  transcript_present: false,
+  logits_present: false,
+  reader_pread_count: 0,
+  reader_bytes_read: 0,
+  format_version: 0,
+  block_align: 0,
+  member_align: 0,
+  block_count: 0,
+  member_count: 0,
+  total_bytes: 0,
+  payload_offset: 0,
+  arch: "".clone(),
+  n_layer: 0,
+  n_embd: 0,
+  n_head: 0,
+  n_head_kv: 0,
+  head_dim: 0,
+  n_ff_exp: 0,
+  n_vocab: 0,
+  n_expert: 0,
+  n_expert_used: 0,
+  context_length: 0,
+  rms_eps_bits: 0,
+  rope_type: -1,
+  rope_dim_count: 0,
+  rope_freq_base_bits: 0,
+  attn_scale_bits: 0,
+  output_tied: false,
+  output_ggml_type: -1,
+  token_count: 0,
+  embedding_block_index: -1,
+  output_block_index: -1,
+  narrow_layer: -1,
+  narrow_index: -1,
+  attention_width: 0,
+  expert_block_count: 0,
+  expert_bytes_read: 0,
+  expert_bytes_in_model: 0,
+  planes_read: 0,
+  planes_in_model: 0,
+  keys_demanded: 0,
+  keys_distinct: 0,
+  dense_bytes_read: 0,
+  head_bytes_read: 0,
+  embedding_bytes_read: 0,
+  model_bytes: 0,
+  dense_window_bytes: 0,
+  dense_peak_block_index: -1,
+  dense_peak_block_kind: -1,
+  dense_peak_block_layer: -1,
+  dense_peak_block_bytes: 0,
+  claim_window_bytes: 0,
+  claim_u_max: 0,
+  claim_peak_use_bytes: 0,
+  claim_peak_use_layer: -1,
+  window_reuse_count: 0,
+  pointer_identity_failures: 0,
+  member_placements: 0,
+  claim_placements: 0,
+  residual_bytes: 0,
+  carried_bytes: 0,
+  logits_bytes: 0,
+  graph_count: 0,
+  node_count_total: 0,
+  embed_node_count: 0,
+  head_node_count: 0,
+  table_rows_a: 0,
+  table_rows_b: 0,
+  slot_capacity: 0,
+  slot_high_water: 0,
+  activation_bytes_peak: 0,
+  graph_context_bytes: 0,
+  backend_name: "".clone(),
+  head_output_norm_bytes: 0,
+  head_output_bytes: 0,
+  head_pread_ns: 0,
+  head_compute_ns: 0,
+  result_norm_sha256: "".clone(),
+  result_norm_bit_sum: 0,
+  sha256: "".clone(),
+  bit_sum: 0,
+  element_count: 0,
+  nonfinite_count: 0,
+  argmax: -1,
+  reference_verdict: REFERENCE_ABSENT,
+  reference_graphs: 0,
+  reference_compared: 0,
+  reference_identical: 0,
+  reference_first_graph: -1,
+  reference_first_layer: -1,
+  reference_first_node: "".clone(),
+  reference_first_index: -1,
+  reference_first_primary_bits: 0,
+  reference_first_reference_bits: 0,
+  reference_pread_count: 0,
+  reference_bytes_read: 0,
+  routing_verdict: ROUTING_ABSENT,
+  routing_layers_expected: 0,
+  routing_layers_matched: 0,
+  routing_ids_total: 0,
+  routing_ids_printed: 0,
+  routing_ids_matched: 0,
+  routing_sums_expected: 0,
+  routing_sums_matched: 0,
+  routing_first_layer: -1,
+  routing_first_token: -1,
+  routing_first_slot: -1,
+  oracle_verdict: ORACLE_ABSENT,
+  oracle_layers_expected: 0,
+  oracle_layers_matched: 0,
+  oracle_expected: 0,
+  oracle_matched: 0,
+  oracle_elements: 0,
+  oracle_max_abs: 0,
+  oracle_max_sum: 0,
+  oracle_worst_layer: -1,
+  oracle_worst_node: "".clone(),
+  oracle_worst_element: -1,
+  oracle_lines: 0,
+  oracle_callback_lines: 0,
+  logits_verdict: LOGITS_ABSENT,
+  logits_reconciliation: false,
+  logits_byte_identical: false,
+  logits_max_abs: 0,
+  logits_argmax_reference: -1,
+  logits_top_k_set: 0,
+  logits_top_k_order: 0,
+  logits_elements: 0,
+  logits_reference_sha256: "".clone(),
+  logits_reference_bit_sum: 0,
+  pread_ns: 0,
+  claim_pread_ns: 0,
+  decide_ns: 0,
+  build_ns: 0,
+  reserve_ns: 0,
+  compute_ns: 0,
+  reference_compute_ns: 0,
+  oracle_ns: 0,
+  elapsed_ns: 0,
+  ggml_buffers_created: 0,
+  ggml_buffers_freed: 0,
+  contexts_created: 0,
+  contexts_freed: 0,
+  backends_created: 0,
+  backends_freed: 0,
+  graphs_created: 0,
+  gallocrs_created: 0,
+  gallocrs_freed: 0,
+  released_before_owner_scope_end: false,
+  phase_balance_failures: 0,
+  tensor_alignment: 0,
+  table_drift: -1,
+  slot_magic_ok: false,
+  fp_contract_off: false,
+}
+
+fn fail(borrow mut o: Outcome, code: str, detail: str) {
+  if o.code.len() == 0 {
+    o.code = code.clone()
+    o.detail = bounded_detail(detail)
+  }
+}
+
+fn fault_into(borrow mut o: Outcome, borrow f: ggml_ffi.Fault) {
+  code_view: str := f.code
+  detail_view: str := f.detail
+  fail(o, code_view, detail_view)
+}
+
+fn pack_fault_into(borrow mut o: Outcome, borrow f: alignpack_read.Fault) {
+  code_view: str := f.code
+  detail_view: str := f.detail
+  fail(o, code_view, detail_view)
+}
+
+fn ffi_fault(code: str, detail: string) -> ggml_ffi.Fault =
+ggml_ffi.Fault { code: code.clone(), detail: detail }
+
+fn pack_fault(code: str, detail: string) -> alignpack_read.Fault =
+alignpack_read.Fault { code: code.clone(), detail: detail }
+
+// One `match` in one place: at this pin a `match` on a `Result` with block arms inside a loop is
+// markedly more expensive to check than a call (R5A correction C8).
+fn take(borrow mut o: Outcome, outcome: Result<(), ggml_ffi.Fault>) {
+  match outcome {
+    Ok(_) => {},
+    Err(f) => { fault_into(o, f) },
+  }
+}
+
+fn take_pack(borrow mut o: Outcome, outcome: Result<(), alignpack_read.Fault>) {
+  match outcome {
+    Ok(_) => {},
+    Err(f) => { pack_fault_into(o, f) },
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Container navigation (section 3.4)
+// ---------------------------------------------------------------------------------------------
+
+// Every member record of one block, read once. Re-reading the member table per role is O(k^2)
+// preads per block; at 1,058 blocks that is the difference between one pass and thirty.
+MembersOfBlock {
+  count: i64,
+  role: array<i64>,
+  ggml_type: array<i64>,
+  nbytes: array<i64>,
+  pack_offset: array<i64>,
+  source_offset: array<i64>,
+  dim0: array<i64>,
+  dim1: array<i64>,
+  dim2: array<i64>,
+  dim3: array<i64>,
+  slice_index: array<i64>,
+  slice_count: array<i64>,
+}
+
+fn read_block_members(
+  borrow f: file,
+  borrow x: alignpack_read.PackIndex,
+  borrow b: alignpack_read.PackBlock,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<MembersOfBlock, alignpack_read.Fault> {
+  mut role: array_builder<i64> := array_builder()
+  mut kind: array_builder<i64> := array_builder()
+  mut nbytes: array_builder<i64> := array_builder()
+  mut pack_offset: array_builder<i64> := array_builder()
+  mut source_offset: array_builder<i64> := array_builder()
+  mut d0: array_builder<i64> := array_builder()
+  mut d1: array_builder<i64> := array_builder()
+  mut d2: array_builder<i64> := array_builder()
+  mut d3: array_builder<i64> := array_builder()
+  mut si: array_builder<i64> := array_builder()
+  mut sc: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= b.member_count { break }
+    m := alignpack_read.member_at(f, x, b, at, c)?
+    role.push(m.role_id)
+    kind.push(m.ggml_type)
+    nbytes.push(m.nbytes)
+    pack_offset.push(m.pack_offset)
+    source_offset.push(m.source_offset)
+    d0.push(m.dim0)
+    d1.push(m.dim1)
+    d2.push(m.dim2)
+    d3.push(m.dim3)
+    si.push(m.slice_index)
+    sc.push(m.slice_count)
+    at = at + 1
+  }
+  return Ok(MembersOfBlock {
+      count: b.member_count,
+      role: role.build(),
+      ggml_type: kind.build(),
+      nbytes: nbytes.build(),
+      pack_offset: pack_offset.build(),
+      source_offset: source_offset.build(),
+      dim0: d0.build(),
+      dim1: d1.build(),
+      dim2: d2.build(),
+      dim3: d3.build(),
+      slice_index: si.build(),
+      slice_count: sc.build(),
+    })
+}
+
+fn role_slot(borrow m: MembersOfBlock, role: i64) -> i64 {
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    if m.role[at] == role { return at }
+    at = at + 1
+  }
+  return -1
+}
+
+fn count_blocks(borrow x: alignpack_read.PackIndex, kind: i64, layer: i64) -> i64 {
+  mut total := 0
+  mut at := 0
+  loop {
+    if at >= x.block_count { break }
+    if x.block_kind[at] == kind && x.block_layer[at] == layer { total = total + 1 }
+    at = at + 1
+  }
+  return total
+}
+
+fn first_block(borrow x: alignpack_read.PackIndex, kind: i64, layer: i64) -> i64 {
+  mut at := 0
+  loop {
+    if at >= x.block_count { break }
+    if x.block_kind[at] == kind && x.block_layer[at] == layer { return at }
+    at = at + 1
+  }
+  return -1
+}
+
+// `-1` is "no block", `-2` is "more than one".
+fn find_expert_block(borrow x: alignpack_read.PackIndex, layer: i64, expert: i64) -> i64 {
+  mut at := 0
+  mut found := -1
+  loop {
+    if at >= x.block_count { break }
+    if x.block_kind[at] == layer_olmoe.KIND_EXPERT && x.block_layer[at] == layer
+      && x.block_expert[at] == expert {
+      if found >= 0 { return -2 }
+      found = at
+    }
+    at = at + 1
+  }
+  return found
+}
+
+// Section 3.4: an olmoe container carries **two** `WeightBlock`s at layer `-1` — the embedding at
+// index 0 and the head at index 1,057 — so the `(kind, layer)` pair alone is ambiguous for both of
+// them and the required `role_id` is part of the selection rather than a refinement of it. Exactly
+// one block must carry the role; none is `R5_BLOCK_MISSING` and more than one is
+// `R5_BLOCK_AMBIGUOUS`, each naming the kind, the layer, and the role.
+fn find_block_with_role(
+  borrow f: file,
+  borrow x: alignpack_read.PackIndex,
+  kind: i64,
+  layer: i64,
+  role: i64,
+  role_label: str,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<i64, alignpack_read.Fault> {
+  mut found := -1
+  mut hits := 0
+  mut at := 0
+  loop {
+    if at >= x.block_count { break }
+    if x.block_kind[at] == kind && x.block_layer[at] == layer {
+      block := alignpack_read.block_at(x, at)?
+      members := read_block_members(f, x, block, c)?
+      if role_slot(members, role) >= 0 {
+        hits = hits + 1
+        if found < 0 { found = at }
+      }
+    }
+    at = at + 1
+  }
+  if hits == 0 {
+    return Err(pack_fault("R5_BLOCK_MISSING", block_detail(kind, layer, role_label)))
+  }
+  if hits > 1 {
+    return Err(pack_fault("R5_BLOCK_AMBIGUOUS", block_detail(kind, layer, role_label)))
+  }
+  return Ok(found)
+}
+
+// Step 13. Every `L` in `[0, n_layer)` must have exactly one `AttentionBlock` and exactly one
+// `RouterBlock`. A model that silently skips a layer is the failure mode a whole-model arm most
+// needs to refuse, because its output is plausible.
+fn validate_layer_coverage(
+  borrow x: alignpack_read.PackIndex, n_layer: i64) -> Result<(), alignpack_read.Fault> {
+  mut layer := 0
+  loop {
+    if layer >= n_layer { break }
+    if count_blocks(x, layer_olmoe.KIND_ATTENTION, layer) != 1
+      || count_blocks(x, layer_olmoe.KIND_ROUTER, layer) != 1 {
+      return Err(pack_fault("R5_LAYER_COVERAGE", labelled("layer", layer)))
+    }
+    layer = layer + 1
+  }
+  return Ok(())
+}
+
+// Step 14. Exactly one `ExpertBlock` at `(L, e)` for every `L` and every `e` — 1,024 blocks on this
+// model — **checked before any routing decision runs**, because discovering a missing expert after
+// the router has chosen it would make a container defect look like a routing defect.
+fn validate_expert_coverage(
+  borrow x: alignpack_read.PackIndex, n_layer: i64, n_expert: i64,
+) -> Result<(), alignpack_read.Fault> {
+  mut layer := 0
+  loop {
+    if layer >= n_layer { break }
+    mut expert := 0
+    loop {
+      if expert >= n_expert { break }
+      if find_expert_block(x, layer, expert) < 0 {
+        return Err(pack_fault("R5D_CLAIM_MISSING", layer_numbered(layer, "expert", expert)))
+      }
+      expert = expert + 1
+    }
+    layer = layer + 1
+  }
+  return Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// The plan (steps 12 to 19)
+// ---------------------------------------------------------------------------------------------
+
+// The whole read schedule as data: 1,058 blocks, 3,219 member records, the per-layer dense window
+// layout the sweep of section 3.5 is taken over, and every expert's three claim planes.
+pub Plan {
+  n_layer: i64,
+  n_expert: i64,
+  attention_index: array<i64>,
+  router_index: array<i64>,
+  layer_window_bytes: array<i64>,
+  layer_member_bytes: array<i64>,
+  m_type: array<i64>,
+  m_ne0: array<i64>,
+  m_ne1: array<i64>,
+  m_nbytes: array<i64>,
+  m_pack_offset: array<i64>,
+  m_source: array<i64>,
+  m_window: array<i64>,
+  expert_index: array<i64>,
+  expert_pack_offset: array<i64>,
+  expert_pack_bytes: array<i64>,
+  claim_start: array<i64>,
+  claim_source: array<i64>,
+  plane_bytes: array<i64>,
+  plane_type: array<i64>,
+  max_block_bytes: i64,
+}
+
+pub fn empty_plan() -> Plan = Plan {
+  n_layer: 0,
+  n_expert: 0,
+  attention_index: empty_array(),
+  router_index: empty_array(),
+  layer_window_bytes: empty_array(),
+  layer_member_bytes: empty_array(),
+  m_type: empty_array(),
+  m_ne0: empty_array(),
+  m_ne1: empty_array(),
+  m_nbytes: empty_array(),
+  m_pack_offset: empty_array(),
+  m_source: empty_array(),
+  m_window: empty_array(),
+  expert_index: empty_array(),
+  expert_pack_offset: empty_array(),
+  expert_pack_bytes: empty_array(),
+  claim_start: empty_array(),
+  claim_source: empty_array(),
+  plane_bytes: empty_array(),
+  plane_type: empty_array(),
+  max_block_bytes: 0,
+}
+
+// Step 15 and 16 for one layer's nine dense members, validated against the geometry exactly and
+// laid out in the dense window at `block_align`-aligned offsets.
+fn plan_layer_dense(
+  borrow attention: MembersOfBlock,
+  borrow router: MembersOfBlock,
+  borrow table: layer_olmoe.MemberTable,
+  layer: i64,
+  block_align: i64,
+  borrow mut m_type: array_builder<i64>,
+  borrow mut m_ne0: array_builder<i64>,
+  borrow mut m_ne1: array_builder<i64>,
+  borrow mut m_nbytes: array_builder<i64>,
+  borrow mut m_pack_offset: array_builder<i64>,
+  borrow mut m_source: array_builder<i64>,
+  borrow mut m_window: array_builder<i64>,
+  borrow mut member_bytes: i64,
+) -> Result<i64, alignpack_read.Fault> {
+  mut total := 0
+  member_bytes = 0
+  mut row := 0
+  loop {
+    if row >= table.count { break }
+    label := layer_olmoe.member_label(table, row)
+    attention_side := table.block[row] == layer_olmoe.KIND_ATTENTION
+    slot := if attention_side {
+      role_slot(attention, table.role[row])
+    } else {
+      role_slot(router, table.role[row])
+    }
+    if slot < 0 {
+      return Err(pack_fault("R5_MEMBER_MISSING", layer_named(layer, "role", label)))
+    }
+    kind := if attention_side { attention.ggml_type[slot] } else { router.ggml_type[slot] }
+    ne0 := if attention_side { attention.dim0[slot] } else { router.dim0[slot] }
+    ne1 := if attention_side { attention.dim1[slot] } else { router.dim1[slot] }
+    nbytes := if attention_side { attention.nbytes[slot] } else { router.nbytes[slot] }
+    at := if attention_side { attention.pack_offset[slot] } else { router.pack_offset[slot] }
+    source := if attention_side { attention.source_offset[slot] } else { router.source_offset[slot] }
+    // A router of the wrong width silently produces a valid softmax over the wrong number of
+    // experts, which is why it has its own code naming the axis that disagrees.
+    if table.role[row] == layer_olmoe.ROLE_ROUTER && (ne0 != table.ne0[row] || ne1 != table.ne1[row]) {
+      if ne0 != table.ne0[row] {
+        return Err(pack_fault("R5D_ROUTER_SHAPE", layer_numbered(layer, "ne0", ne0)))
+      }
+      return Err(pack_fault("R5D_ROUTER_SHAPE", layer_numbered(layer, "ne1", ne1)))
+    }
+    if ne0 != table.ne0[row] || ne1 != table.ne1[row] || nbytes < 1
+      || ne0 > MAX_DIMENSION || ne1 > MAX_DIMENSION {
+      return Err(pack_fault("R5_SHAPE", layer_named(layer, "role", label)))
+    }
+    m_type.push(kind)
+    m_ne0.push(ne0)
+    m_ne1.push(ne1)
+    m_nbytes.push(nbytes)
+    m_pack_offset.push(at)
+    m_source.push(source)
+    m_window.push(total)
+    total = total + align_up(nbytes, block_align)
+    member_bytes = member_bytes + nbytes
+    row = row + 1
+  }
+  return Ok(total)
+}
+
+// Step 17 for one layer's `n_expert` `ExpertBlock`s. Every claim is shape-checked, slice-checked,
+// and checked for **plane consistency**: a layer whose experts disagree about a plane's byte count
+// or its ggml type cannot be stacked, because `mul_mat_id` reads plane `u` at `u * plane` and one
+// stride serves the whole stack.
+fn plan_layer_experts(
+  borrow f: file,
+  borrow x: alignpack_read.PackIndex,
+  borrow g: layer_olmoe.Geometry,
+  layer: i64,
+  borrow mut plane_bytes: array_builder<i64>,
+  borrow mut plane_type: array_builder<i64>,
+  borrow mut expert_index: array_builder<i64>,
+  borrow mut expert_pack_offset: array_builder<i64>,
+  borrow mut expert_pack_bytes: array_builder<i64>,
+  borrow mut claim_start: array_builder<i64>,
+  borrow mut claim_source: array_builder<i64>,
+  borrow mut max_block: i64,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  mut first_bytes := zero_column(layer_olmoe.CLAIM_ROLE_COUNT)
+  mut first_type := zero_column(layer_olmoe.CLAIM_ROLE_COUNT)
+  mut expert := 0
+  loop {
+    if expert >= g.n_expert { break }
+    at := find_expert_block(x, layer, expert)
+    block := alignpack_read.block_at(x, at)?
+    members := read_block_members(f, x, block, c)?
+    expert_index.push(at)
+    expert_pack_offset.push(block.pack_offset)
+    expert_pack_bytes.push(block.pack_bytes)
+    if block.pack_bytes > max_block { max_block = block.pack_bytes }
+    mut role := 0
+    loop {
+      if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+      label := layer_olmoe.claim_label(role)
+      slot := role_slot(members, layer_olmoe.claim_role(role))
+      if slot < 0 {
+        return Err(pack_fault("R5D_CLAIM_MISSING", layer_expert_role(layer, expert, label)))
+      }
+      // `moe-prereq-discharge.md` section 1.1 steps 7a and 7b, re-raised verbatim: a claim's slice
+      // pair is `plane index` / `sliced axis extent`, and the plane it names must be its own expert.
+      if members.slice_index[slot] < 0 || members.slice_count[slot] < 1
+        || members.slice_index[slot] >= members.slice_count[slot] {
+        return Err(pack_fault("R4_5_SLICE", labelled("index", members.slice_index[slot])))
+      }
+      if members.slice_count[slot] != g.n_expert || members.dim2[slot] != members.slice_count[slot]
+        || members.dim3[slot] != 1 {
+        return Err(pack_fault("R4_5_SLICE", labelled("count", members.slice_count[slot])))
+      }
+      if members.slice_index[slot] != expert {
+        return Err(pack_fault("R5D_CLAIM_MISSING", layer_expert_role(layer, expert, label)))
+      }
+      if members.dim0[slot] != layer_olmoe.claim_ne0(g, role)
+        || members.dim1[slot] != layer_olmoe.claim_ne1(g, role) || members.nbytes[slot] < 1 {
+        return Err(pack_fault("R5_SHAPE", layer_expert_role(layer, expert, label)))
+      }
+      if expert == 0 {
+        first_bytes[role] = members.nbytes[slot]
+        first_type[role] = members.ggml_type[slot]
+      } else if members.nbytes[slot] != first_bytes[role]
+        || members.ggml_type[slot] != first_type[role] {
+        return Err(pack_fault("R5_SHAPE", layer_expert_role(layer, expert, label)))
+      }
+      start := members.pack_offset[slot] - block.pack_offset
+      if start < 0 || members.nbytes[slot] > block.pack_bytes - start {
+        return Err(pack_fault("R4_PACK_UNREADABLE", layer_expert_role(layer, expert, label)))
+      }
+      claim_start.push(start)
+      claim_source.push(members.source_offset[slot])
+      role = role + 1
+    }
+    expert = expert + 1
+  }
+  mut push_at := 0
+  loop {
+    if push_at >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+    plane_bytes.push(first_bytes[push_at])
+    plane_type.push(first_type[push_at])
+    push_at = push_at + 1
+  }
+  return Ok(())
+}
+
+fn build_plan(
+  borrow f: file,
+  borrow x: alignpack_read.PackIndex,
+  borrow g: layer_olmoe.Geometry,
+  borrow table: layer_olmoe.MemberTable,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<Plan, alignpack_read.Fault> {
+  mut attention_index: array_builder<i64> := array_builder()
+  mut router_index: array_builder<i64> := array_builder()
+  mut layer_window_bytes: array_builder<i64> := array_builder()
+  mut layer_member_bytes: array_builder<i64> := array_builder()
+  mut m_type: array_builder<i64> := array_builder()
+  mut m_ne0: array_builder<i64> := array_builder()
+  mut m_ne1: array_builder<i64> := array_builder()
+  mut m_nbytes: array_builder<i64> := array_builder()
+  mut m_pack_offset: array_builder<i64> := array_builder()
+  mut m_source: array_builder<i64> := array_builder()
+  mut m_window: array_builder<i64> := array_builder()
+  mut expert_index: array_builder<i64> := array_builder()
+  mut expert_pack_offset: array_builder<i64> := array_builder()
+  mut expert_pack_bytes: array_builder<i64> := array_builder()
+  mut claim_start: array_builder<i64> := array_builder()
+  mut claim_source: array_builder<i64> := array_builder()
+  mut plane_bytes: array_builder<i64> := array_builder()
+  mut plane_type: array_builder<i64> := array_builder()
+  mut max_block := 0
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer { break }
+    a_index := first_block(x, layer_olmoe.KIND_ATTENTION, layer)
+    r_index := first_block(x, layer_olmoe.KIND_ROUTER, layer)
+    attention_block := alignpack_read.block_at(x, a_index)?
+    router_block := alignpack_read.block_at(x, r_index)?
+    attention := read_block_members(f, x, attention_block, c)?
+    router := read_block_members(f, x, router_block, c)?
+    mut member_bytes := 0
+    total := plan_layer_dense(
+      attention, router, table, layer, x.block_align,
+      m_type, m_ne0, m_ne1, m_nbytes, m_pack_offset, m_source, m_window, member_bytes)?
+    plan_layer_experts(
+      f, x, g, layer, plane_bytes, plane_type, expert_index, expert_pack_offset,
+      expert_pack_bytes, claim_start, claim_source, max_block, c)?
+    attention_index.push(a_index)
+    router_index.push(r_index)
+    layer_window_bytes.push(total)
+    layer_member_bytes.push(member_bytes)
+    layer = layer + 1
+  }
+  return Ok(Plan {
+      n_layer: g.n_layer,
+      n_expert: g.n_expert,
+      attention_index: attention_index.build(),
+      router_index: router_index.build(),
+      layer_window_bytes: layer_window_bytes.build(),
+      layer_member_bytes: layer_member_bytes.build(),
+      m_type: m_type.build(),
+      m_ne0: m_ne0.build(),
+      m_ne1: m_ne1.build(),
+      m_nbytes: m_nbytes.build(),
+      m_pack_offset: m_pack_offset.build(),
+      m_source: m_source.build(),
+      m_window: m_window.build(),
+      expert_index: expert_index.build(),
+      expert_pack_offset: expert_pack_offset.build(),
+      expert_pack_bytes: expert_pack_bytes.build(),
+      claim_start: claim_start.build(),
+      claim_source: claim_source.build(),
+      plane_bytes: plane_bytes.build(),
+      plane_type: plane_type.build(),
+      max_block_bytes: max_block,
+    })
+}
+
+// The embedding and the head: the two role-qualified `WeightBlock` members, the row stride the
+// gather depends on, and the tied-embedding answer section 3.4 **derives** rather than assumes.
+pub Ends {
+  embed_block_index: i64,
+  output_block_index: i64,
+  row_bytes: i64,
+  embed_type: i64,
+  embed_nbytes: i64,
+  embed_pack_offset: i64,
+  embed_source: i64,
+  norm_type: i64,
+  norm_nbytes: i64,
+  norm_pack_offset: i64,
+  norm_source: i64,
+  out_type: i64,
+  out_nbytes: i64,
+  out_pack_offset: i64,
+  out_source: i64,
+  out_window: i64,
+  head_window_bytes: i64,
+  tied: bool,
+}
+
+pub fn empty_ends() -> Ends = Ends {
+  embed_block_index: -1,
+  output_block_index: -1,
+  row_bytes: 0,
+  embed_type: -1,
+  embed_nbytes: 0,
+  embed_pack_offset: 0,
+  embed_source: 0,
+  norm_type: -1,
+  norm_nbytes: 0,
+  norm_pack_offset: 0,
+  norm_source: 0,
+  out_type: -1,
+  out_nbytes: 0,
+  out_pack_offset: 0,
+  out_source: 0,
+  out_window: 0,
+  head_window_bytes: 0,
+  tied: false,
+}
+
+// Step 12, role-qualified, and steps 15 and 16 for the two `WeightBlock`s. Tied embeddings are
+// **detected, not assumed**: two members that are the same GGUF tensor carry the same
+// `source_offset` and the same `nbytes`, whatever they are called (R5B correction C7).
+fn stage_ends(
+  borrow pak: file,
+  borrow x: alignpack_read.PackIndex,
+  borrow g: layer_olmoe.Geometry,
+  borrow mut ends: Ends,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  embed_index := find_block_with_role(
+    pak, x, layer_olmoe.KIND_WEIGHT, -1, layer_olmoe.ROLE_TOKEN_EMBD, "token_embd", c)?
+  output_index := find_block_with_role(
+    pak, x, layer_olmoe.KIND_WEIGHT, -1, layer_olmoe.ROLE_OUTPUT, "output", c)?
+  embed_block := alignpack_read.block_at(x, embed_index)?
+  output_block := alignpack_read.block_at(x, output_index)?
+  embed_members := read_block_members(pak, x, embed_block, c)?
+  output_members := read_block_members(pak, x, output_block, c)?
+  embed_slot := role_slot(embed_members, layer_olmoe.ROLE_TOKEN_EMBD)
+  norm_slot := role_slot(output_members, layer_olmoe.ROLE_OUTPUT_NORM)
+  out_slot := role_slot(output_members, layer_olmoe.ROLE_OUTPUT)
+  if norm_slot < 0 {
+    return Err(pack_fault("R5_MEMBER_MISSING", layer_named(-1, "role", "output_norm")))
+  }
+  if embed_members.dim0[embed_slot] != g.n_embd || embed_members.dim1[embed_slot] != g.n_vocab {
+    return Err(pack_fault("R5_SHAPE", layer_named(-1, "role", "token_embd")))
+  }
+  if output_members.dim0[norm_slot] != g.n_embd || output_members.dim1[norm_slot] != 1 {
+    return Err(pack_fault("R5_SHAPE", layer_named(-1, "role", "output_norm")))
+  }
+  if output_members.dim0[out_slot] != g.n_embd || output_members.dim1[out_slot] != g.n_vocab {
+    return Err(pack_fault("R5_SHAPE", layer_named(-1, "role", "output")))
+  }
+  row_bytes := embed_members.nbytes[embed_slot] / g.n_vocab
+  if row_bytes <= 0 || row_bytes * g.n_vocab != embed_members.nbytes[embed_slot] {
+    return Err(pack_fault("R5_SHAPE", layer_named(-1, "role", "token_embd")))
+  }
+  tied := embed_members.source_offset[embed_slot] == output_members.source_offset[out_slot]
+    && embed_members.nbytes[embed_slot] == output_members.nbytes[out_slot]
+  norm_bytes := align_up(output_members.nbytes[norm_slot], x.block_align)
+  ends = Ends {
+    embed_block_index: embed_index,
+    output_block_index: output_index,
+    row_bytes: row_bytes,
+    embed_type: embed_members.ggml_type[embed_slot],
+    embed_nbytes: embed_members.nbytes[embed_slot],
+    embed_pack_offset: embed_members.pack_offset[embed_slot],
+    embed_source: embed_members.source_offset[embed_slot],
+    norm_type: output_members.ggml_type[norm_slot],
+    norm_nbytes: output_members.nbytes[norm_slot],
+    norm_pack_offset: output_members.pack_offset[norm_slot],
+    norm_source: output_members.source_offset[norm_slot],
+    out_type: output_members.ggml_type[out_slot],
+    out_nbytes: output_members.nbytes[out_slot],
+    out_pack_offset: output_members.pack_offset[out_slot],
+    out_source: output_members.source_offset[out_slot],
+    out_window: norm_bytes,
+    head_window_bytes: norm_bytes + align_up(output_members.nbytes[out_slot], x.block_align),
+    tied: tied,
+  }
+  return Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// The two windows (section 3.5)
+// ---------------------------------------------------------------------------------------------
+
+// The layout of the one reused Align-owned claim window: three `block_align`-aligned role regions,
+// each `U_max` plane-sized slots laid end to end at the **largest** plane any layer declares.
+//
+// **The plane stride is the plane, exactly** (R5D correction C3): a stacked 3-D tensor over `U`
+// planes *is* `U` plane-sized regions in a row, and padding each plane would make `mul_mat_id` read
+// plane `u` at the wrong offset. Only each **region base** is aligned.
+pub ClaimWindow {
+  region: array<i64>,
+  max_plane: array<i64>,
+  u_max: i64,
+  total: i64,
+}
+
+pub fn empty_claim_window() -> ClaimWindow = ClaimWindow {
+  region: empty_array(),
+  max_plane: empty_array(),
+  u_max: 0,
+  total: 0,
+}
+
+// Step 19. `U_max = min(n_expert, n_expert_used * token_count)` — the arithmetic bound, not the
+// observed maximum, so the window is reserved once, checked once, and refilled sixteen times, and
+// `R5E_CLAIM_OVERFLOW` becomes a fail-closed guard no routing decision can reach.
+fn size_claim_window(
+  borrow p: Plan,
+  borrow g: layer_olmoe.Geometry,
+  tokens: i64,
+  block_align: i64,
+) -> ClaimWindow {
+  mut u_max := g.n_expert_used * tokens
+  if u_max > g.n_expert { u_max = g.n_expert }
+  mut regions: array_builder<i64> := array_builder()
+  mut planes: array_builder<i64> := array_builder()
+  mut total := 0
+  mut role := 0
+  loop {
+    if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+    mut widest := 0
+    mut layer := 0
+    loop {
+      if layer >= p.n_layer { break }
+      value := column_at(p.plane_bytes, layer * layer_olmoe.CLAIM_ROLE_COUNT + role)
+      if value > widest { widest = value }
+      layer = layer + 1
+    }
+    base := align_up(total, block_align)
+    regions.push(base)
+    planes.push(widest)
+    total = base + u_max * widest
+    role = role + 1
+  }
+  return ClaimWindow {
+    region: regions.build(),
+    max_plane: planes.build(),
+    u_max: u_max,
+    total: total,
+  }
+}
+
+// Step 18. The sweep of section 3.5 over the dense blocks this run will read, before anything is
+// reserved. Section 2.1 is why the maximum is the head: 84,520,960 B against 11,075,584 for the
+// largest layer pair and 8,192 for the gathered rows.
+fn size_dense_window(
+  borrow p: Plan,
+  borrow ends: Ends,
+  block_align: i64,
+  tokens: i64,
+  borrow mut o: Outcome,
+) -> i64 {
+  embed_bytes := align_up(ends.row_bytes * tokens, block_align)
+  mut peak := embed_bytes
+  o.dense_peak_block_index = ends.embed_block_index
+  o.dense_peak_block_kind = layer_olmoe.KIND_WEIGHT
+  o.dense_peak_block_layer = -1
+  mut layer := 0
+  loop {
+    if layer >= p.n_layer { break }
+    if p.layer_window_bytes[layer] > peak {
+      peak = p.layer_window_bytes[layer]
+      o.dense_peak_block_index = p.attention_index[layer]
+      o.dense_peak_block_kind = layer_olmoe.KIND_ATTENTION
+      o.dense_peak_block_layer = layer
+    }
+    layer = layer + 1
+  }
+  if ends.head_window_bytes > peak {
+    peak = ends.head_window_bytes
+    o.dense_peak_block_index = ends.output_block_index
+    o.dense_peak_block_kind = layer_olmoe.KIND_WEIGHT
+    o.dense_peak_block_layer = -1
+  }
+  o.dense_peak_block_bytes = peak
+  o.dense_window_bytes = peak
+  if peak <= 0 || peak > MAX_WINDOW_BYTES {
+    fail(o, "R5_WINDOW_BUDGET", labelled("window", peak))
+    return -1
+  }
+  return peak
+}
+
+// ---------------------------------------------------------------------------------------------
+// One graph's members
+// ---------------------------------------------------------------------------------------------
+
+// The members of exactly one graph, in slot order, with the window offsets this run chose. It is
+// built fresh for each of the thirty-four graphs, which is what the `array<i64>` replacement rule
+// forces and what keeps the layer table the same table sixteen times.
+pub GraphMembers {
+  count: i64,
+  names: string,
+  name_start: array<i64>,
+  name_end: array<i64>,
+  ggml_type: array<i64>,
+  ne0: array<i64>,
+  rows: array<i64>,
+  nbytes: array<i64>,
+  window: array<i64>,
+  n_dims: array<i64>,
+  source: array<i64>,
+  pack: array<i64>,
+  pieces: array<i64>,
+  stride: array<i64>,
+}
+
+pub fn empty_graph_members() -> GraphMembers = GraphMembers {
+  count: 0,
+  names: "".clone(),
+  name_start: empty_array(),
+  name_end: empty_array(),
+  ggml_type: empty_array(),
+  ne0: empty_array(),
+  rows: empty_array(),
+  nbytes: empty_array(),
+  window: empty_array(),
+  n_dims: empty_array(),
+  source: empty_array(),
+  pack: empty_array(),
+  pieces: empty_array(),
+  stride: empty_array(),
+}
+
+pub fn graph_member_label(borrow m: GraphMembers, index: i64) -> str {
+  view: str := m.names
+  if index < 0 || index >= m.count { return "" }
+  return view[m.name_start[index]..m.name_end[index]]
+}
+
+fn build_embed_members(borrow g: layer_olmoe.Geometry, borrow e: Ends, tokens: i64) -> GraphMembers {
+  names := builder()
+  names.write("token_embd")
+  mut name_start: array_builder<i64> := array_builder()
+  mut name_end: array_builder<i64> := array_builder()
+  mut kind: array_builder<i64> := array_builder()
+  mut ne0: array_builder<i64> := array_builder()
+  mut rows: array_builder<i64> := array_builder()
+  mut nbytes: array_builder<i64> := array_builder()
+  mut window: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  mut source: array_builder<i64> := array_builder()
+  mut pack: array_builder<i64> := array_builder()
+  mut pieces: array_builder<i64> := array_builder()
+  mut stride: array_builder<i64> := array_builder()
+  name_start.push(0)
+  name_end.push(10)
+  kind.push(e.embed_type)
+  ne0.push(g.n_embd)
+  rows.push(tokens)
+  nbytes.push(e.row_bytes * tokens)
+  window.push(0)
+  dims.push(2)
+  source.push(e.embed_source)
+  pack.push(e.embed_pack_offset)
+  pieces.push(tokens)
+  stride.push(e.row_bytes)
+  return GraphMembers {
+    count: 1,
+    names: names.to_string(),
+    name_start: name_start.build(),
+    name_end: name_end.build(),
+    ggml_type: kind.build(),
+    ne0: ne0.build(),
+    rows: rows.build(),
+    nbytes: nbytes.build(),
+    window: window.build(),
+    n_dims: dims.build(),
+    source: source.build(),
+    pack: pack.build(),
+    pieces: pieces.build(),
+    stride: stride.build(),
+  }
+}
+
+fn build_head_members(borrow g: layer_olmoe.Geometry, borrow e: Ends) -> GraphMembers {
+  names := builder()
+  names.write("output_norm")
+  names.write("output")
+  mut name_start: array_builder<i64> := array_builder()
+  mut name_end: array_builder<i64> := array_builder()
+  mut kind: array_builder<i64> := array_builder()
+  mut ne0: array_builder<i64> := array_builder()
+  mut rows: array_builder<i64> := array_builder()
+  mut nbytes: array_builder<i64> := array_builder()
+  mut window: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  mut source: array_builder<i64> := array_builder()
+  mut pack: array_builder<i64> := array_builder()
+  mut pieces: array_builder<i64> := array_builder()
+  mut stride: array_builder<i64> := array_builder()
+  name_start.push(0)
+  name_end.push(11)
+  kind.push(e.norm_type)
+  ne0.push(g.n_embd)
+  rows.push(1)
+  nbytes.push(e.norm_nbytes)
+  window.push(0)
+  dims.push(1)
+  source.push(e.norm_source)
+  pack.push(e.norm_pack_offset)
+  pieces.push(1)
+  stride.push(e.norm_nbytes)
+  name_start.push(11)
+  name_end.push(17)
+  kind.push(e.out_type)
+  ne0.push(g.n_embd)
+  rows.push(g.n_vocab)
+  nbytes.push(e.out_nbytes)
+  window.push(e.out_window)
+  dims.push(2)
+  source.push(e.out_source)
+  pack.push(e.out_pack_offset)
+  pieces.push(1)
+  stride.push(e.out_nbytes)
+  return GraphMembers {
+    count: 2,
+    names: names.to_string(),
+    name_start: name_start.build(),
+    name_end: name_end.build(),
+    ggml_type: kind.build(),
+    ne0: ne0.build(),
+    rows: rows.build(),
+    nbytes: nbytes.build(),
+    window: window.build(),
+    n_dims: dims.build(),
+    source: source.build(),
+    pack: pack.build(),
+    pieces: pieces.build(),
+    stride: stride.build(),
+  }
+}
+
+fn build_layer_members(
+  borrow table: layer_olmoe.MemberTable, borrow p: Plan, layer: i64) -> GraphMembers {
+  names := builder()
+  mut name_start: array_builder<i64> := array_builder()
+  mut name_end: array_builder<i64> := array_builder()
+  mut kind: array_builder<i64> := array_builder()
+  mut ne0: array_builder<i64> := array_builder()
+  mut rows: array_builder<i64> := array_builder()
+  mut nbytes: array_builder<i64> := array_builder()
+  mut window: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  mut source: array_builder<i64> := array_builder()
+  mut pack: array_builder<i64> := array_builder()
+  mut pieces: array_builder<i64> := array_builder()
+  mut stride: array_builder<i64> := array_builder()
+  base := layer * table.count
+  mut cursor := 0
+  mut row := 0
+  loop {
+    if row >= table.count { break }
+    label := layer_olmoe.member_label(table, row)
+    names.write(label)
+    name_start.push(cursor)
+    cursor = cursor + label.len()
+    name_end.push(cursor)
+    kind.push(p.m_type[base + row])
+    ne0.push(p.m_ne0[base + row])
+    rows.push(p.m_ne1[base + row])
+    nbytes.push(p.m_nbytes[base + row])
+    window.push(p.m_window[base + row])
+    dims.push(table.n_dims[row])
+    source.push(p.m_source[base + row])
+    pack.push(p.m_pack_offset[base + row])
+    pieces.push(1)
+    stride.push(p.m_nbytes[base + row])
+    row = row + 1
+  }
+  return GraphMembers {
+    count: table.count,
+    names: names.to_string(),
+    name_start: name_start.build(),
+    name_end: name_end.build(),
+    ggml_type: kind.build(),
+    ne0: ne0.build(),
+    rows: rows.build(),
+    nbytes: nbytes.build(),
+    window: window.build(),
+    n_dims: dims.build(),
+    source: source.build(),
+    pack: pack.build(),
+    pieces: pieces.build(),
+    stride: stride.build(),
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Filling the two windows (section 3.4)
+// ---------------------------------------------------------------------------------------------
+
+fn window_put(
+  borrow window: slice<u8>,
+  offset: i64,
+  borrow source: slice<u8>,
+  n: i64,
+  label: str,
+) -> Result<(), alignpack_read.Fault> {
+  match ggml_ffi.window_copy(window, offset, source, n, label) {
+    Ok(_) => { return Ok(()) },
+    Err(f) => {
+      code_view: str := f.code
+      detail_view: str := f.detail
+      return Err(pack_fault(code_view, bounded_detail(detail_view)))
+    },
+  }
+}
+
+// `n` bytes at `at`, copied into the window at `into`, through one reused transient. `f.pread`
+// publishes exactly what the syscall returned and a short read is completed here; a zero-length
+// read at an offset already proved inside the file is an allocation failure or a file that shrank
+// underneath, never a truncation (R5B correction C6).
+fn read_into_window(
+  borrow handle: file,
+  borrow mut temp: buffer,
+  borrow window: slice<u8>,
+  into: i64,
+  at: i64,
+  n: i64,
+  code: str,
+  label: str,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  mut done := 0
+  loop {
+    if done >= n { break }
+    count := match handle.pread(temp, at + done) {
+      Ok(value) => value,
+      Err(_) => { return Err(pack_fault(code, named("role", label))) },
+    }
+    c.pread_count = c.pread_count + 1
+    if count <= 0 { return Err(pack_fault(code, named("role", label))) }
+    take := if count > n - done { n - done } else { count }
+    c.bytes_read = c.bytes_read + take
+    view := temp.bytes()
+    if view.len() < take { return Err(pack_fault(code, named("role", label))) }
+    window_put(window, into + done, view, take, label)?
+    done = done + take
+  }
+  return Ok(())
+}
+
+fn fill_members(
+  borrow pak: file,
+  borrow m: GraphMembers,
+  borrow tokens: TokenColumns,
+  borrow window: slice<u8>,
+  borrow mut temp: buffer,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    label := graph_member_label(m, at)
+    mut piece := 0
+    loop {
+      if piece >= m.pieces[at] { break }
+      span := m.stride[at]
+      source_at := if m.pieces[at] > 1 {
+        m.pack[at] + tokens.ids[piece] * span
+      } else {
+        m.pack[at]
+      }
+      read_into_window(
+        pak, temp, window, m.window[at] + piece * span, source_at, span,
+        "R4_PACK_UNREADABLE", label, c)?
+      piece = piece + 1
+    }
+    at = at + 1
+  }
+  return Ok(())
+}
+
+// Step 30's read shape, and the container's whole contribution: one expert's gate, up, and down
+// claims lie in one contiguous span, so `U` experts are `U` reads instead of `3U`
+// (`r5d-moe-layer-forward.md` section 2.7). The block image is read through **one reused transient**
+// sized to the largest `ExpertBlock` the container holds, and each chunk the syscall returns is
+// intersected with the three claims' spans and scattered into the three role regions — so a short
+// read costs a second round rather than a second buffer.
+fn read_block_scatter(
+  borrow handle: file,
+  borrow mut temp: buffer,
+  borrow claim_window: slice<u8>,
+  block_offset: i64,
+  block_bytes: i64,
+  borrow starts: array<i64>,
+  borrow sizes: array<i64>,
+  borrow dests: array<i64>,
+  label: str,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  mut done := 0
+  loop {
+    if done >= block_bytes { break }
+    count := match handle.pread(temp, block_offset + done) {
+      Ok(value) => value,
+      Err(_) => { return Err(pack_fault("R4_PACK_UNREADABLE", named("role", label))) },
+    }
+    c.pread_count = c.pread_count + 1
+    if count <= 0 { return Err(pack_fault("R4_PACK_UNREADABLE", named("role", label))) }
+    take := if count > block_bytes - done { block_bytes - done } else { count }
+    c.bytes_read = c.bytes_read + take
+    view := temp.bytes()
+    if view.len() < take { return Err(pack_fault("R4_PACK_UNREADABLE", named("role", label))) }
+    mut role := 0
+    loop {
+      if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+      lo := if starts[role] > done { starts[role] } else { done }
+      end := starts[role] + sizes[role]
+      hi := if end < done + take { end } else { done + take }
+      if hi > lo {
+        piece := view[lo - done..hi - done]
+        window_put(claim_window, dests[role] + (lo - starts[role]), piece, hi - lo, label)?
+      }
+      role = role + 1
+    }
+    done = done + take
+  }
+  return Ok(())
+}
+
+// Oracle 1's byte precondition, for one graph's dense members. The reference file is **not** the
+// container and nothing has proved this range is inside it: `source_offset` and `nbytes` are the
+// pack's claims about a file the caller merely named.
+fn compare_source_members(
+  borrow handle: file,
+  size: i64,
+  borrow m: GraphMembers,
+  borrow tokens: TokenColumns,
+  borrow window: slice<u8>,
+  layer: i64,
+  borrow mut temp: buffer,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    label := graph_member_label(m, at)
+    mut piece := 0
+    loop {
+      if piece >= m.pieces[at] { break }
+      span := m.stride[at]
+      source_at := if m.pieces[at] > 1 {
+        m.source[at] + tokens.ids[piece] * span
+      } else {
+        m.source[at]
+      }
+      window_at := m.window[at] + piece * span
+      compare_span(handle, size, window, window_at, source_at, span,
+        layer_named(layer, "role", label), temp, c)?
+      piece = piece + 1
+    }
+    at = at + 1
+  }
+  return Ok(())
+}
+
+// One byte range of the source GGUF against one byte range of an Align-owned window, in
+// `CHUNK_BYTES` rounds through the one reused transient.
+fn compare_span(
+  borrow handle: file,
+  size: i64,
+  borrow window: slice<u8>,
+  window_at: i64,
+  source_at: i64,
+  span: i64,
+  detail: string,
+  borrow mut temp: buffer,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  detail_view: str := detail
+  if source_at < 0 || span < 0 || source_at > size || span > size - source_at {
+    return Err(pack_fault("R5_SOURCE_UNREADABLE", detail.clone()))
+  }
+  mut done := 0
+  loop {
+    if done >= span { break }
+    count := match handle.pread(temp, source_at + done) {
+      Ok(value) => value,
+      Err(_) => { return Err(pack_fault("R5_SOURCE_UNREADABLE", detail.clone())) },
+    }
+    c.pread_count = c.pread_count + 1
+    if count <= 0 { return Err(pack_fault("R5_SOURCE_UNREADABLE", detail.clone())) }
+    take := if count > span - done { span - done } else { count }
+    c.bytes_read = c.bytes_read + take
+    view := temp.bytes()
+    if view.len() < take { return Err(pack_fault("R5_SOURCE_UNREADABLE", detail.clone())) }
+    packed := window[window_at + done..window_at + done + take]
+    if !crypto.constant_time_equal(packed, view[0..take]) {
+      return Err(pack_fault("R5_SOURCE_DIVERGED", detail.clone()))
+    }
+    done = done + take
+  }
+  return Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Digests (section 3.8)
+// ---------------------------------------------------------------------------------------------
+
+// Checksums are never floats: `sha256` is over the exact little-endian f32 bytes, `bit_sum` is the
+// `i64` sum of the u32 bit patterns, and `f32_sum_millionths` is a **sequential f32 accumulation in
+// element order** — the instrument's own order — widened to `f64` and rounded.
+pub Digest {
+  sha: string,
+  bit_sum: i64,
+  sum_millionths: i64,
+  nonfinite: i64,
+  argmax: i64,
+}
+
+fn empty_digest() -> Digest = Digest {
+  sha: "".clone(),
+  bit_sum: 0,
+  sum_millionths: 0,
+  nonfinite: 0,
+  argmax: -1,
+}
+
+fn digest_region(borrow region: slice<u8>) -> Digest {
+  count := region.len() / 4
+  digest := crypto.sha256(region)
+  mut bits_total := 0
+  mut nonfinite_count := 0
+  mut accumulator: f32 := 0.0 as f32
+  mut best := 0
+  mut best_value: f32 := 0.0 as f32
+  mut element := 0
+  loop {
+    if element >= count { break }
+    bits := region.u32_le(element * 4) as i64
+    bits_total = bits_total + bits
+    if (bits / 8388608) % 256 == 255 { nonfinite_count = nonfinite_count + 1 }
+    value := region.f32_le(element * 4)
+    accumulator = accumulator + value
+    if element == 0 || value > best_value {
+      best = element
+      best_value = value
+    }
+    element = element + 1
+  }
+  return Digest {
+    sha: encoding.hex_encode(digest[0..digest.len()]),
+    bit_sum: bits_total,
+    sum_millionths: ((accumulator as f64) * 1000000.0).round() as i64,
+    nonfinite: nonfinite_count,
+    argmax: if count > 0 { best } else { -1 },
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The node-table walk (section 3.6)
+// ---------------------------------------------------------------------------------------------
+
+// One loop, one shim call per issued row, and no control flow that depends on which node this is:
+// `when` selects the rows and `alt_when` selects the operands, both as data.
+fn build_nodes(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  borrow nodes: layer_olmoe.MmNodeTable,
+  last: bool,
+  wide: bool,
+) -> Result<(), ggml_ffi.Fault> {
+  mut row := 0
+  loop {
+    if row >= nodes.count { break }
+    if layer_olmoe.mm_row_issued(nodes.when[row], last, wide) {
+      op := nodes.op[row]
+      out := nodes.out[row]
+      swap := nodes.alt_when[row] != layer_olmoe.WHEN_ALWAYS
+        && layer_olmoe.mm_row_issued(nodes.alt_when[row], last, wide)
+      a := if swap && nodes.alt_a[row] >= 0 { nodes.alt_a[row] } else { nodes.a[row] }
+      b := if swap && nodes.alt_b[row] >= 0 { nodes.alt_b[row] } else { nodes.b[row] }
+      tag := labelled("node", out)
+      label: str := tag
+      if op == layer_olmoe.OP_GET_ROWS {
+        ggml_ffi.op_get_rows(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_olmoe.OP_RMS_NORM {
+        ggml_ffi.op_rms_norm(ctx, slots, out, a, nodes.p0[row], label)?
+      }
+      if op == layer_olmoe.OP_MUL {
+        ggml_ffi.op_mul(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_olmoe.OP_ADD {
+        ggml_ffi.op_add(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_olmoe.OP_MUL_MAT {
+        ggml_ffi.op_mul_mat(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_olmoe.OP_RESHAPE_3D {
+        ggml_ffi.op_reshape_3d(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], label)?
+      }
+      if op == layer_olmoe.OP_PERMUTE {
+        ggml_ffi.op_permute(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row], label)?
+      }
+      if op == layer_olmoe.OP_CONT_3D {
+        ggml_ffi.op_cont_3d(ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], label)?
+      }
+      if op == layer_olmoe.OP_ROPE {
+        ggml_ffi.op_rope_neox(
+          ctx, slots, out, a, b, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row], label)?
+      }
+      if op == layer_olmoe.OP_SOFT_MAX {
+        ggml_ffi.op_soft_max_ext(ctx, slots, out, a, b, nodes.p0[row], nodes.p1[row], label)?
+      }
+      if op == layer_olmoe.OP_SWIGLU {
+        ggml_ffi.op_swiglu_split(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_olmoe.OP_PAD {
+        ggml_ffi.op_pad(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row], label)?
+      }
+      if op == layer_olmoe.OP_ARGSORT {
+        ggml_ffi.op_argsort(ctx, slots, out, a, nodes.p0[row], label)?
+      }
+      if op == layer_olmoe.OP_MUL_MAT_ID {
+        ggml_ffi.op_mul_mat_id(ctx, slots, out, a, b, nodes.c[row], label)?
+      }
+      if op == layer_olmoe.OP_VIEW_2D {
+        ggml_ffi.op_view_2d(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row],
+          nodes.p4[row], label)?
+      }
+      row = row + 1
+    } else {
+      row = row + 1
+    }
+  }
+  return Ok(())
+}
+
+// `ggml_set_output` on every **compared** oracle node of the phase being built. Without it
+// `ggml_gallocr` reuses an intermediate's memory and the bytes read back are not the node computed.
+// `kq-L` and `kq_soft_max-L` are deliberately not marked: they are never read back, and marking
+// them would cost activation for a comparison section 3.7 excludes by contract.
+fn mark_outputs(
+  borrow slots: slice<u8>,
+  borrow oracle: layer_olmoe.OracleTable,
+  base: i64,
+  count: i64,
+  phase: i64,
+) -> Result<(), ggml_ffi.Fault> {
+  mut at := 0
+  loop {
+    if at >= count { break }
+    row := base + at
+    if oracle.class[row] == layer_olmoe.ORACLE_COMPARED
+      && (phase < 0 || oracle.phase_b[row] == phase) {
+      id := layer_olmoe.oracle_id(oracle, row)
+      ggml_ffi.slot_mark_output(slots, oracle.slot[row], id)?
+    }
+    at = at + 1
+  }
+  return Ok(())
+}
+
+// The weight tensors, created in the weight context and **placed** at their own interior offsets in
+// the reused Align-owned dense window. R4.5's contract, 147 times.
+fn graph_weights(
+  ctx: raw,
+  handle: raw,
+  borrow slots: slice<u8>,
+  borrow window: slice<u8>,
+  borrow m: GraphMembers,
+) -> Result<(), ggml_ffi.Fault> {
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    label := graph_member_label(m, at)
+    span := m.nbytes[at]
+    if m.n_dims[at] == 1 {
+      ggml_ffi.slot_new_tensor_1d(ctx, slots, at, m.ggml_type[at], m.ne0[at], label)?
+    } else {
+      ggml_ffi.slot_new_tensor_2d(ctx, slots, at, m.ggml_type[at], m.ne0[at], m.rows[at], label)?
+    }
+    if ggml_ffi.slot_nbytes(slots, at) != span {
+      return Err(ffi_fault("R5_SHAPE", named("role", label)))
+    }
+    offset := m.window[at]
+    region := window[offset..offset + span]
+    ggml_ffi.slot_place(handle, slots, at, region, label)?
+    at = at + 1
+  }
+  return Ok(())
+}
+
+// `verdict` is `EXTERNAL` only when **every** weight tensor of **every** graph landed at its own
+// window offset. `window.pointer_identity_failures` is what makes that a measurement across 195
+// placements rather than a claim.
+fn graph_identity(
+  borrow slots: slice<u8>,
+  borrow window: slice<u8>,
+  borrow m: GraphMembers,
+  borrow mut o: Outcome,
+) {
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    landed := ggml_ffi.slot_data_offset(slots, at, window)
+    o.member_placements = o.member_placements + 1
+    if landed != m.window[at] {
+      o.pointer_identity_failures = o.pointer_identity_failures + 1
+    }
+    at = at + 1
+  }
+}
+
+// Step 25's Align-side pre-check, re-run at **every** layer because the window is reused 34 times
+// and a block whose members are not `block_align`-aligned would otherwise reach
+// `ggml_backend_cpu_buffer_from_ptr`, which is `abort()` on a misaligned pointer.
+fn graph_alignment(
+  borrow m: GraphMembers, borrow window: slice<u8>, alignment: i64, layer: i64,
+  borrow mut o: Outcome,
+) {
+  if ggml_ffi.align_mod(window, alignment) != 0 {
+    fail(o, "R5_ALIGNMENT", "window")
+    return
+  }
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    if m.window[at] % alignment != 0 {
+      fail(o, "R5_ALIGNMENT", layer_named(layer, "role", graph_member_label(m, at)))
+      return
+    }
+    at = at + 1
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Oracle 2 — the transcript, scanned once before the schedule (section 3.7)
+//
+// R5B correction C4's ordering, inherited: the fourteen oracle nodes of a layer live in a `gallocr`
+// buffer that is freed when that layer's two graphs are torn down, and holding 34 graphs alive to
+// compare them at the end is the opposite of what section 3.10 owns. The transcript is therefore
+// **scanned** before the schedule and **compared** inside each layer.
+// ---------------------------------------------------------------------------------------------
+
+pub OracleRanges { start: array<i64>, length: array<i64> }
+
+pub fn empty_ranges() -> OracleRanges = OracleRanges {
+  start: empty_array(),
+  length: empty_array(),
+}
+
+fn oracle_layer_of(n_layer: i64, row: i64) -> i64 {
+  if row <= 0 { return -1 }
+  if row >= layer_olmoe.mm_oracle_head_base(n_layer) { return -1 }
+  return (row - 1) / layer_olmoe.MM_LAYER_ORACLE_COUNT
+}
+
+fn prepare_transcript(
+  transcript_path: str,
+  borrow oracle: layer_olmoe.OracleTable,
+  n_layer: i64,
+  kv_width: i64,
+  borrow mut scan: moe_layer_forward.TranscriptScan,
+  borrow mut ranges: OracleRanges,
+  borrow mut o: Outcome,
+) {
+  started := time.instant()
+  scan = moe_layer_forward.scan_transcript(transcript_path, oracle)
+  o.oracle_lines = scan.line_count
+  o.oracle_callback_lines = scan.callback_line_count
+  o.oracle_expected = layer_olmoe.mm_oracle_compared_count(n_layer)
+  o.oracle_layers_expected = n_layer
+  o.routing_layers_expected = n_layer
+  if scan.code.len() > 0 {
+    code_view: str := scan.code
+    detail_view: str := scan.detail
+    fail(o, code_view, detail_view)
+    o.oracle_ns = time.instant() - started
+    return
+  }
+  mut starts := zero_column(oracle.count)
+  mut lengths := zero_column(oracle.count)
+  mut element := 0
+  loop {
+    if element >= scan.element_node.len() { break }
+    row := scan.element_node[element]
+    if lengths[row] == 0 { starts[row] = element }
+    lengths[row] = lengths[row] + 1
+    element = element + 1
+  }
+  ranges = OracleRanges { start: starts, length: lengths }
+  mut row := 0
+  loop {
+    if row >= oracle.count || o.code.len() > 0 { break }
+    id := layer_olmoe.oracle_id(oracle, row)
+    layer := oracle_layer_of(n_layer, row)
+    if scan.matched[row] == 0 {
+      fail(o, "R5_ORACLE_MISSING", layer_named(layer, "node", id))
+      break
+    }
+    // Section 3.3: the transcript's `kq-L` `ne0` **is** the instrument's reduction width, and it is
+    // validated against the operand rather than read as one. An oracle that configures the thing it
+    // verifies is the one property no amount of downstream checking repairs — and on a routed model
+    // it would also silently change which bytes the arm reads.
+    if oracle.class[row] == layer_olmoe.ORACLE_SHAPE_INCOMPARABLE && scan.ne0[row] != kv_width {
+      fail(o, "R5_ORACLE_SHAPE", layer_named(layer, "node", id))
+      break
+    }
+    // R5A correction C19's element-count rule, inherited verbatim and applied sixteen times over: a
+    // transcript that lost one layer's value blocks would otherwise report `PASS` over 15 of 16.
+    if oracle.class[row] != layer_olmoe.ORACLE_SHAPE_INCOMPARABLE {
+      expected := printed_count(scan.ne0[row]) * printed_count(scan.ne1[row])
+        * printed_count(scan.ne2[row]) * printed_count(scan.ne3[row])
+      if ranges.length[row] != expected {
+        fail(o, "R5_ORACLE_MISSING", shortfall(layer, id, ranges.length[row], expected))
+        break
+      }
+    }
+    row = row + 1
+  }
+  if o.code.len() == 0 {
+    o.oracle_layers_matched = n_layer
+    o.routing_layers_matched = n_layer
+  }
+  o.oracle_ns = time.instant() - started
+}
+
+fn oracle_ten_thousandths(borrow region: slice<u8>, at: i64) -> i64 {
+  bits := region.u32_le(at * 4) as i64
+  if (bits / 8388608) % 256 == 255 { return UNREPRESENTABLE }
+  scaled := ((region.f32_le(at * 4) as f64) * 10000.0).round() as i64
+  if scaled > SCALE_LIMIT_TEN_THOUSANDTHS { return UNREPRESENTABLE }
+  if scaled < 0 - SCALE_LIMIT_TEN_THOUSANDTHS { return UNREPRESENTABLE }
+  return scaled
+}
+
+// One graph's share of oracle 2. Every compared row is matched by `(name, declared shape)`: a shape
+// disagreement is `R5_ORACLE_SHAPE`, and the element comparison is R5A's ten-thousandths rule with
+// an exact arm for the one integer node.
+fn compare_transcript_rows(
+  borrow slots: slice<u8>,
+  borrow oracle: layer_olmoe.OracleTable,
+  base: i64,
+  count: i64,
+  layer: i64,
+  borrow scan: moe_layer_forward.TranscriptScan,
+  borrow starts: array<i64>,
+  borrow lengths: array<i64>,
+  borrow window: slice<u8>,
+  borrow mut breach: bool,
+  borrow mut o: Outcome,
+) -> Result<(), ggml_ffi.Fault> {
+  mut at := 0
+  loop {
+    if at >= count { break }
+    row := base + at
+    if oracle.class[row] == layer_olmoe.ORACLE_COMPARED {
+      id := layer_olmoe.oracle_id(oracle, row)
+      index_of := oracle.slot[row]
+      span := ggml_ffi.slot_nbytes(slots, index_of)
+      if span <= 0 || span > window.len() {
+        return Err(ffi_fault("R5_SLOT", layer_named(layer, "node", id)))
+      }
+      if scan.ne0[row] != ggml_ffi.slot_ne(slots, index_of, 0)
+        || scan.ne1[row] != ggml_ffi.slot_ne(slots, index_of, 1)
+        || scan.ne2[row] != ggml_ffi.slot_ne(slots, index_of, 2)
+        || scan.ne3[row] != ggml_ffi.slot_ne(slots, index_of, 3) {
+        return Err(ffi_fault("R5_ORACLE_SHAPE", layer_named(layer, "node", id)))
+      }
+      ggml_ffi.slot_get(slots, index_of, window, 0, span, id)?
+      o.oracle_matched = o.oracle_matched + 1
+      compare_transcript_elements(oracle, row, layer, scan, starts, lengths, window, span, o)?
+      compare_transcript_sum(oracle, row, scan, window, span, breach, o)
+    }
+    at = at + 1
+  }
+  return Ok(())
+}
+
+fn compare_transcript_elements(
+  borrow oracle: layer_olmoe.OracleTable,
+  row: i64,
+  layer: i64,
+  borrow scan: moe_layer_forward.TranscriptScan,
+  borrow starts: array<i64>,
+  borrow lengths: array<i64>,
+  borrow window: slice<u8>,
+  span: i64,
+  borrow mut o: Outcome,
+) -> Result<(), ggml_ffi.Fault> {
+  id := layer_olmoe.oracle_id(oracle, row)
+  integer := oracle.integer[row] == 1
+  mut element := starts[row]
+  last := starts[row] + lengths[row]
+  loop {
+    if element >= last { break }
+    spot := scan.element_index[element]
+    if spot < 0 || spot * 4 + 4 > span {
+      return Err(ffi_fault("R5_ORACLE_SHAPE", layer_named(layer, "node", id)))
+    }
+    // An **integer** node is compared exactly, in ids scaled to ten-thousandths so one magnitude
+    // serves both classes; a float node crosses the range-checked conversion.
+    computed := if integer {
+      (window.u32_le(spot * 4) as i64) * 10000
+    } else {
+      oracle_ten_thousandths(window, spot)
+    }
+    expected := scan.element_value[element]
+    unrepresentable := computed == UNREPRESENTABLE
+      || expected > SCALE_LIMIT_TEN_THOUSANDTHS
+      || expected < 0 - SCALE_LIMIT_TEN_THOUSANDTHS
+    difference := if unrepresentable { 0 } else { computed - expected }
+    magnitude := if unrepresentable {
+      SCALE_LIMIT_TEN_THOUSANDTHS
+    } else if difference < 0 {
+      0 - difference
+    } else {
+      difference
+    }
+    o.oracle_elements = o.oracle_elements + 1
+    if magnitude > o.oracle_max_abs {
+      o.oracle_max_abs = magnitude
+      o.oracle_worst_layer = layer
+      o.oracle_worst_node = id.clone()
+      o.oracle_worst_element = spot
+    }
+    element = element + 1
+  }
+  return Ok(())
+}
+
+fn compare_transcript_sum(
+  borrow oracle: layer_olmoe.OracleTable,
+  row: i64,
+  borrow scan: moe_layer_forward.TranscriptScan,
+  borrow window: slice<u8>,
+  span: i64,
+  borrow mut breach: bool,
+  borrow mut o: Outcome,
+) {
+  if scan.sum_present[row] != 1 { return }
+  integer := oracle.integer[row] == 1
+  mut accumulator: f32 := 0.0 as f32
+  mut bits_total := 0
+  mut nonfinite_seen := 0
+  mut index := 0
+  loop {
+    if index >= span / 4 { break }
+    bits := window.u32_le(index * 4) as i64
+    bits_total = bits_total + bits
+    if !integer {
+      if (bits / 8388608) % 256 == 255 { nonfinite_seen = nonfinite_seen + 1 }
+      accumulator = accumulator + window.f32_le(index * 4)
+    }
+    index = index + 1
+  }
+  // An i32 node's `bit_sum` **is** its sum, and the transcript prints an exact integer for it, so
+  // the comparison is exact rather than toleranced.
+  computed := if integer {
+    bits_total * 1000000
+  } else {
+    ((accumulator as f64) * 1000000.0).round() as i64
+  }
+  expected := scan.sum_millionths[row]
+  if !integer && (nonfinite_seen > 0
+      || computed > SUM_SCALE_LIMIT_MILLIONTHS
+      || computed < 0 - SUM_SCALE_LIMIT_MILLIONTHS) {
+    o.oracle_max_sum = UNREPRESENTABLE
+    breach = true
+    return
+  }
+  difference := computed - expected
+  magnitude := if difference < 0 { 0 - difference } else { difference }
+  scale := if expected < 0 { 0 - expected } else { expected }
+  mut bound := if integer { 0 } else { SUM_TOLERANCE_MILLIONTHS }
+  if !integer {
+    relative := scale / (1000000 / SUM_TOLERANCE_RELATIVE_PPM)
+    if relative > bound { bound = relative }
+  }
+  if magnitude > o.oracle_max_sum { o.oracle_max_sum = magnitude }
+  if magnitude > bound { breach = true }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Oracle 3 — routing identity, per layer (section 3.7)
+// ---------------------------------------------------------------------------------------------
+
+// The `n_expert_used * T_L` ids Align sliced out of `ffn_moe_argsort-L` must equal the transcript's
+// `ffn_moe_topk-L` block: every **printed** id exactly, and the block's exact integer sum. At
+// `n_expert_used` 8 the instrument prints six of eight, so the direct comparison covers 36 of 48
+// per layer and the sum pins the other twelve in aggregate — which is why the document publishes
+// the coverage rather than leaving a reader to infer it.
+//
+// A disagreement is a **successful run** reporting `MISMATCH`, and oracle 2 is still evaluated: a
+// transcript comparison against a differently-routed layer is exactly the diagnostic a reader needs.
+fn compare_routing_layer(
+  borrow scan: moe_layer_forward.TranscriptScan,
+  borrow ranges: OracleRanges,
+  base: i64,
+  layer: i64,
+  borrow routing: layer_olmoe.Routing,
+  n_expert_used: i64,
+  borrow mut o: Outcome,
+) {
+  row := base + layer_olmoe.mm_oracle_topk_row()
+  o.routing_ids_total = o.routing_ids_total + routing.topk.len()
+  mut observed := 0
+  mut sum_at := 0
+  loop {
+    if sum_at >= routing.topk.len() { break }
+    observed = observed + routing.topk[sum_at]
+    sum_at = sum_at + 1
+  }
+  mut element := ranges.start[row]
+  last := ranges.start[row] + ranges.length[row]
+  loop {
+    if element >= last { break }
+    spot := scan.element_index[element]
+    expected := scan.element_value[element] / 10000
+    o.routing_ids_printed = o.routing_ids_printed + 1
+    if spot >= 0 && spot < routing.topk.len() && routing.topk[spot] == expected {
+      o.routing_ids_matched = o.routing_ids_matched + 1
+    } else if o.routing_first_layer < 0 {
+      o.routing_first_layer = layer
+      o.routing_first_token = if n_expert_used > 0 { spot / n_expert_used } else { -1 }
+      o.routing_first_slot = if n_expert_used > 0 { spot % n_expert_used } else { -1 }
+    }
+    element = element + 1
+  }
+  if scan.sum_present[row] == 1 {
+    o.routing_sums_expected = o.routing_sums_expected + 1
+    if scan.sum_millionths[row] == observed * 1000000 {
+      o.routing_sums_matched = o.routing_sums_matched + 1
+    } else if o.routing_first_layer < 0 {
+      o.routing_first_layer = layer
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Oracle 4 — the logits (section 3.7)
+// ---------------------------------------------------------------------------------------------
+
+fn top_k(borrow region: slice<u8>, borrow mut index: array_builder<i64>,
+  borrow mut bits: array_builder<i64>) {
+  count := region.len() / 4
+  mut taken := zero_column(if count < TOP_K { count } else { TOP_K })
+  mut picked := 0
+  loop {
+    if picked >= TOP_K || picked >= count { break }
+    mut best := -1
+    mut best_value: f32 := 0.0 as f32
+    mut at := 0
+    loop {
+      if at >= count { break }
+      mut used := false
+      mut seen := 0
+      loop {
+        if seen >= picked { break }
+        if taken[seen] == at { used = true }
+        seen = seen + 1
+      }
+      if !used {
+        value := region.f32_le(at * 4)
+        if best < 0 || value > best_value {
+          best = at
+          best_value = value
+        }
+      }
+      at = at + 1
+    }
+    if best < 0 { break }
+    taken[picked] = best
+    index.push(best)
+    bits.push(region.u32_le(best * 4) as i64)
+    picked = picked + 1
+  }
+}
+
+fn logit_ten_thousandths(borrow region: slice<u8>, at: i64) -> i64 {
+  bits := region.u32_le(at * 4) as i64
+  if (bits / 8388608) % 256 == 255 { return UNREPRESENTABLE }
+  scaled := ((region.f32_le(at * 4) as f64) * 10000.0).round() as i64
+  if scaled > SCALE_LIMIT_TEN_THOUSANDTHS { return UNREPRESENTABLE }
+  if scaled < 0 - SCALE_LIMIT_TEN_THOUSANDTHS { return UNREPRESENTABLE }
+  return scaled
+}
+
+// Section 3.7's table. At the reconciliation width the contract is **byte-identity** over every one
+// of `n_vocab * 4` bytes — section 2.4 measured exactly that on four prompts and three consecutive
+// runs — and at the runtime width the verdict is `WITHIN` only when the bound, the `argmax`, and
+// the top ten **as a set** all agree. R5B's "in order" clause is replaced by set equality and the
+// order is published as a number: section 2.8 measured order agreement on 2 of 4 prompts and set
+// agreement on 4 of 4, and requiring an order a declared non-goal demonstrably perturbs would make
+// the runtime verdict fail for a reason that is not a defect.
+fn compare_logits(
+  logits_path: str,
+  borrow primary: slice<u8>,
+  n_vocab: i64,
+  reconciliation: bool,
+  borrow mut top: TopColumns,
+  borrow mut o: Outcome,
+) {
+  handle := match fs.open_rw(logits_path) {
+    Ok(value) => value,
+    Err(failure) => {
+      fail(o, "R5_LOGITS_UNREADABLE", error_name(failure))
+      return
+    },
+  }
+  size := match handle.len() {
+    Ok(value) => value,
+    Err(failure) => {
+      fail(o, "R5_LOGITS_UNREADABLE", error_name(failure))
+      return
+    },
+  }
+  if size != n_vocab * 4 {
+    b := builder()
+    b.write("bytes[")
+    b.write_int(size)
+    b.write("]/")
+    b.write_int(n_vocab * 4)
+    rendered := b.to_string()
+    rendered_view: str := rendered
+    fail(o, "R5_LOGITS_SHAPE", rendered_view)
+    return
+  }
+  mut image: buffer := buffer(0)
+  mut counters := alignpack_read.new_counters()
+  take_pack(o, alignpack_read.read_exact(
+      handle, image, counters, "R5_LOGITS_UNREADABLE", 0, size))
+  if o.code.len() > 0 { return }
+  view := image.bytes()
+  if view.len() != size {
+    fail(o, "R5_LOGITS_UNREADABLE", "short")
+    return
+  }
+  reference_digest := digest_region(view)
+  o.logits_reference_sha256 = reference_digest.sha.clone()
+  o.logits_reference_bit_sum = reference_digest.bit_sum
+  o.logits_argmax_reference = reference_digest.argmax
+  // R5B correction C23: the reference blob is an **input**, and an input carrying an infinity or a
+  // NaN is a malformed reference, not a failing oracle.
+  if reference_digest.nonfinite > 0 {
+    fail(o, "R5_LOGITS_NONFINITE", labelled("elements", reference_digest.nonfinite))
+    return
+  }
+  o.logits_byte_identical = crypto.constant_time_equal(primary, view)
+  o.logits_elements = n_vocab
+  o.logits_reconciliation = reconciliation
+  mut worst := 0
+  mut at := 0
+  loop {
+    if at >= n_vocab { break }
+    primary_scaled := logit_ten_thousandths(primary, at)
+    reference_scaled := logit_ten_thousandths(view, at)
+    unrepresentable := primary_scaled == UNREPRESENTABLE
+      || reference_scaled == UNREPRESENTABLE
+    difference := if unrepresentable { 0 } else { primary_scaled - reference_scaled }
+    magnitude := if unrepresentable {
+      SCALE_LIMIT_TEN_THOUSANDTHS
+    } else if difference < 0 {
+      0 - difference
+    } else {
+      difference
+    }
+    if magnitude > worst { worst = magnitude }
+    at = at + 1
+  }
+  o.logits_max_abs = worst
+  mut reference_index: array_builder<i64> := array_builder()
+  mut reference_bits: array_builder<i64> := array_builder()
+  top_k(view, reference_index, reference_bits)
+  reference_top := reference_index.build()
+  mut order := 0
+  mut rank := 0
+  loop {
+    if rank >= top.index.len() || rank >= reference_top.len() { break }
+    if top.index[rank] != reference_top[rank] { break }
+    order = order + 1
+    rank = rank + 1
+  }
+  mut overlap := 0
+  mut probe := 0
+  loop {
+    if probe >= reference_top.len() { break }
+    mut seen := 0
+    mut found := false
+    loop {
+      if seen >= top.index.len() { break }
+      if top.index[seen] == reference_top[probe] { found = true }
+      seen = seen + 1
+    }
+    if found { overlap = overlap + 1 }
+    probe = probe + 1
+  }
+  o.logits_top_k_order = order
+  o.logits_top_k_set = overlap
+  if reconciliation {
+    o.logits_verdict = if o.logits_byte_identical { LOGITS_IDENTICAL } else { LOGITS_FAIL }
+    return
+  }
+  // R5B correction C19: `top_k` yields `min(TOP_K, n_vocab)` ranks, so a vocabulary smaller than
+  // ten can never reach an agreement of ten and `WITHIN` would be unreachable by arithmetic rather
+  // than by measurement.
+  required := if n_vocab < TOP_K { n_vocab } else { TOP_K }
+  within := worst <= LOGIT_TOLERANCE_TEN_THOUSANDTHS
+    && o.argmax == o.logits_argmax_reference
+    && overlap >= required
+  o.logits_verdict = if within { LOGITS_WITHIN } else { LOGITS_FAIL }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Oracle 1 — bit-exact self-reference (section 3.7)
+// ---------------------------------------------------------------------------------------------
+
+// Every compared oracle node of a graph must be **byte-identical** between the two arms. This
+// oracle proves bytes: it is version- and kernel-independent, and at model scale it is the only
+// check that catches a window refilled before its previous tenant was freed.
+fn compare_reference_rows(
+  borrow primary: slice<u8>,
+  borrow reference: slice<u8>,
+  borrow oracle: layer_olmoe.OracleTable,
+  base: i64,
+  count: i64,
+  graph: i64,
+  layer: i64,
+  borrow left: slice<u8>,
+  borrow right: slice<u8>,
+  borrow mut o: Outcome,
+) -> Result<(), ggml_ffi.Fault> {
+  mut at := 0
+  loop {
+    if at >= count { break }
+    row := base + at
+    if oracle.class[row] == layer_olmoe.ORACLE_COMPARED {
+      id := layer_olmoe.oracle_id(oracle, row)
+      index_of := oracle.slot[row]
+      span := ggml_ffi.slot_nbytes(primary, index_of)
+      if span <= 0 || span > left.len() || span > right.len() {
+        return Err(ffi_fault("R5_SLOT", graph_node_at(graph, layer, id, -1)))
+      }
+      ggml_ffi.slot_get(primary, index_of, left, 0, span, id)?
+      ggml_ffi.slot_get(reference, index_of, right, 0, span, id)?
+      o.reference_compared = o.reference_compared + 1
+      mut element := 0
+      mut differed := false
+      loop {
+        if element >= span / 4 { break }
+        a := left.u32_le(element * 4) as i64
+        b := right.u32_le(element * 4) as i64
+        if a != b {
+          differed = true
+          if o.reference_first_index < 0 {
+            o.reference_first_graph = graph
+            o.reference_first_layer = layer
+            o.reference_first_node = id.clone()
+            o.reference_first_index = element
+            o.reference_first_primary_bits = a
+            o.reference_first_reference_bits = b
+          }
+          break
+        }
+        element = element + 1
+      }
+      if !differed { o.reference_identical = o.reference_identical + 1 }
+    }
+    at = at + 1
+  }
+  return Ok(())
+}
+
+// The reference arm's weights: created in a second context, allocated by
+// `ggml_backend_alloc_ctx_tensors`, and filled from the same Align windows, so **ggml** owns the
+// bytes and the arm owns nothing ggml can see. The inputs are shared rather than rebuilt — the two
+// arms must differ in where the weights live and in nothing else.
+fn reference_weights(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  borrow primary: slice<u8>,
+  borrow window: slice<u8>,
+  borrow m: GraphMembers,
+  first_input: i64,
+  last_input: i64,
+  fill: bool,
+) -> Result<(), ggml_ffi.Fault> {
+  mut at := 0
+  loop {
+    if at >= m.count { break }
+    label := graph_member_label(m, at)
+    if fill {
+      offset := m.window[at]
+      region := window[offset..offset + m.nbytes[at]]
+      ggml_ffi.slot_set(slots, at, region, 0, m.nbytes[at], label)?
+    } else {
+      if m.n_dims[at] == 1 {
+        ggml_ffi.slot_new_tensor_1d(ctx, slots, at, m.ggml_type[at], m.ne0[at], label)?
+      } else {
+        ggml_ffi.slot_new_tensor_2d(ctx, slots, at, m.ggml_type[at], m.ne0[at], m.rows[at], label)?
+      }
+    }
+    at = at + 1
+  }
+  if !fill { return Ok(()) }
+  mut copy_at := first_input
+  loop {
+    if copy_at > last_input { break }
+    ggml_ffi.slot_copy(slots, copy_at, primary, copy_at, "input")?
+    copy_at = copy_at + 1
+  }
+  return Ok(())
+}
+
+// The reference arm's three compact expert stacks. The claim window's planes are contiguous, so the
+// copy is plane by plane, which is also what makes it a genuinely independent placement.
+fn reference_claims(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  borrow claim_window: slice<u8>,
+  borrow g: layer_olmoe.Geometry,
+  borrow win: ClaimWindow,
+  borrow planes: array<i64>,
+  borrow types: array<i64>,
+  routed_count: i64,
+  fill: bool,
+) -> Result<(), ggml_ffi.Fault> {
+  mut role := 0
+  loop {
+    if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+    label := layer_olmoe.claim_label(role)
+    slot := mm_claim_slot(role)
+    plane := planes[role]
+    if fill {
+      mut u := 0
+      loop {
+        if u >= routed_count { break }
+        base := win.region[role] + u * plane
+        source := claim_window[base..base + plane]
+        ggml_ffi.slot_set(slots, slot, source, u * plane, plane, label)?
+        u = u + 1
+      }
+    } else {
+      ggml_ffi.slot_new_tensor_3d(
+        ctx, slots, slot, types[role],
+        layer_olmoe.claim_ne0(g, role), layer_olmoe.claim_ne1(g, role), routed_count, label)?
+      if ggml_ffi.slot_nbytes(slots, slot) != routed_count * plane {
+        return Err(ffi_fault("R5_SHAPE", named("role", label)))
+      }
+    }
+    role = role + 1
+  }
+  return Ok(())
+}
+
+fn mm_claim_slot(role: i64) -> i64 {
+  if role == 0 { return layer_olmoe.MM_SLOT_GATE }
+  if role == 1 { return layer_olmoe.MM_SLOT_UP }
+  return layer_olmoe.MM_SLOT_DOWN
+}
+
+// ---------------------------------------------------------------------------------------------
+// The teardown (section 3.10)
+// ---------------------------------------------------------------------------------------------
+
+fn free_gallocr(handle: raw, borrow mut o: Outcome) {
+  if !ggml_ffi.handle_absent(handle) {
+    ggml_ffi.gallocr_free(handle)
+    o.gallocrs_freed = o.gallocrs_freed + 1
+  }
+}
+
+fn free_context(handle: raw, borrow mut o: Outcome) {
+  if !ggml_ffi.handle_absent(handle) {
+    ggml_ffi.context_close(handle)
+    o.contexts_freed = o.contexts_freed + 1
+  }
+}
+
+fn free_buffer(handle: raw, borrow mut o: Outcome) {
+  if !ggml_ffi.handle_absent(handle) {
+    ggml_ffi.buffer_free(handle)
+    o.ggml_buffers_freed = o.ggml_buffers_freed + 1
+  }
+}
+
+// Section 3.10's per-layer order: gallocr B, graph-B context, the claim window's ggml buffer, the
+// reference pair, gallocr A, graph-A context, the dense window's ggml buffer, the weight context,
+// and the input context. It runs on **every** exit path from construction onward, which is why the
+// steps above it are guards rather than early returns: a leaked ggml buffer is not a leak on this
+// backend, it is a crash at `exit` (R4.5 section 2.4).
+fn teardown_layer(
+  galloc_b: raw,
+  reference_galloc_b: raw,
+  graph_b_ctx: raw,
+  reference_graph_b_ctx: raw,
+  claim_buffer: raw,
+  galloc_a: raw,
+  reference_galloc_a: raw,
+  graph_a_ctx: raw,
+  reference_graph_a_ctx: raw,
+  weight_buffer: raw,
+  reference_buffer: raw,
+  reference_ctx: raw,
+  weight_ctx: raw,
+  input_buffer: raw,
+  input_ctx: raw,
+  borrow mut o: Outcome,
+) {
+  free_gallocr(reference_galloc_b, o)
+  free_gallocr(galloc_b, o)
+  free_context(reference_graph_b_ctx, o)
+  free_context(graph_b_ctx, o)
+  free_buffer(claim_buffer, o)
+  free_gallocr(reference_galloc_a, o)
+  free_gallocr(galloc_a, o)
+  free_context(reference_graph_a_ctx, o)
+  free_context(graph_a_ctx, o)
+  free_buffer(weight_buffer, o)
+  free_buffer(reference_buffer, o)
+  free_context(reference_ctx, o)
+  free_context(weight_ctx, o)
+  free_buffer(input_buffer, o)
+  free_context(input_ctx, o)
+}
+
+// ---------------------------------------------------------------------------------------------
+// The two end graphs (steps 26 and 34)
+// ---------------------------------------------------------------------------------------------
+
+pub EndResult {
+  node_count: i64,
+  activation_bytes: i64,
+  compute_ns: i64,
+  reference_compute_ns: i64,
+  slot_high_water: i64,
+  out_ne0: i64,
+  out_ne1: i64,
+  out_bytes: i64,
+  norm_sha: string,
+  norm_bit_sum: i64,
+}
+
+pub fn empty_end_result() -> EndResult = EndResult {
+  node_count: 0,
+  activation_bytes: 0,
+  compute_ns: 0,
+  reference_compute_ns: 0,
+  slot_high_water: 0,
+  out_ne0: 0,
+  out_ne1: 0,
+  out_bytes: 0,
+  norm_sha: "".clone(),
+  norm_bit_sum: 0,
+}
+
+// The embedding gather and the head, which are one graph each and share every rule the layer's two
+// graphs obey: the same store, the same window, the same placement contract, the same reference
+// arm, and the same teardown. Making the embedding its own graph is what makes all sixteen phase-A
+// graphs the same table walked sixteen times with different weights.
+fn run_end_graph(
+  device: raw,
+  backend: raw,
+  context_bytes: i64,
+  kind: i64,
+  graph_index: i64,
+  layer: i64,
+  tokens_in: i64,
+  oracle_base: i64,
+  oracle_count: i64,
+  reference: bool,
+  borrow g: layer_olmoe.Geometry,
+  borrow m: GraphMembers,
+  borrow nodes: layer_olmoe.MmNodeTable,
+  borrow oracle: layer_olmoe.OracleTable,
+  borrow window: slice<u8>,
+  borrow slot_view: slice<u8>,
+  borrow ref_slot_view: slice<u8>,
+  borrow input_view: slice<u8>,
+  borrow output_view: slice<u8>,
+  borrow node_window: slice<u8>,
+  borrow ref_window: slice<u8>,
+  borrow scan: moe_layer_forward.TranscriptScan,
+  borrow ranges: OracleRanges,
+  borrow mut breach: bool,
+  borrow mut result: EndResult,
+  borrow mut o: Outcome,
+) {
+  mut weight_ctx := ggml_ffi.null_handle()
+  mut input_ctx := ggml_ffi.null_handle()
+  mut graph_ctx := ggml_ffi.null_handle()
+  mut reference_ctx := ggml_ffi.null_handle()
+  mut reference_graph_ctx := ggml_ffi.null_handle()
+  mut weight_buffer := ggml_ffi.null_handle()
+  mut input_buffer := ggml_ffi.null_handle()
+  mut reference_buffer := ggml_ffi.null_handle()
+  mut graph := ggml_ffi.null_handle()
+  mut reference_graph := ggml_ffi.null_handle()
+  mut galloc := ggml_ffi.null_handle()
+  mut reference_galloc := ggml_ffi.null_handle()
+
+  take(o, ggml_ffi.slots_init(slot_view, slot_view.len(), "slots"))
+  if reference && o.code.len() == 0 {
+    take(o, ggml_ffi.slots_init(ref_slot_view, ref_slot_view.len(), "reference_slots"))
+  }
+  if o.code.len() == 0 {
+    weight_ctx = ggml_ffi.context_open(context_bytes)
+    input_ctx = ggml_ffi.context_open(context_bytes)
+    graph_ctx = ggml_ffi.context_open(context_bytes)
+    if ggml_ffi.handle_absent(weight_ctx) || ggml_ffi.handle_absent(input_ctx)
+      || ggml_ffi.handle_absent(graph_ctx) {
+      fail(o, "R5_GGML_INIT", "context")
+    } else {
+      o.contexts_created = o.contexts_created + 3
+    }
+  }
+  if o.code.len() == 0 {
+    weight_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
+    if ggml_ffi.handle_absent(weight_buffer) {
+      fail(o, "R5_GGML_INIT", "weight_buffer")
+    } else {
+      o.ggml_buffers_created = o.ggml_buffers_created + 1
+    }
+  }
+  if o.code.len() == 0 {
+    alignment := o.tensor_alignment
+    graph_alignment(m, window, alignment, layer, o)
+  }
+  if o.code.len() == 0 { take(o, graph_weights(weight_ctx, weight_buffer, slot_view, window, m)) }
+  if o.code.len() == 0 { graph_identity(slot_view, window, m, o) }
+  if o.code.len() == 0 {
+    if kind == GRAPH_EMBED {
+      take(o, ggml_ffi.slot_new_i32_1d(
+          input_ctx, slot_view, layer_olmoe.MM_SLOT_TOKENS, tokens_in, "inp_tokens"))
+    } else {
+      take(o, ggml_ffi.slot_new_tensor_2d(
+          input_ctx, slot_view, layer_olmoe.MM_SLOT_CUR, layer_olmoe.GGML_TYPE_F32,
+          g.n_embd, tokens_in, "cur"))
+    }
+  }
+  if o.code.len() == 0 {
+    input_buffer = ggml_ffi.alloc_remaining(input_ctx, backend)
+    if ggml_ffi.handle_absent(input_buffer) {
+      fail(o, "R5_GGML_INIT", "input_buffer")
+    } else {
+      o.ggml_buffers_created = o.ggml_buffers_created + 1
+    }
+  }
+  if o.code.len() == 0 {
+    if kind == GRAPH_EMBED {
+      take(o, ggml_ffi.slot_set(
+          slot_view, layer_olmoe.MM_SLOT_TOKENS, input_view, 0, tokens_in * 4, "inp_tokens"))
+    } else {
+      take(o, ggml_ffi.slot_set(
+          slot_view, layer_olmoe.MM_SLOT_CUR, input_view, 0, g.n_embd * tokens_in * 4, "cur"))
+    }
+  }
+  if o.code.len() == 0 {
+    graph = ggml_ffi.graph_new(graph_ctx)
+    galloc = ggml_ffi.gallocr_new(backend)
+    if ggml_ffi.handle_absent(graph) || ggml_ffi.handle_absent(galloc) {
+      fail(o, "R5_GGML_INIT", "graph")
+    } else {
+      o.graphs_created = o.graphs_created + 1
+      o.gallocrs_created = o.gallocrs_created + 1
+    }
+  }
+  output_slot := if kind == GRAPH_EMBED {
+    layer_olmoe.mm_embed_output_slot()
+  } else {
+    layer_olmoe.mm_head_output_slot()
+  }
+  if o.code.len() == 0 { take(o, build_nodes(graph_ctx, slot_view, nodes, false, false)) }
+  if o.code.len() == 0 {
+    take(o, mark_outputs(slot_view, oracle, oracle_base, oracle_count, -1))
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.graph_expand(graph, slot_view, output_slot, "output"))
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.gallocr_reserve(galloc, graph, labelled("graph", graph_index)))
+    result.activation_bytes = ggml_ffi.gallocr_bytes(galloc)
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.gallocr_alloc(galloc, graph, labelled("graph", graph_index)))
+    result.node_count = ggml_ffi.graph_node_count(graph)
+    result.slot_high_water = ggml_ffi.slots_high_water(slot_view)
+  }
+  if o.code.len() == 0 {
+    started := time.instant()
+    status := ggml_ffi.graph_compute(backend, graph)
+    result.compute_ns = time.instant() - started
+    if status != 0 {
+      fail(o, "R5_COMPUTE", layer_named(layer, "status", int_text(status)))
+    }
+  }
+  if o.code.len() == 0 {
+    span := ggml_ffi.slot_nbytes(slot_view, output_slot)
+    result.out_ne0 = ggml_ffi.slot_ne(slot_view, output_slot, 0)
+    result.out_ne1 = ggml_ffi.slot_ne(slot_view, output_slot, 1)
+    result.out_bytes = span
+    if span <= 0 || span > output_view.len() {
+      fail(o, "R5_RESIDUAL", labelled("layer", layer))
+    } else {
+      take(o, ggml_ffi.slot_get(slot_view, output_slot, output_view, 0, span, "output"))
+    }
+  }
+  if o.code.len() == 0 && kind == GRAPH_HEAD {
+    index_of := oracle.slot[oracle_base]
+    span := ggml_ffi.slot_nbytes(slot_view, index_of)
+    if span > 0 && span <= node_window.len() {
+      take(o, ggml_ffi.slot_get(slot_view, index_of, node_window, 0, span, "result_norm"))
+      norm_region := node_window[0..span]
+      norm := digest_region(norm_region)
+      result.norm_sha = norm.sha.clone()
+      result.norm_bit_sum = norm.bit_sum
+    }
+  }
+  if o.code.len() == 0 && o.transcript_present {
+    match compare_transcript_rows(
+      slot_view, oracle, oracle_base, oracle_count, layer, scan, ranges.start, ranges.length,
+      node_window, breach, o) {
+      Ok(_) => {},
+      Err(f) => { fault_into(o, f) },
+    }
+  }
+  if o.code.len() == 0 && reference {
+    reference_ctx = ggml_ffi.context_open(context_bytes)
+    reference_graph_ctx = ggml_ffi.context_open(context_bytes)
+    if ggml_ffi.handle_absent(reference_ctx) || ggml_ffi.handle_absent(reference_graph_ctx) {
+      fail(o, "R5_GGML_INIT", "reference_context")
+    } else {
+      o.contexts_created = o.contexts_created + 2
+    }
+    input_slot := if kind == GRAPH_EMBED {
+      layer_olmoe.MM_SLOT_TOKENS
+    } else {
+      layer_olmoe.MM_SLOT_CUR
+    }
+    if o.code.len() == 0 {
+      take(o, reference_weights(
+          reference_ctx, ref_slot_view, slot_view, window, m, input_slot, input_slot, false))
+    }
+    if o.code.len() == 0 {
+      reference_buffer = ggml_ffi.alloc_remaining(reference_ctx, backend)
+      if ggml_ffi.handle_absent(reference_buffer) {
+        fail(o, "R5_GGML_INIT", "reference_buffer")
+      } else {
+        o.ggml_buffers_created = o.ggml_buffers_created + 1
+      }
+    }
+    if o.code.len() == 0 {
+      take(o, reference_weights(
+          reference_ctx, ref_slot_view, slot_view, window, m, input_slot, input_slot, true))
+    }
+    if o.code.len() == 0 {
+      reference_graph = ggml_ffi.graph_new(reference_graph_ctx)
+      reference_galloc = ggml_ffi.gallocr_new(backend)
+      if ggml_ffi.handle_absent(reference_graph) || ggml_ffi.handle_absent(reference_galloc) {
+        fail(o, "R5_GGML_INIT", "reference_graph")
+      } else {
+        o.graphs_created = o.graphs_created + 1
+        o.gallocrs_created = o.gallocrs_created + 1
+      }
+    }
+    if o.code.len() == 0 {
+      take(o, build_nodes(reference_graph_ctx, ref_slot_view, nodes, false, false))
+    }
+    if o.code.len() == 0 {
+      take(o, mark_outputs(ref_slot_view, oracle, oracle_base, oracle_count, -1))
+    }
+    if o.code.len() == 0 {
+      take(o, ggml_ffi.graph_expand(reference_graph, ref_slot_view, output_slot, "output"))
+    }
+    if o.code.len() == 0 {
+      take(o, ggml_ffi.gallocr_reserve(
+          reference_galloc, reference_graph, labelled("graph", graph_index)))
+      take(o, ggml_ffi.gallocr_alloc(
+          reference_galloc, reference_graph, labelled("graph", graph_index)))
+    }
+    if o.code.len() == 0 {
+      started := time.instant()
+      status := ggml_ffi.graph_compute(backend, reference_graph)
+      result.reference_compute_ns = time.instant() - started
+      if status != 0 {
+        fail(o, "R5_COMPUTE", layer_named(layer, "reference_status", int_text(status)))
+      }
+    }
+    if o.code.len() == 0 {
+      o.reference_graphs = o.reference_graphs + 1
+      match compare_reference_rows(
+        slot_view, ref_slot_view, oracle, oracle_base, oracle_count, graph_index, layer,
+        node_window, ref_window, o) {
+        Ok(_) => {},
+        Err(f) => { fault_into(o, f) },
+      }
+    }
+  }
+  teardown_layer(
+    ggml_ffi.null_handle(), ggml_ffi.null_handle(), ggml_ffi.null_handle(),
+    ggml_ffi.null_handle(), ggml_ffi.null_handle(), galloc, reference_galloc, graph_ctx,
+    reference_graph_ctx, weight_buffer, reference_buffer, reference_ctx, weight_ctx,
+    input_buffer, input_ctx, o)
+}
+
+// ---------------------------------------------------------------------------------------------
+// One layer (steps 27 to 33)
+// ---------------------------------------------------------------------------------------------
+
+pub LayerSpec {
+  layer: i64,
+  t_in: i64,
+  t_out: i64,
+  width: i64,
+  last: bool,
+  wide: bool,
+  oracle_base: i64,
+  graph_index: i64,
+  reference: bool,
+}
+
+pub LayerResult {
+  claim_bytes: i64,
+  claim_planes: i64,
+  claim_pread_ns: i64,
+  decide_ns: i64,
+  compute_a_ns: i64,
+  compute_b_ns: i64,
+  reference_compute_ns: i64,
+  node_count_a: i64,
+  node_count_b: i64,
+  activation_a: i64,
+  activation_b: i64,
+  slot_high_water: i64,
+  out_ne0: i64,
+  out_ne1: i64,
+  out_bytes: i64,
+  sha: string,
+  bit_sum: i64,
+  sum_millionths: i64,
+  nonfinite: i64,
+}
+
+pub fn empty_layer_result() -> LayerResult = LayerResult {
+  claim_bytes: 0,
+  claim_planes: 0,
+  claim_pread_ns: 0,
+  decide_ns: 0,
+  compute_a_ns: 0,
+  compute_b_ns: 0,
+  reference_compute_ns: 0,
+  node_count_a: 0,
+  node_count_b: 0,
+  activation_a: 0,
+  activation_b: 0,
+  slot_high_water: 0,
+  out_ne0: 0,
+  out_ne1: 0,
+  out_bytes: 0,
+  sha: "".clone(),
+  bit_sum: 0,
+  sum_millionths: 0,
+  nonfinite: 0,
+}
+
+// Step 30. For each routed expert in ascending order, one `pread` of the whole `ExpertBlock` and a
+// scatter of its three claims to their own slots in the three role regions.
+fn stage_claims(
+  borrow pak: file,
+  borrow mut temp: buffer,
+  borrow claim_window: slice<u8>,
+  borrow p: Plan,
+  borrow win: ClaimWindow,
+  borrow planes: array<i64>,
+  borrow routing: layer_olmoe.Routing,
+  layer: i64,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  mut u := 0
+  loop {
+    if u >= routing.count { break }
+    expert := routing.routed[u]
+    key := layer * p.n_expert + expert
+    mut start_builder: array_builder<i64> := array_builder()
+    mut size_builder: array_builder<i64> := array_builder()
+    mut dest_builder: array_builder<i64> := array_builder()
+    mut role := 0
+    loop {
+      if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+      start_builder.push(p.claim_start[key * layer_olmoe.CLAIM_ROLE_COUNT + role])
+      size_builder.push(planes[role])
+      dest_builder.push(win.region[role] + u * planes[role])
+      role = role + 1
+    }
+    starts := start_builder.build()
+    sizes := size_builder.build()
+    dests := dest_builder.build()
+    read_block_scatter(
+      pak, temp, claim_window, p.expert_pack_offset[key], p.expert_pack_bytes[key],
+      starts, sizes, dests, "expert", c)?
+    u = u + 1
+  }
+  return Ok(())
+}
+
+// Oracle 1's byte precondition for one layer's read claims, at each claim's own claimed absolute
+// offset. `moe-prereq-discharge.md` section 1.1 establishes that a claim's `source_offset` is
+// already the plane's absolute position, so no `slice_index * plane` arithmetic is repeated here.
+fn compare_claim_source(
+  borrow handle: file,
+  size: i64,
+  borrow claim_window: slice<u8>,
+  borrow p: Plan,
+  borrow win: ClaimWindow,
+  borrow planes: array<i64>,
+  borrow routing: layer_olmoe.Routing,
+  layer: i64,
+  borrow mut temp: buffer,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  mut u := 0
+  loop {
+    if u >= routing.count { break }
+    expert := routing.routed[u]
+    key := layer * p.n_expert + expert
+    mut role := 0
+    loop {
+      if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+      compare_span(handle, size, claim_window, win.region[role] + u * planes[role],
+        p.claim_source[key * layer_olmoe.CLAIM_ROLE_COUNT + role], planes[role],
+        layer_expert_role(layer, expert, layer_olmoe.claim_label(role)), temp, c)?
+      role = role + 1
+    }
+    u = u + 1
+  }
+  return Ok(())
+}
+
+// Step 31. The five values that cross from phase A to phase B, each written at exactly its declared
+// length for this layer's `T_out`. **`topk_ids` and `compact_ids` are two tensors and never one**
+// (section 2.3): the router's probability gather takes the **global** ids and `mul_mat_id` takes the
+// **compacted** ones, and a build that used one for both produces a model whose every gate, up,
+// swiglu and down node agrees with llama.cpp and whose mixing weights are garbage. Their ranges are
+// validated separately, against `n_expert` and against `U_L`.
+fn stage_carry(
+  borrow slots: slice<u8>,
+  borrow window: slice<u8>,
+  borrow topk_image: slice<u8>,
+  borrow compact_image: slice<u8>,
+  borrow g: layer_olmoe.Geometry,
+  borrow routing: layer_olmoe.Routing,
+  layer: i64,
+  t_out: i64,
+) -> Result<(), ggml_ffi.Fault> {
+  activation := g.n_embd * t_out * 4
+  probs := g.n_expert * t_out * 4
+  ids := g.n_expert_used * t_out * 4
+  if activation > window.len() || probs > window.len()
+    || topk_image.len() != ids || compact_image.len() != ids {
+    return Err(ffi_fault("R5E_CARRY", layer_named(layer, "input", "length")))
+  }
+  mut check := 0
+  loop {
+    if check >= routing.topk.len() { break }
+    if routing.topk[check] < 0 || routing.topk[check] >= g.n_expert {
+      return Err(ffi_fault("R5E_CARRY", layer_named(layer, "input", "topk_ids")))
+    }
+    if routing.compact[check] < 0 || routing.compact[check] >= routing.count {
+      return Err(ffi_fault("R5E_CARRY", layer_named(layer, "input", "compact_ids")))
+    }
+    check = check + 1
+  }
+  if ggml_ffi.slot_nbytes(slots, layer_olmoe.MM_A_NODE_BASE + 31) != activation {
+    return Err(ffi_fault("R5E_CARRY", layer_named(layer, "input", "ffn_norm")))
+  }
+  if ggml_ffi.slot_nbytes(slots, layer_olmoe.MM_A_NODE_BASE + 29) != activation {
+    return Err(ffi_fault("R5E_CARRY", layer_named(layer, "input", "ffn_inp")))
+  }
+  if ggml_ffi.slot_nbytes(slots, layer_olmoe.MM_A_NODE_BASE + 33) != probs {
+    return Err(ffi_fault("R5E_CARRY", layer_named(layer, "input", "ffn_moe_probs")))
+  }
+  ggml_ffi.slot_get(
+    slots, layer_olmoe.MM_A_NODE_BASE + 31, window, 0, activation, "ffn_norm")?
+  ggml_ffi.slot_set(
+    slots, layer_olmoe.MM_SLOT_FFN_NORM, window, 0, activation, "ffn_norm_in")?
+  ggml_ffi.slot_get(
+    slots, layer_olmoe.MM_A_NODE_BASE + 29, window, 0, activation, "ffn_inp")?
+  ggml_ffi.slot_set(
+    slots, layer_olmoe.MM_SLOT_FFN_INP, window, 0, activation, "ffn_inp_in")?
+  ggml_ffi.slot_get(
+    slots, layer_olmoe.MM_A_NODE_BASE + 33, window, 0, probs, "ffn_moe_probs")?
+  ggml_ffi.slot_set(
+    slots, layer_olmoe.MM_SLOT_PROBS, window, 0, probs, "ffn_moe_probs_in")?
+  ggml_ffi.slot_set(slots, layer_olmoe.MM_SLOT_TOPK, topk_image, 0, ids, "topk_ids")?
+  ggml_ffi.slot_set(slots, layer_olmoe.MM_SLOT_COMPACT, compact_image, 0, ids, "compact_ids")?
+  return Ok(())
+}
+
+// Every input tensor of both phases, created once in one context. Their shapes are all geometry, so
+// none of them waits on the routing decision; only the **values** of the five carried ones do.
+fn layer_inputs(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  borrow g: layer_olmoe.Geometry,
+  borrow spec: LayerSpec,
+) -> Result<(), ggml_ffi.Fault> {
+  ggml_ffi.slot_new_tensor_2d(
+    ctx, slots, layer_olmoe.MM_SLOT_CUR, layer_olmoe.GGML_TYPE_F32, g.n_embd, spec.t_in, "cur")?
+  ggml_ffi.slot_new_i32_1d(ctx, slots, layer_olmoe.MM_SLOT_POS, spec.t_in, "inp_pos")?
+  ggml_ffi.slot_new_tensor_2d(
+    ctx, slots, layer_olmoe.MM_SLOT_MASK, layer_olmoe.GGML_TYPE_F32, spec.width, spec.t_in,
+    "kq_mask")?
+  ggml_ffi.slot_new_i32_1d(ctx, slots, layer_olmoe.MM_SLOT_OUT_IDS, 1, "out_ids")?
+  ggml_ffi.slot_new_tensor_2d(
+    ctx, slots, layer_olmoe.MM_SLOT_FFN_NORM, layer_olmoe.GGML_TYPE_F32, g.n_embd, spec.t_out,
+    "ffn_norm_in")?
+  ggml_ffi.slot_new_tensor_2d(
+    ctx, slots, layer_olmoe.MM_SLOT_FFN_INP, layer_olmoe.GGML_TYPE_F32, g.n_embd, spec.t_out,
+    "ffn_inp_in")?
+  ggml_ffi.slot_new_tensor_2d(
+    ctx, slots, layer_olmoe.MM_SLOT_PROBS, layer_olmoe.GGML_TYPE_F32, g.n_expert, spec.t_out,
+    "ffn_moe_probs_in")?
+  ggml_ffi.slot_new_i32_2d(
+    ctx, slots, layer_olmoe.MM_SLOT_TOPK, g.n_expert_used, spec.t_out, "topk_ids")?
+  ggml_ffi.slot_new_i32_2d(
+    ctx, slots, layer_olmoe.MM_SLOT_COMPACT, g.n_expert_used, spec.t_out, "compact_ids")?
+  return Ok(())
+}
+
+// The three compact expert stacks, created in the weight context and **placed** at their own region
+// bases in the reused Align-owned claim window. `ne2` is `U`: the one data-dependent shape parameter
+// in either table, and it enters here and nowhere else.
+fn claim_tensors(
+  ctx: raw,
+  handle: raw,
+  borrow slots: slice<u8>,
+  borrow claim_window: slice<u8>,
+  borrow g: layer_olmoe.Geometry,
+  borrow win: ClaimWindow,
+  borrow planes: array<i64>,
+  borrow types: array<i64>,
+  routed_count: i64,
+  borrow mut placements: i64,
+  borrow mut identity_failures: i64,
+) -> Result<(), ggml_ffi.Fault> {
+  mut role := 0
+  loop {
+    if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+    label := layer_olmoe.claim_label(role)
+    slot := mm_claim_slot(role)
+    span := routed_count * planes[role]
+    ggml_ffi.slot_new_tensor_3d(
+      ctx, slots, slot, types[role], layer_olmoe.claim_ne0(g, role),
+      layer_olmoe.claim_ne1(g, role), routed_count, label)?
+    // The stacked tensor's own `ggml_nbytes` must be exactly `U` planes, which is the check that a
+    // compact stack really is `U` plane-sized regions laid end to end.
+    if ggml_ffi.slot_nbytes(slots, slot) != span {
+      return Err(ffi_fault("R5_SHAPE", named("role", label)))
+    }
+    base := win.region[role]
+    region := claim_window[base..base + span]
+    ggml_ffi.slot_place(handle, slots, slot, region, label)?
+    placements = placements + 1
+    if ggml_ffi.slot_data_offset(slots, slot, claim_window) != base {
+      identity_failures = identity_failures + 1
+    }
+    role = role + 1
+  }
+  return Ok(())
+}
+
+// Steps 27 to 33 for exactly one of the sixteen layers: the dense window is already filled, and
+// this function owns the two graphs, the routing decision between them, the claim window's fill and
+// its ggml buffer, the five carried inputs, the reference pair, and the teardown. Every ggml object
+// is a bare local, because `raw` cannot be aggregated, and every one of them is freed before this
+// function returns — which is what makes reusing both windows for the next layer safe.
+fn run_layer(
+  device: raw,
+  backend: raw,
+  context_bytes: i64,
+  borrow spec: LayerSpec,
+  borrow g: layer_olmoe.Geometry,
+  borrow p: Plan,
+  borrow win: ClaimWindow,
+  borrow m: GraphMembers,
+  borrow a_nodes: layer_olmoe.MmNodeTable,
+  borrow b_nodes: layer_olmoe.MmNodeTable,
+  borrow oracle: layer_olmoe.OracleTable,
+  borrow window: slice<u8>,
+  borrow claim_window: slice<u8>,
+  borrow slot_view: slice<u8>,
+  borrow ref_slot_view: slice<u8>,
+  borrow index_image: slice<u8>,
+  borrow mask: slice<u8>,
+  borrow out_ids: slice<u8>,
+  borrow residual: slice<u8>,
+  borrow node_window: slice<u8>,
+  borrow ref_window: slice<u8>,
+  borrow scan: moe_layer_forward.TranscriptScan,
+  borrow ranges: OracleRanges,
+  borrow pak: file,
+  borrow mut block_temp: buffer,
+  borrow mut counters: alignpack_read.Counters,
+  borrow mut breach: bool,
+  borrow mut routing: layer_olmoe.Routing,
+  borrow mut result: LayerResult,
+  borrow mut o: Outcome,
+) {
+  mut weight_ctx := ggml_ffi.null_handle()
+  mut input_ctx := ggml_ffi.null_handle()
+  mut graph_a_ctx := ggml_ffi.null_handle()
+  mut graph_b_ctx := ggml_ffi.null_handle()
+  mut reference_ctx := ggml_ffi.null_handle()
+  mut reference_graph_a_ctx := ggml_ffi.null_handle()
+  mut reference_graph_b_ctx := ggml_ffi.null_handle()
+  mut weight_buffer := ggml_ffi.null_handle()
+  mut claim_buffer := ggml_ffi.null_handle()
+  mut input_buffer := ggml_ffi.null_handle()
+  mut reference_buffer := ggml_ffi.null_handle()
+  mut graph_a := ggml_ffi.null_handle()
+  mut graph_b := ggml_ffi.null_handle()
+  mut reference_graph_a := ggml_ffi.null_handle()
+  mut reference_graph_b := ggml_ffi.null_handle()
+  mut galloc_a := ggml_ffi.null_handle()
+  mut galloc_b := ggml_ffi.null_handle()
+  mut reference_galloc_a := ggml_ffi.null_handle()
+  mut reference_galloc_b := ggml_ffi.null_handle()
+
+  mut plane_builder: array_builder<i64> := array_builder()
+  mut type_builder: array_builder<i64> := array_builder()
+  mut role_at := 0
+  loop {
+    if role_at >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+    plane_builder.push(p.plane_bytes[spec.layer * layer_olmoe.CLAIM_ROLE_COUNT + role_at])
+    type_builder.push(p.plane_type[spec.layer * layer_olmoe.CLAIM_ROLE_COUNT + role_at])
+    role_at = role_at + 1
+  }
+  planes := plane_builder.build()
+  types := type_builder.build()
+
+  take(o, ggml_ffi.slots_init(slot_view, slot_view.len(), "slots"))
+  if spec.reference && o.code.len() == 0 {
+    take(o, ggml_ffi.slots_init(ref_slot_view, ref_slot_view.len(), "reference_slots"))
+  }
+  if o.code.len() == 0 {
+    weight_ctx = ggml_ffi.context_open(context_bytes)
+    input_ctx = ggml_ffi.context_open(context_bytes)
+    graph_a_ctx = ggml_ffi.context_open(context_bytes)
+    graph_b_ctx = ggml_ffi.context_open(context_bytes)
+    if ggml_ffi.handle_absent(weight_ctx) || ggml_ffi.handle_absent(input_ctx)
+      || ggml_ffi.handle_absent(graph_a_ctx) || ggml_ffi.handle_absent(graph_b_ctx) {
+      fail(o, "R5_GGML_INIT", "context")
+    } else {
+      o.contexts_created = o.contexts_created + 4
+    }
+  }
+  if o.code.len() == 0 {
+    weight_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
+    if ggml_ffi.handle_absent(weight_buffer) {
+      fail(o, "R5_GGML_INIT", "weight_buffer")
+    } else {
+      o.ggml_buffers_created = o.ggml_buffers_created + 1
+    }
+  }
+  if o.code.len() == 0 {
+    alignment := o.tensor_alignment
+    graph_alignment(m, window, alignment, spec.layer, o)
+  }
+  if o.code.len() == 0 { take(o, graph_weights(weight_ctx, weight_buffer, slot_view, window, m)) }
+  if o.code.len() == 0 { graph_identity(slot_view, window, m, o) }
+  if o.code.len() == 0 { take(o, layer_inputs(input_ctx, slot_view, g, spec)) }
+  if o.code.len() == 0 {
+    input_buffer = ggml_ffi.alloc_remaining(input_ctx, backend)
+    if ggml_ffi.handle_absent(input_buffer) {
+      fail(o, "R5_GGML_INIT", "input_buffer")
+    } else {
+      o.ggml_buffers_created = o.ggml_buffers_created + 1
+    }
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.slot_set(
+        slot_view, layer_olmoe.MM_SLOT_CUR, residual, 0, g.n_embd * spec.t_in * 4, "cur"))
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.slot_set(
+        slot_view, layer_olmoe.MM_SLOT_POS, index_image, 0, spec.t_in * 4, "inp_pos"))
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.slot_set(
+        slot_view, layer_olmoe.MM_SLOT_MASK, mask, 0, spec.width * spec.t_in * 4, "kq_mask"))
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.slot_set(slot_view, layer_olmoe.MM_SLOT_OUT_IDS, out_ids, 0, 4, "out_ids"))
+  }
+  if o.code.len() == 0 {
+    graph_a = ggml_ffi.graph_new(graph_a_ctx)
+    galloc_a = ggml_ffi.gallocr_new(backend)
+    if ggml_ffi.handle_absent(graph_a) || ggml_ffi.handle_absent(galloc_a) {
+      fail(o, "R5_GGML_INIT", "graph_a")
+    } else {
+      o.graphs_created = o.graphs_created + 1
+      o.gallocrs_created = o.gallocrs_created + 1
+    }
+  }
+  if o.code.len() == 0 {
+    take(o, build_nodes(graph_a_ctx, slot_view, a_nodes, spec.last, spec.wide))
+  }
+  if o.code.len() == 0 {
+    take(o, mark_outputs(
+        slot_view, oracle, spec.oracle_base, layer_olmoe.MM_LAYER_ORACLE_COUNT, 0))
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.graph_expand(graph_a, slot_view, layer_olmoe.mm_a_output_slot(), "output"))
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.gallocr_reserve(galloc_a, graph_a, labelled("layer", spec.layer)))
+    result.activation_a = ggml_ffi.gallocr_bytes(galloc_a)
+    take(o, ggml_ffi.gallocr_alloc(galloc_a, graph_a, layer_named(spec.layer, "stage", "alloc_a")))
+    result.node_count_a = ggml_ffi.graph_node_count(graph_a)
+  }
+  if o.code.len() == 0 {
+    started := time.instant()
+    status := ggml_ffi.graph_compute(backend, graph_a)
+    result.compute_a_ns = time.instant() - started
+    if status != 0 {
+      fail(o, "R5_COMPUTE", layer_named(spec.layer, "status", int_text(status)))
+    }
+  }
+
+  // Step 28. The decision, on bytes Align owns. **No view is ever read back**: `ffn_moe_argsort` is
+  // contiguous `{n_expert, T_out}` and the arm reads it whole; the top-k slice is Align's arithmetic
+  // over those bytes, not a strided `ggml_backend_tensor_get`.
+  if o.code.len() == 0 {
+    decide_started := time.instant()
+    span := ggml_ffi.slot_nbytes(slot_view, layer_olmoe.MM_A_NODE_BASE + 34)
+    if span != g.n_expert * spec.t_out * 4 {
+      fail(o, "R5_SHAPE", layer_named(spec.layer, "node", "ffn_moe_argsort"))
+    } else {
+      take(o, ggml_ffi.slot_get(
+          slot_view, layer_olmoe.MM_A_NODE_BASE + 34, node_window, 0, span, "ffn_moe_argsort"))
+    }
+    if o.code.len() == 0 {
+      routing = layer_olmoe.decide(node_window, g.n_expert, g.n_expert_used, spec.t_out)
+      result.decide_ns = time.instant() - decide_started
+      if routing.code.len() > 0 {
+        code_view: str := routing.code
+        detail_view: str := routing.detail
+        // `R5D_EXPERT_ID`'s detail is `layer[<L>]token[<t>]slot[<s>]`: the layer this arm added in
+        // front of the `(token, slot)` pair `layer_olmoe.decide` already names, not a second
+        // bracketed field around it.
+        located := builder()
+        located.write("layer[")
+        located.write_int(spec.layer)
+        located.write("]")
+        located.write(detail_view)
+        rendered := located.to_string()
+        rendered_view: str := rendered
+        fail(o, code_view, rendered_view)
+      }
+    }
+  }
+  // Step 29's fail-closed guard: step 19 reserved for `U_max = min(n_expert, n_expert_used * T)`,
+  // which no routing decision can exceed, so this is defence rather than an input-reachable code.
+  if o.code.len() == 0 {
+    mut used_bytes := 0
+    mut role := 0
+    loop {
+      if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+      used_bytes = used_bytes + routing.count * planes[role]
+      if routing.count * planes[role] > win.u_max * win.max_plane[role] {
+        fail(o, "R5E_CLAIM_OVERFLOW", layer_numbered(spec.layer, "bytes", used_bytes))
+      }
+      role = role + 1
+    }
+    result.claim_bytes = used_bytes
+    result.claim_planes = routing.count * layer_olmoe.CLAIM_ROLE_COUNT
+  }
+  if o.code.len() == 0 {
+    claim_started := time.instant()
+    take_pack(o, stage_claims(
+        pak, block_temp, claim_window, p, win, planes, routing, spec.layer, counters))
+    result.claim_pread_ns = time.instant() - claim_started
+    // `window.reuse_count` counts **window fills**, across both windows: eighteen of the dense one
+    // and sixteen of the claim one on this model, which is the thirty-four of section 3.4.
+    o.window_reuse_count = o.window_reuse_count + 1
+  }
+  if o.code.len() == 0 {
+    claim_buffer = ggml_ffi.buffer_from_host(device, claim_window, claim_window.len())
+    if ggml_ffi.handle_absent(claim_buffer) {
+      fail(o, "R5_GGML_INIT", "claim_buffer")
+    } else {
+      o.ggml_buffers_created = o.ggml_buffers_created + 1
+    }
+  }
+  mut claim_placements := 0
+  mut claim_identity_failures := 0
+  if o.code.len() == 0 {
+    take(o, claim_tensors(
+        weight_ctx, claim_buffer, slot_view, claim_window, g, win, planes, types,
+        routing.count, claim_placements, claim_identity_failures))
+    o.claim_placements = o.claim_placements + claim_placements
+    o.pointer_identity_failures = o.pointer_identity_failures + claim_identity_failures
+  }
+  mut topk_image: buffer := buffer(g.n_expert_used * spec.t_out * 4)
+  mut compact_image: buffer := buffer(g.n_expert_used * spec.t_out * 4)
+  if o.code.len() == 0 {
+    mut write_at := 0
+    loop {
+      if write_at >= routing.topk.len() { break }
+      topk_image.put_u32_le(routing.topk[write_at] as u32)
+      compact_image.put_u32_le(routing.compact[write_at] as u32)
+      write_at = write_at + 1
+    }
+  }
+  topk_view := topk_image.bytes()
+  compact_view := compact_image.bytes()
+  if o.code.len() == 0 {
+    take(o, stage_carry(
+        slot_view, node_window, topk_view, compact_view, g, routing, spec.layer, spec.t_out))
+  }
+  if o.code.len() == 0 {
+    graph_b = ggml_ffi.graph_new(graph_b_ctx)
+    galloc_b = ggml_ffi.gallocr_new(backend)
+    if ggml_ffi.handle_absent(graph_b) || ggml_ffi.handle_absent(galloc_b) {
+      fail(o, "R5_GGML_INIT", "graph_b")
+    } else {
+      o.graphs_created = o.graphs_created + 1
+      o.gallocrs_created = o.gallocrs_created + 1
+    }
+  }
+  if o.code.len() == 0 {
+    take(o, build_nodes(graph_b_ctx, slot_view, b_nodes, spec.last, spec.wide))
+  }
+  if o.code.len() == 0 {
+    take(o, mark_outputs(
+        slot_view, oracle, spec.oracle_base, layer_olmoe.MM_LAYER_ORACLE_COUNT, 1))
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.graph_expand(
+        graph_b, slot_view, layer_olmoe.mm_b_output_slot(g.n_expert_used), "output"))
+  }
+  if o.code.len() == 0 {
+    take(o, ggml_ffi.gallocr_reserve(galloc_b, graph_b, labelled("layer", spec.layer)))
+    result.activation_b = ggml_ffi.gallocr_bytes(galloc_b)
+    take(o, ggml_ffi.gallocr_alloc(galloc_b, graph_b, layer_named(spec.layer, "stage", "alloc_b")))
+    result.node_count_b = ggml_ffi.graph_node_count(graph_b)
+    result.slot_high_water = ggml_ffi.slots_high_water(slot_view)
+  }
+  if o.code.len() == 0 {
+    started := time.instant()
+    status := ggml_ffi.graph_compute(backend, graph_b)
+    result.compute_b_ns = time.instant() - started
+    if status != 0 {
+      fail(o, "R5_COMPUTE", layer_named(spec.layer, "status_b", int_text(status)))
+    }
+  }
+  // Step 33's residual invariant: the bytes read back are exactly `n_embd * T_out * 4`, and `T_out`
+  // is the `T_in` the next graph declares.
+  if o.code.len() == 0 {
+    output_slot := layer_olmoe.mm_b_output_slot(g.n_expert_used)
+    span := ggml_ffi.slot_nbytes(slot_view, output_slot)
+    result.out_ne0 = ggml_ffi.slot_ne(slot_view, output_slot, 0)
+    result.out_ne1 = ggml_ffi.slot_ne(slot_view, output_slot, 1)
+    result.out_bytes = span
+    if span != g.n_embd * spec.t_out * 4 || span > residual.len() {
+      fail(o, "R5_RESIDUAL", labelled("layer", spec.layer))
+    } else {
+      take(o, ggml_ffi.slot_get(slot_view, output_slot, residual, 0, span, "l_out"))
+      l_out_region := residual[0..span]
+      digest := digest_region(l_out_region)
+      result.sha = digest.sha.clone()
+      result.bit_sum = digest.bit_sum
+      result.sum_millionths = digest.sum_millionths
+      result.nonfinite = digest.nonfinite
+    }
+  }
+  if o.code.len() == 0 && o.transcript_present {
+    match compare_transcript_rows(
+      slot_view, oracle, spec.oracle_base, layer_olmoe.MM_LAYER_ORACLE_COUNT, spec.layer, scan,
+      ranges.start, ranges.length, node_window, breach, o) {
+      Ok(_) => {},
+      Err(f) => { fault_into(o, f) },
+    }
+  }
+  if o.code.len() == 0 && o.transcript_present {
+    compare_routing_layer(
+      scan, ranges, spec.oracle_base, spec.layer, routing, g.n_expert_used, o)
+  }
+  // Steps 35's node half, for both of this layer's graphs. The weights are created in a second
+  // context and allocated by `ggml_backend_alloc_ctx_tensors`, so **ggml** owns the bytes and the
+  // arm owns nothing ggml can see; the twelve inputs are shared through the store rather than
+  // rebuilt, because the two arms must differ in where the weights live and in nothing else.
+  if o.code.len() == 0 && spec.reference {
+    reference_ctx = ggml_ffi.context_open(context_bytes)
+    reference_graph_a_ctx = ggml_ffi.context_open(context_bytes)
+    reference_graph_b_ctx = ggml_ffi.context_open(context_bytes)
+    if ggml_ffi.handle_absent(reference_ctx) || ggml_ffi.handle_absent(reference_graph_a_ctx)
+      || ggml_ffi.handle_absent(reference_graph_b_ctx) {
+      fail(o, "R5_GGML_INIT", "reference_context")
+    } else {
+      o.contexts_created = o.contexts_created + 3
+    }
+    if o.code.len() == 0 {
+      take(o, reference_weights(
+          reference_ctx, ref_slot_view, slot_view, window, m,
+          layer_olmoe.MM_SLOT_CUR, layer_olmoe.MM_SLOT_COMPACT, false))
+    }
+    if o.code.len() == 0 {
+      take(o, reference_claims(
+          reference_ctx, ref_slot_view, claim_window, g, win, planes, types, routing.count, false))
+    }
+    if o.code.len() == 0 {
+      reference_buffer = ggml_ffi.alloc_remaining(reference_ctx, backend)
+      if ggml_ffi.handle_absent(reference_buffer) {
+        fail(o, "R5_GGML_INIT", "reference_buffer")
+      } else {
+        o.ggml_buffers_created = o.ggml_buffers_created + 1
+      }
+    }
+    if o.code.len() == 0 {
+      take(o, reference_claims(
+          reference_ctx, ref_slot_view, claim_window, g, win, planes, types, routing.count, true))
+    }
+    if o.code.len() == 0 {
+      take(o, reference_weights(
+          reference_ctx, ref_slot_view, slot_view, window, m,
+          layer_olmoe.MM_SLOT_CUR, layer_olmoe.MM_SLOT_COMPACT, true))
+    }
+    if o.code.len() == 0 {
+      reference_graph_a = ggml_ffi.graph_new(reference_graph_a_ctx)
+      reference_graph_b = ggml_ffi.graph_new(reference_graph_b_ctx)
+      reference_galloc_a = ggml_ffi.gallocr_new(backend)
+      reference_galloc_b = ggml_ffi.gallocr_new(backend)
+      if ggml_ffi.handle_absent(reference_graph_a) || ggml_ffi.handle_absent(reference_graph_b)
+        || ggml_ffi.handle_absent(reference_galloc_a)
+        || ggml_ffi.handle_absent(reference_galloc_b) {
+        fail(o, "R5_GGML_INIT", "reference_graph")
+      } else {
+        o.graphs_created = o.graphs_created + 2
+        o.gallocrs_created = o.gallocrs_created + 2
+      }
+    }
+    if o.code.len() == 0 {
+      take(o, build_nodes(reference_graph_a_ctx, ref_slot_view, a_nodes, spec.last, spec.wide))
+      take(o, mark_outputs(
+          ref_slot_view, oracle, spec.oracle_base, layer_olmoe.MM_LAYER_ORACLE_COUNT, 0))
+      take(o, ggml_ffi.graph_expand(
+          reference_graph_a, ref_slot_view, layer_olmoe.mm_a_output_slot(), "output"))
+      take(o, ggml_ffi.gallocr_reserve(
+          reference_galloc_a, reference_graph_a, labelled("layer", spec.layer)))
+      take(o, ggml_ffi.gallocr_alloc(
+          reference_galloc_a, reference_graph_a, labelled("layer", spec.layer)))
+    }
+    if o.code.len() == 0 {
+      take(o, build_nodes(reference_graph_b_ctx, ref_slot_view, b_nodes, spec.last, spec.wide))
+      take(o, mark_outputs(
+          ref_slot_view, oracle, spec.oracle_base, layer_olmoe.MM_LAYER_ORACLE_COUNT, 1))
+      take(o, ggml_ffi.graph_expand(
+          reference_graph_b, ref_slot_view, layer_olmoe.mm_b_output_slot(g.n_expert_used),
+          "output"))
+      take(o, ggml_ffi.gallocr_reserve(
+          reference_galloc_b, reference_graph_b, labelled("layer", spec.layer)))
+      take(o, ggml_ffi.gallocr_alloc(
+          reference_galloc_b, reference_graph_b, labelled("layer", spec.layer)))
+    }
+    if o.code.len() == 0 {
+      started := time.instant()
+      status := ggml_ffi.graph_compute(backend, reference_graph_a)
+      mut second := 0
+      if status == 0 { second = ggml_ffi.graph_compute(backend, reference_graph_b) }
+      result.reference_compute_ns = time.instant() - started
+      if status != 0 {
+        fail(o, "R5_COMPUTE", layer_numbered(spec.layer, "reference_status_a", status))
+      } else if second != 0 {
+        fail(o, "R5_COMPUTE", layer_numbered(spec.layer, "reference_status_b", second))
+      }
+    }
+    if o.code.len() == 0 {
+      o.reference_graphs = o.reference_graphs + 2
+      match compare_reference_rows(
+        slot_view, ref_slot_view, oracle, spec.oracle_base,
+        layer_olmoe.MM_LAYER_ORACLE_COUNT, spec.graph_index, spec.layer, node_window,
+        ref_window, o) {
+        Ok(_) => {},
+        Err(f) => { fault_into(o, f) },
+      }
+    }
+  }
+  teardown_layer(
+    galloc_b, reference_galloc_b, graph_b_ctx, reference_graph_b_ctx, claim_buffer,
+    galloc_a, reference_galloc_a, graph_a_ctx, reference_graph_a_ctx, weight_buffer,
+    reference_buffer, reference_ctx, weight_ctx, input_buffer, input_ctx, o)
+}
+
+// ---------------------------------------------------------------------------------------------
+// The schedule (steps 26 to 39)
+// ---------------------------------------------------------------------------------------------
+
+// `sha256` over this layer's routed `ExpertBlock` indices, in ascending routed order and as
+// little-endian `u32`. It is the one per-layer field that names *which blocks* the run read without
+// repeating `routed[]` in a second form.
+fn claim_block_digest(borrow p: Plan, borrow routing: layer_olmoe.Routing, layer: i64) -> string {
+  mut image: buffer := buffer(routing.count * 4 + 4)
+  mut at := 0
+  loop {
+    if at >= routing.count { break }
+    image.put_u32_le(p.expert_index[layer * p.n_expert + routing.routed[at]] as u32)
+    at = at + 1
+  }
+  view := image.bytes()
+  digest := crypto.sha256(view)
+  return encoding.hex_encode(digest[0..digest.len()])
+}
+
+fn render_id_matrix(borrow column: array<i64>, used: i64) -> string {
+  d := builder()
+  d.write("[")
+  mut token := 0
+  loop {
+    if (token + 1) * used > column.len() { break }
+    if token > 0 { d.write(",") }
+    d.write("[")
+    mut slot := 0
+    loop {
+      if slot >= used { break }
+      if slot > 0 { d.write(",") }
+      d.write_int(column[token * used + slot])
+      slot = slot + 1
+    }
+    d.write("]")
+    token = token + 1
+  }
+  d.write("]")
+  return d.to_string()
+}
+
+// One row of `schedule[]`, rendered as it is produced. Section 3.8: `schedule[]` is the
+// capability's real output, one row per layer rather than one row per node, and the routing
+// decision is a **per-layer fact with no other place to publish it** — `routed[]`,
+// `expert_ids[][]`, and `compact_ids[][]` are what a residency policy will be designed against, and
+// they are written **before any oracle runs**.
+fn render_schedule_row(
+  borrow p: Plan,
+  borrow spec: LayerSpec,
+  borrow routing: layer_olmoe.Routing,
+  borrow r: LayerResult,
+  used: i64,
+  dense_pread_ns: i64,
+  member_count: i64,
+) -> string {
+  d := builder()
+  layer := spec.layer
+  role_base := layer * layer_olmoe.CLAIM_ROLE_COUNT
+  d.write("{\"layer\":")
+  d.write_int(layer)
+  d.write(",\"attention_block_index\":")
+  d.write_int(column_at(p.attention_index, layer))
+  d.write(",\"router_block_index\":")
+  d.write_int(column_at(p.router_index, layer))
+  d.write(",\"dense_bytes\":")
+  d.write_int(column_at(p.layer_member_bytes, layer))
+  d.write(",\"attn_v_ggml_type\":")
+  d.write_int(column_at(p.m_type, layer * member_count + 5))
+  d.write(",\"ffn_down_exps_ggml_type\":")
+  d.write_int(column_at(p.plane_type, role_base + 2))
+  d.write(",\"t_in\":")
+  d.write_int(spec.t_in)
+  d.write(",\"t_out\":")
+  d.write_int(spec.t_out)
+  d.write(",\"routed_count\":")
+  d.write_int(routing.count)
+  d.write(",\"routed\":[")
+  mut at := 0
+  loop {
+    if at >= routing.routed.len() { break }
+    if at > 0 { d.write(",") }
+    d.write_int(routing.routed[at])
+    at = at + 1
+  }
+  d.write("],\"expert_ids\":")
+  topk_matrix := render_id_matrix(routing.topk, used)
+  topk_view: str := topk_matrix
+  d.write(topk_view)
+  d.write(",\"compact_ids\":")
+  compact_matrix := render_id_matrix(routing.compact, used)
+  compact_view: str := compact_matrix
+  d.write(compact_view)
+  d.write(",\"claim_bytes\":")
+  d.write_int(r.claim_bytes)
+  d.write(",\"claim_block_indices_digest\":")
+  digest := claim_block_digest(p, routing, layer)
+  digest_view: str := digest
+  d.write(json_string(digest_view))
+  d.write(",\"plane_stride_gate\":")
+  d.write_int(column_at(p.plane_bytes, role_base + 0))
+  d.write(",\"plane_stride_up\":")
+  d.write_int(column_at(p.plane_bytes, role_base + 1))
+  d.write(",\"plane_stride_down\":")
+  d.write_int(column_at(p.plane_bytes, role_base + 2))
+  d.write(",\"pread_ns\":")
+  d.write_int(dense_pread_ns)
+  d.write(",\"claim_pread_ns\":")
+  d.write_int(r.claim_pread_ns)
+  d.write(",\"decide_ns\":")
+  d.write_int(r.decide_ns)
+  d.write(",\"compute_a_ns\":")
+  d.write_int(r.compute_a_ns)
+  d.write(",\"compute_b_ns\":")
+  d.write_int(r.compute_b_ns)
+  d.write(",\"node_count_a\":")
+  d.write_int(r.node_count_a)
+  d.write(",\"node_count_b\":")
+  d.write_int(r.node_count_b)
+  d.write(",\"l_out_sha256\":")
+  sha_view: str := r.sha
+  d.write(json_string(sha_view))
+  d.write(",\"l_out_bit_sum\":")
+  d.write_int(r.bit_sum)
+  d.write(",\"l_out_f32_sum_millionths\":")
+  d.write_int(r.sum_millionths)
+  d.write(",\"l_out_ne0\":")
+  d.write_int(r.out_ne0)
+  d.write(",\"l_out_ne1\":")
+  d.write_int(r.out_ne1)
+  d.write(",\"nonfinite_count\":")
+  d.write_int(r.nonfinite)
+  d.write("}")
+  return d.to_string()
+}
+
+fn spec_for(
+  layer: i64, t_in: i64, t_out: i64, width: i64, last: bool, wide: bool, reference: bool,
+) -> LayerSpec = LayerSpec {
+  layer: layer,
+  t_in: t_in,
+  t_out: t_out,
+  width: width,
+  last: last,
+  wide: wide,
+  oracle_base: layer_olmoe.mm_oracle_layer_base(layer),
+  graph_index: 1 + 2 * layer,
+  reference: reference,
+}
+
+// The per-graph bookkeeping every stage repeats, and section 3.10's per-phase balance assertion:
+// `ggml_buffers_created == ggml_buffers_freed` at every **phase** boundary, not only at the end,
+// because R5E has two graphs and two windows per layer and a leak in one is invisible to a check on
+// the other.
+fn account(
+  activation: i64, high_water: i64, nodes: i64,
+  borrow mut graphs: array_builder<i64>, borrow mut o: Outcome) {
+  graphs.push(activation)
+  if activation > o.activation_bytes_peak { o.activation_bytes_peak = activation }
+  if high_water > o.slot_high_water { o.slot_high_water = high_water }
+  o.node_count_total = o.node_count_total + nodes
+}
+
+fn check_balance(borrow mut o: Outcome) {
+  if o.ggml_buffers_created != o.ggml_buffers_freed || o.contexts_created != o.contexts_freed
+    || o.gallocrs_created != o.gallocrs_freed {
+    o.phase_balance_failures = o.phase_balance_failures + 1
+  }
+}
+
+// The thirty-four window fills and the sixteen routing decisions between them. Section 3.7: the run
+// computes **exactly one schedule, at `KV_WIDTH`, always** — there is no second pass, because on a
+// routed model a second pass at a different width would take different routing decisions and read
+// different bytes, which would make `residency.*` ambiguous about which schedule it describes.
+fn schedule_model(
+  borrow pak: file,
+  borrow g: layer_olmoe.Geometry,
+  borrow table: layer_olmoe.MemberTable,
+  borrow plan: Plan,
+  borrow tokens: TokenColumns,
+  borrow embed_members: GraphMembers,
+  borrow head_members: GraphMembers,
+  borrow window: slice<u8>,
+  borrow claim_window: slice<u8>,
+  borrow win: ClaimWindow,
+  device: raw,
+  context_bytes: i64,
+  residual_bytes: i64,
+  logits_bytes: i64,
+  readback_bytes: i64,
+  reference_path: str,
+  transcript_path: str,
+  logits_path: str,
+  borrow mut schedule: ScheduleRows,
+  borrow mut graphs: GraphColumns,
+  borrow mut curve: CurveColumns,
+  borrow mut top: TopColumns,
+  borrow mut chunk_temp: buffer,
+  borrow mut block_temp: buffer,
+  borrow mut counters: alignpack_read.Counters,
+  borrow mut o: Outcome,
+) {
+  width := o.attention_width
+  wide := width > tokens.count
+  slot_bytes := layer_olmoe.SLOT_HEADER_BYTES
+    + layer_olmoe.SLOT_BYTES * layer_olmoe.MAX_NODE_SLOTS
+  mut slots: buffer := buffer(slot_bytes + 8)
+  fill_zero(slots, 1)
+  slot_pad := 8 - base_mod(slots, 8)
+  fill_zero(slots, slot_pad - 1 + slot_bytes)
+  mut reference_slots: buffer := buffer(slot_bytes + 8)
+  fill_zero(reference_slots, 1)
+  reference_pad := 8 - base_mod(reference_slots, 8)
+  fill_zero(reference_slots, reference_pad - 1 + slot_bytes)
+  mut mask: buffer := buffer(width * tokens.count * 4)
+  layer_olmoe.mm_write_mask(mask, width, tokens.count)
+  // The gathered ids remapped to `0..T-1` — the embedding window holds only the rows this prefill
+  // needs — and the positions, which are the same vector.
+  mut index_image: buffer := buffer(tokens.count * 4)
+  mut out_ids_image: buffer := buffer(4)
+  mut image_at := 0
+  loop {
+    if image_at >= tokens.count { break }
+    index_image.put_u32_le(image_at as u32)
+    image_at = image_at + 1
+  }
+  out_ids_image.put_u32_le((tokens.count - 1) as u32)
+  mut residual: buffer := buffer(residual_bytes)
+  prime_window(residual, residual_bytes)
+  mut logits: buffer := buffer(logits_bytes)
+  prime_window(logits, logits_bytes)
+  mut node_window: buffer := buffer(readback_bytes)
+  prime_window(node_window, readback_bytes)
+  mut reference_window: buffer := buffer(readback_bytes)
+  prime_window(reference_window, readback_bytes)
+
+  slots_all := slots.bytes()
+  reference_slots_all := reference_slots.bytes()
+  mask_view := mask.bytes()
+  index_view := index_image.bytes()
+  out_ids_view := out_ids_image.bytes()
+  residual_view := residual.bytes()
+  logits_view := logits.bytes()
+  node_view := node_window.bytes()
+  reference_view := reference_window.bytes()
+  if slots_all.len() < slot_pad + slot_bytes
+    || reference_slots_all.len() < reference_pad + slot_bytes
+    || mask_view.len() != width * tokens.count * 4
+    || index_view.len() != tokens.count * 4 || out_ids_view.len() != 4
+    || residual_view.len() != residual_bytes || logits_view.len() != logits_bytes
+    || node_view.len() != readback_bytes || reference_view.len() != readback_bytes {
+    fail(o, "R4_WINDOW_UNAVAILABLE", "slots")
+    return
+  }
+  slot_view := slots_all[slot_pad..slot_pad + slot_bytes]
+  ref_slot_view := reference_slots_all[reference_pad..reference_pad + slot_bytes]
+
+  oracle := layer_olmoe.mm_oracle_table(g, g.n_layer)
+  embed_nodes := layer_olmoe.mm_embed_node_table(g)
+  head_nodes := layer_olmoe.mm_head_node_table(g)
+  a_nodes := layer_olmoe.mm_a_node_table(g, tokens.count, width)
+  b_nodes_full := layer_olmoe.mm_b_node_table(g, tokens.count)
+  o.table_rows_a = a_nodes.count
+  o.table_rows_b = b_nodes_full.count
+  mut scan := moe_layer_forward.empty_transcript_scan()
+  mut ranges := empty_ranges()
+  if o.transcript_present {
+    prepare_transcript(transcript_path, oracle, g.n_layer, width, scan, ranges, o)
+  }
+  mut source_counters := alignpack_read.new_counters()
+  mut breach := false
+  mut activation: array_builder<i64> := array_builder()
+  mut cumulative: array_builder<i64> := array_builder()
+  rows := builder()
+  mut schedule_rows := 0
+  mut running := 0
+
+  mut backend := ggml_ffi.null_handle()
+  if o.code.len() == 0 {
+    backend = ggml_ffi.backend_open(device)
+    if ggml_ffi.handle_absent(backend) {
+      fail(o, "R5_GGML_INIT", "backend")
+    } else {
+      o.backends_created = o.backends_created + 1
+      o.backend_name = ggml_ffi.backend_name(backend)
+    }
+  }
+  o.graph_count = 2 * g.n_layer + 2
+
+  // Graph 0: the embedding gather, one `pread` group per token row.
+  mut embed_result := empty_end_result()
+  if o.code.len() == 0 {
+    read_started := time.instant()
+    take_pack(o, fill_members(pak, embed_members, tokens, window, chunk_temp, counters))
+    o.pread_ns = o.pread_ns + (time.instant() - read_started)
+    o.window_reuse_count = o.window_reuse_count + 1
+    o.embedding_bytes_read = embed_members.stride[0] * tokens.count
+  }
+  if o.code.len() == 0 && o.reference_present {
+    take_pack(o, compare_source_file(
+        reference_path, embed_members, tokens, window, -1, chunk_temp, source_counters))
+  }
+  if o.code.len() == 0 {
+    embed_reference := o.reference_present
+    run_end_graph(
+      device, backend, context_bytes, GRAPH_EMBED, 0, -1, tokens.count, 0, 1,
+      embed_reference, g, embed_members, embed_nodes, oracle, window, slot_view,
+      ref_slot_view, index_view, residual_view, node_view, reference_view, scan, ranges,
+      breach, embed_result, o)
+    account(embed_result.activation_bytes, embed_result.slot_high_water, embed_result.node_count,
+      activation, o)
+    o.embed_node_count = embed_result.node_count
+    o.compute_ns = o.compute_ns + embed_result.compute_ns
+    o.reference_compute_ns = o.reference_compute_ns + embed_result.reference_compute_ns
+    check_balance(o)
+  }
+
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer || o.code.len() > 0 { break }
+    last := layer == g.n_layer - 1
+    t_out := if last { 1 } else { tokens.count }
+    members := build_layer_members(table, plan, layer)
+    read_started := time.instant()
+    take_pack(o, fill_members(pak, members, tokens, window, chunk_temp, counters))
+    dense_pread := time.instant() - read_started
+    o.pread_ns = o.pread_ns + dense_pread
+    o.window_reuse_count = o.window_reuse_count + 1
+    o.dense_bytes_read = o.dense_bytes_read + plan.layer_member_bytes[layer]
+    if o.code.len() == 0 && o.reference_present {
+      take_pack(o, compare_source_file(
+          reference_path, members, tokens, window, layer, chunk_temp, source_counters))
+    }
+    reference := o.reference_present
+    spec := spec_for(layer, tokens.count, t_out, width, last, wide, reference)
+    b_nodes := layer_olmoe.mm_b_node_table(g, t_out)
+    mut routing := layer_olmoe.empty_routing()
+    mut result := empty_layer_result()
+    if o.code.len() == 0 {
+      run_layer(
+        device, backend, context_bytes, spec, g, plan, win, members, a_nodes,
+        b_nodes, oracle, window, claim_window, slot_view,
+        ref_slot_view, index_view, mask_view, out_ids_view, residual_view, node_view,
+        reference_view, scan, ranges, pak, block_temp, counters, breach, routing, result, o)
+      account(result.activation_a, result.slot_high_water, result.node_count_a, activation, o)
+      account(result.activation_b, result.slot_high_water, result.node_count_b, activation, o)
+      o.compute_ns = o.compute_ns + result.compute_a_ns + result.compute_b_ns
+      o.claim_pread_ns = o.claim_pread_ns + result.claim_pread_ns
+      o.decide_ns = o.decide_ns + result.decide_ns
+      o.reference_compute_ns = o.reference_compute_ns + result.reference_compute_ns
+      check_balance(o)
+    }
+    if o.code.len() == 0 && o.reference_present {
+      take_pack(o, compare_claim_source_file(
+          reference_path, claim_window, plan, win, routing, layer, chunk_temp, source_counters))
+    }
+    if o.code.len() == 0 {
+      o.expert_bytes_read = o.expert_bytes_read + result.claim_bytes
+      o.planes_read = o.planes_read + result.claim_planes
+      o.keys_demanded = o.keys_demanded + routing.count
+      o.keys_distinct = o.keys_distinct + routing.count
+      running = running + result.claim_bytes
+      cumulative.push(running)
+      if result.claim_bytes > o.claim_peak_use_bytes {
+        o.claim_peak_use_bytes = result.claim_bytes
+        o.claim_peak_use_layer = layer
+      }
+      if schedule_rows > 0 { rows.write(",") }
+      row_text := render_schedule_row(
+        plan, spec, routing, result, g.n_expert_used, dense_pread, table.count)
+      row_view: str := row_text
+      rows.write(row_view)
+      schedule_rows = schedule_rows + 1
+    }
+    layer = layer + 1
+  }
+
+  // Graph 33: the head. `output_norm`, `output`, and the one `MUL_MAT` against 84.5 MB of Q6_K that
+  // section 2.2's narrowing runs once instead of six times.
+  mut head_result := empty_end_result()
+  head_base := layer_olmoe.mm_oracle_head_base(g.n_layer)
+  if o.code.len() == 0 {
+    read_started := time.instant()
+    take_pack(o, fill_members(pak, head_members, tokens, window, chunk_temp, counters))
+    o.head_pread_ns = time.instant() - read_started
+    o.pread_ns = o.pread_ns + o.head_pread_ns
+    o.window_reuse_count = o.window_reuse_count + 1
+    o.head_bytes_read = head_members.nbytes[0] + head_members.nbytes[1]
+  }
+  if o.code.len() == 0 && o.reference_present {
+    take_pack(o, compare_source_file(
+        reference_path, head_members, tokens, window, g.n_layer, chunk_temp, source_counters))
+  }
+  if o.code.len() == 0 {
+    head_reference := o.reference_present
+    run_end_graph(
+      device, backend, context_bytes, GRAPH_HEAD, 1 + 2 * g.n_layer, g.n_layer, 1, head_base,
+      layer_olmoe.MM_HEAD_ORACLE_COUNT, head_reference, g, head_members, head_nodes, oracle,
+      window, slot_view, ref_slot_view, residual_view, logits_view, node_view, reference_view,
+      scan, ranges, breach, head_result, o)
+    account(head_result.activation_bytes, head_result.slot_high_water, head_result.node_count,
+      activation, o)
+    o.head_node_count = head_result.node_count
+    o.head_compute_ns = head_result.compute_ns
+    o.compute_ns = o.compute_ns + head_result.compute_ns
+    o.reference_compute_ns = o.reference_compute_ns + head_result.reference_compute_ns
+    norm_view: str := head_result.norm_sha
+    o.result_norm_sha256 = norm_view.clone()
+    o.result_norm_bit_sum = head_result.norm_bit_sum
+    check_balance(o)
+  }
+  if o.code.len() == 0 {
+    if head_result.out_bytes != logits_bytes {
+      fail(o, "R5_RESIDUAL", labelled("layer", g.n_layer))
+    } else {
+      digest := digest_region(logits_view)
+      o.sha256 = digest.sha.clone()
+      o.bit_sum = digest.bit_sum
+      o.element_count = g.n_vocab
+      o.nonfinite_count = digest.nonfinite
+      o.argmax = digest.argmax
+      mut top_index: array_builder<i64> := array_builder()
+      mut top_bits: array_builder<i64> := array_builder()
+      top_k(logits_view, top_index, top_bits)
+      top = TopColumns { index: top_index.build(), bits: top_bits.build() }
+    }
+  }
+  if o.code.len() == 0 && o.logits_present {
+    compare_logits(logits_path, logits_view, g.n_vocab, wide, top, o)
+  }
+
+  if !ggml_ffi.handle_absent(backend) {
+    ggml_ffi.backend_close(backend)
+    o.backends_freed = o.backends_freed + 1
+  }
+  o.slot_capacity = ggml_ffi.slots_capacity(slot_view)
+  o.slot_magic_ok = ggml_ffi.slots_ok(slot_view)
+  o.released_before_owner_scope_end =
+  o.ggml_buffers_created == o.ggml_buffers_freed
+    && o.contexts_created == o.contexts_freed
+    && o.backends_created == o.backends_freed
+    && o.gallocrs_created == o.gallocrs_freed
+    && o.phase_balance_failures == 0
+  // Both verdicts are conclusions about a **completed** run: an error document that placed one
+  // graph's members would otherwise claim `EXTERNAL` over 1 of 34, and a reference arm that compared
+  // one graph would claim `IDENTICAL` over the same 1 of 34 (R5B correction C17).
+  o.verdict = if o.code.len() > 0 {
+    VERDICT_UNAVAILABLE
+  } else if o.member_placements > 0 && o.pointer_identity_failures == 0 {
+    VERDICT_EXTERNAL
+  } else {
+    VERDICT_COPIED
+  }
+  if o.reference_present && o.reference_compared > 0 && o.code.len() == 0
+    && o.reference_graphs == o.graph_count {
+    if o.reference_identical == o.reference_compared {
+      o.reference_verdict = REFERENCE_IDENTICAL
+    } else {
+      o.reference_verdict = REFERENCE_MISMATCH
+      worst_view: str := o.reference_first_node
+      fail(o, "R5_REFERENCE_MISMATCH", graph_node_at(
+          o.reference_first_graph, o.reference_first_layer, worst_view, o.reference_first_index))
+    }
+  }
+  if o.transcript_present && o.code.len() == 0 {
+    // A routing mismatch is **data on a successful run**, not an error code, and oracle 2 is still
+    // evaluated and reported beside it.
+    if o.routing_ids_printed > 0 && o.routing_ids_matched == o.routing_ids_printed
+      && o.routing_sums_matched == o.routing_sums_expected
+      && o.routing_sums_expected == g.n_layer {
+      o.routing_verdict = ROUTING_MATCH
+    } else {
+      o.routing_verdict = ROUTING_MISMATCH
+    }
+    if o.oracle_elements <= 0 {
+      fail(o, "R5_ORACLE_MISSING", "elements[0]")
+    } else {
+      o.oracle_verdict = if o.oracle_max_abs <= TOLERANCE_TEN_THOUSANDTHS && !breach {
+        ORACLE_PASS
+      } else {
+        ORACLE_FAIL
+      }
+    }
+  }
+  // The reader counters are two independent pairs (R5B correction C18): `pack.reader_*` is the
+  // container's and is what `timings.pread_ns` and `claim_pread_ns` time; `reference.*` is the
+  // source GGUF's, read only by the self-reference oracle's byte-equality pre-check.
+  o.reader_pread_count = counters.pread_count
+  o.reader_bytes_read = counters.bytes_read
+  o.reference_pread_count = source_counters.pread_count
+  o.reference_bytes_read = source_counters.bytes_read
+  graphs = GraphColumns { activation_bytes: activation.build() }
+  curve = CurveColumns { cumulative: cumulative.build() }
+  schedule = ScheduleRows { count: schedule_rows, text: rows.to_string() }
+}
+
+fn compare_source_file(
+  reference_path: str,
+  borrow m: GraphMembers,
+  borrow tokens: TokenColumns,
+  borrow window: slice<u8>,
+  layer: i64,
+  borrow mut temp: buffer,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  handle := match fs.open_rw(reference_path) {
+    Ok(value) => value,
+    Err(failure) => {
+      return Err(pack_fault("R5_SOURCE_UNREADABLE", error_name(failure).clone()))
+    },
+  }
+  size := match handle.len() {
+    Ok(value) => value,
+    Err(failure) => {
+      return Err(pack_fault("R5_SOURCE_UNREADABLE", error_name(failure).clone()))
+    },
+  }
+  return compare_source_members(handle, size, m, tokens, window, layer, temp, c)
+}
+
+fn compare_claim_source_file(
+  reference_path: str,
+  borrow claim_window: slice<u8>,
+  borrow p: Plan,
+  borrow win: ClaimWindow,
+  borrow routing: layer_olmoe.Routing,
+  layer: i64,
+  borrow mut temp: buffer,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  handle := match fs.open_rw(reference_path) {
+    Ok(value) => value,
+    Err(failure) => {
+      return Err(pack_fault("R5_SOURCE_UNREADABLE", error_name(failure).clone()))
+    },
+  }
+  size := match handle.len() {
+    Ok(value) => value,
+    Err(failure) => {
+      return Err(pack_fault("R5_SOURCE_UNREADABLE", error_name(failure).clone()))
+    },
+  }
+  mut plane_builder: array_builder<i64> := array_builder()
+  mut role := 0
+  loop {
+    if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+    plane_builder.push(p.plane_bytes[layer * layer_olmoe.CLAIM_ROLE_COUNT + role])
+    role = role + 1
+  }
+  planes := plane_builder.build()
+  return compare_claim_source(
+    handle, size, claim_window, p, win, planes, routing, layer, temp, c)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Steps 3 to 25 (section 3.9)
+// ---------------------------------------------------------------------------------------------
+
+// Steps 3, 4, and 5 to 10: the token list, the **mandatory** declared attention width, the geometry
+// document, and the two range checks that need `n_vocab`. `KV_WIDTH` has no default and is not
+// derived from the transcript, for section 3.3's two reasons: letting the file used as an oracle
+// configure the computation it verifies is the one property no downstream checking repairs, and on
+// a routed model that configuration would also change the *bytes read*.
+fn stage_geometry(
+  tokens_text: str,
+  width_text: str,
+  geometry_path: str,
+  borrow mut tokens: TokenColumns,
+  borrow mut o: Outcome,
+) -> layer_olmoe.Geometry {
+  mut g := layer_olmoe.empty_geometry()
+  lexical := moe_layer_forward.parse_tokens(tokens_text, 9223372036854775807)
+  if !lexical.ok {
+    detail_view: str := lexical.detail
+    fail(o, "R5_TOKENS", detail_view)
+    return g
+  }
+  width := parse_index(width_text)
+  if width < lexical.count || width > layer_olmoe.MAX_ATTENTION_WIDTH {
+    fail(o, "R5_KV_WIDTH", labelled("kv_width", width))
+    return g
+  }
+  o.attention_width = width
+  geometry_text := match fs.read_file(geometry_path) {
+    Ok(value) => value,
+    Err(failure) => {
+      fail(o, "R5_GEOMETRY_UNREADABLE", error_name(failure))
+      return g
+    },
+  }
+  geometry_view: str := geometry_text
+  g = layer_olmoe.parse_geometry(geometry_view)
+  o.arch = g.arch.clone()
+  o.n_layer = g.n_layer
+  o.n_embd = g.n_embd
+  o.n_head = g.n_head
+  o.n_head_kv = g.n_head_kv
+  o.head_dim = g.head_dim
+  o.n_ff_exp = g.n_ff_exp
+  o.n_vocab = g.n_vocab
+  o.n_expert = g.n_expert
+  o.n_expert_used = g.n_expert_used
+  o.context_length = g.context_length
+  o.rms_eps_bits = g.rms_eps_bits
+  o.rope_type = g.rope_type
+  o.rope_dim_count = g.rope_dim_count
+  o.rope_freq_base_bits = g.rope_freq_base_bits
+  o.attn_scale_bits = g.attn_scale_bits
+  if g.code.len() > 0 {
+    code_view: str := g.code
+    detail_view: str := g.detail
+    fail(o, code_view, detail_view)
+    return g
+  }
+  // R5D correction C1's ceiling at **R5E's** slot base. R5D's phase-B table starts at slot 52 and
+  // R5E's at 56, because R5E's layer carries nine dense members, four attention inputs, three
+  // compact stacks and five carried values rather than R5D's ten and eight; the store is the same
+  // 128 slots, so the ceiling this arm can honour is `n_expert_used <= 32` rather than 34. It is
+  // checked here, naming the field, rather than reaching the node walk and reporting `R5_SLOT` on a
+  // row that is not at fault.
+  if layer_olmoe.MM_B_NODE_BASE + layer_olmoe.b_node_count(g.n_expert_used)
+    > layer_olmoe.MAX_NODE_SLOTS {
+    fail(o, "R5_GEOMETRY", "n_expert_used")
+    return g
+  }
+  parsed := moe_layer_forward.parse_tokens(tokens_text, g.n_vocab)
+  if !parsed.ok {
+    detail_view: str := parsed.detail
+    fail(o, "R5_TOKENS", detail_view)
+    return g
+  }
+  mut ids: array_builder<i64> := array_builder()
+  mut copy_at := 0
+  loop {
+    if copy_at >= parsed.count { break }
+    ids.push(parsed.ids[copy_at])
+    copy_at = copy_at + 1
+  }
+  o.token_count = parsed.count
+  o.narrow_layer = g.n_layer - 1
+  o.narrow_index = parsed.count - 1
+  tokens = TokenColumns { count: parsed.count, ids: ids.build() }
+  return g
+}
+
+// Step 24, and section 5.6's risk: a Q6_K `output.weight` or a Q4_K `ffn_down_exps` discovered
+// unsupported after 1.5 GB of I/O is a failure this design refuses to be able to have. Every member
+// of every block the run will read is type-checked **before the first read**.
+fn stage_types(borrow m: GraphMembers, layer: i64, borrow mut o: Outcome) {
+  mut at := 0
+  loop {
+    if at >= m.count || o.code.len() > 0 { break }
+    status := ggml_ffi.type_ok_status(m.ggml_type[at], m.ne0[at])
+    if status != 0 {
+      code := if status == ggml_ffi.STATUS_TYPE { "R5_TYPE_UNSUPPORTED" } else { "R5_SHAPE" }
+      fail(o, code, layer_named(layer, "role", graph_member_label(m, at)))
+    }
+    at = at + 1
+  }
+}
+
+fn stage_claim_types(borrow p: Plan, borrow g: layer_olmoe.Geometry, borrow mut o: Outcome) {
+  mut layer := 0
+  loop {
+    if layer >= p.n_layer || o.code.len() > 0 { break }
+    mut role := 0
+    loop {
+      if role >= layer_olmoe.CLAIM_ROLE_COUNT || o.code.len() > 0 { break }
+      at := layer * layer_olmoe.CLAIM_ROLE_COUNT + role
+      status := ggml_ffi.type_ok_status(p.plane_type[at], layer_olmoe.claim_ne0(g, role))
+      if status != 0 {
+        code := if status == ggml_ffi.STATUS_TYPE { "R5_TYPE_UNSUPPORTED" } else { "R5_SHAPE" }
+        fail(o, code, layer_named(layer, "role", layer_olmoe.claim_label(role)))
+      }
+      role = role + 1
+    }
+    layer = layer + 1
+  }
+}
+
+// Steps 11 to 19: the container, both coverage checks, 3,219 member records, and the two window
+// sweeps. Nothing here touches ggml and nothing outside the process is written.
+fn stage_plan(
+  borrow pak: file,
+  borrow g: layer_olmoe.Geometry,
+  borrow table: layer_olmoe.MemberTable,
+  tokens: i64,
+  borrow mut plan: Plan,
+  borrow mut ends: Ends,
+  borrow mut win: ClaimWindow,
+  borrow mut o: Outcome,
+  borrow mut c: alignpack_read.Counters,
+) -> i64 {
+  index := match alignpack_read.open_pack(pak, c) {
+    Ok(value) => value,
+    Err(f) => {
+      pack_fault_into(o, f)
+      return -1
+    },
+  }
+  o.format_version = index.format_version
+  o.block_align = index.block_align
+  o.member_align = index.member_align
+  o.block_count = index.block_count
+  o.member_count = index.member_count
+  o.total_bytes = index.total_bytes
+  o.payload_offset = index.payload_offset
+  o.model_bytes = index.total_bytes
+  match stage_ends(pak, index, g, ends, c) {
+    Ok(_) => {},
+    Err(f) => { pack_fault_into(o, f) },
+  }
+  o.embedding_block_index = ends.embed_block_index
+  o.output_block_index = ends.output_block_index
+  o.output_tied = ends.tied
+  o.output_ggml_type = ends.out_type
+  o.head_output_norm_bytes = ends.norm_nbytes
+  o.head_output_bytes = ends.out_nbytes
+  if o.code.len() > 0 { return -1 }
+  take_pack(o, validate_layer_coverage(index, g.n_layer))
+  if o.code.len() > 0 { return -1 }
+  take_pack(o, validate_expert_coverage(index, g.n_layer, g.n_expert))
+  if o.code.len() > 0 { return -1 }
+  o.expert_block_count = g.n_layer * g.n_expert
+  plan = match build_plan(pak, index, g, table, c) {
+    Ok(value) => value,
+    Err(f) => {
+      pack_fault_into(o, f)
+      return -1
+    },
+  }
+  mut in_model := 0
+  mut planes := 0
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer { break }
+    mut role := 0
+    loop {
+      if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+      in_model = in_model + g.n_expert * plan.plane_bytes[layer * layer_olmoe.CLAIM_ROLE_COUNT + role]
+      planes = planes + g.n_expert
+      role = role + 1
+    }
+    layer = layer + 1
+  }
+  o.expert_bytes_in_model = in_model
+  o.planes_in_model = planes
+  win = size_claim_window(plan, g, tokens, index.block_align)
+  o.claim_window_bytes = win.total
+  o.claim_u_max = win.u_max
+  if win.total <= 0 || win.total > layer_olmoe.MAX_CLAIM_WINDOW_BYTES {
+    fail(o, "R5D_CLAIM_BUDGET", labelled("bytes", win.total))
+    return -1
+  }
+  o.reader_pread_count = c.pread_count
+  o.reader_bytes_read = c.bytes_read
+  return size_dense_window(plan, ends, index.block_align, tokens, o)
+}
+
+// Steps 20 to 40. Every ggml object below the backend is created and freed inside `run_layer` or
+// `run_end_graph`, so this function holds exactly one: the device.
+pub fn execute(
+  pack_path: str,
+  geometry_path: str,
+  tokens_text: str,
+  width_text: str,
+  reference_path: str,
+  transcript_path: str,
+  logits_path: str,
+  borrow mut tokens: TokenColumns,
+  borrow mut schedule: ScheduleRows,
+  borrow mut graphs: GraphColumns,
+  borrow mut curve: CurveColumns,
+  borrow mut top: TopColumns,
+) -> Outcome {
+  started := time.instant()
+  mut o := empty_outcome()
+  o.fp_contract_off = ggml_ffi.fp_contract_off()
+  o.reference_present = reference_path.len() > 0
+  o.transcript_present = transcript_path.len() > 0
+  o.logits_present = logits_path.len() > 0
+
+  g := stage_geometry(tokens_text, width_text, geometry_path, tokens, o)
+  if o.code.len() > 0 {
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  table := layer_olmoe.mm_layer_member_table(g)
+  pak := match fs.open_rw(pack_path) {
+    Ok(handle) => handle,
+    Err(failure) => {
+      fail(o, "R4_PACK_UNREADABLE", error_name(failure))
+      o.elapsed_ns = time.instant() - started
+      return o
+    },
+  }
+  mut counters := alignpack_read.new_counters()
+  mut plan := empty_plan()
+  mut ends := empty_ends()
+  mut win := empty_claim_window()
+  dense_bytes := stage_plan(pak, g, table, tokens.count, plan, ends, win, o, counters)
+  if dense_bytes < 0 {
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // Step 21. Every allocation is a function of the geometry, the token count, and the block table,
+  // computed and checked before anything is reserved.
+  residual_bytes := g.n_embd * tokens.count * 4
+  logits_bytes := g.n_vocab * 4
+  carried_bytes := 2 * g.n_embd * tokens.count * 4 + g.n_expert * tokens.count * 4
+    + 2 * g.n_expert_used * tokens.count * 4
+  mut readback := g.n_embd * g.n_expert_used * tokens.count
+  readback = larger(readback, g.n_ff_exp * g.n_expert_used * tokens.count)
+  readback = larger(readback, g.n_expert * tokens.count)
+  readback = larger(readback, g.n_embd * tokens.count)
+  readback = larger(readback, g.n_vocab)
+  readback_bytes := readback * 4
+  o.residual_bytes = residual_bytes
+  o.logits_bytes = logits_bytes
+  o.carried_bytes = carried_bytes
+  if residual_bytes <= 0 || residual_bytes > MAX_WINDOW_BYTES {
+    fail(o, "R5_WINDOW_BUDGET", "residual")
+  }
+  if o.code.len() == 0 && (carried_bytes <= 0 || carried_bytes > MAX_WINDOW_BYTES) {
+    fail(o, "R5_WINDOW_BUDGET", "carried")
+  }
+  if o.code.len() == 0 && (logits_bytes <= 0 || logits_bytes > MAX_WINDOW_BYTES) {
+    fail(o, "R5_WINDOW_BUDGET", "logits")
+  }
+  if o.code.len() > 0 {
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+
+  // The two Align-owned weight windows, each over-reserved by `MAX_TENSOR_ALIGNMENT` so the arm can
+  // hand ggml an **interior** range that starts on a boundary, allocated exactly once and reused 34
+  // times between them.
+  mut weights: buffer := buffer(dense_bytes + MAX_TENSOR_ALIGNMENT)
+  fill_zero(weights, 1)
+  dense_pad := MAX_TENSOR_ALIGNMENT - base_mod(weights, MAX_TENSOR_ALIGNMENT)
+  prime_window(weights, dense_pad - 1 + dense_bytes)
+  mut claims: buffer := buffer(win.total + MAX_TENSOR_ALIGNMENT)
+  fill_zero(claims, 1)
+  claim_pad := MAX_TENSOR_ALIGNMENT - base_mod(claims, MAX_TENSOR_ALIGNMENT)
+  prime_window(claims, claim_pad - 1 + win.total)
+  weights_view := weights.bytes()
+  claims_view := claims.bytes()
+  if weights_view.len() != dense_pad + dense_bytes
+    || claims_view.len() != claim_pad + win.total {
+    fail(o, "R4_WINDOW_UNAVAILABLE", "weights")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  window_view := weights_view[dense_pad..dense_pad + dense_bytes]
+  claim_view := claims_view[claim_pad..claim_pad + win.total]
+
+  embed_members := build_embed_members(g, ends, tokens.count)
+  head_members := build_head_members(g, ends)
+
+  // Step 22. Availability, and where the default stub shim stops: everything above — the whole
+  // reader, the geometry, both coverage checks, every member, shape, slice, and window budget — has
+  // run for real without ggml, without a model, and without a transcript.
+  if !ggml_ffi.available() {
+    fail(o, "R5_GGML_UNAVAILABLE", "stub")
+    o.verdict = VERDICT_UNAVAILABLE
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  device := ggml_ffi.device_open()
+  if ggml_ffi.handle_absent(device) {
+    fail(o, "R5_GGML_UNAVAILABLE", "device")
+    o.verdict = VERDICT_UNAVAILABLE
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // Step 23.
+  alignment := ggml_ffi.tensor_alignment()
+  o.tensor_alignment = if alignment > 0 { alignment } else { 0 }
+  o.table_drift = ggml_ffi.table_drift()
+  if alignment <= 0 || alignment > MAX_TENSOR_ALIGNMENT {
+    fail(o, "R5_ABI", labelled("alignment", alignment))
+  }
+  if o.code.len() == 0 && o.table_drift >= 0 {
+    fail(o, "R5_ABI", labelled("type", o.table_drift))
+  }
+  // The three claim regions are fixed for the whole run, so their alignment is checked once rather
+  // than at every layer: a region base that is not `0 mod tensor_alignment` would reach
+  // `ggml_backend_cpu_buffer_from_ptr` with a misaligned interior pointer, which is `abort()`.
+  if o.code.len() == 0 {
+    if ggml_ffi.align_mod(claim_view, alignment) != 0 {
+      fail(o, "R5_ALIGNMENT", "claim_window")
+    }
+    mut role := 0
+    loop {
+      if role >= layer_olmoe.CLAIM_ROLE_COUNT || o.code.len() > 0 { break }
+      if win.region[role] % alignment != 0 {
+        fail(o, "R5_ALIGNMENT", named("role", layer_olmoe.claim_label(role)))
+      }
+      role = role + 1
+    }
+  }
+  if o.code.len() == 0 {
+    stage_types(embed_members, -1, o)
+    mut probe := 0
+    loop {
+      if probe >= g.n_layer || o.code.len() > 0 { break }
+      probe_members := build_layer_members(table, plan, probe)
+      stage_types(probe_members, probe, o)
+      probe = probe + 1
+    }
+  }
+  if o.code.len() == 0 { stage_types(head_members, g.n_layer, o) }
+  if o.code.len() == 0 { stage_claim_types(plan, g, o) }
+  if o.code.len() > 0 {
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  context_bytes := ggml_ffi.graph_context_bytes(layer_olmoe.MAX_NODE_SLOTS)
+  o.graph_context_bytes = context_bytes
+  if context_bytes <= 0 {
+    fail(o, "R5_ABI", labelled("graph_context_bytes", context_bytes))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  mut chunk_temp: buffer := buffer(CHUNK_BYTES)
+  mut block_temp: buffer := buffer(if plan.max_block_bytes > 0 { plan.max_block_bytes } else { 1 })
+  schedule_model(
+    pak, g, table, plan, tokens, embed_members, head_members, window_view, claim_view, win,
+    device, context_bytes, residual_bytes, logits_bytes, readback_bytes,
+    reference_path, transcript_path, logits_path, schedule, graphs, curve, top,
+    chunk_temp, block_temp, counters, o)
+  o.elapsed_ns = time.instant() - started
+  return o
+}
+
+// ---------------------------------------------------------------------------------------------
+// The document (section 3.8)
+// ---------------------------------------------------------------------------------------------
+
+pub fn render_head(borrow o: Outcome, borrow tokens: TokenColumns) -> string {
+  d := builder()
+  d.write("\"model\":{\"arch\":")
+  arch_view: str := o.arch
+  d.write(json_string(arch_view))
+  d.write(",\"n_layer\":")
+  d.write_int(o.n_layer)
+  d.write(",\"n_embd\":")
+  d.write_int(o.n_embd)
+  d.write(",\"n_head\":")
+  d.write_int(o.n_head)
+  d.write(",\"n_head_kv\":")
+  d.write_int(o.n_head_kv)
+  d.write(",\"head_dim\":")
+  d.write_int(o.head_dim)
+  d.write(",\"n_ff_exp\":")
+  d.write_int(o.n_ff_exp)
+  d.write(",\"n_vocab\":")
+  d.write_int(o.n_vocab)
+  d.write(",\"n_expert\":")
+  d.write_int(o.n_expert)
+  d.write(",\"n_expert_used\":")
+  d.write_int(o.n_expert_used)
+  d.write(",\"context_length\":")
+  d.write_int(o.context_length)
+  d.write(",\"rms_eps_bits\":")
+  d.write_int(o.rms_eps_bits)
+  d.write(",\"rope_type\":")
+  d.write_int(o.rope_type)
+  d.write(",\"rope_dim_count\":")
+  d.write_int(o.rope_dim_count)
+  d.write(",\"rope_freq_base_bits\":")
+  d.write_int(o.rope_freq_base_bits)
+  d.write(",\"attn_scale_bits\":")
+  d.write_int(o.attn_scale_bits)
+  d.write(",\"output_tied\":")
+  d.write(bool_text(o.output_tied))
+  d.write(",\"output_ggml_type\":")
+  d.write_int(o.output_ggml_type)
+  d.write("},\"selection\":{\"token_count\":")
+  d.write_int(o.token_count)
+  d.write(",\"tokens\":[")
+  mut token_at := 0
+  loop {
+    if token_at >= tokens.ids.len() { break }
+    if token_at > 0 { d.write(",") }
+    d.write_int(tokens.ids[token_at])
+    token_at = token_at + 1
+  }
+  d.write("],\"embedding_block_index\":")
+  d.write_int(o.embedding_block_index)
+  d.write(",\"output_block_index\":")
+  d.write_int(o.output_block_index)
+  d.write(",\"narrow_layer\":")
+  d.write_int(o.narrow_layer)
+  d.write(",\"narrow_index\":")
+  d.write_int(o.narrow_index)
+  d.write(",\"attention_width\":")
+  d.write_int(o.attention_width)
+  d.write(",\"expert_block_count\":")
+  d.write_int(o.expert_block_count)
+  d.write("}")
+  return d.to_string()
+}
+
+// `residency.cumulative_expert_bytes[]` is section 2.9's union curve as a document field, so the
+// "where does the win come from" question is answered without re-running anything.
+// `keys_demanded` and `keys_distinct` are **equal** on every prefill — that is section 2.9's
+// finding, and publishing both is how a future multi-prefill capability will see the moment they
+// stop being equal.
+pub fn render_residency(borrow o: Outcome, borrow curve: CurveColumns) -> string {
+  total_read := o.expert_bytes_read + o.dense_bytes_read + o.head_bytes_read
+    + o.embedding_bytes_read
+  d := builder()
+  d.write("{\"expert_bytes_read\":")
+  d.write_int(o.expert_bytes_read)
+  d.write(",\"expert_bytes_in_model\":")
+  d.write_int(o.expert_bytes_in_model)
+  d.write(",\"expert_bytes_read_ppm\":")
+  d.write_int(if o.expert_bytes_in_model > 0 {
+      o.expert_bytes_read * 1000000 / o.expert_bytes_in_model
+    } else {
+      0
+    })
+  d.write(",\"planes_read\":")
+  d.write_int(o.planes_read)
+  d.write(",\"planes_in_model\":")
+  d.write_int(o.planes_in_model)
+  d.write(",\"keys_demanded\":")
+  d.write_int(o.keys_demanded)
+  d.write(",\"keys_distinct\":")
+  d.write_int(o.keys_distinct)
+  d.write(",\"dense_bytes_read\":")
+  d.write_int(o.dense_bytes_read)
+  d.write(",\"head_bytes_read\":")
+  d.write_int(o.head_bytes_read)
+  d.write(",\"embedding_bytes_read\":")
+  d.write_int(o.embedding_bytes_read)
+  d.write(",\"total_bytes_read\":")
+  d.write_int(total_read)
+  d.write(",\"model_bytes\":")
+  d.write_int(o.model_bytes)
+  d.write(",\"total_bytes_read_ppm\":")
+  d.write_int(if o.model_bytes > 0 { total_read * 1000000 / o.model_bytes } else { 0 })
+  d.write(",\"cumulative_expert_bytes\":[")
+  mut at := 0
+  loop {
+    if at >= curve.cumulative.len() { break }
+    if at > 0 { d.write(",") }
+    d.write_int(curve.cumulative[at])
+    at = at + 1
+  }
+  d.write("]}")
+  return d.to_string()
+}
+
+// `window.claim_peak_use_bytes` against `window.claim_bytes` publishes section 3.5's
+// over-reservation per run: the window is sized by the arithmetic bound `U_max` and the measured
+// prompt does not reach it, and the trade is a document field rather than a paragraph.
+pub fn render_window(borrow o: Outcome) -> string {
+  d := builder()
+  d.write("{\"dense_bytes\":")
+  d.write_int(o.dense_window_bytes)
+  d.write(",\"dense_peak_block_index\":")
+  d.write_int(o.dense_peak_block_index)
+  d.write(",\"dense_peak_block_kind\":")
+  d.write_int(o.dense_peak_block_kind)
+  d.write(",\"dense_peak_block_layer\":")
+  d.write_int(o.dense_peak_block_layer)
+  d.write(",\"dense_peak_block_bytes\":")
+  d.write_int(o.dense_peak_block_bytes)
+  d.write(",\"claim_bytes\":")
+  d.write_int(o.claim_window_bytes)
+  d.write(",\"claim_u_max\":")
+  d.write_int(o.claim_u_max)
+  d.write(",\"claim_peak_use_bytes\":")
+  d.write_int(o.claim_peak_use_bytes)
+  d.write(",\"claim_peak_use_layer\":")
+  d.write_int(o.claim_peak_use_layer)
+  d.write(",\"reuse_count\":")
+  d.write_int(o.window_reuse_count)
+  d.write(",\"pointer_identity_failures\":")
+  d.write_int(o.pointer_identity_failures)
+  d.write(",\"member_placements\":")
+  d.write_int(o.member_placements)
+  d.write(",\"claim_placements\":")
+  d.write_int(o.claim_placements)
+  d.write(",\"residual_bytes\":")
+  d.write_int(o.residual_bytes)
+  d.write(",\"carried_bytes\":")
+  d.write_int(o.carried_bytes)
+  d.write(",\"logits_bytes\":")
+  d.write_int(o.logits_bytes)
+  d.write("}")
+  return d.to_string()
+}
+
+// **ggml's node counts are not the table row counts, and both are published**: ggml materializes
+// some rows as nodes and folds others, and publishing only one of them would make the slot budget
+// unauditable.
+pub fn render_graph(borrow o: Outcome, borrow graphs: GraphColumns) -> string {
+  d := builder()
+  d.write("{\"graph_count\":")
+  d.write_int(o.graph_count)
+  d.write(",\"node_count_total\":")
+  d.write_int(o.node_count_total)
+  d.write(",\"embed_node_count\":")
+  d.write_int(o.embed_node_count)
+  d.write(",\"head_node_count\":")
+  d.write_int(o.head_node_count)
+  d.write(",\"table_rows_a\":")
+  d.write_int(o.table_rows_a)
+  d.write(",\"table_rows_b\":")
+  d.write_int(o.table_rows_b)
+  d.write(",\"slot_capacity\":")
+  d.write_int(o.slot_capacity)
+  d.write(",\"slot_high_water\":")
+  d.write_int(o.slot_high_water)
+  d.write(",\"activation_bytes_peak\":")
+  d.write_int(o.activation_bytes_peak)
+  d.write(",\"activation_bytes_by_graph\":[")
+  mut at := 0
+  loop {
+    if at >= graphs.activation_bytes.len() { break }
+    if at > 0 { d.write(",") }
+    d.write_int(graphs.activation_bytes[at])
+    at = at + 1
+  }
+  d.write("],\"context_bytes\":")
+  d.write_int(o.graph_context_bytes)
+  d.write(",\"backend_name\":")
+  backend_view: str := o.backend_name
+  d.write(json_string(backend_view))
+  d.write("}")
+  return d.to_string()
+}
+
+pub fn render_output(borrow o: Outcome, borrow top: TopColumns) -> string {
+  d := builder()
+  d.write("{\"output_norm_bytes\":")
+  d.write_int(o.head_output_norm_bytes)
+  d.write(",\"output_bytes\":")
+  d.write_int(o.head_output_bytes)
+  d.write(",\"pread_ns\":")
+  d.write_int(o.head_pread_ns)
+  d.write(",\"compute_ns\":")
+  d.write_int(o.head_compute_ns)
+  d.write(",\"node_count\":")
+  d.write_int(o.head_node_count)
+  d.write(",\"result_norm_sha256\":")
+  norm_view: str := o.result_norm_sha256
+  d.write(json_string(norm_view))
+  d.write(",\"result_norm_bit_sum\":")
+  d.write_int(o.result_norm_bit_sum)
+  d.write("},\"output\":{\"sha256\":")
+  sha_view: str := o.sha256
+  d.write(json_string(sha_view))
+  d.write(",\"bit_sum\":")
+  d.write_int(o.bit_sum)
+  d.write(",\"element_count\":")
+  d.write_int(o.element_count)
+  d.write(",\"nonfinite_count\":")
+  d.write_int(o.nonfinite_count)
+  d.write(",\"argmax\":")
+  d.write_int(o.argmax)
+  d.write(",\"top_k\":[")
+  mut at := 0
+  loop {
+    if at >= top.index.len() { break }
+    if at > 0 { d.write(",") }
+    d.write("{\"index\":")
+    d.write_int(top.index[at])
+    d.write(",\"bits\":")
+    d.write_int(column_at(top.bits, at))
+    d.write("}")
+    at = at + 1
+  }
+  d.write("]}")
+  return d.to_string()
+}
+
+pub fn render_oracles(borrow o: Outcome) -> string {
+  d := builder()
+  d.write("{\"present\":")
+  d.write(bool_text(o.reference_present))
+  d.write(",\"verdict\":")
+  d.write(json_string(reference_label(o.reference_verdict)))
+  d.write(",\"graphs_compared\":")
+  d.write_int(o.reference_graphs)
+  d.write(",\"nodes_compared\":")
+  d.write_int(o.reference_compared)
+  d.write(",\"nodes_identical\":")
+  d.write_int(o.reference_identical)
+  d.write(",\"first_difference_graph\":")
+  d.write_int(o.reference_first_graph)
+  d.write(",\"first_difference_layer\":")
+  d.write_int(o.reference_first_layer)
+  d.write(",\"first_difference_node\":")
+  reference_node_view: str := o.reference_first_node
+  d.write(json_string(reference_node_view))
+  d.write(",\"first_difference_index\":")
+  d.write_int(o.reference_first_index)
+  d.write(",\"first_difference_primary_bits\":")
+  d.write_int(o.reference_first_primary_bits)
+  d.write(",\"first_difference_reference_bits\":")
+  d.write_int(o.reference_first_reference_bits)
+  d.write(",\"pread_count\":")
+  d.write_int(o.reference_pread_count)
+  d.write(",\"bytes_read\":")
+  d.write_int(o.reference_bytes_read)
+  d.write("},\"routing_oracle\":{\"present\":")
+  d.write(bool_text(o.transcript_present))
+  d.write(",\"verdict\":")
+  d.write(json_string(routing_label(o.routing_verdict)))
+  d.write(",\"instrument\":")
+  d.write(json_string("llama-eval-callback"))
+  d.write(",\"layers_expected\":")
+  d.write_int(o.routing_layers_expected)
+  d.write(",\"layers_matched\":")
+  d.write_int(o.routing_layers_matched)
+  d.write(",\"ids_total\":")
+  d.write_int(o.routing_ids_total)
+  d.write(",\"ids_printed_compared\":")
+  d.write_int(o.routing_ids_printed)
+  d.write(",\"ids_printed_matched\":")
+  d.write_int(o.routing_ids_matched)
+  d.write(",\"sums_expected\":")
+  d.write_int(o.routing_sums_expected)
+  d.write(",\"sums_matched\":")
+  d.write_int(o.routing_sums_matched)
+  d.write(",\"first_difference_layer\":")
+  d.write_int(o.routing_first_layer)
+  d.write(",\"first_difference_token\":")
+  d.write_int(o.routing_first_token)
+  d.write(",\"first_difference_slot\":")
+  d.write_int(o.routing_first_slot)
+  d.write("}")
+  return d.to_string()
+}
+
+pub fn render_transcript_oracle(borrow o: Outcome) -> string {
+  d := builder()
+  d.write("{\"present\":")
+  d.write(bool_text(o.transcript_present))
+  d.write(",\"verdict\":")
+  d.write(json_string(oracle_label(o.oracle_verdict)))
+  d.write(",\"instrument\":")
+  d.write(json_string("llama-eval-callback"))
+  d.write(",\"instrument_kv_width\":")
+  d.write_int(o.attention_width)
+  d.write(",\"layers_expected\":")
+  d.write_int(o.oracle_layers_expected)
+  d.write(",\"layers_matched\":")
+  d.write_int(o.oracle_layers_matched)
+  d.write(",\"nodes_expected\":")
+  d.write_int(o.oracle_expected)
+  d.write(",\"nodes_matched\":")
+  d.write_int(o.oracle_matched)
+  d.write(",\"elements_compared\":")
+  d.write_int(o.oracle_elements)
+  d.write(",\"max_abs_diff_ten_thousandths\":")
+  d.write_int(o.oracle_max_abs)
+  d.write(",\"max_sum_diff_millionths\":")
+  d.write_int(o.oracle_max_sum)
+  d.write(",\"tolerance_ten_thousandths\":")
+  d.write_int(TOLERANCE_TEN_THOUSANDTHS)
+  d.write(",\"sum_tolerance_millionths\":")
+  d.write_int(SUM_TOLERANCE_MILLIONTHS)
+  d.write(",\"sum_tolerance_relative_ppm\":")
+  d.write_int(SUM_TOLERANCE_RELATIVE_PPM)
+  d.write(",\"worst_layer\":")
+  d.write_int(o.oracle_worst_layer)
+  d.write(",\"worst_node\":")
+  worst_node_view: str := o.oracle_worst_node
+  d.write(json_string(worst_node_view))
+  d.write(",\"worst_element_index\":")
+  d.write_int(o.oracle_worst_element)
+  d.write(",\"transcript_lines\":")
+  d.write_int(o.oracle_lines)
+  d.write(",\"transcript_callback_lines\":")
+  d.write_int(o.oracle_callback_lines)
+  d.write("},\"oracle_logits\":{\"present\":")
+  d.write(bool_text(o.logits_present))
+  d.write(",\"verdict\":")
+  d.write(json_string(logits_label(o.logits_verdict)))
+  d.write(",\"compared_pass\":")
+  d.write(json_string(if o.logits_reconciliation { "reconciliation" } else { "runtime" }))
+  d.write(",\"byte_identical\":")
+  d.write(bool_text(o.logits_byte_identical))
+  d.write(",\"max_abs_diff_ten_thousandths\":")
+  d.write_int(o.logits_max_abs)
+  d.write(",\"tolerance_ten_thousandths\":")
+  d.write_int(LOGIT_TOLERANCE_TEN_THOUSANDTHS)
+  d.write(",\"argmax_primary\":")
+  d.write_int(o.argmax)
+  d.write(",\"argmax_reference\":")
+  d.write_int(o.logits_argmax_reference)
+  d.write(",\"top_k_set_agreement\":")
+  d.write_int(o.logits_top_k_set)
+  d.write(",\"top_k_order_agreement\":")
+  d.write_int(o.logits_top_k_order)
+  d.write(",\"elements_compared\":")
+  d.write_int(o.logits_elements)
+  d.write(",\"reference_sha256\":")
+  logits_sha_view: str := o.logits_reference_sha256
+  d.write(json_string(logits_sha_view))
+  d.write(",\"reference_bit_sum\":")
+  d.write_int(o.logits_reference_bit_sum)
+  d.write("}")
+  return d.to_string()
+}
+
+pub fn render_tail(borrow o: Outcome) -> string {
+  d := builder()
+  d.write("{\"pread_ns\":")
+  d.write_int(o.pread_ns)
+  d.write(",\"claim_pread_ns\":")
+  d.write_int(o.claim_pread_ns)
+  d.write(",\"decide_ns\":")
+  d.write_int(o.decide_ns)
+  d.write(",\"build_ns\":")
+  d.write_int(o.build_ns)
+  d.write(",\"reserve_ns\":")
+  d.write_int(o.reserve_ns)
+  d.write(",\"compute_ns\":")
+  d.write_int(o.compute_ns)
+  d.write(",\"reference_compute_ns\":")
+  d.write_int(o.reference_compute_ns)
+  d.write(",\"oracle_ns\":")
+  d.write_int(o.oracle_ns)
+  d.write(",\"elapsed_ns\":")
+  d.write_int(o.elapsed_ns)
+  d.write("},\"lifetime\":{\"ggml_buffers_created\":")
+  d.write_int(o.ggml_buffers_created)
+  d.write(",\"ggml_buffers_freed\":")
+  d.write_int(o.ggml_buffers_freed)
+  d.write(",\"contexts_created\":")
+  d.write_int(o.contexts_created)
+  d.write(",\"contexts_freed\":")
+  d.write_int(o.contexts_freed)
+  d.write(",\"backends_created\":")
+  d.write_int(o.backends_created)
+  d.write(",\"backends_freed\":")
+  d.write_int(o.backends_freed)
+  d.write(",\"graphs_created\":")
+  d.write_int(o.graphs_created)
+  d.write(",\"gallocrs_created\":")
+  d.write_int(o.gallocrs_created)
+  d.write(",\"gallocrs_freed\":")
+  d.write_int(o.gallocrs_freed)
+  d.write(",\"phase_balance_failures\":")
+  d.write_int(o.phase_balance_failures)
+  d.write(",\"released_before_owner_scope_end\":")
+  d.write(bool_text(o.released_before_owner_scope_end))
+  d.write("},\"abi\":{\"tensor_alignment\":")
+  d.write_int(o.tensor_alignment)
+  d.write(",\"table_drift\":")
+  d.write_int(o.table_drift)
+  d.write(",\"slot_magic_ok\":")
+  d.write(bool_text(o.slot_magic_ok))
+  d.write(",\"fp_contract_off\":")
+  d.write(bool_text(o.fp_contract_off))
+  d.write(",\"graph_context_bytes\":")
+  d.write_int(o.graph_context_bytes)
+  d.write("}")
+  return d.to_string()
+}
+
+pub fn render(
+  borrow o: Outcome,
+  pack_path: str,
+  geometry_path: str,
+  reference_path: str,
+  transcript_path: str,
+  logits_path: str,
+  borrow tokens: TokenColumns,
+  borrow schedule: ScheduleRows,
+  borrow residency_json: string,
+  borrow window_json: string,
+  borrow graph_json: string,
+  borrow output_json: string,
+  borrow oracles_json: string,
+  borrow transcript_json: string,
+  borrow tail_json: string,
+) -> string {
+  failed := o.code.len() > 0
+  code_view: str := o.code
+  detail_view: str := o.detail
+  header := render_head(o, tokens)
+  header_view: str := header
+  schedule_view: str := schedule.text
+  residency_view: str := residency_json
+  window_view: str := window_json
+  graph_view: str := graph_json
+  output_view: str := output_json
+  oracles_view: str := oracles_json
+  transcript_view: str := transcript_json
+  tail_view: str := tail_json
+
+  d := builder()
+  d.write("{\"schema_version\":")
+  d.write_int(SCHEMA_VERSION)
+  d.write(",\"kind\":")
+  d.write(json_string(DOCUMENT_KIND))
+  d.write(",\"pack_path\":")
+  d.write(json_string(pack_path))
+  d.write(",\"geometry_path\":")
+  d.write(json_string(geometry_path))
+  d.write(",\"reference_path\":")
+  d.write(json_string(reference_path))
+  d.write(",\"transcript_path\":")
+  d.write(json_string(transcript_path))
+  d.write(",\"logits_path\":")
+  d.write(json_string(logits_path))
+  d.write(",\"status\":")
+  d.write(json_string(if failed { "error" } else { "ok" }))
+  d.write(",\"error_code\":")
+  d.write(json_string(code_view))
+  d.write(",\"error_detail\":")
+  d.write(json_string(detail_view))
+  d.write(",\"verdict\":")
+  d.write(json_string(verdict_label(o.verdict)))
+  d.write(",\"pack\":{\"format_version\":")
+  d.write_int(o.format_version)
+  d.write(",\"block_align\":")
+  d.write_int(o.block_align)
+  d.write(",\"member_align\":")
+  d.write_int(o.member_align)
+  d.write(",\"block_count\":")
+  d.write_int(o.block_count)
+  d.write(",\"member_count\":")
+  d.write_int(o.member_count)
+  d.write(",\"total_bytes\":")
+  d.write_int(o.total_bytes)
+  d.write(",\"payload_offset\":")
+  d.write_int(o.payload_offset)
+  d.write(",\"reader_pread_count\":")
+  d.write_int(o.reader_pread_count)
+  d.write(",\"reader_bytes_read\":")
+  d.write_int(o.reader_bytes_read)
+  d.write("},")
+  d.write(header_view)
+  d.write(",\"schedule\":[")
+  d.write(schedule_view)
+  d.write("],\"residency\":")
+  d.write(residency_view)
+  d.write(",\"window\":")
+  d.write(window_view)
+  d.write(",\"graph\":")
+  d.write(graph_view)
+  d.write(",\"head\":")
+  d.write(output_view)
+  d.write(",\"reference\":")
+  d.write(oracles_view)
+  d.write(",\"oracle\":")
+  d.write(transcript_view)
+  d.write(",\"timings\":")
+  d.write(tail_view)
+  d.write("}")
+  return d.to_string()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The summary block and the CLI adapter (section 3.3)
+// ---------------------------------------------------------------------------------------------
+
+fn print_pair(left: i64, right: i64) {
+  b := builder()
+  b.write_int(left)
+  b.write("/")
+  b.write_int(right)
+  rendered := b.to_string()
+  rendered_view: str := rendered
+  print(rendered_view)
+}
+
+fn print_summary(borrow o: Outcome, borrow tokens: TokenColumns, pack_path: str) {
+  failed := o.code.len() > 0
+  print("moe model forward:")
+  print("status:")
+  if failed { print("ERROR") } else { print("OK") }
+  print("verdict:")
+  print(verdict_label(o.verdict))
+  print("pack path:")
+  sanitized_path := sanitize_summary_line(pack_path)
+  sanitized_path_view: str := sanitized_path
+  print(sanitized_path_view)
+  print("schema:")
+  print(SCHEMA_VERSION)
+  print("arch:")
+  arch_view: str := o.arch
+  sanitized_arch := sanitize_summary_line(arch_view)
+  sanitized_arch_view: str := sanitized_arch
+  print(sanitized_arch_view)
+  print("layers:")
+  print(o.n_layer)
+  print("tokens:")
+  ids := builder()
+  mut token_at := 0
+  loop {
+    if token_at >= tokens.ids.len() { break }
+    if token_at > 0 { ids.write(",") }
+    ids.write_int(tokens.ids[token_at])
+    token_at = token_at + 1
+  }
+  rendered_ids := ids.to_string()
+  rendered_ids_view: str := rendered_ids
+  print(rendered_ids_view)
+  print("kv width:")
+  print(o.attention_width)
+  print("experts routed:")
+  print_pair(o.keys_demanded, o.n_layer * o.n_expert)
+  print("expert bytes read:")
+  print(o.expert_bytes_read)
+  print("expert bytes in model:")
+  print(o.expert_bytes_in_model)
+  print("dense bytes read:")
+  print(o.dense_bytes_read)
+  print("dense window bytes:")
+  print(o.dense_window_bytes)
+  print("claim window bytes:")
+  print(o.claim_window_bytes)
+  print("claim window peak use:")
+  print(o.claim_peak_use_bytes)
+  print("residual bytes:")
+  print(o.residual_bytes)
+  print("activation bytes:")
+  print(o.activation_bytes_peak)
+  print("graphs:")
+  print(o.graph_count)
+  print("graph nodes:")
+  print(o.node_count_total)
+  print("backend:")
+  backend_view: str := o.backend_name
+  sanitized_backend := sanitize_summary_line(backend_view)
+  sanitized_backend_view: str := sanitized_backend
+  print(sanitized_backend_view)
+  print("pread ns:")
+  print(o.pread_ns)
+  print("claim pread ns:")
+  print(o.claim_pread_ns)
+  print("compute ns:")
+  print(o.compute_ns)
+  print("elapsed ns:")
+  print(o.elapsed_ns)
+  print("logits sha256:")
+  sha_view: str := o.sha256
+  print(sha_view)
+  print("logits bit sum:")
+  print(o.bit_sum)
+  print("logits argmax:")
+  print(o.argmax)
+  print("routing:")
+  print(routing_label(o.routing_verdict))
+  print("reference:")
+  print(reference_label(o.reference_verdict))
+  print("reference nodes:")
+  if o.reference_present { print_pair(o.reference_identical, o.reference_compared) } else { print("-") }
+  print("transcript:")
+  print(oracle_label(o.oracle_verdict))
+  print("logits oracle:")
+  print(logits_label(o.logits_verdict))
+  print("max abs diff:")
+  print(o.oracle_max_abs)
+  print("logit max diff:")
+  print(o.logits_max_abs)
+  print("released:")
+  print(o.ggml_buffers_freed + o.contexts_freed + o.backends_freed + o.gallocrs_freed)
+  if failed {
+    print("error:")
+    code_view: str := o.code
+    print(code_view)
+    print("detail:")
+    detail_view: str := o.detail
+    sanitized_detail := sanitize_summary_line(detail_view)
+    sanitized_detail_view: str := sanitized_detail
+    print(sanitized_detail_view)
+  }
+}
+
+// Section 3.3: exactly five, six, seven, eight, or nine operands, and **there is no gap** —
+// `KV_WIDTH` is mandatory and is operand five, because on a routed model the declared width changes
+// which experts the router selects and therefore which bytes the arm reads. `-` is admitted in
+// exactly two positions: the document position, where it is R0's "write to stdout", and the
+// transcript position, where it means **the transcript arm does not run while the logits arm still
+// does** — which is what lets the arm, rather than the runner, produce the runtime-width `WITHIN`
+// verdict against the same reference logits file.
+pub fn run(args: array<str>) -> Result<(), Error> {
+  count := args.len()
+  if count < 6 || count > 10 {
+    return Err(Error.Invalid)
+  }
+  if !moe_layer_forward.valid_path(args[2]) || args[2] == "-" {
+    return Err(Error.Invalid)
+  }
+  if !moe_layer_forward.valid_path(args[3]) || args[3] == "-" {
+    return Err(Error.Invalid)
+  }
+  if count >= 7 && args[6] != "-" && !moe_layer_forward.valid_path(args[6]) {
+    return Err(Error.Invalid)
+  }
+  if count >= 8 && (!moe_layer_forward.valid_path(args[7]) || args[7] == "-") {
+    return Err(Error.Invalid)
+  }
+  if count >= 9 && args[8] != "-" && !moe_layer_forward.valid_path(args[8]) {
+    return Err(Error.Invalid)
+  }
+  if count == 10 && (!moe_layer_forward.valid_path(args[9]) || args[9] == "-") {
+    return Err(Error.Invalid)
+  }
+  reference_path := if count >= 8 { args[7] } else { "" }
+  transcript_path := if count >= 9 && args[8] != "-" { args[8] } else { "" }
+  logits_path := if count == 10 { args[9] } else { "" }
+  mut tokens := empty_tokens()
+  mut schedule := empty_schedule()
+  mut graphs := empty_graphs()
+  mut curve := empty_curve()
+  mut top := empty_top()
+  outcome := execute(
+    args[2], args[3], args[4], args[5], reference_path, transcript_path, logits_path,
+    tokens, schedule, graphs, curve, top)
+  residency_json := render_residency(outcome, curve)
+  window_json := render_window(outcome)
+  graph_json := render_graph(outcome, graphs)
+  output_json := render_output(outcome, top)
+  oracles_json := render_oracles(outcome)
+  transcript_json := render_transcript_oracle(outcome)
+  tail_json := render_tail(outcome)
+  document := render(
+    outcome, args[2], args[3], reference_path, transcript_path, logits_path, tokens, schedule,
+    residency_json, window_json, graph_json, output_json, oracles_json, transcript_json,
+    tail_json)
+  document_view: str := document
+  if count == 6 || args[6] == "-" {
+    print(document_view)
+  } else {
+    fs.write_file(args[6], document_view)?
+    print_summary(outcome, tokens, args[2])
+  }
+  if outcome.code.len() > 0 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
