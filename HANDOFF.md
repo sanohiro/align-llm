@@ -3,103 +3,92 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R1C-OLMOE-MOE-IR (2026-08-28)
+## Active: MOE-PREREQ-DISCHARGE (2026-08-28)
 
-Branch `agent/r1c-olmoe-moe-ir`, rebased onto `main` `546b5cc` (the merged R2-LOCALITY-GATE, PR
-#131). Design ledger `docs/specs/r1c-olmoe-moe-ir.md` is authoritative. Implementation and review
-are complete; publication is the only remaining step.
+Branch `agent/moe-prereq-discharge`, rebased onto `main` `e15e3d3` (the merged R1C-OLMOE-MOE-IR,
+PR #132). Design ledger `docs/specs/moe-prereq-discharge.md` is authoritative. Implementation and
+review are complete; publication is in progress and is the only remaining step.
 
-**The model.** `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (path withheld from this file by
-convention), 4,213,512,192 bytes, sha256
-`4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f`, architecture `olmoe`, 16
-layers, `n_expert` 64, `n_expert_used` 8, types F32/Q4_K/Q6_K. The download was user-approved under
-decision (a).
+**What it delivers.** The per-expert half of the R4 and R4.5 gates, measured on the real olmoe
+model rather than on the synthetic corpus. Two verdicts stop being constants and become rules over
+the block set the run measured:
 
-**What it delivers.** A new `src/frontend_olmoe.align` turns the real file into `R1_MODEL_IR` at the
-unchanged `schema_version: 2` through a frontend table over the shared model IR: 195 tensors =
-3 global + 16 layers x 12 per-layer patterns, a three-way architecture dispatch across three verbs,
-and two roles appended to the frozen `role_id` list, `attn_q_norm` (27) and `attn_k_norm` (28),
-guarded by a three-list mirror regression. Per-expert claims tile the stacked tensors, including
-layers that mix Q4_K and Q6_K. The size-sum oracle closes at
-`1,781,760 + 4,211,730,432 = 4,213,512,192` on the real file, and the Block IR reaches 1,058 blocks
-/ 3,219 claims. `src/model_ir.align` and `src/gguf.align` are **byte-unchanged**, proven by 284
-differential invocations rather than asserted. The ledger's section 3 closure matrix is discharged
-(section 6.1 maps every cell to its shipped case, and section 6 records eleven corrections to the
-plan).
+- `scripts/run-alignpack-qualification` reports the container's `ExpertBlock` improvement —
+  1,024 blocks, 3,072 -> 1,024 ranges, 165,368,823,808 -> 3,900,702,720 span bytes,
+  42,394,624 -> 1,000,000 ppm, 0 -> 1,024 of 1,024 contiguous;
+- `scripts/run-ggml-spike` selects both arms by `role_id` out of the pack document it just wrote
+  and computes real expert claims: all three members of the first `ExpertBlock` and member 0 of the
+  last (block 1,056, plane 63 of 64), every one `EXTERNAL`, `IDENTICAL`, and bit-identical to the
+  same plane read from the original GGUF.
 
-**R1B corrections 16-18.** The real model contradicts rather than confirms two of R1B's `ASSUMED`
-rows: the stacked gate/up/down axis order is reversed versus R1B's gpt-oss assumption, and R1B's
-required split expert biases are falsified as a generic rule (the real file carries no bias tensor
-of any kind). Both are recorded as corrections in `docs/specs/r1b-gptoss-moe-ir.md` section 7 and
-are deliberately not repaired in the gpt-oss frontend, since no real gpt-oss file is present to
-settle it (decision (b) is infeasible on this host).
+Admitting the claim form required `R4_5_EXTERNAL_BUFFER` `schema_version: 2`, the split of step 7
+into 7a (the slice pair) and 7b (the shape by form), and the new `R4_5_SLICE` code — the shipped arm
+had refused a real expert claim with `R4_5_SHAPE`, detail `n_dims[3]`, so R4.5's own claim that the
+CLI already addressed an `ExpertBlock` with no new surface is refuted and removed. R4's expert
+hotness ordering and prefetch groups, and R4.5's GPU expert arm and discrete-VRAM half, stay
+deferred and are unchanged.
 
-**Committed on the branch.** Nothing is uncommitted. After the rebase onto `546b5cc` the branch is
-`83361a9` (design ledger), `45e4ced` (implementation), `4c86336` (review repair), and the
-reconciliation commit on top; the same three commits were `5a15fd7`, `eb868ba`, and `58e9ba9`
-before the rebase, and the review record below names the pre-rebase head it read. No `Makefile`
-change, so the classifier stays in hosted scope.
+**Committed on the branch.** Nothing is uncommitted. After the rebase onto `e15e3d3` the branch is
+`4656d88` (design ledger), `eed850e` (implementation), `4bf25b8` (review repair), `0dd4ea8` (the
+developer guide, which still described both qualifications as they were before this capability
+changed them), and the reconciliation and baseline commits on top; the first three were `49f8e4c`,
+`ee041a7`, and `5015daf` before the rebase, and the review record below names the pre-rebase head it
+read. **The `Makefile`
+changes** — `ggml-spike-smoke` gains a `build` prerequisite, because its claim cells are taken from
+a container `main --pack` wrote — so the classifier selects executable preflight and the baseline
+commit chain has to be re-recorded on this branch.
 
-**Review envelope.** Two complementary reviewers covered the implementation head `eb868ba`
-(`45e4ced` after the rebase) for explicitly disjoint risks. Reviewer A: approve, three nit findings
-(the block-explosion guard always naming `olmoe.expert_count`; section 2.6's key-order sentence read across steps rather than within
-one; `role_required` ignoring its parameter). Reviewer B: approve with changes, three medium and one
-low (section 4.5 calling the real model's 2,097,152-byte `bytes_read` one window when it is two;
-`docs/align-requests.md` Request 23 carrying no R1C evidence block and the ledger calling the
-frontend a "third client"; `HANDOFF.md`, `docs/specs/roadmap.md` item 18 and its Japanese section R1,
-and `docs/align-development.md` still describing R1C as unimplemented; the parity runner's `ulimit -f`
-bounding the Metal shader cache). All seven findings were accepted, none rejected, and all are
-repaired in one consolidated commit on top of it (`4c86336`). The repair is narrow — a diagnostic
-detail key with its fixture, one enumerated function, one runner limit, and documentation — so it does not
-trigger a second comprehensive review, and the reconciliation commit onto the merged locality gate
-is documentation-only.
+**Review envelope.** One comprehensive reviewer covered the whole diff at the pre-rebase
+implementation head `ee041a7` (`eed850e` after the rebase): verdict **approve**, eight findings —
+four minor, two low, two nits. **All eight were accepted**, none rejected, and all are repaired in
+one consolidated commit on top of it (`4bf25b8`). The repair is narrow — a reclaim pattern, a
+detail token, two documentation corrections, one added qualification run with its digest, a report
+count, one assertion strengthened from a prefix to exact lines, and named refusals in the selector —
+so it does not trigger a second comprehensive review, and the reconciliation commit onto the merged
+R1C is documentation-only.
 
-**Verification.** Durable owner evidence at the repaired head, all four PASS on this macOS host with
-the recorded Homebrew `LIBRARY_PATH` (`docs/align-development.md`):
+**Verification.** Durable owner evidence at the rebased head, on this macOS host with the recorded
+Homebrew `LIBRARY_PATH` (`docs/align-development.md`):
 
 ```text
-gmake check              ok: checked 30 unit(s) per-unit
-gmake model-ir-smoke     PASS — 49 qwen, 31 gpt-oss, 29 olmoe, 62 R0 fixtures re-run
-gmake alignpack-smoke    PASS — 27 positive fixtures, 128 negative sources, 20,280 assertions
-gmake model-ir-parity    PASS (olmoe) — 15 compared rows, type census f32 81 / q4_K 97 / q6_K 17,
-                         coverage 195 of 195 over 1,058 blocks, bytes_read 2,097,152
-                         PASS (qwen2) — 14 compared rows, coverage 339 of 339 over 58 blocks
+gmake check                    ok: checked 30 unit(s) per-unit
+gmake build                    ok
+gmake ggml-spike               ok, stub shim and real shim
+gmake ggml-spike-smoke         PASS - 7 no-document, 43 documented cases; olmoe 22 blocks /
+                               69 members, 16 ExpertBlocks, n_expert 8, claim surface PASS
+gmake alignpack-smoke          PASS - 27 positive fixtures, 128 negative sources, 20,298
+                               assertions; qualification-verdict MoE PASS and dense N/A
+gmake model-ir-smoke           PASS - 49 qwen, 31 gpt-oss, 29 olmoe, 62 R0 fixtures re-run
+gmake expert-trace-smoke       PASS - 98 fixtures, 17 error codes
+gmake layer-forward-smoke      PASS - 59 + 28 documented cases, three oracles
+gmake gate-topology-check      PASS
+gmake format-check             PASS; gmake fmt leaves no diff; git diff --check clean
 ```
 
-Both parity runs point `ALIGN_LLM_LLAMA_CLI` at the Homebrew `llama-cli`, the recorded reference
-build `0.2.0 (build 10566, commit bb4caa754)`. The runner's `ulimit -f` is now 262,144 blocks
-(256 MiB) rather than 8,192: it bounds every file the reference writes, and on a Metal host that
-includes `llama-cli`'s 12-35 MB shader pipeline cache, which killed the reference with SIGXFSZ on any
-cold-cache run under the old 8 MiB cap (ledger section 6 item 9). `gmake build`,
-`gmake expert-trace-smoke`, `gmake gate-topology-check`, and `gmake format-check` also PASS after
-the rebase; `gmake fmt` leaves no diff and `git diff --check` is clean.
+Both focused qualifications, on the host that holds the models:
 
-**Observation, not a claim.** The real model produces 1,024 non-contiguous `ExpertBlock`s. That is
-recorded as an input to R3's residency simulation, not as a performance result; this capability
-makes no timing claim.
+```text
+gmake alignpack-qualification  PASS (olmoe) - identity, sequential read, and the MoE verdict above
+gmake ggml-spike-qualification PASS (olmoe) - dense + three expert claims + the last plane;
+                               1 dense, 3 expert, 1 last-plane digest checked
+                               PASS (qwen2) - dense arm, expert arm N/A, 1 dense digest checked
+```
 
-**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test olmoe-model-ir -- gmake
-model-ir-smoke alignpack-smoke`, then publish and merge. (2) Rebase the two design-stage branches
-below onto the merged result and implement them in roadmap order. (3) R2b's corpus-wide
-stratification, which the merged locality gate's corpus and aggregator are the input to.
+**Measurement.** The layout numbers are a claim about this container on this named model, not a
+platform or throughput claim; neither qualification asserts an elapsed bound.
 
-## Design in progress
+**Next actions, in order.** (1) Re-record the baseline commit chain, since the `Makefile` changed.
+(2) `python3 scripts/pre-pr --owner-test moe-prereq -- make ggml-spike-smoke alignpack-smoke
+gate-topology-check` under the installed profile, then publish and merge. (3) Rebase
+`agent/r3-residency-sim` onto the merged result and continue it.
 
-Two local branches stack on this capability's implementation commit; neither is pushed:
+## Design and implementation in progress elsewhere
 
-- `agent/moe-prereq-discharge` — the MoE prerequisite discharge ledger **and its implementation**.
-  It discharges the per-expert half of R4 and R4.5 on the real olmoe model: the container's 1,024
-  `ExpertBlock`s go 42,394,624 → 1,000,000 ppm, and the spike computes real expert claims — all
-  three members of the first `ExpertBlock` and member 0 of the last, the latter a `slice_index
-  63/64` plane — every one `EXTERNAL` and bit-identical to the same plane read from the GGUF. The
-  claim form required `schema_version: 2`, step 7a/7b, and the new `R4_5_SLICE` code; R4's
-  hotness/prefetch groups and R4.5's GPU expert arm stay deferred. **Review:** one comprehensive
-  reviewer of the whole diff at the pre-rebase implementation head `ee041a7` — verdict *approve*,
-  8 findings (4 minor, 2 low, 2 nit), **all 8 accepted**, none rejected, all repaired in the single
-  follow-up commit on that branch.
-- `agent/r3-residency-sim` at `198850b` — the R3 residency simulator ledger, design only.
-
-Both must be rebased onto the merged R1C before publication or further implementation.
+- `agent/r3-residency-sim` — the R3 residency simulator. Its design ledger
+  `docs/specs/r3-residency-sim.md` is committed at `198850b`; implementation is in progress and
+  uncommitted in its own worktree. It stacks on the pre-rebase R1C commits and must be rebased onto
+  the merged `main` before publication. The merged locality gate is its demand signal and the
+  1,024 non-contiguous `ExpertBlock`s this capability packs are its input.
 
 ## Pending decisions (2026-08-28)
 
@@ -113,10 +102,9 @@ longer fits alongside the downloaded model and its alignpack space; R1B's real-m
 (d) below are unchanged and still pending.
 
 1. **Small MoE GGUF, 1-4 GB. — TAKEN.** `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (3.9 GiB) is on
-   this host. It unblocked the R2 locality gate, which is measured, met, and merged (PR #131), and
-   R1C's `olmoe` frontend, which is in publication above. R3's residency simulation and R4's
-   per-expert half and R4.5's expert matmul follow from the merged R1C rather than from another
-   download.
+   this host. It unblocked the R2 locality gate (merged, PR #131), R1C's `olmoe` frontend (merged,
+   PR #132), and R4's per-expert half with R4.5's expert matmul, which are in publication above.
+   R3's residency simulation follows from the same file rather than from another download.
 2. **`gpt-oss-20b-mxfp4.gguf`, 12.1 GB.** Unblocks R1B's real-model `model-ir-parity` qualification
    and every `ASSUMED` row of `docs/specs/r1b-gptoss-moe-ir.md` section 2.5 — including the two
    rows R1C has now contradicted from the olmoe side. **Infeasible on this host** after decision 1
@@ -178,10 +166,10 @@ non-finite-readback goldens, masked in golden normalization alone. Full ledger:
 `docs/specs/r5c-metal-prefill.md`.
 
 **Resume in another environment.** Fetch `origin`, check out `main`, then check out
-`agent/r1c-olmoe-moe-ir` and read `docs/specs/r1c-olmoe-moe-ir.md` in full before touching `src/`.
-Decision 1 is taken, R2's gate is measured and merged, and the work it still gates (R3, R4's
-per-expert half, R4.5's expert matmul) waits on the merged R1C frontend rather than on another
-decision. For the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1);
+`agent/moe-prereq-discharge` and read `docs/specs/moe-prereq-discharge.md` in full before touching
+`src/` or either qualification runner. Decision 1 is taken; R2's gate and R1C's frontend are merged,
+and the remaining work it gated — R4's per-expert half and R4.5's expert matmul here, R3's
+residency simulation next — waits on no further decision. For the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1);
 decision 3 -> R6 (section R6), R7-R9, and the decode half of R2's gate; decision 4 -> R5's deferred
 microbenchmark C (section R5).
 
@@ -193,9 +181,18 @@ exists by the time work resumes; otherwise rebuild from the CLAUDE.md rules (the
 
 ## Merged checkpoints
 
-Track B, dense local model (R0 → R5C), plus the merged R2 locality gate. The R2 and R5C
-checkpoints are above; the rest, newest first:
+Track B, dense local model (R0 → R5C), plus the merged R2 locality gate and R1C olmoe frontend.
+The R2 and R5C checkpoints are above; the rest, newest first:
 
+- **R1C-OLMOE-MOE-IR** (PR #132, head `3580a62`, merge `e15e3d3`): `src/frontend_olmoe.align`, a
+  three-way architecture dispatch, and two roles appended to the frozen `role_id` list
+  (`attn_q_norm` 27, `attn_k_norm` 28). The real olmoe file reaches `R1_MODEL_IR` at the unchanged
+  `schema_version: 2`, the size-sum oracle closes at
+  `1,781,760 + 4,211,730,432 = 4,213,512,192`, and the Block IR reaches 1,058 blocks / 3,219 claims;
+  `model-ir-parity` PASS against both real models, the first discharged against a real MoE model.
+  It also contradicts two of R1B's `ASSUMED` rows — the stacked gate/up/down axis order and the
+  required split expert biases — recorded as corrections in `docs/specs/r1b-gptoss-moe-ir.md`
+  section 7. Ledger: `docs/specs/r1c-olmoe-moe-ir.md`.
 - **R5B-MODEL-PREFILL-FORWARD** (PR #128, head `3470646`, merge `870bf31`): a whole 28-layer Qwen2
   CPU prefill computed over one Align-owned alignpack window, final logits byte-identical to
   `llama-debug --save-logits`. Ledger: `docs/specs/r5b-model-prefill-forward.md`.

@@ -206,8 +206,9 @@ The current forward delivery order is:
     (async prefetch + GPU compute) cannot be written at this pin and is deferred with Request 41
     named (`docs/align-requests.md`).
 18. **R1C-OLMOE-MOE-IR — an olmoe frontend and the first Model IR/Block IR derived from a real MoE
-    model. Implemented and reviewed; in publication.** On branch `agent/r1c-olmoe-moe-ir`, design
-    ledger merged at commit `83361a9`, implementation at `45e4ced` with its review repair on top.
+    model. Merged as PR #132, merge commit `e15e3d3` on `main`.** Was on branch
+    `agent/r1c-olmoe-moe-ir` at head `3580a62`; design ledger `83361a9`, implementation `45e4ced`,
+    review repair `4c86336`, reconciliation `3580a62`.
     [`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md) is the authoritative plan and owns the contract
     ledger and closure matrix. It turns the real, locally present
     `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (195 tensors = 3 global + 16 layers × 12 per-layer
@@ -230,8 +231,7 @@ The current forward delivery order is:
     is the qualification R1B could only record as `N/A`, so this is the first `model-ir-parity`
     discharged against a real MoE model. Section 6 of the ledger records eleven corrections to the
     plan, including that the parity runner's `ulimit -f` had to rise to 256 MiB because it bounds
-    `llama-cli`'s Metal shader pipeline cache and not only its log. Review is complete and
-    publication is in progress; see `HANDOFF.md`.
+    `llama-cli`'s Metal shader pipeline cache and not only its log.
 19. **R2-LOCALITY-GATE — the R2 locality gate, measured on a real MoE model. Merged as PR #131,
     merge commit `546b5cc` on `main`.** Was on branch `agent/r2-locality-gate` at the review repair
     `fff5806`; no design gate triggered. Discharged R2A's `MOE-PREREQ` deferral by running
@@ -248,13 +248,34 @@ The current forward delivery order is:
     (observed truncated slots 3 of 8 at each end). The R2 section below records the verdict, its
     limits, and the R2b/R2c work that remains.
 
+20. **MOE-PREREQ-DISCHARGE — the per-expert half of R4 and R4.5, measured on a real MoE model.
+    Implemented and reviewed; in publication.** On branch `agent/moe-prereq-discharge`, rebased onto
+    the merged R1C at `main` `e15e3d3`; design ledger `4656d88`, implementation `eed850e`, review
+    repair `4bf25b8`, developer-guide refresh `0dd4ea8`. [`moe-prereq-discharge.md`](moe-prereq-discharge.md) is the authoritative plan
+    and owns the probe record, the contract ledger, the closure matrix, the correction ledger, and
+    the cell-to-case map. It discharges the two prerequisites items 13 and 14 left open, on
+    `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` rather than on the synthetic corpus, by turning two
+    constant verdicts into rules over the block set each run measured: the alignpack qualification
+    reports the container's 1,024 `ExpertBlock`s going 3,072 → 1,024 ranges, 42,394,624 → 1,000,000
+    ppm, and 0 → 1,024 of 1,024 contiguous; the ggml spike selects both arms by `role_id` out of the
+    pack document it just wrote and computes real expert claims — all three members of the first
+    `ExpertBlock` and member 0 of the last (block 1,056, plane 63 of 64) — every one `EXTERNAL` and
+    bit-identical to the same plane read from the original GGUF. **The shipped R4.5 arm refused a
+    real expert claim** with `R4_5_SHAPE`, detail `n_dims[3]`, so admitting the claim form took
+    `R4_5_EXTERNAL_BUFFER` to `schema_version: 2`, split step 7 into 7a (the slice pair) and 7b (the
+    shape by form), and added the `R4_5_SLICE` code; R4.5's claim that the CLI already addressed an
+    `ExpertBlock` with no new surface is refuted and removed. R4's expert hotness ordering and
+    prefetch groups, and R4.5's GPU expert arm and discrete-VRAM half, stay deferred and unchanged.
+    The layout numbers are a claim about this container on this named model, not a platform or
+    throughput claim. Review is complete and publication is in progress; see `HANDOFF.md`.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
-`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked two capabilities taken in
-parallel, items 18 and 19 above: item 19 is merged and its gate is met, and item 18 is implemented,
-reviewed, and in publication. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18, 19, and 20 above:
+items 18 and 19 are merged and R2's gate is met, and item 20 — the per-expert half of R4 and R4.5 —
+is implemented, reviewed, and in publication. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
 **infeasible on this host** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
 a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
