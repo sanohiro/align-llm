@@ -41,6 +41,45 @@ def printed_count(extent):
     return extent if extent <= TRUNCATION_PRINTED else TRUNCATION_PRINTED
 
 
+def require_compact_router_axes(documents, labels=None):
+    """Admit only the compact router-slot observations used by the historical R2/R3 gates.
+
+    R2c deliberately prints every router slot. Replaying the already-recorded locality and
+    residency measurements with that instrument would therefore change their input streams even
+    when decode is disabled with ``-n 0``. These gates fail closed instead: a caller that wants
+    full-axis or decode evidence must use R2c's own qualification or a new measured capability.
+    """
+    if labels is None:
+        labels = [str(index) for index in range(len(documents))]
+    if len(labels) != len(documents):
+        raise GateError("document and label counts differ")
+
+    for label, document in zip(labels, documents):
+        moe = document.get("moe") or {}
+        used = moe.get("n_expert_used")
+        if document.get("status") != "ok" or not moe.get("present") \
+                or not isinstance(used, int) or isinstance(used, bool) or used <= 0:
+            # The owning consumer reports the more specific document/router error. This helper
+            # only owns admission of the print form once those fields are meaningful.
+            continue
+        expected = set(range(used)) if used <= TRUNCATION_PRINTED else {
+            0, 1, 2, used - 3, used - 2, used - 1,
+        }
+        if used > TRUNCATION_PRINTED and moe.get("slots_truncated") is not True:
+            raise GateError(
+                "%s: historical gate requires compact router axes; full-axis R2c input refused"
+                % label)
+        groups = {}
+        for row in document.get("selections") or []:
+            key = (row.get("graph"), row.get("layer"), row.get("token"))
+            groups.setdefault(key, set()).add(row.get("slot"))
+        for key, slots in groups.items():
+            if slots != expected:
+                raise GateError(
+                    "%s: historical gate requires compact router axes; group %r has slots %r"
+                    % (label, key, sorted(slots)))
+
+
 def wilson_bounds(hits, trials, z=Z_95):
     """The Wilson score interval for a binomial proportion, returned as floats in [0, 1].
 
@@ -173,6 +212,8 @@ def aggregate(documents, labels=None):
             raise GateError("%s: router shape (%s, %s) differs from (%s, %s)"
                             % (label, moe["n_expert"], moe["n_expert_used"], n_expert,
                                n_expert_used))
+
+    require_compact_router_axes(documents, labels)
 
     observed_slots = printed_count(n_expert_used)
     # The null the roadmap gate is judged against: under a router that picks `n_expert_used` of

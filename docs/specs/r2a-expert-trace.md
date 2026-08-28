@@ -295,6 +295,15 @@ so the `ne <= 6` branch on axis 0 is an **inference from the single shared loop 
 `n_expert_used = 4` the expert-id row prints in full, and for `n_expert_used = 8` it prints ids
 `{0, 1, 2, 5, 6, 7}` and hides two.
 
+**R2c extension (2026-08-28).** The pinned R2c instrument exempts `ffn_moe_topk` from that
+truncation. For that node family, the schema-1 parser now admits either the compact form above or
+exactly `ne` values with no marker on axes 0, 1, and 2; every other node retains the compact form. It
+derives indices and truncation fields from the accepted marker, not from extent alone. Existing
+build-10566 transcripts retain byte-identical documents. Slot form is consistent across the
+transcript, token form across applicable non-reduced blocks in one graph, and axis-2 slice form
+across every applicable group and block; the full form is specified by
+[`r2c-decode-instrument.md`](r2c-decode-instrument.md) section 2.3.
+
 **Finding 7 — build 10566's `llama-eval-callback` performs exactly one graph evaluation per
 invocation, and `-n 1` does not add a decode step.** Two runs (5-token and 3-token prompts) each
 produced exactly one `embd` node and exactly one `result_output` node, and the last-token reduction
@@ -599,7 +608,7 @@ container, and joining the two documents is R2b's job (section 5.1), not a guess
 | `n_expert_used` | integer | Axis 0 of `ffn_moe_topk-N`, required to be identical on every layer of every graph |
 | `n_expert_source` | string or `null` | `"ffn_moe_probs"`, `"ffn_moe_logits"`, `"router_weight"`, or `null`. Which rule was applied, in the `head_dim_source` tradition of R1 |
 | `topk_layers` | array of integer | Ascending layer indices with at least one parsed `ffn_moe_topk` block |
-| `slots_truncated` | boolean | `true` when `n_expert_used > 6`, so slot ids `3 .. n_expert_used-4` were never printed (finding 6) |
+| `slots_truncated` | boolean | `true` when an accepted `ffn_moe_topk` slot axis carried finding 6's ellipsis; `false` for R2c's full axis even when `n_expert_used > 6` |
 
 A dense transcript reaches this object with `present: false` and every other field at its `null` or
 empty sentinel, and `status` stays `"ok"`. That is section 1.2 item 5, and it is the shape of every
@@ -626,9 +635,9 @@ document this host can produce today.
 | `ordinal` | integer | Position in the transcript, from `0` |
 | `n_tokens` | integer | Axis 1 of `embd`, cross-checked against axis 1 of every `ffn_moe_topk-N` in the same graph |
 | `phase` | string | `"prefill"` when `n_tokens > 1`; `"decode"` when `n_tokens == 1` and `ordinal > 0`; `"single_token_first_graph"` when `n_tokens == 1` and `ordinal == 0` |
-| `tokens_observed` | integer | `min(n_tokens, 6)` (finding 6) |
-| `tokens_truncated` | boolean | `n_tokens > 6` |
-| `observed_token_indices` | array of integer | `[0 .. n_tokens-1]` when not truncated, else `[0, 1, 2, n_tokens-3, n_tokens-2, n_tokens-1]` |
+| `tokens_observed` | integer | The accepted non-reduced `ffn_moe_topk` token-axis value count when present; otherwise `min(n_tokens, 6)` from the entry tensor |
+| `tokens_truncated` | boolean | Whether that selected token axis carried finding 6's ellipsis |
+| `observed_token_indices` | array of integer | `[0 .. n_tokens-1]` for the full form, else `[0, 1, 2, n_tokens-3, n_tokens-2, n_tokens-1]` for the compact form |
 | `node_count` | integer | Callback blocks in this graph |
 
 **`phase` has three values and not two.** A first graph of one token is genuinely ambiguous: it is
@@ -707,7 +716,7 @@ at all; every later step produces a `status: "error"` document and then maps to
 6. Per-line shape classification: header, value-block structure, `sum`, or ignorable.
 7. Header field extraction: name, type, op, operand dims, result dims.
 8. Graph segmentation and per-graph bounds.
-9. Value-block structure: row and element counts against finding 6's `min(ne, 6)` rule.
+9. Value-block structure: row and element counts against section 2.2's exact compact/full rule.
 10. `ffn_moe_topk` element parse and expert bounds.
 11. MoE consistency across layers and graphs.
 12. Selection-table and aggregate bounds.
@@ -727,7 +736,7 @@ at all; every later step produces a `status: "error"` document and then maps to
 | `R2_GRAPH_LIMIT` | Graph count would exceed `MAX_GRAPHS` | 8 | `MAX_GRAPHS` |
 | `R2_NODE_LIMIT` | One graph's node count would exceed `MAX_NODES_PER_GRAPH` | 8 | the graph ordinal |
 | `R2_LAYER_INDEX` | A `-N` suffix parses to a value outside `[0, MAX_LAYERS)` | 7 | the node name |
-| `R2_ROW_COUNT` | A block's printed row count is not `min(ne1, 6)`, or its element count is not `min(ne0, 6)`, or its axis-2 slice count is not `min(ne2, 6)` | 9 | the node name |
+| `R2_ROW_COUNT` | Axis 3 is not exactly `ne3`; an axis 0-2 count/marker does not match the compact three-plus-three form; an `ffn_moe_topk` axis does not match either that exact compact form or exactly its full extent with no marker; or the applicable slot, token, or axis-2 slice form changes within its scope | 9 | the node name |
 | `R2_TOKEN_COUNT` | `n_tokens` outside `[1, MAX_TOKENS_PER_GRAPH]`, or `embd` and an `ffn_moe_topk` in one graph disagree on it | 8, 11 | the node name |
 | `R2_EXPERT_ID_NOT_INTEGRAL` | An `ffn_moe_topk` element is not `<digits>.<zeros>` — a non-zero fraction, a sign, `nan`, or `inf` | 10 | the escaped element text |
 | `R2_EXPERT_BOUNDS` | `n_expert_used` outside `[1, MAX_EXPERTS_USED]`; `n_expert` outside `[1, MAX_EXPERTS]`; an expert id outside `[0, n_expert)`, or outside `[0, MAX_EXPERTS)` when `n_expert` is unknown | 10 | the node name |
@@ -739,10 +748,10 @@ They are the reason a transcript from a build whose print format moved is refuse
 half-read. Section 2.5.3 argues why the binding is expressed as grammar codes rather than as a
 version check.
 
-**`R2_ROW_COUNT` is not defensive.** It is the check that finding 6's truncation rule actually held,
-and it is the difference between recovering an exact token index and inventing one. If a future
-build changes `3` to some other split, this code fires on the first block rather than producing a
-document full of wrong token indices.
+**`R2_ROW_COUNT` is not defensive.** It is the check that either finding 6's compact truncation rule
+or R2c's exact full-router form actually held, and it is the difference between recovering an exact
+token index and inventing one. If a future build changes the split or prints a partial router axis,
+this code fires on the first block rather than producing a document full of wrong token indices.
 
 **Unrecognized lines outside a value block are not an error.** Finding 8's interleaved stderr logs,
 a shell banner, and a trailing blank line are all counted into `source.skipped_line_count` and
@@ -851,8 +860,8 @@ transcript exists. Marking them is the section 1.4 honesty requirement made mech
 | Success — layer suffix | `-N` yields the layer; an unsuffixed name yields none; `node_946` is not read as layer 946 | `parse_layer_suffix` | `layer-suffix`: asserts `node_NNN` and `MTL0#leaf_398#0` produce no layer |
 | Success — `n_layer` | `max(N) + 1` over every suffixed family | aggregate pass | `real-transcript` asserts `28` |
 | Success — value structure | The nine shapes of finding 6 are classified and the block terminates on `sum` | `scan_block` | `value-shapes` over all twelve real shapes of the section 4.3 fixture |
-| Success — truncation rule | Row, element, and slice counts equal `min(ne, 6)`; token indices under truncation are `{0,1,2,n-3,n-2,n-1}` | `scan_block`, `token_index_of_row` | `truncation-map`: generator emits `n_tokens` in `{1, 4, 5, 6, 7, 8, 64}` and asserts the exact index set |
-| Success — axis-0 full print | An axis-0 extent `<= 6` prints in full | `scan_block` | `topk-slots-4`. **MOE-PREREQ**: verified synthetically only; finding 6 records that no real axis-0 extent under seven was observed on this host |
+| Success — compact truncation rule | Compact row, element, and slice counts equal `min(ne, 6)`; token indices under truncation are `{0,1,2,n-3,n-2,n-1}` | `scan_block`, `token_index_of_row` | `truncation-map`: generator emits `n_tokens` in `{1, 4, 5, 6, 7, 8, 64}` and asserts the exact index set |
+| Success — full router axes | An `ffn_moe_topk` axis prints exactly its extent with no marker, including extents above six; direct indices and false truncation fields result | `scan_block`, `token_index_of_row` | `topk-slots-full`, `topk-tokens-full`, and multi-graph full-axis fixtures; R2c OLMoE qualification |
 | Success — expert id parse | `     12.0000` yields `12`; no float parse is used | `parse_expert_id` | `expert-id-format`: every id 0..255 rendered as `%12.4f` and round-tripped |
 | Success — `n_expert` source | `ffn_moe_probs` wins, then `ffn_moe_logits`, then the router weight; `n_expert_source` reports which | `derive_n_expert` | `n-expert-probs`, `n-expert-logits`, `n-expert-router`, `n-expert-absent`. **MOE-PREREQ** |
 | Success — dense document | A transcript with no `ffn_moe_topk` is `status: "ok"`, `moe.present: false`, `selections: []`, `locality` all `null` | `build` | `real-transcript`, `dense-synthetic` |
@@ -864,7 +873,7 @@ transcript exists. Marking them is the section 1.4 honesty requirement made mech
 | Failure — precedence | A transcript with two defects reports the earlier row | ordered guards | `precedence-line-then-header`, `precedence-header-then-rowcount` |
 | Failure — grammar drift | A header with a changed field width, a missing `}`, or an unknown op shape is `R2_HEADER_GRAMMAR`, never partially parsed | `parse_header` | `grammar-drift`: five mutations of a real header line |
 | Failure — value drift | A stray line inside a value block is `R2_VALUE_GRAMMAR`; the same line outside one is skipped | `scan_block` | `value-drift-inside`, `value-drift-outside` |
-| Failure — row count | A block printing 5 rows for `ne1 = 28` is `R2_ROW_COUNT` | step 9 | `rowcount-mismatch` |
+| Failure — row count | A compact/full axis with a short, long, misplaced-marker, mixed-form, or non-router-full shape is `R2_ROW_COUNT` | step 9 | `rowcount-mismatch` plus R2c's eight malformed/mixed/non-router cases, including mixed axis-2 form across blocks |
 | Failure — expert bounds | An id `>= n_expert`, a negative id, `nan`, and a non-zero fraction each fire their row | step 10 | `expert-out-of-range`, `expert-negative`, `expert-nan`, `expert-fraction` |
 | Failure — MoE inconsistency | Two layers disagreeing on `n_expert_used` is `R2_MOE_INCONSISTENT` | step 11 | `moe-inconsistent-layers`, `moe-inconsistent-graphs` |
 | Failure — limits | Graph, node, and selection limits each fire against lowered debug constants | ordered guards | `graph-limit`, `node-limit`, `selection-limit` |
@@ -900,7 +909,7 @@ transcript exists. Marking them is the section 1.4 honesty requirement made mech
 | Case | Contract to close | Implementation | Exact regression |
 | --- | --- | --- | --- |
 | Independence | The generator derives no value from `src/`; every expected selection and every aggregate is computed in Python | module imports | code review; the import list |
-| Format fidelity | The generator's renderer reproduces the section 2.2 format string, the `%12.4f` element, the three markers, and the `min(ne, 6)` rule exactly | `render_block` | `fixture-selfcheck`: the generator re-parses the section 4.3 real fixture with its own reader and asserts an identical token stream |
+| Format fidelity | The generator's renderer reproduces the section 2.2 format string, the `%12.4f` element, the compact markers/counts, and R2c's full-router form exactly | `render_block` | independent compact corpus plus R2c full/malformed expected documents |
 | Corpus coverage | Every fixture named in sections 3.1–3.3 is emitted, with a manifest naming each case's expected code or expected document | `main` | the runner asserts every manifest case ran |
 | Determinism | Two runs produce byte-identical fixtures | fixed seed | `fixture-determinism` |
 | Cleanup | Writes only into a caller-supplied temporary tree | `main` | the runner's repository leak sweep |
@@ -933,20 +942,23 @@ document. Six families:
    the expert ids drawn from a fixed seed so the generator knows every selection and every aggregate
    in advance. This is the corpus that closes every **MOE-PREREQ** cell synthetically, and the one
    the section 4.5 decision would replace with a real transcript.
-3. **Truncated axes.** `n_tokens` in `{6, 7, 8, 64, 1024}` crossed with `n_expert_used` in
+3. **Compact axes.** `n_tokens` in `{6, 7, 8, 64, 1024}` crossed with `n_expert_used` in
    `{4, 6, 7, 8}`, exercising every combination of full and three-plus-three printing on axes 0 and
    1, and a three-axis tensor exercising axis 2. Expected: exact `observed_token_indices`, exact
    `slots_truncated`, and `adjacent_pair_count` equal to `min(n_tokens, 6) - 1` when
    `n_tokens <= 6` and `4` when `n_tokens > 6`.
-4. **Malformed.** One fixture per row of section 2.6's table, each defective in exactly one way, plus
+4. **R2c full axes.** Eight-slot/eight-token single- and multi-graph transcripts whose independent
+   oracle expects direct indices, false truncation fields, and every selection, plus short, long,
+   misplaced-marker, mixed compact/full slot or axis-2 form, and non-router-full refusals.
+5. **Malformed.** One fixture per row of section 2.6's table, each defective in exactly one way, plus
    the two precedence fixtures defective in two ordered ways.
-5. **Huge line.** A single 200,000-byte line, both as the first line and as a line after 500 valid
+6. **Huge line.** A single 200,000-byte line, both as the first line and as a line after 500 valid
    blocks, asserting `R2_LINE_TOO_LONG` with the right offset and a truthful partial document.
-6. **Window boundary.** The same logical transcript emitted with padding chosen so that a header
+7. **Window boundary.** The same logical transcript emitted with padding chosen so that a header
    line, a value row, a `sum` line, and a truncation marker each straddle offset `WINDOW_BYTES`,
    asserting a byte-identical document across all four paddings and against the unpadded original.
 
-Families 5 and 6 are the two that a whole-file parser would pass trivially and a streaming parser can
+Families 6 and 7 are the two that a whole-file parser would pass trivially and a streaming parser can
 fail silently; they exist because section 2.4 chose streaming.
 
 ### 4.2 Owner — `scripts/run-expert-trace-smoke`, `make expert-trace-smoke`
@@ -1165,11 +1177,13 @@ rediscovered:
    `n_tokens` above six loses every middle token.
 2. **Emit a graph per decode step.** `llama-eval-callback` decodes the prompt once and stops.
 
-R2A takes no position on whether either is worth doing, because that depends on numbers R2b has not
-produced. What R2A guarantees is that a patched transcript needs **no parser change**: multi-graph
-segmentation, decode phase, and untruncated axes are all already in section 2.5's contract and all
-already have fixtures (`multi-graph`, `phase-decode`, `topk-slots-4`). If R2c ships, R2A's document
-gets *more* rows, not a schema 2.
+R2c shipped the dependency and exposed a correction to this plan's original guarantee: the schema
+had fields for untruncated axes, but the implementation accepted exactly six values whenever
+`ne > 6` and derived both truncation flags from extent. The consumer change is therefore part of
+R2c: the parser accepts the exact compact or full forms in section 2.2, while existing multi-graph
+segmentation and decode phase remain unchanged. The document gets more rows and accurate false
+truncation flags, not a schema 2. The authoritative build/patch/cache contract is
+[`r2c-decode-instrument.md`](r2c-decode-instrument.md).
 
 ### 5.3 R3 — the consumer
 
@@ -1340,12 +1354,10 @@ names the superseded text. Cases without a runner prefix are cases inside
 | 19 | Section 7.5 item 2, "No string ordering and no string sort" | Half withdrawn. `str` satisfies `Ord` at this pin and `<` **is** the byte-lexicographic comparison, so `span_less` / `span_same` are two expressions over `span_text`, not a hand-written byte loop. The genuine remaining gap is the *sort*: `array<T>.sort()` rejects `str` elements, `array_builder<str>` is rejected outright, and `sort_by_key` — which does admit a `str` key — cannot reach these columns because "a lambda cannot capture the owned value 'starts' yet"; there is no comparator `sort_by` — so `sort_spans` stays | Claiming a gap that does not exist weakens the register. `docs/align-requests.md` Request 27 and section 7.5 item 2 now state the shipped half and the missing half separately | `make check`, `make expert-trace-smoke` (every `node_families` / `unsuffixed_nodes` / `ops` list), `multibyte-everywhere` |
 | 20 | Section 2.5.6's `n_tokens` — "cross-checked against axis 1 of every `ffn_moe_topk-N` in the same graph" — and section 2.5.5's `topk_layers` | **False against a real MoE model.** Build 10566 applies the output-token `GET_ROWS` reduction *before* the **last** layer's feed-forward, so on a 16-layer OLMoE prefill of 3 tokens `embd` is `{2048, 3, 1, 1}` while `ffn_moe_topk-15` is `{8, 1, 1, 1}`. A `ffn_moe_topk-N` block whose token axis is **shorter** than the graph's is *token-reduced*, not inconsistent: it is parsed and validated exactly like any other block, but it contributes **no `selections[]` row and nothing to any locality aggregate**, its layer is excluded from `moe.topk_layers`, and it is listed in the new `moe.token_reduced_layers`. A **longer** axis, and any disagreement outside `ffn_moe_topk`, remain `R2_TOKEN_COUNT`. The exemption is bounded to the reduction the instrument actually performs: **at most one layer per graph may claim it, and it must be the graph's highest layer index.** A suffixed node at a higher layer arriving after a layer was accepted as token-reduced, or a second reduced layer in the same graph, is `R2_TOKEN_COUNT` with that node's name as the detail — dropping an *interior* layer's entire routing from every aggregate is a silent loss no rule of build 10566 explains | The transcript does not carry the retained token indices: `inp_out_ids` reaches the graph as a leaf (`node_899 = GET_ROWS(l_out-14{2048, 3, 1, 1}, MTL0#leaf_227#0{1, 1, 1, 1}) = {2048, 1, 1, 1}`) and a leaf is never printed by the callback. Labelling the reduced block's single row `token: 0` would place the *last* position's routing at index 0 and corrupt every adjacency; refusing the transcript would reject every real MoE model. `moe.token_reduced_layers` is what keeps the omission visible, which is section 1.1's third property. `schema_version` stays `1`: the field is additive, and no consumer outside this repository reads the document | `moe-token-reduced-tail`, `moe-token-reduced-pair`, `token-reduced-middle` (a short axis at layer 1 of 3, refused at `ffn_norm-2`), `token-count` (retargeted to a *longer* axis), `run-expert-trace-parity` on the real OLMoE model, `run-expert-locality-gate` |
 
-**One finding, not a correction.** Because `R2_ROW_COUNT` enforces `printed = min(ne, 6)`, no
-`(graph, layer)` pair can ever carry more than six observed token indices, so a run of consecutive
-observed tokens is at most six long and every `locality.working_set` window above `4` reports
-`sample_count: 0` on **every transcript this parser accepts**. Windows 8 through 64 become
-non-vacuous only if R2c ships section 5.2's first change. The windows are still emitted, with their
-zero sample counts visible, because a reader must be able to see that the question was asked.
+**Closed by R2c.** Compact build-10566 transcripts still expose at most six token indices per
+`(graph, layer)`, so their `locality.working_set` windows above `4` remain visibly vacuous. The R2c
+router form is accepted at full extent, allowing windows 8 through 64 to become non-vacuous when the
+captured graph actually contains that many token positions.
 
 ## 7. Verification record and unclosed cells
 

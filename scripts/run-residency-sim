@@ -191,10 +191,11 @@ for prompt in "${selected[@]}"; do
   # keeps attention unfused so the graph shape stays the one `docs/specs/r2a-expert-trace.md`
   # section 2.2 was measured against; `-ctk f32 -ctv f32` keeps the cache tensors in a printable
   # type; `-nr` suppresses the reasoning wrapper so the prompt reaches the tokenizer verbatim;
-  # `-c 512` bounds the context. `ulimit -f` caps the transcript at 256 MiB.
+  # `-c 512` bounds the context. `-n 0` keeps this historical gate prefill-only after R2c assigns
+  # positive `-n` to decode steps. `ulimit -f` caps the transcript at 256 MiB.
   (
     ulimit -f 262144
-    exec $instrument_timeout "$instrument" -m "$model" -p "$prompt" -n 1 -t 4 \
+    exec $instrument_timeout "$instrument" -m "$model" -p "$prompt" -n 0 -t 4 \
       -fa off -ctk f32 -ctv f32 -nr -c 512 \
       </dev/null >"$transcript" 2>"$temp_dir/instrument.log"
   ) || {
@@ -218,6 +219,27 @@ for prompt in "${selected[@]}"; do
   index=$((index + 1))
 done
 end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+
+# R3's recorded verdict is over the historical compact first/last-three router-slot sample. R2c's
+# full-axis instrument changes that demand stream even with decode disabled, so reuse the locality
+# gate's exact admission rule and fail before the simulator can publish a different verdict under
+# the old capability name.
+python3 - "$root_dir/scripts" "$temp_dir/documents" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from expert_locality_gate import GateError, require_compact_router_axes
+
+paths = sorted(Path(sys.argv[2]).glob("*.json"))
+documents = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+try:
+    require_compact_router_axes(documents, [path.stem for path in paths])
+except GateError as error:
+    raise SystemExit("residency sim qualification: historical compact-axis admission failed: %s"
+                     % error)
+PY
 
 after=$(python3 - "$model" <<'PY'
 import os, sys

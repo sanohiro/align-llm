@@ -3,34 +3,78 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R3-QUALIFICATION-PREREQUISITES (2026-08-28)
+## Active: R2C-DECODE-INSTRUMENT (2026-08-28)
 
-Branch `fix/r3-qualification-prerequisites` starts from current `main` `95c47e7`, the merge of R3
-PR #135. A second R3 implementation was independently completed before that merge became visible;
-its duplicate PR #137 is closed and will not be integrated. Its final review nevertheless exposed
-one root-cause class that applies to the merged qualification: the wrapper generated a Model IR but
-did not validate it or the requested budget until after every prompt had invoked the external
-instrument, so a locally knowable defect could consume up to 40 600-second prompt runs.
+Branch `agent/r2c-decode-instrument` starts from `main` `1b11245`, the merge of R3 follow-up PR #138.
+The next eligible roadmap dependency is decision (c): source-build llama.cpp at exact commit
+`bb4caa7540188872173c44d161602d9271386413` with the minimal R2c instrument patch, which unblocks
+R6 and therefore R7-R9. R5 microbenchmark C remains independently blocked on Align Request 41.
 
-**Current checkpoint.** `scripts/run-residency-sim` now validates prompt count in the simulator's
-existing `[1, MAX_TRACE_PATHS]` envelope, derives the Model IR and default budget, and asks the
-simulator itself to validate both against a one-row probe list whose trace is deliberately absent.
-Only exact `R3_TRACE_UNREADABLE` step-8 evidence admits instrument `--version` and prompt capture;
-no Model IR or budget validation is duplicated in shell. The hosted owner covers three refusals
-with zero fake-instrument calls and one valid admission through `--version` to the first prompt.
-`make residency-sim-smoke`, `make residency-sim-qualification` (exact N/A), `make format-check`, and
-`make baseline-check` pass. The hardware-name evidence finding from the duplicate implementation is
-not applicable because merged R3 has no hardware-profile string input.
+**Current checkpoint.** The triggered design ledger is `docs/specs/r2c-decode-instrument.md`
+(`d8e4818`); the reviewed implementation head is `5f1eb3e`, the first consolidated review repair is
+`46432de`, and the final review's three accepted findings are repaired in the current branch tip.
+`.llama-revision` and the 2,170-byte patch pin the external source and
+two-file diff. The `r2c-v2` managed builder has completed a fresh CPU build with Metal and
+llama/ggml shared libraries disabled, verified build 10566 / commit `bb4caa7`, and emitted a
+schema-1 attestation. The patch preserves the omitted/nonpositive `-n` one-prefill behavior, emits
+up to `-n` one-token decode graphs with common sampling and EOG stop, and prints every
+`ffn_moe_topk` axis while leaving all other debug tensors at three-plus-three.
 
-**Review envelope.** One host-native Codex comprehensive review covered the whole follow-up diff at
-`045cb48` against base tip and merge base `95c47e73ec0be1cd79ecd6536e0b84bc254bd871`.
-Verdict: clean; findings: none. The reviewer traced the probe through the simulator's documented
-validation order and CLI exit mapping and ran the direct owner with the existing product binary.
-Its attempt to reacquire the managed compiler lock was N/A because the review sandbox makes the
-user cache read-only; the normal owner run above is the owning build evidence.
+The source-to-client check found and corrected one pre-existing R2A contradiction: prose said a
+full-axis R2c transcript needed no parser change, but `src/expert_trace.align` accepted exactly six
+values whenever an extent exceeded six and derived truncation flags from extent. Schema 1 now
+admits exact compact or full forms based on the ellipsis actually observed. Existing compact
+documents remain unchanged; the independent generator now owns full slot/token success and eight
+malformed/mixed/non-router refusals. `make check`, `scripts/run-r2c-instrument-smoke` (54 contract
+groups), and `scripts/run-expert-trace-smoke` (108 fixtures, 17 error codes) pass. The compiled dense
+qualification passes through the product parser: omitted, zero, and negative `-n` each produce one
+prefill graph, while `-n 2` produces one prefill plus two decode graphs. The real OLMoE half also
+passes: three graphs including decode, 48 full-width groups, 384 selections, and full-axis extent
+eight. Independent parity reports 16 layers, 64 experts, top-8, 488 retained selections, and the
+known token-reduced final layer. No model or transcript is committed.
 
-**Next actions, in order.** Run the exact-head owner and preflight, publish and merge the follow-up,
-then refresh `main` and start the next eligible roadmap capability.
+**Review envelope.** Host-native Codex (`gpt-5.6-sol`, xhigh) first reviewed
+`5f1eb3e7614a8a8e1cfd4ee13e8b31db3b8c26a8` against base tip and merge base
+`1b11245cee98bf3bba8ab874683206b4243d1761`. Verdict: four valid findings — two P1 and two P2 — all
+accepted, none rejected. That repair compares staged and unstaged tracked source to `HEAD`; disables
+Metal and advances the cache recipe to `r2c-v2`; requires an applicable router extent above six;
+and downloads the tiny model to a hash-validated temporary sibling before atomic rename. The same
+pass corrected the remaining compact-only normative prose in R2A. Deterministic owners and fresh
+dense/MoE materialization pass after repair.
+
+The required final comprehensive review covered `46432ded7e8d60d8bca4f4d33fdc80a252099aae`
+against the same base tip and merge base. It found three further valid findings, all accepted and
+none rejected: R2/R3 historical replays still changed from six to eight observed slots under the
+R2c instrument; explicit/XDG/HOME cache roots could resolve inside the checkout; and router axis 2
+could change compact/full print form between groups or blocks. The final repair makes historical
+gates share an exact compact-axis admission check, rejects lexical and symlink-mediated checkout
+cache containment, and settles the axis-2 form across every applicable group/block with a new
+`R2_ROW_COUNT` fixture. The repair is limited to those recorded findings and their plan/owner
+evidence, so the workflow requires repair-delta inspection and affected owner verification rather
+than a third comprehensive review. Both are complete.
+
+**Candidate contents.** The pin, patch, managed builder, deterministic smoke, focused qualification,
+R2A parser/source oracle changes, R2A specification correction, roadmap and developer-guide
+changes, and this handoff update belong to this capability. `Makefile` and aggregate topology are
+intentionally unchanged, so the canonical coding baseline artifact set is unchanged.
+
+**Next actions, in order.** Run exact-head preflight, publish the English pull request with both
+review envelopes and finding dispositions, monitor required checks, and merge. Per the user's stop
+point, do not begin R6 after this PR; after merge, refresh `main`, record no active work, and stop.
+
+**Latest durable verification.** On WSL2 x86_64 with GNU 14.2.0 and the managed Align
+`3a34febe` toolchain:
+
+```text
+scripts/run-r2c-instrument-smoke                         PASS, 54 contract groups
+make expert-trace-smoke                                  PASS, 108 fixtures / 17 error codes
+make residency-sim-smoke                                 PASS, oracle and admission owners
+make check                                               PASS, 31 units per-unit
+scripts/run-r2c-instrument-qualification                 dense PASS; MoE PASS
+scripts/run-expert-trace-parity                          MoE PASS; model read-only proof PASS
+scripts/llama-eval-callback-toolchain verify             bb4caa7540188872173c44d161602d9271386413
+scripts/llama-eval-callback-toolchain attest instrument  r2c-v2, instrument sha256 2911b1ffed36...
+```
 
 ## Merged checkpoint: R3-RESIDENCY-SIM (2026-08-28)
 
