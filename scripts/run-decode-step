@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-# R6-DECODE-KV-STEP1 named focused qualification (`docs/specs/r6-decode-kv-step1.md` section 5).
+# R6-DECODE-KV-STEP1 and R6-STEP-N named focused qualification
+# (`docs/specs/r6-decode-kv-step1.md` section 5 and `docs/specs/r6-step-n.md` section 5).
 # **Opt-in and capable-only.** It is in neither HOSTED_CHECK_TARGETS nor CAPABLE_ONLY_CHECK_TARGETS
 # and in no aggregate, exactly as `model-forward-qualification` is not.
 #
@@ -12,10 +13,18 @@ set -euo pipefail
 #   ALIGN_LLM_LLAMA_EVAL_CALLBACK   path to `llama-eval-callback`, R2C-patched
 #   ALIGN_LLM_LLAMA_DEBUG           path to `llama-debug`
 #   ALIGN_LLM_DECODE_STEP_TMPDIR    where the pack is written; defaults to TMPDIR
+#   ALIGN_LLM_DECODE_STEPS          the step count `N`; defaults to 16
 #
-# When any is unset, or the model or either instrument is absent, or the free space under the
-# scratch root is under the pack's size plus 1 GiB, it prints one explicit N/A line naming the
-# missing input and exits 0. It never skips silently.
+# When any is unset, or the model or either instrument is absent, or `numpy` is unavailable, or the
+# free space under the scratch root is under the pack's size plus 2 GiB, it prints one explicit N/A
+# line naming the missing input and exits 0. It never skips silently.
+#
+# **`N` and its documented fallback.** `DECODE_STEPS` below is the one constant. R6-STEP-N section 6
+# risk 1 estimates the whole run at roughly 670 s of the 1800 s cap, with pack-read bandwidth the
+# dominant uncertainty; if a host measures more than about 900 s, set `ALIGN_LLM_DECODE_STEPS=8`,
+# which halves every term. The fallback changes what is measured and not what is asserted: section
+# 3.5's rule is stated in terms of `N`, and `k in {1, ceil(N/2), N}` is three checkpoints at either
+# value.
 #
 # **The sampler is pinned and this is not optional.** Section 3.1 measured it: two runs of
 # `llama-eval-callback -n 1` with default sampling produced byte-identical prefill graphs and
@@ -31,8 +40,17 @@ set -euo pipefail
 #
 # It packs the real model into a temporary directory **outside the work tree**, derives the geometry
 # with `main --model-ir`, and for each of four prompts captures both instrument outputs, checks that
-# the transcript really holds two graphs, runs `ggml-spike --decode-step` three times, and asserts
-# section 5's list. Everything it writes is removed on every exit path including a signal.
+# the transcript really holds `N + 1` graphs, runs `ggml-spike --decode-step` three times, and
+# asserts section 3.5's rule. Everything it writes is removed on every exit path including a signal.
+#
+# **Gate G, the thing this capability is named for.** The transcript does not print the sampled token
+# and `result_output`'s argmax is not derivable from six of 152,064 printed values (R6-STEP-N section
+# 3.1 measured both). What it does print is graph `j`'s first node,
+# `embd = GET_ROWS(token_embd.weight, [d_{j-1}])` — a **copy** of a vocabulary row, with no
+# arithmetic — so if this arm's `d_k` is llama.cpp's, those printed bytes are equal. Section 3.2
+# turns that into an id equality by measuring, over the whole vocabulary, how many rows share a
+# printed fingerprint; the measurement runs here, once, before the gate is claimed, and the run
+# refuses any step whose decoded id is a member of a colliding class.
 
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
@@ -61,7 +79,9 @@ model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
 scratch_root="${ALIGN_LLM_DECODE_STEP_TMPDIR:-${TMPDIR:-/tmp}}"
 [ -d "${scratch_root}" ] || na "the scratch root ${scratch_root} does not exist"
 free_kib=$(df -Pk "${scratch_root}" | awk 'NR == 2 { print $4 }')
-need_kib=$(( model_bytes / 1024 + 1048576 ))
+# R6-STEP-N section 6 risk 2. The pack plus **2 GiB**, not 1: at `-n 16` one transcript is roughly
+# 16 MB and four prompts are roughly 64 MB, and covering them by luck is not covering them.
+need_kib=$(( model_bytes / 1024 + 2097152 ))
 if [ "${free_kib}" -lt "${need_kib}" ]; then
   na "free space under ${scratch_root} is ${free_kib} KiB, below the ${need_kib} KiB the pack needs"
 fi
@@ -82,6 +102,15 @@ trap cleanup EXIT HUP INT TERM
 # model at `-c 512` (section 3.1 measured `cache_k_l0 (view) (permuted) = {128, 256, 4}`), and the
 # arm validates the transcript's `kq` `ne0` against it rather than reading it from the transcript.
 KV_WIDTH=256
+
+# R6-STEP-N section 5. `N`, and the only constant a host is expected to move.
+DECODE_STEPS="${ALIGN_LLM_DECODE_STEPS:-16}"
+case "${DECODE_STEPS}" in
+  ''|*[!0-9]*) na "ALIGN_LLM_DECODE_STEPS=${DECODE_STEPS} is not a decimal step count" ;;
+esac
+if [ "${DECODE_STEPS}" -lt 1 ] || [ "${DECODE_STEPS}" -gt 64 ]; then
+  na "ALIGN_LLM_DECODE_STEPS=${DECODE_STEPS} is outside 1..MAX_DECODE_STEPS (64)"
+fi
 
 echo "decode step qualification: packing ${ALIGN_LLM_GGUF_MODEL} into ${work_dir}"
 "${root_dir}/main" --pack "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/model.alignpack" \
@@ -120,10 +149,10 @@ for prompt in "${PROMPTS[@]}"; do
   mkdir -p "${case_dir}/lg"
   echo "decode step qualification: prompt ${index} of ${#PROMPTS[@]}: ${prompt}"
 
-  # `--temp 0 -s 0` is contractual (section 3.1). `-n 1` makes the instrument emit a **second**
-  # graph, which is the graph this capability is about.
+  # `--temp 0 -s 0` is contractual (section 3.1). `-n N` makes the instrument emit exactly `N + 1`
+  # graphs, and graph `k + 1` is the one this arm's step `k` is compared against.
   "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" -m "${ALIGN_LLM_GGUF_MODEL}" -p "${prompt}" \
-    -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 --temp 0 -s 0 \
+    -n "${DECODE_STEPS}" -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 --temp 0 -s 0 \
     > "${case_dir}/transcript.txt" 2> "${case_dir}/transcript.log"
   "${ALIGN_LLM_LLAMA_DEBUG}" -m "${ALIGN_LLM_GGUF_MODEL}" -p "${prompt}" \
     -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 \
@@ -139,27 +168,38 @@ for prompt in "${PROMPTS[@]}"; do
     exit 1
   fi
 
-  tokens=$(python3 - "${tokens_bin}" <<'PY'
+  tokens=$(python3 - "${tokens_bin}" "${DECODE_STEPS}" <<'PY'
 import struct
 import sys
 
 with open(sys.argv[1], "rb") as handle:
     raw = handle.read()
+steps = int(sys.argv[2])
 ids = list(struct.unpack("<%di" % (len(raw) // 4), raw))
-if not ids or len(ids) > 8:
-    raise SystemExit("decode step qualification: FAIL %d prompt tokens, outside 1..8" % len(ids))
+# `T + N <= MAX_PREFILL_TOKENS` (32), because oracle C' runs `--model-forward` at `TOKENS,d_1..d_N`
+# and that arm refuses more than the cap. R6-STEP-N section 2.5 is why the cap is 32 and not 8.
+if not ids or len(ids) + steps > 32:
+    raise SystemExit("decode step qualification: FAIL %d prompt tokens plus %d steps exceeds "
+                     "MAX_PREFILL_TOKENS (32)" % (len(ids), steps))
 print(",".join(str(i) for i in ids))
 PY
 )
   echo "decode step qualification:   ${prompt} tokenizes to ${tokens}"
+  if [ "${index}" = 1 ]; then
+    scaling_tokens="${tokens}"
+  fi
 
-  # The transcript must hold exactly two graphs. Every graph this instrument prints begins with an
-  # `embd` header, so counting that header counts graphs; a transcript with one graph would let the
-  # arm's own "skip the first" rule silently compare nothing.
+  # R6-STEP-N section 3.5, rule 7. The transcript must hold exactly `N + 1` graphs. Every graph this
+  # instrument prints begins with an `embd` header, so counting that header counts graphs. Fewer
+  # means llama.cpp stopped early at EOS (section 2.12), and this arm would still emit `N` steps: the
+  # two runs would then differ in **length** rather than in arithmetic, so the prompt is refused by
+  # name rather than compared over a shorter run.
+  want_graphs=$(( DECODE_STEPS + 1 ))
   graphs=$(grep -c 'common_debug_cb_eval:.* embd = ' "${case_dir}/transcript.txt" || true)
-  if [ "${graphs}" != "2" ]; then
-    echo "decode step qualification: FAIL the transcript holds ${graphs} graphs, not 2 — is" \
-      "llama-eval-callback R2C-patched and was -n 1 honoured?" >&2
+  if [ "${graphs}" != "${want_graphs}" ]; then
+    echo "decode step qualification: FAIL prompt ${index} transcript holds ${graphs} graphs, not" \
+      "${want_graphs} — llama.cpp reached EOS before step ${DECODE_STEPS}, or is" \
+      "llama-eval-callback R2C-patched and was -n ${DECODE_STEPS} honoured?" >&2
     exit 1
   fi
 
@@ -167,7 +207,7 @@ PY
     "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
       "${work_dir}/geometry.json" "${tokens}" \
       "${document_root}/case${index}-run${repeat}.json" "${ALIGN_LLM_GGUF_MODEL}" \
-      "${case_dir}/transcript.txt" "${KV_WIDTH}" "${logits_bin}" \
+      "${case_dir}/transcript.txt" "${KV_WIDTH}" "${logits_bin}" "${DECODE_STEPS}" \
       > "${case_dir}/summary${repeat}.txt" || {
         echo "decode step qualification: FAIL prompt ${index} run ${repeat} exited non-zero" >&2
         cat "${case_dir}/summary${repeat}.txt" >&2 || true
@@ -180,30 +220,94 @@ print(d['status'], d['error_code'], d['error_detail'], file=sys.stderr)
       }
   done
 
-  # Oracle C. Our own single-shot `T+1` prefill against our own decode step.
+  # Oracle C'. Our own single-shot `T+k` prefill against our own step `k`, at three checkpoints
+  # rather than at every step: each one is a whole `--model-forward`, thirty graphs and a full pass
+  # over the 4.7 GB weight set, so sixteen of them per prompt would cost more than the run.
   #
-  # Section 3.2 expected this to be a characterization at best, because llama.cpp's own two paths
-  # differ by up to 0.17 in activations and 0.054 at the logits. **Measured, it is byte identity**:
-  # our decode step at `n_past = T` reproduces our own `T+1` prefill's final position exactly, which
-  # is what section 5.1 records and why this is an acceptance check here and not a report.
-  decoded=$(python3 -c "
+  # The three bound three regimes rather than sample uniformly: `k = 1` is the case R6 already
+  # measured and the only one with a prior result to disagree with; `k = N` is the deepest
+  # accumulation and where a drift would show first; `k = ceil(N/2)` catches a divergence that begins
+  # mid-loop and would be invisible at both ends.
+  #
+  # R6 section 3.2 expected byte identity here to be a characterization at best, because llama.cpp's
+  # own two paths differ by up to 0.17 in activations. **Measured, it is byte identity**, because
+  # every operand this arm hands ggml is a contiguous F32 tensor, so its decode path and its prefill
+  # path take the same kernel — a reason that does not weaken with `k`.
+  checkpoints=$(python3 -c "
+import sys
+n = int(sys.argv[1])
+print(' '.join(str(k) for k in sorted({1, -(-n // 2), n})))
+" "${DECODE_STEPS}")
+  for k in ${checkpoints}; do
+    prefix=$(python3 -c "
 import json, sys
-print(json.load(open(sys.argv[1]))['decode']['token_id'])
-" "${document_root}/case${index}-run1.json")
-  "${root_dir}/ggml-spike" --model-forward "${work_dir}/model.alignpack" \
-    "${work_dir}/geometry.json" "${tokens},${decoded}" \
-    "${document_root}/case${index}-single.json" "${ALIGN_LLM_GGUF_MODEL}" - "${KV_WIDTH}" \
-    > "${case_dir}/single.txt" || true
+ids = json.load(open(sys.argv[1]))['decode']['token_ids'][:int(sys.argv[2])]
+print(','.join(str(i) for i in ids))
+" "${document_root}/case${index}-run1.json" "${k}")
+    "${root_dir}/ggml-spike" --model-forward "${work_dir}/model.alignpack" \
+      "${work_dir}/geometry.json" "${tokens},${prefix}" \
+      "${document_root}/case${index}-single${k}.json" "${ALIGN_LLM_GGUF_MODEL}" - "${KV_WIDTH}" \
+      > "${case_dir}/single${k}.txt" || true
+  done
 done
 
-python3 - "${document_root}" "${KV_WIDTH}" <<'PY'
+# R6-STEP-N section 2.10's scaling row, on the first prompt only. It is the measurement that
+# motivates resident weights — the loop re-reads the whole pack once per step — and it is
+# characterization: **no TTFT or tokens-per-second claim is made anywhere in this qualification.**
+scaling_dir="${work_dir}/scaling"
+mkdir -p "${scaling_dir}"
+for n in 1 4 "${DECODE_STEPS}"; do
+  echo "decode step qualification: scaling run at N=${n} on prompt 1"
+  "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+    "${work_dir}/geometry.json" "${scaling_tokens}" \
+    "${scaling_dir}/n${n}.json" "${ALIGN_LLM_GGUF_MODEL}" - "${KV_WIDTH}" - "${n}" \
+    > "${scaling_dir}/n${n}.txt" || {
+      echo "decode step qualification: FAIL the scaling run at N=${n} exited non-zero" >&2
+      exit 1
+    }
+done
+
+# Gate G's load-bearing measurement (section 3.2), taken **once** and before the gate is claimed. It
+# is over `token_embd.weight` of the source GGUF rather than of the pack, and that is equivalent
+# rather than looser: every member the arm reads is compared byte for byte against this same file at
+# its own `source_offset` before its graph runs, and `reference.verdict` is asserted below.
+#
+# It is handed every id any prompt decoded, so the same pass also reports those rows' own
+# fingerprints and the gate can compare them against the transcript without a second walk over
+# 4.7 GB of weights.
+decoded_ids=$(python3 -c "
+import glob, json, os, sys
+ids = set()
+for name in sorted(glob.glob(os.path.join(sys.argv[1], '*-run1.json'))):
+    with open(name, 'r', encoding='utf-8') as handle:
+        ids.update(json.load(handle)['decode']['token_ids'])
+print(','.join(str(i) for i in sorted(ids)))
+" "${document_root}")
+
+echo "decode step qualification: measuring embd fingerprint injectivity over the whole vocabulary"
+python3 "${root_dir}/scripts/decode_step_fingerprint.py" "${ALIGN_LLM_GGUF_MODEL}" \
+  "${work_dir}/fingerprints.json" --ids "${decoded_ids}" || {
+    echo "decode step qualification: FAIL the fingerprint measurement did not complete" >&2
+    exit 1
+  }
+
+python3 - "${document_root}" "${KV_WIDTH}" "${DECODE_STEPS}" "${work_dir}/fingerprints.json" \
+  "${work_dir}" <<'PY'
 import json
 import os
+import re
 import sys
 
-document_root, kv_width = sys.argv[1], int(sys.argv[2])
+document_root, kv_width, steps = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+fingerprint_path, work_dir = sys.argv[4], sys.argv[5]
 failures = []
 rows = []
+
+with open(fingerprint_path, "r", encoding="utf-8") as handle:
+    measurement = json.load(handle)
+COLLIDING = set(measurement["colliding_ids"])
+FINGERPRINTS = {int(key): value for key, value in measurement["fingerprints"].items()}
+CHECKPOINTS = sorted({1, -(-steps // 2), steps})
 
 
 def load(name):
@@ -221,9 +325,99 @@ def normalize(document):
     copy["head"]["pread_ns"] = 0
     copy["head"]["compute_ns"] = 0
     copy["decode"]["compute_ns"] = 0
+    # R6-STEP-N section 2.9. A per-step timing array is the exact place a determinism check goes
+    # quietly green on nothing, so every row's own `compute_ns` is zeroed as well as the sum.
+    for row in copy["steps"]:
+        row["compute_ns"] = 0
     copy["plane"]["readback_ns"] = 0
     copy["plane"]["upload_ns"] = 0
     return json.dumps(copy, sort_keys=True, separators=(",", ":"))
+
+
+# ---------------------------------------------------------------------------------------------
+# Gate G's second leg: the transcript's own `embd` fingerprints, graph by graph.
+#
+# `common_debug_print_tensor` prints, for a `{n_embd, 1, 1, 1}` f32 tensor at a print limit of 3,
+# one bracketed row of six `%12.4f` values with a `...` between the halves, then `sum = %f`. The
+# parse below reads exactly that and nothing else: the first `embd` node of each graph, in order.
+# ---------------------------------------------------------------------------------------------
+
+EMBD = re.compile(r"^common_debug_cb_eval:\s+embd = ")
+NUMBER = re.compile(r"^\s*-?\d+\.\d+\s*$")
+
+
+def transcript_embeddings(path):
+    """One `(printed, sum)` pair per graph, in graph order."""
+    found = []
+    pending = None
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            line = line.rstrip("\n")
+            if EMBD.match(line):
+                pending = {"printed": None, "sum": None}
+                found.append(pending)
+                continue
+            if pending is None or pending["sum"] is not None:
+                continue
+            stripped = line.strip()
+            if pending["printed"] is None and stripped.startswith("[") \
+                    and stripped.endswith("],") and "..." in stripped:
+                pieces = [piece for piece in stripped.strip("[],").split(",")
+                          if NUMBER.match(piece)]
+                if len(pieces) == 6:
+                    pending["printed"] = ["%12.4f" % float(piece) for piece in pieces]
+            elif stripped.startswith("sum = "):
+                pending["sum"] = "%f" % float(stripped[len("sum = "):])
+    return found
+
+
+def gate_g(case, document, transcript_path):
+    """R6-STEP-N section 3.5 rule 1. Returns a one-line verdict for the report."""
+    decoded = document["decode"]["token_ids"]
+    if len(decoded) != steps:
+        failures.append("%s: gate G has %d ids, not %d" % (case, len(decoded), steps))
+        return "FAIL (wrong length)"
+    # G1 is inherited and exact: `d_1` is the argmax of a vector this arm proved byte-identical to
+    # `llama-debug --save-logits` on the same prompt at the same width, so it is llama.cpp's own
+    # argmax with no tolerance. `oracle_logits` is asserted separately below.
+    if decoded[0] != document["output"]["argmax"]:
+        failures.append("%s: gate G1 -- d_1 is %d and the prefill's argmax is %d"
+                        % (case, decoded[0], document["output"]["argmax"]))
+        return "FAIL (G1)"
+    graphs = transcript_embeddings(transcript_path)
+    if len(graphs) != steps + 1:
+        failures.append("%s: gate G read %d embd blocks, not %d" % (case, len(graphs), steps + 1))
+        return "FAIL (graph count)"
+    sums_agree = True
+    for index, identifier in enumerate(decoded):
+        # The measured escape hatch. A colliding id is one whose printed row is shared with another
+        # vocabulary row, so equal printed bytes would not prove equal ids; the run refuses rather
+        # than reporting a gate it cannot support.
+        if identifier in COLLIDING:
+            failures.append("%s: gate G2 -- step %d decoded id %d, which shares its printed "
+                            "fingerprint with %d other vocabulary rows, so equal printed bytes do "
+                            "not prove equal ids (section 3.2's fallback G3 applies)"
+                            % (case, index + 1, identifier, len(COLLIDING) - 1))
+            return "FAIL (collision)"
+        ours = FINGERPRINTS.get(identifier)
+        if ours is None:
+            failures.append("%s: gate G2 -- no measured fingerprint for id %d"
+                            % (case, identifier))
+            return "FAIL (missing fingerprint)"
+        theirs = graphs[index + 1]
+        if theirs["printed"] is None:
+            failures.append("%s: gate G2 -- transcript graph %d printed no embd row"
+                            % (case, index + 2))
+            return "FAIL (unparsed)"
+        if theirs["printed"] != ours["printed"]:
+            failures.append("%s: gate G2 -- step %d decoded id %d, whose embedding row prints "
+                            "%r, and transcript graph %d printed %r"
+                            % (case, index + 1, identifier, ours["printed"], index + 2,
+                               theirs["printed"]))
+            return "FAIL (step %d)" % (index + 1)
+        if theirs["sum"] != ours["sum"]:
+            sums_agree = False
+    return "PASS (%d ids, sums %s)" % (steps, "agree" if sums_agree else "differ")
 
 
 cases = sorted({name.split("-")[0] for name in os.listdir(document_root)
@@ -240,61 +434,91 @@ for case in cases:
         continue
     plane = document["plane"]
     decode = document["decode"]
+    step_rows = document["steps"]
     oracle = document["oracle_decode"]
     logits = document["oracle_logits"]
+    tokens_in = document["selection"]["token_count"]
     # Section 2.2's size arithmetic on this model at this width: 28 * 2 * 256 * 4 * 128 * 4.
     if plane["bytes"] != 29360128:
         failures.append("%s: plane is %d bytes, not 29,360,128" % (case, plane["bytes"]))
     if plane["layers"] != document["model"]["n_layer"]:
         failures.append("%s: the plane holds %d layers of %d"
                         % (case, plane["layers"], document["model"]["n_layer"]))
-    # Oracle B, the capability's own acceptance check.
+    # R6-STEP-N section 2.4: `T + N` columns on a complete run, grown in place one per step.
+    if plane["columns_written"] != tokens_in + steps:
+        failures.append("%s: the plane holds %d columns, not T + %d"
+                        % (case, plane["columns_written"], steps))
+    # Oracle B, cumulative and inclusive of each step's own newly written column.
     if plane["roundtrip_verdict"] != "IDENTICAL" or plane["roundtrip_bytes_compared"] <= 0:
         failures.append("%s: oracle B is %r over %d bytes"
                         % (case, plane["roundtrip_verdict"], plane["roundtrip_bytes_compared"]))
-    # Oracle A, at the instrument's own printing precision, against its **second** graph.
-    #
-    # THE SHIPPED ACCEPTANCE RULE, stated once here and nowhere else (ledger section 5.1):
-    #
-    #   A, B, and C are all acceptance. B must be `IDENTICAL` on every prompt and C must be
-    #   byte-identical on every prompt, unconditionally. A must be `PASS`, **or** `FAIL` with both
-    #   of `max_abs_diff <= 5000` ten-thousandths (section 3.4's own characterization bound) and C
-    #   byte-identical on that prompt. C's byte identity is therefore load-bearing twice: on its own,
-    #   and again as the condition that lets an A `FAIL` be attributed to llama.cpp's
-    #   decode-versus-prefill kernel selection rather than to this arm's arithmetic.
-    #
-    # The conjunction is written out at the admission site below rather than left to the reader to
-    # infer from two separate checks.
+    if plane["first_mismatch_step"] != -1:
+        failures.append("%s: a passing run named a mismatching step: %r" % (case, plane))
+    # The loop's own shape, before any oracle reads it.
+    if decode["steps_requested"] != steps or decode["steps_completed"] != steps \
+            or len(step_rows) != steps or len(decode["token_ids"]) != steps:
+        failures.append("%s: %d of %d steps completed with %d rows and %d ids"
+                        % (case, decode["steps_completed"], decode["steps_requested"],
+                           len(step_rows), len(decode["token_ids"])))
+        continue
+    if decode["token_ids"] != [row["token_id"] for row in step_rows]:
+        failures.append("%s: token_ids and steps[].token_id disagree" % case)
+    if decode["n_past_first"] != tokens_in or decode["n_past_last"] != tokens_in + steps - 1:
+        failures.append("%s: n_past runs %d..%d, not %d..%d"
+                        % (case, decode["n_past_first"], decode["n_past_last"], tokens_in,
+                           tokens_in + steps - 1))
+    digests = {row["sha256"] for row in step_rows}
+    if len(digests) != steps or document["output"]["sha256"] in digests:
+        failures.append("%s: two steps produced the same logits, or a step reproduced the "
+                        "prefill's -- the loop is not advancing" % case)
+    for index, row in enumerate(step_rows):
+        if row["index"] != index + 1 or row["n_past"] != tokens_in + index \
+                or row["plane_column_written"] != tokens_in + index:
+            failures.append("%s: steps[%d] is at n_past %d writing column %d"
+                            % (case, index, row["n_past"], row["plane_column_written"]))
+        if index + 1 < steps and row["argmax"] != step_rows[index + 1]["token_id"]:
+            failures.append("%s: steps[%d] produced %d and steps[%d] consumed %d -- the chain broke"
+                            % (case, index, row["argmax"], index + 1,
+                               step_rows[index + 1]["token_id"]))
+        if row["nonfinite_count"] != 0 \
+                or row["element_count"] != document["model"]["n_vocab"]:
+            failures.append("%s: steps[%d] has %d logits, %d non-finite"
+                            % (case, index, row["element_count"], row["nonfinite_count"]))
+        # R6-STEP-N section 3.4's structural gate, at **every** step, unconditionally. None of it
+        # can pass vacuously: a mis-aligned graph skip, a truncated transcript, a dropped layer, an
+        # empty comparison, a width drift, and a widened tolerance each fail one of these.
+        step_oracle = row["oracle"]
+        if step_oracle["instrument_graph"] != index + 2:
+            failures.append("%s: steps[%d] compared instrument graph %d, not %d"
+                            % (case, index, step_oracle["instrument_graph"], index + 2))
+        if step_oracle["nodes_matched"] != step_oracle["nodes_expected"]:
+            failures.append("%s: steps[%d] matched %d of %d nodes"
+                            % (case, index, step_oracle["nodes_matched"],
+                               step_oracle["nodes_expected"]))
+        if step_oracle["layers_matched"] != document["model"]["n_layer"]:
+            failures.append("%s: steps[%d] matched %d layers"
+                            % (case, index, step_oracle["layers_matched"]))
+        if step_oracle["elements_compared"] <= 0:
+            failures.append("%s: steps[%d] compared zero elements" % (case, index))
     if oracle["tolerance_ten_thousandths"] != 1:
-        failures.append("%s: oracle A ran at a tolerance of %d, not 1"
+        failures.append("%s: oracle A' ran at a tolerance of %d, not 1"
                         % (case, oracle["tolerance_ten_thousandths"]))
-    if oracle["verdict"] not in ("PASS", "FAIL"):
-        failures.append("%s: oracle A is %r" % (case, oracle["verdict"]))
-    if oracle["instrument_graph"] != 2 or oracle["instrument_kv_width"] != kv_width:
-        failures.append("%s: oracle A compared graph %d at width %d"
-                        % (case, oracle["instrument_graph"], oracle["instrument_kv_width"]))
-    if oracle["nodes_matched"] != oracle["nodes_expected"] or oracle["elements_compared"] <= 0:
-        failures.append("%s: oracle A matched %d of %d nodes over %d elements"
-                        % (case, oracle["nodes_matched"], oracle["nodes_expected"],
-                           oracle["elements_compared"]))
-    if oracle["layers_matched"] != document["model"]["n_layer"]:
-        failures.append("%s: oracle A matched %d layers" % (case, oracle["layers_matched"]))
+    if oracle["instrument_graph_first"] != 2 or oracle["instrument_graph_last"] != steps + 1 \
+            or oracle["steps_compared"] != steps or oracle["instrument_kv_width"] != kv_width:
+        failures.append("%s: oracle A' compared %d steps over graphs %d..%d at width %d"
+                        % (case, oracle["steps_compared"], oracle["instrument_graph_first"],
+                           oracle["instrument_graph_last"], oracle["instrument_kv_width"]))
     # The prefill half is R5B's contract, unchanged: byte identity against `llama-debug`'s blob at
-    # the reconciliation width.
+    # the reconciliation width. It is also gate G1's whole evidence.
     if logits["verdict"] != "IDENTICAL" or not logits["byte_identical"]:
         failures.append("%s: the prefill logits are %r against llama-debug"
                         % (case, logits["verdict"]))
-    if decode["n_past"] != document["selection"]["token_count"]:
-        failures.append("%s: n_past %d, not T" % (case, decode["n_past"]))
-    if decode["token_id"] != document["output"]["argmax"]:
-        failures.append("%s: the decoded token %d is not the prefill's argmax %d"
-                        % (case, decode["token_id"], document["output"]["argmax"]))
+    if document["reference"]["verdict"] != "IDENTICAL":
+        failures.append("%s: the pack does not match the source GGUF byte for byte: %r"
+                        % (case, document["reference"]["verdict"]))
     if decode["slot_high_water"] != 66 or document["graph"]["slot_capacity"] != 128:
         failures.append("%s: slots %d/%d, not 66/128"
                         % (case, decode["slot_high_water"], document["graph"]["slot_capacity"]))
-    if decode["sha256"] == document["output"]["sha256"]:
-        failures.append("%s: the decode logits equal the prefill's — the step recomputed the prompt"
-                        % case)
     if not document["abi"]["fp_contract_off"]:
         failures.append("%s: the shim was not built with -ffp-contract=off" % case)
     lifetime = document["lifetime"]
@@ -311,77 +535,120 @@ for case in cases:
     if len({normalize(run) for run in runs}) != 1:
         failures.append("%s: three consecutive runs produced different documents" % case)
 
-    single_path = os.path.join(document_root, "%s-single.json" % case)
-    single_note = "not run"
-    single_identical = False
-    if os.path.exists(single_path):
-        single = load(single_path)
-        if single["status"] == "ok":
-            single_identical = single["output"]["sha256"] == decode["sha256"]
-            single_note = ("argmax %d vs %d, byte-identical %s"
-                           % (single["output"]["argmax"], decode["argmax"], single_identical))
+    # Gate G, on the ids, against the same transcript the oracles read.
+    transcript = os.path.join(work_dir, "case%s" % case[len("case"):], "transcript.txt")
+    gate = gate_g(case, document, transcript)
+
+    # Oracle C', at the three checkpoints.
+    checkpoint_notes = []
+    for k in CHECKPOINTS:
+        single_path = os.path.join(document_root, "%s-single%d.json" % (case, k))
+        note = "k=%d not run" % k
+        identical = False
+        if os.path.exists(single_path):
+            single = load(single_path)
+            if single["status"] == "ok":
+                identical = single["output"]["sha256"] == step_rows[k - 1]["sha256"]
+                note = "k=%d %s" % (k, "byte-identical" if identical else
+                                    "DIFFERS (%s vs %s)" % (single["output"]["sha256"][:12],
+                                                            step_rows[k - 1]["sha256"][:12]))
+            else:
+                note = "k=%d error %s" % (k, single["error_code"])
+        if not identical:
+            failures.append("%s: oracle C' is %r -- step %d did not reproduce this arm's own "
+                            "single-shot T+%d prefill" % (case, note, k, k))
+        checkpoint_notes.append(note)
+
+    # R6-STEP-N section 3.5, rule 5. R6's admission rule applies **verbatim at step 1 only**, where
+    # its precondition actually holds: oracle C' runs at k = 1. At steps 2..N oracle A' is
+    # characterization, for the measured reason section 3.4 gives -- llama.cpp's own decode graph
+    # takes a different MUL_MAT accumulation path from its own multi-column prefill, and that
+    # divergence compounds through depth and through the KV cache -- and the structural assertions
+    # above are what is gated there.
+    first = step_rows[0]["oracle"]
+    if first["verdict"] == "FAIL":
+        if first["max_abs_diff_ten_thousandths"] > 5000 or "byte-identical" not in checkpoint_notes[0]:
+            failures.append("%s: oracle A' FAIL at step 1 at %d/1e-4 with oracle C' %r is not "
+                            "admissible -- the rule admits a FAIL only inside section 3.4's "
+                            "characterization bound of 5000 AND with oracle C' byte-identical"
+                            % (case, first["max_abs_diff_ten_thousandths"], checkpoint_notes[0]))
         else:
-            single_note = "error %s" % single["error_code"]
-    # Oracle C, acceptance in its own right on every prompt.
-    if not single_identical:
-        failures.append("%s: oracle C is %r — the decode step did not reproduce this arm's own "
-                        "single-shot T+1 prefill" % (case, single_note))
-    if oracle["verdict"] == "FAIL":
-        # The admission is the conjunction, written out: within the characterization bound **and**
-        # oracle C byte-identical. Either half missing is a failure, and the second half is stated
-        # here as well as above so that a future change to the oracle C check cannot silently widen
-        # what an oracle A `FAIL` is allowed to be.
-        if oracle["max_abs_diff_ten_thousandths"] > 5000 or not single_identical:
-            failures.append("%s: oracle A FAIL at %d/1e-4 with oracle C %r is not admissible — the "
-                            "rule admits a FAIL only inside section 3.4's characterization bound of "
-                            "5000 AND with oracle C byte-identical"
-                            % (case, oracle["max_abs_diff_ten_thousandths"], single_note))
-        else:
-            print("decode step qualification: %s oracle A FAIL at %d/1e-4 on %s-%d, admitted: "
-                  "oracle C is byte-identical, so the divergence is llama.cpp's decode-versus-"
-                  "prefill kernel selection (section 5.1), not this arm's arithmetic"
-                  % (case, oracle["max_abs_diff_ten_thousandths"], oracle["worst_node"],
-                     oracle["worst_layer"]))
+            print("decode step qualification: %s oracle A' FAIL at step 1 at %d/1e-4 on %s-%d, "
+                  "admitted: oracle C' at k=1 is byte-identical, so the divergence is llama.cpp's "
+                  "decode-versus-prefill kernel selection (R6 section 5.1), not this arm's "
+                  "arithmetic"
+                  % (case, first["max_abs_diff_ten_thousandths"], first["worst_node"],
+                     first["worst_layer"]))
+    elif first["verdict"] != "PASS":
+        failures.append("%s: oracle A' at step 1 is %r" % (case, first["verdict"]))
 
     rows.append({
         "case": case,
-        "tokens": document["selection"]["token_count"],
-        "decoded_token": decode["token_id"],
-        "oracle_a": oracle["verdict"],
-        "oracle_a_max_abs_ten_thousandths": oracle["max_abs_diff_ten_thousandths"],
-        "oracle_a_max_sum_millionths": oracle["max_sum_diff_millionths"],
-        "oracle_a_elements": oracle["elements_compared"],
+        "tokens": tokens_in,
+        "token_ids": decode["token_ids"],
+        "gate_g": gate,
+        "oracle_a_curve": [(row["oracle"]["verdict"],
+                            row["oracle"]["max_abs_diff_ten_thousandths"],
+                            row["oracle"]["max_sum_diff_millionths"]) for row in step_rows],
         "oracle_b": plane["roundtrip_verdict"],
         "oracle_b_bytes": plane["roundtrip_bytes_compared"],
-        "oracle_c_single_shot": single_note,
+        "oracle_c": checkpoint_notes,
         "plane_bytes": plane["bytes"],
         "plane_readback_ns": plane["readback_ns"],
         "plane_upload_ns": plane["upload_ns"],
-        "prefill_compute_ns": document["timings"]["compute_ns"],
+        "step_compute_ns": [row["compute_ns"] for row in step_rows],
         "decode_compute_ns": decode["compute_ns"],
-        "prefill_nodes": document["graph"]["node_count_total"],
-        "decode_nodes": decode["node_count"],
         "elapsed_ns": document["timings"]["elapsed_ns"],
+        "reader_bytes": document["pack"]["reader_bytes_read"],
     })
 
+print("decode step qualification: embd fingerprint injectivity over %d rows of %s: %d distinct "
+      "fingerprints, %d collision class(es) covering %d ids, of which %d are not all-zero "
+      "(unused) vocabulary rows"
+      % (measurement["n_vocab"], measurement["ggml_type"],
+         measurement["distinct_fingerprints"], measurement["collision_classes"],
+         measurement["colliding_id_count"],
+         len(measurement["colliding_ids_that_are_not_all_zero"])))
+
 for row in rows:
-    print("decode step qualification: %s T=%d token=%d  A=%s(max %d/1e-4, sum %d/1e-6, %d elems)  "
-          "B=%s(%d B)  C=%s  plane=%d B  readback=%d ns upload=%d ns  "
-          "prefill=%d ns decode=%d ns  nodes %d/%d"
-          % (row["case"], row["tokens"], row["decoded_token"], row["oracle_a"],
-             row["oracle_a_max_abs_ten_thousandths"], row["oracle_a_max_sum_millionths"],
-             row["oracle_a_elements"], row["oracle_b"], row["oracle_b_bytes"],
-             row["oracle_c_single_shot"], row["plane_bytes"], row["plane_readback_ns"],
-             row["plane_upload_ns"], row["prefill_compute_ns"], row["decode_compute_ns"],
-             row["prefill_nodes"], row["decode_nodes"]))
+    steps_ns = row["step_compute_ns"]
+    print("decode step qualification: %s T=%d  G=%s  B=%s(%d B)  C'=[%s]  ids=%s"
+          % (row["case"], row["tokens"], row["gate_g"], row["oracle_b"], row["oracle_b_bytes"],
+             ", ".join(row["oracle_c"]), ",".join(str(i) for i in row["token_ids"])))
+    print("decode step qualification: %s   A' per step (verdict, max abs /1e-4, max sum /1e-6): %s"
+          % (row["case"], "; ".join("%d:%s/%d/%d" % (i + 1, v, a, s)
+                                    for i, (v, a, s) in enumerate(row["oracle_a_curve"]))))
+    print("decode step qualification: %s   compute %d ns over %d steps (min %d, max %d), "
+          "plane readback %d ns upload %d ns, elapsed %d ns, pack bytes read %d"
+          % (row["case"], row["decode_compute_ns"], len(steps_ns), min(steps_ns), max(steps_ns),
+             row["plane_readback_ns"], row["plane_upload_ns"], row["elapsed_ns"],
+             row["reader_bytes"]))
+
+# The scaling row. Characterization, reported and not asserted, and the first concrete evidence for
+# resident weights: the loop re-reads the whole pack once per step.
+for n in sorted({1, 4, steps}):
+    path = os.path.join(work_dir, "scaling", "n%d.json" % n)
+    if not os.path.exists(path):
+        continue
+    with open(path, "r", encoding="utf-8") as handle:
+        scaled = json.load(handle)
+    if scaled["status"] != "ok":
+        failures.append("scaling N=%d: %s %s" % (n, scaled["error_code"], scaled["error_detail"]))
+        continue
+    print("decode step qualification: scaling N=%d  elapsed %d ns  decode compute %d ns  "
+          "pack bytes read %d  plane columns %d"
+          % (n, scaled["timings"]["elapsed_ns"], scaled["decode"]["compute_ns"],
+             scaled["pack"]["reader_bytes_read"], scaled["plane"]["columns_written"]))
 
 if failures:
     for line in failures:
         sys.stderr.write("decode step qualification: FAIL %s\n" % line)
     raise SystemExit(1)
 
-print("decode step qualification: %d prompts x 3 runs PASS — oracle A at one ten-thousandth "
-      "against llama.cpp's own decode graph, oracle B byte-identical over every layer's K and V, "
-      "oracle C byte-identical against this arm's own single-shot T+1 prefill"
-      % len(rows))
+print("decode step qualification: %d prompts x 3 runs at N=%d PASS -- gate G on the token ids "
+      "(d_1 byte-exact against llama-debug, d_1..d_N against the transcript's embd fingerprint "
+      "over a vocabulary measured to have %d collision class covering only all-zero rows), oracle "
+      "B byte-identical over every layer's K and V at every step including the column that step "
+      "wrote, oracle C' byte-identical at k in %s, and oracle A' structurally complete at every "
+      "step" % (len(rows), steps, measurement["collision_classes"], CHECKPOINTS))
 PY

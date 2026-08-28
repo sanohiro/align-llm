@@ -9,10 +9,17 @@ import layer_forward
 import layer_qwen2
 import model_forward
 
-// R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md`). The `--decode-step` arm: the Align-owned
-// KV plane of section 2.2, the decode graph shape of section 2.4, the split of token ids from
-// positions of section 2.6, the sixteen-step validation order of section 2.8, the `R6_DECODE_STEP`
-// document of section 2.9, and oracles A and B of section 3.3.
+// R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md`) and R6-STEP-N
+// (`docs/specs/r6-step-n.md`). The `--decode-step` arm: the Align-owned KV plane of R6 section 2.2,
+// the decode graph shape of R6 section 2.4, the split of token ids from positions of R6 section 2.6,
+// the validation order of R6-STEP-N section 2.7, the `R6_DECODE_STEP` schema-2 document of
+// R6-STEP-N section 2.9, and oracles A', B, and C' of R6-STEP-N section 3.4.
+//
+// R6 computes **one** decode step at `n_past = T` and stops. R6-STEP-N makes the same arm answer
+// "what are the next `N` tokens": a `STEPS` operand, a write-back of each step's own K and V
+// column into the plane, per-step iteration of the three things that depend on `n_past` (the node
+// table, the offset mask, the position image), and a token-id gate. It needs no new ggml op, FFI
+// symbol, node row, or slot -- R6's decode row table is already parameterised by `n_past`.
 //
 // R5B computes a whole prefill and stops. Every K and V it produces is a graph-internal node that
 // dies with its graph — `src/model_forward.align` opens three fresh `ggml_context`s per graph and
@@ -32,7 +39,7 @@ import model_forward
 // order, the plane's layout and lifetime, the decode graph's inputs, both concat axes, the offset
 // mask, oracle A's second-graph transcript comparison, oracle B's byte round trip, and the document.
 
-SCHEMA_VERSION := 1
+SCHEMA_VERSION := 2
 DOCUMENT_KIND := "R6_DECODE_STEP"
 
 // Section 2.8's vocabulary. `R6_*` is what this arm owns; the ggml seam's `R5_*` codes reach the
@@ -42,6 +49,11 @@ CODE_TOKENS := "R6_TOKENS"
 CODE_GEOMETRY := "R6_GEOMETRY"
 CODE_ARCH := "R6_ARCH_UNSUPPORTED"
 CODE_KV_WIDTH := "R6_KV_WIDTH"
+// R6-STEP-N section 2.7. The one new code this capability adds. There is deliberately no
+// `R6_STEP_FAILED`: a step that fails fails for a reason that already has a code, and a wrapper
+// would give every seam code two names depending on where it was raised. What the loop adds is a
+// **locator**, and the locator is the `step[<k>]` detail prefix `prefix_step` writes.
+CODE_STEPS := "R6_STEPS"
 CODE_PLANE_UNAVAILABLE := "R6_PLANE_UNAVAILABLE"
 CODE_PLANE_WRITE := "R6_PLANE_WRITE"
 CODE_PLANE_MISMATCH := "R6_PLANE_MISMATCH"
@@ -103,6 +115,10 @@ pub Plane {
   // same call. `render_plane` names the tensor on the wire, which is where a reader needs the word.
   first_mismatch_tensor: i64,
   first_mismatch_column: i64,
+  // R6-STEP-N section 2.9. Which step's round trip disagreed. `-1` is "no mismatch"; a mismatch that
+  // named a layer, a tensor, and a column but not a step would leave a reader guessing which of `N`
+  // graphs produced it.
+  first_mismatch_step: i64,
 }
 
 pub fn empty_plane() -> Plane = Plane {
@@ -117,14 +133,28 @@ pub fn empty_plane() -> Plane = Plane {
   first_mismatch_layer: -1,
   first_mismatch_tensor: -1,
   first_mismatch_column: -1,
+  first_mismatch_step: -1,
 }
 
-// Section 2.9's `decode` object. `token_id` is the prefill's own `argmax` and never an operand:
-// section 2.1 records why, and section 3.1 measured it — an operand would let a caller pass a token
-// llama.cpp did not sample, and the transcript oracle would then compare two different sequences and
-// still report `PASS`.
+// R6-STEP-N section 2.9's `decode` object at schema 2: **loop-level only**. Step 1's token is still
+// the prefill's own `argmax` and is never an operand — R6 section 2.1 records why, and its section
+// 3.1 measured it: an operand would let a caller pass a token llama.cpp did not sample, and the
+// transcript oracle would then compare two different sequences and still report `PASS`. Every step
+// after the first consumes the previous step's own `argmax`, which is what makes the `N` ids one
+// chain rooted at a byte-exact `d_1` (R6-STEP-N section 3.2).
+//
+// The scalars schema 1 published about *the* step — `sha256`, `bit_sum`, `element_count`,
+// `nonfinite_count`, `argmax`, `token_id` — are gone from this record's rendered form because there
+// is no longer exactly one step. They live per step in `model_forward.StepColumns`. The fields kept
+// here are the ones that mean something about the whole loop: a count, a bound, a sum, or a maximum.
 pub Decode {
   n_past: i64,
+  n_past_last: i64,
+  steps_requested: i64,
+  steps_completed: i64,
+  // The **most recent** step's scalars. They are working state for the loop — the token the next
+  // step consumes, and the digest oracle C' is compared against — and are not rendered as
+  // `decode.*` at schema 2.
   token_id: i64,
   argmax: i64,
   sha256: string,
@@ -139,6 +169,9 @@ pub Decode {
 
 pub fn empty_decode() -> Decode = Decode {
   n_past: 0,
+  n_past_last: 0,
+  steps_requested: 0,
+  steps_completed: 0,
   token_id: -1,
   argmax: -1,
   sha256: "".clone(),
@@ -249,6 +282,43 @@ fn plane_detail(layer: i64, tensor: str) -> string {
   b.write_int(layer)
   b.write("]tensor[")
   b.write(tensor)
+  b.write("]")
+  return b.to_string()
+}
+
+// R6-STEP-N section 2.7's locator. Every detail raised inside the loop is prefixed `step[<k>]`,
+// written at one place rather than threaded through forty call sites: the loop records the code
+// count before the step and calls this afterwards, so a seam code raised anywhere inside the step —
+// `R5_COMPUTE` at a layer graph, `R6_PLANE_MISMATCH` at the round trip, `R6_ORACLE_MISSING` at the
+// transcript — reaches the document with the step it came from and with its own code unchanged.
+//
+// `bounded_detail`'s 256-byte cap is unchanged and applied again after the prefix, which costs at
+// most nine bytes against a `k` of at most `MAX_DECODE_STEPS`.
+fn prefix_step(borrow mut o: model_forward.Outcome, step: i64) {
+  if o.code.len() == 0 { return }
+  b := builder()
+  b.write("step[")
+  b.write_int(step)
+  b.write("]")
+  detail_view: str := o.detail
+  b.write(detail_view)
+  joined := b.to_string()
+  joined_view: str := joined
+  o.detail = bounded_detail(joined_view)
+}
+
+fn steps_detail(value: str) -> string {
+  b := builder()
+  b.write("steps[")
+  b.write(value)
+  b.write("]")
+  return b.to_string()
+}
+
+fn steps_detail_int(value: i64) -> string {
+  b := builder()
+  b.write("steps[")
+  b.write_int(value)
   b.write("]")
   return b.to_string()
 }
@@ -823,7 +893,15 @@ fn run_step_graph(
   // reuses an intermediate's memory and the bytes read back are not the node computed. The plane
   // would then be filled with whatever the next tenant left, which is a failure mode that looks like
   // arithmetic.
-  if o.code.len() == 0 && capture {
+  //
+  // R6-STEP-N section 4.5: the **decode** layer graph marks the same two rows, because the write-back
+  // reads them. They are nodes the graph already contains — row 12 is its post-RoPE K and row 10 its
+  // reshaped V, both `{head_dim, n_head_kv, 1}` — so the node count is unchanged and no new op, FFI
+  // symbol, or slot is added. The concat outputs (rows 16 and 22) are deliberately not the source:
+  // row 22's V is transposed, so its new column is strided, and a strided write-back would be a
+  // second layout to get wrong.
+  write_back := decode && layer_graph
+  if o.code.len() == 0 && (capture || write_back) {
     take(o, ggml_ffi.slot_mark_output(slot_view, nodes.out[PREFILL_K_ROW], "k_plane"))
     take(o, ggml_ffi.slot_mark_output(slot_view, nodes.out[PREFILL_V_ROW], "v_plane"))
   }
@@ -873,9 +951,24 @@ fn run_step_graph(
     }
   }
   if o.code.len() == 0 && capture {
-    capture_plane(slot_view, nodes, plane, g, spec.layer, spec.tokens_in, stride, state, o)
+    capture_plane(slot_view, nodes, plane, g, spec.layer, spec.tokens_in, 0, stride, state, o)
   }
-  if o.code.len() == 0 && decode && layer_graph {
+  // R6-STEP-N section 2.4's ordering invariant, in the order it names. R6 stated the invariant as an
+  // **exclusion** — the plane is never both a `slot_get` destination and a `slot_set` source in one
+  // call — and named that as why step 2 was out of scope. What replaces it is **disjointness plus
+  // ordering**: this graph uploaded columns `0 .. n_past-1` before compute, and now, after a
+  // completed compute, writes column `n_past` and only that column. The two byte ranges are disjoint
+  // by construction and no call is ever both.
+  //
+  // The write-back precedes the verification on purpose. R6 compared `n_past` columns of an
+  // `n_past + 1`-wide operand and left the new column unchecked until — under R6 — never. Here the
+  // comparison bound is `n_past + 1`, so the column the graph produced (rows 12/10) and the column
+  // the plane holds are compared through a *different* node (rows 16/22): a write-back one lane off,
+  // in the wrong tensor, or at the wrong column dies in its own step.
+  if o.code.len() == 0 && write_back {
+    capture_plane(slot_view, nodes, plane, g, spec.layer, 1, n_past, stride, state, o)
+  }
+  if o.code.len() == 0 && write_back {
     verify_plane(
       slot_view, nodes, plane, node_window, g, spec.layer, n_past, stride, state, o)
   }
@@ -891,9 +984,15 @@ fn run_step_graph(
     ggml_ffi.null_handle(), ggml_ffi.null_handle(), input_buffer, input_ctx, o)
 }
 
-// Section 2.2's "written by". One layer's post-RoPE K and its V, read back into the plane at that
-// layer's two offsets, columns `0 .. T-1`. Both nodes are `{head_dim, n_head_kv, T}`, which is the
-// plane's own order, so each is one contiguous copy and nothing is reordered on the way in.
+// R6 section 2.2's "written by", generalised by R6-STEP-N section 2.4. One layer's post-RoPE K and
+// its V, read back into the plane at that layer's two offsets, starting at column `first_column`.
+// Both nodes are `{head_dim, n_head_kv, tokens}`, which is the plane's own order, so each is one
+// contiguous copy and nothing is reordered on the way in.
+//
+// The prefill calls it once per layer with `first_column = 0` and `tokens = T`; decode step `k`
+// calls it once per layer with `first_column = n_past` and `tokens = 1`. **That is the only
+// difference, and it is why "grown in place" is not a reallocation:** the buffer is `KV_WIDTH`
+// columns wide from the start, and growth means writing further into it.
 fn capture_plane(
   borrow slots: slice<u8>,
   borrow nodes: layer_qwen2.NodeTable,
@@ -901,14 +1000,18 @@ fn capture_plane(
   borrow g: layer_qwen2.Geometry,
   layer: i64,
   tokens: i64,
+  first_column: i64,
   stride: i64,
   borrow mut state: Plane,
   borrow mut o: model_forward.Outcome,
 ) {
-  span := tokens * plane_column_bytes(g)
-  k_at := plane_k_offset(stride, layer)
-  v_at := plane_v_offset(stride, layer)
-  if span <= 0 || span > stride || v_at + stride > plane.len() {
+  column_bytes := plane_column_bytes(g)
+  span := tokens * column_bytes
+  offset := first_column * column_bytes
+  k_at := plane_k_offset(stride, layer) + offset
+  v_at := plane_v_offset(stride, layer) + offset
+  if span <= 0 || first_column < 0 || offset + span > stride
+    || plane_v_offset(stride, layer) + stride > plane.len() {
     fail(o, CODE_PLANE_WRITE, plane_detail(layer, "k"))
     return
   }
@@ -931,15 +1034,26 @@ fn capture_plane(
   }
   state.readback_ns = state.readback_ns + (time.instant() - started)
   if o.code.len() == 0 {
-    state.layers = state.layers + 1
-    state.columns_written = tokens
+    // `plane.layers` counts the layers the plane holds, not the number of write-backs: at `N` steps
+    // a running total would report `n_layer * (N + 1)`. A maximum is the honest reading and it is
+    // the same number R6 published.
+    if layer + 1 > state.layers { state.layers = layer + 1 }
+    // `columns_written` is advanced by the **prefill** here and by the step loop only after a step
+    // has completed every one of its layers. A per-layer advance would let a run that failed at
+    // layer 4 of step `k` publish `T + k` columns when only `T + k - 1` were verified.
+    if first_column == 0 { state.columns_written = tokens }
   }
 }
 
-// Section 3.3, oracle B. The K and V the decode graph **actually consumed** — its two `CONCAT`
-// nodes, read back after compute — must agree with the plane byte for byte over columns
-// `0 .. n_past-1`, on every layer. This is the oracle that tests what this capability adds: the
-// readback, the layout, the two offsets, the upload, and both concat axes.
+// R6-STEP-N section 3.4, oracle B. The K and V the decode graph **actually consumed** — its two
+// `CONCAT` nodes, read back after compute — must agree with the plane byte for byte over columns
+// `0 .. n_past`, on every layer. This is the oracle that tests what this capability adds: the
+// readback, the layout, the two offsets, the upload, both concat axes, and now the write-back.
+//
+// Two things changed from R6. It is **cumulative**: at step `k` the comparison covers the prefill's
+// `T` columns *and* every column a previous step wrote, so a write-back that was correct when it
+// happened and was corrupted later is caught. And it **includes the new column** (`n_past + 1`
+// columns, not `n_past`), because the write-back precedes it.
 fn verify_plane(
   borrow slots: slice<u8>,
   borrow nodes: layer_qwen2.NodeTable,
@@ -982,7 +1096,7 @@ fn verify_plane(
     o, ggml_ffi.slot_get(slots, nodes.out[DECODE_K_CONCAT_ROW], node_window, 0, span, "k_concat"))
   if o.code.len() > 0 { return }
   bad := compare_past_k(
-    node_window, plane, k_at, g.head_dim, g.n_head_kv, n_past, columns)
+    node_window, plane, k_at, g.head_dim, g.n_head_kv, columns, columns)
   if bad >= 0 {
     state.roundtrip_verdict = ROUNDTRIP_MISMATCH
     state.first_mismatch_layer = layer
@@ -995,7 +1109,7 @@ fn verify_plane(
     o, ggml_ffi.slot_get(slots, nodes.out[DECODE_V_CONCAT_ROW], node_window, 0, span, "v_concat"))
   if o.code.len() > 0 { return }
   worst := compare_past_v(
-    node_window, plane, v_at, g.head_dim, g.n_head_kv, n_past, columns)
+    node_window, plane, v_at, g.head_dim, g.n_head_kv, columns, columns)
   if worst >= 0 {
     state.roundtrip_verdict = ROUNDTRIP_MISMATCH
     state.first_mismatch_layer = layer
@@ -1005,17 +1119,20 @@ fn verify_plane(
     return
   }
   state.roundtrip_bytes_compared =
-  state.roundtrip_bytes_compared + 2 * n_past * plane_column_bytes(g)
+  state.roundtrip_bytes_compared + 2 * columns * plane_column_bytes(g)
 }
 
 // ---------------------------------------------------------------------------------------------
 // Oracle A — the decode transcript (section 3.3)
 //
-// `llama-eval-callback -n 1` emits **two** graphs and every node name repeats across them, so the
-// scan is told to skip the first: section 3.1 measured that the decode graph is the second of
-// exactly two, and `layer_forward.scan_transcript_after` is that instruction. Comparing our decode
-// graph against llama.cpp's prefill graph would agree on the seven nodes that do not depend on the
-// KV cache and could still report `PASS`.
+// `llama-eval-callback -n N` emits exactly `N + 1` graphs and every node name repeats across them,
+// so the scan is told how many to skip. R6-STEP-N section 3.1 measured the counting and it is exact:
+// graph `j` (`j = 2 .. N+1`) consumes `d_{j-1}`, and this arm's step `k` consumes `d_k`, so **this
+// arm's `N` decode graphs are llama.cpp's graphs 2 through `N+1`, one for one** and step `k` skips
+// `k` graphs. Comparing our decode graph against llama.cpp's prefill graph, or against the wrong
+// decode graph, would agree on the nodes that do not depend on the KV cache and could still report
+// `PASS`; `instrument_graph == k + 1` is published per step so that a reader does not have to take
+// the alignment on trust.
 //
 // Coverage is R5B's, unchanged: nineteen rows per layer plus the head's two and the embedding's one,
 // of which `kq-L` and `kq_soft_max-L` are matched, shape-checked against `KV_WIDTH`, and excluded
@@ -1029,12 +1146,13 @@ fn prepare_decode_transcript(
   borrow oracle: layer_qwen2.OracleTable,
   n_layer: i64,
   kv_width: i64,
+  step: i64,
   borrow mut scan: layer_forward.TranscriptScan,
   borrow mut ranges: model_forward.OracleRanges,
   borrow mut o: model_forward.Outcome,
 ) {
   started := time.instant()
-  scan = layer_forward.scan_transcript_after(transcript_path, oracle, 1)
+  scan = layer_forward.scan_transcript_after(transcript_path, oracle, step)
   o.oracle_lines = scan.line_count
   o.oracle_callback_lines = scan.callback_line_count
   o.oracle_expected = 1 + 17 * n_layer + layer_qwen2.MF_HEAD_ORACLE_COUNT
@@ -1058,7 +1176,26 @@ fn prepare_decode_transcript(
   check_decode_coverage(oracle, ranges, scan, n_layer, kv_width, o)
   if o.code.len() == 0 { o.oracle_layers_matched = n_layer }
   o.oracle_layers_expected = n_layer
-  o.oracle_ns = time.instant() - started
+  o.oracle_ns = o.oracle_ns + (time.instant() - started)
+}
+
+// R6-STEP-N section 3.4. Oracle A' is **per step**, so its accumulators are per step: the loop zeroes
+// them before each step, reads the step's own numbers out afterwards, and folds them into the
+// aggregate `oracle_decode` publishes. Without this, `max_abs` would be a maximum over the whole run
+// reported as though it belonged to every step, and `elements_compared > 0` — the specific guard
+// against a comparison that passes because it compared nothing — could be satisfied at step 7 by
+// work step 1 did.
+fn reset_step_oracle(borrow mut o: model_forward.Outcome) {
+  o.oracle_matched = 0
+  o.oracle_elements = 0
+  o.oracle_max_abs = 0
+  o.oracle_max_sum = 0
+  o.oracle_worst_layer = -1
+  o.oracle_worst_node = "".clone()
+  o.oracle_worst_element = -1
+  o.oracle_layers_matched = 0
+  o.oracle_layers_expected = 0
+  o.oracle_expected = 0
 }
 
 // The three structural rules, in R5B's order and with R6's codes. Step 14 of section 2.8 is the
@@ -1169,6 +1306,7 @@ fn decode_embed_members(
 fn stage_inputs(
   tokens_text: str,
   width_text: str,
+  steps_text: str,
   geometry_path: str,
   borrow mut tokens: model_forward.TokenColumns,
   borrow mut o: model_forward.Outcome,
@@ -1180,6 +1318,24 @@ fn stage_inputs(
     fail(o, CODE_TOKENS, detail_view)
     return g
   }
+  // Step 3b (R6-STEP-N section 2.7). `STEPS` is decided **before** `KV_WIDTH`, because `N` must be a
+  // number before `T + N` is one; with both invalid the code is `R6_STEPS`. The plane bound
+  // `T + N <= KV_WIDTH` is step 6's and raises `R6_KV_WIDTH`, not this code: the condition there is
+  // "the plane is too narrow for this run", and R6 already owns that sentence.
+  steps := model_forward.parse_index(steps_text)
+  if steps < 0 {
+    unparsed := steps_detail(steps_text)
+    unparsed_view: str := unparsed
+    fail(o, CODE_STEPS, unparsed_view)
+    return g
+  }
+  if steps < 1 || steps > layer_qwen2.MAX_DECODE_STEPS {
+    ranged := steps_detail_int(steps)
+    ranged_view: str := ranged
+    fail(o, CODE_STEPS, ranged_view)
+    return g
+  }
+  o.decode_steps_requested = steps
   geometry_text := match fs.read_file(geometry_path) {
     Ok(value) => value,
     Err(failure) => {
@@ -1221,8 +1377,9 @@ fn stage_inputs(
     fail(o, CODE_TOKENS, detail_view)
     return g
   }
+  // Step 6, generalised. At `N = 1` the bound is R6's `T + 1 <= KV_WIDTH`, character for character.
   width := model_forward.parse_index(width_text)
-  if width < parsed.count + 1 || width > layer_qwen2.MAX_ATTENTION_WIDTH {
+  if width < parsed.count + steps || width > layer_qwen2.MAX_ATTENTION_WIDTH {
     fail(o, CODE_KV_WIDTH, model_forward.labelled("kv_width", width))
     return g
   }
@@ -1387,7 +1544,7 @@ fn decode_pass(
   if decoded.slot_high_water < head_result.slot_high_water {
     decoded.slot_high_water = head_result.slot_high_water
   }
-  decoded.graph_count = g.n_layer + 2
+  decoded.graph_count = decoded.graph_count + g.n_layer + 2
   if o.code.len() > 0 { return }
   if head_result.out_bytes != g.n_vocab * 4 {
     fail(o, "R5_RESIDUAL", model_forward.labelled("layer", g.n_layer))
@@ -1399,11 +1556,254 @@ fn decode_pass(
   decoded.element_count = g.n_vocab
   decoded.nonfinite_count = digest.nonfinite
   decoded.argmax = digest.argmax
-  if state.roundtrip_verdict == ROUNDTRIP_ABSENT && state.roundtrip_bytes_compared > 0 {
-    state.roundtrip_verdict = ROUNDTRIP_IDENTICAL
-  }
   o.reader_pread_count = o.reader_pread_count + counters.pread_count
   o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read
+}
+
+// ---------------------------------------------------------------------------------------------
+// The decode loop (step 11' of R6-STEP-N section 2.7)
+//
+// `N` greedy steps over one plane. Three things depend on `n_past` and are therefore rebuilt at each
+// step — the node table, the offset mask, and the position image — and everything else is built once
+// and reused. The embedding row is a fourth per-step object and it is a pack read, which is where
+// this loop's `O(N x model bytes)` cost lives; section 6 risk 1 measures it rather than hiding it.
+//
+// `decode_ids_image` is deliberately **not** per step. It is the row index into the gathered
+// embedding window and the window holds exactly one row: the token changes, the row index does not.
+// That is R6 section 2.6's id/position split doing its job, and it is why the loop needs no fourth
+// per-step input.
+//
+// The per-step results are a **column set** rather than `Outcome` fields, for R6 section 10.6's
+// reason: `model_forward.Outcome` is already 1,328 bytes and passed by value at some twenty-five
+// call sites, and `N` per-step scalars would make it grow with an operand.
+fn decode_loop(
+  borrow pak: file,
+  device: raw,
+  backend: raw,
+  context_bytes: i64,
+  borrow g: layer_qwen2.Geometry,
+  borrow ends: model_forward.Ends,
+  borrow table: layer_qwen2.MemberTable,
+  borrow plan: model_forward.Plan,
+  borrow tokens: model_forward.TokenColumns,
+  borrow head_members: model_forward.GraphMembers,
+  borrow window: slice<u8>,
+  borrow slot_view: slice<u8>,
+  borrow ids_view: slice<u8>,
+  borrow pos_all: slice<u8>,
+  borrow mask_all: slice<u8>,
+  borrow out_ids_view: slice<u8>,
+  borrow residual_view: slice<u8>,
+  borrow logits_view: slice<u8>,
+  borrow node_view: slice<u8>,
+  borrow plane_view: slice<u8>,
+  borrow oracle: layer_qwen2.OracleTable,
+  borrow embed_nodes: layer_qwen2.NodeTable,
+  borrow head_nodes: layer_qwen2.NodeTable,
+  transcript_path: str,
+  first_token: i64,
+  first_n_past: i64,
+  steps: i64,
+  width: i64,
+  stride: i64,
+  borrow mut breach: bool,
+  borrow mut activation: array_builder<i64>,
+  borrow mut state: Plane,
+  borrow mut decoded: Decode,
+  borrow mut o: model_forward.Outcome,
+) -> model_forward.StepColumns {
+  digests := builder()
+  worst_names := builder()
+  mut n_past_column: array_builder<i64> := array_builder()
+  mut token_column: array_builder<i64> := array_builder()
+  mut argmax_column: array_builder<i64> := array_builder()
+  mut bit_column: array_builder<i64> := array_builder()
+  mut element_column: array_builder<i64> := array_builder()
+  mut nonfinite_column: array_builder<i64> := array_builder()
+  mut compute_column: array_builder<i64> := array_builder()
+  mut node_column: array_builder<i64> := array_builder()
+  mut plane_column: array_builder<i64> := array_builder()
+  mut verdict_column: array_builder<i64> := array_builder()
+  mut max_abs_column: array_builder<i64> := array_builder()
+  mut max_sum_column: array_builder<i64> := array_builder()
+  mut elements_column: array_builder<i64> := array_builder()
+  mut matched_column: array_builder<i64> := array_builder()
+  mut expected_column: array_builder<i64> := array_builder()
+  mut layers_column: array_builder<i64> := array_builder()
+  mut graph_column: array_builder<i64> := array_builder()
+  mut worst_layer_column: array_builder<i64> := array_builder()
+  mut worst_start: array_builder<i64> := array_builder()
+  mut worst_end: array_builder<i64> := array_builder()
+  mut worst_at := 0
+  mut aggregate_max_abs := 0
+  mut aggregate_max_sum := 0
+  mut aggregate_elements := 0
+  mut aggregate_matched := 0
+  mut aggregate_expected := 0
+  mut aggregate_layers := 0
+  mut aggregate_worst_layer := -1
+  mut aggregate_worst_element := -1
+  mut aggregate_worst_node: string := "".clone()
+  mut worst_unset := true
+  mut aggregate_verdict := model_forward.ORACLE_ABSENT
+  mut any_breach := false
+  mut token := first_token
+  mut step := 1
+  loop {
+    if step > steps || o.code.len() > 0 { break }
+    n_past := first_n_past + step - 1
+    // Oracle A' selects transcript graph `k + 1` by skipping `k`. The rescan is `O(N x file)` and is
+    // accepted and measured (section 6 risk 3): the alternative holds `N` graphs' element ranges in
+    // memory and is a new data structure for a cost measured in seconds.
+    reset_step_oracle(o)
+    breach = false
+    mut scan := layer_forward.empty_transcript_scan()
+    mut ranges := model_forward.empty_ranges()
+    if o.transcript_present {
+      prepare_decode_transcript(transcript_path, oracle, g.n_layer, width, step, scan, ranges, o)
+    }
+    if o.code.len() > 0 {
+      prefix_step(o, step)
+      break
+    }
+    step_nodes := layer_qwen2.mf_decode_layer_node_table(g, n_past, width)
+    pos_view := pos_all[(step - 1) * 4..step * 4]
+    mask_view := mask_all[(step - 1) * width * 4..step * width * 4]
+    before_nodes := decoded.node_count
+    before_compute := decoded.compute_ns
+    decoded.token_id = token
+    decode_pass(
+      pak, device, backend, context_bytes, g, ends, table, plan, tokens, head_members, window,
+      slot_view, ids_view, pos_view, mask_view, out_ids_view, residual_view, logits_view, node_view,
+      plane_view, oracle, embed_nodes, step_nodes, head_nodes, scan, ranges.start, ranges.length,
+      token, n_past, width, stride, breach, activation, state, decoded, o)
+    if o.code.len() > 0 {
+      // Section 2.8. A failure inside step `k` publishes `steps_completed = k - 1` and `k - 1`
+      // complete objects: **a partial step publishes no object**, because a half-filled row is a row
+      // that says a step happened and no step happened. The plane keeps the `T + k - 1` columns some
+      // completed step verified, and nothing reads the rest, because this loop is the only reader
+      // and it has stopped.
+      if state.roundtrip_verdict == ROUNDTRIP_MISMATCH && state.first_mismatch_step < 0 {
+        state.first_mismatch_step = step
+      }
+      prefix_step(o, step)
+      break
+    }
+    if breach { any_breach = true }
+    step_verdict := if !o.transcript_present {
+      model_forward.ORACLE_ABSENT
+    } else if o.oracle_elements <= 0 {
+      model_forward.ORACLE_FAIL
+    } else if o.oracle_max_abs <= model_forward.TOLERANCE_TEN_THOUSANDTHS && !breach {
+      model_forward.ORACLE_PASS
+    } else {
+      model_forward.ORACLE_FAIL
+    }
+    state.columns_written = n_past + 1
+    decoded.steps_completed = step
+    decoded.n_past_last = n_past
+    n_past_column.push(n_past)
+    token_column.push(token)
+    argmax_column.push(decoded.argmax)
+    bit_column.push(decoded.bit_sum)
+    element_column.push(decoded.element_count)
+    nonfinite_column.push(decoded.nonfinite_count)
+    compute_column.push(decoded.compute_ns - before_compute)
+    node_column.push(decoded.node_count - before_nodes)
+    plane_column.push(n_past)
+    verdict_column.push(step_verdict)
+    max_abs_column.push(o.oracle_max_abs)
+    max_sum_column.push(o.oracle_max_sum)
+    elements_column.push(o.oracle_elements)
+    matched_column.push(o.oracle_matched)
+    expected_column.push(o.oracle_expected)
+    layers_column.push(o.oracle_layers_matched)
+    graph_column.push(if o.transcript_present { step + 1 } else { 0 })
+    worst_layer_column.push(o.oracle_worst_layer)
+    step_sha: str := decoded.sha256
+    digests.write(step_sha)
+    step_worst: str := o.oracle_worst_node
+    worst_names.write(step_worst)
+    worst_start.push(worst_at)
+    worst_at = worst_at + step_worst.len()
+    worst_end.push(worst_at)
+    if o.transcript_present && (o.oracle_max_abs > aggregate_max_abs || worst_unset) {
+      worst_unset = false
+      aggregate_max_abs = o.oracle_max_abs
+      aggregate_worst_layer = o.oracle_worst_layer
+      aggregate_worst_element = o.oracle_worst_element
+      aggregate_worst_node = step_worst.clone()
+      o.decode_oracle_worst_step = step
+    }
+    if o.oracle_max_sum > aggregate_max_sum { aggregate_max_sum = o.oracle_max_sum }
+    aggregate_elements = aggregate_elements + o.oracle_elements
+    aggregate_matched = aggregate_matched + o.oracle_matched
+    aggregate_expected = aggregate_expected + o.oracle_expected
+    aggregate_layers = o.oracle_layers_matched
+    aggregate_verdict = if aggregate_verdict == model_forward.ORACLE_FAIL {
+      model_forward.ORACLE_FAIL
+    } else {
+      step_verdict
+    }
+    // Both are claims about a comparison, so neither is advanced when there was none to make: a
+    // document with `oracle_decode.present: false` must not report a step count and a graph range
+    // for a graph it never opened.
+    if o.transcript_present {
+      o.decode_oracle_steps_compared = o.decode_oracle_steps_compared + 1
+      o.decode_oracle_graph_last = step + 1
+    }
+    // The chain: this step's `argmax` is the next step's input. A divergence at step `j` cannot be
+    // absorbed later — it changes step `j`'s `embd`, and every later step's input, `embd`, and
+    // logits — so the `N` ids are gated as one chain rooted at a byte-exact `d_1`.
+    token = decoded.argmax
+    step = step + 1
+  }
+  // Section 2.8: **never `IDENTICAL` on an error document.** A run that stopped inside step `k` did
+  // verify `T + k - 1` columns, and saying `IDENTICAL` about them would read as a claim about the
+  // run rather than about the columns some completed step checked; `columns_written` is where that
+  // number is published. A mismatch is sticky and keeps its own verdict.
+  if o.code.len() == 0 && state.roundtrip_verdict == ROUNDTRIP_ABSENT
+    && state.roundtrip_bytes_compared > 0 {
+    state.roundtrip_verdict = ROUNDTRIP_IDENTICAL
+  }
+  breach = any_breach
+  o.oracle_max_abs = aggregate_max_abs
+  o.oracle_max_sum = aggregate_max_sum
+  o.oracle_elements = aggregate_elements
+  o.oracle_matched = aggregate_matched
+  o.oracle_expected = aggregate_expected
+  o.oracle_layers_matched = aggregate_layers
+  o.oracle_layers_expected = g.n_layer
+  o.oracle_worst_layer = aggregate_worst_layer
+  o.oracle_worst_element = aggregate_worst_element
+  aggregate_view: str := aggregate_worst_node
+  o.oracle_worst_node = aggregate_view.clone()
+  if o.transcript_present && o.code.len() == 0 { o.oracle_verdict = aggregate_verdict }
+  return model_forward.StepColumns {
+    count: decoded.steps_completed,
+    n_past: n_past_column.build(),
+    token_id: token_column.build(),
+    argmax: argmax_column.build(),
+    bit_sum: bit_column.build(),
+    element_count: element_column.build(),
+    nonfinite_count: nonfinite_column.build(),
+    compute_ns: compute_column.build(),
+    node_count: node_column.build(),
+    plane_column: plane_column.build(),
+    oracle_verdict: verdict_column.build(),
+    oracle_max_abs: max_abs_column.build(),
+    oracle_max_sum: max_sum_column.build(),
+    oracle_elements: elements_column.build(),
+    oracle_nodes_matched: matched_column.build(),
+    oracle_nodes_expected: expected_column.build(),
+    oracle_layers: layers_column.build(),
+    oracle_graph: graph_column.build(),
+    oracle_worst_layer: worst_layer_column.build(),
+    digests: digests.to_string(),
+    worst_names: worst_names.to_string(),
+    worst_name_start: worst_start.build(),
+    worst_name_end: worst_end.build(),
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1694,9 +2094,11 @@ fn schedule_decode(
   reference_path: str,
   transcript_path: str,
   logits_path: str,
+  steps: i64,
   borrow mut schedule: model_forward.ScheduleColumns,
   borrow mut graphs: model_forward.GraphColumns,
   borrow mut top: model_forward.TopColumns,
+  borrow mut stepped: model_forward.StepColumns,
   borrow mut o: model_forward.Outcome,
 ) {
   // The plane's and the step's bookkeeping are **locals of this frame**, published into `o` on the
@@ -1711,6 +2113,8 @@ fn schedule_decode(
   state.bytes = plane_bytes
   state.stride = stride
   decoded.n_past = n_past
+  decoded.n_past_last = n_past
+  decoded.steps_requested = steps
   slot_bytes := layer_qwen2.SLOT_HEADER_BYTES + layer_qwen2.SLOT_BYTES * layer_qwen2.MAX_NODE_SLOTS
   mut slots: buffer := buffer(slot_bytes + 8)
   model_forward.fill_zero(slots, 1)
@@ -1718,11 +2122,20 @@ fn schedule_decode(
   model_forward.fill_zero(slots, slot_pad - 1 + slot_bytes)
   mut mask_wide: buffer := buffer(width * tokens.count * 4)
   layer_qwen2.mf_write_mask(mask_wide, width, tokens.count)
-  // Section 2.6's offset mask. One row, `0.0` for columns `0 ..= n_past` and `-inf` above, which is
-  // the whole difference between "this token may attend to everything the prompt produced plus
-  // itself" and "this token may attend to column zero".
-  mut mask_decode: buffer := buffer(width * 4)
-  layer_qwen2.mf_write_mask_offset(mask_decode, width, 1, n_past)
+  // Section 2.6's offset mask, one row per step. `0.0` for columns `0 ..= n_past` and `-inf` above,
+  // which is the whole difference between "this token may attend to everything the prompt produced
+  // plus itself" and "this token may attend to column zero".
+  //
+  // R6-STEP-N section 2.6 calls this per-step object "rewritten in place". Align's `buffer` is
+  // append-only, so the honest form of that is **one buffer holding every step's row**, written once
+  // in order and sliced per step. The bytes are the same and no reservation happens inside the loop.
+  mut mask_decode: buffer := buffer(width * steps * 4)
+  mut mask_step := 0
+  loop {
+    if mask_step >= steps { break }
+    layer_qwen2.mf_write_mask_offset(mask_decode, width, 1, n_past + mask_step)
+    mask_step = mask_step + 1
+  }
   mut index_image: buffer := buffer(tokens.count * 4)
   mut image_at := 0
   loop {
@@ -1736,8 +2149,13 @@ fn schedule_decode(
   // **0** and the position is **`n_past`**, and until R6 they were one buffer.
   mut decode_ids_image: buffer := buffer(4)
   decode_ids_image.put_u32_le(0 as u32)
-  mut decode_pos_image: buffer := buffer(4)
-  decode_pos_image.put_u32_le(n_past as u32)
+  mut decode_pos_image: buffer := buffer(steps * 4)
+  mut pos_step := 0
+  loop {
+    if pos_step >= steps { break }
+    decode_pos_image.put_u32_le((n_past + pos_step) as u32)
+    pos_step = pos_step + 1
+  }
   mut decode_out_ids_image: buffer := buffer(4)
   decode_out_ids_image.put_u32_le(0 as u32)
   mut residual: buffer := buffer(residual_bytes)
@@ -1775,9 +2193,10 @@ fn schedule_decode(
     return
   }
   if slots_all.len() < slot_pad + slot_bytes
-    || mask_wide_view.len() != width * tokens.count * 4 || mask_decode_view.len() != width * 4
+    || mask_wide_view.len() != width * tokens.count * 4
+    || mask_decode_view.len() != width * steps * 4
     || index_view.len() != tokens.count * 4 || out_ids_view.len() != 4
-    || decode_ids_view.len() != 4 || decode_pos_view.len() != 4
+    || decode_ids_view.len() != 4 || decode_pos_view.len() != steps * 4
     || decode_out_ids_view.len() != 4
     || residual_view.len() != residual_bytes || decode_residual_view.len() != g.n_embd * 4
     || logits_view.len() != logits_bytes || decode_logits_view.len() != logits_bytes
@@ -1791,12 +2210,11 @@ fn schedule_decode(
   embed_nodes := layer_qwen2.mf_embed_node_table()
   head_nodes := layer_qwen2.mf_head_node_table(g)
   prefill_nodes := layer_qwen2.mf_layer_node_table(g, tokens.count, width)
-  decode_nodes := layer_qwen2.mf_decode_layer_node_table(g, n_past, width)
-  mut scan := layer_forward.empty_transcript_scan()
-  mut ranges := model_forward.empty_ranges()
-  if o.transcript_present {
-    prepare_decode_transcript(transcript_path, oracle, g.n_layer, width, scan, ranges, o)
-  }
+  // The prefill graphs are never compared — oracle A' is the **decode** graph's oracle and every
+  // prefill spec carries `compare = false` — so they take the empty scan. Each decode step prepares
+  // its own, at its own graph offset, inside the loop.
+  scan := layer_forward.empty_transcript_scan()
+  ranges := model_forward.empty_ranges()
   mut breach := false
   mut decoded_token := -1
   mut activation: array_builder<i64> := array_builder()
@@ -1837,12 +2255,12 @@ fn schedule_decode(
   }
   if o.code.len() == 0 {
     token_id := decoded_token
-    decode_pass(
+    stepped = decode_loop(
       pak, device, backend, context_bytes, g, ends, table, plan, tokens, head_members, window,
       slot_view, decode_ids_view, decode_pos_view, mask_decode_view, decode_out_ids_view,
       decode_residual_view, decode_logits_view, node_view, plane_view, oracle, embed_nodes,
-      decode_nodes, head_nodes, scan, ranges.start, ranges.length, token_id, n_past, width, stride,
-      breach, activation, state, decoded, o)
+      head_nodes, transcript_path, token_id, n_past, steps, width, stride, breach, activation,
+      state, decoded, o)
   }
   if !ggml_ffi.handle_absent(backend) {
     ggml_ffi.backend_close(backend)
@@ -1872,16 +2290,12 @@ fn schedule_decode(
   if o.reference_present && o.code.len() == 0 {
     o.reference_verdict = model_forward.REFERENCE_IDENTICAL
   }
-  if o.transcript_present && o.code.len() == 0 {
-    if o.oracle_elements <= 0 {
-      fail(o, CODE_ORACLE_MISSING, "elements[0]")
-    } else {
-      o.oracle_verdict = if o.oracle_max_abs <= model_forward.TOLERANCE_TEN_THOUSANDTHS && !breach {
-        model_forward.ORACLE_PASS
-      } else {
-        model_forward.ORACLE_FAIL
-      }
-    }
+  // `elements_compared > 0` is asserted per step inside the loop's own verdict and again here over
+  // the aggregate: section 6 risk 6's specific guard against a comparison that passes because it
+  // compared nothing.
+  if o.transcript_present && o.code.len() == 0 && o.oracle_elements <= 0 {
+    fail(o, CODE_ORACLE_MISSING, "elements[0]")
+    o.oracle_verdict = model_forward.ORACLE_FAIL
   }
   graphs = model_forward.GraphColumns { activation_bytes: activation.build() }
   publish(state, decoded, o)
@@ -1905,7 +2319,11 @@ fn publish(borrow p: Plane, borrow k: Decode, borrow mut o: model_forward.Outcom
   o.plane_first_mismatch_layer = p.first_mismatch_layer
   o.plane_first_mismatch_tensor = p.first_mismatch_tensor
   o.plane_first_mismatch_column = p.first_mismatch_column
+  o.plane_first_mismatch_step = p.first_mismatch_step
   o.decode_n_past = k.n_past
+  o.decode_n_past_last = k.n_past_last
+  o.decode_steps_requested = k.steps_requested
+  o.decode_steps_completed = k.steps_completed
   o.decode_token_id = k.token_id
   o.decode_argmax = k.argmax
   sha_view: str := k.sha256
@@ -1938,10 +2356,12 @@ pub fn execute(
   transcript_path: str,
   width_text: str,
   logits_path: str,
+  steps_text: str,
   borrow mut tokens: model_forward.TokenColumns,
   borrow mut schedule: model_forward.ScheduleColumns,
   borrow mut graphs: model_forward.GraphColumns,
   borrow mut top: model_forward.TopColumns,
+  borrow mut stepped: model_forward.StepColumns,
 ) -> model_forward.Outcome {
   started := time.instant()
   mut o := model_forward.empty_outcome()
@@ -1953,13 +2373,19 @@ pub fn execute(
   o.reference_present = reference_path.len() > 0
   o.transcript_present = transcript_path.len() > 0
   o.logits_present = logits_path.len() > 0
+  // Section 2.8: `decode.steps_requested` is published in **every** document, including one refused
+  // before step 3b ever runs, so the count is never implicit in the output. The probe below only
+  // publishes; the refusals stay exactly where the validation order puts them.
+  probed := model_forward.parse_index(steps_text)
+  if probed > 0 { o.decode_steps_requested = probed }
 
-  g := stage_inputs(tokens_text, width_text, geometry_path, tokens, o)
+  g := stage_inputs(tokens_text, width_text, steps_text, geometry_path, tokens, o)
   if o.code.len() > 0 {
     o.elapsed_ns = time.instant() - started
     return o
   }
   width := o.reconciliation_width
+  steps := o.decode_steps_requested
   table := layer_qwen2.mf_layer_member_table(g)
   pak := match fs.open_rw(pack_path) {
     Ok(handle) => handle,
@@ -2094,7 +2520,7 @@ pub fn execute(
   schedule_decode(
     pak, g, table, staged.plan, staged.ends, tokens, embed_members, head_members, window_view, device,
     context_bytes, width, residual_bytes, logits_bytes, readback_bytes, reference_path,
-    transcript_path, logits_path, schedule, graphs, top, o)
+    transcript_path, logits_path, steps, schedule, graphs, top, stepped, o)
   o.elapsed_ns = time.instant() - started
   return o
 }
@@ -2132,17 +2558,39 @@ pub fn render_plane(borrow p: model_forward.Outcome) -> string {
   d.write(model_forward.json_string(plane_tensor_label(p.plane_first_mismatch_tensor)))
   d.write(",\"first_mismatch_column\":")
   d.write_int(p.plane_first_mismatch_column)
+  d.write(",\"first_mismatch_step\":")
+  d.write_int(p.plane_first_mismatch_step)
   d.write("}")
   return d.to_string()
 }
 
-pub fn render_decode(borrow k: model_forward.Outcome) -> string {
+// R6-STEP-N section 2.9. `decode` at schema 2 is **loop-level only**: a count, two bounds, the id
+// chain, and four aggregates. The scalars schema 1 published about *the* step are gone, because
+// there is no longer exactly one, and they are in `steps[]` instead.
+//
+// `token_ids` duplicates `steps[i].token_id` on purpose, so the gate can read one array without
+// walking objects; the smoke asserts the two agree on every case. It is the field gate G reads and
+// it holds `d_1 .. d_M` — the tokens the completed steps **consumed** — so `token_ids[0]` is the
+// prefill's own argmax and `steps[M].argmax` is the one id this arm computes and nothing gates.
+pub fn render_decode(borrow k: model_forward.Outcome, borrow steps: model_forward.StepColumns) -> string {
   d := builder()
-  d.write("{\"n_past\":")
+  d.write("{\"steps_requested\":")
+  d.write_int(k.decode_steps_requested)
+  d.write(",\"steps_completed\":")
+  d.write_int(k.decode_steps_completed)
+  d.write(",\"n_past_first\":")
   d.write_int(k.decode_n_past)
-  d.write(",\"token_id\":")
-  d.write_int(k.decode_token_id)
-  d.write(",\"graph_count\":")
+  d.write(",\"n_past_last\":")
+  d.write_int(k.decode_n_past_last)
+  d.write(",\"token_ids\":[")
+  mut at := 0
+  loop {
+    if at >= steps.count { break }
+    if at > 0 { d.write(",") }
+    d.write_int(model_forward.column_at(steps.token_id, at))
+    at = at + 1
+  }
+  d.write("],\"graph_count\":")
   d.write_int(k.decode_graph_count)
   d.write(",\"node_count\":")
   d.write_int(k.decode_node_count)
@@ -2150,24 +2598,72 @@ pub fn render_decode(borrow k: model_forward.Outcome) -> string {
   d.write_int(k.decode_slot_high_water)
   d.write(",\"compute_ns\":")
   d.write_int(k.decode_compute_ns)
-  d.write(",\"sha256\":")
-  sha_view: str := k.decode_sha256
-  d.write(model_forward.json_string(sha_view))
-  d.write(",\"bit_sum\":")
-  d.write_int(k.decode_bit_sum)
-  d.write(",\"element_count\":")
-  d.write_int(k.decode_element_count)
-  d.write(",\"nonfinite_count\":")
-  d.write_int(k.decode_nonfinite_count)
-  d.write(",\"argmax\":")
-  d.write_int(k.decode_argmax)
   d.write("}")
   return d.to_string()
 }
 
-// Oracle A's block. `instrument_graph` is `2` and says so on the wire: section 3.3's whole
-// correctness argument is that the comparison is against llama.cpp's **decode** graph, and a reader
-// should not have to know that to trust the verdict.
+// R6-STEP-N section 2.9's `steps[]`. One object per **completed** step, ordered by `index`,
+// ascending, with no gaps. A partial step publishes no object.
+pub fn render_steps(borrow s: model_forward.StepColumns) -> string {
+  d := builder()
+  mut at := 0
+  loop {
+    if at >= s.count { break }
+    if at > 0 { d.write(",") }
+    d.write("{\"index\":")
+    d.write_int(at + 1)
+    d.write(",\"n_past\":")
+    d.write_int(model_forward.column_at(s.n_past, at))
+    d.write(",\"token_id\":")
+    d.write_int(model_forward.column_at(s.token_id, at))
+    d.write(",\"argmax\":")
+    d.write_int(model_forward.column_at(s.argmax, at))
+    d.write(",\"sha256\":")
+    d.write(model_forward.json_string(model_forward.step_digest_at(s, at)))
+    d.write(",\"bit_sum\":")
+    d.write_int(model_forward.column_at(s.bit_sum, at))
+    d.write(",\"element_count\":")
+    d.write_int(model_forward.column_at(s.element_count, at))
+    d.write(",\"nonfinite_count\":")
+    d.write_int(model_forward.column_at(s.nonfinite_count, at))
+    d.write(",\"compute_ns\":")
+    d.write_int(model_forward.column_at(s.compute_ns, at))
+    d.write(",\"node_count\":")
+    d.write_int(model_forward.column_at(s.node_count, at))
+    d.write(",\"plane_column_written\":")
+    d.write_int(model_forward.column_at(s.plane_column, at))
+    d.write(",\"oracle\":{\"verdict\":")
+    d.write(model_forward.json_string(
+        model_forward.oracle_label(model_forward.column_at(s.oracle_verdict, at))))
+    d.write(",\"max_abs_diff_ten_thousandths\":")
+    d.write_int(model_forward.column_at(s.oracle_max_abs, at))
+    d.write(",\"max_sum_diff_millionths\":")
+    d.write_int(model_forward.column_at(s.oracle_max_sum, at))
+    d.write(",\"elements_compared\":")
+    d.write_int(model_forward.column_at(s.oracle_elements, at))
+    d.write(",\"nodes_matched\":")
+    d.write_int(model_forward.column_at(s.oracle_nodes_matched, at))
+    d.write(",\"nodes_expected\":")
+    d.write_int(model_forward.column_at(s.oracle_nodes_expected, at))
+    d.write(",\"layers_matched\":")
+    d.write_int(model_forward.column_at(s.oracle_layers, at))
+    d.write(",\"worst_layer\":")
+    d.write_int(model_forward.column_at(s.oracle_worst_layer, at))
+    d.write(",\"worst_node\":")
+    d.write(model_forward.json_string(model_forward.step_worst_node_at(s, at)))
+    d.write(",\"instrument_graph\":")
+    d.write_int(model_forward.column_at(s.oracle_graph, at))
+    d.write("}}")
+    at = at + 1
+  }
+  return d.to_string()
+}
+
+// Oracle A''s aggregate block. `instrument_graph_first` is `2` and `instrument_graph_last` is
+// `N + 1`, and both say so on the wire: R6-STEP-N section 3.1's whole correctness argument is that
+// step `k` is compared against llama.cpp's **decode** graph `k + 1`, and a reader should not have to
+// know that to trust the verdict. The per-step `instrument_graph` in `steps[]` is the same claim,
+// asserted step by step.
 pub fn render_oracle_decode(borrow o: model_forward.Outcome) -> string {
   d := builder()
   d.write("{\"present\":")
@@ -2176,7 +2672,13 @@ pub fn render_oracle_decode(borrow o: model_forward.Outcome) -> string {
   d.write(model_forward.json_string(model_forward.oracle_label(o.oracle_verdict)))
   d.write(",\"instrument\":")
   d.write(model_forward.json_string("llama-eval-callback"))
-  d.write(",\"instrument_graph\":2")
+  d.write(",\"steps_compared\":")
+  d.write_int(o.decode_oracle_steps_compared)
+  d.write(",\"worst_step\":")
+  d.write_int(o.decode_oracle_worst_step)
+  d.write(",\"instrument_graph_first\":2")
+  d.write(",\"instrument_graph_last\":")
+  d.write_int(o.decode_oracle_graph_last)
   d.write(",\"instrument_kv_width\":")
   d.write_int(o.reconciliation_width)
   d.write(",\"layers_expected\":")
@@ -2276,6 +2778,7 @@ pub fn render(
   borrow schedule: model_forward.ScheduleColumns,
   borrow graphs: model_forward.GraphColumns,
   borrow top: model_forward.TopColumns,
+  borrow stepped: model_forward.StepColumns,
   pack_path: str,
   geometry_path: str,
   reference_path: str,
@@ -2294,8 +2797,10 @@ pub fn render(
   graph_view: str := graph
   plane := render_plane(o)
   plane_view: str := plane
-  step := render_decode(o)
+  step := render_decode(o, stepped)
   step_view: str := step
+  rows_of_steps := render_steps(stepped)
+  rows_of_steps_view: str := rows_of_steps
   head := model_forward.render_output(o, top)
   head_view: str := head
   reference := model_forward.render_reference(o)
@@ -2321,7 +2826,9 @@ pub fn render(
   d.write(plane_view)
   d.write(",\"decode\":")
   d.write(step_view)
-  d.write(",\"head\":")
+  d.write(",\"steps\":[")
+  d.write(rows_of_steps_view)
+  d.write("],\"head\":")
   d.write(head_view)
   d.write(",\"reference\":")
   d.write(reference_view)
@@ -2373,8 +2880,12 @@ fn print_summary(
   print(o.reconciliation_width)
   print("n_past:")
   print(o.decode_n_past)
-  print("decoded token:")
-  print(o.decode_token_id)
+  print("steps requested:")
+  print(o.decode_steps_requested)
+  print("steps completed:")
+  print(o.decode_steps_completed)
+  print("last n_past:")
+  print(o.decode_n_past_last)
   print("plane bytes:")
   print(o.plane_bytes)
   print("plane layers:")
@@ -2386,10 +2897,10 @@ fn print_summary(
   print("prefill logits sha256:")
   sha_view: str := o.sha256
   print(sha_view)
-  print("decode logits sha256:")
+  print("last decode logits sha256:")
   decode_sha_view: str := o.decode_sha256
   print(decode_sha_view)
-  print("decode argmax:")
+  print("last decode argmax:")
   print(o.decode_argmax)
   print("decode transcript:")
   print(model_forward.oracle_label(o.oracle_verdict))
@@ -2417,17 +2928,27 @@ fn print_summary(
   }
 }
 
-// Section 2.1: exactly five, six, seven, nine, or ten operands. **Eight is `R6_ARITY`**, inherited
-// verbatim from `--model-forward`'s rule and for the same reason: `KV_WIDTH` travels with the
-// transcript, so a transcript without a width refuses itself.
+// R6-STEP-N section 2.2: exactly five, six, seven, nine, ten, or **eleven** operands. **Eight is
+// still `R6_ARITY`**, inherited verbatim from `--model-forward`'s rule and for R6's own reason:
+// `KV_WIDTH` travels with the transcript, so a transcript without a width refuses itself.
 //
 // `KV_WIDTH` has no default at any arity. Below nine operands it is simply not supplied, and step 6
 // refuses the run with `R6_KV_WIDTH` and detail `kv_width[-1]` — which is what "fail-closed, no
-// default" means for an arm whose lower bound is `T + 1`: there is no width a caller did not write
-// that is safe to assume, because the decode step's own column has to fit somewhere.
+// default" means for an arm whose lower bound is `T + N`: there is no width a caller did not write
+// that is safe to assume, because the decode steps' own columns have to fit somewhere.
+//
+// `STEPS` is last rather than earlier because every earlier position is spoken for and moving one
+// would change the meaning of an existing invocation silently. The cost of last position is the `-`
+// form of `LOGITS`, so that `STEPS` is reachable without a blob — the convention `TRANSCRIPT` has
+// used since R5B, inherited rather than invented.
+//
+// **`STEPS` absent means 1, and it is this arm's only default.** It exists so that every
+// pre-schema-2 invocation keeps its exact meaning. Its hazard — a caller who forgets the operand
+// silently gets one step — is closed by publishing `decode.steps_requested` in **every** document,
+// including error documents, so the count is never implicit in the output.
 pub fn run(args: array<str>) -> Result<(), Error> {
   count := args.len()
-  if count < 5 || count == 8 || count > 10 {
+  if count < 5 || count == 8 || count > 11 {
     return Err(Error.Invalid)
   }
   if !layer_forward.valid_path(args[2]) || !layer_forward.valid_path(args[3]) {
@@ -2442,23 +2963,25 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   if count >= 9 && args[7] != "-" && !layer_forward.valid_path(args[7]) {
     return Err(Error.Invalid)
   }
-  if count == 10 && !layer_forward.valid_path(args[9]) {
+  if count >= 10 && args[9] != "-" && !layer_forward.valid_path(args[9]) {
     return Err(Error.Invalid)
   }
   reference_path := if count >= 7 { args[6] } else { "" }
   transcript_path := if count >= 9 && args[7] != "-" { args[7] } else { "" }
   width_text := if count >= 9 { args[8] } else { "" }
-  logits_path := if count == 10 { args[9] } else { "" }
+  logits_path := if count >= 10 && args[9] != "-" { args[9] } else { "" }
+  steps_text := if count == 11 { args[10] } else { "1" }
   mut tokens := model_forward.empty_tokens()
   mut schedule := model_forward.empty_schedule()
   mut graphs := model_forward.empty_graphs()
   mut top := model_forward.empty_top()
+  mut stepped := model_forward.empty_steps()
   outcome := execute(
-    args[2], args[3], args[4], reference_path, transcript_path, width_text, logits_path,
-    tokens, schedule, graphs, top)
+    args[2], args[3], args[4], reference_path, transcript_path, width_text, logits_path, steps_text,
+    tokens, schedule, graphs, top, stepped)
   document := render(
-    outcome, tokens, schedule, graphs, top, args[2], args[3], reference_path, transcript_path,
-    logits_path)
+    outcome, tokens, schedule, graphs, top, stepped, args[2], args[3], reference_path,
+    transcript_path, logits_path)
   document_view: str := document
   if count == 5 || args[5] == "-" {
     print(document_view)

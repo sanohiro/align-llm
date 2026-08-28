@@ -232,7 +232,10 @@ STUB_CASES = [
     # a particular number, and nine is one past the new one exactly as seven was one
     # past the old one. `src/layer_olmoe.align` keeps its own cap at 6, so the routed
     # block below still refuses seven.
-    ("lf-tokens-nine", [ARM, PACK, "0", GEOM, "1,2,3,4,5,6,7,8,9"], "R5_TOKENS"),
+    # R6-STEP-N section 2.5 lifts `MAX_PREFILL_TOKENS` 8 -> 32. **33 repetitions of token id 1,
+    # not `1,2,...,33`:** this geometry's `n_vocab` is 32, so an ascending list would be refused
+    # as out-of-vocabulary and the case would stop being about the cap.
+    ("lf-tokens-33", [ARM, PACK, "0", GEOM, ",".join(["1"] * 33)], "R5_TOKENS"),
     # The other half of that lift, and the reason it is safe. `llama-eval-callback` prints a
     # tensor's rows in full only while `ne1 <= 6`; above it prints three leading and three trailing
     # rows and the scan's `printed_count` clamps to six on **both** sides. A seven- or eight-token
@@ -779,7 +782,10 @@ STUB_CASES = [
     ("mf-tokens-trailing", [ARM, PACK, GEOM, "1,"], "R5_TOKENS"),
     ("mf-tokens-space", [ARM, PACK, GEOM, "1, 2"], "R5_TOKENS"),
     # R6 section 2.7: the cap is 8 now, so the over-cap fixture is nine tokens.
-    ("mf-tokens-nine", [ARM, PACK, GEOM, "1,2,3,4,5,6,7,8,9"], "R5_TOKENS"),
+    # R6-STEP-N section 2.5 lifts `MAX_PREFILL_TOKENS` 8 -> 32. **33 repetitions of token id 1,
+    # not `1,2,...,33`:** this geometry's `n_vocab` is 32, so an ascending list would be refused
+    # as out-of-vocabulary and the case would stop being about the cap.
+    ("mf-tokens-33", [ARM, PACK, GEOM, ",".join(["1"] * 33)], "R5_TOKENS"),
     # R6 section 2.7's other half. Above six tokens the instrument prints three leading and three
     # trailing rows and `printed_count` clamps to six on both sides, so a transcript comparison at
     # `T = 7` would check six of seven rows and still report `PASS`. The oracle refuses itself. The
@@ -2615,17 +2621,19 @@ print("moe layer forward smoke: %d no-document cases (R5D_ARITY, R5D_PATH), %d d
 PY
 
 # ---------------------------------------------------------------------------------------------
-# R6-DECODE-KV-STEP1 — the `--decode-step` arm over the same synthetic two-layer model
+# R6-DECODE-KV-STEP1 and R6-STEP-N — the `--decode-step` arm over the same synthetic two-layer model
 #
-# `docs/specs/r6-decode-kv-step1.md` section 5.1. This block extends the existing runner rather than
-# adding a target: `layer-forward-smoke` is already a member of HOSTED_CHECK_TARGETS, so R6 adds
-# rows to it and changes no aggregate membership and no check topology.
+# `docs/specs/r6-decode-kv-step1.md` section 5.1 and `docs/specs/r6-step-n.md` section 5. This block
+# extends the existing runner rather than adding a target: `layer-forward-smoke` is already a member
+# of HOSTED_CHECK_TARGETS, so both capabilities add rows to it and change no aggregate membership and
+# no check topology.
 #
 # Hosted, ggml-free, model-free, llama.cpp-free. The corpus is `layer_forward_fixture.py --model`
-# extended with a **second call**: a pure-Python decode step at `n_past = T` over the KV plane the
-# prefill produced, and a transcript holding **two graphs** exactly as `llama-eval-callback -n 1`
-# emits them. Both acceptance oracles are therefore reachable with no ggml and no model — oracle A
-# against the transcript's second graph, oracle B over the plane's own bytes.
+# extended with a **loop of three calls**: a pure-Python decode step per iteration at
+# `n_past = T + k - 1` over the KV plane the prefill produced and each step grew, and a transcript
+# holding **four graphs** exactly as `llama-eval-callback -n 3` emits them. Every oracle is therefore
+# reachable with no ggml and no model — oracle A' against transcript graph `k + 1` at three different
+# offsets, oracle B over the plane's own bytes including each step's newly written column.
 # ---------------------------------------------------------------------------------------------
 
 DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
@@ -2658,27 +2666,37 @@ GEOM = path("geometry.json")
 TOKENS = "3,17,5"
 SOURCE = path("model-source.bin")
 TRANSCRIPT = path("model-decode-transcript.txt")
+SHORT_TRANSCRIPT = path("model-decode-transcript-short-for-steps.txt")
 LOGITS = path("model-logits.bin")
 WIDTH = "8"
-# The generator's own argmax over its own prefill logits. The arm derives the decoded token from its
-# own logits and never takes it as an operand (section 2.1), so this file is what makes "the arm
-# decoded the token the reference decoded" an assertion rather than a coincidence.
-with open(path("model-decode-argmax.txt"), "r", encoding="utf-8") as handle:
-    EXPECTED_TOKEN = int(handle.read().strip())
+STEPS = "3"
+# The generator's own greedy ids: one per line, `K` lines, the ids its own reference loop
+# **consumed**. The arm derives step 1's token from its own prefill logits and every later step's
+# from its own previous step (R6 section 2.1, R6-STEP-N section 3.2), and never takes any of them as
+# an operand, so this file is what makes "the arm decoded the tokens the reference decoded" an
+# assertion rather than a coincidence.
+with open(path("model-decode-tokens.txt"), "r", encoding="utf-8") as handle:
+    EXPECTED_TOKENS = [int(line) for line in handle.read().split()]
+EXPECTED_TOKEN = EXPECTED_TOKENS[0]
 
-# Section 2.1's arity rule: five, six, seven, nine, or ten operands. **Eight is `R6_ARITY`** and the
-# gap is the contract, inherited verbatim from `--model-forward`.
+# R6-STEP-N section 2.2's arity rule: five, six, seven, nine, ten, or **eleven** operands. **Eight is
+# still `R6_ARITY`** and the gap is the contract, inherited verbatim from `--model-forward`.
+#
+# `--decode-stepped` is not and will not be an arm. R6 used `--decode-steps` here, and R6-STEP-N
+# would have turned that negative case positive had it shipped a second arm; it ships a `STEPS`
+# operand instead, and the case moves to a flag that stays unknown.
 NO_DOCUMENT = [
     ("ds-arity-3", [ARM, PACK, GEOM]),
     ("ds-arity-8", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT]),
-    ("ds-arity-11", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, "extra"]),
+    ("ds-arity-12",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "extra"]),
     ("ds-path-pack-empty", [ARM, "", GEOM, TOKENS]),
     ("ds-path-geometry-empty", [ARM, PACK, "", TOKENS]),
     ("ds-path-long", [ARM, "/" + ("a" * 5000), GEOM, TOKENS]),
     ("ds-path-doc-empty", [ARM, PACK, GEOM, TOKENS, ""]),
     ("ds-path-reference-empty", [ARM, PACK, GEOM, TOKENS, "-", ""]),
     ("ds-path-logits-empty", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, ""]),
-    ("ds-arm-unknown-flag", ["--decode-steps", PACK, GEOM, TOKENS]),
+    ("ds-arm-unknown-flag", ["--decode-stepped", PACK, GEOM, TOKENS]),
 ]
 
 # Steps 3 to 8 of section 2.8, in order, against the **default** stub: the whole reader, the
@@ -2692,8 +2710,25 @@ STUB_CASES = [
      "R5_GGML_UNAVAILABLE"),
     ("ds-tokens-empty", [ARM, PACK, GEOM, ""], "R6_TOKENS"),
     ("ds-tokens-trailing", [ARM, PACK, GEOM, "1,"], "R6_TOKENS"),
-    ("ds-tokens-nine", [ARM, PACK, GEOM, "1,2,3,4,5,6,7,8,9"], "R6_TOKENS"),
+    # R6-STEP-N section 2.5's lift, 8 -> 32. **33 repetitions of token id 1, not `1,2,...,33`:** the
+    # hosted geometry's `n_vocab` is 32, so an ascending list would be refused as out-of-vocabulary
+    # and the case would stop being about the cap.
+    ("ds-tokens-33", [ARM, PACK, GEOM, ",".join(["1"] * 33)], "R6_TOKENS"),
     ("ds-tokens-oob", [ARM, PACK, GEOM, "1,32"], "R6_TOKENS"),
+    # Step 3b (R6-STEP-N section 2.3). Parse, then range, then the cap; the plane bound is step 6's
+    # and raises `R6_KV_WIDTH`, which is what `ds-kv-width-narrow-for-steps` below asserts.
+    ("ds-steps-empty", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH, "-", ""], "R6_STEPS"),
+    ("ds-steps-zero", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH, "-", "0"], "R6_STEPS"),
+    ("ds-steps-negative", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH, "-", "-1"],
+     "R6_STEPS"),
+    ("ds-steps-trailing", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH, "-", "3,"],
+     "R6_STEPS"),
+    ("ds-steps-over-max", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH, "-", "65"],
+     "R6_STEPS"),
+    # The precedence assertion: `STEPS` is decided before `KV_WIDTH`, because `N` must be a number
+    # before `T + N` is one. Both operands are invalid here and the code is `R6_STEPS`.
+    ("ds-steps-zero-and-narrow", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", "2", "-", "0"],
+     "R6_STEPS"),
     ("ds-geometry-unreadable", [ARM, PACK, path("absent.json"), TOKENS],
      "R6_GEOMETRY_UNREADABLE"),
     ("ds-geometry-not-json", [ARM, PACK, TRANSCRIPT, TOKENS], "R6_GEOMETRY"),
@@ -2707,6 +2742,11 @@ STUB_CASES = [
     ("ds-kv-width-negative", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", "-1"], "R6_KV_WIDTH"),
     # The lower bound is `T + 1` and not `T`: the decode step's own column has to fit.
     ("ds-kv-width-equal-t", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", "3"], "R6_KV_WIDTH"),
+    # The generalised bound: `T + N <= KV_WIDTH`. At `T = 3` and `N = 3` a width of 5 is one column
+    # short, and the code is `R6_KV_WIDTH` rather than `R6_STEPS` because "the plane is too narrow
+    # for this run" is a sentence R6 already owns.
+    ("ds-kv-width-narrow-for-steps", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", "5", "-", STEPS],
+     "R6_KV_WIDTH"),
     ("ds-kv-width-over-max", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", "4097"], "R6_KV_WIDTH"),
     ("ds-pack-missing", [ARM, path("absent.alignpack"), GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
      "R4_PACK_UNREADABLE"),
@@ -2727,6 +2767,16 @@ ENGINE_CASES = [
     ("ds-engine-ok", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH], ""),
     ("ds-engine-transcript", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH], ""),
     ("ds-engine-logits", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS], ""),
+    # R6-STEP-N section 2.2's `-` form of `LOGITS`, which exists only so that `STEPS` is reachable
+    # without a blob. `TRANSCRIPT` has used the same convention since R5B.
+    ("ds-logits-dash", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, "-"], ""),
+    # The capability itself: three steps over one plane, gated against the reference loop's own ids.
+    ("ds-steps-3", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, "-", STEPS], ""),
+    # A transcript one graph short of what `STEPS = 3` needs. Steps 1 and 2 compare normally and
+    # step 3 finds no graph 4, so the refusal names the step rather than the run.
+    ("ds-transcript-short-for-steps",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, SHORT_TRANSCRIPT, WIDTH, "-", STEPS],
+     "R6_ORACLE_MISSING"),
     # A transcript holding only the prefill graph. The arm skips the first graph by contract
     # (section 3.3), so nothing is matched and the run is refused rather than compared against the
     # wrong graph — which is the failure this fixture exists to make visible.
@@ -2788,6 +2838,16 @@ FORCED_CASES = [
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH], ""),
     ("ds-force-mask-offset", "engine+mask-offset",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH], ""),
+    # R6-STEP-N section 4.1's `failure` cell: the axis this capability adds. The build fails compute
+    # once the past-K upload has grown, so step 1 completes and step 2 does not, and the document
+    # publishes what step 1 did — which is the whole point of the per-step failure contract.
+    ("ds-force-compute-step2", "engine+compute-step2",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH, "-", STEPS], "R5_COMPUTE"),
+    # R6-STEP-N section 4.2's `failure -- round trip` cell. The step's own written column is shifted
+    # by one lane, and oracle B reports column `T` — which is what proves the **new** column is
+    # compared and not only the past ones.
+    ("ds-force-writeback-offset", "engine+writeback-offset",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH], "R6_PLANE_MISMATCH"),
 ]
 
 
@@ -2848,6 +2908,11 @@ def normalize(text):
     document["head"]["pread_ns"] = 0
     document["head"]["compute_ns"] = 0
     document["decode"]["compute_ns"] = 0
+    # R6-STEP-N section 2.9, and section 6 risk 5's named prior failure class: a **per-step** timing
+    # array is the exact place a golden goes non-deterministic, so every row's own `compute_ns` is
+    # zeroed as well as the loop's sum.
+    for row in document["steps"]:
+        row["compute_ns"] = 0
     document["plane"]["readback_ns"] = 0
     document["plane"]["upload_ns"] = 0
     for key, placeholder in PLACEHOLDER.items():
@@ -2897,7 +2962,7 @@ def record(name, operands, expected):
     if (result.returncode == 0) != (expected_exit == 0):
         failures.append("%s: status %r but exit %d"
                         % (name, document["status"], result.returncode))
-    if document["kind"] != "R6_DECODE_STEP" or document["schema_version"] != 1:
+    if document["kind"] != "R6_DECODE_STEP" or document["schema_version"] != 2:
         failures.append("%s: wrong document identity %r/%r"
                         % (name, document["kind"], document["schema_version"]))
     if not document["abi"]["fp_contract_off"]:
@@ -2951,19 +3016,62 @@ for name, operands, expected in ENGINE_CASES:
     if plane["bytes"] != 512 or plane["stride"] != 128:
         failures.append("%s: plane %d bytes, stride %d, not 512/128"
                         % (name, plane["bytes"], plane["stride"]))
-    if plane["layers"] != 2 or plane["columns_written"] != 3:
-        failures.append("%s: the plane holds %d layers and %d columns, not 2 and T"
-                        % (name, plane["layers"], plane["columns_written"]))
-    # Oracle B. Every written byte of both tensors of both layers, compared after the decode graph
-    # consumed them: `2 tensors * 2 layers * 3 columns * 1 head * 4 lanes * 4 bytes`.
-    if plane["roundtrip_verdict"] != "IDENTICAL" or plane["roundtrip_bytes_compared"] != 192:
-        failures.append("%s: oracle B is %r over %d bytes"
-                        % (name, plane["roundtrip_verdict"], plane["roundtrip_bytes_compared"]))
-    if plane["first_mismatch_layer"] != -1 or plane["first_mismatch_tensor"] != "-":
+    steps_requested = decode["steps_requested"]
+    rows = document["steps"]
+    # R6-STEP-N section 2.4: the plane holds `T + N` columns on a complete run, grown one column per
+    # step **in place** — the buffer was `KV_WIDTH` columns wide from the start.
+    if plane["layers"] != 2 or plane["columns_written"] != 3 + steps_requested:
+        failures.append("%s: the plane holds %d layers and %d columns, not 2 and T + %d"
+                        % (name, plane["layers"], plane["columns_written"], steps_requested))
+    # Oracle B, cumulative and inclusive of each step's own new column: at step `k` it compares
+    # `2 tensors * 2 layers * (T + k) columns * 1 head * 4 lanes * 4 bytes`.
+    expected_bytes = sum(2 * 2 * (3 + k) * 1 * 4 * 4 for k in range(1, steps_requested + 1))
+    if plane["roundtrip_verdict"] != "IDENTICAL" \
+            or plane["roundtrip_bytes_compared"] != expected_bytes:
+        failures.append("%s: oracle B is %r over %d bytes, not %d"
+                        % (name, plane["roundtrip_verdict"], plane["roundtrip_bytes_compared"],
+                           expected_bytes))
+    if plane["first_mismatch_layer"] != -1 or plane["first_mismatch_tensor"] != "-" \
+            or plane["first_mismatch_step"] != -1:
         failures.append("%s: a passing run named a mismatch: %r" % (name, plane))
-    if decode["n_past"] != 3 or decode["token_id"] != EXPECTED_TOKEN:
-        failures.append("%s: decoded token %d at n_past %d, not %d at 3"
-                        % (name, decode["token_id"], decode["n_past"], EXPECTED_TOKEN))
+    # The loop's shape. `token_ids` duplicates `steps[i].token_id` on purpose so the gate can read
+    # one array without walking objects; that the two agree is asserted rather than assumed.
+    if decode["steps_completed"] != steps_requested or len(rows) != steps_requested:
+        failures.append("%s: %d of %d steps completed with %d rows"
+                        % (name, decode["steps_completed"], steps_requested, len(rows)))
+    elif decode["token_ids"] != [row["token_id"] for row in rows]:
+        failures.append("%s: token_ids %r do not match steps[].token_id %r"
+                        % (name, decode["token_ids"], [row["token_id"] for row in rows]))
+    elif decode["token_ids"] != EXPECTED_TOKENS[:steps_requested]:
+        failures.append("%s: decoded %r, not the reference loop's %r"
+                        % (name, decode["token_ids"], EXPECTED_TOKENS[:steps_requested]))
+    if decode["n_past_first"] != 3 or decode["n_past_last"] != 3 + steps_requested - 1:
+        failures.append("%s: n_past runs %d..%d, not 3..%d"
+                        % (name, decode["n_past_first"], decode["n_past_last"],
+                           3 + steps_requested - 1))
+    if rows and rows[0]["token_id"] != document["output"]["argmax"]:
+        failures.append("%s: the chain's root %d is not the prefill's argmax %d"
+                        % (name, rows[0]["token_id"], document["output"]["argmax"]))
+    for index, row in enumerate(rows):
+        # Every step writes exactly one column, at `n_past`, and reads the ones before it.
+        if row["index"] != index + 1 or row["n_past"] != 3 + index \
+                or row["plane_column_written"] != 3 + index:
+            failures.append("%s: steps[%d] is %r" % (name, index, row))
+        if index + 1 < len(rows) and row["argmax"] != rows[index + 1]["token_id"]:
+            failures.append("%s: steps[%d] produced %d and steps[%d] consumed %d — the chain broke"
+                            % (name, index, row["argmax"], index + 1, rows[index + 1]["token_id"]))
+        if row["element_count"] != 32 or row["nonfinite_count"] != 0:
+            failures.append("%s: steps[%d] has %d logits, %d non-finite"
+                            % (name, index, row["element_count"], row["nonfinite_count"]))
+        # 1 + 36 + 38 + 3: the decode graph issues two more rows per layer than the prefill — one
+        # `CONCAT` on K and one on V — at `t = 1`.
+        if row["node_count"] != 78:
+            failures.append("%s: steps[%d] node_count %d, not 1 + 36 + 38 + 3"
+                            % (name, index, row["node_count"]))
+    if len({row["sha256"] for row in rows}) != len(rows) \
+            or document["output"]["sha256"] in {row["sha256"] for row in rows}:
+        failures.append("%s: two steps produced the same logits, or a step reproduced the prefill's"
+                        % name)
     # Section 2.3: the two plane slots sit above the decode table's own node slots, so the arm's
     # high-water is 66 against a capacity of 128 — and the prefill arm's stays 52.
     if decode["slot_high_water"] != 66 or graph["slot_capacity"] != 128:
@@ -2975,15 +3083,13 @@ for name, operands, expected in ENGINE_CASES:
     if graph["node_count_total"] != 74:
         failures.append("%s: prefill node_count_total %d, not 1 + 34 + 36 + 3"
                         % (name, graph["node_count_total"]))
-    if decode["node_count"] != 78:
-        failures.append("%s: decode node_count %d, not 1 + 36 + 38 + 3"
-                        % (name, decode["node_count"]))
-    if decode["graph_count"] != 4 or graph["graph_count"] != 4:
-        failures.append("%s: %d prefill graphs and %d decode graphs, not 4 and 4"
-                        % (name, graph["graph_count"], decode["graph_count"]))
-    if decode["element_count"] != 32 or decode["nonfinite_count"] != 0:
-        failures.append("%s: %d decode logits, %d non-finite"
-                        % (name, decode["element_count"], decode["nonfinite_count"]))
+    # `decode.node_count` and `decode.graph_count` are **sums** over the loop at schema 2.
+    if decode["node_count"] != 78 * steps_requested:
+        failures.append("%s: decode node_count %d, not %d x (1 + 36 + 38 + 3)"
+                        % (name, decode["node_count"], steps_requested))
+    if decode["graph_count"] != 4 * steps_requested or graph["graph_count"] != 4:
+        failures.append("%s: %d prefill graphs and %d decode graphs, not 4 and %d"
+                        % (name, graph["graph_count"], decode["graph_count"], 4 * steps_requested))
     lifetime = document["lifetime"]
     if not lifetime["released_before_owner_scope_end"]:
         failures.append("%s: the teardown did not balance" % name)
@@ -3002,18 +3108,41 @@ for name, operands, expected in ENGINE_CASES:
 # both layers plus the head — against a pure-Python decode step that shares none of the engine's
 # code. `max_abs_diff` is zero here and the tolerance is not consulted, which is the strongest form
 # the hosted corpus can take.
-oracle = json.loads(produced["ds-engine-transcript"])["oracle_decode"]
-if oracle["verdict"] != "PASS" or oracle["max_abs_diff_ten_thousandths"] != 0:
-    failures.append("ds-engine-transcript: %r" % oracle)
-if oracle["layers_matched"] != 2 or oracle["nodes_matched"] != oracle["nodes_expected"]:
-    failures.append("ds-engine-transcript: %d/%d layers, %d/%d nodes"
-                    % (oracle["layers_matched"], oracle["layers_expected"],
-                       oracle["nodes_matched"], oracle["nodes_expected"]))
-if oracle["elements_compared"] <= 0:
-    failures.append("ds-engine-transcript: zero elements compared with a PASS verdict")
-if oracle["tolerance_ten_thousandths"] != 1 or oracle["instrument_graph"] != 2:
-    failures.append("ds-engine-transcript: the decode oracle is not the second graph at 1e-4: %r"
-                    % oracle)
+for case_name, expect_steps in (("ds-engine-transcript", 1), ("ds-steps-3", 3)):
+    stepped = json.loads(produced[case_name])
+    oracle = stepped["oracle_decode"]
+    if oracle["verdict"] != "PASS" or oracle["max_abs_diff_ten_thousandths"] != 0:
+        failures.append("%s: %r" % (case_name, oracle))
+    if oracle["layers_matched"] != 2 or oracle["nodes_matched"] != oracle["nodes_expected"]:
+        failures.append("%s: %d/%d layers, %d/%d nodes"
+                        % (case_name, oracle["layers_matched"], oracle["layers_expected"],
+                           oracle["nodes_matched"], oracle["nodes_expected"]))
+    if oracle["elements_compared"] <= 0:
+        failures.append("%s: zero elements compared with a PASS verdict" % case_name)
+    if oracle["tolerance_ten_thousandths"] != 1 or oracle["instrument_graph_first"] != 2 \
+            or oracle["instrument_graph_last"] != expect_steps + 1 \
+            or oracle["steps_compared"] != expect_steps:
+        failures.append("%s: the decode oracle did not run over graphs 2..%d at 1e-4: %r"
+                        % (case_name, expect_steps + 1, oracle))
+    # R6-STEP-N section 3.4's structural gate, at **every** step: none of it can pass vacuously.
+    # A mis-aligned graph skip, a truncated transcript, a dropped layer, and the empty comparison
+    # each fail one of these four.
+    for index, row in enumerate(stepped["steps"]):
+        step_oracle = row["oracle"]
+        if step_oracle["instrument_graph"] != index + 2:
+            failures.append("%s: steps[%d] compared graph %d, not %d"
+                            % (case_name, index, step_oracle["instrument_graph"], index + 2))
+        if step_oracle["nodes_matched"] != step_oracle["nodes_expected"] \
+                or step_oracle["layers_matched"] != 2 \
+                or step_oracle["elements_compared"] <= 0 \
+                or step_oracle["verdict"] != "PASS":
+            failures.append("%s: steps[%d] oracle %r" % (case_name, index, step_oracle))
+
+# A transcript one graph short of `STEPS`: steps 1 and 2 compare and step 3 is refused by name.
+short = json.loads(produced["ds-transcript-short-for-steps"])
+if not short["error_detail"].startswith("step[3]") or short["decode"]["steps_completed"] != 2:
+    failures.append("ds-transcript-short-for-steps: %r after %d steps"
+                    % (short["error_detail"], short["decode"]["steps_completed"]))
 
 breached = json.loads(produced["ds-transcript-perturbed"])
 if breached["status"] != "ok" or breached["oracle_decode"]["verdict"] != "FAIL" \
@@ -3036,7 +3165,9 @@ if mf_document["graph"]["slot_high_water"] != 52:
                     % mf_document["graph"]["slot_high_water"])
 # Section 3.2: the decode step is **not** the prefill's final position. If these agreed, the decode
 # graph would be recomputing the prompt.
-if ds_document["decode"]["sha256"] == ds_document["output"]["sha256"]:
+if not ds_document["steps"]:
+    failures.append("ds-step-differs: the run published no step at all")
+elif ds_document["steps"][0]["sha256"] == ds_document["output"]["sha256"]:
     failures.append("ds-step-differs: the decode logits equal the prefill's")
 
 # Both output forms emit byte-identical document bytes, and three consecutive runs agree.
@@ -3061,6 +3192,34 @@ build_shim(None)
 # Oracle B's shipped regression, asserted beside its golden row: the code alone would not say that
 # the document also names the layer, the tensor, and the column, which is what makes the diagnosis
 # usable. Section 4.2.
+# R6-STEP-N section 2.8's per-step failure contract, asserted in full: the document publishes what
+# step 1 completed and says nothing about the step that did not.
+partial = json.loads(produced["ds-force-compute-step2"])
+if partial["status"] != "error" or partial["error_code"] != "R5_COMPUTE" \
+        or not partial["error_detail"].startswith("step[2]"):
+    failures.append("ds-force-compute-step2: %r %r"
+                    % (partial["error_code"], partial["error_detail"]))
+if partial["decode"]["steps_requested"] != 3 or partial["decode"]["steps_completed"] != 1 \
+        or len(partial["steps"]) != 1 or len(partial["decode"]["token_ids"]) != 1:
+    failures.append("ds-force-compute-step2: a partial step published a row: %r"
+                    % partial["decode"])
+if partial["plane"]["columns_written"] != 4:
+    failures.append("ds-force-compute-step2: %d columns written, not T + 1"
+                    % partial["plane"]["columns_written"])
+if partial["plane"]["roundtrip_verdict"] == "IDENTICAL":
+    failures.append("ds-force-compute-step2: an error document claimed IDENTICAL")
+
+# R6-STEP-N section 4.2. The write-back's own regression: oracle B names column `T`, which is the
+# column this step wrote, and is the evidence that the new column is compared and not only the past.
+shifted = json.loads(produced["ds-force-writeback-offset"])
+if shifted["plane"]["first_mismatch_column"] != 3 \
+        or shifted["plane"]["first_mismatch_tensor"] != "k" \
+        or shifted["plane"]["first_mismatch_layer"] != 0 \
+        or shifted["plane"]["first_mismatch_step"] != 1 \
+        or shifted["error_detail"] != "step[1]layer[0]tensor[k]col[3]":
+    failures.append("ds-force-writeback-offset: oracle B did not name the new column: %r %r"
+                    % (shifted["plane"], shifted["error_detail"]))
+
 staged = json.loads(produced["ds-force-plane-stage-offset"])["plane"]
 if staged["roundtrip_verdict"] != "MISMATCH" or staged["first_mismatch_layer"] != 0 \
         or staged["first_mismatch_tensor"] != "k" or staged["first_mismatch_column"] != 0:
@@ -3085,7 +3244,7 @@ REQUIRED_CODES = {
     "R5_BLOCK_MISSING",
     "R5_LAYER_COVERAGE", "R5_MEMBER_MISSING", "R5_SHAPE", "R5_GGML_UNAVAILABLE",
     "R5_TYPE_UNSUPPORTED", "R5_ALIGNMENT", "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE",
-    "R5_SOURCE_DIVERGED", "R5_LOGITS_SHAPE", "R5_LOGITS_UNREADABLE",
+    "R5_SOURCE_DIVERGED", "R5_LOGITS_SHAPE", "R5_LOGITS_UNREADABLE", "R6_STEPS",
 }
 missing_codes = REQUIRED_CODES - codes
 if missing_codes:
@@ -3120,7 +3279,8 @@ if failures:
     raise SystemExit(1)
 
 print("decode step smoke: %d no-document cases (R6_ARITY, R6_PATH), %d documented cases, "
-      "%d codes reached, oracle A PASS against the transcript's second graph, oracle B IDENTICAL "
-      "over the whole plane, and arm-r5b-unchanged PASS"
+      "%d codes reached, oracle A' PASS against transcript graphs 2..4 at three step offsets, "
+      "oracle B IDENTICAL over the whole plane including every written-back column, three steps "
+      "decoding the reference loop's own ids, and arm-r5b-unchanged PASS"
       % (len(NO_DOCUMENT), len(ORDER), len(codes - {""})))
 PY

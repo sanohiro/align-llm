@@ -206,6 +206,18 @@ else
     engine+mask-offset)
                        include_flags+=("${engine}" "-DALIGN_GGML_FORCE_MASK_OFFSET=1")
                        flavour="stub+engine+force-mask-offset" ;;
+    # R6-STEP-N (`docs/specs/r6-step-n.md` sections 4.1 and 4.2). The two conditions the step axis
+    # adds and no operand can produce: a compute failure at a chosen **step** index rather than a
+    # chosen graph, and a write-back that lands one lane off. `compute-step2` keys on the past-K
+    # upload growing, so it fires at step 2 and not step 1; `writeback-offset` keys on the one-column
+    # shape of the decode graph's post-RoPE K, so it perturbs the column the step just wrote and
+    # nothing else, and oracle B names that column.
+    engine+compute-step2)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_COMPUTE_STEP2=1")
+                       flavour="stub+engine+force-compute-step2" ;;
+    engine+writeback-offset)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_WRITEBACK_OFFSET=1")
+                       flavour="stub+engine+force-writeback-offset" ;;
     *)
       printf '%s\n' "build-ggml-shim: unknown stub ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
       exit 1
