@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Opt-in real OLMoE R3 policy qualification; never part of an aggregate."""
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import resource
+import subprocess
+import sys
+import tempfile
+
+
+root = Path(__file__).resolve().parents[1]
+binary = root / "main"
+adapter = root / "scripts" / "build-residency-task"
+na_line = "residency sim qualification: N/A (required real inputs unavailable)"
+
+
+def unavailable():
+    print(na_line)
+    return 0
+
+
+def fail(message):
+    raise SystemExit("residency sim qualification: ERROR %s" % message)
+
+
+def limited_file_size():
+    resource.setrlimit(resource.RLIMIT_FSIZE, (256 * 1024 * 1024, 256 * 1024 * 1024))
+
+
+def checked(command, stdout=None, stderr=None, timeout=None):
+    result = subprocess.run(
+        command,
+        cwd=root,
+        stdin=subprocess.DEVNULL,
+        stdout=stdout if stdout is not None else subprocess.PIPE,
+        stderr=stderr if stderr is not None else subprocess.PIPE,
+        timeout=timeout,
+        preexec_fn=limited_file_size if timeout is not None else None,
+    )
+    if result.returncode != 0:
+        fail("%r exited %d" % (command, result.returncode))
+    return result
+
+
+def main():
+    model_text = os.environ.get("ALIGN_LLM_GGUF_MODEL", "")
+    instrument_text = os.environ.get("ALIGN_LLM_LLAMA_EVAL_CALLBACK", "")
+    hardware_text = os.environ.get("ALIGN_LLM_R3_HARDWARE", "")
+    measurement = os.environ.get("ALIGN_LLM_R3_MEASUREMENT", "")
+    if not model_text or not instrument_text or not hardware_text or not measurement:
+        return unavailable()
+    model = Path(model_text)
+    instrument = Path(instrument_text)
+    hardware = Path(hardware_text)
+    if not model.is_file() or not instrument.is_file() or not os.access(instrument, os.X_OK) \
+            or not hardware.is_file() or not binary.is_file():
+        return unavailable()
+    if "\n" in measurement or "\r" in measurement or len(measurement.encode("utf-8")) > 512:
+        fail("ALIGN_LLM_R3_MEASUREMENT must be one bounded line")
+    prompt_path = Path(os.environ.get(
+        "ALIGN_LLM_LOCALITY_PROMPTS", str(root / "eval" / "prompts" / "expert-locality-v1.txt")
+    ))
+    try:
+        prompt_count = int(os.environ.get("ALIGN_LLM_LOCALITY_PROMPT_COUNT", "40"))
+    except ValueError as exc:
+        fail("ALIGN_LLM_LOCALITY_PROMPT_COUNT is not an integer")
+    if not prompt_path.is_file() or prompt_count < 1:
+        fail("prompt corpus or count is invalid")
+    prompts = [line for line in prompt_path.read_text(encoding="utf-8").splitlines() if line]
+    if len(prompts) < prompt_count:
+        fail("prompt corpus has fewer rows than requested")
+    prompts = prompts[:prompt_count]
+    before = model.stat().st_size, model.stat().st_mtime_ns
+
+    with tempfile.TemporaryDirectory(prefix="align-r3-qualification-") as raw_directory:
+        directory = Path(raw_directory)
+        model_ir = directory / "model-ir.json"
+        checked([str(binary), "--model-ir", str(model), str(model_ir)])
+        trace_paths = []
+        for ordinal, prompt in enumerate(prompts):
+            transcript = directory / "transcript.txt"
+            instrument_log = directory / "instrument.log"
+            with transcript.open("wb") as output, instrument_log.open("wb") as diagnostic:
+                checked([
+                    str(instrument), "-m", str(model), "-p", prompt, "-n", "1", "-t", "4",
+                    "-fa", "off", "-ctk", "f32", "-ctv", "f32", "-nr", "-c", "512",
+                ], stdout=output, stderr=diagnostic, timeout=600)
+            trace = directory / ("trace-%03d.json" % ordinal)
+            checked([str(binary), "--expert-trace", str(transcript), str(trace)])
+            transcript.unlink()
+            trace_paths.append(trace)
+        after = model.stat().st_size, model.stat().st_mtime_ns
+        if before != after:
+            fail("model size or mtime changed during qualification")
+
+        hardware_value = json.loads(hardware.read_text(encoding="utf-8"))
+        hardware_name = hardware_value.get("name")
+        if not isinstance(hardware_name, str) or not hardware_name:
+            fail("hardware document has no name")
+        task = directory / "task.json"
+        checked([
+            str(adapter), "--task-id", "olmoe-residency-qualification",
+            "--model-id", model.name, "--hardware", str(hardware), "--output", str(task),
+            str(model_ir), *(str(path) for path in trace_paths),
+        ])
+        result_path = directory / "result.json"
+        checked([str(binary), "--residency-sim", str(task), str(result_path)])
+        task_value = json.loads(task.read_text(encoding="utf-8"))
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        if result.get("status") != "ok" or len(result.get("policies", [])) != 7:
+            fail("simulator did not produce seven OK policy rows")
+        prefill = result["policies"][0]["prefill_demand_count"]
+        decode = result["policies"][0]["decode_demand_count"]
+        print("residency sim qualification: MEASURED")
+        print("  task sha256        %s" % hashlib.sha256(task.read_bytes()).hexdigest())
+        print("  model IR sha256    %s" % result["model_ir_sha256"])
+        print("  trace manifest     %s" % result["trace_sha256"])
+        print("  model              %s" % result["model_id"])
+        print("  hardware           %s" % hardware_name)
+        print("  capacity bytes     %d" % result["hardware"]["cache_capacity_bytes"])
+        print("  cost measurement   %s" % measurement)
+        print("  demands            %d prefill, %d decode" % (prefill, decode))
+        print("  truncation         tokens=%s reduced_layers=%d" % (
+            "yes" if task_value["tokens_truncated"] else "no",
+            task_value["token_reduced_layer_count"],
+        ))
+        print("  policies")
+        for row in result["policies"]:
+            print("    %-18s cost_ns=%d hits=%d/%d transfer_bytes=%d prefetch_bytes=%d cpu=%d" % (
+                row["policy"], row["residency_cost_ns"], row["hit_count"], row["demand_count"],
+                row["transfer_bytes"], row["prefetch_bytes"], row["cpu_fallback_count"],
+            ))
+        print("  winner             %s (%s)" % (result["best_policy"], result["verdict"]))
+        print("  decode observed    %s" % ("yes" if decode else "no"))
+        print("residency-sim-qualification verdict=%s best_policy=%s baseline_cost_ns=%d "
+              "best_cost_ns=%d hardware=%s prompts=%d decode_observed=%s" % (
+                  "IDENTIFIED" if result["verdict"] == "IMPROVED" else "BASELINE",
+                  result["best_policy"], result["baseline_cost_ns"], result["best_cost_ns"],
+                  hardware_name, prompt_count, "yes" if decode else "no",
+              ))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

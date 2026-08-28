@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Join R1 model IR and R2 activation traces into one canonical R3 task."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+
+
+HARDWARE_FIELDS = [
+    "name",
+    "cache_capacity_bytes",
+    "transfer_fixed_ns",
+    "transfer_ns_per_kib",
+    "cpu_fixed_ns",
+    "cpu_ns_per_kib",
+    "prefetch_cost_per_mille",
+    "prefetch_count",
+    "score_recency_weight",
+    "score_frequency_weight",
+    "score_impact_weight",
+    "score_layer_weight",
+]
+
+
+class AdapterError(Exception):
+    pass
+
+
+def unique_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise AdapterError("duplicate JSON key %r" % key)
+        value[key] = item
+    return value
+
+
+def read_document(path):
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as exc:
+        raise AdapterError("cannot read %s: %s" % (path, exc)) from exc
+    try:
+        value = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AdapterError("invalid JSON in %s: %s" % (path, exc)) from exc
+    if not isinstance(value, dict):
+        raise AdapterError("%s is not a JSON object" % path)
+    return raw, value
+
+
+def identifier(name, value):
+    if not isinstance(value, str) or not value or "\0" in value or len(value.encode("utf-8")) > 256:
+        raise AdapterError("invalid %s" % name)
+    return value
+
+
+def exact_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def require_int(where, value, minimum=None):
+    if not exact_int(value) or (minimum is not None and value < minimum):
+        raise AdapterError("invalid %s" % where)
+    return value
+
+
+def load_hardware(path):
+    _, hardware = read_document(path)
+    if list(hardware) != HARDWARE_FIELDS:
+        raise AdapterError("hardware fields/order do not match schema 1")
+    identifier("hardware.name", hardware["name"])
+    for field in HARDWARE_FIELDS[1:]:
+        require_int("hardware.%s" % field, hardware[field])
+    return hardware
+
+
+def load_model(path):
+    raw, document = read_document(path)
+    if document.get("schema_version") != 2 or document.get("kind") != "R1_MODEL_IR":
+        raise AdapterError("model IR must be R1_MODEL_IR schema 2")
+    if document.get("status") != "ok":
+        raise AdapterError("model IR status is not ok")
+    model = document.get("model")
+    blocks = document.get("blocks")
+    if not isinstance(model, dict) or not isinstance(blocks, list):
+        raise AdapterError("model IR is missing model or blocks")
+    if model.get("arch") != "olmoe":
+        raise AdapterError("model IR architecture is not olmoe")
+    n_layer = require_int("model.n_layer", model.get("n_layer"), 1)
+    n_expert = require_int("model.n_expert", model.get("n_expert"), 1)
+    n_expert_used = require_int("model.n_expert_used", model.get("n_expert_used"), 1)
+    if n_expert_used > n_expert:
+        raise AdapterError("model.n_expert_used exceeds n_expert")
+    expert_blocks = []
+    for ordinal, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            raise AdapterError("model block %d is not an object" % ordinal)
+        if block.get("kind") != "ExpertBlock":
+            continue
+        layer = require_int("blocks[%d].layer" % ordinal, block.get("layer"), 0)
+        expert = require_int("blocks[%d].expert" % ordinal, block.get("expert"), 0)
+        size = require_int("blocks[%d].byte_size" % ordinal, block.get("byte_size"), 1)
+        if layer >= n_layer or expert >= n_expert:
+            raise AdapterError("ExpertBlock %d is outside model extents" % ordinal)
+        row = {"layer": layer, "expert": expert, "bytes": size}
+        if expert_blocks and (layer, expert) <= (
+            expert_blocks[-1]["layer"], expert_blocks[-1]["expert"]
+        ):
+            raise AdapterError("ExpertBlock order is not strictly ascending")
+        expert_blocks.append(row)
+    if not expert_blocks:
+        raise AdapterError("model IR has no ExpertBlock")
+    return raw, n_layer, n_expert, n_expert_used, expert_blocks
+
+
+def selection_key(row):
+    return row["graph"], row["layer"], row["token"], row["slot"]
+
+
+def append_trace(path, expected, graph_base, demands):
+    raw, document = read_document(path)
+    if document.get("schema_version") != 1 or document.get("kind") != "R2_ACTIVATION_TRACE":
+        raise AdapterError("%s must be R2_ACTIVATION_TRACE schema 1" % path)
+    if document.get("status") != "ok":
+        raise AdapterError("%s status is not ok" % path)
+    graph_meta = document.get("graph")
+    moe = document.get("moe")
+    graphs = document.get("graphs")
+    selections = document.get("selections")
+    if not all(isinstance(value, expected_type) for value, expected_type in (
+        (graph_meta, dict), (moe, dict), (graphs, list), (selections, list)
+    )):
+        raise AdapterError("%s is missing graph, moe, graphs, or selections" % path)
+    n_layer, n_expert, n_expert_used = expected
+    if graph_meta.get("n_layer") != n_layer or not moe.get("present"):
+        raise AdapterError("%s model shape does not match the MoE model" % path)
+    if moe.get("n_expert") != n_expert or moe.get("n_expert_used") != n_expert_used:
+        raise AdapterError("%s expert extents disagree with the model" % path)
+    phases = {}
+    truncated = False
+    for ordinal, graph in enumerate(graphs):
+        if not isinstance(graph, dict) or graph.get("ordinal") != ordinal:
+            raise AdapterError("%s graph ordinals are not contiguous" % path)
+        phase = graph.get("phase")
+        if phase not in ("prefill", "decode", "single_token_first_graph"):
+            raise AdapterError("%s graph %d has invalid phase" % (path, ordinal))
+        phases[ordinal] = phase
+        if graph.get("tokens_truncated") is True:
+            truncated = True
+        elif graph.get("tokens_truncated") is not False:
+            raise AdapterError("%s graph %d has invalid tokens_truncated" % (path, ordinal))
+    previous = None
+    group = None
+    group_experts = set()
+    for ordinal, source in enumerate(selections):
+        if not isinstance(source, dict):
+            raise AdapterError("%s selection %d is not an object" % (path, ordinal))
+        values = []
+        for field in ("graph", "layer", "token", "slot", "expert"):
+            values.append(require_int("selection.%s" % field, source.get(field), 0))
+        graph, layer, token, slot, expert = values
+        if graph not in phases or layer >= n_layer or expert >= n_expert or slot >= n_expert_used:
+            raise AdapterError("%s selection %d is outside declared extents" % (path, ordinal))
+        key = (graph, layer, token, slot)
+        if previous is not None and key <= previous:
+            raise AdapterError("%s selection order is not strictly ascending" % path)
+        current_group = key[:3]
+        if current_group != group:
+            if slot != 0:
+                raise AdapterError("%s selection group does not begin at slot zero" % path)
+            group = current_group
+            group_experts = set()
+        if expert in group_experts:
+            raise AdapterError("%s selection group repeats an expert" % path)
+        group_experts.add(expert)
+        demands.append({
+            "graph": graph_base + graph,
+            "layer": layer,
+            "token": token,
+            "slot": slot,
+            "expert": expert,
+            "phase": phases[graph],
+        })
+        previous = key
+    reduced = moe.get("token_reduced_layers", [])
+    if not isinstance(reduced, list) or any(not exact_int(value) or value < 0 for value in reduced):
+        raise AdapterError("%s has invalid token_reduced_layers" % path)
+    return raw, graph_base + len(graphs), truncated, len(reduced)
+
+
+def write_new(path, payload):
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        descriptor = os.open(path, flags, 0o666)
+    except OSError as exc:
+        raise AdapterError("cannot create output %s: %s" % (path, exc)) from exc
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(payload)
+            output.flush()
+    except BaseException:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task-id", required=True)
+    parser.add_argument("--model-id", required=True)
+    parser.add_argument("--hardware", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("model_ir")
+    parser.add_argument("traces", nargs="+")
+    return parser.parse_args(argv)
+
+
+def main(argv):
+    args = parse_args(argv)
+    task_id = identifier("task-id", args.task_id)
+    model_id = identifier("model-id", args.model_id)
+    hardware = load_hardware(args.hardware)
+    model_raw, n_layer, n_expert, n_expert_used, blocks = load_model(args.model_ir)
+    demands = []
+    graph_base = 0
+    tokens_truncated = False
+    token_reduced_layer_count = 0
+    trace_digests = []
+    for trace_path in args.traces:
+        trace_raw, graph_base, truncated, reduced = append_trace(
+            trace_path, (n_layer, n_expert, n_expert_used), graph_base, demands
+        )
+        trace_digests.append(hashlib.sha256(trace_raw).hexdigest())
+        tokens_truncated = tokens_truncated or truncated
+        token_reduced_layer_count += reduced
+    if not demands:
+        raise AdapterError("traces contain no selections")
+    available = {(row["layer"], row["expert"]) for row in blocks}
+    for ordinal, demand in enumerate(demands):
+        if (demand["layer"], demand["expert"]) not in available:
+            raise AdapterError("selection %d has no ExpertBlock" % ordinal)
+    trace_manifest = "".join(digest + "\n" for digest in trace_digests).encode("ascii")
+    task = {
+        "schema_version": 1,
+        "kind": "R3_RESIDENCY_TASK",
+        "task_id": task_id,
+        "trace_sha256": hashlib.sha256(trace_manifest).hexdigest(),
+        "model_ir_sha256": hashlib.sha256(model_raw).hexdigest(),
+        "model_id": model_id,
+        "n_layer": n_layer,
+        "n_expert": n_expert,
+        "n_expert_used": n_expert_used,
+        "tokens_truncated": tokens_truncated,
+        "token_reduced_layer_count": token_reduced_layer_count,
+        "hardware": hardware,
+        "blocks": blocks,
+        "demands": demands,
+    }
+    payload = json.dumps(task, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
+    write_new(args.output, payload)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except AdapterError as exc:
+        print("build residency task: ERROR %s" % exc, file=sys.stderr)
+        raise SystemExit(2)

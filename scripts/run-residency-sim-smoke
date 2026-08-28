@@ -1,0 +1,628 @@
+#!/usr/bin/env python3
+"""Hosted R3 adapter, simulator, policy-oracle, validation, and CLI owner."""
+
+import copy
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+
+root = Path(__file__).resolve().parents[1]
+binary = root / "main"
+adapter = root / "scripts" / "build-residency-task"
+
+POLICIES = [
+    "lru", "lfu", "recent-reuse", "score-based", "top-k-prefetch",
+    "impact-prefetch", "cpu-fallback",
+]
+RESULT_FIELDS = [
+    "schema_version", "kind", "task_id", "status", "error_code", "error_detail",
+    "trace_sha256", "model_ir_sha256", "model_id", "hardware", "tokens_truncated",
+    "token_reduced_layer_count", "score_inputs", "baseline_policy", "best_policy",
+    "verdict", "demand_count", "demand_bytes", "baseline_cost_ns", "best_cost_ns",
+    "policies",
+]
+POLICY_FIELDS = [
+    "policy", "demand_count", "hit_count", "miss_count", "hit_per_mille",
+    "hit_bytes", "miss_bytes", "transfer_bytes", "prefetch_bytes",
+    "useful_prefetch_count", "unused_prefetch_count", "eviction_count",
+    "cpu_fallback_count", "residency_cost_ns", "peak_resident_bytes",
+    "prefill_demand_count", "prefill_hit_count", "prefill_hit_per_mille",
+    "decode_demand_count", "decode_hit_count", "decode_hit_per_mille",
+]
+
+
+def fail(message):
+    raise SystemExit("residency sim smoke: FAIL %s" % message)
+
+
+def compact(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
+
+
+def write_json(path, value):
+    path.write_bytes(compact(value))
+
+
+def run(command, expected=0):
+    result = subprocess.run(command, cwd=root, capture_output=True)
+    if result.returncode != expected:
+        fail("%r returned %d, expected %d\nstdout=%r\nstderr=%r" % (
+            command, result.returncode, expected, result.stdout, result.stderr
+        ))
+    return result
+
+
+def make_producers(directory):
+    blocks = []
+    index = 0
+    for layer in range(2):
+        for expert in range(8):
+            blocks.append({
+                "index": index,
+                "kind": "ExpertBlock",
+                "layer": layer,
+                "expert": expert,
+                "tensor_count": 3,
+                "byte_size": 1024 if expert % 2 == 0 else 2048,
+                "first_absolute_offset": index * 4096,
+                "end_absolute_offset": index * 4096 + 8192,
+                "contiguous": False,
+                "tensors": [],
+            })
+            index += 1
+    model = {
+        "schema_version": 2,
+        "kind": "R1_MODEL_IR",
+        "path": "synthetic.gguf",
+        "status": "ok",
+        "error_code": "",
+        "error_detail": "",
+        "source": {},
+        "model": {"arch": "olmoe", "n_layer": 2, "n_expert": 8, "n_expert_used": 8},
+        "quant": {},
+        "coverage": {},
+        "blocks": blocks,
+    }
+    model_path = directory / "model.json"
+    write_json(model_path, model)
+
+    slots = [0, 1, 2, 5, 6, 7]
+
+    def trace(name, phase, groups, truncated, reduced):
+        selections = []
+        for layer, token, experts in groups:
+            for slot, expert in zip(slots, experts):
+                selections.append({
+                    "graph": 0, "layer": layer, "token": token,
+                    "slot": slot, "expert": expert,
+                })
+        document = {
+            "schema_version": 1,
+            "kind": "R2_ACTIVATION_TRACE",
+            "path": name + ".log",
+            "status": "ok",
+            "error_code": "",
+            "error_detail": "",
+            "source": {},
+            "run": {},
+            "graph": {"graph_count": 1, "n_layer": 2},
+            "moe": {
+                "present": True,
+                "n_expert": 8,
+                "n_expert_used": 8,
+                "token_reduced_layers": list(range(reduced)),
+            },
+            "graphs": [{
+                "ordinal": 0,
+                "n_tokens": 2 if phase == "prefill" else 1,
+                "phase": phase,
+                "tokens_observed": 2 if phase == "prefill" else 1,
+                "tokens_truncated": truncated,
+                "observed_token_indices": [0, 1] if phase == "prefill" else [0],
+                "node_count": 1,
+            }],
+            "selections": selections,
+            "locality": {},
+        }
+        path = directory / (name + ".json")
+        write_json(path, document)
+        return path
+
+    prefill = trace("prefill", "prefill", [
+        (0, 0, [0, 1, 2, 3, 4, 5]),
+        (0, 1, [0, 1, 6, 7, 4, 5]),
+        (1, 0, [0, 1, 2, 3, 4, 5]),
+        (1, 1, [0, 1, 6, 7, 4, 5]),
+    ], True, 1)
+    decode = trace("decode", "decode", [
+        (0, 0, [0, 1, 2, 3, 4, 5]),
+        (1, 0, [0, 1, 6, 7, 4, 5]),
+    ], False, 0)
+    hardware = {
+        "name": "synthetic-target",
+        "cache_capacity_bytes": 4096,
+        "transfer_fixed_ns": 100,
+        "transfer_ns_per_kib": 80,
+        "cpu_fixed_ns": 50,
+        "cpu_ns_per_kib": 40,
+        "prefetch_cost_per_mille": 250,
+        "prefetch_count": 2,
+        "score_recency_weight": 4,
+        "score_frequency_weight": 4,
+        "score_impact_weight": 2,
+        "score_layer_weight": 1,
+    }
+    hardware_path = directory / "hardware.json"
+    write_json(hardware_path, hardware)
+    return model_path, [prefill, decode], hardware_path
+
+
+def costs(task):
+    transfer = []
+    cpu = []
+    for block in task["blocks"]:
+        kib = (block["bytes"] + 1023) // 1024
+        transfer.append(task["hardware"]["transfer_fixed_ns"]
+                        + kib * task["hardware"]["transfer_ns_per_kib"])
+        cpu.append(task["hardware"]["cpu_fixed_ns"]
+                   + kib * task["hardware"]["cpu_ns_per_kib"])
+    return transfer, cpu
+
+
+def simulate_policy(task, policy_index):
+    blocks = task["blocks"]
+    demands = task["demands"]
+    hardware = task["hardware"]
+    block_index = {(row["layer"], row["expert"]): at for at, row in enumerate(blocks)}
+    transfer_cost, cpu_cost = costs(task)
+    maximum_transfer = max(transfer_cost)
+    count = len(blocks)
+    resident = [False] * count
+    prefetched = [False] * count
+    last_access = [-1] * count
+    last_hit = [-1] * count
+    frequency = [0] * count
+    selected_epoch = [-1] * count
+    metrics = {field: 0 for field in POLICY_FIELDS[1:]}
+    metrics["policy"] = POLICIES[policy_index]
+    resident_bytes = 0
+    group_epoch = 0
+
+    def retention_score(block, now):
+        age = now + 1 if last_access[block] < 0 else now - last_access[block]
+        recency = 1000 // (age + 1)
+        freq = frequency[block] * 1000 // now
+        impact = transfer_cost[block] * 1000 // maximum_transfer if maximum_transfer else 0
+        inverse_layer = (task["n_layer"] - blocks[block]["layer"]) * 1000 // task["n_layer"]
+        return (recency * hardware["score_recency_weight"]
+                + freq * hardware["score_frequency_weight"]
+                + impact * hardware["score_impact_weight"]
+                + inverse_layer * hardware["score_layer_weight"])
+
+    def choose_victim(policy, now):
+        candidates = [index for index, present in enumerate(resident) if present]
+        if not candidates:
+            fail("oracle tried to evict an empty cache")
+        if policy == 1:
+            return min(candidates, key=lambda index: (frequency[index], last_access[index], index))
+        if policy == 2:
+            return min(candidates, key=lambda index: (last_hit[index], last_access[index], index))
+        if policy == 3:
+            return min(candidates, key=lambda index: (retention_score(index, now), index))
+        return min(candidates, key=lambda index: (last_access[index], index))
+
+    def make_room(policy, now, needed):
+        nonlocal resident_bytes
+        while resident_bytes > hardware["cache_capacity_bytes"] - needed:
+            victim = choose_victim(policy, now)
+            resident[victim] = False
+            resident_bytes -= blocks[victim]["bytes"]
+            metrics["eviction_count"] += 1
+            if prefetched[victim]:
+                prefetched[victim] = False
+                metrics["unused_prefetch_count"] += 1
+
+    for ordinal, demand in enumerate(demands):
+        block = block_index[demand["layer"], demand["expert"]]
+        size = blocks[block]["bytes"]
+        phase = demand["phase"]
+        if phase == "prefill":
+            metrics["prefill_demand_count"] += 1
+        elif phase == "decode":
+            metrics["decode_demand_count"] += 1
+        if resident[block]:
+            metrics["hit_count"] += 1
+            metrics["hit_bytes"] += size
+            last_hit[block] = ordinal
+            if phase == "prefill":
+                metrics["prefill_hit_count"] += 1
+            elif phase == "decode":
+                metrics["decode_hit_count"] += 1
+            if prefetched[block]:
+                prefetched[block] = False
+                metrics["useful_prefetch_count"] += 1
+        else:
+            metrics["miss_count"] += 1
+            metrics["miss_bytes"] += size
+            use_cpu = policy_index == 6 and cpu_cost[block] < transfer_cost[block]
+            if use_cpu:
+                metrics["cpu_fallback_count"] += 1
+                metrics["residency_cost_ns"] += cpu_cost[block]
+            else:
+                metrics["transfer_bytes"] += size
+                metrics["residency_cost_ns"] += transfer_cost[block]
+                if size <= hardware["cache_capacity_bytes"]:
+                    make_room(policy_index, ordinal, size)
+                    resident[block] = True
+                    prefetched[block] = False
+                    resident_bytes += size
+                    metrics["peak_resident_bytes"] = max(
+                        metrics["peak_resident_bytes"], resident_bytes
+                    )
+        frequency[block] += 1
+        if resident[block]:
+            last_access[block] = ordinal
+
+        group = demand["graph"], demand["layer"], demand["token"]
+        group_done = ordinal + 1 == len(demands) or group != (
+            demands[ordinal + 1]["graph"],
+            demands[ordinal + 1]["layer"],
+            demands[ordinal + 1]["token"],
+        )
+        if policy_index in (4, 5) and group_done and ordinal + 1 < len(demands):
+            target_layer = demands[ordinal + 1]["layer"]
+            for _ in range(hardware["prefetch_count"]):
+                candidates = [index for index, row in enumerate(blocks)
+                              if row["layer"] == target_layer and frequency[index] > 0
+                              and not resident[index] and selected_epoch[index] != group_epoch
+                              and row["bytes"] <= hardware["cache_capacity_bytes"]]
+                if not candidates:
+                    break
+                if policy_index == 4:
+                    candidate = min(candidates, key=lambda index: (-frequency[index], index))
+                else:
+                    candidate = min(
+                        candidates,
+                        key=lambda index: (-(frequency[index] * transfer_cost[index]), index),
+                    )
+                selected_epoch[candidate] = group_epoch
+                size = blocks[candidate]["bytes"]
+                make_room(0, ordinal, size)
+                resident[candidate] = True
+                prefetched[candidate] = True
+                last_access[candidate] = ordinal
+                resident_bytes += size
+                metrics["transfer_bytes"] += size
+                metrics["prefetch_bytes"] += size
+                metrics["residency_cost_ns"] += (
+                    transfer_cost[candidate] * hardware["prefetch_cost_per_mille"] // 1000
+                )
+                metrics["peak_resident_bytes"] = max(
+                    metrics["peak_resident_bytes"], resident_bytes
+                )
+            group_epoch += 1
+
+    metrics["unused_prefetch_count"] += sum(prefetched)
+    metrics["demand_count"] = len(demands)
+    metrics["hit_per_mille"] = metrics["hit_count"] * 1000 // len(demands)
+    metrics["prefill_hit_per_mille"] = (
+        metrics["prefill_hit_count"] * 1000 // metrics["prefill_demand_count"]
+        if metrics["prefill_demand_count"] else -1
+    )
+    metrics["decode_hit_per_mille"] = (
+        metrics["decode_hit_count"] * 1000 // metrics["decode_demand_count"]
+        if metrics["decode_demand_count"] else -1
+    )
+    return {field: metrics[field] for field in POLICY_FIELDS}
+
+
+def oracle(task):
+    rows = [simulate_policy(task, index) for index in range(7)]
+    best = min(range(7), key=lambda index: (
+        rows[index]["residency_cost_ns"], rows[index]["transfer_bytes"], index
+    ))
+    block_index = {(row["layer"], row["expert"]): row for row in task["blocks"]}
+    demand_bytes = sum(block_index[row["layer"], row["expert"]]["bytes"]
+                       for row in task["demands"])
+    return {
+        "schema_version": 1,
+        "kind": "R3_RESIDENCY_RESULT",
+        "task_id": task["task_id"],
+        "status": "ok",
+        "error_code": "",
+        "error_detail": "",
+        "trace_sha256": task["trace_sha256"],
+        "model_ir_sha256": task["model_ir_sha256"],
+        "model_id": task["model_id"],
+        "hardware": task["hardware"],
+        "tokens_truncated": task["tokens_truncated"],
+        "token_reduced_layer_count": task["token_reduced_layer_count"],
+        "score_inputs": "recent+frequency+transfer_cost+layer",
+        "baseline_policy": "lru",
+        "best_policy": POLICIES[best],
+        "verdict": ("IMPROVED" if best != 0
+                    and rows[best]["residency_cost_ns"] < rows[0]["residency_cost_ns"]
+                    else "BASELINE"),
+        "demand_count": len(task["demands"]),
+        "demand_bytes": demand_bytes,
+        "baseline_cost_ns": rows[0]["residency_cost_ns"],
+        "best_cost_ns": rows[best]["residency_cost_ns"],
+        "policies": rows,
+    }
+
+
+def run_sim(task_path, result_path=None, expected=0):
+    command = [str(binary), "--residency-sim", str(task_path)]
+    if result_path is not None:
+        command.append(str(result_path))
+    return run(command, expected)
+
+
+def assert_result_shape(document):
+    if list(document) != RESULT_FIELDS:
+        fail("result field order %r" % list(document))
+    for row in document["policies"]:
+        if list(row) != POLICY_FIELDS:
+            fail("policy field order %r" % list(row))
+
+
+def mutation(task, code):
+    value = copy.deepcopy(task)
+    if code == "R3_SCHEMA":
+        value["schema_version"] = 2
+    elif code == "R3_KIND":
+        value["kind"] = "bad"
+    elif code == "R3_ID":
+        value["trace_sha256"] = "A" * 64
+    elif code == "R3_SHAPE":
+        value["n_expert_used"] = 9
+    elif code == "R3_HARDWARE":
+        value["hardware"]["prefetch_count"] = 0
+    elif code == "R3_BLOCK":
+        value["blocks"][0]["bytes"] = 0
+    elif code == "R3_BLOCK_ORDER":
+        value["blocks"][0], value["blocks"][1] = value["blocks"][1], value["blocks"][0]
+    elif code == "R3_DEMAND":
+        value["demands"][0]["phase"] = "unknown"
+    elif code == "R3_DEMAND_ORDER":
+        value["demands"][0]["slot"] = 1
+    elif code == "R3_JOIN":
+        value["blocks"] = [row for row in value["blocks"]
+                           if not (row["layer"] == 0 and row["expert"] == 0)]
+    elif code == "R3_ARITHMETIC":
+        value["blocks"][0]["bytes"] = 1 << 50
+        value["hardware"]["transfer_ns_per_kib"] = 10 ** 12
+    return value
+
+
+def main():
+    if not binary.is_file():
+        fail("main is not built")
+    with tempfile.TemporaryDirectory(prefix="align-r3-smoke-") as raw_directory:
+        directory = Path(raw_directory)
+        model, traces, hardware = make_producers(directory)
+        task_path = directory / "task.json"
+        run([
+            str(adapter), "--task-id", "synthetic-r3", "--model-id", "synthetic-olmoe",
+            "--hardware", str(hardware), "--output", str(task_path), str(model),
+            *(str(path) for path in traces),
+        ])
+        task_raw = task_path.read_bytes()
+        task = json.loads(task_raw)
+        if [row["slot"] for row in task["demands"][:6]] != [0, 1, 2, 5, 6, 7]:
+            fail("adapter did not preserve hidden-slot gaps")
+        if task["demands"][-1]["graph"] != 1:
+            fail("adapter did not offset graph ordinals")
+        if not task["tokens_truncated"] or task["token_reduced_layer_count"] != 1:
+            fail("adapter lost truncation provenance")
+        expected_trace = hashlib.sha256(b"".join(
+            hashlib.sha256(path.read_bytes()).hexdigest().encode("ascii") + b"\n"
+            for path in traces
+        )).hexdigest()
+        if task["trace_sha256"] != expected_trace:
+            fail("trace manifest digest mismatch")
+
+        machine = run_sim(task_path)
+        actual = json.loads(machine.stdout)
+        expected = oracle(task)
+        assert_result_shape(actual)
+        if actual != expected:
+            fail("complete policy oracle mismatch\nactual=%s\nexpected=%s" % (
+                json.dumps(actual, indent=2), json.dumps(expected, indent=2)
+            ))
+        result_path = directory / "result.json"
+        file_run = run_sim(task_path, result_path)
+        if result_path.read_bytes() + b"\n" != machine.stdout:
+            fail("machine/file document bytes differ")
+        summary = file_run.stdout.decode("utf-8").splitlines()
+        if summary[:6] != [
+            "residency simulation:", "status:", "OK", "baseline:", "lru", "best policy:",
+        ] or len(summary) != 15:
+            fail("file summary is not the stable 15-line block: %r" % summary)
+        rows = {row["policy"]: row for row in actual["policies"]}
+        if rows["cpu-fallback"]["cpu_fallback_count"] == 0:
+            fail("CPU fallback branch was not reached")
+        if rows["top-k-prefetch"]["prefetch_bytes"] == 0:
+            fail("top-k prefetch branch was not reached")
+        if rows["top-k-prefetch"]["useful_prefetch_count"] == 0:
+            fail("useful prefetch accounting branch was not reached")
+        if rows["impact-prefetch"]["unused_prefetch_count"] == 0:
+            fail("unused prefetch accounting branch was not reached")
+        if rows["lru"]["prefill_demand_count"] == 0 or rows["lru"]["decode_demand_count"] == 0:
+            fail("phase split branches were not reached")
+
+        unknown = copy.deepcopy(task)
+        unknown["ignored"] = {"escaped": "\u20ac", "nested": [1, True]}
+        unknown_path = directory / "unknown.json"
+        write_json(unknown_path, unknown)
+        unknown_result = json.loads(run_sim(unknown_path).stdout)
+        if unknown_result != expected:
+            fail("grammar-valid unknown field changed the result")
+
+        edge = copy.deepcopy(task)
+        edge["blocks"][0]["bytes"] = 8192
+        edge["hardware"]["cpu_fixed_ns"] = edge["hardware"]["transfer_fixed_ns"]
+        edge["hardware"]["cpu_ns_per_kib"] = edge["hardware"]["transfer_ns_per_kib"]
+        for demand in edge["demands"]:
+            demand["phase"] = "single_token_first_graph"
+        edge_path = directory / "edge.json"
+        write_json(edge_path, edge)
+        edge_actual = json.loads(run_sim(edge_path).stdout)
+        edge_expected = oracle(edge)
+        if edge_actual != edge_expected:
+            fail("oversized/tie/absent-phase oracle mismatch")
+        edge_rows = {row["policy"]: row for row in edge_actual["policies"]}
+        if edge_rows["cpu-fallback"]["cpu_fallback_count"] != 0:
+            fail("CPU cost tie incorrectly selected fallback")
+        if edge_rows["lru"]["prefill_hit_per_mille"] != -1 \
+                or edge_rows["lru"]["decode_hit_per_mille"] != -1:
+            fail("absent phases did not report -1")
+
+        for code in (
+            "R3_SCHEMA", "R3_KIND", "R3_ID", "R3_SHAPE", "R3_HARDWARE", "R3_BLOCK",
+            "R3_BLOCK_ORDER", "R3_DEMAND", "R3_DEMAND_ORDER", "R3_JOIN", "R3_ARITHMETIC",
+        ):
+            invalid_path = directory / (code + ".json")
+            invalid_result = directory / (code + "-result.json")
+            write_json(invalid_path, mutation(task, code))
+            run_sim(invalid_path, invalid_result, expected=2)
+            document = json.loads(invalid_result.read_bytes())
+            if document["status"] != "error" or document["error_code"] != code:
+                fail("%s produced %r" % (code, document))
+            if document["demand_count"] != 0 or document["best_policy"] != "" \
+                    or document["policies"] != [] or document["verdict"] != "ERROR":
+                fail("%s leaked a partial result" % code)
+
+        precedence = mutation(task, "R3_KIND")
+        precedence["schema_version"] = 2
+        precedence_path = directory / "precedence.json"
+        precedence_result = directory / "precedence-result.json"
+        write_json(precedence_path, precedence)
+        run_sim(precedence_path, precedence_result, expected=2)
+        if json.loads(precedence_result.read_bytes())["error_code"] != "R3_SCHEMA":
+            fail("multi-invalid precedence did not select R3_SCHEMA")
+
+        block_limit = copy.deepcopy(task)
+        block_limit["n_layer"] = 1
+        block_limit["n_expert"] = 2049
+        block_limit["n_expert_used"] = 1
+        block_limit["blocks"] = [
+            {"layer": 0, "expert": expert, "bytes": 1024} for expert in range(2049)
+        ]
+        block_limit["demands"] = [{
+            "graph": 0, "layer": 0, "token": 0, "slot": 0, "expert": 0,
+            "phase": "prefill",
+        }]
+        block_limit_path = directory / "limit-blocks.json"
+        block_limit_result = directory / "limit-blocks-result.json"
+        write_json(block_limit_path, block_limit)
+        run_sim(block_limit_path, block_limit_result, expected=2)
+        if json.loads(block_limit_result.read_bytes())["error_code"] != "R3_SHAPE":
+            fail("block cap did not fail before policy work")
+
+        demand_limit = copy.deepcopy(task)
+        demand_limit["demands"] = [copy.deepcopy(task["demands"][0]) for _ in range(65537)]
+        demand_limit_path = directory / "limit-demands.json"
+        demand_limit_result = directory / "limit-demands-result.json"
+        write_json(demand_limit_path, demand_limit)
+        run_sim(demand_limit_path, demand_limit_result, expected=2)
+        if json.loads(demand_limit_result.read_bytes())["error_code"] != "R3_SHAPE":
+            fail("demand cap did not fail before policy work")
+
+        missing = copy.deepcopy(task)
+        del missing["task_id"]
+        missing_path = directory / "decode-missing.json"
+        write_json(missing_path, missing)
+        destination = directory / "decode-preserve.json"
+        destination.write_bytes(b"sentinel")
+        run_sim(missing_path, destination, expected=1)
+        if destination.read_bytes() != b"sentinel":
+            fail("decode failure touched destination")
+        duplicate_path = directory / "decode-duplicate.json"
+        duplicate_path.write_bytes(task_raw.replace(
+            b'"schema_version":1,', b'"schema_version":1,"schema_version":1,', 1
+        ))
+        run_sim(duplicate_path, expected=1)
+
+        malformed_path = directory / "decode-malformed.json"
+        malformed_path.write_bytes(b"{not-json")
+        run_sim(malformed_path, expected=1)
+        utf8_path = directory / "decode-utf8.json"
+        utf8_path.write_bytes(b'{"schema_version":1,"bad":"\xff"}')
+        run_sim(utf8_path, expected=2)
+        write_failure = run_sim(task_path, directory, expected=21)
+        if write_failure.stdout:
+            fail("result write failure printed a summary")
+
+        for command in (
+            [str(binary), "--residency-sim"],
+            [str(binary), "--residency-sim", "", str(directory / "empty-result.json")],
+            [str(binary), "--residency-sim", "x" * 4097],
+            [str(binary), "--residency-sim", str(task_path), "a", "b"],
+        ):
+            rejected = run(command, expected=2)
+            if rejected.stdout:
+                fail("CLI arity/path refusal printed output: %r" % command)
+
+        occupied = directory / "occupied-task.json"
+        occupied.write_bytes(b"sentinel")
+        run([
+            str(adapter), "--task-id", "synthetic-r3", "--model-id", "synthetic-olmoe",
+            "--hardware", str(hardware), "--output", str(occupied), str(model), str(traces[0]),
+        ], expected=2)
+        if occupied.read_bytes() != b"sentinel":
+            fail("adapter replaced an occupied output")
+
+        def adapter_refusal(name, model_value=None, trace_value=None, raw_hardware=None):
+            case_model = directory / (name + "-model.json")
+            case_trace = directory / (name + "-trace.json")
+            case_hardware = directory / (name + "-hardware.json")
+            case_output = directory / (name + "-task.json")
+            write_json(case_model, model_value if model_value is not None
+                       else json.loads(model.read_bytes()))
+            write_json(case_trace, trace_value if trace_value is not None
+                       else json.loads(traces[0].read_bytes()))
+            if raw_hardware is None:
+                case_hardware.write_bytes(hardware.read_bytes())
+            else:
+                case_hardware.write_bytes(raw_hardware)
+            run([
+                str(adapter), "--task-id", "synthetic-r3", "--model-id", "synthetic-olmoe",
+                "--hardware", str(case_hardware), "--output", str(case_output),
+                str(case_model), str(case_trace),
+            ], expected=2)
+            if case_output.exists():
+                fail("adapter refusal %s created output" % name)
+
+        bad_model = json.loads(model.read_bytes())
+        bad_model["status"] = "error"
+        adapter_refusal("model-status", model_value=bad_model)
+        bad_model = json.loads(model.read_bytes())
+        bad_model["model"]["arch"] = "qwen2"
+        adapter_refusal("model-arch", model_value=bad_model)
+        bad_trace = json.loads(traces[0].read_bytes())
+        bad_trace["status"] = "error"
+        adapter_refusal("trace-status", trace_value=bad_trace)
+        bad_trace = json.loads(traces[0].read_bytes())
+        bad_trace["moe"]["n_expert"] = 7
+        adapter_refusal("trace-extents", trace_value=bad_trace)
+        bad_model = json.loads(model.read_bytes())
+        bad_model["blocks"] = [block for block in bad_model["blocks"]
+                               if not (block["layer"] == 0 and block["expert"] == 0)]
+        adapter_refusal("join", model_value=bad_model)
+        duplicate_hardware = hardware.read_bytes().replace(
+            b'{"name":', b'{"name":"duplicate","name":', 1
+        )
+        adapter_refusal("duplicate", raw_hardware=duplicate_hardware)
+
+        print("residency sim smoke: PASS - 7 policies, 11 semantic codes, 2 limit cases, 6 adapter refusals, CLI/oracle")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

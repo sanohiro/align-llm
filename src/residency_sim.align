@@ -1,0 +1,909 @@
+module residency_sim
+
+import core.json
+import std.fs
+
+// R3-RESIDENCY-SIM. The public contract, validation order, and policy semantics are owned by
+// docs/specs/r3-residency-sim.md. This module consumes a complete task; it does not infer hardware
+// costs, hidden router slots, or absent phases.
+
+SCHEMA_VERSION := 1
+MAX_LAYERS := 512
+MAX_EXPERTS := 4096
+MAX_BLOCKS := 2048
+MAX_DEMANDS := 65536
+MAX_ID_BYTES := 256
+MAX_BYTES := 1125899906842624
+MAX_COST_INPUT := 1000000000000
+MAX_WEIGHT := 1000000
+
+Hardware {
+  name: str,
+  cache_capacity_bytes: i64,
+  transfer_fixed_ns: i64,
+  transfer_ns_per_kib: i64,
+  cpu_fixed_ns: i64,
+  cpu_ns_per_kib: i64,
+  prefetch_cost_per_mille: i64,
+  prefetch_count: i64,
+  score_recency_weight: i64,
+  score_frequency_weight: i64,
+  score_impact_weight: i64,
+  score_layer_weight: i64,
+}
+
+BlockRow {
+  layer: i64,
+  expert: i64,
+  bytes: i64,
+}
+
+DemandRow {
+  graph: i64,
+  layer: i64,
+  token: i64,
+  slot: i64,
+  expert: i64,
+  phase: str,
+}
+
+ResidencyTask {
+  schema_version: i64,
+  kind: str,
+  task_id: str,
+  trace_sha256: str,
+  model_ir_sha256: str,
+  model_id: str,
+  n_layer: i64,
+  n_expert: i64,
+  n_expert_used: i64,
+  tokens_truncated: bool,
+  token_reduced_layer_count: i64,
+  hardware: Hardware,
+  blocks: array<BlockRow>,
+  demands: array<DemandRow>,
+}
+
+PolicyMetrics {
+  policy: string,
+  demand_count: i64,
+  hit_count: i64,
+  miss_count: i64,
+  hit_per_mille: i64,
+  hit_bytes: i64,
+  miss_bytes: i64,
+  transfer_bytes: i64,
+  prefetch_bytes: i64,
+  useful_prefetch_count: i64,
+  unused_prefetch_count: i64,
+  eviction_count: i64,
+  cpu_fallback_count: i64,
+  residency_cost_ns: i64,
+  peak_resident_bytes: i64,
+  prefill_demand_count: i64,
+  prefill_hit_count: i64,
+  prefill_hit_per_mille: i64,
+  decode_demand_count: i64,
+  decode_hit_count: i64,
+  decode_hit_per_mille: i64,
+}
+
+HardwareWire {
+  name: string,
+  cache_capacity_bytes: i64,
+  transfer_fixed_ns: i64,
+  transfer_ns_per_kib: i64,
+  cpu_fixed_ns: i64,
+  cpu_ns_per_kib: i64,
+  prefetch_cost_per_mille: i64,
+  prefetch_count: i64,
+  score_recency_weight: i64,
+  score_frequency_weight: i64,
+  score_impact_weight: i64,
+  score_layer_weight: i64,
+}
+
+ResultWire {
+  schema_version: i64,
+  kind: string,
+  task_id: string,
+  status: string,
+  error_code: string,
+  error_detail: string,
+  trace_sha256: string,
+  model_ir_sha256: string,
+  model_id: string,
+  hardware: HardwareWire,
+  tokens_truncated: bool,
+  token_reduced_layer_count: i64,
+  score_inputs: string,
+  baseline_policy: string,
+  best_policy: string,
+  verdict: string,
+  demand_count: i64,
+  demand_bytes: i64,
+  baseline_cost_ns: i64,
+  best_cost_ns: i64,
+  policies: array<PolicyMetrics>,
+}
+
+Validation {
+  ok: bool,
+  code: string,
+  detail: string,
+}
+
+pub SimulationStatus { Ok, Error }
+
+pub SimulationResult {
+  document: string,
+  status: SimulationStatus,
+  demand_count: i64,
+  baseline_cost_ns: i64,
+  best_cost_ns: i64,
+  best_policy: i64,
+}
+
+fn valid() -> Validation {
+  return Validation { ok: true, code: "".clone(), detail: "".clone() }
+}
+
+fn invalid(code: str, detail: str) -> Validation {
+  return Validation { ok: false, code: code.clone(), detail: detail.clone() }
+}
+
+fn row_detail(kind: str, ordinal: i64) -> string {
+  b := builder()
+  b.write(kind)
+  b.write("[")
+  b.write_int(ordinal)
+  b.write("]")
+  return b.to_string()
+}
+
+fn valid_identifier(value: str) -> bool {
+  return value.len() > 0 && value.len() <= MAX_ID_BYTES && !value.contains("\0")
+}
+
+fn valid_digest(value: str) -> bool {
+  if value.len() != 64 { return false }
+  bytes := value.bytes()
+  mut at := 0
+  loop {
+    if at >= bytes.len() { break }
+    byte := bytes.u8(at) as i64
+    if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return false }
+    at = at + 1
+  }
+  return true
+}
+
+fn valid_phase(value: str) -> bool {
+  return value == "prefill" || value == "decode" || value == "single_token_first_graph"
+}
+
+fn block_before(borrow left: BlockRow, borrow right: BlockRow) -> bool {
+  return left.layer < right.layer || (left.layer == right.layer && left.expert < right.expert)
+}
+
+fn demand_before(borrow left: DemandRow, borrow right: DemandRow) -> bool {
+  if left.graph != right.graph { return left.graph < right.graph }
+  if left.layer != right.layer { return left.layer < right.layer }
+  if left.token != right.token { return left.token < right.token }
+  return left.slot < right.slot
+}
+
+fn same_group(borrow left: DemandRow, borrow right: DemandRow) -> bool {
+  return left.graph == right.graph && left.layer == right.layer && left.token == right.token
+}
+
+fn find_block(borrow blocks: array<BlockRow>, layer: i64, expert: i64) -> i64 {
+  mut low := 0
+  mut high := blocks.len()
+  loop {
+    if low >= high { break }
+    middle := low + (high - low) / 2
+    row := blocks[middle]
+    if row.layer < layer || (row.layer == layer && row.expert < expert) {
+      low = middle + 1
+    } else {
+      high = middle
+    }
+  }
+  if low < blocks.len() && blocks[low].layer == layer && blocks[low].expert == expert {
+    return low
+  }
+  return -1
+}
+
+fn validate_task(borrow task: ResidencyTask) -> Validation {
+  // Section 2.6 exact first-error order. Each pass is complete before the next class starts.
+  if task.schema_version != SCHEMA_VERSION { return invalid("R3_SCHEMA", "schema_version") }
+  if task.kind != "R3_RESIDENCY_TASK" { return invalid("R3_KIND", "kind") }
+  if !valid_identifier(task.task_id) { return invalid("R3_ID", "task_id") }
+  if !valid_digest(task.trace_sha256) { return invalid("R3_ID", "trace_sha256") }
+  if !valid_digest(task.model_ir_sha256) { return invalid("R3_ID", "model_ir_sha256") }
+  if !valid_identifier(task.model_id) { return invalid("R3_ID", "model_id") }
+
+  if task.n_layer < 1 || task.n_layer > MAX_LAYERS { return invalid("R3_SHAPE", "n_layer") }
+  if task.n_expert < 1 || task.n_expert > MAX_EXPERTS { return invalid("R3_SHAPE", "n_expert") }
+  if task.n_expert_used < 1 || task.n_expert_used > task.n_expert {
+    return invalid("R3_SHAPE", "n_expert_used")
+  }
+  if task.token_reduced_layer_count < 0 {
+    return invalid("R3_SHAPE", "token_reduced_layer_count")
+  }
+  if task.blocks.len() < 1 || task.blocks.len() > MAX_BLOCKS {
+    return invalid("R3_SHAPE", "blocks")
+  }
+  if task.demands.len() < 1 || task.demands.len() > MAX_DEMANDS {
+    return invalid("R3_SHAPE", "demands")
+  }
+
+  h := task.hardware
+  if !valid_identifier(h.name) { return invalid("R3_HARDWARE", "hardware.name") }
+  if h.cache_capacity_bytes < 1 || h.cache_capacity_bytes > MAX_BYTES {
+    return invalid("R3_HARDWARE", "hardware.cache_capacity_bytes")
+  }
+  if h.transfer_fixed_ns < 0 || h.transfer_fixed_ns > MAX_COST_INPUT {
+    return invalid("R3_HARDWARE", "hardware.transfer_fixed_ns")
+  }
+  if h.transfer_ns_per_kib < 0 || h.transfer_ns_per_kib > MAX_COST_INPUT {
+    return invalid("R3_HARDWARE", "hardware.transfer_ns_per_kib")
+  }
+  if h.cpu_fixed_ns < 0 || h.cpu_fixed_ns > MAX_COST_INPUT {
+    return invalid("R3_HARDWARE", "hardware.cpu_fixed_ns")
+  }
+  if h.cpu_ns_per_kib < 0 || h.cpu_ns_per_kib > MAX_COST_INPUT {
+    return invalid("R3_HARDWARE", "hardware.cpu_ns_per_kib")
+  }
+  if h.prefetch_cost_per_mille < 0 || h.prefetch_cost_per_mille > 1000 {
+    return invalid("R3_HARDWARE", "hardware.prefetch_cost_per_mille")
+  }
+  if h.prefetch_count < 1 || h.prefetch_count > task.n_expert {
+    return invalid("R3_HARDWARE", "hardware.prefetch_count")
+  }
+  if h.score_recency_weight < 0 || h.score_recency_weight > MAX_WEIGHT {
+    return invalid("R3_HARDWARE", "hardware.score_recency_weight")
+  }
+  if h.score_frequency_weight < 0 || h.score_frequency_weight > MAX_WEIGHT {
+    return invalid("R3_HARDWARE", "hardware.score_frequency_weight")
+  }
+  if h.score_impact_weight < 0 || h.score_impact_weight > MAX_WEIGHT {
+    return invalid("R3_HARDWARE", "hardware.score_impact_weight")
+  }
+  if h.score_layer_weight < 0 || h.score_layer_weight > MAX_WEIGHT {
+    return invalid("R3_HARDWARE", "hardware.score_layer_weight")
+  }
+  weight_total := h.score_recency_weight + h.score_frequency_weight
+    + h.score_impact_weight + h.score_layer_weight
+  if weight_total <= 0 { return invalid("R3_HARDWARE", "hardware.score_weights") }
+
+  mut at := 0
+  loop {
+    if at >= task.blocks.len() { break }
+    row := task.blocks[at]
+    if row.layer < 0 || row.layer >= task.n_layer || row.expert < 0
+      || row.expert >= task.n_expert || row.bytes < 1 || row.bytes > MAX_BYTES {
+      detail := row_detail("blocks", at)
+      detail_view: str := detail
+      return invalid("R3_BLOCK", detail_view)
+    }
+    at = at + 1
+  }
+  at = 1
+  loop {
+    if at >= task.blocks.len() { break }
+    previous_block := task.blocks[at - 1]
+    current_block := task.blocks[at]
+    if !block_before(previous_block, current_block) {
+      detail := row_detail("blocks", at)
+      detail_view: str := detail
+      return invalid("R3_BLOCK_ORDER", detail_view)
+    }
+    at = at + 1
+  }
+
+  at = 0
+  loop {
+    if at >= task.demands.len() { break }
+    row := task.demands[at]
+    if row.graph < 0 || row.layer < 0 || row.layer >= task.n_layer || row.token < 0
+      || row.slot < 0 || row.slot >= task.n_expert_used || row.expert < 0
+      || row.expert >= task.n_expert || !valid_phase(row.phase) {
+      detail := row_detail("demands", at)
+      detail_view: str := detail
+      return invalid("R3_DEMAND", detail_view)
+    }
+    mut prior := at
+    loop {
+      if prior <= 0 { break }
+      prior = prior - 1
+      prior_row := task.demands[prior]
+      if !same_group(prior_row, row) { break }
+      if prior_row.expert == row.expert {
+        detail := row_detail("demands", at)
+        detail_view: str := detail
+        return invalid("R3_DEMAND", detail_view)
+      }
+    }
+    at = at + 1
+  }
+
+  at = 0
+  mut graph := -1
+  mut graph_phase: str := ""
+  loop {
+    if at >= task.demands.len() { break }
+    row := task.demands[at]
+    if at > 0 {
+      previous_demand := task.demands[at - 1]
+      if !demand_before(previous_demand, row) {
+        detail := row_detail("demands", at)
+        detail_view: str := detail
+        return invalid("R3_DEMAND_ORDER", detail_view)
+      }
+    }
+    same_as_previous := if at == 0 {
+      false
+    } else {
+      previous_demand := task.demands[at - 1]
+      same_group(previous_demand, row)
+    }
+    if !same_as_previous {
+      if row.slot != 0 {
+        detail := row_detail("demands", at)
+        detail_view: str := detail
+        return invalid("R3_DEMAND_ORDER", detail_view)
+      }
+    } else if row.slot <= task.demands[at - 1].slot {
+      detail := row_detail("demands", at)
+      detail_view: str := detail
+      return invalid("R3_DEMAND_ORDER", detail_view)
+    }
+    if row.graph != graph {
+      graph = row.graph
+      graph_phase = row.phase
+    } else if row.phase != graph_phase {
+      detail := row_detail("demands", at)
+      detail_view: str := detail
+      return invalid("R3_DEMAND_ORDER", detail_view)
+    }
+    at = at + 1
+  }
+
+  at = 0
+  loop {
+    if at >= task.demands.len() { break }
+    row := task.demands[at]
+    if find_block(task.blocks, row.layer, row.expert) < 0 {
+      detail := row_detail("demands", at)
+      detail_view: str := detail
+      return invalid("R3_JOIN", detail_view)
+    }
+    at = at + 1
+  }
+  return valid()
+}
+
+fn filled_table(count: i64, value: i64) -> array<i64> {
+  mut values: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= count { break }
+    values.push(value)
+    at = at + 1
+  }
+  return values.build()
+}
+
+fn add_checked(left: i64, right: i64) -> Result<i64, Error> {
+  value := left.checked_add(right) else { return Err(Error.Invalid) }
+  if value < 0 { return Err(Error.Invalid) }
+  return Ok(value)
+}
+
+fn mul_checked(left: i64, right: i64) -> Result<i64, Error> {
+  value := left.checked_mul(right) else { return Err(Error.Invalid) }
+  if value < 0 { return Err(Error.Invalid) }
+  return Ok(value)
+}
+
+fn block_cost(bytes: i64, fixed: i64, per_kib: i64) -> Result<i64, Error> {
+  plus := bytes.checked_add(1023) else { return Err(Error.Invalid) }
+  kib := plus / 1024
+  variable := mul_checked(kib, per_kib)?
+  return add_checked(fixed, variable)
+}
+
+fn policy_name(index: i64) -> str {
+  if index == 0 { return "lru" }
+  if index == 1 { return "lfu" }
+  if index == 2 { return "recent-reuse" }
+  if index == 3 { return "score-based" }
+  if index == 4 { return "top-k-prefetch" }
+  if index == 5 { return "impact-prefetch" }
+  return "cpu-fallback"
+}
+
+pub fn policy_label(index: i64) -> str {
+  if index < 0 || index > 6 { return "-" }
+  return policy_name(index)
+}
+
+fn normalized_impact(cost: i64, maximum: i64) -> Result<i64, Error> {
+  if maximum <= 0 { return Ok(0) }
+  scaled := mul_checked(cost, 1000)?
+  return Ok(scaled / maximum)
+}
+
+fn retention_score(
+  block: i64,
+  now: i64,
+  borrow task: ResidencyTask,
+  borrow transfer_cost: array<i64>,
+  borrow last_access: array<i64>,
+  borrow frequency: array<i64>,
+  maximum_transfer: i64,
+) -> Result<i64, Error> {
+  age := if last_access[block] < 0 { now + 1 } else { now - last_access[block] }
+  recency := 1000 / (age + 1)
+  frequency_scaled := mul_checked(frequency[block], 1000)? / now
+  impact := normalized_impact(transfer_cost[block], maximum_transfer)?
+  layer_inverse := (task.n_layer - task.blocks[block].layer) * 1000 / task.n_layer
+  recency_score := mul_checked(recency, task.hardware.score_recency_weight)?
+  frequency_score := mul_checked(frequency_scaled, task.hardware.score_frequency_weight)?
+  impact_score := mul_checked(impact, task.hardware.score_impact_weight)?
+  layer_score := mul_checked(layer_inverse, task.hardware.score_layer_weight)?
+  first := add_checked(recency_score, frequency_score)?
+  second := add_checked(impact_score, layer_score)?
+  return add_checked(first, second)
+}
+
+fn choose_victim(
+  policy: i64,
+  now: i64,
+  borrow task: ResidencyTask,
+  borrow transfer_cost: array<i64>,
+  borrow resident: array<i64>,
+  borrow last_access: array<i64>,
+  borrow frequency: array<i64>,
+  borrow last_hit: array<i64>,
+  maximum_transfer: i64,
+) -> Result<i64, Error> {
+  mut victim := -1
+  mut at := 0
+  loop {
+    if at >= resident.len() { break }
+    if resident[at] != 0 {
+      mut better := victim < 0
+      if victim >= 0 {
+        if policy == 1 {
+          better = frequency[at] < frequency[victim]
+            || (frequency[at] == frequency[victim] && last_access[at] < last_access[victim])
+        } else if policy == 2 {
+          better = last_hit[at] < last_hit[victim]
+            || (last_hit[at] == last_hit[victim] && last_access[at] < last_access[victim])
+        } else if policy == 3 {
+          score := retention_score(at, now, task, transfer_cost, last_access, frequency,
+            maximum_transfer)?
+          victim_score := retention_score(victim, now, task, transfer_cost, last_access, frequency,
+            maximum_transfer)?
+          better = score < victim_score
+        } else {
+          better = last_access[at] < last_access[victim]
+        }
+      }
+      // A complete primary tie keeps the first row encountered, which is the lower
+      // `(layer, expert)` because the block table is strictly ascending.
+      if better { victim = at }
+    }
+    at = at + 1
+  }
+  if victim < 0 { return Err(Error.Invalid) }
+  return Ok(victim)
+}
+
+EvictionUpdate {
+  resident_bytes: i64,
+  eviction_count: i64,
+  unused_prefetch_count: i64,
+}
+
+fn make_room(
+  policy: i64,
+  now: i64,
+  needed: i64,
+  borrow task: ResidencyTask,
+  borrow transfer_cost: array<i64>,
+  borrow mut resident: array<i64>,
+  borrow mut prefetched: array<i64>,
+  borrow last_access: array<i64>,
+  borrow frequency: array<i64>,
+  borrow last_hit: array<i64>,
+  maximum_transfer: i64,
+  resident_bytes_input: i64,
+  eviction_count_input: i64,
+  unused_prefetch_input: i64,
+) -> Result<EvictionUpdate, Error> {
+  mut resident_bytes := resident_bytes_input
+  mut eviction_count := eviction_count_input
+  mut unused_prefetch_count := unused_prefetch_input
+  loop {
+    if resident_bytes <= task.hardware.cache_capacity_bytes - needed { break }
+    victim := choose_victim(policy, now, task, transfer_cost, resident, last_access, frequency,
+      last_hit, maximum_transfer)?
+    resident[victim] = 0
+    resident_bytes = resident_bytes - task.blocks[victim].bytes
+    eviction_count = add_checked(eviction_count, 1)?
+    if prefetched[victim] != 0 {
+      prefetched[victim] = 0
+      unused_prefetch_count = add_checked(unused_prefetch_count, 1)?
+    }
+  }
+  return Ok(EvictionUpdate {
+      resident_bytes: resident_bytes,
+      eviction_count: eviction_count,
+      unused_prefetch_count: unused_prefetch_count,
+    })
+}
+
+fn per_mille(numerator: i64, denominator: i64) -> i64 {
+  if denominator == 0 { return -1 }
+  return numerator * 1000 / denominator
+}
+
+fn simulate_policy(
+  policy: i64,
+  borrow task: ResidencyTask,
+  borrow transfer_cost: array<i64>,
+  borrow cpu_cost: array<i64>,
+  maximum_transfer: i64,
+) -> Result<PolicyMetrics, Error> {
+  count := task.blocks.len()
+  mut resident := filled_table(count, 0)
+  mut prefetched := filled_table(count, 0)
+  mut last_access := filled_table(count, -1)
+  mut last_hit := filled_table(count, -1)
+  mut frequency := filled_table(count, 0)
+  mut selected_epoch := filled_table(count, -1)
+  mut resident_bytes := 0
+  mut peak_resident_bytes := 0
+  mut hit_count := 0
+  mut miss_count := 0
+  mut hit_bytes := 0
+  mut miss_bytes := 0
+  mut transfer_bytes := 0
+  mut prefetch_bytes := 0
+  mut useful_prefetch_count := 0
+  mut unused_prefetch_count := 0
+  mut eviction_count := 0
+  mut cpu_fallback_count := 0
+  mut residency_cost_ns := 0
+  mut prefill_demand_count := 0
+  mut prefill_hit_count := 0
+  mut decode_demand_count := 0
+  mut decode_hit_count := 0
+  mut group_epoch := 0
+  mut at := 0
+  loop {
+    if at >= task.demands.len() { break }
+    demand := task.demands[at]
+    block := find_block(task.blocks, demand.layer, demand.expert)
+    if block < 0 { return Err(Error.Invalid) }
+    bytes := task.blocks[block].bytes
+    if demand.phase == "prefill" {
+      prefill_demand_count = add_checked(prefill_demand_count, 1)?
+    } else if demand.phase == "decode" {
+      decode_demand_count = add_checked(decode_demand_count, 1)?
+    }
+
+    hit := resident[block] != 0
+    if hit {
+      hit_count = add_checked(hit_count, 1)?
+      hit_bytes = add_checked(hit_bytes, bytes)?
+      last_hit[block] = at
+      if demand.phase == "prefill" {
+        prefill_hit_count = add_checked(prefill_hit_count, 1)?
+      } else if demand.phase == "decode" {
+        decode_hit_count = add_checked(decode_hit_count, 1)?
+      }
+      if prefetched[block] != 0 {
+        prefetched[block] = 0
+        useful_prefetch_count = add_checked(useful_prefetch_count, 1)?
+      }
+    } else {
+      miss_count = add_checked(miss_count, 1)?
+      miss_bytes = add_checked(miss_bytes, bytes)?
+      use_cpu := policy == 6 && cpu_cost[block] < transfer_cost[block]
+      if use_cpu {
+        cpu_fallback_count = add_checked(cpu_fallback_count, 1)?
+        residency_cost_ns = add_checked(residency_cost_ns, cpu_cost[block])?
+      } else {
+        transfer_bytes = add_checked(transfer_bytes, bytes)?
+        residency_cost_ns = add_checked(residency_cost_ns, transfer_cost[block])?
+        if bytes <= task.hardware.cache_capacity_bytes {
+          room := make_room(policy, at, bytes, task, transfer_cost, resident, prefetched,
+            last_access, frequency, last_hit, maximum_transfer, resident_bytes, eviction_count,
+            unused_prefetch_count)?
+          resident_bytes = room.resident_bytes
+          eviction_count = room.eviction_count
+          unused_prefetch_count = room.unused_prefetch_count
+          resident[block] = 1
+          prefetched[block] = 0
+          resident_bytes = add_checked(resident_bytes, bytes)?
+          if resident_bytes > peak_resident_bytes { peak_resident_bytes = resident_bytes }
+        }
+      }
+    }
+    frequency[block] = add_checked(frequency[block], 1)?
+    if resident[block] != 0 { last_access[block] = at }
+
+    group_done := if at + 1 >= task.demands.len() {
+      true
+    } else {
+      next_demand := task.demands[at + 1]
+      !same_group(demand, next_demand)
+    }
+    if (policy == 4 || policy == 5) && group_done && at + 1 < task.demands.len() {
+      target_layer := task.demands[at + 1].layer
+      mut prefetched_now := 0
+      loop {
+        if prefetched_now >= task.hardware.prefetch_count { break }
+        mut candidate := -1
+        mut candidate_score := 0
+        mut block_at := 0
+        loop {
+          if block_at >= task.blocks.len() { break }
+          eligible := task.blocks[block_at].layer == target_layer && frequency[block_at] > 0
+            && resident[block_at] == 0 && selected_epoch[block_at] != group_epoch
+            && task.blocks[block_at].bytes <= task.hardware.cache_capacity_bytes
+          if eligible {
+            score := if policy == 4 {
+              frequency[block_at]
+            } else {
+              mul_checked(frequency[block_at], transfer_cost[block_at])?
+            }
+            if candidate < 0 || score > candidate_score {
+              candidate = block_at
+              candidate_score = score
+            }
+          }
+          block_at = block_at + 1
+        }
+        if candidate < 0 { break }
+        selected_epoch[candidate] = group_epoch
+        candidate_bytes := task.blocks[candidate].bytes
+        room := make_room(0, at, candidate_bytes, task, transfer_cost, resident, prefetched,
+          last_access, frequency, last_hit, maximum_transfer, resident_bytes, eviction_count,
+          unused_prefetch_count)?
+        resident_bytes = room.resident_bytes
+        eviction_count = room.eviction_count
+        unused_prefetch_count = room.unused_prefetch_count
+        resident[candidate] = 1
+        prefetched[candidate] = 1
+        last_access[candidate] = at
+        resident_bytes = add_checked(resident_bytes, candidate_bytes)?
+        transfer_bytes = add_checked(transfer_bytes, candidate_bytes)?
+        prefetch_bytes = add_checked(prefetch_bytes, candidate_bytes)?
+        scaled := mul_checked(transfer_cost[candidate], task.hardware.prefetch_cost_per_mille)?
+        residency_cost_ns = add_checked(residency_cost_ns, scaled / 1000)?
+        if resident_bytes > peak_resident_bytes { peak_resident_bytes = resident_bytes }
+        prefetched_now = prefetched_now + 1
+      }
+      group_epoch = group_epoch + 1
+    }
+    at = at + 1
+  }
+
+  at = 0
+  loop {
+    if at >= prefetched.len() { break }
+    if prefetched[at] != 0 {
+      unused_prefetch_count = add_checked(unused_prefetch_count, 1)?
+    }
+    at = at + 1
+  }
+  name: str := policy_name(policy)
+  return Ok(PolicyMetrics {
+      policy: name.clone(),
+      demand_count: task.demands.len(),
+      hit_count: hit_count,
+      miss_count: miss_count,
+      hit_per_mille: per_mille(hit_count, task.demands.len()),
+      hit_bytes: hit_bytes,
+      miss_bytes: miss_bytes,
+      transfer_bytes: transfer_bytes,
+      prefetch_bytes: prefetch_bytes,
+      useful_prefetch_count: useful_prefetch_count,
+      unused_prefetch_count: unused_prefetch_count,
+      eviction_count: eviction_count,
+      cpu_fallback_count: cpu_fallback_count,
+      residency_cost_ns: residency_cost_ns,
+      peak_resident_bytes: peak_resident_bytes,
+      prefill_demand_count: prefill_demand_count,
+      prefill_hit_count: prefill_hit_count,
+      prefill_hit_per_mille: per_mille(prefill_hit_count, prefill_demand_count),
+      decode_demand_count: decode_demand_count,
+      decode_hit_count: decode_hit_count,
+      decode_hit_per_mille: per_mille(decode_hit_count, decode_demand_count),
+    })
+}
+
+Costs {
+  transfer: array<i64>,
+  cpu: array<i64>,
+  maximum_transfer: i64,
+  demand_bytes: i64,
+}
+
+fn build_costs(borrow task: ResidencyTask) -> Result<Costs, Error> {
+  mut transfer_builder: array_builder<i64> := array_builder()
+  mut cpu_builder: array_builder<i64> := array_builder()
+  mut maximum_transfer := 0
+  mut at := 0
+  loop {
+    if at >= task.blocks.len() { break }
+    bytes := task.blocks[at].bytes
+    transfer := block_cost(bytes, task.hardware.transfer_fixed_ns,
+      task.hardware.transfer_ns_per_kib)?
+    cpu := block_cost(bytes, task.hardware.cpu_fixed_ns, task.hardware.cpu_ns_per_kib)?
+    transfer_builder.push(transfer)
+    cpu_builder.push(cpu)
+    if transfer > maximum_transfer { maximum_transfer = transfer }
+    at = at + 1
+  }
+  mut demand_bytes := 0
+  at = 0
+  loop {
+    if at >= task.demands.len() { break }
+    row := task.demands[at]
+    block := find_block(task.blocks, row.layer, row.expert)
+    if block < 0 { return Err(Error.Invalid) }
+    demand_bytes = add_checked(demand_bytes, task.blocks[block].bytes)?
+    at = at + 1
+  }
+  return Ok(Costs {
+      transfer: transfer_builder.build(),
+      cpu: cpu_builder.build(),
+      maximum_transfer: maximum_transfer,
+      demand_bytes: demand_bytes,
+    })
+}
+
+fn empty_metrics() -> array<PolicyMetrics> {
+  mut rows: array_builder<PolicyMetrics> := array_builder()
+  return rows.build()
+}
+
+fn hardware_wire(borrow hardware: Hardware) -> HardwareWire {
+  return HardwareWire {
+    name: hardware.name.clone(),
+    cache_capacity_bytes: hardware.cache_capacity_bytes,
+    transfer_fixed_ns: hardware.transfer_fixed_ns,
+    transfer_ns_per_kib: hardware.transfer_ns_per_kib,
+    cpu_fixed_ns: hardware.cpu_fixed_ns,
+    cpu_ns_per_kib: hardware.cpu_ns_per_kib,
+    prefetch_cost_per_mille: hardware.prefetch_cost_per_mille,
+    prefetch_count: hardware.prefetch_count,
+    score_recency_weight: hardware.score_recency_weight,
+    score_frequency_weight: hardware.score_frequency_weight,
+    score_impact_weight: hardware.score_impact_weight,
+    score_layer_weight: hardware.score_layer_weight,
+  }
+}
+
+fn result_document(
+  borrow task: ResidencyTask,
+  status: str,
+  error_code: str,
+  error_detail: str,
+  best_policy: str,
+  verdict: str,
+  demand_count: i64,
+  demand_bytes: i64,
+  baseline_cost_ns: i64,
+  best_cost_ns: i64,
+  policies: array<PolicyMetrics>,
+) -> string {
+  wire := ResultWire {
+    schema_version: 1,
+    kind: "R3_RESIDENCY_RESULT".clone(),
+    task_id: task.task_id.clone(),
+    status: status.clone(),
+    error_code: error_code.clone(),
+    error_detail: error_detail.clone(),
+    trace_sha256: task.trace_sha256.clone(),
+    model_ir_sha256: task.model_ir_sha256.clone(),
+    model_id: task.model_id.clone(),
+    hardware: hardware_wire(task.hardware),
+    tokens_truncated: task.tokens_truncated,
+    token_reduced_layer_count: task.token_reduced_layer_count,
+    score_inputs: "recent+frequency+transfer_cost+layer".clone(),
+    baseline_policy: "lru".clone(),
+    best_policy: best_policy.clone(),
+    verdict: verdict.clone(),
+    demand_count: demand_count,
+    demand_bytes: demand_bytes,
+    baseline_cost_ns: baseline_cost_ns,
+    best_cost_ns: best_cost_ns,
+    policies: policies,
+  }
+  return json.encode(wire).clone()
+}
+
+fn invalid_result(borrow task: ResidencyTask, code: str, detail: str) -> SimulationResult {
+  document := result_document(task, "error", code, detail, "", "ERROR", 0, 0, 0, 0,
+    empty_metrics())
+  return SimulationResult {
+    document: document,
+    status: SimulationStatus.Error,
+    demand_count: 0,
+    baseline_cost_ns: 0,
+    best_cost_ns: 0,
+    best_policy: -1,
+  }
+}
+
+fn simulate_task(borrow task: ResidencyTask) -> SimulationResult {
+  validation := validate_task(task)
+  if !validation.ok {
+    code_view: str := validation.code
+    detail_view: str := validation.detail
+    return invalid_result(task, code_view, detail_view)
+  }
+  costs := match build_costs(task) {
+    Ok(value) => value,
+    Err(_) => { return invalid_result(task, "R3_ARITHMETIC", "cost") },
+  }
+  mut rows_builder: array_builder<PolicyMetrics> := array_builder()
+  mut policy := 0
+  loop {
+    if policy >= 7 { break }
+    row := match simulate_policy(policy, task, costs.transfer, costs.cpu,
+      costs.maximum_transfer) {
+      Ok(value) => value,
+      Err(_) => { return invalid_result(task, "R3_ARITHMETIC", "metrics") },
+    }
+    rows_builder.push(row)
+    policy = policy + 1
+  }
+  rows := rows_builder.build()
+  mut best := 0
+  policy = 1
+  loop {
+    if policy >= rows.len() { break }
+    if rows[policy].residency_cost_ns < rows[best].residency_cost_ns
+      || (rows[policy].residency_cost_ns == rows[best].residency_cost_ns
+        && rows[policy].transfer_bytes < rows[best].transfer_bytes) {
+      best = policy
+    }
+    policy = policy + 1
+  }
+  best_name: str := policy_name(best)
+  verdict := if best != 0 && rows[best].residency_cost_ns < rows[0].residency_cost_ns {
+    "IMPROVED"
+  } else {
+    "BASELINE"
+  }
+  baseline_cost := rows[0].residency_cost_ns
+  best_cost := rows[best].residency_cost_ns
+  document := result_document(task, "ok", "", "", best_name, verdict, task.demands.len(),
+    costs.demand_bytes, baseline_cost, best_cost, rows)
+  return SimulationResult {
+    document: document,
+    status: SimulationStatus.Ok,
+    demand_count: task.demands.len(),
+    baseline_cost_ns: baseline_cost,
+    best_cost_ns: best_cost,
+    best_policy: best,
+  }
+}
+
+pub fn run_file(task_path: str) -> Result<SimulationResult, Error> {
+  data := fs.read_file(task_path)?
+  arena {
+    task: ResidencyTask := json.decode(data)?
+    return Ok(simulate_task(task))
+  }
+}

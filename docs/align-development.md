@@ -759,6 +759,59 @@ comparison, so the verdict is a comparison of integers.
 The gate joins no aggregate and no `Makefile` target: adding one would select the fresh-image
 preflight profile for a runner that cannot execute in CI anyway.
 
+## Residency simulator development
+
+R3-RESIDENCY-SIM is specified by `docs/specs/r3-residency-sim.md`. It consumes the exact R2
+selection rows and graph phases joined to R1 schema-2 `ExpertBlock.byte_size` rows. It does not use
+the locality aggregate as a substitute for the sequence and does not invent R2's hidden router
+slots. Build the canonical task with:
+
+```sh
+scripts/build-residency-task \
+  --task-id olmoe-prefill-target-a \
+  --model-id olmoe-q4-k-m \
+  --hardware hardware.json \
+  --output residency-task.json \
+  model-ir.json trace-000.json trace-001.json
+```
+
+`hardware.json` is the exact schema-1 hardware object from the R3 ledger. The adapter refuses an
+occupied output and hashes the exact model-IR bytes plus an ordered manifest of trace digests. Run
+the Align-owned simulator in machine or file form:
+
+```sh
+./main --residency-sim residency-task.json
+./main --residency-sim residency-task.json residency-result.json
+```
+
+The result has one fixed-order row for LRU, LFU, recent reuse, score-based eviction, top-k
+prefetch, impact prefetch, and CPU fallback. All rows see one cold-cache demand schedule and byte
+capacity. `residency_cost_ns` is computed from caller-declared transfer, prefetch-overlap, and CPU
+costs. These are simulation inputs, not measurements made by the command.
+
+`make residency-sim-smoke` is the hosted owner and a `HOSTED_CHECK_TARGETS` member. Direct
+invocation reruns the R1 and R2 producer owners, then builds a two-trace synthetic join, compares
+all seven complete rows with an independent Python oracle, and covers the validation and CLI
+matrix. The focused qualification is deliberately outside every aggregate:
+
+```sh
+ALIGN_LLM_GGUF_MODEL=/path/to/olmoe.gguf \
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \
+ALIGN_LLM_R3_HARDWARE=/path/to/measured-hardware.json \
+ALIGN_LLM_R3_MEASUREMENT='benchmark report or command identifying these costs' \
+  make residency-sim-qualification
+```
+
+The qualification reuses `ALIGN_LLM_LOCALITY_PROMPTS` and `ALIGN_LLM_LOCALITY_PROMPT_COUNT` when
+set. Missing real inputs print exactly:
+
+```text
+residency sim qualification: N/A (required real inputs unavailable)
+```
+
+The R3 roadmap gate is still open after the hosted owner. It closes only when this real-model
+qualification names measured costs and reports a strict non-LRU `IMPROVED` winner.
+
 ## alignpack development
 
 R4-ALIGNPACK-LAYER-MAJOR is merged into `main` as PR #125 (head `a7e72dc`, merge `991eab1`); its

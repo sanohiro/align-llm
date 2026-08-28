@@ -6643,7 +6643,8 @@ align-llm verification: pending — `make check` emits no "huge struct copy" war
   `borrow t: GgufTable` accessors in `src/gguf.align`, the three
   `borrow … : gguf.GgufTable` parameters in `src/frontend_olmoe.align`, or the fourteen
   `borrow p: PackPlan` sites in `src/alignpack.align` (`:1261:50`, `:1317:56`,
-  `:1331:57` and eleven more), while the by-value warnings the lint
+  `:1331:57` and eleven more), or the nine `borrow task: ResidencyTask` sites in
+  `src/residency_sim.align`, while the by-value warnings the lint
   legitimately owns are unchanged
 ```
 
@@ -6811,8 +6812,26 @@ correct in the same file and is quoted here only so it is not mistaken for evide
 `src/frontend_olmoe.align:182:67` (returning `model_ir$ModelIr`, 176 bytes) and `:189:49` (returning
 `model_ir$Prepared`, 568 bytes) are genuine owned returns.
 
-The count is now five clients across four wide records (`GgufTable`, `BlockPlan`, `TranscriptScan`,
-`PackPlan`) and every architecture frontend in the repository. The status stays `PROPOSED` and
+**Sixth client, from R3-RESIDENCY-SIM.** `ResidencyTask` is a 264-byte decoded record containing
+the task identity, hardware model, and two dynamic record arrays. Validation, cost construction,
+seven policy runs, and result rendering all take it as `borrow task: ResidencyTask`; no call copies
+or consumes the decoded owner. The selected compiler nevertheless emits nine copies of the same
+false warning, including:
+
+```text
+src/residency_sim.align:219:31: warning: huge struct copy: `residency_sim$ResidencyTask` (264 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+src/residency_sim.align:558:16: warning: huge struct copy: `residency_sim$ResidencyTask` (264 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+src/residency_sim.align:848:31: warning: huge struct copy: `residency_sim$ResidencyTask` (264 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+```
+
+`src/residency_sim.align:219` is semantic validation, `:558` is the seven-policy simulation entry,
+and `:848` renders an error result. The other six sites have the same explicit `borrow` mode. This
+is a fifth wide record and a different ownership source: unlike the earlier hand-built column
+plans, `ResidencyTask` is decoded inside one arena and must remain live while all seven policies
+reuse its arrays. Restructuring it merely to silence the diagnostic would obscure that ownership.
+
+The count is now six clients across five wide records (`GgufTable`, `BlockPlan`, `TranscriptScan`,
+`PackPlan`, `ResidencyTask`) and every architecture frontend in the repository. The status stays `PROPOSED` and
 `Blocking: no`; no workaround is written, and none of these sites is restructured to silence a
 diagnostic that is wrong about them.
 

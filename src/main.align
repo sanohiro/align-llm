@@ -21,6 +21,7 @@ import prompt_evaluate
 import prompt_experiment
 import prompt_generate
 import prompt_state
+import residency_sim
 import verification_loop
 import result
 import std.env
@@ -38,6 +39,7 @@ fn print_help() {
   print("       main --inspect-gguf <model.gguf> [inspection.json]")
   print("       main --model-ir <model.gguf> [model-ir.json]")
   print("       main --expert-trace <callback.log> [trace.json]")
+  print("       main --residency-sim <task.json> [result.json]")
   print("       main --pack <model.gguf> <out.alignpack> [alignpack.json]")
   print("       main --pack-verify <model.gguf> <pack.alignpack> [alignpack-verify.json]")
   print("       main prompt <experiment|generate|evaluate|accept|rollback> <request.json> <result.json>")
@@ -742,6 +744,70 @@ fn expert_trace_demo(args: array<str>) -> Result<(), Error> {
   }
 }
 
+// R3-RESIDENCY-SIM CLI adapter (`docs/specs/r3-residency-sim.md` section 2.1). Arity and both
+// lexical paths are checked before the task is opened. The module owns task decoding, semantic
+// validation, all policy work, and canonical result encoding.
+fn residency_sim_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() < 3 || args.len() > 4 {
+    return Err(Error.Invalid)
+  }
+  if !valid_cli_path(args[2]) {
+    return Err(Error.Invalid)
+  }
+  if args.len() == 4 && !valid_cli_path(args[3]) {
+    return Err(Error.Invalid)
+  }
+  simulated := residency_sim.run_file(args[2])?
+  document_view: str := simulated.document
+  if args.len() == 3 {
+    print(document_view)
+  } else {
+    fs.write_file(args[3], document_view)?
+    print("residency simulation:")
+    print("status:")
+    match simulated.status {
+      Ok => print("OK"),
+      Error => print("ERROR"),
+    }
+    print("baseline:")
+    print("lru")
+    print("best policy:")
+    if simulated.best_policy >= 0 {
+      print(residency_sim.policy_label(simulated.best_policy))
+    } else {
+      print("-")
+    }
+    print("verdict:")
+    match simulated.status {
+      Ok => {
+        if simulated.best_policy != 0
+          && simulated.best_cost_ns < simulated.baseline_cost_ns {
+          print("IMPROVED")
+        } else {
+          print("BASELINE")
+        }
+      },
+      Error => print("ERROR"),
+    }
+    print("demands:")
+    print(simulated.demand_count)
+    print("baseline cost ns:")
+    match simulated.status {
+      Ok => print(simulated.baseline_cost_ns),
+      Error => print("-"),
+    }
+    print("best cost ns:")
+    match simulated.status {
+      Ok => print(simulated.best_cost_ns),
+      Error => print("-"),
+    }
+  }
+  match simulated.status {
+    Ok => { return Ok(()) },
+    Error => { return Err(Error.Invalid) },
+  }
+}
+
 // R4-ALIGNPACK-LAYER-MAJOR CLI adapter (`docs/specs/r4-alignpack-layer-major.md` section 2.3). Both
 // arms hold no container knowledge and no layout knowledge: they validate arity, validate every
 // operand lexically, read the container table exactly once, select the frontend from the
@@ -1139,6 +1205,8 @@ pub fn main(args: array<str>) -> Result<(), Error> {
                               model_ir_demo(args)?
                             } else if args[1] == "--expert-trace" {
                               expert_trace_demo(args)?
+                            } else if args[1] == "--residency-sim" {
+                              residency_sim_demo(args)?
                             } else if args[1] == "--pack" {
                               pack_demo(args)?
                             } else if args[1] == "--pack-verify" {

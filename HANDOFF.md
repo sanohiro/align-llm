@@ -11,18 +11,24 @@ The stale handoff referred to an unavailable commit `198850b`; no local worktree
 pull request, or GitHub commit contains it, so the ledger was reconstructed from the merged R1C and
 R2A producer contracts instead of assuming missing work.
 
-**Current checkpoint.** The design gate is complete. R3 consumes exact R2 `selections[]`, graph
-phases, and truncation provenance, joined to R1 schema-2 `ExpertBlock.byte_size` rows. It compares
-seven deterministic policies under one explicit caller-supplied hardware cost model. The hosted
-owner is synthetic correctness evidence and makes no hardware-speed claim; the roadmap gate remains
-open until the opt-in real-model qualification uses measured costs and identifies a strict non-LRU
-winner. This host does not currently have the OLMoE model or R2 instrument inputs needed for that
-focused qualification.
+**Current checkpoint.** The candidate implements the R1/R2 adapter, Align simulator and CLI, all
+seven policies, canonical task/result documents, ordered semantic validation, an independent Python
+oracle, and the opt-in real-model qualification. The owner preserves R2's real top-8 slot gaps,
+joins two trace graph namespaces, exercises prefill/decode/ambiguous phases, heterogeneous and
+oversized blocks, CPU ties, useful/unused prefetch, every semantic code, resource caps, and adapter,
+decode, path, and write refusals. `make residency-sim-smoke` passes after rerunning both producer
+owners; `make build`, `make gate-topology-check`, its self-test, and `make format-check` pass.
+`make residency-sim-qualification` prints its exact `N/A` line because this host does not currently
+have the OLMoE model and R2 instrument inputs. The hosted owner makes no hardware-speed claim; the
+roadmap gate remains open until that focused qualification names measured costs and identifies a
+strict non-LRU winner. Existing non-blocking Request 23 gained its sixth client: the selected
+compiler falsely reports nine by-value-copy warnings for explicit `borrow task: ResidencyTask`
+parameters.
 
-**Next actions, in order.** (1) Commit this reconstructed design checkpoint. (2) Implement the task
-adapter, Align simulator/CLI, independent-oracle smoke owner, and opt-in qualification. (3) Run the
-narrow owners, one comprehensive review, repair accepted findings, exact-head preflight, publish,
-and merge. (4) Refresh `main` and continue the next eligible roadmap capability.
+**Next actions, in order.** (1) Commit the consumer-complete implementation checkpoint. (2) Run one
+fresh comprehensive review, validate and consolidate accepted findings, and rerun affected owners.
+(3) Run exact-head preflight including the topology-selected fresh `make ci`, publish, and merge.
+(4) Refresh `main` and continue the next eligible roadmap capability.
 
 ## Merged checkpoint: GCC14-FP-CONTRACT-PORTABILITY (2026-08-28)
 
@@ -159,9 +165,9 @@ longer fits alongside the downloaded model and its alignpack space; R1B's real-m
 non-blocking. `.align-revision` selects
 `3a34febe`. Top clients by reference count in
 `docs/align-requests.md` (grep-verified against the register): Request 34 (`Result` payloads beyond
-scalars, 9 mentions), Requests 21 and 23 (read-only open; huge-struct-copy lint, 7 each — Request 23
-gained R1C's evidence block, making `src/frontend_olmoe.align` its fifth client and the third
-architecture frontend to trip it), and Requests 33 and 32 (aligned allocation; FFI by-value structs,
+scalars, 9 mentions), Request 23 (huge-struct-copy lint, 8 mentions; R3's borrowed decoded
+`ResidencyTask` is its sixth client), Request 21 (read-only open, 7 mentions), and Requests 33 and
+32 (aligned allocation; FFI by-value structs,
 6 each); Requests 32, 33, and 37 are also R5's own named clients.
 
 **R2-LOCALITY-GATE merged checkpoint (PR #131, head `fff5806`, merge `546b5cc`).** The R2 gate is

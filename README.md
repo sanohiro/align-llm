@@ -70,6 +70,7 @@ make test-selection-smoke
 make patch-eval-smoke
 make verify-loop-smoke
 make failure-memory-smoke
+make residency-sim-smoke
 ```
 
 `make check` checks the complete import graph one module at a time. `make run` compiles and runs the bootstrap CLI. `make build` writes the `main` executable in the repository root; it is ignored by Git.
@@ -107,6 +108,17 @@ Run a bounded verification task from a JSON specification:
 ```sh
 ./main --verify-loop task.json verification-result.json
 ```
+
+Compare expert residency policies from a joined R1/R2 task:
+
+```sh
+./main --residency-sim residency-task.json
+./main --residency-sim residency-task.json residency-result.json
+```
+
+Use `scripts/build-residency-task` to join an `R1_MODEL_IR` document, an explicit hardware JSON
+object, and one or more `R2_ACTIVATION_TRACE` documents. The result compares seven deterministic
+policies; it is a cost-model simulation, not a measured runtime-speed claim.
 
 The schema-2 task names the repository root, candidate and repair patch path (use an empty string to
 disable repair), required build and full-test commands, and an optional `targeted_test` command.

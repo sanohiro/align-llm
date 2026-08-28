@@ -1,7 +1,7 @@
 # R3-RESIDENCY-SIM
 
-Status: design active. This document is the authoritative public-contract ledger, closure matrix,
-and acceptance plan for the first R3 consumer capability.
+Status: implementation candidate. This document is the authoritative public-contract ledger,
+closure matrix, and acceptance plan for the first R3 consumer capability.
 
 ## 1. Capability boundary
 
@@ -122,8 +122,8 @@ and are not preserved in the result.
 | `tokens_truncated` | True when any contributing R2 graph hid token positions. Always echoed |
 | `token_reduced_layer_count` | Non-negative count summed from R2 documents. Omitted layers create no demand row and remain visible here |
 | `hardware` | Section 2.3 |
-| `blocks` | Section 2.4; 1..4,096 rows |
-| `demands` | Section 2.5; 1..262,144 rows |
+| `blocks` | Section 2.4; 1..2,048 rows |
+| `demands` | Section 2.5; 1..65,536 rows |
 
 ### 2.3 Hardware cost model
 
@@ -179,8 +179,10 @@ prefetch policies can select historically known peers in the next layer.
 Rows preserve R2 observation order and are strictly ascending by
 `(graph, layer, token, slot)`. Ordinals are non-negative; layer/expert are within declared extents;
 `phase` is exactly `prefill`, `decode`, or `single_token_first_graph`. All rows of one graph use one
-phase. Slots begin at zero and are contiguous inside each `(graph, layer, token)` group. An expert
-appears at most once in a group. R2's unprinted slots are not invented.
+phase. Slots begin at zero and are strictly increasing inside each `(graph, layer, token)` group;
+gaps are allowed because R2 prints `0,1,2,n_expert_used-3,n_expert_used-2,n_expert_used-1` when the
+router has more than six slots. An expert appears at most once in a group. R2's unprinted slots are
+not invented.
 
 ### 2.6 Validation and error precedence
 
@@ -194,13 +196,14 @@ Semantic validation is side-effect-free and uses this exact first-error order:
 6. `R3_BLOCK` — block field bounds;
 7. `R3_BLOCK_ORDER` — block order or duplicate;
 8. `R3_DEMAND` — demand field, phase, slot, or duplicate-expert defect;
-9. `R3_DEMAND_ORDER` — observation order, graph-phase mismatch, or slot discontinuity;
+9. `R3_DEMAND_ORDER` — observation order, graph-phase mismatch, or non-increasing slot;
 10. `R3_JOIN` — a demand without exactly one block;
 11. `R3_ARITHMETIC` — any cost/metric upper-bound proof.
 
 `error_detail` is a bounded ASCII token: the failing field name or `<row-kind>[<ordinal>]`, never a
 path or free prose. Invalid results carry zero demands, `best_policy: ""`, `verdict: "ERROR"`, and
-an empty `policies` array.
+an empty `policies` array. `demand_bytes`, `baseline_cost_ns`, and `best_cost_ns` are also zero;
+the file-form summary renders both costs as `-`, so no sentinel is presented as a measurement.
 
 ### 2.7 Policy semantics
 
@@ -232,10 +235,12 @@ entry becomes useful once when a later demand first hits it before eviction; tha
 prefetched marker. Entries still marked when evicted or when the run ends each add one unused
 prefetch. Demand eviction ties choose the lower `(layer, expert)` row as the victim.
 
-The score-based normalized components are each `[0, 1000]`: frequency over demands processed,
-recency as `1000 / (age + 1)`, transfer impact over the maximum block transfer cost, and inverse
-layer position. Each is multiplied by its named hardware weight; checked arithmetic precedes the
-sum.
+The score-based normalized components are each `[0, 1000]`: frequency as
+`block_accesses * 1000 / demands_processed`, recency as `1000 / (age + 1)`, transfer impact as
+`block_transfer_cost * 1000 / maximum_block_transfer_cost`, and inverse layer position as
+`(n_layer - layer) * 1000 / n_layer`. Eviction cannot occur before one demand has been processed,
+so the frequency denominator is positive. Each component is multiplied by its named hardware
+weight; checked arithmetic precedes the sum.
 
 ### 2.8 Result format — `R3_RESIDENCY_RESULT`, schema 1
 
@@ -340,6 +345,7 @@ in the smoke runner computes all seven rows from the emitted task and compares t
 | Seven-policy result | fixed row/order, deterministic winner, LRU tie | arithmetic failure produces no partial rows | complete golden + oracle |
 | Adapter | R2/R1 join, graph offset, mixed block sizes | every producer/status/extent/join refusal before output replacement | adapter fixture matrix |
 | Ownership | task borrowed across seven runs; result cloned out | decode, semantic error, loop exit, and write `?` release once | whole/per-unit compilation, repeated smoke |
+| Bounded work | binary demand/block joins plus at most `7 * demands * blocks` victim/ranking scans under the schema caps; real OLMoE is 1,024 blocks and 10,800 demands for the frozen 40-prompt corpus | caps checked before state-column allocation or policy work | `limit-*`, owner elapsed diagnostic |
 | Generic/interface/cache | N/A — no generic or exported interface surface | N/A — concrete module only | `make check`, `make build` |
 | Process/shared state | N/A — no child process, thread, global cache, or environment | independent processes share no state | CLI isolation case |
 
@@ -350,9 +356,13 @@ adapter, executes the Align CLI, compares the complete document with an independ
 every error code and policy branch, and reruns existing R1/R2 owners affected by the join.
 
 The opt-in `make residency-sim-qualification` consumes the real OLMoE model and R2 instrument under
-the existing explicit environment inputs. It records the task digest, hardware profile, capacity,
-all seven policy rows, winner, and whether decode was observed. A missing model/instrument/profile
-prints one exact `N/A` line. The qualification is not in an aggregate.
+the existing `ALIGN_LLM_GGUF_MODEL`, `ALIGN_LLM_LLAMA_EVAL_CALLBACK`,
+`ALIGN_LLM_LOCALITY_PROMPTS`, and `ALIGN_LLM_LOCALITY_PROMPT_COUNT` inputs. It additionally requires
+`ALIGN_LLM_R3_HARDWARE`, the section 2.3 JSON object, and `ALIGN_LLM_R3_MEASUREMENT`, one bounded
+line naming the measurement source for those declared costs. It records the task digest, hardware
+profile, capacity, measurement source, all seven policy rows, winner, and whether decode was
+observed. A missing model/instrument/profile/measurement prints one exact `N/A` line. The
+qualification is not in an aggregate.
 
 R3's roadmap gate is met only when that focused qualification identifies a strict non-LRU winner
 under a hardware profile whose costs are backed by named measurements. Hosted synthetic evidence
@@ -367,3 +377,10 @@ ships the simulator but does not by itself claim a target-hardware policy win.
 - Router/task/language/repo scores are explicitly unavailable rather than zero-filled.
 - The CLI, both schemas, validation order, ownership, identity, matrix, owner, and qualification are
   defined in this ledger before implementation.
+
+## 7. Implementation correction ledger
+
+1. The design checkpoint said slots were contiguous. R2's shipped top-8 truncation contract and
+   real OLMoE documents contain `0,1,2,5,6,7`; requiring contiguity would reject the exact producer
+   R3 is meant to consume. Section 2.5 now requires zero-first, strictly increasing slots and keeps
+   gaps, while the adapter still refuses to invent the hidden rows.
