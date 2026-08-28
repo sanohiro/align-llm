@@ -5,7 +5,7 @@ file records durable project state.
 
 ## Active: R3-RESIDENCY-SIM (2026-08-28)
 
-Branch `agent/r3-residency-sim` starts at current `main` `4f01553`, the merge of PR #134.
+Branch `agent/r3-residency-sim` is rebased onto current `main` `aad872f`, the merge of PR #136.
 `docs/specs/r3-residency-sim.md` is the authoritative public-contract ledger and closure matrix.
 The stale handoff referred to an unavailable commit `198850b`; no local worktree, remote branch,
 pull request, or GitHub commit contains it, so the ledger was reconstructed from the merged R1C and
@@ -13,44 +13,47 @@ R2A producer contracts instead of assuming missing work.
 
 **Current checkpoint.** The candidate implements the R1/R2 adapter, Align simulator and CLI, all
 seven policies, canonical task/result documents, ordered semantic validation, an independent Python
-oracle, and the opt-in real-model qualification. The first comprehensive review of `f7e205a`
-against base tip and merge base `4f01553b1ea18b815376d5cd7c082d4406a042ec` found four valid issues:
+oracle, and the opt-in real-model qualification. The first comprehensive review covered pre-rebase
+`f7e205a` (now `64e3311`) against base tip and merge base
+`4f01553b1ea18b815376d5cd7c082d4406a042ec` and found four valid issues:
 one P1 unbounded prefetch-ranking path and three P2 mismatches in adapter hardware validation,
-file-result newline bytes, and duplicate-expert precedence. Commit `2463ed9` repaired all four.
+file-result newline bytes, and duplicate-expert precedence. Pre-rebase commit `2463ed9` (now
+`1e02db2`) repaired all four.
 
-The required final comprehensive review of `2463ed9`, with the same base tip and merge base and the
-whole diff, found three further valid P2 issues: the adapter rejected valid R2 callback observation
-order when layers were non-monotonic; it could persist an individually valid task that immediately
-failed aggregate i64 arithmetic; and the real qualification accepted whitespace-only measurement
-provenance. Per the final-review rule, these were not patched as another repair loop. The public
-contract was re-scoped as a redesigned candidate: demand groups retain callback order and require
-only non-decreasing graph ordinals, contiguity, zero-first/increasing slots, and stable graph phase;
-producer and consumer now enforce one conservative whole-task arithmetic proof; and measurement
-provenance must contain a non-whitespace character. All three findings are accepted and implemented
-in redesign commit `999000b`; none is rejected.
+The required final comprehensive review of pre-rebase `2463ed9`, with the same base tip and merge
+base and the whole diff, found three further valid P2 issues: the adapter rejected valid R2 callback
+observation order when layers were non-monotonic; it could persist an individually valid task that
+immediately failed aggregate i64 arithmetic; and the real qualification accepted whitespace-only
+measurement provenance. Per the final-review rule, these were not patched as another repair loop.
+The public contract was re-scoped as a redesigned candidate: demand groups retain callback order
+and require only non-decreasing graph ordinals, contiguity, zero-first/increasing slots, and stable
+graph phase; producer and consumer now enforce one conservative whole-task arithmetic proof; and
+measurement provenance must contain a non-whitespace character. All three findings are accepted
+and implemented in pre-rebase redesign commit `999000b` (now `7610b47`); none is rejected.
 
 One fresh host-native Codex comprehensive review then covered the whole redesigned diff at
-`999000b`, again against base tip and merge base
+pre-rebase `999000b`, again against base tip and merge base
 `4f01553b1ea18b815376d5cd7c082d4406a042ec`; verdict: changes requested. It found one valid P2:
 Python accepted float/bool schema ordinals and truthy non-boolean `moe.present` values as typed R1/R2
-metadata. The finding is accepted. The current narrow uncommitted repair requires exact integer
-types and literal boolean presence, adds six scalar-type refusals, and changes no public contract or
-policy behavior; it does not trigger another comprehensive review.
+metadata. The finding is accepted. Pre-rebase repair `2fe1b38` (now `3594317`) requires exact
+integer types and literal boolean presence, adds six scalar-type refusals, and changes no public
+contract or policy behavior; it does not trigger another comprehensive review. Rebase onto PR #136
+changed only the pre-existing ggml shim compiler guard and does not materially change the reviewed
+R3 risks, so it requires fresh integration evidence but not another comprehensive review.
 
-`make fmt`, `make build`, `make residency-sim-smoke`, and `make format-check` pass. The owner now
-reports 7 policies, 11 semantic codes, 3 limit cases, 18 adapter refusals, measurement provenance,
-and the complete CLI/oracle comparison after rerunning both producer owners. It includes a valid
-layer-1-before-layer-0 trace, a non-contiguous-group refusal, and the reviewer's 2,400-demand
-arithmetic reproducer refused before output creation. `make residency-sim-qualification` prints its
-exact `N/A` line because the required model/instrument environment is unavailable. The hosted owner
-makes no hardware-speed claim, so the roadmap
+After the rebase, `make residency-sim-smoke` and `make format-check` pass, and
+`make residency-sim-qualification` prints its exact `N/A` line. The owner reports 7 policies, 11
+semantic codes, 3 limit cases, 18 adapter refusals, measurement provenance, and the complete
+CLI/oracle comparison after rerunning both producer owners. It includes a valid layer-1-before-
+layer-0 trace, a non-contiguous-group refusal, and the reviewer's 2,400-demand
+arithmetic reproducer refused before output creation. The qualification is N/A because the required
+model/instrument environment is unavailable. The hosted owner makes no hardware-speed claim, so the roadmap
 gate remains open until that focused qualification names measured costs and identifies a strict
 non-LRU winner. Existing non-blocking Request 23's sixth client now produces eleven false
 by-value-copy warnings for explicit `borrow task: ResidencyTask` parameters.
 
-**Next actions, in order.** (1) Commit the consolidated scalar-type repair and rerun the affected
-owner. (2) Run exact-head preflight including the topology-selected fresh `make ci`, publish, and
-merge. (3) Refresh `main` and continue the next eligible roadmap capability.
+**Next actions, in order.** (1) Run exact-head preflight including the topology-selected fresh
+`make ci`, publish, and merge. (2) Refresh `main` and continue the next eligible roadmap capability.
 
 ## Merged checkpoint: GCC14-FP-CONTRACT-PORTABILITY (2026-08-28)
 
