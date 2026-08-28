@@ -833,3 +833,82 @@ print("residency sim smoke: %d model IR(s), %d trace(s), every policy at every s
       "against the independent oracle, both CLI forms, the golden, determinism, "
       "the section 2.6 error corpus, and CLI arity/isolation PASS" % (2, len(made)))
 PY
+
+# The real qualification must reject local prerequisites before it starts the external instrument.
+# The simulator itself owns the Model IR and budget rules, so these rows assert the wrapper reaches
+# that validator before even asking the fake instrument for its version.
+qualification_prompt="$temp_dir/qualification-prompt.txt"
+qualification_instrument="$temp_dir/qualification-instrument"
+qualification_calls="$temp_dir/qualification-instrument-calls"
+printf '%s\n' 'one synthetic prompt' >"$qualification_prompt"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'printf "%s\n" "$*" >>"${R3_QUALIFICATION_CALLS:?}"' \
+  'if [ "${1:-}" = "--version" ]; then printf "%s\n" "fake instrument"; exit 0; fi' \
+  'exit 97' >"$qualification_instrument"
+chmod 0755 "$qualification_instrument"
+
+qualification_refusal() {
+  name=$1
+  subject=$2
+  count=$3
+  budget=$4
+  expected=$5
+  stdout="$temp_dir/$name.stdout"
+  stderr="$temp_dir/$name.stderr"
+  rm -f "$qualification_calls"
+  set +e
+  R3_QUALIFICATION_CALLS="$qualification_calls" \
+    ALIGN_LLM_LLAMA_EVAL_CALLBACK="$qualification_instrument" \
+    ALIGN_LLM_GGUF_MODEL="$subject" \
+    ALIGN_LLM_LOCALITY_PROMPTS="$qualification_prompt" \
+    ALIGN_LLM_LOCALITY_PROMPT_COUNT="$count" \
+    ALIGN_LLM_RESIDENCY_BUDGET="$budget" \
+    "$root_dir/scripts/run-residency-sim" >"$stdout" 2>"$stderr"
+  status=$?
+  set -e
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n' "residency sim smoke: $name qualification prerequisite returned success" >&2
+    exit 1
+  fi
+  if [ -e "$qualification_calls" ]; then
+    printf '%s\n' "residency sim smoke: $name launched the instrument before refusal" >&2
+    exit 1
+  fi
+  if ! grep -F "$expected" "$stderr" >/dev/null; then
+    printf '%s\n' "residency sim smoke: $name did not report $expected" >&2
+    tail -20 "$stderr" >&2 || true
+    exit 1
+  fi
+}
+
+qualification_refusal qualification-prompt-count \
+  "$fixture_dir/olmoe-full.gguf" 0 1 'integer in [1, 4096]'
+qualification_refusal qualification-budget \
+  "$fixture_dir/olmoe-full.gguf" 1 12x R3_BUDGET_MALFORMED
+qualification_refusal qualification-model \
+  "$fixture_dir/qwen2-full.gguf" 1 1 R3_IR_NOT_MOE
+
+rm -f "$qualification_calls"
+set +e
+R3_QUALIFICATION_CALLS="$qualification_calls" \
+  ALIGN_LLM_LLAMA_EVAL_CALLBACK="$qualification_instrument" \
+  ALIGN_LLM_GGUF_MODEL="$fixture_dir/olmoe-full.gguf" \
+  ALIGN_LLM_LOCALITY_PROMPTS="$qualification_prompt" \
+  ALIGN_LLM_LOCALITY_PROMPT_COUNT=1 \
+  ALIGN_LLM_RESIDENCY_BUDGET= \
+  "$root_dir/scripts/run-residency-sim" \
+  >"$temp_dir/qualification-admission.stdout" 2>"$temp_dir/qualification-admission.stderr"
+status=$?
+set -e
+if [ "$status" -eq 0 ] \
+    || [ "$(wc -l <"$qualification_calls" 2>/dev/null || printf 0)" -ne 2 ] \
+    || [ "$(sed -n '1p' "$qualification_calls")" != "--version" ] \
+    || ! grep -F 'instrument exited 97 on prompt 0' \
+      "$temp_dir/qualification-admission.stderr" >/dev/null; then
+  printf '%s\n' "residency sim smoke: valid qualification prerequisites did not reach prompt work" >&2
+  tail -20 "$temp_dir/qualification-admission.stderr" >&2 || true
+  exit 1
+fi
+printf '%s\n' "residency sim qualification prerequisites: 3 refusals and valid admission PASS"

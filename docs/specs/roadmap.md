@@ -277,7 +277,7 @@ The current forward delivery order is:
     throughput claim. Review, publication, and merge are complete; see `HANDOFF.md`.
 
 21. **R3-RESIDENCY-SIM — the R3 cache-simulator gate, measured on the real MoE activation corpus.
-    Implemented and reviewed; in publication.** On branch `agent/r3-residency-sim`, rebased onto the
+    Merged in PR #135.** The merged capability is based on the
     merged MoE prerequisites and C8's optional targeted stage at `main` `4f01553`. [`r3-residency-sim.md`](r3-residency-sim.md) is the
     authoritative plan and owns the contract ledger, the closure matrix, the correction ledger, the
     probe record, and the cell-to-case map; the design gate triggered on three counts (a new public
@@ -299,7 +299,7 @@ The current forward delivery order is:
     column; a miss penalty needs R4.5's and R5's measured transfer costs; CPU fallback needs R5's
     microbenchmark). The result is a policy claim about this named model and this corpus, not a
     platform or throughput claim, and it carries the caveats the section R3 entry below records.
-    Review is complete and publication is in progress; see `HANDOFF.md`.
+    Review, publication, and merge are complete; see `HANDOFF.md`.
 
 ### Status (2026-08-28)
 
@@ -307,8 +307,8 @@ Track B is complete on the dense local model from R0 through R5C (item 17). Deci
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
 `olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18, 19, and 20 above:
 items 18, 19, and 20 are merged, R2's gate is met, and R4's and R4.5's per-expert halves are
-discharged. It also unblocked item 21, R3-RESIDENCY-SIM, which is implemented, reviewed, and in
-publication with the R3 gate met on the real corpus. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+discharged. It also unblocked item 21, R3-RESIDENCY-SIM, which is merged with the R3 gate met on the
+real corpus. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
 **infeasible on this host** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
 a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
