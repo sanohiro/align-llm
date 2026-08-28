@@ -3,6 +3,17 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
+## Active: GCC14-FP-CONTRACT-PORTABILITY (2026-08-28)
+
+Branch `fix/gcc14-fp-contract` repairs a pre-existing hosted-check failure discovered by the R3
+publication preflight. GCC 14.2 diagnoses `#pragma STDC FP_CONTRACT OFF` as unknown, while the shim
+builder compiles with `-Werror`; Clang accepts it. The source pragma is therefore Clang-only, while
+the cross-compiler `-ffp-contract=off` flag and behavioural probe remain mandatory. R3 stays intact
+on `agent/r3-residency-sim` at `2fe1b38` until this prerequisite merges.
+
+**Next actions.** Run the ggml owner with GCC and Clang, complete executable preflight and review,
+merge the portability repair, then rebase R3 onto refreshed `main` and resume its publication.
+
 ## Active: C8-OPTIONAL-TARGETED-STAGE (2026-08-28)
 
 Branch `agent/c8-optional-targeted-stage` has merged current `main` `35a0df6`
