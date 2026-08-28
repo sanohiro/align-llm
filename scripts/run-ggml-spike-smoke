@@ -576,10 +576,19 @@ finally:
 selector = os.path.join(root_dir, "scripts", "ggml_spike_select.py")
 
 
-def selection_document(name, blocks):
+OWN_SOURCE = object()
+
+
+def selection_document(name, blocks, source=OWN_SOURCE):
+    """A pack document for the selector. `source=None` writes one with **no** `source` object."""
     path = os.path.join(work_dir, "selection-%s.json" % name)
+    document = {"blocks": blocks}
+    if source is OWN_SOURCE:
+        document["source"] = olmoe_document["source"]
+    elif source is not None:
+        document["source"] = source
     with open(path, "w", encoding="utf-8") as handle:
-        json.dump({"blocks": blocks, "source": olmoe_document["source"]}, handle)
+        json.dump(document, handle)
     return path
 
 
@@ -596,10 +605,31 @@ else:
     if selection["dense"] != {"block": FIRST_DENSE["index"], "member": FIRST_DENSE_MEMBER}:
         failures.append("selection-olmoe: dense arm is %r" % (selection["dense"],))
     if selection["expert"] != {"block": FIRST_EXPERT["index"],
-                               "members": list(range(len(FIRST_EXPERT["members"])))}:
+                               "members": list(range(len(FIRST_EXPERT["members"]))),
+                               "last_block": olmoe_experts[-1]["index"]}:
         failures.append("selection-olmoe: expert arm is %r" % (selection["expert"],))
+    elif olmoe_experts[-1]["members"][0]["slice_index"] < 1:
+        # The whole reason the last block is selected: it is the plane the first block cannot give.
+        failures.append("selection-olmoe: the last ExpertBlock's member 0 is plane %r"
+                        % (olmoe_experts[-1]["members"][0]["slice_index"],))
     if selection["identity"] != olmoe_document["source"]["header_region_sha256"]:
         failures.append("selection-olmoe: identity is %r" % selection["identity"])
+
+# `last_block` is the plane index the first `ExpertBlock` cannot give: every member of that block is
+# plane 0, so without a second block the real-model arm never addresses a `slice_index > 0` interior
+# (section 5.4). A container with exactly one `ExpertBlock` reports `None` rather than repeating the
+# first arm's block.
+single_expert = run_selector(selection_document(
+    "single-expert",
+    [entry for entry in olmoe_blocks if entry["kind"] != "ExpertBlock"]
+    + [entry for entry in olmoe_blocks if entry["kind"] == "ExpertBlock"][:1]))
+if single_expert.returncode != 0:
+    failures.append("selection-single-expert: exited %d" % single_expert.returncode)
+else:
+    only = json.loads(single_expert.stdout.decode("utf-8"))["expert"]
+    if only["last_block"] is not None:
+        failures.append("selection-single-expert: last_block is %r for one ExpertBlock"
+                        % (only["last_block"],))
 
 # Early exit: a model with no `ExpertBlock` is a legitimate shape — the dense arm still runs and
 # the expert arm is absent, which is the `N/A` line rather than a failure.
@@ -619,6 +649,26 @@ if no_attention.returncode == 0:
 elif b"AttentionBlock" not in no_attention.stderr:
     failures.append("selection-no-attention: the failure does not name the missing block: %r"
                     % no_attention.stderr.decode("utf-8", "replace")[-200:])
+
+# Malformed input: a pack document missing a field the rule reads is a producer defect, and it must
+# leave one `FAIL` line naming the field rather than a `KeyError` traceback an operator has to
+# decode. Three shapes, one per level the selector descends: the document, a block, and `source`.
+for label, blocks, source in (
+        ("no-blocks", None, OWN_SOURCE),
+        ("block-without-kind", [{"index": 0, "members": []}], OWN_SOURCE),
+        ("no-source", olmoe_blocks, None)):
+    path = os.path.join(work_dir, "selection-%s.json" % label)
+    with open(path, "w", encoding="utf-8") as handle:
+        document = {} if blocks is None else {"blocks": blocks}
+        if source is OWN_SOURCE:
+            document["source"] = olmoe_document["source"]
+        json.dump(document, handle)
+    malformed = run_selector(path)
+    text = malformed.stderr.decode("utf-8", "replace")
+    if malformed.returncode == 0:
+        failures.append("selection-%s: exited 0 on a malformed pack document" % label)
+    elif "Traceback" in text or "ggml spike qualification: FAIL" not in text:
+        failures.append("selection-%s: the refusal is not a named FAIL: %r" % (label, text[-300:]))
 
 # Both output forms must emit byte-identical document bytes (section 3.3).
 document_path = os.path.join(work_dir, "spike.json")

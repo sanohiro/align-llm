@@ -1198,7 +1198,17 @@ def drive_usage():
         require(line in help_text, "usage-diff: an existing usage line disappeared: %r" % line)
 
 
-def drive_qualification_verdicts(moe_source, dense_source):
+def expert_by_kind(verify, side):
+    """The `ExpertBlock` row of one side of a `--pack-verify` document's `sequential_read`."""
+    stats = as_dict(as_dict(verify["sequential_read"])[side])
+    for entry in stats["by_kind"]:
+        record = as_dict(entry)
+        if record["kind"] == "ExpertBlock":
+            return record
+    return None
+
+
+def drive_qualification_verdicts(moe_source, moe_verify, dense_source):
     """`qualification-verdict` (`docs/specs/moe-prereq-discharge.md` section 4.4).
 
     The MoE verdict of `scripts/run-alignpack-qualification` is a **rule over the block set the run
@@ -1209,12 +1219,50 @@ def drive_qualification_verdicts(moe_source, dense_source):
     `qwen2-permuted` rather than `qwen2-full` is the dense case on purpose: `qwen2-full`'s data
     section is already in block order, so its `(sequential read)` verdict is a deliberate `FAIL`
     (section 4.4 of `r4-alignpack-layer-major.md`) and the run never reaches the MoE line.
+
+    The MoE verdict's numbers are asserted **exactly**, and against this smoke's own
+    `--pack-verify` document for the same fixture rather than against constants written here. A
+    substring match on `PASS ExpertBlock ` would accept a verdict that printed any numbers at all,
+    including numbers from a different side of the comparison; the fixture and the runner pack the
+    same file with the same writer, so the two documents must agree row for row.
     """
+    source_expert = expert_by_kind(moe_verify, "source")
+    pack_expert = expert_by_kind(moe_verify, "pack")
+    require(source_expert is not None and pack_expert is not None,
+            "qualification-verdict moe: the fixture has no ExpertBlock by_kind row to compare")
+    # Section 3.5's eight assertions, checked here against the fixture's own numbers as well: a
+    # corpus that no longer satisfies them would make the runner print `FAIL`, and this says which
+    # of the two is wrong.
+    for label, held in (
+            ("source.contiguous_block_count == 0", source_expert["contiguous_block_count"] == 0),
+            ("source.range_count > pack.range_count",
+             source_expert["range_count"] > pack_expert["range_count"]),
+            ("source.span_bytes > pack.span_bytes",
+             source_expert["span_bytes"] > pack_expert["span_bytes"]),
+            ("source.amplification_ppm > pack.amplification_ppm",
+             source_expert["amplification_ppm"] > pack_expert["amplification_ppm"]),
+            ("pack.contiguous_block_count == pack.block_count",
+             pack_expert["contiguous_block_count"] == pack_expert["block_count"]),
+            ("pack.range_count == pack.block_count",
+             pack_expert["range_count"] == pack_expert["block_count"]),
+            ("pack.amplification_ppm == 1000000", pack_expert["amplification_ppm"] == 1000000),
+            ("pack.span_bytes == pack.payload_bytes",
+             pack_expert["span_bytes"] == pack_expert["payload_bytes"])):
+        require(held, "qualification-verdict moe: the fixture does not satisfy %r" % label)
+
+    moe_lines = [
+        b"alignpack qualification (MoE): PASS  ExpertBlock %d blocks" % pack_expert["block_count"],
+        b"    src  %d ranges / %d span / %d contiguous / %d ppm"
+        % (source_expert["range_count"], source_expert["span_bytes"],
+           source_expert["contiguous_block_count"], source_expert["amplification_ppm"]),
+        b"    pack %d ranges / %d span / %d contiguous / %d ppm"
+        % (pack_expert["range_count"], pack_expert["span_bytes"],
+           pack_expert["contiguous_block_count"], pack_expert["amplification_ppm"]),
+        b"alignpack qualification (gpt-oss MoE): N/A",
+    ]
     runner = str(Path(root_dir) / "scripts" / "run-alignpack-qualification")
     for label, source, expected in (
-            ("moe", moe_source,
-             [b"alignpack qualification (MoE): PASS  ExpertBlock ",
-              b"alignpack qualification (gpt-oss MoE): N/A"]),
+            ("moe", moe_source, moe_lines),
             ("dense", dense_source,
              [b"alignpack qualification (MoE): N/A - the packed model has no ExpertBlock"])):
         destination = Path(work_dir) / ("qualification-verdict-" + label)
@@ -1231,8 +1279,10 @@ def drive_qualification_verdicts(moe_source, dense_source):
                     "qualification-verdict %s: the verdict does not contain %r" % (label, line))
         require(not list(destination.iterdir()),
                 "qualification-verdict %s: the runner left files behind" % label)
-    # The six numbers of the MoE verdict, and that they are the ones the pack actually has.
-    print("alignpack smoke: qualification-verdict MoE PASS and dense N/A")
+    print("alignpack smoke: qualification-verdict MoE PASS (ExpertBlock %d blocks, %d -> %d "
+          "ranges, %d -> %d ppm) and dense N/A"
+          % (pack_expert["block_count"], source_expert["range_count"], pack_expert["range_count"],
+             source_expert["amplification_ppm"], pack_expert["amplification_ppm"]))
 
 
 def drive_qualification_skips(sample_source):
@@ -1413,8 +1463,8 @@ drive_limits(qwen["source"])
 drive_environment(qwen["source"])
 drive_single_producer()
 drive_usage()
-drive_qualification_verdicts(results["olmoe-full"]["source"],
-                            results["qwen2-permuted"]["source"])
+drive_qualification_verdicts(results["olmoe-full"]["source"], results["olmoe-full"]["verify"],
+                             results["qwen2-permuted"]["source"])
 drive_qualification_skips(qwen["source"])
 drive_full_filesystem(qwen["source"])
 

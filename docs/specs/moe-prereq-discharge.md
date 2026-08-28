@@ -448,7 +448,7 @@ Both output forms continue to emit byte-identical document bytes, and the `verdi
 | Code | Meaning | Step | Detail | Status |
 | --- | --- | --- | --- | --- |
 | `R4_5_SLICE` | the member record's `slice_index` / `slice_count` pair is self-inconsistent | 7a | `pair` / `count[<n>]` / `index[<n>]` | **new** |
-| `R4_5_SHAPE` | the member is not a 2-D `mul_mat` left operand, or `ne0 % blck_size != 0` | 7b, 12 | adds `dim2[<n>]`, `dim3[<n>]`; keeps `n_dims[<n>]`, `ne0[<n>]`, `ne1[<n>]`, `nbytes[<n>]`, `ne0_bound[<n>]`, `ne1_bound[<n>]`, `dim2_dim3` | extended |
+| `R4_5_SHAPE` | the member is not a 2-D `mul_mat` left operand, `ne0 % blck_size != 0`, or ggml's own size for the tensor disagrees with the record | 7b, 12, 15 | adds `dim2[<n>]`, `dim3[<n>]`, and `ggml_nbytes[<n>]` (step 15, ggml's number, distinct from step 7b's `nbytes[<n>]`); keeps `n_dims[<n>]`, `ne0[<n>]`, `ne1[<n>]`, `nbytes[<n>]`, `ne0_bound[<n>]`, `ne1_bound[<n>]`, `dim2_dim3` | extended |
 | every other `R4_5_*` and `R4_PACK_*` | unchanged | unchanged | unchanged | unchanged |
 
 Exit mapping is R0's, reused verbatim and unchanged: `Ok(())` on `status: "ok"`,
@@ -503,8 +503,15 @@ derived from the pack document the run just wrote:
 
 ```text
 dense arm    the first AttentionBlock's member whose role is attn_q
-expert arm   the first ExpertBlock's three members, in member order
+expert arm   the first ExpertBlock's three members, in member order,
+             then member 0 of the last ExpertBlock
 ```
+
+The last block is there for one reason: **every member of the first `ExpertBlock` is plane 0**, so
+without it no real-model run addresses an interior at a plane index greater than zero, and the whole
+`slice_index > 0` half of the claim form would be synthetic-only evidence (section 5.4). It is one
+extra run of about a second. A container holding exactly one `ExpertBlock` selects no last block —
+the run would repeat the first arm rather than add evidence — and prints an `N/A` line saying so.
 
 Both are resolved by `role_id` — `attn_q` is 1, and the expert roles are 19 / 21 / 23 — and not by
 name, because `r1c-olmoe-moe-ir.md` section 2.5.2 makes `role_id` the stable identity while a GGUF
@@ -543,13 +550,16 @@ Measured entries for `ce233b8aa20f77d6002ce9fd4f81adea8e5e2f2b4fc16b810bb67a01fe
 | expert | 3 / 0 | `blk.0.ffn_gate_exps.weight` | 2048x1024 | 1,179,648 | 0 | `237ffed519b03a78ff1219aa0a89af8c2bf6876f1931bef4f9874145f6f5220f` |
 | expert | 3 / 1 | `blk.0.ffn_up_exps.weight` | 2048x1024 | 1,179,648 | 1,179,648 | `1a5ceeeaad4c03d43e2e73fafe1b73f2b74edb86970ec021b65018c2cda91c1a` |
 | expert | 3 / 2 | `blk.0.ffn_down_exps.weight` | 1024x2048 | 1,720,320 | 2,359,296 | `6436a1ff2caac9446fc784e7c6b74bda70ee14d2a9ca051905fbc9a7ef21f8ef` |
+| expert, last plane | 1056 / 0 | `blk.15.ffn_gate_exps.weight` | 2048x1024 | 1,179,648 | 0 | `7891a6cc8ad9bce54026849a613c808c653a79acedbdc32d40569b1b6ce4ea20` |
 
 The existing narrow claim about digests is inherited verbatim: each is correct for this model, this
 member, this activation, this ggml version, and this CPU backend, it is not portable, and its failure
 message says the kernel or the model changed rather than reading as a corruption report.
 
-The `(expert block)` `N/A` line is deleted. The `(GPU arm)` and `(discrete VRAM)` `N/A` lines are
-**unchanged**, and section 5.5 is why.
+The `(expert block)` `N/A` line is deleted, and one `(expert plane index)` line joins the output:
+`PASS` naming the plane the last block's member 0 addressed, or `N/A` for a container with a single
+`ExpertBlock`. The `(GPU arm)` and `(discrete VRAM)` `N/A` lines are **unchanged**, and section 5.5
+is why.
 
 ### 3.6 Which sentences change, and which do not
 
@@ -578,6 +588,7 @@ against the final tree.
 | §3.3 | Gains the `slice:` summary line |
 | §3.7 | `schema_version` becomes 2; `tensor` gains `slice_index` and `slice_count` |
 | §3.8 step 7 | Replaced by steps 7a and 7b of section 3.2 here; the code table gains `R4_5_SLICE` and the two new `R4_5_SHAPE` details |
+| §3.8 step 15 | The `ggml_nbytes(A) != member.nbytes` refusal gains its **own** detail token, `ggml_nbytes[<n>]`. It had reused step 7b's `nbytes[<n>]` while carrying a different number — ggml's rather than the record's — and one shared token for two faults under one code is a detail an operator cannot read |
 | §4.3 / §4.6 | The `R4_5_SHAPE` fixture rows gain the claim cases; a new `R4_5_SLICE` row |
 | §5.2 | The assertion table becomes the invariants plus the model-keyed digest table of section 3.5 here |
 | §5.4 bullet *An expert block* | **The sentence "the CLI already addresses an `ExpertBlock` by its block index with no new surface" is refuted and removed.** Replaced by the measurement of section 2.4 and a pointer to step 7a/7b. The bullet itself is deleted from the deferral list |
@@ -660,7 +671,7 @@ document wherever the cell is a rule rather than a computation.
 | Failure — non-unit `dim3` | claim with `dim3 != 1` → `R4_5_SHAPE`, `dim3[<n>]` | step 7b | `expert-claim-dim3` |
 | Failure — bounds | `dim0`/`dim1` zero or above `MAX_DIMENSION` | unchanged | existing cases, now exercised through both forms |
 | Failure — range | member range outside its block | unchanged | existing `member-outside-block` |
-| Cross-check | `ggml_nbytes(A) == member.nbytes` for a claim | step 15, unchanged | **CAPABLE** — `run-ggml-spike` expert arm, all three members. It is a computation over ggml's own type table and has no hosted companion |
+| Cross-check | `ggml_nbytes(A) == member.nbytes` for a claim | step 15; the rule is unchanged, its detail token becomes `ggml_nbytes[<n>]` (section 3.6) | **CAPABLE** — `run-ggml-spike` expert arm, all four claim runs. It is a computation over ggml's own type table and has no hosted companion |
 
 ### 4.3 `src/ggml_spike.align` — the document and the summary
 
@@ -669,8 +680,8 @@ document wherever the cell is a rule rather than a computation.
 | Construction | `schema_version` is 2 in every emitted document, error documents included | renderer | every smoke case asserts it |
 | Success | `tensor.slice_index` / `slice_count` present in both forms | renderer | `olmoe-expert-claim` (`0`/`64`), any dense case (`-1`/`-1`) |
 | Success — summary | `slice: <index>/<count>` for a claim, `slice: -` for a whole-tensor member | summary renderer | `olmoe-expert-claim` and a dense case, exact-line assertions against the corpus's own values |
-| Failure | The two fields are present in an error document produced after step 6 | renderer | `expert-claim-dim2` |
-| Early exit | An error before step 6 emits `-1`/`-1`, not garbage | field defaults | `index-out-of-range` |
+| Failure | The two fields are present in an error document produced after step 6 | renderer | `olmoe-expert-claim-dim2` |
+| Early exit | An error before step 6 emits `-1`/`-1`, not garbage | field defaults | the pre-existing `spike-block-oob` and `spike-member-oob` |
 | Byte identity | The stdout and file forms are byte-identical | unchanged | existing `document-forms-identical` |
 
 ### 4.4 `scripts/run-alignpack-qualification`
@@ -678,7 +689,7 @@ document wherever the cell is a rule rather than a computation.
 | Cell | Contract | Implementation | Regression |
 | --- | --- | --- | --- |
 | Construction | The verdict reads `by_kind`, never a path or a variable | verdict block | `qualification-skip` unit, extended with a stub document holding an `ExpertBlock` |
-| Success — MoE | The eight assertions of section 3.5, then `PASS` with six numbers | verdict block | **CAPABLE** real run; hosted, a fixture document |
+| Success — MoE | The eight assertions of section 3.5, then `PASS` with the block count and the two four-number rows | verdict block | **CAPABLE** real run; hosted, `qualification-verdict moe`, which compares the three printed lines **exactly** against the smoke's own `--pack-verify` document for the same fixture |
 | Success — dense | No `ExpertBlock` entry prints the shape `N/A` and neither passes nor fails | verdict block | hosted, a fixture document from the qwen corpus |
 | Failure | A pack whose `ExpertBlock` rows do not improve exits non-zero | verdict block | hosted, a mutated fixture document |
 | Malformed input | A `by_kind` array missing `contiguous_block_count` is a `FAIL`, not a silent pass | key access | hosted, a fixture document |
@@ -692,10 +703,13 @@ document wherever the cell is a rule rather than a computation.
 | Construction | Selection resolves by `role_id`, from the pack document | selection block | **CAPABLE**; hosted, a fixture document |
 | Success — dense arm | The invariants plus the keyed digest | assertion block | **CAPABLE** real run |
 | Success — expert arm | The invariants plus three keyed digests, over all three members | assertion block | **CAPABLE** real run |
+| Success — expert arm, last plane | The same invariants over member 0 of the **last** `ExpertBlock`, plus `slice_index >= 1` and its own keyed digest | selection and assertion blocks | **CAPABLE** real run |
 | Failure — no `AttentionBlock` | `FAIL`, named | selection block | hosted, a fixture document |
+| Malformed input | A pack document missing `blocks`, a block's `kind`, or `source` is one named `FAIL`, not a traceback | selector refusals | hosted, three fixture documents |
 | Early exit — no `ExpertBlock` | one `N/A` line for the expert arm, dense arm still runs | selection block | hosted, a fixture document |
+| Early exit — one `ExpertBlock` | `last_block` is `null`; one `N/A` line for the plane index, the three members still run | selection block | hosted, a fixture document |
 | Early exit — unknown model identity | one `N/A` line for the digest assertion only; invariants still run | digest table | hosted, a fixture document |
-| Cleanup | The pack, the documents, and every `forced-*.json` are removed; the reclaimed count printed | unchanged, extended with the expert arm's documents | existing trap assertions |
+| Cleanup | The pack, the documents, and every `forced-*.json` are removed; the reclaimed count printed | unchanged; the expert documents are removed by pattern, since how many exist is the packed model's property | existing trap assertions |
 
 ### 4.6 `scripts/gguf_fixture.py` and `scripts/run-ggml-spike-smoke`
 
@@ -737,7 +751,9 @@ input. Both now discharge a MoE verdict when the model they were given has exper
 The expert arm runs **all three members** of the selected `ExpertBlock` rather than one, for the
 reason in section 2.5 finding 3: member 0's interior offset is 0 and does not exercise interior
 addressing, member 1 is a Q4_K plane at a non-zero interior offset, and member 2 is a Q6_K plane with
-the transposed axis order at a larger one. Three runs cost about three seconds.
+the transposed axis order at a larger one. Three runs cost about three seconds. A fourth run,
+member 0 of the **last** `ExpertBlock`, costs about one more and is the only one whose `slice_index`
+is not zero (section 5.4).
 
 Measured whole-run cost on this host, which is the budget the risk section is written against:
 
@@ -793,6 +809,13 @@ Recorded so a later reader does not mistake a pass for wider evidence than it is
   not this capability's, and section 5.6 names it.
 - **Six-member expert blocks, MXFP4, split expert biases, a fused `ffn_gate_up_exps`.** All
   gpt-oss-specific, all still synthetic. Section 5.5.
+- **Planes between the first and the last.** The expert arm measures the first `ExpertBlock`'s three
+  members and member 0 of the **last** one, so a `slice_index > 0` plane *is* real-model evidence —
+  without that fourth run every real plane measured would be plane 0 and the whole non-zero half of
+  the claim form would rest on the synthetic corpus. What stays uncovered is the interior: 2 of this
+  model's 1,024 `ExpertBlock`s are computed, and no claim is made about the 1,022 between them. That
+  is a deliberate cost bound, not an absence of a rule to test — the rule is `slice_index`-agnostic
+  by construction (section 3.2) and the corpus exercises both ends of it.
 
 ### 5.5 Deferred surfaces, and the honest gate
 
@@ -919,8 +942,11 @@ same boundary.
 ## 7. Cell-to-case map
 
 Section 4's cell names against the case names that ship. A cell whose name is unchanged is not
-listed. Every case in the first table is a `scripts/run-ggml-spike-smoke` case and appears in
-`scripts/ggml-spike-golden.jsonl` under that name.
+listed. Every **case** named in the tables below is a `scripts/run-ggml-spike-smoke` case and
+appears in `scripts/ggml-spike-golden.jsonl` under that name; the rows that name a *stage* rather
+than a case (4.6 Construction, Cross-implementation, Cleanup, and the 4.5 selection rows) are
+assertion blocks of that smoke and have no golden document, because what they check is a run's behaviour rather than one
+emitted document.
 
 | Section 4 cell | Shipped case | Note |
 | --- | --- | --- |
@@ -933,6 +959,7 @@ listed. Every case in the first table is a `scripts/run-ggml-spike-smoke` case a
 | 4.2 Failure — expert axis mismatch | `olmoe-expert-claim-dim2` | `dim2[n_expert]`, produced from bytes 80–95 (correction M1) |
 | 4.2 Failure — non-unit `dim3` | `olmoe-expert-claim-dim3` | the one fixture that edits offset 72 (correction M1) |
 | 4.3 Success — summary, whole form | `olmoe-dense-member` | the olmoe pack's own `attn_q`, asserted as the exact `slice: -` line under `dims:` |
+| 4.3 Early exit | `spike-block-oob`, `spike-member-oob` | the pre-existing out-of-range cases carry the cell: each is refused at step 5 or 6 and its document holds `-1`/`-1` for the two new fields |
 | 4.6 Construction (`olmoe-pack-verify`) | the smoke's olmoe stage | `--pack` and `--pack-verify` both `ok`, `verdict: identical`, plus the assertion that `--pack` never writes a self-inconsistent pair |
 | 4.6 Cross-implementation (`olmoe-reader-agreement`) | the smoke's reader-agreement block | `scripts/alignpack_reader.py`'s pair for **every** member of the packed olmoe container |
 | 4.6 Cleanup | the smoke's `cleanup` trap | removal of the temporary tree is now asserted, not assumed |
@@ -942,7 +969,10 @@ listed. Every case in the first table is a `scripts/run-ggml-spike-smoke` case a
 | Construction — selection by `role_id` | `selection-olmoe` in `run-ggml-spike-smoke` | runs `scripts/ggml_spike_select.py` over the real pack document (correction M7) |
 | Early exit — no `ExpertBlock` | `selection-dense-only` | the same document with its `ExpertBlock`s removed; the dense arm still resolves |
 | Failure — no `AttentionBlock` | `selection-no-attention` | non-zero exit, and the message names the missing block |
+| Malformed input — a field the rule reads is absent | `selection-no-blocks`, `selection-block-without-kind`, `selection-no-source` | one named `FAIL` line per shape, never a `KeyError` traceback |
+| Early exit — one `ExpertBlock` | `selection-single-expert` | `last_block` is `null`, and the runner prints the `(expert plane index)` `N/A` instead of repeating the first block |
 | Success — dense arm, Success — expert arm | **CAPABLE**, `make ggml-spike-qualification` | measured on both real models |
+| Success — expert arm, last plane | **CAPABLE**, the `(expert plane index)` line | member 0 of the **last** `ExpertBlock`: the one real-model run whose `slice_index` is not zero (section 5.4) |
 
 | Section 4.4 cell | Shipped case | Note |
 | --- | --- | --- |

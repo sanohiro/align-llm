@@ -77,7 +77,7 @@ answered only for unified memory.
 | `align owns buffer lifetime` | **Dischargeable.** The bytes live in one Align `buffer` local; ggml holds a borrowed pointer and is torn down before the owner's scope ends | Section 2.3; the ordering contract and its abort case are section 3.9 |
 | `no silent copy` | **Discharged.** `ggml_get_data(tensor)` equals the Align buffer's data pointer plus the member's interior offset, exactly | Section 2.3, probe 2b: `identity_weights` = `14336`, the member's own `pack_offset - block.pack_offset` |
 | `quantized layout preserved` | **Discharged.** A real Q4_K tensor computes from pack bytes with **zero** differing output elements against the same tensor read from the original GGUF into a ggml-allocated buffer | Section 2.3: `differing_elements = 0` of 14,336 f32 |
-| `one expert matmul succeeds` | **Discharged** for a dense block and for an expert claim on the CPU backend; deferred for the GPU arm | Section 2.3 computes `blk.0.attn_q.weight`; [`moe-prereq-discharge.md`](moe-prereq-discharge.md) sections 2.4 and 2.5 measure a real `ExpertBlock` claim — the shipped arm refused it with `R4_5_SHAPE`, detail `n_dims[3]`, and step 7a/7b admits it — and section 3.5 there runs all three members of one `ExpertBlock` against the GGUF plane |
+| `one expert matmul succeeds` | **Discharged** for a dense block and for an expert claim on the CPU backend; deferred for the GPU arm | Section 2.3 computes `blk.0.attn_q.weight`; [`moe-prereq-discharge.md`](moe-prereq-discharge.md) sections 2.4 and 2.5 measure a real `ExpertBlock` claim — the shipped arm refused it with `R4_5_SHAPE`, detail `n_dims[3]`, and step 7a/7b admits it — and section 3.5 there runs all three members of the first `ExpertBlock`, plus member 0 of the last one so that one measured plane has `slice_index > 0`, against the GGUF plane |
 
 Two clauses the roadmap implies but does not write are answered here as well:
 
@@ -803,7 +803,10 @@ step 10, and nothing outside the process is ever written.**
     `R4_5_ALIGNMENT`, detail `weights` / `member` / `output`. Section 2.4 is why this step exists
 14. Backend and context creation. → `R4_5_GGML_INIT`, detail `backend` / `device` / `context`
 15. Buffer creation, tensor creation, placement, activation allocation and fill. → `R4_5_GGML_INIT`,
-    detail naming the object
+    detail naming the object; and `ggml_nbytes(A) != member.nbytes`, once ggml has built the tensor
+    from the recorded dims, → `R4_5_SHAPE`, detail `ggml_nbytes[<n>]` carrying **ggml's** number.
+    The token is not step 7b's `nbytes[<n>]`, which carries the member record's own: the two are
+    different faults under one code, and one token each is what lets a detail say which number it is
 16. `align_ggml_compute`, warm-up then five timed calls; any non-zero `ggml_status`. →
     `R4_5_COMPUTE`, detail `status[<n>]`
 17. Reference arm, five-operand form only: open the GGUF, read `M.nbytes` at `M.source_offset`. →
@@ -821,7 +824,7 @@ step 10, and nothing outside the process is ever written.**
 | `R4_PACK_*` | a container defect, surfaced verbatim from `alignpack_read` | 4, 9 | R4's own details |
 | `R4_WINDOW_UNAVAILABLE` | `buffer(N)` degraded to capacity 0 | 8 | `weights` / `output` / `activation` |
 | `R4_5_SLICE` | the member record's `slice_index` / `slice_count` pair is self-inconsistent | 7a | `pair` / `count[<n>]` / `index[<n>]` |
-| `R4_5_SHAPE` | the member is not a `mul_mat` left operand, or `ne0 % blck_size != 0` | 7b, 12 | the field: `n_dims[<n>]`, `ne0[<n>]`, `ne1[<n>]`, `nbytes[<n>]`, `ne0_bound[<n>]`, `ne1_bound[<n>]`, `dim2_dim3` (whole form), `dim2[<n>]` / `dim3[<n>]` (claim form) |
+| `R4_5_SHAPE` | the member is not a `mul_mat` left operand, `ne0 % blck_size != 0`, or ggml's own size for the tensor disagrees with the record | 7b, 12, 15 | the field: `n_dims[<n>]`, `ne0[<n>]`, `ne1[<n>]`, `nbytes[<n>]`, `ne0_bound[<n>]`, `ne1_bound[<n>]`, `dim2_dim3` (whole form), `dim2[<n>]` / `dim3[<n>]` (claim form), `ggml_nbytes[<n>]` (step 15, ggml's number) |
 | `R4_5_GGML_UNAVAILABLE` | the stub shim, or no CPU device | 10 | `stub` / `device` |
 | `R4_5_ABI` | `align_ggml_abi_probe` returned an implausible constant | 11 | the constant |
 | `R4_5_TYPE_UNSUPPORTED` | the ggml type cannot be a `mul_mat` left operand | 12 | `type[<id>]` |
@@ -1099,14 +1102,19 @@ sections 1.5 and 3.5):
 
 ```text
 dense arm    the first AttentionBlock's member whose role is attn_q (role_id 1)
-expert arm   the first ExpertBlock's members, in member order (roles 19 / 21 / 23)
+expert arm   the first ExpertBlock's members, in member order (roles 19 / 21 / 23),
+             then member 0 of the last ExpertBlock
 ```
 
 A model with no `ExpertBlock` prints one `N/A` line for the expert arm and runs the dense arm as
 before; a model with no `AttentionBlock` is a `FAIL`, because every architecture this repository
 supports has one. The expert arm runs **all** the block's members rather than one: the first
 member's interior offset is zero and therefore does not exercise interior addressing at all, while
-the others do, at two different quantizations and both axis orders.
+the others do, at two different quantizations and both axis orders. It then runs member 0 of the
+**last** `ExpertBlock`, whose `slice_index` is not zero — every member of the first block is plane 0
+of its stacked tensor, so that one run is what keeps the claim form's non-zero half from being
+synthetic-only evidence. A container with a single `ExpertBlock` selects no last block and prints an
+`N/A` line for the plane index.
 
 The assertions split into **invariants**, which hold for every model and every member and carry the
 gate, and a small **model-keyed digest table**.
@@ -1139,6 +1147,7 @@ without keying on a path. `ALIGN_LLM_GGML_SPIKE_SHA256` overrides the dense arm'
 | `ce233b8a…` OLMoE-1B-7B | expert 0 | `blk.0.ffn_gate_exps.weight` | `237ffed519b03a78ff1219aa0a89af8c2bf6876f1931bef4f9874145f6f5220f` |
 | `ce233b8a…` OLMoE-1B-7B | expert 1 | `blk.0.ffn_up_exps.weight` | `1a5ceeeaad4c03d43e2e73fafe1b73f2b74edb86970ec021b65018c2cda91c1a` |
 | `ce233b8a…` OLMoE-1B-7B | expert 2 | `blk.0.ffn_down_exps.weight` | `6436a1ff2caac9446fc784e7c6b74bda70ee14d2a9ca051905fbc9a7ef21f8ef` |
+| `ce233b8a…` OLMoE-1B-7B | expert, last plane | `blk.15.ffn_gate_exps.weight` | `7891a6cc8ad9bce54026849a613c808c653a79acedbdc32d40569b1b6ce4ea20` |
 
 Then the four ggml-only error fixtures of section 4.6, then it removes the pack and the tree.
 

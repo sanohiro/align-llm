@@ -986,8 +986,15 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
     // The pack's recorded `nbytes` and `ggml_nbytes()` of the tensor ggml built from the recorded
     // dims must agree. That equality is itself the check that the member table carries enough to
     // size a member from the pack alone, which is the difference between a container and an index.
+    //
+    // The detail is `ggml_nbytes[<n>]` and not `nbytes[<n>]`: step 7b already spends the latter on
+    // the member record's own `nbytes`, and the two failures are different faults reported under
+    // the same code. Step 7b says the container declares an impossible size; this says ggml and the
+    // container disagree about a size both consider possible, and the number printed here is
+    // **ggml's**, not the record's. One token per fault, so an operator reading a detail knows
+    // which of the two numbers it is.
     if ggml_ffi.tensor_nbytes(weight_tensor) != member.nbytes {
-      fail(o, "R4_5_SHAPE", labelled("nbytes", ggml_ffi.tensor_nbytes(weight_tensor)))
+      fail(o, "R4_5_SHAPE", labelled("ggml_nbytes", ggml_ffi.tensor_nbytes(weight_tensor)))
     }
   }
   if o.code.len() == 0 {

@@ -116,9 +116,13 @@ The current forward delivery order is:
     `model_ir.resolve_claims` and `model_ir.derive_status` and imports no frontend. **It closes
     the R4 gate on the qwen half with real weights**: one qualification run over
     Qwen2.5-Coder-7B Q4_K_M reported byte identity and 89 → 58 ranges, 11,130,544,128 → 4,677,120,000
-    span bytes, 2,379,786 → 1,000,000 ppm, and 27 → 58 of 58 contiguous blocks. The per-expert half
-    is closed synthetically and stays **MOE-PREREQ**, pending the same small MoE GGUF decision R2
-    names.
+    span bytes, 2,379,786 → 1,000,000 ppm, and 27 → 58 of 58 contiguous blocks. **The per-expert
+    half is discharged on a real MoE model by item 20**: over
+    `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` the 1,024 `ExpertBlock`s go 3,072 → 1,024 ranges,
+    165,368,823,808 → 3,900,702,720 span bytes, 42,394,624 → 1,000,000 ppm, and 0 → 1,024 of 1,024
+    contiguous blocks. The residual **MOE-PREREQ** is gpt-oss-specific — a six-member `ExpertBlock`,
+    MXFP4 geometry, split expert biases, and the fused `ffn_gate_up_exps` stay synthetic — and it
+    waits on the 12.1 GB file the Status section records as infeasible on this host.
 14. **R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer.
     Merged as PR #126, merge commit `fa567b1` on `main`.** Was on branch
     `agent/r4-5-external-buffer`.
@@ -131,7 +135,10 @@ The current forward delivery order is:
     computed over our bytes or over a copy. It answers R4.5's gate for the DRAM half and for unified
     memory; section R4.5 below records clause by clause what that discharges and what it defers.
     Implemented, reviewed, repaired, and merged; R4's PR #125 merged first and PR #126 landed on top
-    of it.
+    of it. **Its `one expert matmul succeeds` clause is discharged for a real expert claim by
+    item 20**, which took `schema_version` to 2 and added one shape rule and one error code —
+    the claim form was not, as this item's Japanese bullet had it, already addressable with no new
+    surface. The GPU expert arm stays deferred.
 15. **R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack.
     Merged as PR #127, merge commit `ccbd8ae` on `main`.** Was on branch
     `agent/r5a-dense-layer-forward`, rebased onto the merged R4.5 at `main` `fa567b1`.
@@ -773,8 +780,12 @@ layer-major
 merge済みである。実装・contract ledger・closure
 matrix・fixture設計・correction ledgerはすべて
 [`r4-alignpack-layer-major.md`](r4-alignpack-layer-major.md)にある。qwen側は実weightで達成済み
-（89 → 58 range、2,379,786 → 1,000,000 ppm、27 → 58/58 contiguous、byte identity）。per-expert側は
-合成fixtureのみで、実MoE GGUFが前提（**MOE-PREREQ**）。
+（89 → 58 range、2,379,786 → 1,000,000 ppm、27 → 58/58 contiguous、byte identity）。per-expert側も
+MOE-PREREQ-DISCHARGE（roadmap item 20、[`moe-prereq-discharge.md`](moe-prereq-discharge.md)）が
+実MoE model `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`で達成した（1,024 ExpertBlockが
+3,072 → 1,024 range、165,368,823,808 → 3,900,702,720 span、42,394,624 → 1,000,000 ppm、
+0 → 1,024/1,024 contiguous）。残る**MOE-PREREQ**はgpt-oss固有（6 member ExpertBlock、MXFP4、
+split expert bias、fused `ffn_gate_up_exps`）のみである。
 
 ---
 
@@ -805,9 +816,12 @@ matrix・fixture設計・correction ledgerはすべて
   offsetと厳密に一致（`14336 == 14336`、`verdict: EXTERNAL`）。
 - `quantized layout preserved` — **達成**。実Q4_K tensorの出力が元GGUFをggml所有memoryに読んだ
   reference armとbit一致（`differing_elements 0` / 14,336 f32）。
-- `one expert matmul succeeds` — **dense blockのみ達成**。この環境の実modelはdenseで、expert block
-  は**MOE-PREREQ**（R2/R4と同じ小型MoE GGUF決定待ち）。CLIはExpertBlockをblock indexで既に指定でき、
-  新surfaceは不要。
+- `one expert matmul succeeds` — **dense blockとexpert claimの両方でCPU backend上達成**。
+  MOE-PREREQ-DISCHARGE（roadmap item 20）が実MoE model
+  `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`のExpertBlock claimを計算し、元GGUFの同一planeと
+  bit一致した（`verdict: EXTERNAL`、`differing_elements 0`）。shipped armは当初この claimを
+  `R4_5_SHAPE`（detail `n_dims[3]`）で拒否しており、`schema_version: 2`・step 7a/7bの shape rule・
+  `R4_5_SLICE` codeの追加が必要だった。GPU armは引き続きdeferである。
 
 **未達として明示的にdeferしているもの**（ledger section 5.4）: GPU/Metal arm（unified memoryでは
 no-copyで動作することを実測済みだが、CPU出力とbit一致しないためtolerance oracleと別のalignment

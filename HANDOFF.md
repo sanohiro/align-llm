@@ -85,13 +85,21 @@ stratification, which the merged locality gate's corpus and aggregator are the i
 
 ## Design in progress
 
-Two local branches stack on this capability's implementation commit and carry a design ledger only;
-neither is pushed and neither has implementation:
+Two local branches stack on this capability's implementation commit; neither is pushed:
 
-- `agent/moe-prereq-discharge` at `49f8e4c` — the MoE prerequisite discharge ledger.
-- `agent/r3-residency-sim` at `198850b` — the R3 residency simulator ledger.
+- `agent/moe-prereq-discharge` — the MoE prerequisite discharge ledger **and its implementation**.
+  It discharges the per-expert half of R4 and R4.5 on the real olmoe model: the container's 1,024
+  `ExpertBlock`s go 42,394,624 → 1,000,000 ppm, and the spike computes real expert claims — all
+  three members of the first `ExpertBlock` and member 0 of the last, the latter a `slice_index
+  63/64` plane — every one `EXTERNAL` and bit-identical to the same plane read from the GGUF. The
+  claim form required `schema_version: 2`, step 7a/7b, and the new `R4_5_SLICE` code; R4's
+  hotness/prefetch groups and R4.5's GPU expert arm stay deferred. **Review:** one comprehensive
+  reviewer of the whole diff at the pre-rebase implementation head `ee041a7` — verdict *approve*,
+  8 findings (4 minor, 2 low, 2 nit), **all 8 accepted**, none rejected, all repaired in the single
+  follow-up commit on that branch.
+- `agent/r3-residency-sim` at `198850b` — the R3 residency simulator ledger, design only.
 
-Both must be rebased onto the merged R1C before any implementation starts.
+Both must be rebased onto the merged R1C before publication or further implementation.
 
 ## Pending decisions (2026-08-28)
 

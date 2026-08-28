@@ -120,12 +120,14 @@ reclaim() {
     echo "ggml spike qualification: reclaimed ${size} bytes"
   fi
   # Every file this runner creates, not only the two named ones: a caller-supplied temporary
-  # directory is not ours to leave litter in, and `forced-*.json` is litter.
+  # directory is not ours to leave litter in, and `forced-*.json` is litter. The expert documents
+  # are removed by pattern rather than by a fixed list of member positions, because how many the
+  # expert arm writes is a property of the packed model's own `ExpertBlock` and not of this script.
   rm -f "${pack_document}" "${spike_document}" "${tmpdir}/spike.err" \
     "${tmpdir}/absent.json" "${tmpdir}/diverged.json" \
     "${tmpdir}/forced-init.json" "${tmpdir}/forced-compute.json" \
     "${tmpdir}/forced-reference.json" \
-    "${tmpdir}/expert-0.json" "${tmpdir}/expert-1.json" "${tmpdir}/expert-2.json" \
+    "${tmpdir}"/expert-*.json \
     "${tmpdir}/selection.json"
   if [ "${owned_tmpdir}" = 1 ]; then
     rmdir "${tmpdir}" 2>/dev/null || true
@@ -175,7 +177,7 @@ run_spike() {
 # case can run it: this runner refuses before this point on any host without ggml.
 python3 "${root_dir}/scripts/ggml_spike_select.py" "${pack_document}" >"${tmpdir}/selection.json"
 
-# Four scalars out of the selection document, each named rather than computed in the shell.
+# Five scalars out of the selection document, each named rather than computed in the shell.
 read_selection() {
   python3 - "${tmpdir}/selection.json" "$1" <<'PY'
 import json
@@ -191,6 +193,9 @@ elif field == "expert_block":
     print(selection["expert"]["block"] if selection["expert"] else -1)
 elif field == "expert_members":
     print(" ".join(str(m) for m in selection["expert"]["members"]) if selection["expert"] else "")
+elif field == "expert_last_block":
+    last = selection["expert"]["last_block"] if selection["expert"] else None
+    print(last if last is not None else -1)
 else:
     raise SystemExit("unknown selection field %r" % field)
 PY
@@ -199,6 +204,7 @@ dense_block=$(read_selection dense_block)
 dense_member=$(read_selection dense_member)
 expert_block=$(read_selection expert_block)
 expert_members=$(read_selection expert_members)
+expert_last_block=$(read_selection expert_last_block)
 
 # The dense arm, with the original GGUF as the reference oracle.
 set +e
@@ -216,21 +222,35 @@ fi
 # measured that member 0's interior offset is zero and therefore does not exercise interior
 # addressing at all; members 1 and 2 do, and member 2 is the transposed axis order at the larger
 # offset. Three runs cost about three seconds.
+run_expert() {
+  set +e
+  run_spike "${pack}" "$1" "$2" "$3" "${model}" >/dev/null 2>"${tmpdir}/spike.err"
+  expert_status=$?
+  set -e
+  if [ "${expert_status}" != 0 ]; then
+    echo "ggml spike qualification: FAIL the expert arm exited ${expert_status}" \
+      "on block $1 member $2" >&2
+    tail -c 2000 "${tmpdir}/spike.err" >&2 || true
+    exit 1
+  fi
+}
+
 expert_count=0
 if [ "${expert_block}" != "-1" ]; then
   for member in ${expert_members}; do
-    set +e
-    run_spike "${pack}" "${expert_block}" "${member}" "${tmpdir}/expert-${member}.json" \
-      "${model}" >/dev/null 2>"${tmpdir}/spike.err"
-    expert_status=$?
-    set -e
-    if [ "${expert_status}" != 0 ]; then
-      echo "ggml spike qualification: FAIL the expert arm exited ${expert_status} on member ${member}" >&2
-      tail -c 2000 "${tmpdir}/spike.err" >&2 || true
-      exit 1
-    fi
+    run_expert "${expert_block}" "${member}" "${tmpdir}/expert-${member}.json"
     expert_count=$((expert_count + 1))
   done
+fi
+
+# And member 0 of the **last** `ExpertBlock`, which is the only run here whose `slice_index` is not
+# zero: every member of the first block is plane 0 of its stacked tensor, so without this one no
+# real model exercises interior addressing at a plane index greater than zero and section 5.4 would
+# have to record that as a gap the synthetic corpus alone covers. One more run, about one second.
+expert_last=0
+if [ "${expert_last_block}" != "-1" ]; then
+  run_expert "${expert_last_block}" 0 "${tmpdir}/expert-last.json"
+  expert_last=1
 fi
 
 # The four failures no input can produce, each with the shim rebuilt exactly as section 4.6 names.
@@ -258,14 +278,15 @@ run_spike "${pack}" "${dense_block}" "${dense_member}" "${tmpdir}/diverged.json"
 set -e
 
 python3 - "${pack_document}" "${spike_document}" "${tmpdir}" "${pack_size}" "${expert_count}" \
-  "${forced_codes[@]}" <<'PY'
+  "${expert_last}" "${forced_codes[@]}" <<'PY'
 import json
 import os
 import sys
 
-pack_document_path, document_path, tmpdir, pack_size, expert_count = sys.argv[1:6]
-forced = dict(entry.split("=", 1) for entry in sys.argv[6:])
+pack_document_path, document_path, tmpdir, pack_size, expert_count, expert_last = sys.argv[1:7]
+forced = dict(entry.split("=", 1) for entry in sys.argv[7:])
 expert_count = int(expert_count)
+expert_last = int(expert_last)
 pack_document = json.load(open(pack_document_path, encoding="utf-8"))
 document = json.load(open(document_path, encoding="utf-8"))
 
@@ -298,6 +319,8 @@ GOLDEN = {
             "1a5ceeeaad4c03d43e2e73fafe1b73f2b74edb86970ec021b65018c2cda91c1a",
             "6436a1ff2caac9446fc784e7c6b74bda70ee14d2a9ca051905fbc9a7ef21f8ef",
         ],
+        # Member 0 of the **last** `ExpertBlock`: the `slice_index > 0` plane.
+        "expert_last": "7891a6cc8ad9bce54026849a613c808c653a79acedbdc32d40569b1b6ce4ea20",
     },
 }
 identity = pack_document["source"]["header_region_sha256"]
@@ -427,6 +450,21 @@ for position in range(expert_count):
                         % (position, member["slice_index"], member["slice_count"]))
     report("expert-%d" % position, spike, block, member)
 
+# The last `ExpertBlock`'s member 0, which is where a `slice_index` greater than zero is measured on
+# a real model rather than on the synthetic corpus (section 5.4). A container with exactly one
+# `ExpertBlock` writes no such document, and the plane it would address is the one already measured.
+last_document = None
+if expert_last:
+    last_document = json.load(open(os.path.join(tmpdir, "expert-last.json"), encoding="utf-8"))
+    expect("expert-last schema_version", last_document["schema_version"], 2)
+    last_block, last_member = invariants("expert-last", last_document)
+    if last_block["kind"] != "ExpertBlock":
+        failures.append("expert-last: selected a %s" % last_block["kind"])
+    if last_member["slice_index"] < 1:
+        failures.append("expert-last: slice_index is %r, so no plane past the first was measured"
+                        % (last_member["slice_index"],))
+    report("expert-last", last_document, last_block, last_member)
+
 if expert_count == 0:
     # Section 5.5: a dense model has nothing to discharge here, and saying so is not a pass.
     print("ggml spike qualification (expert block): N/A - the packed model has no ExpertBlock; "
@@ -435,21 +473,34 @@ else:
     print("ggml spike qualification (expert block): PASS  %d claims of block %d, all EXTERNAL and "
           "IDENTICAL against the GGUF plane at source_offset"
           % (expert_count, expert_documents[0]["selection"]["block_index"]))
+    if last_document is None:
+        print("ggml spike qualification (expert plane index): N/A - the packed model holds one "
+              "ExpertBlock, so every plane it can address is plane 0. See "
+              "docs/specs/moe-prereq-discharge.md section 5.4.")
+    else:
+        print("ggml spike qualification (expert plane index): PASS  block %d member 0 is plane "
+              "%d/%d, EXTERNAL and IDENTICAL"
+              % (last_document["selection"]["block_index"],
+                 last_document["tensor"]["slice_index"], last_document["tensor"]["slice_count"]))
 
 # ---- the digests, keyed by model identity ------------------------------------------------------
 expected_dense = dense_override or (golden["dense"] if golden else None)
 expected_expert = golden["expert"] if golden else []
 if expert_override and expert_documents:
     expected_expert = [expert_override] + list(expected_expert[1:])
-if expected_dense is None and not expected_expert:
+expected_last = golden.get("expert_last") if golden else None
+if expected_dense is None and not expected_expert and expected_last is None:
     print("ggml spike qualification (digests): N/A - model identity %s is not in the digest table "
           "and no override was given; every invariant above still ran. See "
           "docs/specs/moe-prereq-discharge.md section 3.5." % identity)
 else:
-    if expected_dense is not None and document["output"]["sha256"] != expected_dense:
-        failures.append("dense output.sha256 is %s, not %s — the ggml kernel, the model, or the "
-                        "activation changed; see docs/specs/r4-5-external-buffer.md section 5.2"
-                        % (document["output"]["sha256"], expected_dense))
+    checked_dense = 0
+    if expected_dense is not None:
+        checked_dense = 1
+        if document["output"]["sha256"] != expected_dense:
+            failures.append("dense output.sha256 is %s, not %s — the ggml kernel, the model, or "
+                            "the activation changed; see docs/specs/r4-5-external-buffer.md "
+                            "section 5.2" % (document["output"]["sha256"], expected_dense))
     for position, spike in enumerate(expert_documents):
         if position >= len(expected_expert):
             continue
@@ -458,8 +509,20 @@ else:
                             "or the activation changed; see "
                             "docs/specs/r4-5-external-buffer.md section 5.2"
                             % (position, spike["output"]["sha256"], expected_expert[position]))
-    print("ggml spike qualification (digests): checked 1 dense and %d expert digests against "
-          "model identity %s" % (min(len(expert_documents), len(expected_expert)), identity))
+    checked_last = 0
+    if expected_last is not None and last_document is not None:
+        checked_last = 1
+        if last_document["output"]["sha256"] != expected_last:
+            failures.append("expert-last output.sha256 is %s, not %s — the ggml kernel, the model, "
+                            "or the activation changed; see "
+                            "docs/specs/r4-5-external-buffer.md section 5.2"
+                            % (last_document["output"]["sha256"], expected_last))
+    # Each count is what this run actually compared, so a model whose identity supplies only some of
+    # the three arms' digests cannot report a check it did not make.
+    print("ggml spike qualification (digests): checked %d dense, %d expert, and %d last-plane "
+          "digests against model identity %s"
+          % (checked_dense, min(len(expert_documents), len(expected_expert)), checked_last,
+             identity))
 
 # ---- the failures no input can produce ---------------------------------------------------------
 expect("forced init", forced.get("init"), "R4_5_GGML_INIT")
