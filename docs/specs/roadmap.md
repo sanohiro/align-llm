@@ -278,7 +278,7 @@ The current forward delivery order is:
 
 21. **R3-RESIDENCY-SIM — the R3 cache-simulator gate, measured on the real MoE activation corpus.
     Implemented and reviewed; in publication.** On branch `agent/r3-residency-sim`, rebased onto the
-    merged MoE prerequisites at `main` `35a0df6`. [`r3-residency-sim.md`](r3-residency-sim.md) is the
+    merged MoE prerequisites and C8's optional targeted stage at `main` `4f01553`. [`r3-residency-sim.md`](r3-residency-sim.md) is the
     authoritative plan and owns the contract ledger, the closure matrix, the correction ledger, the
     probe record, and the cell-to-case map; the design gate triggered on three counts (a new public
     CLI verb `--simulate-residency`, a new exchanged format `R3_RESIDENCY_SIM` `schema_version: 1`,

@@ -867,10 +867,10 @@ compares fetched bytes only.
 
 **Two Align capability requests came out of implementing this module**, both recorded in
 `docs/align-requests.md` with fresh sibling probes under the pinned compiler and neither blocking:
-**Request 44** (priority high) is a compiler soundness defect — the region checker accepts a move of
+**Request 45** (priority high) is a compiler soundness defect — the region checker accepts a move of
 a Move-typed field out of a `json.decode`d record through a two-hop field-access chain with no
 diagnostic, and the built program corrupts the heap at run time when the decoded record's recursive
-`Drop` frees the same string again; the shipped fix is one `.clone()`. **Request 45** is two related
+`Drop` frees the same string again; the shipped fix is one `.clone()`. **Request 46** is two related
 array-shape gaps — a local `array<i64>` passed `borrow mut` into a call inside a `loop` invalidates
 the caller's later reads of it, and an `array<i64>` field of a record cannot be element-assigned at
 all — which together force every helper here to return owned columns and force one admission block

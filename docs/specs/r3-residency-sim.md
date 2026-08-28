@@ -1394,7 +1394,8 @@ edit; this section is the client evidence.
    `BUDGET_BYTES` is a CLI operand and a `json.decode` detour would accept `-0`, `1e3`, and leading
    whitespace, none of which this operand admits. `parse_budget` is 15 lines with an explicit
    non-wrapping overflow guard.
-6. **Huge-struct-copy warnings on `borrow` parameters** (Request 23). Fourth client:
+6. **Huge-struct-copy warnings on `borrow` parameters** (Request 23). Sixth client, counting the
+   register's own list:
    `residency_sim$Derived` (440 bytes) warns on the renderer's `borrow` parameter, and
    `residency_sim$ResidencySim` (200 bytes) and `residency_sim$TraceLoad` (184 bytes) warn on the
    returns that own them. Four sites, additional evidence, no status change.
