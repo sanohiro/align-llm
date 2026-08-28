@@ -58,12 +58,15 @@ reported `baseline Align revision differs from .align-revision`. A diagnostic re
 same sole cause; both runs cleaned their profile state successfully. R3 changes the identity-bound
 `Makefile` and `src/main.align`, so the existing canonical baseline cannot be reused.
 
-**Next actions, in order.** (1) Commit this correction as the clean implementation source, record
-the two-sample deterministic reference, commit its immutable oracle, and finalize the canonical
-baseline/digest as the required three-commit chain. (2) Run `make baseline-check`, review the final
-whole diff because the repair expands the publication artifact set, and rerun exact-head preflight.
-(3) Publish and merge with a merge commit. (4) Refresh `main` and continue the next eligible roadmap
-capability.
+**Baseline refresh.** The required chain is `e080d83` -> `1291b8b` -> `898b502` (clean source ->
+immutable oracle -> finalization). The WSL2/Ryzen 9 5950X deterministic-reference run recorded two
+passing attempts with a 268,617,652 ns median. The 20 artifact paths are unchanged; `.align-revision`,
+`Makefile`, and `src/main.align` have new identities. `make baseline-check` ends `baseline chain:
+PASS`, and no pending record remains.
+
+**Next actions, in order.** (1) Review the final whole diff because the repair expands the
+publication artifact set, then rerun exact-head preflight. (2) Publish and merge with a merge
+commit. (3) Refresh `main` and continue the next eligible roadmap capability.
 
 ## Merged checkpoint: GCC14-FP-CONTRACT-PORTABILITY (2026-08-28)
 
