@@ -1,12 +1,14 @@
 """Trace-list projections for the R3 decode residency arms.
 
-`scripts/run-decode-residency-gate` replays one full-axis R2c capture three times, and the three
+`scripts/run-decode-residency-gate` replays one full-axis R2c capture four times, and the four
 arms differ only in which graphs of each `R2_ACTIVATION_TRACE` reach the simulator:
 
     mixed         every admitted graph, the document exactly as captured
     decode_only   graph 0 projected away, so the stream is generated tokens and nothing else
     prefill_only  every graph but graph 0 projected away, so the stream is prompt tokens and
                   nothing else, at the same full router axes as the other two
+    decode_head4  graph 0 and every decode graph after the fourth projected away, so the stream is
+                  generated tokens and nothing else at roughly the prefill-only arm's length
 
 A projection is a projection *for the simulator*, not a re-derived R2A document: exactly the two
 arrays `main --simulate-residency` reads — `graphs` and `selections` — are filtered, and every other
@@ -33,9 +35,27 @@ key is carried over by reference, so a caller must treat the result as read-only
 # a graph: it only decides which ordinals survive.
 PREFILL_ORDINAL = 0
 
+# The `decode_head4` arm keeps decode ordinals 1..4 of every document. Four is not arbitrary: on the
+# R3 corpus it makes the arm 40 x 4 x 16 x 8 = 20,480 demands over 160 token positions, next to the
+# prefill-only arm's 23,040 over 192, so the two differ in phase at a comparable stream length. The
+# arm name embeds this number; changing it means renaming the arm.
+DECODE_HEAD_STEPS = 4
+
 # The arm names, in the order the runner reports them. `mixed` is the identity projection and is
 # listed here so a caller can drive every arm from one table.
-ARM_NAMES = ("mixed", "decode_only", "prefill_only")
+ARM_NAMES = ("mixed", "decode_only", "prefill_only", "decode_head4")
+
+# The one place an arm is *defined*: a predicate over the graph ordinal. `scripts/residency_
+# projection.py` exports the predicates as well as the projections so that a caller which needs to
+# reason about an arm without projecting a document — `scripts/run-decode-residency-gate` derives
+# the head-4 arm's expected phase census from the captured graphs this way — asks this table rather
+# than re-deriving the rule.
+KEEPS = {
+    "mixed": lambda ordinal: True,
+    "decode_only": lambda ordinal: ordinal != PREFILL_ORDINAL,
+    "prefill_only": lambda ordinal: ordinal == PREFILL_ORDINAL,
+    "decode_head4": lambda ordinal: PREFILL_ORDINAL < ordinal <= DECODE_HEAD_STEPS,
+}
 
 
 def _select(document, keep):
@@ -52,12 +72,29 @@ def _select(document, keep):
 
 def project_mixed(document):
     """The identity projection: the captured document, graphs and all."""
-    return _select(document, lambda ordinal: True)
+    return _select(document, KEEPS["mixed"])
 
 
 def project_decode_only(document):
     """The captured document with graph 0 projected away and every ordinal left as captured."""
-    return _select(document, lambda ordinal: ordinal != PREFILL_ORDINAL)
+    return _select(document, KEEPS["decode_only"])
+
+
+def project_decode_head4(document):
+    """The captured document with graph 0 and every decode graph after the fourth projected away.
+
+    This is the arm that addresses the confound section 8.3 of `docs/specs/r3-residency-sim.md`
+    named and could not separate. The decode-only arm removes the decode graphs' *phase* and their
+    *stream length* at once: it is 81,920 demands over 640 token positions against the prefill-only
+    arm's 23,040 over 192, so a verdict that differs between them could belong to either. Truncating
+    decode to its first four steps holds the corpus, the budget, the admission rule, the full slot
+    axis, and the phase fixed and brings the length back to the prefill-only arm's order, so a
+    verdict this arm shares with `decode_only` is not attributable to stream length.
+
+    The kept ordinals are 1..4 as captured, so every retained graph is still `decode` under
+    `docs/specs/r2a-expert-trace.md` section 2.5.6 and nothing here is renumbered.
+    """
+    return _select(document, KEEPS["decode_head4"])
 
 
 def project_prefill_only(document):
@@ -70,13 +107,14 @@ def project_prefill_only(document):
     admission rule, and the full slot axis fixed and removes only the decode graphs, so a verdict
     that still differs from section 7.4's is a coverage effect and not a decode effect.
     """
-    return _select(document, lambda ordinal: ordinal == PREFILL_ORDINAL)
+    return _select(document, KEEPS["prefill_only"])
 
 
 PROJECTIONS = {
     "mixed": project_mixed,
     "decode_only": project_decode_only,
     "prefill_only": project_prefill_only,
+    "decode_head4": project_decode_head4,
 }
 
 
@@ -85,8 +123,9 @@ def declared_demands(document):
 
     This mirrors `src/residency_sim.align`'s admission rather than counting `selections` blindly, so
     a caller's a-priori bound is the number the simulator will actually allocate. Because admission
-    is decided per graph and a projection only removes whole graphs, the three arms partition one
-    capture exactly: `mixed` = `prefill_only` + `decode_only`, demand for demand.
+    is decided per graph and a projection only removes whole graphs, the two complementary arms
+    partition one capture exactly: `mixed` = `prefill_only` + `decode_only`, demand for demand.
+    `decode_head4` is not part of that partition — it is a strict subset of `decode_only`.
     """
     admitted = {row["ordinal"] for row in document.get("graphs") or []
                 if not row.get("tokens_truncated")}

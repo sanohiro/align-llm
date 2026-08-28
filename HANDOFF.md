@@ -17,10 +17,11 @@ independent reviewers, and the consolidated repair are complete and committed on
 the standing every R2c consumer has. It takes `scripts/run-decode-locality-gate`'s capture flag for
 flag (40 prompts, `-n 16 --temp 0 --seed 42 -t 4 -fa off -ctk f32 -ctv f32 -nr -c 512`), derives one
 `R2_ACTIVATION_TRACE` per transcript, deletes the transcript, admits the corpus with R2D's
-`require_full_router_axes`, and runs `main --simulate-residency` **three** times at section 7.4's own
+`require_full_router_axes`, and runs `main --simulate-residency` **four** times at section 7.4's own
 975,175,680 B budget: the **mixed** list as captured, a **decode-only** list with graph 0 projected
-away, and a **prefill-only** control with the decode graphs projected away instead. The ordinals are
-kept in every projection. The projections live in `scripts/residency_projection.py`, imported by
+away, a **prefill-only** coverage control with the decode graphs projected away instead, and a
+**head-4** stream-length control keeping only decode ordinals 1–4. The ordinals are kept in every
+projection. The projections live in `scripts/residency_projection.py`, imported by
 both the runner and `scripts/run-residency-sim-smoke`, so the arms the hosted owner proves against
 the independent oracle are the arms the real-model runner replays.
 
@@ -32,21 +33,31 @@ corpus-identity block, and the transcript cap from both files and fails if they 
 the extracted invocation stops containing the flags.
 
 **The gate is met in the decode direction and the answer is narrower than the recorded one — and
-the control arm changes what that is attributed to.** On the same 40-prompt corpus: mixed 104,960
-demands over 832 token positions, decode-only 81,920 over 640, prefill-only 23,040 over 192, slot
-coverage 1,000 per mille everywhere. `recent_reuse` beats `lru` by 59 to 238 per mille at
-15/31/62/125 per mille of the expert footprint on both decode arms, and at 250 and 500 per mille
-**no candidate beats the baseline at all** — both `NO_POLICY_BEATS_BASELINE`, `recent_reuse_w2`
-byte-identical to `lru`, `lfu` flipped from a 221-per-mille saving to 152/190-per-mille losses.
+the two control arms change what that is attributed to.** On the same 40-prompt corpus: mixed
+104,960 demands over 832 token positions, decode-only 81,920 over 640, prefill-only 23,040 over 192,
+head-4 20,480 over 160, slot coverage 1,000 per mille everywhere. `recent_reuse` beats `lru` by 59
+to 238 per mille at 15/31/62/125 per mille of the expert footprint on the mixed and decode-only arms
+and by 70 to 200 at 31/62/125 on head-4, and at 250 and 500 per mille **no candidate beats the
+baseline at all** on any of the three — all `NO_POLICY_BEATS_BASELINE`, `recent_reuse_w2`
+byte-identical to `lru`, `lfu` flipped from a 221-per-mille saving to 152/190/88-per-mille losses.
 **But the prefill-only control is `BEATS_BASELINE` at that same 250-per-mille budget**: `lfu` 194
 per mille, jackknife tested and stable at a 186-per-mille minimum, `recent_reuse_w32` clearing the
 floor at 191. So section 7.4's 223-per-mille win **survives the coverage change** (six printed slots
-to eight), and what removes it is the presence of decode demands. The working-set explanation an
-earlier draft gave is measured and **rejected**: the winning control arm sits at 2.14 working sets,
-tighter than section 7.4's 2.86 and within seven per cent of the losing mixed arm's prefill
-positions. One confound is named and not separated: decode also lengthens the stream 4.3×. 476 and
-473 per mille of headroom stay uncaptured by every online candidate on the decode arms. Full record,
-limits, and mutation evidence: `docs/specs/r3-residency-sim.md` section 8.
+to eight). **The head-4 arm excludes stream length as well**: at 20,480 demands, eleven per cent
+*fewer* than the winning prefill-only arm, it is still `NO_POLICY_BEATS_BASELINE` with a gain of 0.
+Two arms of comparable length at the same budget over the same corpus give opposite verdicts and
+only the phase differs, so what removes the win is the presence of decode demands — not coverage,
+not the working-set ratio, not length. The working-set explanation an earlier draft gave is measured
+and **rejected**: the winning control arm sits at 2.14 working sets, the *identical* multiple the
+losing mixed arm's own prefill positions sit at (the seven per cent is the distance to a decode
+position's 2.00), and both are tighter than section 7.4's 2.86. *Why* frequency loses is **not**
+settled: it is consistent with decode's more uniform routing, which `r2a-expert-trace.md` section
+9.4 measures as small (4-per-mille entropy gap, up to 0.24 of it estimator bias, ~3 per cent mass
+variance), so that is one candidate explanation and not a mechanism. What remains unseparated is
+decode's routing statistics from a decode position's wider working set (sixteen layers against
+fifteen). 476, 473, and 453 per mille of headroom stay uncaptured by every online candidate on the
+three decode arms. Full record, limits, and mutation evidence:
+`docs/specs/r3-residency-sim.md` section 8.
 
 **Consequences recorded in the roadmap.** R4B's decode-corpus resume condition is **discharged
 negatively** — the decode histogram is more uniform than prefill's (entropy 996) and no prefetch
@@ -58,7 +69,7 @@ the control arm strengthens rather than weakens that: the premise fails specific
 contain decode, which is what a runtime serves.
 
 **Candidate contents.** `scripts/run-decode-residency-gate` (new), `scripts/residency_projection.py`
-(new), five cases and two binding checks in `scripts/run-residency-sim-smoke`, one behaviour-neutral
+(new), six cases and two binding checks in `scripts/run-residency-sim-smoke`, one behaviour-neutral
 `usedforsecurity=False` keyword in `scripts/run-decode-locality-gate` required by the
 `capture-identity` check, `docs/specs/r3-residency-sim.md` section 8, the roadmap R3/R4B/R6
 paragraphs and items 23/24/25, the developer-guide section, and this handoff update. **No Align
@@ -75,14 +86,19 @@ independent reviewers over disjoint risks. Reviewer B (docs/governance) requeste
 mutants killed. All 18 were validated and **accepted**; none was rejected. They are repaired in one
 consolidated commit together with the merge of `main` `c21b9e4`.
 
-**The repair is materially more than a repair, and a final delta review is warranted.** Reviewer B's
+**The repair was materially more than a repair, and a final delta review was taken.** Reviewer B's
 major 2 asked for a third arm or a demotion of the mechanism claim to a hypothesis. The third arm
 was built and run, and it **refuted the reading the section had recorded**: the loss at 25 per cent
-is not a coverage artefact and not a working-set artefact, it is decode. Section 8.3, section 8.4,
-the roadmap item, the roadmap R3/R4B/R6 Japanese paragraphs, and this record are re-worded to what
-the evidence supports. The runner gained an arm, `graph_phases` assertions, a partition assertion,
-budget validation, an imported projection module, and `jackknife_tested`; the hosted owner gained
-three cases and two binding checks.
+is not a coverage artefact and not a working-set artefact, it is decode. The final delta review
+approved that repair with minors, of which the substantive one was that the section still asserted
+a *routing-statistics* mechanism the arms could not separate from stream length. A **fourth arm**
+(`decode_head4`) was therefore added and the whole gate re-run on the real model: it excludes length
+too, and the mechanism claim is now stated as an intervention plus one candidate explanation.
+Section 8.1–8.5, the roadmap item, the roadmap R3/R4B/R6 Japanese paragraphs, the developer guide,
+and this record are re-worded to what the evidence supports. The runner gained two arms,
+`graph_phases` assertions, partition and subset assertions, budget validation, an imported
+projection module, and `jackknife_tested`; the hosted owner gained four cases and two binding
+checks.
 
 **Root-cause audit across the diff.** Every `ALIGN_LLM_*` read in `run-decode-residency-gate` is now
 validated or has an explicit N/A path, `ALIGN_LLM_RESIDENCY_BUDGET` included. Every positional index
@@ -104,10 +120,12 @@ measurement. It remains a follow-up for that runner's owner. The pre-existing po
 every caller runs after `check_case` has compared the whole document to the independent oracle,
 which fails first on any order the index could mis-select.
 
-**Next actions, in order.** Order one final delta review of the repair (the third arm and the
-re-worded consequences materially change the recorded conclusion), then run exact-head preflight,
-publish the English pull request with the measurement and both review envelopes, monitor required
-checks, and merge.
+**Next actions, in order.** Publish the English pull request with the four-arm measurement and the
+review envelope, monitor required checks, merge, and then start the next eligible Track B roadmap
+item. The comprehensive review is closed: two independent reviewers at `eb38ecd` (18 findings, all
+accepted and repaired in `403a4a3`), one final delta review of that repair (approve with minors),
+and one narrow repair of those minors, which added the head-4 arm and re-ran the gate. No further
+full review is required; the repair narrows a recorded claim rather than expanding scope.
 
 **Latest durable verification.** At the repair head, on this macOS arm64 host with the managed Align
 `3a34febe` toolchain:
@@ -117,19 +135,20 @@ gmake build                          PASS
 gmake residency-sim-smoke            PASS, 2 model IRs, 27 traces, every policy at every sweep
                                      budget against the independent oracle, both CLI forms, the
                                      golden, determinism, the section 2.6 error corpus, and the
-                                     five new cases and two binding checks; 6 of 6 mutants killed,
+                                     six new cases and two binding checks; 8 of 8 mutants killed,
                                      including one that survived before `sim-renumbered-decode-only`
-                                     was added
+                                     was added and both mutations of the head-4 predicate
 gmake expert-trace-smoke             PASS, 108 fixtures / 17 error codes, both aggregators
 gmake format-check                   PASS
 gmake gate-topology-check            PASS
 git diff --check                     clean
-scripts/run-decode-residency-gate    MEASURED, exit 0, three arms; mixed and decode-only
+scripts/run-decode-residency-gate    MEASURED, exit 0, four arms; mixed, decode-only, and head-4
                                      NO_POLICY_BEATS_BASELINE and prefill-only BEATS_BASELINE at
-                                     the requested budget; 219.4 s for 40 captures. Run three
-                                     times on this host, the last at this exact head: every line of
-                                     output identical across the runs except `elapsed` (509.4 s
-                                     under concurrent load, 261.0 s, 219.4 s). Elapsed is a
+                                     the requested budget; 531.7 s for 40 captures. Run four times
+                                     on this host, the last at this exact head and the only one
+                                     carrying the head-4 arm: every line the first three arms print
+                                     is identical across all four runs except `elapsed` (509.4 s
+                                     under concurrent load, 261.0 s, 219.4 s, 531.7 s). Elapsed is a
                                      load-dependent diagnostic and nothing rests on it
 ```
 

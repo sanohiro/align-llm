@@ -1102,7 +1102,7 @@ decode residency gate: N/A (ALIGN_LLM_GGUF_MODEL is absent)
 The other four variables are **overrides, not switches**: a corpus this script was pointed at and
 cannot read is a broken invocation that exits 1, never `N/A`.
 
-**Three arms, one budget, one rule.** The capture is `scripts/run-decode-locality-gate`'s, flag for
+**Four arms, one budget, one rule.** The capture is `scripts/run-decode-locality-gate`'s, flag for
 flag — `-n N --temp 0 --seed 42 -t 4 -fa off -ctk f32 -ctv f32 -nr -c 512` — so the two decode
 measurements are taken over the same greedy continuations. The capture logic is **deliberately
 duplicated** rather than factored into a shared helper: the two runners differ in their N/A
@@ -1120,13 +1120,19 @@ runner and not the other is a smoke failure, not a silent second measurement.
 | `mixed` | the documents as captured | a session of short requests, prompt and generation pooled — the regime section 7 was already reading |
 | `decode_only` | the same documents with graph 0 projected away | generation alone, with no prompt tokens in the stream |
 | `prefill_only` | the same documents with every decode graph projected away | the **coverage control**: prompt tokens alone, at the same full eight-slot axis |
+| `decode_head4` | the same documents with graph 0 and every decode graph after the fourth projected away | the **stream-length control**: generation alone at the prefill-only arm's order of length |
 
-The third arm is what makes the other two interpretable. R2c changed *two* things at once against
-the stream section 7.4 recorded — the router axis went from six printed slots to all eight, and real
-decode graphs appeared — so a verdict that moved could be caused by either. The prefill-only arm
-holds corpus, budget, admission rule, and slot axis fixed and removes only the decode graphs. If it
-agrees with the other two, the movement is a **coverage** effect and must not be attributed to
-decode; only a verdict the prefill-only arm does *not* share is decode-specific.
+The last two arms are what make the first two interpretable, and each removes one confound. R2c
+changed *two* things at once against the stream section 7.4 recorded — the router axis went from six
+printed slots to all eight, and real decode graphs appeared — so a verdict that moved could be
+caused by either. The prefill-only arm holds corpus, budget, admission rule, and slot axis fixed and
+removes only the decode graphs. If it agrees with the other arms, the movement is a **coverage**
+effect and must not be attributed to decode; only a verdict the prefill-only arm does *not* share is
+decode-specific. That control is also much shorter than the decode arms, though — 23,040 demands
+against 81,920 — so a verdict that differs could still belong to the cache pressure the longer
+stream carries rather than to the phase. The head-4 arm keeps the phase and truncates each
+generation to its first `DECODE_HEAD_STEPS` steps, 20,480 demands over 160 positions, so a verdict
+it shares with the decode-only arm is not a **length** effect either.
 
 Each list is a **projection for the simulator**, not a second R2A document: exactly the two arrays
 `main --simulate-residency` reads — `graphs` and `selections` — are filtered, and every other block
@@ -1139,15 +1145,16 @@ The projections live in `scripts/residency_projection.py`, **imported by both** 
 `scripts/run-residency-sim-smoke`, so the arms the hosted owner checks against the independent
 oracle are the arms the real-model runner replays. `projection-binding` in that smoke pins the
 import by name and fails if the runner grows a projection of its own. The runner also asserts the
-partition — `mixed` demands equal `prefill_only` plus `decode_only`, demand for demand — and
-asserts each arm's `graph_phases` census, which is the only field that states *which* phase was
+partition — `mixed` demands equal `prefill_only` plus `decode_only`, demand for demand — that
+`decode_head4` is a strict subset of `decode_only` carrying exactly four decode graphs per prompt,
+and each arm's `graph_phases` census, which is the only field that states *which* phase was
 replayed: a projection that filtered nothing, filtered everything, or renumbered an ordinal would
 otherwise still produce a well-formed document with plausible byte totals.
 
 **`one_token_working_set_*` is a first-position quantity, not an arm average.**
 `src/residency_sim.align` scans the pooled stream until the first demand whose token ordinal is not
 0, so the field reports the working set of whichever token position sorts first. In the mixed and
-prefill-only arms that is a prompt token; in the decode-only arm it is a generated one. Read it as
+prefill-only arms that is a prompt token; in the two decode arms it is a generated one. Read it as
 "a token of this phase demands this much", never as "this arm's tokens demand this much on average".
 
 **Bounds are checked before the instrument runs.** `src/residency_sim.align`'s `MAX_DEMANDS` is
@@ -1155,7 +1162,7 @@ prefill-only arms that is a prompt token; in the decode-only arm it is a generat
 token, every router slot is printed, and a one-token graph has no token-reduced tail — so
 `prompts x steps x n_layer x n_expert_used` is checked against the cap first and names the two knobs
 to lower. The exact pooled total, prefill included, is re-checked after the capture, and the section
-2.7 simulation-cost product is asserted against `MAX_SIMULATION_STEPS` for both arms before any
+2.7 simulation-cost product is asserted against `MAX_SIMULATION_STEPS` for every arm before any
 replay is launched.
 
 **It is a measurement, not a pass/fail owner test.** It exits 0 on every `verdict.result` of every

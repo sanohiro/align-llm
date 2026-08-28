@@ -14,7 +14,7 @@ set -euo pipefail
 # It captures one prompt-plus-decode transcript per prompt from the same checked-in corpus with the
 # same contractual flags `scripts/run-decode-locality-gate` established, derives one
 # `R2_ACTIVATION_TRACE` per transcript with `main --expert-trace`, deletes the transcript, admits
-# the corpus with R2D's `require_full_router_axes`, and runs `main --simulate-residency` three
+# the corpus with R2D's `require_full_router_axes`, and runs `main --simulate-residency` four
 # times over one capture:
 #
 #   mixed         every admitted graph — the prompt's prefill graph and its decode graphs — pooled
@@ -23,13 +23,18 @@ set -euo pipefail
 #                 left as captured, so the stream is generated tokens and nothing else
 #   prefill-only  the same documents with every decode graph projected away, so the stream is
 #                 prompt tokens and nothing else — at the same full eight-slot router axis
+#   decode-head4  the same documents with graph 0 and every decode graph after the fourth projected
+#                 away, so the stream is generated tokens at the prefill-only arm's order of length
 #
-# The third arm exists to separate the two things R2c changed at once. Against the prefill-only,
+# The last two arms are controls, and each removes one confound. Against the prefill-only,
 # six-of-eight-slot stream `docs/specs/r3-residency-sim.md` section 7.4 recorded, the mixed and
 # decode-only arms differ in *both* coverage and phase, so a verdict that moved could be caused by
 # either. The prefill-only arm holds corpus, budget, admission rule, and slot axis fixed and removes
 # only the decode graphs: if it agrees with the other two, the movement is a coverage effect and the
-# section must not attribute it to decode.
+# section must not attribute it to decode. The decode-only arm is then still longer than it — 81,920
+# demands against 23,040 — so a verdict that differs between them could belong to the phase or to
+# the length. The head-4 arm holds the phase and cuts the length to 20,480 demands, so a verdict it
+# shares with the decode-only arm is not a stream-length effect either.
 #
 # Each list is a *projection for the simulator*, not a re-derived R2A document: exactly the two
 # arrays `main --simulate-residency` reads — `graphs` and `selections` — are filtered, and every
@@ -351,12 +356,16 @@ decode_steps = int(sys.argv[7])
 
 sys.path.insert(0, str(root_dir / "scripts"))
 from expert_locality_gate import GateError, require_full_router_axes   # noqa: E402
-from residency_projection import ARM_NAMES, PROJECTIONS, declared_demands   # noqa: E402
+from residency_projection import (ARM_NAMES, DECODE_HEAD_STEPS, KEEPS,      # noqa: E402
+                                  PROJECTIONS, declared_demands)
 # Section 2.4's policy set and its candidate subset are read from the independent oracle rather than
 # hand-copied here: the references are not candidates. `null` and `compulsory` are bounds, `belady`
 # is the offline optimum the headroom term is measured against, and `lru` is the declared baseline.
 # A hand-copied list would let this runner and the hosted owner disagree about what a candidate is.
-from residency_oracle import CANDIDATES, POLICY_NAMES   # noqa: E402
+# `phase_of` comes from the same place for the same reason: it is R2A section 2.5.6's total
+# function, and the head-4 arm's expected phase census is derived from the captured graphs with it
+# rather than re-implemented here.
+from residency_oracle import CANDIDATES, POLICY_NAMES, phase_of   # noqa: E402
 
 MAX_DEMANDS = 262144
 MAX_SIMULATION_STEPS = 1 << 32
@@ -399,7 +408,8 @@ for arm in ARM_NAMES:
 
 arm_demands = {name: sum(declared_demands(row) for row in rows)
                for name, rows in arm_documents.items()}
-# A projection removes whole graphs and admission is decided per graph, so the two projections must
+# A projection removes whole graphs and admission is decided per graph, so the two complementary
+# projections must
 # partition the capture exactly. If they do not, one of them dropped or duplicated a selection and
 # every rate below would be measured on a stream nobody described.
 if arm_demands["prefill_only"] + arm_demands["decode_only"] != arm_demands["mixed"]:
@@ -407,6 +417,37 @@ if arm_demands["prefill_only"] + arm_demands["decode_only"] != arm_demands["mixe
         "decode residency gate: the projections do not partition the capture: prefill-only %d + "
         "decode-only %d != mixed %d"
         % (arm_demands["prefill_only"], arm_demands["decode_only"], arm_demands["mixed"]))
+# The head-4 arm is not part of that partition: it is a strict subset of the decode-only arm, the
+# same stream truncated to its first four decode steps. The predicates are what define the arms, so
+# the containment is checked on them over the ordinals this capture actually produced — a head-4
+# predicate that admitted graph 0, or a graph the decode-only predicate drops, would make the length
+# control a different measurement rather than a shorter one.
+captured_ordinals = sorted({row.get("ordinal") for document in documents
+                            for row in document.get("graphs") or []})
+if not all(KEEPS["decode_only"](ordinal) for ordinal in captured_ordinals
+           if KEEPS["decode_head4"](ordinal)):
+    raise SystemExit("decode residency gate: the head-4 arm is not a subset of the decode-only arm")
+if not arm_demands["decode_head4"] < arm_demands["decode_only"]:
+    raise SystemExit(
+        "decode residency gate: the head-4 arm did not shorten the decode stream: %d demand(s) "
+        "against decode-only's %d" % (arm_demands["decode_head4"], arm_demands["decode_only"]))
+
+# The head-4 arm's decode census is the one arm expectation that is not a round number known before
+# the capture: it depends on how many decode graphs each prompt actually produced. It is re-derived
+# here from the captured graphs through the oracle's `phase_of` rather than assumed, and the
+# separate check below states the corpus property the section's arithmetic rests on — every prompt
+# generated more than four steps, so the arm is four decode graphs per document.
+head4_census = {"prefill": 0, "decode": 0, "single_token_first_graph": 0}
+for document in documents:
+    for row in document.get("graphs") or []:
+        if row.get("tokens_truncated") or not KEEPS["decode_head4"](row.get("ordinal")):
+            continue
+        phase = phase_of(row.get("n_tokens"), row["ordinal"])
+        if phase is None:
+            raise SystemExit("decode residency gate: a kept graph has no n_tokens, so its phase "
+                             "cannot be stated")
+        head4_census[phase] += 1
+
 for name, total in sorted(arm_demands.items()):
     if total > MAX_DEMANDS:
         raise SystemExit(
@@ -424,7 +465,7 @@ smallest = min(expert_sizes)
 
 # The section 2.7 cost guard, asserted rather than hoped for: the simulator refuses with
 # `R3_SIMULATION_COST` when `demand_count * min(key_space, budget / smallest_expert_bytes)` exceeds
-# 2^32, and both arms must sit inside it before the replays are launched.
+# 2^32, and every arm must sit inside it before the replays are launched.
 resident_bound = min(key_space, int(budget) // smallest)
 cost = {name: total * resident_bound for name, total in arm_demands.items()}
 for name, value in sorted(cost.items()):
@@ -465,7 +506,8 @@ def check_graph_phases(name, stream):
     Every number below is known before the capture runs: one prefill graph per prompt, no
     `single_token_first_graph` because `docs/specs/r2a-expert-trace.md` section 2.5.6 gives that name
     to a one-token graph at ordinal 0 and every prompt in the corpus is longer than one token, and
-    the two projections partition the mixed arm's decode and prefill census between them.
+    the two complementary projections partition the mixed arm's decode and prefill census between
+    them, while the head-4 arm's census is re-derived from the captured graphs above.
     """
     phases = stream["graph_phases"]
     mixed_phases = results["mixed"]["stream"]["graph_phases"]
@@ -474,6 +516,8 @@ def check_graph_phases(name, stream):
         "mixed":        (len(labels),            mixed_phases["decode"],      0),
         "decode_only":  (0,                      mixed_phases["decode"],      0),
         "prefill_only": (mixed_phases["prefill"], 0,                          0),
+        "decode_head4": (head4_census["prefill"], head4_census["decode"],
+                         head4_census["single_token_first_graph"]),
     }[name]
     for field, want in zip(("prefill", "decode", "single_token_first_graph"), expected):
         if phases[field] != want:
@@ -485,6 +529,20 @@ def check_graph_phases(name, stream):
     if name != "mixed" and arm_demands[name] >= arm_demands["mixed"]:
         problems.append("%s: the projection did not shrink the stream (%d demand(s) against the "
                         "mixed arm's %d)" % (name, arm_demands[name], arm_demands["mixed"]))
+    if name == "decode_head4":
+        # The arm is a length control, so the two properties its reading depends on are asserted
+        # rather than described: it carries only decode graphs, and it carries exactly
+        # `DECODE_HEAD_STEPS` of them per prompt — a capture whose generation stopped early would
+        # still produce a well-formed shorter arm, and the section's comparison to the prefill-only
+        # arm's length would silently stop being the comparison it claims.
+        if phases["decode"] != DECODE_HEAD_STEPS * len(labels):
+            problems.append("%s: %d decode graph(s) for %d prompt(s), so some prompt generated "
+                            "fewer than %d step(s) and the arm is not the head of every stream"
+                            % (name, phases["decode"], len(labels), DECODE_HEAD_STEPS))
+        if phases["decode"] >= mixed_phases["decode"]:
+            problems.append("%s: the arm did not truncate the decode stream (%d graph(s) against "
+                            "the mixed arm's %d)" % (name, phases["decode"],
+                                                     mixed_phases["decode"]))
 
 
 def check_arm(name, document):
@@ -640,7 +698,10 @@ print()
 
 ARMS = (("mixed", "mixed         prefill graph + decode graphs, one continuing pooled stream"),
         ("decode_only", "decode-only   graph 0 projected away, ordinals as captured"),
-        ("prefill_only", "prefill-only  decode graphs projected away — the coverage control arm"))
+        ("prefill_only", "prefill-only  decode graphs projected away — the coverage control arm"),
+        ("decode_head4",
+         "decode-head4  decode ordinals 1..%d only — the stream-length control arm"
+         % DECODE_HEAD_STEPS))
 
 cleared_by_arm = {}
 for name, title in ARMS:
@@ -660,12 +721,12 @@ for name, title in ARMS:
     # `one_token_working_set_*` is measured over the pooled stream's *first* token position only
     # (`src/residency_sim.align`: the scan stops at the first demand whose token ordinal is not 0),
     # so the phase it reports is the phase of that position, not an average over the arm. In the
-    # mixed and prefill-only arms that position is a prompt token; in the decode-only arm it is a
+    # mixed and prefill-only arms that position is a prompt token; in the two decode arms it is a
     # generated one, which is why the two differ by exactly the prefill graph's reduced last layer.
     print("    one token        %d expert(s), %d byte(s) at the stream's first token position, a "
           "%s token - the LRU cliff"
           % (stream["one_token_working_set_keys"], stream["one_token_working_set_bytes"],
-             "generated" if name == "decode_only" else "prompt"))
+             "generated" if name in ("decode_only", "decode_head4") else "prompt"))
     print("    token_major at the requested budget")
     print("      %-18s %18s %10s %14s" % ("policy", "bytes fetched", "hit ‰", "vs lru ‰"))
     # `check_arm` records a problem and stops when the ten rows of section 2.4 are not all present.
@@ -728,15 +789,19 @@ for name, title in ARMS:
     print()
 
 print("  caveats")
-print("    - the decode-only and prefill-only lists are projections of the captured documents: only")
+print("    - the three projected lists are projections of the captured documents: only")
 print("      `graphs` and `selections`, the two arrays the simulator reads, are filtered, and every")
 print("      other block still describes the whole transcript")
 print("    - the prefill-only arm is the coverage control, not a third result: it holds corpus,")
 print("      budget, admission, and the full eight-slot axis fixed and removes only the decode")
-print("      graphs, so a verdict it shares with the other two arms is NOT attributable to decode")
+print("      graphs, so a verdict it shares with the decode arms is NOT attributable to decode")
+print("    - the head-4 arm is the stream-length control: same phase and axes as decode-only, cut")
+print("      to decode ordinals 1..%d so its length is the prefill-only arm's order, so a verdict it"
+      % DECODE_HEAD_STEPS)
+print("      shares with decode-only is NOT attributable to the length decode adds")
 print("    - one_token_working_set_* is the first pooled token position only, so the mixed and")
-print("      prefill-only arms report a prompt token's working set and decode-only a generated")
-print("      one; they are not per-arm averages")
+print("      prefill-only arms report a prompt token's working set and the two decode arms a")
+print("      generated one; they are not per-arm averages")
 print("    - decode is greedy (--temp 0 --seed 42) and bounded at %d step(s) with -c 512, so this"
       % decode_steps)
 print("      is one continuation per prompt, not a distribution over continuations")
@@ -744,7 +809,7 @@ print("    - the first decode graph of a token-reduced prefill layer is a compul
 print("      prefill capture never charged: the instrument reduces the last layer's token axis, so")
 print("      that layer is demanded for the first time in decode")
 print("    - bytes are counted, never converted to seconds: this makes no performance claim")
-print("    - cross-prompt reuse still carries part of the cache pressure in both arms, so the")
+print("    - cross-prompt reuse still carries part of the cache pressure in every arm, so the")
 print("      result reads as \"across a session of many short requests\"")
 print()
 print("  elapsed            %.1f s for %d capture(s) (diagnostic only; no performance claim)"

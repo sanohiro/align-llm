@@ -384,33 +384,46 @@ The current forward delivery order is:
     document, no Align source change, and no coordinated invariant.
     `scripts/run-decode-residency-gate` takes item 24's capture flag for flag — 40 prompts at
     `-n 16 --temp 0 --seed 42` — admits it with the same `require_full_router_axes`, and replays it
-    through `main --simulate-residency` in **three** arms at section 7.4's own 25-per-cent budget:
+    through `main --simulate-residency` in **four** arms at section 7.4's own 25-per-cent budget:
     the **mixed** list as captured (104,960 demands, 832 token positions), a **decode-only** list
-    with graph 0 projected away and the ordinals kept (81,920 demands, 640 positions), and a
-    **prefill-only** control with the decode graphs projected away instead (23,040 demands, 192
-    positions). **The gate is met in the decode direction and its answer is narrower**:
-    `recent_reuse` beats `lru` by 59 to 238 per mille at 1.5/3.1/6.2/12.5 per cent on both decode
-    arms, but at 25 and 50 per cent **no candidate beats the baseline at all** — both report
+    with graph 0 projected away and the ordinals kept (81,920 demands, 640 positions), a
+    **prefill-only** coverage control with the decode graphs projected away instead (23,040 demands,
+    192 positions), and a **head-4** stream-length control keeping only decode ordinals 1–4 (20,480
+    demands, 160 positions). **The gate is met in the decode direction and its answer is narrower**:
+    `recent_reuse` beats `lru` by 59 to 238 per mille at 1.5/3.1/6.2/12.5 per cent on the mixed and
+    decode-only arms and by 70 to 200 at 3.1/6.2/12.5 on the head-4 arm, but at 25 and 50 per cent
+    **no candidate beats the baseline at all** on any of the three — all report
     `NO_POLICY_BEATS_BASELINE`, `recent_reuse_w2` is byte-identical to `lru`, and `lfu` changes sign
-    from a 221-per-mille saving to a 152/190-per-mille loss. **The control arm is what makes that
-    attributable.** R2c changed slot coverage (750 → 1,000 per mille) and phase at the same time;
-    the prefill-only arm changes only coverage and is **`BEATS_BASELINE` at the same 25-per-cent
-    budget**, `lfu` 194 per mille with a stable jackknife (minimum fold 186), `recent_reuse_w32`
-    still clearing the floor at 191. So section 7.4's 223-per-mille win **survives full axes**, and
-    what removes it is the presence of decode demands — decode's expert distribution is more uniform
-    (item 24's entropy 996 against prefill's 992), `lru` rises to 569 per mille on decode where it is
-    492 on prefill, and every frequency candidate falls behind it. The working-set tightening an
-    earlier draft blamed is measured and rejected: the winning control arm sits at 2.14 working sets
-    against the losing mixed arm's 2.0–2.14. Not separated, and stated: decode also lengthens the
-    stream 4.3×. 476 and 473 per mille of headroom to the offline optimum remain **uncaptured by
-    every online candidate** on the decode arms, which is the strongest evidence yet for the
-    score-based and impact-driven policies ledger section 5.1 defers with named prerequisites.
+    from a 221-per-mille saving to a 152/190/88-per-mille loss. **The two control arms are what make
+    that attributable.** R2c changed slot coverage (750 → 1,000 per mille) and phase at the same
+    time; the prefill-only arm changes only coverage and is **`BEATS_BASELINE` at the same
+    25-per-cent budget**, `lfu` 194 per mille with a stable jackknife (minimum fold 186),
+    `recent_reuse_w32` still clearing the floor at 191. So section 7.4's 223-per-mille win
+    **survives full axes**. Phase also changed the stream's length, and the head-4 arm removes that
+    too: at 20,480 demands — eleven per cent *fewer* than the winning prefill-only arm, so less
+    cross-prompt pressure, not more — it still reaches `NO_POLICY_BEATS_BASELINE` with a gain of 0.
+    **Two arms of comparable length give opposite verdicts, and only the phase differs**, so what
+    removes the win is the presence of decode demands: not coverage, not the working-set tightening
+    an earlier draft blamed (the winning control sits at 2.14 working sets, the identical multiple
+    the losing mixed arm's own prefill positions sit at — the seven per cent separates that from a
+    decode position's 2.00), and not stream length. *Why* frequency loses is **not** settled: it is
+    consistent with decode's more uniform expert distribution (item 24's entropy 996 against
+    prefill's 992), but `r2a-expert-trace.md` section 9.4 measures that effect as **small** — a
+    4-per-mille entropy gap of which estimator bias accounts for up to 0.24, and about 3 per cent of
+    the window-deficit — so it is one candidate explanation and not a demonstrated mechanism. What
+    the arms cannot separate is decode's routing statistics from a decode position's wider
+    per-position working set (sixteen layers against fifteen), and section 8.4 says so. 476, 473,
+    and 453 per mille of headroom to the offline optimum remain **uncaptured by every online
+    candidate** on the three decode arms, which is the strongest evidence yet for the score-based
+    and impact-driven policies ledger section 5.1 defers with named prerequisites.
     `scripts/run-residency-sim` still refuses a full-axis document, so the two corpora can never be
-    pooled. Four hosted cases and two binding checks join `residency-sim-smoke` — three full-axis
-    arms against the independent oracle, both admission refusals, the runner's binding to the shared
-    `scripts/residency_projection.py`, and an enforced capture-flag identity with item 24's runner —
-    and a mutation that ignores decode graphs is killed by the new cases and by nothing else in the
-    file. No `Makefile` change and no aggregate membership change. See `HANDOFF.md`.
+    pooled. Six hosted cases and two binding checks join `residency-sim-smoke` — four full-axis arms
+    against the independent oracle, the renumbered decode-only list that makes their
+    `single_token_first_graph: 0` an assertion rather than a vacuous label, both admission refusals,
+    the runner's binding to the shared `scripts/residency_projection.py`, and an enforced
+    capture-flag identity with item 24's runner — and a mutation that ignores decode graphs is
+    killed by the new cases and by nothing else in the file, as are both mutations of the head-4
+    predicate. No `Makefile` change and no aggregate membership change. See `HANDOFF.md`.
 
 ### Status (2026-08-28)
 
@@ -1000,18 +1013,22 @@ prompt長は最大6 tokenで192 token positionしかなく、cache pressureの�
 **decode方向も満たされた（2026-08-28、R3-DECODE-RESIDENCY、roadmap item 25）。ただし答えは
 上記より狭い。** R2cのpatched instrumentで捕捉した同じ40 prompt・`-n 16 --temp 0 --seed 42`の
 decode corpus（R2Dと同一のcapture、admissionも同一の`require_full_router_axes`）を
-`main --simulate-residency`で3 armに replayした。arm (i) **mixed**は捕捉したままのlist
+`main --simulate-residency`で4 armに replayした。arm (i) **mixed**は捕捉したままのlist
 （40 prefill + 640 decode graph、832 token位置、104,960 demand）、arm (ii) **decode-only**は
 graph 0 をprojectionで落とし ordinalはそのまま残したlist（640 decode graph、640 token位置、
-81,920 demand）、arm (iii) **prefill-only**は逆にdecode graphだけを落とした**control**
-（40 prefill graph、192 token位置、23,040 demand）である。
+81,920 demand）、arm (iii) **prefill-only**は逆にdecode graphだけを落とした**coverage control**
+（40 prefill graph、192 token位置、23,040 demand）、arm (iv) **head-4**はdecode ordinal 1–4だけを
+残した**stream長のcontrol**（160 decode graph、160 token位置、20,480 demand）である。
 
-第3のarmが必要な理由は、R2cが**2つの変数を同時に動かした**ことにある。router slotの印字が
-6/8から8/8になり（slot coverage 750‰ → 1000‰）、同時に実decode graphが現れた。mixedと
-decode-onlyはsection 7.4のstreamに対して両方が変わっているため、結果が動いてもどちらが原因か
-決められない。prefill-only armはcorpus・budget・admission・8 slot軸を固定し、decode graphだけを
-除く。したがってこのarmが他と同じverdictを出せばそれはcoverageの効果であり、出さなければ
-coverageの効果ではない。
+第3・第4のarmが必要な理由は、それぞれ別の交絡を除くためである。まずR2cが**2つの変数を同時に
+動かした**: router slotの印字が6/8から8/8になり（slot coverage 750‰ → 1000‰）、同時に実decode
+graphが現れた。mixedとdecode-onlyはsection 7.4のstreamに対して両方が変わっているため、結果が
+動いてもどちらが原因か決められない。prefill-only armはcorpus・budget・admission・8 slot軸を
+固定し、decode graphだけを除く。したがってこのarmが他と同じverdictを出せばそれはcoverageの
+効果であり、出さなければcoverageの効果ではない。次にそのcontrol arm自身がdecode armより
+**短い**（23,040 対 81,920 demand）ため、verdictの差がphaseではなくstream長に由来する可能性が
+残る。head-4 armはphaseを保ったまま各生成を先頭4 stepに切り詰め、20,480 demandにする。
+このarmがdecode-onlyと同じverdictを出せば、それはstream長の効果ではない。
 
 ```text
 budget 975175680 B (250‰), token_major
@@ -1020,56 +1037,67 @@ arm          baseline lru        best_policy  gain   headroom  jackknife      re
 mixed        176,661,381,120 B   -            0‰     476‰      未実施         NO_POLICY_BEATS_BASELINE
 decode-only  134,615,285,760 B   -            0‰     473‰      未実施         NO_POLICY_BEATS_BASELINE
 prefill-only  44,349,947,904 B   lfu          194‰   552‰      最小186‰ 安定  BEATS_BASELINE
+head-4        33,722,744,832 B   -            0‰     453‰      未実施         NO_POLICY_BEATS_BASELINE
 
-sweep（mixed と decode-only は全pointでverdict一致）
-   7‰   NO_POLICY_BEATS_BASELINE（3 arm共通）
-  15‰   BEATS_BASELINE   recent_reuse_w32 59‰ / 59‰、prefill-onlyは lfu 61‰
-  31‰   BEATS_BASELINE   recent_reuse_w32 137‰ / 134‰ / 106‰
-  62‰   BEATS_BASELINE   recent_reuse_w32 238‰、recent_reuse_w8 232‰、recent_reuse_w32 226‰
- 125‰   BEATS_BASELINE   recent_reuse_w32 59‰、recent_reuse_w8 70‰、lfu 78‰
- 250‰   NO_POLICY（mixed/decode-only、headroom 476‰ / 473‰）／ BEATS_BASELINE（prefill-only、lfu 194‰）
- 500‰   NO_POLICY_BEATS_BASELINE（3 arm共通、headroom 593‰ / 583‰ / 496‰）
+sweep（mixed と decode-only は全pointでverdict一致。以下 mixed / decode-only / prefill-only / head-4）
+   7‰   NO_POLICY_BEATS_BASELINE（4 arm共通）
+  15‰   BEATS_BASELINE   recent_reuse_w32 59‰ / 59‰、prefill-onlyは lfu 61‰、head-4のみ NO_POLICY（41‰）
+  31‰   BEATS_BASELINE   recent_reuse_w32 137‰ / 134‰ / 106‰ / 97‰
+  62‰   BEATS_BASELINE   recent_reuse_w32 238‰、recent_reuse_w8 232‰、recent_reuse_w32 226‰、recent_reuse_w8 200‰
+ 125‰   BEATS_BASELINE   recent_reuse_w32 59‰、recent_reuse_w8 70‰、lfu 78‰、recent_reuse_w8 70‰
+ 250‰   NO_POLICY（mixed/decode-only/head-4、headroom 476‰ / 473‰ / 453‰）／ BEATS_BASELINE（prefill-only、lfu 194‰）
+ 500‰   NO_POLICY_BEATS_BASELINE（4 arm共通、headroom 593‰ / 583‰ / 496‰ / 512‰）
 1000‰   NO_HEADROOM
 ```
 
 数値の意味と限界は[`r3-residency-sim.md`](r3-residency-sim.md) section 8にある。要点のみ:
 **baselineより有効なpolicyは依然として特定できる**（expert footprintの1.5–12.5 %では
-`recent_reuse`が59–238‰勝つ）が、**section 7.4が記録した25 %の動作点では、decodeを含む2 armの
+`recent_reuse`が59–238‰勝つ）が、**section 7.4が記録した25 %の動作点では、decodeを含む3 armの
 どのcandidateもlruに勝たない**。`recent_reuse_w2`はlruとbyte単位で完全に一致し、`lfu`は221‰の
-節約から152‰・190‰の悪化へ符号が反転した。
+節約から152‰・190‰・88‰の悪化へ符号が反転した。
 
-**その原因はcoverageではなくdecodeである。** control armであるprefill-onlyは同じ25 %のbudgetで
-`lfu`が194‰勝ち、jackknifeも安定（最小186‰）で`BEATS_BASELINE`となる。`recent_reuse_w32`も
-191‰でfloorを越える。つまりsection 7.4の223‰という結果は**8/8 slotでも生き残る**（223‰ → 194‰）
-のであって、6 slot subsampleの産物ではなかった。初期の草稿はworking setの拡大
-（341 MB → 455–488 MB、budgetが2.86倍から2.0–2.14倍へ）を原因としていたが、これは**実測により
-棄却された**: 勝つprefill-only armは2.14倍で、負けるmixed armのprefill位置と7 %しか違わない。
-decodeで何が変わるかはbyte tableが示す。`lru`はdecodeでむしろ**強くなり**（hit 569‰ 対
-prefillの492‰）、`lfu`は**弱くなる**（487‰ 対 592‰）。decodeのexpert分布はprefillより一様で
-（entropy 996 対 992、top-8 mass 163 対 179、64 expert全使用、
-`docs/specs/r2a-expert-trace.md` section 9.2）、frequencyが利用できる偏りが減るためである。
+**その原因はcoverageでもstream長でもなくdecodeである。** control armであるprefill-onlyは同じ
+25 %のbudgetで`lfu`が194‰勝ち、jackknifeも安定（最小186‰）で`BEATS_BASELINE`となる。
+`recent_reuse_w32`も191‰でfloorを越える。つまりsection 7.4の223‰という結果は**8/8 slotでも
+生き残る**（223‰ → 194‰）のであって、6 slot subsampleの産物ではなかった。さらにhead-4 armは
+prefill-only armより**11 %短い**20,480 demandでありながら`NO_POLICY_BEATS_BASELINE`（gain 0）
+のままである。同じcorpus・同じbudget・同程度の長さの2 armが**逆のverdict**を出し、両者の違いは
+tokenがpromptか生成かだけである。初期の草稿はworking setの拡大（341 MB → 455–488 MB、budgetが
+2.86倍から2.0–2.14倍へ）を原因としていたが、これは**実測により棄却された**: 勝つprefill-only arm
+の2.14倍は、負けるmixed armのprefill位置とまったく同じ値である（7 %の差はdecode位置の2.00倍との
+差であって、arm間の差ではない）。
 
-**分離できていない交絡を1つ明示する**: decode graphを除くとstreamは104,960 demand・832位置から
-23,040 demand・192位置へ短くなる。したがってこの実測は「coverageではない」ことは示すが、
-「decodeのrouting統計」と「decodeが生むstream長」を分離しない。長さ一致armは本capabilityでは
-作らない。
+decodeで何が変わるかはbyte tableが示す。`lru`はdecodeでむしろ**強くなり**（hit 569‰・568‰ 対
+prefillの492‰）、`lfu`は**弱くなる**（487‰・530‰ 対 592‰）。**なぜfrequencyが効かなくなるのかは
+本測定では確定しない。** decodeのexpert分布がprefillより一様であること（entropy 996 対 992、
+top-8 mass 163 対 179、64 expert全使用、`docs/specs/r2a-expert-trace.md` section 9.2）と整合する
+が、同document section 9.4はその効果量を**小さい**と測っている（entropy差4‰、うち推定量のbiasが
+最大0.24‰、相対mass分散は約3 %）。したがってこれは**候補となる説明の1つ**であって、実証された
+機構ではない。
 
-一方でofflineに対するheadroomはdecodeを含む2 armで25 %に476‰・50 %に593‰残り、**online
-candidateはその一切を回収していない**。これはledger section 5.1がprerequisite付きでdeferしている
-score-based / impact-driven prefetchに投資する根拠であって、recency/frequencyの変種を増やす
-根拠ではない。`topk_prefetch`は3 armのいずれでも改善しない（mixedでk=1がlru比+4 %、k=8で+65 %の
-byte、prefill-onlyでも-10‰・-343‰）。
+**分離できていない点を明示する**: coverageとstream長は上記の2つのcontrol armで除かれた。残るのは
+「decodeのrouting統計」と「decode位置あたりのworking setの広さ」の区別である。decode位置は16層
+（128 key・487,587,840 B）をdemandし、prompt位置は15層（120 key・454,950,912 B）である。この2つ
+を分離するarmは本capabilityでは作らない。
+
+一方でofflineに対するheadroomはdecodeを含む3 armで25 %に476‰・473‰・453‰、50 %に593‰・583‰・
+512‰残り、**online candidateはその一切を回収していない**。これはledger section 5.1が
+prerequisite付きでdeferしているscore-based / impact-driven prefetchに投資する根拠であって、
+recency/frequencyの変種を増やす根拠ではない。`topk_prefetch`は4 armのいずれでも改善しない
+（mixedでk=1がlru比+4 %、k=8で+65 %のbyte、prefill-onlyでも-10‰・-343‰、head-4でも-36‰・
+-567‰）。
 section 7.4の223‰という記録は**書き換えられない**: `scripts/run-residency-sim`はfull-axis document
 を引き続き拒否するため、2つのstreamがpoolされることはない。
 
 限界: greedy（`--temp 0`）固定、`-c 512`、prompt 6 token以下、生成16 tokenの範囲のみ。
-`pooling`は3 armとも`continuing`であり、decode-only armも40件の生成を1つのcacheにpoolしている
-（「多数の短いrequestからなるsession」であって「1回の長い生成」ではない）。
+`pooling`は4 armとも`continuing`であり、decode-only armもhead-4 armも40件の生成を1つのcacheに
+poolしている（「多数の短いrequestからなるsession」であって「1回の長い生成」ではない）。head-4 arm
+は**長さのcontrol**であって「4 token生成して止まるworkload」の測定ではない。
 prefill graphの最終層はinstrumentのoutput-token reductionで縮約されるため、layer 15はdecodeで
-初めてdemandされる（prefill-only armのdemand layerは15、他は16）。
+初めてdemandされる（prefill-only armのdemand layerは15、他の3 armは16）。
 `one_token_working_set_*`はpooled streamの**先頭token位置1つ**の値であり、armごとの平均ではない
-（mixedとprefill-onlyはprompt tokenの120 key / 454,950,912 B、decode-onlyはgenerated tokenの
-128 key / 487,587,840 B）。sweep表の各行にjackknifeは無い（section 2.8はrequested budgetでのみ
+（mixedとprefill-onlyはprompt tokenの120 key / 454,950,912 B、decode-onlyとhead-4はgenerated
+tokenの128 key / 487,587,840 B）。sweep表の各行にjackknifeは無い（section 2.8はrequested budgetでのみ
 resamplingする）。時間・帯域・throughputの主張は一切含まない。
 
 ---
@@ -1120,14 +1148,16 @@ hotness layoutを支持しない: decode側のhistogramはprefill側より**さ�
 （entropy 996対992 per mille、top-8 mass 163対179、64 expert全使用、
 `docs/specs/r2a-expert-trace.md` section 9.2）、hotness orderingが前提とするskewは存在しない。
 そしてdecodeを含むstream上のresidency simulationでは、25 %および50 % budgetで**どのcandidateも
-LRUに勝たず**、`topk_prefetch`は3 armのいずれでも改善しない（mixedでk=1が+4 %・k=8が+65 %のbyte、
-prefill-only armでも-10‰・-343‰）（`docs/specs/r3-residency-sim.md` section 8.2・8.3）。
+LRUに勝たず**、`topk_prefetch`は4 armのいずれでも改善しない（mixedでk=1が+4 %・k=8が+65 %のbyte、
+prefill-only armでも-10‰・-343‰、長さを揃えたhead-4 armでも-36‰・-567‰）
+（`docs/specs/r3-residency-sim.md` section 8.2・8.3）。
 したがってresume条件は**充足されたうえで否定的に解消**された: expert hotness orderingと
 prefetch groupは、「decode corpus待ち」ではなく「decode corpusで測ったが正当化されなかった」として
 引き続きdeferする。
 
 **この否定はprefetch group全体に及ぶが、frequency信号そのものに及ぶわけではない。** item 25の
-control armは、同じ25 % budgetのprefill-onlyのstreamでは`lfu`が194‰勝つことを示している
+control armは、同じ25 % budget・同程度の長さのprefill-onlyのstreamでは`lfu`が194‰勝つことを
+示している
 （`docs/specs/r3-residency-sim.md` section 8.2）。つまりprefillのrouting分布には依然として
 frequencyが利用できる偏りがあり、上の否定は**decodeを含む動作点**についての否定である。
 それでもR4Bのhotness orderingは再開しない: hotness orderingは**静的なpack順**であって
@@ -1285,10 +1315,11 @@ candidate policyが存在せず、`recent_reuse`が勝つのは1.5–12.5 %の�
 広い動作点で効く」という前提は**decodeを含むstreamでは成立しない**ため、それをKV tieringに
 優先させる根拠はない。
 
-この結論はcontrol armによって**強められている**。prefill-only armは同じ25 % budgetで`lfu`が
-194‰勝つ（`BEATS_BASELINE`、jackknife最小186‰）ので、25 %でcandidateが勝てないのは
-slot coverageの変化やworking setの拡大ではなく、**streamにdecode demandが含まれること**に
-帰属する。runtimeが実際に扱うのはまさにそのstreamであり、prefillだけのstreamではない。
+この結論は2つのcontrol armによって**強められている**。prefill-only armは同じ25 % budgetで`lfu`が
+194‰勝ち（`BEATS_BASELINE`、jackknife最小186‰）、長さを揃えたhead-4 armは20,480 demand（prefill-
+onlyより11 %短い）でも`NO_POLICY_BEATS_BASELINE`のままである。したがって25 %でcandidateが
+勝てないのはslot coverageの変化でもworking setの拡大でもstream長でもなく、**streamにdecode
+demandが含まれること**に帰属する。runtimeが実際に扱うのはまさにそのstreamであり、prefillだけのstreamではない。
 残る476‰のheadroomを取りにいくにはscore-based / impact-driven policyが必要で、
 その入力（R2Aの`schema_version: 2` weight column、R4.5/R5の実測transfer cost）はまだ存在しない
 （ledger section 5.1）。したがってTrack Bの次順はKV tieringであり、expert residency policyの

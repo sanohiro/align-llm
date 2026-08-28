@@ -331,21 +331,25 @@ check_case("sim-multi-graph", trace_list("sim-multi", [multi]), uniform_ir, basi
 # ---- sim-full-axis-decode: a prefill graph followed by real one-token decode graphs ----------
 # Every other case in this file replays prefill graphs only, because that is all build 10566 could
 # produce (section 5.2). R2c's patched instrument evaluates one graph per decode step, so a trace
-# is now `[prefill, decode, decode, ...]` and `scripts/run-decode-residency-gate` replays it in two
-# arms: the mixed list as captured, and a decode-only list with graph 0 projected away and every
-# remaining ordinal left as captured. Both arms are exercised here against the oracle, with no
-# model and no instrument.
+# is now `[prefill, decode, decode, ...]` and `scripts/run-decode-residency-gate` replays it in four
+# arms: the mixed list as captured, a decode-only list with graph 0 projected away and every
+# remaining ordinal left as captured, a prefill-only control, and a head-4 length control. Every arm
+# is exercised here against the oracle, with no model and no instrument.
 #
 # Keeping the ordinals is the point of the projection: `docs/specs/r2a-expert-trace.md` section
 # 2.5.6 classifies a one-token graph at ordinal 0 as `single_token_first_graph`, so renumbering
 # would turn the first decode step into a phase it is not, and `graph_phases` would stop being able
 # to state what was replayed.
-# The two counts are deliberately unequal. With four prefill tokens and four decode steps the
-# decode-only and prefill-only projections would carry the same number of token positions, and the
-# assertion below that the three arms are three different measurements could be satisfied by a
-# projection that selected the wrong graphs but the right count.
+# The four counts are deliberately unequal — 32, 20, 16, and 12 token positions. Where two arms
+# carried the same number of positions, the assertions below that the four arms are four different
+# measurements could be satisfied by a projection that selected the wrong graphs but the right
+# count. Three prompt tokens and five decode steps separate all four, and `DECODE_STEPS` must stay
+# above `DECODE_HEAD_STEPS` or the head-4 arm would be the decode-only arm under another name.
 DECODE_STEPS = 5
-PREFILL_TOKENS = 4
+PREFILL_TOKENS = 3
+if DECODE_STEPS <= projection.DECODE_HEAD_STEPS:
+    fail("sim-full-axis-decode: %d decode step(s) cannot exercise a head of %d, so the head-4 arm "
+         "would be the decode-only arm" % (DECODE_STEPS, projection.DECODE_HEAD_STEPS))
 
 
 def full_axis_choose(offset):
@@ -445,6 +449,40 @@ prefill_case = check_case("sim-full-axis-prefill-only",
                               "verdict/jackknife_folds": 4,
                           })
 
+# ---- sim-full-axis-decode-head4: the runner's stream-length control arm ----------------------
+# The prefill-only arm removes the coverage confound but not the length one: the decode-only arm is
+# five times its length on this fixture and 3.6x on the real corpus, so a verdict that differs
+# between them could belong to decode's phase or to the stream decode adds. The head-4 arm keeps
+# decode ordinals 1..`DECODE_HEAD_STEPS` and nothing else — same phase, same axes, prefill-only's
+# order of length — and it is the fourth projection the runner replays, so the oracle checks it for
+# the same reason as the other three.
+head4_docs = [projected("decode_head4", "full-axis-head4-%d" % index, path)
+              for index, path in enumerate(mixed_docs)]
+head4_positions = 4 * projection.DECODE_HEAD_STEPS
+head4_case = check_case("sim-full-axis-decode-head4",
+                        trace_list("sim-full-axis-head4", head4_docs), uniform_ir,
+                        full_axis_budget, asserts={
+                            "inputs/admitted_trace_count": 4,
+                            "stream/omitted_truncated_graphs": 0,
+                            "stream/token_position_count": head4_positions,
+                            "stream/demand_count": head4_positions * 2 * 3,
+                            "stream/graph_phases/prefill": 0,
+                            "stream/graph_phases/decode": 4 * projection.DECODE_HEAD_STEPS,
+                            "stream/graph_phases/single_token_first_graph": 0,
+                            "verdict/jackknife_folds": 4,
+                        })
+# The arm is only a *length* control if it is the decode-only stream truncated rather than a
+# different selection of graphs. A projection that kept ordinals 1..5, or 0..4, would still produce
+# a well-formed document; these two assertions are what separate it from that.
+if head4_case["stream"]["demand_count"] >= decode_case["stream"]["demand_count"]:
+    fail("sim-full-axis-decode-head4: the head-4 arm did not truncate the decode stream (%d "
+         "demand(s) against decode-only's %d)"
+         % (head4_case["stream"]["demand_count"], decode_case["stream"]["demand_count"]))
+head4_kept = {row["ordinal"] for row in json.loads(Path(head4_docs[0]).read_text())["graphs"]}
+if head4_kept != set(range(1, projection.DECODE_HEAD_STEPS + 1)):
+    fail("sim-full-axis-decode-head4: the arm kept graph ordinals %r, expected 1..%d"
+         % (sorted(head4_kept), projection.DECODE_HEAD_STEPS))
+
 # ---- sim-renumbered-decode-only: why the projection keeps the ordinals -----------------------
 # Both runners' comments and `docs/specs/r3-residency-sim.md` section 8.1 rest on one claim: a
 # decode-only list whose ordinals were renumbered would report the first decode step as
@@ -484,23 +522,22 @@ if renumbered_case["stream"]["demand_count"] != decode_case["stream"]["demand_co
 # Each projection must be a *different measurement*, not a relabelling of the same one. If an arm
 # produced the mixed arm's stream it would be answering nothing, and if the two projections did not
 # partition the capture one of them dropped or duplicated a selection.
-for name, case in (("decode-only", decode_case), ("prefill-only", prefill_case)):
+for name, case in (("decode-only", decode_case), ("prefill-only", prefill_case),
+                   ("head-4", head4_case)):
     if case["stream"]["demand_count"] >= mixed_case["stream"]["demand_count"]:
         fail("sim-full-axis-decode: the %s projection did not drop any graph" % name)
 if (decode_case["stream"]["demand_count"] + prefill_case["stream"]["demand_count"]
         != mixed_case["stream"]["demand_count"]):
-    fail("sim-full-axis-decode: the two projections do not partition the capture (%d + %d != %d)"
+    fail("sim-full-axis-decode: the two complementary projections do not partition the capture "
+         "(%d + %d != %d)"
          % (decode_case["stream"]["demand_count"], prefill_case["stream"]["demand_count"],
             mixed_case["stream"]["demand_count"]))
 for order in ("token_major", "layer_major"):
-    mixed_rows = by_policy(mixed_case, order, full_axis_budget)
-    decode_rows = by_policy(decode_case, order, full_axis_budget)
-    prefill_rows = by_policy(prefill_case, order, full_axis_budget)
-    totals = {"mixed": mixed_rows["lru"]["bytes_fetched"],
-              "decode-only": decode_rows["lru"]["bytes_fetched"],
-              "prefill-only": prefill_rows["lru"]["bytes_fetched"]}
-    if len(set(totals.values())) != 3:
-        fail("sim-full-axis-decode: %s baseline bytes %r do not separate the three arms, so the "
+    totals = {name: by_policy(case, order, full_axis_budget)["lru"]["bytes_fetched"]
+              for name, case in (("mixed", mixed_case), ("decode-only", decode_case),
+                                 ("prefill-only", prefill_case), ("head-4", head4_case))}
+    if len(set(totals.values())) != 4:
+        fail("sim-full-axis-decode: %s baseline bytes %r do not separate the four arms, so the "
              "case cannot tell them apart" % (order, totals))
 
 # The graph ordinal is part of the replay order, not decoration: within one document the demands of
@@ -508,7 +545,7 @@ for order in ("token_major", "layer_major"):
 # strictly increasing along that order. A stream sorted without the graph term interleaves the
 # decode graphs into the prefill graph's token positions and cannot produce this count.
 for case, positions in ((mixed_case, mixed_positions), (decode_case, decode_positions),
-                        (prefill_case, prefill_positions)):
+                        (prefill_case, prefill_positions), (head4_case, head4_positions)):
     if case["stream"]["token_position_count"] != positions:
         fail("sim-full-axis-decode: %d token position(s) for %d expected"
              % (case["stream"]["token_position_count"], positions))
@@ -544,7 +581,8 @@ for name, case in (("mixed", mixed_case), ("decode-only", decode_case)):
 for name, listing, expected in (
         ("mixed", trace_list("sim-full-axis", mixed_docs), mixed_case),
         ("decode-only", trace_list("sim-full-axis-decode", decode_docs), decode_case),
-        ("prefill-only", trace_list("sim-full-axis-prefill", prefill_docs), prefill_case)):
+        ("prefill-only", trace_list("sim-full-axis-prefill", prefill_docs), prefill_case),
+        ("head-4", trace_list("sim-full-axis-head4", head4_docs), head4_case)):
     again = json.loads(run(["--simulate-residency", str(listing), str(uniform_ir),
                             str(full_axis_budget)], expect_exit=0).stdout)
     if normalized(again) != normalized(expected):
@@ -645,7 +683,7 @@ for expected in ("from residency_projection import", "PROJECTIONS[arm]"):
     if expected not in decode_runner:
         fail("projection-binding: scripts/run-decode-residency-gate no longer uses "
              "scripts/residency_projection.py (%r absent)" % expected)
-if "def project_decode_only" in decode_runner or "def project_prefill_only" in decode_runner:
+if any(("def project_%s" % arm) in decode_runner for arm in projection.ARM_NAMES):
     fail("projection-binding: scripts/run-decode-residency-gate defines a projection of its own, "
          "so the arms this file checks are not the arms it replays")
 for arm in projection.ARM_NAMES:
@@ -703,7 +741,10 @@ for relative in CAPTURE_PEERS:
              % (relative, len(ulimit)))
     captures[relative] = (invocation, identity, ulimit)
 
-if len(captures) == len(CAPTURE_PEERS):
+# A missing extraction has already been reported above; comparing it would replace that finding
+# with a `TypeError` from the flag scan below, which reads the invocation as a list of lines.
+if len(captures) == len(CAPTURE_PEERS) and all(
+        part is not None for capture in captures.values() for part in capture):
     left, right = (captures[relative] for relative in CAPTURE_PEERS)
     for index, what in enumerate(("instrument invocation", "corpus identity", "transcript cap")):
         if left[index] != right[index]:
