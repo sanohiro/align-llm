@@ -577,16 +577,22 @@ of 264–456 ms and a decode graph of 114–157 ms. The two crossings together a
 4.0 ms; the 3.6 ms upload is one prompt on one run and the other three are under 1 ms, so the figure
 is load-dependent and no ratio is claimed from it.
 
-The run was performed three times — twice around the writing of the acceptance rule, and once more
-at the review-repair head. **Every recorded value above is identical across all three**: the same
+The run was performed **four** times — twice around the writing of the acceptance rule, once at the
+review-repair head, and once at the publication head after the final review's repair.
+**Every recorded value above is identical across all four**: the same
 decoded tokens (671, 715, 2691, 526), the same oracle A verdicts and maxima (`FAIL` at 2391 on
 `ffn_inp-27` for the first prompt, `PASS` at 0 for the other three, 5,058 elements each), the same
 oracle B byte counts (688,128 and 344,064), the same `plane.bytes` 29,360,128, and the same node
 counts 958/1014. Oracle C is byte-identical on all four prompts in every run, with the argmax pair
 agreeing (26312, 262, 1159, 11844). Only the elapsed timings moved, which is what makes them a
 diagnostic: the repair-head run measured `plane.readback_ns` 108,961–386,167 and `plane.upload_ns`
-882,083–1,000,464 against prefills of 252–493 ms and decode graphs of 111–127 ms, inside the ranges
-the paragraph above records and confirming that the 3.6 ms upload was load, not structure.
+882,083–1,000,464 against prefills of 252–493 ms and decode graphs of 111–127 ms, and the
+publication-head run measured `plane.readback_ns` 226,709–320,749 and `plane.upload_ns`
+513,792–1,020,544 against prefills of 264–454 ms and decode graphs of 112–147 ms. Both are inside
+the ranges the paragraph above records, which confirms that the 3.6 ms upload was load, not
+structure. The publication-head run was taken **concurrently with an unrelated aggregate on the same
+host**, and the structural quantities did not move at all — which is what a correctness
+qualification should show and why nothing here is a performance claim.
 
 ### The finding that changes section 3.2
 

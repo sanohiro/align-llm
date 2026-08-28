@@ -67,11 +67,14 @@ pass. The four reviewer mutants and the new plane mutant were re-injected at the
 five still die with their distinct diagnoses: `R5_SHAPE node[24]` / `node[22]`, oracle A `FAIL` at
 8092 on `q_rope` / 514 on `kqv`, and `R6_PLANE_MISMATCH layer[0]tensor[k]col[0]`.
 
-**`gmake decode-step-qualification` was re-run on the real model at the repair head and passed.**
-Every recorded value in ledger 5.1 reproduced: decoded tokens 671/715/2691/526, oracle A `FAIL` at
-2391 on `ffn_inp-27` for the first prompt and `PASS` at 0 for the other three over 5,058 elements
-each, oracle B `IDENTICAL` over 688,128 and 344,064 bytes, oracle C byte-identical on all four,
-`plane.bytes` 29,360,128, nodes 958/1014. Only the timings moved. Ledger 5.1 records the run.
+**`gmake decode-step-qualification` was re-run on the real model at the repair head and again at the
+publication head; both passed.** Every recorded value in ledger 5.1 reproduced on each: decoded
+tokens 671/715/2691/526, oracle A `FAIL` at 2391 on `ffn_inp-27` for the first prompt and `PASS` at
+0 for the other three over 5,058 elements each, oracle B `IDENTICAL` over 688,128 and 344,064 bytes,
+oracle C byte-identical on all four with the argmax pairs 26312/262/1159/11844, `plane.bytes`
+29,360,128, nodes 958/1014. Only the timings moved. Ledger 5.1 records all four runs. The
+publication-head run took 3 m 48 s wall and was taken concurrently with an unrelated aggregate on
+this host; no structural quantity moved.
 
 **Goldens that moved, and why.** Ledger section 5.3 is exact. `gpu-forward-golden.jsonl` and
 `moe-layer-forward-golden.jsonl` are byte-unchanged. `layer-forward-golden.jsonl` and
