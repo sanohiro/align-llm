@@ -914,8 +914,9 @@ corrected during review.
 Provenance: host as recorded in `docs/specs/r2a-expert-trace.md` section 2.2;
 `llama-eval-callback` build 10566; `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`;
 `eval/prompts/expert-locality-v1.txt` (40 prompts, md5 `d7fff23f5a1d4f6237e6f848f3318d8b`, 877 B);
-traces produced by `main --expert-trace` at `agent/r2-locality-gate`'s `src/expert_trace.align`;
-sizes from `main --model-ir` at `agent/r1c-olmoe-moe-ir`. All 40 transcripts were deleted after
+traces produced by `main --expert-trace` at `agent/r2-locality-gate`'s `src/expert_trace.align`
+(since merged as PR #131); sizes from `main --model-ir` at `agent/r1c-olmoe-moe-ir` (since merged as
+PR #132). All 40 transcripts were deleted after
 conversion.
 
 Stream: 40 documents, 40 admitted, 0 truncated graphs, 192 token positions, **17,280 demands**, 938
@@ -1154,14 +1155,17 @@ numerator, so this is the only place the two languages could have disagreed —
 | `eval/prompts/expert-locality-v1.txt` | the 40-prompt corpus the qualification captures, md5 `d7fff23f5a1d4f6237e6f848f3318d8b`, 877 B |
 | `Makefile`, `scripts/check-gate-topology` | the two targets and both pinned aggregate lists |
 
-**Two prerequisites travelled with this branch and are not R3's design.** The branch is based on
-R1C, which predates the R2 locality gate, and the corrected `src/expert_trace.align` is required
-before a real OLMoE transcript converts at all: without it every capture fails `R2_TOKEN_COUNT` on
-layer 15's token-reduced `ffn_moe_topk`. `src/expert_trace.align`,
-`scripts/eval_callback_fixture.py`, `scripts/run-expert-trace-smoke`,
-`scripts/run-expert-trace-parity`, and `scripts/expert_locality_gate.py` are therefore taken
-verbatim from the merged R2 wave; they are one owner and its fixture, and taking the module without
-its fixture leaves `make expert-trace-smoke` red on the new `moe.token_reduced_layers` field.
+**The prerequisite this branch once carried is now merged and is no longer part of this diff.**
+Implementation began on top of R1C, which predates the R2 locality gate, and the corrected
+`src/expert_trace.align` is required before a real OLMoE transcript converts at all: without it
+every capture fails `R2_TOKEN_COUNT` on layer 15's token-reduced `ffn_moe_topk`. That module and its
+owners — `scripts/eval_callback_fixture.py`, `scripts/run-expert-trace-smoke`,
+`scripts/run-expert-trace-parity`, and `scripts/expert_locality_gate.py` — were therefore carried on
+the branch verbatim from the R2 wave while it was unmerged. The branch is now rebased onto `main`
+`35a0df6`, which contains the merged R2 wave (PR #131), the merged R1C frontend (PR #132), and the
+merged MoE prerequisite discharge (PR #133), so those five paths come from `main` and the R3 diff
+contains none of them. The qualification still depends on that correction; it is simply no longer
+R3's to ship.
 
 ### 7.2 Cells closed by a case
 

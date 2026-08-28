@@ -276,13 +276,39 @@ The current forward delivery order is:
     The layout numbers are a claim about this container on this named model, not a platform or
     throughput claim. Review, publication, and merge are complete; see `HANDOFF.md`.
 
+21. **R3-RESIDENCY-SIM — the R3 cache-simulator gate, measured on the real MoE activation corpus.
+    Implemented and reviewed; in publication.** On branch `agent/r3-residency-sim`, rebased onto the
+    merged MoE prerequisites at `main` `35a0df6`. [`r3-residency-sim.md`](r3-residency-sim.md) is the
+    authoritative plan and owns the contract ledger, the closure matrix, the correction ledger, the
+    probe record, and the cell-to-case map; the design gate triggered on three counts (a new public
+    CLI verb `--simulate-residency`, a new exchanged format `R3_RESIDENCY_SIM` `schema_version: 1`,
+    and a coordinated invariant across three modules plus the `Makefile`). It replays a demand stream
+    derived from real `R2_ACTIVATION_TRACE` documents against ten residency policies over four
+    families — `lru`, `lfu`, three fixed-window `recent_reuse`, two `topk_prefetch` degrees, and the
+    `null` / `compulsory` / `belady` references — at a nine-point budget sweep, with a
+    leave-one-document-out jackknife over the corpus and a headroom measure against the miss-optimal
+    offline reference. **The R3 gate is met**: at the requested 975,175,680 B budget (250 per mille
+    of the 3,900,702,720 B expert footprint), `recent_reuse_w32` fetches 26,033,848,320 B against the
+    `lru` baseline's 33,532,231,680 B — 223 per mille fewer, against a 50-per-mille materiality
+    floor — with a 40-fold jackknife minimum gain of 213 per mille and 574 per mille of headroom
+    still left to the offline optimum, verdict `BEATS_BASELINE`. Across the sweep the verdict is
+    `BEATS_BASELINE` at 1/3/6/12/25 per cent, `NO_POLICY_BEATS_BASELINE` at 0 and 50 per cent, and
+    `NO_HEADROOM` at 100 per cent. Roadmap section R3's remaining three policies — score-based,
+    impact-driven prefetch, and CPU fallback — are deferred with named prerequisites rather than
+    simulated against invented constants (router scores need an R2A `schema_version: 2` weight
+    column; a miss penalty needs R4.5's and R5's measured transfer costs; CPU fallback needs R5's
+    microbenchmark). The result is a policy claim about this named model and this corpus, not a
+    platform or throughput claim, and it carries the caveats the section R3 entry below records.
+    Review is complete and publication is in progress; see `HANDOFF.md`.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
 `olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18, 19, and 20 above:
-items 18 and 19 are merged and R2's gate is met, and item 20 — the per-expert half of R4 and R4.5 —
-merged as PR #133. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+items 18, 19, and 20 are merged, R2's gate is met, and R4's and R4.5's per-expert halves are
+discharged. It also unblocked item 21, R3-RESIDENCY-SIM, which is implemented, reviewed, and in
+publication with the R3 gate met on the real corpus. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
 **infeasible on this host** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
 a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
@@ -789,6 +815,29 @@ align-sim
 ### Gate
 
 対象ハードウェア条件で、baselineより有効なpolicyを特定できること。
+
+このgateはR3-RESIDENCY-SIM（roadmap item 21、[`r3-residency-sim.md`](r3-residency-sim.md)）が所有
+する。実装・contract ledger・closure matrix・fixture設計・correction ledger・probe recordはすべて
+同ledgerにある。実MoE model `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`と実corpus
+`eval/prompts/expert-locality-v1.txt`（40 prompt、md5 `d7fff23f5a1d4f6237e6f848f3318d8b`）から
+`R2_ACTIVATION_TRACE`を40件導出し、938 distinct key / 17,280 demandのstreamを10 policyで
+replayした結果、**gateは達成**である: 要求budget 975,175,680 B（expert footprint
+3,900,702,720 Bの250‰）で`recent_reuse_w32`が26,033,848,320 Bをfetchし、baselineの`lru`の
+33,532,231,680 Bに対して223‰少ない（materiality floorは50‰）。40-fold
+leave-one-document-out jackknifeの最小gainは213‰でstable、offline optimumまでのheadroomは574‰、
+verdictは`BEATS_BASELINE`。9点sweepでは1/3/6/12/25 %が`BEATS_BASELINE`、0 %と50 %が
+`NO_POLICY_BEATS_BASELINE`、100 %が`NO_HEADROOM`である。上のpolicy一覧のうち実装したのは
+LRU・LFU・recent reuse・top-k prefetchの4系統で、score-based・impact-driven prefetch・CPU
+fallbackはledger section 5.1のとおりprerequisite付きでdeferしている（router scoreはR2Aの
+`schema_version: 2` weight column、miss penaltyはR4.5/R5の実測transfer cost、CPU fallbackはR5の
+microbenchmarkが前提）。
+
+**この結果が主張する範囲**（ledger section 4.5末尾および5.2-5.3）: prefill graphのみをdecode順で
+replayしたものであり、decodeを観測したものではない。instrumentが印字するrouter slotは8中6、
+prompt長は最大6 tokenで192 token positionしかなく、cache pressureの大半はprompt間のreuseに
+由来する。比較指標はfetch byte数のみで、時間・帯域・throughputの主張は一切含まない。したがって
+読み方は「短いrequestが多数並ぶsessionにおいて、frequency-awareなresidencyはrecencyに勝つ」で
+あり、「1回の生成の内部でexpert reuseが高い」ではない。後者にはR2cのdecode traceが必要である。
 
 ---
 

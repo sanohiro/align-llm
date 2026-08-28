@@ -80,7 +80,9 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > decision to download `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, Track B started two consumers on
 > that model: R2-LOCALITY-GATE merged as align-llm PR #131 (`fff5806` -> `546b5cc`) with the R2
 > locality gate met in the prefill direction, R1C-OLMOE-MOE-IR merged as align-llm PR #132, and
-> MOE-PREREQ-DISCHARGE merged as align-llm PR #133. See the end of this narrative for the next consumer
+> MOE-PREREQ-DISCHARGE merged as align-llm PR #133. R3-RESIDENCY-SIM (branch
+> `agent/r3-residency-sim`, the expert-residency policy simulator) is the single active Track B
+> consumer, in publication. See the end of this narrative for the next consumer
 > named for each remaining pending user/Align decision.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
 > R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
 > parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
@@ -354,9 +356,10 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > R5's deferred required microbenchmark C. None of these decisions changes any request's status;
 > Requests 21-43 remain PROPOSED and non-blocking, and none has merged since R0.
 > R3-RESIDENCY-SIM (`docs/specs/r3-residency-sim.md`) is now the active capability, on branch
-> `agent/r3-residency-sim` (based on R1C, carrying the merged R2 wave's corrected
-> `src/expert_trace.align` and its owners as a prerequisite). **Implementation is complete in the
-> working tree and not yet merged.** It simulates ten expert-residency cache policies against a
+> `agent/r3-residency-sim`, rebased onto the merged MoE prerequisites at `main` `35a0df6` so that
+> the corrected `src/expert_trace.align` its qualification depends on now comes from `main` rather
+> than from a prerequisite carried on the branch. **Implementation and review are complete;
+> publication is the only remaining step.** It simulates ten expert-residency cache policies against a
 > real-model activation-trace corpus and discharges the roadmap R3 gate: at the requested 250-per-
 > mille budget, `recent_reuse_w32` beats the `lru` baseline by 223 per mille with headroom 574 per
 > mille to the offline optimum, a 40-fold leave-one-document-out jackknife minimum gain of 213 per
@@ -378,7 +381,7 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > than factored into one helper. It is non-blocking — the duplication is in place and checked against
 > an independent oracle — with all of R3-RESIDENCY-SIM as independent work. R3 also strengthens
 > Request 21 with a narrower client of the `fs.size`/stat absence specifically (R3 itself needs no
-> `fs.open_ro`, since `fs.read_file` does not demand `O_RDWR`), Request 23 with a fifth wide-record
+> `fs.open_ro`, since `fs.read_file` does not demand `O_RDWR`), Request 23 with a sixth wide-record
 > `borrow`-parameter false positive (`residency_sim$Derived`), and Request 26 with a second private
 > `str`-to-integer parser (`parse_budget`) that a `json.decode` detour and the existing `parse_uint`
 > both fail to match. None of this changes any request's status; Requests 21-43 and 45-46 remain PROPOSED and

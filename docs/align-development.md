@@ -759,6 +759,124 @@ comparison, so the verdict is a comparison of integers.
 The gate joins no aggregate and no `Makefile` target: adding one would select the fresh-image
 preflight profile for a runner that cannot execute in CI anyway.
 
+## Residency simulation development
+
+R3-RESIDENCY-SIM's authoritative plan is `docs/specs/r3-residency-sim.md`, which owns the contract
+ledger, the policy set, the exchanged document, the validation order, the closure matrix, the
+correction ledger, and the probe record. It replays the demand stream implied by a set of
+`R2_ACTIVATION_TRACE` documents against ten expert-residency cache policies at a nine-point budget
+sweep, and answers the roadmap section R3 gate question — is any policy materially better than the
+baseline on this hardware condition — with a measured verdict rather than an opinion. It needs no
+model, no instrument, and no GPU: its inputs are two documents this repository already produces.
+
+The CLI arm has the same two forms every other document verb has:
+
+```sh
+./main --simulate-residency TRACES.txt MODEL-IR.json BUDGET_BYTES
+./main --simulate-residency TRACES.txt MODEL-IR.json BUDGET_BYTES RESIDENCY.json
+```
+
+`TRACES.txt` is a list of `R2_ACTIVATION_TRACE` document paths, one per line; `MODEL-IR.json` is an
+`R1_MODEL_IR` document, from which only the `ExpertBlock` rows and their `byte_size` are read;
+`BUDGET_BYTES` is the requested residency budget in bytes, parsed by the module's own decimal parser
+rather than through a `json.decode` detour. The three-operand form prints the whole
+`R3_RESIDENCY_SIM` (`schema_version: 1`) document and nothing else, and the four-operand form writes
+it to `RESIDENCY.json` and prints the stable human summary block instead; both forms produce a
+byte-identical document, which the owner asserts on every case. All four operands are validated
+lexically against `MAX_PATH_BYTES` (4096) and rejected for a NUL byte before any file work, so an
+unusable destination never costs a simulation. Every rate in the summary carries the router-slot
+coverage it is conditional on: the instrument prints six of eight slots on the subject model, so no
+number is a hit rate without the qualifier "over printed slots".
+
+**The narrow durable owner is `gmake residency-sim-smoke`**, and it is a member of
+`HOSTED_CHECK_TARGETS` alongside `gguf-smoke`, `model-ir-smoke`, and `expert-trace-smoke` — the same
+justification admitted all four. It builds its own synthetic olmoe Model IRs and MoE transcripts,
+needs no model, no network, no instrument, and no GPU, writes well under a megabyte into a temporary
+tree, and runs in about a second. `scripts/check-gate-topology` pins the member list in two places
+and `gmake gate-topology-check` fails if either drifts.
+
+**The oracle is an independent Python re-implementation, not a self-check.** `scripts/residency_oracle.py`
+implements sections 2.2 through 2.8 of the plan from the plan and never from `src/`, renders the
+whole document itself, and the smoke compares every integer of every policy at every sweep budget in
+both demand orders, with no tolerance. One case is additionally pinned by a checked-in golden,
+`eval/fixtures/residency-sim/sim-basic.golden.json`, with its three host-dependent values normalized
+(the two path operands and `inputs.bytes_read`, which grows with the scratch directory's name).
+Regenerate the golden deliberately, never by hand:
+
+```sh
+ALIGN_LLM_RESIDENCY_SIM_UPDATE_GOLDEN=1 gmake residency-sim-smoke
+```
+
+That switch rewrites the file and prints `residency sim smoke: golden rewritten`; review the diff
+before committing it, because the golden is a contract record and not a cache.
+
+**The focused qualification is `gmake residency-sim-qualification`**, which runs
+`scripts/run-residency-sim`. It is the run that discharges the roadmap section R3 gate on the real
+corpus: it captures one prefill transcript per prompt with the flags and safeguards
+`scripts/run-expert-locality-gate` established, derives one `R2_ACTIVATION_TRACE` per transcript with
+`main --expert-trace`, deletes each transcript immediately, derives the `R1_MODEL_IR` once with
+`main --model-ir`, and runs `main --simulate-residency` over the result.
+
+```sh
+ALIGN_LLM_GGUF_MODEL=/path/to/moe-model.gguf \
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \
+  gmake residency-sim-qualification
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ALIGN_LLM_GGUF_MODEL` | none | a **MoE** GGUF; the subject model |
+| `ALIGN_LLM_LLAMA_EVAL_CALLBACK` | none | the callback instrument executable |
+| `ALIGN_LLM_LOCALITY_PROMPTS` | `eval/prompts/expert-locality-v1.txt` | the prompt corpus, one prompt per line |
+| `ALIGN_LLM_LOCALITY_PROMPT_COUNT` | `40` | prompts to use, taken from the **top** of the corpus in file order |
+| `ALIGN_LLM_RESIDENCY_BUDGET` | 25 per cent of the model's expert byte footprint | the `BUDGET_BYTES` operand |
+| `ALIGN_LLM_RESIDENCY_SIM_UPDATE_GOLDEN` | unset | owner-only; `1` rewrites the checked-in golden instead of comparing against it |
+
+**The opt-in is over exactly the two variables that name the subject.** Neither has a default,
+because a qualification that silently passes when its subject is missing is worse than no
+qualification. A missing or unusable subject prints exactly one of these lines, in this order, and
+exits 0 without claiming a measurement; the line must be quoted as the `N/A` reason in the pull
+request:
+
+```text
+residency sim qualification: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)
+residency sim qualification: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable)
+residency sim qualification: N/A (ALIGN_LLM_GGUF_MODEL unset)
+residency sim qualification: N/A (ALIGN_LLM_GGUF_MODEL is absent)
+```
+
+The other three variables are **overrides, not switches**: they have defaults, and a corpus this
+script was pointed at and cannot read is a broken invocation that exits 1, never `N/A`.
+
+**The qualification is a measurement, not a pass/fail owner test.** It exits 0 on all three
+`verdict.result` values — `BEATS_BASELINE`, `NO_POLICY_BEATS_BASELINE`, and `NO_HEADROOM` are all
+answers to the roadmap question — and exits nonzero only when the instrument, the corpus, or a
+parser prevented a measurement from being taken. It prints human tables and one machine-readable
+final line:
+
+```text
+residency-sim verdict=... budget=... baseline_bytes=... best=... best_bytes=... gain_per_mille=...
+  headroom_per_mille=... jackknife_folds=... jackknife_min_per_mille=... jackknife_stable=...
+  demands=... token_positions=... distinct_keys=... slot_coverage_per_mille=...
+```
+
+It deliberately joins no aggregate — not `HOSTED_CHECK_TARGETS`, not `CAPABLE_ONLY_CHECK_TARGETS`,
+and not `ci` — because it needs a multi-gigabyte model and an external instrument that CI does not
+have. Its elapsed time is printed as a diagnostic and is not a performance claim; the whole result
+compares fetched bytes only.
+
+**Two Align capability requests came out of implementing this module**, both recorded in
+`docs/align-requests.md` with fresh sibling probes under the pinned compiler and neither blocking:
+**Request 44** (priority high) is a compiler soundness defect — the region checker accepts a move of
+a Move-typed field out of a `json.decode`d record through a two-hop field-access chain with no
+diagnostic, and the built program corrupts the heap at run time when the decoded record's recursive
+`Drop` frees the same string again; the shipped fix is one `.clone()`. **Request 45** is two related
+array-shape gaps — a local `array<i64>` passed `borrow mut` into a call inside a `loop` invalidates
+the caller's later reads of it, and an `array<i64>` field of a record cannot be element-assigned at
+all — which together force every helper here to return owned columns and force one admission block
+to be written twice rather than factored into a helper. Read both before restructuring
+`src/residency_sim.align`.
+
 ## alignpack development
 
 R4-ALIGNPACK-LAYER-MAJOR is merged into `main` as PR #125 (head `a7e72dc`, merge `991eab1`); its
