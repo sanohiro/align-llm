@@ -524,7 +524,7 @@ length; the arm under test is `--decode-step`.
 | --- | --- |
 | Owner, during development | `gmake layer-forward-smoke` — the owner for R5A–R5D and now R6, already a member of `HOSTED_CHECK_TARGETS` |
 | Focused qualification | `gmake decode-step-qualification` → `scripts/run-decode-step`, opt-in, capable-only, **outside every aggregate** |
-| Coding-baseline chain | `gmake baseline-check`, **re-recorded before publication.** This capability changes `Makefile` and `scripts/build-ggml-shim`, both of which the chain covers, so the recorded source → oracle → finalization chain at the merge base does not describe this head. Re-record it, then re-run `gmake baseline-check` at the exact publication head |
+| Coding-baseline chain | `gmake baseline-check`, **re-recorded before publication.** This capability changes `Makefile`, one of the twenty recorded baseline artifacts, so the recorded source → oracle → finalization chain at the merge base does not describe this head. (`scripts/build-ggml-shim` also changes but is not a recorded artifact.) Re-recorded on Linux as `e4548b1` → `6d1c152` → `1bbacaa`; `gmake baseline-check` passes at the finalized head |
 | Publication | `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`, on the unchanged head the baseline chain was recorded against |
 | Formatting | `gmake fmt` before committing Align source; `gmake format-check` and `git diff --check` clean |
 

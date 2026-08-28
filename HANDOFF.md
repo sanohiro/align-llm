@@ -80,18 +80,25 @@ each, oracle B `IDENTICAL` over 688,128 and 344,064 bytes, oracle C byte-identic
 bytes change. `decode-step-golden.jsonl` adds the three forced-build rows and changes seven existing
 rows in one field, `graph.slot_high_water`, which is repair (2) above.
 
+**Coding-baseline chain, re-recorded — reviewer B's blocker, discharged.** The capability changes
+`Makefile`, one of the twenty recorded baseline artifacts, so the chain that shipped with R5D no
+longer bound this head. (`scripts/build-ggml-shim` also changes but is **not** a recorded artifact
+and does not itself invalidate the chain; an earlier draft of this record said it did.) The
+identity-bound chain is now `e4548b1` → `6d1c152` → `1bbacaa` — clean source, immutable oracle
+projection, finalization — with the pending measurement recorded on Linux (aarch64, kernel
+6.11.11-linuxkit, Python 3.12.3) through the DinD wrapper, exactly as R5D's was. Exactly one of the
+twenty artifact digests moved (`Makefile`); `.align-revision` is unchanged at `3a34febe` and the
+twenty paths are identical. `gmake baseline-check` passes on Linux at the finalized head.
+
 **Next actions, in order.**
-1. **Re-record the coding-baseline chain and re-run `gmake baseline-check`.** It fails at this head
-   because the capability changes `Makefile` and `scripts/build-ggml-shim`, which the recorded
-   source → oracle → finalization chain covers. This is reviewer B's blocker and it belongs to
-   whoever publishes, because the stamp binds to the exact unchanged head.
-2. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`, on the
-   unchanged head from step 1. The diff touches `Makefile`, `scripts/build-ggml-shim`, and the
-   goldens, so the classifier selects the executable row and the installed fresh-image profile; do
-   not substitute a Docker skip or an ambient `DOCKER_HOST`.
-3. Open the English pull request with the verification table, the review envelope, and the finding
-   dispositions.
-4. The next capability is step 2 and the decode loop, which needs a write-back at column `n_past` —
+1. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`, on the
+   unchanged head. The diff touches `Makefile`, `scripts/build-ggml-shim`, and the goldens, so the
+   classifier selects the executable row and the installed fresh-image profile; do not substitute a
+   Docker skip or an ambient `DOCKER_HOST`.
+2. Open the English pull request with the verification table, the review envelope, and the finding
+   dispositions. It must be a **merge** commit: squash and rebase would make the three baseline
+   commits unreachable from `main`.
+3. The next capability is step 2 and the decode loop, which needs a write-back at column `n_past` —
    the one thing that makes the plane both a read and a write target in one graph.
 
 **Deviations from the ledger, recorded rather than hidden.** Ledger section 10 is authoritative and
