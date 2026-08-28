@@ -821,6 +821,15 @@ Recorded so a later reader does not mistake a pass for wider evidence than it is
   both `src/alignpack_read.align` and `--pack-verify` — is a change to R4's format validation, worth
   doing on its own evidence and owned by R4. Deferred, with the reason recorded rather than the
   question dropped.
+- **Two qualification cells with no injection point.** Section 4.4's *Failure* (a pack whose
+  `ExpertBlock` rows do not improve) and *Malformed input* (a `by_kind` array missing
+  `contiguous_block_count`) read the `--pack-verify` document the runner itself writes, and the
+  runner has no operand for a substitute one. Adding one would be a testing seam in a
+  multi-gigabyte-artifact runner for two cells, so both are deferred with the reason recorded rather
+  than the question dropped. The malformed path is still *implemented* as an explicit required-field
+  check that raises, and section 4.5's *Early exit — unknown model identity* is deferred for the
+  same reason: it lives inside the runner's assertion block, which no host without ggml reaches.
+  Corrections M7 and M8.
 - **More than one node, the R5 loader, a read-only pack open.** `r4-5-external-buffer.md` section
   5.4, unchanged.
 
@@ -879,3 +888,64 @@ Two secondary observations for the same owner:
 | **Measurement.** 42.4x is a layout number, not a throughput number | The headline risk of over-reading the result | Section 5.3 inherits section 2.6's three limits verbatim, and no elapsed number in this document is a threshold |
 | **Coverage.** Zero padding and zero duplication on this model | Two format paths get no real-model evidence | Named in section 5.4; both stay owned by the synthetic corpus rather than being claimed as covered |
 | **Schema bump.** `R4_5_EXTERNAL_BUFFER` 1 → 2 | Any consumer of the R4.5 document | There is exactly one consumer, `scripts/run-ggml-spike`, and it changes in the same commit. Recorded because the count being one is what makes the bump cheap, not because it is zero |
+
+---
+
+## 6. Corrections the implementation forced
+
+Each row is a sentence in sections 1 to 5 that the implementation refuted or narrowed, in the same
+form `r4-5-external-buffer.md` section 6 uses. Section 7 is the cell-to-case map that goes with them.
+
+| # | Section | The plan said | Measured / implemented | Resolution |
+| --- | --- | --- | --- | --- |
+| M1 | 5.1 | "The three `R4_5_SLICE` and three `R4_5_SHAPE` claim fixtures are produced by rewriting bytes 80–95 of one 96-byte member record" | Five of the six are, and two of those are the interesting ones: `dim2[<n>]` comes from setting `slice_count` to a value the pair still admits (`0`/`n_expert - 1`) while `dim2` keeps its packed extent, and `n_dims[3]` comes from setting the pair to `-1`/`-1` so the same record is read as a *whole* member. The sixth cannot: **no slice-pair value makes `dim3` non-unit**, because `dim3` is not in bytes 80–95 | `olmoe-expert-claim-dim3` rewrites `dim3` at member-record offset 72. The claim is narrowed to "every `R4_5_SLICE` fixture and two of the three `R4_5_SHAPE` claim fixtures", which is stronger than it sounds: it means the slice pair alone can drive both a shape refusal and a form switch |
+| M2 | 3.7, 4.6 | The owner table lists three scripts and the fixture generator; `ggml-spike-smoke` is not listed as gaining a build input | Section 4.6 requires the smoke to pack the synthetic olmoe container with `main --pack`, so the runner needs `main` | `Makefile`'s `ggml-spike-smoke` gains a `build` prerequisite, exactly as `alignpack-smoke` already has. **Aggregate membership and check topology are unchanged** — the target was already in `HOSTED_CHECK_TARGETS` and `build` already precedes it there — so this is a build input, not a topology change |
+| M3 | 4.6, 5.1 | "the smoke packs the synthetic olmoe corpus `scripts/gguf_fixture.py` already generates" | Running that generator's whole corpus writer costs seconds and writes 130 containers the smoke does not use | The smoke instantiates `gguf_fixture.OlmoeModel()` and writes the one container. Same generator, same bytes, same corpus; only the delivery differs |
+| M4 | 3.5 | "expert arm: the first `ExpertBlock`'s **three** members, in member order" | Three is a property of the olmoe shape. A gpt-oss `ExpertBlock` has six, and a runner hard-coded to three would silently measure half of it | The expert arm runs **every** member of the first `ExpertBlock`, read from the pack document. On olmoe that is the same three runs section 5.2 budgeted |
+| M5 | 3.5 | The keyed table holds block/member, name, dims, `nbytes`, interior, and `sha256` per model | Five of those six are properties of the pack document, so keying them by model would encode one model's extents in a table that a second model must then extend | Only the `sha256` values are keyed by `source.header_region_sha256`. Name, role, dims, `nbytes`, `n_dims`, the slice pair, and the interior offset became **invariants checked against the pack document**, which is what makes the unknown-identity path degrade to an `N/A` for the digests alone, exactly as the plan requires |
+| M6 | 3.5 | The `(expert block)` `N/A` line is deleted | Deleting it outright would have removed the only line saying the gpt-oss cells stay deferred, and would have left a dense model with no expert-arm line at all | The line is *replaced*, not deleted: a MoE run prints `(expert block): PASS`, a dense run prints `(expert block): N/A - the packed model has no ExpertBlock`. `run-alignpack-qualification` likewise gains a `(gpt-oss MoE): N/A` line after its MoE `PASS`, which is where section 5.5's gpt-oss deferral is now stated in output |
+| M7 | 4.5 | Every cell has a hosted companion "over a fixture document" | `scripts/run-ggml-spike` refuses before its selection block on any host without ggml, so a companion embedded in that runner could never be reached in CI, and a companion that re-implemented the rule would test a copy | The selection rule moved to `scripts/ggml_spike_select.py`, one owner, and `run-ggml-spike-smoke` runs **it** over three pack documents. Its *Early exit — unknown model identity* cell is still inside the runner's assertion block and stays uncovered; it is recorded in section 5.5 as a deferral rather than claimed |
+| M8 | 4.4 | *Success — dense*, *Failure*, and *Malformed input* are hosted "fixture document" cells | The verdict reads the `--pack-verify` document the runner itself writes, and there is no injection point for a mutated one | *Construction*, *Success — MoE*, and *Success — dense* are hosted for real, by driving the actual runner over the synthetic `olmoe-full` and `qwen2-permuted` containers (`qualification-verdict` in `scripts/run-alignpack-smoke`). *Failure* and *Malformed input* are deferred with that reason; the malformed-`by_kind` path is still implemented as an explicit required-field check that raises rather than reading a missing key |
+| M9 | 4.4 | The dense hosted companion uses "a fixture document from the qwen corpus" | `qwen2-full`'s data section is already in Model IR block order, so its `(sequential read)` verdict is a deliberate `FAIL` (`r4-alignpack-layer-major.md` section 4.4) and the run never reaches the MoE line | The dense companion uses `qwen2-permuted`, whose source is genuinely scattered. Measured: `src 26 ranges / 1455680 span / 1745185 ppm`, then the shape `N/A` |
+| M10 | 3.6 | `docs/specs/roadmap.md` items 13 and 14 are amended and a new item is added | Out of scope for this branch, which does not modify the roadmap | Not done here. The two `r4-*` documents are amended as section 3.6 specifies; the roadmap rows remain for whoever lands the capability |
+
+**One thing section 2.5's C probe predicted exactly, and it is worth recording as a non-correction.**
+All four `sha256` values in section 3.5's table were produced by `moe_claim_probe.c` before any Align
+line changed, and the shipped arm reproduces all four bit for bit through `ggml-spike` — including
+`f7430e7b…` for the dense OLMoE `attn_q`, which the probe never computed and which came instead from
+section 2.4's dense control. The boundary the probe measured and the boundary the arm crosses are the
+same boundary.
+
+## 7. Cell-to-case map
+
+Section 4's cell names against the case names that ship. A cell whose name is unchanged is not
+listed. Every case in the first table is a `scripts/run-ggml-spike-smoke` case and appears in
+`scripts/ggml-spike-golden.jsonl` under that name.
+
+| Section 4 cell | Shipped case | Note |
+| --- | --- | --- |
+| 4.1 Success — claim | `olmoe-expert-claim` | plane 0 of the first `ExpertBlock`, unmutated |
+| 4.1 Success — claim, last plane | `olmoe-expert-claim-last` | plane `n_expert - 1`, resolved from the corpus's own `n_expert` |
+| 4.1 Failure — half pair | `olmoe-expert-claim-slice-pair`, `olmoe-expert-claim-slice-pair-mirror` | both directions, as the plan asks: `count` cleared and `index` cleared |
+| 4.1 Failure — zero count | `olmoe-expert-claim-slice-count` | `count[0]` |
+| 4.1 Failure — out of range | `olmoe-expert-claim-slice-range` | `index[n_expert]` |
+| 4.2 Failure — 3-D, not a claim (`whole-member-3d`) | `olmoe-whole-member-3d`, and the pre-existing `spike-shape-3d` | the olmoe case is section 2.4's measured refusal over a real claim record; `spike-shape-3d` keeps the same rule on the minimal corpus |
+| 4.2 Failure — expert axis mismatch | `olmoe-expert-claim-dim2` | `dim2[n_expert]`, produced from bytes 80–95 (correction M1) |
+| 4.2 Failure — non-unit `dim3` | `olmoe-expert-claim-dim3` | the one fixture that edits offset 72 (correction M1) |
+| 4.3 Success — summary, whole form | `olmoe-dense-member` | the olmoe pack's own `attn_q`, asserted as the exact `slice: -` line under `dims:` |
+| 4.6 Construction (`olmoe-pack-verify`) | the smoke's olmoe stage | `--pack` and `--pack-verify` both `ok`, `verdict: identical`, plus the assertion that `--pack` never writes a self-inconsistent pair |
+| 4.6 Cross-implementation (`olmoe-reader-agreement`) | the smoke's reader-agreement block | `scripts/alignpack_reader.py`'s pair for **every** member of the packed olmoe container |
+| 4.6 Cleanup | the smoke's `cleanup` trap | removal of the temporary tree is now asserted, not assumed |
+
+| Section 4.5 cell | Shipped case | Note |
+| --- | --- | --- |
+| Construction — selection by `role_id` | `selection-olmoe` in `run-ggml-spike-smoke` | runs `scripts/ggml_spike_select.py` over the real pack document (correction M7) |
+| Early exit — no `ExpertBlock` | `selection-dense-only` | the same document with its `ExpertBlock`s removed; the dense arm still resolves |
+| Failure — no `AttentionBlock` | `selection-no-attention` | non-zero exit, and the message names the missing block |
+| Success — dense arm, Success — expert arm | **CAPABLE**, `make ggml-spike-qualification` | measured on both real models |
+
+| Section 4.4 cell | Shipped case | Note |
+| --- | --- | --- |
+| Construction, Success — MoE | `qualification-verdict moe` in `scripts/run-alignpack-smoke` | the real runner over synthetic `olmoe-full` |
+| Success — dense | `qualification-verdict dense` | the real runner over `qwen2-permuted` (correction M9) |
+| Failure, Malformed input | deferred | correction M8 |

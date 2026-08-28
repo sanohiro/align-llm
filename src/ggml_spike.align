@@ -75,7 +75,11 @@ MAX_DIMENSION := 16777216
 // computed at step 8, before the ABI probe of step 12 has said what the alignment is.
 MAX_TENSOR_ALIGNMENT := 64
 
-SCHEMA_VERSION := 1
+// 2 since MOE-PREREQ-DISCHARGE. The bump is not additive book-keeping: a version-1 consumer handed
+// a document describing a **claim** would read a `tensor` object whose `ne0`/`ne1` no longer
+// describe the whole tensor the `name` names, which is a difference in meaning rather than in
+// fields (`docs/specs/moe-prereq-discharge.md` section 3.3).
+SCHEMA_VERSION := 2
 DOCUMENT_KIND := "R4_5_EXTERNAL_BUFFER"
 
 VERDICT_UNAVAILABLE := 0
@@ -132,6 +136,12 @@ Outcome {
   ne0: i64,
   ne1: i64,
   nbytes: i64,
+  // The member record's slice pair, verbatim: `-1` / `-1` for a whole-tensor member and
+  // `[0, slice_count)` / `[1, ..)` for one plane claimed out of a stacked tensor
+  // (`docs/specs/moe-prereq-discharge.md` section 3.3). Both are always emitted, in both forms,
+  // because an absent field and a `-1` field are different statements.
+  slice_index: i64,
+  slice_count: i64,
   blck_size: i64,
   type_size: i64,
   elements_per_row_ok: bool,
@@ -212,6 +222,10 @@ fn empty_outcome() -> Outcome = Outcome {
   ne0: 0,
   ne1: 0,
   nbytes: 0,
+  // The whole-tensor pair, so a failure before step 6 emits the neutral value rather than a
+  // number no member record supplied (section 4.3, cell *Early exit*).
+  slice_index: -1,
+  slice_count: -1,
   blck_size: 0,
   type_size: 0,
   elements_per_row_ok: false,
@@ -610,6 +624,8 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
   o.ne0 = member.dim0
   o.ne1 = member.dim1
   o.nbytes = member.nbytes
+  o.slice_index = member.slice_index
+  o.slice_count = member.slice_count
   o.member_pack_offset = member.pack_offset
   o.interior_offset = member.pack_offset - block.pack_offset
   match alignpack_read.member_name(pak, index, member, counters) {
@@ -630,8 +646,38 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
     return o
   }
 
-  // Step 7. The member is a 2-D tensor whose bytes are inside its own block.
-  if member.n_dims != 2 {
+  // Step 7a. The member record's slice pair is well formed, **before** any shape rule consults it
+  // (`docs/specs/moe-prereq-discharge.md` section 3.2). `r4-alignpack-layer-major.md` section 2.4.4
+  // admits exactly two pairs: `-1`/`-1` for a whole-tensor claim, and `plane index`/`sliced axis
+  // extent` for one plane of a stacked tensor. Anything else is a container whose member record
+  // contradicts itself — a defect no `--pack` can write — and it gets its own code rather than a
+  // `R4_5_SHAPE` detail, because reporting it as a shape would tell an operator the tensor is the
+  // wrong shape when the file is malformed.
+  whole_member := member.slice_index == -1 && member.slice_count == -1
+  claimed_member := member.slice_index >= 0 && member.slice_count >= 1
+    && member.slice_index < member.slice_count
+  if !whole_member && !claimed_member {
+    if member.slice_index < 0 || member.slice_count < 0 {
+      // One of the two negative and the other not: neither form, and naming either number alone
+      // would attribute the defect to a field that may be the correct one.
+      fail(o, "R4_5_SLICE", "pair")
+    } else if member.slice_count < 1 {
+      fail(o, "R4_5_SLICE", labelled("count", member.slice_count))
+    } else {
+      fail(o, "R4_5_SLICE", labelled("index", member.slice_index))
+    }
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+
+  // Step 7b. The member is a `mul_mat` left operand whose bytes are inside its own block. A claim
+  // is a **plane** of a stacked tensor: its `[dim0, dim1]` is that plane exactly — section 2.5
+  // finding 1 measured `ggml_nbytes` of the 2-D tensor built from them equal to the member's
+  // recorded `nbytes` in both axis orders and both quantizations — so everything downstream of
+  // here is identical for the two forms and only the declared rank and expert axis differ.
+  mut expected_dims := 2
+  if claimed_member { expected_dims = 3 }
+  if member.n_dims != expected_dims {
     fail(o, "R4_5_SHAPE", labelled("n_dims", member.n_dims))
     o.elapsed_ns = time.instant() - started
     return o
@@ -646,7 +692,20 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
     o.elapsed_ns = time.instant() - started
     return o
   }
-  if member.dim2 != 1 || member.dim3 != 1 {
+  if claimed_member {
+    // `dim2` is the sliced axis, so its extent must be the pair's own `slice_count`; a claim's
+    // `dim3` is the one axis that must still be absent, and `dim2_dim3` would not say which.
+    if member.dim2 != member.slice_count {
+      fail(o, "R4_5_SHAPE", labelled("dim2", member.dim2))
+      o.elapsed_ns = time.instant() - started
+      return o
+    }
+    if member.dim3 != 1 {
+      fail(o, "R4_5_SHAPE", labelled("dim3", member.dim3))
+      o.elapsed_ns = time.instant() - started
+      return o
+    }
+  } else if member.dim2 != 1 || member.dim3 != 1 {
     fail(o, "R4_5_SHAPE", "dim2_dim3")
     o.elapsed_ns = time.instant() - started
     return o
@@ -1299,6 +1358,10 @@ fn render(borrow o: Outcome, pack_path: str, reference_path: str) -> string {
   d.write_int(o.ne1)
   d.write(",\"nbytes\":")
   d.write_int(o.nbytes)
+  d.write(",\"slice_index\":")
+  d.write_int(o.slice_index)
+  d.write(",\"slice_count\":")
+  d.write_int(o.slice_count)
   d.write(",\"blck_size\":")
   d.write_int(o.blck_size)
   d.write(",\"type_size\":")
@@ -1436,6 +1499,20 @@ fn print_summary(borrow o: Outcome, pack_path: str) {
   rendered_dims := dims.to_string()
   rendered_dims_view: str := rendered_dims
   print(rendered_dims_view)
+  // Section 3.3's one added line. `dims:` states the plane; this states which plane of how many, or
+  // `-` when the member is the whole tensor.
+  print("slice:")
+  if o.slice_index >= 0 && o.slice_count >= 1 {
+    slice_text := builder()
+    slice_text.write_int(o.slice_index)
+    slice_text.write("/")
+    slice_text.write_int(o.slice_count)
+    rendered_slice := slice_text.to_string()
+    rendered_slice_view: str := rendered_slice
+    print(rendered_slice_view)
+  } else {
+    print("-")
+  }
   print("member bytes:")
   print(o.nbytes)
   print("block bytes:")

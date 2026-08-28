@@ -1198,6 +1198,43 @@ def drive_usage():
         require(line in help_text, "usage-diff: an existing usage line disappeared: %r" % line)
 
 
+def drive_qualification_verdicts(moe_source, dense_source):
+    """`qualification-verdict` (`docs/specs/moe-prereq-discharge.md` section 4.4).
+
+    The MoE verdict of `scripts/run-alignpack-qualification` is a **rule over the block set the run
+    measured**, so it is exercised here by giving that runner two synthetic containers of different
+    shapes and reading what it decided. Both are small enough to pack in milliseconds, and the
+    runner reclaims each pack itself.
+
+    `qwen2-permuted` rather than `qwen2-full` is the dense case on purpose: `qwen2-full`'s data
+    section is already in block order, so its `(sequential read)` verdict is a deliberate `FAIL`
+    (section 4.4 of `r4-alignpack-layer-major.md`) and the run never reaches the MoE line.
+    """
+    runner = str(Path(root_dir) / "scripts" / "run-alignpack-qualification")
+    for label, source, expected in (
+            ("moe", moe_source,
+             [b"alignpack qualification (MoE): PASS  ExpertBlock ",
+              b"alignpack qualification (gpt-oss MoE): N/A"]),
+            ("dense", dense_source,
+             [b"alignpack qualification (MoE): N/A - the packed model has no ExpertBlock"])):
+        destination = Path(work_dir) / ("qualification-verdict-" + label)
+        destination.mkdir(exist_ok=True)
+        environment = dict(os.environ)
+        environment["ALIGN_LLM_GGUF_MODEL"] = str(source)
+        environment["ALIGN_LLM_ALIGNPACK_TMPDIR"] = str(destination)
+        outcome = subprocess.run([runner], capture_output=True, env=environment)
+        require(outcome.returncode == 0,
+                "qualification-verdict %s: exited %d: %s"
+                % (label, outcome.returncode, outcome.stderr.decode("utf-8", "replace")[-400:]))
+        for line in expected:
+            require(line in outcome.stdout,
+                    "qualification-verdict %s: the verdict does not contain %r" % (label, line))
+        require(not list(destination.iterdir()),
+                "qualification-verdict %s: the runner left files behind" % label)
+    # The six numbers of the MoE verdict, and that they are the ones the pack actually has.
+    print("alignpack smoke: qualification-verdict MoE PASS and dense N/A")
+
+
 def drive_qualification_skips(sample_source):
     """`qualification-skip` (section 3.7): every refusal of `scripts/run-alignpack-qualification`
     prints exactly one `N/A` line and exits 0 without claiming a pass. The runner is driven here
@@ -1376,6 +1413,8 @@ drive_limits(qwen["source"])
 drive_environment(qwen["source"])
 drive_single_producer()
 drive_usage()
+drive_qualification_verdicts(results["olmoe-full"]["source"],
+                            results["qwen2-permuted"]["source"])
 drive_qualification_skips(qwen["source"])
 drive_full_filesystem(qwen["source"])
 
