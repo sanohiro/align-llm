@@ -812,7 +812,10 @@ def main(argv):
     model = "--model" in argv[1:]
     moe = "--moe" in argv[1:]
     rest = [a for a in argv[1:] if a not in ("--model", "--moe")]
-    if len(rest) != 1:
+    # One positional operand and nothing else. An option-shaped argument — `--help` above all — is
+    # rejected rather than silently taken as a directory name to create, which is the guard
+    # `scripts/gguf_fixture.py` already carries.
+    if len(rest) != 1 or rest[0].startswith("-"):
         sys.stderr.write("usage: layer_forward_fixture.py OUTDIR [--model] [--moe]\n")
         return 2
     for path in write_corpus(rest[0], model=model, moe=moe):
@@ -1671,6 +1674,17 @@ def write_moe_corpus(directory, emit):
     # `R5_TYPE_UNSUPPORTED`: a claim declaring a ggml type the operand table does not carry.
     emit("moe-pack-claim-type.alignpack",
          patch(base, member_field(layout, claim_base, 40), "<I", 4))
+    # Correction C12's `R5_TYPE_UNSUPPORTED`: a claim of a **later** routed expert declaring a
+    # different, perfectly supported ggml type from the first routed expert's for the same role.
+    # `nbytes` is untouched, so the plane still fills its region and the stack the arm builds is
+    # still exactly `U` planes; only the encoding the stack was built from is wrong, and no oracle
+    # can see that because all three read the stack the arm built. The `claim-type` mutation above
+    # patches `routed[0]`, which the first-plane type check already covers; this one patches
+    # `routed[1]`, which it did not.
+    second_routed = routed[1]
+    mismatch_base = 1 + dense_layer_members + second_routed * len(MOE_EXPERT_ROLES)
+    emit("moe-pack-claim-type-mismatch.alignpack",
+         patch(base, member_field(layout, mismatch_base, 40), "<I", 1))
     emit("moe-pack-truncated.alignpack", base[:len(base) - 64])
 
     emit("moe-source.bin", source_image(layout))

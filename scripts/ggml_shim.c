@@ -1534,6 +1534,12 @@ int32_t align_ggml_op_mul_mat_id(
  * view; the reachable span of a strided one is `offset + (ne1 - 1) * nb1 + row_size(ne0)`, and that
  * is what is checked here. A view that reads past its source is the exact class of defect section
  * 2.8's readback bug belonged to.
+ *
+ * Correction C13. The source-type gate is the stub's, restated here rather than left to the stub
+ * alone: `ne0` is an element count and `ggml_row_size` is the only place the type enters the span
+ * arithmetic, so a quantized or sub-byte source would make the extent test a statement about a
+ * block count while the table means elements. Both files now refuse anything but F32, which is the
+ * only type either node table views.
  */
 int32_t align_ggml_op_view_2d(
     void *ctx, void *slots, int64_t out, int64_t a, int64_t ne0, int64_t ne1,
@@ -1553,6 +1559,9 @@ int32_t align_ggml_op_view_2d(
     }
     if (ne0 > sa->ne[0]) {
         return ALIGN_GGML_SHAPE;
+    }
+    if (sa->type != GGML_TYPE_F32) {
+        return ALIGN_GGML_TYPE;
     }
     nb1 = sa->nb[nb1_dim];
     offset = (size_t) offset_index * sa->nb[offset_dim];

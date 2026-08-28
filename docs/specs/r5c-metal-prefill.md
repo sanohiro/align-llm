@@ -1834,6 +1834,28 @@ NaN is the one arm64 produces; the emulated run reproduces the host's answer, no
 evidence is the arithmetic above, which is exact, together with the architectures' documented
 default NaN encodings.
 
+### C22 — C11's and C19's 15 s target is retired
+
+Recorded here by R5D-MOE-LAYER-FORWARD; `docs/specs/r5d-moe-layer-forward.md` section 6, correction
+C18 carries the arithmetic and `r5b-model-prefill-forward.md` section 6, correction C26 retires the
+paired `check-per-unit` target the same way.
+
+C11 and C19 above each measured `make layer-forward-smoke` against a **15 s** acceptance target,
+found it exceeded on this host, and kept it by splitting the overrun between the host and the
+capability -- 11.0 + 2.2 = 13.2 s in C11, 11.0 + 1.05 = 12.05 s in C19. Both records were honest
+about doing that. The split does not survive a fourth block: R5D measures **30.57 s** median with
+its block against **19.41 s** without it, paired and alternating, three runs each. Its own cost is
++11.2 s, and 11.0 + 11.2 = **22.2 s** is outside 15 s against the very baseline the target was set
+from, so there is no attribution left to make.
+
+**The target is retired.** C11's own reasoning is why: the remedy the target names -- splitting the
+arm along a module boundary -- reduces *checker* cost, and the runner's cost is process launches,
+shim rebuilds, and executable builds. R5D reduced what could be reduced without losing coverage,
+as C11 did, and is still 11 s. `layer-forward-smoke` is one member of `HOSTED_CHECK_TARGETS`; its
+budget belongs to that aggregate and to the fresh worker's cap, neither of which is near, and a
+per-capability wall clock on one developer's laptop measured the laptop. C11's and C19's
+measurements stand as measurements; only the target they were compared against is withdrawn.
+
 ### Cell-to-case map
 
 Every applicable closure cell of section 4, mapped to the implementing function and the exact case

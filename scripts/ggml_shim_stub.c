@@ -962,10 +962,16 @@ static void align_stub_run(align_stub_tensor *t) {
         }
     } break;
     /* R5D section 3.5. `ggml_argsort` sorts each row of `ne0` elements and writes the permutation
-     * of indices, not the values. The loop shape is ggml's own selection sort with a strict
-     * comparison, so equal probabilities keep ascending index order in both files and a tie is
-     * broken identically — which section 5.6 records as the one place a different backend could
-     * disagree. */
+     * of indices, not the values.
+     *
+     * Correction C12. This kernel is a **stable insertion sort** — an index only moves past a
+     * neighbour whose value is strictly out of order — so equal probabilities keep ascending index
+     * order, which is the order `scripts/layer_forward_fixture.py`'s own independent forward
+     * produces and therefore the only order the hosted goldens can agree with. It is deliberately
+     * *not* a claim about ggml: ggml 0.21.0's CPU `argsort` is a `std::sort` over the index array,
+     * whose tie order above the introsort insertion threshold is unspecified, and the exchange sort
+     * this kernel used before C12 agreed with neither. Section 5.6's tie row is where that gap is
+     * recorded and bounded; neither corpus holds an exact tie. */
     case ALIGN_STUB_OP_ARGSORT: {
         int32_t *out = (int32_t *) t->data;
         int64_t rows = align_stub_nelements(t) / t->ne[0];
@@ -977,16 +983,17 @@ static void align_stub_run(align_stub_tensor *t) {
             for (i0 = 0; i0 < t->ne[0]; i0++) {
                 idx[i0] = (int32_t) i0;
             }
-            for (i0 = 0; i0 < t->ne[0]; i0++) {
-                for (j = i0 + 1; j < t->ne[0]; j++) {
-                    int32_t swap = descending ? (row[idx[i0]] < row[idx[j]])
-                                              : (row[idx[i0]] > row[idx[j]]);
-                    if (swap) {
-                        int32_t keep = idx[i0];
-                        idx[i0] = idx[j];
-                        idx[j] = keep;
+            for (i0 = 1; i0 < t->ne[0]; i0++) {
+                int32_t keep = idx[i0];
+                for (j = i0; j > 0; j--) {
+                    int32_t move = descending ? (row[idx[j - 1]] < row[keep])
+                                              : (row[idx[j - 1]] > row[keep]);
+                    if (!move) {
+                        break;
                     }
+                    idx[j] = idx[j - 1];
                 }
+                idx[j] = keep;
             }
 #ifdef ALIGN_GGML_FORCE_ARGSORT_RANGE
             /* R5D section 4.5's `moe-routing-id-range` cell. An argsort that names a plane the
@@ -1942,7 +1949,8 @@ int32_t align_ggml_op_mul_mat_id(
 /* The stride and the offset are derived from the source's **own** strides, exactly as the real
  * shim derives them from `a->nb[]`; an engine tensor is contiguous, so the strides are the products
  * of its extents. The extent test is the same strict one: the reachable span of a strided view is
- * `offset + (ne1 - 1) * nb1 + ne0 * 4`.
+ * `offset + (ne1 - 1) * nb1 + ne0 * 4`. The F32 source gate below is the same one too, since
+ * correction C13 restated it in `scripts/ggml_shim.c`.
  */
 int32_t align_ggml_op_view_2d(
     void *ctx, void *slots, int64_t out, int64_t a, int64_t ne0, int64_t ne1,

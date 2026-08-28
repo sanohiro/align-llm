@@ -3245,9 +3245,10 @@ fn stage_reference_weights(
     slot := layer_olmoe.claim_slot(role)
     span := routed_count * shape.plane[role]
     if fill {
-      // The compact stack is contiguous in the claim window only when its plane size is already a
-      // multiple of `block_align`; otherwise the window's slots are padded and the reference copy
-      // has to go plane by plane, which is also what makes it a genuinely independent placement.
+      // The reference copy goes plane by plane into ggml-owned memory, which is what makes it a
+      // genuinely independent placement: correction C3's rule — the planes of a role region lie end
+      // to end, so `plane_stride == nbytes` — is exactly the thing the two placements must agree
+      // on, and a plane-by-plane copy would disagree loudly if the primary window were padded.
       mut u := 0
       loop {
         if u >= routed_count { break }
@@ -3293,8 +3294,9 @@ fn readback_bytes(borrow g: layer_olmoe.Geometry, tokens: i64) -> i64 {
   return most * 4
 }
 
-// Step 18's claim half: the three claim types against the operand table and the `ne0 % blck_size`
-// rule. It runs after the claims are read, because the types are the container's.
+// Step 18's claim half: the three claim types against the operand table, the `ne0 % blck_size`
+// rule, and — correction C12 — every later plane's type against its own role's first. It runs after
+// the claims are read, because the types are the container's.
 fn stage_claim_types(borrow claims: ClaimColumns, borrow mut o: Outcome) {
   mut role := 0
   loop {
@@ -3308,6 +3310,26 @@ fn stage_claim_types(borrow claims: ClaimColumns, borrow mut o: Outcome) {
       }
     }
     role = role + 1
+  }
+  // Both arms build **one** compact stack per role, and both build it from the **first** routed
+  // expert's declared type — `stage_claim_tensors` and `stage_reference_weights` alike index
+  // `claims.ggml_type` by role. Every other plane of that role is therefore staged as if it
+  // carried the first's encoding, and nothing downstream can notice: `nbytes` agrees, because F32
+  // and F16 at half the elements are the same byte count and this arm's shape rule is over
+  // `nbytes`; and all three oracles read the stack the arm built rather than the container's
+  // declaration. The uniformity walk is here, after the operand-table rows above so a genuinely
+  // unsupported first plane still names its role rather than the second plane that disagrees with
+  // it, and before any ggml object exists so the refusal covers both arms at once.
+  mut at := layer_olmoe.CLAIM_ROLE_COUNT
+  loop {
+    if at >= claims.count { break }
+    role_of := claims.role[at]
+    if claims.ggml_type[at] != claims.ggml_type[role_of] {
+      fail(o, "R5_TYPE_UNSUPPORTED",
+        expert_role_detail(claims.expert[at], layer_olmoe.claim_label(role_of)))
+      return
+    }
+    at = at + 1
   }
 }
 

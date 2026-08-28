@@ -5,7 +5,7 @@
 # kq-0 and kq_soft_max-0, which are present, matched, and excluded from element comparison by
 # contract because llama.cpp's n_kv is a padded KV-cache width and R5D has no cache.
 #
-# The four norm-0 records and the fifteen ffn_moe_weighted-0 (view) / node_NN reduction records
+# The four norm-0 records and the fourteen ffn_moe_weighted-0 (view) / node_NN reduction records
 # are deliberately absent: section 2.2 facts 4 and 5 record that four different tensors of one
 # OLMoE layer print under the name norm-0 and that the reduction chain's names are positional, so
 # the arm never seeks either class and each is published as an oracle exclusion instead.

@@ -1585,12 +1585,15 @@ v1 container directly with real F32 members, at `n_expert 8` / `n_expert_used 3`
 the synthetic corpus is the only place the routing oracle's *full* print coverage is reachable; the
 real model structurally truncates 12 of 48 selected expert ids (ledger section 2.2 fact 6).
 
-**R5D adds no Makefile target and changes no aggregate membership beyond the fourth
-`layer-forward-smoke` block.** A separate `moe-layer-forward-smoke` target would add a
+**R5D adds no smoke target and changes no aggregate membership**; it does add one Makefile target,
+the opt-in `moe-layer-forward-qualification`. A separate `moe-layer-forward-smoke` target would add a
 `HOSTED_CHECK_TARGETS` member, which `docs/specs/check-gate-topology.md` and the `Makefile`'s own
-comment record as a check-topology change selecting `make ci` for publication; R5D keeps the
-topology fixed and stays in the ordinary lane. `moe-layer-forward-qualification` joins no aggregate
-and is named explicitly in the pull request, exactly as its three siblings are.
+comment record as a check-topology change selecting `make ci` for publication; R5D's fourth
+`layer-forward-smoke` block keeps the topology fixed, so `make ci` is not selected.
+`moe-layer-forward-qualification` joins no aggregate and is named explicitly in the pull request,
+exactly as its three siblings are — but a `Makefile` edit is still an executable-contract boundary,
+so `scripts/pre-pr` selects the **executable** row and the installed profile, not the documentation
+lane (ledger section 6, correction C15).
 
 The shim gains five new `extern` symbols (`argsort`, `mul_mat_id`, `view_2d`, a 3-D stacked-tensor
 constructor, and a 2-D i32 constructor) and one widened one (`soft_max_ext` with `mask == -1` meaning
