@@ -108,6 +108,16 @@ prompts of at most six tokens, so cross-prompt reuse carries most of the cache p
 result as "across a session of many short requests, frequency-aware residency beats recency", not as
 "within a generation, expert reuse is high".
 
+**Baseline chain, re-recorded.** The `Makefile` change, plus PR #134's `.align-revision` move that
+this branch adopts, invalidate the chain that shipped with C8-OPTIONAL-TARGETED-STAGE, so the
+identity-bound chain is re-recorded on this branch as `ec5ca39` -> `e729b68` -> `4bf5976` (clean
+source -> immutable oracle -> finalization), measured on Linux (aarch64, kernel 6.11.11-linuxkit,
+Python 3.12.3) and checked there with `make baseline-check` ending `baseline chain: PASS`. Three of
+the twenty recorded artifacts changed: `.align-revision` (`4b515f8d` -> `3a34febe`, PR #134's, adopted
+unchanged), `Makefile`, and `src/main.align`, the latter two this capability's own. The other
+seventeen hashes are unchanged and the twenty paths are identical. The pull request must merge with a
+merge commit; squash and rebase merges would make these commits unreachable.
+
 **Align capability requests.** Implementation added Requests 45 and 46 (filed as 44 and 45 before
 PR #134 took 44), both `PROPOSED`, non-blocking, and shipped around with documented workarounds.
 **Request 45 is priority high**: a compiler soundness defect, where the region checker accepts a move
