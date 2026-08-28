@@ -174,8 +174,13 @@ ggml-spike:
 # synthetic alignpack corpus into a temporary tree, needs no model, no network, no ggml, and no
 # reference tool, and runs in seconds — the same justification that admitted gguf-smoke,
 # model-ir-smoke, expert-trace-smoke, and alignpack-smoke — so it joins HOSTED_CHECK_TARGETS. It
-# runs the whole CLI over every fixture and reaches ten of the fifteen error codes for real.
-ggml-spike-smoke:
+# runs the whole CLI over every fixture and reaches eleven of the sixteen error codes for real.
+#
+# It depends on `build` since MOE-PREREQ-DISCHARGE: the claim cells of
+# `docs/specs/moe-prereq-discharge.md` section 4.6 are taken from the synthetic olmoe container
+# packed by `main --pack`, exactly as `alignpack-smoke` already does, rather than from a hand-forged
+# container that could disagree with the writer about where a plane lives.
+ggml-spike-smoke: build
 	./scripts/run-ggml-spike-smoke
 
 # The section 5.2 focused qualification. It is opt-in through ALIGN_LLM_GGML_INCLUDE,

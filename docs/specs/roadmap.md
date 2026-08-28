@@ -72,8 +72,8 @@ The current forward delivery order is:
    43,886,999 ns parent median (326,093 ppm), and its Align prerequisite shipped in PR #892. Its authoritative
    contract and stop conditions are in `docs/specs/c8-optional-targeted-stage.md`. Its stable
    candidate passes the schema/owner matrix and improves the 101-pair fixed-task median from
-   60,515,456 ns to 40,475,113 ns (331,160 ppm, 33.12%); review and publication remain. Track B
-   resumes after this bounded capability merges. Every other deferred surface retains the normal floor or
+   60,515,456 ns to 40,475,113 ns (331,160 ppm, 33.12%); review is complete and PR #134 is in final
+   base-integration/publication. Track B resumes after this bounded capability merges. Every other deferred surface retains the normal floor or
    genuine-request re-entry rule.
 9. **R0-GGUF-INSPECT — read-only GGUF header, metadata, and tensor-table inspection. Gate met,
    closed.** The first Track B capability. It delivers one consumer-complete path: a caller names a
@@ -123,9 +123,13 @@ The current forward delivery order is:
     `model_ir.resolve_claims` and `model_ir.derive_status` and imports no frontend. **It closes
     the R4 gate on the qwen half with real weights**: one qualification run over
     Qwen2.5-Coder-7B Q4_K_M reported byte identity and 89 → 58 ranges, 11,130,544,128 → 4,677,120,000
-    span bytes, 2,379,786 → 1,000,000 ppm, and 27 → 58 of 58 contiguous blocks. The per-expert half
-    is closed synthetically and stays **MOE-PREREQ**, pending the same small MoE GGUF decision R2
-    names.
+    span bytes, 2,379,786 → 1,000,000 ppm, and 27 → 58 of 58 contiguous blocks. **The per-expert
+    half is discharged on a real MoE model by item 20**: over
+    `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` the 1,024 `ExpertBlock`s go 3,072 → 1,024 ranges,
+    165,368,823,808 → 3,900,702,720 span bytes, 42,394,624 → 1,000,000 ppm, and 0 → 1,024 of 1,024
+    contiguous blocks. The residual **MOE-PREREQ** is gpt-oss-specific — a six-member `ExpertBlock`,
+    MXFP4 geometry, split expert biases, and the fused `ffn_gate_up_exps` stay synthetic — and it
+    waits on the 12.1 GB file the Status section records as infeasible on this host.
 14. **R4.5-EXTERNAL-BUFFER-SPIKE — computing a ggml matmul over an Align-owned quantized buffer.
     Merged as PR #126, merge commit `fa567b1` on `main`.** Was on branch
     `agent/r4-5-external-buffer`.
@@ -138,7 +142,10 @@ The current forward delivery order is:
     computed over our bytes or over a copy. It answers R4.5's gate for the DRAM half and for unified
     memory; section R4.5 below records clause by clause what that discharges and what it defers.
     Implemented, reviewed, repaired, and merged; R4's PR #125 merged first and PR #126 landed on top
-    of it.
+    of it. **Its `one expert matmul succeeds` clause is discharged for a real expert claim by
+    item 20**, which took `schema_version` to 2 and added one shape rule and one error code —
+    the claim form was not, as this item's Japanese bullet had it, already addressable with no new
+    surface. The GPU expert arm stays deferred.
 15. **R5A-DENSE-LAYER-FORWARD — one Qwen2 dense layer computed from an Align-owned alignpack.
     Merged as PR #127, merge commit `ccbd8ae` on `main`.** Was on branch
     `agent/r5a-dense-layer-forward`, rebased onto the merged R4.5 at `main` `fa567b1`.
@@ -206,8 +213,9 @@ The current forward delivery order is:
     (async prefetch + GPU compute) cannot be written at this pin and is deferred with Request 41
     named (`docs/align-requests.md`).
 18. **R1C-OLMOE-MOE-IR — an olmoe frontend and the first Model IR/Block IR derived from a real MoE
-    model. Implemented and reviewed; in publication.** On branch `agent/r1c-olmoe-moe-ir`, design
-    ledger merged at commit `83361a9`, implementation at `45e4ced` with its review repair on top.
+    model. Merged as PR #132, merge commit `e15e3d3` on `main`.** Was on branch
+    `agent/r1c-olmoe-moe-ir` at head `3580a62`; design ledger `83361a9`, implementation `45e4ced`,
+    review repair `4c86336`, reconciliation `3580a62`.
     [`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md) is the authoritative plan and owns the contract
     ledger and closure matrix. It turns the real, locally present
     `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (195 tensors = 3 global + 16 layers × 12 per-layer
@@ -230,8 +238,7 @@ The current forward delivery order is:
     is the qualification R1B could only record as `N/A`, so this is the first `model-ir-parity`
     discharged against a real MoE model. Section 6 of the ledger records eleven corrections to the
     plan, including that the parity runner's `ulimit -f` had to rise to 256 MiB because it bounds
-    `llama-cli`'s Metal shader pipeline cache and not only its log. Review is complete and
-    publication is in progress; see `HANDOFF.md`.
+    `llama-cli`'s Metal shader pipeline cache and not only its log.
 19. **R2-LOCALITY-GATE — the R2 locality gate, measured on a real MoE model. Merged as PR #131,
     merge commit `546b5cc` on `main`.** Was on branch `agent/r2-locality-gate` at the review repair
     `fff5806`; no design gate triggered. Discharged R2A's `MOE-PREREQ` deferral by running
@@ -248,13 +255,34 @@ The current forward delivery order is:
     (observed truncated slots 3 of 8 at each end). The R2 section below records the verdict, its
     limits, and the R2b/R2c work that remains.
 
+20. **MOE-PREREQ-DISCHARGE — the per-expert half of R4 and R4.5, measured on a real MoE model.
+    Merged as PR #133 at `35a0df6`.** The branch was rebased onto the merged R1C at `main`
+    `e15e3d3`; design ledger `4656d88`, implementation `eed850e`, review
+    repair `4bf25b8`, developer-guide refresh `0dd4ea8`. [`moe-prereq-discharge.md`](moe-prereq-discharge.md) is the authoritative plan
+    and owns the probe record, the contract ledger, the closure matrix, the correction ledger, and
+    the cell-to-case map. It discharges the two prerequisites items 13 and 14 left open, on
+    `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` rather than on the synthetic corpus, by turning two
+    constant verdicts into rules over the block set each run measured: the alignpack qualification
+    reports the container's 1,024 `ExpertBlock`s going 3,072 → 1,024 ranges, 42,394,624 → 1,000,000
+    ppm, and 0 → 1,024 of 1,024 contiguous; the ggml spike selects both arms by `role_id` out of the
+    pack document it just wrote and computes real expert claims — all three members of the first
+    `ExpertBlock` and member 0 of the last (block 1,056, plane 63 of 64) — every one `EXTERNAL` and
+    bit-identical to the same plane read from the original GGUF. **The shipped R4.5 arm refused a
+    real expert claim** with `R4_5_SHAPE`, detail `n_dims[3]`, so admitting the claim form took
+    `R4_5_EXTERNAL_BUFFER` to `schema_version: 2`, split step 7 into 7a (the slice pair) and 7b (the
+    shape by form), and added the `R4_5_SLICE` code; R4.5's claim that the CLI already addressed an
+    `ExpertBlock` with no new surface is refuted and removed. R4's expert hotness ordering and
+    prefetch groups, and R4.5's GPU expert arm and discrete-VRAM half, stay deferred and unchanged.
+    The layout numbers are a claim about this container on this named model, not a platform or
+    throughput claim. Review, publication, and merge are complete; see `HANDOFF.md`.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
-`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked two capabilities taken in
-parallel, items 18 and 19 above: item 19 is merged and its gate is met, and item 18 is implemented,
-reviewed, and in publication. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18, 19, and 20 above:
+items 18 and 19 are merged and R2's gate is met, and item 20 — the per-expert half of R4 and R4.5 —
+merged as PR #133. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
 **infeasible on this host** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
 a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
@@ -276,9 +304,9 @@ than by a separate align-coder capability.
 **ALIGN-ADOPTION is an internal prerequisite checkpoint, not a standalone capability.** Within the
 next consumer branch, batch its merged Align requests into one compiler-pin update, run every named
 focused real-client acceptance target, and then run one final fresh `make ci`. Preserve each
-request's lifecycle evidence without opening a pin-only pull request. As of R5C-METAL-PREFILL-ARM's
-merge (2026-08-28), no Align request has merged since R0; `.align-revision` stays pinned to
-`4b515f8d` and there is nothing to batch.
+request's lifecycle evidence without opening a pin-only pull request. C8-OPTIONAL-TARGETED-STAGE
+adopts Request 44's merged Align prerequisite at `3a34febe`; that adoption and its real-client
+verification remain part of the consumer capability rather than a pin-only pull request.
 
 Only design the next eligible capability in implementation detail; later ledger entries may retain
 their accepted contracts but must not generate speculative implementation pull requests. The
@@ -560,12 +588,12 @@ baseline・測定値・host・binary digestは
 2026-08-28に明示的に再開した唯一の例外である。権威あるcontractと停止条件は
 [`c8-optional-targeted-stage.md`](c8-optional-targeted-stage.md)にある。stable candidateはschema/owner
 matrixをpassし、101-pairの固定タスク中央値を60,515,456 nsから40,475,113 nsへ短縮した
-（331,160 ppm、33.12%）。reviewとpublicationが残る。このbounded capabilityの
+（331,160 ppm、33.12%）。reviewは完了し、PR #134のbase integrationとpublicationが残る。このbounded capabilityの
 merge後にTrack Bへ戻る。R0のgateは達成済みでcloseした。R1（Qwen2 Model IR）のgateも
 達成済みでcloseし、R1B（gpt-oss/MoEフロントエンド）もPR #123としてmergeされ、R1のgateはgpt-oss側を
 含めてcloseした（gpt-oss実モデルによるqualificationのみ、ユーザー判断待ちのopen項目として残る）。
-現在はR2 locality gateとR1C OLMoE frontendまでmerge済みであり、このbounded C8 capabilityの
-次はTrack BのMoE prerequisite discharge、その後にR3 residency simulationを実装する。
+現在はR2 locality gate、R1C OLMoE frontend、MoE prerequisite discharge（PR #133）までmerge済みであり、
+このbounded C8 capabilityの次はR3 residency simulationを実装する。
 
 ---
 
@@ -650,15 +678,15 @@ gpt-oss実モデルに対する`model-ir-parity` qualificationのみ、`gpt-oss-
 ダウンロードに関するユーザー判断待ちのopen項目として残る（決定(b)は本hostでは容量不足のため
 **infeasible**として記録済み、`HANDOFF.md`参照）。
 
-**R1C-OLMOE-MOE-IR**（[`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md)、branch
-`agent/r1c-olmoe-moe-ir`、design ledger commit `83361a9`）は第三のR1 capabilityであり、実MoEモデル
+**R1C-OLMOE-MOE-IR**（[`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md)、PR #132、merge
+`e15e3d3`、design ledger commit `83361a9`）は第三のR1 capabilityであり、実MoEモデル
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`に対する`src/frontend_olmoe.align`と三方向architecture
 dispatchは`45e4ced`で**実装完了**、review指摘の修正commitがその上に載っている（forward order
 item 18）。owner checkは4本ともPASS：`make check`（30 unit）、`make model-ir-smoke`（qwen 49、
 gpt-oss 31、olmoe 29、R0 62 fixtureの再実行）、`make alignpack-smoke`（positive 27、negative source
 128、assertion 20,280）、および実モデル2本に対する`make model-ir-parity`（olmoe 15行＋type census
 `f32` 81 / `q4_K` 97 / `q6_K` 17、qwen2 14行）。olmoeのparityはR1Bが`N/A`としか記録できなかった
-qualificationであり、実MoEモデルに対する初のPASSである。reviewも完了し、残作業はpublicationのみ。
+qualificationであり、実MoEモデルに対する初のPASSである。review・publication・mergeは完了している。
 この実測は、R1Bのsection 2.5が`ASSUMED`としていた2行を**確認ではなく反証**した：stacked gate/up/down axis orderはR1Bの想定と逆であり、R1Bがrequiredとしていたsplit
 expert bias群は実MoEファイルに一切bias tensorが存在しないことで汎用規則としては反証された。
 どちらも実gpt-ossファイルがない以上gpt-oss frontend自体は変更せず、R1B section 7への訂正として
@@ -787,8 +815,12 @@ layer-major
 merge済みである。実装・contract ledger・closure
 matrix・fixture設計・correction ledgerはすべて
 [`r4-alignpack-layer-major.md`](r4-alignpack-layer-major.md)にある。qwen側は実weightで達成済み
-（89 → 58 range、2,379,786 → 1,000,000 ppm、27 → 58/58 contiguous、byte identity）。per-expert側は
-合成fixtureのみで、実MoE GGUFが前提（**MOE-PREREQ**）。
+（89 → 58 range、2,379,786 → 1,000,000 ppm、27 → 58/58 contiguous、byte identity）。per-expert側も
+MOE-PREREQ-DISCHARGE（roadmap item 20、[`moe-prereq-discharge.md`](moe-prereq-discharge.md)）が
+実MoE model `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`で達成した（1,024 ExpertBlockが
+3,072 → 1,024 range、165,368,823,808 → 3,900,702,720 span、42,394,624 → 1,000,000 ppm、
+0 → 1,024/1,024 contiguous）。残る**MOE-PREREQ**はgpt-oss固有（6 member ExpertBlock、MXFP4、
+split expert bias、fused `ffn_gate_up_exps`）のみである。
 
 ---
 
@@ -819,9 +851,12 @@ matrix・fixture設計・correction ledgerはすべて
   offsetと厳密に一致（`14336 == 14336`、`verdict: EXTERNAL`）。
 - `quantized layout preserved` — **達成**。実Q4_K tensorの出力が元GGUFをggml所有memoryに読んだ
   reference armとbit一致（`differing_elements 0` / 14,336 f32）。
-- `one expert matmul succeeds` — **dense blockのみ達成**。この環境の実modelはdenseで、expert block
-  は**MOE-PREREQ**（R2/R4と同じ小型MoE GGUF決定待ち）。CLIはExpertBlockをblock indexで既に指定でき、
-  新surfaceは不要。
+- `one expert matmul succeeds` — **dense blockとexpert claimの両方でCPU backend上達成**。
+  MOE-PREREQ-DISCHARGE（roadmap item 20）が実MoE model
+  `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`のExpertBlock claimを計算し、元GGUFの同一planeと
+  bit一致した（`verdict: EXTERNAL`、`differing_elements 0`）。shipped armは当初この claimを
+  `R4_5_SHAPE`（detail `n_dims[3]`）で拒否しており、`schema_version: 2`・step 7a/7bの shape rule・
+  `R4_5_SLICE` codeの追加が必要だった。GPU armは引き続きdeferである。
 
 **未達として明示的にdeferしているもの**（ledger section 5.4）: GPU/Metal arm（unified memoryでは
 no-copyで動作することを実測済みだが、CPU出力とbit一致しないためtolerance oracleと別のalignment

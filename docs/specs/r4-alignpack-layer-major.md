@@ -127,21 +127,28 @@ The roadmap gate for R4 is *元GGUFとのtensor内容一致と、連続read量�
    2,379,786 ppm, a 2.38x read amplification. The pack's layout makes every block exactly one range
    and its span exactly its payload: 58 ranges, 1,000,000 ppm, by construction and re-measured from
    the written file. The qualification prints both sides.
-3. **NOT discharged — the MoE case on real weights.** The per-expert improvement is the largest one
-   this format offers, and it is verified **synthetically only**: an `ExpertBlock`'s six members are
-   six planes of six different stacked tensors, so its claims are six ranges spanning most of a
-   layer's expert region in the source and one range in the pack. No gpt-oss GGUF exists on this
-   host — `docs/specs/r1b-gptoss-moe-ir.md` section 4.4 records the same pending user decision — so
-   every real-model number in this document is the dense qwen2 case. Cells that depend on real MoE
-   weights are marked **MOE-PREREQ** in section 3.
+3. **Discharged on olmoe — the MoE case on real weights.** The per-expert improvement is the largest
+   one this format offers, and
+   [`moe-prereq-discharge.md`](moe-prereq-discharge.md) section 2.3 measures it on
+   `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`: the `ExpertBlock` kind alone goes from 3,072 source
+   ranges / 165,368,823,808 span / **42,394,624 ppm** with 0 of 1,024 blocks contiguous, to 1,024
+   ranges / 3,900,702,720 span / **1,000,000 ppm** with 1,024 of 1,024 contiguous. Every
+   non-contiguous block in that source is an `ExpertBlock`, every one of them is exactly three
+   ranges, and every one becomes one range in the pack. What stays synthetic is the **gpt-oss**
+   shape specifically: a six-member `ExpertBlock` drawn from six stacked tensors, MXFP4 geometry,
+   split expert biases, and the fused `ffn_gate_up_exps`. No gpt-oss GGUF exists on this host —
+   `docs/specs/r1b-gptoss-moe-ir.md` section 4.4 records the same pending user decision — so every
+   *gpt-oss* number in this document is synthetic, while the MoE-generic claim is measured. The
+   cells that still depend on gpt-oss weights remain **MOE-PREREQ** in section 3.
 4. **NOT discharged — hotness and prefetch groups.** Section 1.3 and section 5.1–5.2. The roadmap
    sentence names four layout properties and this capability ships two of them. Saying so is the
    section 1.4 honesty requirement; the container reserves the fields for the other two.
 
 R4's honest terminal state is therefore: *the format is defined and self-describing, the copy is
-byte-exact and verified over a real 4.68 GB model, the sequential-read improvement is defined,
-baselined, and measured on that model, and two of the four named layout properties are deferred with
-their format surface reserved.*
+byte-exact and verified over a real 4.68 GB dense model and a real 4.21 GB MoE model, the
+sequential-read improvement is defined, baselined, and measured on both — including the per-expert
+half, at 42.4x on the `ExpertBlock` kind — and two of the four named layout properties are deferred
+with their format surface reserved.*
 
 ## 2. Public-contract ledger
 
@@ -255,8 +262,16 @@ container, `ExpertBlock(L, e)` claims plane `e` of six stacked tensors
 `docs/specs/r1b-gptoss-moe-ir.md` section 2.5.3). Those six claims are six ranges, and each stacked
 tensor is `n_expert` planes wide, so a single-read fetch of one expert transfers on the order of
 `n_expert` times its payload. In the pack it is one range at 1,000,000 ppm. With no gpt-oss GGUF on
-this host, this is asserted only over `scripts/gguf_fixture.py`'s synthetic gpt-oss corpus, where
-every plane offset is generator-known.
+this host, the **gpt-oss** shape is asserted only over `scripts/gguf_fixture.py`'s synthetic gpt-oss
+corpus, where every plane offset is generator-known.
+
+**The prediction's shape holds on real MoE weights and its constant does not.**
+[`moe-prereq-discharge.md`](moe-prereq-discharge.md) section 2.3 measures the olmoe case, whose
+`ExpertBlock` has three members rather than six: 42,394,624 ppm, or 42.4x, against the 64x this
+finding's "on the order of `n_expert`" would predict at `n_expert = 64`. The gap is because an
+expert's claims lie inside one *layer's* expert region rather than across the whole file, and
+because the three stacked tensors are not adjacent in the source's alphabetical run. The honest form
+of the claim is the measured one.
 
 **Throughput measurements on this host** (Apple M1, 8 cores, 16 GiB, APFS on `/dev/disk3s5`), used
 only to size constants and state a time budget — **no performance claim is made and none of these is
@@ -1039,7 +1054,8 @@ count is bounded by the frontend. Nothing is quadratic and nothing rescans.
 Every applicable cell names its implementation owner and the exact regression that closes it. `N/A`
 carries a concrete reason; `DEFERRED` is an intentional decision recorded in section 5. Regression
 names are cases inside `scripts/run-alignpack-smoke` unless another runner is named. **MOE-PREREQ**
-marks a cell whose real-weight evidence does not exist on this host (section 1.4 item 3); each is
+marks a cell whose real-weight evidence does not exist on this host (section 1.4 item 3); since
+MOE-PREREQ-DISCHARGE that means **gpt-oss-shaped** evidence specifically, and each such cell is
 closed synthetically and relisted in section 4.5.
 
 ### 3.1 `src/alignpack.align` — the container codec
@@ -1070,7 +1086,7 @@ closed synthetically and relisted in section 4.5.
 | Success — layer-major order | Block table order equals Model IR block order; `pack_offset` is strictly increasing | `plan_layout` | `block-order-matches-ir`: the smoke diffs the pack's block sequence against the `R1_MODEL_IR` document's |
 | Success — alignment | Every `pack_offset` of a block is `block_align`-aligned and of a member `member_align`-aligned | `plan_layout` | `alignment-invariant` in `alignpack_reader.py` |
 | Success — contiguity | Every block satisfies `range_count == 1` and `span == pack_bytes` | `plan_layout` | `pack-contiguity`: asserted for every block of every fixture |
-| Success — per-expert contiguity | Every `ExpertBlock`'s six claims are one range | `plan_layout` | `expert-block-contiguous` over the gpt-oss corpus. **MOE-PREREQ** for real weights |
+| Success — per-expert contiguity | Every `ExpertBlock`'s claims are one range | `plan_layout` | `expert-block-contiguous` over the gpt-oss corpus, beside `run-alignpack-qualification`'s measured `ExpertBlock` verdict on real olmoe weights ([`moe-prereq-discharge.md`](moe-prereq-discharge.md) section 3.5). The gpt-oss six-member shape stays **MOE-PREREQ** |
 | Success — padding accounting | `padding_bytes == sum(pack_bytes) - sum(payload_bytes) + inter-block padding`, and `total_bytes` equals the plan's cursor | `plan_layout` | `padding-accounting`, cross-checked by the Python reader |
 | Success — duplication | A tied `token_embd.weight` appears in two blocks, is written twice, and `duplicated_bytes` equals its size | `plan_layout` | `tied-embedding-duplicated` over `qwen2-tied.gguf` |
 | Success — zero-byte member | A member with `nbytes == 0` occupies no payload and still gets a valid aligned `pack_offset` | `plan_layout` | `zero-byte-member` |
@@ -1183,8 +1199,10 @@ Six fixture families, all built from existing containers:
 
 1. **Positive, dense.** `qwen2-full`, `qwen2-tied`, `qwen2-geometry`, `qwen2-permuted`: pack, verify,
    and read independently. `qwen2-tied` is the duplication case.
-2. **Positive, MoE.** The gpt-oss containers, including both `expert_ffn_layout` variants. These
-   close the per-expert contiguity cells synthetically. **MOE-PREREQ.**
+2. **Positive, MoE.** The gpt-oss containers, including both `expert_ffn_layout` variants, and the
+   olmoe containers. These close the per-expert contiguity cells synthetically; the MoE-generic half
+   is also measured on real weights by `run-alignpack-qualification`, and only the gpt-oss
+   six-member shape stays **MOE-PREREQ**.
 3. **Negative, source.** The whole existing R0/R1 negative corpus, re-run through `--pack`, asserting
    that every `R0_*` and `R1_*` code passes through verbatim and that **no destination file is
    created** for any of them.
@@ -1333,8 +1351,19 @@ The verdicts it emits rather than the pull request authoring them:
 alignpack qualification (identity): PASS
 alignpack qualification (sequential read): PASS  src 89 ranges / 11130544128 span / 2379786 ppm
                                                  pack 58 ranges / 4677120000 span / 1000000 ppm
-alignpack qualification (MoE): N/A - no gpt-oss GGUF on this host; see section 4.5.
+alignpack qualification (MoE): PASS  ExpertBlock 1024 blocks
+    src  3072 ranges / 165368823808 span / 0 contiguous / 42394624 ppm
+    pack 1024 ranges /   3900702720 span / 1024 contiguous / 1000000 ppm
+alignpack qualification (gpt-oss MoE): N/A - every gpt-oss-shaped cell ... stays synthetic; see
+docs/specs/moe-prereq-discharge.md section 5.5.
 ```
+
+**The MoE verdict is a rule over the block set the run measured, not a constant.**
+[`moe-prereq-discharge.md`](moe-prereq-discharge.md) section 3.5 defines it: no `ExpertBlock` in
+either `by_kind` array prints a shape `N/A` and neither passes nor fails; otherwise eight assertions
+run and the six numbers above are printed. No environment variable declares that a model is MoE,
+because a caller must not be able to assert a verdict the run did not measure (section 1.5 there).
+The block above is the measurement on `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`.
 
 **The improvement verdict is strict, and a source that is already contiguous therefore reports
 `(sequential read): FAIL`.** The test is that the pack's range count, span, and amplification are
@@ -1356,19 +1385,25 @@ reads the same 9.35 GB again in Python and is the slowest step. Total a few minu
 disk holds the pack only for that long. These are **budget estimates, not thresholds**: the
 qualification asserts no elapsed bound and fails on no timing.
 
-### 4.5 The MoE prerequisite
+### 4.5 The gpt-oss prerequisite
 
-Every **MOE-PREREQ** cell in section 3, and the per-expert half of the improvement claim, need a real
-gpt-oss GGUF, which does not exist on this host.
+**The per-expert half of the improvement claim is no longer part of this prerequisite.**
+[`moe-prereq-discharge.md`](moe-prereq-discharge.md) sections 2.2 and 2.3 discharge it on
+`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, and section 4.4's verdict block above is the measurement.
+What remains here is **gpt-oss-shaped and only that**: a six-member `ExpertBlock`, MXFP4 geometry,
+split expert biases, and the fused `ffn_gate_up_exps`. Those **MOE-PREREQ** cells in section 3 need a
+real gpt-oss GGUF, which does not exist on this host.
 `docs/specs/r1b-gptoss-moe-ir.md` section 4.4 already records the same pending user decision about
 `gpt-oss-20b-mxfp4.gguf` (12.1 GB), and R4 adds one consideration to it: **packing a 12.1 GB model
 needs 12.1 GB of free space on top of the model itself.** With 27 GiB free, downloading it (12.1 GB)
 and packing it (12.1 GB) leaves under 3 GiB. That is the honest constraint, and it is a reason to
 prefer a smaller MoE GGUF — the same one `docs/specs/r2a-expert-trace.md` section 4.5 asks for — over
 gpt-oss-20b, since a small MoE would discharge the R2 locality gate and R4's per-expert cells with
-one download.
+one download. **That sentence is now satisfied**: the small MoE arrived, and it discharged R4's
+per-expert cells. The 12.1 GB disk argument is superseded by the roadmap's recorded finding that
+gpt-oss-20b is infeasible on this host.
 
-Until then, the MoE half is `N/A` with this reason and never counts as a pass.
+Until then, the gpt-oss half is `N/A` with this reason and never counts as a pass.
 
 ### 4.6 Metrics
 
@@ -1379,7 +1414,10 @@ by `alignpack_reader.py`); every block of every pack has `range_count == 1` and
 
 **Primary — the gate's second half.** `range_count_total`, `span_bytes_total`,
 `contiguous_block_count`, and `amplification_ppm_total` for both containers, per model and per block
-kind, as defined in section 2.6 and computed by two independent implementations.
+kind, as defined in section 2.6 and computed by two independent implementations. The `by_kind`
+`ExpertBlock` row is a **discharged measurement** since MOE-PREREQ-DISCHARGE: 3,072 → 1,024 ranges,
+165,368,823,808 → 3,900,702,720 span bytes, 0 → 1,024 of 1,024 contiguous, 42,394,624 → 1,000,000
+ppm on `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`.
 
 **Secondary — `bytes_read` and `bytes_written`.** For `--pack`:
 `payload_bytes <= bytes_written <= total_bytes` and
@@ -1840,7 +1878,7 @@ smoke runs over every positive fixture and against every mutation.
 | 3.2 Layer-major order | `block-order-matches-ir`: the pack's `(kind, layer, expert)` sequence is diffed against the `R1_MODEL_IR` document's, per fixture |
 | 3.2 Alignment | `reader.check_layout` asserts every block `pack_offset` is `block_align`-aligned and every member `pack_offset` is `member_align`-aligned, on every fixture |
 | 3.2 Contiguity | Section 6.3's three exact identities, asserted per block and per model on every fixture, plus the reader's independent merge |
-| 3.2 Per-expert contiguity | `expert-block-contiguous`: every gpt-oss `ExpertBlock` has `source_range_count > 1` and `pack_range_count == 1`. **MOE-PREREQ** for real weights |
+| 3.2 Per-expert contiguity | `expert-block-contiguous`: every gpt-oss `ExpertBlock` has `source_range_count > 1` and `pack_range_count == 1`; `run-alignpack-qualification`'s `ExpertBlock` verdict asserts the same on real olmoe weights. The gpt-oss six-member shape stays **MOE-PREREQ** |
 | 3.2 Padding accounting | `padding-accounting`: `layout.padding_bytes == total_bytes - payload_offset - Σ payload`, cross-checked by the reader, and `total_bytes` equals the last member's end |
 | 3.2 Duplication | `tied-embedding-duplicated`: `qwen2-tied` reports `duplicated_bytes > 0` and `qwen2-full` reports `0`; the identity `payload == total_tensor_bytes + duplicated` is `R4_DUPLICATION_MISMATCH` when it fails |
 | 3.2 Statistics, both sides, and `by_kind` | `stats-oracle`: the reader recomputes every section 2.6 value with an explicit interval merge and compares against both documents, field by field, including every `by_kind` row |
@@ -1884,7 +1922,7 @@ Each prints one exact line and never counts as a pass.
 | 3.3 `cleanup-failed` | `alignpack smoke: cleanup-failed N/A (a destination directory made read-only after fs.create_rw does not make fs.remove fail on this filesystem)` |
 | 3.3 `window-unavailable` | `alignpack smoke: window-unavailable N/A (truncating the source between the plan and the copy needs an injection point the arm does not expose)` |
 | 3.5 `read-only-source` | Covered by Request 21's client evidence rather than by a case: the arm cannot open a read-only model at all, which is the request, not a behaviour to assert |
-| 4.5 MoE on real weights | `alignpack qualification (MoE): N/A - no gpt-oss GGUF on this host` |
+| 4.5 gpt-oss MoE on real weights | `alignpack qualification (gpt-oss MoE): N/A`. The MoE-generic per-expert claim is discharged on olmoe; only the gpt-oss six-member shape is unreachable |
 
 **`write-to-full-filesystem` is reachable after all, and this table used to say it was not.** The
 claim that "a loopback image needs root on darwin" was wrong: `hdiutil create -size 8m -fs

@@ -846,14 +846,19 @@ reaches the model emits its own verdicts rather than the pull request authoring 
 alignpack qualification (identity): PASS
 alignpack qualification (sequential read): PASS  src 89 ranges / 11130544128 span / 2379786 ppm
                                                  pack 58 ranges / 4677120000 span / 1000000 ppm
-alignpack qualification (MoE): N/A - no gpt-oss GGUF on this host; see
-docs/specs/r4-alignpack-layer-major.md section 4.5.
+alignpack qualification (MoE): N/A - the packed model has no ExpertBlock; see
+docs/specs/moe-prereq-discharge.md section 5.5.
 ```
 
-**The MoE half of the gate is closed only synthetically.** Per-expert contiguity — the case where
-this format is worth the most, since one expert's six planes are six scattered ranges in a GGUF and
-one range in a pack — is asserted over `scripts/gguf_fixture.py`'s gpt-oss corpus. It needs the same
-small MoE GGUF the R2 locality gate is waiting for.
+**The MoE verdict is a rule over the block set the run measured**, not a constant and not a second
+environment variable: a model whose pack has `ExpertBlock`s is asserted against the eight conditions
+of `docs/specs/moe-prereq-discharge.md` section 3.5 and prints `PASS` with the block count and both
+sides' ranges, span, contiguity, and ppm; a model without them prints the `N/A` line above and
+neither passes nor fails. On `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` it reports 1,024 `ExpertBlock`s
+going 3,072 -> 1,024 ranges, 42,394,624 -> 1,000,000 ppm, and 0 -> 1,024 of 1,024 contiguous. **What
+stays synthetic is the gpt-oss shape** — a six-member `ExpertBlock`, MXFP4 geometry, split expert
+biases, and the fused `ffn_gate_up_exps` — asserted over `scripts/gguf_fixture.py`'s gpt-oss corpus
+and still waiting on a real gpt-oss file.
 
 **The peak resident set is not `metrics.peak_window_bytes`.** That field measures the I/O windows
 only. Both arms also hold the plan columns and the rendered document, which are proportional to
@@ -867,13 +872,18 @@ R4.5-EXTERNAL-BUFFER-SPIKE is implemented on branch `agent/r4-5-external-buffer`
 plan is `docs/specs/r4-5-external-buffer.md`, which owns the probe record, the contract ledger, the
 closure matrix, the fixture design, the correction ledger, and the cell-to-case map. It answers one
 question — can quantized weights living in a buffer Align owns be computed by the ggml backend? —
-and it answers it as data, in an `R4_5_EXTERNAL_BUFFER`, `schema_version: 1` document.
+and it answers it as data, in an `R4_5_EXTERNAL_BUFFER`, `schema_version: 2` document. The bump
+is MOE-PREREQ-DISCHARGE's (`docs/specs/moe-prereq-discharge.md` section 3.3): `tensor` carries
+the member's `slice_index` / `slice_count` pair, and for one plane claimed out of a stacked
+expert tensor `ne0`/`ne1` describe the **plane** rather than the tensor the `name` names.
 
 It is **its own executable**, not an arm of `main`, and that is a contract rather than a
 convenience: a `link(...)` clause is compile-time and unconditional and Align has no conditional
 compilation, so a ggml dependency anywhere in `src/main.align`'s import graph would put `-lggml` on
 every link of `main` on every host. `make build` is untouched, and `make check` never compiles these
-three modules — `make ggml-spike-smoke` is what does.
+three modules — `make ggml-spike-smoke` is what does. That target does depend on `make build`,
+because its claim cases are taken from a synthetic olmoe container `main --pack` writes rather than
+from a hand-forged one that could disagree with the writer about where a plane lives.
 
 ```sh
 gmake ggml-spike                    # build ggml-spike (stub shim unless ALIGN_LLM_GGML_INCLUDE is set)
@@ -918,9 +928,11 @@ that runner's contract is that it exercises the ggml-free build whatever a devel
 ggml symbol, but it answers the ABI probe, the type table, and the alignment pre-check from the same
 checked-in data as the real shim — the fenced `R4.5 SHARED SHIM CONTRACT` region is byte-identical in
 both files and the smoke asserts that on every run. So `gmake ggml-spike-smoke` runs the whole CLI,
-the whole standalone pack reader, every index/shape/alignment check, and **ten of the fifteen error
-codes** for real, on a host that has never heard of ggml, against a synthetic corpus written by
-`scripts/ggml_spike_fixture.py`. Every case is a checked-in golden document in
+the whole standalone pack reader, every index/shape/alignment check, and **eleven of the sixteen
+error codes** for real — including both success forms and every detail of the claim rules, since
+steps 7a and 7b sit inside the ggml-free prefix — on a host that has never heard of ggml, against a
+synthetic corpus written by `scripts/ggml_spike_fixture.py` and a synthetic olmoe container packed
+by `main --pack`. Every case is a checked-in golden document in
 `scripts/ggml-spike-golden.jsonl`, compared byte for byte after the timings, the two `mktemp`
 paths, and the four allocator-dependent `buffer` fields are rewritten in place:
 
@@ -929,7 +941,8 @@ ALIGN_LLM_GGML_SPIKE_GOLDEN_UPDATE=1 scripts/run-ggml-spike-smoke   # rewrite th
 ```
 
 The qualification takes an optional `ALIGN_LLM_GGML_SPIKE_TMPDIR` (default `mktemp -d`, refused if it
-resolves inside the work tree) and an optional `ALIGN_LLM_GGML_SPIKE_SHA256`. Like
+resolves inside the work tree), an optional `ALIGN_LLM_GGML_SPIKE_SHA256`, and an optional
+`ALIGN_LLM_GGML_SPIKE_EXPERT_SHA256`. Like
 `run-alignpack-qualification` it writes a multi-gigabyte pack, checks `model_size + 1 GiB` of free
 space first, removes the pack on every exit path, and prints the reclaimed byte count. A missing or
 unusable input prints exactly one of these lines, alone, and exits 0 without claiming a pass; the
@@ -948,10 +961,15 @@ ggml spike qualification: N/A (the destination already exists: <pack>)
 ggml spike qualification: N/A (insufficient free space: <avail> < <required>)
 ```
 
-A run that reaches the model prints three more `N/A` lines it will never stop printing, because each
-names a half of the gate this spike does **not** discharge — an expert block (this host's only model
-is dense), the GPU arm (measured working on Metal, but it needs a tolerance oracle and a different
-alignment rule), and discrete VRAM (unanswerable here). Quote them as they are printed.
+A run that reaches the model **selects both arms out of the pack document it just wrote**, by
+`role_id` and never from a path or a variable: the first `AttentionBlock`'s `attn_q` member, then
+every member of the first `ExpertBlock` and member 0 of the last one, the latter being the only run
+whose `slice_index` is not zero. It then prints two `N/A` lines it will never stop printing, because
+each names a half of the gate this spike does **not** discharge — the GPU arm (measured working on
+Metal, but it needs a tolerance oracle and a different alignment rule) and discrete VRAM
+(unanswerable here). A dense model adds a third, for the expert block it does not have, and a model
+with a single `ExpertBlock` one more, for the plane index it cannot vary. Quote them as they are
+printed.
 
 **Alignment is compensated, not assumed.** Align ships no aligned allocator, and this host answers
 the same reservation with a 32-aligned base on one run and a 16-aligned one on the next

@@ -47,7 +47,7 @@ model, and it checks its own output against the original GGUF.
 - Two C shims, `scripts/ggml_shim.c` (real) and `scripts/ggml_shim_stub.c` (ggml-free), so the spike
   executable builds on a host that has never heard of ggml.
 - One executable target `ggml-spike` from entry `src/ggml_spike.align`, its CLI, its summary block,
-  and the `R4_5_EXTERNAL_BUFFER` document at `schema_version: 1`.
+  and the `R4_5_EXTERNAL_BUFFER` document at `schema_version: 2`.
 - An in-process reference oracle: the same tensor's bytes read from the original GGUF into a
   **ggml-allocated** buffer, computed with the same graph, compared bit-exactly.
 - One owner test that runs without ggml, and one named focused qualification that runs with it.
@@ -77,7 +77,7 @@ answered only for unified memory.
 | `align owns buffer lifetime` | **Dischargeable.** The bytes live in one Align `buffer` local; ggml holds a borrowed pointer and is torn down before the owner's scope ends | Section 2.3; the ordering contract and its abort case are section 3.9 |
 | `no silent copy` | **Discharged.** `ggml_get_data(tensor)` equals the Align buffer's data pointer plus the member's interior offset, exactly | Section 2.3, probe 2b: `identity_weights` = `14336`, the member's own `pack_offset - block.pack_offset` |
 | `quantized layout preserved` | **Discharged.** A real Q4_K tensor computes from pack bytes with **zero** differing output elements against the same tensor read from the original GGUF into a ggml-allocated buffer | Section 2.3: `differing_elements = 0` of 14,336 f32 |
-| `one expert matmul succeeds` | **Dischargeable for a dense block; deferred for an expert block.** This host's model has no experts | Section 2.3 computes `blk.0.attn_q.weight`; section 5.4 records the MoE deferral, inherited from `r4-alignpack-layer-major.md` section 4.5 |
+| `one expert matmul succeeds` | **Discharged** for a dense block and for an expert claim on the CPU backend; deferred for the GPU arm | Section 2.3 computes `blk.0.attn_q.weight`; [`moe-prereq-discharge.md`](moe-prereq-discharge.md) sections 2.4 and 2.5 measure a real `ExpertBlock` claim — the shipped arm refused it with `R4_5_SHAPE`, detail `n_dims[3]`, and step 7a/7b admits it — and section 3.5 there runs all three members of the first `ExpertBlock`, plus member 0 of the last one so that one measured plane has `slice_index > 0`, against the GGUF plane |
 
 Two clauses the roadmap implies but does not write are answered here as well:
 
@@ -534,12 +534,13 @@ ggml spike:
 status:            OK | ERROR
 verdict:           EXTERNAL | COPIED | UNAVAILABLE
 pack path:         <sanitized path>
-schema:            1
+schema:            2
 block:             <integer>
 member:            <integer>
 name:              <member name, sanitized>
 ggml type:         <integer>
 dims:              <ne0>x<ne1>
+slice:             <index>/<count>      # or "-" for a whole-tensor member
 member bytes:      <integer>
 block bytes:       <integer>
 data offset:       <integer>            # ggml_get_data(A) - buffer base, in bytes
@@ -691,13 +692,13 @@ The oracle is bit-exact and not tolerance-based because both arms run the same k
 backend over the same bytes. Section 2.5 measured that this is only true within one backend; a GPU
 arm would need a different rule, which is why it is deferred and not flagged.
 
-### 3.7 `R4_5_EXTERNAL_BUFFER`, `schema_version: 1`
+### 3.7 `R4_5_EXTERNAL_BUFFER`, `schema_version: 2`
 
 Canonical UTF-8 JSON in declaration order, in the R0/R1/R2A/R4 shape: `schema_version`, `kind`,
 paths, `status`, `error_code`, `error_detail`, then the payload objects.
 
 ```text
-schema_version    1
+schema_version    2
 kind              "R4_5_EXTERNAL_BUFFER"
 pack_path         string
 reference_path    string, "" when the reference arm did not run
@@ -711,6 +712,7 @@ pack              format_version, block_align, member_align, block_count, member
 selection         block_index, member_index_in_block, member_index_global, name,
                   kind, layer, expert, role_id
 tensor            ggml_type, n_dims, ne0, ne1, nbytes,
+                  slice_index, slice_count,
                   blck_size, type_size, elements_per_row_ok (bool)
 buffer            block_pack_bytes, block_pack_offset, member_pack_offset, interior_offset,
                   base_alignment, tensor_data_offset, pointer_identity (bool),
@@ -750,7 +752,17 @@ value. Instead:
 `elements_per_row_ok` is `ne0 % blck_size == 0`, carried because a false value is exactly the
 `R4_5_SHAPE` condition and a reader should not have to recompute it.
 
-`schema_version` is `1` and nominal. A consumer keys on `kind` plus `schema_version`.
+**`slice_index` and `slice_count` are the member record's values verbatim**, added by
+MOE-PREREQ-DISCHARGE: `-1` and `-1` for a whole-tensor member, `[0, slice_count)` and `[1, ..)` for
+one plane claimed out of a stacked tensor. They are always present, in both forms, because an absent
+field and a `-1` field are different statements and a consumer must not have to distinguish them by
+key presence. For a claim, `ne0`/`ne1` describe the **plane**, not the whole tensor the `name` names.
+
+`schema_version` is `2`. A consumer keys on `kind` plus `schema_version`, and the bump is not
+additive book-keeping: a version-1 consumer handed a document describing a claim would read a
+`tensor` object whose `ne0`/`ne1` no longer mean what they meant, which is a difference in meaning
+rather than in fields. `r1b-gptoss-moe-ir.md` took `R1_MODEL_IR` to `schema_version: 2` for the same
+kind of change; see [`moe-prereq-discharge.md`](moe-prereq-discharge.md) section 3.3.
 
 ### 3.8 Validation order and error codes
 
@@ -767,8 +779,15 @@ step 10, and nothing outside the process is ever written.**
 5. `BLOCK < block_count`. → `R4_5_INDEX`, detail `block[<n>]`
 6. `MEMBER < block.member_count`, and `member_start + member_count <= member_count(header)`. →
    `R4_5_INDEX`, detail `member[<n>]`
-7. Member shape: `n_dims == 2`, `dim0 >= 1`, `dim1 >= 1`, `dim2 == 1`, `dim3 == 1`, `nbytes >= 1`,
-   and the member's range inside its block. → `R4_5_SHAPE`
+7a. **The slice pair is well formed.** `r4-alignpack-layer-major.md` section 2.4.4 admits exactly
+   two pairs: `slice_index == -1 and slice_count == -1` (a whole-tensor claim), or
+   `slice_index >= 0 and slice_count >= 1 and slice_index < slice_count` (one plane of a stacked
+   tensor). Anything else — one of the two negative and the other not, `slice_count == 0`, or
+   `slice_index >= slice_count` — is → `R4_5_SLICE`, detail `pair` / `count[<n>]` / `index[<n>]`
+7b. **Member shape, chosen by the pair.** Both forms: `dim0 >= 1`, `dim1 >= 1`,
+   `dim0 <= MAX_DIMENSION`, `dim1 <= MAX_DIMENSION`, `nbytes >= 1`, `dim3 == 1`, and the member's
+   range inside its block. Whole form: `n_dims == 2` and `dim2 == 1`. Claim form: `n_dims == 3` and
+   `dim2 == slice_count`. → `R4_5_SHAPE`
 8. Window availability: `buffer(block.pack_bytes)` and `buffer(dim1 * 16)` did not degrade to
    capacity 0 (R4 section 2.1's silent-degradation case). → `R4_WINDOW_UNAVAILABLE`
 9. One `pread` of the block, completing short reads. → `R4_PACK_UNREADABLE`
@@ -784,7 +803,10 @@ step 10, and nothing outside the process is ever written.**
     `R4_5_ALIGNMENT`, detail `weights` / `member` / `output`. Section 2.4 is why this step exists
 14. Backend and context creation. → `R4_5_GGML_INIT`, detail `backend` / `device` / `context`
 15. Buffer creation, tensor creation, placement, activation allocation and fill. → `R4_5_GGML_INIT`,
-    detail naming the object
+    detail naming the object; and `ggml_nbytes(A) != member.nbytes`, once ggml has built the tensor
+    from the recorded dims, → `R4_5_SHAPE`, detail `ggml_nbytes[<n>]` carrying **ggml's** number.
+    The token is not step 7b's `nbytes[<n>]`, which carries the member record's own: the two are
+    different faults under one code, and one token each is what lets a detail say which number it is
 16. `align_ggml_compute`, warm-up then five timed calls; any non-zero `ggml_status`. →
     `R4_5_COMPUTE`, detail `status[<n>]`
 17. Reference arm, five-operand form only: open the GGUF, read `M.nbytes` at `M.source_offset`. →
@@ -801,7 +823,8 @@ step 10, and nothing outside the process is ever written.**
 | `R4_5_INDEX` | an index does not parse or is out of range | 3, 5, 6 | `block[<n>]` / `member[<n>]` |
 | `R4_PACK_*` | a container defect, surfaced verbatim from `alignpack_read` | 4, 9 | R4's own details |
 | `R4_WINDOW_UNAVAILABLE` | `buffer(N)` degraded to capacity 0 | 8 | `weights` / `output` / `activation` |
-| `R4_5_SHAPE` | the member is not a 2-D tensor, or `ne0 % blck_size != 0` | 7, 12 | the field |
+| `R4_5_SLICE` | the member record's `slice_index` / `slice_count` pair is self-inconsistent | 7a | `pair` / `count[<n>]` / `index[<n>]` |
+| `R4_5_SHAPE` | the member is not a `mul_mat` left operand, `ne0 % blck_size != 0`, or ggml's own size for the tensor disagrees with the record | 7b, 12, 15 | the field: `n_dims[<n>]`, `ne0[<n>]`, `ne1[<n>]`, `nbytes[<n>]`, `ne0_bound[<n>]`, `ne1_bound[<n>]`, `dim2_dim3` (whole form), `dim2[<n>]` / `dim3[<n>]` (claim form), `ggml_nbytes[<n>]` (step 15, ggml's number) |
 | `R4_5_GGML_UNAVAILABLE` | the stub shim, or no CPU device | 10 | `stub` / `device` |
 | `R4_5_ABI` | `align_ggml_abi_probe` returned an implausible constant | 11 | the constant |
 | `R4_5_TYPE_UNSUPPORTED` | the ggml type cannot be a `mul_mat` left operand | 12 | `type[<id>]` |
@@ -811,6 +834,24 @@ step 10, and nothing outside the process is ever written.**
 | `R4_5_SOURCE_UNREADABLE` | the reference GGUF could not be opened or read | 17 | the offset |
 | `R4_5_SOURCE_DIVERGED` | pack bytes differ from GGUF bytes | 18 | `member@<offset>` |
 | `R4_5_REFERENCE_MISMATCH` | an output element differs | 19 | `element[<index>]` |
+
+**`R4_5_SLICE` is a code and not another `R4_5_SHAPE` detail**, because the two failures name
+different faults. `R4_5_SHAPE` means *this member is not usable as a `mul_mat` left operand* — a
+refusal by the arm about its own domain. A self-inconsistent slice pair means *this container's
+member record contradicts itself* — a defect the R4 writer cannot produce, that `--pack-verify` does
+not check, and that no valid pack can contain. Reporting it as `R4_5_SHAPE` would tell an operator
+the tensor is the wrong shape when the file is malformed. It is not an `R4_PACK_*` code either:
+`src/alignpack_read.align` raises R4's vocabulary verbatim and section 3.5 fixes exactly what it
+validates, so adding a slice rule there would split the truth about what a valid v1 container is
+across two owners. [`moe-prereq-discharge.md`](moe-prereq-discharge.md) sections 3.2 and 5.5 record
+the argument and the deferral.
+
+**Everything downstream of step 7 is unchanged for a claim.** `A` is
+`new_tensor_2d(ggml_type, dim0, dim1)` in both forms, the step-15 `ggml_nbytes == nbytes` equality
+holds in both, the activation is `[dim0, 4]` and the output `[dim1, 4]` in both,
+`interior = member.pack_offset - block.pack_offset` is unchanged, step 13's alignment gate is
+unchanged, and the reference arm reads `nbytes` at `source_offset` in both — which for a claim is
+`claimed_absolute_offset`, so it is the plane and nothing else.
 
 **`R4_5_ALIGNMENT` is the code that would otherwise not exist**, and it is the design's answer to
 section 2.4: without step 13, a misaligned buffer produces `GGML_ASSERT` and `abort()` — no
@@ -898,13 +939,13 @@ form by the reference arm's own `M.nbytes` buffer and ggml's copy of the weights
 | --- | --- | --- | --- |
 | Exact commands | Section 3.3, three arities | `src/ggml_spike.align` | `run-ggml-spike-smoke` covers each arity and each arity failure |
 | Inputs and defaults | Pack path, two indices, optional `-`/doc path, optional GGUF | same | smoke |
-| Results and errors | Section 3.8, fifteen codes, first-applicable-row order | same | smoke reaches steps 1–10; qualification reaches 11–19 |
+| Results and errors | Section 3.8, sixteen codes, first-applicable-row order | same | smoke reaches steps 1–10, including steps 7a and 7b; qualification reaches 11–19 |
 | Multi-invalid precedence | Deterministic by step order; a pack that is both malformed and asked for an out-of-range block reports `R4_PACK_*` | same | smoke fixture `bad-header-and-bad-index` |
 | Ownership and allocation | Section 3.9 table and ordering diagram | same | `lifetime` object in every document |
 | Owner module | Section 3.9 module table | — | `grep unsafe src/` shows one file |
 | Persisted / cache identity | `N/A` — the spike persists nothing and caches nothing. It only ever writes the caller's document path | — | — |
-| Schema version | `R4_5_EXTERNAL_BUFFER`, `1`, nominal on `kind` + `schema_version` | `src/ggml_spike.align` | smoke compares whole documents against golden files |
-| Validation order | Section 3.8, twenty steps | same | smoke and qualification |
+| Schema version | `R4_5_EXTERNAL_BUFFER`, `2` since MOE-PREREQ-DISCHARGE, keyed on `kind` + `schema_version` | `src/ggml_spike.align` | smoke compares whole documents against golden files |
+| Validation order | Section 3.8, twenty-one steps (7 split into 7a and 7b) | same | smoke and qualification |
 | Prerequisites | ggml `0.21.0`-compatible headers and libraries for the real shim; a GGUF and a pack for the qualification | `scripts/run-ggml-spike` | explicit `N/A` line with a reason when unset |
 | Build inputs | `ALIGN_LLM_GGML_INCLUDE` selects the real shim, otherwise the stub; `ALIGN_LLM_GGML_LIB` and `ALIGN_LLM_GGUF_MODEL` gate the qualification | `Makefile`, both scripts | `check-gate-topology`; the smoke asserts the stub build reports `R4_5_GGML_UNAVAILABLE` |
 | Environment isolation | Neither script exports anything into `make build`'s environment; `main` never links the shim | `Makefile` | `make build` on a ggml-free host, which is the hosted default |
@@ -954,10 +995,10 @@ a step of section 3.8.
 | Cell | Implementation | Regression |
 | --- | --- | --- |
 | Formation | arity, path guards, index parse — S1–S3 | `spike-arity-2/6`, `spike-path-empty`, `spike-path-nul`, `spike-index-negative`, `spike-index-nonnumeric` |
-| Construction | reader open, block and member selection — S4–S7 | `spike-block-oob`, `spike-member-oob`, `spike-shape-3d`, `spike-shape-zero` |
+| Construction | reader open, block and member selection — S4–S7b | `spike-block-oob`, `spike-member-oob`, `spike-shape-3d`, `spike-shape-zero`, and the claim cells: `olmoe-expert-claim`, `olmoe-expert-claim-last`, `olmoe-whole-member-3d`, `olmoe-expert-claim-dim2`, `olmoe-expert-claim-dim3` |
 | Success | the whole path to a document | qualification `qwen-blk0-attn-q`; stub smoke to S10 |
-| Failure | each of the fifteen codes | table in 4.6 |
-| Malformed input | a pack whose member table claims a `ggml_type` that is not a `mul_mat` operand; a member whose `ne0 % blck_size != 0` | `spike-type-unsupported`, `spike-ne0-not-multiple` (both synthetic, both reachable with the stub since S12's check is in the shim — the stub implements `align_ggml_type_ok` against a checked-in table) |
+| Failure | each of the sixteen codes | table in 4.6 |
+| Malformed input | a pack whose member table claims a `ggml_type` that is not a `mul_mat` operand; a member whose `ne0 % blck_size != 0`; a member record whose slice pair contradicts itself | `spike-type-unsupported`, `spike-ne0-not-multiple` (both synthetic, both reachable with the stub since S12's check is in the shim — the stub implements `align_ggml_type_ok` against a checked-in table), and `olmoe-expert-claim-slice-pair`, `-slice-pair-mirror`, `-slice-count`, `-slice-range`, each a mutation of bytes 80–95 of one 96-byte member record of a pack `main --pack` wrote |
 | Early exit | S10 with the stub: `verdict: "UNAVAILABLE"`, `compute`/`output` zeroed, exit non-zero | `spike-stub-unavailable` golden document |
 | Branch joins | every `?`, `match`, and `map_err` in S4–S19 has a named fixture in 4.6 | 4.6 |
 | Move-in / out | `weights`, `output`, `activation` are bare `mut` locals; the rendered document is moved out by `to_string()` | compile |
@@ -996,8 +1037,9 @@ a step of section 3.8.
 | `R4_5_INDEX` | `spike-index-negative`, `spike-index-nonnumeric`, `spike-block-oob`, `spike-member-oob` | yes |
 | `R4_PACK_MAGIC` … `R4_PACK_UNREADABLE` | the seven reader fixtures of 4.1 | yes |
 | `R4_WINDOW_UNAVAILABLE` | `spike-window-huge`: a fixture header claiming a `pack_bytes` past any allocation | yes |
-| `R4_5_SHAPE` | `spike-shape-3d`, `spike-shape-zero`, `spike-ne0-not-multiple` | yes |
-| `R4_5_GGML_UNAVAILABLE` | `spike-stub-unavailable` | yes — this is the stub |
+| `R4_5_SLICE` | `olmoe-expert-claim-slice-pair`, `-slice-pair-mirror`, `-slice-count`, `-slice-range` | yes |
+| `R4_5_SHAPE` | `spike-shape-3d`, `spike-shape-zero`, `spike-ne0-not-multiple`, `olmoe-whole-member-3d`, `olmoe-expert-claim-dim2`, `olmoe-expert-claim-dim3` | yes |
+| `R4_5_GGML_UNAVAILABLE` | `spike-stub-unavailable`, `olmoe-expert-claim` | yes — this is the stub |
 | `R4_5_ABI` | qualification only, by inspection of the recorded constants | no |
 | `R4_5_TYPE_UNSUPPORTED` | `spike-type-unsupported` | yes |
 | `R4_5_ALIGNMENT` | `spike-misaligned`, `spike-misaligned-member` | yes |
@@ -1007,8 +1049,12 @@ a step of section 3.8.
 | `R4_5_SOURCE_DIVERGED` | qualification, against a truncated copy of the GGUF | no |
 | `R4_5_REFERENCE_MISMATCH` | qualification, against a GGUF with one flipped payload byte | no |
 
-Nine of the fifteen codes are reachable in hosted CI without ggml. The six that are not are exactly
+Ten of the sixteen codes are reachable in hosted CI without ggml. The six that are not are exactly
 the six that require a live foreign library, and each names its qualification mechanism.
+`R4_5_SLICE` joins the reachable side for free: steps 7a and 7b sit inside the ggml-free prefix that
+step 10 defines, so the entire claim-validation surface — every code, every detail, and both success
+forms — is testable on a runner with no ggml at all
+([`moe-prereq-discharge.md`](moe-prereq-discharge.md) section 4.6).
 
 **Final pass.** Before review, every cell above maps to the diff and to passing evidence, or to an
 explicit deferral in section 5.4. Cells marked `N/A` state the reason inline, as 4.2's
@@ -1049,36 +1095,68 @@ naming the missing input and exits `0` when `ALIGN_LLM_GGML_INCLUDE`, `ALIGN_LLM
 `ALIGN_LLM_GGUF_MODEL` is unset, or the model is absent, or free space is under the pack's size plus
 1 GiB.
 
-Otherwise it builds the real shim, packs the model with `./main --pack` into the temporary tree,
-runs
+Otherwise it builds the real shim, packs the model with `./main --pack` into the temporary tree, and
+selects **two arms out of the pack document it just wrote**, by `role_id` and never by a path, a
+file name, or a variable a caller sets ([`moe-prereq-discharge.md`](moe-prereq-discharge.md)
+sections 1.5 and 3.5):
 
 ```text
-ggml-spike $PACK 1 1 $DOC $ALIGN_LLM_GGUF_MODEL
+dense arm    the first AttentionBlock's member whose role is attn_q (role_id 1)
+expert arm   the first ExpertBlock's members, in member order (roles 19 / 21 / 23),
+             then member 0 of the last ExpertBlock
 ```
 
-and asserts, against the recorded values of section 2.3:
+A model with no `ExpertBlock` prints one `N/A` line for the expert arm and runs the dense arm as
+before; a model with no `AttentionBlock` is a `FAIL`, because every architecture this repository
+supports has one. The expert arm runs **all** the block's members rather than one: the first
+member's interior offset is zero and therefore does not exercise interior addressing at all, while
+the others do, at two different quantizations and both axis orders. It then runs member 0 of the
+**last** `ExpertBlock`, whose `slice_index` is not zero — every member of the first block is plane 0
+of its stacked tensor, so that one run is what keeps the claim form's non-zero half from being
+synthetic-only evidence. A container with a single `ExpertBlock` selects no last block and prints an
+`N/A` line for the plane index.
 
-| Assertion | Expected |
+The assertions split into **invariants**, which hold for every model and every member and carry the
+gate, and a small **model-keyed digest table**.
+
+| Invariant | Expected |
 | --- | --- |
-| `status` | `ok` |
-| `verdict` | `EXTERNAL` |
-| `selection.name` | `blk.0.attn_q.weight` |
-| `tensor.ggml_type` | `12` |
-| `tensor.ne0`, `tensor.ne1`, `tensor.nbytes` | `3584`, `3584`, `7225344` |
-| `buffer.interior_offset`, `buffer.tensor_data_offset` | `14336`, `14336` |
-| `buffer.pointer_identity`, `buffer.output_pointer_identity` | `true`, `true` |
-| `abi.tensor_alignment`, `abi.q4k_blck_size`, `abi.q4k_type_size` | `32`, `256`, `144` |
+| `status`, `verdict` | `ok`, `EXTERNAL` |
+| `selection.name`, `selection.role_id` | the pack document's member record |
+| `tensor.ggml_type`, `n_dims`, `ne0`, `ne1`, `nbytes` | the pack document's member record |
+| `tensor.slice_index`, `tensor.slice_count` | the pack document's member record |
+| `tensor.elements_per_row_ok` | `true` |
+| `buffer.interior_offset` | `member.pack_offset - block.pack_offset` |
+| `buffer.tensor_data_offset`, `pointer_identity` | the interior offset, `true` |
+| `buffer.output_pointer_identity` | `true` |
 | `reference.bytes_equal`, `reference.verdict`, `reference.differing_elements` | `true`, `IDENTICAL`, `0` |
-| `output.sha256` | `2ccc7dc778108df3b626128895347f203795a2d82b502805806fb8472457e044` |
 | `lifetime.*_created == *_freed`, `released_before_owner_scope_end` | equal, `true` |
+| `abi.tensor_alignment`, `q4k_blck_size`, `q4k_type_size`, `table_drift` | `32`, `256`, `144`, `-1` |
+
+The digest table is keyed by the pack document's `source.header_region_sha256`, which
+`r4-alignpack-layer-major.md` section 2.4.6 already computes and which identifies a model down to
+the last tensor's placement. That is what lets one script hold golden values for more than one model
+without keying on a path. `ALIGN_LLM_GGML_SPIKE_SHA256` overrides the dense arm's digest and
+`ALIGN_LLM_GGML_SPIKE_EXPERT_SHA256` the expert arm's first member; an unknown identity prints one
+`N/A` line for the digests alone and still runs every invariant above.
+
+| Model identity | Arm | Name | `sha256` |
+| --- | --- | --- | --- |
+| `df727e6e…` qwen2.5-coder-7b | dense | `blk.0.attn_q.weight` | `2ccc7dc778108df3b626128895347f203795a2d82b502805806fb8472457e044` |
+| `ce233b8a…` OLMoE-1B-7B | dense | `blk.0.attn_q.weight` | `f7430e7beefe2d3322f3b115f2cd25683c49db31b96fa38f37d7a19c14f763a7` |
+| `ce233b8a…` OLMoE-1B-7B | expert 0 | `blk.0.ffn_gate_exps.weight` | `237ffed519b03a78ff1219aa0a89af8c2bf6876f1931bef4f9874145f6f5220f` |
+| `ce233b8a…` OLMoE-1B-7B | expert 1 | `blk.0.ffn_up_exps.weight` | `1a5ceeeaad4c03d43e2e73fafe1b73f2b74edb86970ec021b65018c2cda91c1a` |
+| `ce233b8a…` OLMoE-1B-7B | expert 2 | `blk.0.ffn_down_exps.weight` | `6436a1ff2caac9446fc784e7c6b74bda70ee14d2a9ca051905fbc9a7ef21f8ef` |
+| `ce233b8a…` OLMoE-1B-7B | expert, last plane | `blk.15.ffn_gate_exps.weight` | `7891a6cc8ad9bce54026849a613c808c653a79acedbdc32d40569b1b6ce4ea20` |
 
 Then the four ggml-only error fixtures of section 4.6, then it removes the pack and the tree.
 
-**`output.sha256` is asserted as an exact value and that is a deliberate, narrow claim.** It is
-correct for this model, this member, this activation, this ggml version, and this CPU backend. It is
-not a portable golden value, and section 5.6 records that a ggml kernel change will move it. The
-assertion is written so its failure message says "the kernel or the model changed" and points here,
-rather than reading as a corruption report.
+**Each `output.sha256` is asserted as an exact value and that is a deliberate, narrow claim.** It is
+correct for that model, that member, this activation, this ggml version, and this CPU backend. It is
+not a portable golden value, and section 5.6 records that a ggml kernel change will move it. Keying
+on the model identity is what keeps an unknown model an `N/A` for the digests rather than a false
+failure. The assertion is written so its failure message says "the kernel or the model changed" and
+points here, rather than reading as a corruption report.
 
 ### 5.3 Metrics
 
@@ -1103,10 +1181,16 @@ rather than a guess.
   page-lock host memory for transfer; there is no `buffer_from_host_ptr` counterpart, and this host
   has no discrete device. R5's DRAM → VRAM tier is a **transfer** design there, not a
   compute-in-place one, and section 1.4 says so rather than generalizing from unified memory.
-- **An expert block.** The gate's "one expert matmul" is discharged for a dense attention block.
-  This host's only real model is dense; `r4-alignpack-layer-major.md` section 4.5's **MOE-PREREQ**
-  is inherited unchanged, and when a real MoE GGUF exists the qualification gains one line — the CLI
-  already addresses an `ExpertBlock` by its block index with no new surface.
+- **An expert block — no longer deferred, and the claim about how it would close was wrong.** The
+  gate's "one expert matmul" is discharged for a dense attention block **and** for an expert claim
+  on the CPU backend. The sentence this bullet used to carry — *"when a real MoE GGUF exists the
+  qualification gains one line: the CLI already addresses an `ExpertBlock` by its block index with
+  no new surface"* — was half true and therefore misleading, and
+  [`moe-prereq-discharge.md`](moe-prereq-discharge.md) section 2.4 measured the refutation: the CLI
+  *does* address the block, and then step 7 refused the member with `R4_5_SHAPE`, detail
+  `n_dims[3]`, because a claim on a stacked tensor is `n_dims == 3` with `dim2 == n_expert`. One
+  shape rule (steps 7a and 7b) and one error code (`R4_5_SLICE`) were required. The GPU half of this
+  clause remains deferred, under the two bullets above.
 - **The R5 loader.** The spike reads one block on request and holds it for one graph. Residency,
   eviction, cache score, and prefetch remain R5's, per `r4-alignpack-layer-major.md` section 5.4.
 - **More than one node.** One `mul_mat` is the whole graph. A multi-node graph would need
@@ -1268,7 +1352,9 @@ ggml, not nine: `R4_5_SOURCE_UNREADABLE` and `R4_5_SOURCE_DIVERGED` are gained f
 `R4_WINDOW_UNAVAILABLE` is lost to C8. Four of the remaining five need a live foreign library and
 each names its mechanism; the fifth, `R4_WINDOW_UNAVAILABLE`, is not reachable from any input. C15
 adds three fixtures to `R4_5_SOURCE_UNREADABLE` without changing the count, and C14 does not change
-it either — it makes two of the ten deterministic rather than allocator-dependent.
+it either — it makes two of the ten deterministic rather than allocator-dependent. MOE-PREREQ-DISCHARGE
+then adds `R4_5_SLICE` to both sides of the count — eleven of sixteen — because steps 7a and 7b sit
+inside the ggml-free prefix.
 
 **How C22 and C23 were found.** Preflight, not review, and one at a time: the exact-head
 `scripts/pre-pr` run failed in its `fresh-installed` phase with the worker aggregate's output

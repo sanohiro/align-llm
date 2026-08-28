@@ -7,8 +7,15 @@ set -euo pipefail
 #
 # It builds the **stub** shim and the `ggml-spike` executable, writes a synthetic alignpack v1
 # corpus into a temporary tree, runs the whole CLI over every fixture, and compares each rendered
-# document byte for byte against a checked-in golden. Ten of the fifteen error codes are reached for
-# real, without ggml, without a model, without a network, and without a reference tool.
+# document byte for byte against a checked-in golden. Eleven of the sixteen error codes are reached
+# for real, without ggml, without a model, without a network, and without a reference tool.
+#
+# Since MOE-PREREQ-DISCHARGE (`docs/specs/moe-prereq-discharge.md` section 4.6) it also packs the
+# **synthetic olmoe** container `scripts/gguf_fixture.py` already generates with `main --pack`,
+# verifies it, and drives the whole of steps 7a and 7b — both success forms, both new
+# `R4_5_SHAPE` details, and every `R4_5_SLICE` detail — over a real `ExpertBlock` claim. That is
+# reachable here because `r4-5-external-buffer.md` section 3.8 stops the stub at step 10, so the
+# entire new validation surface is hosted and only the *computations* need real ggml.
 #
 # `ALIGN_LLM_GGML_INCLUDE` is unset deliberately and unconditionally: this runner's contract is that
 # it exercises the ggml-free build, so a developer's exported include path must not silently turn it
@@ -23,9 +30,17 @@ root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
 
 work_dir=$(mktemp -d)
+# The temporary tree now holds a packed synthetic olmoe container as well as the hand-written
+# corpus, so removal is asserted rather than assumed (section 4.6, cell *Cleanup*): a tree that
+# survives is a leak this runner caused, and on the fresh worker it is also an aggregate failure
+# with no output naming the cause.
 cleanup() {
   status=$?
   rm -rf "${work_dir}"
+  if [ -e "${work_dir}" ]; then
+    echo "ggml spike smoke: FAIL the temporary tree survived cleanup: ${work_dir}" >&2
+    exit 1
+  fi
   exit "${status}"
 }
 trap cleanup EXIT HUP INT TERM
@@ -109,14 +124,17 @@ LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
 python3 - "${root_dir}" "${work_dir}" <<'PY'
 import json
 import os
+import struct
 import subprocess
 import sys
 
 root_dir, work_dir = sys.argv[1:3]
 sys.path.insert(0, os.path.join(root_dir, "scripts"))
 import alignpack_reader  # noqa: E402  (the independent third opinion, section 3.5)
+import gguf_fixture  # noqa: E402  (the synthetic olmoe container, section 5.1)
 
 binary = os.path.join(work_dir, "ggml-spike")
+main_binary = os.path.join(root_dir, "main")
 golden_path = os.path.join(root_dir, "scripts", "ggml-spike-golden.jsonl")
 update = os.environ.get("ALIGN_LLM_GGML_SPIKE_GOLDEN_UPDATE") == "1"
 
@@ -130,6 +148,100 @@ SOURCE_MID = os.path.join(work_dir, "source-mid-member.bin")
 
 def pack(name):
     return os.path.join(work_dir, name + ".alignpack")
+
+
+# =============================================================================================
+# The synthetic olmoe stage (`docs/specs/moe-prereq-discharge.md` sections 4.6 and 5.1)
+#
+# No new corpus: `scripts/gguf_fixture.py` already generates the olmoe container `run-model-ir-smoke`
+# drives, so this packs *that* with the repository's own `main --pack`, verifies it, and takes every
+# claim fixture from a copy of the result. A fixture forged by hand could disagree with the writer
+# about where a plane lives; one produced by the writer cannot.
+# =============================================================================================
+
+MEMBER_RECORD_BYTES = 96
+SLICE_INDEX_OFFSET = 80
+SLICE_COUNT_OFFSET = 84
+DIM3_OFFSET = 72
+
+olmoe_failures = []
+OLMOE_GGUF = os.path.join(work_dir, "olmoe-full.gguf")
+OLMOE_PACK = os.path.join(work_dir, "olmoe.alignpack")
+OLMOE_PACK_DOCUMENT = os.path.join(work_dir, "olmoe-pack.json")
+OLMOE_VERIFY_DOCUMENT = os.path.join(work_dir, "olmoe-verify.json")
+
+with open(OLMOE_GGUF, "wb") as handle:
+    handle.write(gguf_fixture.OlmoeModel().bytes)
+
+
+def run_main(operands):
+    return subprocess.run([main_binary] + operands, capture_output=True, cwd=work_dir)
+
+
+packed = run_main(["--pack", OLMOE_GGUF, OLMOE_PACK, OLMOE_PACK_DOCUMENT])
+if packed.returncode != 0:
+    raise SystemExit("ggml spike smoke: FAIL olmoe-pack-verify: --pack exited %d: %s"
+                     % (packed.returncode, packed.stderr.decode("utf-8", "replace")[-400:]))
+verified = run_main(["--pack-verify", OLMOE_GGUF, OLMOE_PACK, OLMOE_VERIFY_DOCUMENT])
+if verified.returncode != 0:
+    raise SystemExit("ggml spike smoke: FAIL olmoe-pack-verify: --pack-verify exited %d"
+                     % verified.returncode)
+
+with open(OLMOE_PACK_DOCUMENT, "r", encoding="utf-8") as handle:
+    olmoe_document = json.load(handle)
+with open(OLMOE_VERIFY_DOCUMENT, "r", encoding="utf-8") as handle:
+    olmoe_verify = json.load(handle)
+if olmoe_document["status"] != "ok":
+    olmoe_failures.append("olmoe-pack-verify: --pack reported %r" % olmoe_document["error_code"])
+if olmoe_verify["status"] != "ok" or olmoe_verify["verdict"] != "identical":
+    olmoe_failures.append("olmoe-pack-verify: --pack-verify reported %r/%r"
+                          % (olmoe_verify["status"], olmoe_verify["verdict"]))
+
+# The block set this stage measured, read from the document rather than assumed: a fixture that
+# stopped emitting `ExpertBlock`s must fail here rather than silently skip the whole new surface.
+olmoe_blocks = olmoe_document["blocks"]
+olmoe_experts = [entry for entry in olmoe_blocks if entry["kind"] == "ExpertBlock"]
+if not olmoe_experts:
+    raise SystemExit("ggml spike smoke: FAIL the synthetic olmoe pack holds no ExpertBlock")
+FIRST_EXPERT = olmoe_experts[0]
+N_EXPERT = FIRST_EXPERT["members"][0]["slice_count"]
+LAST_EXPERT = [entry for entry in olmoe_experts
+               if entry["members"][0]["slice_index"] == N_EXPERT - 1][0]
+FIRST_DENSE = [entry for entry in olmoe_blocks if entry["kind"] == "AttentionBlock"][0]
+FIRST_DENSE_MEMBER = [position for position, member in enumerate(FIRST_DENSE["members"])
+                      if member["role_id"] == 1][0]
+
+# Section 4.1's *Malformed input* cell: every claim fixture below is a **mutation**, and the claim
+# that `--pack` cannot write one is asserted rather than assumed.
+olmoe_members = []
+for entry in olmoe_blocks:
+    olmoe_members.extend(entry["members"])
+for position, member in enumerate(olmoe_members):
+    pair = (member["slice_index"], member["slice_count"])
+    well_formed = pair == (-1, -1) or (pair[0] >= 0 and pair[1] >= 1 and pair[0] < pair[1])
+    if not well_formed:
+        olmoe_failures.append("olmoe-pack-verify: --pack wrote a self-inconsistent slice pair "
+                              "%r at member %d" % (pair, position))
+
+MEMBER_TABLE_OFFSET = olmoe_document["pack"]["member_table_offset"]
+FIRST_EXPERT_GLOBAL = sum(len(entry["members"]) for entry in olmoe_blocks
+                          if entry["index"] < FIRST_EXPERT["index"])
+
+
+def olmoe_mutation(name, offset, fmt, *values):
+    """One claim fixture: a copy of the packed olmoe container with one member record edited.
+
+    The edit is always inside the **first `ExpertBlock`'s first member**, which is the record every
+    claim case selects, and it is the smallest change that produces the named defect (section 5.1).
+    """
+    with open(OLMOE_PACK, "rb") as source:
+        raw = bytearray(source.read())
+    struct.pack_into(fmt, raw, MEMBER_TABLE_OFFSET + FIRST_EXPERT_GLOBAL * MEMBER_RECORD_BYTES
+                     + offset, *values)
+    path = pack(name)
+    with open(path, "wb") as destination:
+        destination.write(bytes(raw))
+    return path
 
 
 # Every case: (name, operands). A case whose operands are rejected before any file work emits no
@@ -181,6 +293,43 @@ CASES = [
     ("spike-reference-empty", [PACK, "1", "1", "-", SOURCE_EMPTY]),
     ("spike-reference-eof", [PACK, "1", "1", "-", SOURCE_EOF]),
     ("spike-reference-mid-member", [PACK, "1", "1", "-", SOURCE_MID]),
+]
+
+# The claim half, all of it over the packed synthetic olmoe container. Steps 7a and 7b sit inside
+# the ggml-free prefix, so every code, every detail, and both success forms are reached here.
+FIRST_EXPERT_OPERANDS = [OLMOE_PACK, str(FIRST_EXPERT["index"]), "0"]
+CASES += [
+    # Success — the claim form, at plane 0 and at plane `n_expert - 1`.
+    ("olmoe-expert-claim", list(FIRST_EXPERT_OPERANDS)),
+    ("olmoe-expert-claim-last", [OLMOE_PACK, str(LAST_EXPERT["index"]), "0"]),
+    # Success — the whole form on the same container, which is also the `slice: -` case.
+    ("olmoe-dense-member",
+     [OLMOE_PACK, str(FIRST_DENSE["index"]), str(FIRST_DENSE_MEMBER)]),
+    # Failure — step 7a. Each is one edit of bytes 80-95 of one member record.
+    ("olmoe-expert-claim-slice-pair",
+     [olmoe_mutation("olmoe-expert-claim-slice-pair", SLICE_COUNT_OFFSET, "<i", -1)]
+     + FIRST_EXPERT_OPERANDS[1:]),
+    ("olmoe-expert-claim-slice-pair-mirror",
+     [olmoe_mutation("olmoe-expert-claim-slice-pair-mirror", SLICE_INDEX_OFFSET, "<i", -1)]
+     + FIRST_EXPERT_OPERANDS[1:]),
+    ("olmoe-expert-claim-slice-count",
+     [olmoe_mutation("olmoe-expert-claim-slice-count", SLICE_COUNT_OFFSET, "<i", 0)]
+     + FIRST_EXPERT_OPERANDS[1:]),
+    ("olmoe-expert-claim-slice-range",
+     [olmoe_mutation("olmoe-expert-claim-slice-range", SLICE_INDEX_OFFSET, "<i", N_EXPERT)]
+     + FIRST_EXPERT_OPERANDS[1:]),
+    # Failure — step 7b. `whole-member-3d` is section 2.4's measured refusal, kept as the whole
+    # form's rule: a member declaring `-1`/`-1` and three dimensions is still not a `mul_mat` left
+    # operand, and the same edit that admits the claim is what would have hidden it.
+    ("olmoe-whole-member-3d",
+     [olmoe_mutation("olmoe-whole-member-3d", SLICE_INDEX_OFFSET, "<ii", -1, -1)]
+     + FIRST_EXPERT_OPERANDS[1:]),
+    ("olmoe-expert-claim-dim2",
+     [olmoe_mutation("olmoe-expert-claim-dim2", SLICE_COUNT_OFFSET, "<i", N_EXPERT - 1)]
+     + FIRST_EXPERT_OPERANDS[1:]),
+    ("olmoe-expert-claim-dim3",
+     [olmoe_mutation("olmoe-expert-claim-dim3", DIM3_OFFSET, "<Q", 2)]
+     + FIRST_EXPERT_OPERANDS[1:]),
 ]
 
 PLACEHOLDER = "<pack>"
@@ -328,6 +477,199 @@ for name, operands in CASES:
         failures.append("%s: status %r but exit %d"
                         % (name, document["status"], result.returncode))
 
+failures.extend(olmoe_failures)
+
+# ---- the claim surface, asserted by code and detail ------------------------------------------
+#
+# `docs/specs/moe-prereq-discharge.md` sections 4.1 and 4.2. Every mutation names the exact fault
+# it was written to produce, and the two unmutated claim cases are what proves each mutation is the
+# cause rather than the container being unusable for a claim at all.
+OLMOE_EXPECTED = {
+    "olmoe-expert-claim": ("R4_5_GGML_UNAVAILABLE", "stub"),
+    "olmoe-expert-claim-last": ("R4_5_GGML_UNAVAILABLE", "stub"),
+    "olmoe-dense-member": ("R4_5_GGML_UNAVAILABLE", "stub"),
+    "olmoe-expert-claim-slice-pair": ("R4_5_SLICE", "pair"),
+    "olmoe-expert-claim-slice-pair-mirror": ("R4_5_SLICE", "pair"),
+    "olmoe-expert-claim-slice-count": ("R4_5_SLICE", "count[0]"),
+    "olmoe-expert-claim-slice-range": ("R4_5_SLICE", "index[%d]" % N_EXPERT),
+    "olmoe-whole-member-3d": ("R4_5_SHAPE", "n_dims[3]"),
+    "olmoe-expert-claim-dim2": ("R4_5_SHAPE", "dim2[%d]" % N_EXPERT),
+    "olmoe-expert-claim-dim3": ("R4_5_SHAPE", "dim3[2]"),
+}
+for name, (code, detail) in sorted(OLMOE_EXPECTED.items()):
+    document = json.loads(produced[name]) if name in produced else None
+    if document is None:
+        failures.append("%s: no document" % name)
+        continue
+    if (document["error_code"], document["error_detail"]) != (code, detail):
+        failures.append("%s: %s/%s, expected %s/%s"
+                        % (name, document["error_code"], document["error_detail"], code, detail))
+    if document["verdict"] != "UNAVAILABLE":
+        failures.append("%s: verdict %s" % (name, document["verdict"]))
+    if document["schema_version"] != 2:
+        failures.append("%s: schema_version %d" % (name, document["schema_version"]))
+
+# The claim's own record, against the pack document `main --pack` wrote (section 4.1,
+# *Construction*): the arm reads the decoded `PackMember` and decodes nothing a second time.
+for name, block, position in (("olmoe-expert-claim", FIRST_EXPERT, 0),
+                              ("olmoe-expert-claim-last", LAST_EXPERT, 0),
+                              ("olmoe-dense-member", FIRST_DENSE, FIRST_DENSE_MEMBER)):
+    document = json.loads(produced[name])
+    member = block["members"][position]
+    for field, got, want in (
+            ("kind", document["selection"]["kind"], block["kind"]),
+            ("name", document["selection"]["name"], member["name"]),
+            ("role_id", document["selection"]["role_id"], member["role_id"]),
+            ("n_dims", document["tensor"]["n_dims"], member["n_dims"]),
+            ("ne0", document["tensor"]["ne0"], member["dims"][0]),
+            ("ne1", document["tensor"]["ne1"], member["dims"][1]),
+            ("nbytes", document["tensor"]["nbytes"], member["nbytes"]),
+            ("slice_index", document["tensor"]["slice_index"], member["slice_index"]),
+            ("slice_count", document["tensor"]["slice_count"], member["slice_count"]),
+            ("interior_offset", document["buffer"]["interior_offset"],
+             member["pack_offset"] - block["pack_offset"])):
+        if got != want:
+            failures.append("%s: %s is %r, the pack document says %r" % (name, field, got, want))
+
+# Section 4.3's summary cell, as exact lines: the block is read positionally, so `slice:` must be
+# the line after `dims:` and must carry the pair, or `-` for a whole-tensor member.
+for name, operands, expected in (
+        ("olmoe-expert-claim", FIRST_EXPERT_OPERANDS,
+         "%d/%d" % (FIRST_EXPERT["members"][0]["slice_index"],
+                    FIRST_EXPERT["members"][0]["slice_count"])),
+        ("olmoe-dense-member",
+         [OLMOE_PACK, str(FIRST_DENSE["index"]), str(FIRST_DENSE_MEMBER)], "-")):
+    summary_path = os.path.join(work_dir, "%s-summary.json" % name)
+    lines = run(list(operands) + [summary_path]).stdout.decode("utf-8").splitlines()
+    if "slice:" not in lines:
+        failures.append("%s: the summary block has no `slice:` line" % name)
+    else:
+        at = lines.index("slice:")
+        if lines[at - 2] != "dims:":
+            failures.append("%s: `slice:` does not follow the `dims:` value" % name)
+        if lines[at + 1] != expected:
+            failures.append("%s: summary slice is %r, expected %r"
+                            % (name, lines[at + 1], expected))
+
+# Section 4.6's cross-implementation cell: the standalone reader decodes the same pair for **every**
+# member of the packed olmoe container, not only the ones a case selects.
+olmoe_independent = alignpack_reader.Pack(OLMOE_PACK)
+try:
+    if len(olmoe_independent.members) != len(olmoe_members):
+        failures.append("olmoe-reader-agreement: %d members, the pack document says %d"
+                        % (len(olmoe_independent.members), len(olmoe_members)))
+    else:
+        for position, (theirs, ours) in enumerate(zip(olmoe_independent.members, olmoe_members)):
+            got = (theirs["slice_index"], theirs["slice_count"])
+            want = (ours["slice_index"], ours["slice_count"])
+            if got != want:
+                failures.append("olmoe-reader-agreement: member %d python %r, align %r"
+                                % (position, got, want))
+finally:
+    olmoe_independent.close()
+
+# ---- the qualification's selection rule, hosted (section 4.5) ---------------------------------
+#
+# `scripts/run-ggml-spike` refuses before its selection on any host without ggml, which is why the
+# rule lives in `scripts/ggml_spike_select.py` and is exercised here, over pack documents rather
+# than over a copy of the logic.
+selector = os.path.join(root_dir, "scripts", "ggml_spike_select.py")
+
+
+OWN_SOURCE = object()
+
+
+def selection_document(name, blocks, source=OWN_SOURCE):
+    """A pack document for the selector. `source=None` writes one with **no** `source` object."""
+    path = os.path.join(work_dir, "selection-%s.json" % name)
+    document = {"blocks": blocks}
+    if source is OWN_SOURCE:
+        document["source"] = olmoe_document["source"]
+    elif source is not None:
+        document["source"] = source
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(document, handle)
+    return path
+
+
+def run_selector(path):
+    return subprocess.run([sys.executable, selector, path], capture_output=True, cwd=work_dir)
+
+# Construction: the real olmoe document resolves both arms by `role_id`.
+chosen = run_selector(OLMOE_PACK_DOCUMENT)
+if chosen.returncode != 0:
+    failures.append("selection-olmoe: exited %d: %s"
+                    % (chosen.returncode, chosen.stderr.decode("utf-8", "replace")[-200:]))
+else:
+    selection = json.loads(chosen.stdout.decode("utf-8"))
+    if selection["dense"] != {"block": FIRST_DENSE["index"], "member": FIRST_DENSE_MEMBER}:
+        failures.append("selection-olmoe: dense arm is %r" % (selection["dense"],))
+    if selection["expert"] != {"block": FIRST_EXPERT["index"],
+                               "members": list(range(len(FIRST_EXPERT["members"]))),
+                               "last_block": olmoe_experts[-1]["index"]}:
+        failures.append("selection-olmoe: expert arm is %r" % (selection["expert"],))
+    elif olmoe_experts[-1]["members"][0]["slice_index"] < 1:
+        # The whole reason the last block is selected: it is the plane the first block cannot give.
+        failures.append("selection-olmoe: the last ExpertBlock's member 0 is plane %r"
+                        % (olmoe_experts[-1]["members"][0]["slice_index"],))
+    if selection["identity"] != olmoe_document["source"]["header_region_sha256"]:
+        failures.append("selection-olmoe: identity is %r" % selection["identity"])
+
+# `last_block` is the plane index the first `ExpertBlock` cannot give: every member of that block is
+# plane 0, so without a second block the real-model arm never addresses a `slice_index > 0` interior
+# (section 5.4). A container with exactly one `ExpertBlock` reports `None` rather than repeating the
+# first arm's block.
+single_expert = run_selector(selection_document(
+    "single-expert",
+    [entry for entry in olmoe_blocks if entry["kind"] != "ExpertBlock"]
+    + [entry for entry in olmoe_blocks if entry["kind"] == "ExpertBlock"][:1]))
+if single_expert.returncode != 0:
+    failures.append("selection-single-expert: exited %d" % single_expert.returncode)
+else:
+    only = json.loads(single_expert.stdout.decode("utf-8"))["expert"]
+    if only["last_block"] is not None:
+        failures.append("selection-single-expert: last_block is %r for one ExpertBlock"
+                        % (only["last_block"],))
+
+# Early exit: a model with no `ExpertBlock` is a legitimate shape — the dense arm still runs and
+# the expert arm is absent, which is the `N/A` line rather than a failure.
+dense_only = run_selector(selection_document(
+    "dense-only", [entry for entry in olmoe_blocks if entry["kind"] != "ExpertBlock"]))
+if dense_only.returncode != 0:
+    failures.append("selection-dense-only: exited %d" % dense_only.returncode)
+elif json.loads(dense_only.stdout.decode("utf-8"))["expert"] is not None:
+    failures.append("selection-dense-only: an expert arm was selected from a dense document")
+
+# Failure: no `AttentionBlock` at all is a `FAIL`, named, because every architecture this repository
+# supports has one.
+no_attention = run_selector(selection_document(
+    "no-attention", [entry for entry in olmoe_blocks if entry["kind"] != "AttentionBlock"]))
+if no_attention.returncode == 0:
+    failures.append("selection-no-attention: exited 0 on a document with no AttentionBlock")
+elif b"AttentionBlock" not in no_attention.stderr:
+    failures.append("selection-no-attention: the failure does not name the missing block: %r"
+                    % no_attention.stderr.decode("utf-8", "replace")[-200:])
+
+# Malformed input: a pack document missing a field the rule reads is a producer defect, and it must
+# leave one `FAIL` line naming the field rather than a `KeyError` traceback an operator has to
+# decode. Three shapes, one per level the selector descends: the document, a block, and `source`.
+for label, blocks, source in (
+        ("no-blocks", None, OWN_SOURCE),
+        ("block-without-kind", [{"index": 0, "members": []}], OWN_SOURCE),
+        ("no-source", olmoe_blocks, None)):
+    path = os.path.join(work_dir, "selection-%s.json" % label)
+    with open(path, "w", encoding="utf-8") as handle:
+        document = {} if blocks is None else {"blocks": blocks}
+        if source is OWN_SOURCE:
+            document["source"] = olmoe_document["source"]
+        json.dump(document, handle)
+    malformed = run_selector(path)
+    text = malformed.stderr.decode("utf-8", "replace")
+    if malformed.returncode == 0:
+        failures.append("selection-%s: exited 0 on a malformed pack document" % label)
+    elif "Traceback" in text or "ggml spike qualification: FAIL" not in text:
+        failures.append("selection-%s: the refusal is not a named FAIL: %r" % (label, text[-300:]))
+
 # Both output forms must emit byte-identical document bytes (section 3.3).
 document_path = os.path.join(work_dir, "spike.json")
 stdout_form = run([PACK, "1", "1"]).stdout.decode("utf-8").rstrip("\n")
@@ -373,6 +715,8 @@ try:
         ("member.n_dims", mine["tensor"]["n_dims"], member["n_dims"]),
         ("member.ne0", mine["tensor"]["ne0"], member["dims"][0]),
         ("member.ne1", mine["tensor"]["ne1"], member["dims"][1]),
+        ("member.slice_index", mine["tensor"]["slice_index"], member["slice_index"]),
+        ("member.slice_count", mine["tensor"]["slice_count"], member["slice_count"]),
         ("interior_offset", mine["buffer"]["interior_offset"],
          member["pack_offset"] - block["pack_offset"]),
     ]
@@ -412,4 +756,7 @@ if failures:
 
 print("ggml spike smoke: %d no-document cases, %d documented cases, reader parity, "
       "shared shim contract, and lifetime PASS" % (len(NO_DOCUMENT), len(CASES)))
+print("ggml spike smoke: olmoe %d blocks / %d members packed and verified, %d ExpertBlocks, "
+      "n_expert %d, claim surface PASS"
+      % (len(olmoe_blocks), len(olmoe_members), len(olmoe_experts), N_EXPERT))
 PY
