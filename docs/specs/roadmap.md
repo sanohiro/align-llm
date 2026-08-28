@@ -301,6 +301,18 @@ The current forward delivery order is:
     platform or throughput claim, and it carries the caveats the section R3 entry below records.
     Review, publication, and merge are complete; see `HANDOFF.md`.
 
+22. **R2C-DECODE-INSTRUMENT — a pinned, source-built decode-graph measurement dependency. Active
+    on branch `agent/r2c-decode-instrument`.** [`r2c-decode-instrument.md`](r2c-decode-instrument.md)
+    is the authoritative ledger and closure matrix. It pins llama.cpp commit
+    `bb4caa7540188872173c44d161602d9271386413` and one two-file patch, builds the patched
+    `llama-eval-callback` into an identity-addressed cache outside Git, and extends the existing
+    schema-1 parser to accept either the upstream three-plus-three router axes or exact full axes.
+    Positive `-n` values now emit bounded one-token decode graphs while omitted/nonpositive `-n`
+    retains one prefill graph; only `ffn_moe_topk` prints every slot and token. Existing R2/R3
+    measurement wrappers now pass explicit `-n 0`, preserving their historical prefill-only
+    semantics. The deterministic and dense compiled owners pass; real-MoE full-axis qualification,
+    comprehensive review, publication, and merge remain before R6 may consume the instrument.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
@@ -309,10 +321,10 @@ Track B is complete on the dense local model from R0 through R5C (item 17). Deci
 items 18, 19, and 20 are merged, R2's gate is met, and R4's and R4.5's per-expert halves are
 discharged. It also unblocked item 21, R3-RESIDENCY-SIM, which is merged with the R3 gate met on the
 real corpus. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
-**infeasible on this host** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
+**infeasible on the host where that decision was recorded** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
-a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
-through it, R7-R9; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
+a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch is active as item
+22 and will unblock R6 and, through it, R7-R9 after merge; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
 required microbenchmark C. See `HANDOFF.md`, "Active capabilities", for the full decision list and
 disk-space accounting.
 
@@ -741,6 +753,10 @@ R2aのauthoritative planは[`r2a-expert-trace.md`](r2a-expert-trace.md)である
 へ変換し、token・layerごとのexpert idとlocality aggregateを記録する。dense（非MoE）transcript
 は`moe: false`を返す。
 
+R2cのauthoritative planは[`r2c-decode-instrument.md`](r2c-decode-instrument.md)である。Exact
+llama.cpp pinと最小の2-file patch、out-of-tree managed builder、full-axis schema-1 parser
+adoptionを一つのconsumer-complete capabilityとして実装する。
+
 ### 測定
 
 ```text
@@ -783,13 +799,14 @@ trialは1 prompt内で相関するため（1 promptが全層・全token位置を
 したがって「局所性が弱ければrepo expert profileへの投資を縮小する」は**発動しない**。R3の
 residency simulationは実測されたdemand signalを前提にしてよい。
 
-ただし**prefillのみ**である。build 10566は1 invocationにつき1 graphしか評価しないため
+ただし**この測定結果はprefillのみ**である。当時の未patch build 10566は1 invocationにつき1 graphしか評価しないため
 decodeの測定は存在せず（`phase_split.decode` は `null`）、decode時reuseやcache policyについては
 何も主張しない。また1 promptあたり6 token位置まで、reuseは印字された3+3スロットのみの観測である。
 このうち厳密に言えるのは**t側**の制限だけで、これはhitのみを取り除くのでp^を**低く**偏らせる。
 t+1側の制限は分子と分母を同時に動かすため方向は確定できず、真のtop-8 reuseが286 per milleより
 上か下かはここでは主張しない。最終層はinstrumentがoutput-token reductionを先に適用するため寄与しない
-（section 6 correction 20）。R2bのcorpus横断層別（language別/task別/repo別偏り）とR2cのdecode測定は
+（section 6 correction 20）。R2cの測定器はitem 22で実装中だが、この過去の数値を書き換えない。
+R2bのcorpus横断層別（language別/task別/repo別偏り）とR2c instrumentを使うdecode locality測定は
 未達のまま残る。
 
 ---

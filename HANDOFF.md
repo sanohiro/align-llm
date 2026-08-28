@@ -3,34 +3,43 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R3-QUALIFICATION-PREREQUISITES (2026-08-28)
+## Active: R2C-DECODE-INSTRUMENT (2026-08-28)
 
-Branch `fix/r3-qualification-prerequisites` starts from current `main` `95c47e7`, the merge of R3
-PR #135. A second R3 implementation was independently completed before that merge became visible;
-its duplicate PR #137 is closed and will not be integrated. Its final review nevertheless exposed
-one root-cause class that applies to the merged qualification: the wrapper generated a Model IR but
-did not validate it or the requested budget until after every prompt had invoked the external
-instrument, so a locally knowable defect could consume up to 40 600-second prompt runs.
+Branch `agent/r2c-decode-instrument` starts from `main` `1b11245`, the merge of R3 follow-up PR #138.
+The next eligible roadmap dependency is decision (c): source-build llama.cpp at exact commit
+`bb4caa7540188872173c44d161602d9271386413` with the minimal R2c instrument patch, which unblocks
+R6 and therefore R7-R9. R5 microbenchmark C remains independently blocked on Align Request 41.
 
-**Current checkpoint.** `scripts/run-residency-sim` now validates prompt count in the simulator's
-existing `[1, MAX_TRACE_PATHS]` envelope, derives the Model IR and default budget, and asks the
-simulator itself to validate both against a one-row probe list whose trace is deliberately absent.
-Only exact `R3_TRACE_UNREADABLE` step-8 evidence admits instrument `--version` and prompt capture;
-no Model IR or budget validation is duplicated in shell. The hosted owner covers three refusals
-with zero fake-instrument calls and one valid admission through `--version` to the first prompt.
-`make residency-sim-smoke`, `make residency-sim-qualification` (exact N/A), `make format-check`, and
-`make baseline-check` pass. The hardware-name evidence finding from the duplicate implementation is
-not applicable because merged R3 has no hardware-profile string input.
+**Current checkpoint.** The triggered design ledger is `docs/specs/r2c-decode-instrument.md`
+(`d8e4818`).
+`.llama-revision` and the 2,170-byte patch pin the external source and two-file diff; the managed
+out-of-tree builder has completed a fresh CPU build with llama/ggml shared libraries disabled,
+verified build 10566 / commit
+`bb4caa7`, and emitted a schema-1 attestation. The patch preserves the omitted/nonpositive `-n`
+one-prefill behavior, emits up to `-n` one-token decode graphs with common sampling and EOG stop,
+and prints every `ffn_moe_topk` axis while leaving all other debug tensors at three-plus-three.
 
-**Review envelope.** One host-native Codex comprehensive review covered the whole follow-up diff at
-`045cb48` against base tip and merge base `95c47e73ec0be1cd79ecd6536e0b84bc254bd871`.
-Verdict: clean; findings: none. The reviewer traced the probe through the simulator's documented
-validation order and CLI exit mapping and ran the direct owner with the existing product binary.
-Its attempt to reacquire the managed compiler lock was N/A because the review sandbox makes the
-user cache read-only; the normal owner run above is the owning build evidence.
+The source-to-client check found and corrected one pre-existing R2A contradiction: prose said a
+full-axis R2c transcript needed no parser change, but `src/expert_trace.align` accepted exactly six
+values whenever an extent exceeded six and derived truncation flags from extent. Schema 1 now
+admits exact compact or full forms based on the ellipsis actually observed. Existing compact
+documents remain unchanged; the independent generator now owns full slot/token success and seven
+malformed/mixed/non-router refusals. `make check`, `scripts/run-r2c-instrument-smoke` (46 contract
+groups), and `scripts/run-expert-trace-smoke` (107 fixtures, 17 error codes) pass. The compiled dense
+qualification passes through the product parser: omitted, zero, and negative `-n` each produce one
+prefill graph, while `-n 2` produces one prefill plus two decode graphs. A capable OLMoE model
+materialization is in progress for the full-axis real-client half; no model or transcript will be
+committed.
 
-**Next actions, in order.** Run the exact-head owner and preflight, publish and merge the follow-up,
-then refresh `main` and start the next eligible roadmap capability.
+**Candidate contents.** The pin, patch, managed builder, deterministic smoke, focused qualification,
+R2A parser/source oracle changes, R2A specification correction, roadmap and developer-guide
+changes, and this handoff update belong to this capability. `Makefile` and aggregate topology are
+intentionally unchanged, so the canonical coding baseline artifact set is unchanged.
+
+**Next actions, in order.** Verify the capable model identity and run the MoE qualification and
+real-transcript parity; finish the ledger-to-diff closure pass and commit the coherent candidate;
+run one comprehensive review and consolidate validated repairs; rerun owners and exact-head
+preflight; publish, merge, refresh `main`, and begin R6's workload/TTFT contract.
 
 ## Merged checkpoint: R3-RESIDENCY-SIM (2026-08-28)
 

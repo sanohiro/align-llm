@@ -905,6 +905,7 @@ set -e
 if [ "$status" -eq 0 ] \
     || [ "$(wc -l <"$qualification_calls" 2>/dev/null || printf 0)" -ne 2 ] \
     || [ "$(sed -n '1p' "$qualification_calls")" != "--version" ] \
+    || ! grep -F ' -n 0 ' "$qualification_calls" >/dev/null \
     || ! grep -F 'instrument exited 97 on prompt 0' \
       "$temp_dir/qualification-admission.stderr" >/dev/null; then
   printf '%s\n' "residency sim smoke: valid qualification prerequisites did not reach prompt work" >&2

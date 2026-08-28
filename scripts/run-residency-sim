@@ -191,10 +191,11 @@ for prompt in "${selected[@]}"; do
   # keeps attention unfused so the graph shape stays the one `docs/specs/r2a-expert-trace.md`
   # section 2.2 was measured against; `-ctk f32 -ctv f32` keeps the cache tensors in a printable
   # type; `-nr` suppresses the reasoning wrapper so the prompt reaches the tokenizer verbatim;
-  # `-c 512` bounds the context. `ulimit -f` caps the transcript at 256 MiB.
+  # `-c 512` bounds the context. `-n 0` keeps this historical gate prefill-only after R2c assigns
+  # positive `-n` to decode steps. `ulimit -f` caps the transcript at 256 MiB.
   (
     ulimit -f 262144
-    exec $instrument_timeout "$instrument" -m "$model" -p "$prompt" -n 1 -t 4 \
+    exec $instrument_timeout "$instrument" -m "$model" -p "$prompt" -n 0 -t 4 \
       -fa off -ctk f32 -ctv f32 -nr -c 512 \
       </dev/null >"$transcript" 2>"$temp_dir/instrument.log"
   ) || {

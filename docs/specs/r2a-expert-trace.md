@@ -295,6 +295,13 @@ so the `ne <= 6` branch on axis 0 is an **inference from the single shared loop 
 `n_expert_used = 4` the expert-id row prints in full, and for `n_expert_used = 8` it prints ids
 `{0, 1, 2, 5, 6, 7}` and hides two.
 
+**R2c extension (2026-08-28).** The pinned R2c instrument exempts `ffn_moe_topk` from that
+truncation. For that node family, the schema-1 parser now admits either the compact form above or
+exactly `ne` values with no marker on axes 0, 1, and 2; every other node retains the compact form. It
+derives indices and truncation fields from the accepted marker, not from extent alone. Existing
+build-10566 transcripts retain byte-identical documents; the full form is specified by
+[`r2c-decode-instrument.md`](r2c-decode-instrument.md) section 2.3.
+
 **Finding 7 — build 10566's `llama-eval-callback` performs exactly one graph evaluation per
 invocation, and `-n 1` does not add a decode step.** Two runs (5-token and 3-token prompts) each
 produced exactly one `embd` node and exactly one `result_output` node, and the last-token reduction
@@ -599,7 +606,7 @@ container, and joining the two documents is R2b's job (section 5.1), not a guess
 | `n_expert_used` | integer | Axis 0 of `ffn_moe_topk-N`, required to be identical on every layer of every graph |
 | `n_expert_source` | string or `null` | `"ffn_moe_probs"`, `"ffn_moe_logits"`, `"router_weight"`, or `null`. Which rule was applied, in the `head_dim_source` tradition of R1 |
 | `topk_layers` | array of integer | Ascending layer indices with at least one parsed `ffn_moe_topk` block |
-| `slots_truncated` | boolean | `true` when `n_expert_used > 6`, so slot ids `3 .. n_expert_used-4` were never printed (finding 6) |
+| `slots_truncated` | boolean | `true` when an accepted `ffn_moe_topk` slot axis carried finding 6's ellipsis; `false` for R2c's full axis even when `n_expert_used > 6` |
 
 A dense transcript reaches this object with `present: false` and every other field at its `null` or
 empty sentinel, and `status` stays `"ok"`. That is section 1.2 item 5, and it is the shape of every
@@ -626,9 +633,9 @@ document this host can produce today.
 | `ordinal` | integer | Position in the transcript, from `0` |
 | `n_tokens` | integer | Axis 1 of `embd`, cross-checked against axis 1 of every `ffn_moe_topk-N` in the same graph |
 | `phase` | string | `"prefill"` when `n_tokens > 1`; `"decode"` when `n_tokens == 1` and `ordinal > 0`; `"single_token_first_graph"` when `n_tokens == 1` and `ordinal == 0` |
-| `tokens_observed` | integer | `min(n_tokens, 6)` (finding 6) |
-| `tokens_truncated` | boolean | `n_tokens > 6` |
-| `observed_token_indices` | array of integer | `[0 .. n_tokens-1]` when not truncated, else `[0, 1, 2, n_tokens-3, n_tokens-2, n_tokens-1]` |
+| `tokens_observed` | integer | The accepted non-reduced `ffn_moe_topk` token-axis value count when present; otherwise `min(n_tokens, 6)` from the entry tensor |
+| `tokens_truncated` | boolean | Whether that selected token axis carried finding 6's ellipsis |
+| `observed_token_indices` | array of integer | `[0 .. n_tokens-1]` for the full form, else `[0, 1, 2, n_tokens-3, n_tokens-2, n_tokens-1]` for the compact form |
 | `node_count` | integer | Callback blocks in this graph |
 
 **`phase` has three values and not two.** A first graph of one token is genuinely ambiguous: it is
@@ -933,20 +940,23 @@ document. Six families:
    the expert ids drawn from a fixed seed so the generator knows every selection and every aggregate
    in advance. This is the corpus that closes every **MOE-PREREQ** cell synthetically, and the one
    the section 4.5 decision would replace with a real transcript.
-3. **Truncated axes.** `n_tokens` in `{6, 7, 8, 64, 1024}` crossed with `n_expert_used` in
+3. **Compact axes.** `n_tokens` in `{6, 7, 8, 64, 1024}` crossed with `n_expert_used` in
    `{4, 6, 7, 8}`, exercising every combination of full and three-plus-three printing on axes 0 and
    1, and a three-axis tensor exercising axis 2. Expected: exact `observed_token_indices`, exact
    `slots_truncated`, and `adjacent_pair_count` equal to `min(n_tokens, 6) - 1` when
    `n_tokens <= 6` and `4` when `n_tokens > 6`.
-4. **Malformed.** One fixture per row of section 2.6's table, each defective in exactly one way, plus
+4. **R2c full axes.** Eight-slot/eight-token single- and multi-graph transcripts whose independent
+   oracle expects direct indices, false truncation fields, and every selection, plus short, long,
+   misplaced-marker, mixed compact/full, and non-router-full refusals.
+5. **Malformed.** One fixture per row of section 2.6's table, each defective in exactly one way, plus
    the two precedence fixtures defective in two ordered ways.
-5. **Huge line.** A single 200,000-byte line, both as the first line and as a line after 500 valid
+6. **Huge line.** A single 200,000-byte line, both as the first line and as a line after 500 valid
    blocks, asserting `R2_LINE_TOO_LONG` with the right offset and a truthful partial document.
-6. **Window boundary.** The same logical transcript emitted with padding chosen so that a header
+7. **Window boundary.** The same logical transcript emitted with padding chosen so that a header
    line, a value row, a `sum` line, and a truncation marker each straddle offset `WINDOW_BYTES`,
    asserting a byte-identical document across all four paddings and against the unpadded original.
 
-Families 5 and 6 are the two that a whole-file parser would pass trivially and a streaming parser can
+Families 6 and 7 are the two that a whole-file parser would pass trivially and a streaming parser can
 fail silently; they exist because section 2.4 chose streaming.
 
 ### 4.2 Owner — `scripts/run-expert-trace-smoke`, `make expert-trace-smoke`
@@ -1165,11 +1175,13 @@ rediscovered:
    `n_tokens` above six loses every middle token.
 2. **Emit a graph per decode step.** `llama-eval-callback` decodes the prompt once and stops.
 
-R2A takes no position on whether either is worth doing, because that depends on numbers R2b has not
-produced. What R2A guarantees is that a patched transcript needs **no parser change**: multi-graph
-segmentation, decode phase, and untruncated axes are all already in section 2.5's contract and all
-already have fixtures (`multi-graph`, `phase-decode`, `topk-slots-4`). If R2c ships, R2A's document
-gets *more* rows, not a schema 2.
+R2c shipped the dependency and exposed a correction to this plan's original guarantee: the schema
+had fields for untruncated axes, but the implementation accepted exactly six values whenever
+`ne > 6` and derived both truncation flags from extent. The consumer change is therefore part of
+R2c: the parser accepts the exact compact or full forms in section 2.2, while existing multi-graph
+segmentation and decode phase remain unchanged. The document gets more rows and accurate false
+truncation flags, not a schema 2. The authoritative build/patch/cache contract is
+[`r2c-decode-instrument.md`](r2c-decode-instrument.md).
 
 ### 5.3 R3 — the consumer
 

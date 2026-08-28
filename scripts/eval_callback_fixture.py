@@ -60,7 +60,7 @@ def fmt_dims(dims):
 class Block:
     """One callback record: its header fields and the value block that follows it."""
 
-    def __init__(self, name, dtype, op, src0, src1, ne, value=None):
+    def __init__(self, name, dtype, op, src0, src1, ne, value=None, full_axes=()):
         self.name = name
         self.dtype = dtype
         self.op = op
@@ -69,6 +69,18 @@ class Block:
         self.ne = list(ne)
         # `value(i0, i1, i2, i3) -> float`; defaults to a deterministic ramp.
         self.value = value or (lambda i0, i1, i2, i3: 0.0)
+        # R2c's patched `ffn_moe_topk` prints selected axes in full. Every other block retains the
+        # build-10566 three-plus-three form. The expected document consumes this fixture-owned
+        # choice directly; it does not infer it from the parser under test.
+        self.full_axes = frozenset(full_axes)
+
+    def indices(self, axis):
+        if axis in self.full_axes:
+            return list(range(self.ne[axis]))
+        return printed_indices(self.ne[axis])
+
+    def axis_truncated(self, axis):
+        return self.ne[axis] > TRUNCATION_PRINTED and axis not in self.full_axes
 
     def header(self):
         src0 = "%s{%s}" % (self.src0[0], fmt_dims(self.src0[1]))
@@ -83,16 +95,16 @@ class Block:
         total = 0.0
         for i3 in range(ne3):
             lines.append(A3_OPEN)
-            for position, i2 in enumerate(printed_indices(ne2)):
-                if truncated(ne2) and position == TRUNCATION_HALF:
+            for position, i2 in enumerate(self.indices(2)):
+                if self.axis_truncated(2) and position == TRUNCATION_HALF:
                     lines.append(A2_TRUNC)
                 lines.append(A2_OPEN)
-                for row_position, i1 in enumerate(printed_indices(ne1)):
-                    if truncated(ne1) and row_position == TRUNCATION_HALF:
+                for row_position, i1 in enumerate(self.indices(1)):
+                    if self.axis_truncated(1) and row_position == TRUNCATION_HALF:
                         lines.append(A1_TRUNC)
                     parts = []
-                    for element_position, i0 in enumerate(printed_indices(ne0)):
-                        if truncated(ne0) and element_position == TRUNCATION_HALF:
+                    for element_position, i0 in enumerate(self.indices(0)):
+                        if self.axis_truncated(0) and element_position == TRUNCATION_HALF:
                             parts.append(A0_MARK)
                         element = self.value(i0, i1, i2, i3)
                         total += element
@@ -179,7 +191,7 @@ class Router:
 
 
 def moe_graph(n_layer, n_tokens, router, graph_ordinal, embd=3584, probs=True, logits=True,
-              reduced_tail=0, reduced_layer=None):
+              reduced_tail=0, reduced_layer=None, full_topk=False):
     """`reduced_tail` models build 10566's real MoE shape: llama.cpp applies the output-token
     `GET_ROWS` reduction before the *last* layer's feed-forward, so that layer's `ffn_moe_topk`
     carries a shorter token axis than the graph and the leaf naming the retained tokens is never
@@ -213,7 +225,8 @@ def moe_graph(n_layer, n_tokens, router, graph_ordinal, embd=3584, probs=True, l
 
         blocks.append(Block("ffn_moe_topk-%d" % layer, "i32", "TOP_K",
                             ("ffn_moe_probs-%d" % layer, [n_expert, layer_tokens, 1, 1]), None,
-                            [used, layer_tokens, 1, 1], value))
+                            [used, layer_tokens, 1, 1], value,
+                            full_axes=(0, 1, 2) if full_topk else ()))
         blocks.append(Block("ffn_moe_out-%d" % layer, "f32", "ADD",
                             ("ffn_moe_topk-%d" % layer, [used, layer_tokens, 1, 1]),
                             ("ffn_norm-%d" % layer, [embd, layer_tokens, 1, 1]),
@@ -270,8 +283,8 @@ def expected_selections(graphs):
             if layer in reduced:
                 continue
             ne0, ne1 = block.ne[0], block.ne[1]
-            for row_position, i1 in enumerate(printed_indices(ne1)):
-                for element_position, i0 in enumerate(printed_indices(ne0)):
+            for row_position, i1 in enumerate(block.indices(1)):
+                for element_position, i0 in enumerate(block.indices(0)):
                     rows.append({
                         "graph": ordinal,
                         "layer": layer,
@@ -423,6 +436,11 @@ def expected_document(path, graphs, text, separator=""):
     for ordinal, blocks in enumerate(graphs):
         n_tokens, _ = token_axis(blocks)
         observed = printed_indices(n_tokens)
+        for block in blocks:
+            family, layer = family_of(block.name)
+            if family == "ffn_moe_topk" and layer not in token_axis(blocks)[1]:
+                observed = block.indices(1)
+                break
         phase = "prefill" if n_tokens > 1 else ("single_token_first_graph" if ordinal == 0 else "decode")
         graph_phase[ordinal] = phase
         graph_rows.append({
@@ -430,7 +448,7 @@ def expected_document(path, graphs, text, separator=""):
             "n_tokens": n_tokens,
             "phase": phase,
             "tokens_observed": len(observed),
-            "tokens_truncated": n_tokens > TRUNCATION_PRINTED,
+            "tokens_truncated": len(observed) != n_tokens,
             "observed_token_indices": observed,
             "node_count": len(blocks),
         })
@@ -499,7 +517,9 @@ def expected_document(path, graphs, text, separator=""):
             "n_expert_source": n_expert_source,
             "topk_layers": sorted(set(topk_layers)),
             "token_reduced_layers": sorted(set(reduced_layers)),
-            "slots_truncated": bool(moe_present and n_expert_used > TRUNCATION_PRINTED),
+            "slots_truncated": any(
+                family_of(block.name)[0] == "ffn_moe_topk" and block.axis_truncated(0)
+                for blocks in graphs for block in blocks),
         },
         "graphs": graph_rows,
         "selections": selections,
@@ -514,6 +534,37 @@ def mutate(text, old, new, count=1):
     if old not in text:
         raise SystemExit("eval_callback_fixture: mutation target %r absent" % old)
     return text.replace(old, new, count)
+
+
+def transform_first_topk_row(text, transform):
+    lines = text.splitlines(keepends=True)
+    in_topk = False
+    for index, raw in enumerate(lines):
+        line = raw.rstrip("\n")
+        if line.startswith("common_debug_cb_eval:"):
+            in_topk = "ffn_moe_topk-" in line
+        elif in_topk and line.startswith(ROW_OPEN) and line.endswith(ROW_CLOSE):
+            body = line[len(ROW_OPEN):-len(ROW_CLOSE)]
+            ending = "\n" if raw.endswith("\n") else ""
+            lines[index] = ROW_OPEN + transform(body) + ROW_CLOSE + ending
+            return "".join(lines)
+    raise SystemExit("eval_callback_fixture: no top-k row to transform")
+
+
+def change_first_topk_token_row(text, duplicate):
+    lines = text.splitlines(keepends=True)
+    in_topk = False
+    for index, raw in enumerate(lines):
+        line = raw.rstrip("\n")
+        if line.startswith("common_debug_cb_eval:"):
+            in_topk = "ffn_moe_topk-" in line
+        elif in_topk and line.startswith(ROW_OPEN) and line.endswith(ROW_CLOSE):
+            if duplicate:
+                lines.insert(index, raw)
+            else:
+                del lines[index]
+            return "".join(lines)
+    raise SystemExit("eval_callback_fixture: no top-k token row to change")
 
 
 def emit(cases, root, name, text, expect="error", code=None, detail=None, asserts=None,
@@ -595,6 +646,49 @@ def main():
         for used in (4, 6, 7, 8):
             positive(cases, root, "trunc-T%d-U%d" % (n_tokens, used),
                      [moe_graph(2, n_tokens, Router(5, 64, used), 0)])
+
+    # R2c full router axes. The independent oracle consumes each Block's fixture-owned print mode,
+    # so these rows prove direct 0..N-1 indices, false truncation fields, and the larger locality
+    # denominator without sharing implementation with the Align parser.
+    positive(cases, root, "r2c-full-T8-U8",
+             [moe_graph(3, 8, Router(37, 64, 8), 0, full_topk=True)])
+    positive(cases, root, "r2c-full-multi-graph", [
+        moe_graph(2, 8, Router(41, 64, 8), 0, full_topk=True),
+        moe_graph(2, 1, Router(41, 64, 8), 1, full_topk=True),
+        moe_graph(2, 1, Router(41, 64, 8), 2, full_topk=True),
+    ])
+
+    # The new alternative is exact, not a relaxed row counter: short/long full slot and token axes,
+    # a marker outside ordinal three, and mixed compact/full top-k layers all fail closed.
+    full_graph = [moe_graph(2, 8, Router(43, 64, 8), 0, full_topk=True)]
+    full_text = render(full_graph)
+    emit(cases, root, "r2c-full-slot-short",
+         transform_first_topk_row(full_text, lambda body: ", ".join(body.split(", ")[:-1])),
+         expect="error", code="R2_ROW_COUNT")
+    emit(cases, root, "r2c-full-slot-long",
+         transform_first_topk_row(full_text, lambda body: body + ", " + body.split(", ")[0]),
+         expect="error", code="R2_ROW_COUNT")
+    emit(cases, root, "r2c-full-slot-marker-misplaced",
+         transform_first_topk_row(full_text, lambda body: A0_MARK + ", " + body),
+         expect="error", code="R2_ROW_COUNT")
+    emit(cases, root, "r2c-full-token-short", change_first_topk_token_row(full_text, False),
+         expect="error", code="R2_ROW_COUNT")
+    emit(cases, root, "r2c-full-token-long", change_first_topk_token_row(full_text, True),
+         expect="error", code="R2_ROW_COUNT")
+    mixed_graph = moe_graph(2, 8, Router(47, 64, 8), 0, full_topk=True)
+    topk_seen = 0
+    for block in mixed_graph:
+        if family_of(block.name)[0] == "ffn_moe_topk":
+            topk_seen += 1
+            if topk_seen == 2:
+                block.full_axes = frozenset()
+    emit(cases, root, "r2c-mixed-print-form", render([mixed_graph]),
+         expect="error", code="R2_ROW_COUNT")
+    non_router_full = [[Block(
+        "embd", "f32", "GET_ROWS", ("token_embd.weight", [8, 64, 1, 1]), None,
+        [8, 1, 1, 1], full_axes=(0,))]]
+    emit(cases, root, "r2c-non-router-full-axis", render(non_router_full),
+         expect="error", code="R2_ROW_COUNT")
 
     # Axis 2 and axis 3 exercised by a three- and four-axis tensor.
     axis_blocks = [

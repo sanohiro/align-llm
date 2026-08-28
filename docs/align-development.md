@@ -681,6 +681,67 @@ is a hard failure and never a skip. The runner also asserts the `bytes_read` bou
 model's size and modification time are unchanged, which is the read-only proof. The instrument runs
 under a 600-second `timeout` so a run that fails to terminate is a bounded failure.
 
+### The pinned R2c decode instrument
+
+R2c's authoritative external-dependency contract is
+`docs/specs/r2c-decode-instrument.md`. `.llama-revision` pins llama.cpp commit
+`bb4caa7540188872173c44d161602d9271386413`, and
+`patches/llama.cpp/r2c-decode-instrument.patch` is the reviewed two-file diff. It changes the
+measurement example only: `ffn_moe_topk` axes print in full, and a positive `-n N` evaluates up to N
+sampled non-EOG tokens as one-token decode graphs. No llama.cpp source or binary is committed.
+
+The managed builder writes outside the work tree and binds its cache entry to both full source
+identities:
+
+```sh
+scripts/llama-eval-callback-toolchain path instrument
+scripts/llama-eval-callback-toolchain ensure instrument
+scripts/llama-eval-callback-toolchain verify
+scripts/llama-eval-callback-toolchain attest instrument
+```
+
+`path` is read-only and need not name an existing entry. `ensure` performs a one-commit fetch, exact
+patch application, a fixed CPU CMake build with llama/ggml shared libraries disabled, admission,
+and atomic publication. `verify` rejects
+source revision/diff drift, untracked source, symlink boundaries, missing or non-executable output,
+and anything whose version is not build 10566 / commit `bb4caa7`. `attest instrument` emits the
+source and patch identities plus the platform-local instrument digest.
+
+The cache root is `ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT/r2c-v1` when explicitly set, otherwise
+`$XDG_CACHE_HOME/align-llm/llama.cpp/r2c-v1` or `$HOME/.cache/align-llm/llama.cpp/r2c-v1`.
+`ALIGN_LLM_LLAMA_REPOSITORY` overrides the public upstream URL for an offline/local source, `CMAKE`
+selects one CMake command, and `CMAKE_BUILD_PARALLEL_LEVEL` controls build scheduling. Unsafe,
+relative, whitespace-containing, or semantically drifted inputs fail; no ambient llama.cpp checkout
+or binary is selected.
+
+The schema-1 parser now selects compact versus full axes from the actual ellipsis. Existing
+build-10566 compact transcripts retain first/last-three indices and byte-identical documents; an
+R2c router axis reports every slot/token and false truncation flags. The deterministic owners are:
+
+```sh
+scripts/run-r2c-instrument-smoke
+make expert-trace-smoke
+make residency-sim-smoke
+```
+
+The compiled focused qualification materializes the instrument, downloads upstream's SHA-pinned
+15M dense test model into that cache when needed, and proves legacy one-prefill versus patched
+one-prefill-plus-two-decode behavior through `main --expert-trace`:
+
+```sh
+scripts/run-r2c-instrument-qualification
+
+ALIGN_LLM_GGUF_MODEL=/path/to/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf \
+  scripts/run-r2c-instrument-qualification
+```
+
+The first command must pass the dense half, proving omitted, zero, and negative `-n` each retain
+one prefill graph while `-n 2` adds two decode graphs, and prints exact N/A for the optional MoE
+half. The second additionally requires `moe.present: true`, at least one decode graph, no slot/token
+truncation, and every observed routing group to contain all `n_expert_used` slots. Any selected
+model/instrument failure is a hard failure, transcripts are bounded to 256 MiB and removed, and no
+latency or locality claim is made.
+
 ### The R2 locality gate
 
 `scripts/run-expert-locality-gate` is the R2 roadmap gate's measurement: it captures one prefill
@@ -688,6 +749,8 @@ transcript per prompt from a checked-in corpus, derives one `R2_ACTIVATION_TRACE
 with `main --expert-trace`, deletes the transcript, and pools every document into one verdict. The
 numbers it produced, and every caveat they carry, are recorded in `docs/specs/r2a-expert-trace.md`
 section 8; that section is authoritative for the result and this one for how to run it.
+The runner passes explicit `-n 0`, so the R2c instrument cannot turn this historical prefill gate
+into a decode workload.
 
 ```sh
 ALIGN_LLM_GGUF_MODEL=/path/to/moe-model.gguf \
@@ -816,6 +879,8 @@ corpus: it captures one prefill transcript per prompt with the flags and safegua
 `scripts/run-expert-locality-gate` established, derives one `R2_ACTIVATION_TRACE` per transcript with
 `main --expert-trace`, deletes each transcript immediately, derives the `R1_MODEL_IR` once with
 `main --model-ir`, and runs `main --simulate-residency` over the result.
+The shared capture flags include explicit `-n 0`; selecting the R2c instrument therefore preserves
+the measured prefill-only demand stream.
 
 ```sh
 ALIGN_LLM_GGUF_MODEL=/path/to/moe-model.gguf \
