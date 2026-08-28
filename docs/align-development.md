@@ -1824,9 +1824,10 @@ against the exact head rather than reasoning from this paragraph.
 
 ## MoE layer forward development
 
-R5D-MOE-LAYER-FORWARD is the design of record on branch `agent/r5d-moe-layer-forward`, ledger
-commit `a85e1fc` after the rebase onto the merged R3 residency simulator at `main` `95c47e7`;
-implementation `7886cee` and review repair `a2e2748` are committed, so every field below is
+R5D-MOE-LAYER-FORWARD is merged as PR #139, merge commit `e312bd7`; it was the design of record on
+branch `agent/r5d-moe-layer-forward`, ledger
+commit `a85e1fc` after the rebase onto the merged R3 residency simulator at `main` `95c47e7`, with
+implementation `7886cee` and review repair `a2e2748`, so every field below is
 finalized. Its authoritative plan is `docs/specs/r5d-moe-layer-forward.md`, which owns
 the probe record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
 deferrals, risks, and candidate-request sections. It answers R5's second gate stage for a **routed**
@@ -1924,6 +1925,78 @@ no mask); `src/ggml_ffi.align` remains the only file with an `extern` block or a
 the `BEGIN/END R4.5 SHARED SHIM CONTRACT` region stays byte-identical (ledger section 4.2). **The
 shim is built with `-ffp-contract=off`**, inherited unchanged from R5A, and the runner asserts
 `abi.fp_contract_off` is `true`.
+
+## MoE whole-model prefill development
+
+R5E-MOE-MODEL-PREFILL is the design of record on branch `agent/r5e-moe-model-prefill`, ledger commit
+`5e3356d`, implementation `053de09`, review repair `e7f727f`, merged with the merged R5D at `main`
+`e312bd7`. Its authoritative plan is `docs/specs/r5e-moe-model-prefill.md`, which owns the probe
+record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
+deferrals, risks, and candidate-request sections. It completes R5's second gate stage: a **whole**
+sixteen-layer OLMoE prefill of at most six tokens, per-layer routing, only the routed experts' planes
+read into Align-owned buffers, the output head, and an `R5_MOE_MODEL_FORWARD`, `schema_version: 1`
+document.
+
+It ships as a **fifth arm of the existing `ggml-spike` executable**, `--moe-model-forward`, beside
+R4.5's positional arm, `--layer-forward`, `--model-forward`/`--model-forward-gpu`, and
+`--moe-layer-forward`, and it reuses `src/layer_olmoe.align` — R5D's topology module, extended with
+layer-parameterized tables — rather than adding a second OLMoE description.
+
+```sh
+gmake ggml-spike                        # unchanged; also builds the --moe-model-forward arm
+gmake layer-forward-smoke               # extended with a fifth block; unchanged aggregate membership
+gmake moe-model-forward-qualification   # the opt-in real-ggml, real-model, two-instrument qualification
+```
+
+`--moe-model-forward` is selected by its exact first operand and takes exactly five, six, seven,
+eight, or nine operands — there is no arity gap:
+
+```sh
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json REF.gguf
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json REF.gguf TRANSCRIPT.txt
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json REF.gguf TRANSCRIPT.txt LOGITS.bin
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json REF.gguf -              LOGITS.bin
+```
+
+**`KV_WIDTH` is mandatory and is operand five**, unlike R5B's optional trailing width, because on a
+routed model the declared attention width changes which experts the router selects and therefore
+which bytes the arm reads (ledger section 2.8). `-` is legal in exactly two positions: the document
+position, where it is R0's write-to-stdout convention, and the transcript position, where it means
+the transcript oracle does not run while the logits oracle still does. `-` anywhere else is
+`R5E_PATH`.
+
+**Env vars, read by `scripts/run-moe-model-forward`:**
+
+```sh
+ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include \                # selects the REAL shim; unset selects the stub
+ALIGN_LLM_GGML_LIB=/opt/homebrew/lib \                        # where libggml / libggml-base are
+ALIGN_LLM_GGUF_MODEL=/path/to/olmoe.gguf \                    # the OLMoE model to pack and use as the reference
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \  # the transcript and routing oracles
+ALIGN_LLM_LLAMA_DEBUG=/path/to/llama-debug \                  # the byte-exact logits oracle
+ALIGN_LLM_MOE_MODEL_FORWARD_TMPDIR=/path/to/scratch \         # where the pack is written; defaults to TMPDIR
+ALIGN_LLM_MOE_MODEL_FORWARD_EXCERPT_UPDATE=1 \                # refreshes the checked-in transcript excerpt
+  gmake moe-model-forward-qualification
+```
+
+`ALIGN_LLM_MOE_MODEL_FORWARD_TMPDIR` is deliberately **not** an N/A condition: it selects a location
+and defaults to `TMPDIR`. The other five are, along with a model whose `arch` is not `olmoe` and a
+scratch root with less than `model_bytes / 1024 + 1048576` KiB free — 5,163,334 KiB for
+`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`.
+
+**The qualification runs the arm twice**, once at the instrument's reconciliation width (256 on this
+model at `-c 512`) with the transcript, and once at the runtime width (`KV_WIDTH == token_count`)
+with `-` in the transcript position, so the arm rather than the runner produces the runtime-width
+logits verdict. It asserts the tokenizer produced the six expected ids and that the two instruments
+agree with each other **before** invoking the arm, so an instrument skew is reported as an instrument
+skew rather than as a failing oracle.
+
+**R5E adds no smoke target and changes no aggregate membership**; like R5D it adds one opt-in
+Makefile target, `moe-model-forward-qualification`, and its owner is `layer-forward-smoke`'s fifth
+block. A `Makefile` edit is still an executable-contract boundary, so `scripts/pre-pr` selects the
+**executable** row and the installed profile rather than the documentation lane. The FFI boundary
+does **not** change: R5E adds no `extern` symbol and neither C shim gains one.
 
 ## The `--decode-step` arm (R6-DECODE-KV-STEP1)
 

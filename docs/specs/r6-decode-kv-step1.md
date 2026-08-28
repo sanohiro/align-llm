@@ -788,11 +788,11 @@ Encountered while designing, classified per `CLAUDE.md`. **None blocks this capa
 | `alignc check` is not a superset of `alignc build` | Genuine Align gap | Request 42, unchanged |
 | Release of rebound `buffer` allocations before frame exit | Genuine Align gap | Request 39 — relevant because the plane is 28 MiB held across two passes; a workaround exists (scope it) and is used |
 
-**Numbering hazard, recorded because it has already bitten this repository twice.** `main` carries
-requests through **46**. The `agent/r5e-moe-model-prefill` branch **holds 47 and 48** and they are
-not free; this capability therefore takes **49**. If that branch merges with different numbers, or
-another branch claims 49 first, this request is renumbered at reconciliation — the number is not a
-contract. The same applies to the roadmap item number in section 9.
+**Numbering hazard, recorded because it has already bitten this repository twice.** When this
+section was written `main` carried requests through **46** and the `agent/r5e-moe-model-prefill`
+branch held 47 and 48 unmerged, so this capability took **49**. That branch has since merged
+(PR #143), 47 and 48 are real on `main`, and 49 is still this capability's. The number was never a
+contract; section 9 records the re-check.
 
 ## 9. Reconciliation — applied
 
@@ -804,12 +804,12 @@ here. Roadmap item **27** is in `docs/specs/roadmap.md`; the `HANDOFF.md` active
 The numbering hazard section 8 recorded was real and both numbers moved. When this section was first
 written, `main` carried roadmap items to **24** and requests to **46**, `agent/r3-decode-residency`
 claimed roadmap **25**, and `agent/r5e-moe-model-prefill` claimed roadmap **26** and requests
-**47/48**. **Re-checked at publication**, against `main` `76246f3` (the merge of PR #142) which this
-branch merges: `agent/r3-decode-residency` has landed and roadmap item **25** is on `main`;
-`agent/r5e-moe-model-prefill` has **not**, so roadmap **26** and requests **47 and 48** remain
-claimed-and-unmerged and are reserved rather than free. Requests on `main` still end at **46**. This
-capability therefore keeps roadmap **27** and Align Request **49**, and `docs/specs/roadmap.md`
-records the reserved gap at item 26 in place so the step from 25 to 27 is not read as an error.
+**47/48**. **Re-checked at publication**, against `main` `5ccc2aa`, which this branch merges: both claims
+landed while this capability was in review. `agent/r3-decode-residency` took roadmap item **25**
+(PR #142) and `agent/r5e-moe-model-prefill` took roadmap item **26** and Align Requests **47** and
+**48** (PR #143). `main` therefore carries roadmap items to 26 and requests to 48, and this
+capability keeps roadmap **27** and Align Request **49** — the numbers it chose against unmerged
+claims are exactly the numbers that are free, with no gap and no renumbering.
 
 ## 10. Deviations from this ledger, and why
 
