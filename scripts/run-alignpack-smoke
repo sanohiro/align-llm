@@ -1261,6 +1261,7 @@ def drive_qualification_verdicts(moe_source, moe_verify, dense_source):
         b"alignpack qualification (gpt-oss MoE): N/A",
     ]
     runner = str(Path(root_dir) / "scripts" / "run-alignpack-qualification")
+    measured = 0
     for label, source, expected in (
             ("moe", moe_source, moe_lines),
             ("dense", dense_source,
@@ -1274,15 +1275,41 @@ def drive_qualification_verdicts(moe_source, moe_verify, dense_source):
         require(outcome.returncode == 0,
                 "qualification-verdict %s: exited %d: %s"
                 % (label, outcome.returncode, outcome.stderr.decode("utf-8", "replace")[-400:]))
+        # The runner's own environmental refusals — headroom, an unusable temporary directory, an
+        # occupied destination — are its contract (`qualification-skip` asserts them), and they are
+        # a property of the host rather than of this fixture. A runner that refused wrote nothing
+        # and claimed nothing, so this case names the refusal and does not assert a verdict it
+        # never produced. It is **not** silence: the reason is printed, and a refusal for a reason
+        # other than the runner's own vocabulary still fails below. This is reachable in practice —
+        # the fresh worker's aggregate runs with far less than the `model_size + 1 GiB` of headroom
+        # the runner requires before it writes anything.
+        refusals = [line for line in outcome.stdout.splitlines()
+                    if line.startswith(b"alignpack qualification: N/A (")]
+        if refusals:
+            require(len(refusals) == 1,
+                    "qualification-verdict %s: %d N/A lines, expected exactly one"
+                    % (label, len(refusals)))
+            require(not list(destination.iterdir()),
+                    "qualification-verdict %s: the runner refused and still wrote files" % label)
+            print("alignpack smoke: qualification-verdict %s N/A - the runner refused this host: %s"
+                  % (label, refusals[0].decode("utf-8", "replace")))
+            continue
         for line in expected:
             require(line in outcome.stdout,
-                    "qualification-verdict %s: the verdict does not contain %r" % (label, line))
+                    "qualification-verdict %s: the verdict does not contain %r; the runner printed "
+                    "%r" % (label, line, outcome.stdout.decode("utf-8", "replace")[-600:]))
         require(not list(destination.iterdir()),
                 "qualification-verdict %s: the runner left files behind" % label)
-    print("alignpack smoke: qualification-verdict MoE PASS (ExpertBlock %d blocks, %d -> %d "
-          "ranges, %d -> %d ppm) and dense N/A"
-          % (pack_expert["block_count"], source_expert["range_count"], pack_expert["range_count"],
-             source_expert["amplification_ppm"], pack_expert["amplification_ppm"]))
+        measured += 1
+    if measured == 2:
+        print("alignpack smoke: qualification-verdict MoE PASS (ExpertBlock %d blocks, %d -> %d "
+              "ranges, %d -> %d ppm) and dense N/A"
+              % (pack_expert["block_count"], source_expert["range_count"],
+                 pack_expert["range_count"], source_expert["amplification_ppm"],
+                 pack_expert["amplification_ppm"]))
+    else:
+        print("alignpack smoke: qualification-verdict %d of 2 verdicts measured on this host"
+              % measured)
 
 
 def drive_qualification_skips(sample_source):
