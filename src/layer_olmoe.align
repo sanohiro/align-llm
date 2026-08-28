@@ -1,0 +1,1403 @@
+module layer_olmoe
+
+import core.json
+
+// R5D-MOE-LAYER-FORWARD (`docs/specs/r5d-moe-layer-forward.md` section 3.5). The OLMoE **routed**
+// layer as data: two node tables, the member-role and claim-role tables, the shape rules, the
+// scalar derivations, the oracle table, and the routing decision. It contains no `extern`
+// declaration, no `unsafe` block, no handle, and no file, and `scripts/run-layer-forward-smoke`
+// asserts the first two by scanning `src/` and finding only `src/ggml_ffi.align`.
+//
+// It is a **second module beside `src/layer_qwen2.align`, not a widening of it** (section 3.1).
+// That module's `parse_geometry` refuses `n_expert != 0` and `arch != "qwen2"` by design and its
+// `Geometry` record has no `n_expert_used` and no `n_ff_exp`; the two architectures' attention
+// halves differ — OLMoE has a QK-norm and no QKV biases, Qwen2 has biases and no QK-norm — so one
+// module owning both would be the "second architecture is a second module behind the same
+// node-table shape" that `r5a-dense-layer-forward.md` section 1.3 already named.
+//
+// **The two node tables are the design.** One loop in `src/moe_layer_forward.align` walks each and
+// issues one shim call per row. Three of this file's orderings are normative and were each chosen
+// after a probe refuted the plan:
+//
+//   * the QK-norm is an RMS norm over `ne[0] == n_embd` applied **before** the head reshape, not a
+//     per-head norm (section 2.2 fact 1). A table that reshapes first type-checks, runs, and is
+//     wrong;
+//   * the router is a 64-way softmax with **no renormalization** and its top-k is an `ARGSORT`
+//     plus a slice taken in Align, never `ggml_top_k`, whose own header says its indices are in no
+//     particular order (section 2.2 facts 2 and 3);
+//   * the expert reduction's eight views and seven adds are in **ascending slot order**. Section
+//     2.3 measured a reversed order changing 1,189 of 2,048 elements of one token's `ffn_moe_out`.
+//     The table encodes the order; no loop direction is free to choose it.
+
+// ---------------------------------------------------------------------------------------------
+// Slots, ops, and the bounds
+// ---------------------------------------------------------------------------------------------
+
+// R5A's store, unchanged in representation and in capacity. The two phases share it and occupy
+// **disjoint** ranges, so phase A's nodes stay readable while phase B is built and the published
+// high-water mark is the whole run's.
+pub MAX_NODE_SLOTS := 128
+pub SLOT_HEADER_BYTES := 16
+pub SLOT_BYTES := 8
+
+// Phase A: ten dense members in slot order, three inputs, thirty-one nodes.
+pub MEMBER_COUNT := 10
+pub SLOT_TOKENS := 10
+pub SLOT_POS := 11
+pub SLOT_MASK := 12
+pub A_NODE_BASE := 13
+pub A_NODE_COUNT := 31
+
+// Phase B: the three compact expert stacks, the five carried values, and `2 * n_expert_used + 8`
+// nodes. `A_NODE_BASE + A_NODE_COUNT == SLOT_GATE` by construction.
+pub SLOT_GATE := 44
+pub SLOT_UP := 45
+pub SLOT_DOWN := 46
+pub SLOT_FFN_NORM := 47
+pub SLOT_FFN_INP := 48
+pub SLOT_PROBS := 49
+pub SLOT_TOPK := 50
+pub SLOT_COMPACT := 51
+pub B_NODE_BASE := 52
+pub CLAIM_ROLE_COUNT := 3
+
+// Section 3.3's prefill cap, and R5A section 3.3's reason for it: `llama-eval-callback` prints
+// every row of an axis only while its extent is `<= 6`, and an oracle that compares fewer elements
+// as the input grows while still reporting `PASS` is worse than one that refuses.
+pub MAX_PREFILL_TOKENS := 6
+
+// Section 3.4's ceiling on the routed union's three windows, checked at step 26 **after** the
+// routing decision, because `U` does not exist before it.
+pub MAX_CLAIM_WINDOW_BYTES := 8589934592
+
+pub OP_GET_ROWS := 1
+pub OP_RMS_NORM := 2
+pub OP_MUL := 3
+pub OP_ADD := 4
+pub OP_MUL_MAT := 5
+pub OP_RESHAPE_3D := 6
+pub OP_PERMUTE := 7
+pub OP_CONT_3D := 8
+pub OP_ROPE := 9
+pub OP_SOFT_MAX := 10
+pub OP_SWIGLU := 11
+// R5D's three new ops. `OP_VIEW_2D`'s two dimension parameters are axis **selectors**, never byte
+// counts: section 3.5 keeps stride arithmetic on the C side so Align cannot forge an offset.
+pub OP_ARGSORT := 12
+pub OP_MUL_MAT_ID := 13
+pub OP_VIEW_2D := 14
+
+// `src/alignpack.align`'s frozen `role_id` list, the thirteen entries this layer needs. Members are
+// located by `role_id` and never by name string and never by position.
+pub ROLE_ATTN_NORM := 0
+pub ROLE_ATTN_Q := 1
+pub ROLE_ATTN_K := 3
+pub ROLE_ATTN_V := 5
+pub ROLE_ATTN_OUTPUT := 7
+pub ROLE_FFN_NORM := 8
+pub ROLE_TOKEN_EMBD := 12
+pub ROLE_ROUTER := 17
+pub ROLE_FFN_GATE_EXPS := 19
+pub ROLE_FFN_UP_EXPS := 21
+pub ROLE_FFN_DOWN_EXPS := 23
+pub ROLE_ATTN_Q_NORM := 27
+pub ROLE_ATTN_K_NORM := 28
+
+// `src/model_ir.align`'s block-kind encoding, unchanged. R5D invents no kind of its own.
+pub KIND_WEIGHT := 0
+pub KIND_EXPERT := 3
+pub KIND_ROUTER := 4
+pub KIND_ATTENTION := 1
+
+pub GGML_TYPE_F32 := 0
+
+// The `-inf` an f32 causal mask is made of, as a bit pattern: the mask is written from bit patterns
+// rather than float arithmetic, so nothing here depends on Align's rendering of infinity.
+pub MASK_NEG_INFINITY_BITS := 4286578688
+pub MASK_ZERO_BITS := 0
+
+pub ROPE_TYPE_NEOX := 2
+pub MAX_BIAS_BITS := 0
+// `1.0f`, the router softmax's scale. The gate is a plain `ggml_soft_max`, which is
+// `ggml_soft_max_ext(ctx, a, NULL, 1.0f, 0.0f)` (section 2.2 fact 2).
+pub UNIT_SCALE_BITS := 1065353216
+
+// The geometry document this module consumes: the shipped `R1_MODEL_IR` at `schema_version: 2`,
+// the same pair `src/layer_qwen2.align` declares.
+pub GEOMETRY_KIND := "R1_MODEL_IR"
+pub GEOMETRY_SCHEMA_VERSION := 2
+
+// The four oracle classes of section 3.6, published verbatim in `nodes[].oracle` so every exclusion
+// is a document field rather than a silent gap. `ORACLE_ABSENT` is the arm's, for a compared row
+// the transcript did not carry.
+pub ORACLE_ABSENT := 0
+pub ORACLE_COMPARED := 1
+pub ORACLE_SHAPE_INCOMPARABLE := 2
+pub ORACLE_AMBIGUOUS_NAME := 3
+pub ORACLE_UNSTABLE_NAME := 4
+
+// The twenty-six nodes section 3.6 compares. It is a constant rather than a count of the table,
+// because a table edit that silently dropped a compared row must be a failing number and not a
+// smaller expectation.
+pub ORACLE_COMPARED_COUNT := 26
+
+// Rows 0 to 29 of the oracle table do not depend on `n_expert_used`; the reduction chain does.
+ORACLE_FIXED_ROWS := 30
+
+// ---------------------------------------------------------------------------------------------
+// The geometry
+// ---------------------------------------------------------------------------------------------
+
+pub Geometry {
+  code: string,
+  detail: string,
+  arch: string,
+  n_layer: i64,
+  n_embd: i64,
+  n_head: i64,
+  n_head_kv: i64,
+  head_dim: i64,
+  n_ff_exp: i64,
+  n_vocab: i64,
+  n_expert: i64,
+  n_expert_used: i64,
+  context_length: i64,
+  rms_eps_bits: i64,
+  rope_type: i64,
+  rope_dim_count: i64,
+  rope_freq_base_bits: i64,
+  attn_scale_bits: i64,
+}
+
+pub fn empty_geometry() -> Geometry = Geometry {
+  code: "".clone(),
+  detail: "".clone(),
+  arch: "".clone(),
+  n_layer: 0,
+  n_embd: 0,
+  n_head: 0,
+  n_head_kv: 0,
+  head_dim: 0,
+  n_ff_exp: 0,
+  n_vocab: 0,
+  n_expert: 0,
+  n_expert_used: 0,
+  context_length: 0,
+  rms_eps_bits: -1,
+  rope_type: -1,
+  rope_dim_count: 0,
+  rope_freq_base_bits: -1,
+  attn_scale_bits: 0,
+}
+
+// `1/sqrt(head_dim)` as a bit pattern, derived in Align and never rendered as a float. Section 3.2
+// records that this model's value is `3db504f3`, the same as R5A's, because both have `head_dim`
+// 128.
+pub fn attn_scale_bits(head_dim: i64) -> i64 {
+  if head_dim <= 0 { return 0 }
+  mut window: buffer := buffer(4)
+  scale: f32 := (1.0 as f32) / ((head_dim as f32).sqrt())
+  window.put_f32_le(scale)
+  view := window.bytes()
+  if view.len() < 4 { return 0 }
+  return view.u32_le(0) as i64
+}
+
+// Eight lowercase hexadecimal digits to the `u32` they name, or `-1`.
+fn parse_bits32(text: str) -> i64 {
+  view := text.bytes()
+  if view.len() != 8 { return -1 }
+  mut value := 0
+  mut at := 0
+  loop {
+    if at >= 8 { break }
+    byte := view.u8(at) as i64
+    mut digit := -1
+    if byte >= 48 && byte <= 57 { digit = byte - 48 }
+    if byte >= 97 && byte <= 102 { digit = byte - 87 }
+    if digit < 0 { return -1 }
+    value = value * 16 + digit
+    at = at + 1
+  }
+  return value
+}
+
+// `true` only for a finite, non-negative float. `rms_eps_bits` reaches `ggml_rms_norm`, which
+// asserts `eps >= 0.0f` inside ggml, and `GGML_ASSERT` is `abort()`: a geometry carrying `7fc00000`
+// or `ff800000` is a legal eight-hex-digit string that would take the process down with no
+// document. R5A section 6 correction C17's rule, re-raised here because the pattern reaches the
+// same kernel.
+fn bits32_finite_nonnegative(bits: i64) -> bool {
+  if bits < 0 { return false }
+  if bits >= 2147483648 { return false }
+  exponent := (bits / 8388608) % 256
+  if exponent == 255 { return false }
+  return true
+}
+
+fn geometry_fault(borrow mut g: Geometry, detail: str) {
+  if g.code.len() == 0 {
+    g.code = "R5_GEOMETRY".clone()
+    g.detail = detail.clone()
+  }
+}
+
+// Section 3.8 steps 5 to 8, in order, first applicable row wins. Every consumed field is required:
+// there is no default and no fallback, because a geometry that silently assumed `n_expert_used`
+// would route a different number of experts and still report `PASS`.
+pub fn parse_geometry(text: str) -> Geometry {
+  mut g := empty_geometry()
+  mut parsed := false
+  arena {
+    match json.doc(text) {
+      Ok(d) => {
+        parsed = true
+        match d.get("kind").as_str() {
+          Some(value) => {
+            if value != GEOMETRY_KIND { geometry_fault(g, "kind") }
+          },
+          None => { geometry_fault(g, "kind") },
+        }
+        match d.get("schema_version").as_i64() {
+          Some(value) => {
+            if value != GEOMETRY_SCHEMA_VERSION { geometry_fault(g, "schema_version") }
+          },
+          None => { geometry_fault(g, "schema_version") },
+        }
+        model := d.get("model")
+        match model.get("arch").as_str() {
+          Some(value) => { g.arch = value.clone() },
+          None => { geometry_fault(g, "arch") },
+        }
+        match model.get("n_layer").as_i64() {
+          Some(value) => { g.n_layer = value },
+          None => { geometry_fault(g, "n_layer") },
+        }
+        match model.get("n_embd").as_i64() {
+          Some(value) => { g.n_embd = value },
+          None => { geometry_fault(g, "n_embd") },
+        }
+        match model.get("n_head").as_i64() {
+          Some(value) => { g.n_head = value },
+          None => { geometry_fault(g, "n_head") },
+        }
+        match model.get("n_head_kv").as_i64() {
+          Some(value) => { g.n_head_kv = value },
+          None => { geometry_fault(g, "n_head_kv") },
+        }
+        match model.get("head_dim").as_i64() {
+          Some(value) => { g.head_dim = value },
+          None => { geometry_fault(g, "head_dim") },
+        }
+        // The two fields R5A's consumer never reads and R5D cannot run without: `n_ff_exp` is the
+        // expert planes' inner width and `n_expert_used` is the slot count of every MoE tensor.
+        match model.get("n_ff_exp").as_i64() {
+          Some(value) => { g.n_ff_exp = value },
+          None => { geometry_fault(g, "n_ff_exp") },
+        }
+        match model.get("n_vocab").as_i64() {
+          Some(value) => { g.n_vocab = value },
+          None => { geometry_fault(g, "n_vocab") },
+        }
+        match model.get("n_expert").as_i64() {
+          Some(value) => { g.n_expert = value },
+          None => { geometry_fault(g, "n_expert") },
+        }
+        match model.get("n_expert_used").as_i64() {
+          Some(value) => { g.n_expert_used = value },
+          None => { geometry_fault(g, "n_expert_used") },
+        }
+        match model.get("context_length").as_i64() {
+          Some(value) => { g.context_length = value },
+          None => { geometry_fault(g, "context_length") },
+        }
+        match model.get("rms_eps_bits").as_str() {
+          Some(value) => { g.rms_eps_bits = parse_bits32(value) },
+          None => { geometry_fault(g, "rms_eps_bits") },
+        }
+        rope := model.get("rope")
+        match rope.get("type").as_i64() {
+          Some(value) => { g.rope_type = value },
+          None => { geometry_fault(g, "rope.type") },
+        }
+        match rope.get("dim_count").as_i64() {
+          Some(value) => { g.rope_dim_count = value },
+          None => { geometry_fault(g, "rope.dim_count") },
+        }
+        match rope.get("freq_base_bits").as_str() {
+          Some(value) => { g.rope_freq_base_bits = parse_bits32(value) },
+          None => { geometry_fault(g, "rope.freq_base_bits") },
+        }
+        // Section 3.2's five fixed RoPE constants are only correct for a model that declares no
+        // scaling, so the precondition is checked rather than assumed.
+        match rope.get("scaling_type").kind() {
+          Null => {},
+          _ => { geometry_fault(g, "rope.scaling_type") },
+        }
+      },
+      Err(_) => {},
+    }
+  }
+  if !parsed {
+    geometry_fault(g, "json")
+    return g
+  }
+  if g.code.len() > 0 { return g }
+  if g.rms_eps_bits < 0 { geometry_fault(g, "rms_eps_bits") }
+  if g.rope_freq_base_bits < 0 { geometry_fault(g, "rope.freq_base_bits") }
+  if g.code.len() > 0 { return g }
+  if !bits32_finite_nonnegative(g.rms_eps_bits) { geometry_fault(g, "rms_eps_bits") }
+  if !bits32_finite_nonnegative(g.rope_freq_base_bits) {
+    geometry_fault(g, "rope.freq_base_bits")
+  }
+  if g.rope_freq_base_bits == 0 { geometry_fault(g, "rope.freq_base_bits") }
+  if g.code.len() > 0 { return g }
+
+  // Step 7's ranges.
+  if g.n_layer < 1 { geometry_fault(g, "n_layer") }
+  if g.n_embd < 1 { geometry_fault(g, "n_embd") }
+  if g.n_head < 1 { geometry_fault(g, "n_head") }
+  if g.n_head_kv < 1 { geometry_fault(g, "n_head_kv") }
+  if g.head_dim < 1 { geometry_fault(g, "head_dim") }
+  if g.n_ff_exp < 1 { geometry_fault(g, "n_ff_exp") }
+  if g.n_vocab < 1 { geometry_fault(g, "n_vocab") }
+  if g.n_expert < 1 { geometry_fault(g, "n_expert") }
+  if g.context_length < 1 { geometry_fault(g, "context_length") }
+  if g.code.len() > 0 { return g }
+  // Step 7's self-consistency. OLMoE is MHA, so `n_head == n_head_kv` is an equality and not the
+  // divisibility a grouped-query model would need.
+  if g.n_embd != g.n_head * g.head_dim { geometry_fault(g, "n_embd==n_head*head_dim") }
+  if g.n_head != g.n_head_kv { geometry_fault(g, "n_head==n_head_kv") }
+  if g.n_expert_used < 1 || g.n_expert_used > g.n_expert {
+    geometry_fault(g, "n_expert_used")
+  }
+  if g.code.len() > 0 { return g }
+  // Section 6, correction C1. The phase-B table is `2 * n_expert_used + 8` rows long, so a
+  // geometry whose slot count exceeds what the store can hold is refused **here**, naming the
+  // field, rather than reaching the node walk and reporting `R5_SLOT` on a row that is not at
+  // fault. The bound is the store's, not an invented ceiling.
+  if B_NODE_BASE + b_node_count(g.n_expert_used) > MAX_NODE_SLOTS {
+    geometry_fault(g, "n_expert_used")
+  }
+  if g.code.len() > 0 { return g }
+  // Step 8's architecture preconditions. This step is what earns section 3.2's five fixed RoPE
+  // constants.
+  arch_view: str := g.arch
+  if arch_view != "olmoe" { geometry_fault(g, "arch") }
+  if g.rope_type != ROPE_TYPE_NEOX { geometry_fault(g, "rope.type") }
+  if g.rope_dim_count != g.head_dim { geometry_fault(g, "rope.dim_count") }
+  if g.code.len() > 0 { return g }
+  if g.head_dim % 2 != 0 { geometry_fault(g, "head_dim") }
+  if g.code.len() > 0 { return g }
+  g.attn_scale_bits = attn_scale_bits(g.head_dim)
+  return g
+}
+
+// ---------------------------------------------------------------------------------------------
+// The member-role table and the shape rules
+// ---------------------------------------------------------------------------------------------
+
+// Ten dense members in **slot order**: slot `i` of the node-slot store holds member `i`. The order
+// is a contract between this table and phase A's node table and nothing else depends on it.
+pub MemberTable {
+  count: i64,
+  names: string,
+  name_start: array<i64>,
+  name_end: array<i64>,
+  role: array<i64>,
+  block: array<i64>,
+  ne0: array<i64>,
+  ne1: array<i64>,
+  n_dims: array<i64>,
+}
+
+fn member_label_of(row: i64) -> str {
+  if row == 0 { return "token_embd" }
+  if row == 1 { return "attn_norm" }
+  if row == 2 { return "attn_q" }
+  if row == 3 { return "attn_q_norm" }
+  if row == 4 { return "attn_k" }
+  if row == 5 { return "attn_k_norm" }
+  if row == 6 { return "attn_v" }
+  if row == 7 { return "attn_output" }
+  if row == 8 { return "ffn_norm" }
+  return "router"
+}
+
+fn member_role_of(row: i64) -> i64 {
+  if row == 0 { return ROLE_TOKEN_EMBD }
+  if row == 1 { return ROLE_ATTN_NORM }
+  if row == 2 { return ROLE_ATTN_Q }
+  if row == 3 { return ROLE_ATTN_Q_NORM }
+  if row == 4 { return ROLE_ATTN_K }
+  if row == 5 { return ROLE_ATTN_K_NORM }
+  if row == 6 { return ROLE_ATTN_V }
+  if row == 7 { return ROLE_ATTN_OUTPUT }
+  if row == 8 { return ROLE_FFN_NORM }
+  return ROLE_ROUTER
+}
+
+// `ffn_norm` and `router` live in the `RouterBlock` — everything the layer needs *before* it knows
+// which experts to fetch — and the other eight in the embedding `WeightBlock` and the
+// `AttentionBlock` (`r1c-olmoe-moe-ir.md` section 2.5.3).
+fn member_block_of(row: i64) -> i64 {
+  if row == 0 { return KIND_WEIGHT }
+  if row <= 7 { return KIND_ATTENTION }
+  return KIND_ROUTER
+}
+
+// The four norms are 1-D at `n_embd`; everything else is 2-D. **Both QK-norms are `n_embd` wide**,
+// which is section 2.2 fact 1 as a shape rule: a per-head norm would be `head_dim` wide and the
+// container would be refused here rather than computing a different layer.
+fn member_is_1d(row: i64) -> bool {
+  return row == 1 || row == 3 || row == 5 || row == 8
+}
+
+fn member_ne0_of(borrow g: Geometry, row: i64) -> i64 {
+  return g.n_embd
+}
+
+fn member_ne1_of(borrow g: Geometry, row: i64) -> i64 {
+  if member_is_1d(row) { return 1 }
+  if row == 0 { return g.n_vocab }
+  if row == 2 { return g.n_head * g.head_dim }
+  if row == 4 { return g.n_head_kv * g.head_dim }
+  if row == 6 { return g.n_head_kv * g.head_dim }
+  if row == 7 { return g.n_embd }
+  return g.n_expert
+}
+
+pub fn member_table(borrow g: Geometry) -> MemberTable {
+  labels := builder()
+  mut names: array_builder<i64> := array_builder()
+  mut ends: array_builder<i64> := array_builder()
+  mut roles: array_builder<i64> := array_builder()
+  mut blocks: array_builder<i64> := array_builder()
+  mut d0: array_builder<i64> := array_builder()
+  mut d1: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  mut cursor := 0
+  mut row := 0
+  loop {
+    if row >= MEMBER_COUNT { break }
+    label := member_label_of(row)
+    labels.write(label)
+    names.push(cursor)
+    cursor = cursor + label.len()
+    ends.push(cursor)
+    roles.push(member_role_of(row))
+    blocks.push(member_block_of(row))
+    d0.push(member_ne0_of(g, row))
+    d1.push(member_ne1_of(g, row))
+    dims.push(if member_is_1d(row) { 1 } else { 2 })
+    row = row + 1
+  }
+  return MemberTable {
+    count: MEMBER_COUNT,
+    names: labels.to_string(),
+    name_start: names.build(),
+    name_end: ends.build(),
+    role: roles.build(),
+    block: blocks.build(),
+    ne0: d0.build(),
+    ne1: d1.build(),
+    n_dims: dims.build(),
+  }
+}
+
+pub fn member_label(borrow m: MemberTable, index: i64) -> str {
+  names_view: str := m.names
+  if index < 0 || index >= m.count { return "" }
+  return names_view[m.name_start[index]..m.name_end[index]]
+}
+
+// The three claim roles, in the order the three compact windows are laid out and in the order the
+// `ExpertBlock` declares them. `ne0` and `ne1` are one **plane's** dims — a claim is a plane of a
+// stacked tensor, `moe-prereq-discharge.md` section 1.1 — and the built tensor's third dim is `U`,
+// never `n_expert`.
+pub fn claim_label(index: i64) -> str {
+  if index == 0 { return "ffn_gate_exps" }
+  if index == 1 { return "ffn_up_exps" }
+  return "ffn_down_exps"
+}
+
+pub fn claim_role(index: i64) -> i64 {
+  if index == 0 { return ROLE_FFN_GATE_EXPS }
+  if index == 1 { return ROLE_FFN_UP_EXPS }
+  return ROLE_FFN_DOWN_EXPS
+}
+
+pub fn claim_ne0(borrow g: Geometry, index: i64) -> i64 {
+  if index == 2 { return g.n_ff_exp }
+  return g.n_embd
+}
+
+pub fn claim_ne1(borrow g: Geometry, index: i64) -> i64 {
+  if index == 2 { return g.n_embd }
+  return g.n_ff_exp
+}
+
+pub fn claim_slot(index: i64) -> i64 {
+  if index == 0 { return SLOT_GATE }
+  if index == 1 { return SLOT_UP }
+  return SLOT_DOWN
+}
+
+// ---------------------------------------------------------------------------------------------
+// The node tables
+// ---------------------------------------------------------------------------------------------
+
+// `c` is `mul_mat_id`'s third slot and `p4` is `view_2d`'s offset index. Both columns exist because
+// R5D's three new ops need them; every R5A op leaves them `-1` and `0`.
+pub NodeTable {
+  count: i64,
+  base: i64,
+  op: array<i64>,
+  a: array<i64>,
+  b: array<i64>,
+  c: array<i64>,
+  out: array<i64>,
+  p0: array<i64>,
+  p1: array<i64>,
+  p2: array<i64>,
+  p3: array<i64>,
+  p4: array<i64>,
+}
+
+// One row, assigned once and pushed once: an owned `array<i64>` field cannot be replaced in place at
+// this pin, which is R5A correction C9's shape forced on every column set in this repository.
+Row {
+  op: i64,
+  a: i64,
+  b: i64,
+  c: i64,
+  p0: i64,
+  p1: i64,
+  p2: i64,
+  p3: i64,
+  p4: i64,
+}
+
+fn row(op: i64, a: i64, b: i64) -> Row = Row {
+  op: op,
+  a: a,
+  b: b,
+  c: -1,
+  p0: 0,
+  p1: 0,
+  p2: 0,
+  p3: 0,
+  p4: 0,
+}
+
+// The number of rows phase B's table holds: eight fixed rows, then `n_expert_used` views,
+// `n_expert_used - 1` adds, and `l_out`. At `n_expert_used = 8` that is 24 (section 3.5); at the
+// synthetic corpus's 3 it is 14.
+pub fn b_node_count(n_expert_used: i64) -> i64 {
+  return 2 * n_expert_used + 8
+}
+
+// Phase A, rows 0 to 30, in the order `ggml_build_forward_expand` visits them.
+fn a_row(borrow g: Geometry, tokens: i64, index: i64) -> Row {
+  n := A_NODE_BASE
+  if index == 0 { return row(OP_GET_ROWS, 0, SLOT_TOKENS) }
+  if index == 1 {
+    mut r := row(OP_RMS_NORM, n + 0, -1)
+    r.p0 = g.rms_eps_bits
+    return r
+  }
+  if index == 2 { return row(OP_MUL, n + 1, 1) }
+  if index == 3 { return row(OP_MUL_MAT, 2, n + 2) }
+  // Section 2.2 fact 1: the QK-norm normalizes over `ne[0] == n_embd` and scales, and only then is
+  // the result reshaped to `{head_dim, n_head, T}`. Reversing rows 4-6 with row 6 type-checks.
+  if index == 4 {
+    mut r := row(OP_RMS_NORM, n + 3, -1)
+    r.p0 = g.rms_eps_bits
+    return r
+  }
+  if index == 5 { return row(OP_MUL, n + 4, 3) }
+  if index == 6 {
+    mut r := row(OP_RESHAPE_3D, n + 5, -1)
+    r.p0 = g.head_dim
+    r.p1 = g.n_head
+    r.p2 = tokens
+    return r
+  }
+  if index == 7 {
+    mut r := row(OP_ROPE, n + 6, SLOT_POS)
+    r.p0 = g.head_dim
+    r.p1 = ROPE_TYPE_NEOX
+    r.p2 = g.context_length
+    r.p3 = g.rope_freq_base_bits
+    return r
+  }
+  if index == 8 { return row(OP_MUL_MAT, 4, n + 2) }
+  if index == 9 {
+    mut r := row(OP_RMS_NORM, n + 8, -1)
+    r.p0 = g.rms_eps_bits
+    return r
+  }
+  if index == 10 { return row(OP_MUL, n + 9, 5) }
+  if index == 11 {
+    mut r := row(OP_RESHAPE_3D, n + 10, -1)
+    r.p0 = g.head_dim
+    r.p1 = g.n_head_kv
+    r.p2 = tokens
+    return r
+  }
+  if index == 12 {
+    mut r := row(OP_ROPE, n + 11, SLOT_POS)
+    r.p0 = g.head_dim
+    r.p1 = ROPE_TYPE_NEOX
+    r.p2 = g.context_length
+    r.p3 = g.rope_freq_base_bits
+    return r
+  }
+  if index == 13 { return row(OP_MUL_MAT, 6, n + 2) }
+  if index == 14 {
+    mut r := row(OP_RESHAPE_3D, n + 13, -1)
+    r.p0 = g.head_dim
+    r.p1 = g.n_head_kv
+    r.p2 = tokens
+    return r
+  }
+  if index == 15 {
+    mut r := row(OP_PERMUTE, n + 12, -1)
+    r.p1 = 2
+    r.p2 = 1
+    r.p3 = 3
+    return r
+  }
+  if index == 16 {
+    mut r := row(OP_PERMUTE, n + 7, -1)
+    r.p1 = 2
+    r.p2 = 1
+    r.p3 = 3
+    return r
+  }
+  if index == 17 { return row(OP_MUL_MAT, n + 15, n + 16) }
+  if index == 18 {
+    mut r := row(OP_SOFT_MAX, n + 17, SLOT_MASK)
+    r.p0 = g.attn_scale_bits
+    r.p1 = MAX_BIAS_BITS
+    return r
+  }
+  if index == 19 {
+    mut r := row(OP_PERMUTE, n + 14, -1)
+    r.p0 = 1
+    r.p1 = 2
+    r.p2 = 0
+    r.p3 = 3
+    return r
+  }
+  if index == 20 {
+    mut r := row(OP_CONT_3D, n + 19, -1)
+    r.p0 = tokens
+    r.p1 = g.head_dim
+    r.p2 = g.n_head_kv
+    return r
+  }
+  if index == 21 { return row(OP_MUL_MAT, n + 20, n + 18) }
+  if index == 22 {
+    mut r := row(OP_PERMUTE, n + 21, -1)
+    r.p1 = 2
+    r.p2 = 1
+    r.p3 = 3
+    return r
+  }
+  if index == 23 {
+    // `ggml_cont_3d` at `ne2 = 1` is the `cont_2d` R5A correction C4 established; no second symbol.
+    mut r := row(OP_CONT_3D, n + 22, -1)
+    r.p0 = g.n_embd
+    r.p1 = tokens
+    r.p2 = 1
+    return r
+  }
+  if index == 24 { return row(OP_MUL_MAT, 7, n + 23) }
+  if index == 25 { return row(OP_ADD, n + 24, n + 0) }
+  if index == 26 {
+    mut r := row(OP_RMS_NORM, n + 25, -1)
+    r.p0 = g.rms_eps_bits
+    return r
+  }
+  if index == 27 { return row(OP_MUL, n + 26, 8) }
+  if index == 28 { return row(OP_MUL_MAT, 9, n + 27) }
+  if index == 29 {
+    // Section 2.2 fact 2: a plain 64-way softmax, unit scale, **no mask** and no renormalization.
+    // `-1` is section 3.5's widened `soft_max_ext` domain.
+    mut r := row(OP_SOFT_MAX, n + 28, -1)
+    r.p0 = UNIT_SCALE_BITS
+    r.p1 = MAX_BIAS_BITS
+    return r
+  }
+  // Section 2.2 fact 3: `ARGSORT` descending, and the slice is Align's. `ggml_top_k` is not
+  // reachable from this table.
+  mut r := row(OP_ARGSORT, n + 29, -1)
+  r.p0 = 1
+  return r
+}
+
+pub fn a_node_table(borrow g: Geometry, tokens: i64) -> NodeTable {
+  return build_table(g, tokens, A_NODE_BASE, A_NODE_COUNT, true)
+}
+
+pub fn b_node_table(borrow g: Geometry, tokens: i64) -> NodeTable {
+  return build_table(g, tokens, B_NODE_BASE, b_node_count(g.n_expert_used), false)
+}
+
+// Phase B, rows 0 to `2 * n_expert_used + 7`. The router's decision is an **input** to this graph
+// and not a node in it, which is what lets a constant table serve a data-dependent `U`.
+fn b_row(borrow g: Geometry, tokens: i64, index: i64) -> Row {
+  m := B_NODE_BASE
+  used := g.n_expert_used
+  if index == 0 {
+    mut r := row(OP_RESHAPE_3D, SLOT_PROBS, -1)
+    r.p0 = 1
+    r.p1 = g.n_expert
+    r.p2 = tokens
+    return r
+  }
+  // The gather is over the **global** expert ids, because it indexes the full 64-way softmax; the
+  // three `mul_mat_id` rows below use the **compact** ids, because they index the routed union's
+  // stack. Confusing the two is the defect section 2.8's `R5D_EXPERT_ID` exists to catch.
+  if index == 1 { return row(OP_GET_ROWS, m + 0, SLOT_TOPK) }
+  if index == 2 {
+    mut r := row(OP_RESHAPE_3D, SLOT_FFN_NORM, -1)
+    r.p0 = g.n_embd
+    r.p1 = 1
+    r.p2 = tokens
+    return r
+  }
+  if index == 3 {
+    mut r := row(OP_MUL_MAT_ID, SLOT_GATE, m + 2)
+    r.c = SLOT_COMPACT
+    return r
+  }
+  if index == 4 {
+    mut r := row(OP_MUL_MAT_ID, SLOT_UP, m + 2)
+    r.c = SLOT_COMPACT
+    return r
+  }
+  if index == 5 { return row(OP_SWIGLU, m + 3, m + 4) }
+  if index == 6 {
+    mut r := row(OP_MUL_MAT_ID, SLOT_DOWN, m + 5)
+    r.c = SLOT_COMPACT
+    return r
+  }
+  if index == 7 { return row(OP_MUL, m + 6, m + 1) }
+  // The reduction, in **ascending slot order**, which section 2.3 measured to be load-bearing to
+  // the last bit. Slot `i` is `view_2d(weighted, n_embd, T, nb1 = weighted->nb[2],
+  // offset = i * weighted->nb[1])`, expressed as two axis selectors and an index.
+  if index < 8 + used {
+    mut r := row(OP_VIEW_2D, m + 7, -1)
+    r.p0 = g.n_embd
+    r.p1 = tokens
+    r.p2 = 2
+    r.p3 = 1
+    r.p4 = index - 8
+    return r
+  }
+  if index < 8 + 2 * used - 1 {
+    // The chain accumulates left to right from slot 0: the first add takes views 0 and 1 and every
+    // later one takes the running total and the next view.
+    step := index - (8 + used)
+    left := if step == 0 { m + 8 } else { m + 8 + used + step - 1 }
+    return row(OP_ADD, left, m + 9 + step)
+  }
+  // `l_out`, against the carried `ffn_inp`.
+  last := if used == 1 { m + 8 } else { m + 8 + 2 * used - 2 }
+  return row(OP_ADD, last, SLOT_FFN_INP)
+}
+
+fn build_table(borrow g: Geometry, tokens: i64, base: i64, count: i64, phase_a: bool) -> NodeTable {
+  mut op: array_builder<i64> := array_builder()
+  mut a: array_builder<i64> := array_builder()
+  mut b: array_builder<i64> := array_builder()
+  mut c: array_builder<i64> := array_builder()
+  mut out: array_builder<i64> := array_builder()
+  mut p0: array_builder<i64> := array_builder()
+  mut p1: array_builder<i64> := array_builder()
+  mut p2: array_builder<i64> := array_builder()
+  mut p3: array_builder<i64> := array_builder()
+  mut p4: array_builder<i64> := array_builder()
+  mut index := 0
+  loop {
+    if index >= count { break }
+    r := if phase_a { a_row(g, tokens, index) } else { b_row(g, tokens, index) }
+    op.push(r.op)
+    a.push(r.a)
+    b.push(r.b)
+    c.push(r.c)
+    out.push(base + index)
+    p0.push(r.p0)
+    p1.push(r.p1)
+    p2.push(r.p2)
+    p3.push(r.p3)
+    p4.push(r.p4)
+    index = index + 1
+  }
+  return NodeTable {
+    count: count,
+    base: base,
+    op: op.build(),
+    a: a.build(),
+    b: b.build(),
+    c: c.build(),
+    out: out.build(),
+    p0: p0.build(),
+    p1: p1.build(),
+    p2: p2.build(),
+    p3: p3.build(),
+    p4: p4.build(),
+  }
+}
+
+// The last node of each graph, which is what `ggml_build_forward_expand` is called on.
+pub fn a_output_slot() -> i64 = A_NODE_BASE + A_NODE_COUNT - 1
+
+pub fn b_output_slot(n_expert_used: i64) -> i64 = B_NODE_BASE + b_node_count(n_expert_used) - 1
+
+// ---------------------------------------------------------------------------------------------
+// The oracle table
+// ---------------------------------------------------------------------------------------------
+
+// `30 + 2 * n_expert_used` rows: the twenty-six section 3.6 compares, plus every node it excludes
+// **by contract** carrying the class that says why. Publishing the exclusions as rows is the whole
+// point: a silent gap and a declared exclusion look identical in a passing run and completely
+// different in a review.
+pub OracleTable {
+  count: i64,
+  text: string,
+  id_start: array<i64>,
+  id_end: array<i64>,
+  name_start: array<i64>,
+  name_end: array<i64>,
+  op_start: array<i64>,
+  op_end: array<i64>,
+  slot: array<i64>,
+  class: array<i64>,
+  by_weight: array<i64>,
+  integer: array<i64>,
+  phase_b: array<i64>,
+}
+
+pub fn oracle_count(n_expert_used: i64) -> i64 = ORACLE_FIXED_ROWS + 2 * n_expert_used
+
+// The row of `ffn_moe_out`, which is the last add of the reduction — or, at `n_expert_used == 1`,
+// the single view that is the whole reduction.
+fn oracle_moe_out_row(n_expert_used: i64) -> i64 = ORACLE_FIXED_ROWS + 2 * n_expert_used - 2
+
+fn oracle_fixed_id(index: i64) -> str {
+  if index == 0 { return "embd" }
+  if index == 1 { return "norm_embd" }
+  if index == 2 { return "attn_norm" }
+  if index == 3 { return "q_pre" }
+  if index == 4 { return "norm_q" }
+  if index == 5 { return "q_normed" }
+  if index == 6 { return "q_rope" }
+  if index == 7 { return "k_pre" }
+  if index == 8 { return "norm_k" }
+  if index == 9 { return "k_normed" }
+  if index == 10 { return "k_rope" }
+  if index == 11 { return "v_cur" }
+  if index == 12 { return "kq" }
+  if index == 13 { return "kq_soft_max" }
+  if index == 14 { return "kqv" }
+  if index == 15 { return "kqv_out" }
+  if index == 16 { return "attn_out" }
+  if index == 17 { return "ffn_inp" }
+  if index == 18 { return "norm_ffn" }
+  if index == 19 { return "ffn_norm" }
+  if index == 20 { return "ffn_moe_logits" }
+  if index == 21 { return "ffn_moe_probs" }
+  if index == 22 { return "ffn_moe_argsort" }
+  if index == 23 { return "ffn_moe_topk" }
+  if index == 24 { return "ffn_moe_weights" }
+  if index == 25 { return "ffn_moe_gate" }
+  if index == 26 { return "ffn_moe_up" }
+  if index == 27 { return "ffn_moe_swiglu" }
+  if index == 28 { return "ffn_moe_down" }
+  return "ffn_moe_weighted"
+}
+
+// The instrument's own names. Section 2.2 fact 5: four different tensors of one OLMoE layer print
+// under `norm-0`, so the four rows below carry that name, are marked `ambiguous_name`, and are
+// **never matched** — each is proved instead by its unique `MUL` consumer, which is compared.
+fn oracle_fixed_stem(index: i64) -> str {
+  if index == 0 { return "embd" }
+  if index == 1 || index == 4 || index == 8 || index == 18 { return "norm" }
+  if index == 2 { return "attn_norm" }
+  if index == 3 { return "Qcur" }
+  if index == 5 { return "Qcur_normed" }
+  if index == 6 { return "Qcur" }
+  if index == 7 { return "Kcur" }
+  if index == 9 { return "Kcur_normed" }
+  if index == 10 { return "Kcur" }
+  if index == 11 { return "Vcur" }
+  if index == 12 { return "kq" }
+  if index == 13 { return "kq_soft_max" }
+  if index == 14 { return "kqv" }
+  if index == 15 { return "kqv_out" }
+  if index == 17 { return "ffn_inp" }
+  if index == 19 { return "ffn_norm" }
+  if index == 20 { return "ffn_moe_logits" }
+  if index == 21 { return "ffn_moe_probs" }
+  if index == 22 { return "ffn_moe_argsort" }
+  if index == 23 { return "ffn_moe_topk" }
+  if index == 24 { return "ffn_moe_weights" }
+  if index == 25 { return "ffn_moe_gate" }
+  if index == 26 { return "ffn_moe_up" }
+  if index == 27 { return "ffn_moe_swiglu" }
+  if index == 28 { return "ffn_moe_down" }
+  return "ffn_moe_weighted"
+}
+
+fn oracle_fixed_op(index: i64) -> str {
+  if index == 0 { return "GET_ROWS" }
+  if index == 1 || index == 4 || index == 8 || index == 18 { return "RMS_NORM" }
+  if index == 2 { return "MUL" }
+  if index == 3 { return "MUL_MAT" }
+  if index == 5 { return "MUL" }
+  if index == 6 { return "ROPE" }
+  if index == 7 { return "MUL_MAT" }
+  if index == 9 { return "MUL" }
+  if index == 10 { return "ROPE" }
+  if index == 11 { return "MUL_MAT" }
+  if index == 12 { return "MUL_MAT" }
+  if index == 13 { return "SOFT_MAX" }
+  if index == 14 { return "MUL_MAT" }
+  if index == 15 { return "CONT" }
+  if index == 16 { return "MUL_MAT" }
+  if index == 17 { return "ADD" }
+  if index == 19 { return "MUL" }
+  if index == 20 { return "MUL_MAT" }
+  if index == 21 { return "SOFT_MAX" }
+  if index == 22 { return "ARGSORT" }
+  if index == 23 { return "VIEW" }
+  if index == 24 { return "GET_ROWS" }
+  if index == 25 { return "MUL_MAT_ID" }
+  if index == 26 { return "MUL_MAT_ID" }
+  if index == 27 { return "SWIGLU" }
+  if index == 28 { return "MUL_MAT_ID" }
+  return "MUL"
+}
+
+// The slot each oracle row observes. `ffn_moe_topk` is the one row that is not a node of either
+// graph: R5D slices the top-k in Align and writes it into phase B's `topk_ids` **input**, which is
+// exactly the tensor the transcript's `ffn_moe_topk-0` view holds (section 2.8).
+fn oracle_fixed_slot(index: i64) -> i64 {
+  if index == 0 { return A_NODE_BASE + 0 }
+  if index == 1 { return A_NODE_BASE + 1 }
+  if index == 2 { return A_NODE_BASE + 2 }
+  if index == 3 { return A_NODE_BASE + 3 }
+  if index == 4 { return A_NODE_BASE + 4 }
+  if index == 5 { return A_NODE_BASE + 5 }
+  if index == 6 { return A_NODE_BASE + 7 }
+  if index == 7 { return A_NODE_BASE + 8 }
+  if index == 8 { return A_NODE_BASE + 9 }
+  if index == 9 { return A_NODE_BASE + 10 }
+  if index == 10 { return A_NODE_BASE + 12 }
+  if index == 11 { return A_NODE_BASE + 13 }
+  if index == 12 { return A_NODE_BASE + 17 }
+  if index == 13 { return A_NODE_BASE + 18 }
+  if index == 14 { return A_NODE_BASE + 21 }
+  if index == 15 { return A_NODE_BASE + 23 }
+  if index == 16 { return A_NODE_BASE + 24 }
+  if index == 17 { return A_NODE_BASE + 25 }
+  if index == 18 { return A_NODE_BASE + 26 }
+  if index == 19 { return A_NODE_BASE + 27 }
+  if index == 20 { return A_NODE_BASE + 28 }
+  if index == 21 { return A_NODE_BASE + 29 }
+  if index == 22 { return A_NODE_BASE + 30 }
+  if index == 23 { return SLOT_TOPK }
+  if index == 24 { return B_NODE_BASE + 1 }
+  if index == 25 { return B_NODE_BASE + 3 }
+  if index == 26 { return B_NODE_BASE + 4 }
+  if index == 27 { return B_NODE_BASE + 5 }
+  if index == 28 { return B_NODE_BASE + 6 }
+  return B_NODE_BASE + 7
+}
+
+fn oracle_fixed_class(index: i64) -> i64 {
+  // Section 2.2 fact 5's four `norm-0` nodes.
+  if index == 1 || index == 4 || index == 8 || index == 18 { return ORACLE_AMBIGUOUS_NAME }
+  // R5A section 3.6's reason, unchanged: the instrument's `n_kv` is a padded cache width and R5D
+  // has no cache, so the two tensors are different shapes and element comparison is undefined.
+  if index == 12 || index == 13 { return ORACLE_SHAPE_INCOMPARABLE }
+  return ORACLE_COMPARED
+}
+
+pub fn oracle_table(borrow g: Geometry, layer: i64) -> OracleTable {
+  body := builder()
+  mut ids: array_builder<i64> := array_builder()
+  mut id_ends: array_builder<i64> := array_builder()
+  mut names: array_builder<i64> := array_builder()
+  mut name_ends: array_builder<i64> := array_builder()
+  mut ops: array_builder<i64> := array_builder()
+  mut op_ends: array_builder<i64> := array_builder()
+  mut slots: array_builder<i64> := array_builder()
+  mut classes: array_builder<i64> := array_builder()
+  mut weighted: array_builder<i64> := array_builder()
+  mut integer: array_builder<i64> := array_builder()
+  mut phase: array_builder<i64> := array_builder()
+  used := g.n_expert_used
+  count := oracle_count(used)
+  moe_out := oracle_moe_out_row(used)
+  suffix := builder()
+  suffix.write("-")
+  suffix.write_int(layer)
+  suffix_text := suffix.to_string()
+  suffix_view: str := suffix_text
+  weight := builder()
+  weight.write("blk.")
+  weight.write_int(layer)
+  weight.write(".attn_output.weight")
+  weight_text := weight.to_string()
+  weight_view: str := weight_text
+  mut cursor := 0
+  mut index := 0
+  loop {
+    if index >= count { break }
+    // The identity of a reduction row, computed rather than tabulated: the chain is
+    // `n_expert_used` long and its rows are named by position.
+    reduction := index - ORACLE_FIXED_ROWS
+    mut id_text := "".clone()
+    mut name_text := "".clone()
+    mut op_text := "ADD".clone()
+    mut class := ORACLE_COMPARED
+    mut is_integer := 0
+    if index < ORACLE_FIXED_ROWS {
+      id_text = oracle_fixed_id(index).clone()
+      op_text = oracle_fixed_op(index).clone()
+      class = oracle_fixed_class(index)
+      if index == 22 || index == 23 { is_integer = 1 }
+      n := builder()
+      if index == 16 {
+        n.write(weight_view)
+      } else {
+        n.write(oracle_fixed_stem(index))
+        if index != 0 { n.write(suffix_view) }
+      }
+      name_text = n.to_string()
+    } else if index == moe_out {
+      id_text = "ffn_moe_out".clone()
+      op_text = if used == 1 { "VIEW".clone() } else { "ADD".clone() }
+      n := builder()
+      n.write("ffn_moe_out")
+      n.write(suffix_view)
+      name_text = n.to_string()
+    } else if index == count - 1 {
+      id_text = "l_out".clone()
+      n := builder()
+      n.write("l_out")
+      n.write(suffix_view)
+      name_text = n.to_string()
+    } else if reduction < used {
+      // Section 2.2 fact 4: the eight slot views print under one repeated name.
+      class = ORACLE_UNSTABLE_NAME
+      op_text = "VIEW".clone()
+      b := builder()
+      b.write("moe_view_")
+      b.write_int(reduction)
+      id_text = b.to_string()
+      n := builder()
+      n.write("ffn_moe_weighted")
+      n.write(suffix_view)
+      n.write(" (view)")
+      name_text = n.to_string()
+    } else {
+      // `node_56` … `node_61`: positional names `r2a-expert-trace.md` section 2.2 finding 3 already
+      // establishes as unstable. Section 6, correction C2: the published name is the wildcard
+      // `node_*` rather than a number that is right for one build of one model and wrong elsewhere.
+      class = ORACLE_UNSTABLE_NAME
+      b := builder()
+      b.write("moe_add_")
+      b.write_int(reduction - used)
+      id_text = b.to_string()
+      name_text = "node_*".clone()
+    }
+    id_view: str := id_text
+    name_view: str := name_text
+    op_view: str := op_text
+    body.write(id_view)
+    ids.push(cursor)
+    cursor = cursor + id_view.len()
+    id_ends.push(cursor)
+    names.push(cursor)
+    body.write(name_view)
+    cursor = cursor + name_view.len()
+    name_ends.push(cursor)
+    ops.push(cursor)
+    body.write(op_view)
+    cursor = cursor + op_view.len()
+    op_ends.push(cursor)
+    slots.push(if index < ORACLE_FIXED_ROWS {
+        oracle_fixed_slot(index)
+      } else {
+        B_NODE_BASE + 8 + reduction
+      })
+    classes.push(class)
+    weighted.push(if index == 16 { 1 } else { 0 })
+    integer.push(is_integer)
+    phase.push(if index < 23 { 0 } else { 1 })
+    index = index + 1
+  }
+  return OracleTable {
+    count: count,
+    text: body.to_string(),
+    id_start: ids.build(),
+    id_end: id_ends.build(),
+    name_start: names.build(),
+    name_end: name_ends.build(),
+    op_start: ops.build(),
+    op_end: op_ends.build(),
+    slot: slots.build(),
+    class: classes.build(),
+    by_weight: weighted.build(),
+    integer: integer.build(),
+    phase_b: phase.build(),
+  }
+}
+
+pub fn oracle_id(borrow o: OracleTable, index: i64) -> str {
+  view: str := o.text
+  if index < 0 || index >= o.count { return "" }
+  return view[o.id_start[index]..o.id_end[index]]
+}
+
+pub fn oracle_name(borrow o: OracleTable, index: i64) -> str {
+  view: str := o.text
+  if index < 0 || index >= o.count { return "" }
+  return view[o.name_start[index]..o.name_end[index]]
+}
+
+pub fn oracle_op(borrow o: OracleTable, index: i64) -> str {
+  view: str := o.text
+  if index < 0 || index >= o.count { return "" }
+  return view[o.op_start[index]..o.op_end[index]]
+}
+
+// `true` when a row is sought in the transcript at all. An `ambiguous_name` or `unstable_name` row
+// is **not**: matching four same-named nodes by ordinal is the silent-miscompare hazard section 2.2
+// fact 5 records, and `node_56` is a name that moves whenever anything upstream changes.
+pub fn oracle_scanned(borrow o: OracleTable, index: i64) -> bool {
+  if index < 0 || index >= o.count { return false }
+  class := o.class[index]
+  return class == ORACLE_COMPARED || class == ORACLE_SHAPE_INCOMPARABLE
+}
+
+pub fn oracle_compared(borrow o: OracleTable, index: i64) -> bool {
+  if index < 0 || index >= o.count { return false }
+  return o.class[index] == ORACLE_COMPARED
+}
+
+// The row the routing-identity oracle reads: `ffn_moe_topk`, whose scanned block is the transcript's
+// own `ffn_moe_topk-0`.
+pub fn oracle_topk_row() -> i64 = 23
+
+// ---------------------------------------------------------------------------------------------
+// The causal mask
+// ---------------------------------------------------------------------------------------------
+
+// A `{T, T}` f32 image, written from bit patterns rather than float arithmetic, so no float is
+// parsed, no float is formatted, and nothing depends on how Align renders infinity.
+pub fn write_mask(borrow mut window: buffer, tokens: i64) {
+  mut row := 0
+  loop {
+    if row >= tokens { break }
+    mut col := 0
+    loop {
+      if col >= tokens { break }
+      bits := if col <= row { MASK_ZERO_BITS } else { MASK_NEG_INFINITY_BITS }
+      window.put_u32_le(bits as u32)
+      col = col + 1
+    }
+    row = row + 1
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The routing decision (section 3.4, between the phases)
+// ---------------------------------------------------------------------------------------------
+
+// What Align decided, on bytes Align owns. `code` is empty on success; otherwise it is the arm's
+// error code and `detail` names the token, the slot, or `remap`.
+//
+// **No view is ever read back** (section 2.8). `ffn_moe_argsort` is contiguous `{n_expert, T}` and
+// the arm reads it whole; the top-k slice below is Align's arithmetic over those bytes, not a
+// strided `ggml_backend_tensor_get`. The probe made exactly that mistake and it produced a
+// plausible expert set, a plausible union, and an `l_out` that was finite, wrong, and off by O(1).
+pub Routing {
+  code: string,
+  detail: string,
+  count: i64,
+  // `[token * n_expert_used + slot]`, the global ids in slot order.
+  topk: array<i64>,
+  // The ascending distinct union, and the same ids remapped onto `[0, U)`.
+  routed: array<i64>,
+  compact: array<i64>,
+}
+
+fn empty_i64_array() -> array<i64> {
+  mut b: array_builder<i64> := array_builder()
+  return b.build()
+}
+
+pub fn empty_routing() -> Routing = Routing {
+  code: "".clone(),
+  detail: "".clone(),
+  count: 0,
+  topk: empty_i64_array(),
+  routed: empty_i64_array(),
+  compact: empty_i64_array(),
+}
+
+fn routing_fault(code: str, detail: string) -> Routing = Routing {
+  code: code.clone(),
+  detail: detail,
+  count: 0,
+  topk: empty_i64_array(),
+  routed: empty_i64_array(),
+  compact: empty_i64_array(),
+}
+
+fn token_slot_detail(token: i64, slot: i64) -> string {
+  b := builder()
+  b.write("token[")
+  b.write_int(token)
+  b.write("]slot[")
+  b.write_int(slot)
+  b.write("]")
+  return b.to_string()
+}
+
+// Steps 24 and 25. `argsort` is the whole contiguous `{n_expert, T}` i32 readback; the result is the
+// slice, the ascending union, and the verified bijection.
+//
+// Every check here is a defence against the one failure mode this design most needs to avoid: a
+// wrong routing produces finite, plausible, wrong numbers and passes every shape check downstream.
+pub fn decide(borrow argsort: slice<u8>, n_expert: i64, n_expert_used: i64, tokens: i64) -> Routing {
+  if n_expert < 1 || n_expert_used < 1 || n_expert_used > n_expert || tokens < 1 {
+    return routing_fault("R5D_EXPERT_ID", "geometry".clone())
+  }
+  if argsort.len() < n_expert * tokens * 4 {
+    return routing_fault("R5D_EXPERT_ID", "argsort".clone())
+  }
+  mut topk: array_builder<i64> := array_builder()
+  // `seen[e]` is `1` once expert `e` has entered the union, so the union is built in one pass and
+  // the pairwise-distinct test inside a token is a second, per-token pass over the same idea.
+  mut union_flag: array_builder<i64> := array_builder()
+  mut flag_at := 0
+  loop {
+    if flag_at >= n_expert { break }
+    union_flag.push(0)
+    flag_at = flag_at + 1
+  }
+  mut seen := union_flag.build()
+  mut token := 0
+  loop {
+    if token >= tokens { break }
+    mut slot := 0
+    loop {
+      if slot >= n_expert_used { break }
+      id := argsort.u32_le((token * n_expert + slot) * 4) as i64
+      if id < 0 || id >= n_expert {
+        return routing_fault("R5D_EXPERT_ID", token_slot_detail(token, slot))
+      }
+      topk.push(id)
+      slot = slot + 1
+    }
+    token = token + 1
+  }
+  ids := topk.build()
+  // Pairwise distinctness inside one token. Section 3.8 records why this is the check that catches
+  // a strided readback: reading `{8, T}` out of a `{64, T}` row's stride yields ranks 8-15 of token
+  // 0 for token 1, which are in range and distinct only sometimes.
+  mut check_token := 0
+  loop {
+    if check_token >= tokens { break }
+    mut left := 0
+    loop {
+      if left >= n_expert_used { break }
+      mut right := left + 1
+      loop {
+        if right >= n_expert_used { break }
+        if ids[check_token * n_expert_used + left] == ids[check_token * n_expert_used + right] {
+          return routing_fault("R5D_EXPERT_ID", token_slot_detail(check_token, right))
+        }
+        right = right + 1
+      }
+      left = left + 1
+    }
+    check_token = check_token + 1
+  }
+  mut mark := 0
+  loop {
+    if mark >= ids.len() { break }
+    seen[ids[mark]] = 1
+    mark = mark + 1
+  }
+  // The **ascending** union, which is what makes `routed[u]` the plane at window slot `u` and what
+  // a reader reproduces from `routing.expert_ids` alone.
+  mut routed_builder: array_builder<i64> := array_builder()
+  mut position_builder: array_builder<i64> := array_builder()
+  mut expert := 0
+  mut next := 0
+  loop {
+    if expert >= n_expert { break }
+    if seen[expert] == 1 {
+      routed_builder.push(expert)
+      position_builder.push(next)
+      next = next + 1
+    } else {
+      position_builder.push(-1)
+    }
+    expert = expert + 1
+  }
+  routed := routed_builder.build()
+  position := position_builder.build()
+  mut compact_builder: array_builder<i64> := array_builder()
+  mut remap_at := 0
+  loop {
+    if remap_at >= ids.len() { break }
+    slot_of := position[ids[remap_at]]
+    if slot_of < 0 || slot_of >= routed.len() {
+      return routing_fault("R5D_EXPERT_ID", "remap".clone())
+    }
+    compact_builder.push(slot_of)
+    remap_at = remap_at + 1
+  }
+  compact := compact_builder.build()
+  // The bijection, verified rather than assumed: every compact slot must be reached by at least one
+  // `(token, slot)` pair, or the union and the remap disagree about `U`.
+  mut cover_builder: array_builder<i64> := array_builder()
+  mut cover_at := 0
+  loop {
+    if cover_at >= routed.len() { break }
+    cover_builder.push(0)
+    cover_at = cover_at + 1
+  }
+  mut cover := cover_builder.build()
+  mut walk := 0
+  loop {
+    if walk >= compact.len() { break }
+    cover[compact[walk]] = 1
+    walk = walk + 1
+  }
+  mut verify := 0
+  loop {
+    if verify >= cover.len() { break }
+    if cover[verify] == 0 {
+      return routing_fault("R5D_EXPERT_ID", "remap".clone())
+    }
+    verify = verify + 1
+  }
+  return Routing {
+    code: "".clone(),
+    detail: "".clone(),
+    count: routed.len(),
+    topk: ids,
+    routed: routed,
+    compact: compact,
+  }
+}

@@ -17,3 +17,8 @@ eval/fixtures/qwen2-blk0-6tok.txt -whitespace
 # scale and carries the same significant trailing spaces
 # (`docs/specs/r5b-model-prefill-forward.md` section 5.1).
 eval/fixtures/qwen2-model-6tok.txt -whitespace
+
+# R5D-MOE-LAYER-FORWARD (`docs/specs/r5d-moe-layer-forward.md` section 5.2). The routed
+# excerpt, for the same reason: the instrument writes a trailing space on every `..., `
+# truncation marker and the oracle parses the bytes it was given.
+eval/fixtures/olmoe-blk0-6tok.txt -whitespace

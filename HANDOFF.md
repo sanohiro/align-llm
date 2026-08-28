@@ -3,7 +3,43 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R3-RESIDENCY-SIM (2026-08-28)
+## Active: R5D-MOE-LAYER-FORWARD (2026-08-28)
+
+Branch `agent/r5d-moe-layer-forward`, based on the merged MOE-PREREQ-DISCHARGE (PR #133,
+`2cdb7bf` → `35a0df6`). Design ledger `docs/specs/r5d-moe-layer-forward.md` committed at `3cb8d59`
+is authoritative. **Implementation is in progress and currently uncommitted**: modified
+`scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`, `scripts/layer_forward_fixture.py`,
+`src/ggml_ffi.align`, `src/ggml_spike.align`; new `src/layer_olmoe.align` and
+`src/moe_layer_forward.align`.
+
+**What it targets.** R5's second gate stage for a **routed** OLMoE layer: one prefill of at most
+six tokens through `blk.0`, computed by ggml over attention weights and only the routed experts'
+planes held in Align-owned buffers, checked against llama.cpp's own numbers. The design's probe
+record fixed six facts the plan got wrong before any contract was written: the QK-norm is a real
+node chain — an RMS norm over the full `n_embd` (not per head) applied *before* the head reshape;
+the router's 64-way softmax is gathered at eight descending-probability slots with **no**
+renormalization; the top-k node is `ARGSORT` + `VIEW`, not `ggml_top_k`; a compacted, id-remapped
+expert stack computed with `mul_mat_id` is bit-identical to llama.cpp's own whole-tensor shape
+(28 of 28 dumped nodes) and needs no restacking copy; the transcript oracle reaches max `|Δ|`
+5.0e-5 (the instrument's own print-rounding bound) over 2,376 elements; and microbenchmark B is
+9.4 ms typical for one routed layer, six tokens, warm. The residency win this capability exists to
+measure is a **decode-time property, not a prefill one**: R5D reads 39% of the layer's expert
+bytes at six prefill tokens, 12.5% at one token, and 73% at eighteen.
+
+The boundary change is five new FFI symbols (`argsort`, `mul_mat_id`, `view_2d`, a 3-D
+stacked-tensor constructor, a 2-D i32 constructor) plus one widened existing symbol
+(`soft_max_ext` with a null mask). **No new Align capability request is expected**; two existing
+requests (44, 45, both on the R3 branch — see below) gain R5D as an anticipated, non-blocking
+client with R3's own mitigation.
+
+**Next actions, in order.** (1) Finish the implementation against the ledger's section 3
+contract. (2) Run the owner test — the fourth block of `scripts/run-layer-forward-smoke` — and
+`make moe-layer-forward-qualification` (opt-in, capable-only) on the host holding the model.
+(3) One comprehensive review. (4) `python3 scripts/pre-pr` and publish; this capability adds no
+Makefile target and changes no `HOSTED_CHECK_TARGETS` membership, so it stays in the ordinary
+classifier lane, not `make ci`.
+
+## Merged checkpoint: R3-RESIDENCY-SIM (2026-08-28)
 
 Branch `agent/r3-residency-sim`, rebased onto `main` `4f01553` (the merged C8-OPTIONAL-TARGETED-STAGE,
 PR #134, which sits on the merged MOE-PREREQ-DISCHARGE, PR #133). Design ledger

@@ -381,6 +381,29 @@ static int32_t align_ggml_eps_ok(int32_t bits) {
 #define ALIGN_GGML_MAX_PAD 4096
 #define ALIGN_GGML_MAX_PAD_ELEMENTS ((int64_t) 16777216)
 
+/* R5D-MOE-LAYER-FORWARD (`docs/specs/r5d-moe-layer-forward.md` section 3.5). `ggml_argsort`'s two
+ * orders, shared so both files refuse the same third value. `ggml_top_k` is deliberately **not**
+ * wrapped: its own header says the indices it returns are in no particular order, section 2.2
+ * fact 3 measured `ffn_moe_topk-0` to be an `ARGSORT` plus a `VIEW` in descending probability, and
+ * section 2.3 measured that slot order to be load-bearing to the last bit.
+ */
+#define ALIGN_GGML_SORT_ASC  0
+#define ALIGN_GGML_SORT_DESC 1
+
+/* The widened `soft_max_ext` input domain. `mask == -1` is "no mask", which is
+ * `ggml_soft_max_ext(ctx, a, NULL, scale, bias)` and what the router's plain 64-way softmax needs;
+ * the existing `sm == NULL -> ALIGN_GGML_SLOT` check makes it unreachable. Widening an existing
+ * symbol's input domain rather than adding a second symbol is `moe-prereq-discharge.md`'s style and
+ * R5B correction C1's rule: the cheapest new shim symbol is the one you do not add.
+ */
+#define ALIGN_GGML_NO_MASK ((int64_t) -1)
+
+/* `align_ggml_op_view_2d`'s dimension-selector bound. Align supplies two axis **indices** and an
+ * offset index, never a stride and never a byte count, so a caller cannot forge an offset; the two
+ * selectors are validated against this bound in C before either stride is read (section 3.5).
+ */
+#define ALIGN_GGML_MAX_DIM_SELECTOR 3
+
 
 /* R5B-MODEL-PREFILL-FORWARD section 6, correction C5. A bounded `memcpy` between two Align-owned
  * byte ranges, and the reason the window can be **reused** at all.
@@ -1373,12 +1396,19 @@ int32_t align_ggml_op_rope_neox(
     return align_ggml_slot_store(slots, out, (void *) result);
 }
 
+/* R5D section 3.5: the one **widened** symbol. `mask == ALIGN_GGML_NO_MASK` is
+ * `ggml_soft_max_ext(ctx, a, NULL, scale, bias)` — the plain softmax the router's 64-way gate is —
+ * and every other value is a slot index that must name a live tensor exactly as before. The
+ * sentinel is tested rather than inferred from a NULL load, so a genuinely empty slot is still
+ * `ALIGN_GGML_SLOT` and never silently becomes an unmasked softmax.
+ */
 int32_t align_ggml_op_soft_max_ext(
     void *ctx, void *slots, int64_t out, int64_t a, int64_t mask,
     int32_t scale_bits, int32_t max_bias_bits) {
-    struct ggml_tensor *sm = align_ggml_slot_tensor(slots, mask);
+    struct ggml_tensor *sm =
+        (mask == ALIGN_GGML_NO_MASK) ? NULL : align_ggml_slot_tensor(slots, mask);
     ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
-    if (sm == NULL) {
+    if (sm == NULL && mask != ALIGN_GGML_NO_MASK) {
         return ALIGN_GGML_SLOT;
     }
     result = ggml_soft_max_ext((struct ggml_context *) ctx, sa, sm,
@@ -1430,6 +1460,147 @@ int32_t align_ggml_op_pad(void *ctx, void *slots, int64_t out, int64_t a,
         return ALIGN_GGML_SHAPE;
     }
     return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * R5D-MOE-LAYER-FORWARD — the five new entry points
+ *
+ * `docs/specs/r5d-moe-layer-forward.md` section 3.5. Rule 5 is kept: each is exactly one ggml call
+ * plus validation, and none decides anything the two node tables in `src/layer_olmoe.align` own.
+ * Rule 3 is why each one validates first: `ggml_mul_mat_id` and `ggml_view_2d` both reach a
+ * `GGML_ASSERT`, which is `abort()` with no unwinding, no document, and no error code.
+ * ------------------------------------------------------------------------------------------- */
+
+int32_t align_ggml_op_argsort(void *ctx, void *slots, int64_t out, int64_t a, int32_t order) {
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (order != ALIGN_GGML_SORT_ASC && order != ALIGN_GGML_SORT_DESC) {
+        return ALIGN_GGML_INIT;
+    }
+    result = ggml_argsort((struct ggml_context *) ctx, sa,
+                          order == ALIGN_GGML_SORT_DESC ? GGML_SORT_ORDER_DESC
+                                                        : GGML_SORT_ORDER_ASC);
+    if (result == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+/* `ggml_mul_mat_id` asserts six shape relations internally. Each is re-stated here, before the
+ * call, so a malformed node table is `ALIGN_GGML_SHAPE` naming the row rather than a SIGABRT: the
+ * stacked operand and the activation are 3-D, the id tensor is 2-D `I32`, its row count is the
+ * token count, the reduction widths agree, and its slot count is a multiple of the activation's
+ * second extent so the broadcast ggml performs is the one the table intends.
+ */
+int32_t align_ggml_op_mul_mat_id(
+    void *ctx, void *slots, int64_t out, int64_t as_slot, int64_t b, int64_t ids) {
+    struct ggml_tensor *sb = align_ggml_slot_tensor(slots, b);
+    struct ggml_tensor *si = align_ggml_slot_tensor(slots, ids);
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, as_slot)
+    if (sb == NULL || si == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (si->type != GGML_TYPE_I32) {
+        return ALIGN_GGML_TYPE;
+    }
+    if (sa->ne[3] != 1 || sb->ne[3] != 1 || si->ne[2] != 1 || si->ne[3] != 1) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (si->ne[1] != sb->ne[2]) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (sa->ne[0] != sb->ne[0]) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (sb->ne[1] <= 0 || si->ne[0] <= 0 || si->ne[0] % sb->ne[1] != 0) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (ggml_is_transposed(sa)) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_mul_mat_id((struct ggml_context *) ctx, sa, sb, si);
+    if (result == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+/* A 2-D window on `a`, whose row stride and byte offset are **derived from `a`'s own strides** and
+ * never supplied by the caller: `nb1 = a->nb[nb1_dim]` and `offset = offset_index * a->nb[
+ * offset_dim]`. Align therefore hands over two axis indices and one element index, and cannot name
+ * a byte position at all.
+ *
+ * The extent test is stricter than ggml's own. `ggml_new_tensor_impl` compares
+ * `row_size(ne0) * ne1 + offset` against `ggml_nbytes(a)`, which is correct only for a contiguous
+ * view; the reachable span of a strided one is `offset + (ne1 - 1) * nb1 + row_size(ne0)`, and that
+ * is what is checked here. A view that reads past its source is the exact class of defect section
+ * 2.8's readback bug belonged to.
+ */
+int32_t align_ggml_op_view_2d(
+    void *ctx, void *slots, int64_t out, int64_t a, int64_t ne0, int64_t ne1,
+    int32_t nb1_dim, int32_t offset_dim, int64_t offset_index) {
+    size_t nb1 = 0;
+    size_t offset = 0;
+    size_t row = 0;
+    size_t span = 0;
+    size_t capacity = 0;
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (nb1_dim < 0 || nb1_dim > ALIGN_GGML_MAX_DIM_SELECTOR
+        || offset_dim < 0 || offset_dim > ALIGN_GGML_MAX_DIM_SELECTOR) {
+        return ALIGN_GGML_INIT;
+    }
+    if (ne0 <= 0 || ne1 <= 0 || offset_index < 0) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (ne0 > sa->ne[0]) {
+        return ALIGN_GGML_SHAPE;
+    }
+    nb1 = sa->nb[nb1_dim];
+    offset = (size_t) offset_index * sa->nb[offset_dim];
+    row = ggml_row_size(sa->type, ne0);
+    capacity = ggml_nbytes(sa);
+    span = offset + (size_t) (ne1 - 1) * nb1 + row;
+    if (span < row || span > capacity) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    result = ggml_view_2d((struct ggml_context *) ctx, sa, ne0, ne1, nb1, offset);
+    if (result == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+/* The stacked expert operand. Same operand-table gate as the 1-D and 2-D constructors, because a
+ * stacked tensor is a `mul_mat_id` left operand and the table is that predicate.
+ */
+int32_t align_ggml_slot_new_tensor_3d(
+    void *ctx, void *slots, int64_t out, int32_t type, int64_t ne0, int64_t ne1, int64_t ne2) {
+    struct ggml_tensor *tensor = NULL;
+    if (ctx == NULL || ne0 <= 0 || ne1 <= 0 || ne2 <= 0) {
+        return ALIGN_GGML_INIT;
+    }
+    if (align_ggml_table_row(type) < 0) {
+        return ALIGN_GGML_TYPE;
+    }
+    tensor = ggml_new_tensor_3d((struct ggml_context *) ctx, (enum ggml_type) type, ne0, ne1, ne2);
+    if (tensor == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    return align_ggml_slot_store(slots, out, (void *) tensor);
+}
+
+/* The `{n_expert_used, T}` id tensors, beside `align_ggml_slot_new_i32_1d` and for its reason: the
+ * operand table has no `I32` row and must not gain one (section 2.8).
+ */
+int32_t align_ggml_slot_new_i32_2d(void *ctx, void *slots, int64_t out, int64_t ne0, int64_t ne1) {
+    struct ggml_tensor *tensor = NULL;
+    if (ctx == NULL || ne0 <= 0 || ne1 <= 0) {
+        return ALIGN_GGML_INIT;
+    }
+    tensor = ggml_new_tensor_2d((struct ggml_context *) ctx, GGML_TYPE_I32, ne0, ne1);
+    if (tensor == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    return align_ggml_slot_store(slots, out, (void *) tensor);
 }
 
 /* The context size a graph of `node_capacity` tensors needs, asked of the linked library so Align

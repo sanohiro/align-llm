@@ -373,6 +373,29 @@ static int32_t align_ggml_eps_ok(int32_t bits) {
 #define ALIGN_GGML_MAX_PAD 4096
 #define ALIGN_GGML_MAX_PAD_ELEMENTS ((int64_t) 16777216)
 
+/* R5D-MOE-LAYER-FORWARD (`docs/specs/r5d-moe-layer-forward.md` section 3.5). `ggml_argsort`'s two
+ * orders, shared so both files refuse the same third value. `ggml_top_k` is deliberately **not**
+ * wrapped: its own header says the indices it returns are in no particular order, section 2.2
+ * fact 3 measured `ffn_moe_topk-0` to be an `ARGSORT` plus a `VIEW` in descending probability, and
+ * section 2.3 measured that slot order to be load-bearing to the last bit.
+ */
+#define ALIGN_GGML_SORT_ASC  0
+#define ALIGN_GGML_SORT_DESC 1
+
+/* The widened `soft_max_ext` input domain. `mask == -1` is "no mask", which is
+ * `ggml_soft_max_ext(ctx, a, NULL, scale, bias)` and what the router's plain 64-way softmax needs;
+ * the existing `sm == NULL -> ALIGN_GGML_SLOT` check makes it unreachable. Widening an existing
+ * symbol's input domain rather than adding a second symbol is `moe-prereq-discharge.md`'s style and
+ * R5B correction C1's rule: the cheapest new shim symbol is the one you do not add.
+ */
+#define ALIGN_GGML_NO_MASK ((int64_t) -1)
+
+/* `align_ggml_op_view_2d`'s dimension-selector bound. Align supplies two axis **indices** and an
+ * offset index, never a stride and never a byte count, so a caller cannot forge an offset; the two
+ * selectors are validated against this bound in C before either stride is read (section 3.5).
+ */
+#define ALIGN_GGML_MAX_DIM_SELECTOR 3
+
 
 /* R5B-MODEL-PREFILL-FORWARD section 6, correction C5. A bounded `memcpy` between two Align-owned
  * byte ranges, and the reason the window can be **reused** at all.
@@ -607,15 +630,29 @@ int64_t align_ptr_offset(const void *a, const void *b) {
 #define ALIGN_STUB_OP_SOFT_MAX  10
 #define ALIGN_STUB_OP_SWIGLU    11
 #define ALIGN_STUB_OP_PAD       12
+/* R5D-MOE-LAYER-FORWARD (`docs/specs/r5d-moe-layer-forward.md` section 5.1). Three more
+ * kernels, which is what makes the routed arm's whole contract — the router, the Align-owned
+ * top-k slice, the compact expert stack, and both oracles — reachable with no ggml and no
+ * model. */
+#define ALIGN_STUB_OP_ARGSORT   13
+#define ALIGN_STUB_OP_MUL_MAT_ID 14
+#define ALIGN_STUB_OP_VIEW      15
 
 typedef struct align_stub_tensor {
     int32_t type;
     int64_t ne[4];
     unsigned char *data;
     int32_t op;
-    struct align_stub_tensor *src[2];
+    /* R5D: three, not two. `ggml_mul_mat_id` takes a stacked operand, an activation, and an id
+     * tensor, and every one of them has to be a graph source or the post-order walk below would
+     * schedule the multiply before the ids it reads. */
+    struct align_stub_tensor *src[3];
     int32_t ip[4];
-    int64_t lp[3];
+    /* Two, not three. The third slot has never had a user, and dropping it pays for `src`'s third
+     * entry exactly: `align_ggml_graph_context_bytes` is `node_capacity * sizeof(this struct)`, so
+     * growing the record by one pointer would move `abi.graph_context_bytes` in every R5A, R5B,
+     * and R5C golden document for a change that has nothing to do with those arms. */
+    int64_t lp[2];
     int32_t is_output;
     int32_t visited;
     int32_t context;
@@ -732,14 +769,29 @@ static void align_stub_run(align_stub_tensor *t) {
     int64_t i2 = 0;
     int64_t i3 = 0;
     switch (t->op) {
+    /* R5D: the general form. `ffn_moe_weights-0` is `get_rows` over a `{1, n_expert, T}` reshape
+     * of the router probabilities indexed by a `{n_expert_used, T}` id tensor, so the index tensor
+     * is 2-D and the source's second axis is selected by the id while its third is selected by the
+     * id's own column. ggml's kernel reads
+     * `src0 + i01*nb01 + i11*nb02` for the id at `(i10, i11)`, which is what this reproduces; the
+     * 1-D index case R5A and R5B use is the `b->ne[1] == 1` specialisation of it and is unchanged
+     * to the bit. */
     case ALIGN_STUB_OP_GET_ROWS: {
         const int32_t *rows = (const int32_t *) b->data;
-        for (i1 = 0; i1 < t->ne[1]; i1++) {
-            int64_t row = (int64_t) rows[i1];
-            if (row < 0 || row >= a->ne[1]) {
-                row = 0;
+        int64_t nc = t->ne[0];
+        for (i2 = 0; i2 < b->ne[2]; i2++) {
+            for (i1 = 0; i1 < b->ne[1]; i1++) {
+                for (i0 = 0; i0 < b->ne[0]; i0++) {
+                    int64_t at = i0 + b->ne[0] * (i1 + b->ne[1] * i2);
+                    int64_t row = (int64_t) rows[at];
+                    if (row < 0 || row >= a->ne[1]) {
+                        row = 0;
+                    }
+                    memcpy(d + at * nc,
+                           x + nc * (row + a->ne[1] * (i1 + a->ne[2] * i2)),
+                           (size_t) nc * 4);
+                }
             }
-            memcpy(d + i1 * t->ne[0], x + row * a->ne[0], (size_t) t->ne[0] * 4);
         }
     } break;
     case ALIGN_STUB_OP_RMS_NORM: {
@@ -858,11 +910,14 @@ static void align_stub_run(align_stub_tensor *t) {
             for (i2 = 0; i2 < t->ne[2]; i2++) {
                 for (i1 = 0; i1 < t->ne[1]; i1++) {
                     int64_t base = t->ne[0] * (i1 + t->ne[1] * (i2 + t->ne[2] * i3));
-                    const float *mask = y + b->ne[0] * (i1 % b->ne[1]);
+                    /* R5D section 3.5's widened domain: a null mask is the router's plain 64-way
+                     * softmax, and it contributes nothing rather than reading a tensor that does
+                     * not exist. */
+                    const float *mask = (b != NULL) ? y + b->ne[0] * (i1 % b->ne[1]) : NULL;
                     float highest = -INFINITY;
                     float total = 0.0f;
                     for (i0 = 0; i0 < t->ne[0]; i0++) {
-                        float value = x[base + i0] * scale + mask[i0];
+                        float value = x[base + i0] * scale + (mask != NULL ? mask[i0] : 0.0f);
                         d[base + i0] = value;
                         if (value > highest) {
                             highest = value;
@@ -904,6 +959,88 @@ static void align_stub_run(align_stub_tensor *t) {
                     }
                 }
             }
+        }
+    } break;
+    /* R5D section 3.5. `ggml_argsort` sorts each row of `ne0` elements and writes the permutation
+     * of indices, not the values. The loop shape is ggml's own selection sort with a strict
+     * comparison, so equal probabilities keep ascending index order in both files and a tie is
+     * broken identically — which section 5.6 records as the one place a different backend could
+     * disagree. */
+    case ALIGN_STUB_OP_ARGSORT: {
+        int32_t *out = (int32_t *) t->data;
+        int64_t rows = align_stub_nelements(t) / t->ne[0];
+        int32_t descending = (t->ip[0] == ALIGN_GGML_SORT_DESC);
+        for (i1 = 0; i1 < rows; i1++) {
+            const float *row = x + i1 * t->ne[0];
+            int32_t *idx = out + i1 * t->ne[0];
+            int64_t j = 0;
+            for (i0 = 0; i0 < t->ne[0]; i0++) {
+                idx[i0] = (int32_t) i0;
+            }
+            for (i0 = 0; i0 < t->ne[0]; i0++) {
+                for (j = i0 + 1; j < t->ne[0]; j++) {
+                    int32_t swap = descending ? (row[idx[i0]] < row[idx[j]])
+                                              : (row[idx[i0]] > row[idx[j]]);
+                    if (swap) {
+                        int32_t keep = idx[i0];
+                        idx[i0] = idx[j];
+                        idx[j] = keep;
+                    }
+                }
+            }
+#ifdef ALIGN_GGML_FORCE_ARGSORT_RANGE
+            /* R5D section 4.5's `moe-routing-id-range` cell. An argsort that names a plane the
+             * stack does not have is not producible from an input: the kernel writes a permutation
+             * of `[0, ne0)` by construction, and that is exactly why `R5D_EXPERT_ID`'s range check
+             * would otherwise be argued rather than run. Never defined in an ordinary build. */
+            idx[0] = (int32_t) t->ne[0];
+#endif
+#ifdef ALIGN_GGML_FORCE_ARGSORT_REPEAT
+            /* The `moe-routing-id-repeat` cell, and the one section 2.8's readback bug actually
+             * produced: two slots of one token naming the same expert. */
+            if (t->ne[0] > 1) {
+                idx[1] = idx[0];
+            }
+#endif
+        }
+    } break;
+    /* R5D section 3.5. One dot product per `(token, slot)` pair against the plane the id names, in
+     * the **same** element order as `ALIGN_STUB_OP_MUL_MAT` above, because section 2.3's whole
+     * result is that a compact stack with remapped ids is bit-identical to a whole one. The
+     * activation's second extent is either the slot count or one, and `id % b->ne[1]` is ggml's own
+     * broadcast rule. */
+    case ALIGN_STUB_OP_MUL_MAT_ID: {
+        const align_stub_tensor *ids = t->src[2];
+        const int32_t *sel = (const int32_t *) ids->data;
+        int64_t k = a->ne[0];
+        int64_t m = a->ne[1];
+        for (i2 = 0; i2 < t->ne[2]; i2++) {
+            for (i1 = 0; i1 < t->ne[1]; i1++) {
+                int64_t plane = (int64_t) sel[i1 + ids->ne[0] * i2];
+                const float *bv = y + k * ((i1 % b->ne[1]) + b->ne[1] * i2);
+                if (plane < 0 || plane >= a->ne[2]) {
+                    plane = 0;
+                }
+                for (i0 = 0; i0 < m; i0++) {
+                    const float *av = x + k * (i0 + m * plane);
+                    float total = 0.0f;
+                    int64_t at = 0;
+                    for (at = 0; at < k; at++) {
+                        total += av[at] * bv[at];
+                    }
+                    d[i0 + m * (i1 + t->ne[1] * i2)] = total;
+                }
+            }
+        }
+    } break;
+    /* R5D section 3.5. Rule 2 of this file — every view is materialized — applied to
+     * `ggml_view_2d`: the row stride and the byte offset were derived from the source's own strides
+     * when the node was built, and the copy reproduces exactly the elements a strided view would
+     * expose. */
+    case ALIGN_STUB_OP_VIEW: {
+        const unsigned char *from = (const unsigned char *) a->data + t->lp[1];
+        for (i1 = 0; i1 < t->ne[1]; i1++) {
+            memcpy(d + i1 * t->ne[0], from + i1 * t->lp[0], (size_t) t->ne[0] * 4);
         }
     } break;
     default:
@@ -1359,6 +1496,17 @@ int32_t align_ggml_slot_new_i32_1d(void *ctx, void *slots, int64_t out, int64_t 
         return ALIGN_GGML_OK;
     }
 #endif
+#ifdef ALIGN_GGML_FORCE_SLOT_EMPTY_MOE
+    /* R5D section 4.5: the same refusal again, at slot 11 — the routed arm's `inp_pos`. R5A's and
+     * R5B's macros target slots 14 and 13, which R5D uses for the causal mask and for nothing, so
+     * neither fires here. Never defined in an ordinary build. */
+    if (out == 11) {
+        (void) ctx;
+        (void) ne0;
+        (void) slots;
+        return ALIGN_GGML_OK;
+    }
+#endif
     align_stub_tensor *t = align_stub_new(ctx, ALIGN_STUB_TYPE_I32, ne0, 1, 1, 1);
     if (t == NULL) {
         return ALIGN_GGML_INIT;
@@ -1390,6 +1538,17 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
      * Align-owned residual **input**, which the primary arm also writes through `slot_set`, so the
      * range stops at 11 (R5B section 6, correction C8). */
     if (status == ALIGN_GGML_OK && index >= 0 && index <= 11) {
+        t->data[off] = (unsigned char) (t->data[off] ^ 0x01u);
+    }
+#endif
+#ifdef ALIGN_GGML_FORCE_REFERENCE_PERTURBATION_MOE
+    /* R5D section 4.4's `self-reference failure` cell. Slots 44 to 46 are the **compact expert
+     * stacks**, which only the reference arm ever writes — the primary places its three over the
+     * Align-owned claim window and never copies a byte into them — so one flipped bit here
+     * perturbs the reference arm and nothing else. R5A's slot range 0-11 is R5D's dense weights
+     * plus its token and position vectors, which the primary *does* write, so that macro is the
+     * wrong instrument for this arm. Never defined in an ordinary build. */
+    if (status == ALIGN_GGML_OK && index >= 44 && index <= 46) {
         t->data[off] = (unsigned char) (t->data[off] ^ 0x01u);
     }
 #endif
@@ -1451,7 +1610,19 @@ static int32_t align_stub_bind(void *slots, int64_t out, align_stub_tensor *t,
     t->op = op;
     t->src[0] = a;
     t->src[1] = b;
+    t->src[2] = NULL;
     return align_ggml_slot_store(slots, out, (void *) t);
+}
+
+/* R5D: the same bind with a third source, for `mul_mat_id`. */
+static int32_t align_stub_bind3(void *slots, int64_t out, align_stub_tensor *t,
+                                align_stub_tensor *a, align_stub_tensor *b,
+                                align_stub_tensor *c, int32_t op) {
+    int32_t status = align_stub_bind(slots, out, t, a, b, op);
+    if (status == ALIGN_GGML_OK) {
+        t->src[2] = c;
+    }
+    return status;
 }
 
 int32_t align_ggml_op_get_rows(void *ctx, void *slots, int64_t out, int64_t a, int64_t b) {
@@ -1463,8 +1634,10 @@ int32_t align_ggml_op_get_rows(void *ctx, void *slots, int64_t out, int64_t a, i
     if (sa->type != ALIGN_STUB_TYPE_F32 || sb->type != ALIGN_STUB_TYPE_I32) {
         return ALIGN_GGML_TYPE;
     }
+    /* R5D: ggml's own result shape, `{a->ne[0], b->ne[0], b->ne[1], a->ne[3]}`. For R5A's and
+     * R5B's 1-D index vectors `b->ne[1]` is 1 and this is the shape they already had. */
     return align_stub_bind(slots, out,
-        align_stub_new(ctx, ALIGN_STUB_TYPE_F32, sa->ne[0], sb->ne[0], 1, 1),
+        align_stub_new(ctx, ALIGN_STUB_TYPE_F32, sa->ne[0], sb->ne[0], sb->ne[1], sa->ne[3]),
         sa, sb, ALIGN_STUB_OP_GET_ROWS);
 }
 
@@ -1621,16 +1794,23 @@ int32_t align_ggml_op_rope_neox(
     return align_stub_bind(slots, out, t, sa, sp, ALIGN_STUB_OP_ROPE);
 }
 
+/* R5D section 3.5: the one **widened** symbol, answered identically here. `mask == -1` is the
+ * router's plain softmax; every other value is a slot index that must name a live tensor, so an
+ * empty slot is still `ALIGN_GGML_SLOT` and never silently becomes an unmasked softmax.
+ */
 int32_t align_ggml_op_soft_max_ext(
     void *ctx, void *slots, int64_t out, int64_t a, int64_t mask,
     int32_t scale_bits, int32_t max_bias_bits) {
     align_stub_tensor *sa = align_stub_slot(slots, a);
-    align_stub_tensor *sm = align_stub_slot(slots, mask);
+    align_stub_tensor *sm = (mask == ALIGN_GGML_NO_MASK) ? NULL : align_stub_slot(slots, mask);
     align_stub_tensor *t = NULL;
-    if (sa == NULL || sm == NULL) {
+    if (sa == NULL) {
         return ALIGN_GGML_SLOT;
     }
-    if (sm->ne[0] < sa->ne[0]) {
+    if (sm == NULL && mask != ALIGN_GGML_NO_MASK) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (sm != NULL && sm->ne[0] < sa->ne[0]) {
         return ALIGN_GGML_SHAPE;
     }
     t = align_stub_new(ctx, ALIGN_STUB_TYPE_F32, sa->ne[0], sa->ne[1], sa->ne[2], sa->ne[3]);
@@ -1695,6 +1875,144 @@ int32_t align_ggml_op_pad(void *ctx, void *slots, int64_t out, int64_t a,
     return align_stub_bind(slots, out, t, sa, NULL, ALIGN_STUB_OP_PAD);
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * R5D-MOE-LAYER-FORWARD — the five new entry points, answered from the engine
+ *
+ * Signature for signature with `scripts/ggml_shim.c`, and refusing the same inputs: without them
+ * the hosted owner would stop at the router and neither the routing-identity oracle nor the
+ * compact-stack multiply would be reachable on a host with no ggml.
+ * ------------------------------------------------------------------------------------------- */
+
+int32_t align_ggml_op_argsort(void *ctx, void *slots, int64_t out, int64_t a, int32_t order) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    align_stub_tensor *t = NULL;
+    if (sa == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+#ifdef ALIGN_GGML_FORCE_ARGSORT_ORDER
+    /* R5D section 4.2's `argsort order` cell: a third sort order, which the node table cannot
+     * express because it carries `0` or `1` and `src/ggml_ffi.align` refuses anything else before
+     * the call. Never defined in an ordinary build. */
+    order = 7;
+#endif
+    if (order != ALIGN_GGML_SORT_ASC && order != ALIGN_GGML_SORT_DESC) {
+        return ALIGN_GGML_INIT;
+    }
+    if (sa->type != ALIGN_STUB_TYPE_F32) {
+        return ALIGN_GGML_TYPE;
+    }
+    t = align_stub_new(ctx, ALIGN_STUB_TYPE_I32, sa->ne[0], sa->ne[1], sa->ne[2], sa->ne[3]);
+    if (t == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    t->ip[0] = order;
+    return align_stub_bind(slots, out, t, sa, NULL, ALIGN_STUB_OP_ARGSORT);
+}
+
+int32_t align_ggml_op_mul_mat_id(
+    void *ctx, void *slots, int64_t out, int64_t as_slot, int64_t b, int64_t ids) {
+    align_stub_tensor *sa = align_stub_slot(slots, as_slot);
+    align_stub_tensor *sb = align_stub_slot(slots, b);
+    align_stub_tensor *si = align_stub_slot(slots, ids);
+    if (sa == NULL || sb == NULL || si == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (sa->type != ALIGN_STUB_TYPE_F32 || sb->type != ALIGN_STUB_TYPE_F32) {
+        return ALIGN_GGML_TYPE;
+    }
+    if (si->type != ALIGN_STUB_TYPE_I32) {
+        return ALIGN_GGML_TYPE;
+    }
+    /* ggml's six shape assertions, re-stated before the engine runs so a malformed node table is a
+     * status naming the row rather than an out-of-range read. */
+    if (sa->ne[3] != 1 || sb->ne[3] != 1 || si->ne[2] != 1 || si->ne[3] != 1) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (si->ne[1] != sb->ne[2] || sa->ne[0] != sb->ne[0]) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (sb->ne[1] <= 0 || si->ne[0] <= 0 || si->ne[0] % sb->ne[1] != 0) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return align_stub_bind3(slots, out,
+        align_stub_new(ctx, ALIGN_STUB_TYPE_F32, sa->ne[1], si->ne[0], sb->ne[2], 1),
+        sa, sb, si, ALIGN_STUB_OP_MUL_MAT_ID);
+}
+
+/* The stride and the offset are derived from the source's **own** strides, exactly as the real
+ * shim derives them from `a->nb[]`; an engine tensor is contiguous, so the strides are the products
+ * of its extents. The extent test is the same strict one: the reachable span of a strided view is
+ * `offset + (ne1 - 1) * nb1 + ne0 * 4`.
+ */
+int32_t align_ggml_op_view_2d(
+    void *ctx, void *slots, int64_t out, int64_t a, int64_t ne0, int64_t ne1,
+    int32_t nb1_dim, int32_t offset_dim, int64_t offset_index) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    align_stub_tensor *t = NULL;
+    int64_t nb[4];
+    int64_t nb1 = 0;
+    int64_t offset = 0;
+    int64_t span = 0;
+    int i = 0;
+    if (sa == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (nb1_dim < 0 || nb1_dim > ALIGN_GGML_MAX_DIM_SELECTOR
+        || offset_dim < 0 || offset_dim > ALIGN_GGML_MAX_DIM_SELECTOR) {
+        return ALIGN_GGML_INIT;
+    }
+#ifdef ALIGN_GGML_FORCE_VIEW_EXTENT
+    /* R5D section 4.2's `view_2d extent` cell: a window that reads past its source, which the node
+     * table cannot express because its extents are the geometry's. This is the class section 2.8's
+     * strided-readback bug belonged to, made observable. Never defined in an ordinary build. */
+    ne1 = ne1 * 64 + 1;
+#endif
+    if (ne0 <= 0 || ne1 <= 0 || offset_index < 0 || ne0 > sa->ne[0]) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (sa->type != ALIGN_STUB_TYPE_F32) {
+        return ALIGN_GGML_TYPE;
+    }
+    nb[0] = 4;
+    for (i = 1; i < 4; i++) {
+        nb[i] = nb[i - 1] * sa->ne[i - 1];
+    }
+    nb1 = nb[nb1_dim];
+    offset = offset_index * nb[offset_dim];
+    span = offset + (ne1 - 1) * nb1 + ne0 * 4;
+    if (span < 0 || span > align_stub_nbytes(sa)) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    t = align_stub_new(ctx, ALIGN_STUB_TYPE_F32, ne0, ne1, 1, 1);
+    if (t == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    t->lp[0] = nb1;
+    t->lp[1] = offset;
+    return align_stub_bind(slots, out, t, sa, NULL, ALIGN_STUB_OP_VIEW);
+}
+
+int32_t align_ggml_slot_new_tensor_3d(
+    void *ctx, void *slots, int64_t out, int32_t type, int64_t ne0, int64_t ne1, int64_t ne2) {
+    align_stub_tensor *t = NULL;
+    if (align_ggml_table_row(type) < 0) {
+        return ALIGN_GGML_TYPE;
+    }
+    t = align_stub_new(ctx, type, ne0, ne1, ne2, 1);
+    if (t == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    return align_ggml_slot_store(slots, out, (void *) t);
+}
+
+int32_t align_ggml_slot_new_i32_2d(void *ctx, void *slots, int64_t out, int64_t ne0, int64_t ne1) {
+    align_stub_tensor *t = align_stub_new(ctx, ALIGN_STUB_TYPE_I32, ne0, ne1, 1, 1);
+    if (t == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    return align_ggml_slot_store(slots, out, (void *) t);
+}
+
 int64_t align_ggml_graph_context_bytes(int64_t node_capacity) {
     if (node_capacity <= 0 || node_capacity > (int64_t) 65536) {
         return -1;
@@ -1726,7 +2044,7 @@ static int32_t align_stub_expand(align_stub_graph *graph, align_stub_tensor *t) 
         return ALIGN_GGML_OK;
     }
     t->visited = 1;
-    for (i = 0; i < 2; i++) {
+    for (i = 0; i < 3; i++) {
         int32_t status = align_stub_expand(graph, t->src[i]);
         if (status != ALIGN_GGML_OK) {
             return status;
@@ -1820,7 +2138,7 @@ static int64_t align_stub_plan(align_stub_graph *g, unsigned char *base) {
         block_size[i] = 0;
     }
     for (j = 0; j < g->count; j++) {
-        for (k = 0; k < 2; k++) {
+        for (k = 0; k < 3; k++) {
             align_stub_tensor *source = g->nodes[j]->src[k];
             if (source == NULL) {
                 continue;
