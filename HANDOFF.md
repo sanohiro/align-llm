@@ -13,32 +13,37 @@ R2A producer contracts instead of assuming missing work.
 
 **Current checkpoint.** The candidate implements the R1/R2 adapter, Align simulator and CLI, all
 seven policies, canonical task/result documents, ordered semantic validation, an independent Python
-oracle, and the opt-in real-model qualification. The owner preserves R2's real top-8 slot gaps,
-joins two trace graph namespaces, exercises prefill/decode/ambiguous phases, heterogeneous and
-oversized blocks, CPU ties, useful/unused prefetch, every semantic code, resource caps, and adapter,
-decode, path, and write refusals. The comprehensive review of `f7e205a` against base tip and merge
-base `4f01553b1ea18b815376d5cd7c082d4406a042ec` (host-native Codex, whole diff) found four valid
-issues: one P1 unbounded prefetch-ranking path and three P2 contract mismatches in adapter hardware
-validation, file-result newline bytes, and duplicate-expert precedence. All four are repaired in the
-current candidate: prefetch ranks one boundary snapshot and has a producer/consumer work envelope;
-the adapter mirrors every hardware bound; both output modes are byte-identical; and a sorted demand
-index makes duplicate detection order-independent. After repair, `make residency-sim-smoke` passes
-with 7 policies, 11 semantic codes, 3 limit cases, and 10 adapter refusals after rerunning both
-producer owners; `make build` and `make fmt` pass. The earlier `make gate-topology-check`, its
-self-test, and `make format-check` evidence belongs to the pre-review candidate and must be refreshed
-by exact-head preflight.
-`make residency-sim-qualification` prints its exact `N/A` line because this host does not currently
-have the OLMoE model and R2 instrument inputs. The hosted owner makes no hardware-speed claim; the
-roadmap gate remains open until that focused qualification names measured costs and identifies a
-strict non-LRU winner. Existing non-blocking Request 23 gained its sixth client: the selected
-compiler falsely reports ten by-value-copy warnings for explicit `borrow task: ResidencyTask`
-parameters.
+oracle, and the opt-in real-model qualification. The first comprehensive review of `f7e205a`
+against base tip and merge base `4f01553b1ea18b815376d5cd7c082d4406a042ec` found four valid issues:
+one P1 unbounded prefetch-ranking path and three P2 mismatches in adapter hardware validation,
+file-result newline bytes, and duplicate-expert precedence. Commit `2463ed9` repaired all four.
 
-**Next actions, in order.** (1) Commit the consolidated repair. (2) Because the P1 repair changes
-the candidate-ranking approach and bounded-work contract, run the one required final comprehensive
-review; if clean, do not repeat it. (3) Run exact-head preflight including the topology-selected
-fresh `make ci`, publish, and merge. (4) Refresh `main` and continue the next eligible roadmap
-capability.
+The required final comprehensive review of `2463ed9`, with the same base tip and merge base and the
+whole diff, found three further valid P2 issues: the adapter rejected valid R2 callback observation
+order when layers were non-monotonic; it could persist an individually valid task that immediately
+failed aggregate i64 arithmetic; and the real qualification accepted whitespace-only measurement
+provenance. Per the final-review rule, these were not patched as another repair loop. The public
+contract was re-scoped as a redesigned candidate: demand groups retain callback order and require
+only non-decreasing graph ordinals, contiguity, zero-first/increasing slots, and stable graph phase;
+producer and consumer now enforce one conservative whole-task arithmetic proof; and measurement
+provenance must contain a non-whitespace character. All three findings are accepted and implemented
+in the current uncommitted redesign; none is rejected.
+
+`make fmt`, `make build`, `make residency-sim-smoke`, and `make format-check` pass. The owner now
+reports 7 policies, 11 semantic codes, 3 limit cases, 12 adapter refusals, measurement provenance,
+and the complete CLI/oracle comparison after rerunning both producer owners. It includes a valid
+layer-1-before-layer-0 trace, a non-contiguous-group refusal, and the reviewer's 2,400-demand
+arithmetic reproducer refused before output creation. `make residency-sim-qualification` previously
+printed its exact `N/A` line because the required model/instrument environment is unavailable; it
+must be refreshed after the redesign. The hosted owner makes no hardware-speed claim, so the roadmap
+gate remains open until that focused qualification names measured costs and identifies a strict
+non-LRU winner. Existing non-blocking Request 23's sixth client now produces eleven false
+by-value-copy warnings for explicit `borrow task: ResidencyTask` parameters.
+
+**Next actions, in order.** (1) Commit the redesigned candidate. (2) Run the focused owner and
+qualification, then one fresh comprehensive review of the newly scoped stable candidate. (3) Run
+exact-head preflight including the topology-selected fresh `make ci`, publish, and merge. (4)
+Refresh `main` and continue the next eligible roadmap capability.
 
 ## Merged checkpoint: GCC14-FP-CONTRACT-PORTABILITY (2026-08-28)
 

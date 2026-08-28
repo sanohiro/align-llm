@@ -149,10 +149,6 @@ def load_model(path):
     return raw, n_layer, n_expert, n_expert_used, expert_blocks
 
 
-def selection_key(row):
-    return row["graph"], row["layer"], row["token"], row["slot"]
-
-
 def append_trace(path, expected, graph_base, demands):
     raw, document = read_document(path)
     if document.get("schema_version") != 1 or document.get("kind") != "R2_ACTIVATION_TRACE":
@@ -185,8 +181,10 @@ def append_trace(path, expected, graph_base, demands):
             truncated = True
         elif graph.get("tokens_truncated") is not False:
             raise AdapterError("%s graph %d has invalid tokens_truncated" % (path, ordinal))
-    previous = None
+    previous_graph = None
+    previous_slot = None
     group = None
+    seen_groups = set()
     group_experts = set()
     for ordinal, source in enumerate(selections):
         if not isinstance(source, dict):
@@ -197,15 +195,19 @@ def append_trace(path, expected, graph_base, demands):
         graph, layer, token, slot, expert = values
         if graph not in phases or layer >= n_layer or expert >= n_expert or slot >= n_expert_used:
             raise AdapterError("%s selection %d is outside declared extents" % (path, ordinal))
-        key = (graph, layer, token, slot)
-        if previous is not None and key <= previous:
-            raise AdapterError("%s selection order is not strictly ascending" % path)
-        current_group = key[:3]
+        if previous_graph is not None and graph < previous_graph:
+            raise AdapterError("%s selection graph order decreases" % path)
+        current_group = (graph, layer, token)
         if current_group != group:
+            if current_group in seen_groups:
+                raise AdapterError("%s selection group is not contiguous" % path)
             if slot != 0:
                 raise AdapterError("%s selection group does not begin at slot zero" % path)
+            seen_groups.add(current_group)
             group = current_group
             group_experts = set()
+        elif slot <= previous_slot:
+            raise AdapterError("%s selection slots are not strictly increasing" % path)
         if expert in group_experts:
             raise AdapterError("%s selection group repeats an expert" % path)
         group_experts.add(expert)
@@ -219,11 +221,50 @@ def append_trace(path, expected, graph_base, demands):
         })
         if len(demands) > MAX_DEMANDS:
             raise AdapterError("traces contain too many selections")
-        previous = key
+        previous_graph = graph
+        previous_slot = slot
     reduced = moe.get("token_reduced_layers", [])
     if not isinstance(reduced, list) or any(not exact_int(value) or value < 0 for value in reduced):
         raise AdapterError("%s has invalid token_reduced_layers" % path)
     return raw, graph_base + len(graphs), truncated, len(reduced)
+
+
+def prove_arithmetic(blocks, demands, hardware):
+    transfer_costs = []
+    cpu_costs = []
+    maximum_bytes = 0
+    for row in blocks:
+        kib = (row["bytes"] + 1023) // 1024
+        transfer = hardware["transfer_fixed_ns"] + kib * hardware["transfer_ns_per_kib"]
+        cpu = hardware["cpu_fixed_ns"] + kib * hardware["cpu_ns_per_kib"]
+        if transfer > MAX_I64 or cpu > MAX_I64:
+            raise AdapterError("cost arithmetic exceeds i64")
+        transfer_costs.append(transfer)
+        cpu_costs.append(cpu)
+        maximum_bytes = max(maximum_bytes, row["bytes"])
+
+    maximum_transfer = max(transfer_costs)
+    maximum_cpu = max(cpu_costs)
+    demand_count = len(demands)
+    if maximum_transfer * 1000 > MAX_I64 or demand_count * maximum_transfer > MAX_I64:
+        raise AdapterError("cost arithmetic exceeds i64")
+    scaled_prefetch = maximum_transfer * hardware["prefetch_cost_per_mille"]
+    if scaled_prefetch > MAX_I64:
+        raise AdapterError("cost arithmetic exceeds i64")
+
+    block_index = {(row["layer"], row["expert"]): row["bytes"] for row in blocks}
+    demand_bytes = sum(block_index[demand["layer"], demand["expert"]] for demand in demands)
+    if demand_bytes > MAX_I64:
+        raise AdapterError("metric arithmetic exceeds i64")
+    prefetch_bound = max(demand_count - 1, 0) * hardware["prefetch_count"]
+    prefetch_bytes = prefetch_bound * maximum_bytes
+    if prefetch_bytes > MAX_I64 or demand_bytes + prefetch_bytes > MAX_I64:
+        raise AdapterError("metric arithmetic exceeds i64")
+    demand_cost = demand_count * max(maximum_transfer, maximum_cpu)
+    prefetch_cost = prefetch_bound * (scaled_prefetch // 1000)
+    if demand_cost > MAX_I64 or prefetch_cost > MAX_I64 \
+            or demand_cost + prefetch_cost > MAX_I64:
+        raise AdapterError("metric arithmetic exceeds i64")
 
 
 def write_new(path, payload):
@@ -284,6 +325,7 @@ def main(argv):
     for ordinal, demand in enumerate(demands):
         if (demand["layer"], demand["expert"]) not in available:
             raise AdapterError("selection %d has no ExpertBlock" % ordinal)
+    prove_arithmetic(blocks, demands, hardware)
     trace_manifest = "".join(digest + "\n" for digest in trace_digests).encode("ascii")
     task = {
         "schema_version": 1,

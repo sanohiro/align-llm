@@ -1,6 +1,6 @@
 # R3-RESIDENCY-SIM
 
-Status: implementation candidate. This document is the authoritative public-contract ledger,
+Status: redesigned implementation candidate. This document is the authoritative public-contract ledger,
 closure matrix, and acceptance plan for the first R3 consumer capability.
 
 ## 1. Capability boundary
@@ -181,13 +181,14 @@ prefetch policies can select historically known peers in the next layer.
 {"graph": 0, "layer": 0, "token": 0, "slot": 0, "expert": 12, "phase": "prefill"}
 ```
 
-Rows preserve R2 observation order and are strictly ascending by
-`(graph, layer, token, slot)`. Ordinals are non-negative; layer/expert are within declared extents;
-`phase` is exactly `prefill`, `decode`, or `single_token_first_graph`. All rows of one graph use one
-phase. Slots begin at zero and are strictly increasing inside each `(graph, layer, token)` group;
-gaps are allowed because R2 prints `0,1,2,n_expert_used-3,n_expert_used-2,n_expert_used-1` when the
-router has more than six slots. An expert appears at most once in a group. R2's unprinted slots are
-not invented.
+Rows preserve R2 observation order; they are not canonicalized by layer or token. Graph ordinals are
+non-decreasing, but callback node order may place (for example) layer 1 before layer 0 inside one
+graph. Each `(graph, layer, token)` group is one contiguous run that cannot reappear later. Ordinals
+are non-negative; layer/expert are within declared extents; `phase` is exactly `prefill`, `decode`,
+or `single_token_first_graph`. All rows of one graph use one phase. Slots begin at zero and are
+strictly increasing inside each group; gaps are allowed because R2 prints
+`0,1,2,n_expert_used-3,n_expert_used-2,n_expert_used-1` when the router has more than six slots. An
+expert appears at most once in a group. R2's unprinted slots are not invented.
 
 ### 2.6 Validation and error precedence
 
@@ -201,7 +202,8 @@ Semantic validation is side-effect-free and uses this exact first-error order:
 6. `R3_BLOCK` — block field bounds;
 7. `R3_BLOCK_ORDER` — block order or duplicate;
 8. `R3_DEMAND` — demand field, phase, slot, or duplicate-expert defect;
-9. `R3_DEMAND_ORDER` — observation order, graph-phase mismatch, or non-increasing slot;
+9. `R3_DEMAND_ORDER` — decreasing graph ordinal, a non-contiguous repeated group, graph-phase
+   mismatch, a group not starting at slot zero, or a non-increasing slot;
 10. `R3_JOIN` — a demand without exactly one block;
 11. `R3_ARITHMETIC` — any cost/metric upper-bound proof.
 
@@ -209,6 +211,17 @@ Semantic validation is side-effect-free and uses this exact first-error order:
 path or free prose. Invalid results carry zero demands, `best_policy: ""`, `verdict: "ERROR"`, and
 an empty `policies` array. `demand_bytes`, `baseline_cost_ns`, and `best_cost_ns` are also zero;
 the file-form summary renders both costs as `-`, so no sentinel is presented as a measurement.
+
+The final arithmetic pass proves the whole task before any policy runs. Let `D` be demand count,
+`P` be `prefetch_count`, `M_bytes` be the largest block, `M_transfer` / `M_cpu` be the largest
+declared per-block costs after the section 2.3 formula, and
+`F = max(D - 1, 0) * P`, a conservative upper bound on prefetch insertions. Checked, non-wrapping
+arithmetic must prove all per-block costs; exact `demand_bytes`; `M_transfer * 1000` for impact
+normalization; `D * M_transfer` for impact ranking; `F * M_bytes + demand_bytes` for transferred
+byte metrics; `M_transfer * prefetch_cost_per_mille`; and
+`D * max(M_transfer, M_cpu) + F * (M_transfer * prefetch_cost_per_mille / 1000)` for residency
+cost. These conservative bounds may reject a declaration whose particular schedule would happen
+not to overflow; they ensure every accepted task can produce all seven complete metric rows.
 
 ### 2.7 Policy semantics
 
@@ -329,9 +342,11 @@ adapter accepts one schema-2 `R1_MODEL_IR` followed by one or more schema-1
 `R2_ACTIVATION_TRACE` documents in caller order. It rejects an occupied output path, duplicate
 JSON keys, non-OK documents, a non-`olmoe` model, non-MoE traces, model/trace extent
 disagreement, every section 2.3 hardware bound including the task-wide work envelope, malformed
-block/demand order, and a missing `ExpertBlock` join. It extracts only
+block/demand order, a missing `ExpertBlock` join, and every section 2.6 arithmetic upper-bound
+proof. It extracts only
 `ExpertBlock` rows, offsets graph ordinals between documents, copies each selection's exact phase
-from its owning graph, preserves printed slot ordinals without filling hidden slots, and writes
+from its owning graph, preserves callback observation order and printed slot ordinals without
+sorting groups or filling hidden slots, and writes
 canonical compact task JSON plus one newline by create-without-replace followed by flush and close.
 It derives `tokens_truncated` as OR over every graph and sums the number of
 `moe.token_reduced_layers` entries over all traces. No input path is written into the task.
@@ -345,14 +360,14 @@ in the smoke runner computes all seven rows from the emitted task and compares t
 | --- | --- | --- | --- |
 | CLI arity and paths | machine and file forms emit identical document bytes | too few/many, empty/NUL/overlong path before open; write failure has no summary | `run-residency-sim-smoke`: `cli-*` |
 | Decode | schema-1 task inside one arena; grammar-valid unknown fields are ignored | malformed, invalid UTF-8, missing/duplicate declared field write nothing and preserve destination | `decode-*` |
-| Semantic validation | complete ordered block/demand tables join; duplicate-expert index is order-independent | every code and multi-invalid precedence, including duplicate plus out-of-order rows; zero policies on error | `invalid-*`, `precedence-*` |
+| Semantic validation | complete ordered block table and observation-ordered demand groups join; duplicate-expert and group-contiguity indexes are order-independent | every code and multi-invalid precedence, including duplicate plus repeated-group rows; zero policies on error | `invalid-*`, `precedence-*`, `observation-order-*` |
 | LRU / LFU / recent reuse | heterogeneous byte capacity, deterministic ties | oversized block served but not retained; zero-capacity impossible by validation | policy oracle cases |
 | Score-based | all four available inputs and weight extremes | zero-total weights rejected; checked product/sum | `score-*`, `arithmetic-*` |
 | Prefetch | structural next group only; one frozen/ranked eligible snapshot; useful and unused rows | cold history, already resident, eviction, final unused accounting | `prefetch-*`, complete oracle |
 | CPU fallback | cheaper CPU, cheaper transfer, strict tie rule | oversized block and fallback never overfill cache | `cpu-*` |
 | Phase split | prefill, decode, ambiguous first graph | absent phase reports `-1`; graph phase mismatch rejected | `phase-*` |
 | Seven-policy result | fixed row/order, deterministic winner, LRU tie | arithmetic failure produces no partial rows | complete golden + oracle |
-| Adapter | R2/R1 join, graph offset, mixed block sizes | every producer/status/extent/join/hardware/work-envelope refusal before output replacement | adapter fixture matrix |
+| Adapter | R2/R1 join, graph offset, non-monotonic callback layer order, mixed block sizes | every producer/status/extent/join/hardware/work-envelope/arithmetic refusal before output creation | adapter fixture matrix |
 | Ownership | task borrowed across seven runs; result cloned out | decode, semantic error, loop exit, and write `?` release once | whole/per-unit compilation, repeated smoke |
 | Bounded work | binary demand/block joins; `O(demands log demands)` duplicate validation; one `O(blocks log blocks)` candidate ranking per prefetch boundary; victim scans amortized by insertions; and the explicit 100,000,000 `demands * blocks * prefetch_count` envelope | row caps and the work product checked before validation/ranking state or policy work | `limit-*`, adapter refusal, owner elapsed diagnostic |
 | Generic/interface/cache | N/A — no generic or exported interface surface | N/A — concrete module only | `make check`, `make build` |
@@ -367,8 +382,8 @@ every error code and policy branch, and reruns existing R1/R2 owners affected by
 The opt-in `make residency-sim-qualification` consumes the real OLMoE model and R2 instrument under
 the existing `ALIGN_LLM_GGUF_MODEL`, `ALIGN_LLM_LLAMA_EVAL_CALLBACK`,
 `ALIGN_LLM_LOCALITY_PROMPTS`, and `ALIGN_LLM_LOCALITY_PROMPT_COUNT` inputs. It additionally requires
-`ALIGN_LLM_R3_HARDWARE`, the section 2.3 JSON object, and `ALIGN_LLM_R3_MEASUREMENT`, one bounded
-line naming the measurement source for those declared costs. It records the task digest, hardware
+`ALIGN_LLM_R3_HARDWARE`, the section 2.3 JSON object, and `ALIGN_LLM_R3_MEASUREMENT`, one bounded,
+non-blank line naming the measurement source for those declared costs. It records the task digest, hardware
 profile, capacity, measurement source, all seven policy rows, winner, and whether decode was
 observed. A missing model/instrument/profile/measurement prints one exact `N/A` line. The
 qualification is not in an aggregate.
@@ -379,7 +394,8 @@ ships the simulator but does not by itself claim a target-hardware policy win.
 
 ## 6. Author consistency pass
 
-- R2 `selections[]` remains the sequence source; no locality aggregate is substituted.
+- R2 `selections[]` remains the sequence source in callback observation order; no layer/token sort
+  or locality aggregate is substituted.
 - R1/R4 remains the byte-size/layout source; no constant expert size is invented.
 - Prefill/decode remain separate and an absent decode phase stays `-1`/unclaimed.
 - All seven roadmap policy families have one row and deterministic semantics.
@@ -405,3 +421,14 @@ ships the simulator but does not by itself claim a target-hardware policy win.
 5. Duplicate-expert detection originally stopped at the first different adjacent group and could
    lose `R3_DEMAND` precedence when the same invalid input was also out of order. A bounded sorted
    demand index now detects the duplicate class independently before observation-order validation.
+6. Final comprehensive review demonstrated a valid R2 document whose callback observed layer 1
+   before layer 0. The former tuple-ascending task rule contradicted R2's normative observation-order
+   contract and rejected that producer output. Demand groups now retain callback order, require only
+   non-decreasing graph ordinals plus contiguous zero-first groups, and the adapter never sorts them.
+7. Final comprehensive review also constructed individually valid hardware and demand declarations
+   that the adapter persisted successfully but the simulator immediately refused with
+   `R3_ARITHMETIC`. Section 2.6 now defines one conservative whole-task proof shared by producer and
+   consumer, and the adapter performs it before create-without-replace.
+8. A whitespace-only `ALIGN_LLM_R3_MEASUREMENT` previously reached a `MEASURED` report without named
+   provenance. The qualification now requires at least one non-whitespace character and the hosted
+   owner exercises that refusal before any real-model work.

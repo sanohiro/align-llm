@@ -58,8 +58,9 @@ def main():
     if not model.is_file() or not instrument.is_file() or not os.access(instrument, os.X_OK) \
             or not hardware.is_file() or not binary.is_file():
         return unavailable()
-    if "\n" in measurement or "\r" in measurement or len(measurement.encode("utf-8")) > 512:
-        fail("ALIGN_LLM_R3_MEASUREMENT must be one bounded line")
+    if not measurement.strip() or "\n" in measurement or "\r" in measurement \
+            or len(measurement.encode("utf-8")) > 512:
+        fail("ALIGN_LLM_R3_MEASUREMENT must be one bounded non-blank line")
     prompt_path = Path(os.environ.get(
         "ALIGN_LLM_LOCALITY_PROMPTS", str(root / "eval" / "prompts" / "expert-locality-v1.txt")
     ))

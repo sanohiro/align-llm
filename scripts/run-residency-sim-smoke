@@ -138,10 +138,11 @@ def make_producers(directory):
         return path
 
     prefill = trace("prefill", "prefill", [
-        (0, 0, [0, 1, 2, 3, 4, 5]),
-        (0, 1, [0, 1, 6, 7, 4, 5]),
+        # R2 promises callback observation order, which may differ from layer order.
         (1, 0, [0, 1, 2, 3, 4, 5]),
         (1, 1, [0, 1, 6, 7, 4, 5]),
+        (0, 0, [0, 1, 2, 3, 4, 5]),
+        (0, 1, [0, 1, 6, 7, 4, 5]),
     ], True, 1)
     decode = trace("decode", "decode", [
         (0, 0, [0, 1, 2, 3, 4, 5]),
@@ -413,6 +414,8 @@ def main():
         task = json.loads(task_raw)
         if [row["slot"] for row in task["demands"][:6]] != [0, 1, 2, 5, 6, 7]:
             fail("adapter did not preserve hidden-slot gaps")
+        if task["demands"][0]["layer"] != 1 or task["demands"][12]["layer"] != 0:
+            fail("adapter did not preserve non-monotonic callback layer order")
         if task["demands"][-1]["graph"] != 1:
             fail("adapter did not offset graph ordinals")
         if not task["tokens_truncated"] or task["token_reduced_layer_count"] != 1:
@@ -521,6 +524,23 @@ def main():
         if duplicate_order_document["error_code"] != "R3_DEMAND" \
                 or duplicate_order_document["error_detail"] != "demands[2]":
             fail("duplicate-expert precedence did not beat observation order")
+
+        repeated_group = copy.deepcopy(task)
+        repeated_group["demands"] = [
+            {"graph": 0, "layer": 1, "token": 0, "slot": 0, "expert": 0,
+             "phase": "prefill"},
+            {"graph": 0, "layer": 0, "token": 0, "slot": 0, "expert": 1,
+             "phase": "prefill"},
+            {"graph": 0, "layer": 1, "token": 0, "slot": 1, "expert": 2,
+             "phase": "prefill"},
+        ]
+        repeated_group_path = directory / "observation-order-repeated-group.json"
+        repeated_group_result = directory / "observation-order-repeated-group-result.json"
+        write_json(repeated_group_path, repeated_group)
+        run_sim(repeated_group_path, repeated_group_result, expected=2)
+        repeated_group_document = json.loads(repeated_group_result.read_bytes())
+        if repeated_group_document["error_code"] != "R3_DEMAND_ORDER":
+            fail("non-contiguous observation-order group was accepted")
 
         work_limit = copy.deepcopy(task)
         work_limit["n_layer"] = 1
@@ -648,6 +668,13 @@ def main():
         bad_trace = json.loads(traces[0].read_bytes())
         bad_trace["moe"]["n_expert"] = 7
         adapter_refusal("trace-extents", trace_value=bad_trace)
+        bad_trace = json.loads(traces[0].read_bytes())
+        bad_trace["selections"] = [
+            {"graph": 0, "layer": 1, "token": 0, "slot": 0, "expert": 0},
+            {"graph": 0, "layer": 0, "token": 0, "slot": 0, "expert": 1},
+            {"graph": 0, "layer": 1, "token": 0, "slot": 1, "expert": 2},
+        ]
+        adapter_refusal("trace-group-contiguity", trace_value=bad_trace)
         bad_model = json.loads(model.read_bytes())
         bad_model["blocks"] = [block for block in bad_model["blocks"]
                                if not (block["layer"] == 0 and block["expert"] == 0)]
@@ -696,7 +723,58 @@ def main():
             raw_hardware=compact(work_hardware),
         )
 
-        print("residency sim smoke: PASS - 7 policies, 11 semantic codes, 3 limit cases, 10 adapter refusals, CLI/oracle")
+        arithmetic_model = json.loads(model.read_bytes())
+        arithmetic_model["model"] = {
+            "arch": "olmoe", "n_layer": 1, "n_expert": 1, "n_expert_used": 1,
+        }
+        arithmetic_model["blocks"] = [{
+            "kind": "ExpertBlock", "layer": 0, "expert": 0, "byte_size": 4079616,
+        }]
+        arithmetic_trace = json.loads(traces[0].read_bytes())
+        arithmetic_trace["graph"]["n_layer"] = 1
+        arithmetic_trace["moe"]["n_expert"] = 1
+        arithmetic_trace["moe"]["n_expert_used"] = 1
+        arithmetic_trace["moe"]["token_reduced_layers"] = []
+        arithmetic_trace["graphs"] = [
+            {"ordinal": ordinal, "phase": "prefill", "tokens_truncated": False}
+            for ordinal in range(2400)
+        ]
+        arithmetic_trace["selections"] = [
+            {"graph": ordinal, "layer": 0, "token": 0, "slot": 0, "expert": 0}
+            for ordinal in range(2400)
+        ]
+        arithmetic_hardware = json.loads(hardware.read_bytes())
+        arithmetic_hardware.update({
+            "cache_capacity_bytes": 1,
+            "transfer_fixed_ns": 10 ** 12,
+            "transfer_ns_per_kib": 10 ** 12,
+            "cpu_fixed_ns": 10 ** 12,
+            "cpu_ns_per_kib": 10 ** 12,
+            "prefetch_cost_per_mille": 1000,
+            "prefetch_count": 1,
+        })
+        adapter_refusal(
+            "arithmetic-bound", model_value=arithmetic_model, trace_value=arithmetic_trace,
+            raw_hardware=compact(arithmetic_hardware),
+        )
+
+        qualification_env = os.environ.copy()
+        qualification_env.update({
+            "ALIGN_LLM_GGUF_MODEL": str(model),
+            "ALIGN_LLM_LLAMA_EVAL_CALLBACK": sys.executable,
+            "ALIGN_LLM_R3_HARDWARE": str(hardware),
+            "ALIGN_LLM_R3_MEASUREMENT": "   ",
+        })
+        qualification = subprocess.run(
+            [str(root / "scripts" / "run-residency-sim-qualification")],
+            cwd=root, env=qualification_env, capture_output=True,
+        )
+        if qualification.returncode == 0 \
+                or b"one bounded non-blank line" not in qualification.stderr:
+            fail("qualification accepted blank measurement provenance")
+
+        print("residency sim smoke: PASS - 7 policies, 11 semantic codes, 3 limit cases, "
+              "12 adapter refusals, measurement provenance, CLI/oracle")
     return 0
 
 

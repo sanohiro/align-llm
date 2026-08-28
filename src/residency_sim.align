@@ -187,13 +187,6 @@ fn block_before(borrow left: BlockRow, borrow right: BlockRow) -> bool {
   return left.layer < right.layer || (left.layer == right.layer && left.expert < right.expert)
 }
 
-fn demand_before(borrow left: DemandRow, borrow right: DemandRow) -> bool {
-  if left.graph != right.graph { return left.graph < right.graph }
-  if left.layer != right.layer { return left.layer < right.layer }
-  if left.token != right.token { return left.token < right.token }
-  return left.slot < right.slot
-}
-
 fn same_group(borrow left: DemandRow, borrow right: DemandRow) -> bool {
   return left.graph == right.graph && left.layer == right.layer && left.token == right.token
 }
@@ -408,6 +401,32 @@ fn validate_task(borrow task: ResidencyTask) -> Validation {
     at = at + 1
   }
 
+  // R2 rows are callback-observation ordered, not layer ordered. The same sorted index also proves
+  // that every group occupies one contiguous input span: for a group of N rows, max-min+1 must be N.
+  at = 0
+  loop {
+    if at >= expert_order.len() { break }
+    group_row := task.demands[expert_order[at]]
+    mut minimum_ordinal := expert_order[at]
+    mut maximum_ordinal := expert_order[at]
+    mut group_count := 0
+    loop {
+      if at >= expert_order.len() { break }
+      ordinal := expert_order[at]
+      row := task.demands[ordinal]
+      if !same_group(group_row, row) { break }
+      if ordinal < minimum_ordinal { minimum_ordinal = ordinal }
+      if ordinal > maximum_ordinal { maximum_ordinal = ordinal }
+      group_count = group_count + 1
+      at = at + 1
+    }
+    if maximum_ordinal - minimum_ordinal + 1 != group_count {
+      detail := row_detail("demands", maximum_ordinal)
+      detail_view: str := detail
+      return invalid("R3_DEMAND_ORDER", detail_view)
+    }
+  }
+
   at = 0
   mut graph := -1
   mut graph_phase: str := ""
@@ -416,7 +435,7 @@ fn validate_task(borrow task: ResidencyTask) -> Validation {
     row := task.demands[at]
     if at > 0 {
       previous_demand := task.demands[at - 1]
-      if !demand_before(previous_demand, row) {
+      if row.graph < previous_demand.graph {
         detail := row_detail("demands", at)
         detail_view: str := detail
         return invalid("R3_DEMAND_ORDER", detail_view)
@@ -461,7 +480,7 @@ fn validate_task(borrow task: ResidencyTask) -> Validation {
     }
     at = at + 1
   }
-  return valid()
+  return validate_arithmetic(task)
 }
 
 fn filled_table(count: i64, value: i64) -> array<i64> {
@@ -492,6 +511,86 @@ fn block_cost(bytes: i64, fixed: i64, per_kib: i64) -> Result<i64, Error> {
   kib := plus / 1024
   variable := mul_checked(kib, per_kib)?
   return add_checked(fixed, variable)
+}
+
+// Prove every arithmetic path conservatively before running any policy. There can be at most one
+// prefetch batch per boundary between demand rows, so `(D - 1) * prefetch_count` bounds insertions
+// without looking ahead at the actual eligible set. The adapter mirrors these exact inequalities.
+fn validate_arithmetic(borrow task: ResidencyTask) -> Validation {
+  mut maximum_bytes := 0
+  mut maximum_transfer := 0
+  mut maximum_cpu := 0
+  mut at := 0
+  loop {
+    if at >= task.blocks.len() { break }
+    bytes := task.blocks[at].bytes
+    transfer := match block_cost(bytes, task.hardware.transfer_fixed_ns,
+      task.hardware.transfer_ns_per_kib) {
+      Ok(value) => value,
+      Err(_) => { return invalid("R3_ARITHMETIC", "cost") },
+    }
+    cpu := match block_cost(bytes, task.hardware.cpu_fixed_ns,
+      task.hardware.cpu_ns_per_kib) {
+      Ok(value) => value,
+      Err(_) => { return invalid("R3_ARITHMETIC", "cost") },
+    }
+    if bytes > maximum_bytes { maximum_bytes = bytes }
+    if transfer > maximum_transfer { maximum_transfer = transfer }
+    if cpu > maximum_cpu { maximum_cpu = cpu }
+    at = at + 1
+  }
+
+  // Impact normalization and impact-prefetch ranking multiply transfer cost by 1000 and by the
+  // maximum possible per-block frequency respectively.
+  _ := maximum_transfer.checked_mul(1000) else {
+    return invalid("R3_ARITHMETIC", "cost")
+  }
+  _ := task.demands.len().checked_mul(maximum_transfer) else {
+    return invalid("R3_ARITHMETIC", "cost")
+  }
+  scaled_prefetch := maximum_transfer.checked_mul(task.hardware.prefetch_cost_per_mille) else {
+    return invalid("R3_ARITHMETIC", "cost")
+  }
+
+  mut demand_bytes := 0
+  at = 0
+  loop {
+    if at >= task.demands.len() { break }
+    row := task.demands[at]
+    block := find_block(task.blocks, row.layer, row.expert)
+    if block < 0 { return invalid("R3_ARITHMETIC", "metrics") }
+    demand_bytes = demand_bytes.checked_add(task.blocks[block].bytes) else {
+      return invalid("R3_ARITHMETIC", "metrics")
+    }
+    at = at + 1
+  }
+
+  boundary_count := if task.demands.len() > 1 { task.demands.len() - 1 } else { 0 }
+  prefetch_bound := boundary_count.checked_mul(task.hardware.prefetch_count) else {
+    return invalid("R3_ARITHMETIC", "metrics")
+  }
+  prefetch_bytes := prefetch_bound.checked_mul(maximum_bytes) else {
+    return invalid("R3_ARITHMETIC", "metrics")
+  }
+  _ := demand_bytes.checked_add(prefetch_bytes) else {
+    return invalid("R3_ARITHMETIC", "metrics")
+  }
+
+  maximum_demand_cost := if maximum_transfer > maximum_cpu {
+    maximum_transfer
+  } else {
+    maximum_cpu
+  }
+  demand_cost := task.demands.len().checked_mul(maximum_demand_cost) else {
+    return invalid("R3_ARITHMETIC", "metrics")
+  }
+  prefetch_cost := prefetch_bound.checked_mul(scaled_prefetch / 1000) else {
+    return invalid("R3_ARITHMETIC", "metrics")
+  }
+  _ := demand_cost.checked_add(prefetch_cost) else {
+    return invalid("R3_ARITHMETIC", "metrics")
+  }
+  return valid()
 }
 
 fn policy_name(index: i64) -> str {
