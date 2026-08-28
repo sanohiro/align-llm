@@ -1004,3 +1004,260 @@ not write a residency configuration, and does not assign any expert to any tier.
 consumes this document belongs to R5 and to `docs/specs/align-llm.md` section 6, and it should
 consume the *curve* in `sweep_best` rather than the single `result`, because section 4.5 shows the
 answer changes three times across the sweep.
+
+## 6. Correction ledger
+
+The capability is now **implemented**. This section records every place where implementation and
+measurement contradicted the plan above, what the shipped contract is, and the exact case that
+closes it. Sections 1 to 5 remain authoritative except where a row below supersedes them; each row
+names the superseded text. Cases without a runner prefix are cases inside
+`scripts/run-residency-sim-smoke`.
+
+| # | Superseded text | Shipped contract | Why | Case |
+| --- | --- | --- | --- | --- |
+| 1 | Section 2.5.4's "`graph_phases` carries R2A's three-valued `phase` forward unchanged" | The trace decode record declares `ordinal`, `n_tokens`, and `tokens_truncated`, and **recomputes** `phase` with `docs/specs/r2a-expert-trace.md` section 2.5.6's rule: `"prefill"` when `n_tokens > 1`, `"decode"` when `n_tokens == 1 && ordinal > 0`, `"single_token_first_graph"` when `n_tokens == 1 && ordinal == 0` | `Option<string>` cannot be read out of an array element at this pin — "reading a Move-type field `Option<string>` out of an array element is not supported yet" — and copying the whole element out is refused as well: "indexing an array of the Move type `TraceGraphRow` is not supported yet". `phase` is a total function of two fields R3 already decodes, so nothing is invented and no transcript is parsed. Section 7.5 item 2 | `sim-basic` (`graph_phases.prefill` 4), `sim-truncated` (1), `sim-multi-graph` (2), and the real run's `{"prefill": 40, "decode": 0, "single_token_first_graph": 0}` |
+| 2 | Section 2.2.1's `R3_TRACE_DISAGREEMENT` row and section 2.6 step 8's code | **Withdrawn.** Every admitted trace is compared against the Model IR's `model.n_expert` and `model.n_expert_used`, so two *admitted* traces cannot disagree; a trace that would disagree fails `R3_SHAPE_MISMATCH` first, whatever the list order. The shipped code set is 29 | A code no fixture can reach is not a contract, exactly as `docs/specs/r2a-expert-trace.md` correction 7 established for `n_expert_source: "router_weight"` | `shape-mismatch`, which mixes an `n_expert = 8` trace with the `n_expert = 2` Model IR |
+| 3 | Section 2.6 steps 5 and 8, "no document is read before its path is guarded", read as a size check | The **path** is guarded before the read, as stated; the **byte cap** (`R3_IR_TOO_LARGE`, `R3_TRACE_TOO_LARGE`) is enforced on the materialized document, because neither `fs.size` nor any metadata-only stat exists at this pin — the same absence `src/alignpack.align:1717` already records | Enforcing a cap before the read requires a surface Align does not ship. The oracle enforces it the same way so the two agree. Section 7.3 records that no fixture reaches either code | not closed by a case; section 7.3 |
+| 4 | Section 2.8's "`sweep_best` applies the same rule at each budget entry" | `sweep_best` applies the **effect floor and the headroom rule** at each budget; the leave-one-document-out stability test runs at the **requested budget only** and is reported once, in `verdict.jackknife_*` | Section 2.7's cost bound is normative and explicit — "`180` replays plus `jackknife_folds * 2` more at the requested budget". Jackknifing all nine budgets would be 720 extra replays on the real corpus, four times the whole study, for a field the plan never gave a per-budget name | `sim-basic` (`jackknife_folds` 4 with eight `sweep_best` rows), `run-residency-sim` (40 folds, minimum gain 213 per mille) |
+| 5 | Section 2.5.1's "every value derived before the failure is present and truthful", read as applying to `stream` | On `status: "error"` the `stream` object is **empty** — zero counts, empty arrays, `pooling: "continuing"` — and `budgets` and `orders` are `[]`. `inputs` and `model` still carry everything settled before the failure | Section 2.6's own rule is that "a trace that fails admission fails the whole run"; a stream pooled from the prefix of the corpus describes a sub-corpus nobody named, which is exactly the silent shrink that rule exists to prevent | every `error_case`, which asserts `stream.demand_count == 0` and empty `budgets`/`orders` |
+| 6 | Section 2.2.2's packed-word field widths, which section 2.6 gives no code | New code **`R3_SELECTION_UNPACKABLE`**, in step 9: a graph ordinal at or above `MAX_GRAPHS`, a token index at or above `MAX_TOKENS`, a slot at or above `MAX_SLOTS`, or a layer at or above `MAX_LAYERS` cannot ride the 62-bit word. `error_detail` is the list ordinal | The widths were stated as a contract with no failure mode. `n_layer * n_expert <= MAX_RESIDENCY_KEYS` does **not** imply `n_layer < 256` — 16,384 layers of one expert satisfies it — so the guard is reachable and is not a redundant assertion | `selection-unpackable` (a slot of 128) |
+| 7 | Section 2.5.5's "eight ascending entries" | Eight entries, **non-decreasing**: at fixture scale `total_expert_bytes >> 7` is below `largest_expert_bytes`, so several low points clamp to the same value and each reports `clamped: true` | De-duplicating would break the stated entry count and hide that the clamp fired more than once; keeping them makes the clamp visible as a plateau at the bottom of the sweep | `budget-clamp` (eight entries, `clamped: true` at index 0, ascending-or-equal asserted) |
+| 8 | Section 2.5.2's `instrument_build_source` | The single value every admitted trace agrees on; `"mixed"` when two admitted traces disagree; `""` when no trace was admitted | Section 2.5.2 gave a disagreement rule for `instrument_builds` and none for its source. "Recorded, not rejected" is the same answer for both fields | the real run reports `absent`; `trace-unreadable` reports `""` |
+| 9 | Section 2.5.2's `bytes_read` | The Model IR document plus every trace document actually read. The trace **list** is not counted | The section 2.5.2 example, `2675149`, is exactly `olmoe-ir.json` (1,191,817) plus the forty documents (1,483,332). The example was the contract | `run-residency-sim` reports `2673069` — the same forty documents at a different scratch path, the only host-dependent byte in them |
+| 10 | Section 2.5.1's implicit whole-document form | The document carries **no trailing newline**. The three-operand form prints it plus one newline; the four-operand form writes it without one | `--model-ir` and `--expert-trace` both do this, and the two-form byte-identical requirement of section 2.3 is stated against those arms | every `check_case`, which asserts `stdout == file + "\n"` |
+| 11 | Section 2.3's column-aligned summary block | The same labels in the same order, one value per line (`print(label)` then `print(value)`), and the two-part rows are printed as `traces: / N / of / M` | `docs/specs/r2a-expert-trace.md` correction 9 fixed this shape for the same reason: a value the inputs control must occupy exactly one line whatever bytes it carries | the smoke asserts the four-operand form opens with `residency sim:` |
+| 12 | Section 2.5.1's "`error_detail` … a `(layer, expert)` pair" | The pair is rendered `"<layer>:<expert>"` | Schema 1 needs a form, not a description | `ir-expert-range` (`0:99`), `ir-expert-duplicate` (`0:0`), `expert-out-of-range` (`0:64`), `missing-expert-block` (`0:0`) |
+| 13 | Section 2.3's "exit `0` on `status: "ok"`, `Err(Error.Invalid)` on `status: "error"`" | Unchanged in the arm; the **process exit for `Err(Error.Invalid)` is 2**, not 1, which is what the runtime maps it to and what every other arm already produces | The plan named the Align value, not the process status. Recording the observed number keeps the cases honest | every `error_case` and every arity case |
+| 14 | Section 2.5.7's `best_policy` with no qualifying candidate | `best_policy` is the lowest-`bytes_fetched` candidate whenever that is strictly below the baseline, and `""` when no candidate is — the `—` of the section 4.5 table's 100-per-cent row. When the jackknife disqualifies the lowest-byte candidate and qualifies a later one, `best_policy` names the **qualifying** one, as section 2.8's `BEATS_BASELINE` row requires. Ties are broken by the section 2.4 row order | Section 2.5.7 gave the field no value for the two non-winning results, and section 4.5's own table needed one | `sim-no-headroom` (`best_policy: ""`, `result: "NO_HEADROOM"`); the real run's 100-per-cent sweep row |
+| 15 | Section 3.1's single `replay` owner for the admission path | The eviction-and-insert block is written **twice inside `replay`**, once on the demand path and once on the prefetch path | A shared `admit` helper has to take the eight per-key tables as `borrow mut` parameters, and at this pin passing a local `array<i64>` as `borrow mut` to a function called inside a `loop` invalidates the caller's own later reads of it. Section 7.5 item 1 | `policy-oracle`: every `topk_prefetch` cell agrees with the oracle, whose admission is one function |
+
+**One finding, not a correction.** The jackknife gain of a fold can be negative when the candidate
+loses on that fold, and Align's `/` truncates toward zero while Python's `//` floors. The oracle
+therefore truncates toward zero explicitly. Every other ratio in the document has a non-negative
+numerator, so this is the only place the two languages could have disagreed —
+`budget-inserted` found it at `-90` against `-91`.
+
+## 7. Verification record and unclosed cells
+
+### 7.1 Shipped surface
+
+| Path | Role |
+| --- | --- |
+| `src/residency_sim.align` | the trace-list reader, both document decoders, the demand-stream builder, the packed-key tables, all ten policies, the budget sweep, the jackknife, the verdict rule, the whole renderer, and every `R3_*` code |
+| `src/main.align` | the `--simulate-residency` arm: arity, the path guard on all four operands, the summary block, exit mapping |
+| `scripts/residency_oracle.py` | the independent Python implementation of sections 2.2 through 2.8; renders the whole document, and is written from this plan and never from `src/` |
+| `scripts/run-residency-sim-smoke` | the narrow durable owner; `make residency-sim-smoke`, in `HOSTED_CHECK_TARGETS` |
+| `scripts/run-residency-sim` | the opt-in focused qualification; `make residency-sim-qualification`, in no aggregate |
+| `eval/fixtures/residency-sim/sim-basic.golden.json` | the checked-in golden: the whole `sim-basic` document with its two path operands normalized and the 1,440-entry per-layer breakdown pinned by SHA-256 |
+| `eval/prompts/expert-locality-v1.txt` | the 40-prompt corpus the qualification captures, md5 `d7fff23f5a1d4f6237e6f848f3318d8b`, 877 B |
+| `Makefile`, `scripts/check-gate-topology` | the two targets and both pinned aggregate lists |
+
+**Two prerequisites travelled with this branch and are not R3's design.** The branch is based on
+R1C, which predates the R2 locality gate, and the corrected `src/expert_trace.align` is required
+before a real OLMoE transcript converts at all: without it every capture fails `R2_TOKEN_COUNT` on
+layer 15's token-reduced `ffn_moe_topk`. `src/expert_trace.align`,
+`scripts/eval_callback_fixture.py`, `scripts/run-expert-trace-smoke`,
+`scripts/run-expert-trace-parity`, and `scripts/expert_locality_gate.py` are therefore taken
+verbatim from the merged R2 wave; they are one owner and its fixture, and taking the module without
+its fixture leaves `make expert-trace-smoke` red on the new `moe.token_reduced_layers` field.
+
+### 7.2 Cells closed by a case
+
+Every applicable cell of section 3.1 maps to a passing case in `scripts/run-residency-sim-smoke`
+except the rows of section 7.3.
+
+| Section 3.1 cell | Case |
+| --- | --- |
+| Construction — trace list read, path guard, duplicate rejection | `list-empty`, `list-blank-line`, `list-blank-middle`, `list-duplicate`, `list-over-cap`, `list-path-too-long`, `list-unreadable` |
+| Construction — Model IR decode into the subset record | `sim-basic`: the four-field `IrBlockRow` decodes a real-shaped `R1_MODEL_IR` whose blocks carry `index`, `tensor_count`, `first_absolute_offset`, `end_absolute_offset`, `contiguous`, and a nested `tensors` array, none of which the record declares |
+| Formation/validation — steps 1–11, in order | one fixture per reachable code (25 of 29), plus `order-budget-before-list`, `order-list-before-ir`, `order-ir-before-budget-floor` |
+| Success — demand stream, both orders | `sim-basic`, `sim-multi-graph`, `sim-truncated`: `token_position_count`, `demand_count`, and both `orders[]` entries against the oracle, which sorts and pools independently |
+| Success — each of the ten policies | `sim-basic`, `sim-mixed-bytes`, `sim-single-trace`, `budget-*`: hits, misses, bytes, prefetch counts, and `resident_key_high_water` for every policy at every sweep budget in both orders, against the oracle, with no tolerance |
+| Success — budget sweep, clamp, requested-point merge | `budget-clamp` (eight entries, `clamped`), `budget-coincides` (eight entries), `budget-inserted` (nine, ascending) |
+| Success — verdict, all three results | `sim-no-headroom` (`NO_HEADROOM`); `run-residency-sim` on the real corpus produces `BEATS_BASELINE` at six sweep points, `NO_POLICY_BEATS_BASELINE` at two, and `NO_HEADROOM` at one, in one document |
+| Success — jackknife | `sim-basic` and `sim-mixed-bytes` compare `jackknife_folds`, `jackknife_min_gain_per_mille`, and `jackknife_stable` against the oracle's own fold loop; `budget-inserted` exercises a negative fold gain |
+| Failure — every code of section 2.6 | as above; `error_case` additionally asserts the partial document's `inputs` and `model` against the oracle |
+| Malformed input | `ir-decode`, `ir-schema-kind`, `ir-schema-version`, `ir-status`, `trace-decode`, `trace-schema`, `trace-status`, `trace-not-moe` |
+| Early exit — arity produces no output; the guard produces no read | four arity cases assert empty stdout and an untouched `OUT.json`; three path-guard cases assert empty stdout |
+| Move-in/out — one decoded document at a time | by construction (`trace_load` returns columns and drops the decoded record), plus `inputs.bytes_read` accounted per document against the oracle |
+| Cleanup — `OUT.json` written once and whole | the two-form identity assertion on every case; a failed render never reaches `fs.write_file` because the document is rendered before the arm writes |
+| Bounded memory | `list-over-cap` (`MAX_TRACE_PATHS`), `ir-key-space` (`MAX_RESIDENCY_KEYS`); the other three caps are in section 7.3 |
+| Both entrypoint forms | every `check_case` |
+| Determinism | three runs of the whole smoke are byte-identical, and the sim-basic document is compared across three invocations inside it |
+| `src/main.align` dispatch | `make gguf-smoke`, `make model-ir-smoke`, `make expert-trace-smoke` unchanged and passing |
+| Fixture/oracle agreement | the oracle renders the whole document and every case compares it field for field |
+| `Makefile` | `make gate-topology-check` with both pinned lists updated |
+
+### 7.3 Cells not closed, with the reason
+
+| Cell | Status | Reason |
+| --- | --- | --- |
+| `R3_IR_TOO_LARGE`, `R3_TRACE_TOO_LARGE` | **not closed by a case** | `MAX_DOCUMENT_BYTES` is 32 MiB, so each needs a 32 MiB fixture written and read twice per case — not a hosted-smoke cost for a guard that is two comparisons. Both are implemented and ordered before the decode, and correction 3 records that they fire after the read because Align ships no `fs.size` |
+| `R3_SELECTION_TOO_MANY` | **not closed by a case** | `MAX_DEMANDS` is 262,144; the smallest trace document that reaches it is roughly 15 MB of JSON, and `src/expert_trace.align`'s own `MAX_SELECTIONS` binds first on any transcript this repository can produce |
+| `R3_SIMULATION_COST` | **bounded by construction** | The guard fires at `demand_count * min(key_space, budget / smallest_expert_bytes) > 2^32`, and `MAX_DEMANDS * MAX_RESIDENCY_KEYS` is `2^18 * 2^14 = 2^32` exactly, so the two caps that *are* fixture-closed bind first everywhere except at both maxima simultaneously. The real corpus evaluates to `17280 * 275 = 4,752,000`, three orders of magnitude inside it |
+| `pooling: "reset"` | **deferred** | Section 5.5, unchanged |
+| `layer_major` bearing a verdict | **deferred** | Section 2.2.2 fixes it at `verdict_bearing: false`; the qualification prints the whole layer-major table beside the token-major one so the sensitivity is visible |
+| an ordered resident structure | **deferred** | Section 5.6, unchanged. The whole 180-replay study plus 80 jackknife replays over the real corpus takes 1.8 s |
+| `peak-allocation` | **closed indirectly** | Align at this pin exposes no resident-set measurement. The claim is carried by section 2.7's static bound and by `resident_key_high_water`, which the document reports per policy per budget and the oracle checks |
+
+### 7.4 Commands and results
+
+Host and environment as `docs/align-development.md` records for this machine: GNU make as `gmake`,
+`LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib`.
+
+```text
+gmake check                     PASS   check-per-unit over 31 units, 2 m 29 s
+                                       (src/residency_sim.align alone: 8.6 s of that, 32 functions)
+gmake build                     PASS
+gmake fmt                       PASS   no diff; idempotent on src/residency_sim.align
+gmake format-check              PASS
+gmake gate-topology-check       PASS   both pinned lists updated
+gmake residency-sim-smoke       PASS   2 synthetic Model IRs, 9 synthetic traces, 10 policies at
+                                       8 or 9 budgets in 2 orders against the oracle, both CLI
+                                       forms, the golden, determinism, 25 error codes, and CLI
+                                       arity/isolation; about 1.1 s; three runs byte-identical
+gmake expert-trace-smoke        PASS   98 fixtures, 17 error codes, the real build-10566 excerpt
+gmake model-ir-smoke            PASS   49 qwen, 31 gpt-oss, 28 olmoe fixtures, 62 R0 fixtures
+gmake residency-sim-qualification  MEASURED   the real 40-prompt corpus; table below
+git diff --check                clean
+```
+
+`make ci` is selected for this capability and is the orchestrator's to run: section 3.3 predicted
+it, and `residency-sim-smoke` joining `HOSTED_CHECK_TARGETS` is exactly the aggregate-membership
+change `CLAUDE.md`'s verification rule names. No security, resource, race, fuzz, stress, platform,
+mutation, or benchmark suite is selected: R3 adds no process, no thread, no socket, no subprocess,
+and no timing claim.
+
+**The qualification reproduces section 4.5's probe table cell for cell.** Same host, same
+instrument (`version: 0.2.0 (build 10566, commit bb4caa754)`), same model
+(`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`), same corpus (md5 `d7fff23f5a1d4f6237e6f848f3318d8b`,
+877 B, 40 prompts), 51.9 s for 40 captures, every transcript deleted after conversion, model size
+and mtime unchanged. Stream: 40 admitted of 40 listed, 0 truncated graphs, 192 token positions,
+17,280 demands, 938 distinct keys of 1,024, layers 0–14, slots `{0,1,2,5,6,7}` — 750 per mille
+coverage — one token position demanding 90 experts and 341,213,184 bytes.
+
+Token-major, continuing pooling. Each cell is `hit per mille over printed slots / gigabytes
+fetched`:
+
+| Budget | % | `null` | `compulsory` | `belady` | `lru` | `lfu` | `recent_w2` | `recent_w8` | `recent_w32` | `topk_k1` | `topk_k8` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 30,474,240 | 0 | 0 / 65.5 | 945 / 3.6 | 69 / 61.0 | 0 / 65.5 | 25 / 63.8 | 1 / 65.4 | 12 / 64.7 | 24 / 63.9 | 0 / 76.1 | 0 / 150.4 |
+| 60,948,480 | 1 | 0 / 65.5 | 945 / 3.6 | 139 / 56.3 | 0 / 65.5 | 59 / 61.6 | 6 / 65.1 | 44 / 62.6 | 56 / 61.8 | 0 / 75.7 | 0 / 147.8 |
+| 121,896,960 | 3 | 0 / 65.5 | 945 / 3.6 | 260 / 48.5 | 0 / 65.5 | 121 / 57.6 | 33 / 63.3 | 112 / 58.2 | 125 / 57.3 | 0 / 74.8 | 0 / 143.1 |
+| 243,793,920 | 6 | 0 / 65.5 | 945 / 3.6 | 409 / 38.7 | 0 / 65.5 | 226 / 50.7 | 103 / 58.7 | 210 / 51.7 | 229 / 50.5 | 0 / 73.0 | 0 / 133.2 |
+| 487,587,840 | 12 | 0 / 65.5 | 945 / 3.6 | 580 / 27.6 | 247 / 49.3 | 376 / 40.8 | 247 / 49.2 | 335 / 43.5 | 360 / 41.9 | 247 / 54.2 | 246 / 100.3 |
+| 975,175,680 | 25 | 0 / 65.5 | 945 / 3.6 | 782 / 14.3 | 488 / 33.5 | 602 / 26.1 | 488 / 33.5 | 520 / 31.4 | 603 / 26.0 | 488 / 35.8 | 488 / 57.7 |
+| 1,950,351,360 | 50 | 0 / 65.5 | 945 / 3.6 | 904 / 6.2 | 812 / 12.3 | 812 / 12.2 | 812 / 12.3 | 812 / 12.3 | 807 / 12.6 | 812 / 13.3 | 812 / 20.7 |
+| 3,900,702,720 | 100 | 0 / 65.5 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 |
+
+Layer-major, reported beside it as the prefill-regime sensitivity and bearing no verdict. It
+reproduces section 2.2.2's LRU row exactly — 330 per mille at 6 and 12 per cent against
+token-major's 0 and 247, and 381 against 488 at 25 per cent:
+
+| Budget | % | `belady` | `lru` | `lfu` | `recent_w2` | `recent_w8` | `recent_w32` | `topk_k1` | `topk_k8` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 30,474,240 | 0 | 326 / 44.1 | 213 / 51.6 | 37 / 63.1 | 216 / 51.4 | 97 / 59.2 | 24 / 63.9 | 209 / 208.5 | 209 / 1317.0 |
+| 60,948,480 | 1 | 351 / 42.5 | 322 / 44.4 | 71 / 60.8 | 322 / 44.4 | 238 / 49.9 | 62 / 61.4 | 322 / 197.2 | 322 / 1279.4 |
+| 121,896,960 | 3 | 390 / 39.9 | 330 / 43.9 | 133 / 56.8 | 330 / 43.9 | 330 / 43.9 | 127 / 57.2 | 330 / 188.7 | 330 / 1221.4 |
+| 243,793,920 | 6 | 465 / 35.0 | 330 / 43.9 | 236 / 50.0 | 330 / 43.9 | 330 / 43.9 | 329 / 43.9 | 330 / 173.3 | 330 / 1107.6 |
+| 487,587,840 | 12 | 612 / 25.5 | 330 / 43.9 | 386 / 40.2 | 330 / 43.9 | 330 / 43.9 | 330 / 43.9 | 330 / 143.0 | 330 / 882.2 |
+| 975,175,680 | 25 | 788 / 13.9 | 381 / 40.5 | 605 / 25.9 | 381 / 40.5 | 381 / 40.5 | 381 / 40.5 | 383 / 80.8 | 381 / 439.1 |
+| 1,950,351,360 | 50 | 906 / 6.1 | 813 / 12.3 | 817 / 11.9 | 813 / 12.3 | 813 / 12.3 | 813 / 12.3 | 813 / 28.6 | 813 / 145.4 |
+| 3,900,702,720 | 100 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 |
+
+The verdict at the requested budget, and `sweep_best`:
+
+```text
+budget           975175680 byte(s)   (250 per mille of the expert footprint, 256 expert equivalents)
+baseline         lru 33532231680 byte(s) fetched
+best candidate   recent_reuse_w32 26033848320 byte(s) fetched
+gain             223 per mille (floor 50)
+headroom         574 per mille to the offline optimum
+jackknife        40 fold(s), minimum gain 213 per mille, stable yes
+result           BEATS_BASELINE
+```
+
+| Budget | % | Headroom | Best candidate | Gain | `result` |
+| --- | --- | --- | --- | --- | --- |
+| 30,474,240 | 0 | 68 | `lfu` | 25 | `NO_POLICY_BEATS_BASELINE` |
+| 60,948,480 | 1 | 139 | `lfu` | 59 | `BEATS_BASELINE` |
+| 121,896,960 | 3 | 259 | `recent_reuse_w32` | 124 | `BEATS_BASELINE` |
+| 243,793,920 | 6 | 409 | `recent_reuse_w32` | 229 | `BEATS_BASELINE` |
+| 487,587,840 | 12 | 440 | `lfu` | 171 | `BEATS_BASELINE` |
+| 975,175,680 | 25 | 574 | `recent_reuse_w32` | 223 | `BEATS_BASELINE` |
+| 1,950,351,360 | 50 | 493 | `lfu` | 2 | `NO_POLICY_BEATS_BASELINE` |
+| 3,900,702,720 | 100 | 0 | — | 0 | `NO_HEADROOM` |
+
+Prefetch accounting at the requested budget: `topk_prefetch_k1` issues 600 prefetches of which 2 are
+later hit before eviction (3 per mille), and `topk_prefetch_k8` issues 6,355 of which 0 are — section
+4.5 finding 4, reproduced exactly.
+
+**The roadmap section R3 gate is discharged.** At the requested hardware condition a policy more
+effective than the baseline is identified numerically, with an effect floor and a stability test
+stated before the measurement, and the answer is a curve rather than a point.
+
+Two numbers differ from section 4.5's probe and both are explained rather than tolerated:
+`inputs.bytes_read` is 2,673,069 here against the probe's 2,675,149, because the only host-dependent
+bytes in an `R2_ACTIVATION_TRACE` are its `path` field and the probe's scratch directory was 52 bytes
+longer per document; and `inputs.instrument_builds` is `[]` with `instrument_build_source: "absent"`
+in both, which is the ordinary case R2A finding 8 records. Every hit rate, byte total, verdict, and
+jackknife bound is identical.
+
+### 7.5 Align limitations met while implementing
+
+Classified, not worked around. The register in `docs/align-requests.md` is the orchestrator's to
+edit; this section is the client evidence.
+
+1. **A local `array<i64>` passed as a `borrow mut` parameter is invalidated for every later read in
+   the caller once the call sits inside a `loop`.** This is the single largest shape constraint on
+   the module and it is a genuine gap, not a style preference. Reduced to three lines:
+
+   ```text
+   mut a := filled(4, 0)
+   loop { if a[i] == 0 { touch(a, i) } ... }      // touch(borrow mut a: array<i64>, k: i64)
+   ```
+
+   fails with "use of invalidated borrow 'a': its source 'a' was moved or reassigned (or its storage
+   was reallocated); create a new view from the current source" on the loop's own guard, on the
+   assignment after the call, and on every read after the loop. The same call outside a loop is
+   accepted. `borrow mut` of a **record** (`src/alignpack_read.align:335`'s `Counters`) and of a
+   **`buffer`** both work inside loops, so the gap is specific to `array<T>`; and a record cannot
+   substitute, because an `array<i64>` **field** of a record cannot be element-assigned at all —
+   `s.table[i] = v` is "invalid assignment target" whether `s` is a local or a `borrow mut`
+   parameter. The consequences are all through `src/residency_sim.align`: every helper returns owned
+   columns inside a record instead of writing through out-parameters (`ReplayResult`, `BudgetSweep`,
+   `IrLoad`, `TraceLoad`, `Verdict`), and correction 15's admission block is written twice.
+   Non-blocking — the module is correct and bounded as written — and it is the shape a
+   `borrow mut array<T>` parameter, or an element-assignable record field, would remove.
+2. **`Option<string>` cannot be read out of an array element, and an array of a Move-type record
+   cannot be indexed at all.** `d.graphs[at].phase` is "reading a Move-type field `Option<string>`
+   out of an array element is not supported yet"; hoisting with `row := d.graphs[at]` is "indexing
+   an array of the Move type `TraceGraphRow` is not supported yet (it would copy the element without
+   transferring ownership)". `Option<i64>` in the same position is fine, so the gap is the Move
+   payload rather than the `Option`. This is what forced correction 1. It is the fourth client of
+   the same family as `docs/align-requests.md` Request 34's ok-payload restriction and is recorded
+   here as client evidence, not as a new consumed surface.
+3. **A field moved out of a decoded record is freed twice.** `build_source: document.run.build_source`
+   compiles cleanly and then aborts the process at `free` with "pointer being freed was not
+   allocated" when the decoded `TraceDocument` is dropped — SIGABRT, no message, and, because stdout
+   is block-buffered, no output at all, so the failure looks like a hang at whatever the last
+   flushed byte was. The fix is one `.clone()` through a `str` view. A partial move out of a record
+   is either supported or rejected; being accepted by the checker and unsound at run time is the
+   part worth recording.
+4. **No `fs.size` and no metadata-only stat.** Correction 3. `src/alignpack.align:1717` already
+   records the same absence beside `fs.open_ro`; R3 is the second client, and unlike R0 and R2A it
+   does **not** need `fs.open_ro` — `fs.read_file` does not demand `O_RDWR`, so a qualification may
+   read documents from a read-only artifact directory, which R2A's arm cannot.
+5. **No `str`-to-number conversion** (Request 26). Second client, exactly as section 2.1 predicted:
+   `BUDGET_BYTES` is a CLI operand and a `json.decode` detour would accept `-0`, `1e3`, and leading
+   whitespace, none of which this operand admits. `parse_budget` is 15 lines with an explicit
+   non-wrapping overflow guard.
+6. **Huge-struct-copy warnings on `borrow` parameters** (Request 23). Fourth client:
+   `residency_sim$Derived` (440 bytes) warns on the renderer's `borrow` parameter, and
+   `residency_sim$ResidencySim` (200 bytes) and `residency_sim$TraceLoad` (184 bytes) warn on the
+   returns that own them. Four sites, additional evidence, no status change.
+7. **`json.decode` ignores undeclared members, at every nesting depth.** Not a gap — the shipped
+   behaviour section 2.1 probed, confirmed on the real 1.19 MB `R1_MODEL_IR`: a four-field
+   `IrBlockRow` decodes 1,058 blocks and never materializes the 3,219 nested tensor records, and the
+   whole decode-plus-sum runs in 0.4 s. It is what makes this module simple, and it is recorded here
+   so the next client can rely on it.
