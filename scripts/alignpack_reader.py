@@ -51,7 +51,10 @@ READ_CHUNK = 4 * 1024 * 1024
 BLOCK_KINDS = ["WeightBlock", "AttentionBlock", "MlpBlock", "ExpertBlock", "RouterBlock"]
 
 # Section 2.4.4's frozen role list: the fifteen R1 roles of `docs/specs/r1-qwen-model-ir.md`
-# section 2.5.6 in that sentence's order, then the roles `docs/specs/r1b-gptoss-moe-ir.md` adds.
+# section 2.5.6 in that sentence's order, then the roles `docs/specs/r1b-gptoss-moe-ir.md` adds,
+# then the two QK-norm roles `docs/specs/r1c-olmoe-moe-ir.md` section 2.5.2 appends. It mirrors
+# `src/alignpack.align`'s `role_id`, index for index; `run-model-ir-smoke`'s `role-list-mirror`
+# case asserts the equality, because a one-sided edit is a compile error in neither language.
 ROLES = [
     "attn_norm", "attn_q", "attn_q_bias", "attn_k", "attn_k_bias", "attn_v", "attn_v_bias",
     "attn_output", "ffn_norm", "ffn_gate", "ffn_up", "ffn_down", "token_embd", "output_norm",
@@ -59,6 +62,7 @@ ROLES = [
     "attn_output_bias", "attn_sinks", "router", "router_bias",
     "ffn_gate_exps", "ffn_gate_exps_bias", "ffn_up_exps", "ffn_up_exps_bias",
     "ffn_down_exps", "ffn_down_exps_bias", "ffn_gate_up_exps", "ffn_gate_up_exps_bias",
+    "attn_q_norm", "attn_k_norm",
 ]
 
 # GGML block geometry, transcribed from the same shipped library the R1B section 2.8.2 oracle read.

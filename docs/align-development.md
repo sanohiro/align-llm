@@ -544,9 +544,15 @@ failure against the reference's log output fails closed (a nonzero exit, never a
 silent pass). The runner also asserts the size-sum oracle against an independent `stat` of the file,
 the `bytes_read` bound, and that the model's size and modification time are unchanged, which is the
 read-only proof. The reference itself runs under a 300-second `timeout` (or `gtimeout`; skipped when
-the host has neither) inside a subshell whose `ulimit -f 8192` caps its log at 8 MiB (bash counts
-1024-byte blocks), so a reference build that fails to terminate is a bounded failure rather than an
-unbounded log. The timeout diagnostic is reported only when one of those wrappers was actually used.
+the host has neither) inside a subshell whose `ulimit -f 262144` caps every file it writes at 256 MiB
+(bash counts 1024-byte blocks), so a reference build that fails to terminate is a bounded failure
+rather than an unbounded log. The cap is deliberately far above the log itself (125 KB for the olmoe
+model, 237 KB for the qwen one) because `ulimit -f` bounds *every* file the reference creates: on a
+Metal host `llama-cli` writes a compiled shader pipeline cache of 12-35 MB per file, so an earlier
+8 MiB cap killed the reference with SIGXFSZ mid-compile whenever that cache was cold, surfacing only
+as "the reference reader exited 153". 256 MiB clears the cache and still bounds the 461 MB runaway
+log the wrapper exists for. The timeout diagnostic is reported only when one of those wrappers was
+actually used.
 
 **The gpt-oss parity qualification is an explicit, named `N/A` today**, stated exactly, per
 `docs/specs/r1b-gptoss-moe-ir.md` section 4.4:
@@ -564,6 +570,42 @@ claim-tiling oracles, and the MXFP4 library oracle above.
 The model path inherits R0's writable-by-the-invoking-user precondition unchanged — `read_table`
 uses the same `fs.open_rw` constructor for both frontends — so Request 21 in
 `docs/align-requests.md` covers this capability too, still `PROPOSED` and non-blocking.
+
+**The olmoe half is the R1C-OLMOE-MOE-IR capability, implemented** (branch
+`agent/r1c-olmoe-moe-ir`, design ledger commit `83361a9`, implementation `45e4ced` with its review
+repair on top; review is complete and publication is the remaining work), specified by
+`docs/specs/r1c-olmoe-moe-ir.md`. `--model-ir` dispatch becomes a three-way chain at
+`general.architecture`: `qwen2` (`src/frontend_qwen.align`), `gpt-oss`
+(`src/frontend_gpt_oss.align`), and now `olmoe` (`src/frontend_olmoe.align`, new); everything else
+still falls through to the qwen2 frontend, whose step-4 re-check produces `R1_UNSUPPORTED_ARCH`. No
+change to `src/model_ir.align` or to `R1_MODEL_IR`'s `schema_version: 2` is required — olmoe reuses
+the neutral geometry pass, block resolution, coverage, and size-sum oracle unchanged, and needs no
+new GGML geometry row (the model uses only `F32`, `Q4_K`, and `Q6_K`, all already sized). The one
+addition to the frozen `role_id` list in `src/alignpack.align` and its `scripts/alignpack_reader.py`
+mirror is two roles the qwen2 and gpt-oss frontends never needed: `attn_q_norm` (27) and
+`attn_k_norm` (28), the olmoe model's per-layer QK-norm tensors (`blk.N.attn_q_norm.weight` and
+`blk.N.attn_k_norm.weight`, each `[n_embd]` F32). They are a hard precondition for R4.5's expert
+matmul on this model: without them two of every seven attention block members would persist as
+`DEFERRED_U32` in a pack rather than as an addressable role.
+
+The parity row set gains a fourth architecture branch in `scripts/run-model-ir-parity`'s
+`build_rows`. The olmoe extension over the shared row set is exactly `["n_expert_used"]` — unlike
+gpt-oss it adds no `n_ff_exp` row, because the reference build prints one only for an architecture
+that declares `expert_feed_forward_length`, and olmoe does not — and it adds no `n_swa` row, because
+the olmoe Model IR has no `sliding_window` field to compare against the reference's architecture
+default. Both omissions are asserted rather than silently dropped. `ALIGN_LLM_GGUF_MODEL` continues
+to serve all three architectures; there is no third environment variable. Unlike the gpt-oss
+qualification, olmoe's is runnable today against
+`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (3.92 GiB, already downloaded locally), and it **has been
+run and passes**: 15 compared rows — `arch: olmoe`, `n_layer: 16`, `n_embd: 2048`,
+`n_head`/`n_head_kv: 16`, `head_dim: 128` (from both `n_embd_head_k` and `n_embd_head_v`),
+`n_ff: 1024`, `n_expert: 64`, `n_expert_used: 8`, `n_vocab: 50304`, `context_length: 4096`,
+`rope.type: 2`, `freq_base 10000.0`, `rms_eps 1.0e-05` — plus a loader type census of `f32: 81`,
+`q4_K: 97`, `q6_K: 17`, coverage of 195 of 195 tensors over 1,058 blocks, and a size-sum oracle
+closing at `1,781,760 + 4,211,730,432 = 4,213,512,192`. `bytes_read` is 2,097,152, which is **two**
+1 MiB windows rather than one, because `data_offset` (1,781,760) lies past the first window boundary.
+This is the first `model-ir-parity` discharged against a real mixture-of-experts model; the qwen2
+qualification passes unchanged over its 14 rows in the same runner.
 
 ## Expert trace development
 

@@ -369,9 +369,16 @@ fn valid_path(path: str) -> bool {
 
 // `member.role_id` is the index of the member's R1 role in this frozen list. Entries 0 to 14 are
 // the fifteen roles `docs/specs/r1-qwen-model-ir.md` section 2.5.6 freezes, in that sentence's
-// order; entries 15 to 26 are the roles `docs/specs/r1b-gptoss-moe-ir.md` adds, appended so that
-// the R1 indexes never move. A role this list does not name — including a frontend that supplied
-// none — is `0xFFFFFFFF`, which is a stated absence and never an index.
+// order; entries 15 to 26 are the roles `docs/specs/r1b-gptoss-moe-ir.md` adds; entries 27 and 28
+// are the two QK-norm roles `docs/specs/r1c-olmoe-moe-ir.md` section 2.5.2 adds — each group
+// appended so that the earlier indexes never move. A role this list does not name — including a
+// frontend that supplied none — is `0xFFFFFFFF`, which is a stated absence and never an index.
+//
+// The list is **append-only**: an existing index never moves, is never reused, and is never
+// renumbered for tidiness, because it travels as a `u32` in the member record of every written
+// pack. `scripts/alignpack_reader.py`'s `ROLES` mirrors it in the same order, and
+// `run-model-ir-smoke`'s `role-list-mirror` case asserts their equality, because the two lists
+// disagreeing is a compile error in neither language.
 //
 // The label is what travels: a `BlockPlan` carries a role as a span of text, and the two shipped
 // frontends number their own internal role enumerations differently, so an id taken from a frontend
@@ -404,6 +411,8 @@ fn role_id(label: str) -> i64 {
   if label == "ffn_down_exps_bias" { return 24 }
   if label == "ffn_gate_up_exps" { return 25 }
   if label == "ffn_gate_up_exps_bias" { return 26 }
+  if label == "attn_q_norm" { return 27 }
+  if label == "attn_k_norm" { return 28 }
   return DEFERRED_U32
 }
 
@@ -435,6 +444,8 @@ fn role_label(id: i64) -> str {
   if id == 24 { return "ffn_down_exps_bias" }
   if id == 25 { return "ffn_gate_up_exps" }
   if id == 26 { return "ffn_gate_up_exps_bias" }
+  if id == 27 { return "attn_q_norm" }
+  if id == 28 { return "attn_k_norm" }
   return ""
 }
 
