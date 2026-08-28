@@ -41,10 +41,21 @@ contract or policy behavior; it does not trigger another comprehensive review. R
 changed only the pre-existing ggml shim compiler guard and does not materially change the reviewed
 R3 risks, so it requires fresh integration evidence but not another comprehensive review.
 
+The final whole-diff host-native Codex review covered `5c6d769` against base tip and merge base
+`aad872f704a32db03eb91edbdbe49aee308d9a8e`; verdict: changes requested. It found two valid P2
+issues in the opt-in qualification: invalid hardware or generated model IR could reach up to 40
+expensive instrument runs before refusal, and a contract-valid newline in the hardware name could
+inject line-oriented verdict evidence. Both findings are accepted, none rejected, and consolidated
+repair `a1ceb2b` reuses the adapter's exact prerequisite loaders before prompt work, checks the
+model-dependent prefetch bound, JSON-escapes external evidence strings, and adds hosted regressions
+for both root-cause classes. The repair is confined to the reviewed qualification boundary and does
+not expand the capability or change simulator policy semantics, so it does not trigger another
+comprehensive review.
+
 After the rebase, `make residency-sim-smoke` and `make format-check` pass, and
 `make residency-sim-qualification` prints its exact `N/A` line. The owner reports 7 policies, 11
-semantic codes, 3 limit cases, 18 adapter refusals, measurement provenance, and the complete
-CLI/oracle comparison after rerunning both producer owners. It includes a valid layer-1-before-
+semantic codes, 3 limit cases, 18 adapter refusals, qualification prerequisite/evidence checks, and
+the complete CLI/oracle comparison after rerunning both producer owners. It includes a valid layer-1-before-
 layer-0 trace, a non-contiguous-group refusal, and the reviewer's 2,400-demand
 arithmetic reproducer refused before output creation. The qualification is N/A because the required
 model/instrument environment is unavailable. The hosted owner makes no hardware-speed claim, so the roadmap
@@ -64,9 +75,8 @@ passing attempts with a 268,617,652 ns median. The 20 artifact paths are unchang
 `Makefile`, and `src/main.align` have new identities. `make baseline-check` ends `baseline chain:
 PASS`, and no pending record remains.
 
-**Next actions, in order.** (1) Review the final whole diff because the repair expands the
-publication artifact set, then rerun exact-head preflight. (2) Publish and merge with a merge
-commit. (3) Refresh `main` and continue the next eligible roadmap capability.
+**Next actions, in order.** (1) Run exact-head preflight. (2) Publish and merge with a merge commit.
+(3) Refresh `main` and continue the next eligible roadmap capability.
 
 ## Merged checkpoint: GCC14-FP-CONTRACT-PORTABILITY (2026-08-28)
 
