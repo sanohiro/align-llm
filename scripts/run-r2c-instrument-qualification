@@ -35,7 +35,16 @@ def command(
     *,
     capture: bool = False,
     timeout: int | None = None,
+    accept: Sequence[int] = (0,),
 ) -> subprocess.CompletedProcess[bytes]:
+    """Run one subprocess, refusing any status outside `accept`.
+
+    `accept` exists for exactly one caller. `main --expert-trace` maps a refused transcript to
+    `Err(Error.Invalid)` and exits 2, and still writes the `R2_ACTIVATION_TRACE` document that
+    names the error code and detail (`docs/specs/r2a-expert-trace.md` section 2.3). Treating 2 as a
+    process failure here would discard that document and report the bare `error: code 2` the
+    product prints on stderr, which names neither the code nor the offending node.
+    """
     try:
         result = subprocess.run(
             arguments,
@@ -48,7 +57,7 @@ def command(
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise QualificationError(f"cannot run {arguments[0]}: {error}") from error
-    if result.returncode != 0:
+    if result.returncode not in accept:
         detail = (result.stderr or b"").decode("utf-8", "replace").strip()
         raise QualificationError(detail or f"{arguments[0]} exited {result.returncode}")
     return result
@@ -193,9 +202,13 @@ def capture(
 
 
 def parse_trace(transcript: Path, destination: Path) -> dict[str, object]:
+    # Status 2 is the parser's own refusal and carries a document; every other nonzero status is a
+    # process failure with no document to read. Admitting 2 here is what makes the diagnostic below
+    # reachable at all.
     command(
         (os.fspath(PRODUCT), "--expert-trace", os.fspath(transcript), os.fspath(destination)),
         capture=True,
+        accept=(0, 2),
     )
     try:
         document = json.loads(destination.read_text(encoding="utf-8"))

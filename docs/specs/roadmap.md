@@ -334,10 +334,49 @@ The current forward delivery order is:
     property rather than a prefill win. The result is a correctness and layout claim about this named
     model, not a throughput claim. No new Align capability request was needed; four existing requests
     (37, 42, 45, 46) gain R5D as a non-blocking client. See `HANDOFF.md`.
-24. **R5E-MOE-MODEL-PREFILL — a whole sixteen-layer OLMoE prefill computed from Align-owned expert
+22. **R2C-DECODE-INSTRUMENT — a pinned, source-built decode-graph measurement dependency. Merged
+    as PR #140, merge commit `89d8721` on `main`, by a parallel session.** [`r2c-decode-instrument.md`](r2c-decode-instrument.md)
+    is the authoritative ledger and closure matrix. It pins llama.cpp commit
+    `bb4caa7540188872173c44d161602d9271386413` and one two-file patch, builds the patched
+    `llama-eval-callback` into an identity-addressed cache outside Git, and extends the existing
+    schema-1 parser to accept either the upstream three-plus-three router axes or exact full axes.
+    Positive `-n` values now emit bounded one-token decode graphs while omitted/nonpositive `-n`
+    retains one prefill graph; only `ffn_moe_topk` prints every slot and token. Existing R2/R3
+    measurement wrappers now pass explicit `-n 0` and reject full-axis documents, preserving their
+    historical prefill-only, compact six-slot semantics. The deterministic owner, dense
+    qualification, and real OLMoE qualification pass;
+    the latter records three graphs including decode, 48 full-width groups, 384 selections, and a
+    router extent of eight above the old six-value threshold. The first comprehensive review found
+    four valid cache/recipe/qualification defects, all consolidated and owner-tested. Final repair
+    review found three further valid compatibility/safety/parser defects; their consolidated repair,
+    affected owner verification, and real OLMoE requalification pass. Its first measurement
+    consumer is item 24; R6 may consume the same instrument as its decode-graph source.
+
+24. **R2D-DECODE-LOCALITY-GATE — the decode half of the R2 locality gate, measured on the real
+    model. Merged as PR #141, merge commit `c21b9e4` on `main`.** On branch `agent/r2d-decode-locality-gate`,
+    started from `main` `89d8721` (R2c PR #140) and merged with `main` `e312bd7` (R5D PR #139)
+    rather than rebased over it, so its recorded commits stay reachable.
+    [`r2a-expert-trace.md`](r2a-expert-trace.md) section 9 is the authoritative record; no
+    design gate is triggered, because it adds no CLI verb, no exchanged document, and no coordinated
+    invariant. `scripts/run-decode-locality-gate` captures one prompt-plus-decode transcript per
+    prompt with item 22's patched instrument at `-n 16 --temp 0 --seed 42`, derives one
+    `R2_ACTIVATION_TRACE` per transcript, deletes the transcript, and pools the documents into three
+    verdicts under one rule: `prefill@8` over all eight router slots, `decode@8` between consecutive
+    decode graphs, and the prompt-to-generation `boundary` pair reported separately. On the same
+    40-prompt corpus all three are `LOCALITY` — 371, **447**, and 364 per mille against a 125 per
+    mille null, with cluster-robust intervals [338, 405], [426, 468], and [325, 405] over 40 prompt
+    clusters — and every layer clears the null on its own stratum. Greedy decode's token-repetition
+    rate is measured at 51 per mille and excluding those pairs leaves every verdict unchanged. The
+    historical compact-axis path and section 8's recorded 286 per mille are untouched. The
+    aggregator's owner case is hosted in `expert-trace-smoke`, needs no model or instrument, and
+    kills all fourteen mutations of the shipped rule. One comprehensive review over two independent
+    reviewers found thirteen findings — one blocker, one major, eleven minor — all accepted and
+    repaired in one consolidated commit; the real-model run was repeated at the repair head and
+    reproduced every recorded number.
+25. **R5E-MOE-MODEL-PREFILL — a whole sixteen-layer OLMoE prefill computed from Align-owned expert
     claims, completing R5's **third** gate stage. Implemented and reviewed; in publication.** On branch
-    `agent/r5e-moe-model-prefill`, merged with the merged R5D at `main` `e312bd7` rather than rebased
-    over it, so the recorded baseline-chain commits stay reachable; design ledger `5e3356d`,
+    `agent/r5e-moe-model-prefill`, merged with the merged R5D at `main` `e312bd7` and then again with the merged
+    R2D at `main` `c21b9e4`, rather than rebased over either, so the recorded baseline-chain commits stay reachable; design ledger `5e3356d`,
     implementation `053de09`, review repair `e7f727f`.
     [`r5e-moe-model-prefill.md`](r5e-moe-model-prefill.md) is the authoritative plan and owns the
     probe record, the contract ledger, the closure matrix, the correction ledger, and the
@@ -367,42 +406,26 @@ The current forward delivery order is:
     **48** (same-call aliasing between a `borrow mut` owner and its own `Copy` scalar field), are
     filed `PROPOSED` and non-blocking. See `HANDOFF.md`.
 
-22. **R2C-DECODE-INSTRUMENT — a pinned, source-built decode-graph measurement dependency. Merged
-    as PR #140, merge commit `89d8721` on `main`, by a parallel session.** [`r2c-decode-instrument.md`](r2c-decode-instrument.md)
-    is the authoritative ledger and closure matrix. It pins llama.cpp commit
-    `bb4caa7540188872173c44d161602d9271386413` and one two-file patch, builds the patched
-    `llama-eval-callback` into an identity-addressed cache outside Git, and extends the existing
-    schema-1 parser to accept either the upstream three-plus-three router axes or exact full axes.
-    Positive `-n` values now emit bounded one-token decode graphs while omitted/nonpositive `-n`
-    retains one prefill graph; only `ffn_moe_topk` prints every slot and token. Existing R2/R3
-    measurement wrappers now pass explicit `-n 0` and reject full-axis documents, preserving their
-    historical prefill-only, compact six-slot semantics. The deterministic owner, dense
-    qualification, and real OLMoE qualification pass;
-    the latter records three graphs including decode, 48 full-width groups, 384 selections, and a
-    router extent of eight above the old six-value threshold. The first comprehensive review found
-    four valid cache/recipe/qualification defects, all consolidated and owner-tested. Final repair
-    review found three further valid compatibility/safety/parser defects; their consolidated repair,
-    affected owner verification, and real OLMoE requalification pass. Preflight, publication, and
-    merge are complete, so R6 may consume the instrument; R2D-DECODE-LOCALITY-GATE, on branch
-    `agent/r2d-decode-locality-gate`, is its first consumer and extends R2's gate past prefill.
 
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
-`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18 through 24 above:
-items 18 through 23 are merged, R2's gate is met, R4's and R4.5's per-expert halves are discharged,
-R3's gate is met on the real corpus, decision (c)'s pinned decode instrument is shipped, and R5D
-computes one routed OLMoE layer over Align-owned expert claims, agreeing with llama.cpp node for
-node. It also unblocked item 24, R5E-MOE-MODEL-PREFILL, which is implemented, reviewed, and in
-publication: a whole sixteen-layer routed prefill over one reused Align-owned claim window, logits
-byte-identical to `llama-debug`, and 33.36% of the model's expert bytes read at six tokens.
+`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18 through 25 above:
+items 18 through 24 are merged, R2's gate is met **in both the prefill and the decode direction**,
+R4's and R4.5's per-expert halves are discharged, R3's gate is met on the real corpus, decision (c)'s
+pinned decode instrument is shipped, and R5D computes one routed OLMoE layer over Align-owned expert
+claims, agreeing with llama.cpp node for node. It also unblocked item 25, R5E-MOE-MODEL-PREFILL,
+which is implemented, reviewed, and in publication: a whole sixteen-layer routed prefill over one
+reused Align-owned claim window, logits byte-identical to `llama-debug`, and 33.36% of the model's
+expert bytes read at six tokens.
 **R5's gate is therefore complete on the real MoE model for all three stages of the routed path** —
 単一block (R4.5 and MOE-PREREQ-DISCHARGE), 単一layer (R5D), and 最小モデル (R5E). Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
 **infeasible on the host where that decision was recorded** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
 a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch is **taken** and
-merged as item 22, unblocking R6 and, through it, R7-R9; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
+merged as item 22, unblocking R6 and, through it, R7-R9, and already consumed by item 24 to meet
+R2's gate in the decode direction; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
 required microbenchmark C. See `HANDOFF.md`, "Active capabilities", for the full decision list and
 disk-space accounting.
 
@@ -883,9 +906,42 @@ decodeの測定は存在せず（`phase_split.decode` は `null`）、decode時r
 このうち厳密に言えるのは**t側**の制限だけで、これはhitのみを取り除くのでp^を**低く**偏らせる。
 t+1側の制限は分子と分母を同時に動かすため方向は確定できず、真のtop-8 reuseが286 per milleより
 上か下かはここでは主張しない。最終層はinstrumentがoutput-token reductionを先に適用するため寄与しない
-（section 6 correction 20）。R2cの測定器はitem 22で実装中だが、この過去の数値を書き換えない。
-R2bのcorpus横断層別（language別/task別/repo別偏り）とR2c instrumentを使うdecode locality測定は
-未達のまま残る。
+（section 6 correction 20）。R2cの測定器（item 22、merge済み）はこの過去の数値を書き換えない。
+
+**decode方向も満たされた（2026-08-28、R2D-DECODE-LOCALITY-GATE）。** R2cのpatched instrumentを
+使い、同じcorpusの40 promptを`-n 16 --temp 0 --seed 42`（greedy）で捕捉した。40 prefill graphと
+640 decode graph、832 token位置（所要は診断値でありhost負荷に依存する: repair後の再実行で252.9秒、
+その前は189.8秒。記録した数値はすべて両者で一致する）。router slotは8/8すべて印字されるため、印字subset用の
+小さいnullは存在せず、nullは125 per milleただ一つである。隣接の定義はgraph内ではなく**系列**
+上であり（decode graphは1 tokenなので、graph内定義ではdecode pairが1件も存在しない）、3本の
+arm を同一ruleで判定する。測定器は`scripts/run-decode-locality-gate`、集計は
+`scripts/expert_locality_gate.py`の`aggregate_decode`である。
+
+```text
+p0 = 125 per mille (k/n = 8/64), 40 prompt clusters, LOCALITY threshold 1.5x
+
+prefill@8  (prompt内の隣接token)          verdict=LOCALITY  p^=371  Wilson [364,378]
+                                          cluster-robust [338,405] (deff 23.274)  2.97x  15/15層
+decode@8   (生成tokenの隣接)              verdict=LOCALITY  p^=447  Wilson [443,450]
+                                          cluster-robust [426,468] (deff 35.375)  3.58x  16/16層
+boundary   (prompt末尾 -> 最初の生成token) verdict=LOCALITY  p^=364  Wilson [350,378]
+                                          cluster-robust [325,405] (deff 8.794)   2.91x  15/15層
+
+histogram entropy: prefill 992 / decode 996 per mille of uniform, top-8 mass 179 / 163
+working set (decode) w=2: 12.420 vs null 15.000 / w=4: 19.105 vs 26.484 / w=8: 28.328 vs 42.009
+```
+
+数値の意味と限界は[`r2a-expert-trace.md`](r2a-expert-trace.md) section 9にある。要点のみ:
+**decodeのreuseはprefillより高く**（447 対 371、cluster-robust区間は重ならない）、decode側の
+histogramはprefill側より一様なので（entropy 996 対 992）popularity偏りではない。8 token連続の
+decodeで触れるexpertは28.33（独立仮定なら42.01）で、window拡大に伴い不足幅が広がる。greedy decode
+のloop（同一tokenの連続）は測定済みで**51 per mille**にとどまり、該当pairを除外しても
+decode@8は429 per mille・cluster-robust [408,451]・LOCALITYのまま変わらない。
+
+限界: greedy（`--temp 0`）固定、`-c 512`、prompt 6 token以下、生成16 tokenの範囲のみ。
+prefill@8の371 per milleは8 slot分母の別測定であり、section 8の286 per mille（印字6 slot）を
+**書き換えるものではない**。1 model・1 corpus・1 hostである。R2bのcorpus横断層別
+（language別/task別/repo別偏り）がR2で唯一未達のまま残る。
 
 ---
 
@@ -1102,7 +1158,7 @@ planが想定したより小さい**——6 tokenのprefillでlayerのexpert byt
 （1 tokenでは12.5%、18 tokenでは73.4%）ため、claim単位のexpert residencyは
 **decode-time property**として記録され、prefillの勝ちとしては主張されない。
 
-**whole modelのrouted版（MoE stage 3）はR5E-MOE-MODEL-PREFILL（roadmap item 24、
+**whole modelのrouted版（MoE stage 3）はR5E-MOE-MODEL-PREFILL（roadmap item 25、
 `docs/specs/r5e-moe-model-prefill.md`）が対象とする。** branch `agent/r5e-moe-model-prefill`、
 merged R5D（`main` `e312bd7`）とmergeし、design ledger `5e3356d`、実装 `053de09`、
 review repair `e7f727f`。実装・review・実modelでのqualificationは完了し、publication中である。

@@ -131,28 +131,39 @@ head. See the pull request for the re-recorded identity-bound chain (clean sourc
 baseline-check` there ending `baseline chain: PASS`. **This pull request must merge with a merge
 commit**; squash and rebase merges would make the recorded commits unreachable.
 
-**Next action.** Merge the pull request. `make ci` is **not** selected: `HOSTED_CHECK_TARGETS`
+**Next action.** Merge the pull request. `main` moved twice during publication — PR #139 (R5D) and
+then PR #141 (R2D-DECODE-LOCALITY-GATE, a parallel session) — and this branch **merges** both rather
+than rebasing over them; R2D took roadmap item **24**, so R5E is item **25**. `make ci` is **not** selected: `HOSTED_CHECK_TARGETS`
 membership is unchanged because R5E's owner is `layer-forward-smoke`'s fifth block, already a member,
 and the one new Makefile target, `moe-model-forward-qualification`, joins no aggregate. The `Makefile`
 edit is still an executable-contract boundary, so publication takes the **fresh-image
 (Docker-in-Docker)** installed profile, not the documentation lane.
 
-## Next: R2D-DECODE-LOCALITY-GATE (2026-08-28)
+## Merged checkpoint: R2D-DECODE-LOCALITY-GATE (2026-08-29)
 
-Branch `agent/r2d-decode-locality-gate`, being implemented in a parallel worktree off `main`
-`89d8721` (PR #140, the merged R2c decode instrument). It extends the merged R2 locality gate past
-prefill, which is what decision (c) was taken to unblock: `scripts/run-decode-locality-gate` plus a
-full-axis, phase-aware aggregation path in `scripts/expert_locality_gate.py` report prefill@8,
-decode@8, and the prefill->decode boundary pair under R2's own rule (Wilson interval,
-cluster-robust design effect, 1.5x materiality floor) with a repetition-excluded sensitivity verdict,
-and record the OLMoE result in `docs/specs/r2a-expert-trace.md` section 9. The same commit repairs
-`run-r2c-instrument-qualification`'s `parse_trace` so an exit-2 refusal document is read and its
-diagnostic is reachable, covered by a new `run-r2c-instrument-smoke` case.
+Branch `agent/r2d-decode-locality-gate` merged as PR #141, merge commit `c21b9e4` on `main`, by a
+**parallel session**. It started from `main` `89d8721` (R2c PR #140) and merged `main` `e312bd7`
+(R5D PR #139) rather than rebasing over it. It is the first measurement consumer of PR #140's
+patched instrument and it closes the **decode half of the R2 roadmap gate**; no design gate was
+triggered.
 
-**Files it touches that R5E also touches**, and which will need the same merge-not-rebase
-reconciliation once R5E merges: `HANDOFF.md`, `docs/specs/roadmap.md` (R5E takes item **24**), and
-`docs/align-development.md`. It does **not** touch `Makefile`, `src/`, or any recorded baseline
-artifact, so R5E's baseline chain and R2D's are independent.
+**The gate is met in the decode direction.** On the same 40-prompt corpus against
+`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` — 40 prefill and 640 decode graphs over 832 token positions
+— all three arms are `LOCALITY` against a 125 per mille null: `prefill@8` **371** per mille,
+cluster-robust [338, 405]; `decode@8` **447** per mille, cluster-robust [426, 468], 16 of 16 layers
+clearing; `boundary` **364** per mille, cluster-robust [325, 405]. Greedy decode's token-repetition
+rate is 51 per mille and excluding those pairs leaves the decode arm at 429 per mille, still
+`LOCALITY`. `docs/specs/r2a-expert-trace.md` section 9 is the authoritative record; section 8's
+prefill gate and its 286 per mille are untouched. It adds no `Makefile` target and changes no
+recorded baseline artifact, so R5E's baseline chain is unaffected by it.
+
+**What it means for R5E and for R3.** R5E records claim-level expert residency as a **decode-time**
+property and defers any residency policy because a single prefill has 343 demands and 343 distinct
+keys. R2D is the first direct measurement of the regime that deferral names: expert reuse between
+consecutive decode steps is materially higher than in prefill (447 against 371 per mille). It does
+not by itself make a cache-hit claim — that still needs a multi-prefill or decode **replay**, which
+`docs/specs/r3-residency-sim.md` owns — but it removes the "decode was never observed" caveat that
+R3's own measurement section records.
 
 ## Merged checkpoint: R5D-MOE-LAYER-FORWARD (2026-08-28)
 
@@ -196,9 +207,9 @@ by a **parallel Codex session** rather than by the session that produced R3 and 
 `main` `1b11245`, the merge of R3 follow-up PR #138.
 It **takes** decision (c): the source build of llama.cpp at exact commit
 `bb4caa7540188872173c44d161602d9271386413` with the minimal R2c instrument patch is pinned and
-shipped, which unblocks R6 and therefore R7-R9. Its first consumer is
-**R2D-DECODE-LOCALITY-GATE** (above). R5 microbenchmark C remains independently blocked on Align
-Request 41.
+shipped, which unblocks R6 and therefore R7-R9. Its first measurement consumer,
+**R2D-DECODE-LOCALITY-GATE**, is merged (above). R5 microbenchmark C remains independently blocked
+on Align Request 41.
 
 **Merged contents.** The triggered design ledger is `docs/specs/r2c-decode-instrument.md`
 (`d8e4818`); the reviewed implementation head is `5f1eb3e`, the first consolidated review repair is
@@ -494,7 +505,8 @@ now TAKEN and merged** as PR #140; decision (d) is unchanged and still pending.
    PR #132), and R4's per-expert half with R4.5's expert matmul (merged, PR #133). R3's residency
    simulation (merged, PR #135), its qualification-prerequisite follow-up (merged, PR #138), R5D's
    routed layer (merged, PR #139), and R5E's whole routed model, in publication above, follow from
-   the same file rather than from another download.
+   the same file rather than from another download, as does R2D's decode locality gate (merged,
+   PR #141).
 2. **`gpt-oss-20b-mxfp4.gguf`, 12.1 GB.** Unblocks R1B's real-model `model-ir-parity` qualification
    and every `ASSUMED` row of `docs/specs/r1b-gptoss-moe-ir.md` section 2.5 — including the two
    rows R1C has now contradicted from the olmoe side. **Infeasible on this host** after decision 1
@@ -573,14 +585,16 @@ non-finite-readback goldens, masked in golden normalization alone. Full ledger:
 `agent/r5e-moe-model-prefill` and read `docs/specs/r5e-moe-model-prefill.md` in full (and
 `docs/specs/r5d-moe-layer-forward.md` for the layer half) before touching `src/layer_olmoe.align`,
 `src/moe_model_forward.align`, or `scripts/run-moe-model-forward`. R5E's only remaining step is the
-merge. After it merges, the next active capability is **R2D-DECODE-LOCALITY-GATE** on
-`agent/r2d-decode-locality-gate`, which must merge `main` rather than rebase over it and reconcile
-`HANDOFF.md`, `docs/specs/roadmap.md`, and `docs/align-development.md`. Decision 1 is taken; R2's
+merge. After it merges, **no capability is active**: R2D merged as PR #141, so the next eligible roadmap
+work is **R6 (Persistent KV)**, which decision (c)'s merged instrument now unblocks and which owes
+its first task — naming the decode oracle — before anything else. R5's deferred microbenchmark C
+stays blocked on Align Request 41. Decision 1 is taken; R2's
 gate, R1C's frontend, R4's per-expert half, R4.5's expert matmul, C8's optional targeted stage, R3's
-residency simulator, R2c's decode instrument, and R5D's routed layer are all merged, so R5E waits on
-no further decision. For the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1);
-decision 3 is **taken and merged** as item 22, so R6 (section R6) and R7-R9 are unblocked and R2D is
-consuming it now; decision 4 -> R5's deferred microbenchmark C (section R5).
+residency simulator, R2c's decode instrument, R5D's routed layer, and R2D's decode locality gate are all
+merged, so R5E waits on no further decision. For the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1);
+decision 3 is **taken and merged** as item 22, and its first consumer, item 24's decode locality
+gate, is merged too, so R6 (section R6) and R7-R9 are unblocked; decision 4 -> R5's deferred
+microbenchmark C (section R5).
 
 **DinD preflight note.** The installed profile requires true Docker-in-Docker on macOS. The recipe
 lives in this session's memory, not in the repository, and the scripts that ran it lived only in a
@@ -591,8 +605,8 @@ exists by the time work resumes; otherwise rebuild from the CLAUDE.md rules (the
 ## Merged checkpoints
 
 Track B, dense local model (R0 → R5C), plus the merged R2 locality gate, the R1C olmoe frontend, the
-MoE prerequisite discharge, the R3 residency simulator, the R2c decode instrument, and R5D's routed
-layer; C8's optional targeted stage is the one merged Track A re-entry. The R5D, R2C, R3-RESIDENCY-SIM,
+MoE prerequisite discharge, the R3 residency simulator, the R2c decode instrument, R5D's routed
+layer, and R2D's decode locality gate; C8's optional targeted stage is the one merged Track A re-entry. The R2D, R5D, R2C, R3-RESIDENCY-SIM,
 MOE-PREREQ-DISCHARGE, R2, and R5C checkpoints are above; the rest, newest first:
 
 - **GCC14-FP-CONTRACT-PORTABILITY** (PR #136, merge `aad872f`): `#pragma STDC FP_CONTRACT OFF` is
