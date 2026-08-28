@@ -6475,6 +6475,15 @@ from the ABI enumeration at the pinned commit `4b515f8d37de2e9a9ba06170c5842fd12
 same read-only-media failure this request already names for R0's inspection and R2A's transcript
 scan, now on a third distinct input.
 
+**R6-KV-PERSIST is this request's strongest client to date** (`docs/specs/r6-kv-persist.md`
+section 7). Every client above reads a file this repository did not produce; the `akvp` container is
+one it **does** produce, so the natural place to put it — a shared read-only cache, a root-owned
+model directory, a container image layer — is exactly the place this arm cannot then read it from.
+`src/decode_step.align`'s load path calls `fs.open_rw(KV_LOAD)` on a file it never writes, and
+`src/kv_plane.align`'s `read_header` needs `f.len()` on the same handle because there is still no
+`fs.size`. **No status change**: a container in a developer's scratch directory is writable by its
+owner, and the capability ships without a workaround.
+
 **R3-RESIDENCY-SIM is a second, narrower client of the same `fs.size`/stat absence — but not a new
 client of the `fs.open_ro` gap this request asks for.** `src/residency_sim.align:377-378` and
 `:518-519` enforce the Model IR and trace document byte caps (`R3_IR_TOO_LARGE`,
@@ -7580,6 +7589,18 @@ whole payload in one byte view — which is exactly the multi-gigabyte residency
 avoid. R4 settled for the bounded header-region digest of section 2.4.6 (5,953,536 bytes on the
 reference model, about 2.6 ms at the measured 2.26 GB/s) and reserved the payload digest field.
 
+**R6-KV-PERSIST is the second client, and the bound it forces is recorded rather than hidden**
+(`docs/specs/r6-kv-persist.md` sections 2.4 and 2.5). Two consequences follow from the one-shot
+digest. First, `MAX_KV_PLANE_BYTES := 536870912` exists: a plane this capability cannot digest is a
+plane it **refuses to persist**, because a persisted artifact whose identity cannot be computed is
+not an identity and the one thing the digest exists to catch — a torn write — would go undetected.
+alignpack's own `MAX_HEADER_REGION_BYTES` of 128 MiB could not simply be inherited, because a plane
+at `MAX_ATTENTION_WIDTH` on the reference model is 448 MiB. Second, the container's model identity
+is the **pack's** header-region digest rather than the GGUF's, because a 4.68 GB digest would need a
+4.68 GB byte view; the limitation that follows — a pack whose weight bytes were corrupted after
+packing has the same header-region digest — is stated in that document's section 2.4 rather than
+papered over. **No status change.**
+
 ### Requested capability
 
 An Align-consistent Move-handle streaming digest, following the existing owned-handle/`Drop` idiom
@@ -7647,6 +7668,14 @@ section 2.8 step 5) is a check-then-create race: `fs.exists(path)` then `fs.crea
 window in which another process could create the path, which is then truncated by `fs.create_rw`.
 The artifact at risk is multiple gigabytes.
 
+**R6-KV-PERSIST is the second client** (`docs/specs/r6-kv-persist.md` section 2.6). Its
+`R6_KV_EXISTS` guard is the same check-then-create shape for the same reason, verified again at this
+pin: `fs.create_rw` is `O_RDWR|O_CREAT|O_TRUNC` and `fs.create_exclusive` returns a sequential
+`writer` with no `pwrite`, so a container that must be written at declared offsets has no exclusive
+positional constructor to use. The race is documented rather than defended — hiding it behind a
+silent overwrite would be worse — and **no workaround is built**. A destination that is a symlink is
+followed in both directions, exactly as alignpack's `dest-symlink` case pins. **No status change.**
+
 ### Requested capability
 
 Mirroring the shipped `fs.create_rw` / `fs.create_exclusive` pair:
@@ -7684,8 +7713,9 @@ Blocked gate or slice: none. R4-ALIGNPACK-LAYER-MAJOR makes no durability claim 
 Independent work that may continue: all work.
 Resume condition: an Align release ships a sync operation with a stated per-platform guarantee.
 Align commit or pull request: none
-align-llm verification: none required for R4; the first consumer would be roadmap R6's persistent
-  KV cache, where losing the artifact loses the only copy.
+align-llm verification: R6-KV-PERSIST's `--decode-step KV_SAVE` would call `f.sync()` before
+  reporting `kv.destination: "WRITTEN"`, and `gmake layer-forward-smoke` would pass unchanged in
+  outcome.
 ```
 
 ### Motivation and current sibling evidence
@@ -7705,8 +7735,17 @@ Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c
 gigabyte alignpack — survives a power loss. For R4 this is genuinely harmless: a pack is a
 deterministic derivative of a file (the source GGUF) that still exists, so a torn pack costs a rerun
 of `--pack`, and `--pack-verify` detects a torn or truncated pack rather than trusting it. It is
-recorded because the next client may be a persistent KV cache (roadmap R6), where the artifact is not
-a derivative of anything else and losing it loses the only copy.
+recorded because the next client is a persistent KV cache (roadmap item 29,
+`docs/specs/r6-kv-persist.md`).
+
+**That client has now been designed and shipped, and it corrects this paragraph's own prediction.**
+The earlier text said the R6 artifact "is not a derivative of anything else and losing it loses the
+only copy". It **is** a deterministic derivative — of the pack, the geometry document, the token
+ids, and `KV_WIDTH` — so a torn `akvp` container costs exactly one re-prefill, and
+`R6_KV_TRUNCATED` or `R6_KV_DIGEST("plane")` detects it rather than loading it
+(`docs/specs/r6-kv-persist.md` section 6, risk 6). This request therefore **stays `low` and
+non-blocking**; the first client that would raise it is one whose artifact is not reproducible from
+inputs that still exist. Correcting the register upward would have been easy and wrong.
 
 ### Requested capability
 
@@ -8399,6 +8438,16 @@ target offset via `window_put`/`align_ggml_window_copy` (`src/model_forward.alig
 because `pread`'s always-full-capacity read would otherwise over-read every member's tail if the
 transient were larger than the smallest member.
 
+**R6-KV-PERSIST is `align_ggml_window_copy`'s second consumer, and adds no new shim symbol**
+(`docs/specs/r6-kv-persist.md` section 2.7). Its load path must fill a caller-owned
+`mut plane: buffer` from a file region, which is the same shape for the same two reasons — the
+buffer is append-only, and `f.pread` overwrites from index 0 and always requests the whole capacity
+— so the plane is read in `CHUNK_BYTES` rounds through one transient and copied in at an offset
+through `model_forward.window_put`. The format's own region order is what makes the tail read safe:
+the plane is the container's **last** region and `f.len() == total_bytes` is validated before the
+first plane byte is read, so the final short read is short by exactly the remaining bytes rather
+than an over-read. **No status change.**
+
 ### Requested capability
 
 ```text
@@ -8468,6 +8517,12 @@ all: `fill_members`/`read_into_window` (`src/model_forward.align:2005-2060`) tak
 to avoid the measured 6.8-8.5x resident-set inflation the rebind-per-call shape produces at this
 member count. `read_exact` itself is unchanged and remains R0/R4's shared reader for every caller
 that reads fewer times per run.
+
+**R6-KV-PERSIST is a cited client** (`docs/specs/r6-kv-persist.md` section 2.7). Its plane refill
+uses one `buffer(model_forward.CHUNK_BYTES)` transient that `f.pread` refills in place and that is
+**never rebound**, for exactly the reason measured above; the two small metadata regions still go
+through `alignpack_read.read_exact`, which rebinds, because they are read once each at 192 and at
+most 128 bytes. **No status change.**
 
 ### Requested capability
 
@@ -9457,6 +9512,15 @@ when `tokens` is the caller's own `borrow mut` parameter and `transient` is a lo
 frame. Measured count: **161 of the 178 errors** in the first cross-module draft of
 `src/decode_step.align` were this one diagnostic, and every one of them disappeared by moving the
 callee into the calling module unchanged.
+
+**R6-KV-PERSIST is the first client for which this gap shapes a module boundary rather than forcing
+a copy** (`docs/specs/r6-kv-persist.md` section 2.7). `src/kv_plane.align` owns the `akvp` format —
+its constants, header, identity record, region arithmetic, digests, and writer — and every one of
+those is expressible with borrowed views and by-value returns, so they cross the boundary freely.
+The plane **refill** does not: it must write into `src/decode_step.align`'s own `mut plane: buffer`
+alongside that frame's other locals, which is precisely the refused shape. The byte movement
+therefore stays with the buffer's owner, the format's authority stays in one module, and no
+compatibility layer is built around the gap. **No status change.**
 
 **2. A foreign call unions its `borrow mut` arguments.** `model_forward.stage_plan` reports through
 four of them:

@@ -48,6 +48,10 @@ cleanup() {
   if [ "${shim_built}" = 1 ]; then
     ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null 2>&1 || true
   fi
+  # R6-KV-PERSIST section 6 risk 2. `ds-kv-save-unwritable` needs a `0555` directory, and a
+  # directory with no write bit cannot have its entries removed — so the mode is restored before
+  # `rm -rf` rather than after a leaked tree is discovered. It is a no-op on every other run.
+  chmod -R u+rwX "${work_dir}" >/dev/null 2>&1 || true
   rm -rf "${work_dir}"
   exit "${status}"
 }
@@ -2639,6 +2643,7 @@ PY
 DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
 LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
 python3 - "${root_dir}" "${work_dir}" <<'PY'
+import hashlib
 import json
 import os
 import subprocess
@@ -2670,6 +2675,136 @@ SHORT_TRANSCRIPT = path("model-decode-transcript-short-for-steps.txt")
 LOGITS = path("model-logits.bin")
 WIDTH = "8"
 STEPS = "3"
+
+# R6-KV-PERSIST section 5.1. Every container this block writes lands under the runner's own
+# `mktemp -d` tree: the checkout is read-only under the fresh worker and nothing is written inside
+# it. Section 6 risk 2's whole member list is closed here — physical paths, a refusal before any
+# reclaim trap, `-L` as well as `-e`, and the `chmod -R u+rwX` the shell trap above performs.
+READER = os.path.join(root_dir, "scripts", "kv_plane_reader.py")
+KV_SAVE = path("kv-saved.akvp")
+KV_DETERMINISM_A = path("kv-determinism-a.akvp")
+KV_DETERMINISM_B = path("kv-determinism-b.akvp")
+KV_DETERMINISM_C = path("kv-determinism-c.akvp")
+KV_OCCUPIED = path("kv-occupied.akvp")
+KV_OCCUPIED_LINK = path("kv-occupied-link.akvp")
+KV_READONLY_DIR = path("kv-readonly")
+KV_UNWRITABLE = os.path.join(KV_READONLY_DIR, "kv.akvp")
+KV_ABSENT = path("kv-absent.akvp")
+KV_GOOD = path("model-kv-good.akvp")
+KV_FOREIGN = path("model-kv-foreign-geometry.akvp")
+KV_HUGE = geom("geometry-kv-too-large")
+
+
+def kv(mutation):
+    return path("model-kv-%s.akvp" % mutation)
+
+
+def ds(save="-", load="-", width=WIDTH, geometry=GEOM, steps=STEPS, transcript=None):
+    """One thirteen-operand invocation. Every kv case is thirteen operands so that the two
+    directions differ in nothing but which position holds the path."""
+    return [ARM, PACK, geometry, TOKENS, "-", SOURCE,
+            TRANSCRIPT if transcript is None else transcript, width, "-", steps, save, load]
+
+
+# Section 5.2's refusal matrix, as data: the case name, the operands, the arm's exact code and
+# exact `error_detail`, and the coarse kind `scripts/kv_plane_reader.py` must independently reach on
+# the same file. `None` in the reader column is a case with no container to read.
+KV_REFUSALS = [
+    ("ds-kv-both", ds(KV_SAVE, KV_GOOD), "R6_KV_ARGS", "kv[save+load]", None, None),
+    # Precedence: 2b precedes every path-content check, so a run naming two paths is refused before
+    # either is opened — including when the load path names nothing at all.
+    ("ds-kv-both-and-missing", ds(KV_SAVE, KV_ABSENT), "R6_KV_ARGS", "kv[save+load]", None, None),
+    ("ds-kv-save-exists", ds(KV_OCCUPIED), "R6_KV_EXISTS", "<path>", None, None),
+    ("ds-kv-save-exists-symlink", ds(KV_OCCUPIED_LINK), "R6_KV_EXISTS", "<path>", None, None),
+    ("ds-kv-save-unwritable", ds(KV_UNWRITABLE), "R6_KV_UNWRITABLE", "Denied", None, None),
+    ("ds-kv-too-large", ds(KV_SAVE, geometry=KV_HUGE, width="4096"),
+     "R6_KV_TOO_LARGE", "plane[537001984]", None, None),
+    # Precedence: an unpersistable configuration reports why it can never be persisted, not that its
+    # destination happens to be taken.
+    ("ds-kv-too-large-and-exists", ds(KV_OCCUPIED, geometry=KV_HUGE, width="4096"),
+     "R6_KV_TOO_LARGE", "plane[537001984]", None, None),
+    ("ds-kv-load-missing", ds("-", KV_ABSENT), "R6_KV_UNREADABLE", "NotFound", None, None),
+    ("ds-kv-truncated-header", ds("-", kv("truncated-header")),
+     "R6_KV_TRUNCATED", "header", kv("truncated-header"), "TRUNCATED"),
+    # Precedence: L2 precedes L3, so a hundred-byte file with a wrong magic is short before it is
+    # foreign.
+    ("ds-kv-magic-and-truncated", ds("-", kv("magic-and-truncated")),
+     "R6_KV_TRUNCATED", "header", kv("magic-and-truncated"), "TRUNCATED"),
+    ("ds-kv-magic", ds("-", kv("magic")), "R6_KV_MAGIC", "\\xbe\\x4b\\x56\\x50",
+     kv("magic"), "MAGIC"),
+    ("ds-kv-version", ds("-", kv("version")), "R6_KV_VERSION", "2", kv("version"), "VERSION"),
+    ("ds-kv-header-bytes", ds("-", kv("header-bytes")), "R6_KV_HEADER", "header_bytes",
+     kv("header-bytes"), "HEADER"),
+    ("ds-kv-identity-record-bytes", ds("-", kv("identity-record-bytes")), "R6_KV_HEADER",
+     "identity_record_bytes", kv("identity-record-bytes"), "HEADER"),
+    ("ds-kv-element-type", ds("-", kv("element-type")), "R6_KV_HEADER", "element_type",
+     kv("element-type"), "HEADER"),
+    ("ds-kv-layout-version", ds("-", kv("layout-version")), "R6_KV_HEADER", "plane_layout_version",
+     kv("layout-version"), "HEADER"),
+    ("ds-kv-plane-align", ds("-", kv("plane-align")), "R6_KV_HEADER", "plane_align",
+     kv("plane-align"), "HEADER"),
+    ("ds-kv-endian-probe", ds("-", kv("endian-probe")), "R6_KV_HEADER", "endian_probe",
+     kv("endian-probe"), "HEADER"),
+    ("ds-kv-doc-schema", ds("-", kv("doc-schema")), "R6_KV_HEADER", "document_schema_version",
+     kv("doc-schema"), "HEADER"),
+    ("ds-kv-high-bit", ds("-", kv("high-bit")), "R6_KV_HEADER", "plane_offset",
+     kv("high-bit"), "HEADER"),
+    ("ds-kv-flags", ds("-", kv("flags")), "R6_KV_RESERVED", "flags", kv("flags"), "RESERVED"),
+    ("ds-kv-reserved", ds("-", kv("reserved")), "R6_KV_RESERVED", "reserved",
+     kv("reserved"), "RESERVED"),
+    ("ds-kv-reserved-u32", ds("-", kv("reserved-u32")), "R6_KV_RESERVED", "reserved_u32",
+     kv("reserved-u32"), "RESERVED"),
+    ("ds-kv-identity-reserved", ds("-", kv("identity-reserved")), "R6_KV_RESERVED",
+     "identity_reserved", kv("identity-reserved"), "RESERVED"),
+    ("ds-kv-truncated-total", ds("-", kv("truncated-total")), "R6_KV_TRUNCATED", "4544!=4608",
+     kv("truncated-total"), "TRUNCATED"),
+    ("ds-kv-region-overlap", ds("-", kv("region-overlap")), "R6_KV_REGION", "identity",
+     kv("region-overlap"), "REGION"),
+    ("ds-kv-region-outside", ds("-", kv("region-outside")), "R6_KV_TRUNCATED", "plane",
+     kv("region-outside"), "REGION"),
+    ("ds-kv-region-misaligned", ds("-", kv("region-misaligned")), "R6_KV_REGION", "plane",
+     kv("region-misaligned"), "REGION"),
+    ("ds-kv-plane-not-last", ds("-", kv("plane-not-last")), "R6_KV_REGION", "plane",
+     kv("plane-not-last"), "REGION"),
+    ("ds-kv-geometry-layers", ds("-", kv("geometry-layers")), "R6_KV_GEOMETRY", "n_layer",
+     kv("geometry-layers"), "GEOMETRY"),
+    ("ds-kv-geometry-head-dim", ds("-", kv("geometry-head-dim")), "R6_KV_GEOMETRY", "head_dim",
+     kv("geometry-head-dim"), "GEOMETRY"),
+    ("ds-kv-geometry-plane-bytes", ds("-", kv("geometry-plane-bytes")), "R6_KV_GEOMETRY",
+     "plane_bytes", kv("geometry-plane-bytes"), "GEOMETRY"),
+    ("ds-kv-identity-pack", ds("-", kv("identity-pack")), "R6_KV_IDENTITY", "pack",
+     kv("identity-pack"), "IDENTITY"),
+    ("ds-kv-identity-pack-size", ds("-", kv("identity-pack-size")), "R6_KV_IDENTITY",
+     "pack_total_bytes", kv("identity-pack-size"), "IDENTITY"),
+    ("ds-kv-identity-geometry", ds("-", kv("identity-geometry")), "R6_KV_IDENTITY", "geometry",
+     kv("identity-geometry"), "IDENTITY"),
+    # The same refusal from a container written against a **different geometry document** rather
+    # than from a flipped byte: the flip proves the field is read, this proves it means what it
+    # says.
+    ("ds-kv-identity-foreign-geometry", ds("-", KV_FOREIGN), "R6_KV_IDENTITY", "geometry",
+     KV_FOREIGN, "IDENTITY"),
+    # L11 reuses R6's existing `R6_KV_WIDTH`: the condition is "the plane is not the width this run
+    # needs", and R6 already owns that sentence. The file is the good one; the **operand** differs.
+    ("ds-kv-width-mismatch", ds("-", KV_GOOD, width="16"), "R6_KV_WIDTH", "kv_width[8]!=[16]",
+     None, None),
+    ("ds-kv-tokens-count", ds("-", kv("tokens-count")), "R6_KV_TOKENS", "count[2]",
+     kv("tokens-count"), "TOKENS"),
+    ("ds-kv-tokens-id", ds("-", kv("tokens-id")), "R6_KV_TOKENS", "2", kv("tokens-id"), "TOKENS"),
+    ("ds-kv-digest-tokens", ds("-", kv("digest-tokens")), "R6_KV_DIGEST", "tokens",
+     kv("digest-tokens"), "DIGEST"),
+    ("ds-kv-npast", ds("-", kv("npast")), "R6_KV_NPAST", "columns[2]!=[3]", kv("npast"), "NPAST"),
+    ("ds-kv-argmax", ds("-", kv("argmax")), "R6_KV_HEADER", "prefill_argmax",
+     kv("argmax"), "ARGMAX"),
+    ("ds-kv-digest-logits", ds("-", kv("digest-logits")), "R6_KV_DIGEST", "logits",
+     kv("digest-logits"), "DIGEST"),
+    ("ds-kv-digest-plane", ds("-", kv("digest-plane")), "R6_KV_DIGEST", "plane",
+     kv("digest-plane"), "DIGEST"),
+    # The one row where the two implementations refuse for **different reasons** — the arm through
+    # the plane digest, the reader through its own zero-tail invariant — which is what proves the
+    # reader is not a transcription of the arm.
+    ("ds-kv-zero-tail", ds("-", kv("zero-tail")), "R6_KV_DIGEST", "plane",
+     kv("zero-tail"), "ZEROTAIL"),
+]
 # The generator's own greedy ids: one per line, `K` lines, the ids its own reference loop
 # **consumed**. The arm derives step 1's token from its own prefill logits and every later step's
 # from its own previous step (R6 section 2.1, R6-STEP-N section 3.2), and never takes any of them as
@@ -2698,8 +2833,14 @@ if len(set(EXPECTED_TOKENS)) != len(EXPECTED_TOKENS):
 NO_DOCUMENT = [
     ("ds-arity-3", [ARM, PACK, GEOM]),
     ("ds-arity-8", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT]),
-    ("ds-arity-12",
-     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "extra"]),
+    # R6-KV-PERSIST section 5.3: `ds-arity-14` replaces `ds-arity-12` as the over-arity case. Both
+    # are `NO_DOCUMENT` and carry no golden row, so the move costs zero golden bytes.
+    ("ds-arity-14",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "-", "-", "extra"]),
+    ("ds-path-kv-save-empty",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "", "-"]),
+    ("ds-path-kv-load-empty",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "-", ""]),
     ("ds-path-pack-empty", [ARM, "", GEOM, TOKENS]),
     ("ds-path-geometry-empty", [ARM, PACK, "", TOKENS]),
     ("ds-path-long", [ARM, "/" + ("a" * 5000), GEOM, TOKENS]),
@@ -2817,7 +2958,19 @@ ENGINE_CASES = [
     ("ds-logits-missing",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH, path("absent.bin")],
      "R5_LOGITS_UNREADABLE"),
-]
+    # R6-KV-PERSIST section 5.1. Both `-` is legal and is exactly the eleven-operand form: this
+    # capability adds no default and absence is the pre-existing behaviour character for character.
+    ("ds-kv-args-dash-dash", ds(), ""),
+    # The save direction, then — in a **separate process** — the load direction over the file the
+    # save wrote. The order in this list is the order `record` runs them, which is what makes
+    # `ds-kv-load-ok` a load of something rather than of nothing.
+    ("ds-kv-save-ok", ds(save=KV_SAVE), ""),
+    ("ds-kv-load-ok", ds(load=KV_SAVE), ""),
+    # The same load over a container written by `scripts/layer_forward_fixture.py` — a third
+    # implementation of the format that has read neither the arm nor the reader. This is what makes
+    # `akvp` a shared contract rather than the arm's habit.
+    ("ds-kv-load-fixture", ds(load=KV_GOOD), ""),
+] + [(name, operands, code) for name, operands, code, _, _, _ in KV_REFUSALS]
 
 FORCED_CASES = [
     ("ds-force-init", "engine+init", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
@@ -2925,9 +3078,46 @@ def normalize(text):
         row["compute_ns"] = 0
     document["plane"]["readback_ns"] = 0
     document["plane"]["upload_ns"] = 0
+    # R6-KV-PERSIST section 2.9: two single intervals and one labelled diagnostic, all wall clock.
+    document["kv"]["write_ns"] = 0
+    document["kv"]["read_ns"] = 0
     for key, placeholder in PLACEHOLDER.items():
         if document[key]:
             document[key] = placeholder
+    # Section 6 risk 2's temp-path class. The `kv` object publishes no path by contract, but
+    # `R6_KV_EXISTS` and `R6_KV_CLEANUP_FAILED` name the destination in `error_detail` — which is a
+    # `mktemp -d` path and would make the golden a function of this run's temporary directory. It is
+    # replaced by a placeholder here, exactly as the five top-level path fields are, and the case
+    # table below asserts the placeholder so the substitution cannot hide a wrong detail.
+    if document["error_detail"].startswith(work_dir):
+        document["error_detail"] = "<path>"
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+# R6-KV-PERSIST section 3, oracle Q. `normalize` plus the keys that are **counts of work the load
+# path legitimately did not do**, and nothing else. What remains inside the comparison is the point:
+# `decode` in full including `token_ids`, every object of `steps[]` including each step's `sha256`,
+# `argmax`, `n_past`, `plane_column_written`, and complete `oracle` sub-object;
+# `plane.columns_written`, `roundtrip_verdict`, `roundtrip_bytes_compared`, and every
+# `first_mismatch_*`; `output` and `oracle_logits`; `oracle_decode` in full; and `model`,
+# `selection`, `window`'s sizes, `head`'s digests, and `abi`.
+PERSIST_EXCLUDED_BLOCKS = ("kv", "graph", "schedule", "timings", "lifetime", "reference")
+PERSIST_EXCLUDED_FIELDS = (
+    # The prefill's own graph, absent by design on a load run.
+    ("plane", "source"), ("plane", "readback_ns"), ("plane", "upload_ns"),
+    ("head", "node_count"), ("head", "pread_ns"), ("head", "compute_ns"),
+    # Pack reads and window fills the prefill performed and the load did not.
+    ("pack", "reader_pread_count"), ("pack", "reader_bytes_read"),
+    ("window", "reuse_count"), ("window", "member_placements"),
+)
+
+
+def normalize_persist(text):
+    document = json.loads(normalize(text))
+    for block in PERSIST_EXCLUDED_BLOCKS:
+        document.pop(block, None)
+    for block, field in PERSIST_EXCLUDED_FIELDS:
+        document[block].pop(field, None)
     return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -2942,8 +3132,19 @@ def build_shim(force):
     subprocess.run([builder], check=True, capture_output=True, env=environment)
 
 
-def run(operands):
-    return subprocess.run([binary] + operands, capture_output=True, cwd=work_dir)
+def run(operands, environment=None):
+    return subprocess.run([binary] + operands, capture_output=True, cwd=work_dir, env=environment)
+
+
+def read_container(container, kind=None, tokens=TOKENS):
+    """`scripts/kv_plane_reader.py`, always as a **subprocess and never imported**
+    (`scripts/run-alignpack-smoke`'s rule): a shared interpreter state would let the two
+    implementations agree by accident."""
+    command = ["python3", READER, "--plane", container, "--pack", PACK, "--geometry", GEOM,
+               "--tokens", tokens, "--quiet"]
+    if kind is not None:
+        command += ["--expect-reject", kind]
+    return subprocess.run(command, capture_output=True, cwd=work_dir)
 
 
 failures = []
@@ -2972,7 +3173,7 @@ def record(name, operands, expected):
     if (result.returncode == 0) != (expected_exit == 0):
         failures.append("%s: status %r but exit %d"
                         % (name, document["status"], result.returncode))
-    if document["kind"] != "R6_DECODE_STEP" or document["schema_version"] != 2:
+    if document["kind"] != "R6_DECODE_STEP" or document["schema_version"] != 3:
         failures.append("%s: wrong document identity %r/%r"
                         % (name, document["kind"], document["schema_version"]))
     if not document["abi"]["fp_contract_off"]:
@@ -3005,6 +3206,16 @@ for name, operands in NO_DOCUMENT:
         failures.append("%s: expected a non-zero exit, got 0" % name)
     if result.stdout != b"":
         failures.append("%s: expected no document, got %d bytes" % (name, len(result.stdout)))
+
+# R6-KV-PERSIST section 5.2's three destination cases need a filesystem state rather than a file
+# with a defect in it. All three live under `work_dir`; the `0555` directory is restored to writable
+# by the shell trap before `rm -rf`, so it cannot survive this runner.
+with open(KV_OCCUPIED, "wb") as handle:
+    handle.write(b"not a container")
+OCCUPIED_BEFORE = open(KV_OCCUPIED, "rb").read()
+os.symlink(KV_OCCUPIED, KV_OCCUPIED_LINK)
+os.makedirs(KV_READONLY_DIR, exist_ok=True)
+os.chmod(KV_READONLY_DIR, 0o555)
 
 # The R5B arm is untouched: its own flag still selects it and it still emits its own document.
 r5b = run(["--model-forward", PACK, GEOM, TOKENS])
@@ -3106,6 +3317,14 @@ for name, operands, expected in ENGINE_CASES:
     if decode["slot_high_water"] != 66 or graph["slot_capacity"] != 128:
         failures.append("%s: slots %d/%d, not 66/128"
                         % (name, decode["slot_high_water"], graph["slot_capacity"]))
+    # R6-KV-PERSIST section 1.1. A load run **skips the prefill entirely**, so it builds no prefill
+    # graph and publishes none: the two prefill-shaped assertions below are the decode loop's
+    # neighbours and do not apply to it. Everything above — the plane, oracle B, the id chain, the
+    # per-step shape — does apply and is asserted on both paths unchanged.
+    if plane["source"] == "LOADED":
+        if graph["node_count_total"] != 0 or graph["graph_count"] != 0:
+            failures.append("%s: a load run published a prefill graph: %r" % (name, graph))
+        continue
     # The prefill runs at the declared width, so it issues R5B's reconciliation graph: 1 + 34 + 36
     # + 3. The decode graph issues two more rows per layer — one `CONCAT` on K and one on V — at
     # `t = 1`: 1 + 36 + 38 + 3.
@@ -3212,6 +3431,174 @@ repeats = {normalize(run([ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDT
 if len(repeats) != 1:
     failures.append("three consecutive runs produced %d distinct documents" % len(repeats))
 
+# ---------------------------------------------------------------------------------------------
+# R6-KV-PERSIST section 3: oracle P, oracle Q, the refusal matrix, and the writer's determinism
+#
+# Everything here runs against the **engine** shim, before the forced-failure loop rebuilds it.
+# ---------------------------------------------------------------------------------------------
+
+# Rule 2. The save run writes, and what it wrote is exactly section 2.3.5's synthetic row.
+saved = json.loads(produced["ds-kv-save-ok"])
+if saved["kv"]["verdict"] != "SAVED" or saved["kv"]["destination"] != "WRITTEN" \
+        or saved["plane"]["source"] != "PREFILL":
+    failures.append("ds-kv-save-ok: %r / %r" % (saved["kv"], saved["plane"]["source"]))
+if (saved["kv"]["total_bytes"], saved["kv"]["plane_offset"], saved["kv"]["plane_bytes"],
+        saved["kv"]["logits_bytes"], saved["kv"]["header_bytes"]) != (4608, 4096, 512, 128, 192):
+    failures.append("ds-kv-save-ok: the container's layout is %r, not section 2.3.5's synthetic row"
+                    % saved["kv"])
+if saved["kv"]["columns_persisted"] != saved["selection"]["token_count"] \
+        or saved["kv"]["token_count"] != saved["selection"]["token_count"] \
+        or saved["kv"]["plane_bytes"] != saved["plane"]["bytes"] \
+        or saved["kv"]["prefill_argmax"] != saved["output"]["argmax"]:
+    failures.append("ds-kv-save-ok: the header disagrees with the run it describes: %r"
+                    % saved["kv"])
+if not os.path.exists(KV_SAVE):
+    failures.append("ds-kv-save-ok: no container at the destination")
+else:
+    stat = os.stat(KV_SAVE)
+    if stat.st_size != saved["kv"]["total_bytes"]:
+        failures.append("ds-kv-save-ok: the file is %d bytes and the header says %d"
+                        % (stat.st_size, saved["kv"]["total_bytes"]))
+    # Section 2.3's region-order property 4: padding is **written**, not left as a hole, so the
+    # allocated size cannot be short of the logical size. A sparse container would report fewer
+    # blocks than bytes and would make the qualification's disk-headroom figure false.
+    if stat.st_blocks * 512 < stat.st_size:
+        failures.append("ds-kv-save-ok: the container is sparse: %d blocks for %d bytes"
+                        % (stat.st_blocks, stat.st_size))
+    reader = read_container(KV_SAVE)
+    if reader.returncode != 0:
+        failures.append("ds-kv-save-ok: the independent reader refused the container: %s"
+                        % reader.stderr.decode("utf-8", "replace").strip())
+
+# Oracle P, legs 1 and 3, and rule 3. A **separate process** loaded the file, and the digests the
+# load run republishes are the ones the save run wrote.
+loaded = json.loads(produced["ds-kv-load-ok"])
+if loaded["kv"]["verdict"] != "LOADED" or loaded["plane"]["source"] != "LOADED" \
+        or loaded["kv"]["destination"] != "-":
+    failures.append("ds-kv-load-ok: %r / %r" % (loaded["kv"], loaded["plane"]["source"]))
+for field in ("plane_sha256", "logits_sha256", "tokens_sha256", "geometry_sha256",
+              "source_header_region_sha256", "total_bytes", "plane_offset", "plane_bytes",
+              "columns_persisted", "prefill_argmax", "pack_total_bytes"):
+    if saved["kv"][field] != loaded["kv"][field]:
+        failures.append("ds-kv-load-ok: kv.%s is %r on the save run and %r on the load run"
+                        % (field, saved["kv"][field], loaded["kv"][field]))
+# Oracle P, leg 2: the plane the loaded run's **graphs consumed** matches the loaded plane, through
+# a different node than the digest — and over the same 960 B `ds-steps-3` reports.
+expected_roundtrip = sum(2 * 2 * (3 + k) * 1 * 4 * 4 for k in range(1, 4))
+if loaded["plane"]["roundtrip_verdict"] != "IDENTICAL" \
+        or loaded["plane"]["roundtrip_bytes_compared"] != expected_roundtrip \
+        or loaded["plane"]["columns_written"] != 3 + 3:
+    failures.append("ds-kv-load-ok: oracle B is %r over %d bytes with %d columns"
+                    % (loaded["plane"]["roundtrip_verdict"],
+                       loaded["plane"]["roundtrip_bytes_compared"],
+                       loaded["plane"]["columns_written"]))
+# Rule 5. Gate G survives the round trip: `output` is republished byte-identically from the
+# persisted vector, so `oracle_logits` is available on the load path and the id chain's root is the
+# container's own `prefill_argmax`.
+if loaded["output"]["sha256"] != saved["output"]["sha256"] \
+        or loaded["output"]["argmax"] != loaded["kv"]["prefill_argmax"] \
+        or loaded["decode"]["token_ids"][0] != loaded["kv"]["prefill_argmax"]:
+    failures.append("ds-kv-load-ok: the persisted vector did not republish `output`: %r / %r"
+                    % (loaded["output"]["argmax"], loaded["kv"]["prefill_argmax"]))
+if loaded["decode"]["token_ids"] != EXPECTED_TOKENS[:3]:
+    failures.append("ds-kv-load-ok: decoded %r, not the reference loop's %r"
+                    % (loaded["decode"]["token_ids"], EXPECTED_TOKENS[:3]))
+
+# The fixture-written container: a third implementation of the format, loaded and decoded.
+from_fixture = json.loads(produced["ds-kv-load-fixture"])
+if from_fixture["plane"]["source"] != "LOADED" \
+        or from_fixture["decode"]["token_ids"] != EXPECTED_TOKENS[:3] \
+        or from_fixture["plane"]["roundtrip_verdict"] != "IDENTICAL":
+    failures.append("ds-kv-load-fixture: %r / %r"
+                    % (from_fixture["decode"]["token_ids"], from_fixture["plane"]))
+if read_container(KV_GOOD).returncode != 0:
+    failures.append("ds-kv-load-fixture: the reader refused the fixture's own container")
+
+# Oracle Q. The two runs are the same run.
+if normalize_persist(produced["ds-kv-save-ok"]) != normalize_persist(produced["ds-kv-load-ok"]):
+    failures.append("ds-kv-roundtrip: %s"
+                    % describe_difference(normalize_persist(produced["ds-kv-save-ok"]),
+                                          normalize_persist(produced["ds-kv-load-ok"])))
+# Section 6 risk 7's guard against a vacuous oracle: the comparison must still hold the things that
+# would change if one loaded lane were wrong.
+witness = json.loads(normalize_persist(produced["ds-kv-load-ok"]))
+if "decode" not in witness or "steps" not in witness or not witness["steps"] \
+        or "sha256" not in witness["steps"][0] or "output" not in witness \
+        or "oracle_logits" not in witness or "roundtrip_bytes_compared" not in witness["plane"]:
+    failures.append("ds-kv-roundtrip: the exclusion list emptied the comparison: %r"
+                    % sorted(witness))
+
+# Section 5.2. Every refusal names its own code **and** its own detail, the independent reader
+# reaches its own coarse kind on the same file, no container is left behind, and the pre-existing
+# file at an occupied destination is byte-unchanged.
+# W1 to W4 run **after** step 10, so a refusal on the save path has already computed and verified a
+# prefill plane and says so. Every other row in the matrix is refused before the plane exists.
+KV_AFTER_PREFILL = {"ds-kv-save-unwritable"}
+
+for name, _, code, detail, container, kind in KV_REFUSALS:
+    document = json.loads(produced[name])
+    if document["error_code"] != code or document["error_detail"] != detail:
+        failures.append("%s: %r/%r, not %r/%r"
+                        % (name, document["error_code"], document["error_detail"], code, detail))
+    after_prefill = name in KV_AFTER_PREFILL
+    expected_source = "PREFILL" if after_prefill else "-"
+    expected_columns = 3 if after_prefill else 0
+    if document["plane"]["source"] != expected_source or document["kv"]["verdict"] != "-" \
+            or document["kv"]["destination"] != "-":
+        failures.append("%s: a refused run published a plane source %r and %r"
+                        % (name, document["plane"]["source"], document["kv"]))
+    # Whatever the plane's provenance, **no step ran**: no row, no id, and never `IDENTICAL`.
+    if document["decode"]["steps_completed"] != 0 or document["steps"] \
+            or document["decode"]["token_ids"] \
+            or document["plane"]["columns_written"] != expected_columns \
+            or document["plane"]["roundtrip_verdict"] == "IDENTICAL":
+        failures.append("%s: a refused run published loop state: %r / %r"
+                        % (name, document["decode"], document["plane"]))
+    if os.path.exists(KV_UNWRITABLE):
+        failures.append("%s: a refused run left a container in the read-only directory" % name)
+    if open(KV_OCCUPIED, "rb").read() != OCCUPIED_BEFORE:
+        failures.append("%s: the pre-existing destination file was modified" % name)
+    if container is not None:
+        outcome = read_container(container, kind)
+        if outcome.returncode != 0:
+            failures.append("%s: the independent reader did not reject %s as %s: %s"
+                            % (name, os.path.basename(container), kind,
+                               outcome.stderr.decode("utf-8", "replace").strip()))
+
+# The reader's own early exit: a `--plane` that names nothing exits 1 having read nothing further.
+missing_reader = read_container(KV_ABSENT)
+if missing_reader.returncode != 1 or not missing_reader.stderr:
+    failures.append("ds-kv-reader-missing: exit %d with %d bytes of diagnostic"
+                    % (missing_reader.returncode, len(missing_reader.stderr)))
+
+# Rule 7, determinism of the **writer**, by double write rather than by a checked-in hex golden
+# (section 3, and `docs/specs/r4-alignpack-layer-major.md` section 7.2's decision inherited with its
+# reasons). Two saves of identical inputs to two destinations, then the same save again under a
+# perturbed environment.
+run(ds(save=KV_DETERMINISM_A))
+run(ds(save=KV_DETERMINISM_B))
+perturbed = dict(os.environ)
+perturbed.update({"TZ": "Pacific/Kiritimati", "LANG": "de_DE.UTF-8", "LC_ALL": "de_DE.UTF-8",
+                  "SOURCE_DATE_EPOCH": "1", "PWD": "/"})
+run(ds(save=KV_DETERMINISM_C), environment=perturbed)
+digests = {}
+for label, container in (("a", KV_DETERMINISM_A), ("b", KV_DETERMINISM_B),
+                         ("c", KV_DETERMINISM_C), ("first", KV_SAVE)):
+    if not os.path.exists(container):
+        failures.append("ds-kv-determinism: %s was not written" % label)
+        continue
+    with open(container, "rb") as handle:
+        digests[label] = hashlib.sha256(handle.read()).hexdigest()
+if len(set(digests.values())) != 1:
+    failures.append("ds-kv-determinism: four writes produced %d distinct containers: %r"
+                    % (len(set(digests.values())), digests))
+
+# Three consecutive load runs of one container are byte-identical after `normalize`.
+load_repeats = {normalize(run(ds(load=KV_GOOD)).stdout.decode("utf-8")) for _ in range(3)}
+if len(load_repeats) != 1:
+    failures.append("ds-kv-load-determinism: three load runs produced %d distinct documents"
+                    % len(load_repeats))
+
 for name, force, operands, expected in FORCED_CASES:
     build_shim(force)
     record(name, operands, expected)
@@ -3274,6 +3661,15 @@ REQUIRED_CODES = {
     "R5_LAYER_COVERAGE", "R5_MEMBER_MISSING", "R5_SHAPE", "R5_GGML_UNAVAILABLE",
     "R5_TYPE_UNSUPPORTED", "R5_ALIGNMENT", "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE",
     "R5_SOURCE_DIVERGED", "R5_LOGITS_SHAPE", "R5_LOGITS_UNREADABLE", "R6_STEPS",
+    # R6-KV-PERSIST section 2.6's whole vocabulary except `R6_KV_WRITE_FAILED`, which section 4.1
+    # marks **deferred as a case**: reaching it needs a filesystem that accepts a create and refuses
+    # a write, which alignpack reaches only through an opt-in `hdiutil` volume, and the correct move
+    # is to reuse that mechanism rather than build a second one. `R6_KV_CLEANUP_FAILED` and
+    # `R6_KV_SIZE_MISMATCH` sit behind it on the same path and are deferred with it.
+    "R6_KV_ARGS", "R6_KV_TOO_LARGE", "R6_KV_EXISTS", "R6_KV_UNREADABLE", "R6_KV_UNWRITABLE",
+    "R6_KV_TRUNCATED", "R6_KV_MAGIC", "R6_KV_VERSION", "R6_KV_HEADER", "R6_KV_RESERVED",
+    "R6_KV_REGION", "R6_KV_GEOMETRY", "R6_KV_IDENTITY", "R6_KV_TOKENS", "R6_KV_NPAST",
+    "R6_KV_DIGEST",
 }
 missing_codes = REQUIRED_CODES - codes
 if missing_codes:
@@ -3312,4 +3708,12 @@ print("decode step smoke: %d no-document cases (R6_ARITY, R6_PATH), %d documente
       "oracle B IDENTICAL over the whole plane including every written-back column, three steps "
       "decoding the reference loop's own ids, and arm-r5b-unchanged PASS"
       % (len(NO_DOCUMENT), len(ORDER), len(codes - {""})))
+print("decode step smoke: akvp v1 -- %d refusal cases each asserting the arm's code and detail and "
+      "the independent reader's own kind over %d reject kinds, a %d-byte container written and "
+      "reloaded in a separate process, a fixture-written container loaded and decoded to the same "
+      "ids, oracle Q byte-identical outside %d excluded groups, and four writes producing one "
+      "digest"
+      % (len(KV_REFUSALS), len({kind for _, _, _, _, _, kind in KV_REFUSALS if kind}),
+         saved["kv"]["total_bytes"],
+         len(PERSIST_EXCLUDED_BLOCKS) + len(PERSIST_EXCLUDED_FIELDS)))
 PY

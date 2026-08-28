@@ -3,7 +3,131 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R6-STEP-N (2026-08-29)
+## Active: R6-KV-PERSIST (2026-08-29)
+
+Branch `agent/r6-kv-persist`, stacked on `agent/r6-step-n`, which is merged into it at `6ca1eef`
+(the STEP-N review repair) by `git merge` — **never a rebase**, so both stacked branches' recorded
+commits stay reachable. Nothing is committed on this branch yet. When R6-DECODE-KV-STEP1 and
+R6-STEP-N land on `origin/main` this branch takes `git merge origin/main` and re-checks the roadmap
+item number, the Align Request numbering, and the `baseline-check` row.
+
+**Capability.** The R6 KV plane persisted to disk and reloaded in a **fresh process**, dense
+Qwen2.5-Coder-7B Q4_K_M, CPU. `docs/specs/r6-kv-persist.md` is the authoritative ledger. **Three**
+of the design gate's four triggers fire — a changed public CLI arm, a **new persisted format** plus
+a document schema bump, and a **process ownership boundary** — and the fourth fires too: the plane's
+layout stops being private to `src/decode_step.align` and becomes a published contract with an
+independent second reader.
+
+**Complete.** `src/kv_plane.align` (new module: the `akvp` v1 constants, the 192-byte header, the
+192-byte identity record, non-wrapping region arithmetic, five `crypto.sha256` digests, and the
+writer; no `unsafe`, no `extern`); `--decode-step` arity 12 and 13 with `KV_SAVE`/`KV_LOAD` and the
+`-` convention; `R6_KV_ARGS` at step 2b, `R6_KV_TOO_LARGE` at 6a, `R6_KV_EXISTS` at 6b, the pack
+identity read at step 7, the save path W1–W4 after step 10, and the load path L1–L14 replacing steps
+9–10; the chunked refill through `model_forward.window_put`; document schema 3 with `plane.source`,
+the `kv` object, and `timings.first_token_ns`; `scripts/kv_plane_reader.py` (a second implementation
+written from the specification, driven as a subprocess, 13 reject kinds);
+`scripts/layer_forward_fixture.py`'s `kv_container` (a **third** implementation) plus 35 mutants and
+a non-degenerate pack source-identity record; the fifth smoke block's 49 new cases;
+`scripts/run-decode-step`'s save → separate-process load → compare leg with the determinism,
+`du`, and TTFT-proxy legs; roadmap item 29, `docs/align-development.md`, and client lines under
+Align Requests 21, 29, 30, 31, 38, 39, and 49 including **one correction to Request 31's own forward
+text**.
+
+**The `Makefile` is byte-untouched** — no target, no `.PHONY` word, no build-list entry;
+`src/kv_plane.align` enters through `src/decode_step.align`'s import graph — so aggregate
+membership and check topology are unchanged by construction. `src/ggml_ffi.align`,
+`scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`, `scripts/build-ggml-shim`, and
+`src/ggml_spike.align` are **byte-unchanged**: the refill's only crossing is
+`align_ggml_window_copy`, which shipped with R5B, and every new refusal is reachable from a
+malformed file rather than from a forced compute failure, so this capability needs **no new forced
+shim build**.
+
+**Goldens.** `scripts/decode-step-golden.jsonl` moves — every row to schema 3, plus 49 new rows, 52
+becoming 101. `scripts/layer-forward-golden.jsonl`, `scripts/model-forward-golden.jsonl`,
+`scripts/gpu-forward-golden.jsonl`, `scripts/moe-layer-forward-golden.jsonl`, and
+`scripts/ggml-spike-golden.jsonl` are **byte-unchanged**, verified by regenerating all five and
+observing no diff — which is the check that the new `Outcome` fields and the fixture's new pack
+source record moved no other arm's document.
+
+**Oracle Q's exclusion list is six groups larger than the design drafted, and the reason is
+recorded.** The design named `kv`, `plane.source`, `plane.readback_ns`, `plane.upload_ns`, `graph`,
+`schedule`, `timings`, and `lifetime`. An empirical diff of a save-run document against a load-run
+document found six more keys that differ, every one of them a **count of work the load path
+legitimately did not do**: `pack.reader_pread_count`, `pack.reader_bytes_read`, `head.node_count`,
+`head.pread_ns`, `head.compute_ns` (the prefill's own head graph), `window.reuse_count`,
+`window.member_placements`, and the `reference` block — whose byte comparison against the source
+GGUF lives in the prefill pass, so a load run performs none of it and must not claim `IDENTICAL`
+over zero comparisons. That last one is a behaviour change in `src/decode_step.align`, not only a
+test exclusion. What stays **inside** the comparison is unchanged and is the point: `decode` in
+full, every `steps[]` object, `plane.roundtrip_*`, `output`, `oracle_logits`, `oracle_decode`,
+`model`, `selection`, and `abi`.
+
+**Six mutants were injected and all six die under `gmake layer-forward-smoke`**: a wrong pack
+identity accepted, the plane digest skipped, the plane read offset off by four, the logits region
+not persisted, a truncated file accepted, and the independent reader accepting a flipped reserved
+byte.
+
+**Verification checkpoint.** `gmake build`, `gmake check`, `gmake fmt`, `gmake format-check`,
+`git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
+`gmake layer-forward-smoke` (all five blocks; **101** documented decode-step cases reaching 40
+codes; 37.9 s whole owner against 34.0 s before) pass.
+
+`gmake decode-step-qualification` ran **twice** on the real model at `N = 16`, 10 min 41 s of the
+1800 s cap, and every correctness value reproduced exactly across the two runs — the same 64 ids,
+the same four container digests, the same byte counts and verdicts, only the timings moving.
+**Every rule this capability owns passes on all four prompts**: oracle Q `IDENTICAL`, gate G `PASS`
+on the load path, oracle B `IDENTICAL` over 26,607,616 B (`T = 6`) and 21,102,592 B (`T = 3`) on the
+load path, oracle C′ byte-identical at `k ∈ {1, 8, 16}` on the load path, containers of exactly
+29,970,432 B that `du` confirms are dense, and three writes per prompt — one of them under a
+perturbed environment — producing one digest.
+
+**It nevertheless exits non-zero, on one pre-existing assertion and one prompt, and the cause is
+instrument provenance.** `oracle_logits.verdict` — R6-STEP-N's requirement that the arm's prefill
+logits be byte-equal to `llama-debug --save-logits` — is `FAIL` on prompt 1 only, the single `T = 6`
+prompt; the three `T = 3` prompts are byte-identical. **This host has no `llama-debug` from the
+pinned toolchain**: `scripts/llama-eval-callback-toolchain` builds only `llama-eval-callback`, and
+`ALIGN_LLM_LLAMA_DEBUG` names an externally provided binary that does not exist here, so one was
+built from the same pinned source at `bb4caa754` with the toolchain's own cmake arguments. It was
+**not** retuned until it agreed. R6 risk 1 and R6-STEP-N section 3.1 name and measured this class
+(one commit built two ways, two different 608,256-byte blobs), and the `llama-eval-callback` side
+agrees with the recorded history on all four prompts — oracle A′ reports the same 2391/1e-4 on
+prompt 1 that R6-STEP-N recorded. The load path's verdict equals the save path's exactly, which is
+itself evidence that the persisted vector round-trips byte-exactly.
+`docs/specs/r6-kv-persist.md` section 5.6 records every number and section 5.6.1 the failure.
+
+`gmake baseline-check` is `N/A` — no `Makefile` line and no build input moved — and
+must be re-checked at the publication head, because R5E moved `Makefile` and the baseline artifacts.
+
+**Next actions, in order.**
+1. Wait for R6-DECODE-KV-STEP1 and R6-STEP-N to land on `origin/main`, then `git merge origin/main`
+   (never a rebase) and re-check the roadmap item number, section 9's reconciliation table, and the
+   next free Align Request number.
+2. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` at the
+   merged head. The diff touches goldens, fixtures, and a new source module, so the classifier
+   selects the executable row; the stamp belongs to the exact unchanged head, so take it after the
+   merge and after any amend.
+3. One comprehensive review of the merged candidate.
+4. The English pull request, with the review envelope and the exact commands and results.
+
+**Reproducing the qualification on this host.** `ALIGN_LLM_LLAMA_DEBUG` has no provisioning path
+in this repository — `scripts/llama-eval-callback-toolchain` builds `llama-eval-callback` only — and
+no `llama-debug` exists on this machine. To re-run, configure a build directory against the pinned
+source the toolchain already staged under
+`~/.cache/align-llm/llama.cpp/r2c-v2/<revision>-<digest>/source` with that script's own
+`cmake_arguments`, and build the `llama-debug` and `llama-eval-callback` targets into it. The one
+used above was built that way and then removed with the rest of this session's scratch. Whether a
+`llama-debug` provisioning path belongs in the repository is a question for whichever capability
+next needs the blob, not for this one.
+
+**Blockers.** None. R6-STEP-N's publication is a sequencing dependency, not a blocker.
+
+**Constraints.** **No new Align request is proposed** and number **50** stays free — re-check after
+`git merge origin/main`, because this branch's register still lacks 47 and 48. Requests 21, 29, 30,
+31, 38, 39, and 49 each gain a cited client and **none changes status**. **No durability claim and
+no TTFT claim**: `timings.first_token_ns` and the runner's invocation wall clock are labelled
+diagnostics and no acceptance decision is taken from either. The R6 roadmap gate stays **unmet**.
+
+## Previously active: R6-STEP-N (2026-08-29)
 
 Branch `agent/r6-step-n`, stacked on `agent/r6-decode-kv-step1` at `1671810`, which is in
 publication. **Two commits and nothing uncommitted:** `a9c6161` is the capability and the commit
