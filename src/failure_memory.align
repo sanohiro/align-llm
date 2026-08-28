@@ -354,6 +354,9 @@ pub fn remember(result_path: str, profile_path: str) -> Result<MemorySummary, Er
   }
   data := fs.read_file(result_path)?
   result: MemoryResult := json.decode(data)?
+  if result.schema_version != 2 {
+    return Err(Error.Invalid)
+  }
   result_status := result.status.clone()
   result_repair_count := result.repair_count
   event := render_event(result, data)

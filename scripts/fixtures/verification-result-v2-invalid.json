@@ -1,0 +1,1 @@
+{"schema_version":2,"task_id":"verification-loop-wire-invalid","status":"INVALID","error_code":2,"iteration_count":0,"max_iterations":0,"repair_count":0,"evaluation_status":"error","evaluation":{"schema_version":1,"status":"error","error_code":2},"attempts":[]}

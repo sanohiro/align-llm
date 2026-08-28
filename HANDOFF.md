@@ -3,11 +3,47 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R1C-OLMOE-MOE-IR (2026-08-28)
+## Active: C8-OPTIONAL-TARGETED-STAGE (2026-08-28)
 
-Branch `agent/r1c-olmoe-moe-ir`, rebased onto `main` `546b5cc` (the merged R2-LOCALITY-GATE, PR
-#131). Design ledger `docs/specs/r1c-olmoe-moe-ir.md` is authoritative. Implementation and review
-are complete; publication is the only remaining step.
+Branch `agent/c8-optional-targeted-stage` starts from current `main` `e15e3d3` (R1C merge, PR
+#132). `docs/specs/c8-optional-targeted-stage.md` is the authoritative public-contract ledger and
+closure matrix. The user explicitly prioritized this one bounded C8 re-entry before returning to
+Track B.
+
+**Why it reopened.** The fresh `e15e3d3` fixed-task baseline measured the targeted process at
+14,311,285 ns of a 43,886,999 ns parent median, a 326,093 ppm (32.61%) removable ceiling versus
+C8's 2,000 ppm floor; parent binary SHA-256 is `10ff55c084f35ee079f19c4b85fdc835abac0350642485d4d298d84dfffacc16`.
+The fixed full command executes the targeted assertion itself. Align PR #892 merged the genuine compiler prerequisite as
+`3a34febe912db5096c58c74fede36ff53f223e04`; the reconciled client register entry is Request 44.
+
+**Preserved evidence.** Local branch `agent/c8-optional-targeted-test` commit `0dcca60` preserves
+the abandoned prototype, reviewed design history, original compiler reproduction, and reference
+handoff. It is not a publication candidate. In a temporary worktree its source passes `make check`
+and `make build` with a compiler containing `3a34febe`; the unchanged owner fails `INVALID`, code 2
+because it still writes schema 1. Do not cherry-pick its conflicting Request 21 or its placeholder-
+argument implementation.
+
+**Current checkpoint.** The candidate is consumer-complete. `.align-revision` selects and the
+managed compiler verifies exact Align `3a34febe`. Schema-2 Some/absent/null tasks, Some/None/Invalid
+result goldens, complete semantic/decode validation side-effect checks, Some/None repair, and
+schema-1 failure-memory events pass `make verify-loop-smoke`; whole/per-unit compilation and format
+also pass. The candidate binary SHA-256 is `552790728dea091f6eaa27852bb6be945438b8580a778d0baedbe395df7225b3`.
+The 101-pair acceptance improves parent 60,515,456 ns to candidate 40,475,113 ns, 331,160 ppm
+(33.12%), while the runner admits only result schema 1→2 and removal of the passing targeted stage.
+Request 44 is `ALIGN_LLM_VERIFIED`. Review and publication remain.
+
+**Next actions, in order.** (1) Finish the ledger-to-diff consistency pass and commit the stable
+candidate. (2) Run one comprehensive `codex review --base main`, disposition findings, and rerun
+affected owners. (3) Run exact-head `scripts/pre-pr` with `make verify-loop-smoke`, publish the
+English PR/review envelope, wait for required checks, and merge. (4) Refresh `main`, close Request
+44 in the next durable checkpoint, rebase `agent/moe-prereq-discharge` onto the merge, and implement
+that next eligible Track B capability before R3 residency simulation.
+
+## Merged checkpoint: R1C-OLMOE-MOE-IR (2026-08-28)
+
+Branch `agent/r1c-olmoe-moe-ir` was rebased onto `main` `546b5cc` (the merged R2-LOCALITY-GATE, PR
+#131) and merged as PR #132 at `e15e3d3`. Design ledger `docs/specs/r1c-olmoe-moe-ir.md` remains
+authoritative. Implementation, review, publication, and merge are complete.
 
 **The model.** `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (path withheld from this file by
 convention), 4,213,512,192 bytes, sha256
@@ -78,10 +114,9 @@ the rebase; `gmake fmt` leaves no diff and `git diff --check` is clean.
 recorded as an input to R3's residency simulation, not as a performance result; this capability
 makes no timing claim.
 
-**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test olmoe-model-ir -- gmake
-model-ir-smoke alignpack-smoke`, then publish and merge. (2) Rebase the two design-stage branches
-below onto the merged result and implement them in roadmap order. (3) R2b's corpus-wide
-stratification, which the merged locality gate's corpus and aggregator are the input to.
+**Consequence.** The two design-stage checkpoints below may now be reconciled onto the merged R1C
+base and implemented in roadmap order after the bounded C8 re-entry. R2b's corpus-wide
+stratification consumes the merged locality gate's corpus and aggregator.
 
 ## Design in progress
 
@@ -122,8 +157,9 @@ longer fits alongside the downloaded model and its alignpack space; R1B's real-m
 4. **Align Request 41** (non-`Copy` capture in `spawn` closures), Align-side. Unblocks R5's required
    microbenchmark C.
 
-**Align capability requests.** Requests 1-20 CLOSED, Requests 21-43 PROPOSED and non-blocking; none
-has merged since R0; `.align-revision` stays pinned to `4b515f8d`. Top clients by reference count in
+**Align capability requests.** Requests 1-20 CLOSED, Requests 21-43 PROPOSED and non-blocking, and
+Request 44 ALIGN_LLM_VERIFIED pending publication closure. `.align-revision` now selects
+`3a34febe`. Top clients by reference count in
 `docs/align-requests.md` (grep-verified against the register): Request 34 (`Result` payloads beyond
 scalars, 9 mentions), Requests 21 and 23 (read-only open; huge-struct-copy lint, 7 each — Request 23
 gained R1C's evidence block, making `src/frontend_olmoe.align` its fifth client and the third

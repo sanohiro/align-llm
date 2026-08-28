@@ -61,13 +61,20 @@ The current forward delivery order is:
    qualifications; neither joins an aggregate. It is listed after the consumer because the consumer
    defines the exact targets a profile must gate, and because the profiles gate *evidence*, not
    implementation.
-8. **C8 — speed-first optimization. Closed.** Nine consumer-complete capabilities each preserved
+8. **C8 — speed-first optimization. Reopened for one bounded tenth capability.** Nine
+   consumer-complete capabilities each preserved
    their correctness contract, named one changed path, and closed a paired fixed-task benchmark
    before claiming an improvement. The section C8 gate is met and `docs/specs/c8-speed-first.md` is
    authoritative for every baseline and measurement. Its retrospective promoted one reusable rule —
    the ppm-floor rule with a 2,000 ppm shipping floor — into section 1 of that document and one
-   clause into the `CLAUDE.md` performance-claim row. A deferred C8 surface reopens only with a
-   recorded cost ceiling above the floor or as a genuine Align capability request.
+   clause into the `CLAUDE.md` performance-claim row. `C8-OPTIONAL-TARGETED-STAGE` is the one
+   explicitly prioritized re-entry: its fresh current-parent targeted process is 14,311,285 ns of a
+   43,886,999 ns parent median (326,093 ppm), and its Align prerequisite shipped in PR #892. Its authoritative
+   contract and stop conditions are in `docs/specs/c8-optional-targeted-stage.md`. Its stable
+   candidate passes the schema/owner matrix and improves the 101-pair fixed-task median from
+   60,515,456 ns to 40,475,113 ns (331,160 ppm, 33.12%); review and publication remain. Track B
+   resumes after this bounded capability merges. Every other deferred surface retains the normal floor or
+   genuine-request re-entry rule.
 9. **R0-GGUF-INSPECT — read-only GGUF header, metadata, and tensor-table inspection. Gate met,
    closed.** The first Track B capability. It delivers one consumer-complete path: a caller names a
    `.gguf` path and receives one canonical `R0_GGUF_INSPECTION` document describing what the file
@@ -541,17 +548,24 @@ HEAD repositoryは評価経路で`ok`（candidate 0件、あるいはindexが持
 
 baselineと比べて、固定タスクの中央値でtime to passing patchが短縮すること。
 
-**達成済み。C8は9個のcapabilityでcloseした。** 9個すべてが固定タスクのpaired benchmarkで
+**9個のcapabilityで当初gateを達成し、1個のbounded capabilityだけ再開した。** 9個すべてが固定タスクのpaired benchmarkで
 中央値の短縮を測定しており、最後の第9capabilityは10,793 ppm（1.08%）の短縮を記録した。個々の
 baseline・測定値・host・binary digestは
 [`c8-speed-first.md`](c8-speed-first.md)のsection 3〜11がsource of truthである。同じretrospective
 で**ppm-floor rule**（cost ceilingを実装前にledgerへ記録し、shipping floorである2,000 ppmを
 下回るseamは実装せずdeferred surfacesに記録する）をsection 1へ昇格させた。残るdeferred surface
 は、floorを超えるcost ceilingを持つか、genuineなAlign capability requestになった場合にのみ
-新しいcapabilityとして再開する。R0のgateは達成済みでcloseした。R1（Qwen2 Model IR）のgateも
+新しいcapabilityとして再開する。`C8-OPTIONAL-TARGETED-STAGE`はtargeted processが
+43,886,999 ns中14,311,285 ns（326,093 ppm）であり、必要なAlign修正もPR #892でshipしたため、
+2026-08-28に明示的に再開した唯一の例外である。権威あるcontractと停止条件は
+[`c8-optional-targeted-stage.md`](c8-optional-targeted-stage.md)にある。stable candidateはschema/owner
+matrixをpassし、101-pairの固定タスク中央値を60,515,456 nsから40,475,113 nsへ短縮した
+（331,160 ppm、33.12%）。reviewとpublicationが残る。このbounded capabilityの
+merge後にTrack Bへ戻る。R0のgateは達成済みでcloseした。R1（Qwen2 Model IR）のgateも
 達成済みでcloseし、R1B（gpt-oss/MoEフロントエンド）もPR #123としてmergeされ、R1のgateはgpt-oss側を
 含めてcloseした（gpt-oss実モデルによるqualificationのみ、ユーザー判断待ちのopen項目として残る）。
-次の実装対象はTrack BのR2a（expert trace）である。
+現在はR2 locality gateとR1C OLMoE frontendまでmerge済みであり、このbounded C8 capabilityの
+次はTrack BのMoE prerequisite discharge、その後にR3 residency simulationを実装する。
 
 ---
 
