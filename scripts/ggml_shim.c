@@ -57,9 +57,10 @@
  * `align_ggml_fp_contract_off` reports a **behavioural** probe rather than the define, because a
  * define is what the build asked for and not what the compiler did. Contraction is not the only
  * way a host can disagree — the stub engine's kernels call libm — so the flag is diagnosis and the
- * golden corpus is the detector.
+ * golden corpus is the detector. Clang implements the standard pragma below; GCC 14.2 still
+ * diagnoses it as unknown, so GCC is covered by the build flag and the behavioural probe.
  */
-#if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 14)
+#if defined(__clang__)
 #pragma STDC FP_CONTRACT OFF
 #endif
 

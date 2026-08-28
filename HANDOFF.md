@@ -47,8 +47,10 @@ token-reduced `ffn_moe_topk`. **The `Makefile` changes** (`residency-sim-smoke`,
 `HOSTED_CHECK_TARGETS` member, and `residency-sim-qualification`, in no aggregate), so the classifier
 selects executable preflight and the baseline commit chain has to be re-recorded on this branch.
 
-**Integration with PR #134.** C8-OPTIONAL-TARGETED-STAGE merged while this branch was in
-publication, and it moved `.align-revision` from `4b515f8d` to **`3a34febe`** (Align PR #892, its own
+**Integration with PR #134 and PR #136.** C8-OPTIONAL-TARGETED-STAGE merged while this branch was
+in publication, and GCC14-FP-CONTRACT-PORTABILITY (PR #136) merged after it — the ggml shim's
+Clang-only `#pragma STDC FP_CONTRACT OFF` under GCC 14.2 and `-Werror`, a pre-existing hosted-check
+failure this capability's own preflight surfaced; both are merged into this branch. PR #134 moved `.align-revision` from `4b515f8d` to **`3a34febe`** (Align PR #892, its own
 Request 44). That renumbered this capability's two register entries — R3's requests are now
 **Request 45** (the compiler soundness defect) and **Request 46** (the `borrow mut` array gaps) —
 and it invalidated both the first preflight stamp and the first baseline chain, because
@@ -317,6 +319,11 @@ Track B, dense local model (R0 → R5C), plus the merged R2 locality gate, the R
 the MoE prerequisite discharge; C8's optional targeted stage is the one merged Track A re-entry.
 The MOE-PREREQ-DISCHARGE, R2, and R5C checkpoints are above; the rest, newest first:
 
+- **GCC14-FP-CONTRACT-PORTABILITY** (PR #136, merge `aad872f`): `#pragma STDC FP_CONTRACT OFF` is
+  Clang-only, and GCC 14.2 diagnoses it as unknown while `scripts/build-ggml-shim` compiles with
+  `-Werror`; the pragma is now guarded and the cross-compiler `-ffp-contract=off` flag plus the
+  behavioural probe stay mandatory. It was discovered by **this capability's** publication preflight
+  and merged as its prerequisite.
 - **C8-OPTIONAL-TARGETED-STAGE** (PR #134, merge `4f01553`): the targeted verification stage becomes
   optional, `R2`-unrelated, on a fresh fixed-task baseline measuring a 326,093 ppm removable ceiling
   against C8's 2,000 ppm floor; the 101-pair acceptance improves 60,515,456 ns to 40,475,113 ns
