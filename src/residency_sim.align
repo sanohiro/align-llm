@@ -1,0 +1,1995 @@
+module residency_sim
+
+import core.json
+import std.fs
+
+// R3-RESIDENCY-SIM (`docs/specs/r3-residency-sim.md`). The offline expert-residency replay
+// simulator and the sole producer of the `R3_RESIDENCY_SIM` document.
+//
+// It reads two already-derived JSON documents — a list of `R2_ACTIVATION_TRACE` traces and one
+// `R1_MODEL_IR` — derives one deterministic demand stream from them, replays that stream against a
+// fixed policy set at a swept set of budgets, and answers the roadmap gate numerically. It links no
+// runtime, opens no GGUF, parses no transcript, and moves no byte of weight.
+//
+// Five rules govern every line below:
+//
+//  1. **No floats.** Every ratio is an integer per mille and every count is exact, so the document
+//     is reproducible byte for byte on any host.
+//  2. **`json.decode` ignores members the target record does not declare** (section 2.1), so the
+//     decode records below name only the fields R3 uses. The 3,219 nested tensor records of a real
+//     `R1_MODEL_IR` are never materialized.
+//  3. **Every table is a pre-sized `array<i64>` indexed by a packed key.** Align at this pin has no
+//     map type and none is needed once the key space is dense and bounded by `MAX_RESIDENCY_KEYS`.
+//  4. **Validation is strictly ordered** (section 2.6) and the first applicable row wins. The
+//     document is rendered exactly once, after the derivation completes or fails, and a failed
+//     derivation still carries every value derived before the failure.
+//  5. **Align integer overflow wraps with no trap**, so every arithmetic guard is written in
+//     non-wrapping form and tested before the operation it protects.
+
+// ---------------------------------------------------------------------------------------------
+// Section 2.7 caps.
+
+MAX_RESIDENCY_KEYS := 16384
+MAX_DEMANDS := 262144
+MAX_TRACE_PATHS := 4096
+MAX_DOCUMENT_BYTES := 33554432
+MAX_PATH_BYTES := 4096
+MAX_SIMULATION_STEPS := 4294967296
+MAX_DETAIL_BYTES := 256
+I64_MAX := 9223372036854775807
+
+// The largest prefetch degree section 2.4 ships. It appears here rather than only in `policy_topk`
+// because the byte-total overflow guard (section 6, correction 18) must bound the traffic of the
+// most expensive policy before any replay runs.
+MAX_PREFETCH_DEGREE := 8
+
+// The ceiling on every byte quantity the document reports, and on the `BUDGET_BYTES` operand. It is
+// `I64_MAX / 1000` rather than `I64_MAX` because every ratio in the document is an integer per
+// mille, so each of those totals is multiplied by 1000 before it is divided: bounding the totals
+// here is what makes `per_mille`, the effect-floor comparison, and every gain and headroom term
+// non-wrapping without a guard at each site (section 6, correction 18).
+MAX_BYTE_TOTAL := 9223372036854775
+
+// Section 2.2.2's packed order-plus-payload word. 45 order bits above 17 key bits is 62, so every
+// word is a positive `i64` and the reordering is the shipped comparator-free `array<i64>` sort.
+KEY_BITS := 17
+KEY_MASK := 131071
+MAX_GRAPHS := 4096
+MAX_TOKENS := 262144
+MAX_LAYERS := 256
+MAX_SLOTS := 128
+SLOT_BITS := 7
+LAYER_SLOT_BITS := 15
+
+// Section 2.8. The effect floor, in per mille, stated before any measurement.
+MARGIN := 50
+RULE_VERSION := 1
+
+// The trace list holds at most `MAX_TRACE_PATHS` = 4096 lines, so a 13-bit ordinal rides below a
+// 49-bit line hash and the packed duplicate-scan word stays positive.
+LINE_HASH_MASK := 562949953421311
+
+POLICY_COUNT := 10
+ORDER_COUNT := 2
+RESULT_FIELDS := 7
+SWEEP_POINTS := 8
+
+// Policy families. `window` and `topk` carry the fixed constants of section 2.4.
+POLICY_NULL := 0
+POLICY_COMPULSORY := 1
+POLICY_BELADY := 2
+POLICY_LRU := 3
+POLICY_LFU := 4
+POLICY_RECENT := 5
+POLICY_TOPK := 6
+
+// ---------------------------------------------------------------------------------------------
+// Decode records. Only the members R3 consumes are declared (rule 2).
+
+IrModelSection { arch: string, n_layer: i64, n_expert: Option<i64>, n_expert_used: Option<i64> }
+
+IrBlockRow { kind: string, layer: i64, expert: i64, byte_size: i64 }
+
+IrDocument {
+  schema_version: i64,
+  kind: string,
+  status: string,
+  model: IrModelSection,
+  blocks: array<IrBlockRow>,
+}
+
+// `phase` is deliberately absent: `Option<string>` cannot be read out of an array element at this
+// pin, and `docs/specs/r2a-expert-trace.md` section 2.5.6 defines `phase` as a total function of
+// `n_tokens` and `ordinal`, both of which are declared here (section 6, correction 1).
+TraceGraphRow { ordinal: i64, n_tokens: Option<i64>, tokens_truncated: bool }
+
+TraceSelectionRow { graph: i64, layer: i64, token: i64, slot: i64, expert: i64 }
+
+TraceMoeSection { present: bool, n_expert: Option<i64>, n_expert_used: Option<i64> }
+
+TraceRunSection { build: Option<i64>, build_source: string }
+
+TraceDocument {
+  schema_version: i64,
+  kind: string,
+  status: string,
+  run: TraceRunSection,
+  moe: TraceMoeSection,
+  graphs: array<TraceGraphRow>,
+  selections: array<TraceSelectionRow>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Owned results.
+
+pub SimStatus { Ok, Error }
+
+// The scalar fields exist for the CLI summary block and for the smoke's assertions; `document` is
+// the authoritative result and is moved, never cloned, into this its sole owning record.
+pub ResidencySim {
+  status: SimStatus,
+  error_code: string,
+  error_detail: string,
+  listed_trace_count: i64,
+  admitted_trace_count: i64,
+  demand_count: i64,
+  token_position_count: i64,
+  slot_coverage_per_mille: i64,
+  observed_slot_count: i64,
+  n_expert_used: i64,
+  distinct_key_count: i64,
+  expert_block_count: i64,
+  requested_budget: i64,
+  requested_per_mille: i64,
+  baseline_bytes_fetched: i64,
+  best_policy: string,
+  best_bytes_fetched: i64,
+  optimal_bytes_fetched: i64,
+  verdict: string,
+  document: string,
+}
+
+// One decoded `R1_MODEL_IR`, reduced to the only cost model R3 has. Every table is returned by
+// value rather than written through a `borrow mut` out-parameter: at this pin a local `array<i64>`
+// passed as `borrow mut` is invalidated for every later read in the caller once the call sits
+// inside a `loop` (section 7.5 item 1), so the module returns owned columns everywhere.
+IrLoad {
+  code: string,
+  detail: string,
+  arch: string,
+  bytes_read: i64,
+  meta: array<i64>,
+  sizes: array<i64>,
+}
+
+// One replay's answer. `totals` is `[hits, misses, bytes_fetched, prefetch_fetches,
+// prefetch_useful, resident_key_high_water]`; `layer_stats` is `[hits, misses]` per layer.
+ReplayResult { totals: array<i64>, layer_stats: array<i64> }
+
+// Section 2.5.5's sweep, as parallel columns.
+BudgetSweep { count: i64, bytes: array<i64>, clamped: array<i64>, requested: array<i64> }
+
+// Section 2.8's answer at one budget. `result` is 0 BEATS_BASELINE, 1 NO_POLICY_BEATS_BASELINE,
+// 2 NO_HEADROOM.
+Verdict { best: i64, best_bytes: i64, gain: i64, headroom: i64, result: i64 }
+
+// One decoded `R2_ACTIVATION_TRACE`, reduced to its contribution to the pooled stream.
+TraceLoad {
+  code: string,
+  detail: string,
+  bytes_read: i64,
+  n_expert: i64,
+  n_expert_used: i64,
+  build: i64,
+  build_present: bool,
+  build_source: string,
+  truncated_graphs: i64,
+  phase_prefill: i64,
+  phase_decode: i64,
+  phase_single: i64,
+  words: array<i64>,
+  observation_key: array<i64>,
+  observation_ident: array<i64>,
+  slot_mask: array<i64>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Small shared helpers.
+
+TextBox { v: str }
+
+// The one text-to-JSON boundary. `json.encode` owns escaping, so an operand carrying a quote, a
+// backslash, or a control byte survives into valid JSON.
+fn json_string(value: str) -> string {
+  boxed := TextBox { v: value }
+  encoded := json.encode(boxed)
+  return encoded[5..encoded.len() - 1].clone()
+}
+
+fn int_text(value: i64) -> string {
+  b := builder()
+  b.write_int(value)
+  return b.to_string()
+}
+
+fn bool_text(value: bool) -> string {
+  if value {
+    return "true".clone()
+  }
+  return "false".clone()
+}
+
+fn filled_table(n: i64, value: i64) -> array<i64> {
+  mut column: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= n { break }
+    column.push(value)
+    at = at + 1
+  }
+  return column.build()
+}
+
+// `error_detail` is a diagnostic, not a contract on the identifier's completeness, so a longer one
+// is truncated at a UTF-8 scalar boundary. The scan walks back over continuation bytes, so the cut
+// can never split a scalar and the slice can never abort.
+fn bounded_detail(value: str) -> string {
+  view := value.bytes()
+  if view.len() <= MAX_DETAIL_BYTES {
+    return value.clone()
+  }
+  mut cut := MAX_DETAIL_BYTES
+  loop {
+    if cut <= 0 { break }
+    byte := view.u8(cut) as i64
+    if byte < 128 || byte >= 192 { break }
+    cut = cut - 1
+  }
+  return value[0..cut].clone()
+}
+
+// Section 2.6 step 2's lexical path guard. Existence, type, and permissions are the operating
+// system's answer, reported through the `*_UNREADABLE` codes, not guessed here.
+pub fn valid_path(path: str) -> bool {
+  if path.len() == 0 || path.len() > MAX_PATH_BYTES { return false }
+  return !path.contains("\0")
+}
+
+// Section 2.1's second client of `docs/align-requests.md` Request 26: there is no `str`-to-number
+// conversion in the standard library, and a `json.decode` detour would accept `-0`, `1e3`, and
+// leading whitespace, none of which this operand admits. Returns `-1` for a malformed operand,
+// which no valid budget can be. A syntactically valid operand above `MAX_BYTE_TOTAL` is malformed
+// too: the budget is reported as a per-mille ratio of the expert footprint, so a value the ratio
+// cannot express is not a budget this document can describe (section 6, correction 18).
+fn parse_budget(value: str) -> i64 {
+  view := value.bytes()
+  if view.len() == 0 { return -1 }
+  mut total := 0
+  mut at := 0
+  loop {
+    if at >= view.len() { break }
+    digit := (view.u8(at) as i64) - 48
+    if digit < 0 || digit > 9 { return -1 }
+    if total > (I64_MAX - digit) / 10 { return -1 }
+    total = total * 10 + digit
+    at = at + 1
+  }
+  if total > MAX_BYTE_TOTAL { return -1 }
+  return total
+}
+
+fn policy_name(index: i64) -> str {
+  if index == 0 { return "null" }
+  if index == 1 { return "compulsory" }
+  if index == 2 { return "belady" }
+  if index == 3 { return "lru" }
+  if index == 4 { return "lfu" }
+  if index == 5 { return "recent_reuse_w2" }
+  if index == 6 { return "recent_reuse_w8" }
+  if index == 7 { return "recent_reuse_w32" }
+  if index == 8 { return "topk_prefetch_k1" }
+  return "topk_prefetch_k8"
+}
+
+fn policy_family(index: i64) -> i64 {
+  if index <= 4 { return index }
+  if index <= 7 { return POLICY_RECENT }
+  return POLICY_TOPK
+}
+
+fn policy_window(index: i64) -> i64 {
+  if index == 5 { return 2 }
+  if index == 6 { return 8 }
+  if index == 7 { return 32 }
+  return 0
+}
+
+fn policy_topk(index: i64) -> i64 {
+  if index == 8 { return 1 }
+  if index == 9 { return 8 }
+  return 0
+}
+
+fn is_candidate(index: i64) -> bool = index >= 4
+
+fn per_mille(numerator: i64, denominator: i64) -> i64 {
+  if denominator <= 0 { return 0 }
+  return numerator * 1000 / denominator
+}
+
+// ---------------------------------------------------------------------------------------------
+// Step 4. The trace list.
+
+// A 62-bit FNV-1a of one line, used only to make the duplicate scan `O(n log n)`; every candidate
+// the hash selects is confirmed by an exact byte comparison before it is reported.
+fn line_hash(value: str) -> i64 {
+  view := value.bytes()
+  mut hash := -3750763034362895579
+  mut at := 0
+  loop {
+    if at >= view.len() { break }
+    hash = (hash ^ (view.u8(at) as i64)) * 1099511628211
+    at = at + 1
+  }
+  return (hash >> 2) & 4611686018427387903
+}
+
+// ---------------------------------------------------------------------------------------------
+// Step 5 and 6. The Model IR.
+
+fn optional_int(value: Option<i64>) -> i64 = match value {
+  Some(inner) => inner,
+  None => -1,
+}
+
+// `json.decode`'s target type cannot be inferred through a `match` arm, so each decode is one
+// `Result`-returning helper whose annotated binding names the target and whose `?` propagates.
+fn decode_model_ir(view: str) -> Result<IrDocument, Error> {
+  value: IrDocument := json.decode(view)?
+  return Ok(value)
+}
+
+fn decode_trace(view: str) -> Result<TraceDocument, Error> {
+  value: TraceDocument := json.decode(view)?
+  return Ok(value)
+}
+
+fn failed_ir_load(code: string, detail: string, arch: string, bytes_read: i64) -> IrLoad = IrLoad {
+  code: code,
+  detail: detail,
+  arch: arch,
+  bytes_read: bytes_read,
+  meta: filled_table(9, 0),
+  sizes: filled_table(0, 0),
+}
+
+// Steps 5 and 6. `meta` is `[n_layer, n_expert, n_expert_used, expert_block_count,
+// total_expert_bytes, smallest, largest, schema_version, key_space]` and `sizes` is the per-key
+// byte-size table, `-1` where the Model IR declares no `ExpertBlock`.
+fn model_ir_load(path: str) -> IrLoad {
+  text := match fs.read_file(path) {
+    Ok(value) => value,
+    Err(_) => { return failed_ir_load("R3_IR_UNREADABLE".clone(), "".clone(), "".clone(), 0) },
+  }
+  view: str := text
+  // There is no `fs.size` and no metadata-only stat at this pin, so the cap is enforced on the
+  // materialized document rather than before the read (section 6, correction 3).
+  if view.len() > MAX_DOCUMENT_BYTES {
+    return failed_ir_load("R3_IR_TOO_LARGE".clone(), "".clone(), "".clone(), 0)
+  }
+  bytes_read := view.len()
+  document := match decode_model_ir(view) {
+    Ok(value) => value,
+    Err(_) => { return failed_ir_load("R3_IR_DECODE".clone(), "".clone(), "".clone(), bytes_read) },
+  }
+  kind_view: str := document.kind
+  if kind_view != "R1_MODEL_IR" || document.schema_version != 2 {
+    return failed_ir_load("R3_IR_SCHEMA".clone(), "".clone(), "".clone(), bytes_read)
+  }
+  status_view: str := document.status
+  arch_view: str := document.model.arch
+  if status_view != "ok" {
+    return failed_ir_load("R3_IR_STATUS".clone(), "".clone(), arch_view.clone(), bytes_read)
+  }
+  n_layer := document.model.n_layer
+  n_expert := optional_int(document.model.n_expert)
+  n_expert_used := optional_int(document.model.n_expert_used)
+  if n_layer <= 0 || n_expert <= 0 {
+    return failed_ir_load("R3_IR_NOT_MOE".clone(), "".clone(), arch_view.clone(), bytes_read)
+  }
+  if n_layer > MAX_LAYERS || n_expert > MAX_RESIDENCY_KEYS
+    || n_layer > MAX_RESIDENCY_KEYS / n_expert {
+    return failed_ir_load("R3_KEY_SPACE_TOO_LARGE".clone(), "".clone(), arch_view.clone(),
+      bytes_read)
+  }
+  key_space := n_layer * n_expert
+  mut meta := filled_table(9, 0)
+  mut sizes := filled_table(key_space, -1)
+  meta[0] = n_layer
+  meta[1] = n_expert
+  meta[2] = n_expert_used
+  meta[7] = document.schema_version
+  meta[8] = key_space
+  mut count := 0
+  mut total := 0
+  mut smallest := 0
+  mut largest := 0
+  mut at := 0
+  loop {
+    if at >= document.blocks.len() { break }
+    block_kind: str := document.blocks[at].kind
+    if block_kind == "ExpertBlock" {
+      layer := document.blocks[at].layer
+      expert := document.blocks[at].expert
+      if layer < 0 || layer >= n_layer || expert < 0 || expert >= n_expert {
+        return failed_ir_load("R3_EXPERT_BLOCK_RANGE".clone(), pair_detail(layer, expert),
+          arch_view.clone(), bytes_read)
+      }
+      key := layer * n_expert + expert
+      if sizes[key] >= 0 {
+        return failed_ir_load("R3_EXPERT_BLOCK_DUPLICATE".clone(), pair_detail(layer, expert),
+          arch_view.clone(), bytes_read)
+      }
+      size := document.blocks[at].byte_size
+      // A block of no bytes is not a residency unit: it would be admitted into every cache for
+      // free, it can never be evicted for capacity, and `sizes`' `-1` sentinel would have to carry
+      // both "no block declared" and "a block of a nonsensical size" (section 6, correction 16).
+      // A negative size is the same refusal and not `R3_MISSING_EXPERT_BLOCK`, which it used to be
+      // misreported as.
+      if size <= 0 {
+        return failed_ir_load("R3_EXPERT_BLOCK_SIZE".clone(), pair_detail(layer, expert),
+          arch_view.clone(), bytes_read)
+      }
+      // Align's integer arithmetic wraps with no trap (rule 5), so the accumulation is guarded
+      // before the addition rather than checked after it (section 6, correction 18).
+      if total > MAX_BYTE_TOTAL - size {
+        return failed_ir_load("R3_BYTE_TOTAL_OVERFLOW".clone(), pair_detail(layer, expert),
+          arch_view.clone(), bytes_read)
+      }
+      sizes[key] = size
+      if count == 0 || size < smallest { smallest = size }
+      if count == 0 || size > largest { largest = size }
+      total = total + size
+      count = count + 1
+    }
+    at = at + 1
+  }
+  if count == 0 {
+    return failed_ir_load("R3_IR_NOT_MOE".clone(), "".clone(), arch_view.clone(), bytes_read)
+  }
+  meta[3] = count
+  meta[4] = total
+  meta[5] = smallest
+  meta[6] = largest
+  return IrLoad {
+    code: "".clone(),
+    detail: "".clone(),
+    arch: arch_view.clone(),
+    bytes_read: bytes_read,
+    meta: meta,
+    sizes: sizes,
+  }
+}
+
+fn pair_detail(layer: i64, expert: i64) -> string {
+  b := builder()
+  b.write_int(layer)
+  b.write(":")
+  b.write_int(expert)
+  return b.to_string()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Steps 8 and 9. One trace.
+
+fn empty_trace_load(code: string, detail: string, bytes_read: i64) -> TraceLoad = TraceLoad {
+  code: code,
+  detail: detail,
+  bytes_read: bytes_read,
+  n_expert: -1,
+  n_expert_used: -1,
+  build: -1,
+  build_present: false,
+  build_source: "".clone(),
+  truncated_graphs: 0,
+  phase_prefill: 0,
+  phase_decode: 0,
+  phase_single: 0,
+  words: filled_table(0, 0),
+  observation_key: filled_table(0, 0),
+  observation_ident: filled_table(0, 0),
+  slot_mask: filled_table(MAX_SLOTS, 0),
+}
+
+fn trace_load(
+  path: str,
+  ordinal: i64,
+  n_layer: i64,
+  n_expert: i64,
+  n_expert_used: i64,
+  borrow sizes: array<i64>,
+) -> TraceLoad {
+  detail := int_text(ordinal)
+  text := match fs.read_file(path) {
+    Ok(value) => value,
+    Err(_) => { return empty_trace_load("R3_TRACE_UNREADABLE".clone(), detail, 0) },
+  }
+  view: str := text
+  if view.len() > MAX_DOCUMENT_BYTES {
+    return empty_trace_load("R3_TRACE_TOO_LARGE".clone(), detail, 0)
+  }
+  bytes_read := view.len()
+  document := match decode_trace(view) {
+    Ok(value) => value,
+    Err(_) => { return empty_trace_load("R3_TRACE_DECODE".clone(), detail, bytes_read) },
+  }
+  kind_view: str := document.kind
+  if kind_view != "R2_ACTIVATION_TRACE" || document.schema_version != 1 {
+    return empty_trace_load("R3_TRACE_SCHEMA".clone(), detail, bytes_read)
+  }
+  status_view: str := document.status
+  if status_view != "ok" {
+    return empty_trace_load("R3_TRACE_STATUS".clone(), detail, bytes_read)
+  }
+  if !document.moe.present {
+    return empty_trace_load("R3_TRACE_NOT_MOE".clone(), detail, bytes_read)
+  }
+  trace_experts := optional_int(document.moe.n_expert)
+  trace_used := optional_int(document.moe.n_expert_used)
+  if trace_experts != n_expert || trace_used != n_expert_used {
+    return empty_trace_load("R3_SHAPE_MISMATCH".clone(), detail, bytes_read)
+  }
+  // Graph admission (section 2.2.1). A graph whose token axis was truncated is excluded and
+  // counted; the table is indexed by graph ordinal and carries three states, because "excluded by
+  // the documented truncation rule" and "named by a selection but never declared" are different
+  // answers and only the first is a silent, counted exclusion (section 6, correction 17):
+  //   1 undeclared, 2 declared and truncated, 0 declared and replayed.
+  mut truncated := filled_table(MAX_GRAPHS, 1)
+  mut slot_mask := filled_table(MAX_SLOTS, 0)
+  mut truncated_graphs := 0
+  mut phase_prefill := 0
+  mut phase_decode := 0
+  mut phase_single := 0
+  mut graph_at := 0
+  loop {
+    if graph_at >= document.graphs.len() { break }
+    graph_ordinal := document.graphs[graph_at].ordinal
+    if graph_ordinal < 0 || graph_ordinal >= MAX_GRAPHS {
+      return empty_trace_load("R3_SELECTION_UNPACKABLE".clone(), detail, bytes_read)
+    }
+    if document.graphs[graph_at].tokens_truncated {
+      truncated[graph_ordinal] = 2
+      truncated_graphs = truncated_graphs + 1
+    } else {
+      truncated[graph_ordinal] = 0
+      // `docs/specs/r2a-expert-trace.md` section 2.5.6's total function, carried forward unchanged.
+      n_tokens := optional_int(document.graphs[graph_at].n_tokens)
+      if n_tokens > 1 {
+        phase_prefill = phase_prefill + 1
+      } else if n_tokens == 1 && graph_ordinal > 0 {
+        phase_decode = phase_decode + 1
+      } else if n_tokens == 1 {
+        phase_single = phase_single + 1
+      }
+    }
+    graph_at = graph_at + 1
+  }
+  mut words: array_builder<i64> := array_builder()
+  mut observation_key: array_builder<i64> := array_builder()
+  mut observation_ident: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= document.selections.len() { break }
+    graph := document.selections[at].graph
+    layer := document.selections[at].layer
+    token := document.selections[at].token
+    slot := document.selections[at].slot
+    expert := document.selections[at].expert
+    // A graph ordinal that cannot ride the packed word, and a selection naming a graph the
+    // document never declared, both fail closed. Dropping them silently would let a demand stream
+    // shrink to the selections that happen to name a declared graph, which is the same silent
+    // shrink section 2.6's "a trace that fails admission fails the whole run" exists to prevent.
+    if graph < 0 || graph >= MAX_GRAPHS {
+      return empty_trace_load("R3_SELECTION_UNPACKABLE".clone(), detail, bytes_read)
+    }
+    if truncated[graph] == 1 {
+      return empty_trace_load("R3_SELECTION_UNPACKABLE".clone(), detail, bytes_read)
+    }
+    if truncated[graph] == 0 {
+      if layer < 0 || layer >= n_layer || expert < 0 || expert >= n_expert {
+        return empty_trace_load("R3_EXPERT_OUT_OF_RANGE".clone(), pair_detail(layer, expert),
+          bytes_read)
+      }
+      key := layer * n_expert + expert
+      if sizes[key] < 0 {
+        return empty_trace_load("R3_MISSING_EXPERT_BLOCK".clone(), pair_detail(layer, expert),
+          bytes_read)
+      }
+      if token < 0 || token >= MAX_TOKENS || slot < 0 || slot >= MAX_SLOTS
+        || layer >= MAX_LAYERS {
+        return empty_trace_load("R3_SELECTION_UNPACKABLE".clone(), detail, bytes_read)
+      }
+      slot_mask[slot] = 1
+      ident := graph * MAX_TOKENS + token
+      order := (ident * MAX_LAYERS + layer) * MAX_SLOTS + slot
+      words.push((order << KEY_BITS) | key)
+      observation_key.push(key)
+      observation_ident.push(ident)
+    }
+    at = at + 1
+  }
+  raw := words.build()
+  // The decoded document owns `run.build_source`; moving the field out of it would leave the
+  // record's drop to free a string this result also owns, so the view is cloned.
+  source_view: str := document.run.build_source
+  build_number := optional_int(document.run.build)
+  return TraceLoad {
+    code: "".clone(),
+    detail: "".clone(),
+    bytes_read: bytes_read,
+    n_expert: trace_experts,
+    n_expert_used: trace_used,
+    build: build_number,
+    build_present: build_number >= 0,
+    build_source: source_view.clone(),
+    truncated_graphs: truncated_graphs,
+    phase_prefill: phase_prefill,
+    phase_decode: phase_decode,
+    phase_single: phase_single,
+    words: raw.sort(),
+    observation_key: observation_key.build(),
+    observation_ident: observation_ident.build(),
+    slot_mask: slot_mask,
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Section 2.4 and 2.8. One replay of one stream against one policy at one budget.
+//
+// `drop_lo`/`drop_hi` is the half-open index range of the leave-one-document-out fold, or `-1`/`-1`
+// for the whole stream. Skipping a contiguous range is what lets the jackknife of section 2.8 reuse
+// the pooled columns instead of materializing `admitted_trace_count` copies of the stream.
+//
+// Victim selection scans the resident list and minimizes `(policy metric, last use, packed key)`,
+// which is a total order, so the scan order does not affect the answer and every policy is
+// deterministic (section 2.4). The eviction-and-insert block appears twice — once on the demand
+// path and once on the prefetch path — because a shared helper would have to take the eight tables
+// as `borrow mut` parameters, which this pin invalidates for every later read in a loop
+// (section 7.5 item 1).
+
+fn replay(
+  borrow keys: array<i64>,
+  borrow toks: array<i64>,
+  borrow sizes: array<i64>,
+  demand_count: i64,
+  drop_lo: i64,
+  drop_hi: i64,
+  budget: i64,
+  policy: i64,
+  n_layer: i64,
+  n_expert: i64,
+  key_space: i64,
+) -> ReplayResult {
+  family := policy_family(policy)
+  window := policy_window(policy)
+  topk := policy_topk(policy)
+  mut resident_size := filled_table(key_space, 0)
+  mut resident_pos := filled_table(key_space, -1)
+  mut resident_list := filled_table(key_space, 0)
+  mut last_use := filled_table(key_space, -1)
+  mut freq := filled_table(key_space, 0)
+  mut recent_count := filled_table(key_space, 0)
+  mut next_of := filled_table(key_space, demand_count + 1)
+  mut prefetched := filled_table(key_space, 0)
+  mut chosen := filled_table(if topk > 0 { topk } else { 1 }, -1)
+  mut totals := filled_table(RESULT_FIELDS, 0)
+  mut layer_stats := filled_table(n_layer * 2, 0)
+  mut used := 0
+  mut resident_count := 0
+  mut high_water := 0
+  // Belady's next-use column, precomputed backwards over the live stream (section 2.4).
+  mut next_use := filled_table(if family == POLICY_BELADY { demand_count } else { 0 }, 0)
+  if family == POLICY_BELADY {
+    mut live := 0
+    mut count_at := 0
+    loop {
+      if count_at >= demand_count { break }
+      if count_at < drop_lo || count_at >= drop_hi { live = live + 1 }
+      count_at = count_at + 1
+    }
+    mut seen := filled_table(key_space, live + 1)
+    mut position := live
+    mut back := demand_count - 1
+    loop {
+      if back < 0 { break }
+      if back < drop_lo || back >= drop_hi {
+        position = position - 1
+        next_use[back] = seen[keys[back]]
+        seen[keys[back]] = position
+      }
+      back = back - 1
+    }
+  }
+  mut current := -1
+  mut ring_lo := 0
+  mut ordinal := 0
+  mut index := 0
+  loop {
+    if index >= demand_count { break }
+    if index >= drop_lo && index < drop_hi {
+      index = index + 1
+    } else {
+      key := keys[index]
+      if toks[index] != current {
+        current = toks[index]
+        if family == POLICY_RECENT {
+          loop {
+            if ring_lo >= index { break }
+            if ring_lo < drop_lo || ring_lo >= drop_hi {
+              if toks[ring_lo] >= current - window { break }
+              recent_count[keys[ring_lo]] = recent_count[keys[ring_lo]] - 1
+            }
+            ring_lo = ring_lo + 1
+          }
+        }
+        if family == POLICY_TOPK {
+          mut layer := 0
+          loop {
+            if layer >= n_layer { break }
+            mut picked := 0
+            loop {
+              if picked >= topk { break }
+              mut best := -1
+              mut best_freq := 0
+              mut expert := 0
+              loop {
+                if expert >= n_expert { break }
+                candidate := layer * n_expert + expert
+                mut taken := false
+                mut scan := 0
+                loop {
+                  if scan >= picked { break }
+                  if chosen[scan] == candidate { taken = true }
+                  scan = scan + 1
+                }
+                if !taken && freq[candidate] > best_freq {
+                  best = candidate
+                  best_freq = freq[candidate]
+                }
+                expert = expert + 1
+              }
+              if best < 0 { break }
+              chosen[picked] = best
+              picked = picked + 1
+            }
+            mut issue := 0
+            loop {
+              if issue >= picked { break }
+              candidate := chosen[issue]
+              size := sizes[candidate]
+              // Residency is `resident_pos`, never `resident_size`: a size is a cost, not a
+              // membership bit (section 6, correction 16).
+              if resident_pos[candidate] < 0 && size > 0 && size <= budget {
+                loop {
+                  if used + size <= budget { break }
+                  if resident_count <= 0 { break }
+                  mut victim := -1
+                  mut victim_last := 0
+                  mut scan := 0
+                  loop {
+                    if scan >= resident_count { break }
+                    entry := resident_list[scan]
+                    better := if victim < 0 {
+                      true
+                    } else if last_use[entry] != victim_last {
+                      last_use[entry] < victim_last
+                    } else {
+                      entry < victim
+                    }
+                    if better {
+                      victim = entry
+                      victim_last = last_use[entry]
+                    }
+                    scan = scan + 1
+                  }
+                  position := resident_pos[victim]
+                  tail := resident_list[resident_count - 1]
+                  resident_list[position] = tail
+                  resident_pos[tail] = position
+                  resident_count = resident_count - 1
+                  used = used - resident_size[victim]
+                  resident_size[victim] = 0
+                  resident_pos[victim] = -1
+                  prefetched[victim] = 0
+                }
+                resident_size[candidate] = size
+                resident_pos[candidate] = resident_count
+                resident_list[resident_count] = candidate
+                resident_count = resident_count + 1
+                used = used + size
+                if resident_count > high_water { high_water = resident_count }
+                // A prefetched block enters as the most recently used, not as the next victim
+                // (section 6, correction 19). `ordinal` is the position of the demand this token
+                // boundary precedes, so the admission is exactly as recent as an ordinary demand
+                // at this position and no more.
+                last_use[candidate] = ordinal
+                prefetched[candidate] = 1
+                totals[2] = totals[2] + size
+                totals[3] = totals[3] + 1
+              }
+              issue = issue + 1
+            }
+            mut reset := 0
+            loop {
+              if reset >= topk { break }
+              chosen[reset] = -1
+              reset = reset + 1
+            }
+            layer = layer + 1
+          }
+        }
+      }
+      layer := key / n_expert
+      size := sizes[key]
+      if family == POLICY_NULL {
+        totals[1] = totals[1] + 1
+        totals[2] = totals[2] + size
+        layer_stats[layer * 2 + 1] = layer_stats[layer * 2 + 1] + 1
+      } else if resident_pos[key] >= 0 {
+        totals[0] = totals[0] + 1
+        layer_stats[layer * 2] = layer_stats[layer * 2] + 1
+        if prefetched[key] != 0 {
+          totals[4] = totals[4] + 1
+          prefetched[key] = 0
+        }
+      } else {
+        totals[1] = totals[1] + 1
+        totals[2] = totals[2] + size
+        layer_stats[layer * 2 + 1] = layer_stats[layer * 2 + 1] + 1
+        if family == POLICY_COMPULSORY {
+          resident_size[key] = size
+          resident_pos[key] = resident_count
+          resident_list[resident_count] = key
+          resident_count = resident_count + 1
+          used = used + size
+          if resident_count > high_water { high_water = resident_count }
+        } else if size <= budget {
+          loop {
+            if used + size <= budget { break }
+            if resident_count <= 0 { break }
+            mut victim := -1
+            mut victim_primary := 0
+            mut victim_last := 0
+            mut scan := 0
+            loop {
+              if scan >= resident_count { break }
+              entry := resident_list[scan]
+              primary := if family == POLICY_LFU {
+                freq[entry]
+              } else if family == POLICY_RECENT {
+                recent_count[entry]
+              } else if family == POLICY_BELADY {
+                0 - next_of[entry]
+              } else {
+                0
+              }
+              better := if victim < 0 {
+                true
+              } else if primary != victim_primary {
+                primary < victim_primary
+              } else if last_use[entry] != victim_last {
+                last_use[entry] < victim_last
+              } else {
+                entry < victim
+              }
+              if better {
+                victim = entry
+                victim_primary = primary
+                victim_last = last_use[entry]
+              }
+              scan = scan + 1
+            }
+            position := resident_pos[victim]
+            tail := resident_list[resident_count - 1]
+            resident_list[position] = tail
+            resident_pos[tail] = position
+            resident_count = resident_count - 1
+            used = used - resident_size[victim]
+            resident_size[victim] = 0
+            resident_pos[victim] = -1
+            prefetched[victim] = 0
+          }
+          resident_size[key] = size
+          resident_pos[key] = resident_count
+          resident_list[resident_count] = key
+          resident_count = resident_count + 1
+          used = used + size
+          if resident_count > high_water { high_water = resident_count }
+        }
+      }
+      freq[key] = freq[key] + 1
+      last_use[key] = ordinal
+      if family == POLICY_RECENT { recent_count[key] = recent_count[key] + 1 }
+      if family == POLICY_BELADY { next_of[key] = next_use[index] }
+      ordinal = ordinal + 1
+      index = index + 1
+    }
+  }
+  totals[5] = high_water
+  return ReplayResult { totals: totals, layer_stats: layer_stats }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Section 2.5.5. The budget sweep.
+
+fn build_budgets(total: i64, largest: i64, requested: i64) -> BudgetSweep {
+  mut bytes := filled_table(SWEEP_POINTS + 1, 0)
+  mut clamped := filled_table(SWEEP_POINTS + 1, 0)
+  mut flag := filled_table(SWEEP_POINTS + 1, 0)
+  mut count := 0
+  mut at := 0
+  loop {
+    if at >= SWEEP_POINTS { break }
+    raw := total >> (7 - at)
+    bytes[count] = if raw < largest { largest } else { raw }
+    clamped[count] = if raw < largest { 1 } else { 0 }
+    count = count + 1
+    at = at + 1
+  }
+  mut matched := -1
+  mut scan := 0
+  loop {
+    if scan >= count { break }
+    if matched < 0 && bytes[scan] == requested { matched = scan }
+    scan = scan + 1
+  }
+  if matched >= 0 {
+    flag[matched] = 1
+    return BudgetSweep { count: count, bytes: bytes, clamped: clamped, requested: flag }
+  }
+  mut insert := count
+  scan = 0
+  loop {
+    if scan >= count { break }
+    if insert == count && bytes[scan] > requested { insert = scan }
+    scan = scan + 1
+  }
+  mut shift := count
+  loop {
+    if shift <= insert { break }
+    bytes[shift] = bytes[shift - 1]
+    clamped[shift] = clamped[shift - 1]
+    flag[shift] = flag[shift - 1]
+    shift = shift - 1
+  }
+  bytes[insert] = requested
+  clamped[insert] = 0
+  flag[insert] = 1
+  return BudgetSweep { count: count + 1, bytes: bytes, clamped: clamped, requested: flag }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Section 2.8. The verdict rule, applied at one budget over one order's results.
+//
+// `stable` states whether the jackknife qualified a candidate, and `winner`/`winner_bytes` name the
+// candidate it qualified — which is not necessarily the lowest-byte one, because the lowest-byte
+// candidate may clear the effect floor on the pooled stream and still lose a fold
+// (section 6, correction 20). `winner` is `-1` for the `sweep_best` rows, which carry the effect
+// floor and the headroom only: section 2.7 bounds the run at `jackknife_folds * 2` extra replays
+// **at the requested budget alone** (section 6, correction 4).
+
+fn decide(
+  borrow results: array<i64>,
+  base: i64,
+  stable: bool,
+  winner: i64,
+  winner_bytes: i64,
+) -> Verdict {
+  baseline := results[base + POLICY_LRU * RESULT_FIELDS + 2]
+  optimal := results[base + POLICY_BELADY * RESULT_FIELDS + 2]
+  headroom := if baseline > 0 { (baseline - optimal) * 1000 / baseline } else { 0 }
+  mut best := -1
+  mut best_bytes := baseline
+  mut at := 0
+  loop {
+    if at >= POLICY_COUNT { break }
+    if is_candidate(at) {
+      value := results[base + at * RESULT_FIELDS + 2]
+      if value < best_bytes {
+        best = at
+        best_bytes = value
+      }
+    }
+    at = at + 1
+  }
+  clears := best >= 0 && best_bytes * 1000 <= baseline * (1000 - MARGIN)
+  // The reported candidate is the qualifying one whenever the jackknife named one; otherwise it is
+  // the lowest-byte candidate strictly below the baseline, which is the `—` of a non-winning row.
+  qualified := stable && winner >= 0
+  chosen := if qualified { winner } else { best }
+  chosen_bytes := if qualified {
+    winner_bytes
+  } else if best >= 0 {
+    best_bytes
+  } else {
+    baseline
+  }
+  gain := if chosen >= 0 && baseline > 0 { (baseline - chosen_bytes) * 1000 / baseline } else { 0 }
+  result := if qualified || (clears && stable && winner < 0) {
+    0
+  } else if headroom < MARGIN {
+    2
+  } else {
+    1
+  }
+  return Verdict {
+    best: chosen,
+    best_bytes: chosen_bytes,
+    gain: gain,
+    headroom: headroom,
+    result: result,
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The renderer. `model_ir`'s shape: one `builder` local, moved out once, and no `builder` crosses a
+// function boundary (`docs/align-requests.md` Request 24).
+
+fn render_policy_rows(
+  borrow results: array<i64>,
+  borrow budget_bytes: array<i64>,
+  budget_count: i64,
+  order: i64,
+  demanded_byte_total: i64,
+) -> string {
+  b := builder()
+  mut at := 0
+  loop {
+    if at >= budget_count { break }
+    base := (order * budget_count + at) * POLICY_COUNT * RESULT_FIELDS
+    floor := results[base + POLICY_NULL * RESULT_FIELDS + 2]
+    mut policy := 0
+    loop {
+      if policy >= POLICY_COUNT { break }
+      if at > 0 || policy > 0 { b.write(",") }
+      slot := base + policy * RESULT_FIELDS
+      hits := results[slot]
+      misses := results[slot + 1]
+      b.write("{\"policy\":")
+      b.write(json_string(policy_name(policy)))
+      b.write(",\"budget_bytes\":")
+      b.write_int(budget_bytes[at])
+      b.write(",\"hits\":")
+      b.write_int(hits)
+      b.write(",\"misses\":")
+      b.write_int(misses)
+      b.write(",\"demands\":")
+      b.write_int(hits + misses)
+      b.write(",\"hit_per_mille\":")
+      b.write_int(per_mille(hits, hits + misses))
+      b.write(",\"bytes_fetched\":")
+      b.write_int(results[slot + 2])
+      b.write(",\"demanded_byte_total\":")
+      b.write_int(demanded_byte_total)
+      b.write(",\"bytes_fetched_per_mille_of_null\":")
+      b.write_int(per_mille(results[slot + 2], floor))
+      b.write(",\"prefetch_fetches\":")
+      b.write_int(results[slot + 3])
+      b.write(",\"prefetch_useful\":")
+      b.write_int(results[slot + 4])
+      b.write(",\"resident_key_high_water\":")
+      b.write_int(results[slot + 5])
+      b.write("}")
+      policy = policy + 1
+    }
+    at = at + 1
+  }
+  return b.to_string()
+}
+
+fn render_per_layer(
+  borrow layer_stats: array<i64>,
+  borrow budget_bytes: array<i64>,
+  borrow layers: array<i64>,
+  budget_count: i64,
+  n_layer: i64,
+  order: i64,
+) -> string {
+  b := builder()
+  mut at := 0
+  loop {
+    if at >= budget_count { break }
+    mut which := 0
+    loop {
+      if which >= layers.len() { break }
+      layer := layers[which]
+      if at > 0 || which > 0 { b.write(",") }
+      b.write("{\"budget_bytes\":")
+      b.write_int(budget_bytes[at])
+      b.write(",\"layer\":")
+      b.write_int(layer)
+      b.write(",\"policies\":[")
+      mut policy := 0
+      loop {
+        if policy >= POLICY_COUNT { break }
+        if policy > 0 { b.write(",") }
+        slot := (((order * budget_count + at) * POLICY_COUNT + policy) * n_layer + layer) * 2
+        hits := layer_stats[slot]
+        misses := layer_stats[slot + 1]
+        b.write("{\"policy\":")
+        b.write(json_string(policy_name(policy)))
+        b.write(",\"demands\":")
+        b.write_int(hits + misses)
+        b.write(",\"hits\":")
+        b.write_int(hits)
+        b.write(",\"hit_per_mille\":")
+        b.write_int(per_mille(hits, hits + misses))
+        b.write("}")
+        policy = policy + 1
+      }
+      b.write("]}")
+      which = which + 1
+    }
+    at = at + 1
+  }
+  return b.to_string()
+}
+
+fn render_int_list(borrow values: array<i64>) -> string {
+  b := builder()
+  mut at := 0
+  loop {
+    if at >= values.len() { break }
+    if at > 0 { b.write(",") }
+    b.write_int(values[at])
+    at = at + 1
+  }
+  return b.to_string()
+}
+
+fn result_name(code: i64) -> str {
+  if code == 0 { return "BEATS_BASELINE" }
+  if code == 1 { return "NO_POLICY_BEATS_BASELINE" }
+  if code == 2 { return "NO_HEADROOM" }
+  return ""
+}
+
+// Everything the derivation settled, handed to the renderer as one borrowed record.
+Derived {
+  list_path: string,
+  ir_path: string,
+  code: string,
+  detail: string,
+  build_source: string,
+  arch: string,
+  listed: i64,
+  admitted: i64,
+  trace_schema: i64,
+  bytes_read: i64,
+  demand_count: i64,
+  token_positions: i64,
+  distinct_keys: i64,
+  demanded_byte_total: i64,
+  distinct_key_bytes: i64,
+  one_token_keys: i64,
+  one_token_bytes: i64,
+  omitted_truncated: i64,
+  omitted_layer_positions: i64,
+  phase_prefill: i64,
+  phase_decode: i64,
+  phase_single: i64,
+  folds: i64,
+  jackknife_min: i64,
+  jackknife_stable: bool,
+  requested: i64,
+  budget_count: i64,
+  meta: array<i64>,
+  builds: array<i64>,
+  layers_demanded: array<i64>,
+  observed_slots: array<i64>,
+  budget_bytes: array<i64>,
+  budget_clamped: array<i64>,
+  budget_requested: array<i64>,
+  results: array<i64>,
+  layer_stats: array<i64>,
+  sweep_best: array<i64>,
+  verdict: array<i64>,
+}
+
+// The renderer. `model_ir`'s shape: one `builder` local, moved out once, and no `builder` crosses a
+// function boundary (`docs/align-requests.md` Request 24). It is a separate function from the
+// derivation for a mechanical reason as well as a structural one: one 600-line function costs the
+// per-unit checker more than two 300-line ones (section 7.4).
+fn render_document(borrow d: Derived) -> string {
+  failed := d.code.len() > 0
+  list_view: str := d.list_path
+  ir_view: str := d.ir_path
+  document := builder()
+  document.write("{\"schema_version\":1,\"kind\":\"R3_RESIDENCY_SIM\",\"trace_list_path\":")
+  document.write(json_string(list_view))
+  document.write(",\"model_ir_path\":")
+  document.write(json_string(ir_view))
+  document.write(",\"status\":")
+  document.write(json_string(if failed { "error" } else { "ok" }))
+  document.write(",\"error_code\":")
+  code_view: str := d.code
+  document.write(json_string(code_view))
+  document.write(",\"error_detail\":")
+  detail_view: str := d.detail
+  document.write(json_string(bounded_detail(detail_view)))
+  document.write(",\"inputs\":{\"listed_trace_count\":")
+  document.write_int(d.listed)
+  document.write(",\"admitted_trace_count\":")
+  document.write_int(d.admitted)
+  document.write(",\"trace_schema_version\":")
+  document.write_int(d.trace_schema)
+  document.write(",\"model_ir_schema_version\":")
+  document.write_int(d.meta[7])
+  document.write(",\"bytes_read\":")
+  document.write_int(d.bytes_read)
+  document.write(",\"instrument_builds\":[")
+  document.write(render_int_list(d.builds))
+  document.write("],\"instrument_build_source\":")
+  source_view: str := d.build_source
+  document.write(json_string(source_view))
+  document.write("},\"model\":{\"arch\":")
+  arch_view: str := d.arch
+  document.write(json_string(arch_view))
+  document.write(",\"n_layer\":")
+  document.write_int(d.meta[0])
+  document.write(",\"n_expert\":")
+  document.write_int(if d.meta[1] > 0 { d.meta[1] } else { 0 })
+  document.write(",\"n_expert_used\":")
+  document.write_int(if d.meta[2] > 0 { d.meta[2] } else { 0 })
+  document.write(",\"expert_block_count\":")
+  document.write_int(d.meta[3])
+  document.write(",\"total_expert_bytes\":")
+  document.write_int(d.meta[4])
+  document.write(",\"smallest_expert_bytes\":")
+  document.write_int(d.meta[5])
+  document.write(",\"largest_expert_bytes\":")
+  document.write_int(d.meta[6])
+  document.write(",\"uniform_expert_bytes\":")
+  document.write(bool_text(d.meta[3] > 0 && d.meta[5] == d.meta[6]))
+  document.write("},\"stream\":{\"pooling\":\"continuing\",\"demand_count\":")
+  document.write_int(d.demand_count)
+  document.write(",\"token_position_count\":")
+  document.write_int(d.token_positions)
+  document.write(",\"distinct_key_count\":")
+  document.write_int(d.distinct_keys)
+  document.write(",\"demanded_byte_total\":")
+  document.write_int(d.demanded_byte_total)
+  document.write(",\"distinct_key_bytes\":")
+  document.write_int(d.distinct_key_bytes)
+  document.write(",\"layers_demanded\":[")
+  document.write(render_int_list(d.layers_demanded))
+  document.write("],\"n_expert_used\":")
+  document.write_int(if failed || d.meta[2] < 0 { 0 } else { d.meta[2] })
+  document.write(",\"observed_slots\":[")
+  document.write(render_int_list(d.observed_slots))
+  document.write("],\"slot_coverage_per_mille\":")
+  document.write_int(per_mille(d.observed_slots.len(), d.meta[2]))
+  document.write(",\"one_token_working_set_keys\":")
+  document.write_int(d.one_token_keys)
+  document.write(",\"one_token_working_set_bytes\":")
+  document.write_int(d.one_token_bytes)
+  document.write(",\"omitted_truncated_graphs\":")
+  document.write_int(d.omitted_truncated)
+  document.write(",\"omitted_layer_positions\":")
+  document.write_int(d.omitted_layer_positions)
+  document.write(",\"graph_phases\":{\"prefill\":")
+  document.write_int(d.phase_prefill)
+  document.write(",\"decode\":")
+  document.write_int(d.phase_decode)
+  document.write(",\"single_token_first_graph\":")
+  document.write_int(d.phase_single)
+  document.write("}},\"budgets\":[")
+  mut budget_at := 0
+  loop {
+    if budget_at >= d.budget_count { break }
+    if budget_at > 0 { document.write(",") }
+    document.write("{\"bytes\":")
+    document.write_int(d.budget_bytes[budget_at])
+    document.write(",\"per_mille_of_expert_bytes\":")
+    document.write_int(per_mille(d.budget_bytes[budget_at], d.meta[4]))
+    document.write(",\"expert_equivalents\":")
+    mean := if d.meta[3] > 0 { d.meta[4] / d.meta[3] } else { 0 }
+    document.write_int(if mean > 0 { d.budget_bytes[budget_at] / mean } else { 0 })
+    document.write(",\"clamped\":")
+    document.write(bool_text(d.budget_clamped[budget_at] != 0))
+    document.write(",\"requested\":")
+    document.write(bool_text(d.budget_requested[budget_at] != 0))
+    document.write("}")
+    budget_at = budget_at + 1
+  }
+  document.write("],\"orders\":[")
+  mut order := 0
+  loop {
+    if order >= ORDER_COUNT { break }
+    if d.budget_count == 0 { break }
+    if order > 0 { document.write(",") }
+    document.write("{\"order\":")
+    document.write(json_string(if order == 0 { "token_major" } else { "layer_major" }))
+    document.write(",\"verdict_bearing\":")
+    document.write(bool_text(order == 0))
+    document.write(",\"policies\":[")
+    rows := render_policy_rows(d.results, d.budget_bytes, d.budget_count, order, d.demanded_byte_total)
+    rows_view: str := rows
+    document.write(rows_view)
+    document.write("],\"per_layer\":[")
+    cells := render_per_layer(d.layer_stats, d.budget_bytes, d.layers_demanded, d.budget_count, d.meta[0],
+      order)
+    cells_view: str := cells
+    document.write(cells_view)
+    document.write("]}")
+    order = order + 1
+  }
+  document.write("],\"verdict\":{\"rule_version\":")
+  document.write_int(RULE_VERSION)
+  document.write(",\"order\":\"token_major\",\"budget_bytes\":")
+  document.write_int(if d.requested > 0 { d.requested } else { 0 })
+  document.write(",\"baseline_policy\":\"lru\",\"baseline_bytes_fetched\":")
+  baseline_bytes := if failed || d.budget_count == 0 {
+    0
+  } else {
+    d.results[requested_slot(d.budget_requested, d.budget_count) + POLICY_LRU * RESULT_FIELDS + 2]
+  }
+  document.write_int(baseline_bytes)
+  document.write(",\"best_policy\":")
+  document.write(json_string(if d.verdict[0] >= 0 && !failed { policy_name(d.verdict[0]) } else { "" }))
+  document.write(",\"best_bytes_fetched\":")
+  document.write_int(if failed { 0 } else { d.verdict[1] })
+  document.write(",\"gain_per_mille\":")
+  document.write_int(if failed { 0 } else { d.verdict[2] })
+  document.write(",\"margin_per_mille\":")
+  document.write_int(MARGIN)
+  document.write(",\"headroom_per_mille\":")
+  document.write_int(if failed { 0 } else { d.verdict[3] })
+  document.write(",\"jackknife_folds\":")
+  document.write_int(d.folds)
+  document.write(",\"jackknife_min_gain_per_mille\":")
+  document.write_int(d.jackknife_min)
+  document.write(",\"jackknife_stable\":")
+  document.write(bool_text(d.jackknife_stable))
+  document.write(",\"result\":")
+  document.write(json_string(if failed { "" } else { result_name(d.verdict[4]) }))
+  document.write(",\"sweep_best\":[")
+  budget_at = 0
+  loop {
+    if budget_at >= d.budget_count { break }
+    if failed { break }
+    if budget_at > 0 { document.write(",") }
+    document.write("{\"budget_bytes\":")
+    document.write_int(d.budget_bytes[budget_at])
+    document.write(",\"best_policy\":")
+    best_index := d.sweep_best[budget_at * 5]
+    document.write(json_string(if best_index >= 0 { policy_name(best_index) } else { "" }))
+    document.write(",\"best_bytes_fetched\":")
+    document.write_int(d.sweep_best[budget_at * 5 + 1])
+    document.write(",\"gain_per_mille\":")
+    document.write_int(d.sweep_best[budget_at * 5 + 2])
+    document.write(",\"headroom_per_mille\":")
+    document.write_int(d.sweep_best[budget_at * 5 + 3])
+    document.write(",\"result\":")
+    document.write(json_string(result_name(d.sweep_best[budget_at * 5 + 4])))
+    document.write("}")
+    budget_at = budget_at + 1
+  }
+  document.write("]}}")
+
+  return document.to_string()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The whole derivation, in the order of section 2.6. Every value derived before a failure survives
+// into the document, so a failed run is diagnosable from its own output.
+
+pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim {
+  mut code := "".clone()
+  mut detail := "".clone()
+  mut listed := 0
+  mut admitted := 0
+  mut trace_schema := 0
+  mut bytes_read := 0
+  mut build_source := "".clone()
+  mut arch := "".clone()
+  mut meta := filled_table(9, 0)
+  mut sizes := filled_table(MAX_RESIDENCY_KEYS, -1)
+  mut slot_seen := filled_table(MAX_SLOTS, 0)
+  mut builds := filled_table(0, 0)
+  mut layers_demanded := filled_table(0, 0)
+  mut observed_slots := filled_table(0, 0)
+  mut budget_bytes := filled_table(SWEEP_POINTS + 1, 0)
+  mut budget_clamped := filled_table(SWEEP_POINTS + 1, 0)
+  mut budget_requested := filled_table(SWEEP_POINTS + 1, 0)
+  mut budget_count := 0
+  mut results := filled_table(0, 0)
+  mut layer_stats := filled_table(0, 0)
+  mut sweep_best := filled_table(0, 0)
+  mut verdict := filled_table(5, 0)
+  mut demand_count := 0
+  mut token_positions := 0
+  mut distinct_keys := 0
+  mut demanded_byte_total := 0
+  mut distinct_key_bytes := 0
+  mut one_token_keys := 0
+  mut one_token_bytes := 0
+  mut omitted_truncated := 0
+  mut omitted_layer_positions := 0
+  mut phase_prefill := 0
+  mut phase_decode := 0
+  mut phase_single := 0
+  mut folds := 0
+  mut jackknife_min := 0
+  mut jackknife_stable := false
+  mut requested := -1
+
+  // Step 2. Every path operand is guarded before any read.
+  if code.len() == 0 && !valid_path(list_path) { code = "R3_PATH".clone() }
+  if code.len() == 0 && !valid_path(ir_path) { code = "R3_PATH".clone() }
+
+  // Step 3. The budget operand.
+  if code.len() == 0 {
+    requested = parse_budget(budget_text)
+    if requested < 0 { code = "R3_BUDGET_MALFORMED".clone() }
+  }
+
+  // Step 4. The trace list.
+  mut list_text := "".clone()
+  mut line_start := filled_table(0, 0)
+  mut line_end := filled_table(0, 0)
+  if code.len() == 0 {
+    match fs.read_file(list_path) {
+      Ok(value) => { list_text = value },
+      Err(_) => { code = "R3_TRACE_LIST_UNREADABLE".clone() },
+    }
+  }
+  if code.len() == 0 {
+    list_view: str := list_text
+    mut starts: array_builder<i64> := array_builder()
+    mut ends: array_builder<i64> := array_builder()
+    mut cursor := 0
+    loop {
+      if cursor >= list_view.len() { break }
+      mut stop := cursor
+      loop {
+        if stop >= list_view.len() { break }
+        if list_view[stop..stop + 1] == "\n" { break }
+        stop = stop + 1
+      }
+      starts.push(cursor)
+      ends.push(stop)
+      cursor = stop + 1
+    }
+    line_start = starts.build()
+    line_end = ends.build()
+    listed = line_start.len()
+    if listed == 0 { code = "R3_TRACE_LIST_EMPTY".clone() }
+    if code.len() == 0 && listed > MAX_TRACE_PATHS { code = "R3_TRACE_LIST_TOO_MANY".clone() }
+  }
+  if code.len() == 0 {
+    list_view: str := list_text
+    mut at := 0
+    loop {
+      if at >= listed { break }
+      if !valid_path(list_view[line_start[at]..line_end[at]]) {
+        code = "R3_PATH".clone()
+        detail = int_text(at + 1)
+        break
+      }
+      at = at + 1
+    }
+  }
+  if code.len() == 0 {
+    // Section 2.3: replaying the same prompt twice would fabricate reuse. The hash orders the scan;
+    // every candidate it selects is confirmed by an exact byte comparison.
+    list_view: str := list_text
+    mut hashes: array_builder<i64> := array_builder()
+    mut at := 0
+    loop {
+      if at >= listed { break }
+      hashes.push(((line_hash(list_view[line_start[at]..line_end[at]]) & LINE_HASH_MASK) << 13) | at)
+      at = at + 1
+    }
+    raw := hashes.build()
+    ordered := raw.sort()
+    mut scan := 1
+    loop {
+      if scan >= ordered.len() { break }
+      if (ordered[scan] >> 13) == (ordered[scan - 1] >> 13) {
+        left := ordered[scan - 1] & 8191
+        right := ordered[scan] & 8191
+        if list_view[line_start[left]..line_end[left]]
+          == list_view[line_start[right]..line_end[right]] {
+          code = "R3_TRACE_LIST_DUPLICATE".clone()
+          detail = int_text((if left > right { left } else { right }) + 1)
+          break
+        }
+      }
+      scan = scan + 1
+    }
+  }
+
+  // Steps 5 and 6. The Model IR.
+  if code.len() == 0 {
+    load := model_ir_load(ir_path)
+    load_code: str := load.code
+    load_detail: str := load.detail
+    load_arch: str := load.arch
+    bytes_read = bytes_read + load.bytes_read
+    if load_code.len() > 0 {
+      code = load_code.clone()
+      detail = load_detail.clone()
+    } else {
+      arch = load_arch.clone()
+    }
+    mut copy_at := 0
+    loop {
+      if copy_at >= load.meta.len() { break }
+      meta[copy_at] = load.meta[copy_at]
+      copy_at = copy_at + 1
+    }
+    copy_at = 0
+    loop {
+      if copy_at >= load.sizes.len() { break }
+      sizes[copy_at] = load.sizes[copy_at]
+      copy_at = copy_at + 1
+    }
+  }
+
+  // Step 7. The budget floor, which can only be checked against the Model IR.
+  if code.len() == 0 && requested < meta[6] { code = "R3_BUDGET_TOO_SMALL".clone() }
+
+  // Steps 8 and 9. Every trace, in list order.
+  mut token_key := filled_table(0, 0)
+  mut token_tok := filled_table(0, 0)
+  mut layer_key := filled_table(0, 0)
+  mut layer_tok := filled_table(0, 0)
+  mut doc_start := filled_table(0, 0)
+  mut doc_end := filled_table(0, 0)
+  if code.len() == 0 {
+    list_view: str := list_text
+    mut token_key_b: array_builder<i64> := array_builder()
+    mut token_tok_b: array_builder<i64> := array_builder()
+    mut layer_key_b: array_builder<i64> := array_builder()
+    mut layer_tok_b: array_builder<i64> := array_builder()
+    mut doc_start_b: array_builder<i64> := array_builder()
+    mut doc_end_b: array_builder<i64> := array_builder()
+    mut build_column: array_builder<i64> := array_builder()
+    mut token_ordinal := 0
+    mut layer_ordinal := 0
+    mut written := 0
+    mut source_seen := false
+    mut source_mixed := false
+    mut at := 0
+    loop {
+      if at >= listed { break }
+      load := trace_load(list_view[line_start[at]..line_end[at]], at + 1,
+        meta[0], meta[1], meta[2], sizes)
+      bytes_read = bytes_read + load.bytes_read
+      load_code: str := load.code
+      if load_code.len() > 0 {
+        code = load_code.clone()
+        load_detail: str := load.detail
+        detail = load_detail.clone()
+        break
+      }
+      trace_schema = 1
+      admitted = admitted + 1
+      mut slot := 0
+      loop {
+        if slot >= MAX_SLOTS { break }
+        if load.slot_mask[slot] != 0 { slot_seen[slot] = 1 }
+        slot = slot + 1
+      }
+      omitted_truncated = omitted_truncated + load.truncated_graphs
+      phase_prefill = phase_prefill + load.phase_prefill
+      phase_decode = phase_decode + load.phase_decode
+      phase_single = phase_single + load.phase_single
+      if load.build_present { build_column.push(load.build) }
+      source_view: str := load.build_source
+      if !source_seen {
+        source_seen = true
+        build_source = source_view.clone()
+      } else if !source_mixed {
+        current_source: str := build_source
+        if current_source != source_view {
+          source_mixed = true
+          build_source = "mixed".clone()
+        }
+      }
+      start := written
+      mut previous := -1
+      mut overflow := false
+      mut scan := 0
+      loop {
+        if scan >= load.words.len() { break }
+        // `MAX_DEMANDS` is a bound on what is allocated, so it is tested before the element that
+        // would exceed it is appended, not after the whole document has been (section 6,
+        // correction 21).
+        if written >= MAX_DEMANDS {
+          overflow = true
+          break
+        }
+        word := load.words[scan]
+        ident := word >> (KEY_BITS + LAYER_SLOT_BITS)
+        if ident != previous {
+          previous = ident
+          token_ordinal = token_ordinal + 1
+        }
+        token_key_b.push(word & KEY_MASK)
+        token_tok_b.push(token_ordinal - 1)
+        written = written + 1
+        scan = scan + 1
+      }
+      if overflow {
+        code = "R3_SELECTION_TOO_MANY".clone()
+        detail = int_text(at + 1)
+        break
+      }
+      doc_start_b.push(start)
+      doc_end_b.push(written)
+      previous = -1
+      scan = 0
+      loop {
+        if scan >= load.observation_key.len() { break }
+        ident := load.observation_ident[scan]
+        if ident != previous {
+          previous = ident
+          layer_ordinal = layer_ordinal + 1
+        }
+        layer_key_b.push(load.observation_key[scan])
+        layer_tok_b.push(layer_ordinal - 1)
+        scan = scan + 1
+      }
+      at = at + 1
+    }
+    token_key = token_key_b.build()
+    token_tok = token_tok_b.build()
+    layer_key = layer_key_b.build()
+    layer_tok = layer_tok_b.build()
+    doc_start = doc_start_b.build()
+    doc_end = doc_end_b.build()
+    raw_builds := build_column.build()
+    builds = raw_builds.sort()
+    demand_count = token_key.len()
+    token_positions = token_ordinal
+  }
+
+  // Step 10. An empty stream would report a hit rate of zero for every policy and a verdict of
+  // NO_HEADROOM, which is a confident wrong answer.
+  if code.len() == 0 && demand_count == 0 { code = "R3_EMPTY_STREAM".clone() }
+
+  // Every byte total in the document is an `i64` and Align's arithmetic wraps with no trap
+  // (rule 5), so the largest total any accumulation below could reach is bounded before the first
+  // byte is summed (section 6, correction 18). `demanded_byte_total` charges every demand at most
+  // `largest_expert_bytes`; a `topk_prefetch` replay may in addition admit `n_layer * 8` blocks at
+  // each of at most `demand_count` token boundaries, and that is the most expensive policy in the
+  // set. The bound is deliberately loose: it refuses a run whose totals *could* wrap rather than
+  // measuring which ones do.
+  if code.len() == 0 {
+    largest := meta[6]
+    bound := demand_count + demand_count * meta[0] * MAX_PREFETCH_DEGREE
+    if largest > 0 && bound > MAX_BYTE_TOTAL / largest { code = "R3_BYTE_TOTAL_OVERFLOW".clone() }
+  }
+
+  // Stream accounting (section 2.5.4).
+  if code.len() == 0 {
+    n_layer := meta[0]
+    n_expert := meta[1]
+    key_space := meta[8]
+    mut seen := filled_table(key_space, 0)
+    mut layer_seen := filled_table(n_layer, 0)
+    mut position_seen := filled_table(n_layer, -1)
+    mut at := 0
+    loop {
+      if at >= demand_count { break }
+      key := token_key[at]
+      demanded_byte_total = demanded_byte_total + sizes[key]
+      if seen[key] == 0 {
+        seen[key] = 1
+        distinct_keys = distinct_keys + 1
+        distinct_key_bytes = distinct_key_bytes + sizes[key]
+      }
+      layer := key / n_expert
+      if layer_seen[layer] == 0 { layer_seen[layer] = 1 }
+      if position_seen[layer] != token_tok[at] {
+        position_seen[layer] = token_tok[at]
+        omitted_layer_positions = omitted_layer_positions + 1
+      }
+      at = at + 1
+    }
+    omitted_layer_positions = token_positions * n_layer - omitted_layer_positions
+    mut first := filled_table(key_space, 0)
+    at = 0
+    loop {
+      if at >= demand_count { break }
+      if token_tok[at] != 0 { break }
+      key := token_key[at]
+      if first[key] == 0 {
+        first[key] = 1
+        one_token_keys = one_token_keys + 1
+        one_token_bytes = one_token_bytes + sizes[key]
+      }
+      at = at + 1
+    }
+    mut layer_column: array_builder<i64> := array_builder()
+    at = 0
+    loop {
+      if at >= n_layer { break }
+      if layer_seen[at] != 0 { layer_column.push(at) }
+      at = at + 1
+    }
+    layers_demanded = layer_column.build()
+    mut slot_column: array_builder<i64> := array_builder()
+    at = 0
+    loop {
+      if at >= MAX_SLOTS { break }
+      if slot_seen[at] != 0 { slot_column.push(at) }
+      at = at + 1
+    }
+    observed_slots = slot_column.build()
+  }
+
+  // Step 11. The cost guard of section 2.7, stated as a bound rather than as an optimism.
+  if code.len() == 0 {
+    capacity := if meta[5] > 0 { requested / meta[5] } else { meta[8] }
+    bounded := if capacity < meta[8] { capacity } else { meta[8] }
+    if bounded > 0 && demand_count > MAX_SIMULATION_STEPS / bounded {
+      code = "R3_SIMULATION_COST".clone()
+    }
+  }
+
+  // The sweep, every replay, and the verdict.
+  if code.len() == 0 {
+    n_layer := meta[0]
+    n_expert := meta[1]
+    key_space := meta[8]
+    sweep := build_budgets(meta[4], meta[6], requested)
+    budget_count = sweep.count
+    mut copy_at := 0
+    loop {
+      if copy_at >= budget_count { break }
+      budget_bytes[copy_at] = sweep.bytes[copy_at]
+      budget_clamped[copy_at] = sweep.clamped[copy_at]
+      budget_requested[copy_at] = sweep.requested[copy_at]
+      copy_at = copy_at + 1
+    }
+    results = filled_table(ORDER_COUNT * budget_count * POLICY_COUNT * RESULT_FIELDS, 0)
+    layer_stats = filled_table(ORDER_COUNT * budget_count * POLICY_COUNT * n_layer * 2, 0)
+    mut order := 0
+    loop {
+      if order >= ORDER_COUNT { break }
+      mut budget_at := 0
+      loop {
+        if budget_at >= budget_count { break }
+        mut policy := 0
+        loop {
+          if policy >= POLICY_COUNT { break }
+          answer := if order == 0 {
+            replay(token_key, token_tok, sizes, demand_count, -1, -1, budget_bytes[budget_at],
+              policy, n_layer, n_expert, key_space)
+          } else {
+            replay(layer_key, layer_tok, sizes, layer_key.len(), -1, -1, budget_bytes[budget_at],
+              policy, n_layer, n_expert, key_space)
+          }
+          base := ((order * budget_count + budget_at) * POLICY_COUNT + policy) * RESULT_FIELDS
+          mut field := 0
+          loop {
+            if field >= RESULT_FIELDS { break }
+            results[base + field] = answer.totals[field]
+            field = field + 1
+          }
+          layer_base := ((order * budget_count + budget_at) * POLICY_COUNT + policy) * n_layer * 2
+          mut cell := 0
+          loop {
+            if cell >= n_layer * 2 { break }
+            layer_stats[layer_base + cell] = answer.layer_stats[cell]
+            cell = cell + 1
+          }
+          policy = policy + 1
+        }
+        budget_at = budget_at + 1
+      }
+      order = order + 1
+    }
+    // The sweep rows, then the jackknife at the requested budget only.
+    sweep_best = filled_table(budget_count * 5, 0)
+    mut sweep_at := 0
+    loop {
+      if sweep_at >= budget_count { break }
+      row := decide(results, sweep_at * POLICY_COUNT * RESULT_FIELDS, true, -1, 0)
+      sweep_best[sweep_at * 5] = row.best
+      sweep_best[sweep_at * 5 + 1] = row.best_bytes
+      sweep_best[sweep_at * 5 + 2] = row.gain
+      sweep_best[sweep_at * 5 + 3] = row.headroom
+      sweep_best[sweep_at * 5 + 4] = row.result
+      sweep_at = sweep_at + 1
+    }
+    mut requested_index := 0
+    sweep_at = 0
+    loop {
+      if sweep_at >= budget_count { break }
+      if budget_requested[sweep_at] != 0 { requested_index = sweep_at }
+      sweep_at = sweep_at + 1
+    }
+    folds = doc_start.len()
+    base := requested_index * POLICY_COUNT * RESULT_FIELDS
+    baseline := results[base + POLICY_LRU * RESULT_FIELDS + 2]
+    mut ranked := filled_table(POLICY_COUNT, 0)
+    mut tested := false
+    mut winner := -1
+    mut winner_bytes := 0
+    mut attempt := 0
+    loop {
+      if attempt >= POLICY_COUNT { break }
+      mut best := -1
+      mut best_bytes := 0
+      mut policy := 0
+      loop {
+        if policy >= POLICY_COUNT { break }
+        if is_candidate(policy) && ranked[policy] == 0 {
+          value := results[base + policy * RESULT_FIELDS + 2]
+          if best < 0 || value < best_bytes {
+            best = policy
+            best_bytes = value
+          }
+        }
+        policy = policy + 1
+      }
+      if best < 0 { break }
+      ranked[best] = 1
+      if best_bytes >= baseline || best_bytes * 1000 > baseline * (1000 - MARGIN) {
+        attempt = attempt + 1
+      } else {
+        mut minimum := 0
+        mut all_clear := true
+        mut fold := 0
+        loop {
+          if fold >= folds { break }
+          fold_base := replay(token_key, token_tok, sizes, demand_count, doc_start[fold],
+            doc_end[fold], budget_bytes[requested_index], POLICY_LRU, meta[0], meta[1], meta[8])
+          fold_baseline := fold_base.totals[2]
+          fold_candidate := replay(token_key, token_tok, sizes, demand_count, doc_start[fold],
+            doc_end[fold], budget_bytes[requested_index], best, meta[0], meta[1], meta[8])
+          fold_gain := if fold_baseline > 0 {
+            (fold_baseline - fold_candidate.totals[2]) * 1000 / fold_baseline
+          } else {
+            0
+          }
+          if fold == 0 || fold_gain < minimum { minimum = fold_gain }
+          if fold_gain < MARGIN { all_clear = false }
+          fold = fold + 1
+        }
+        if !tested {
+          tested = true
+          jackknife_min = minimum
+        }
+        if all_clear {
+          jackknife_stable = true
+          jackknife_min = minimum
+          winner = best
+          winner_bytes = best_bytes
+          break
+        }
+        attempt = attempt + 1
+      }
+    }
+    answer := decide(results, base, jackknife_stable, winner, winner_bytes)
+    verdict[0] = answer.best
+    verdict[1] = answer.best_bytes
+    verdict[2] = answer.gain
+    verdict[3] = answer.headroom
+    verdict[4] = answer.result
+  }
+
+  // Section 2.6's "a trace that fails admission fails the whole run" applies to the accounting as
+  // well: a partially pooled stream describes no corpus, so on failure the `stream` section is
+  // empty and `inputs` carries the partial trace accounting (section 6, correction 5).
+  if code.len() > 0 {
+    demand_count = 0
+    token_positions = 0
+    omitted_truncated = 0
+    phase_prefill = 0
+    phase_decode = 0
+    phase_single = 0
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // One render, whatever happened above.
+  derived := Derived {
+    list_path: list_path.clone(),
+    ir_path: ir_path.clone(),
+    code: code,
+    detail: detail,
+    build_source: build_source,
+    arch: arch,
+    listed: listed,
+    admitted: admitted,
+    trace_schema: trace_schema,
+    bytes_read: bytes_read,
+    demand_count: demand_count,
+    token_positions: token_positions,
+    distinct_keys: distinct_keys,
+    demanded_byte_total: demanded_byte_total,
+    distinct_key_bytes: distinct_key_bytes,
+    one_token_keys: one_token_keys,
+    one_token_bytes: one_token_bytes,
+    omitted_truncated: omitted_truncated,
+    omitted_layer_positions: omitted_layer_positions,
+    phase_prefill: phase_prefill,
+    phase_decode: phase_decode,
+    phase_single: phase_single,
+    folds: folds,
+    jackknife_min: jackknife_min,
+    jackknife_stable: jackknife_stable,
+    requested: requested,
+    budget_count: budget_count,
+    meta: meta,
+    builds: builds,
+    layers_demanded: layers_demanded,
+    observed_slots: observed_slots,
+    budget_bytes: budget_bytes,
+    budget_clamped: budget_clamped,
+    budget_requested: budget_requested,
+    results: results,
+    layer_stats: layer_stats,
+    sweep_best: sweep_best,
+    verdict: verdict,
+  }
+  document := render_document(derived)
+  failed := derived.code.len() > 0
+
+  code_out: str := derived.code
+  detail_out: str := derived.detail
+  derived_code := code_out.clone()
+  derived_detail := detail_out.clone()
+  baseline_bytes := if failed || derived.budget_count == 0 {
+    0
+  } else {
+    derived.results[requested_slot(derived.budget_requested, derived.budget_count)
+        + POLICY_LRU * RESULT_FIELDS + 2]
+  }
+  optimal := if failed || derived.budget_count == 0 {
+    0
+  } else {
+    derived.results[requested_slot(derived.budget_requested, derived.budget_count) + POLICY_BELADY * RESULT_FIELDS + 2]
+  }
+  return ResidencySim {
+    status: if failed { SimStatus.Error } else { SimStatus.Ok },
+    error_code: derived_code,
+    error_detail: derived_detail,
+    listed_trace_count: derived.listed,
+    admitted_trace_count: derived.admitted,
+    demand_count: derived.demand_count,
+    token_position_count: derived.token_positions,
+    slot_coverage_per_mille: per_mille(derived.observed_slots.len(), derived.meta[2]),
+    observed_slot_count: derived.observed_slots.len(),
+    n_expert_used: if derived.meta[2] > 0 { derived.meta[2] } else { 0 },
+    distinct_key_count: derived.distinct_keys,
+    expert_block_count: derived.meta[3],
+    requested_budget: if derived.requested > 0 { derived.requested } else { 0 },
+    requested_per_mille: per_mille(if derived.requested > 0 { derived.requested } else { 0 }, derived.meta[4]),
+    baseline_bytes_fetched: baseline_bytes,
+    best_policy: if derived.verdict[0] >= 0 && !failed {
+      policy_name(derived.verdict[0]).clone()
+    } else {
+      "".clone()
+    },
+    best_bytes_fetched: if failed { 0 } else { derived.verdict[1] },
+    optimal_bytes_fetched: optimal,
+    verdict: if failed { "".clone() } else { result_name(derived.verdict[4]).clone() },
+    document: document,
+  }
+}
+
+// The requested budget's slot into the flat result table, for the `token_major` order.
+fn requested_slot(borrow requested_flag: array<i64>, budget_count: i64) -> i64 {
+  mut at := 0
+  loop {
+    if at >= budget_count { break }
+    if requested_flag[at] != 0 { return at * POLICY_COUNT * RESULT_FIELDS }
+    at = at + 1
+  }
+  return 0
+}

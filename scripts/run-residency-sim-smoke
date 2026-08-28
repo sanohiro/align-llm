@@ -1,0 +1,835 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R3-RESIDENCY-SIM narrow durable owner (`docs/specs/r3-residency-sim.md` section 4.2). It needs no
+# model, no network, no instrument, and no GPU: `scripts/gguf_fixture.py` writes synthetic olmoe
+# containers, `main --model-ir` derives their `R1_MODEL_IR`, `scripts/eval_callback_fixture.py`
+# writes synthetic MoE transcripts with generator-known expert ids, `main --expert-trace` converts
+# them, and every count of the resulting `R3_RESIDENCY_SIM` document is compared against
+# `scripts/residency_oracle.py` — an independent Python implementation of section 2.4 written from
+# the plan and never from `src/residency_sim.align`. Every fixture is removed by the EXIT trap.
+# That is why it joins HOSTED_CHECK_TARGETS.
+#
+# No tolerance is used anywhere, because every value in the document is an integer.
+
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+temp_dir=$(mktemp -d)
+fixture_dir="$temp_dir/fixtures"
+work_dir="$temp_dir/work"
+
+cleanup() {
+  rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
+if [ ! -x "$root_dir/main" ]; then
+  printf '%s\n' "residency sim smoke: the product executable is missing; run 'make build'" >&2
+  exit 1
+fi
+
+mkdir -p "$work_dir"
+python3 "$root_dir/scripts/gguf_fixture.py" "$fixture_dir"
+
+python3 - "$root_dir/main" "$fixture_dir" "$work_dir" "$root_dir" <<'PY'
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+binary, fixture_dir, work_dir, root_dir = (
+    sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]))
+sys.path.insert(0, str(Path(root_dir) / "scripts"))
+import eval_callback_fixture as fixture          # noqa: E402
+import residency_oracle as oracle                # noqa: E402
+
+failures = []
+
+
+def fail(message):
+    failures.append(message)
+    sys.stderr.write("residency sim smoke: %s\n" % message)
+
+
+def report_difference(name, actual, expected, path):
+    if type(actual) is not type(expected):
+        fail("%s: %s has type %s, the oracle says %s"
+             % (name, path, type(actual).__name__, type(expected).__name__))
+    elif isinstance(actual, dict):
+        for key in sorted(set(actual) | set(expected)):
+            if key not in actual or key not in expected:
+                fail("%s: %s/%s is present on one side only" % (name, path, key))
+            elif actual[key] != expected[key]:
+                report_difference(name, actual[key], expected[key], "%s/%s" % (path, key))
+    elif isinstance(actual, list):
+        if len(actual) != len(expected):
+            fail("%s: %s has %d entries, the oracle says %d"
+                 % (name, path, len(actual), len(expected)))
+        else:
+            for index, (left, right) in enumerate(zip(actual, expected)):
+                if left != right:
+                    report_difference(name, left, right, "%s[%d]" % (path, index))
+    else:
+        fail("%s: %s is %r, the oracle says %r" % (name, path, actual, expected))
+
+
+def run(args, expect_exit=None):
+    completed = subprocess.run([binary] + args, capture_output=True, text=True)
+    if expect_exit is not None and completed.returncode != expect_exit:
+        fail("%r exited %d, expected %d (stderr %r)"
+             % (args, completed.returncode, expect_exit, completed.stderr[:200]))
+    return completed
+
+
+# -------------------------------------------------------------------------------------------
+# The synthetic Model IRs, derived by the already-verified `--model-ir` arm rather than
+# hand-authored, so the fixture graph cannot drift from R1C's renderer (section 4.1).
+
+def derive_ir(name):
+    out = work_dir / ("%s-ir.json" % name)
+    completed = run(["--model-ir", str(fixture_dir / ("%s.gguf" % name)), str(out)], expect_exit=0)
+    document = json.loads(out.read_text())
+    if document["status"] != "ok":
+        fail("%s model ir: %s" % (name, document["error_code"]))
+    return out, document
+
+
+uniform_ir, uniform_doc = derive_ir("olmoe-full")
+mixed_ir, mixed_doc = derive_ir("olmoe-mixed-quant")
+
+UNIFORM = (uniform_doc["model"]["n_layer"], uniform_doc["model"]["n_expert"],
+           uniform_doc["model"]["n_expert_used"])
+MIXED = (mixed_doc["model"]["n_layer"], mixed_doc["model"]["n_expert"],
+         mixed_doc["model"]["n_expert_used"])
+if UNIFORM != (2, 8, 3):
+    fail("olmoe-full hyperparameters moved: %r" % (UNIFORM,))
+if MIXED != (2, 2, 2):
+    fail("olmoe-mixed-quant hyperparameters moved: %r" % (MIXED,))
+
+
+def expert_bytes(document):
+    return [b["byte_size"] for b in document["blocks"] if b["kind"] == "ExpertBlock"]
+
+
+if len(set(expert_bytes(uniform_doc))) != 1:
+    fail("olmoe-full no longer has uniform expert bytes")
+if len(set(expert_bytes(mixed_doc))) != 2:
+    fail("olmoe-mixed-quant no longer has two distinct expert byte sizes")
+
+
+# -------------------------------------------------------------------------------------------
+# The synthetic traces. Every selection is a pure function of the router seed, so the corpus is
+# known before the simulator has read a byte.
+
+made = {}
+
+
+def make_trace(name, graphs):
+    if name in made:
+        return made[name]
+    transcript = work_dir / ("%s.log" % name)
+    transcript.write_text(fixture.render(graphs), encoding="utf-8")
+    document = work_dir / ("%s.json" % name)
+    run(["--expert-trace", str(transcript), str(document)], expect_exit=0)
+    parsed = json.loads(document.read_text())
+    if parsed["status"] != "ok":
+        fail("trace %s: %s %s" % (name, parsed["error_code"], parsed["error_detail"]))
+    transcript.unlink()
+    made[name] = document
+    return document
+
+
+def moe(seed, n_layer, n_tokens, shape, ordinal=0):
+    _, n_expert, used = shape
+    return fixture.moe_graph(n_layer, n_tokens, fixture.Router(seed, n_expert, used), ordinal)
+
+
+class ScriptedRouter:
+    """A router whose selection at `(graph, layer, token)` is a table lookup rather than a seeded
+    draw, so a case can engineer the exact demand stream a contract row needs — the cyclic-reference
+    stream of section 4.5 finding 1, for instance. It presents `fixture.Router`'s interface."""
+
+    def __init__(self, n_expert, n_expert_used, choose):
+        self.n_expert = n_expert
+        self.n_expert_used = n_expert_used
+        self.choose = choose
+
+    def experts(self, graph, layer, token):
+        chosen = list(self.choose(graph, layer, token))
+        if len(chosen) != self.n_expert_used or len(set(chosen)) != len(chosen):
+            raise AssertionError("a scripted router must name %d distinct experts, got %r"
+                                 % (self.n_expert_used, chosen))
+        return chosen
+
+
+def scripted(n_layer, n_tokens, shape, choose, ordinal=0):
+    _, n_expert, used = shape
+    return fixture.moe_graph(n_layer, n_tokens, ScriptedRouter(n_expert, used, choose), ordinal)
+
+
+def by_policy(document, order, budget):
+    """The policy rows of one (order, budget) cell, keyed by policy name."""
+    entries = document["orders"][0 if order == "token_major" else 1]["policies"]
+    return {entry["policy"]: entry for entry in entries if entry["budget_bytes"] == budget}
+
+
+def trace_list(name, documents):
+    path = work_dir / ("%s.txt" % name)
+    path.write_text("".join("%s\n" % document for document in documents), encoding="utf-8")
+    return path
+
+
+def normalized(document):
+    """The golden form. Three values are host-dependent and none of them is a contract: the two path
+    operands, and `inputs.bytes_read` — an `R2_ACTIVATION_TRACE` records its own transcript `path`,
+    so every trace document's length grows with the scratch directory's name (section 6,
+    correction 9 measured exactly this between the probe and the qualification). The 1,440-entry
+    per-layer breakdown is pinned by digest rather than checked in whole. Every other integer,
+    `bytes_read` included, is still compared against the oracle on every case, which is where that
+    accounting is actually owned."""
+    copy = json.loads(json.dumps(document))
+    copy["trace_list_path"] = "TRACE_LIST"
+    copy["model_ir_path"] = "MODEL_IR"
+    copy["inputs"]["bytes_read"] = "PATH_DEPENDENT"
+    for order in copy["orders"]:
+        payload = json.dumps(order["per_layer"], separators=(",", ":")).encode("utf-8")
+        order["per_layer"] = {"entry_count": len(order["per_layer"]),
+                              "sha256": hashlib.sha256(payload).hexdigest()}
+    return copy
+
+
+def check_case(name, listing, ir_path, budget, asserts=None, expect_exit=0):
+    """Both CLI forms, byte-identical documents, and every integer against the oracle."""
+    printed = run(["--simulate-residency", str(listing), str(ir_path), str(budget)],
+                  expect_exit=expect_exit)
+    destination = work_dir / ("%s-out.json" % name)
+    written = run(["--simulate-residency", str(listing), str(ir_path), str(budget),
+                   str(destination)], expect_exit=expect_exit)
+    on_disk = destination.read_text()
+    if printed.stdout != on_disk + "\n":
+        fail("%s: the two forms produced different documents" % name)
+    if not written.stdout.startswith("residency sim:\n"):
+        fail("%s: the four-operand form did not print the summary block" % name)
+    document = json.loads(on_disk)
+    expected = oracle.simulate(str(listing), str(ir_path), str(budget))
+    if document != expected:
+        report_difference(name, document, expected, "")
+        fail("%s: the document disagrees with the oracle" % name)
+    for path, value in (asserts or {}).items():
+        cursor = document
+        for step in path.split("/"):
+            cursor = cursor[int(step)] if step.lstrip("-").isdigit() else cursor[step]
+        if cursor != value:
+            fail("%s: %s is %r, expected %r" % (name, path, cursor, value))
+    return document
+
+
+def sweep_points(document):
+    total = document["model"]["total_expert_bytes"]
+    largest = document["model"]["largest_expert_bytes"]
+    return [max(largest, total >> (7 - i)) for i in range(8)]
+
+
+
+uniform_expert_total = sum(expert_bytes(uniform_doc))
+uniform_largest = max(expert_bytes(uniform_doc))
+mixed_expert_total = sum(expert_bytes(mixed_doc))
+mixed_largest = max(expert_bytes(mixed_doc))
+
+# ---- sim-basic: four documents, every policy at every sweep budget against the oracle ------
+basic = [make_trace("basic-%d" % i, [moe(11 + i, 2, 4, UNIFORM)]) for i in range(4)]
+basic_list = trace_list("sim-basic", basic)
+basic_budget = uniform_expert_total >> 2
+document = check_case("sim-basic", basic_list, uniform_ir, basic_budget, asserts={
+    "status": "ok",
+    "kind": "R3_RESIDENCY_SIM",
+    "schema_version": 1,
+    "inputs/listed_trace_count": 4,
+    "inputs/admitted_trace_count": 4,
+    "stream/pooling": "continuing",
+    "stream/omitted_truncated_graphs": 0,
+    "stream/token_position_count": 16,
+    "stream/demand_count": 16 * 2 * 3,
+    "stream/graph_phases/prefill": 4,
+    "model/uniform_expert_bytes": True,
+    "orders/0/order": "token_major",
+    "orders/0/verdict_bearing": True,
+    "orders/1/order": "layer_major",
+    "orders/1/verdict_bearing": False,
+    "verdict/rule_version": 1,
+    "verdict/order": "token_major",
+    "verdict/baseline_policy": "lru",
+    "verdict/margin_per_mille": 50,
+    "verdict/jackknife_folds": 4,
+})
+for order in document["orders"]:
+    names = [entry["policy"] for entry in order["policies"]]
+    # The name *set* over the whole order, not the first ten rows: slicing ten entries off a list
+    # of ten-per-budget rows can only ever see the first budget's block, so it asserts nothing about
+    # the policy set the document actually reports.
+    if sorted(set(names)) != sorted(oracle.POLICY_NAMES):
+        fail("sim-basic/%s: the policy set is not the ten rows of section 2.4, it is %r"
+             % (order["order"], sorted(set(names))))
+    if len(names) != len(oracle.POLICY_NAMES) * len(document["budgets"]):
+        fail("sim-basic/%s: %d policy rows for %d budget(s) and %d policies"
+             % (order["order"], len(names), len(document["budgets"]), len(oracle.POLICY_NAMES)))
+    for start in range(0, len(names), len(oracle.POLICY_NAMES)):
+        if names[start:start + len(oracle.POLICY_NAMES)] != oracle.POLICY_NAMES:
+            fail("sim-basic/%s: the rows at %d are not in section 2.4 order"
+                 % (order["order"], start))
+if document["stream"]["slot_coverage_per_mille"] != 1000:
+    fail("sim-basic: a synthetic transcript prints every slot, so coverage must be 1000 per mille")
+
+# `null` is the floor and `compulsory` the lower bound no policy at any budget can beat.
+for order in document["orders"]:
+    by_budget = {}
+    for entry in order["policies"]:
+        by_budget.setdefault(entry["budget_bytes"], {})[entry["policy"]] = entry
+    for budget, row in by_budget.items():
+        if row["null"]["bytes_fetched"] != document["stream"]["demanded_byte_total"]:
+            fail("sim-basic: null must fetch the whole demanded byte volume")
+        if row["null"]["hits"] != 0:
+            fail("sim-basic: null must never hit")
+        for policy, entry in row.items():
+            if entry["bytes_fetched"] < row["compulsory"]["bytes_fetched"]:
+                fail("sim-basic: %s beat the compulsory bound at %d" % (policy, budget))
+            if entry["hits"] + entry["misses"] != document["stream"]["demand_count"]:
+                fail("sim-basic: %s replayed a different demand count" % policy)
+        if row["belady"]["bytes_fetched"] > row["lru"]["bytes_fetched"]:
+            fail("sim-basic: belady is not optimal at %d" % budget)
+
+# ---- sim-single-trace: pooling of one is not a special case --------------------------------
+check_case("sim-single-trace", trace_list("sim-single", basic[:1]), uniform_ir, basic_budget,
+           asserts={"inputs/admitted_trace_count": 1, "verdict/jackknife_folds": 1})
+
+# ---- sim-truncated: one graph with n_tokens = 9 is excluded and counted ---------------------
+truncated = make_trace("truncated", [moe(21, 2, 9, UNIFORM, 0), moe(22, 2, 4, UNIFORM, 1)])
+check_case("sim-truncated", trace_list("sim-truncated", [truncated]), uniform_ir, basic_budget,
+           asserts={"stream/omitted_truncated_graphs": 1,
+                    "stream/token_position_count": 4,
+                    "stream/graph_phases/prefill": 1})
+
+# ---- sim-multi-graph: two admitted graphs pool into one continuing stream -------------------
+multi = make_trace("multi", [moe(31, 2, 3, UNIFORM, 0), moe(32, 2, 5, UNIFORM, 1)])
+check_case("sim-multi-graph", trace_list("sim-multi", [multi]), uniform_ir, basic_budget,
+           asserts={"stream/omitted_truncated_graphs": 0,
+                    "stream/token_position_count": 8,
+                    "stream/graph_phases/prefill": 2})
+
+# ---- sim-mixed-bytes: the real model's per-layer mixed quantization -------------------------
+mixed_traces = [make_trace("mixed-%d" % i, [moe(41 + i, 2, 5, MIXED)]) for i in range(3)]
+mixed_document = check_case("sim-mixed-bytes", trace_list("sim-mixed", mixed_traces), mixed_ir,
+                            mixed_expert_total >> 1,
+                            asserts={"model/uniform_expert_bytes": False,
+                                     "inputs/admitted_trace_count": 3})
+if (mixed_document["model"]["smallest_expert_bytes"]
+        == mixed_document["model"]["largest_expert_bytes"]):
+    fail("sim-mixed-bytes: the mixed fixture reported a uniform byte table")
+
+# ---- sim-no-headroom: a budget that holds the whole expert footprint ------------------------
+check_case("sim-no-headroom", basic_list, uniform_ir, uniform_expert_total, asserts={
+    "verdict/headroom_per_mille": 0,
+    "verdict/result": "NO_HEADROOM",
+    "verdict/best_policy": "",
+})
+
+# ---- sim-uniform-bytes: a uniform size table makes hit and byte orderings the same ordering --
+uniform_block = expert_bytes(uniform_doc)[0]
+uniform_case = check_case("sim-uniform-bytes", basic_list, uniform_ir, uniform_expert_total >> 3,
+                          asserts={"model/uniform_expert_bytes": True,
+                                   "model/smallest_expert_bytes": uniform_block,
+                                   "model/largest_expert_bytes": uniform_block})
+for order in ("token_major", "layer_major"):
+    for entry in uniform_case["budgets"]:
+        row = by_policy(uniform_case, order, entry["bytes"])
+        # Every expert costs the same, so a non-prefetch policy's bytes are exactly its misses times
+        # the block size, and more hits is the same statement as fewer bytes. A prefetch policy is
+        # excluded because it fetches bytes without a demand miss, which is section 2.8's whole
+        # reason for measuring bytes rather than hits.
+        plain = [name for name in oracle.POLICY_NAMES if not name.startswith("topk")]
+        for name in plain:
+            if row[name]["bytes_fetched"] != row[name]["misses"] * uniform_block:
+                fail("sim-uniform-bytes: %s/%s bytes are not misses times the block size"
+                     % (order, name))
+        for left in plain:
+            for right in plain:
+                same = ((row[left]["hits"] > row[right]["hits"])
+                        != (row[left]["bytes_fetched"] < row[right]["bytes_fetched"]))
+                if same:
+                    fail("sim-uniform-bytes: %s/%s and %s disagree on hit and byte order at %d"
+                         % (order, left, right, entry["bytes"]))
+
+# ---- sim-cyclic: the LRU cliff at the one-token working set ---------------------------------
+# Every token demands six keys — layer 0's experts 0, 1, 2 every time, and three of layer 1's five
+# on a rotation — which is the cyclic-reference pathology of section 4.5 finding 1: a token touches
+# every layer before returning to layer 0, so LRU evicts each expert exactly before it is needed
+# again. Below the one-token working set LRU cannot hit at all; frequency, which sees that layer 0's
+# three experts are demanded twice as often as layer 1's five, can.
+def cyclic_experts(_graph, layer, token):
+    if layer == 0:
+        return (0, 1, 2)
+    return tuple((token + i) % 5 + 3 for i in range(3))
+
+
+cyclic = [make_trace("cyclic", [scripted(2, 6, UNIFORM, cyclic_experts)])]
+cyclic_list = trace_list("sim-cyclic", cyclic)
+cyclic_case = check_case("sim-cyclic", cyclic_list, uniform_ir, uniform_block * 6, asserts={
+    "stream/one_token_working_set_keys": 6,
+    "stream/one_token_working_set_bytes": uniform_block * 6,
+    "stream/distinct_key_count": 8,
+})
+working_set = cyclic_case["stream"]["one_token_working_set_bytes"]
+below = [e["bytes"] for e in cyclic_case["budgets"] if e["bytes"] < working_set]
+at_or_above = [e["bytes"] for e in cyclic_case["budgets"] if e["bytes"] >= working_set]
+if not below or not at_or_above:
+    fail("sim-cyclic: the sweep does not straddle the one-token working set")
+for budget in below:
+    row = by_policy(cyclic_case, "token_major", budget)
+    if row["lru"]["hits"] != 0:
+        fail("sim-cyclic: lru hit %d time(s) at %d, below the one-token working set %d"
+             % (row["lru"]["hits"], budget, working_set))
+    if row["topk_prefetch_k8"]["bytes_fetched"] <= row["lru"]["bytes_fetched"]:
+        fail("sim-cyclic: topk_prefetch_k8 must be charged for its own traffic at %d" % budget)
+# The cliff is one-sided only for LRU: at the widest budget still under the working set, frequency
+# and the offline optimum both clear it. At one or two blocks nothing can hit a six-key cycle, so
+# the claim is made where it is a claim.
+edge = by_policy(cyclic_case, "token_major", max(below))
+if edge["lfu"]["hits"] <= 0 or edge["belady"]["hits"] <= edge["lfu"]["hits"]:
+    fail("sim-cyclic: lfu must clear the LRU cliff at %d and belady must beat it" % max(below))
+if by_policy(cyclic_case, "token_major", min(at_or_above))["lru"]["hits"] <= 0:
+    fail("sim-cyclic: lru must hit once the budget reaches the one-token working set")
+
+# ---- sim-prefetch-useless: a prefetch that never pays for itself ----------------------------
+# The same cyclic stream at the smallest legal budget. Every prefetched block is evicted by the
+# demands of the token position it precedes, so no prefetch is ever hit, and both degrees fetch
+# strictly more than the baseline. Section 2.4's "topk_prefetch charges its own traffic" and the
+# `prefetch_fetches` / `prefetch_useful` accounting are what this row exercises.
+useless = check_case("sim-prefetch-useless", cyclic_list, uniform_ir, uniform_block)
+for budget in [entry["bytes"] for entry in useless["budgets"]
+               if entry["bytes"] == uniform_block]:
+    row = by_policy(useless, "token_major", budget)
+    for policy in ("topk_prefetch_k1", "topk_prefetch_k8"):
+        if row[policy]["prefetch_fetches"] <= 0:
+            fail("sim-prefetch-useless: %s issued no prefetch at %d" % (policy, budget))
+        if row[policy]["prefetch_useful"] != 0:
+            fail("sim-prefetch-useless: %s reported %d useful prefetch(es) at %d"
+                 % (policy, row[policy]["prefetch_useful"], budget))
+        if row[policy]["bytes_fetched"] <= row["lru"]["bytes_fetched"]:
+            fail("sim-prefetch-useless: %s must fetch more than lru at %d" % (policy, budget))
+
+# ---- verdict-no-policy: headroom is left, and no candidate takes it -------------------------
+# Three documents whose frequency structure leaves every candidate at or above the baseline's byte
+# total while `belady` keeps a large headroom: the gate's "a better policy may exist and none of
+# these is it".
+unstable = [make_trace("jk-%d" % i, [moe(1 + i, 2, 4, UNIFORM)]) for i in range(5)]
+no_policy_case = check_case("verdict-no-policy",
+                            trace_list("verdict-no-policy", unstable[:3]),
+                            uniform_ir, uniform_expert_total >> 1, asserts={
+                                "verdict/result": "NO_POLICY_BEATS_BASELINE",
+                                "verdict/best_policy": "",
+                                "verdict/gain_per_mille": 0,
+                                "verdict/jackknife_stable": False,
+                                "verdict/jackknife_folds": 3,
+                            })
+if no_policy_case["verdict"]["headroom_per_mille"] < 50:
+    fail("verdict-no-policy: NO_POLICY_BEATS_BASELINE requires headroom at or above the floor")
+
+# ---- jackknife-unstable: a candidate clears the floor and one fold takes it back -------------
+unstable_case = check_case("jackknife-unstable", trace_list("jackknife-unstable", unstable),
+                           uniform_ir, uniform_expert_total >> 1, asserts={
+                               "verdict/jackknife_stable": False,
+                               "verdict/jackknife_folds": 5,
+                           })
+if unstable_case["verdict"]["result"] == "BEATS_BASELINE":
+    fail("jackknife-unstable: an unstable win must not be reported as BEATS_BASELINE")
+if unstable_case["verdict"]["jackknife_min_gain_per_mille"] >= 50:
+    fail("jackknife-unstable: the fixture no longer has a fold below the effect floor")
+unstable_row = by_policy(unstable_case, "token_major",
+                         unstable_case["verdict"]["budget_bytes"])
+cleared = [name for name in oracle.CANDIDATES
+           if 1000 * unstable_row[name]["bytes_fetched"]
+           <= (1000 - 50) * unstable_case["verdict"]["baseline_bytes_fetched"]]
+if not cleared:
+    fail("jackknife-unstable: no candidate clears the pooled effect floor, so the jackknife "
+         "never runs and the case asserts nothing")
+
+# ---- jackknife-second-candidate: the qualifying policy is not the lowest-byte one ------------
+# The lowest-byte candidate clears the pooled effect floor and then loses a fold; a later, larger
+# candidate clears every fold. `best_policy` must name the qualifying one, which is what section
+# 2.8's BEATS_BASELINE row requires and what a lowest-byte-only answer gets wrong.
+second = [make_trace("jk2-%d" % i, [moe(44 + i, 2, 4, UNIFORM)]) for i in range(4)]
+second_case = check_case("jackknife-second-candidate",
+                         trace_list("jackknife-second-candidate", second),
+                         uniform_ir, uniform_expert_total >> 2, asserts={
+                             "verdict/result": "BEATS_BASELINE",
+                             "verdict/jackknife_stable": True,
+                             "verdict/jackknife_folds": 4,
+                         })
+second_row = by_policy(second_case, "token_major", second_case["verdict"]["budget_bytes"])
+second_baseline = second_case["verdict"]["baseline_bytes_fetched"]
+lowest_name = min((name for name in oracle.CANDIDATES),
+                  key=lambda name: (second_row[name]["bytes_fetched"],
+                                    oracle.POLICY_NAMES.index(name)))
+if second_case["verdict"]["best_policy"] == lowest_name:
+    fail("jackknife-second-candidate: the fixture no longer separates the lowest-byte candidate "
+         "from the qualifying one")
+if 1000 * second_row[lowest_name]["bytes_fetched"] > (1000 - 50) * second_baseline:
+    fail("jackknife-second-candidate: the lowest-byte candidate must clear the pooled effect floor")
+if (second_row[second_case["verdict"]["best_policy"]]["bytes_fetched"]
+        <= second_row[lowest_name]["bytes_fetched"]):
+    fail("jackknife-second-candidate: the qualifying policy must fetch more than the lowest-byte "
+         "one, or the case proves nothing")
+if second_case["verdict"]["best_bytes_fetched"] != \
+        second_row[second_case["verdict"]["best_policy"]]["bytes_fetched"]:
+    fail("jackknife-second-candidate: best_bytes_fetched does not belong to best_policy")
+
+# ---- budget-clamp: the low sweep points cannot hold the largest expert ----------------------
+clamped = check_case("budget-clamp", basic_list, uniform_ir, uniform_largest)
+if len(clamped["budgets"]) != 8:
+    fail("budget-clamp: the operand coincides with a clamped sweep point, so eight entries")
+if not clamped["budgets"][0]["clamped"]:
+    fail("budget-clamp: the lowest sweep point must report clamped")
+if clamped["budgets"][0]["bytes"] != uniform_largest:
+    fail("budget-clamp: the clamp floor is largest_expert_bytes")
+if [entry["bytes"] for entry in clamped["budgets"]] != sorted(
+        entry["bytes"] for entry in clamped["budgets"]):
+    fail("budget-clamp: the sweep is not ascending")
+if sum(1 for entry in clamped["budgets"] if entry["requested"]) != 1:
+    fail("budget-clamp: exactly one entry is the requested one")
+
+# ---- budget-coincides / budget-inserted ----------------------------------------------------
+coincides = check_case("budget-coincides", basic_list, uniform_ir, uniform_expert_total >> 1)
+if len(coincides["budgets"]) != 8:
+    fail("budget-coincides: an operand equal to a sweep point is not duplicated")
+inserted_budget = (uniform_expert_total >> 1) + uniform_largest
+inserted = check_case("budget-inserted", basic_list, uniform_ir, inserted_budget)
+if len(inserted["budgets"]) != 9:
+    fail("budget-inserted: an operand between two sweep points is a ninth entry")
+if [entry["bytes"] for entry in inserted["budgets"]] != sorted(
+        entry["bytes"] for entry in inserted["budgets"]):
+    fail("budget-inserted: the ninth entry was not inserted in ascending position")
+
+# ---- determinism: the same inputs produce a byte-identical document -------------------------
+runs = {run(["--simulate-residency", str(basic_list), str(uniform_ir),
+             str(basic_budget)], expect_exit=0).stdout for _ in range(3)}
+if len(runs) != 1:
+    fail("determinism: three runs produced different documents")
+
+# ---- the golden: one checked-in document, normalized on its two path operands ---------------
+golden_path = Path(root_dir) / "eval/fixtures/residency-sim/sim-basic.golden.json"
+golden_actual = normalized(json.loads(next(iter(runs))))
+if os.environ.get("ALIGN_LLM_RESIDENCY_SIM_UPDATE_GOLDEN") == "1":
+    golden_path.parent.mkdir(parents=True, exist_ok=True)
+    golden_path.write_text(json.dumps(golden_actual, indent=1, ensure_ascii=False) + "\n",
+                           encoding="utf-8")
+    sys.stderr.write("residency sim smoke: golden rewritten\n")
+elif not golden_path.exists():
+    fail("the golden %s is missing" % golden_path)
+elif json.loads(golden_path.read_text()) != golden_actual:
+    fail("sim-basic no longer matches the checked-in golden")
+
+# ---- B1: a materially longer scratch directory changes nothing but bytes_read ---------------
+# `inputs.bytes_read` grows with the scratch directory's name because a `--expert-trace` document
+# embeds its own transcript path (section 6, correction 9), and the golden normalizes that one
+# field away rather than pinning it. Setting `TMPDIR` cannot exercise that: BSD `mktemp -d` on
+# macOS ignores `TMPDIR` for a bare `-d` invocation and always resolves under `/var/folders`, so a
+# `TMPDIR`-based control measures the same directory twice. An explicit template forces a real,
+# much longer directory instead.
+short_work_dir = work_dir
+long_root = short_work_dir.parent / ("b1-long-workdir-" + "x" * 131)
+long_root.mkdir(parents=True, exist_ok=True)
+long_work_dir = Path(subprocess.run(
+    ["mktemp", "-d", str(long_root / "tmp.XXXXXXXX")],
+    capture_output=True, text=True, check=True).stdout.strip())
+work_dir = long_work_dir
+try:
+    long_ir, _ = derive_ir("olmoe-full")
+    long_basic = [make_trace("b1-basic-%d" % i, [moe(11 + i, 2, 4, UNIFORM)]) for i in range(4)]
+    long_list = trace_list("sim-basic", long_basic)
+    long_document = check_case("b1-long-workdir", long_list, long_ir, basic_budget)
+finally:
+    work_dir = short_work_dir
+
+if len(str(long_work_dir)) <= len(str(short_work_dir)):
+    fail("b1-long-workdir: the scratch directory did not actually get longer (%d <= %d chars); "
+         "the self-check is not exercising anything"
+         % (len(str(long_work_dir)), len(str(short_work_dir))))
+if long_document["inputs"]["bytes_read"] == document["inputs"]["bytes_read"]:
+    fail("b1-long-workdir: bytes_read did not change with the scratch directory's length")
+if normalized(long_document) != normalized(document):
+    fail("b1-long-workdir: a longer work_dir changed the document beyond the path-dependent fields")
+sys.stderr.write(
+    "residency sim smoke: b1 work_dir %d -> %d chars, bytes_read %d -> %d\n"
+    % (len(str(short_work_dir)), len(str(long_work_dir)),
+       document["inputs"]["bytes_read"], long_document["inputs"]["bytes_read"]))
+
+# -------------------------------------------------------------------------------------------
+# Section 2.6. One fixture per reachable code, plus the ordering assertion.
+
+def error_case(name, listing, ir_path, budget, code, detail=None, asserts=None):
+    document = check_case(name, listing, ir_path, budget, expect_exit=2, asserts=asserts)
+    if document["status"] != "error" or document["error_code"] != code:
+        fail("%s: reported %r/%r, expected %r"
+             % (name, document["status"], document["error_code"], code))
+    if detail is not None and document["error_detail"] != detail:
+        fail("%s: detail %r, expected %r" % (name, document["error_detail"], detail))
+    if document["budgets"] or document["orders"]:
+        fail("%s: a failed run must not report a sweep or a replay" % name)
+    if document["stream"]["demand_count"] != 0:
+        fail("%s: a failed run reports an empty stream" % name)
+    return document
+
+
+def write_json(name, payload):
+    path = work_dir / ("%s.json" % name)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def edited_ir(name, mutate):
+    payload = json.loads(uniform_ir.read_text())
+    mutate(payload)
+    return write_json(name, payload)
+
+
+def edited_trace(name, mutate):
+    payload = json.loads(basic[0].read_text())
+    mutate(payload)
+    return write_json(name, payload)
+
+
+missing = work_dir / "absent.json"
+missing_list = work_dir / "absent.txt"
+
+error_case("budget-malformed", basic_list, uniform_ir, "12x", "R3_BUDGET_MALFORMED")
+error_case("budget-negative", basic_list, uniform_ir, "-1", "R3_BUDGET_MALFORMED")
+error_case("budget-empty", basic_list, uniform_ir, "", "R3_BUDGET_MALFORMED")
+error_case("budget-overflow", basic_list, uniform_ir, "9" * 20, "R3_BUDGET_MALFORMED")
+# A budget above `MAX_BYTE_TOTAL` parses as an `i64` and still cannot be reported: the document
+# expresses it as a per-mille ratio of the expert footprint, and that multiplication would wrap.
+error_case("budget-above-byte-ceiling", basic_list, uniform_ir,
+           str(((1 << 63) - 1) // 1000 + 1), "R3_BUDGET_MALFORMED")
+error_case("list-unreadable", missing_list, uniform_ir, basic_budget, "R3_TRACE_LIST_UNREADABLE")
+
+empty_list = work_dir / "empty.txt"
+empty_list.write_text("", encoding="utf-8")
+error_case("list-empty", empty_list, uniform_ir, basic_budget, "R3_TRACE_LIST_EMPTY")
+newline_only = work_dir / "newline.txt"
+newline_only.write_text("\n", encoding="utf-8")
+error_case("list-blank-line", newline_only, uniform_ir, basic_budget, "R3_PATH", detail="1")
+blank_middle = work_dir / "blank-middle.txt"
+blank_middle.write_text("%s\n\n%s\n" % (basic[0], basic[1]), encoding="utf-8")
+error_case("list-blank-middle", blank_middle, uniform_ir, basic_budget, "R3_PATH", detail="2")
+duplicate = work_dir / "duplicate.txt"
+duplicate.write_text("%s\n%s\n%s\n" % (basic[0], basic[1], basic[0]), encoding="utf-8")
+error_case("list-duplicate", duplicate, uniform_ir, basic_budget, "R3_TRACE_LIST_DUPLICATE",
+           detail="3")
+over_cap = work_dir / "over-cap.txt"
+over_cap.write_text("".join("%s/t%04d.json\n" % (work_dir, i) for i in range(4097)),
+                    encoding="utf-8")
+error_case("list-over-cap", over_cap, uniform_ir, basic_budget, "R3_TRACE_LIST_TOO_MANY")
+long_path = work_dir / "long-path.txt"
+long_path.write_text("%s\n" % ("a" * 4097), encoding="utf-8")
+error_case("list-path-too-long", long_path, uniform_ir, basic_budget, "R3_PATH", detail="1")
+
+error_case("ir-unreadable", basic_list, missing, basic_budget, "R3_IR_UNREADABLE")
+not_json = work_dir / "not-json.json"
+not_json.write_text("{not json", encoding="utf-8")
+error_case("ir-decode", basic_list, not_json, basic_budget, "R3_IR_DECODE")
+error_case("ir-schema-kind", basic_list,
+           edited_ir("ir-kind", lambda d: d.update(kind="R2_ACTIVATION_TRACE")),
+           basic_budget, "R3_IR_SCHEMA")
+error_case("ir-schema-version", basic_list,
+           edited_ir("ir-version", lambda d: d.update(schema_version=3)),
+           basic_budget, "R3_IR_SCHEMA")
+error_case("ir-status", basic_list,
+           edited_ir("ir-status", lambda d: d.update(status="error")),
+           basic_budget, "R3_IR_STATUS")
+error_case("ir-not-moe", basic_list,
+           edited_ir("ir-dense", lambda d: d.update(
+               blocks=[b for b in d["blocks"] if b["kind"] != "ExpertBlock"])),
+           basic_budget, "R3_IR_NOT_MOE")
+
+
+def widen(payload):
+    payload["model"]["n_layer"] = 256
+    payload["model"]["n_expert"] = 256
+
+
+error_case("ir-key-space", basic_list, edited_ir("ir-wide", widen), basic_budget,
+           "R3_KEY_SPACE_TOO_LARGE")
+
+
+def duplicate_block(payload):
+    first = next(b for b in payload["blocks"] if b["kind"] == "ExpertBlock")
+    payload["blocks"].append(dict(first))
+
+
+error_case("ir-expert-duplicate", basic_list, edited_ir("ir-dup", duplicate_block), basic_budget,
+           "R3_EXPERT_BLOCK_DUPLICATE", detail="0:0")
+
+
+def range_block(payload):
+    first = next(b for b in payload["blocks"] if b["kind"] == "ExpertBlock")
+    first["expert"] = 99
+
+
+error_case("ir-expert-range", basic_list, edited_ir("ir-range", range_block), basic_budget,
+           "R3_EXPERT_BLOCK_RANGE", detail="0:99")
+
+
+def sized_block(size):
+    def mutate(payload):
+        for block in payload["blocks"]:
+            if block["kind"] == "ExpertBlock" and block["layer"] == 0 and block["expert"] == 0:
+                block["byte_size"] = size
+    return mutate
+
+
+def every_block(size):
+    def mutate(payload):
+        for block in payload["blocks"]:
+            if block["kind"] == "ExpertBlock":
+                block["byte_size"] = size
+    return mutate
+
+
+# A block of no bytes would be admitted into every cache for free and could never be evicted for
+# capacity; a negative one is not a size at all and used to be misreported as a missing block.
+error_case("ir-expert-size-zero", basic_list, edited_ir("ir-size-zero", sized_block(0)),
+           basic_budget, "R3_EXPERT_BLOCK_SIZE", detail="0:0")
+error_case("ir-expert-size-negative", basic_list, edited_ir("ir-size-neg", sized_block(-4096)),
+           basic_budget, "R3_EXPERT_BLOCK_SIZE", detail="0:0")
+# Sixteen experts of 2^50 bytes carry `total_expert_bytes` past MAX_BYTE_TOTAL on the ninth block;
+# four experts of 2^47 do not, but sixty demands against them carry `demanded_byte_total` past it.
+# Both are refused with a code rather than wrapping into a plausible-looking total. Both budgets are
+# themselves legal operands, so step 3 does not fire first.
+error_case("ir-byte-total-overflow", basic_list,
+           edited_ir("ir-huge", every_block(1 << 50)), str(1 << 50), "R3_BYTE_TOTAL_OVERFLOW")
+
+
+def edited_mixed_ir(name, mutate):
+    payload = json.loads(mixed_ir.read_text())
+    mutate(payload)
+    return write_json(name, payload)
+
+
+error_case("stream-byte-total-overflow", trace_list("stream-huge", mixed_traces),
+           edited_mixed_ir("mixed-huge", every_block(1 << 47)), str(1 << 47),
+           "R3_BYTE_TOTAL_OVERFLOW")
+error_case("budget-too-small", basic_list, uniform_ir, uniform_largest - 1, "R3_BUDGET_TOO_SMALL")
+
+absent_trace = work_dir / "absent-trace.txt"
+absent_trace.write_text("%s\n" % missing, encoding="utf-8")
+error_case("trace-unreadable", absent_trace, uniform_ir, basic_budget, "R3_TRACE_UNREADABLE",
+           detail="1")
+error_case("trace-decode", trace_list("trace-decode", [not_json]), uniform_ir, basic_budget,
+           "R3_TRACE_DECODE", detail="1")
+error_case("trace-schema", trace_list("trace-schema", [
+    edited_trace("t-kind", lambda d: d.update(kind="R1_MODEL_IR"))]), uniform_ir, basic_budget,
+    "R3_TRACE_SCHEMA", detail="1")
+error_case("trace-status", trace_list("trace-status", [
+    edited_trace("t-status", lambda d: d.update(status="error"))]), uniform_ir, basic_budget,
+    "R3_TRACE_STATUS", detail="1")
+error_case("trace-not-moe", trace_list("trace-dense", [
+    edited_trace("t-dense", lambda d: d["moe"].update(present=False))]), uniform_ir, basic_budget,
+    "R3_TRACE_NOT_MOE", detail="1")
+error_case("shape-mismatch", trace_list("shape-mismatch", [basic[0]]), mixed_ir, basic_budget,
+           "R3_SHAPE_MISMATCH", detail="1")
+
+
+def out_of_range(payload):
+    payload["selections"][0]["expert"] = 64
+
+
+error_case("expert-out-of-range", trace_list("out-of-range", [
+    edited_trace("t-range", out_of_range)]), uniform_ir, basic_budget,
+    "R3_EXPERT_OUT_OF_RANGE", detail="0:64")
+
+
+def unpackable(payload):
+    payload["selections"][0]["slot"] = 128
+
+
+error_case("selection-unpackable", trace_list("unpackable", [
+    edited_trace("t-unpackable", unpackable)]), uniform_ir, basic_budget,
+    "R3_SELECTION_UNPACKABLE", detail="1")
+
+
+def undeclared_graph(payload):
+    payload["selections"][0]["graph"] = 7
+
+
+# A selection naming a graph the document never declared is not a documented exclusion, so it fails
+# closed rather than shrinking the stream by one demand that nothing counts.
+error_case("selection-undeclared-graph", trace_list("undeclared", [
+    edited_trace("t-undeclared", undeclared_graph)]), uniform_ir, basic_budget,
+    "R3_SELECTION_UNPACKABLE", detail="1")
+
+
+def drop_expert_block(payload):
+    payload["blocks"] = [b for b in payload["blocks"]
+                         if not (b["kind"] == "ExpertBlock" and b["layer"] == 0
+                                 and b["expert"] == 0)]
+
+
+missing_block_ir = edited_ir("ir-missing-block", drop_expert_block)
+demanded = json.loads(basic[0].read_text())["selections"]
+if not any(s["layer"] == 0 and s["expert"] == 0 for s in demanded):
+    fail("expert-block-missing: the seeded router never demands (0, 0); pick another fixture")
+error_case("missing-expert-block", basic_list, missing_block_ir, basic_budget,
+           "R3_MISSING_EXPERT_BLOCK", detail="0:0")
+
+
+def empty_selections(payload):
+    payload["selections"] = []
+    for graph in payload["graphs"]:
+        graph["tokens_truncated"] = True
+
+
+error_case("empty-stream", trace_list("empty-stream", [
+    edited_trace("t-empty", empty_selections)]), uniform_ir, basic_budget, "R3_EMPTY_STREAM")
+
+# `validation-order`: an input failing two conditions reports the earlier code. A malformed budget
+# beside an unreadable list reports the budget, and an unreadable list beside a broken Model IR
+# reports the list.
+error_case("order-budget-before-list", missing_list, uniform_ir, "12x", "R3_BUDGET_MALFORMED")
+error_case("order-list-before-ir", missing_list, not_json, basic_budget,
+           "R3_TRACE_LIST_UNREADABLE")
+error_case("order-ir-before-budget-floor", basic_list, not_json, 0, "R3_IR_DECODE")
+
+# -------------------------------------------------------------------------------------------
+# Early exit. An arity failure produces no output at all and leaves the destination untouched.
+
+untouched = work_dir / "untouched.json"
+for args in (["--simulate-residency"],
+             ["--simulate-residency", str(basic_list)],
+             ["--simulate-residency", str(basic_list), str(uniform_ir)],
+             ["--simulate-residency", str(basic_list), str(uniform_ir), str(basic_budget),
+              str(untouched), "extra"]):
+    completed = run(args, expect_exit=2)
+    if completed.stdout:
+        fail("arity-no-output: %r produced stdout" % args)
+if untouched.exists():
+    fail("arity-no-output: the destination was written by an arity failure")
+
+for args in (["--simulate-residency", "", str(uniform_ir), str(basic_budget)],
+             ["--simulate-residency", str(basic_list), "a" * 4097, str(basic_budget)],
+             ["--simulate-residency", str(basic_list), str(uniform_ir), str(basic_budget),
+              "a" * 4097]):
+    completed = run(args, expect_exit=2)
+    if completed.stdout:
+        fail("path-guard: %r produced stdout" % args)
+
+if failures:
+    sys.stderr.write("residency sim smoke: %d failure(s)\n" % len(failures))
+    raise SystemExit(1)
+
+print("residency sim smoke: %d model IR(s), %d trace(s), every policy at every sweep budget "
+      "against the independent oracle, both CLI forms, the golden, determinism, "
+      "the section 2.6 error corpus, and CLI arity/isolation PASS" % (2, len(made)))
+PY

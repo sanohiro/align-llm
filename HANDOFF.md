@@ -3,55 +3,136 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: GCC14-FP-CONTRACT-PORTABILITY (2026-08-28)
+## Active: R3-RESIDENCY-SIM (2026-08-28)
 
-Branch `fix/gcc14-fp-contract` repairs a pre-existing hosted-check failure discovered by the R3
-publication preflight. GCC 14.2 diagnoses `#pragma STDC FP_CONTRACT OFF` as unknown, while the shim
-builder compiles with `-Werror`; Clang accepts it. The source pragma is therefore Clang-only, while
-the cross-compiler `-ffp-contract=off` flag and behavioural probe remain mandatory. R3 stays intact
-on `agent/r3-residency-sim` at `2fe1b38` until this prerequisite merges.
+Branch `agent/r3-residency-sim`, rebased onto `main` `4f01553` (the merged C8-OPTIONAL-TARGETED-STAGE,
+PR #134, which sits on the merged MOE-PREREQ-DISCHARGE, PR #133). Design ledger
+`docs/specs/r3-residency-sim.md` is authoritative. Implementation and review are complete;
+publication is in progress and is the only remaining step.
 
-**Next actions.** Run the ggml owner with GCC and Clang, complete executable preflight and review,
-merge the portability repair, then rebase R3 onto refreshed `main` and resume its publication.
+**What it delivers.** The R3 roadmap gate, measured. `main --simulate-residency` replays the demand
+stream implied by a set of real `R2_ACTIVATION_TRACE` documents against ten expert-residency cache
+policies in four families — `lru`, `lfu`, three fixed-window `recent_reuse`, two `topk_prefetch`
+degrees, plus the `null` / `compulsory` / `belady` references — at a nine-point budget sweep, with a
+leave-one-document-out jackknife over the corpus and a headroom measure against the miss-optimal
+offline reference, and emits one `R3_RESIDENCY_SIM` (`schema_version: 1`) document. The design gate
+triggered on three counts: a new public CLI verb, a new versioned exchanged format, and a coordinated
+invariant across three modules plus the `Makefile`.
 
-## Active: C8-OPTIONAL-TARGETED-STAGE (2026-08-28)
+**The gate is met.** On the real 40-prompt corpus (`eval/prompts/expert-locality-v1.txt`, md5
+`d7fff23f5a1d4f6237e6f848f3318d8b`) against `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`: a stream of
+17,280 demands over 938 distinct `(layer, expert)` keys of 1,024, 192 token positions, slot coverage
+750 per mille. At the requested budget of 975,175,680 B (250 per mille of the 3,900,702,720 B expert
+footprint), verdict `BEATS_BASELINE` — `recent_reuse_w32` fetches 26,033,848,320 B against the `lru`
+baseline's 33,532,231,680 B, 223 per mille fewer against a 50-per-mille materiality floor, with a
+40-fold jackknife minimum gain of 213 per mille (stable) and 574 per mille of headroom still left to
+the offline optimum. Across the sweep: `BEATS_BASELINE` at 1/3/6/12/25 per cent,
+`NO_POLICY_BEATS_BASELINE` at 0 and 50 per cent, `NO_HEADROOM` at 100 per cent. Top-k prefetch buys
+hits and pays for them with more bytes than it saves: under the shipped MRU insertion rule
+`topk_prefetch_k1` issues 219 prefetches of which 102 are later hit (465 per mille) and
+`topk_prefetch_k8` issues 3,332 of which 1,590 are (477 per mille), and no `topk_prefetch` cell is
+below `lru` at any budget. Roadmap section R3's other three policies — score-based, impact-driven
+prefetch, CPU fallback — are deferred with named prerequisites (a router-weight column R2A does not
+capture; R4.5's and R5's measured transfer costs; R5's microbenchmark) rather than simulated against
+invented constants.
 
-Branch `agent/c8-optional-targeted-stage` has merged current `main` `35a0df6`
-(MOE-PREREQ-DISCHARGE, PR #133). `docs/specs/c8-optional-targeted-stage.md` is the authoritative
-public-contract ledger and closure matrix. The user explicitly prioritized this one bounded C8
-re-entry before returning to Track B.
+**Committed on the branch.** Nothing is uncommitted. After the rebase onto `4f01553` the branch is
+`4951ff6` (design ledger), `424a516` (implementation), `a22f839` (review repair), `2e058f7` (final
+review repair), and the reconciliation and baseline commits on top; before the two rebases the first
+four were `198850b`, `ff4f76d`, `c7cfe1a`, and `967aadf`, and the review record on the pull request
+names the pre-rebase heads the reviewers read. Two prerequisites the branch once carried are now in
+`main` and are no longer part of this diff: the merged R2 wave's corrected `src/expert_trace.align`
+and its four owners, without which every real OLMoE capture fails `R2_TOKEN_COUNT` on layer 15's
+token-reduced `ffn_moe_topk`. **The `Makefile` changes** (`residency-sim-smoke`, a new
+`HOSTED_CHECK_TARGETS` member, and `residency-sim-qualification`, in no aggregate), so the classifier
+selects executable preflight and the baseline commit chain has to be re-recorded on this branch.
 
-**Why it reopened.** The fresh `e15e3d3` fixed-task baseline measured the targeted process at
-14,311,285 ns of a 43,886,999 ns parent median, a 326,093 ppm (32.61%) removable ceiling versus
-C8's 2,000 ppm floor; parent binary SHA-256 is `10ff55c084f35ee079f19c4b85fdc835abac0350642485d4d298d84dfffacc16`.
-The fixed full command executes the targeted assertion itself. Align PR #892 merged the genuine compiler prerequisite as
-`3a34febe912db5096c58c74fede36ff53f223e04`; the reconciled client register entry is Request 44.
+**Integration with PR #134 and PR #136.** C8-OPTIONAL-TARGETED-STAGE merged while this branch was
+in publication, and GCC14-FP-CONTRACT-PORTABILITY (PR #136) merged after it — the ggml shim's
+Clang-only `#pragma STDC FP_CONTRACT OFF` under GCC 14.2 and `-Werror`, a pre-existing hosted-check
+failure this capability's own preflight surfaced; both are merged into this branch. PR #134 moved `.align-revision` from `4b515f8d` to **`3a34febe`** (Align PR #892, its own
+Request 44). That renumbered this capability's two register entries — R3's requests are now
+**Request 45** (the compiler soundness defect) and **Request 46** (the `borrow mut` array gaps) —
+and it invalidated both the first preflight stamp and the first baseline chain, because
+`.align-revision` is itself one of the twenty recorded baseline artifacts. Every owner below is
+re-run against the managed `3a34febe` compiler; nothing in R3's own behaviour changed with the pin.
 
-**Preserved evidence.** Local branch `agent/c8-optional-targeted-test` commit `0dcca60` preserves
-the abandoned prototype, reviewed design history, original compiler reproduction, and reference
-handoff. It is not a publication candidate. In a temporary worktree its source passes `make check`
-and `make build` with a compiler containing `3a34febe`; the unchanged owner fails `INVALID`, code 2
-because it still writes schema 1. Do not cherry-pick its conflicting Request 21 or its placeholder-
-argument implementation.
+**Review envelope.** Two complementary reviewers covered explicitly disjoint risks at the pre-rebase
+implementation head `ff4f76d` (`424a516` after the rebases): reviewer A the Align source and the
+simulation semantics (1 blocker, 1 major, 4 minor, 1 observation), reviewer B the governance,
+contract, and verification surface (1 high, 3 medium, 5 low). **All fourteen findings were accepted**,
+none rejected, and all are repaired in one consolidated commit (`c7cfe1a`, `a22f839` after the
+rebases), recorded as items 16 to 23 of the ledger's correction register. Two changed shipped
+behaviour rather than prose: an `ExpertBlock` with `byte_size: 0` took `SIGABRT` through a
+`resident_list` overrun and is now refused with `R3_EXPERT_BLOCK_SIZE`, and `best_policy` could name
+a jackknife-**unstable** candidate beside `jackknife_stable: true` and now names the qualifying one.
+Six hosted cases and five error-code cases were added, and the prefetch insertion rule is now
+specified as MRU — which moved only the two `topk_prefetch` rows and changed no verdict, sweep row,
+or non-prefetch policy on the fixtures or on the real corpus. The final review at `c7cfe1a` is
+**approve** with five documentation-only findings, all repaired in `967aadf` (`2e058f7` after the
+rebases); that repair is documentation-only apart from the smoke's new explicit-template B1
+self-check, so no further comprehensive review is required. The reconciliation commits onto the
+merged MoE prerequisites and onto PR #134 are documentation-only.
 
-**Current checkpoint.** The candidate is consumer-complete. `.align-revision` selects and the
-managed compiler verifies exact Align `3a34febe`. Schema-2 Some/absent/null tasks, Some/None/Invalid
-result goldens, complete semantic/decode validation side-effect checks, Some/None repair, and
-schema-1 failure-memory events pass `make verify-loop-smoke`; whole/per-unit compilation and format
-also pass. The candidate binary SHA-256 is `552790728dea091f6eaa27852bb6be945438b8580a778d0baedbe395df7225b3`.
-The 101-pair acceptance improves parent 60,515,456 ns to candidate 40,475,113 ns, 331,160 ppm
-(33.12%), while the runner admits only result schema 1→2 and removal of the passing targeted stage.
-Request 44 is `ALIGN_LLM_VERIFIED`. Comprehensive review of `02c7564` against base/merge-base
-`e15e3d3` found one P2 documentation gap: exact benchmark commands and host/CPU were omitted. The
-finding was accepted and repaired with the WSL2/Ryzen environment and both 31/101-pair commands;
-there was no implementation finding. Exact-head preflight passed at `5f392ea`, and all three
-GitHub checks passed. PR #133 merged concurrently before #134, so the remaining work is the
-integration merge, publication, and merge. On the integrated tree,
-`CC=clang make verify-loop-smoke ggml-spike-smoke alignpack-smoke gate-topology-check` passes.
+**Verification.** Durable owner evidence at the rebased head, on this macOS host with the recorded
+Homebrew `LIBRARY_PATH` and the `CARGO` wrapper the managed `3a34febe` build needs
+(`docs/align-development.md`):
 
-**Next actions, in order.** (1) Complete the clean integration of `35a0df6`, rerun the affected
-owner checks and exact-head preflight, and update PR #134 evidence. (2) Merge #134 and refresh
-`main`. (3) Close Request 44 in the next durable checkpoint and continue R3 residency simulation.
+```text
+gmake check                    ok: checked 31 unit(s) per-unit
+gmake build                    ok
+gmake residency-sim-smoke      PASS x3, byte-identical - 2 model IRs, 23 traces, every policy at
+                               every sweep budget in both orders against the independent Python
+                               oracle, both CLI forms, the golden, determinism, the section 2.6
+                               error corpus, and CLI arity/isolation
+gmake expert-trace-smoke       PASS - 98 fixtures, 17 error codes
+gmake model-ir-smoke           PASS - 49 qwen, 31 gpt-oss, 29 olmoe, 62 R0 fixtures re-run
+gmake ggml-spike-smoke         PASS - 7 no-document, 43 documented cases; olmoe claim surface PASS
+gmake alignpack-smoke          PASS - 27 positive fixtures, 128 negative sources, 20,300 assertions
+gmake verify-loop-smoke        PASS - PR #134's schema-v2 owner, unchanged by this branch
+gmake gate-topology-check      PASS
+gmake format-check             PASS; gmake fmt leaves no diff; git diff --check clean
+```
+
+The focused qualification, on the host that holds the models (MEASURED, in no aggregate):
+
+```text
+gmake residency-sim-qualification  BEATS_BASELINE - the numbers above; 40 captures in 55.7-64.1 s
+                                   across three post-repair runs, every transcript deleted after
+                                   conversion
+```
+
+**Measurement.** This is a policy claim about the named MoE model and this corpus, not a platform or
+throughput claim. It compares fetched bytes only; elapsed time is printed as a diagnostic. The stream
+is prefill-only, replayed in decode order because decode is the regime being modelled and not because
+decode was observed; the instrument prints six of eight router slots; the corpus is 40 independent
+prompts of at most six tokens, so cross-prompt reuse carries most of the cache pressure. Read the
+result as "across a session of many short requests, frequency-aware residency beats recency", not as
+"within a generation, expert reuse is high".
+
+**Baseline chain, re-recorded.** The `Makefile` change, plus PR #134's `.align-revision` move that
+this branch adopts, invalidate the chain that shipped with C8-OPTIONAL-TARGETED-STAGE, so the
+identity-bound chain is re-recorded on this branch as `ec5ca39` -> `e729b68` -> `4bf5976` (clean
+source -> immutable oracle -> finalization), measured on Linux (aarch64, kernel 6.11.11-linuxkit,
+Python 3.12.3) and checked there with `make baseline-check` ending `baseline chain: PASS`. Three of
+the twenty recorded artifacts changed: `.align-revision` (`4b515f8d` -> `3a34febe`, PR #134's, adopted
+unchanged), `Makefile`, and `src/main.align`, the latter two this capability's own. The other
+seventeen hashes are unchanged and the twenty paths are identical. The pull request must merge with a
+merge commit; squash and rebase merges would make these commits unreachable.
+
+**Align capability requests.** Implementation added Requests 45 and 46 (filed as 44 and 45 before
+PR #134 took 44), both `PROPOSED`, non-blocking, and shipped around with documented workarounds.
+**Request 45 is priority high**: a compiler soundness defect, where the region checker accepts a move
+of a Move-typed field out of a `json.decode`d record through a two-hop field-access chain with no
+diagnostic and the built program corrupts the heap at run time on the decoded record's recursive
+`Drop`; the shipped fix is one `.clone()`. Request 46 is two related array-shape gaps
+(`borrow mut array<T>` loop invalidation, and no element assignment through an array field). R3 also
+strengthened Requests 21, 23, and 26 with new client evidence.
+
+**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test residency-sim -- make
+residency-sim-smoke gate-topology-check` under the installed profile at the exact head, then publish
+and merge. (2) Refresh `main` and start the next eligible roadmap item; R5's deferred microbenchmark
+C and R6 both wait on pending decisions (d) and (c) below.
 
 ## Merged checkpoint: MOE-PREREQ-DISCHARGE (2026-08-28)
 
@@ -140,14 +221,6 @@ ending `baseline chain: PASS`. Two of the twenty recorded artifacts changed agai
 so required no re-record of its own. The other eighteen hashes are unchanged and the twenty paths
 are identical. PR #133 merged with merge commit `35a0df6`, so these commits remain reachable.
 
-## Design and implementation in progress elsewhere
-
-- `agent/r3-residency-sim` — the R3 residency simulator. Its design ledger
-  `docs/specs/r3-residency-sim.md` is committed at `198850b`; implementation is in progress and
-  uncommitted in its own worktree. It stacks on the pre-rebase R1C commits and must be rebased onto
-  the merged `main` before publication. The merged locality gate is its demand signal and the
-  1,024 non-contiguous `ExpertBlock`s this capability packs are its input.
-
 ## Pending decisions (2026-08-28)
 
 **Decision (a) taken 2026-08-28.** `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai;
@@ -161,8 +234,8 @@ longer fits alongside the downloaded model and its alignpack space; R1B's real-m
 
 1. **Small MoE GGUF, 1-4 GB. — TAKEN.** `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (3.9 GiB) is on
    this host. It unblocked the R2 locality gate (merged, PR #131), R1C's `olmoe` frontend (merged,
-   PR #132), and R4's per-expert half with R4.5's expert matmul (merged, PR #133).
-   R3's residency simulation follows from the same file rather than from another download.
+   PR #132), and R4's per-expert half with R4.5's expert matmul (merged, PR #133). R3's residency
+   simulation, in publication above, follows from the same file rather than from another download.
 2. **`gpt-oss-20b-mxfp4.gguf`, 12.1 GB.** Unblocks R1B's real-model `model-ir-parity` qualification
    and every `ASSUMED` row of `docs/specs/r1b-gptoss-moe-ir.md` section 2.5 — including the two
    rows R1C has now contradicted from the olmoe side. **Infeasible on this host** after decision 1
@@ -176,14 +249,16 @@ longer fits alongside the downloaded model and its alignpack space; R1B's real-m
 4. **Align Request 41** (non-`Copy` capture in `spawn` closures), Align-side. Unblocks R5's required
    microbenchmark C.
 
-**Align capability requests.** Requests 1-20 CLOSED, Requests 21-43 PROPOSED and non-blocking, and
-Request 44 ALIGN_LLM_VERIFIED pending publication closure. `.align-revision` now selects
-`3a34febe`. Top clients by reference count in
+**Align capability requests.** Requests 1-20 CLOSED, Requests 21-43 and 45-46 PROPOSED and
+non-blocking, and Request 44 ALIGN_LLM_VERIFIED, closed by PR #134. `.align-revision` now selects
+`3a34febe`. Requests 45 and 46 are new, filed by R3-RESIDENCY-SIM (see above) and renumbered from
+44 and 45 when PR #134 took 44; Request 45 is priority **high** — an accepted-but-unsound compiler
+defect — rather than the medium/low of the rest of this range. Top clients by reference count in
 `docs/align-requests.md` (grep-verified against the register): Request 34 (`Result` payloads beyond
-scalars, 9 mentions), Requests 21 and 23 (read-only open; huge-struct-copy lint, 7 each — Request 23
-gained R1C's evidence block, making `src/frontend_olmoe.align` its fifth client and the third
-architecture frontend to trip it), and Requests 33 and 32 (aligned allocation; FFI by-value structs,
-6 each); Requests 32, 33, and 37 are also R5's own named clients.
+scalars, 9 mentions), Requests 21 and 23 (read-only open; huge-struct-copy lint, 8 each — Request 23
+gained R1C's `src/frontend_olmoe.align` and then R3's `residency_sim$Derived`, making six clients
+across five wide records), and Requests 33 and 32 (aligned allocation; FFI by-value structs, 6 each);
+Requests 32, 33, and 37 are also R5's own named clients.
 
 **R2-LOCALITY-GATE merged checkpoint (PR #131, head `fff5806`, merge `546b5cc`).** The R2 gate is
 **met in the prefill direction**. `scripts/run-expert-locality-gate` over
@@ -224,10 +299,11 @@ sign-bit/payload difference (arm64's default NaN vs. x86-64 SSE's QNaN) surfacin
 non-finite-readback goldens, masked in golden normalization alone. Full ledger:
 `docs/specs/r5c-metal-prefill.md`.
 
-**Resume in another environment.** Fetch `origin`, check out `main`, finish the active C8
-publication if it is still open, then resume R3 from its design ledger. Decision 1 is taken; R2's
-gate, R1C's frontend, R4's per-expert half, and R4.5's expert matmul are merged, so R3 waits on no
-further decision. For the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1);
+**Resume in another environment.** Fetch `origin`, check out `main`, then check out
+`agent/r3-residency-sim` and read `docs/specs/r3-residency-sim.md` in full before touching
+`src/residency_sim.align`, the oracle, or either runner. Decision 1 is taken; R2's gate, R1C's
+frontend, R4's per-expert half, R4.5's expert matmul, and C8's optional targeted stage are all
+merged, so R3 waits on no further decision. For the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1);
 decision 3 -> R6 (section R6), R7-R9, and the decode half of R2's gate; decision 4 -> R5's deferred
 microbenchmark C (section R5).
 
@@ -239,9 +315,20 @@ exists by the time work resumes; otherwise rebuild from the CLAUDE.md rules (the
 
 ## Merged checkpoints
 
-Track B, dense local model (R0 → R5C), plus the merged R2 locality gate and R1C olmoe frontend.
-The R2 and R5C checkpoints are above; the rest, newest first:
+Track B, dense local model (R0 → R5C), plus the merged R2 locality gate, the R1C olmoe frontend, and
+the MoE prerequisite discharge; C8's optional targeted stage is the one merged Track A re-entry.
+The MOE-PREREQ-DISCHARGE, R2, and R5C checkpoints are above; the rest, newest first:
 
+- **GCC14-FP-CONTRACT-PORTABILITY** (PR #136, merge `aad872f`): `#pragma STDC FP_CONTRACT OFF` is
+  Clang-only, and GCC 14.2 diagnoses it as unknown while `scripts/build-ggml-shim` compiles with
+  `-Werror`; the pragma is now guarded and the cross-compiler `-ffp-contract=off` flag plus the
+  behavioural probe stay mandatory. It was discovered by **this capability's** publication preflight
+  and merged as its prerequisite.
+- **C8-OPTIONAL-TARGETED-STAGE** (PR #134, merge `4f01553`): the targeted verification stage becomes
+  optional, `R2`-unrelated, on a fresh fixed-task baseline measuring a 326,093 ppm removable ceiling
+  against C8's 2,000 ppm floor; the 101-pair acceptance improves 60,515,456 ns to 40,475,113 ns
+  (331,160 ppm). It adopted Align `3a34febe` (Align PR #892) as `.align-revision` and closed
+  Request 44 at `ALIGN_LLM_VERIFIED`. Ledger: `docs/specs/c8-optional-targeted-stage.md`.
 - **R1C-OLMOE-MOE-IR** (PR #132, head `3580a62`, merge `e15e3d3`): `src/frontend_olmoe.align`, a
   three-way architecture dispatch, and two roles appended to the frozen `role_id` list
   (`attn_q_norm` 27, `attn_k_norm` 28). The real olmoe file reaches `R1_MODEL_IR` at the unchanged

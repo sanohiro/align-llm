@@ -1,0 +1,401 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R3-RESIDENCY-SIM focused qualification (`docs/specs/r3-residency-sim.md` section 4.3), and the run
+# that discharges the roadmap section R3 gate — 対象ハードウェア条件で、baselineより有効なpolicyを
+# 特定できること — on the real corpus.
+#
+# It captures one prefill transcript per prompt from the checked-in corpus with the flags and
+# safeguards `scripts/run-expert-locality-gate` established, derives one `R2_ACTIVATION_TRACE` per
+# transcript with `main --expert-trace`, deletes the transcript immediately, derives the
+# `R1_MODEL_IR` once with `main --model-ir`, writes the trace list, and runs
+# `main --simulate-residency`.
+#
+#   ALIGN_LLM_GGUF_MODEL             path to a MoE model.        NO DEFAULT - absent is N/A, exit 0
+#   ALIGN_LLM_LLAMA_EVAL_CALLBACK    path to llama-eval-callback. NO DEFAULT - absent is N/A, exit 0
+#   ALIGN_LLM_LOCALITY_PROMPTS       prompt corpus (default eval/prompts/expert-locality-v1.txt);
+#                                    named and missing is exit 1, never N/A
+#   ALIGN_LLM_LOCALITY_PROMPT_COUNT  prompts to use, from the top of the corpus (default 40);
+#                                    a corpus holding fewer is exit 1
+#   ALIGN_LLM_RESIDENCY_BUDGET       the BUDGET_BYTES operand; default 25 per cent of the model's
+#                                    expert byte footprint, which is the section 4.5 probe's point
+#
+# Opt-in, never in an aggregate, never in CI. The opt-in is over the two variables that name the
+# subject and nothing else: neither has a default, because a qualification that silently passes when
+# its subject is missing is worse than no qualification, so an absent instrument or model prints one
+# exact N/A line and exits 0 without claiming a measurement. The remaining three have defaults and
+# are overrides, not switches — a corpus this script was pointed at and cannot read is a broken
+# invocation and fails.
+#
+# The qualification is a measurement, not a pass/fail owner test. It exits 0 on every one of the
+# three `verdict.result` values — BEATS_BASELINE, NO_POLICY_BEATS_BASELINE, and NO_HEADROOM are all
+# answers to the roadmap question — and exits nonzero only when the instrument, the corpus, or a
+# parser prevented a measurement from being taken at all.
+
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+instrument="${ALIGN_LLM_LLAMA_EVAL_CALLBACK:-}"
+model="${ALIGN_LLM_GGUF_MODEL:-}"
+prompts="${ALIGN_LLM_LOCALITY_PROMPTS:-$root_dir/eval/prompts/expert-locality-v1.txt}"
+prompt_count="${ALIGN_LLM_LOCALITY_PROMPT_COUNT:-40}"
+
+if [ -z "$instrument" ]; then
+  printf '%s\n' "residency sim qualification: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)"
+  exit 0
+fi
+if [ ! -x "$instrument" ]; then
+  printf '%s\n' "residency sim qualification: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable)"
+  exit 0
+fi
+if [ -z "$model" ]; then
+  printf '%s\n' "residency sim qualification: N/A (ALIGN_LLM_GGUF_MODEL unset)"
+  exit 0
+fi
+if [ ! -f "$model" ]; then
+  printf '%s\n' "residency sim qualification: N/A (ALIGN_LLM_GGUF_MODEL is absent)"
+  exit 0
+fi
+if [ ! -f "$prompts" ]; then
+  printf '%s\n' "residency sim qualification: the prompt corpus $prompts is absent" >&2
+  exit 1
+fi
+if [ ! -x "$root_dir/main" ]; then
+  printf '%s\n' "residency sim qualification: the product executable is missing; run 'make build'" >&2
+  exit 1
+fi
+
+temp_dir=$(mktemp -d)
+cleanup() {
+  rm -rf "$temp_dir"
+}
+# A signal must remove the transcript too: one transcript is tens of megabytes, and a run
+# interrupted at the terminal is the ordinary way this qualification ends early.
+trap cleanup EXIT HUP INT TERM
+
+before=$(python3 - "$model" <<'PY'
+import os, sys
+info = os.stat(sys.argv[1])
+print("%d %d" % (info.st_size, info.st_mtime_ns))
+PY
+)
+
+"$instrument" --version >"$temp_dir/version.txt" 2>&1 || {
+  status=$?
+  printf '%s\n' "residency sim qualification: the instrument exited $status for --version" >&2
+  tail -20 "$temp_dir/version.txt" >&2 || true
+  exit 1
+}
+
+# The corpus is read once, in file order, and the first `prompt_count` lines are used. The order is
+# part of the corpus identity recorded below, and it is also the trace-list order, which section
+# 2.2.2 makes part of the input identity rather than an implicit detail.
+selected=()
+while IFS= read -r line || [ -n "$line" ]; do
+  [ -n "$line" ] || continue
+  selected+=("$line")
+  [ "${#selected[@]}" -lt "$prompt_count" ] || break
+done <"$prompts"
+if [ "${#selected[@]}" -lt "$prompt_count" ]; then
+  printf '%s\n' "residency sim qualification: the corpus holds ${#selected[@]} prompts, $prompt_count requested" >&2
+  exit 1
+fi
+
+corpus_identity=$(python3 - "$prompts" "$prompt_count" <<'PY'
+import hashlib, sys
+from pathlib import Path
+raw = Path(sys.argv[1]).read_bytes()
+print("%s %s %d %d"
+      % (Path(sys.argv[1]).name, hashlib.md5(raw).hexdigest(), len(raw), int(sys.argv[2])))
+PY
+)
+
+instrument_timeout=""
+if command -v timeout >/dev/null 2>&1; then
+  instrument_timeout="timeout 600"
+elif command -v gtimeout >/dev/null 2>&1; then
+  instrument_timeout="gtimeout 600"
+fi
+
+# The Model IR is derived once, from the same file the instrument is reading, and it is the only
+# cost model the simulator has.
+"$root_dir/main" --model-ir "$model" "$temp_dir/model-ir.json" >/dev/null || {
+  status=$?
+  printf '%s\n' "residency sim qualification: --model-ir exited $status" >&2
+  exit 1
+}
+
+mkdir -p "$temp_dir/documents"
+printf '%s\n' "residency sim qualification: capturing ${#selected[@]} prefill transcripts" >&2
+start_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+index=0
+for prompt in "${selected[@]}"; do
+  transcript="$temp_dir/transcript.txt"
+  # The flags are contractual, not incidental, and are the ones the R2 gate established. `-fa off`
+  # keeps attention unfused so the graph shape stays the one `docs/specs/r2a-expert-trace.md`
+  # section 2.2 was measured against; `-ctk f32 -ctv f32` keeps the cache tensors in a printable
+  # type; `-nr` suppresses the reasoning wrapper so the prompt reaches the tokenizer verbatim;
+  # `-c 512` bounds the context. `ulimit -f` caps the transcript at 256 MiB.
+  (
+    ulimit -f 262144
+    exec $instrument_timeout "$instrument" -m "$model" -p "$prompt" -n 1 -t 4 \
+      -fa off -ctk f32 -ctv f32 -nr -c 512 \
+      </dev/null >"$transcript" 2>"$temp_dir/instrument.log"
+  ) || {
+    status=$?
+    if [ -n "$instrument_timeout" ] && [ "$status" -eq 124 ]; then
+      printf '%s\n' "residency sim qualification: the instrument did not finish within 600 s on prompt $index" >&2
+    else
+      printf '%s\n' "residency sim qualification: the instrument exited $status on prompt $index" >&2
+    fi
+    tail -20 "$temp_dir/instrument.log" >&2 || true
+    exit 1
+  }
+  "$root_dir/main" --expert-trace "$transcript" \
+    >"$temp_dir/documents/$(printf '%03d' "$index").json" || {
+    status=$?
+    printf '%s\n' "residency sim qualification: --expert-trace exited $status on prompt $index" >&2
+    exit 1
+  }
+  # The transcripts are the bulk of the run and none is retained: the documents are the evidence.
+  rm -f "$transcript"
+  index=$((index + 1))
+done
+end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+
+after=$(python3 - "$model" <<'PY'
+import os, sys
+info = os.stat(sys.argv[1])
+print("%d %d" % (info.st_size, info.st_mtime_ns))
+PY
+)
+if [ "$before" != "$after" ]; then
+  printf '%s\n' "residency sim qualification: the model's size or mtime changed during the run" >&2
+  exit 1
+fi
+
+# The trace list is the corpus artifact of section 2.3: one path per line, in prompt order.
+find "$temp_dir/documents" -name '*.json' | sort >"$temp_dir/traces.txt"
+
+budget="${ALIGN_LLM_RESIDENCY_BUDGET:-}"
+if [ -z "$budget" ]; then
+  budget=$(python3 - "$temp_dir/model-ir.json" <<'PY'
+import json, sys
+document = json.load(open(sys.argv[1]))
+total = sum(b["byte_size"] for b in document["blocks"] if b["kind"] == "ExpertBlock")
+print(total >> 2)
+PY
+)
+fi
+
+set +e
+"$root_dir/main" --simulate-residency "$temp_dir/traces.txt" "$temp_dir/model-ir.json" \
+  "$budget" >"$temp_dir/residency.json"
+sim_status=$?
+set -e
+if [ ! -s "$temp_dir/residency.json" ]; then
+  printf '%s\n' "residency sim qualification: --simulate-residency exited $sim_status with no document" >&2
+  exit 1
+fi
+
+python3 - "$temp_dir/residency.json" "$temp_dir/version.txt" "$corpus_identity" \
+  "$start_ns" "$end_ns" "$sim_status" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+version_text = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace").strip()
+corpus_identity = sys.argv[3]
+elapsed_ns = int(sys.argv[5]) - int(sys.argv[4])
+sim_status = int(sys.argv[6])
+
+if document["status"] != "ok":
+    raise SystemExit("residency sim qualification: the measurement could not be taken: %s %s"
+                     % (document["error_code"], document["error_detail"]))
+if sim_status != 0:
+    raise SystemExit("residency sim qualification: the arm exited %d on an ok document"
+                     % sim_status)
+
+model, stream, verdict = document["model"], document["stream"], document["verdict"]
+inputs = document["inputs"]
+by_key = {}
+for order in document["orders"]:
+    for row in order["policies"]:
+        by_key[(order["order"], row["budget_bytes"], row["policy"])] = row
+EXPECTED_POLICIES = ["null", "compulsory", "belady", "lru", "lfu", "recent_reuse_w2",
+                     "recent_reuse_w8", "recent_reuse_w32", "topk_prefetch_k1", "topk_prefetch_k8"]
+policies = EXPECTED_POLICIES
+budgets = [entry for entry in document["budgets"]]
+sweep = {entry["budget_bytes"]: entry for entry in verdict["sweep_best"]}
+
+# The plan's expected verdict shape, asserted rather than described. These are properties of the
+# contract, not of the corpus: a run whose stream is empty, whose orders are not both reported, or
+# whose verdict does not name one of the three results has not answered the gate.
+problems = []
+if document["kind"] != "R3_RESIDENCY_SIM" or document["schema_version"] != 1:
+    problems.append("the document is not R3_RESIDENCY_SIM schema 1")
+if inputs["admitted_trace_count"] != inputs["listed_trace_count"]:
+    problems.append("a listed trace was not admitted")
+if stream["pooling"] != "continuing":
+    problems.append("the stream is not the continuing pooled stream of section 2.2.3")
+if stream["demand_count"] <= 0 or stream["token_position_count"] <= 0:
+    problems.append("the stream is empty")
+if [order["order"] for order in document["orders"]] != ["token_major", "layer_major"]:
+    problems.append("both replay orders of section 2.2.2 are not reported")
+if [order["verdict_bearing"] for order in document["orders"]] != [True, False]:
+    problems.append("the verdict-bearing order is not token_major")
+# The name *set* over every reported row, not the first ten of a ten-per-budget list: slicing ten
+# entries can only ever see the first budget's block, so it asserts nothing about the policy set the
+# document reports.
+for order in document["orders"]:
+    reported = [row["policy"] for row in order["policies"]]
+    if sorted(set(reported)) != sorted(EXPECTED_POLICIES):
+        problems.append("%s: the policy set is not the ten rows of section 2.4, it is %r"
+                        % (order["order"], sorted(set(reported))))
+    if len(reported) != len(EXPECTED_POLICIES) * len(budgets):
+        problems.append("%s: %d policy rows for %d budget(s) and %d policies"
+                        % (order["order"], len(reported), len(budgets), len(EXPECTED_POLICIES)))
+    for start in range(0, len(reported), len(EXPECTED_POLICIES)):
+        if reported[start:start + len(EXPECTED_POLICIES)] != EXPECTED_POLICIES:
+            problems.append("%s: the rows at %d are not in section 2.4 order"
+                            % (order["order"], start))
+if verdict["order"] != "token_major" or verdict["baseline_policy"] != "lru":
+    problems.append("the verdict is not defined on token_major against the lru baseline")
+if verdict["rule_version"] != 1 or verdict["margin_per_mille"] != 50:
+    problems.append("the verdict rule is not rule_version 1 at a 50 per mille floor")
+if verdict["result"] not in ("BEATS_BASELINE", "NO_POLICY_BEATS_BASELINE", "NO_HEADROOM"):
+    problems.append("the verdict is not one of the three section 2.8 results")
+if verdict["result"] == "BEATS_BASELINE" and not verdict["jackknife_stable"]:
+    problems.append("BEATS_BASELINE without a stable jackknife")
+if verdict["jackknife_folds"] != inputs["admitted_trace_count"]:
+    problems.append("the jackknife did not run one fold per admitted document")
+if len(sweep) != len(budgets):
+    problems.append("sweep_best does not cover every budget")
+for order in document["orders"]:
+    for entry in budgets:
+        row = by_key[(order["order"], entry["bytes"], "compulsory")]
+        floor = by_key[(order["order"], entry["bytes"], "null")]
+        for policy in policies:
+            cell = by_key[(order["order"], entry["bytes"], policy)]
+            if cell["hits"] + cell["misses"] != cell["demands"]:
+                problems.append("%s/%s does not account for every demand" % (order["order"], policy))
+            if cell["bytes_fetched"] < row["bytes_fetched"]:
+                problems.append("%s/%s beat the compulsory lower bound" % (order["order"], policy))
+            if cell["bytes_fetched"] > floor["bytes_fetched"] and not policy.startswith("topk"):
+                problems.append("%s/%s fetched more than the null floor" % (order["order"], policy))
+        optimal = by_key[(order["order"], entry["bytes"], "belady")]
+        baseline = by_key[(order["order"], entry["bytes"], "lru")]
+        if optimal["bytes_fetched"] > baseline["bytes_fetched"]:
+            problems.append("%s: belady is not optimal at %d" % (order["order"], entry["bytes"]))
+
+print("residency sim qualification: MEASURED")
+print("  instrument build")
+for line in version_text.splitlines():
+    print("    %s" % line.strip())
+print("  corpus             %s" % corpus_identity)
+print("  model              %s n_layer %d n_expert %d n_expert_used %d"
+      % (model["arch"], model["n_layer"], model["n_expert"], model["n_expert_used"]))
+print("  expert blocks      %d, %d byte(s) total, %d..%d per expert, uniform %s"
+      % (model["expert_block_count"], model["total_expert_bytes"],
+         model["smallest_expert_bytes"], model["largest_expert_bytes"],
+         "yes" if model["uniform_expert_bytes"] else "no"))
+print("  traces             %d admitted of %d listed, %d byte(s) read, instrument build(s) %s (%s)"
+      % (inputs["admitted_trace_count"], inputs["listed_trace_count"], inputs["bytes_read"],
+         inputs["instrument_builds"] or "none", inputs["instrument_build_source"]))
+print("  stream             %s pooling, %d demand(s) over %d token position(s), %d distinct key(s)"
+      % (stream["pooling"], stream["demand_count"], stream["token_position_count"],
+         stream["distinct_key_count"]))
+print("  slot coverage      %d per mille (%d of %d slot(s) printed) - EVERY RATE BELOW IS OVER "
+      "PRINTED SLOTS" % (stream["slot_coverage_per_mille"], len(stream["observed_slots"]),
+                         stream["n_expert_used"]))
+print("  observed slots     %s" % stream["observed_slots"])
+print("  layers demanded    %s" % stream["layers_demanded"])
+print("  omitted            %d truncated graph(s), %d layer position(s) with no printed block"
+      % (stream["omitted_truncated_graphs"], stream["omitted_layer_positions"]))
+print("  graph phases       %s" % json.dumps(stream["graph_phases"], sort_keys=True))
+print("  one token position %d expert(s), %d byte(s) - the LRU cliff"
+      % (stream["one_token_working_set_keys"], stream["one_token_working_set_bytes"]))
+print()
+for order in document["orders"]:
+    print("  %s%s: hit per mille over printed slots / gigabytes fetched"
+          % (order["order"], "  (verdict-bearing)" if order["verdict_bearing"] else ""))
+    header = "%14s %5s" % ("budget", "pct")
+    for policy in policies:
+        header += " %17s" % policy
+    print("  " + header)
+    for entry in budgets:
+        row = "%14d %4d%%" % (entry["bytes"], entry["per_mille_of_expert_bytes"] // 10)
+        for policy in policies:
+            cell = by_key[(order["order"], entry["bytes"], policy)]
+            row += " %17s" % ("%d / %.1f" % (cell["hit_per_mille"],
+                                             cell["bytes_fetched"] / 1e9))
+        print("  " + row + ("   <- requested" if entry["requested"] else ""))
+    print()
+
+print("  prefetch accounting at the requested budget (token_major)")
+for policy in ("topk_prefetch_k1", "topk_prefetch_k8"):
+    cell = by_key[("token_major", verdict["budget_bytes"], policy)]
+    print("    %-18s %d fetch(es), %d later hit before eviction (%d per mille)"
+          % (policy, cell["prefetch_fetches"], cell["prefetch_useful"],
+             1000 * cell["prefetch_useful"] // max(cell["prefetch_fetches"], 1)))
+print()
+print("  verdict (section 2.8, rule_version %d, bytes_fetched on token_major)"
+      % verdict["rule_version"])
+print("    budget           %d byte(s)" % verdict["budget_bytes"])
+print("    baseline         lru %d byte(s) fetched" % verdict["baseline_bytes_fetched"])
+print("    best candidate   %s %d byte(s) fetched"
+      % (verdict["best_policy"] or "-", verdict["best_bytes_fetched"]))
+print("    gain             %d per mille (floor %d)"
+      % (verdict["gain_per_mille"], verdict["margin_per_mille"]))
+print("    headroom         %d per mille to the offline optimum" % verdict["headroom_per_mille"])
+print("    jackknife        %d fold(s), minimum gain %d per mille, stable %s"
+      % (verdict["jackknife_folds"], verdict["jackknife_min_gain_per_mille"],
+         "yes" if verdict["jackknife_stable"] else "no"))
+print("    result           %s" % verdict["result"])
+print()
+print("  sweep")
+print("    %14s %5s %10s %10s %-18s %s"
+      % ("budget", "pct", "gain", "headroom", "best", "result"))
+for entry in budgets:
+    row = sweep[entry["bytes"]]
+    print("    %14d %4d%% %9d‰ %9d‰ %-18s %s"
+          % (entry["bytes"], entry["per_mille_of_expert_bytes"] // 10, row["gain_per_mille"],
+             row["headroom_per_mille"], row["best_policy"] or "-", row["result"]))
+print()
+print("  caveats")
+print("    - the stream is prefill-only, replayed in decode order because decode is the regime")
+print("      being modelled and not because decode was observed (section 5.2)")
+print("    - %d of %d router slots are printed, so every rate is a conditional subsample and"
+      % (len(stream["observed_slots"]), stream["n_expert_used"]))
+print("      bytes_fetched understates the true traffic (section 2.2.4)")
+print("    - bytes are counted, never converted to seconds: R3 makes no performance claim "
+      "(section 5.3)")
+print("    - cross-prompt reuse carries most of the cache pressure, so the result reads as")
+print("      \"across a session of many short requests\", not \"within one generation\"")
+print()
+print("  elapsed            %.1f s for %d capture(s) (diagnostic only; no performance claim)"
+      % (elapsed_ns / 1e9, inputs["admitted_trace_count"]))
+print("  transcripts        deleted; the %d document(s) were the evidence"
+      % inputs["admitted_trace_count"])
+print()
+print("residency-sim verdict=%s budget=%d baseline_bytes=%d best=%s best_bytes=%d "
+      "gain_per_mille=%d headroom_per_mille=%d jackknife_folds=%d jackknife_min_per_mille=%d "
+      "jackknife_stable=%s demands=%d token_positions=%d distinct_keys=%d "
+      "slot_coverage_per_mille=%d"
+      % (verdict["result"], verdict["budget_bytes"], verdict["baseline_bytes_fetched"],
+         verdict["best_policy"] or "none", verdict["best_bytes_fetched"],
+         verdict["gain_per_mille"], verdict["headroom_per_mille"], verdict["jackknife_folds"],
+         verdict["jackknife_min_gain_per_mille"],
+         "yes" if verdict["jackknife_stable"] else "no", stream["demand_count"],
+         stream["token_position_count"], stream["distinct_key_count"],
+         stream["slot_coverage_per_mille"]))
+
+if problems:
+    for problem in problems:
+        sys.stderr.write("residency sim qualification: %s\n" % problem)
+    raise SystemExit(1)
+PY
+
+printf '%s\n' "residency sim qualification: model size and mtime unchanged (read-only proof)"

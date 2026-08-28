@@ -9,6 +9,7 @@ import frontend_qwen
 import frontend_gpt_oss
 import frontend_olmoe
 import expert_trace
+import residency_sim
 import model_ir
 import alignpack
 import repair
@@ -38,6 +39,7 @@ fn print_help() {
   print("       main --inspect-gguf <model.gguf> [inspection.json]")
   print("       main --model-ir <model.gguf> [model-ir.json]")
   print("       main --expert-trace <callback.log> [trace.json]")
+  print("       main --simulate-residency <traces.txt> <model-ir.json> <budget-bytes> [residency.json]")
   print("       main --pack <model.gguf> <out.alignpack> [alignpack.json]")
   print("       main --pack-verify <model.gguf> <pack.alignpack> [alignpack-verify.json]")
   print("       main prompt <experiment|generate|evaluate|accept|rollback> <request.json> <result.json>")
@@ -742,6 +744,113 @@ fn expert_trace_demo(args: array<str>) -> Result<(), Error> {
   }
 }
 
+// R3-RESIDENCY-SIM CLI adapter (`docs/specs/r3-residency-sim.md` section 2.3). The arm holds no
+// policy, no schema, and no cost model: it validates arity, guards every path operand lexically,
+// runs the derivation exactly once, writes or prints the document, prints the summary block, and
+// maps the derivation status to the process exit. Arity is checked before any path or file work, so
+// an arity failure produces no output at all.
+//
+// There is no `--policy`, no `--order`, and no `--window` flag: a policy flag would let a caller
+// select the policy that wins on their own corpus and report it as a finding, both orders are
+// always reported, and a window flag would make the three fixed `recent_reuse` constants tunable
+// against the evaluation corpus (section 2.3).
+fn simulate_residency_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() < 5 || args.len() > 6 {
+    return Err(Error.Invalid)
+  }
+  // Section 2.6 step 2, and it owns every operand. `residency_sim.simulate` re-checks the two input
+  // paths as the module's own fail-closed contract, but nothing below this arm ever sees the
+  // destination, so an over-long or NUL-bearing destination has to be refused here.
+  if !residency_sim.valid_path(args[2]) || !residency_sim.valid_path(args[3]) {
+    return Err(Error.Invalid)
+  }
+  if args.len() == 6 && !residency_sim.valid_path(args[5]) {
+    return Err(Error.Invalid)
+  }
+  simulated := residency_sim.simulate(args[2], args[3], args[4])
+  document_view: str := simulated.document
+  if args.len() == 5 {
+    // The machine form: the document and one newline, and nothing else.
+    print(document_view)
+  } else {
+    fs.write_file(args[5], document_view)?
+    // Section 2.3 stable summary. The JSON document remains the authoritative result.
+    print("residency sim:")
+    print("status:")
+    match simulated.status {
+      Ok => print("OK"),
+      Error => print("ERROR"),
+    }
+    print("traces:")
+    print(simulated.admitted_trace_count)
+    print("of")
+    print(simulated.listed_trace_count)
+    print("demands:")
+    print(simulated.demand_count)
+    print("token positions:")
+    print(simulated.token_position_count)
+    // Every rate in the block carries the coverage it is conditional on (section 2.2.4): the
+    // instrument prints six of eight router slots on this model, so no number here is a hit rate
+    // without the qualifier "over printed slots".
+    print("slot coverage:")
+    print(simulated.slot_coverage_per_mille)
+    print("slots:")
+    print(simulated.observed_slot_count)
+    print("of")
+    print(simulated.n_expert_used)
+    print("experts:")
+    print(simulated.distinct_key_count)
+    print("of")
+    print(simulated.expert_block_count)
+    print("budget:")
+    print(simulated.requested_budget)
+    print("budget per mille:")
+    print(simulated.requested_per_mille)
+    print("baseline:")
+    print(simulated.baseline_bytes_fetched)
+    print("best:")
+    best_view: str := simulated.best_policy
+    // `-` is reserved for a value the inputs do not supply, reusing the R0 convention rather than
+    // inventing a second one.
+    if best_view.len() > 0 {
+      print(best_view)
+    } else {
+      print("-")
+    }
+    print(simulated.best_bytes_fetched)
+    print("optimal:")
+    print(simulated.optimal_bytes_fetched)
+    print("verdict:")
+    verdict_view: str := simulated.verdict
+    if verdict_view.len() > 0 {
+      print(verdict_view)
+    } else {
+      print("-")
+    }
+    match simulated.status {
+      Ok => {},
+      Error => {
+        print("error:")
+        error_view: str := simulated.error_code
+        print(error_view)
+        print("detail:")
+        detail_view: str := simulated.error_detail
+        // The detail names an input-supplied identifier, so it is escaped for the same reason the
+        // R1 arm's `arch` is: the block is read positionally.
+        sanitized_detail := sanitize_summary_line(detail_view)
+        sanitized_detail_view: str := sanitized_detail
+        print(sanitized_detail_view)
+      },
+    }
+  }
+  // An input defect is persisted and reported data; the CLI maps it to the existing `Error.Invalid`
+  // process exit after the document has been emitted.
+  match simulated.status {
+    Ok => { return Ok(()) },
+    Error => { return Err(Error.Invalid) },
+  }
+}
+
 // R4-ALIGNPACK-LAYER-MAJOR CLI adapter (`docs/specs/r4-alignpack-layer-major.md` section 2.3). Both
 // arms hold no container knowledge and no layout knowledge: they validate arity, validate every
 // operand lexically, read the container table exactly once, select the frontend from the
@@ -1139,6 +1248,8 @@ pub fn main(args: array<str>) -> Result<(), Error> {
                               model_ir_demo(args)?
                             } else if args[1] == "--expert-trace" {
                               expert_trace_demo(args)?
+                            } else if args[1] == "--simulate-residency" {
+                              simulate_residency_demo(args)?
                             } else if args[1] == "--pack" {
                               pack_demo(args)?
                             } else if args[1] == "--pack-verify" {
