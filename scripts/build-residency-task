@@ -23,6 +23,15 @@ HARDWARE_FIELDS = [
     "score_impact_weight",
     "score_layer_weight",
 ]
+MAX_LAYERS = 512
+MAX_EXPERTS = 4096
+MAX_BLOCKS = 2048
+MAX_DEMANDS = 65536
+MAX_BYTES = 1 << 50
+MAX_COST_INPUT = 10 ** 12
+MAX_WEIGHT = 10 ** 6
+MAX_PREFETCH_SCAN_WORK = 100_000_000
+MAX_I64 = (1 << 63) - 1
 
 
 class AdapterError(Exception):
@@ -44,7 +53,13 @@ def read_document(path):
     except OSError as exc:
         raise AdapterError("cannot read %s: %s" % (path, exc)) from exc
     try:
-        value = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique_object)
+        value = json.loads(
+            raw.decode("utf-8", "strict"),
+            object_pairs_hook=unique_object,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                AdapterError("invalid JSON constant %r" % value)
+            ),
+        )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AdapterError("invalid JSON in %s: %s" % (path, exc)) from exc
     if not isinstance(value, dict):
@@ -62,8 +77,9 @@ def exact_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def require_int(where, value, minimum=None):
-    if not exact_int(value) or (minimum is not None and value < minimum):
+def require_int(where, value, minimum=None, maximum=None):
+    if not exact_int(value) or (minimum is not None and value < minimum) \
+            or (maximum is not None and value > maximum):
         raise AdapterError("invalid %s" % where)
     return value
 
@@ -73,8 +89,22 @@ def load_hardware(path):
     if list(hardware) != HARDWARE_FIELDS:
         raise AdapterError("hardware fields/order do not match schema 1")
     identifier("hardware.name", hardware["name"])
-    for field in HARDWARE_FIELDS[1:]:
-        require_int("hardware.%s" % field, hardware[field])
+    require_int("hardware.cache_capacity_bytes", hardware["cache_capacity_bytes"], 1, MAX_BYTES)
+    for field in (
+        "transfer_fixed_ns", "transfer_ns_per_kib", "cpu_fixed_ns", "cpu_ns_per_kib",
+    ):
+        require_int("hardware.%s" % field, hardware[field], 0, MAX_COST_INPUT)
+    require_int(
+        "hardware.prefetch_cost_per_mille", hardware["prefetch_cost_per_mille"], 0, 1000
+    )
+    require_int("hardware.prefetch_count", hardware["prefetch_count"], 1, MAX_EXPERTS)
+    for field in (
+        "score_recency_weight", "score_frequency_weight", "score_impact_weight",
+        "score_layer_weight",
+    ):
+        require_int("hardware.%s" % field, hardware[field], 0, MAX_WEIGHT)
+    if not any(hardware[field] > 0 for field in HARDWARE_FIELDS[-4:]):
+        raise AdapterError("invalid hardware.score_weights")
     return hardware
 
 
@@ -90,9 +120,9 @@ def load_model(path):
         raise AdapterError("model IR is missing model or blocks")
     if model.get("arch") != "olmoe":
         raise AdapterError("model IR architecture is not olmoe")
-    n_layer = require_int("model.n_layer", model.get("n_layer"), 1)
-    n_expert = require_int("model.n_expert", model.get("n_expert"), 1)
-    n_expert_used = require_int("model.n_expert_used", model.get("n_expert_used"), 1)
+    n_layer = require_int("model.n_layer", model.get("n_layer"), 1, MAX_LAYERS)
+    n_expert = require_int("model.n_expert", model.get("n_expert"), 1, MAX_EXPERTS)
+    n_expert_used = require_int("model.n_expert_used", model.get("n_expert_used"), 1, MAX_EXPERTS)
     if n_expert_used > n_expert:
         raise AdapterError("model.n_expert_used exceeds n_expert")
     expert_blocks = []
@@ -101,9 +131,9 @@ def load_model(path):
             raise AdapterError("model block %d is not an object" % ordinal)
         if block.get("kind") != "ExpertBlock":
             continue
-        layer = require_int("blocks[%d].layer" % ordinal, block.get("layer"), 0)
-        expert = require_int("blocks[%d].expert" % ordinal, block.get("expert"), 0)
-        size = require_int("blocks[%d].byte_size" % ordinal, block.get("byte_size"), 1)
+        layer = require_int("blocks[%d].layer" % ordinal, block.get("layer"), 0, MAX_I64)
+        expert = require_int("blocks[%d].expert" % ordinal, block.get("expert"), 0, MAX_I64)
+        size = require_int("blocks[%d].byte_size" % ordinal, block.get("byte_size"), 1, MAX_BYTES)
         if layer >= n_layer or expert >= n_expert:
             raise AdapterError("ExpertBlock %d is outside model extents" % ordinal)
         row = {"layer": layer, "expert": expert, "bytes": size}
@@ -114,6 +144,8 @@ def load_model(path):
         expert_blocks.append(row)
     if not expert_blocks:
         raise AdapterError("model IR has no ExpertBlock")
+    if len(expert_blocks) > MAX_BLOCKS:
+        raise AdapterError("model IR has too many ExpertBlock rows")
     return raw, n_layer, n_expert, n_expert_used, expert_blocks
 
 
@@ -161,7 +193,7 @@ def append_trace(path, expected, graph_base, demands):
             raise AdapterError("%s selection %d is not an object" % (path, ordinal))
         values = []
         for field in ("graph", "layer", "token", "slot", "expert"):
-            values.append(require_int("selection.%s" % field, source.get(field), 0))
+            values.append(require_int("selection.%s" % field, source.get(field), 0, MAX_I64))
         graph, layer, token, slot, expert = values
         if graph not in phases or layer >= n_layer or expert >= n_expert or slot >= n_expert_used:
             raise AdapterError("%s selection %d is outside declared extents" % (path, ordinal))
@@ -185,6 +217,8 @@ def append_trace(path, expected, graph_base, demands):
             "expert": expert,
             "phase": phases[graph],
         })
+        if len(demands) > MAX_DEMANDS:
+            raise AdapterError("traces contain too many selections")
         previous = key
     reduced = moe.get("token_reduced_layers", [])
     if not isinstance(reduced, list) or any(not exact_int(value) or value < 0 for value in reduced):
@@ -227,6 +261,8 @@ def main(argv):
     model_id = identifier("model-id", args.model_id)
     hardware = load_hardware(args.hardware)
     model_raw, n_layer, n_expert, n_expert_used, blocks = load_model(args.model_ir)
+    if hardware["prefetch_count"] > n_expert:
+        raise AdapterError("hardware.prefetch_count exceeds model.n_expert")
     demands = []
     graph_base = 0
     tokens_truncated = False
@@ -241,6 +277,9 @@ def main(argv):
         token_reduced_layer_count += reduced
     if not demands:
         raise AdapterError("traces contain no selections")
+    prefetch_scan_work = len(demands) * len(blocks) * hardware["prefetch_count"]
+    if prefetch_scan_work > MAX_PREFETCH_SCAN_WORK:
+        raise AdapterError("hardware.prefetch_count exceeds the bounded-work envelope")
     available = {(row["layer"], row["expert"]) for row in blocks}
     for ordinal, demand in enumerate(demands):
         if (demand["layer"], demand["expert"]) not in available:

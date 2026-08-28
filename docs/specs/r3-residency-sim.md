@@ -147,7 +147,12 @@ and are not preserved in the result.
 `name` follows the identifier rule. Capacity is positive and at most 2^50. Fixed costs and
 per-KiB costs are in `[0, 10^12]`. `prefetch_cost_per_mille` is `[0, 1000]`: zero models perfect
 overlap and 1000 makes prefetched transfer cost equal demand transfer cost. `prefetch_count` is
-`[1, n_expert]`. Score weights are `[0, 10^6]` and at least one is positive.
+`[1, n_expert]`. Score weights are `[0, 10^6]` and at least one is positive. Before any policy
+state is allocated, the task must also satisfy
+`demands.len() * blocks.len() * prefetch_count <= 100,000,000`; failure is `R3_HARDWARE` with
+`hardware.prefetch_work`. This admits the frozen real workload (10,800 demands, 1,024 blocks, and a
+prefetch count up to 9) while refusing declarations whose repeated candidate/eviction work would
+make an otherwise schema-valid task an unbounded CLI stall.
 
 All arithmetic is checked before addition or multiplication. Transfer cost for `bytes` is:
 
@@ -229,7 +234,9 @@ blocks until the new block fits, records one demand transfer, and inserts the bl
 
 Prefetch runs only after a complete `(graph, layer, token)` group. It may inspect the next group's
 graph/layer/token identity but not its expert ids. History includes only demands already processed.
-Candidates with no history are ineligible. A ranking tie selects lower `(layer, expert)` first.
+At that boundary each policy snapshots the eligible non-resident candidates and ranks that snapshot
+once; evictions caused by applying the ranked list do not add newly non-resident blocks to the same
+batch. Candidates with no history are ineligible. A ranking tie selects lower `(layer, expert)` first.
 An already resident candidate costs nothing and does not consume the prefetch count. A prefetched
 entry becomes useful once when a later demand first hits it before eviction; that hit clears its
 prefetched marker. Entries still marked when evicted or when the run ends each add one unused
@@ -297,11 +304,12 @@ asserted at or below capacity.
 ### 2.9 Ownership, allocation, and identity
 
 `fs.read_file` owns the task bytes. Decode occurs inside one arena; task strings borrow those bytes
-and task arrays are arena-owned. The simulator borrows the decoded task, creates fixed-size scalar
-columns proportional to `blocks.len()`, and creates exactly seven result rows. No input field is
-moved on the first policy. The encoded result is cloned before the arena ends. Success, semantic
-failure, `?`, and output-write failure release the task bytes, every decoded array, all scalar
-columns, and the encoded builder exactly once.
+and task arrays are arena-owned. The simulator borrows the decoded task, creates a validation index
+proportional to `demands.len()`, fixed-size scalar columns and boundary ranking arrays proportional
+to `blocks.len()`, and exactly seven result rows. No input field is moved on the first policy. The
+encoded result is cloned before the arena ends. Success, semantic failure, `?`, and output-write
+failure release the task bytes, every decoded array, all index/scalar columns, and the encoded
+builder exactly once.
 
 Task identity is the tuple `(schema_version, task_id, trace_sha256, model_ir_sha256, hardware)`.
 There is no cache artifact and no compatibility route for future schemas.
@@ -320,7 +328,8 @@ scripts/build-residency-task \
 adapter accepts one schema-2 `R1_MODEL_IR` followed by one or more schema-1
 `R2_ACTIVATION_TRACE` documents in caller order. It rejects an occupied output path, duplicate
 JSON keys, non-OK documents, a non-`olmoe` model, non-MoE traces, model/trace extent
-disagreement, malformed block/demand order, and a missing `ExpertBlock` join. It extracts only
+disagreement, every section 2.3 hardware bound including the task-wide work envelope, malformed
+block/demand order, and a missing `ExpertBlock` join. It extracts only
 `ExpertBlock` rows, offsets graph ordinals between documents, copies each selection's exact phase
 from its owning graph, preserves printed slot ordinals without filling hidden slots, and writes
 canonical compact task JSON plus one newline by create-without-replace followed by flush and close.
@@ -336,16 +345,16 @@ in the smoke runner computes all seven rows from the emitted task and compares t
 | --- | --- | --- | --- |
 | CLI arity and paths | machine and file forms emit identical document bytes | too few/many, empty/NUL/overlong path before open; write failure has no summary | `run-residency-sim-smoke`: `cli-*` |
 | Decode | schema-1 task inside one arena; grammar-valid unknown fields are ignored | malformed, invalid UTF-8, missing/duplicate declared field write nothing and preserve destination | `decode-*` |
-| Semantic validation | complete ordered block/demand tables join | every code and multi-invalid precedence; zero policies on error | `invalid-*`, `precedence-*` |
+| Semantic validation | complete ordered block/demand tables join; duplicate-expert index is order-independent | every code and multi-invalid precedence, including duplicate plus out-of-order rows; zero policies on error | `invalid-*`, `precedence-*` |
 | LRU / LFU / recent reuse | heterogeneous byte capacity, deterministic ties | oversized block served but not retained; zero-capacity impossible by validation | policy oracle cases |
 | Score-based | all four available inputs and weight extremes | zero-total weights rejected; checked product/sum | `score-*`, `arithmetic-*` |
-| Prefetch | structural next group only; useful and unused rows | cold history, already resident, eviction, final unused accounting | `prefetch-*`, source guard |
+| Prefetch | structural next group only; one frozen/ranked eligible snapshot; useful and unused rows | cold history, already resident, eviction, final unused accounting | `prefetch-*`, complete oracle |
 | CPU fallback | cheaper CPU, cheaper transfer, strict tie rule | oversized block and fallback never overfill cache | `cpu-*` |
 | Phase split | prefill, decode, ambiguous first graph | absent phase reports `-1`; graph phase mismatch rejected | `phase-*` |
 | Seven-policy result | fixed row/order, deterministic winner, LRU tie | arithmetic failure produces no partial rows | complete golden + oracle |
-| Adapter | R2/R1 join, graph offset, mixed block sizes | every producer/status/extent/join refusal before output replacement | adapter fixture matrix |
+| Adapter | R2/R1 join, graph offset, mixed block sizes | every producer/status/extent/join/hardware/work-envelope refusal before output replacement | adapter fixture matrix |
 | Ownership | task borrowed across seven runs; result cloned out | decode, semantic error, loop exit, and write `?` release once | whole/per-unit compilation, repeated smoke |
-| Bounded work | binary demand/block joins plus at most `7 * demands * blocks` victim/ranking scans under the schema caps; real OLMoE is 1,024 blocks and 10,800 demands for the frozen 40-prompt corpus | caps checked before state-column allocation or policy work | `limit-*`, owner elapsed diagnostic |
+| Bounded work | binary demand/block joins; `O(demands log demands)` duplicate validation; one `O(blocks log blocks)` candidate ranking per prefetch boundary; victim scans amortized by insertions; and the explicit 100,000,000 `demands * blocks * prefetch_count` envelope | row caps and the work product checked before validation/ranking state or policy work | `limit-*`, adapter refusal, owner elapsed diagnostic |
 | Generic/interface/cache | N/A — no generic or exported interface surface | N/A — concrete module only | `make check`, `make build` |
 | Process/shared state | N/A — no child process, thread, global cache, or environment | independent processes share no state | CLI isolation case |
 
@@ -384,3 +393,15 @@ ships the simulator but does not by itself claim a target-hardware policy win.
    real OLMoE documents contain `0,1,2,5,6,7`; requiring contiguity would reject the exact producer
    R3 is meant to consume. Section 2.5 now requires zero-first, strictly increasing slots and keeps
    gaps, while the adapter still refuses to invent the hidden rows.
+2. Comprehensive review found that repeatedly scanning the full block table for each prefetch
+   candidate allowed hundreds of billions of comparisons at the independent row caps. Prefetch now
+   freezes and ranks one eligible snapshot per boundary, and section 2.3 adds a checked task-wide
+   work envelope enforced by both the adapter and simulator before output/policy work.
+3. The adapter originally checked hardware types but not section 2.3 ranges, so it could create a
+   new task that the simulator immediately refused and leave the create-without-replace destination
+   occupied. It now mirrors every hardware range, the model-dependent count, and the work envelope.
+4. File mode wrote the encoded JSON without machine mode's trailing newline even though section 2.1
+   promised byte identity. File mode now writes the newline and the owner compares exact bytes.
+5. Duplicate-expert detection originally stopped at the first different adjacent group and could
+   lose `R3_DEMAND` precedence when the same invalid input was also out of order. A bounded sorted
+   demand index now detects the duplicate class independently before observation-order validation.

@@ -16,19 +16,29 @@ seven policies, canonical task/result documents, ordered semantic validation, an
 oracle, and the opt-in real-model qualification. The owner preserves R2's real top-8 slot gaps,
 joins two trace graph namespaces, exercises prefill/decode/ambiguous phases, heterogeneous and
 oversized blocks, CPU ties, useful/unused prefetch, every semantic code, resource caps, and adapter,
-decode, path, and write refusals. `make residency-sim-smoke` passes after rerunning both producer
-owners; `make build`, `make gate-topology-check`, its self-test, and `make format-check` pass.
+decode, path, and write refusals. The comprehensive review of `f7e205a` against base tip and merge
+base `4f01553b1ea18b815376d5cd7c082d4406a042ec` (host-native Codex, whole diff) found four valid
+issues: one P1 unbounded prefetch-ranking path and three P2 contract mismatches in adapter hardware
+validation, file-result newline bytes, and duplicate-expert precedence. All four are repaired in the
+current candidate: prefetch ranks one boundary snapshot and has a producer/consumer work envelope;
+the adapter mirrors every hardware bound; both output modes are byte-identical; and a sorted demand
+index makes duplicate detection order-independent. After repair, `make residency-sim-smoke` passes
+with 7 policies, 11 semantic codes, 3 limit cases, and 10 adapter refusals after rerunning both
+producer owners; `make build` and `make fmt` pass. The earlier `make gate-topology-check`, its
+self-test, and `make format-check` evidence belongs to the pre-review candidate and must be refreshed
+by exact-head preflight.
 `make residency-sim-qualification` prints its exact `N/A` line because this host does not currently
 have the OLMoE model and R2 instrument inputs. The hosted owner makes no hardware-speed claim; the
 roadmap gate remains open until that focused qualification names measured costs and identifies a
 strict non-LRU winner. Existing non-blocking Request 23 gained its sixth client: the selected
-compiler falsely reports nine by-value-copy warnings for explicit `borrow task: ResidencyTask`
+compiler falsely reports ten by-value-copy warnings for explicit `borrow task: ResidencyTask`
 parameters.
 
-**Next actions, in order.** (1) Commit the consumer-complete implementation checkpoint. (2) Run one
-fresh comprehensive review, validate and consolidate accepted findings, and rerun affected owners.
-(3) Run exact-head preflight including the topology-selected fresh `make ci`, publish, and merge.
-(4) Refresh `main` and continue the next eligible roadmap capability.
+**Next actions, in order.** (1) Commit the consolidated repair. (2) Because the P1 repair changes
+the candidate-ranking approach and bounded-work contract, run the one required final comprehensive
+review; if clean, do not repeat it. (3) Run exact-head preflight including the topology-selected
+fresh `make ci`, publish, and merge. (4) Refresh `main` and continue the next eligible roadmap
+capability.
 
 ## Merged checkpoint: GCC14-FP-CONTRACT-PORTABILITY (2026-08-28)
 

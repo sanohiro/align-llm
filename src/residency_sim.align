@@ -16,6 +16,7 @@ MAX_ID_BYTES := 256
 MAX_BYTES := 1125899906842624
 MAX_COST_INPUT := 1000000000000
 MAX_WEIGHT := 1000000
+MAX_PREFETCH_SCAN_WORK := 100000000
 
 Hardware {
   name: str,
@@ -197,6 +198,70 @@ fn same_group(borrow left: DemandRow, borrow right: DemandRow) -> bool {
   return left.graph == right.graph && left.layer == right.layer && left.token == right.token
 }
 
+fn demand_expert_before(borrow left: DemandRow, borrow right: DemandRow) -> bool {
+  if left.graph != right.graph { return left.graph < right.graph }
+  if left.layer != right.layer { return left.layer < right.layer }
+  if left.token != right.token { return left.token < right.token }
+  return left.expert < right.expert
+}
+
+// Duplicate-expert validation precedes observation-order validation. Sorting row ordinals by the
+// duplicate key makes that precedence independent of the input order without an O(demands^2)
+// adversarial path. The merge is stable and bounded by the already-checked demand cap.
+fn demand_expert_order(borrow demands: array<DemandRow>) -> array<i64> {
+  n := demands.len()
+  mut source := filled_table(n, 0)
+  mut target := filled_table(n, 0)
+  mut at := 0
+  loop {
+    if at >= n { break }
+    source[at] = at
+    at = at + 1
+  }
+  mut width := 1
+  loop {
+    if width >= n { break }
+    mut lo := 0
+    loop {
+      if lo >= n { break }
+      mid := if lo + width < n { lo + width } else { n }
+      hi := if lo + width + width < n { lo + width + width } else { n }
+      mut left := lo
+      mut right := mid
+      mut out := lo
+      loop {
+        if out >= hi { break }
+        take_left := if left >= mid {
+          false
+        } else if right >= hi {
+          true
+        } else {
+          right_row := demands[source[right]]
+          left_row := demands[source[left]]
+          !demand_expert_before(right_row, left_row)
+        }
+        if take_left {
+          target[out] = source[left]
+          left = left + 1
+        } else {
+          target[out] = source[right]
+          right = right + 1
+        }
+        out = out + 1
+      }
+      lo = hi
+    }
+    mut copy := 0
+    loop {
+      if copy >= n { break }
+      source[copy] = target[copy]
+      copy = copy + 1
+    }
+    width = width * 2
+  }
+  return source
+}
+
 fn find_block(borrow blocks: array<BlockRow>, layer: i64, expert: i64) -> i64 {
   mut low := 0
   mut high := blocks.len()
@@ -278,6 +343,15 @@ fn validate_task(borrow task: ResidencyTask) -> Validation {
   weight_total := h.score_recency_weight + h.score_frequency_weight
     + h.score_impact_weight + h.score_layer_weight
   if weight_total <= 0 { return invalid("R3_HARDWARE", "hardware.score_weights") }
+  demand_block_work := task.demands.len().checked_mul(task.blocks.len()) else {
+    return invalid("R3_HARDWARE", "hardware.prefetch_work")
+  }
+  prefetch_scan_work := demand_block_work.checked_mul(h.prefetch_count) else {
+    return invalid("R3_HARDWARE", "hardware.prefetch_work")
+  }
+  if prefetch_scan_work > MAX_PREFETCH_SCAN_WORK {
+    return invalid("R3_HARDWARE", "hardware.prefetch_work")
+  }
 
   mut at := 0
   loop {
@@ -315,17 +389,21 @@ fn validate_task(borrow task: ResidencyTask) -> Validation {
       detail_view: str := detail
       return invalid("R3_DEMAND", detail_view)
     }
-    mut prior := at
-    loop {
-      if prior <= 0 { break }
-      prior = prior - 1
-      prior_row := task.demands[prior]
-      if !same_group(prior_row, row) { break }
-      if prior_row.expert == row.expert {
-        detail := row_detail("demands", at)
-        detail_view: str := detail
-        return invalid("R3_DEMAND", detail_view)
-      }
+    at = at + 1
+  }
+
+  expert_order := demand_expert_order(task.demands)
+  at = 1
+  loop {
+    if at >= expert_order.len() { break }
+    prior_ordinal := expert_order[at - 1]
+    ordinal := expert_order[at]
+    prior_row := task.demands[prior_ordinal]
+    row := task.demands[ordinal]
+    if same_group(prior_row, row) && prior_row.expert == row.expert {
+      detail := row_detail("demands", ordinal)
+      detail_view: str := detail
+      return invalid("R3_DEMAND", detail_view)
     }
     at = at + 1
   }
@@ -553,6 +631,91 @@ fn per_mille(numerator: i64, denominator: i64) -> i64 {
   return numerator * 1000 / denominator
 }
 
+fn prefetch_candidate_before(
+  left: i64,
+  right: i64,
+  policy: i64,
+  borrow frequency: array<i64>,
+  borrow transfer_cost: array<i64>,
+) -> Result<bool, Error> {
+  left_score := if policy == 4 {
+    frequency[left]
+  } else {
+    mul_checked(frequency[left], transfer_cost[left])?
+  }
+  right_score := if policy == 4 {
+    frequency[right]
+  } else {
+    mul_checked(frequency[right], transfer_cost[right])?
+  }
+  return Ok(left_score > right_score || (left_score == right_score && left < right))
+}
+
+// Freeze the boundary's eligible set and rank it once. This preserves the declared historical
+// score and lower-block tie order while preventing prefetch_count full-table scans at every group.
+fn ranked_prefetch_candidates(
+  policy: i64,
+  target_layer: i64,
+  borrow task: ResidencyTask,
+  borrow resident: array<i64>,
+  borrow frequency: array<i64>,
+  borrow transfer_cost: array<i64>,
+) -> Result<array<i64>, Error> {
+  mut eligible: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= task.blocks.len() { break }
+    if task.blocks[at].layer == target_layer && frequency[at] > 0 && resident[at] == 0
+      && task.blocks[at].bytes <= task.hardware.cache_capacity_bytes {
+      eligible.push(at)
+    }
+    at = at + 1
+  }
+  mut source := eligible.build()
+  n := source.len()
+  mut target := filled_table(n, 0)
+  mut width := 1
+  loop {
+    if width >= n { break }
+    mut lo := 0
+    loop {
+      if lo >= n { break }
+      mid := if lo + width < n { lo + width } else { n }
+      hi := if lo + width + width < n { lo + width + width } else { n }
+      mut left := lo
+      mut right := mid
+      mut out := lo
+      loop {
+        if out >= hi { break }
+        take_left := if left >= mid {
+          false
+        } else if right >= hi {
+          true
+        } else {
+          prefetch_candidate_before(source[left], source[right], policy, frequency, transfer_cost)?
+        }
+        if take_left {
+          target[out] = source[left]
+          left = left + 1
+        } else {
+          target[out] = source[right]
+          right = right + 1
+        }
+        out = out + 1
+      }
+      lo = hi
+    }
+    mut copy := 0
+    loop {
+      if copy >= n { break }
+      source[copy] = target[copy]
+      copy = copy + 1
+    }
+    width = width * 2
+  }
+  return Ok(source)
+}
+
 fn simulate_policy(
   policy: i64,
   borrow task: ResidencyTask,
@@ -566,7 +729,6 @@ fn simulate_policy(
   mut last_access := filled_table(count, -1)
   mut last_hit := filled_table(count, -1)
   mut frequency := filled_table(count, 0)
-  mut selected_epoch := filled_table(count, -1)
   mut resident_bytes := 0
   mut peak_resident_bytes := 0
   mut hit_count := 0
@@ -584,7 +746,6 @@ fn simulate_policy(
   mut prefill_hit_count := 0
   mut decode_demand_count := 0
   mut decode_hit_count := 0
-  mut group_epoch := 0
   mut at := 0
   loop {
     if at >= task.demands.len() { break }
@@ -647,32 +808,12 @@ fn simulate_policy(
     }
     if (policy == 4 || policy == 5) && group_done && at + 1 < task.demands.len() {
       target_layer := task.demands[at + 1].layer
+      ranked := ranked_prefetch_candidates(policy, target_layer, task, resident, frequency,
+        transfer_cost)?
       mut prefetched_now := 0
       loop {
-        if prefetched_now >= task.hardware.prefetch_count { break }
-        mut candidate := -1
-        mut candidate_score := 0
-        mut block_at := 0
-        loop {
-          if block_at >= task.blocks.len() { break }
-          eligible := task.blocks[block_at].layer == target_layer && frequency[block_at] > 0
-            && resident[block_at] == 0 && selected_epoch[block_at] != group_epoch
-            && task.blocks[block_at].bytes <= task.hardware.cache_capacity_bytes
-          if eligible {
-            score := if policy == 4 {
-              frequency[block_at]
-            } else {
-              mul_checked(frequency[block_at], transfer_cost[block_at])?
-            }
-            if candidate < 0 || score > candidate_score {
-              candidate = block_at
-              candidate_score = score
-            }
-          }
-          block_at = block_at + 1
-        }
-        if candidate < 0 { break }
-        selected_epoch[candidate] = group_epoch
+        if prefetched_now >= task.hardware.prefetch_count || prefetched_now >= ranked.len() { break }
+        candidate := ranked[prefetched_now]
         candidate_bytes := task.blocks[candidate].bytes
         room := make_room(0, at, candidate_bytes, task, transfer_cost, resident, prefetched,
           last_access, frequency, last_hit, maximum_transfer, resident_bytes, eviction_count,
@@ -691,7 +832,6 @@ fn simulate_policy(
         if resident_bytes > peak_resident_bytes { peak_resident_bytes = resident_bytes }
         prefetched_now = prefetched_now + 1
       }
-      group_epoch = group_epoch + 1
     }
     at = at + 1
   }

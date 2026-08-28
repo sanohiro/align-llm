@@ -762,7 +762,12 @@ fn residency_sim_demo(args: array<str>) -> Result<(), Error> {
   if args.len() == 3 {
     print(document_view)
   } else {
-    fs.write_file(args[3], document_view)?
+    output := builder()
+    output.write(document_view)
+    output.write("\n")
+    output_text := output.to_string()
+    output_view: str := output_text
+    fs.write_file(args[3], output_view)?
     print("residency simulation:")
     print("status:")
     match simulated.status {
