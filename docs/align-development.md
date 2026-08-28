@@ -709,6 +709,8 @@ identities plus the platform-local instrument digest.
 
 The cache root is `ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT/r2c-v2` when explicitly set, otherwise
 `$XDG_CACHE_HOME/align-llm/llama.cpp/r2c-v2` or `$HOME/.cache/align-llm/llama.cpp/r2c-v2`.
+The resolved generation path must be outside the align-llm checkout; lexical containment and a
+cache path that reaches the checkout through a symlink are both refused before any write.
 `ALIGN_LLM_LLAMA_REPOSITORY` overrides the public upstream URL for an offline/local source, `CMAKE`
 selects one CMake command, and `CMAKE_BUILD_PARALLEL_LEVEL` controls build scheduling. Unsafe,
 relative, whitespace-containing, or semantically drifted inputs fail; no ambient llama.cpp checkout
@@ -751,8 +753,10 @@ transcript per prompt from a checked-in corpus, derives one `R2_ACTIVATION_TRACE
 with `main --expert-trace`, deletes the transcript, and pools every document into one verdict. The
 numbers it produced, and every caveat they carry, are recorded in `docs/specs/r2a-expert-trace.md`
 section 8; that section is authoritative for the result and this one for how to run it.
-The runner passes explicit `-n 0`, so the R2c instrument cannot turn this historical prefill gate
-into a decode workload.
+The runner passes explicit `-n 0`, so positive-`-n` decode cannot enter this historical prefill
+gate. It also requires the original compact first/last-three router-slot form: selecting the R2c
+full-axis instrument is a controlled measurement failure, not a silent change from six to eight
+observed slots. Use `run-r2c-instrument-qualification` for R2c full-axis/decode evidence.
 
 ```sh
 ALIGN_LLM_GGUF_MODEL=/path/to/moe-model.gguf \
@@ -881,8 +885,9 @@ corpus: it captures one prefill transcript per prompt with the flags and safegua
 `scripts/run-expert-locality-gate` established, derives one `R2_ACTIVATION_TRACE` per transcript with
 `main --expert-trace`, deletes each transcript immediately, derives the `R1_MODEL_IR` once with
 `main --model-ir`, and runs `main --simulate-residency` over the result.
-The shared capture flags include explicit `-n 0`; selecting the R2c instrument therefore preserves
-the measured prefill-only demand stream.
+The shared capture flags include explicit `-n 0`, and the wrapper reuses R2's historical
+compact-axis admission before simulation. An R2c full-axis document is therefore refused rather
+than changing the measured six-slot demand stream under the old R3 capability name.
 
 ```sh
 ALIGN_LLM_GGUF_MODEL=/path/to/moe-model.gguf \

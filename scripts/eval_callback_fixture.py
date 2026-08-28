@@ -684,6 +684,18 @@ def main():
                 block.full_axes = frozenset()
     emit(cases, root, "r2c-mixed-print-form", render([mixed_graph]),
          expect="error", code="R2_ROW_COUNT")
+    mixed_axis2_graph = moe_graph(2, 5, Router(53, 64, 8), 0, full_topk=True)
+    topk_seen = 0
+    for block in mixed_axis2_graph:
+        if family_of(block.name)[0] == "ffn_moe_topk":
+            block.ne[2] = 8
+            topk_seen += 1
+            if topk_seen == 2:
+                # Slots and tokens stay full in both blocks. Only axis 2 changes from eight slices
+                # to the compact first/last three, so this case cannot be caught by their owners.
+                block.full_axes = frozenset((0, 1))
+    emit(cases, root, "r2c-mixed-axis2-print-form", render([mixed_axis2_graph]),
+         expect="error", code="R2_ROW_COUNT")
     non_router_full = [[Block(
         "embd", "f32", "GET_ROWS", ("token_embd.weight", [8, 64, 1, 1]), None,
         [8, 1, 1, 1], full_axes=(0,))]]

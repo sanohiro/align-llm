@@ -11,53 +11,65 @@ The next eligible roadmap dependency is decision (c): source-build llama.cpp at 
 R6 and therefore R7-R9. R5 microbenchmark C remains independently blocked on Align Request 41.
 
 **Current checkpoint.** The triggered design ledger is `docs/specs/r2c-decode-instrument.md`
-(`d8e4818`); the reviewed implementation head is `5f1eb3e` and the consolidated review repair is the
-current branch tip. `.llama-revision` and the 2,170-byte patch pin the external source and two-file
-diff. The `r2c-v2` managed builder has completed a fresh CPU build with Metal and llama/ggml shared
-libraries disabled, verified build 10566 / commit `bb4caa7`, and emitted a schema-1 attestation.
-The patch preserves the omitted/nonpositive `-n`
-one-prefill behavior, emits up to `-n` one-token decode graphs with common sampling and EOG stop,
-and prints every `ffn_moe_topk` axis while leaving all other debug tensors at three-plus-three.
+(`d8e4818`); the reviewed implementation head is `5f1eb3e`, the first consolidated review repair is
+`46432de`, and the final review's three accepted findings are repaired in the current branch tip.
+`.llama-revision` and the 2,170-byte patch pin the external source and
+two-file diff. The `r2c-v2` managed builder has completed a fresh CPU build with Metal and
+llama/ggml shared libraries disabled, verified build 10566 / commit `bb4caa7`, and emitted a
+schema-1 attestation. The patch preserves the omitted/nonpositive `-n` one-prefill behavior, emits
+up to `-n` one-token decode graphs with common sampling and EOG stop, and prints every
+`ffn_moe_topk` axis while leaving all other debug tensors at three-plus-three.
 
 The source-to-client check found and corrected one pre-existing R2A contradiction: prose said a
 full-axis R2c transcript needed no parser change, but `src/expert_trace.align` accepted exactly six
 values whenever an extent exceeded six and derived truncation flags from extent. Schema 1 now
 admits exact compact or full forms based on the ellipsis actually observed. Existing compact
-documents remain unchanged; the independent generator now owns full slot/token success and seven
-malformed/mixed/non-router refusals. `make check`, `scripts/run-r2c-instrument-smoke` (50 contract
-groups), and `scripts/run-expert-trace-smoke` (107 fixtures, 17 error codes) pass. The compiled dense
+documents remain unchanged; the independent generator now owns full slot/token success and eight
+malformed/mixed/non-router refusals. `make check`, `scripts/run-r2c-instrument-smoke` (54 contract
+groups), and `scripts/run-expert-trace-smoke` (108 fixtures, 17 error codes) pass. The compiled dense
 qualification passes through the product parser: omitted, zero, and negative `-n` each produce one
 prefill graph, while `-n 2` produces one prefill plus two decode graphs. The real OLMoE half also
 passes: three graphs including decode, 48 full-width groups, 384 selections, and full-axis extent
 eight. Independent parity reports 16 layers, 64 experts, top-8, 488 retained selections, and the
 known token-reduced final layer. No model or transcript is committed.
 
-**Review envelope.** Host-native Codex (`gpt-5.6-sol`, xhigh) reviewed
+**Review envelope.** Host-native Codex (`gpt-5.6-sol`, xhigh) first reviewed
 `5f1eb3e7614a8a8e1cfd4ee13e8b31db3b8c26a8` against base tip and merge base
 `1b11245cee98bf3bba8ab874683206b4243d1761`. Verdict: four valid findings — two P1 and two P2 — all
-accepted, none rejected. The repair compares staged and unstaged tracked source to `HEAD`; disables
+accepted, none rejected. That repair compares staged and unstaged tracked source to `HEAD`; disables
 Metal and advances the cache recipe to `r2c-v2`; requires an applicable router extent above six;
 and downloads the tiny model to a hash-validated temporary sibling before atomic rename. The same
 pass corrected the remaining compact-only normative prose in R2A. Deterministic owners and fresh
-dense/MoE materialization pass after repair. Because the Metal/generation repair changes platform
-behavior, one final comprehensive repair review remains required before publication.
+dense/MoE materialization pass after repair.
+
+The required final comprehensive review covered `46432ded7e8d60d8bca4f4d33fdc80a252099aae`
+against the same base tip and merge base. It found three further valid findings, all accepted and
+none rejected: R2/R3 historical replays still changed from six to eight observed slots under the
+R2c instrument; explicit/XDG/HOME cache roots could resolve inside the checkout; and router axis 2
+could change compact/full print form between groups or blocks. The final repair makes historical
+gates share an exact compact-axis admission check, rejects lexical and symlink-mediated checkout
+cache containment, and settles the axis-2 form across every applicable group/block with a new
+`R2_ROW_COUNT` fixture. The repair is limited to those recorded findings and their plan/owner
+evidence, so the workflow requires repair-delta inspection and affected owner verification rather
+than a third comprehensive review. Both are complete.
 
 **Candidate contents.** The pin, patch, managed builder, deterministic smoke, focused qualification,
 R2A parser/source oracle changes, R2A specification correction, roadmap and developer-guide
 changes, and this handoff update belong to this capability. `Makefile` and aggregate topology are
 intentionally unchanged, so the canonical coding baseline artifact set is unchanged.
 
-**Next actions, in order.** Commit the consolidated repair; run the final comprehensive repair
-review and disposition any finding; run exact-head preflight; publish, merge, refresh `main`, and
-begin R6's workload/TTFT contract.
+**Next actions, in order.** Run exact-head preflight, publish the English pull request with both
+review envelopes and finding dispositions, monitor required checks, and merge. Per the user's stop
+point, do not begin R6 after this PR; after merge, refresh `main`, record no active work, and stop.
 
 **Latest durable verification.** On WSL2 x86_64 with GNU 14.2.0 and the managed Align
 `3a34febe` toolchain:
 
 ```text
-scripts/run-r2c-instrument-smoke                         PASS, 50 contract groups
-make expert-trace-smoke                                  PASS, 107 fixtures / 17 error codes
+scripts/run-r2c-instrument-smoke                         PASS, 54 contract groups
+make expert-trace-smoke                                  PASS, 108 fixtures / 17 error codes
 make residency-sim-smoke                                 PASS, oracle and admission owners
+make check                                               PASS, 31 units per-unit
 scripts/run-r2c-instrument-qualification                 dense PASS; MoE PASS
 scripts/run-expert-trace-parity                          MoE PASS; model read-only proof PASS
 scripts/llama-eval-callback-toolchain verify             bb4caa7540188872173c44d161602d9271386413

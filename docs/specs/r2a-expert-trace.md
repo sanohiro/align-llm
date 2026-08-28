@@ -299,7 +299,9 @@ so the `ne <= 6` branch on axis 0 is an **inference from the single shared loop 
 truncation. For that node family, the schema-1 parser now admits either the compact form above or
 exactly `ne` values with no marker on axes 0, 1, and 2; every other node retains the compact form. It
 derives indices and truncation fields from the accepted marker, not from extent alone. Existing
-build-10566 transcripts retain byte-identical documents; the full form is specified by
+build-10566 transcripts retain byte-identical documents. Slot form is consistent across the
+transcript, token form across applicable non-reduced blocks in one graph, and axis-2 slice form
+across every applicable group and block; the full form is specified by
 [`r2c-decode-instrument.md`](r2c-decode-instrument.md) section 2.3.
 
 **Finding 7 — build 10566's `llama-eval-callback` performs exactly one graph evaluation per
@@ -734,7 +736,7 @@ at all; every later step produces a `status: "error"` document and then maps to
 | `R2_GRAPH_LIMIT` | Graph count would exceed `MAX_GRAPHS` | 8 | `MAX_GRAPHS` |
 | `R2_NODE_LIMIT` | One graph's node count would exceed `MAX_NODES_PER_GRAPH` | 8 | the graph ordinal |
 | `R2_LAYER_INDEX` | A `-N` suffix parses to a value outside `[0, MAX_LAYERS)` | 7 | the node name |
-| `R2_ROW_COUNT` | Axis 3 is not exactly `ne3`; an axis 0-2 count/marker does not match the compact three-plus-three form; or an `ffn_moe_topk` axis does not match either that exact compact form or exactly its full extent with no marker | 9 | the node name |
+| `R2_ROW_COUNT` | Axis 3 is not exactly `ne3`; an axis 0-2 count/marker does not match the compact three-plus-three form; an `ffn_moe_topk` axis does not match either that exact compact form or exactly its full extent with no marker; or the applicable slot, token, or axis-2 slice form changes within its scope | 9 | the node name |
 | `R2_TOKEN_COUNT` | `n_tokens` outside `[1, MAX_TOKENS_PER_GRAPH]`, or `embd` and an `ffn_moe_topk` in one graph disagree on it | 8, 11 | the node name |
 | `R2_EXPERT_ID_NOT_INTEGRAL` | An `ffn_moe_topk` element is not `<digits>.<zeros>` — a non-zero fraction, a sign, `nan`, or `inf` | 10 | the escaped element text |
 | `R2_EXPERT_BOUNDS` | `n_expert_used` outside `[1, MAX_EXPERTS_USED]`; `n_expert` outside `[1, MAX_EXPERTS]`; an expert id outside `[0, n_expert)`, or outside `[0, MAX_EXPERTS)` when `n_expert` is unknown | 10 | the node name |
@@ -871,7 +873,7 @@ transcript exists. Marking them is the section 1.4 honesty requirement made mech
 | Failure — precedence | A transcript with two defects reports the earlier row | ordered guards | `precedence-line-then-header`, `precedence-header-then-rowcount` |
 | Failure — grammar drift | A header with a changed field width, a missing `}`, or an unknown op shape is `R2_HEADER_GRAMMAR`, never partially parsed | `parse_header` | `grammar-drift`: five mutations of a real header line |
 | Failure — value drift | A stray line inside a value block is `R2_VALUE_GRAMMAR`; the same line outside one is skipped | `scan_block` | `value-drift-inside`, `value-drift-outside` |
-| Failure — row count | A compact/full axis with a short, long, misplaced-marker, mixed-form, or non-router-full shape is `R2_ROW_COUNT` | step 9 | `rowcount-mismatch` plus R2c's seven malformed/mixed/non-router cases |
+| Failure — row count | A compact/full axis with a short, long, misplaced-marker, mixed-form, or non-router-full shape is `R2_ROW_COUNT` | step 9 | `rowcount-mismatch` plus R2c's eight malformed/mixed/non-router cases, including mixed axis-2 form across blocks |
 | Failure — expert bounds | An id `>= n_expert`, a negative id, `nan`, and a non-zero fraction each fire their row | step 10 | `expert-out-of-range`, `expert-negative`, `expert-nan`, `expert-fraction` |
 | Failure — MoE inconsistency | Two layers disagreeing on `n_expert_used` is `R2_MOE_INCONSISTENT` | step 11 | `moe-inconsistent-layers`, `moe-inconsistent-graphs` |
 | Failure — limits | Graph, node, and selection limits each fire against lowered debug constants | ordered guards | `graph-limit`, `node-limit`, `selection-limit` |
@@ -947,7 +949,7 @@ document. Six families:
    `n_tokens <= 6` and `4` when `n_tokens > 6`.
 4. **R2c full axes.** Eight-slot/eight-token single- and multi-graph transcripts whose independent
    oracle expects direct indices, false truncation fields, and every selection, plus short, long,
-   misplaced-marker, mixed compact/full, and non-router-full refusals.
+   misplaced-marker, mixed compact/full slot or axis-2 form, and non-router-full refusals.
 5. **Malformed.** One fixture per row of section 2.6's table, each defective in exactly one way, plus
    the two precedence fixtures defective in two ordered ways.
 6. **Huge line.** A single 200,000-byte line, both as the first line and as a line after 500 valid

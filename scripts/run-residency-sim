@@ -220,6 +220,27 @@ for prompt in "${selected[@]}"; do
 done
 end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
 
+# R3's recorded verdict is over the historical compact first/last-three router-slot sample. R2c's
+# full-axis instrument changes that demand stream even with decode disabled, so reuse the locality
+# gate's exact admission rule and fail before the simulator can publish a different verdict under
+# the old capability name.
+python3 - "$root_dir/scripts" "$temp_dir/documents" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from expert_locality_gate import GateError, require_compact_router_axes
+
+paths = sorted(Path(sys.argv[2]).glob("*.json"))
+documents = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+try:
+    require_compact_router_axes(documents, [path.stem for path in paths])
+except GateError as error:
+    raise SystemExit("residency sim qualification: historical compact-axis admission failed: %s"
+                     % error)
+PY
+
 after=$(python3 - "$model" <<'PY'
 import os, sys
 info = os.stat(sys.argv[1])

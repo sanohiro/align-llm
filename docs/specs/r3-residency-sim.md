@@ -900,9 +900,10 @@ identity, the instrument version block, and the whole verdict, and it exits 0 on
 three `result` values because all three are answers to the roadmap gate. It exits nonzero only when
 the instrument, the corpus, or a parser prevented a measurement.
 
-R2c makes positive `-n` values emit decode graphs. The runner therefore uses explicit `-n 0` so a
-pinned R2c instrument does not silently change this already-recorded prefill-only gate or its demand
-stream; R2c's own qualification owns decode capture.
+R2c makes positive `-n` values emit decode graphs. The runner therefore uses explicit `-n 0` and,
+after conversion, requires R2's original compact first/last-three router-slot form. A pinned R2c
+full-axis instrument is a controlled qualification failure rather than a silent change to this
+already-recorded six-slot demand stream; R2c's own qualification owns decode and full-axis capture.
 
 ### 4.4 What is not run
 

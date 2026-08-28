@@ -119,6 +119,10 @@ def patch_contract() -> None:
         runner = (ROOT / relative).read_text(encoding="utf-8")
         if ' -n 0 -t 4 ' not in runner or ' -n 1 -t 4 ' in runner:
             raise SmokeFailure(f"{relative} does not preserve its prefill-only capture")
+        if relative.endswith("run-expert-locality-gate") and "aggregate(documents, labels)" not in runner:
+            raise SmokeFailure(f"{relative} bypasses compact-axis admission in aggregate")
+        if relative.endswith("run-residency-sim") and "require_compact_router_axes" not in runner:
+            raise SmokeFailure(f"{relative} does not enforce historical compact router axes")
 
 
 def identity_refusals() -> None:
@@ -156,6 +160,24 @@ def cache_contract() -> None:
         raise SmokeFailure("wrong source path")
     if tool.selected_path(entry, "instrument") != entry / tool.INSTRUMENT:
         raise SmokeFailure("wrong instrument path")
+    with tempfile.TemporaryDirectory(prefix="r2c-cache-boundary-") as temporary:
+        boundary = Path(temporary)
+        project = boundary / "checkout"
+        project.mkdir()
+        outside = boundary / "outside"
+        outside.mkdir()
+        linked_checkout = outside / "checkout-link"
+        linked_checkout.symlink_to(project, target_is_directory=True)
+        with mock.patch.object(tool, "PROJECT", project):
+            for name, environment in (
+                ("explicit-in-checkout", {"ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT": str(project / "cache")}),
+                ("xdg-in-checkout", {"XDG_CACHE_HOME": str(project / "cache")}),
+                ("home-in-checkout", {"HOME": str(project / "home")}),
+                ("symlink-into-checkout",
+                 {"ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT": str(linked_checkout / "cache")}),
+            ):
+                expect_tool_error(name, lambda environment=environment: tool.cache_root(environment),
+                                  "outside the align-llm checkout")
 
 
 def cmake_contract() -> None:

@@ -626,13 +626,15 @@ if inspect_still_works.returncode == 0:
 # instrument. `scripts/expert_locality_gate.py` is the same module `scripts/run-expert-locality-gate`
 # imports; only its input differs.
 sys.path.insert(0, str(root_dir / "scripts"))
-from expert_locality_gate import GateError, aggregate
+from expert_locality_gate import GateError, aggregate, require_compact_router_axes
 
 gate_inputs = {}
 for name, document in documents.items():
     if document["status"] != "ok" or not document["moe"]["present"]:
         continue
     if document["locality"]["adjacent_pair_count"] <= 0:
+        continue
+    if document["moe"]["n_expert_used"] > 6 and document["moe"]["slots_truncated"] is not True:
         continue
     shape = (document["moe"]["n_expert"], document["moe"]["n_expert_used"])
     gate_inputs.setdefault(shape, []).append((name, document))
@@ -689,7 +691,9 @@ def built_document(shares, n_expert=GATE_N_EXPERT, used=GATE_N_EXPERT_USED, slot
                     cursor += 1
                     if candidate not in previous and candidate not in chosen:
                         chosen.append(candidate)
-            for slot, expert in enumerate(chosen):
+            slot_indices = (list(range(used)) if slots == used or used <= 6 else
+                            [0, 1, 2, used - 3, used - 2, used - 1])
+            for slot, expert in zip(slot_indices, chosen):
                 selections.append({"graph": 0, "layer": layer, "token": token,
                                    "slot": slot, "expert": expert})
             groups[(layer, token)] = chosen
@@ -740,6 +744,18 @@ def gate_case(label, documents, **expected):
                     result["cluster_low_per_mille"], result["cluster_count"],
                     result["design_effect_per_mille"]))
     return result
+
+
+# The historical gate's denominator is six printed slots. A schema-1 full-axis R2c document is
+# valid parser output but is not valid input to that already-recorded measurement.
+full_axis_document = built_document([[8] * 5] * 4, slots=8)
+try:
+    require_compact_router_axes([full_axis_document], ["full-axis"])
+except GateError as error:
+    if "compact router axes" not in str(error):
+        fail("locality-gate-aggregator: full-axis refusal has the wrong diagnostic %r" % error)
+else:
+    fail("locality-gate-aggregator: a full-axis R2c document entered the historical gate")
 
 
 # The two nulls are constants of the router shape, not of the corpus, and the verdict is judged

@@ -78,8 +78,11 @@ model, prompt, seed, and expected graph count. The instrument emits no new delim
 
 The already-recorded R2 locality and R3 residency gates are intentionally prefill-only. Their
 runners used `-n 1` only because the unpatched example ignored it; both now pass explicit `-n 0` so
-selecting the R2c instrument cannot retroactively add decode demand or change either historical
-verdict. `run-r2c-instrument-qualification` is the owner of positive-`-n` capture.
+decode cannot enter those replays. Their recorded denominator is also the unpatched compact
+first/last-three router-slot sample, so both share a document admission check that rejects R2c's
+full-axis output instead of silently recomputing an old verdict over eight slots. Historical replay
+therefore requires an unpatched compact-axis instrument. `run-r2c-instrument-qualification` is the
+owner of positive-`-n` and full-axis capture.
 
 ### 2.3 R2A parser adoption
 
@@ -92,9 +95,10 @@ forms. Every other tensor retains the compact build-10566 grammar:
 
 An extent of six or less has only the full form. A full axis above six on a non-router tensor, an
 ellipsis anywhere except after the first three values, a compact form with other than six values, a
-full form with other than `extent` values, or mixed compact/full routing rows for the same
-applicable graph axis remains `R2_ROW_COUNT`. Axis 3 is unchanged because build 10566 never
-truncates it.
+full form with other than `extent` values, or mixed compact/full routing rows remains
+`R2_ROW_COUNT`. Slot form is consistent across the transcript, token form across the applicable
+non-reduced blocks of one graph, and axis-2 slice form across every applicable group and block.
+Axis 3 is unchanged because build 10566 never truncates it.
 
 Before an ellipsis, a row ordinal is its axis index. After an ellipsis, the existing three-plus-three
 mapping applies. With no ellipsis, every ordinal is its exact index. This rule applies independently
@@ -139,9 +143,9 @@ differ by platform/compiler, so no cross-platform binary digest is promised.
 
 | Input | Default | Validation and meaning |
 | --- | --- | --- |
-| `ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT` | unset | Absolute cache base; non-empty, no whitespace/NUL. When set, generation is appended |
-| `XDG_CACHE_HOME` | unset | If the explicit root is unset, absolute base for `align-llm/llama.cpp`; same lexical rule |
-| `HOME` | process environment | Last fallback, producing `$HOME/.cache/align-llm/llama.cpp`; absence or unsafe value fails |
+| `ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT` | unset | Absolute cache base; non-empty, no whitespace/NUL. When set, generation is appended. The resolved result must be outside this checkout |
+| `XDG_CACHE_HOME` | unset | If the explicit root is unset, absolute base for `align-llm/llama.cpp`; same lexical and resolved checkout-containment rules |
+| `HOME` | process environment | Last fallback, producing `$HOME/.cache/align-llm/llama.cpp`; absence, unsafe value, or a resolved result inside this checkout fails |
 | `ALIGN_LLM_LLAMA_REPOSITORY` | `https://github.com/ggml-org/llama.cpp.git` | Fetch source; one non-empty argument with no whitespace/NUL. A local repository path is allowed for reproducible offline materialization |
 | `CMAKE` | `cmake` | One command path/name with no whitespace/NUL |
 | `CMAKE_BUILD_PARALLEL_LEVEL` | CMake default | Passed through by CMake; affects build scheduling, not cache identity or semantics |
@@ -170,7 +174,9 @@ are not asserted portable.
 
 ### 2.6 Ownership, allocation, and cleanup
 
-The selected cache base owns one `r2c-v2` directory. Under it, one advisory lock file per effective
+The selected cache base resolves to one `r2c-v2` directory outside the align-llm checkout; lexical
+or symlink-mediated containment is refused before a path is returned or any write occurs. Under it,
+one advisory lock file per effective
 identity serializes creators. A completed entry owns sibling `source/` and `build/` directories;
 the executable is `build/bin/llama-eval-callback` (with `.exe` on Windows, although Windows is not a
 qualified platform in this capability). The tool never writes inside align-llm.
@@ -216,7 +222,7 @@ subprocess answers, and owns:
 - exact pin and patch digest/size/scope;
 - cache identity, path derivation, and the exact CMake recipe;
 - CLI arity and kind refusal;
-- absolute/safe cache and repository inputs;
+- absolute/safe cache and repository inputs, including checkout containment through symlinks;
 - exact entry validation order and each refusal class;
 - attestation fields and file digests;
 - existing-entry reuse, atomic staging publication, collision refusal, and cleanup after each
@@ -224,11 +230,12 @@ subprocess answers, and owns:
 - patch semantics by checking the external diff contains the two named source files, the exact
   family guard, unchanged default limit, sampling loop, EOG stop, and one-token decode.
 
-The existing parser owner adds full-slot, full-token, mixed-form, misplaced-marker, short-full,
-overlong-full, and non-router-full fixtures. Its independent Python oracle derives indices and
-truncation flags from the fixture's selected print form rather than importing the Align
-implementation. The residency owner proves its real-capture wrapper still invokes the instrument
-with explicit `-n 0`.
+The existing parser owner adds full-slot, full-token, mixed slot/token/axis-2 form,
+misplaced-marker, short-full, overlong-full, and non-router-full fixtures. Its independent Python
+oracle derives indices and truncation flags from the fixture's selected print form rather than
+importing the Align implementation. The locality owner proves a full-axis schema-1 document is
+refused by the shared historical compact-axis admission, and the residency wrapper reuses that
+check after invoking its selected compact instrument with explicit `-n 0`.
 
 All three commands form the publication owner passed to `scripts/pre-pr`. No new target is added to the
 `Makefile` or any aggregate: the parser owner is already hosted, and R2c's fetched measurement
@@ -275,7 +282,7 @@ time is diagnostic.
 | Destination collision | never overwrite or merge; refuse and preserve both existing destination and staging cleanup rule | smoke collision case |
 | Malformed pin | refuse before cache resolution | smoke pin grammar cases |
 | Patch identity drift | refuse before cache resolution/build | smoke digest and byte-count cases |
-| Unsafe cache/repository/CMake input | refuse before subprocess launch | smoke environment cases |
+| Unsafe cache/repository/CMake input | refuse before subprocess launch, including explicit, XDG, HOME, and symlink-mediated cache roots inside this checkout | smoke environment and cache-boundary cases |
 | Symlink or non-directory boundary | refuse before Git/output inspection | smoke boundary cases |
 | Dirty or extra source | compare the whole tracked tree to `HEAD`, including staged changes, and refuse extra paths before output/version admission | smoke staged/unstaged tracked-diff and untracked cases |
 | Missing/non-regular/non-executable instrument | refuse before running version | smoke output cases |
@@ -284,12 +291,12 @@ time is diagnostic.
 | Decode success | positive `-n` produces one-token graphs until count or EOG | dense qualification fixed 3-graph result; MoE capable half |
 | Decode EOG | stop without decoding EOG; fewer than requested graphs is valid instrument behavior | smoke patch semantic assertion; fixed dense qualification avoids EOG |
 | Decode failure | upstream example returns nonzero with decode-step diagnostic | source review; N/A to input-driven qualification because no stable GGUF forces this path |
-| Historical prefill gates | R2 locality and R3 residency remain one prefill graph per prompt under the patched instrument | tool smoke exact `-n 0` source assertions; residency wrapper admission case |
+| Historical prefill gates | R2 locality and R3 residency require one prefill graph per prompt and the original compact router slots; full-axis R2c documents fail rather than changing the recorded demand stream | tool smoke exact `-n 0` and shared compact-admission source assertions; locality full-axis refusal |
 | Non-router tensor | upstream print limit remains three | smoke patch semantic assertion; dense transcript remains truncated in the ordinary way |
 | Router tensor | all axes printed, no middle slot or token omitted, with at least one applicable extent above the old six-value threshold | MoE capable qualification threshold; new R2A full-axis synthetic fixtures |
 | Compact parser input | six values plus exact ellipsis maps to first/last indices; existing document bytes do not change | complete existing expert-trace corpus |
 | Full parser input | extent values, no ellipsis, direct indices, false truncation fields | full-slot/full-token fixtures and independent expected documents |
-| Mixed/malformed parser input | misplaced marker, short/long full axis, non-router full axis, or inconsistent routing form is `R2_ROW_COUNT` | focused malformed fixtures |
+| Mixed/malformed parser input | misplaced marker, short/long full axis, non-router full axis, or inconsistent slot, token, or axis-2 routing form is `R2_ROW_COUNT` | focused malformed fixtures |
 | Transcript overflow / timeout | bounded capture fails nonzero and temporary transcript is removed | qualification implementation review; successful qualification reports both files below the bound |
 | Tiny-model download failure | partial bytes remain only below a unique temporary sibling and are removed; the final cache path stays absent and a retry can succeed | smoke interrupted-download then retry case |
 | Normal cleanup | every transcript/document temp tree removed; managed cache retained | qualification post-run assertion |

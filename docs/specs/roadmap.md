@@ -309,12 +309,16 @@ The current forward delivery order is:
     schema-1 parser to accept either the upstream three-plus-three router axes or exact full axes.
     Positive `-n` values now emit bounded one-token decode graphs while omitted/nonpositive `-n`
     retains one prefill graph; only `ffn_moe_topk` prints every slot and token. Existing R2/R3
-    measurement wrappers now pass explicit `-n 0`, preserving their historical prefill-only
-    semantics. The deterministic owner, dense qualification, and real OLMoE qualification pass;
+    measurement wrappers now pass explicit `-n 0` and reject full-axis documents, preserving their
+    historical prefill-only, compact six-slot semantics. The deterministic owner, dense
+    qualification, and real OLMoE qualification pass;
     the latter records three graphs including decode, 48 full-width groups, 384 selections, and a
     router extent of eight above the old six-value threshold. The first comprehensive review found
     four valid cache/recipe/qualification defects, all consolidated and owner-tested. Final repair
-    review, publication, and merge remain before R6 may consume the instrument.
+    review found three further valid compatibility/safety/parser defects; their consolidated repair,
+    affected owner verification, and real OLMoE requalification pass. Exact-head preflight,
+    publication, and merge remain, after which R6 may consume the instrument in a later work
+    session.
 
 ### Status (2026-08-28)
 

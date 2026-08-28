@@ -82,7 +82,20 @@ def cache_root(environment: Mapping[str, str] | None = None) -> Path:
         )
     if not base.is_absolute():
         raise ToolchainError("managed llama.cpp toolchain root must be absolute")
-    return base / GENERATION
+    try:
+        root = (base / GENERATION).resolve()
+        project = PROJECT.resolve()
+    except (OSError, RuntimeError) as error:
+        raise ToolchainError(f"cannot resolve managed llama.cpp toolchain root: {error}") from error
+    try:
+        root.relative_to(project)
+    except ValueError:
+        pass
+    else:
+        raise ToolchainError(
+            "managed llama.cpp toolchain root must be outside the align-llm checkout"
+        )
+    return root
 
 
 def identity_name(revision: str, patch_digest: str) -> str:

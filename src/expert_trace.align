@@ -985,6 +985,10 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
   // Applicable only when n_expert_used > 6: 0 is full, 1 is compact, -1 is not settled.
   mut slots_print_form := -1
   mut slots_truncated := false
+  // Applicable only to a top-k axis 2 extent above 6. The transcript has no schema field for this
+  // structural axis, so one global form prevents groups or blocks with different denominators from
+  // being accepted into one document.
+  mut slices_print_form := -1
   mut probs_experts := -1
   mut logits_experts := -1
 
@@ -1100,6 +1104,15 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
           if !axis_complete(block_slices, block_ne2, block_a2_marked, block_is_topk) {
             failure = fault("R2_ROW_COUNT", block_name.clone())
             break
+          }
+          if block_is_topk && block_ne2 > TRUNCATION_PRINTED {
+            slice_form := if block_a2_marked { 1 } else { 0 }
+            if slices_print_form < 0 {
+              slices_print_form = slice_form
+            } else if slices_print_form != slice_form {
+              failure = fault("R2_ROW_COUNT", block_name.clone())
+              break
+            }
           }
           block_state = BLOCK_OUTER
         } else {
