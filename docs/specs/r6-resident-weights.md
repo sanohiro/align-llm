@@ -1,7 +1,9 @@
 # R6-RESIDENT-WEIGHTS
 
-Status: **implemented and measured, 2026-08-29**. Branch `agent/r6-resident-weights`, stacked on
-`agent/r6-kv-persist` head `9699848`. Sections 1 to 4 and 6 to 10 are the design as it was written
+Status: **implemented and measured, 2026-08-29**. Branch `agent/r6-resident-weights`, implemented on
+`agent/r6-kv-persist` head `9699848` and then merged with that branch's review repair and its own
+merge of `main` (`bdb34eb`, carrying `main` `3df063b` = R6-STEP-N #145 and R5E-MOE-MODEL-PREFILL) by
+`git merge` — never a rebase. Sections 1 to 4 and 6 to 10 are the design as it was written
 **before** implementation and are unchanged, so that the result can be read against the prediction.
 Section 5.8 records what was built and what it measured, section 5.9 records every deviation from
 this document with its reason, and section 11 gains the corrections implementation found.
@@ -900,7 +902,7 @@ the final diff and its passing evidence, or to an explicit deferral in this plan
 | Surface, owner module | `src/decode_step.align`; `src/ggml_spike.align` byte-unchanged | `git diff --stat` shows no `src/ggml_spike.align` |
 | Operand grammar, arity | `run`'s `count > 14` bound and `resident_text := if count >= 14 { args[13] } else { "-" }` | `ds-arity-15` (no document), `ds-resident-dash` (byte-identical to the thirteen-operand form) |
 | `RESIDENT` values and `R6_RESIDENT` | `execute`'s check before `stage_inputs`, `resident_detail` | `ds-resident-unknown`, `ds-resident-empty`, `ds-resident-case`, `ds-resident-unknown-and-missing`, each asserting the exact detail |
-| Defaults; `weights.mode` in every document | `o.resident_mode` set before any refusal; `render_weights` in `render` | `record()` asserts the `weights` object on **all 109** documented cases |
+| Defaults; `weights.mode` in every document | `o.resident_mode` set before any refusal; `render_weights` in `render` | `record()` asserts the `weights` object on **all 115** documented cases |
 | Position | `args[13]`, section 5.9 deviation 5 | — |
 
 **Section 3.2 — the arena.**
@@ -925,7 +927,7 @@ legs; primary metric exact at all three `N`; floor verdict printed by the runner
 (`failures.append` when below). Evidence: section 5.8.1.
 
 **Section 3.5 — the document.** `render_weights`, `SCHEMA_VERSION := 4`, `fill_ns` normalized in
-both runners. Evidence: the golden's 109 rows; the programmatic old-versus-new diff showing only
+both runners. Evidence: the golden's 115 rows; the programmatic old-versus-new diff showing only
 `.schema_version` and `.weights` moved.
 
 **Section 3.6 — the memory ceiling.** The runner's `RESIDENT_MIN_GIB` preflight and its `N/A` line;
@@ -1098,6 +1100,8 @@ merge time and section 8's row is updated then.
 | `docs/specs/roadmap.md` | Item **30**, as section 9.1 drafted it, with the arena at 4,677,533,696 B, the operand at the fourteenth position, and the measured result and floor verdict in place of the prediction. Items 25 to 29 are unchanged; the numbering held |
 | `HANDOFF.md` | A new `## Active: R6-RESIDENT-WEIGHTS` block above the R6-KV-PERSIST one, which is left byte-unchanged so the merge from `agent/r6-kv-persist` stays clean |
 | `docs/align-development.md` | The `--decode-step` section's heading gains `, R6-RESIDENT-WEIGHTS`; the arity line becomes "twelve, thirteen, **or fourteen**"; a fourteen-operand invocation joins the synopsis; and a `RESIDENT` block records the operand, the arena, schema 4, the opt-in rule with its abort, the runner's 12 GiB preflight, and the CPU-only boundary |
+| the merge itself | `git merge agent/r6-kv-persist` (`bdb34eb`) resolved three conflicts and nothing else: `ds()` in `scripts/run-layer-forward-smoke` gained **both** sides' keyword arguments (`pack` from KV-PERSIST's identity refusals, `resident` from this capability); `docs/align-development.md`'s `--decode-step` heading took this capability's version below R5E's incoming section; and `scripts/decode-step-golden.jsonl` was **regenerated** rather than merged. `src/decode_step.align` and `src/model_forward.align` auto-merged with no conflict and compile clean |
+| `scripts/decode-step-golden.jsonl` | Regenerated with `ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE=1 gmake layer-forward-smoke`: **107 rows -> 115**, the 8 new `ds-resident-*` rows added and **no row removed**. A programmatic walk of the old and new documents confirms the only fields that moved in a pre-existing row are `.schema_version` (3 -> 4) and the new `.weights` object — exactly what section 4.5 predicted, now against KV-PERSIST's post-repair corpus rather than its pre-repair one. The other six goldens are byte-identical to the incoming branch's |
 | `docs/align-requests.md` | **Request 50** — `std.os.physical_memory` / `available_memory` — filed with every mandatory field, `Blocking: no`, and its acceptance criteria. Request 35's priority is raised to **high** with this capability recorded as its second and sharpest client and the 4.68 GB abort stated. Request 38 gains section 2.4's measured Darwin `pread` boundary and this capability as its third consumer. Requests 33, 39, and 49 are cited in section 8 as continuing clients; none changes status |
 
 ## 10. Risks

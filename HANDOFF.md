@@ -5,11 +5,14 @@ file records durable project state.
 
 ## Active: R6-RESIDENT-WEIGHTS (2026-08-29)
 
-Branch `agent/r6-resident-weights`, stacked on `agent/r6-kv-persist` head `9699848`, which is
-brought in by `git merge` — **never a rebase**. When R6-KV-PERSIST's review repair lands, this
-branch merges it and re-checks the roadmap item number, the schema number, the Align Request
-numbering, and `scripts/decode-step-golden.jsonl`. When the R6 branches land on `origin/main` it
-takes `git merge origin/main` and re-checks the same four things.
+Branch `agent/r6-resident-weights`. Implemented on `agent/r6-kv-persist` head `9699848`, then
+**merged** with that branch's review repair `1971c61` and its own `main` merge `bdb34eb` — which
+carries `main` `3df063b` (R6-STEP-N, PR #145) and R5E-MOE-MODEL-PREFILL — by `git merge`, **never a
+rebase**, so every stacked branch's recorded commits stay reachable. The four things that merge
+re-checks all held: roadmap item **30** (29 is KV-PERSIST), document schema **4** (KV-PERSIST took
+3), Align Request **50** (1–49 taken), and `scripts/decode-step-golden.jsonl` regenerated from the
+merged head. When the R6 branches land on `origin/main` this branch takes `git merge origin/main`
+and re-checks the same four.
 
 **Capability.** The whole weight set held **resident for one process's lifetime**, so that after one
 fill every decode step reads exactly zero pack bytes. Dense Qwen2.5-Coder-7B Q4_K_M, **CPU only**.
@@ -64,7 +67,7 @@ Oracle R PASS on the real model at `N = 16` with the transcript, logits blob, an
 supplied.
 
 **Goldens.** `scripts/decode-step-golden.jsonl` moves — every row to schema 4 plus a `weights`
-object, and 8 new rows, 101 becoming 109. A programmatic diff of the old and new files confirms the
+object, and 8 new rows, 107 becoming 115. A programmatic diff of the old and new files confirms the
 **only** fields that changed in a pre-existing row are `.schema_version` and `.weights`, which is
 exactly what section 4.5 predicted. `scripts/layer-forward-golden.jsonl`,
 `scripts/model-forward-golden.jsonl`, `scripts/gpu-forward-golden.jsonl`,
@@ -96,35 +99,52 @@ performance-claim row means the review must include measurement risk. (4) Publis
 throwaway that lives outside the work tree and is not committed; section 5.8 records its whole
 output.
 
-## Active: R6-KV-PERSIST (2026-08-29)
+## In review: R6-KV-PERSIST (2026-08-29)
 
 Branch `agent/r6-kv-persist`, stacked on `agent/r6-step-n`, which is merged into it at `6ca1eef`
 (the STEP-N review repair) by `git merge` — **never a rebase**, so both stacked branches' recorded
-commits stay reachable. Nothing is committed on this branch yet. When R6-DECODE-KV-STEP1 and
-R6-STEP-N land on `origin/main` this branch takes `git merge origin/main` and re-checks the roadmap
-item number, the Align Request numbering, and the `baseline-check` row.
+commits stay reachable. **Three commits and nothing uncommitted:** `9699848` is the capability,
+`1971c61` is the consolidated repair of the first comprehensive review's findings, and the head is
+the merge of `origin/main` at `3df063b` — R6-STEP-N, PR #145, which itself carries
+R6-DECODE-KV-STEP1 (PR #144) and R5E — again taken as `git merge origin/main` and never a rebase.
+Both stacked prerequisites have now landed, so the reconciliation they were waiting on is **done**:
+roadmap numbering is unchanged (27 / 28 / **29**), `docs/align-requests.md` now runs 1–49 on this
+branch so the next free number is **50** and this capability still claims none, and `Makefile` and
+`.gitattributes` moved on `main` rather than here.
 
 **Capability.** The R6 KV plane persisted to disk and reloaded in a **fresh process**, dense
-Qwen2.5-Coder-7B Q4_K_M, CPU. `docs/specs/r6-kv-persist.md` is the authoritative ledger. **Three**
-of the design gate's four triggers fire — a changed public CLI arm, a **new persisted format** plus
-a document schema bump, and a **process ownership boundary** — and the fourth fires too: the plane's
-layout stops being private to `src/decode_step.align` and becomes a published contract with an
-independent second reader.
+Qwen2.5-Coder-7B Q4_K_M, CPU. `docs/specs/r6-kv-persist.md` is the authoritative ledger. **All
+four** of the design gate's triggers fire — a changed public CLI arm, a **new persisted format**
+plus a document schema bump, a **process ownership boundary**, and a coordinated invariant across
+three or more modules: the plane's layout stops being private to `src/decode_step.align` and becomes
+a published contract with an independent second reader.
 
 **Complete.** `src/kv_plane.align` (new module: the `akvp` v1 constants, the 192-byte header, the
 192-byte identity record, non-wrapping region arithmetic, five `crypto.sha256` digests, and the
 writer; no `unsafe`, no `extern`); `--decode-step` arity 12 and 13 with `KV_SAVE`/`KV_LOAD` and the
 `-` convention; `R6_KV_ARGS` at step 2b, `R6_KV_TOO_LARGE` at 6a, `R6_KV_EXISTS` at 6b, the pack
-identity read at step 7, the save path W1–W4 after step 10, and the load path L1–L14 replacing steps
-9–10; the chunked refill through `model_forward.window_put`; document schema 3 with `plane.source`,
-the `kv` object, and `timings.first_token_ns`; `scripts/kv_plane_reader.py` (a second implementation
-written from the specification, driven as a subprocess, 13 reject kinds);
-`scripts/layer_forward_fixture.py`'s `kv_container` (a **third** implementation) plus 35 mutants and
-a non-degenerate pack source-identity record; the fifth smoke block's 49 new cases;
-`scripts/run-decode-step`'s save → separate-process load → compare leg with the determinism,
-`du`, and TTFT-proxy legs; roadmap item 29, `docs/align-development.md`, and client lines under
-Align Requests 21, 29, 30, 31, 38, 39, and 49 including **one correction to Request 31's own forward
+identity read and its degenerate-digest refusal at step 7/7b, the save path W1–W4 after step 10, and
+the load path L1–L14 replacing steps 9–10; the chunked refill through `model_forward.window_put`;
+document schema 3 with `plane.source`, the `kv` object, and `timings.first_token_ns`;
+`scripts/kv_plane_reader.py` (a second implementation written from the specification, driven as a
+subprocess, 13 reject kinds); `scripts/layer_forward_fixture.py`'s `kv_container` (a **third**
+implementation) plus 39 mutants, an honest short-prompt container, a zero-identity pack, and a
+non-degenerate pack source-identity record; the fifth smoke block's 55 new cases;
+`scripts/run-decode-step`'s save → separate-process load → compare leg with the determinism, `du`,
+and TTFT-proxy legs; roadmap item 29, `docs/align-development.md`, and client lines under Align
+Requests 21, 29, 30, 31, 38, 39, and 49 including **one correction to Request 31's own forward
 text**.
+
+**The review repair added four rules to the format, and they are contract additions rather than bug
+fixes** (spec section 11.4): the **canonical region layout** is now enforced by the arm as well as
+the reader (`R6_KV_REGION("layout")`); **inter-region padding must be zero** in the arm too
+(`R6_KV_RESERVED("padding")`, and no digest covers the gaps); `MAX_KV_PLANE_BYTES` and
+`MAX_KV_LOGITS_BYTES` are re-checked **on load** ahead of the length comparison (`R6_KV_TOO_LARGE`);
+and a **thirty-two-zero-byte pack identity** is refused rather than compared
+(`R6_KV_IDENTITY("pack_absent")`). Spec section 5.2.1 is the rule-by-rule arm-to-reader parity
+table: three asymmetries survive and all three are stated — `ZEROTAIL` by design, `pack_absent`
+because its subject is the pack, and two places where the two implementations refuse the same file
+and only the name differs.
 
 **The `Makefile` is byte-untouched** — no target, no `.PHONY` word, no build-list entry;
 `src/kv_plane.align` enters through `src/decode_step.align`'s import graph — so aggregate
@@ -135,82 +155,83 @@ membership and check topology are unchanged by construction. `src/ggml_ffi.align
 malformed file rather than from a forced compute failure, so this capability needs **no new forced
 shim build**.
 
-**Goldens.** `scripts/decode-step-golden.jsonl` moves — every row to schema 3, plus 49 new rows, 52
-becoming 101. `scripts/layer-forward-golden.jsonl`, `scripts/model-forward-golden.jsonl`,
+**Goldens.** `scripts/decode-step-golden.jsonl` moves — every row to schema 3, plus 55 new rows, 52
+becoming 107. `scripts/layer-forward-golden.jsonl`, `scripts/model-forward-golden.jsonl`,
 `scripts/gpu-forward-golden.jsonl`, `scripts/moe-layer-forward-golden.jsonl`, and
 `scripts/ggml-spike-golden.jsonl` are **byte-unchanged**, verified by regenerating all five and
 observing no diff — which is the check that the new `Outcome` fields and the fixture's new pack
 source record moved no other arm's document.
 
-**Oracle Q's exclusion list is six groups larger than the design drafted, and the reason is
+**Oracle Q's exclusion list is sixteen groups, eight more than the design drafted, and the reason is
 recorded.** The design named `kv`, `plane.source`, `plane.readback_ns`, `plane.upload_ns`, `graph`,
 `schedule`, `timings`, and `lifetime`. An empirical diff of a save-run document against a load-run
-document found six more keys that differ, every one of them a **count of work the load path
-legitimately did not do**: `pack.reader_pread_count`, `pack.reader_bytes_read`, `head.node_count`,
-`head.pread_ns`, `head.compute_ns` (the prefill's own head graph), `window.reuse_count`,
-`window.member_placements`, and the `reference` block — whose byte comparison against the source
-GGUF lives in the prefill pass, so a load run performs none of it and must not claim `IDENTICAL`
-over zero comparisons. That last one is a behaviour change in `src/decode_step.align`, not only a
-test exclusion. What stays **inside** the comparison is unchanged and is the point: `decode` in
-full, every `steps[]` object, `plane.roundtrip_*`, `output`, `oracle_logits`, `oracle_decode`,
-`model`, `selection`, and `abi`.
+document found eight more keys that differ: `pack.reader_pread_count`, `pack.reader_bytes_read`,
+`head.node_count`, `head.pread_ns`, `head.compute_ns`, `window.reuse_count`,
+`window.member_placements`, and the `reference` block. Seven are counts of work the load path did
+not do; the eighth is a **verdict** — `reference.verdict`, whose byte comparison against the source
+GGUF lives in the prefill pass, so a load run performs none of it and now publishes `"-"` rather
+than claiming `IDENTICAL` over zero comparisons. That is a public field's behaviour changing, not
+only a test exclusion, and the qualification asserts it positively on the save run. What stays
+**inside** the comparison is unchanged and is the point: `decode` in full, every `steps[]` object,
+`plane.roundtrip_*`, `output`, `oracle_logits`, `oracle_decode`, `model`, `selection`, and `abi`.
 
 **Six mutants were injected and all six die under `gmake layer-forward-smoke`**: a wrong pack
 identity accepted, the plane digest skipped, the plane read offset off by four, the logits region
 not persisted, a truncated file accepted, and the independent reader accepting a flipped reserved
-byte.
+byte. The last is the one that matters most — it fails in the reader, on a file the arm refuses
+correctly.
 
-**Verification checkpoint.** `gmake build`, `gmake check`, `gmake fmt`, `gmake format-check`,
-`git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
-`gmake layer-forward-smoke` (all five blocks; **101** documented decode-step cases reaching 40
-codes; 37.9 s whole owner against 34.0 s before) pass.
+**Verification checkpoint** (repair head). `gmake build`, `gmake check` (31 units), `gmake fmt`,
+`gmake format-check`, `git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
+`gmake layer-forward-smoke` (all five blocks; **107** documented decode-step cases reaching 40
+codes; the akvp block's 51 refusal rows over 13 reject kinds) pass.
 
-`gmake decode-step-qualification` ran **twice** on the real model at `N = 16`, 10 min 41 s of the
-1800 s cap, and every correctness value reproduced exactly across the two runs — the same 64 ids,
-the same four container digests, the same byte counts and verdicts, only the timings moving.
+`gmake decode-step-qualification` **exits 0** on the real model at `N = 16`, 10 min 41 s (641 s) of
+the 1800 s cap. It ran **twice** — once at the implementation head and once at the repair head,
+which adds four refusals to the load path — and every correctness value reproduced exactly: the same
+64 ids, the same four container digests, the same byte counts and verdicts, only the timings moving.
+Instruments: `ALIGN_LLM_LLAMA_DEBUG=/opt/homebrew/bin/llama-debug`, the **pinned Homebrew build**
+`version: 0.2.0 (build 10566, commit bb4caa754)`, and the R2c-patched `llama-eval-callback` from the
+`r2c-v2` cache.
+
 **Every rule this capability owns passes on all four prompts**: oracle Q `IDENTICAL`, gate G `PASS`
 on the load path, oracle B `IDENTICAL` over 26,607,616 B (`T = 6`) and 21,102,592 B (`T = 3`) on the
 load path, oracle C′ byte-identical at `k ∈ {1, 8, 16}` on the load path, containers of exactly
-29,970,432 B that `du` confirms are dense, and three writes per prompt — one of them under a
-perturbed environment — producing one digest.
+29,970,432 B that `du` confirms are dense, and three writes per prompt — one under a perturbed
+environment — producing one digest. **`oracle_logits.verdict` is `IDENTICAL` and `byte_identical` on
+all four prompts on both paths**, so gate G1 holds unconditionally.
 
-**It nevertheless exits non-zero, on one pre-existing assertion and one prompt, and the cause is
-instrument provenance.** `oracle_logits.verdict` — R6-STEP-N's requirement that the arm's prefill
-logits be byte-equal to `llama-debug --save-logits` — is `FAIL` on prompt 1 only, the single `T = 6`
-prompt; the three `T = 3` prompts are byte-identical. **This host has no `llama-debug` from the
-pinned toolchain**: `scripts/llama-eval-callback-toolchain` builds only `llama-eval-callback`, and
-`ALIGN_LLM_LLAMA_DEBUG` names an externally provided binary that does not exist here, so one was
-built from the same pinned source at `bb4caa754` with the toolchain's own cmake arguments. It was
-**not** retuned until it agreed. R6 risk 1 and R6-STEP-N section 3.1 name and measured this class
-(one commit built two ways, two different 608,256-byte blobs), and the `llama-eval-callback` side
-agrees with the recorded history on all four prompts — oracle A′ reports the same 2391/1e-4 on
-prompt 1 that R6-STEP-N recorded. The load path's verdict equals the save path's exactly, which is
-itself evidence that the persisted vector round-trips byte-exactly.
-`docs/specs/r6-kv-persist.md` section 5.6 records every number and section 5.6.1 the failure.
+The only `FAIL` in the run is oracle A′ on prompt 1 at step 1, `2391/1e-4` on `ffn_inp-27` — the
+exact value R6-STEP-N recorded, admitted under R6's rule because oracle C′ at `k = 1` is
+byte-identical, so the divergence is llama.cpp's decode-versus-prefill kernel selection and not this
+arm's arithmetic. Nothing about it is this capability's. `docs/specs/r6-kv-persist.md` section 5.6
+records every number; the earlier "this host has no `llama-debug`" narrative and its section 5.6.1
+are **deleted**, because they were wrong: the `r2c-v2` cache holds only `llama-eval-callback`, and
+that is not evidence about `llama-debug`.
 
 `gmake baseline-check` is `N/A` — no `Makefile` line and no build input moved — and
 must be re-checked at the publication head, because R5E moved `Makefile` and the baseline artifacts.
 
 **Next actions, in order.**
-1. Wait for R6-DECODE-KV-STEP1 and R6-STEP-N to land on `origin/main`, then `git merge origin/main`
-   (never a rebase) and re-check the roadmap item number, section 9's reconciliation table, and the
-   next free Align Request number.
+1. One comprehensive review of the merged candidate. The repair added four refusals to a persisted
+   format's contract, so the reviewer is asked explicitly whether that is a narrow repair of
+   recorded findings or a material change of behaviour requiring a final delta review.
 2. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` at the
-   merged head. The diff touches goldens, fixtures, and a new source module, so the classifier
-   selects the executable row; the stamp belongs to the exact unchanged head, so take it after the
-   merge and after any amend.
-3. One comprehensive review of the merged candidate.
-4. The English pull request, with the review envelope and the exact commands and results.
+   exact publication head. The diff touches goldens, fixtures, and a new source module, so the
+   classifier selects the executable row; the stamp belongs to the exact unchanged head, so take it
+   last, after the review repairs and any amend. **`baseline-check` needs re-checking there**: this
+   branch changes no `Makefile` line and no build input, but the merge brought `main`'s `Makefile`
+   and `.gitattributes` changes in, so the classifier sees them in the merged tree.
+3. The English pull request, with the review envelope and the exact commands and results.
 
-**Reproducing the qualification on this host.** `ALIGN_LLM_LLAMA_DEBUG` has no provisioning path
-in this repository — `scripts/llama-eval-callback-toolchain` builds `llama-eval-callback` only — and
-no `llama-debug` exists on this machine. To re-run, configure a build directory against the pinned
-source the toolchain already staged under
-`~/.cache/align-llm/llama.cpp/r2c-v2/<revision>-<digest>/source` with that script's own
-`cmake_arguments`, and build the `llama-debug` and `llama-eval-callback` targets into it. The one
-used above was built that way and then removed with the rest of this session's scratch. Whether a
-`llama-debug` provisioning path belongs in the repository is a question for whichever capability
-next needs the blob, not for this one.
+**Reproducing the qualification on this host.** Both instruments exist and neither is built here.
+`ALIGN_LLM_LLAMA_DEBUG` **must** be the pinned Homebrew `llama-debug`, `version: 0.2.0 (build 10566,
+commit bb4caa754)` at `/opt/homebrew/bin/llama-debug` — never a local source build, because
+`oracle_logits` is a byte comparison and a source build has been measured to disagree with the
+pinned build. `ALIGN_LLM_LLAMA_EVAL_CALLBACK` is the R2c-patched instrument under
+`~/.cache/align-llm/llama.cpp/r2c-v2/<revision>-<digest>/build/bin/llama-eval-callback`; **that
+cache holds `llama-eval-callback` and nothing else**, so its lack of a `llama-debug` says nothing
+about the host. `docs/align-development.md`'s `--decode-step` section states both as rules.
 
 **Blockers.** None. R6-STEP-N's publication is a sequencing dependency, not a blocker.
 
@@ -220,13 +241,14 @@ next needs the blob, not for this one.
 no TTFT claim**: `timings.first_token_ns` and the runner's invocation wall clock are labelled
 diagnostics and no acceptance decision is taken from either. The R6 roadmap gate stays **unmet**.
 
-## Previously active: R6-STEP-N (2026-08-29)
+## Merged checkpoint: R6-STEP-N (2026-08-29)
 
-Branch `agent/r6-step-n`, stacked on `agent/r6-decode-kv-step1` at `1671810`, which is in
-publication. **Two commits and nothing uncommitted:** `a9c6161` is the capability and the commit
-after it — this branch's head — is the consolidated repair of the first comprehensive review's
-findings. When R6 lands on `origin/main` this branch takes `git merge origin/main` — never a rebase,
-so R6's recorded commits stay reachable — and reconciles.
+Merged as `3df063b` (PR #145). The record below is the branch's own.
+
+Branch `agent/r6-step-n`, in publication. **Three commits and nothing uncommitted:** `a9c6161` is
+the capability, `6ca1eef` is the consolidated repair of the two disjoint comprehensive reviews'
+findings, and the head is the merge of `origin/main` at `d9a91e4` — R6-DECODE-KV-STEP1, PR #144 —
+taken as `git merge origin/main` and never a rebase, so every recorded commit stays reachable.
 
 **Capability.** An N-step greedy decode loop over the R6 KV plane, dense Qwen2.5-Coder-7B Q4_K_M,
 CPU, gated on **token ids**. `docs/specs/r6-step-n.md` is the authoritative ledger. The design gate
@@ -296,8 +318,10 @@ on every prompt, and oracle C' with its step index off by one differs at every c
 **`scripts/build-ggml-shim` gains two forced-build arms** — `engine+compute-step2` and
 `engine+writeback-offset` — which are inputs to the **stub** shim only and never to an ordinary
 build. That is the one build-adjacent file this capability touches; the `Makefile` itself is
-byte-unchanged, so `gmake baseline-check` is recorded `N/A` and must be re-checked at the
-publication head, because R5E moved `Makefile` and the baseline artifacts.
+byte-unchanged, so `gmake baseline-check` needs no re-record. Re-checked at the merge head after
+R5E and R6 both moved `Makefile` and the baseline artifacts: none of the baseline's twenty tracked
+artifacts is in this capability's publication diff, and the source → oracle → finalization chain
+`e61993d` → `3cde6e2` → `cb8d2ce` stays reachable from the merge commit.
 
 **Numbering, reconciled 2026-08-29.** R5E merged as PR #143 (`main` `5ccc2aa`), so roadmap item 26
 is R5E and Align Requests **47 and 48 are real on `main`**. R6-DECODE-KV-STEP1 keeps roadmap item
@@ -307,20 +331,45 @@ is R5E and Align Requests **47 and 48 are real on `main`**. R6-DECODE-KV-STEP1 k
 `MAX_PREFILL_TOKENS` consumer and none conflicts with this diff, but all are re-checked at the
 merge.
 
+**The merge, taken and reconciled.** Two conflicts, both resolved by keeping **both** sides:
+`docs/align-development.md` (R5E's "MoE whole-model prefill development" section above this
+capability's renamed `--decode-step` heading) and `scripts/run-layer-forward-smoke` (R5E's fifth
+block above this capability's renamed sixth-block banner). Roadmap item **28** and Align Request
+numbering (**49** real, **50** free) are confirmed unchanged by the merge. R6's own final repair
+`5445c14` had recorded the prefill cap as **8** in `docs/specs/r5a-dense-layer-forward.md` and
+`docs/specs/r5b-model-prefill-forward.md`; the merge commit moves both to **32** — `TOKENS` 1 to 32,
+the range `7 .. 32` open for arithmetic and closed for comparison — with `R5_ORACLE_TRUNCATED`
+byte-unchanged, and brings the two source comments that narrate the lift
+(`src/layer_forward.align`, `src/model_forward.align`) and `docs/align-development.md`'s
+`R5_ORACLE_TRUNCATED` paragraph with them. Ledger sections 8 and 9 record it. **No golden moved:**
+all six golden files were byte-identical to what the merged runner produces, so the documented
+`ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE=1` regeneration was not needed.
+
+**Verification at the merge head.** `gmake build`, `gmake layer-forward-smoke` (all six blocks,
+2 min 32 s), `gmake ggml-spike-smoke`, `gmake format-check`, and `git diff --check` pass.
+`gmake decode-step-qualification` was run a **third** time on the real model, at the merge head, and
+**every correctness value in ledger section 5.1 reproduced exactly** — the same fingerprint
+partition (149,710 / 1 class / 2,355 ids / 0 non-zero), the same 64 ids, gate G `PASS` × 4, oracle B
+`IDENTICAL` over 26,607,616 B and 21,102,592 B, oracle C′ byte-identical at `k ∈ {1, 8, 16}` × 4,
+and oracle A′ identical to the last digit including the `T = 6` prompt's admitted 2391/5878/1295.
+Only the timings moved, downward. Section 5.1 records the third run.
+
 **Next actions, in order.**
-1. Wait for R6-DECODE-KV-STEP1 to land on `origin/main` — **do not merge `main` before then** — then
-   `git merge origin/main` (never a rebase) and re-check the roadmap item number, the ledger's
-   section 9 reconciliation table, and `docs/align-development.md`, which R5E also edited.
-2. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` at the
-   merged head. The diff touches goldens and fixtures, so the classifier selects the executable row;
-   it selects the **hosted** profile and not the fresh-image one, and `gmake baseline-check` is
-   `N/A` because no `Makefile` line and no build input moved. The stamp belongs to the exact
-   unchanged head, so take it after the merge and after any further amend.
-3. One comprehensive review of the merged candidate — the first review's findings are recorded and
-   consolidated into the repair commit at this branch's head, and a narrow repair does not require
-   another full review, but the merge with `main` is a base change and its integration evidence is
-   fresh.
-4. The English pull request, with the review envelope and the exact commands and results.
+1. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` at the
+   pushed head. The publication diff touches `src/`, goldens, fixtures, and runners, so the
+   classifier selects the executable row and the **hosted** profile: none of its twenty-four
+   `FRESH_IMAGE_PATTERNS` is in the diff, `Makefile` and `.gitattributes` are byte-untouched
+   relative to `origin/main`, and none of the baseline's twenty tracked artifacts (`src/main.align`
+   and `Makefile` among them) moved, so `gmake baseline-check` passes without re-recording the
+   chain. The stamp belongs to the exact unchanged head; re-merge and re-stamp if `main` moves.
+2. The English pull request, with the review envelope and the exact commands and results.
+3. **No further review.** Two disjoint comprehensive reviews read `a9c6161` against base `1671810`
+   and their nine findings are all accepted and consolidated into `6ca1eef`; the repair did not
+   expand scope, change approach, or change behavior, design, specification, or governance, so the
+   final-review rule is not triggered. The merge is a base change and carries **fresh integration
+   evidence** rather than a fresh review: it materially changes no reviewed risk — it adds R5E's
+   already-reviewed sections beside this capability's, and moves two prose caps in the direction the
+   reviewed ledger section 2.5 already specifies.
 
 **Blockers.** None. R6 publication is a sequencing dependency, not a blocker.
 
@@ -333,11 +382,17 @@ on ids, not text, and the one place text would help — the external `llama-debu
 stays hand-measured exactly as R6 left it. Requests 41 and 49 each gain a cited client and no
 workaround is built for either. No hypothetical surface is consumed anywhere.
 
-## Previously active: R6-DECODE-KV-STEP1 (2026-08-29)
+## Merged checkpoint: R6-DECODE-KV-STEP1 (2026-08-29)
 
-Branch `agent/r6-decode-kv-step1`, off `main` at `c21b9e4`. **Two commits, and nothing uncommitted:**
-`73557dc` is the capability and the commit after it is the consolidated review repair. Reviewers'
-base tip was `76246f3`; the merge base is `c21b9e4`.
+Merged as `d9a91e4` (PR #144). The record below is the branch's own.
+
+Branch `agent/r6-decode-kv-step1`, started from `main` at `c21b9e4` and **merged** twice rather than
+rebased, so its recorded commits stay reachable: with `main` `76246f3` (R3-DECODE-RESIDENCY, PR #142)
+and then with `main` `5ccc2aa` (R5E-MOE-MODEL-PREFILL, PR #143). Nothing uncommitted. `73557dc` is
+the capability, `1671810` is the consolidated review repair, and `5445c14` is the narrow repair of
+the final delta review's minors; the rest of the branch is the two merges, the re-recorded baseline
+chain, and its record. Reviewers read `73557dc` against base tip `76246f3` with merge base `c21b9e4`;
+the final delta review read `1671810`.
 
 **Capability.** One decode step at `n_past = T` over an Align-owned KV plane, dense Qwen2.5-Coder-7B
 Q4_K_M, CPU. `docs/specs/r6-decode-kv-step1.md` is the authoritative ledger. The design gate is
@@ -357,8 +412,13 @@ ledger section 5.1.
 **Review and repair.** One comprehensive review of `73557dc` over two independent reviewers on
 disjoint risks. Reviewer B (spec/docs/governance) requested changes: 1 blocker, 4 major, 8 minor.
 Reviewer A (Align/C/FFI) approved with 1 major and 6 minor. All 20 findings have a disposition and
-are repaired in one consolidated commit, except the blocker, which is a **publication step** rather
-than a code change and is next action 2 below.
+are repaired in `1671810`, except the blocker, which is a **publication step** rather than a code
+change and is next action 1 below. One final delta review of that repair approved it with three
+minors — the R5A/R5B ledgers still described `MAX_PREFILL_TOKENS` as 6 and carried no
+`R5_ORACLE_TRUNCATED` row; `verify_plane`'s size-disagreement early return named `k` even when only
+the V concat row disagreed; and neither of that function's size guards has a shipped case — and
+`5445c14` repairs all three. The repair narrows records and one diagnostic rather than expanding
+scope, so no further full review is required.
 
 The repair changes behaviour in two places and both are recorded in the ledger:
 
@@ -389,11 +449,14 @@ pass. The four reviewer mutants and the new plane mutant were re-injected at the
 five still die with their distinct diagnoses: `R5_SHAPE node[24]` / `node[22]`, oracle A `FAIL` at
 8092 on `q_rope` / 514 on `kqv`, and `R6_PLANE_MISMATCH layer[0]tensor[k]col[0]`.
 
-**`gmake decode-step-qualification` was re-run on the real model at the repair head and passed.**
-Every recorded value in ledger 5.1 reproduced: decoded tokens 671/715/2691/526, oracle A `FAIL` at
-2391 on `ffn_inp-27` for the first prompt and `PASS` at 0 for the other three over 5,058 elements
-each, oracle B `IDENTICAL` over 688,128 and 344,064 bytes, oracle C byte-identical on all four,
-`plane.bytes` 29,360,128, nodes 958/1014. Only the timings moved. Ledger 5.1 records the run.
+**`gmake decode-step-qualification` was re-run on the real model at the repair head and again at the
+publication head; both passed.** Every recorded value in ledger 5.1 reproduced on each: decoded
+tokens 671/715/2691/526, oracle A `FAIL` at 2391 on `ffn_inp-27` for the first prompt and `PASS` at
+0 for the other three over 5,058 elements each, oracle B `IDENTICAL` over 688,128 and 344,064 bytes,
+oracle C byte-identical on all four with the argmax pairs 26312/262/1159/11844, `plane.bytes`
+29,360,128, nodes 958/1014. Only the timings moved. Ledger 5.1 records all four runs. The
+publication-head run took 3 m 48 s wall and was taken concurrently with an unrelated aggregate on
+this host; no structural quantity moved.
 
 **Goldens that moved, and why.** Ledger section 5.3 is exact. `gpu-forward-golden.jsonl` and
 `moe-layer-forward-golden.jsonl` are byte-unchanged. `layer-forward-golden.jsonl` and
@@ -402,19 +465,28 @@ each, oracle B `IDENTICAL` over 688,128 and 344,064 bytes, oracle C byte-identic
 bytes change. `decode-step-golden.jsonl` adds the three forced-build rows and changes seven existing
 rows in one field, `graph.slot_high_water`, which is repair (2) above.
 
+**Coding-baseline chain, re-recorded — reviewer B's blocker, discharged.** The capability changes
+`Makefile`, one of the twenty recorded baseline artifacts, so the chain on `main` does not bind this
+head. (`scripts/build-ggml-shim` also changes but is **not** a recorded artifact and does not itself
+invalidate the chain; an earlier draft of this record said it did.) The identity-bound chain is
+`e61993d` → `3cde6e2` → `cb8d2ce` — clean source, immutable oracle projection, finalization — with
+the pending measurement recorded on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) through
+the DinD wrapper, exactly as R5D's and R5E's were. Exactly one of the twenty artifact digests moved
+(`Makefile`); `.align-revision` is unchanged at `3a34febe` and the twenty paths are identical.
+`gmake baseline-check` passes on Linux at the finalized head. This chain **supersedes** the one this
+branch first recorded against `main` `76246f3` (`e4548b1` → `6d1c152` → `1bbacaa`), which PR #143
+invalidated by changing recorded artifacts of its own; both chains stay in this branch's history and
+only the later one is named in the finalized baseline.
+
 **Next actions, in order.**
-1. Nothing further on the repair: it is committed and owner-tested.
-2. **Re-record the coding-baseline chain and re-run `gmake baseline-check`.** It fails at this head
-   because the capability changes `Makefile` and `scripts/build-ggml-shim`, which the recorded
-   source → oracle → finalization chain covers. This is reviewer B's blocker and it belongs to
-   whoever publishes, because the stamp binds to the exact unchanged head.
-3. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`, on the
-   unchanged head from step 2. The diff touches `Makefile`, `scripts/build-ggml-shim`, and the
-   goldens, so the classifier selects the executable row and the installed fresh-image profile; do
-   not substitute a Docker skip or an ambient `DOCKER_HOST`.
-4. Open the English pull request with the verification table, the review envelope, and the finding
-   dispositions.
-5. The next capability is step 2 and the decode loop, which needs a write-back at column `n_past` —
+1. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`, on the
+   unchanged head. The diff touches `Makefile`, `scripts/build-ggml-shim`, and the goldens, so the
+   classifier selects the executable row and the installed fresh-image profile; do not substitute a
+   Docker skip or an ambient `DOCKER_HOST`.
+2. Open the English pull request with the verification table, the review envelope, and the finding
+   dispositions. It must be a **merge** commit: squash and rebase would make the three baseline
+   commits unreachable from `main`.
+3. The next capability is step 2 and the decode loop, which needs a write-back at column `n_past` —
    the one thing that makes the plane both a read and a write target in one graph.
 
 **Deviations from the ledger, recorded rather than hidden.** Ledger section 10 is authoritative and
@@ -434,205 +506,227 @@ review's "drive the C chain externally" recommendation possible: the operand `ll
 a prompt **string** and the runner holds token ids, so an external chain today would have to guess
 the decoded token's text.
 
-**Numbering.** Roadmap item **27** and Align Request **49**, both chosen against the branches in
-flight: `main` carries roadmap items to 24 and requests to 46, `agent/r3-decode-residency` claims
-roadmap 25, and `agent/r5e-moe-model-prefill` claims roadmap 26 and **holds requests 47/48 — they
-are not free**. Both must be re-checked at reconciliation.
+**Numbering, re-checked at the merge with `main` `5ccc2aa`.** Roadmap item **27** and Align Request
+**49** are unchanged and are now contiguous rather than reserved: `main` carries roadmap items to
+**26** and requests to **48**, because `agent/r3-decode-residency` landed item 25 as PR #142 and
+`agent/r5e-moe-model-prefill` landed item 26 and Requests 47 and 48 as PR #143. The numbering hazard
+ledger section 8 recorded is therefore closed — the numbers this branch chose against unmerged
+claims are the numbers that are free.
 
-## Previously active: R2D-DECODE-LOCALITY-GATE (2026-08-28)
+## Merged checkpoint: R5E-MOE-MODEL-PREFILL (2026-08-28)
 
-Branch `agent/r2d-decode-locality-gate` starts from `main` `89d8721`, the merge of R2c PR #140, and
-is merged with `main` `e312bd7` (R5D PR #139) rather than rebased over it, so its recorded commits
-stay reachable. It is the first measurement consumer of the patched instrument and it closes the
-decode half of the R2 roadmap gate. No design gate is triggered: no CLI verb, no exchanged
-document, and no coordinated invariant across three or more modules.
+PR #143 merged as `5ccc2aa` on `main`. The publication and merge named in the next actions below
+are complete; the rest of this record is unchanged.
 
-**Current checkpoint.** Implementation, the real-model run, one comprehensive review over two
-independent reviewers, and the consolidated repair are complete and committed on the branch. No
-intentional uncommitted files. `scripts/run-decode-locality-gate` captures one prompt-plus-decode
-transcript per prompt with `-n 16 --temp 0 --seed 42` on top of the R2 flags, derives one
-`R2_ACTIVATION_TRACE` per transcript, reads one entry-embedding token fingerprint per observed
-position, deletes the transcript, and pools the documents into three verdicts under one rule.
-Adjacency is over the sequence rather than inside a graph, because a decode graph holds one token;
-the arms are `prefill@8` (all eight router slots), `decode@8` (consecutive decode graphs), and the
-prompt-to-generation `boundary` pair. The aggregation lives in a new full-axis path in
-`scripts/expert_locality_gate.py` (`require_full_router_axes`, `entry_token_fingerprints`,
-`aggregate_decode`, `DECODE_CAVEATS`/`decode_caveats`); the historical compact path and its refusal
-are untouched.
 
-**The gate is met in the decode direction.** On the same 40-prompt corpus against
-`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, 40 prefill and 640 decode graphs over 832 token positions,
-252.9 s at the repair head and 189.8 s before it — elapsed is a load-dependent diagnostic and every
-recorded number is identical across the two runs: all three arms `LOCALITY` against a 125 per mille
-null — `prefill@8` 371 per mille, cluster-robust [338, 405], design effect 23.274; `decode@8`
-**447** per mille, cluster-robust [426, 468], design effect 35.375, 16 of 16 layers clearing;
-`boundary` 364 per mille, cluster-robust [325, 405]. Greedy decode's measured token-repetition rate
-is 51 per mille and excluding those pairs leaves the decode arm at 429 per mille, cluster-robust
-[408, 451], still `LOCALITY`. An optional 32-step, 8-prompt subset arm reaches 504 per mille and
-does not weaken any verdict. The full record, its limits, and the mutation evidence are
-`docs/specs/r2a-expert-trace.md` section 9; section 8's prefill gate is untouched and its 286 per
-mille is not rewritten.
+Branch `agent/r5e-moe-model-prefill`, based on the merged MOE-PREREQ-DISCHARGE (PR #133, `35a0df6`)
+and then **merged** with `main` `e312bd7` — the merged R5D at PR #139, which itself carries PR #134's
+pin move, PR #135 (R3-RESIDENCY-SIM), PR #136, PR #138, and PR #140 (R2C-DECODE-INSTRUMENT) — rather
+than rebased over it, so this branch's recorded baseline-chain commits stay reachable. The branch is
+`5e3356d` (design ledger), `053de09` (implementation), `e7f727f` (review repair), the merge commit,
+and the reconciliation and baseline commits on top. Design ledger
+`docs/specs/r5e-moe-model-prefill.md` is authoritative and carries the implementation's corrections
+C1–C25 and the cell-to-case map. **The capability is implemented, reviewed, verified, and committed**;
+`src/moe_model_forward.align`, `scripts/run-moe-model-forward`,
+`scripts/sweep-moe-model-forward-excerpt.py`, `scripts/moe-model-forward-golden.jsonl`, and
+`eval/fixtures/olmoe-model-6tok.txt` are new, and `src/layer_olmoe.align`, `src/ggml_spike.align`,
+`scripts/layer_forward_fixture.py`, `scripts/run-layer-forward-smoke`, `scripts/build-ggml-shim`,
+and `scripts/ggml_shim_stub.c` are extended. **No `extern` symbol is added and `scripts/ggml_shim.c`
+is unchanged.** No intentional uncommitted files. Merge is the only remaining step.
 
-**Defect repaired in passing.** `scripts/run-r2c-instrument-qualification`'s `parse_trace` raised
-on any nonzero status, so the parser-refusal diagnostic below it was unreachable:
-`main --expert-trace` exits 2 on `status: "error"` and still writes the document naming the code
-and detail. `command()` now takes an `accept` set, `parse_trace` passes `(0, 2)`, and a new
-`parse-trace-statuses` case in `scripts/run-r2c-instrument-smoke` proves the refusal diagnostic, an
-accepted document, and that every other nonzero status is still a process failure. Without the fix
-that case reports `error: code 2`.
+**What it does.** R5's **third** gate stage — 最小モデル on the routed path, after R4.5/MOE-PREREQ's
+単一block and R5D's 単一layer: `ggml-spike --moe-model-forward` computes a
+whole sixteen-layer OLMoE prefill of at most six tokens — per-layer routing, only the routed experts'
+planes read into **one** Align-owned claim window reserved at the arithmetic union bound and reused
+across layers, the narrowing inside layer fifteen where the instrument does, and the output head —
+and emits one `R5_MOE_MODEL_FORWARD` (`schema_version: 1`) document with the per-layer union curve.
+`KV_WIDTH` is a **mandatory** fifth operand, not R5B's optional trailing one, because on a routed
+model the declared attention width changes which experts the router selects and therefore which bytes
+the arm reads.
 
-**Candidate contents.** The runner, the aggregation path, the qualification fix, the hosted
-aggregator cases in `expert-trace-smoke` and the `parse-trace-statuses` case in
-`run-r2c-instrument-smoke`, `docs/specs/r2a-expert-trace.md` section 9, the roadmap R2 and item
-22/24 updates, the
-developer-guide section, and this handoff update. **No `Makefile` change**: like
-`run-expert-locality-gate` and `run-r2c-instrument-qualification`, this runner joins no target and
-no aggregate, so aggregate topology and the canonical coding baseline artifact set are unchanged.
+**Measured on the real model** at the adopted pin: the final logits are **byte-identical** to
+`llama-debug --save-logits`, `sha256 a56195da2c913d8dd7fa608917a381200c4b59d1c534fae2d4bbb828f80d2383`;
+the self-reference oracle is **227 of 227** nodes byte-identical over 34 graphs; the transcript oracle
+is `PASS` over **16 of 16 layers, 227 of 227 nodes, 21,372 elements**, max |Δ| 0 ten-thousandths and
+max |Δsum| 0 millionths; the routing-identity oracle is `MATCH` at **546 of 546** printed ids over 728
+slots and 16 of 16 block sums; and the runtime-width run is `WITHIN`, argmax 2262, reading the same
+1,301,446,656 expert bytes. **Residency: 1,301,446,656 of 3,900,702,720 expert bytes = 333,644 ppm
+(33.36%)**, 1,029 of 3,072 planes, 343 of 1,024 keys — two thirds of this model's expert weights are
+never touched by a prefill. Peak resident weight bytes 280,342,528 against 4,212,193,280 for the
+container, **6.66%**; dense window 84,520,960 B; claim window 195,821,568 B reserved at `U_max` 48
+with a 101,990,400 B peak use at layer 0; activation peak 4,440,064 B; 34 graphs, 918 ggml nodes.
 
-**Review and repair.** One comprehensive review of the stable candidate at `5a7ace7`, two
-independent reviewers over disjoint risks. Reviewer B (docs/governance) requested changes: 1
-blocker, 1 major, 4 minor. Reviewer A (executable diff) approved with 7 minor findings. All 13 were
-validated and **accepted**; none was rejected. They are repaired in one consolidated commit on this
-branch, together with the merge of `main` `e312bd7` (R5D PR #139) that the blocker required. The
-repair adds no capability and changes no measured number: `threshold_per_mille` is a reported
-diagnostic corrected from the floored to the ceiled quotient (187 -> 188) in both the decode and
-the merged compact gate, admission now runs before the router-shape read,
-`ALIGN_LLM_LOCALITY_PROMPT_COUNT` is range-checked like `ALIGN_LLM_DECODE_STEPS`, the short-context
-caveat is bound to the measured corpus rather than hard-coded, the fingerprint arm names the prompt
-and reason it could not be read, and five new owner cases pin the materiality boundary from both
-sides, correction 20's token-reduced layer at the real 16-layer shape, a chain gap in the
-working-set runs, a refused document's own `error_code`, and the fingerprint reader's block
-terminator.
+**The residency *policy* stays deferred, deliberately.** Within one prefill there are 343 demands and
+343 distinct `(layer, expert)` keys, so no cache can hit; a policy needs repeated prefills or decode
+before a hit rate is a measurement. What this capability hands R6 and any residency work is the shape:
+claim `pread` **560.8 ms** against **147.3 ms** of graph compute in this run — the claim read is
+**3.8×** compute — so a six-token routed prefill of this model on this CPU is I/O bound even with the
+pack in page cache. Both timings are single-run diagnostics inside the spreads ledger correction C16
+records (109.9–252.8 ms compute, 519.9–612.0 ms claim `pread`); the exact-integer half carries no
+measurement risk.
 
-**Root-cause audit across the diff.** Every `ALIGN_LLM_*` read in `run-decode-locality-gate` is now
-validated or has an explicit N/A path; every new aggregate function runs behind
-`require_full_router_axes`; and the only other per-mille threshold helper — the merged compact
-gate's — carried the same off-by-one and is corrected with it. One instance of the same class is
-recorded and **not** repaired here, because it belongs to a merged capability outside this diff:
-`scripts/run-expert-locality-gate` also reads `ALIGN_LLM_LOCALITY_PROMPT_COUNT` without validating
-it, so `=0` there still yields an empty measurement. It is a follow-up for that runner's owner.
+**Review.** One comprehensive review of the stable candidate, two complementary reviewers over
+explicitly disjoint risks at implementation head `053de09`: reviewer A returned **no blocker** with 1
+medium and 4 low findings; reviewer B returned **changes requested** with 3 medium, 3 low, and 2 info
+findings. **All thirteen were validated and accepted**, none rejected, and all are repaired in the one
+consolidated commit `e7f727f`; ledger corrections C17–C22 record the contract changes. The repair
+built and measured the two promised window-budget fixtures (a member declaring 2^40 bytes reaches
+`R4_PACK_OFFSET`, not `R5_WINDOW_BUDGET` or `R5D_CLAIM_BUDGET`, so both are recorded as fail-closed
+guards and `R5_INDEX` as never emitted), fixed the coverage denominator at the 36 declared `R5*` codes
+(32 reached plus 5 inherited, asserted in both directions), published `oracle.sums_expected` /
+`sums_matched`, added the reference arm's non-aliasing assertion, made `residency.keys_distinct` a
+real run-level set cardinality, refused a non-UTF-8 path with `R5E_PATH`, and corrected
+`expert_bytes_read_ppm` to 333,644 at all three sites. After the merge with `main` a **final
+comprehensive review of the merged candidate** was run because the merge brought in R5D's own review
+repair, which this branch had not carried. It returned **approve after repair** with 13 findings — 1
+high, 3 medium, 9 low/info — **no defect in shipped behaviour**; all were validated and accepted and
+repaired in one consolidated commit, recorded as corrections **C24** and **C25** plus in-place record
+fixes. Its envelope and every finding's disposition are on the pull request.
 
-**Next actions, in order.** Run exact-head preflight with the owner commands below, publish the
-English pull request with the measurement and both review envelopes, monitor required checks, and
-merge. A further comprehensive review is not required: the repair is confined to the recorded
-findings, adds no behaviour beyond the four named guards, and changes no measured result.
+**Align capability requests.** Two new, both `PROPOSED` and non-blocking: **Request 47** (a `Borrow`
+argument must be a stable named local or field) and **Request 48** (same-call aliasing between a
+`borrow mut` owner and its own `Copy` scalar field, where the nested read-only-borrow spelling of the
+same shape compiles). They were drafted as 46 and 47 and renumbered at reconciliation because R3's
+pair merged first and took 45 and 46. Both probes were re-measured unchanged at the adopted
+`3a34febe`. R5E is also appended as a **third client** of Requests 45 and 46 — the two it could only
+anticipate while they lived on `agent/r3-residency-sim`.
 
-**Latest durable verification.** At the repair head, on this macOS arm64 host with the managed
-Align `3a34febe` toolchain:
-
-```text
-gmake build                       PASS
-gmake expert-trace-smoke          PASS, 108 fixtures / 17 error codes, both aggregator units,
-                                  14 of 14 mutants killed by the decode unit alone
-gmake format-check                PASS
-git diff --check                  clean
-scripts/run-decode-locality-gate  MEASURED, three LOCALITY verdicts, 252.9 s; every recorded per
-                                  mille, interval, count, and verdict identical to the pre-repair
-                                  run (section 9.2). Elapsed is a load-dependent diagnostic; the
-                                  pre-repair run took 189.8 s on the same host
-scripts/run-r2c-instrument-smoke  PASS, 55 contract groups, on Docker linux/arm64
-```
-
-`scripts/run-r2c-instrument-smoke` fails on this macOS host in its pre-existing `cache-contract`
-case, which asserts `HOME=/home/test` resolves to `/home/test/.cache/...` while macOS resolves
-`/home` through a firmlink to `/System/Volumes/Data/home`. The failure reproduces unchanged on
-`main` `89d8721` and is environmental, not a regression; the Docker run above is the evidence for
-the changed cases.
-
-## Merged checkpoint: R5D-MOE-LAYER-FORWARD (2026-08-28)
-
-PR #139 merged as `e312bd7` on `main`. The exact-head preflight, publication, and merge named
-in the next actions below are complete; the rest of this record is unchanged.
-
-Branch `agent/r5d-moe-layer-forward`, rebased onto `main` `95c47e7` (the merged R3-RESIDENCY-SIM,
-PR #135, which sits on PR #136's GCC 14 shim fix, C8's optional targeted stage at PR #134 — a
-parallel Codex session's change, not this session's work — and the merged MOE-PREREQ-DISCHARGE at
-PR #133), and then **merged** with `main` `1b11245` — PR #138, a parallel Codex session's R3
-qualification-prerequisite follow-up — rather than rebased over it, so this branch's recorded
-baseline-chain commits stay reachable. The branch is `a85e1fc` (design ledger), `7886cee`
-(implementation), `a2e2748` (review repair), and the reconciliation and baseline commits on top;
-before the rebase the first three were `3cb8d59`, `e584849`, and `aaedf26`, and the review record on
-the pull request names the pre-rebase heads the reviewers read. Design ledger `docs/specs/r5d-moe-layer-forward.md` is authoritative and
-now carries the implementation's corrections C1–C22 and the shipped arm's measured section 7.
-**The capability is implemented and committed**: `src/layer_olmoe.align` and
-`src/moe_layer_forward.align` are new; `scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`,
-`scripts/layer_forward_fixture.py`, `src/ggml_ffi.align`, and `src/ggml_spike.align` are extended;
-`scripts/run-moe-layer-forward`, `scripts/sweep-moe-layer-forward-excerpt.py`,
-`scripts/moe-layer-forward-golden.jsonl`, and `eval/fixtures/olmoe-blk0-6tok.txt` are new. No
-intentional uncommitted files.
-
-**What it does.** R5's second gate stage for a **routed** OLMoE layer: one prefill of at most six
-tokens through `blk.0`, computed by ggml over attention weights and only the routed experts' planes
-held in Align-owned buffers, checked against llama.cpp's own numbers. Measured by the shipped arm on
-the real model (ledger section 7.1): the routed layer reads **101,990,400 of 261,095,424** expert
-bytes (390,625 ppm, 75 of 192 planes, 25 block reads); the self-reference oracle is 46 of 46
-byte-identical; the routing-identity oracle is `MATCH` at 36 of 48 printed ids plus the exact sum
-1,471; the transcript oracle is `PASS`, 26 nodes, 2,376 elements, max |Δ| 0 ten-thousandths.
-**Required microbenchmark B is 5.64 ms** (phase A 1.452 + phase B 4.185, warm means of five) — the
-probe's 9.4 ms timed a cold graph per arm and the shipped arm's contractual warm-up is what section
-3.5 already required. The residency win is a **decode-time property**: 39% of the layer's expert
-bytes at six prefill tokens, 12.5% at one, 73% at eighteen.
-
-The boundary change is five new FFI symbols (`argsort`, `mul_mat_id`, `view_2d`, a 3-D
-stacked-tensor constructor, a 2-D i32 constructor) plus one widened existing symbol
-(`soft_max_ext` with a null mask). **No new Align capability request was needed.** Four existing
-requests gain R5D as a client, all non-blocking: Requests 45 and 46 (R3's, renumbered from 44 and 45
-when PR #134 took Request 44, and now on `main` with the merged PR #135) and Requests 37 and 42.
-Ledger section 5.5 named all four as to be appended at reconciliation, and the reconciliation commit
-appends R5D's client evidence to each of the four register entries.
-
-**Review.** One comprehensive review of the stable candidate, two independent reviewers over
-disjoint risks. Reviewer A (source) **approve** with 2 medium and 2 low findings; reviewer B
-(governance/record) **approve after repair** with 2 med-high, 3 medium, and 6 low findings. All
-fifteen were validated and **accepted**, and all fifteen are repaired in the consolidated repair
-commit on this branch; ledger corrections C12–C21 record the contract changes, and
-`r5b-model-prefill-forward.md` C26 and `r5c-metal-prefill.md` C22 record the retired
-`layer-forward-smoke` and `check-per-unit` acceptance targets. No finding was rejected. The repair
-adds one behavioural refusal (a claim plane whose `ggml_type` is not its role's first, reproduced
-before and after) and one hosted case, `moe-engine-claim-type-mismatch`; every other change is a
-record, a comment, or an assertion.
-
-**Verification, re-run in full at the rebased head against the managed `3a34febe` compiler** that
-PR #134 pinned, on this host with `gmake` and
-`LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib`:
+**Verification, re-run in full at the merged head against the managed `3a34febe` compiler**, on this
+macOS host with `gmake`, the recorded Homebrew
+`LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib`, and the
+`CARGO` wrapper (`docs/align-development.md`):
 
 ```text
-gmake check                    ok: checked 31 unit(s) per-unit (137 s)
+gmake check                    ok: checked 31 unit(s) per-unit (153 s)
 gmake build                    ok
-gmake ggml-spike               ok, stub shim and real shim
+gmake ggml-spike               ok, stub shim and real shim (37 s)
 gmake ggml-spike-smoke         PASS - 7 no-document, 43 documented cases; olmoe 22 blocks /
                                69 members, 16 ExpertBlocks, claim surface PASS
-gmake layer-forward-smoke      PASS x3, byte-identical, 28 / 27 / 26 s - 8 no-document and 75
-                               documented R5A/R5B cases, 59 model-forward, 28 gpu-forward, and
-                               R5D's 8 no-document / 78 documented cases, 29 codes, three oracles
-gmake alignpack-smoke          PASS - 27 positive fixtures, 128 negative sources, 20,302 assertions
+gmake layer-forward-smoke      PASS x3, byte-identical apart from the mktemp path, 41 / 37 / 37 s -
+                               R5A/R5B's 8 no-document and 75 documented cases, 59 model-forward,
+                               28 gpu-forward, R5D's 8 / 78 with 29 codes, and R5E's 14 no-document
+                               (R5E_ARITY, R5E_PATH) and 96 documented cases, 32 of the 36 declared
+                               R5* codes plus 5 inherited R4/R2 codes, all four oracles, the routing
+                               identity element-wise complete over a whole model, and
+                               arm-r5a/r5b/r5d-unchanged
+gmake alignpack-smoke          PASS - 27 positive fixtures, 128 negative sources, 20,303 assertions
 gmake residency-sim-smoke      PASS - PR #135's owner, unchanged by this branch
+gmake expert-trace-smoke       PASS - PR #140's parser owner, unchanged by this branch
 gmake gate-topology-check      PASS
 gmake format-check             PASS; gmake fmt leaves no diff; git diff --check clean
 ```
 
-**No golden byte changed at the new pin.** The R5A, R5B, R5C, R5D, and ggml-spike golden documents
-are byte-identical under `3a34febe`, so the pin adoption needs no correction row of its own.
+The focused qualification — opt-in, capable-only, in **no** aggregate — on the host that holds the
+model, at the adopted pin:
 
-**Baseline chain, re-recorded.** This branch's `Makefile` and `.gitattributes` changes invalidate
-the chain that shipped with R3-RESIDENCY-SIM, so the identity-bound chain is re-recorded here as
-`7c4830a` -> `c6cee0c` -> `09de0fd` (clean source -> immutable oracle -> finalization), measured on
-Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) and checked there with `make baseline-check`
-ending `baseline chain: PASS`. Two of the twenty recorded artifacts changed against the R3 chain:
-`Makefile`, which gains the opt-in `moe-layer-forward-qualification` target and no
-`HOSTED_CHECK_TARGETS` member, and `.gitattributes`, which marks the new olmoe excerpt `-whitespace`.
-`.align-revision` is `3a34febe` on both chains, because R3 already adopted PR #134's move. The other
-eighteen hashes are unchanged and the twenty paths are identical. The pull request must merge with a
-merge commit; squash and rebase merges would make these commits unreachable.
+```text
+gmake moe-model-forward-qualification   every section 5.2 assertion PASS
 
-**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test moe-layer-forward -- make
-layer-forward-smoke gate-topology-check` under the installed profile at the exact head, then publish
-and merge. Note the preflight lane: R5D adds the `moe-layer-forward-qualification` Makefile target,
-so the classifier selects the **executable** row and the installed profile — publication needs the
-**fresh-image (Docker-in-Docker)** preflight, not the documentation lane. `HOSTED_CHECK_TARGETS`
-membership is unchanged, so `make ci` is *not* selected. (2) After merge, refresh `main` and start
-the next eligible roadmap item; R5's deferred microbenchmark C and R6 both wait on pending decisions
-(d) and (c) below.
+the two instruments agree (result_output sum -111030.031250, tokens 1545,823,9,66,13,270)
+self-reference IDENTICAL (227/227 nodes byte-identical over 34 graphs)
+routing identity MATCH, 546/546 printed ids over 728 slots, 16/16 block sums
+transcript PASS, 16/16 layers, 227/227 nodes, 21372 elements, max |d| 0, max |dsum| 0
+logits IDENTICAL at the reconciliation width, sha256 a56195da2c913d8dd...
+logits WITHIN at the runtime width, argmax 2262, top-ten set 10/10
+residency 1301446656/3900702720 expert bytes = 333644 ppm (33.36%), 1029/3072 planes, 343/1024 keys
+peak resident weight bytes 280342528 against 4212193280 - 6.66%
+34 graphs, 918 ggml nodes, activation peak 4440064 B, slot high water 80/128
+microbenchmark B = 147.318 ms; dense pread 126.5 ms, claim pread 560.8 ms
+```
+
+**No golden byte changed at the new pin**, and every exact-integer quantity in ledger section 7 is
+identical to the pre-pin run, so the adoption needs no behavioural correction row; ledger correction
+C23 records the pin move, the request renumbering, and the appended client evidence.
+
+**Baseline chain, re-recorded.** This branch changes `Makefile` and `.gitattributes`, both among the
+twenty recorded canonical baseline artifacts, so the chain that shipped with R5D no longer binds this
+head. See the pull request for the re-recorded identity-bound chain (clean source -> immutable oracle
+-> finalization), measured on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) with `make
+baseline-check` there ending `baseline chain: PASS`. **This pull request must merge with a merge
+commit**; squash and rebase merges would make the recorded commits unreachable.
+
+**Next action.** Merge the pull request. `main` moved three times during publication — PR #139
+(R5D), PR #141 (R2D-DECODE-LOCALITY-GATE) and PR #142 (R3-DECODE-RESIDENCY), the last two from a
+parallel session — and this branch **merges** all three rather than rebasing over them. R2D took
+roadmap item **24** and R3-DECODE-RESIDENCY item **25**, so R5E is item **26**. `make ci` is **not** selected: `HOSTED_CHECK_TARGETS`
+membership is unchanged because R5E's owner is `layer-forward-smoke`'s fifth block, already a member,
+and the one new Makefile target, `moe-model-forward-qualification`, joins no aggregate. The `Makefile`
+edit is still an executable-contract boundary, so publication takes the **fresh-image
+(Docker-in-Docker)** installed profile, not the documentation lane.
+
+## Merged checkpoint: R3-DECODE-RESIDENCY (2026-08-29)
+
+Branch `agent/r3-decode-residency` merged as PR #142, merge commit `76246f3` on `main`, by a
+**parallel session**. It is the residency consumer of R2D's capture and closes the **decode half of
+the R3 roadmap gate**; no design gate, no Align source change, no `Makefile` change, no aggregate
+membership change, so R5E's baseline chain is unaffected by it.
+
+`scripts/run-decode-residency-gate` replays `main --simulate-residency` four times at section 7.4's
+975,175,680 B budget over the same 40-prompt corpus: mixed, decode-only, a prefill-only coverage
+control, and a head-4 stream-length control. **The gate is met in the decode direction but the
+answer is narrower than the prefill one**: `recent_reuse` beats `lru` by 59 to 238 per mille at
+budgets of 15/31/62/125 per mille of the expert footprint, and at 250 and 500 per mille **no
+candidate beats the baseline at all** on any decode arm. The prefill-only control at the same
+250-per-mille budget is still `BEATS_BASELINE`, and the head-4 control — eleven per cent *fewer*
+demands than that winning arm — is not, so what removes the win is the presence of decode demands
+rather than coverage, working-set ratio, or stream length. R4B's decode-corpus resume condition is
+discharged **negatively**, and R6's KV tiering is ordered ahead of a runtime expert-residency policy.
+`docs/specs/r3-residency-sim.md` section 8 is the authoritative record.
+
+**What it means for R5E.** R5E defers any residency policy because a single prefill has 343 demands
+and 343 distinct keys. Item 25 is the first measurement of a policy in the decode regime that
+deferral names, and it says the policy question is open at realistic budgets rather than settled —
+which is the reason R5E ships the per-layer union curve (`schedule[].routed`) as an input to that
+work instead of a policy of its own.
+
+## Merged checkpoint: R2D-DECODE-LOCALITY-GATE (2026-08-29)
+
+Branch `agent/r2d-decode-locality-gate` merged as PR #141, merge commit `c21b9e4` on `main`, by a
+**parallel session**. It started from `main` `89d8721` (R2c PR #140) and merged `main` `e312bd7`
+(R5D PR #139) rather than rebasing over it. It is the first measurement consumer of PR #140's
+patched instrument and it closes the **decode half of the R2 roadmap gate**; no design gate was
+triggered.
+
+**The gate is met in the decode direction.** On the same 40-prompt corpus against
+`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` — 40 prefill and 640 decode graphs over 832 token positions
+— all three arms are `LOCALITY` against a 125 per mille null: `prefill@8` **371** per mille,
+cluster-robust [338, 405]; `decode@8` **447** per mille, cluster-robust [426, 468], 16 of 16 layers
+clearing; `boundary` **364** per mille, cluster-robust [325, 405]. Greedy decode's token-repetition
+rate is 51 per mille and excluding those pairs leaves the decode arm at 429 per mille, still
+`LOCALITY`. `docs/specs/r2a-expert-trace.md` section 9 is the authoritative record; section 8's
+prefill gate and its 286 per mille are untouched. It adds no `Makefile` target and changes no
+recorded baseline artifact, so R5E's baseline chain is unaffected by it.
+
+**What it means for R5E and for R3.** R5E records claim-level expert residency as a **decode-time**
+property and defers any residency policy because a single prefill has 343 demands and 343 distinct
+keys. R2D is the first direct measurement of the regime that deferral names: expert reuse between
+consecutive decode steps is materially higher than in prefill (447 against 371 per mille). It does
+not by itself make a cache-hit claim — that still needs a multi-prefill or decode **replay**, which
+`docs/specs/r3-residency-sim.md` owns — but it removes the "decode was never observed" caveat that
+R3's own measurement section records.
+
+## Merged checkpoint: R5D-MOE-LAYER-FORWARD (2026-08-28)
+
+Branch `agent/r5d-moe-layer-forward` merged as PR #139, merge commit `e312bd7` on `main`, preserving
+its recorded baseline chain `7c4830a` -> `c6cee0c` -> `09de0fd` with a merge commit. Design ledger
+`docs/specs/r5d-moe-layer-forward.md` remains authoritative.
+
+**What it delivers.** R5's second gate stage for a **routed** OLMoE layer: one prefill of at most six
+tokens through `blk.0`, computed by ggml over attention weights and only the routed experts' planes
+held in Align-owned buffers, checked against llama.cpp's own numbers. The routed layer reads
+**101,990,400 of 261,095,424** expert bytes (390,625 ppm, 75 of 192 planes, 25 block reads); the
+self-reference oracle is 46 of 46 byte-identical; the routing-identity oracle is `MATCH` at 36 of 48
+printed ids plus the exact sum 1,471; the transcript oracle is `PASS`, 26 nodes, 2,376 elements, max
+|Δ| 0 ten-thousandths. Required microbenchmark B is **5.64 ms**. The residency win is a **decode-time
+property**: 39% of the layer's expert bytes at six prefill tokens, 12.5% at one, 73% at eighteen. The
+boundary change is five new FFI symbols plus one widened one; no new Align capability request was
+needed, and Requests 37, 42, 45, and 46 gained R5D as a non-blocking client.
+
+R5E is built directly on it: `src/layer_olmoe.align` is R5D's topology module, extended with
+layer-parameterized tables, and R5E's arm is a fifth `ggml-spike` arm beside R5D's fourth. R5E takes
+main's repaired R5D verbatim — R5D's `stage_claim_types` refusal, its stable-insertion-sort stub
+`argsort`, its `view_2d` F32 gate, and its `moe-engine-claim-type-mismatch` case are unmodified by
+R5E.
 
 ## Merged checkpoint: R3-QUALIFICATION-PREREQUISITES (2026-08-28)
 
@@ -648,20 +742,18 @@ recorded baseline-chain commits stay reachable.
 
 ## Merged checkpoint: R2C-DECODE-INSTRUMENT (2026-08-28)
 
-PR #140 merged as `89d8721`, authored by a **parallel Codex session** rather than by the
-session that produced R3 and R5D.
-authoritative.
+Branch `agent/r2c-decode-instrument` merged as PR #140, merge commit `89d8721` on `main`, authored
+by a **parallel Codex session** rather than by the session that produced R3 and R5D. It started from
+`main` `1b11245`, the merge of R3 follow-up PR #138.
+It **takes** decision (c): the source build of llama.cpp at exact commit
+`bb4caa7540188872173c44d161602d9271386413` with the minimal R2c instrument patch is pinned and
+shipped, which unblocks R6 and therefore R7-R9. Its first measurement consumer,
+**R2D-DECODE-LOCALITY-GATE**, is merged (above). R5 microbenchmark C remains independently blocked
+on Align Request 41.
 
-Branch `agent/r2c-decode-instrument` started from `main` `1b11245`, the merge of R3 follow-up
-PR #138, and discharged decision (c): a source build of llama.cpp at exact commit
-`bb4caa7540188872173c44d161602d9271386413` with the minimal R2c instrument patch. It unblocks R6
-and therefore R7-R9, and the active R2D capability above is its first measurement consumer. R5
-microbenchmark C remains independently blocked on Align Request 41.
-
-**What it delivers.** The triggered design ledger is `docs/specs/r2c-decode-instrument.md`
+**Merged contents.** The triggered design ledger is `docs/specs/r2c-decode-instrument.md`
 (`d8e4818`); the reviewed implementation head is `5f1eb3e`, the first consolidated review repair is
-`46432de`, and the final review's three accepted findings are repaired at `76400f5`, the merged
-branch tip.
+`46432de`, and the final review's three accepted findings are repaired in `76400f5`.
 `.llama-revision` and the 2,170-byte patch pin the external source and
 two-file diff. The `r2c-v2` managed builder has completed a fresh CPU build with Metal and
 llama/ggml shared libraries disabled, verified build 10566 / commit `bb4caa7`, and emitted a
@@ -675,7 +767,7 @@ values whenever an extent exceeded six and derived truncation flags from extent.
 admits exact compact or full forms based on the ellipsis actually observed. Existing compact
 documents remain unchanged; the independent generator now owns full slot/token success and eight
 malformed/mixed/non-router refusals. `make check`, `scripts/run-r2c-instrument-smoke` (54 contract
-groups at this merge; R2D above adds one), and `scripts/run-expert-trace-smoke` (108 fixtures, 17 error codes) pass. The compiled dense
+groups), and `scripts/run-expert-trace-smoke` (108 fixtures, 17 error codes) pass. The compiled dense
 qualification passes through the product parser: omitted, zero, and negative `-n` each produce one
 prefill graph, while `-n 2` produces one prefill plus two decode graphs. The real OLMoE half also
 passes: three graphs including decode, 48 full-width groups, 384 selections, and full-axis extent
@@ -707,12 +799,11 @@ R2A parser/source oracle changes, R2A specification correction, roadmap and deve
 changes, and this handoff update belong to this capability. `Makefile` and aggregate topology are
 intentionally unchanged, so the canonical coding baseline artifact set is unchanged.
 
-**Merge.** Exact-head preflight, publication with both review envelopes and finding dispositions,
-and merge are complete; nothing remains on this capability. R5D merged it in rather than rebasing
-over it, so that branch's recorded baseline-chain commits stay reachable; `Makefile` and the
-canonical baseline artifact set are unchanged by it, so R5D's chain still binds.
+Published and merged as PR #140. R5D merges it in rather than rebasing over it, so this branch's
+recorded baseline-chain commits stay reachable; `Makefile` and the canonical baseline artifact set
+are unchanged by it, so R5D's chain still binds.
 
-**Durable verification at merge.** On WSL2 x86_64 with GNU 14.2.0 and the managed Align
+**Latest durable verification.** On WSL2 x86_64 with GNU 14.2.0 and the managed Align
 `3a34febe` toolchain:
 
 ```text
@@ -946,38 +1037,40 @@ are identical. PR #133 merged with merge commit `35a0df6`, so these commits rema
 models directory (path withheld from this file by convention). Disk free is now ~16 GiB on this
 host. **Decision (b) is now infeasible on this host**: `gpt-oss-20b-mxfp4.gguf` at 12.1 GB no
 longer fits alongside the downloaded model and its alignpack space; R1B's real-model
-`model-ir-parity` qualification stays open pending a host with more free disk. **Decision (c) taken
-2026-08-28** by R2C-DECODE-INSTRUMENT (PR #140, merge `89d8721`): the patched `llama-eval-callback`
-is pinned, source-built out of Git, and already consumed by R2D-DECODE-LOCALITY-GATE. Decision (d)
-below is unchanged and still pending.
+`model-ir-parity` qualification stays open pending a host with more free disk. **Decision (c) is
+now TAKEN and merged** as PR #140; decision (d) is unchanged and still pending.
 
 1. **Small MoE GGUF, 1-4 GB. — TAKEN.** `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (3.9 GiB) is on
    this host. It unblocked the R2 locality gate (merged, PR #131), R1C's `olmoe` frontend (merged,
    PR #132), and R4's per-expert half with R4.5's expert matmul (merged, PR #133). R3's residency
-   simulation (merged, PR #135), its qualification-prerequisite follow-up (merged, PR #138), and
-   R5D's routed layer, in publication above, follow from the same file rather than from another
-   download.
+   simulation (merged, PR #135), its qualification-prerequisite follow-up (merged, PR #138), R5D's
+   routed layer (merged, PR #139), and R5E's whole routed model, in publication above, follow from
+   the same file rather than from another download, as does R2D's decode locality gate (merged,
+   PR #141).
 2. **`gpt-oss-20b-mxfp4.gguf`, 12.1 GB.** Unblocks R1B's real-model `model-ir-parity` qualification
    and every `ASSUMED` row of `docs/specs/r1b-gptoss-moe-ir.md` section 2.5 — including the two
    rows R1C has now contradicted from the olmoe side. **Infeasible on this host** after decision 1
    (disk free ~16 GiB); it stays open pending a host with more free disk.
-3. **Build llama.cpp from source at `bb4caa754`** and apply the R2c minimal instrument patch
-   (decode-step graphs, untruncated `ffn_moe_topk`). **TAKEN**, merged as PR #140. It unblocks R6
-   (Persistent KV) and, through it, R7-R9, and it did extend the locality gate past prefill:
-   R2D-DECODE-LOCALITY-GATE measured `decode@8` at 447 per mille against a 125 per mille null
-   (`docs/specs/r2a-expert-trace.md` section 9). The cost recorded when it was proposed stands: a
-   from-source external dependency whose qualification is reproducible only on hosts that repeat
-   the build, materialized by `scripts/llama-eval-callback-toolchain` into a cache outside Git.
+3. **Build llama.cpp from source at `bb4caa754`** and apply the R2c minimal instrument patch (decode-
+   step graphs, untruncated `ffn_moe_topk`). **TAKEN**, shipped and merged as PR #140,
+   `docs/specs/r2c-decode-instrument.md`: `.llama-revision` and a 2,170-byte two-file patch pin the
+   source, and the `r2c-v2` managed builder materializes the instrument into an identity-addressed
+   cache outside Git. It unblocks R6 (Persistent KV) and, through it, R7-R9, and it is what extends
+   the merged locality gate past prefill — R2D-DECODE-LOCALITY-GATE is doing exactly that now. The
+   cost stands as recorded: a clone plus a cmake build, and a qualification reproducible only on
+   hosts that repeat the build.
 4. **Align Request 41** (non-`Copy` capture in `spawn` closures), Align-side. Unblocks R5's required
    microbenchmark C.
 
-**Align capability requests.** The open range is 21-46: Requests 1-20 CLOSED, Requests 21-43 and
-45-46 PROPOSED and non-blocking, and Request 44 ALIGN_LLM_VERIFIED, closed by PR #134.
-`.align-revision` selects `3a34febe`. R2C-DECODE-INSTRUMENT and R2D-DECODE-LOCALITY-GATE added
-none: neither changed an Align module, so neither met a language, compiler, or standard-library
-gap. Requests 45 and 46 are new, filed by R3-RESIDENCY-SIM (see above) and renumbered from
+**Align capability requests.** Requests 1-20 CLOSED, Requests 21-43 and 45-48 PROPOSED and
+non-blocking, and Request 44 ALIGN_LLM_VERIFIED, closed by PR #134. **Requests 47 and 48 are new,
+filed by R5E-MOE-MODEL-PREFILL** (see above), drafted as 46 and 47 and renumbered at reconciliation
+when R3's pair took 45 and 46; both probes re-measured unchanged at `3a34febe`. `.align-revision` now selects
+`3a34febe`. Requests 45 and 46 are new, filed by R3-RESIDENCY-SIM (see above) and renumbered from
 44 and 45 when PR #134 took 44; Request 45 is priority **high** — an accepted-but-unsound compiler
-defect — rather than the medium/low of the rest of this range. **R5D added no request and appended
+defect — rather than the medium/low of the rest of this range. **R5E added two requests and appended client evidence to two more**: Requests 45 and 46 each gain
+R5E as a third client — `layer_olmoe.parse_geometry`'s decoded-record reads, reused unchanged, and
+sixteen per-layer routing decisions that repeat R5D's two array-shape gaps once per layer. **R5D added no request and appended
 client evidence to four**: Requests 45 and 46 gain `src/layer_olmoe.align`'s `parse_geometry` and its
 routing decision (the two R5D could only anticipate before PR #135 merged them), Request 37 gains
 R5D's per-unit check times — 15.6 s for the arm's own unit against 0.67 s for the 1,403-line module
@@ -1016,10 +1109,7 @@ cells (`expert trace parity (MoE): PASS` over 934 callback blocks) and added cor
 10566 applies the output-token `GET_ROWS` reduction before the last layer's feed-forward, so a
 *token-reduced* highest-index layer is parsed and validated but contributes no `selections[]` row
 and is listed in the additive `moe.token_reduced_layers` field (`schema_version` stays 1). Full
-numbers and every caveat: `docs/specs/r2a-expert-trace.md` section 8. The decode half is now
-measured separately by the active R2D capability above and recorded in section 9; it adds to this
-result and does not rewrite the 286 per mille, which remains the recorded value of this compact
-six-slot measurement.
+numbers and every caveat: `docs/specs/r2a-expert-trace.md` section 8.
 
 **R5C merged checkpoint.** Metal microbenchmark A, unified memory: self-reference `IDENTICAL` 479 of
 479 nodes over 30 graphs; logits `WITHIN`, max `|Δ|` 2,936 of 6,000 ten-thousandths against R5B's
@@ -1032,13 +1122,21 @@ non-finite-readback goldens, masked in golden normalization alone. Full ledger:
 `docs/specs/r5c-metal-prefill.md`.
 
 **Resume in another environment.** Fetch `origin`, check out `main`, then check out
-`agent/r5d-moe-layer-forward` and read `docs/specs/r5d-moe-layer-forward.md` in full before touching
-`src/layer_olmoe.align`, `src/moe_layer_forward.align`, the two C shims, or either runner. Decision 1
-is taken; R2's gate, R1C's frontend, R4's per-expert half, R4.5's expert matmul, C8's optional
-targeted stage, and R3's residency simulator are all merged, so R5D waits on no further decision. For
-the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1); decision 3 -> R6 (section
-R6), R7-R9, and the decode half of R2's gate; decision 4 -> R5's deferred microbenchmark C (section
-R5).
+`agent/r5e-moe-model-prefill` and read `docs/specs/r5e-moe-model-prefill.md` in full (and
+`docs/specs/r5d-moe-layer-forward.md` for the layer half) before touching `src/layer_olmoe.align`,
+`src/moe_model_forward.align`, or `scripts/run-moe-model-forward`. R5E's only remaining step is the
+merge. After it merges, **no capability is active** here: R2D merged as PR #141 and R3-DECODE-RESIDENCY
+as PR #142, and item 25 explicitly orders **R6 (Persistent KV)** ahead of a runtime
+expert-residency policy. R6 is the next eligible roadmap work — decision (c)'s merged instrument
+unblocks it, and its first task is naming the decode oracle. A separate worktree on
+`agent/r6-decode-kv-step1` already exists in this session's scratchpad. R5's deferred microbenchmark
+C stays blocked on Align Request 41. Decision 1 is taken; R2's
+gate, R1C's frontend, R4's per-expert half, R4.5's expert matmul, C8's optional targeted stage, R3's
+residency simulator, R2c's decode instrument, R5D's routed layer, R2D's decode locality gate, and R3's
+decode residency gate are all merged, so R5E waits on no further decision. For the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1);
+decision 3 is **taken and merged** as item 22, and its first consumer, item 24's decode locality
+gate, is merged too, so R6 (section R6) and R7-R9 are unblocked; decision 4 -> R5's deferred
+microbenchmark C (section R5).
 
 **DinD preflight note.** The installed profile requires true Docker-in-Docker on macOS. The recipe
 lives in this session's memory, not in the repository, and the scripts that ran it lived only in a
@@ -1049,9 +1147,9 @@ exists by the time work resumes; otherwise rebuild from the CLAUDE.md rules (the
 ## Merged checkpoints
 
 Track B, dense local model (R0 → R5C), plus the merged R2 locality gate, the R1C olmoe frontend, the
-MoE prerequisite discharge, and the R3 residency simulator; C8's optional targeted stage is the one
-merged Track A re-entry. The R3-RESIDENCY-SIM, MOE-PREREQ-DISCHARGE, R2, and R5C checkpoints are
-above; the rest, newest first:
+MoE prerequisite discharge, the R3 residency simulator and its decode half, the R2c decode
+instrument, R5D's routed layer, and R2D's decode locality gate; C8's optional targeted stage is the one merged Track A re-entry. The R3-DECODE-RESIDENCY, R2D, R5D, R2C,
+R3-RESIDENCY-SIM, MOE-PREREQ-DISCHARGE, R2, and R5C checkpoints are above; the rest, newest first:
 
 - **GCC14-FP-CONTRACT-PORTABILITY** (PR #136, merge `aad872f`): `#pragma STDC FP_CONTRACT OFF` is
   Clang-only, and GCC 14.2 diagnoses it as unknown while `scripts/build-ggml-shim` compiles with

@@ -210,13 +210,23 @@ def decode_header(raw, size):
     if h["logits_bytes"] != h["n_vocab"] * 4:
         reject("REGION", "logits_bytes %d is not 4 x n_vocab %d"
                % (h["logits_bytes"], h["n_vocab"]))
-    # The layout the writer should have produced, re-derived rather than read back.
-    expected_plane_offset = align_up(
-        align_up(align_up(HEADER_BYTES + h["token_stream_bytes"], REGION_ALIGN)
-                 + IDENTITY_RECORD_BYTES, REGION_ALIGN) + h["logits_bytes"], h["plane_align"])
-    if h["token_stream_offset"] != HEADER_BYTES or h["plane_offset"] != expected_plane_offset:
-        reject("REGION", "the region layout is not section 2.3's: plane_offset %d, expected %d"
-               % (h["plane_offset"], expected_plane_offset))
+    # Section 2.3.1's canonical layout: a **format** rule, not this reader's preference. The region
+    # order, the two alignments, and the region sizes determine every offset, so an `akvp` v1
+    # container has exactly one layout at a given `token_count`, `n_vocab`, and `plane_align`.
+    # `src/kv_plane.align`'s L7 re-derives the same three offsets and refuses a non-canonical one as
+    # `R6_KV_REGION("layout")`, so the two implementations refuse the same files.
+    expected_identity_offset = align_up(HEADER_BYTES + h["token_stream_bytes"], REGION_ALIGN)
+    expected_logits_offset = align_up(expected_identity_offset + IDENTITY_RECORD_BYTES,
+                                      REGION_ALIGN)
+    expected_plane_offset = align_up(expected_logits_offset + h["logits_bytes"], h["plane_align"])
+    for name, actual, expected in (
+            ("token_stream_offset", h["token_stream_offset"], HEADER_BYTES),
+            ("identity_offset", h["identity_offset"], expected_identity_offset),
+            ("logits_offset", h["logits_offset"], expected_logits_offset),
+            ("plane_offset", h["plane_offset"], expected_plane_offset)):
+        if actual != expected:
+            reject("REGION", "the region layout is not section 2.3's: %s is %d, expected %d"
+                   % (name, actual, expected))
     return h
 
 
@@ -334,7 +344,7 @@ def inspect(args):
             ("identity->logits", h["identity_offset"] + IDENTITY_RECORD_BYTES, h["logits_offset"]),
             ("logits->plane", h["logits_offset"] + h["logits_bytes"], h["plane_offset"])):
         if any(raw[start:end]):
-            reject("REGION", "the %s padding is not zero" % name)
+            reject("RESERVED", "the %s padding is not zero" % name)
 
     h["ids"] = ids
     h["digests"] = {name: value.hex() for name, value in digests.items()}

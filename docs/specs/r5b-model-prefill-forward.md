@@ -546,10 +546,16 @@ Exactly four, five, six, eight, or nine operands. **Seven is `R5_ARITY`**, and t
 contract: `KV_WIDTH` is not optional metadata beside the transcript, it is what makes the comparison
 against that transcript meaningful, so it travels with it.
 
-Arm selection, `MAX_PATH_BYTES`, the `-` document convention, `TOKENS` (1 to 6 comma-separated
-non-negative decimal ids, each `< n_vocab`), and `MAX_PREFILL_TOKENS = 6` are
-`r5a-dense-layer-forward.md` section 3.3's, verbatim. The cap remains the oracle's rather than the
-arithmetic's, and section 5.4 keeps lifting it with R6.
+Arm selection, `MAX_PATH_BYTES`, the `-` document convention, `TOKENS` (1 to 32 comma-separated
+non-negative decimal ids, each `< n_vocab`), and `MAX_PREFILL_TOKENS = 32` are
+`r5a-dense-layer-forward.md` section 3.3's, verbatim. The cap was 6 when this arm shipped,
+`R6-DECODE-KV-STEP1` (`docs/specs/r6-decode-kv-step1.md` section 2.7) lifted it to 8, and `R6-STEP-N`
+(`docs/specs/r6-step-n.md` section 2.5) lifted it to 32, both times for the decode arm. The cap remains the oracle's rather than the arithmetic's, and this arm keeps it that way the
+same way R5A does: a token count above six **with a transcript** is `R5_ORACLE_TRUNCATED` at the
+token stage, before any container or graph work, with detail `tokens[<n>]`
+(`src/model_forward.align`). Without a transcript the same count is admitted — which is what
+`--decode-step`'s oracle-C pass relies on, since it runs this arm at `T + 1` tokens with `-` in the
+transcript position.
 
 **`KV_WIDTH` is the attention width the reference instrument used**, a non-negative decimal integer
 in `[token_count, MAX_ATTENTION_WIDTH]` with `MAX_ATTENTION_WIDTH = 4096`. `KV_WIDTH == token_count`
@@ -870,7 +876,9 @@ step 20, and nothing outside the process is ever written.**
 1. Arm selection and exact arity — four, five, six, eight, or nine operands. → `R5_ARITY`
 2. Lexical path validation of every path operand; `-` in the document position is not a path. →
    `R5_PATH`
-3. `TOKENS` parses: 1–6 non-negative decimal integers, comma-separated, no spaces. → `R5_TOKENS`
+3. `TOKENS` parses: 1–8 non-negative decimal integers, comma-separated, no spaces. → `R5_TOKENS`.
+   A count above six **with a transcript** is refused in the same stage, before any container work.
+   → `R5_ORACLE_TRUNCATED`
 4. `KV_WIDTH` parses and is in `[token_count, MAX_ATTENTION_WIDTH]`. → `R5_KV_WIDTH`
 5. Geometry document open and read. → `R5_GEOMETRY_UNREADABLE`
 6. Geometry parses, `kind == "R1_MODEL_IR"`, `schema_version == 2`. → `R5_GEOMETRY`
@@ -937,7 +945,8 @@ step 20, and nothing outside the process is ever written.**
 | --- | --- | --- | --- |
 | `R5_ARITY` | wrong arm or operand count, including seven | 1 | `N/A` — no document exists |
 | `R5_PATH` | a path operand is empty, too long, or contains NUL | 2 | `N/A` — no document exists |
-| `R5_TOKENS` | the token list does not parse, is empty, exceeds six, or names an id `>= n_vocab` | 3, 10 | `token[<i>]` |
+| `R5_TOKENS` | the token list does not parse, is empty, exceeds `MAX_PREFILL_TOKENS` (32), or names an id `>= n_vocab` | 3, 10 | `token[<i>]` |
+| `R5_ORACLE_TRUNCATED` | a transcript is supplied and the token count exceeds six, the width above which `llama-eval-callback` prints a tensor's rows truncated | 3 | `tokens[<n>]` |
 | `R5_KV_WIDTH` | **new.** `KV_WIDTH` does not parse, is below the token count, or exceeds 4096 | 4 | `kv_width[<n>]` |
 | `R5_GEOMETRY_UNREADABLE` | the geometry document could not be opened or read | 5 | the path's failure |
 | `R5_GEOMETRY` | not a v2 `R1_MODEL_IR`, a missing/out-of-range/inconsistent field, an unusable bit pattern, or an unsupported architecture | 6–9 | the field or relation |
@@ -1348,7 +1357,10 @@ than against an intuition.
   first task is naming the oracle, not writing the cache. Section 2.7's reconciliation pass is the
   measurement that says what the cache will cost in agreement terms: **nothing**, because at a
   matched reduction width the answer is already byte-identical.
-- **Lifting `MAX_PREFILL_TOKENS` above 6.** Same blocker, same owner. R6.
+- **Lifting `MAX_PREFILL_TOKENS` above 6.** Same blocker, same owner. R6. **Discharged by
+  R6-DECODE-KV-STEP1 and R6-STEP-N**: the constant is 8 and then 32, the instrument is unchanged, and
+  this arm refuses a transcript above six tokens with `R5_ORACLE_TRUNCATED` (section 3.3) rather than
+  comparing rows it never saw.
 - **A residency policy.** Cache score, eviction, tiering across GPU/system/NVMe, and prefetch.
   Section 5.3 is its baseline. `docs/specs/align-llm.md`'s residency section is the design of record
   and R5B changes none of it.

@@ -40,8 +40,8 @@ mandatory operand on a load run, and the saving is bounded above by the cost of 
 
 ### 1.2 Why the design gate fires
 
-Three of `CLAUDE.md`'s four triggers fire, and this is the first R6 capability for which the third
-is true rather than arguable.
+**All four** of `CLAUDE.md`'s triggers fire, and this is the first R6 capability for which the
+fourth is true rather than arguable. The table below is the count: four rows, four `Yes`.
 
 | Trigger | Fired | Why |
 | --- | --- | --- |
@@ -50,7 +50,7 @@ is true rather than arguable.
 | Ownership / process / network boundary | **Yes** | R6 section 2.9 records "N/A — nothing is persisted" and R6-STEP-N repeats it. That row is now false. The plane crosses a **process boundary** through a file: one process owns and frees it, a different process reconstructs it, and the two are bound only by bytes on disk |
 | Coordinated invariant across ≥ 3 modules | **Yes** | The plane's layout — layer-major, K then V per layer, `stride = kv_width · n_head_kv · head_dim · 4`, columns with `head_dim` fastest — is today an invariant private to `src/decode_step.align`. Persisting it publishes it, and `src/kv_plane.align`, `src/decode_step.align`, `scripts/kv_plane_reader.py`, and `scripts/layer_forward_fixture.py` must now agree on it byte for byte |
 
-R6-STEP-N withdrew the third trigger with a reason (section 10.8: the invariant was R6's and
+R6-STEP-N withdrew the fourth trigger with a reason (section 10.8: the invariant was R6's and
 unchanged, only its consumers moved). Here the invariant itself changes status — from a private
 convention to a published contract with an independent second reader — so the trigger is claimed,
 and section 4's closure matrix is required rather than voluntary.
@@ -205,10 +205,15 @@ Four properties of that order are contract, not incident:
 3. **The plane is `plane_align`-aligned** (4096, the page size on both targets), for alignpack's
    reason: a later `O_DIRECT` read, an `mmap` of the plane region, or a GPU staging upload all want
    it, and it costs a bounded 4095 bytes.
-4. **Padding is written, not left as a hole.** A `pwrite` past the current end extends the file with
-   a zero hole; a sparse file and a dense file of the same plane report different sizes to `du`, and
-   a reader validating "padding is zero" should validate bytes that exist. One `PAD` buffer of
-   `plane_align` zero bytes is built once and each pad is one `f.pwrite` of a sub-slice of it.
+4. **Padding is written, not left as a hole, and it is zero — validated by both implementations.** A
+   `pwrite` past the current end extends the file with a zero hole; a sparse file and a dense file
+   of the same plane report different sizes to `du`, and a reader validating "padding is zero"
+   should validate bytes that exist. One `PAD` buffer of `plane_align` zero bytes is built once and
+   each pad is one `f.pwrite` of a sub-slice of it. **No digest covers the gaps**, so "padding is
+   zero" is a rule or it is nothing: the arm checks the three gaps at L6 and refuses a non-zero byte
+   as `R6_KV_RESERVED("padding")`, and `scripts/kv_plane_reader.py` reaches its own `RESERVED`.
+   `ds-kv-padding-nonzero` is the case, and every one of the five digests still recomputes correctly
+   on that file, which is what makes the rule load-bearing rather than incidental.
 
 #### 2.3.1 Header — 192 bytes at offset 0
 
@@ -229,7 +234,7 @@ Four properties of that order are contract, not incident:
 | 64 | 8 | `u64` | `identity_offset` | |
 | 72 | 8 | `u64` | `logits_offset` | |
 | 80 | 8 | `u64` | `logits_bytes` | `== n_vocab * 4` |
-| 88 | 8 | `u64` | `plane_offset` | multiple of `plane_align` |
+| 88 | 8 | `u64` | `plane_offset` | multiple of `plane_align`, and equal to the canonical value below |
 | 96 | 8 | `u64` | `plane_bytes` | `== n_layer * 2 * kv_width * n_head_kv * head_dim * 4` |
 | 104 | 4 | `u32` | `n_layer` | `>= 1` |
 | 108 | 4 | `u32` | `n_head_kv` | `>= 1` |
@@ -242,6 +247,25 @@ Four properties of that order are contract, not incident:
 | 136 | 4 | `u32` | `document_schema_version` | `3` — the `R6_DECODE_STEP` schema this writer emits |
 | 140 | 4 | `u32` | `reserved_u32` | `0` |
 | 144 | 48 | `u8[48]` | `reserved` | all zero |
+
+**There is exactly one layout, and it is a format rule.** The region order, `REGION_ALIGN`,
+`plane_align`, and the two variable region sizes together determine every offset, so an `akvp` v1
+container at a given `token_count`, `n_vocab`, and `plane_align` has one legal layout and no other:
+
+```text
+token_stream_offset = header_bytes                                          # 192
+identity_offset     = align_up(header_bytes + token_count * 4, 8)
+logits_offset       = align_up(identity_offset + identity_record_bytes, 8)
+plane_offset        = align_up(logits_offset + n_vocab * 4, plane_align)
+total_bytes         = plane_offset + plane_bytes
+```
+
+`src/kv_plane.align`'s `plan_header` forms these four on the writing side and its `read_header`
+re-derives the same four at L7, and `scripts/kv_plane_reader.py` re-derives them independently. A
+file whose regions are merely *containable, aligned, disjoint, and plane-last* — a plane pushed one
+whole `plane_align` forward, say — is refused as `R6_KV_REGION("layout")` by both. Accepting it in
+one implementation and refusing it in the other would be a format with two meanings;
+`ds-kv-region-noncanonical` is the case.
 
 **Why 192 rather than alignpack's 128.** Every field above is load-bearing and they sum to 144; the
 remaining 48 bytes are reserve. alignpack v1 shipped a 128-byte header with a single 8-byte reserved
@@ -360,6 +384,16 @@ common mistake reports the field rather than an opaque digest mismatch.
   `reference.verdict == "IDENTICAL"` on every qualification prompt. It is a limitation, not a gap:
   filling it needs a whole-payload digest, which is Request 29.
 
+**A digest of thirty-two zero bytes is not an identity, and is refused rather than compared.** The
+pack's source-identity record is optional in alignpack's own format, and a pack that reserved it and
+left it zero hands this arm an all-zero `source_header_region_sha256` — which compares **equal** to
+the all-zero digest a container written against such a pack would carry, so `R6_KV_IDENTITY("pack")`
+would pass over nothing. Step 7b refuses the degenerate value on both directions with
+`R6_KV_IDENTITY("pack_absent")`: a container is never written with an identity that cannot
+distinguish one model from another, and one is never loaded on it. `ds-kv-pack-identity-absent` is
+the case, and section 11.3 deviation 4 — which made the *fixture* write a non-degenerate record — is
+the same class caught one layer lower.
+
 **Invalidation rule: every mismatch is a refusal, never a silent re-prefill.** There is no fallback
 path, no "recompute on miss", and no partial acceptance. A caller that wants a prefill runs without
 `KV_LOAD`. A capability that silently substitutes a different computation for the one it was asked
@@ -370,10 +404,11 @@ for is a cache, and section 1.3 declares that this is not one.
 | Field | Contract |
 | --- | --- |
 | Constant | `MAX_KV_PLANE_BYTES := 536870912` (512 MiB), `src/kv_plane.align` |
-| Applies to | `plane_bytes`, on **both** directions, checked at validation step 6a — before the pack is opened and long before a prefill runs |
+| Applies to | `plane_bytes`, on **both** directions. On a save run at step 6a, from the geometry and the operand — before the pack is opened and long before a prefill runs. On a load run again at L7, from the header, because there the number comes out of a file this process did not write |
 | Failure | `R6_KV_TOO_LARGE`, detail `plane[<n>]` |
-| Companion | `MAX_KV_LOGITS_BYTES := 16777216` (16 MiB); `R6_KV_TOO_LARGE` detail `logits[<n>]` |
-| Companion | `MAX_KV_CONTAINER_BYTES := 1073741824` (1 GiB), the whole-file bound checked against the header's `total_bytes` before any region is addressed |
+| Companion | `MAX_KV_LOGITS_BYTES := 16777216` (16 MiB); `R6_KV_TOO_LARGE` detail `logits[<n>]`. Checked at 6a and at L7, for the same reason |
+| Companion | `MAX_KV_CONTAINER_BYTES := 1073741824` (1 GiB), the whole-file bound; checked at 6a and at L7 against the header's `total_bytes` before any region is addressed |
+| All three on load | Checked at L7 **before** `f.len() == total_bytes`, so a header claiming an unreasonable magnitude is refused on its own claim rather than through the file's length, and a case can state the bound without materializing half a gigabyte. `ds-kv-plane-too-large` and `ds-kv-logits-too-large` are the cases; `scripts/kv_plane_reader.py` bounds all three in the same place and reaches its coarse `HEADER` |
 
 **Why a bound exists at all.** `crypto.sha256` is one-shot over one byte view. alignpack met the same
 wall and bounded its digested region at `MAX_HEADER_REGION_BYTES := 134217728` (128 MiB,
@@ -397,9 +432,10 @@ precedent, so the precedent's *number* cannot be inherited and its *reasoning* m
   alone, and the one thing the digest exists to catch (a torn write, which section 6 risk 6 says is
   the realistic failure) would go undetected. alignpack could reserve `payload_sha256` because it has
   a second, complete verification arm; this capability has none.
-- The existing `MAX_PLANE_BYTES := 8589934592` (8 GiB, `src/decode_step.align:71`) is the **in-memory**
-  bound and is unchanged. `MAX_KV_PLANE_BYTES` is deliberately smaller and is the **persisted-and-
-  digested** bound. The two are different questions and the ledger keeps them apart.
+- The existing `MAX_PLANE_BYTES := 8589934592` (8 GiB, `src/decode_step.align:76`) is the
+  **in-memory** bound and is unchanged. `MAX_KV_PLANE_BYTES` is deliberately smaller and is the
+  **persisted-and- digested** bound. The two are different questions and the ledger keeps them
+  apart.
 
 The bound is checked at step 6a, **before the prefill**, so a caller who asks for an unpersistable
 configuration learns it in milliseconds rather than after paying for a prefill.
@@ -423,6 +459,7 @@ R6-STEP-N's steps 1–16 keep their order and their codes. This capability inser
 | **6a** | **either operand present: `plane_bytes <= MAX_KV_PLANE_BYTES`, `n_vocab * 4 <= MAX_KV_LOGITS_BYTES`, `total_bytes <= MAX_KV_CONTAINER_BYTES`** | **`R6_KV_TOO_LARGE`** | `plane[<n>]` / `logits[<n>]` / `container[<n>]` |
 | **6b** | **`KV_SAVE` present: `fs.exists(KV_SAVE)` is false** | **`R6_KV_EXISTS`** | the sanitized destination path |
 | 7–8 | pack members, plane sizing; **plus** the pack's `source_header_region_sha256` and `total_bytes`, read once, when either operand is present | unchanged / `R6_PACK_*` | unchanged |
+| **7b** | **either operand present: the pack's `source_header_region_sha256` is not thirty-two zero bytes** | **`R6_KV_IDENTITY`** | `pack_absent` |
 | 9–10 | prefill pass, plane readback of columns `0 .. T-1` | unchanged | unchanged |
 | — | **on `KV_LOAD`, steps 9 and 10 do not run; L1–L14 run instead** | | |
 | — | **on `KV_SAVE`, W1–W4 run immediately after step 10 and before step 11′** | | |
@@ -437,9 +474,9 @@ once every field agrees.
 | L2 | `f.len() >= header_bytes` (192) | `R6_KV_TRUNCATED` | `header` |
 | L3 | `magic == AKVP` | `R6_KV_MAGIC` | the four bytes, hex-escaped |
 | L4 | `format_version == 1` | `R6_KV_VERSION` | the version |
-| L5 | `header_bytes`, `identity_record_bytes`, `element_type`, `plane_layout_version`, `plane_align`, `document_schema_version`, `endian_probe`; every `u64` offset/length has its high bit clear; every `u32` count is `>= 1` and inside its own `MAX_*` | `R6_KV_HEADER` | the field name |
-| L6 | `flags == 0`, `reserved_u32 == 0`, the 48 reserved header bytes are zero, the 24 reserved identity bytes are zero | `R6_KV_RESERVED` | the field name |
-| L7 | `f.len() == total_bytes`; every region inside `[0, total_bytes)`; regions pairwise disjoint; each region 8-byte aligned; `plane_offset % plane_align == 0`; `plane_offset + plane_bytes == total_bytes`; `token_stream_bytes == token_count * 4`; `logits_bytes == n_vocab * 4` | `R6_KV_TRUNCATED` / `R6_KV_REGION` | `<a>!=<b>` or the region name |
+| L5 | `header_bytes`, `identity_record_bytes`, `element_type`, `plane_layout_version`, `plane_align`, `document_schema_version`, `endian_probe`; every `u64` offset/length has its high bit clear; every `u32` count against the bound this format states for it — `kv_width <= MAX_ATTENTION_WIDTH`, `token_count <= MAX_PREFILL_TOKENS`, `columns_persisted <= kv_width`, `0 <= prefill_argmax < n_vocab`, and `n_layer`/`n_head_kv`/`head_dim`/`n_vocab` `>= 1`. **Those four have no `MAX_*` of their own**; the shapes they imply are bounded at L7 by section 2.5's three bounds and settled at L8 against the loaded geometry | `R6_KV_HEADER` | the field name |
+| L6 | `flags == 0`, `reserved_u32 == 0`, the 48 reserved header bytes are zero, the 24 reserved identity bytes are zero, **and the three inter-region padding runs are zero** (taken after L7, because it is the one reserved-space rule that needs L7's validated offsets) | `R6_KV_RESERVED` | the field name, or `padding` |
+| L7 | `plane_bytes <= MAX_KV_PLANE_BYTES`, `logits_bytes <= MAX_KV_LOGITS_BYTES`, `total_bytes <= MAX_KV_CONTAINER_BYTES`; `f.len() == total_bytes`; every region inside `[0, total_bytes)`; regions pairwise disjoint; each region 8-byte aligned; `plane_offset % plane_align == 0`; `plane_offset + plane_bytes == total_bytes`; `token_stream_bytes == token_count * 4`; `logits_bytes == n_vocab * 4`; **and the four offsets equal section 2.3.1's canonical layout** | `R6_KV_TOO_LARGE` / `R6_KV_TRUNCATED` / `R6_KV_REGION` | `plane[<n>]` / `logits[<n>]` / `container[<n>]`, `<a>!=<b>` or the region name, `layout` |
 | L8 | `n_layer`, `n_head_kv`, `head_dim`, `n_vocab`, `element_type` equal the loaded geometry's; `plane_bytes == plane_bytes_for(g, kv_width)` | `R6_KV_GEOMETRY` | the field name |
 | L9 | `source_header_region_sha256` and `pack_total_bytes` equal the pack's | `R6_KV_IDENTITY` | `pack` / `pack_total_bytes` |
 | L10 | `geometry_sha256` equals `crypto.sha256` of the geometry bytes this run read | `R6_KV_IDENTITY` | `geometry` |
@@ -461,7 +498,7 @@ is how two documents come to disagree. The detail is widened to name both values
 | W1 | `fs.create_rw(KV_SAVE)` | `R6_KV_UNWRITABLE` | the Align `Error` variant name |
 | W2 | write header, token stream, padding, identity record, logits, padding, plane — each with one `f.pwrite` at its declared offset | `R6_KV_WRITE_FAILED` | `<Variant>@<offset>` |
 | W3 | `f.len() == total_bytes` | `R6_KV_SIZE_MISMATCH` | `<a>!=<b>` |
-| W4 | on any failure at or after W1: `fs.remove(KV_SAVE)`; `kv.destination` becomes `"REMOVED"`, or `"WRITTEN"` with `R6_KV_CLEANUP_FAILED` in the detail | `R6_KV_CLEANUP_FAILED` | the sanitized path |
+| W4 | on any failure at or after W1: `fs.remove(KV_SAVE)` — the **destination name**, with the dangling-symlink consequence stated below; `kv.destination` becomes `"REMOVED"`, or `"WRITTEN"` with `R6_KV_CLEANUP_FAILED` in the detail | `R6_KV_CLEANUP_FAILED` | the sanitized path |
 
 **The plane is one `pwrite`, and that is verified rather than assumed.** `f.pwrite` writes **all** of
 its argument, looping over partial writes internally and retrying `EINTR`
@@ -485,6 +522,19 @@ overwrite would be worse than naming it. A destination that is a **symlink** is 
 directions, exactly as alignpack's `dest-symlink` case pins: an existing target is `R6_KV_EXISTS`
 naming the link's path, and a **dangling** symlink is created through, so a caller who removes the
 name it passed has not removed the container.
+
+**One consequence of following a dangling symlink is stated rather than hidden, because W4's "every
+failure removes it" is not true of it.** `fs.remove(KV_SAVE)` removes the **name** it was given.
+When that name is a dangling symlink, `fs.create_rw` created the file at the link's target and
+`fs.remove` unlinks the symlink, so a write failure at W2 or W3 leaves a partial container **at the
+target** and `kv.destination` still reports `"REMOVED"` — which is true of the name and false of the
+bytes. It is not defended, for the reason `R6_KV_EXISTS`'s race is not defended: at this pin there
+is no `fs.symlink_metadata`, no `lstat`, and no `O_NOFOLLOW`, so the arm cannot distinguish a
+dangling symlink from an absent path without a capability Align does not ship (section 8 records no
+new request for it: refusing symlink destinations outright would also change
+`ds-kv-save-exists-symlink`'s settled behaviour, which alignpack pins). The exposure is one
+developer host writing to a caller-named path it chose; the honest scope of W4 is therefore **"the
+destination name is removed"**, and section 7 carries it as a declared limitation.
 
 **Multi-invalid precedence is total and asserted.** Three orderings carry cases of their own because
 they are the ones a reader would guess wrong: `R6_KV_ARGS` (2b) precedes every path-content check,
@@ -531,7 +581,8 @@ and `f.pread` overwrites from index 0 and always requests exactly the destinatio
 cannot be resumed mid-buffer. The plane is filled in `model_forward.CHUNK_BYTES` (1 MiB) rounds
 through the transient and `model_forward.window_put` → `ggml_ffi.window_copy` →
 `align_ggml_window_copy`, the bounded `memcpy` R5B added for this exact reason and wired at
-`src/ggml_ffi.align:193,772`. This is **Request 38's** second consumer and no new request is proposed.
+`src/ggml_ffi.align:259,925`. This is **Request 38's** second consumer and no new request is
+proposed.
 
 **No in-arm read-back of the metadata regions.** It was considered: `pread` the first `plane_offset`
 bytes after W3 and compare against the images just written. It is **not taken**, because a read-back
@@ -548,6 +599,7 @@ look like durability evidence and would not be any (section 7).
 | `schema_version` | **3** |
 | New: `plane.source` | `"PREFILL"` when the prefill computed the plane, `"LOADED"` when `KV_LOAD` supplied it. Present in every document, `"-"` on a document refused before the plane exists |
 | New: the `kv` object | Present in **every** document, including error documents, with one shape at every arity |
+| **Changed: `reference.verdict`** | **`"-"` on a load run**, and this is a public field's behaviour changing rather than only a test exclusion. R5B's byte comparison of every pack member against the source GGUF lives **inside the prefill pass**, so a load run performs zero comparisons; before this capability `schedule_decode` set `REFERENCE_IDENTICAL` whenever `reference_present && code == 0`, which on a load run would publish a pass over nothing. The condition is now additionally `&& !loading`. `reference.present` still reports whether the operand was supplied, every count stays `0`, and the prefill path is character-for-character unchanged. The qualification asserts `reference.verdict == "IDENTICAL"` on the **save** run, where the comparison actually ran |
 | `output`, `oracle_logits` | **Populated on a load run too**, from the persisted logit vector: `output.sha256` is the digest of the loaded bytes, `output.argmax` is `prefill_argmax`, and `oracle_logits` compares the loaded vector against `LOGITS` exactly as a prefill run does. This is section 2.4's whole reason for persisting the logits — see below |
 | `decode`, `steps[]`, `plane`, `oracle_decode`, `model`, `selection`, `graph`, `schedule`, `head`, `timings`, `lifetime`, `abi` | Unchanged in shape from schema 2 |
 | New: `timings.first_token_ns` | The interval from `execute`'s first `time.instant()` to the instant step 1's argmax is available; `0` when no step completed. Section 1.4's diagnostic. **Zeroed by `normalize`** |
@@ -654,11 +706,17 @@ run writes `plane.akvp`; a **separate process** loads it. Three independent thin
 
 **Oracle Q — the two runs are the same run (external to the container, acceptance).** With
 `normalize_persist` defined as `normalize` plus dropping the keys below, the save run's and the load
-run's documents must be **byte-identical**:
+run's documents must be **byte-identical**. The list is **sixteen groups**: the design named eight,
+and an empirical field-by-field diff of a save-run document against a load-run document found eight
+more, each a count of work the prefill did and the load run did not (section 11.3, deviation 2).
+This is the shipped list, and both runners hold exactly it:
 
 ```text
-excluded: kv, plane.source, plane.readback_ns, plane.upload_ns,
-          graph, schedule, timings, lifetime
+excluded blocks (6): kv, graph, schedule, timings, lifetime, reference
+excluded fields (10): plane.source, plane.readback_ns, plane.upload_ns,
+                      head.node_count, head.pread_ns, head.compute_ns,
+                      pack.reader_pread_count, pack.reader_bytes_read,
+                      window.reuse_count, window.member_placements
 ```
 
 Everything else is compared, and the exclusions are each justified rather than convenient:
@@ -667,7 +725,11 @@ Everything else is compared, and the exclusions are each justified rather than c
 | --- | --- |
 | `kv`, `plane.source` | They *are* the difference |
 | `graph`, `schedule` | A load run builds no prefill graph, so graph and node counts legitimately differ |
-| `timings`, `lifetime`, `plane.*_ns` | Wall clock, and ggml object counts that follow the graph count |
+| `timings`, `lifetime`, `plane.*_ns`, `head.pread_ns`, `head.compute_ns` | Wall clock, and ggml object counts that follow the graph count |
+| `head.node_count` | The prefill's own head graph, which the load run does not build |
+| `pack.reader_pread_count`, `pack.reader_bytes_read` | The prefill's own weight sweep. The decode loop's reads are still compared, because they are in the same two counters and both runs perform them |
+| `window.reuse_count`, `window.member_placements` | Window fills the prefill performed |
+| `reference` | R5B's byte comparison against the source GGUF lives in the prefill pass, so a load run performs none of it and publishes `reference.verdict: "-"` (section 2.8, section 11.3 deviation 3). This is the **one** excluded group that is not purely a count, and it is excluded because the work behind it did not run |
 
 **What that leaves inside the comparison is the point**: `decode` in full, including `token_ids`;
 every object of `steps[]`, including each step's `sha256`, `argmax`, `n_past`,
@@ -741,7 +803,7 @@ a reason. `T` is the prefill length, `N` the step count, `k` a step index.
 
 | Phase | Implementation | Regression |
 | --- | --- | --- |
-| Formation / validation | `read_header(borrow f: file) -> KvHeader` decodes 192 bytes and runs L2–L7 in order, returning a Copy record whose `code`/`detail` are set on the first failure | `ds-kv-magic`, `-version`, `-header-bytes`, `-identity-record-bytes`, `-element-type`, `-layout-version`, `-plane-align`, `-endian-probe`, `-flags`, `-reserved`, `-truncated-header`, `-truncated-total`, `-region-overlap`, `-region-outside`, `-region-misaligned`, `-plane-not-last` |
+| Formation / validation | `read_header(borrow f: file) -> KvHeader` decodes 192 bytes and runs L2–L7 in order, returning a Copy record whose `code`/`detail` are set on the first failure; `padding_zero(borrow f, borrow h)` runs L6's third part over the three gaps | `ds-kv-magic`, `-version`, `-header-bytes`, `-identity-record-bytes`, `-element-type`, `-layout-version`, `-plane-align`, `-endian-probe`, `-flags`, `-reserved`, `-truncated-header`, `-truncated-total`, `-longer-total`, `-region-overlap`, `-region-outside`, `-region-misaligned`, `-plane-not-last`, `-region-noncanonical`, `-padding-nonzero`, `-plane-too-large`, `-logits-too-large` |
 | Construction | `write_container(dest: str, borrow h: KvHeader, borrow ids: slice<u8>, borrow logits: slice<u8>, borrow plane: slice<u8>) -> KvWrite`; every field is fixed before `fs.create_rw` | `ds-kv-save-ok`; the reader accepts the produced file |
 | Success | header, token stream, identity, logits, plane written at declared offsets, padding explicit, `f.len() == total_bytes` | `ds-kv-save-ok` asserts `kv.total_bytes == 4608` on the synthetic; `du` check in the qualification |
 | Failure | `fs.create_rw` fails → `R6_KV_UNWRITABLE`; a `pwrite` fails → `R6_KV_WRITE_FAILED` with `<Variant>@<offset>` | `ds-kv-save-unwritable` (destination inside a `0555` directory) → `R6_KV_UNWRITABLE`, no file. **`R6_KV_WRITE_FAILED` is deferred as a case**: reaching it needs a filesystem that accepts a create and refuses a write, which alignpack reaches only through an opt-in `hdiutil` volume — reused, not rebuilt (section 5.2) |
@@ -770,7 +832,7 @@ a reason. `T` is the prefill length, `N` the step count, `k` a step index.
 | --- | --- | --- |
 | Construction | `Outcome` gains the `kv_*` scalars and `plane_source`; `StepColumns` is **unchanged** — nothing here is per step | the compiler's own struct-size warning, unchanged in count (Request 23) |
 | Success | `window_put` and `CHUNK_BYTES` are **reused unchanged** by the refill; the prefill path is untouched | `model-forward-golden.jsonl` **byte-unchanged** |
-| Failure | a refill round whose copied byte count does not reach `plane_bytes` | `R6_KV_TRUNCATED("plane")`; `ds-kv-truncated-plane` |
+| Failure | a refill round whose copied byte count does not reach `plane_bytes` | `R6_KV_TRUNCATED("kv_plane")`. **No `ds-kv-*` case reaches it and none can**, and the reason is L7: the plane is the container's last region and `f.len() == total_bytes` and `plane_offset + plane_bytes == total_bytes` are both proved before a byte of the plane is read, so a container that reaches the refill has a complete plane region by construction. The cell is closed by an **injected mutant** instead — section 5.5's "plane read offset off by four", which fails `ds-kv-load-ok` with exactly this code and detail — and section 11.2 records it |
 | Malformed input / Early exit / Cleanup | unchanged | existing `mf-*` cases |
 | **Non-regression** | no constant, no node row, no slot, no mask writer moves | `gpu-forward-golden.jsonl`, `moe-layer-forward-golden.jsonl`, `layer-forward-golden.jsonl`, `ggml-spike-golden.jsonl` **byte-unchanged**; predicted in section 5.3 |
 
@@ -778,7 +840,7 @@ a reason. `T` is the prefill length, `N` the step count, `k` a step index.
 
 | Phase | Implementation | Regression |
 | --- | --- | --- |
-| **All phases** | **N/A — byte-unchanged, all five.** `ggml_spike` forwards `args` to `decode_step.run` at line 1603 and holds no arity set. The shim needs no new symbol: `align_ggml_window_copy` shipped with R5B and is the refill's only crossing. `layer_qwen2` gains no constant — `MAX_KV_*` belong to the format owner, not to the model's geometry module | The shared-region byte-identity check (`run-layer-forward-smoke:57-64`), the `unsafe`/`extern` confinement scan (`:75-86`), and the no-`malloc` scan (`:65-68`) all pass **with no diff to check**, which is this row's evidence. `ds-arm-unknown-flag` on `--decode-stepped` is unchanged |
+| **All phases** | **N/A — byte-unchanged, all five.** `ggml_spike` forwards `args` to `decode_step.run` at line 1603 and holds no arity set. The shim needs no new symbol: `align_ggml_window_copy` shipped with R5B and is the refill's only crossing. `layer_qwen2` gains no constant — `MAX_KV_*` belong to the format owner, not to the model's geometry module | The shared-region byte-identity check (`run-layer-forward-smoke:61-68`), the `unsafe`/`extern` confinement scan (`:79-89`), and the no-`malloc` scan (`:69-72`) all pass **with no diff to check**, which is this row's evidence. `ds-arm-unknown-flag` on `--decode-stepped` is unchanged |
 
 ### 4.5 `scripts/kv_plane_reader.py` — the independent reader
 
@@ -798,7 +860,7 @@ a reason. `T` is the prefill length, `N` the step count, `k` a step index.
 | --- | --- | --- |
 | Construction | `write_decode_corpus` gains `write_kv_container(path, mutation=None)`: it emits a **known-good** `akvp` v1 container for the synthetic two-layer model from its own pure-Python prefill — the same generator that already produces the plane's expected values — and, given a mutation name, one byte-level defect | every `ds-kv-*` refusal case consumes one of its outputs |
 | **The fixture is a third implementation, and that is the point** | The arm writes containers, the reader reads them, and the fixture writes them **from the same document without reading either**. A `ds-kv-load-fixture` case loads a fixture-written container and must decode the same ids as `ds-kv-load-ok` | `ds-kv-load-fixture` |
-| Success | ~24 files: one good container and one per mutation | the case table |
+| Success | **42 files**: one known-good container, one per named mutation (**39**), one honest short-prompt container for `ds-kv-tokens-count`, and one written against a foreign geometry document | the case table |
 | Failure | **N/A** — the generator is total over its own fixed inputs and reads no external file | stated, with reason |
 | Malformed input | **N/A** — it produces malformed input; it consumes none | stated, with reason |
 | Early exit | the argv guard rejects an option-shaped operand, as today | existing |
@@ -876,6 +938,7 @@ byte-unchanged.
 | `ds-kv-save-exists-symlink` | destination a symlink to an existing file | `R6_KV_EXISTS` | N/A |
 | `ds-kv-save-unwritable` | destination inside a `0555` directory | `R6_KV_UNWRITABLE` | N/A |
 | `ds-kv-too-large` | a geometry whose `plane_bytes` exceeds `MAX_KV_PLANE_BYTES` | `R6_KV_TOO_LARGE` | N/A |
+| `ds-kv-pack-identity-absent` | the **pack's** source-identity digest is thirty-two zero bytes | `R6_KV_IDENTITY` `pack_absent` | N/A (the defect is in the pack) |
 | `ds-kv-load-missing` | `KV_LOAD` names nothing | `R6_KV_UNREADABLE` | N/A |
 | `ds-kv-truncated-header` | file of 100 bytes | `R6_KV_TRUNCATED` `header` | `TRUNCATED` |
 | `ds-kv-magic` | byte 0 flipped | `R6_KV_MAGIC` | `MAGIC` |
@@ -891,10 +954,15 @@ byte-unchanged.
 | `ds-kv-flags` | `flags = 1` | `R6_KV_RESERVED` `flags` | `RESERVED` |
 | `ds-kv-reserved` | a reserved header byte non-zero | `R6_KV_RESERVED` | `RESERVED` |
 | `ds-kv-truncated-total` | last 64 bytes removed | `R6_KV_TRUNCATED` `<a>!=<b>` | `TRUNCATED` |
+| `ds-kv-longer-total` | 64 bytes appended; the header untouched | `R6_KV_TRUNCATED` `4672!=4608` | `TRUNCATED` |
+| `ds-kv-plane-too-large` | `plane_bytes` one byte above `MAX_KV_PLANE_BYTES`, declared not materialized | `R6_KV_TOO_LARGE` `plane[536870913]` | `HEADER` |
+| `ds-kv-logits-too-large` | `logits_bytes` above `MAX_KV_LOGITS_BYTES`, with the matching `n_vocab` | `R6_KV_TOO_LARGE` `logits[16777220]` | `HEADER` |
 | `ds-kv-region-overlap` | `identity_offset` moved into the token stream | `R6_KV_REGION` `identity` | `REGION` |
 | `ds-kv-region-outside` | `plane_offset` past `total_bytes` | `R6_KV_TRUNCATED` `plane` | `REGION` |
 | `ds-kv-region-misaligned` | `plane_offset` not a multiple of `plane_align` | `R6_KV_REGION` `plane` | `REGION` |
 | `ds-kv-plane-not-last` | `plane_offset + plane_bytes < total_bytes` | `R6_KV_REGION` `plane` | `REGION` |
+| `ds-kv-region-noncanonical` | the plane pushed one whole `plane_align` forward: containable, aligned, disjoint, plane-last, and **not** section 2.3.1's layout | `R6_KV_REGION` `layout` | `REGION` |
+| `ds-kv-padding-nonzero` | one byte of the `logits -> plane` padding non-zero; **all five digests still recompute** | `R6_KV_RESERVED` `padding` | `RESERVED` |
 | `ds-kv-geometry-layers` | `n_layer = 3` against a two-layer geometry | `R6_KV_GEOMETRY` `n_layer` | `GEOMETRY` |
 | `ds-kv-geometry-head-dim` | `head_dim = 8` | `R6_KV_GEOMETRY` `head_dim` | `GEOMETRY` |
 | `ds-kv-geometry-plane-bytes` | `plane_bytes` inconsistent with the integers | `R6_KV_GEOMETRY` `plane_bytes` | `GEOMETRY` |
@@ -902,7 +970,7 @@ byte-unchanged.
 | `ds-kv-identity-pack-size` | `pack_total_bytes` off by one | `R6_KV_IDENTITY` `pack_total_bytes` | `IDENTITY` |
 | `ds-kv-identity-geometry` | container written against a perturbed geometry | `R6_KV_IDENTITY` `geometry` | `IDENTITY` |
 | `ds-kv-width-mismatch` | container at width 8, operand 16 | **`R6_KV_WIDTH`** `kv_width[8]!=[16]` | N/A (operand-relative) |
-| `ds-kv-tokens-count` | `token_count = 2` against `T = 3` | `R6_KV_TOKENS` `count[2]` | `TOKENS` |
+| `ds-kv-tokens-count` | a **well-formed container for a two-token prompt**, loaded by a run asking for three. Not a header patch: shortening `token_count` in place would move no region and be refused by the canonical-layout rule at L7 before L12 compared anything | `R6_KV_TOKENS` `count[2]` | `TOKENS` |
 | `ds-kv-tokens-id` | third id changed | `R6_KV_TOKENS` `2` | `TOKENS` |
 | `ds-kv-digest-tokens` | `token_stream_sha256` flipped | `R6_KV_DIGEST` `tokens` | `DIGEST` |
 | `ds-kv-npast` | `columns_persisted = 2`, `token_count = 3` | `R6_KV_NPAST` | `NPAST` |
@@ -921,6 +989,48 @@ deliberate: it is the case that proves the reader is not a transcription of the 
 (`R6_KV_TOO_LARGE`),
 `ds-kv-magic-and-truncated` (a 100-byte file with a wrong magic → `R6_KV_TRUNCATED`, because L2
 precedes L3).
+
+#### 5.2.1 Arm-to-reader parity, rule by rule
+
+The review asked the question directly, so the answer is a table rather than a claim: **every rule
+the format states, the code the arm raises, the coarse kind `scripts/kv_plane_reader.py` reaches,
+and the case.** A blank reader column is a defect the reader cannot see — an operand, a destination,
+or the pack — not a rule it declines to check.
+
+| Rule | Arm | Reader | Case |
+| --- | --- | --- | --- |
+| `magic == AKVP` | `R6_KV_MAGIC` | `MAGIC` | `ds-kv-magic` |
+| `format_version == 1` | `R6_KV_VERSION` | `VERSION` | `ds-kv-version` |
+| `header_bytes`, `identity_record_bytes`, `element_type`, `plane_layout_version`, `plane_align`, `document_schema_version`, `endian_probe` | `R6_KV_HEADER(<field>)` | `HEADER` | seven cases, one per field |
+| every `u64` offset/length has its high bit clear | `R6_KV_HEADER(<field>)` | `HEADER` | `ds-kv-high-bit` |
+| `n_layer`/`n_head_kv`/`head_dim`/`n_vocab` `>= 1`; `kv_width`, `token_count`, `columns_persisted`, `prefill_argmax` in range | `R6_KV_HEADER(<field>)` | `HEADER` | reached through the geometry rows below; no header-only mutant is emitted for the four `>= 1` fields because L8 settles each against the loaded geometry |
+| `flags`, `reserved_u32`, 48 reserved header bytes, 24 reserved identity bytes | `R6_KV_RESERVED(<field>)` | `RESERVED` | `ds-kv-flags`, `-reserved`, `-reserved-u32`, `-identity-reserved` |
+| **inter-region padding is zero** | `R6_KV_RESERVED("padding")` | `RESERVED` | `ds-kv-padding-nonzero` |
+| `plane_bytes`/`logits_bytes`/`total_bytes` against section 2.5's three bounds | `R6_KV_TOO_LARGE` `plane[<n>]` / `logits[<n>]` / `container[<n>]` | `HEADER` — **a difference in vocabulary, not in which files are accepted**: the reader gives every declared-magnitude defect its coarse `HEADER`, and adding a fourteenth kind would change the reader's own contract to say nothing new | `ds-kv-plane-too-large`, `ds-kv-logits-too-large`; the container bound is checked in the same place and has no mutant, because a header claiming over 1 GiB is refused by the plane bound first |
+| `f.len() == total_bytes` | `R6_KV_TRUNCATED("<a>!=<b>")` | `TRUNCATED` | `ds-kv-truncated-total` (short), `ds-kv-longer-total` (long) |
+| every region inside `[0, total_bytes)` | `R6_KV_TRUNCATED(<region>)` | `REGION` | `ds-kv-region-outside`. **The one refusal where the two name different reasons and neither is wrong**: the arm reads containment as "this file is too short for what it declares" and the reader reserves `TRUNCATED` for a length disagreement and calls a bad offset a region defect. Both refuse the same file, at the same point, and the row's expectation states both |
+| region 8-byte alignment; `plane_offset % plane_align` | `R6_KV_REGION(<region>)` | `REGION` | `ds-kv-region-misaligned` |
+| regions pairwise disjoint | `R6_KV_REGION(<region>)` | `REGION` | `ds-kv-region-overlap` |
+| `plane_offset + plane_bytes == total_bytes` | `R6_KV_REGION("plane")` | `REGION` | `ds-kv-plane-not-last` |
+| `token_stream_bytes == token_count * 4`; `logits_bytes == n_vocab * 4` | `R6_KV_REGION(<region>)` | `REGION` | none, and the position is what makes that safe: both implementations check these two **before** the canonical-layout rule, so neither can reach the layout rule on an inconsistent header |
+| **the four offsets are section 2.3.1's canonical layout** | `R6_KV_REGION("layout")` | `REGION` | `ds-kv-region-noncanonical` |
+| `n_layer`, `n_head_kv`, `head_dim`, `n_vocab`, `element_type`, `plane_bytes` against the loaded geometry | `R6_KV_GEOMETRY(<field>)` | `GEOMETRY` | `ds-kv-geometry-layers`, `-geometry-head-dim`, `-geometry-plane-bytes` |
+| pack digest and `pack_total_bytes` | `R6_KV_IDENTITY("pack")` / `("pack_total_bytes")` | `IDENTITY` | `ds-kv-identity-pack`, `-identity-pack-size` |
+| the **pack's** digest is not all zero | `R6_KV_IDENTITY("pack_absent")` | — . **Asymmetric on purpose**: this is a rule about the pack, not about the container, and it fires before any container exists on a save run. The reader's `--pack` is optional and it has no container to judge here | `ds-kv-pack-identity-absent` |
+| geometry digest | `R6_KV_IDENTITY("geometry")` | `IDENTITY` | `ds-kv-identity-geometry`, `-identity-foreign-geometry` |
+| `kv_width` equals the operand | `R6_KV_WIDTH` | — (operand-relative; the file is well-formed) | `ds-kv-width-mismatch` |
+| `token_count` and each id against the operand | `R6_KV_TOKENS` | `TOKENS` | `ds-kv-tokens-count`, `-tokens-id` |
+| `columns_persisted == token_count` | `R6_KV_NPAST` | `NPAST` | `ds-kv-npast` |
+| `prefill_argmax` is the persisted vector's argmax | `R6_KV_HEADER("prefill_argmax")` | `ARGMAX` | `ds-kv-argmax`. Vocabulary again: the reader gives the invariant its own kind, the arm reports the header field that is wrong |
+| the three region digests recompute | `R6_KV_DIGEST("tokens"/"logits"/"plane")` | `DIGEST` | `ds-kv-digest-tokens`, `-digest-logits`, `-digest-plane` |
+| columns at and above `columns_persisted` are zero | — , caught through `R6_KV_DIGEST("plane")` | `ZEROTAIL` | `ds-kv-zero-tail`. **The deliberate asymmetry**, and the only one: the reader owns an invariant the arm does not check separately, which is what proves the reader is not a transcription |
+| operand, destination, and write rules — `R6_KV_ARGS`, `R6_KV_EXISTS`, `R6_KV_UNWRITABLE`, `R6_KV_UNREADABLE`, save-side `R6_KV_TOO_LARGE`, and W2–W4's three deferred codes | as named | — (no container to read) | `ds-kv-both`, `-both-and-missing`, `-save-exists`, `-save-exists-symlink`, `-save-unwritable`, `-too-large`, `-too-large-and-exists`, `-load-missing`; W2–W4 deferred (section 11.2) |
+
+**Three asymmetries survive the audit and all three are stated above**: `ZEROTAIL` by design,
+`pack_absent` because its subject is the pack, and the two vocabulary differences (`R6_KV_TRUNCATED`
+vs `REGION` on containment, `R6_KV_HEADER` vs `ARGMAX`, and `R6_KV_TOO_LARGE` vs `HEADER`), where
+both implementations refuse the same file at the same point and only the name differs. Nothing is
+accepted by one and refused by the other.
 
 ### 5.3 Predicted golden movement
 
@@ -970,18 +1080,20 @@ which also covers the second `N = 16` transcript per prompt.
 
 Green at the implementation head, **37.9 s** for the whole owner against 34.0 s before this
 capability — inside section 5.1's 39 s estimate, and still a seconds-scale hosted check, which is
-what admits it to `HOSTED_CHECK_TARGETS`. (A second run measured 57 s while a real-model
-qualification held the CPU. The figure to compare against 34.0 s is the idle one; both are
-recorded so a later disagreement names its cause.)
+what admits it to `HOSTED_CHECK_TARGETS`. Green again at the review-repair head, which adds six
+refusal cases: 69 s, measured while a real-model qualification held the CPU, against 57 s measured
+the same way at the implementation head. **Only idle figures may be compared with each other**: the
+comparable pair is 34.0 s and 37.9 s, and the contended pair is 57 s and 69 s. Both are recorded so
+a later disagreement names its cause.
 
 The fifth block reports:
 
 ```text
-decode step smoke: 12 no-document cases (R6_ARITY, R6_PATH), 101 documented cases, 40 codes
+decode step smoke: 12 no-document cases (R6_ARITY, R6_PATH), 107 documented cases, 40 codes
   reached, oracle A' PASS against transcript graphs 2..4 at three step offsets, oracle B IDENTICAL
   over the whole plane including every written-back column, three steps decoding the reference
   loop's own ids, and arm-r5b-unchanged PASS
-decode step smoke: akvp v1 -- 45 refusal cases each asserting the arm's code and detail and the
+decode step smoke: akvp v1 -- 51 refusal cases each asserting the arm's code and detail and the
   independent reader's own kind over 13 reject kinds, a 4608-byte container written and reloaded in
   a separate process, a fixture-written container loaded and decoded to the same ids, oracle Q
   byte-identical outside 16 excluded groups, and four writes producing one digest
@@ -997,13 +1109,15 @@ decode step smoke: akvp v1 -- 45 refusal cases each asserting the arm's code and
 | Oracle Q | The save and load documents are byte-identical after `normalize_persist`, and the comparison is asserted non-vacuous: `decode`, `steps[].sha256`, `output`, `oracle_logits`, and `plane.roundtrip_bytes_compared` are all still inside it |
 | Determinism | Four writes — two ordinary, one after them, one under `TZ`/`LANG`/`LC_ALL`/`SOURCE_DATE_EPOCH`/`PWD` perturbation — produce **one** `sha256` |
 | Load determinism | Three consecutive load runs produce one document after `normalize` |
-| The refusal matrix | 45 rows. Each asserts the arm's exact `R6_KV_*` **and** its exact `error_detail`, that no container was left behind, that the pre-existing file at an occupied destination is byte-unchanged, and — on the 33 rows that have a container — that `scripts/kv_plane_reader.py` independently reaches its own coarse kind |
+| The refusal matrix | **51** rows. Each asserts the arm's exact `R6_KV_*` **and** its exact `error_detail`, that no container was left behind, that the pre-existing file at an occupied destination is byte-unchanged, and — on the **41** rows whose defect is in the container — that `scripts/kv_plane_reader.py` independently reaches its own coarse kind. The other ten are operand, destination, pack, or geometry defects with nothing for the reader to judge |
 | Reject kinds reached | All **13**: `MAGIC VERSION HEADER RESERVED REGION TRUNCATED IDENTITY GEOMETRY TOKENS NPAST DIGEST ARGMAX ZEROTAIL` |
 | `ds-kv-zero-tail` | The arm refuses through `R6_KV_DIGEST("plane")` and the reader through `ZEROTAIL` — the one row where the two refuse for **different reasons**, which is what proves the reader is not a transcription of the arm |
 | `ds-kv-reader-missing` | The reader exits 1 with one diagnostic line and reads nothing further |
 | Codes reached | 40, up from 24. Sixteen of the nineteen `R6_KV_*` codes are reached; section 5.7 names the three that are deferred and why |
 
-**Six mutants, injected into the implementation and each run under the whole owner. All six die.**
+**Ten mutants, injected into the implementation and each run under the whole owner. All ten die.**
+The first six are the implementation head's; the last four were added by the review repair, one per
+rule it added, and each was run the same way — inject, `gmake layer-forward-smoke`, restore.
 
 | Mutant | Dies as |
 | --- | --- |
@@ -1013,19 +1127,49 @@ decode step smoke: akvp v1 -- 45 refusal cases each asserting the arm's code and
 | The logits region not persisted (W2's logits `pwrite` skipped) | `ds-kv-load-ok: expected error_code '', got 'R6_KV_DIGEST' ('logits')` |
 | A truncated file accepted (L7's `f.len() == total_bytes` removed) | `ds-kv-truncated-total: 'R6_KV_TRUNCATED'/'kv_plane', not 'R6_KV_TRUNCATED'/'4544!=4608'` |
 | The **reader** accepting a flipped reserved byte | `ds-kv-reserved: the independent reader did not reject model-kv-reserved.akvp as RESERVED` |
+| **New:** the canonical-layout rule removed (L7) | `ds-kv-region-noncanonical: expected error_code 'R6_KV_REGION', got ''` — and the document it published shows why the rule is load-bearing rather than tidy: the run **loaded the container and decoded `[24, 9, 27]` correctly** with `roundtrip_verdict: "IDENTICAL"` over 960 B, so nothing but the rule stands between the arm and a layout the independent reader refuses |
+| **New:** the padding-zero check removed (L6) | `ds-kv-padding-nonzero: expected error_code 'R6_KV_RESERVED', got ''` — again a clean load, because no digest covers the gaps |
+| **New:** L7's `MAX_KV_PLANE_BYTES` bound removed | `ds-kv-plane-too-large: 'R6_KV_TRUNCATED'/'plane', not 'R6_KV_TOO_LARGE'/'plane[536870913]'` — the file is still refused, by the next rule down, under the wrong name. This is the finding's exact shape: a true refusal naming the wrong reason |
+| **New:** step 7b's degenerate pack-identity refusal removed | `ds-kv-pack-identity-absent: expected error_code 'R6_KV_IDENTITY', got ''` — and the container it wrote carries `source_header_region_sha256` of thirty-two zero bytes, which is the identity the rule exists to refuse |
 
-The last one is the one that matters most: it fails in the **reader**, on a file the arm refuses
-correctly, which is the only way to show that the second implementation is load-bearing rather than
-decorative.
+Two are worth naming. The **reader** mutant matters most: it fails in the reader, on a file the arm
+refuses correctly, which is the only way to show that the second implementation is load-bearing
+rather than decorative. The **canonical-layout** and **padding** mutants matter for the same reason
+in the other direction: with either rule removed the arm loads the container and decodes correctly,
+so neither rule is implied by any other check and neither is redundant with a digest.
 
 ### 5.6 Result — `gmake decode-step-qualification`, the real model, 2026-08-29
 
 Dense Qwen2.5-Coder-7B-Instruct Q4_K_M, CPU, `KV_WIDTH` 256, `N = 16`, four prompts, three runs
-each, plus this capability's save/load leg on all four. **10 min 41 s** of the 1800 s cap, so
-neither documented fallback (`ALIGN_LLM_DECODE_STEPS=8`, then
-`ALIGN_LLM_KV_PERSIST_PROMPTS=2`) was taken. It was run **twice** on this host, and every
-correctness value reproduced exactly — the same 64 ids, the same four `plane_sha256`, the same byte
-counts, the same verdicts. Only the timings moved.
+each, plus this capability's save/load leg on all four. Host `aarch64-apple-darwin` (Apple M1),
+Homebrew ggml 0.21.0.
+
+**Instrument provenance, stated first because the review turned on it.**
+`ALIGN_LLM_LLAMA_DEBUG=/opt/homebrew/bin/llama-debug` — the **pinned Homebrew build**,
+`version: 0.2.0 (build 10566, commit bb4caa754)`, the same binary R6-STEP-N section 5.1 used and the
+same one `scripts/run-model-forward` resolves. `ALIGN_LLM_LLAMA_EVAL_CALLBACK` is the R2c-patched
+instrument under `~/.cache/align-llm/llama.cpp/r2c-v2/<revision>-<digest>/build/bin/`, generation
+`r2c-v2`. **That cache holds `llama-eval-callback` and nothing else**, which is the fact an earlier
+draft of this section mistook for "this host has no `llama-debug`".
+
+**The run exits 0.** `10 min 41 s` (641 s) of the 1800 s cap, so neither documented fallback
+(`ALIGN_LLM_DECODE_STEPS=8`, then `ALIGN_LLM_KV_PERSIST_PROMPTS=2`) was taken. It was run **twice**
+on this host — once at the implementation head and once at the review-repair head, which adds four
+refusals to the load path — and **every correctness value reproduced exactly**: the same 64 ids, the
+same four `plane_sha256`, the same byte counts, the same verdicts. Only the timings moved, and the
+table below is the repair head's run.
+
+**`oracle_logits.verdict` is `IDENTICAL` and `byte_identical` on all four prompts, on both the save
+and the load path.** The arm's prefill logits are byte-equal to `llama-debug --save-logits`, so gate
+G1 holds unconditionally and the whole id chain is rooted in llama.cpp's own argmax with no
+tolerance.
+
+**The one `FAIL` in the run is oracle A′ on prompt 1 at step 1, `2391/1e-4` on `ffn_inp-27`, and it
+is admitted rather than tolerated** — the exact value R6-STEP-N recorded for that prompt, admitted
+under R6's rule because oracle C′ at `k = 1` is byte-identical, so the divergence is llama.cpp's
+decode-versus-prefill kernel selection and not this arm's arithmetic. Nothing about it is this
+capability's, and the load run reports it identically because the persisted vector round-trips
+byte-exactly.
 
 **Rules 2 to 8 of section 3's acceptance rule, on every prompt.**
 
@@ -1045,81 +1189,47 @@ deterministic across processes and across runs, not only within one.
 
 | Prompt | Container | `du -k` | `plane_sha256` | `kv.write_ns` | `kv.read_ns` |
 | --- | --- | --- | --- | --- | --- |
-| `case1` | 29,970,432 B | 29,268 KiB (= 29,970,432 B) | `8257ea399420…` | 29.6 ms | 17.8 ms |
-| `case2` | 29,970,432 B | 29,268 KiB (= 29,970,432 B) | `9d7e4431d1e0…` | 36.9 ms | 19.5 ms |
-| `case3` | 29,970,432 B | 29,268 KiB (= 29,970,432 B) | `2f1c25fc6578…` | 37.2 ms | 22.5 ms |
-| `case4` | 29,970,432 B | 29,268 KiB (= 29,970,432 B) | `67e734387ce0…` | 46.5 ms | 35.9 ms |
+| `case1` | 29,970,432 B | 29,268 KiB (= 29,970,432 B) | `8257ea399420…` | 37.0 ms | 25.5 ms |
+| `case2` | 29,970,432 B | 29,268 KiB (= 29,970,432 B) | `9d7e4431d1e0…` | 33.6 ms | 23.1 ms |
+| `case3` | 29,970,432 B | 29,268 KiB (= 29,970,432 B) | `2f1c25fc6578…` | 30.8 ms | 23.3 ms |
+| `case4` | 29,970,432 B | 29,268 KiB (= 29,970,432 B) | `67e734387ce0…` | 42.5 ms | 22.4 ms |
 
 **29,970,432 B is section 2.3.5's predicted reference row exactly**, and `du` reports 29,268 KiB,
 which is 29,970,432 B to the byte — the container is **dense**, so section 2.3's explicit padding is
 an assertion rather than a claim and the qualification's disk-headroom figure is true. Metadata plus
 padding is 610,304 B before the plane, of which 608,256 B is the persisted logit vector; the
-non-logit overhead is **2,048 B, or 0.007 %** of the plane. Write is roughly 0.8 to 1.0 GB/s and
-read roughly 0.9 to 1.7 GB/s, each including its `crypto.sha256` passes.
+non-logit overhead is **2,048 B, or 0.007 %** of the plane. Write is roughly 0.7 to 1.0 GB/s and
+read roughly 1.2 to 1.3 GB/s, each including its `crypto.sha256` passes.
 
 **Section 1.4's two labelled diagnostics.** Three runs each direction at `STEPS = 1`, no transcript,
 no logits blob. Median with the observed range.
 
 | Prompt | `timings.first_token_ns`, save | `timings.first_token_ns`, load | invocation wall, save | invocation wall, load |
 | --- | --- | --- | --- | --- |
-| `case1` | 3.638 s [3.622 … 3.658] | 0.661 s [0.653 … 0.664] | 3.665 s | 0.679 s |
-| `case2` | 3.452 s [3.433 … 3.650] | 0.715 s [0.713 … 0.720] | 3.477 s | 0.741 s |
-| `case3` | 3.993 s [3.965 … 4.045] | 0.943 s [0.934 … 0.959] | 4.018 s | 0.966 s |
-| `case4` | 4.516 s [4.469 … 4.525] | 1.095 s [1.089 … 1.117] | 4.547 s | 1.129 s |
+| `case1` | 4.119 s [4.003 … 4.144] | 0.658 s [0.654 … 0.716] | 4.140 s | 0.681 s |
+| `case2` | 3.587 s [3.561 … 3.804] | 0.662 s [0.660 … 0.675] | 3.609 s | 0.682 s |
+| `case3` | 3.014 s [2.995 … 3.023] | 0.666 s [0.659 … 0.676] | 3.033 s | 0.688 s |
+| `case4` | 4.258 s [3.776 … 4.896] | 1.451 s [1.303 … 2.709] | 4.286 s | 1.481 s |
 
 **No rate, speedup, or per-token figure is derived from these, and the R6 roadmap gate stays
 unmet.** Section 1.4's four reasons stand, and its fifth applies here specifically: `REFERENCE` has
 no `-` form, so the model is supplied at thirteen operands and its byte comparison runs **inside the
 prefill pass**, which the load direction does not run at all — so the difference between the two
 columns overstates what loading saves. The runner prints that sentence beside the numbers.
+`case4`'s load spread — 1.30 s to 2.71 s across three runs — is the third of section 1.4's reasons
+visible in the data: this is a contended host and the numbers are characterization, not a
+measurement anyone should build on.
 
 **The scaling row, unchanged in kind from R6-STEP-N and reported as characterization**: at
 `N ∈ {1, 4, 16}` on prompt 1 the run reads 8,741,169,024 / 21,852,852,000 / 74,299,583,904 B from
 the pack — the loop's `O(N × model bytes)` term, which loading does not remove and which is why
 section 1.4 says a TTFT figure measured here cannot bear the gate.
 
-#### 5.6.1 Two assertions fail on prompt 1, and the cause is instrument provenance
-
-The run exits non-zero. Both failures are the **same** assertion on the **same** prompt:
-
-```text
-decode step qualification: FAIL case1: the prefill logits are 'FAIL' against llama-debug
-decode step qualification: FAIL case1: the persisted vector is 'FAIL' against llama-debug on the load path
-```
-
-The first is **R6-STEP-N's** assertion, not this capability's: `oracle_logits.verdict` must be
-`IDENTICAL` — the arm's prefill logits byte-equal to `llama-debug --save-logits`. The second is this
-capability's restatement of it on the load path.
-
-**What it is.** R6 risk 1 and R6-STEP-N section 3.1 name this class and measured it: the same
-llama.cpp commit built two ways produces two different 608,256-byte logits blobs. This host has
-**no `llama-debug` from the pinned toolchain** — `scripts/llama-eval-callback-toolchain` builds only
-`llama-eval-callback`, and `ALIGN_LLM_LLAMA_DEBUG` names an externally provided binary that does not
-exist here — so one was built from the same pinned source at `bb4caa754`, with the toolchain's own
-cmake arguments, in one build tree alongside a freshly built `llama-eval-callback`. It was **not**
-retuned to agree: changing an instrument's flags until it matches is the anti-pattern the oracle
-rules exist to prevent.
-
-**What it is not.** It is confined to prompt 1, the only `T = 6` prompt, and the three `T = 3`
-prompts are byte-identical against the same binary. Prompt 1 is also the prompt on which oracle A′
-reports `FAIL` at **2391/1e-4** at step 1 — the exact value R6-STEP-N recorded for it on its own
-host — admitted under R6's rule because oracle C′ at `k = 1` is byte-identical. The
-`llama-eval-callback` side therefore agrees with the recorded history on all four prompts, and only
-the `llama-debug` blob for the six-token prefill disagrees.
-
-**What it means for this capability: nothing, and the fact is itself evidence.** The load run's
-`oracle_logits` verdict equals the save run's exactly, because the persisted vector round-trips
-byte-exactly — which is what oracle Q reporting `IDENTICAL` on all four prompts says. Every rule
-this capability owns passes on every prompt: the container is written and independently read, a
-separate process loads it and decodes the same sixteen ids, gate G passes over those ids on the load
-path, oracles B and C′ hold on the load path at the same byte counts and checkpoints, the two
-documents are byte-identical outside the exclusion list, and three writes produce one digest.
-
 ### 5.7 The goldens that moved — predicted in advance, and reconciled
 
 | File | Predicted (section 5.3) | Actual |
 | --- | --- | --- |
-| `scripts/decode-step-golden.jsonl` | every row schema 2 → 3, plus ~44 new rows; 52 → ~96 | Every row schema 2 → 3 (a `kv` object, `plane.source`, `timings.first_token_ns`), plus **49** new rows. **52 → 101**, a diff of exactly 101 added and 52 removed lines |
+| `scripts/decode-step-golden.jsonl` | every row schema 2 → 3, plus ~44 new rows; 52 → ~96 | Every row schema 2 → 3 (a `kv` object, `plane.source`, `timings.first_token_ns`), plus **55** new rows. **52 → 107**. The implementation head reached 101; the review repair added six rows (section 11.4) and rewrote one in place, `ds-kv-tokens-count`, whose `kv.tokens_sha256` and `kv.plane_sha256` change because the case is now an honest two-token container rather than a header patch |
 | `scripts/layer-forward-golden.jsonl` | byte-unchanged | **byte-unchanged** |
 | `scripts/model-forward-golden.jsonl` | byte-unchanged | **byte-unchanged** |
 | `scripts/gpu-forward-golden.jsonl` | byte-unchanged | **byte-unchanged** |
@@ -1181,11 +1291,14 @@ are deferred with it.
    `R6_KV_TRUNCATED` or `R6_KV_DIGEST("plane")` detects it rather than loading it. This is also a
    **correction to Request 31's own forward text**, which predicts that R6's KV cache "is not a
    derivative of anything else and losing it loses the only copy" — see section 8.
-7. **A vacuous equality oracle.** Oracle Q compares two documents after dropping eight key groups; a
-   careless exclusion list would make it pass by comparing almost nothing.
+7. **A vacuous equality oracle.** Oracle Q compares two documents after dropping sixteen key groups
+   — the design named eight and an empirical field-by-field diff found eight more (section 11.3,
+   deviation 2); a careless exclusion list would make it pass by comparing almost nothing.
    *Mitigation:* section 3 lists what remains **inside** the comparison rather than only what is
-   outside, and a mutant that shifts one loaded column by one lane changes `steps[1].sha256`, which
-   is inside. The mutant list in section 6.8's shape is the guard.
+   outside, every exclusion is a **count of work** the load path did not do rather than a result,
+   the smoke asserts positively that `decode`, `steps[].sha256`, `output`, `oracle_logits`, and
+   `plane.roundtrip_bytes_compared` are still inside, and a mutant that shifts one loaded column by
+   one lane changes `steps[1].sha256`, which is inside.
 8. **The two-process leg could pass by accident on a warm page cache**, if the "separate process"
    were not separate. *Mitigation:* the runner invokes two `ggml-spike` processes and asserts the
    save process exited before the load process started; `plane.source == "LOADED"` in the second
@@ -1203,6 +1316,7 @@ are deferred with it.
 | **A container on read-only media cannot be loaded.** There is no `fs.open_ro` and no `fs.size`, so even *learning a file's length* needs `O_RDWR` | **21**, `PROPOSED`, medium | A plane saved to a read-only mount, a root-owned cache, or a container image layer is unreadable by this arm. This is Request 21's **strongest client yet**: unlike the GGUF, this artifact is one this repository *produces*, so the natural place to put it is exactly the shared read-only cache it cannot then read |
 | **No exclusive positional create.** `create_rw` truncates; `create_exclusive` returns a sequential `writer` with no `pwrite` | **30**, `PROPOSED`, medium | `R6_KV_EXISTS` is a documented check-then-create race (section 2.6). **Second client** |
 | **No incremental digest.** `crypto.sha256` is one-shot over one byte view | **29**, `PROPOSED`, medium | `MAX_KV_PLANE_BYTES` exists because of it (section 2.5), and the pack's payload cannot be digested, which is why model identity is the header-region digest (section 2.4). **Second client** |
+| **No way to tell a dangling symlink from an absent path.** There is no `fs.symlink_metadata`, no `lstat`, and no `O_NOFOLLOW` at this pin | none proposed — see below | W4's cleanup removes the destination **name**. If the caller names a dangling symlink, `fs.create_rw` writes through it and `fs.remove` unlinks the symlink, so a failed write leaves a partial container at the link's target while `kv.destination` reports `"REMOVED"` (section 2.6). No request is proposed because refusing symlink destinations outright would change `ds-kv-save-exists-symlink`'s settled alignpack-inherited behaviour, and the exposure is one developer host writing to a path it chose |
 
 **Deferred capabilities.**
 
@@ -1239,20 +1353,21 @@ Classified per `CLAUDE.md`. **None blocks this capability, and no new request is
 | Indexing arrays of Move element types | Genuine Align gap, recorded | **Request 22, `PROPOSED`, non-blocking.** The token stream is a fixed-width `u32` region and the digests are fixed-width slices of one string — the same avoidance R6-STEP-N deviation 1 records. Cited; no new client shape |
 | Non-`Copy` capture in `spawn` closures | Genuine Align gap, recorded | **Request 41, `PROPOSED`.** Relevant only to parallelising the qualification, which is not attempted (section 4.7) |
 
-**No new request is proposed, and the numbering is recorded because it is a live hazard.** This
-branch's `docs/align-requests.md` runs 1–46 plus 49; requests **47 and 48 exist on `main`** (R5E, PR
-#143) and reach this branch only through the merge R6-STEP-N section 8 schedules. The next free number
-is therefore **50**, it is **not claimed by this capability**, and every gap above resolves to an
-existing entry. If a genuine new gap appears during implementation, it takes 50 — **re-checked at
-branch time**, after `git merge origin/main`, because a second branch could claim it first.
+**No new request is proposed, and the numbering is recorded because it is a live hazard.** At the
+implementation head this branch's `docs/align-requests.md` ran 1–46 plus 49, with requests **47 and
+48** on `main` only (R5E, PR #143). The merge of `origin/main` at `3df063b` has since brought them
+in, so the register now runs **1–49** here and the next free number is **50**. It is **not claimed by
+this capability**, and every gap above resolves to an existing entry.
 
 ## 9. Reconciliation drafts
 
-**Applied, 2026-08-29.** Every draft below is now in the tree; three differ from their draft in
-wording and one in substance, and each is noted where it occurs. The substantive one is section
-9.4's Request 31 line: the shipped text states the correction as a correction — naming the
-prediction it overturns — rather than only asserting the new fact. The wording ones are section
-9.1's code count (the shipped item says "nineteen `R6_KV_*` codes plus item 27's own
+**Applied, 2026-08-29.** Every draft below is now in the tree; **four** differ from their draft in
+wording and one in substance, and each is noted where it occurs. The fourth wording difference is
+section 9.4's `align-llm verification:` line: the draft writes `--kv-save`, which is not a surface
+this capability ships, and the shipped register line writes `--decode-step KV_SAVE`. The substantive
+one is section 9.4's Request 31 line: the shipped text states the correction as a correction —
+naming the prediction it overturns — rather than only asserting the new fact. The wording ones are
+section 9.1's code count (the shipped item says "nineteen `R6_KV_*` codes plus item 27's own
 `R6_KV_WIDTH`", which is the same twenty, counted so a reader can tell which is reused), section
 9.1's "384 bytes" (the shipped item says "192 bytes and one `fstat`", the cost of the **earliest**
 refusals L2–L7; 384 is still the cost of the deepest cheap refusal, L9, and section 2.3's
@@ -1280,7 +1395,7 @@ cross-reference to it move with it.
 >     a named exclusion list, with item 28's gate G, oracle B, and oracle C′ carried forward and
 >     asserted on both processes, and with the writer's determinism proved by double-write digest
 >     equality rather than by a checked-in hex golden. Owner `gmake layer-forward-smoke`, whose fifth
->     block gains a save/load round trip, a ~40-case refusal matrix, and an independent Python reader
+>     block gains a save/load round trip, a fifty-case refusal matrix, and an independent Python reader
 >     driven as a subprocess; focused `gmake decode-step-qualification`. **No TTFT claim.** The run
 >     reports `timings.first_token_ns` for prefill-then-decode against load-then-decode as a labelled
 >     diagnostic. **What it leaves open:** the R6 gate asks that TTFT improve on repeated coding tasks
@@ -1304,11 +1419,11 @@ Under **`## R6: Persistent KV` → `### Gate`**, the `**未達。**` paragraph g
 > never a rebase — and reconciles roadmap numbering, request numbering, and the `baseline-check` row.
 >
 > **Capability.** The R6 KV plane persisted to disk and reloaded in a fresh process, dense
-> Qwen2.5-Coder-7B Q4_K_M, CPU. `docs/specs/r6-kv-persist.md` is the authoritative ledger. **Three**
-> of the design gate's four triggers fire — a changed public CLI arm, a **new persisted format** plus
-> a document schema bump, and a **process ownership boundary** — and the third, a coordinated
-> invariant across three or more modules, fires too: the plane's layout stops being private to
-> `src/decode_step.align` and becomes a published contract with an independent second reader.
+> Qwen2.5-Coder-7B Q4_K_M, CPU. `docs/specs/r6-kv-persist.md` is the authoritative ledger. **All
+> four** of the design gate's triggers fire — a changed public CLI arm, a **new persisted format**
+> plus a document schema bump, a **process ownership boundary**, and a coordinated invariant across
+> three or more modules: the plane's layout stops being private to `src/decode_step.align` and
+> becomes a published contract with an independent second reader.
 >
 > **Not started.** Everything. In implementation order:
 > 1. `src/kv_plane.align` — constants, the 192-byte header, the 192-byte identity record, region
@@ -1426,10 +1541,11 @@ changed:
 6. **`R6_KV_WIDTH` was going to be a new code.** The draft had `R6_KV_WIDTH_MISMATCH`. R6-STEP-N
    section 2.3 already refused to mint a second code for "the plane is the wrong width" and gave the
    reason; section 2.6 reuses the existing code with a widened detail and records the decision.
-7. **Three design-gate triggers were claimed without checking the third.** R6-STEP-N withdrew the
+7. **The fourth design-gate trigger was nearly copied rather than checked.** R6-STEP-N withdrew the
    "three or more modules" trigger with a reason. Section 1.2 re-derives it rather than copying
-   either answer: it fires here because the plane's *layout* changes status from a private convention
-   to a published contract with an independent reader, which is a different fact from R6-STEP-N's.
+   either answer: it fires here because the plane's *layout* changes status from a private
+   convention to a published contract with an independent reader, which is a different fact from
+   R6-STEP-N's.
 8. **The TTFT section claimed and disclaimed in the same breath.** An early draft both reported a
    proxy and said no claim was made, without saying why the gate cannot be met. Section 1.4 now gives
    four concrete reasons — no corpus, weight streaming dominates, page cache, four of five mechanisms
@@ -1465,8 +1581,9 @@ the diff is named and given its reason rather than omitted.
 | 2.2 `PACK` mandatory on a load run | `execute` opens the pack before `schedule_decode` on both paths | `ds-kv-load-ok` publishes a full `pack` block; the decode loop's own reads are in `pack.reader_bytes_read` |
 | 2.3 header at offset 0, 192 bytes, every field at its declared offset | `kv_plane.encode_header_image` / `read_header` | `scripts/kv_plane_reader.py` decodes each field independently; one mutant per field in the matrix |
 | 2.3 `endian_probe` is a canary, not a mode switch | `read_header` validates it and has no second decode path | `ds-kv-endian-probe` → `R6_KV_HEADER` `endian_probe` |
-| 2.3 region order, 8-byte alignment, `plane_align`, plane **last**, no trailing padding | `kv_plane.plan_header` and L7 | `ds-kv-region-overlap`, `-region-outside`, `-region-misaligned`, `-plane-not-last`; the reader re-derives `plane_offset` from the geometry integers |
-| 2.3 padding written, not a hole | `write_container`'s `write_padding` over one `PAD` buffer | the smoke's `st_blocks * 512 >= st_size` check; the reader asserts all three padding runs are zero |
+| 2.3 region order, 8-byte alignment, `plane_align`, plane **last**, no trailing padding | `kv_plane.plan_header` and L7 | `ds-kv-region-overlap`, `-region-outside`, `-region-misaligned`, `-plane-not-last` |
+| 2.3.1 **one canonical layout**, re-derived by writer, arm, and reader from the same three helpers | `kv_plane.plan_header` and `read_header`'s L7 share `canonical_identity_offset` / `canonical_logits_offset` / `canonical_plane_offset`; `kv_plane_reader.py` re-derives all four independently | `ds-kv-region-noncanonical` → `R6_KV_REGION("layout")` / `REGION` |
+| 2.3 padding written, not a hole, **and zero on both sides** | `write_container`'s `write_padding` over one `PAD` buffer; `kv_plane.padding_zero` at L6 on the load path | the smoke's `st_blocks * 512 >= st_size` check; `ds-kv-padding-nonzero` → `R6_KV_RESERVED("padding")` / `RESERVED`, on a file whose five digests all still recompute |
 | 2.3.3 five digests, all `crypto.sha256`; `hash64` in no persisted field | `kv_plane.write_container`, `digest_hex`, `region_matches` | `ds-kv-digest-tokens`, `-digest-logits`, `-digest-plane`, `-identity-pack`, `-identity-geometry` |
 | 2.3.4 plane layout version 1 = the arm's own buffer image | `write_container` takes `borrow plane: slice<u8>` and writes it whole | `ds-kv-load-fixture`: a container laid out by a third implementation loads and decodes the same ids |
 | 2.3.5 measured sizes | `plan_header` | the synthetic row asserted exactly (4608/4096/512/128/192); the reference row in section 5.6 |
@@ -1474,6 +1591,8 @@ the diff is named and given its reason rather than omitted.
 | 2.4 model identity is the **pack's** header-region digest | `execute`'s 32-byte `pread` at `source_record_offset + 48` | `ds-kv-identity-pack`, `ds-kv-identity-pack-size`; the fixture now writes a non-degenerate record (deviation 4) |
 | 2.4 every mismatch is a refusal, never a silent re-prefill | there is no fallback branch in `load_plane` | every matrix row publishes `decode.steps_completed == 0` and no `steps[]` row |
 | 2.5 `MAX_KV_PLANE_BYTES` etc. at step 6a, before the pack is opened | `stage_inputs` | `ds-kv-too-large` (`plane[537001984]`), reached with a geometry no pack describes |
+| 2.5 all three bounds re-checked on **load** at L7, ahead of the length comparison | `kv_plane.read_header` | `ds-kv-plane-too-large` (`plane[536870913]`), `ds-kv-logits-too-large` (`logits[16777220]`); both declared rather than materialized |
+| 2.4 a thirty-two-zero-byte pack digest is refused, not compared | `execute`'s step 7b over `kv_plane.all_zero` | `ds-kv-pack-identity-absent` → `R6_KV_IDENTITY("pack_absent")`, asserting no container was written |
 | 2.5 refusing beats skipping | no "digest absent" flag exists in the format | the reader has no path that accepts a container without recomputing all five digests |
 | 2.6 validation order 1–16 with 2b, 6a, 6b inserted | `run`, `execute`, `stage_inputs` | `ds-kv-both-and-missing`, `ds-kv-too-large-and-exists` |
 | 2.6 load order L1–L14, cheapest first | `load_plane` and `kv_plane.read_header` | the whole matrix; a wrong file is refused after 192 bytes and one `fstat` |
@@ -1490,7 +1609,7 @@ the diff is named and given its reason rather than omitted.
 | 2.8 `timings.first_token_ns`, zeroed by `normalize` | `decode_loop` at step 1; `render_timings_step` | both runners' `normalize`; three-consecutive-runs checks pass |
 | 2.9 saturation checked, not assumed | `add_checked`/`mul_checked` before every file-derived sum | `ds-kv-high-bit` refuses a `u64` with bit 63 set before it addresses anything |
 | 3 oracle P | the save/load pair plus the independent reader | section 5.5, section 5.6 |
-| 3 oracle Q | `normalize_persist` in both runners | section 5.5, section 5.6; the exclusion list grew by six groups (deviation 2) |
+| 3 oracle Q | `normalize_persist` in both runners | section 5.5, section 5.6; the exclusion list grew by eight groups, eight to sixteen (deviation 2) |
 | 3 gate G re-scoped: G1 asserted on the save run, inherited on the load run | `compare_prefill_logits` runs on both, over persisted bytes on the load path | section 5.6 states it as the weaker statement it is |
 | 3 determinism by double write, not a hex golden | four writes in the smoke, three in the qualification | section 5.5, section 5.6 |
 | 4.5 the reader is a subprocess, never imported | `read_container` shells out to `python3` | the smoke's invocation shape |
@@ -1508,6 +1627,7 @@ the diff is named and given its reason rather than omitted.
 | 4.1 move-in/out, source nulling, replacement, return | `N/A` — no ownership transfer is added. `KvHeader` and `KvWrite` are returned by value; the plane and the logits arrive as `slice<u8>` borrows |
 | 4.5 the reader's cleanup phase | `N/A` — it reads only, writes nothing, and closes through `with` |
 | 4.6 the fixture's failure and malformed-input phases | `N/A` — it produces malformed input and consumes none, and is total over its own fixed inputs |
+| 4.3 `R6_KV_TRUNCATED("kv_plane")` from the refill, as a `ds-kv-*` case | **Unreachable from a malformed container, by construction rather than by omission.** L7 proves `f.len() == total_bytes` and `plane_offset + plane_bytes == total_bytes` before the refill reads a byte, so any container that reaches the refill has a complete plane region; a file short of its own plane is refused as `R6_KV_TRUNCATED("<a>!=<b>")` at L7 (`ds-kv-truncated-total`) and one long is refused there too (`ds-kv-longer-total`). The cell is closed by an injected mutant — section 5.5's "plane read offset off by four" — which is the only way to make the refill short |
 | Two concurrent `--kv-load` runs of one container | **Unsupported and not attempted** (section 4.7). Safe by inspection, not tested, and not promised; parallelising would need Request 41 |
 
 ### 11.3 Deviations from the ledger, with reasons
@@ -1525,18 +1645,26 @@ Eight, each recorded rather than absorbed.
    `KvWrite` likewise returns the three digests it computed, so the caller never recomputes a
    29 MB `sha256` it has already paid for. No ownership transfer is added and no borrow rule is
    worked around.
-2. **Oracle Q's exclusion list is six groups larger than section 3 drafted, and each addition is a
-   count of work the load path legitimately did not do.** The design named `kv`, `plane.source`,
-   `plane.readback_ns`, `plane.upload_ns`, `graph`, `schedule`, `timings`, and `lifetime`. An
-   empirical field-by-field diff of a save-run document against a load-run document found six more
-   keys that differ: `pack.reader_pread_count` and `pack.reader_bytes_read` (the prefill's own
-   weight reads), `head.node_count`, `head.pread_ns`, and `head.compute_ns` (the prefill's own head
-   graph), `window.reuse_count` and `window.member_placements` (window fills the prefill performed),
-   and the whole `reference` block (deviation 3). Every one is a **measurement of work**, not a
-   result; no digest, id, or verdict moved into the exclusion list, and the smoke asserts
-   explicitly that `decode`, `steps[].sha256`, `output`, `oracle_logits`, and
-   `plane.roundtrip_bytes_compared` are all still **inside** the comparison, which is section 6
-   risk 7's guard against a vacuous oracle.
+2. **Oracle Q's exclusion list is eight groups larger than section 3 drafted — eight became sixteen
+   — and every addition is work the load path legitimately did not do.** The design named `kv`,
+   `plane.source`, `plane.readback_ns`, `plane.upload_ns`, `graph`, `schedule`, `timings`, and
+   `lifetime`. An empirical field-by-field diff of a save-run document against a load-run document
+   found **eight** more keys that differ: `pack.reader_pread_count` and `pack.reader_bytes_read`
+   (the prefill's own weight reads), `head.node_count`, `head.pread_ns`, and `head.compute_ns` (the
+   prefill's own head graph), `window.reuse_count` and `window.member_placements` (window fills the
+   prefill performed), and the whole `reference` block. Section 3 now carries the shipped sixteen
+   rather than the drafted eight, and section 6 risk 7 counts sixteen.
+
+   **Seven of the eight are measurements of work. The eighth is a verdict, and saying otherwise
+   would be false.** `reference.verdict` moved into the exclusion list, and it is a verdict rather
+   than a count — so the honest statement is narrower than "no digest, id, or verdict was excluded":
+   **no digest, no id, and no verdict of the decode itself was excluded**, and the one verdict that
+   was is `reference.verdict`, excluded because the comparison behind it does not run on a load path
+   at all (deviation 3, and section 2.8 now carries it as a public behaviour change). The
+   qualification asserts it positively on the save run, so it is asserted somewhere rather than
+   merely dropped. The smoke asserts explicitly that `decode`, `steps[].sha256`, `output`,
+   `oracle_logits`, and `plane.roundtrip_bytes_compared` are all still **inside** the comparison,
+   which is section 6 risk 7's guard against a vacuous oracle.
 3. **`reference.verdict` is `"-"` on a load run, and that is a behaviour change rather than only a
    test exclusion.** R5B's byte comparison of every member against the source GGUF lives in the
    prefill pass, so a load run performs none of it. Before this change `schedule_decode` set
@@ -1568,15 +1696,46 @@ Eight, each recorded rather than absorbed.
    an `error_detail` that begins with `work_dir` by `<path>`, exactly as it already placeholders the
    five top-level path fields, and the case table asserts the placeholder so the substitution
    cannot hide a wrong detail.
-8. **`MAX_KV_CONTAINER_BYTES` is checked twice.** Section 2.5 puts it at step 6a, which covers the
-   save direction, where this process computes `total_bytes`. On a load run `total_bytes` comes out
-   of a file this process did not write, so `read_header` checks it again at L7 — after the file's
-   own length has been agreed and before any region is addressed. The code is the same
-   `R6_KV_TOO_LARGE` with the same `container[<n>]` detail shape.
+8. **Section 2.5's bounds are checked twice.** Section 2.5 puts them at step 6a, which covers the
+   save direction, where this process computes `total_bytes` from the geometry and the operand. On a
+   load run all three numbers come out of a file this process did not write, so `read_header` checks
+   them again at L7. The codes and detail shapes are the same `R6_KV_TOO_LARGE` /
+   `plane[<n>]` / `logits[<n>]` / `container[<n>]`. *(At the implementation head only
+   `MAX_KV_CONTAINER_BYTES` was re-checked on load; the review repair added the other two and moved
+   all three ahead of the `f.len() == total_bytes` comparison — section 11.4.)*
+
+### 11.4 The review repair, and what it added to the contract
+
+One comprehensive review of the implementation head found one blocker, five major findings, and
+thirteen minor ones across two reviewers. Every finding is dispositioned in the pull request; the
+four that **changed a public promise** are recorded here, because a refusal the arm did not make
+before is a contract addition and not a bug fix.
+
+| Addition | Rule | Code and case | Why it is an addition rather than a repair |
+| --- | --- | --- | --- |
+| **Canonical region layout** (section 2.3.1) | The four offsets must equal the one layout the format's own arithmetic produces | `R6_KV_REGION("layout")`; `ds-kv-region-noncanonical` | The arm previously accepted any containable, aligned, disjoint, plane-last layout while `scripts/kv_plane_reader.py` re-derived the canonical one and refused everything else. Two implementations disagreeing about which files are legal is a format with two meanings; the rule is promoted rather than the reader relaxed, because the writer produces exactly one layout and determinism is already a contract |
+| **Zero padding between regions** (section 2.3, property 4) | The three inter-region gaps are zero | `R6_KV_RESERVED("padding")`; `ds-kv-padding-nonzero` | Section 2.3 promised the property and only the reader enforced it. **No digest covers the gaps**, so a container carrying data there round-tripped every digest and loaded |
+| **`MAX_KV_PLANE_BYTES` and `MAX_KV_LOGITS_BYTES` on load** (section 2.5) | Both bounds are re-checked at L7 against the header's own claim, before `f.len()` is compared | `R6_KV_TOO_LARGE` `plane[<n>]` / `logits[<n>]`; `ds-kv-plane-too-large`, `ds-kv-logits-too-large` | Section 2.5 said "both directions" and the load direction checked only the container bound, so an oversized declared plane was refused at L8 as `R6_KV_GEOMETRY` — a true refusal naming the wrong reason |
+| **A degenerate pack identity** (section 2.4) | The pack's `source_header_region_sha256` must not be thirty-two zero bytes | `R6_KV_IDENTITY("pack_absent")`; `ds-kv-pack-identity-absent` | An all-zero digest compares equal to an all-zero digest, so `R6_KV_IDENTITY("pack")` passed over nothing. Deviation 4 fixed the *fixture* that exposed it; this fixes the *arm* |
+
+Two further findings changed a **case** rather than a rule: `ds-kv-longer-total` covers the side of
+`f.len() != total_bytes` that `ds-kv-truncated-total` did not, and `ds-kv-tokens-count` became an
+honest two-token container because a header-only patch is now refused by the canonical-layout rule
+before the token count is compared. `scripts/kv_plane_reader.py`'s padding refusal moved from
+`REGION` to `RESERVED` so that the two implementations name the same reason, which keeps
+`ds-kv-zero-tail` the **only** row where they do not.
+
+**The remaining findings changed no contract**: section 5.6's record was re-taken with the pinned
+`llama-debug` (section 5.6, and section 5.6.1 is deleted with the source-build narrative it
+described), and the rest are counts, citations, and wording corrected in place — the sixteen
+exclusion groups, `reference.verdict`'s row in section 2.8, section 4.3's unreachable cell, the
+fourth wording deviation in section 9, and the dangling-symlink limitation in section 2.6 and
+section 7.
 
 Three rows of section 5.2's matrix were **added** rather than deviated from: `ds-kv-reserved-u32`
 and `ds-kv-identity-reserved` split section 2.6's L6 into the three reserved fields it actually
 covers, and `ds-kv-identity-foreign-geometry` complements `ds-kv-identity-geometry` with a container
 written against a genuinely different geometry document rather than a flipped byte — the flip proves
-the field is read, the foreign container proves it means what it says. The matrix ships **45** rows
-against the ledger's forty.
+the field is read, the foreign container proves it means what it says. The matrix ships **51** rows
+against the ledger's forty: forty-five at the implementation head and six more from the review
+repair (section 11.4).

@@ -340,13 +340,14 @@ pub fn plan_header(
   h.document_schema_version = DOCUMENT_SCHEMA_VERSION
   h.reserved_u32 = 0
   h.pack_total_bytes = pack_total_bytes
+  // The same three derivations `read_header`'s L7 re-derives, so the writer and the validator
+  // cannot drift: there is one canonical layout and one expression of it.
   h.token_stream_offset = HEADER_BYTES
   h.token_stream_bytes = mul_checked(token_count, 4)
-  h.identity_offset =
-  align_up(add_checked(h.token_stream_offset, h.token_stream_bytes), REGION_ALIGN)
-  h.logits_offset = align_up(add_checked(h.identity_offset, IDENTITY_RECORD_BYTES), REGION_ALIGN)
+  h.identity_offset = canonical_identity_offset(token_count)
+  h.logits_offset = canonical_logits_offset(token_count)
   h.logits_bytes = mul_checked(n_vocab, 4)
-  h.plane_offset = align_up(add_checked(h.logits_offset, h.logits_bytes), PLANE_ALIGN)
+  h.plane_offset = canonical_plane_offset(token_count, n_vocab, PLANE_ALIGN)
   h.plane_bytes = plane_bytes_for_shape(n_layer, n_head_kv, head_dim, kv_width)
   h.total_bytes = add_checked(h.plane_offset, h.plane_bytes)
   if h.token_stream_bytes < 0 || h.identity_offset < 0 || h.logits_offset < 0
@@ -426,7 +427,12 @@ pub fn read_header(borrow f: file) -> KvHeader {
     return h
   }
   // L5. The fixed widths, the two versions, the alignment, the probe, then every `u64` offset and
-  // length with its high bit clear, then every `u32` count inside its own `MAX_*`.
+  // length with its high bit clear, then every `u32` count against the bound this format states for
+  // it: `kv_width` against `MAX_ATTENTION_WIDTH`, `token_count` against `MAX_PREFILL_TOKENS`,
+  // `columns_persisted` against `kv_width`, `prefill_argmax` against `n_vocab`, and
+  // `n_layer`/`n_head_kv`/`head_dim`/`n_vocab` against `1` — those four have no `MAX_*` of their
+  // own, and the shapes they imply are bounded at L7 by `MAX_KV_PLANE_BYTES` and
+  // `MAX_KV_LOGITS_BYTES` and at L8 against the geometry this run loaded.
   h.header_bytes = view.u32_le(8) as i64
   if h.header_bytes != HEADER_BYTES {
     refused(h, CODE_HEADER, "header_bytes")
@@ -544,19 +550,34 @@ pub fn read_header(borrow f: file) -> KvHeader {
     }
     at = at + 1
   }
-  // L7. The file's own length first, then containment, then alignment, then disjointness, then the
-  // three shape identities. `plane_offset + plane_bytes == total_bytes` is what makes the chunked
-  // refill's short tail read a proof rather than a hope (section 2.3, region-order property 1).
-  if size != h.total_bytes {
-    text := pair_text(size, h.total_bytes)
+  // L7. Section 2.5's three bounds first — on a load run every one of them is a number out of a
+  // file this process did not write, so the header's own claim is refused before it is compared
+  // against anything — then the file's own length, then containment, then alignment, then
+  // disjointness, then the three shape identities, then the canonical layout.
+  // `plane_offset + plane_bytes == total_bytes` is what makes the chunked refill's short tail read
+  // a proof rather than a hope (section 2.3, region-order property 1).
+  if h.plane_bytes > MAX_KV_PLANE_BYTES {
+    text := labelled("plane", h.plane_bytes)
     text_view: str := text
-    refused(h, CODE_TRUNCATED, text_view)
+    refused(h, CODE_TOO_LARGE, text_view)
+    return h
+  }
+  if h.logits_bytes > MAX_KV_LOGITS_BYTES {
+    text := labelled("logits", h.logits_bytes)
+    text_view: str := text
+    refused(h, CODE_TOO_LARGE, text_view)
     return h
   }
   if h.total_bytes > MAX_KV_CONTAINER_BYTES {
     text := labelled("container", h.total_bytes)
     text_view: str := text
     refused(h, CODE_TOO_LARGE, text_view)
+    return h
+  }
+  if size != h.total_bytes {
+    text := pair_text(size, h.total_bytes)
+    text_view: str := text
+    refused(h, CODE_TRUNCATED, text_view)
     return h
   }
   if !region_inside(0, HEADER_BYTES, h.total_bytes) {
@@ -627,8 +648,74 @@ pub fn read_header(borrow f: file) -> KvHeader {
     refused(h, CODE_REGION, "logits")
     return h
   }
+  // L7's last rule, and it is a **format** rule rather than a writer's habit (section 2.3.1). The
+  // region order, the two alignments, and the region sizes together determine every offset, so
+  // there is exactly one layout an `akvp` v1 container can have at a given `token_count`,
+  // `n_vocab`, and `plane_align`. Re-deriving it here rather than accepting any offset that merely
+  // satisfies the containment, alignment, and disjointness rules is what keeps the arm and
+  // `scripts/kv_plane_reader.py` — which re-derives the same offsets — refusing the same files: a
+  // reader that computes an offset and a writer that publishes a different one is a format with two
+  // meanings, and a gap-bearing variant would also defeat the padding rule below.
+  if h.token_stream_offset != HEADER_BYTES
+    || h.identity_offset != canonical_identity_offset(h.token_count)
+    || h.logits_offset != canonical_logits_offset(h.token_count)
+    || h.plane_offset != canonical_plane_offset(h.token_count, h.n_vocab, h.plane_align) {
+    refused(h, CODE_REGION, "layout")
+    return h
+  }
   h.ok = true
   return h
+}
+
+// Section 2.3's region order, derived from the two counts and the declared alignment. `plan_header`
+// forms the same three offsets on the writing side; they are stated once here and used by both.
+fn canonical_identity_offset(token_count: i64) -> i64 =
+align_up(add_checked(HEADER_BYTES, mul_checked(token_count, 4)), REGION_ALIGN)
+
+fn canonical_logits_offset(token_count: i64) -> i64 =
+align_up(add_checked(canonical_identity_offset(token_count), IDENTITY_RECORD_BYTES), REGION_ALIGN)
+
+fn canonical_plane_offset(token_count: i64, n_vocab: i64, plane_align: i64) -> i64 =
+align_up(add_checked(canonical_logits_offset(token_count), mul_checked(n_vocab, 4)), plane_align)
+
+// L6's third part, and section 2.3's region-order property 4: **every padding byte is written, not
+// left as a hole**, so a reader validating "padding is zero" validates bytes that exist. Section
+// 2.3 states the property of the *format*, so the arm enforces it as well as the independent reader
+// does — a container carrying data in its gaps is not a container this format describes, and the
+// digests do not cover the gaps.
+//
+// The three gaps are bounded by construction: the first two are under `REGION_ALIGN` and the third
+// is under `plane_align` (at most `MAX_ALIGNMENT`), so this is three short `pread`s and never a
+// second pass over a region.
+pub fn padding_zero(borrow f: file, borrow h: KvHeader) -> bool {
+  if !gap_zero(f, add_checked(h.token_stream_offset, h.token_stream_bytes), h.identity_offset) {
+    return false
+  }
+  if !gap_zero(f, add_checked(h.identity_offset, IDENTITY_RECORD_BYTES), h.logits_offset) {
+    return false
+  }
+  return gap_zero(f, add_checked(h.logits_offset, h.logits_bytes), h.plane_offset)
+}
+
+fn gap_zero(borrow f: file, start: i64, end: i64) -> bool {
+  length := end - start
+  if length <= 0 { return true }
+  if length > MAX_ALIGNMENT { return false }
+  mut window: buffer := buffer(length)
+  count := match f.pread(window, start) {
+    Ok(value) => value,
+    Err(_) => { return false },
+  }
+  if count != length { return false }
+  view := window.bytes()
+  if view.len() != length { return false }
+  mut at := 0
+  loop {
+    if at >= length { break }
+    if view.u8(at) as i64 != 0 { return false }
+    at = at + 1
+  }
+  return true
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -652,6 +739,19 @@ pub fn identity_hex(borrow record: slice<u8>, index: i64) -> string {
   at := digest_at(index)
   if index < 0 || index > DIGEST_PLANE || record.len() < at + DIGEST_BYTES { return "".clone() }
   return encoding.hex_encode(record[at..at + DIGEST_BYTES])
+}
+
+// Section 2.4. A digest of thirty-two zero bytes is not an identity: it compares equal to every
+// other absent identity, so a comparison against it decides nothing. The arm refuses the degenerate
+// value rather than passing over it.
+pub fn all_zero(borrow view: slice<u8>) -> bool {
+  mut at := 0
+  loop {
+    if at >= view.len() { break }
+    if view.u8(at) as i64 != 0 { return false }
+    at = at + 1
+  }
+  return true
 }
 
 pub fn identity_matches(borrow record: slice<u8>, index: i64, borrow expected: slice<u8>) -> bool {
