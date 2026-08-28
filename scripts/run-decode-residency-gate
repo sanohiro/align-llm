@@ -14,20 +14,32 @@ set -euo pipefail
 # It captures one prompt-plus-decode transcript per prompt from the same checked-in corpus with the
 # same contractual flags `scripts/run-decode-locality-gate` established, derives one
 # `R2_ACTIVATION_TRACE` per transcript with `main --expert-trace`, deletes the transcript, admits
-# the corpus with R2D's `require_full_router_axes`, and runs `main --simulate-residency` twice:
+# the corpus with R2D's `require_full_router_axes`, and runs `main --simulate-residency` three
+# times over one capture:
 #
-#   mixed        every admitted graph — the prompt's prefill graph and its decode graphs — pooled
-#                into one continuing stream, which is what a session of short requests looks like
-#   decode-only  the same documents with graph 0 projected away and every remaining graph ordinal
-#                left as captured, so the stream is generated tokens and nothing else
+#   mixed         every admitted graph — the prompt's prefill graph and its decode graphs — pooled
+#                 into one continuing stream, which is what a session of short requests looks like
+#   decode-only   the same documents with graph 0 projected away and every remaining graph ordinal
+#                 left as captured, so the stream is generated tokens and nothing else
+#   prefill-only  the same documents with every decode graph projected away, so the stream is
+#                 prompt tokens and nothing else — at the same full eight-slot router axis
 #
-# The decode-only list is a *projection for the simulator*, not a re-derived R2A document: exactly
-# the two arrays `main --simulate-residency` reads — `graphs` and `selections` — are filtered, and
-# every other block (`input`, `graph`, `locality`) still describes the whole captured transcript.
+# The third arm exists to separate the two things R2c changed at once. Against the prefill-only,
+# six-of-eight-slot stream `docs/specs/r3-residency-sim.md` section 7.4 recorded, the mixed and
+# decode-only arms differ in *both* coverage and phase, so a verdict that moved could be caused by
+# either. The prefill-only arm holds corpus, budget, admission rule, and slot axis fixed and removes
+# only the decode graphs: if it agrees with the other two, the movement is a coverage effect and the
+# section must not attribute it to decode.
+#
+# Each list is a *projection for the simulator*, not a re-derived R2A document: exactly the two
+# arrays `main --simulate-residency` reads — `graphs` and `selections` — are filtered, and every
+# other block (`input`, `graph`, `locality`) still describes the whole captured transcript.
 # Keeping the ordinals is the point of the projection. Renumbering them would turn the first decode
 # graph into a `single_token_first_graph`, which is `docs/specs/r2a-expert-trace.md` section 2.5.6's
 # name for "the transcript cannot tell a one-token prompt from a decode step", and the arm would
-# then be measuring a phase it does not have.
+# then be measuring a phase it does not have. The projections live in
+# `scripts/residency_projection.py` so that `scripts/run-residency-sim-smoke` exercises the same
+# implementation against its independent oracle rather than a second copy of it.
 #
 #   ALIGN_LLM_GGUF_MODEL             path to a MoE model.         NO DEFAULT - absent is N/A, exit 0
 #   ALIGN_LLM_LLAMA_EVAL_CALLBACK    path to the PATCHED instrument
@@ -37,8 +49,9 @@ set -euo pipefail
 #                                    named and missing is exit 1, never N/A
 #   ALIGN_LLM_LOCALITY_PROMPT_COUNT  prompts to use, from the top of the corpus (default 40)
 #   ALIGN_LLM_DECODE_STEPS           generated tokens per prompt (default 16)
-#   ALIGN_LLM_RESIDENCY_BUDGET       the BUDGET_BYTES operand; default 25 per cent of the model's
-#                                    expert byte footprint, which is the point R3 recorded
+#   ALIGN_LLM_RESIDENCY_BUDGET       the BUDGET_BYTES operand, a positive decimal integer; default
+#                                    25 per cent of the model's expert byte footprint, which is the
+#                                    point R3 recorded
 #
 # Opt-in, never in an aggregate, never in CI, and no `Makefile` target — the same standing
 # `scripts/run-decode-locality-gate`, `scripts/run-expert-locality-gate`, and
@@ -142,7 +155,7 @@ import hashlib, sys
 from pathlib import Path
 raw = Path(sys.argv[1]).read_bytes()
 print("%s %s %d %d"
-      % (Path(sys.argv[1]).name, hashlib.md5(raw).hexdigest(), len(raw), int(sys.argv[2])))
+      % (Path(sys.argv[1]).name, hashlib.md5(raw, usedforsecurity=False).hexdigest(), len(raw), int(sys.argv[2])))
 PY
 )
 
@@ -162,7 +175,9 @@ fi
 }
 
 budget="${ALIGN_LLM_RESIDENCY_BUDGET:-}"
+budget_source="ALIGN_LLM_RESIDENCY_BUDGET"
 if [ -z "$budget" ]; then
+  budget_source="the computed 25-per-cent default"
   # 25 per cent of the expert footprint, expressed as `total >> 2` so the default is the exact
   # sweep point `docs/specs/r3-residency-sim.md` section 4.5 and section 7.4 recorded.
   budget=$(python3 - "$temp_dir/model-ir.json" <<'PY'
@@ -172,6 +187,25 @@ total = sum(b["byte_size"] for b in document["blocks"] if b["kind"] == "ExpertBl
 print(total >> 2)
 PY
   )
+fi
+# A named override that cannot be honoured is an error, not a value that surfaces an hour later as
+# a parser diagnostic from the product. `BUDGET_BYTES` is a positive decimal integer with no sign,
+# no separator, and no exponent (`src/residency_sim.align` `parse_budget`), and this runner also
+# divides by it before the replays, so `0` and a non-numeric value must be refused here. The ceiling
+# is the simulator's own `MAX_BYTE_TOTAL`, `I64_MAX / 1000`, because every byte total is multiplied
+# by 1000 before it is divided. The product remains the authority on the exact rule; this check only
+# guarantees the operand reaches it as an integer the runner can also reason about.
+case "$budget" in
+  ''|*[!0-9]*)
+    printf '%s\n' "decode residency gate: $budget_source must be a positive decimal integer" >&2
+    exit 1 ;;
+esac
+# The digit-count guard runs first: `[ -gt ]` parses its operands as C integers, so a value wider
+# than the type would fail as a shell arithmetic error rather than as this runner's diagnostic.
+if [ "${#budget}" -gt 16 ] || [ "$budget" -lt 1 ] || [ "$budget" -gt 9223372036854775 ]; then
+  printf '%s\n' \
+    "decode residency gate: $budget_source is $budget, outside 1..9223372036854775" >&2
+  exit 1
 fi
 
 # The a-priori demand bound, checked before the instrument is launched at all. `MAX_DEMANDS` is
@@ -237,7 +271,7 @@ PY
   exit 1
 }
 
-mkdir -p "$temp_dir/documents" "$temp_dir/decode-only"
+mkdir -p "$temp_dir/documents"
 printf '%s\n' "decode residency gate: capturing ${#selected[@]} transcripts at -n $decode_steps" >&2
 start_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
 index=0
@@ -317,17 +351,17 @@ decode_steps = int(sys.argv[7])
 
 sys.path.insert(0, str(root_dir / "scripts"))
 from expert_locality_gate import GateError, require_full_router_axes   # noqa: E402
+from residency_projection import ARM_NAMES, PROJECTIONS, declared_demands   # noqa: E402
+# Section 2.4's policy set and its candidate subset are read from the independent oracle rather than
+# hand-copied here: the references are not candidates. `null` and `compulsory` are bounds, `belady`
+# is the offline optimum the headroom term is measured against, and `lru` is the declared baseline.
+# A hand-copied list would let this runner and the hosted owner disagree about what a candidate is.
+from residency_oracle import CANDIDATES, POLICY_NAMES   # noqa: E402
 
 MAX_DEMANDS = 262144
 MAX_SIMULATION_STEPS = 1 << 32
 MARGIN_PER_MILLE = 50
-EXPECTED_POLICIES = ["null", "compulsory", "belady", "lru", "lfu", "recent_reuse_w2",
-                     "recent_reuse_w8", "recent_reuse_w32", "topk_prefetch_k1", "topk_prefetch_k8"]
-# Section 2.4's candidate set: the references are not candidates. `null` and `compulsory` are
-# bounds, `belady` is the offline optimum the headroom term is measured against, and `lru` is the
-# declared baseline.
-CANDIDATES = [name for name in EXPECTED_POLICIES
-              if name not in ("null", "compulsory", "belady", "lru")]
+EXPECTED_POLICIES = list(POLICY_NAMES)
 
 document_dir = temp_dir / "documents"
 paths = sorted(document_dir.glob("*.json"))
@@ -346,43 +380,33 @@ except GateError as error:
     raise SystemExit("decode residency gate: full-axis admission failed: %s" % error)
 
 
-def project_decode_only(document):
-    """The captured document with graph 0 projected away and every ordinal left as captured.
+# The projected arms are written to disk and read back, so what is counted below is exactly the
+# bytes `main --simulate-residency` will parse rather than the in-memory object that produced them.
+# `mixed` needs no projection directory: the captured documents are already its trace list.
+arm_dirs = {"mixed": document_dir}
+arm_documents = {"mixed": documents}
+for arm in ARM_NAMES:
+    if arm == "mixed":
+        continue
+    arm_dir = temp_dir / arm.replace("_", "-")
+    arm_dir.mkdir(parents=True, exist_ok=True)
+    for label, document in zip(labels, documents):
+        (arm_dir / ("%s.json" % label)).write_text(
+            json.dumps(PROJECTIONS[arm](document)), encoding="utf-8")
+    arm_dirs[arm] = arm_dir
+    arm_documents[arm] = [json.loads((arm_dir / ("%s.json" % label)).read_text(encoding="utf-8"))
+                          for label in labels]
 
-    Exactly the two arrays `main --simulate-residency` reads are filtered. Everything else — the
-    `input` counters, the `graph` block, R2A's own `locality` breakdown — still describes the whole
-    transcript, which is stated in the caveats rather than silently repaired: re-deriving them would
-    make this a second R2A document rather than a projection of one.
-    """
-    copy = json.loads(json.dumps(document))
-    copy["graphs"] = [row for row in copy.get("graphs") or [] if row.get("ordinal") != 0]
-    copy["selections"] = [row for row in copy.get("selections") or [] if row.get("graph") != 0]
-    return copy
-
-
-decode_only_dir = temp_dir / "decode-only"
-for label, document in zip(labels, documents):
-    (decode_only_dir / ("%s.json" % label)).write_text(
-        json.dumps(project_decode_only(document)), encoding="utf-8")
-
-
-def declared_demands(document):
-    """The demands one document contributes: every selection naming a declared, untruncated graph.
-
-    This mirrors `src/residency_sim.align`'s admission rather than counting `selections` blindly, so
-    the bound below is the number the simulator will actually allocate.
-    """
-    admitted = {row["ordinal"] for row in document.get("graphs") or []
-                if not row.get("tokens_truncated")}
-    return sum(1 for row in document.get("selections") or [] if row.get("graph") in admitted)
-
-
-projected = [json.loads((decode_only_dir / ("%s.json" % label)).read_text(encoding="utf-8"))
-             for label in labels]
-arm_documents = {"mixed": documents, "decode_only": projected}
-arm_dirs = {"mixed": document_dir, "decode_only": decode_only_dir}
 arm_demands = {name: sum(declared_demands(row) for row in rows)
                for name, rows in arm_documents.items()}
+# A projection removes whole graphs and admission is decided per graph, so the two projections must
+# partition the capture exactly. If they do not, one of them dropped or duplicated a selection and
+# every rate below would be measured on a stream nobody described.
+if arm_demands["prefill_only"] + arm_demands["decode_only"] != arm_demands["mixed"]:
+    raise SystemExit(
+        "decode residency gate: the projections do not partition the capture: prefill-only %d + "
+        "decode-only %d != mixed %d"
+        % (arm_demands["prefill_only"], arm_demands["decode_only"], arm_demands["mixed"]))
 for name, total in sorted(arm_demands.items()):
     if total > MAX_DEMANDS:
         raise SystemExit(
@@ -410,7 +434,7 @@ for name, value in sorted(cost.items()):
             % (name, value, MAX_SIMULATION_STEPS))
 
 results = {}
-for name in ("mixed", "decode_only"):
+for name in ARM_NAMES:
     listing = temp_dir / ("traces-%s.txt" % name)
     listing.write_text("".join("%s\n" % path for path in sorted(arm_dirs[name].glob("*.json"))),
                        encoding="utf-8")
@@ -432,11 +456,43 @@ for name in ("mixed", "decode_only"):
 problems = []
 
 
+def check_graph_phases(name, stream):
+    """What each arm's projection must have done to the phase census, asserted per arm.
+
+    `graph_phases` is the only field that states *which phase* was replayed, so an arm that silently
+    replayed the wrong graphs — a projection that filtered nothing, filtered everything, or
+    renumbered an ordinal — would still produce a well-formed document with plausible byte totals.
+    Every number below is known before the capture runs: one prefill graph per prompt, no
+    `single_token_first_graph` because `docs/specs/r2a-expert-trace.md` section 2.5.6 gives that name
+    to a one-token graph at ordinal 0 and every prompt in the corpus is longer than one token, and
+    the two projections partition the mixed arm's decode and prefill census between them.
+    """
+    phases = stream["graph_phases"]
+    mixed_phases = results["mixed"]["stream"]["graph_phases"]
+    expected = {
+        # arm            prefill                 decode                       single_token_first
+        "mixed":        (len(labels),            mixed_phases["decode"],      0),
+        "decode_only":  (0,                      mixed_phases["decode"],      0),
+        "prefill_only": (mixed_phases["prefill"], 0,                          0),
+    }[name]
+    for field, want in zip(("prefill", "decode", "single_token_first_graph"), expected):
+        if phases[field] != want:
+            problems.append("%s: graph_phases %s is %d, the arm replays %d"
+                            % (name, field, phases[field], want))
+    if name == "mixed" and phases["decode"] < 1:
+        problems.append("%s: the capture produced no decode graph at all, so no arm can separate "
+                        "prefill from decode" % name)
+    if name != "mixed" and arm_demands[name] >= arm_demands["mixed"]:
+        problems.append("%s: the projection did not shrink the stream (%d demand(s) against the "
+                        "mixed arm's %d)" % (name, arm_demands[name], arm_demands["mixed"]))
+
+
 def check_arm(name, document):
     """The contract properties of one arm, asserted rather than described."""
     inputs, stream, verdict = document["inputs"], document["stream"], document["verdict"]
     if document["kind"] != "R3_RESIDENCY_SIM" or document["schema_version"] != 1:
         problems.append("%s: the document is not R3_RESIDENCY_SIM schema 1" % name)
+    check_graph_phases(name, stream)
     if inputs["admitted_trace_count"] != inputs["listed_trace_count"]:
         problems.append("%s: a listed trace was not admitted" % name)
     if stream["pooling"] != "continuing":
@@ -469,6 +525,14 @@ def check_arm(name, document):
     if verdict["jackknife_folds"] != inputs["admitted_trace_count"]:
         problems.append("%s: the jackknife did not run one fold per admitted document" % name)
     rows = by_policy(document, "token_major", verdict["budget_bytes"])
+    # Everything below reads named rows out of that table. A document that did not report the ten
+    # rows of section 2.4 at the verdict's own budget is a reportable problem, not a traceback: the
+    # structural findings already recorded above are what a reader needs, and a `KeyError` here
+    # would destroy them along with the rest of the output.
+    if set(rows) != set(EXPECTED_POLICIES):
+        problems.append("%s: token_major reports %r at the verdict budget, not the ten rows of "
+                        "section 2.4" % (name, sorted(rows)))
+        return []
     for policy, cell in rows.items():
         if cell["hits"] + cell["misses"] != cell["demands"]:
             problems.append("%s/%s does not account for every demand" % (name, policy))
@@ -519,8 +583,33 @@ def check_arm(name, document):
 
 
 def by_policy(document, order, budget_bytes):
-    entries = document["orders"][0 if order == "token_major" else 1]["policies"]
-    return {row["policy"]: row for row in entries if row["budget_bytes"] == budget_bytes}
+    """One order's policy rows at one budget, selected by the reported `order` name.
+
+    The name is what selects the block. Indexing `orders` positionally would silently read the
+    `layer_major` rows under the `token_major` label on any document whose order list is not in the
+    expected sequence — and the check that the sequence *is* expected only records a problem, which
+    is reported after this table has already been read.
+    """
+    blocks = [entry for entry in document["orders"] if entry["order"] == order]
+    if len(blocks) != 1:
+        raise SystemExit("decode residency gate: the document reports %d %s block(s), expected 1"
+                         % (len(blocks), order))
+    return {row["policy"]: row for row in blocks[0]["policies"]
+            if row["budget_bytes"] == budget_bytes}
+
+
+def per_mille_gain(baseline, value):
+    """`(baseline - value) * 1000 / baseline` with C truncation toward zero.
+
+    `src/residency_sim.align`'s `per_mille` divides with Align's integer division, which truncates
+    toward zero; Python's `//` floors. The two agree on a saving and differ by one per mille on a
+    loss, which is exactly the rows above the baseline this table prints.
+    """
+    if baseline <= 0:
+        return 0
+    numerator = 1000 * (baseline - value)
+    magnitude = abs(numerator) // baseline
+    return magnitude if numerator >= 0 else -magnitude
 
 
 version_text = (temp_dir / "version.txt").read_text(encoding="utf-8", errors="replace").strip()
@@ -542,19 +631,22 @@ print("  expert blocks      %d, %d byte(s) total, %d..%d per expert, uniform %s"
 print("  budget             %s byte(s) = %d per mille of the expert footprint"
       % (budget, results["mixed"]["verdict"]["budget_bytes"] * 1000
          // model_block["total_expert_bytes"]))
-print("  demand bound       mixed %d, decode-only %d, MAX_DEMANDS %d"
-      % (arm_demands["mixed"], arm_demands["decode_only"], MAX_DEMANDS))
-print("  simulation cost    mixed %d, decode-only %d, MAX_SIMULATION_STEPS %d "
-      "(resident bound %d key(s))"
-      % (cost["mixed"], cost["decode_only"], MAX_SIMULATION_STEPS, resident_bound))
+print("  demand bound       %s, MAX_DEMANDS %d"
+      % (", ".join("%s %d" % (name, arm_demands[name]) for name in ARM_NAMES), MAX_DEMANDS))
+print("  simulation cost    %s, MAX_SIMULATION_STEPS %d (resident bound %d key(s))"
+      % (", ".join("%s %d" % (name, cost[name]) for name in ARM_NAMES), MAX_SIMULATION_STEPS,
+         resident_bound))
 print()
 
-ARMS = (("mixed", "mixed        prefill graph + decode graphs, one continuing pooled stream"),
-        ("decode_only", "decode-only  graph 0 projected away, ordinals as captured"))
+ARMS = (("mixed", "mixed         prefill graph + decode graphs, one continuing pooled stream"),
+        ("decode_only", "decode-only   graph 0 projected away, ordinals as captured"),
+        ("prefill_only", "prefill-only  decode graphs projected away — the coverage control arm"))
 
+cleared_by_arm = {}
 for name, title in ARMS:
     document = results[name]
     cleared = check_arm(name, document)
+    cleared_by_arm[name] = cleared
     stream, verdict = document["stream"], document["verdict"]
     rows = by_policy(document, "token_major", verdict["budget_bytes"])
     print("  %s" % title)
@@ -565,14 +657,27 @@ for name, title in ARMS:
           % (stream["demand_count"], stream["token_position_count"], stream["distinct_key_count"]))
     print("    graph phases     %s" % json.dumps(stream["graph_phases"], sort_keys=True))
     print("    layers demanded  %s" % stream["layers_demanded"])
-    print("    one token        %d expert(s), %d byte(s) - the LRU cliff"
-          % (stream["one_token_working_set_keys"], stream["one_token_working_set_bytes"]))
+    # `one_token_working_set_*` is measured over the pooled stream's *first* token position only
+    # (`src/residency_sim.align`: the scan stops at the first demand whose token ordinal is not 0),
+    # so the phase it reports is the phase of that position, not an average over the arm. In the
+    # mixed and prefill-only arms that position is a prompt token; in the decode-only arm it is a
+    # generated one, which is why the two differ by exactly the prefill graph's reduced last layer.
+    print("    one token        %d expert(s), %d byte(s) at the stream's first token position, a "
+          "%s token - the LRU cliff"
+          % (stream["one_token_working_set_keys"], stream["one_token_working_set_bytes"],
+             "generated" if name == "decode_only" else "prompt"))
     print("    token_major at the requested budget")
     print("      %-18s %18s %10s %14s" % ("policy", "bytes fetched", "hit ‰", "vs lru ‰"))
-    for policy in EXPECTED_POLICIES:
+    # `check_arm` records a problem and stops when the ten rows of section 2.4 are not all present.
+    # This block must not then raise on the same document: the recorded problems are printed to
+    # stderr after the human block, and a `KeyError` here would take them down with it.
+    reported = [policy for policy in EXPECTED_POLICIES if policy in rows]
+    if len(reported) != len(EXPECTED_POLICIES):
+        print("      (incomplete: %d of %d section 2.4 rows at this budget; see the problems below)"
+              % (len(reported), len(EXPECTED_POLICIES)))
+    for policy in reported:
         cell = rows[policy]
-        gain = (1000 * (verdict["baseline_bytes_fetched"] - cell["bytes_fetched"])
-                // verdict["baseline_bytes_fetched"])
+        gain = per_mille_gain(verdict["baseline_bytes_fetched"], cell["bytes_fetched"])
         mark = ""
         if policy == "lru":
             mark = "  <- baseline"
@@ -595,25 +700,43 @@ for name, title in ARMS:
           % (verdict["gain_per_mille"], verdict["margin_per_mille"]))
     print("      headroom       %d per mille to the offline optimum"
           % verdict["headroom_per_mille"])
-    print("      jackknife      %d fold(s), minimum gain %d per mille, stable %s"
-          % (verdict["jackknife_folds"], verdict["jackknife_min_gain_per_mille"],
+    # Section 2.8 resamples only over candidates that clear the pooled effect floor, so when none
+    # does the fold loop never runs and `jackknife_min_gain_per_mille` is the untested initial 0
+    # rather than a measured minimum. Printing `40 fold(s), minimum gain 0` without that word reads
+    # as a measured instability. `jackknife_folds` still reports how many folds the document is
+    # *partitioned* into, which is a property of the corpus and is true either way.
+    print("      jackknife      %s; %d fold(s) available, minimum gain %s, stable %s"
+          % ("tested" if cleared else "NOT tested (no candidate cleared the pooled floor)",
+             verdict["jackknife_folds"],
+             ("%d per mille" % verdict["jackknife_min_gain_per_mille"]) if cleared
+             else "not measured",
              "yes" if verdict["jackknife_stable"] else "no"))
     print("      result         %s" % verdict["result"])
-    print("    sweep")
-    print("      %14s %5s %10s %10s %-18s %s"
-          % ("budget", "pct", "gain", "headroom", "best", "result"))
+    print("    sweep (pooled effect floor only: section 2.8 resamples at the requested budget, so")
+    print("           no row below carries a jackknife of its own)")
+    # The share column reports the document's own `per_mille_of_expert_bytes` rather than a percent
+    # derived from it: dividing by ten here would print the 125-per-mille row as "12%", which
+    # understates the operating point the prose then has to describe.
+    print("      %14s %8s %10s %10s %-18s %s"
+          % ("budget", "share", "gain", "headroom", "best", "result"))
     sweep = {row["budget_bytes"]: row for row in verdict["sweep_best"]}
     for entry in document["budgets"]:
         row = sweep[entry["bytes"]]
-        print("      %14d %4d%% %9d‰ %9d‰ %-18s %s"
-              % (entry["bytes"], entry["per_mille_of_expert_bytes"] // 10, row["gain_per_mille"],
+        print("      %14d %7d‰ %9d‰ %9d‰ %-18s %s"
+              % (entry["bytes"], entry["per_mille_of_expert_bytes"], row["gain_per_mille"],
                  row["headroom_per_mille"], row["best_policy"] or "-", row["result"]))
     print()
 
 print("  caveats")
-print("    - the decode-only list is a projection of the captured documents: only `graphs` and")
-print("      `selections`, the two arrays the simulator reads, are filtered, and every other block")
-print("      still describes the whole transcript")
+print("    - the decode-only and prefill-only lists are projections of the captured documents: only")
+print("      `graphs` and `selections`, the two arrays the simulator reads, are filtered, and every")
+print("      other block still describes the whole transcript")
+print("    - the prefill-only arm is the coverage control, not a third result: it holds corpus,")
+print("      budget, admission, and the full eight-slot axis fixed and removes only the decode")
+print("      graphs, so a verdict it shares with the other two arms is NOT attributable to decode")
+print("    - one_token_working_set_* is the first pooled token position only, so the mixed and")
+print("      prefill-only arms report a prompt token's working set and decode-only a generated")
+print("      one; they are not per-arm averages")
 print("    - decode is greedy (--temp 0 --seed 42) and bounded at %d step(s) with -c 512, so this"
       % decode_steps)
 print("      is one continuation per prompt, not a distribution over continuations")
@@ -632,19 +755,24 @@ print()
 for name, _ in ARMS:
     document = results[name]
     stream, verdict = document["stream"], document["verdict"]
+    # `jackknife_tested` is the field that keeps the two zeros apart: a `jackknife_min_per_mille=0`
+    # under `jackknife_tested=no` is the untested initial value, not a fold that measured no gain.
+    tested = "yes" if cleared_by_arm[name] else "no"
     print("decode-residency-gate arm=%s verdict=%s budget=%d baseline_bytes=%d best=%s "
-          "best_bytes=%d gain_per_mille=%d headroom_per_mille=%d jackknife_folds=%d "
-          "jackknife_min_per_mille=%d jackknife_stable=%s demands=%d token_positions=%d "
-          "distinct_keys=%d slot_coverage_per_mille=%d prefill_graphs=%d decode_graphs=%d "
-          "single_first_graphs=%d prompts=%d decode_steps=%d"
+          "best_bytes=%d gain_per_mille=%d headroom_per_mille=%d jackknife_tested=%s "
+          "jackknife_folds=%d jackknife_min_per_mille=%d jackknife_stable=%s demands=%d "
+          "token_positions=%d distinct_keys=%d slot_coverage_per_mille=%d prefill_graphs=%d "
+          "decode_graphs=%d single_first_graphs=%d one_token_ws_keys=%d one_token_ws_bytes=%d "
+          "prompts=%d decode_steps=%d"
           % (name, verdict["result"], verdict["budget_bytes"], verdict["baseline_bytes_fetched"],
              verdict["best_policy"] or "none", verdict["best_bytes_fetched"],
-             verdict["gain_per_mille"], verdict["headroom_per_mille"], verdict["jackknife_folds"],
-             verdict["jackknife_min_gain_per_mille"],
+             verdict["gain_per_mille"], verdict["headroom_per_mille"], tested,
+             verdict["jackknife_folds"], verdict["jackknife_min_gain_per_mille"],
              "yes" if verdict["jackknife_stable"] else "no", stream["demand_count"],
              stream["token_position_count"], stream["distinct_key_count"],
              stream["slot_coverage_per_mille"], stream["graph_phases"]["prefill"],
              stream["graph_phases"]["decode"], stream["graph_phases"]["single_token_first_graph"],
+             stream["one_token_working_set_keys"], stream["one_token_working_set_bytes"],
              len(labels), decode_steps))
 
 if problems:

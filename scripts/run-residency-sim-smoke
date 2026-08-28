@@ -46,6 +46,7 @@ binary, fixture_dir, work_dir, root_dir = (
 sys.path.insert(0, str(Path(root_dir) / "scripts"))
 import eval_callback_fixture as fixture          # noqa: E402
 import residency_oracle as oracle                # noqa: E402
+import residency_projection as projection        # noqa: E402
 
 failures = []
 
@@ -215,6 +216,13 @@ def check_case(name, listing, ir_path, budget, asserts=None, expect_exit=0):
     if not written.stdout.startswith("residency sim:\n"):
         fail("%s: the four-operand form did not print the summary block" % name)
     document = json.loads(on_disk)
+    # Every caller of a successful case indexes `stream`, `verdict`, and `orders` out of the result.
+    # An error document carries none of them, so continuing would replace this case's diagnostic
+    # with a `KeyError` traceback from whichever line happened to read a missing key first.
+    if expect_exit == 0 and document.get("status") != "ok":
+        fail("%s: the run exited 0 with %s %s rather than an ok document"
+             % (name, document.get("error_code"), document.get("error_detail")))
+        raise SystemExit(1)
     expected = oracle.simulate(str(listing), str(ir_path), str(budget))
     if document != expected:
         report_difference(name, document, expected, "")
@@ -332,7 +340,11 @@ check_case("sim-multi-graph", trace_list("sim-multi", [multi]), uniform_ir, basi
 # 2.5.6 classifies a one-token graph at ordinal 0 as `single_token_first_graph`, so renumbering
 # would turn the first decode step into a phase it is not, and `graph_phases` would stop being able
 # to state what was replayed.
-DECODE_STEPS = 4
+# The two counts are deliberately unequal. With four prefill tokens and four decode steps the
+# decode-only and prefill-only projections would carry the same number of token positions, and the
+# assertion below that the three arms are three different measurements could be satisfied by a
+# projection that selected the wrong graphs but the right count.
+DECODE_STEPS = 5
 PREFILL_TOKENS = 4
 
 
@@ -361,16 +373,18 @@ def full_axis_graphs(offset):
     return graphs
 
 
-def decode_only(name, source):
-    """The captured document with graph 0 projected away and the ordinals left as captured.
+def projected(arm, name, source):
+    """One captured document through `scripts/residency_projection.py`'s named arm.
 
-    Exactly the two arrays the simulator reads are filtered — `graphs` and `selections` — which is
-    what `scripts/run-decode-residency-gate` writes for its second arm. The result must be a legal
-    schema-1 input: graph 0 becomes undeclared and no selection names it, so nothing fails closed.
+    The projection is **imported, not re-implemented**: `scripts/run-decode-residency-gate` writes
+    its arms with this exact function, so a defect in it is a defect the oracle below sees. A second
+    copy here would let the runner's arms drift from the arms the hosted owner proves correct, which
+    is the one thing this case exists to prevent.
+
+    The result must be a legal schema-1 input: the removed graphs become undeclared and no retained
+    selection names them, so nothing fails closed.
     """
-    payload = json.loads(Path(source).read_text())
-    payload["graphs"] = [row for row in payload["graphs"] if row["ordinal"] != 0]
-    payload["selections"] = [row for row in payload["selections"] if row["graph"] != 0]
+    payload = projection.PROJECTIONS[arm](json.loads(Path(source).read_text()))
     path = work_dir / ("%s.json" % name)
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
@@ -393,7 +407,7 @@ mixed_case = check_case("sim-full-axis-decode", trace_list("sim-full-axis", mixe
 if mixed_case["stream"]["slot_coverage_per_mille"] != 1000:
     fail("sim-full-axis-decode: the capture must print every router slot")
 
-decode_docs = [decode_only("full-axis-decode-only-%d" % index, path)
+decode_docs = [projected("decode_only", "full-axis-decode-only-%d" % index, path)
                for index, path in enumerate(mixed_docs)]
 decode_positions = 4 * DECODE_STEPS
 decode_list = trace_list("sim-full-axis-decode", decode_docs)
@@ -408,22 +422,93 @@ decode_case = check_case("sim-full-axis-decode-only", decode_list, uniform_ir,
                              "stream/graph_phases/single_token_first_graph": 0,
                              "verdict/jackknife_folds": 4,
                          })
-# The projection must be a *different measurement*, not a relabelling of the same one. If the two
-# arms produced the same stream the decode-only arm would be answering nothing.
-if decode_case["stream"]["demand_count"] >= mixed_case["stream"]["demand_count"]:
-    fail("sim-full-axis-decode: the decode-only projection did not drop the prefill graph")
+
+# ---- sim-full-axis-prefill-only: the runner's coverage control arm --------------------------
+# `scripts/run-decode-residency-gate`'s third arm removes the decode graphs instead of the prefill
+# graph, so that a verdict shared by all three arms cannot be attributed to decode. It is the arm
+# that separates "the router axis went from six printed slots to eight" from "real decode graphs
+# appeared", and it is exercised here for the same reason as the other two: it is a projection the
+# runner replays, so the oracle must agree with it.
+prefill_docs = [projected("prefill_only", "full-axis-prefill-only-%d" % index, path)
+                for index, path in enumerate(mixed_docs)]
+prefill_positions = 4 * PREFILL_TOKENS
+prefill_case = check_case("sim-full-axis-prefill-only",
+                          trace_list("sim-full-axis-prefill", prefill_docs), uniform_ir,
+                          full_axis_budget, asserts={
+                              "inputs/admitted_trace_count": 4,
+                              "stream/omitted_truncated_graphs": 0,
+                              "stream/token_position_count": prefill_positions,
+                              "stream/demand_count": prefill_positions * 2 * 3,
+                              "stream/graph_phases/prefill": 4,
+                              "stream/graph_phases/decode": 0,
+                              "stream/graph_phases/single_token_first_graph": 0,
+                              "verdict/jackknife_folds": 4,
+                          })
+
+# ---- sim-renumbered-decode-only: why the projection keeps the ordinals -----------------------
+# Both runners' comments and `docs/specs/r3-residency-sim.md` section 8.1 rest on one claim: a
+# decode-only list whose ordinals were renumbered would report the first decode step as
+# `single_token_first_graph`, and `graph_phases` would stop being able to state what was replayed.
+# Every assertion above pins `single_token_first_graph: 0`, which a phase classifier that never
+# produces that label would satisfy vacuously. This case builds the renumbered list the projection
+# deliberately does *not* build and requires the label to appear, so the three arms' zeros are
+# assertions rather than a property of an unreachable branch.
+def renumbered(name, source):
+    payload = json.loads(Path(source).read_text())
+    order = {row["ordinal"]: index for index, row in enumerate(payload["graphs"])}
+    for row in payload["graphs"]:
+        row["ordinal"] = order[row["ordinal"]]
+    for row in payload["selections"]:
+        row["graph"] = order[row["graph"]]
+    path = work_dir / ("%s.json" % name)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+renumbered_docs = [renumbered("full-axis-renumbered-%d" % index, path)
+                   for index, path in enumerate(decode_docs)]
+renumbered_case = check_case("sim-renumbered-decode-only",
+                             trace_list("sim-full-axis-renumbered", renumbered_docs), uniform_ir,
+                             full_axis_budget, asserts={
+                                 "stream/graph_phases/prefill": 0,
+                                 "stream/graph_phases/decode": 4 * (DECODE_STEPS - 1),
+                                 "stream/graph_phases/single_token_first_graph": 4,
+                                 "stream/demand_count": decode_positions * 2 * 3,
+                             })
+# The demands are identical and only the phase census moved, which is exactly what renumbering would
+# have destroyed silently: the arm would still report a well-formed document with the same bytes.
+if renumbered_case["stream"]["demand_count"] != decode_case["stream"]["demand_count"]:
+    fail("sim-renumbered-decode-only: renumbering changed the demand count, so this case is not "
+         "isolating the phase census")
+
+# Each projection must be a *different measurement*, not a relabelling of the same one. If an arm
+# produced the mixed arm's stream it would be answering nothing, and if the two projections did not
+# partition the capture one of them dropped or duplicated a selection.
+for name, case in (("decode-only", decode_case), ("prefill-only", prefill_case)):
+    if case["stream"]["demand_count"] >= mixed_case["stream"]["demand_count"]:
+        fail("sim-full-axis-decode: the %s projection did not drop any graph" % name)
+if (decode_case["stream"]["demand_count"] + prefill_case["stream"]["demand_count"]
+        != mixed_case["stream"]["demand_count"]):
+    fail("sim-full-axis-decode: the two projections do not partition the capture (%d + %d != %d)"
+         % (decode_case["stream"]["demand_count"], prefill_case["stream"]["demand_count"],
+            mixed_case["stream"]["demand_count"]))
 for order in ("token_major", "layer_major"):
     mixed_rows = by_policy(mixed_case, order, full_axis_budget)
     decode_rows = by_policy(decode_case, order, full_axis_budget)
-    if mixed_rows["lru"]["bytes_fetched"] == decode_rows["lru"]["bytes_fetched"]:
-        fail("sim-full-axis-decode: %s baseline bytes are identical across the two arms, so the "
-             "case cannot tell the arms apart" % order)
+    prefill_rows = by_policy(prefill_case, order, full_axis_budget)
+    totals = {"mixed": mixed_rows["lru"]["bytes_fetched"],
+              "decode-only": decode_rows["lru"]["bytes_fetched"],
+              "prefill-only": prefill_rows["lru"]["bytes_fetched"]}
+    if len(set(totals.values())) != 3:
+        fail("sim-full-axis-decode: %s baseline bytes %r do not separate the three arms, so the "
+             "case cannot tell them apart" % (order, totals))
 
 # The graph ordinal is part of the replay order, not decoration: within one document the demands of
 # graph `g` all precede those of graph `g + 1`, and the token ordinals the document reports must be
 # strictly increasing along that order. A stream sorted without the graph term interleaves the
 # decode graphs into the prefill graph's token positions and cannot produce this count.
-for case, positions in ((mixed_case, mixed_positions), (decode_case, decode_positions)):
+for case, positions in ((mixed_case, mixed_positions), (decode_case, decode_positions),
+                        (prefill_case, prefill_positions)):
     if case["stream"]["token_position_count"] != positions:
         fail("sim-full-axis-decode: %d token position(s) for %d expected"
              % (case["stream"]["token_position_count"], positions))
@@ -432,7 +517,10 @@ for case, positions in ((mixed_case, mixed_positions), (decode_case, decode_posi
              % case["stream"]["one_token_working_set_keys"])
 
 # The jackknife must be doing work on this fixture, or a `decide` that never resampled would agree
-# with it and the case would not be able to see the difference.
+# with it and the case would not be able to see the difference. The prefill-only arm is deliberately
+# not asserted here: whether one of its 96 demands clears the pooled floor is a property of the
+# fixture's router table rather than of the simulator, and the two arms below already pin the
+# resampling path.
 for name, case in (("mixed", mixed_case), ("decode-only", decode_case)):
     verdict = case["verdict"]
     rows = by_policy(case, "token_major", full_axis_budget)
@@ -455,7 +543,8 @@ for name, case in (("mixed", mixed_case), ("decode-only", decode_case)):
 # belongs to `sim-basic` and is not touched.
 for name, listing, expected in (
         ("mixed", trace_list("sim-full-axis", mixed_docs), mixed_case),
-        ("decode-only", trace_list("sim-full-axis-decode", decode_docs), decode_case)):
+        ("decode-only", trace_list("sim-full-axis-decode", decode_docs), decode_case),
+        ("prefill-only", trace_list("sim-full-axis-prefill", prefill_docs), prefill_case)):
     again = json.loads(run(["--simulate-residency", str(listing), str(uniform_ir),
                             str(full_axis_budget)], expect_exit=0).stdout)
     if normalized(again) != normalized(expected):
@@ -545,6 +634,88 @@ for relative, expected in (("scripts/run-residency-sim", "require_compact_router
     if relative == "scripts/run-decode-residency-gate" \
             and "require_compact_router_axes" in source:
         fail("full-axis-admission: the decode runner gained the compact admission")
+
+# ---- projection-binding: the runner replays the arms this file proved correct ----------------
+# `sim-full-axis-decode-only` and `sim-full-axis-prefill-only` are evidence about
+# `scripts/run-decode-residency-gate` only for as long as the runner uses the same implementation.
+# A runner that reverted to a local `project_decode_only` would pass every assertion above while
+# replaying an arm nothing here has checked, so the binding is pinned by name.
+decode_runner = (Path(root_dir) / "scripts/run-decode-residency-gate").read_text(encoding="utf-8")
+for expected in ("from residency_projection import", "PROJECTIONS[arm]"):
+    if expected not in decode_runner:
+        fail("projection-binding: scripts/run-decode-residency-gate no longer uses "
+             "scripts/residency_projection.py (%r absent)" % expected)
+if "def project_decode_only" in decode_runner or "def project_prefill_only" in decode_runner:
+    fail("projection-binding: scripts/run-decode-residency-gate defines a projection of its own, "
+         "so the arms this file checks are not the arms it replays")
+for arm in projection.ARM_NAMES:
+    if ('"%s"' % arm) not in decode_runner:
+        fail("projection-binding: scripts/run-decode-residency-gate never names the %r arm" % arm)
+
+# ---- capture-identity: the two decode runners must capture the same transcripts ---------------
+# `docs/specs/r3-residency-sim.md` section 8.1 and `docs/specs/r2a-expert-trace.md` section 9 both
+# claim the residency and locality measurements were taken over *the same capture*, "flag for flag".
+# The capture is deliberately duplicated rather than factored into a shared helper — the two runners
+# differ in N/A prefixes, per-prompt side work, and post-capture admission, and
+# `scripts/run-decode-locality-gate` is a merged, measurement-bearing runner whose output identity a
+# refactor would put at risk — so the claim is enforced here instead of asserted in prose. A flag
+# added to one runner and not the other silently turns one claim into two measurements.
+CAPTURE_PEERS = ("scripts/run-decode-locality-gate", "scripts/run-decode-residency-gate")
+
+
+def block_after(source, opener, closer):
+    """The lines strictly between the first line containing `opener` and the next `closer` line."""
+    lines = source.splitlines()
+    for index, line in enumerate(lines):
+        if opener in line:
+            for end in range(index + 1, len(lines)):
+                if lines[end].strip() == closer:
+                    return [entry.strip() for entry in lines[index + 1:end]]
+            return None
+    return None
+
+
+def continued_lines(source, opener):
+    """One backslash-continued shell command, starting at the line containing `opener`."""
+    lines = source.splitlines()
+    for index, line in enumerate(lines):
+        if opener in line:
+            collected = [line.strip()]
+            while collected[-1].endswith("\\") and index + 1 < len(lines):
+                index += 1
+                collected.append(lines[index].strip())
+            return collected
+    return None
+
+
+captures = {}
+for relative in CAPTURE_PEERS:
+    source = (Path(root_dir) / relative).read_text(encoding="utf-8")
+    invocation = continued_lines(source, 'exec $instrument_timeout "$instrument"')
+    identity = block_after(source, 'corpus_identity=$(python3 - "$prompts" "$prompt_count"', "PY")
+    ulimit = [line.strip() for line in source.splitlines() if line.strip().startswith("ulimit -f")]
+    if invocation is None:
+        fail("capture-identity: %s has no instrument invocation to compare" % relative)
+    if identity is None:
+        fail("capture-identity: %s has no corpus-identity block to compare" % relative)
+    if len(ulimit) != 1:
+        fail("capture-identity: %s declares %d transcript size cap(s), expected 1"
+             % (relative, len(ulimit)))
+    captures[relative] = (invocation, identity, ulimit)
+
+if len(captures) == len(CAPTURE_PEERS):
+    left, right = (captures[relative] for relative in CAPTURE_PEERS)
+    for index, what in enumerate(("instrument invocation", "corpus identity", "transcript cap")):
+        if left[index] != right[index]:
+            fail("capture-identity: the %s differs between %s and %s:\n      %s\n      %s"
+                 % (what, CAPTURE_PEERS[0], CAPTURE_PEERS[1], left[index], right[index]))
+    # The comparison is only worth anything if it is looking at the real flags. If the extracted
+    # invocation stopped containing them the two runners would agree vacuously.
+    for flag in ("-n \"$decode_steps\"", "--temp 0", "--seed 42", "-fa off", "-ctk f32",
+                 "-ctv f32", "-nr", "-c 512"):
+        if not any(flag in line for line in left[0]):
+            fail("capture-identity: the extracted invocation does not contain %r, so the "
+                 "comparison is vacuous" % flag)
 
 # ---- sim-mixed-bytes: the real model's per-layer mixed quantization -------------------------
 mixed_traces = [make_trace("mixed-%d" % i, [moe(41 + i, 2, 5, MIXED)]) for i in range(3)]

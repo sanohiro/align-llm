@@ -132,7 +132,7 @@ import hashlib, sys
 from pathlib import Path
 raw = Path(sys.argv[1]).read_bytes()
 print("%s %s %d %d"
-      % (Path(sys.argv[1]).name, hashlib.md5(raw).hexdigest(), len(raw), int(sys.argv[2])))
+      % (Path(sys.argv[1]).name, hashlib.md5(raw, usedforsecurity=False).hexdigest(), len(raw), int(sys.argv[2])))
 PY
 )
 

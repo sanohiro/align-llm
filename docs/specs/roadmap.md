@@ -303,7 +303,7 @@ The current forward delivery order is:
     `1b11245`, moved the qualification wrapper's Model IR and budget validation ahead of the
     instrument runs. See `HANDOFF.md`.
 23. **R5D-MOE-LAYER-FORWARD — one OLMoE MoE layer computed from Align-owned expert claims, the
-    routed half of R5's second gate stage. Implemented and reviewed; in publication.** On branch
+    routed half of R5's second gate stage. Merged** as PR #139 (`main` `e312bd7`). On branch
     `agent/r5d-moe-layer-forward`, rebased onto the merged R3 residency simulator at `main`
     `95c47e7` and then merged with `main` `1b11245` (PR #138's follow-up) rather than rebased over
     it, so the recorded baseline-chain commits stay reachable; design ledger `a85e1fc`,
@@ -353,9 +353,10 @@ The current forward delivery order is:
     consumer is item 24; R6 may consume the same instrument as its decode-graph source.
 
 24. **R2D-DECODE-LOCALITY-GATE — the decode half of the R2 locality gate, measured on the real
-    model. Implemented and reviewed; in publication.** On branch `agent/r2d-decode-locality-gate`,
-    started from `main` `89d8721` (R2c PR #140) and merged with `main` `e312bd7` (R5D PR #139)
-    rather than rebased over it, so its recorded commits stay reachable.
+    model. Merged** as PR #141 (`main` `c21b9e4`). It was developed on branch
+    `agent/r2d-decode-locality-gate`, started from `main` `89d8721` (R2c PR #140) and merged with
+    `main` `e312bd7` (R5D PR #139) rather than rebased over it, so its recorded commits stay
+    reachable.
     [`r2a-expert-trace.md`](r2a-expert-trace.md) section 9 is the authoritative record; no
     design gate is triggered, because it adds no CLI verb, no exchanged document, and no coordinated
     invariant. `scripts/run-decode-locality-gate` captures one prompt-plus-decode transcript per
@@ -375,30 +376,41 @@ The current forward delivery order is:
     reproduced every recorded number.
 
 25. **R3-DECODE-RESIDENCY — the decode half of the R3 cache-simulator gate, measured on the real
-    model. Implemented; in review.** On branch `agent/r3-decode-residency`, stacked on item 24's
-    `agent/r2d-decode-locality-gate`. [`r3-residency-sim.md`](r3-residency-sim.md) section 8 is the
+    model. Implemented and reviewed; repair complete.** On branch `agent/r3-decode-residency`,
+    started from item 24's `d48bde0` and merged with `main` `c21b9e4` (item 24's PR #141) rather
+    than rebased over it, so its recorded commits stay reachable.
+    [`r3-residency-sim.md`](r3-residency-sim.md) section 8 is the
     authoritative record; no design gate is triggered, because it adds no CLI verb, no exchanged
     document, no Align source change, and no coordinated invariant.
     `scripts/run-decode-residency-gate` takes item 24's capture flag for flag — 40 prompts at
     `-n 16 --temp 0 --seed 42` — admits it with the same `require_full_router_axes`, and replays it
-    through `main --simulate-residency` in two arms at section 7.4's own 25-per-cent budget: the
-    **mixed** list as captured (104,960 demands, 832 token positions) and a **decode-only** list
-    with graph 0 projected away and the ordinals kept (81,920 demands, 640 positions). Slot coverage
-    is 1,000 per mille rather than 750 and all sixteen layers are demanded rather than fifteen, so
-    the one-token working set grows from 341 MB to 455–488 MB and the fixed 975,175,680 B budget is
-    2.0–2.1 working sets where section 7.4's was 2.86. **The gate is met in the decode direction and
-    its answer is narrower**: `recent_reuse` still beats `lru` by 59 to 238 per mille at
-    1/3/6/12 per cent on both arms, but at 25 and 50 per cent **no candidate beats the baseline at all** — both
-    arms report `NO_POLICY_BEATS_BASELINE`, `recent_reuse_w2` is byte-identical to `lru`, and `lfu`
-    has changed sign from a 221-per-mille saving to a 153-per-mille loss. 476 and 473 per mille of
-    headroom to the offline optimum remain **uncaptured by every online candidate**, which is the
-    strongest evidence yet for the score-based and impact-driven policies ledger section 5.1 defers
-    with named prerequisites. Section 7.4's recorded 223-per-mille result is untouched and
-    `scripts/run-residency-sim` still refuses a full-axis document, so the two streams can never be
-    pooled. Two hosted cases join `residency-sim-smoke` — a synthetic full-axis multi-graph trace
-    against the independent oracle and both admission refusals — and a mutation that ignores decode
-    graphs is killed by them and by nothing else in the file. No `Makefile` change and no aggregate
-    membership change. See `HANDOFF.md`.
+    through `main --simulate-residency` in **three** arms at section 7.4's own 25-per-cent budget:
+    the **mixed** list as captured (104,960 demands, 832 token positions), a **decode-only** list
+    with graph 0 projected away and the ordinals kept (81,920 demands, 640 positions), and a
+    **prefill-only** control with the decode graphs projected away instead (23,040 demands, 192
+    positions). **The gate is met in the decode direction and its answer is narrower**:
+    `recent_reuse` beats `lru` by 59 to 238 per mille at 1.5/3.1/6.2/12.5 per cent on both decode
+    arms, but at 25 and 50 per cent **no candidate beats the baseline at all** — both report
+    `NO_POLICY_BEATS_BASELINE`, `recent_reuse_w2` is byte-identical to `lru`, and `lfu` changes sign
+    from a 221-per-mille saving to a 152/190-per-mille loss. **The control arm is what makes that
+    attributable.** R2c changed slot coverage (750 → 1,000 per mille) and phase at the same time;
+    the prefill-only arm changes only coverage and is **`BEATS_BASELINE` at the same 25-per-cent
+    budget**, `lfu` 194 per mille with a stable jackknife (minimum fold 186), `recent_reuse_w32`
+    still clearing the floor at 191. So section 7.4's 223-per-mille win **survives full axes**, and
+    what removes it is the presence of decode demands — decode's expert distribution is more uniform
+    (item 24's entropy 996 against prefill's 992), `lru` rises to 569 per mille on decode where it is
+    492 on prefill, and every frequency candidate falls behind it. The working-set tightening an
+    earlier draft blamed is measured and rejected: the winning control arm sits at 2.14 working sets
+    against the losing mixed arm's 2.0–2.14. Not separated, and stated: decode also lengthens the
+    stream 4.3×. 476 and 473 per mille of headroom to the offline optimum remain **uncaptured by
+    every online candidate** on the decode arms, which is the strongest evidence yet for the
+    score-based and impact-driven policies ledger section 5.1 defers with named prerequisites.
+    `scripts/run-residency-sim` still refuses a full-axis document, so the two corpora can never be
+    pooled. Four hosted cases and two binding checks join `residency-sim-smoke` — three full-axis
+    arms against the independent oracle, both admission refusals, the runner's binding to the shared
+    `scripts/residency_projection.py`, and an enforced capture-flag identity with item 24's runner —
+    and a mutation that ignores decode graphs is killed by the new cases and by nothing else in the
+    file. No `Makefile` change and no aggregate membership change. See `HANDOFF.md`.
 
 ### Status (2026-08-28)
 
@@ -407,14 +419,14 @@ Track B is complete on the dense local model from R0 through R5C (item 17). Deci
 `olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18 through 24 above:
 items 18 through 22 are merged, R2's gate is met, R4's and R4.5's per-expert halves are discharged,
 R3's gate is met on the real corpus, and decision (c)'s pinned decode instrument is shipped. It also
-unblocked item 23, R5D-MOE-LAYER-FORWARD, which is implemented, reviewed, and in publication with
-one routed OLMoE layer computed over Align-owned expert claims and agreeing with llama.cpp node for
-node, item 24, R2D-DECODE-LOCALITY-GATE, which is implemented and reviewed and meets R2's
-locality gate in the decode direction on the same 40-prompt corpus, and item 25,
-R3-DECODE-RESIDENCY, which is implemented and meets R3's gate in the decode direction — narrowly,
-with the win confined to budgets at or below 12 per cent of the expert footprint and no candidate
-beating `lru` at 25 or 50 per cent. Item 25 discharges R4B's decode-corpus resume condition
-negatively and orders R6's KV tiering ahead of a runtime expert-residency policy.
+unblocked item 23, R5D-MOE-LAYER-FORWARD, merged as PR #139, with one routed OLMoE layer computed
+over Align-owned expert claims and agreeing with llama.cpp node for node, item 24,
+R2D-DECODE-LOCALITY-GATE, merged as PR #141, which meets R2's locality gate in the decode direction
+on the same 40-prompt corpus, and item 25, R3-DECODE-RESIDENCY, which is implemented and meets R3's
+gate in the decode direction — narrowly, with the win confined to budgets at or below 12.5 per cent
+of the expert footprint and no candidate beating `lru` at 25 or 50 per cent. Item 25 discharges
+R4B's decode-corpus resume condition negatively and orders R6's KV tiering ahead of a runtime
+expert-residency policy.
 Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
 **infeasible on the host where that decision was recorded** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
@@ -988,48 +1000,77 @@ prompt長は最大6 tokenで192 token positionしかなく、cache pressureの�
 **decode方向も満たされた（2026-08-28、R3-DECODE-RESIDENCY、roadmap item 25）。ただし答えは
 上記より狭い。** R2cのpatched instrumentで捕捉した同じ40 prompt・`-n 16 --temp 0 --seed 42`の
 decode corpus（R2Dと同一のcapture、admissionも同一の`require_full_router_axes`）を
-`main --simulate-residency`で2 armに replayした。arm (i) **mixed**は捕捉したままのlist
+`main --simulate-residency`で3 armに replayした。arm (i) **mixed**は捕捉したままのlist
 （40 prefill + 640 decode graph、832 token位置、104,960 demand）、arm (ii) **decode-only**は
 graph 0 をprojectionで落とし ordinalはそのまま残したlist（640 decode graph、640 token位置、
-81,920 demand）である。router slotは8/8印字されるためslot coverageは1000‰（従来750‰）、
-demandされるlayerも16/16（従来15）となり、1 token working setは341 MBから455–488 MBに拡大する。
-その結果、同じ975,175,680 B（250‰）のbudgetはworking setの2.0–2.1倍でしかなく、section 7.4時点の
-2.86倍とは別の動作点になる。
+81,920 demand）、arm (iii) **prefill-only**は逆にdecode graphだけを落とした**control**
+（40 prefill graph、192 token位置、23,040 demand）である。
+
+第3のarmが必要な理由は、R2cが**2つの変数を同時に動かした**ことにある。router slotの印字が
+6/8から8/8になり（slot coverage 750‰ → 1000‰）、同時に実decode graphが現れた。mixedと
+decode-onlyはsection 7.4のstreamに対して両方が変わっているため、結果が動いてもどちらが原因か
+決められない。prefill-only armはcorpus・budget・admission・8 slot軸を固定し、decode graphだけを
+除く。したがってこのarmが他と同じverdictを出せばそれはcoverageの効果であり、出さなければ
+coverageの効果ではない。
 
 ```text
-budget 975175680 B (250‰), token_major, 両arm共通の結論
+budget 975175680 B (250‰), token_major
 
-arm        baseline lru        best_policy  gain  headroom  result
-mixed      176,661,381,120 B   -            0‰    476‰      NO_POLICY_BEATS_BASELINE
-decode-only 134,615,285,760 B  -            0‰    473‰      NO_POLICY_BEATS_BASELINE
+arm          baseline lru        best_policy  gain   headroom  jackknife      result
+mixed        176,661,381,120 B   -            0‰     476‰      未実施         NO_POLICY_BEATS_BASELINE
+decode-only  134,615,285,760 B   -            0‰     473‰      未実施         NO_POLICY_BEATS_BASELINE
+prefill-only  44,349,947,904 B   lfu          194‰   552‰      最小186‰ 安定  BEATS_BASELINE
 
-sweep (両armで verdict は全point一致)
-  0%   NO_POLICY_BEATS_BASELINE
-  1%   BEATS_BASELINE   recent_reuse_w32  gain 59‰
-  3%   BEATS_BASELINE   recent_reuse_w32  gain 137‰ / 134‰
-  6%   BEATS_BASELINE   recent_reuse_w32 (mixed) / recent_reuse_w8 (decode-only)  gain 238‰ / 232‰
- 12%   BEATS_BASELINE   recent_reuse_w32 (mixed) / recent_reuse_w8 (decode-only)  gain 59‰ / 70‰
- 25%   NO_POLICY_BEATS_BASELINE   headroom 476‰ / 473‰
- 50%   NO_POLICY_BEATS_BASELINE   headroom 593‰ / 583‰
-100%   NO_HEADROOM
+sweep（mixed と decode-only は全pointでverdict一致）
+   7‰   NO_POLICY_BEATS_BASELINE（3 arm共通）
+  15‰   BEATS_BASELINE   recent_reuse_w32 59‰ / 59‰、prefill-onlyは lfu 61‰
+  31‰   BEATS_BASELINE   recent_reuse_w32 137‰ / 134‰ / 106‰
+  62‰   BEATS_BASELINE   recent_reuse_w32 238‰、recent_reuse_w8 232‰、recent_reuse_w32 226‰
+ 125‰   BEATS_BASELINE   recent_reuse_w32 59‰、recent_reuse_w8 70‰、lfu 78‰
+ 250‰   NO_POLICY（mixed/decode-only、headroom 476‰ / 473‰）／ BEATS_BASELINE（prefill-only、lfu 194‰）
+ 500‰   NO_POLICY_BEATS_BASELINE（3 arm共通、headroom 593‰ / 583‰ / 496‰）
+1000‰   NO_HEADROOM
 ```
 
 数値の意味と限界は[`r3-residency-sim.md`](r3-residency-sim.md) section 8にある。要点のみ:
-**baselineより有効なpolicyは依然として特定できる**（expert footprintの1–12 %では`recent_reuse`が
-59–238‰勝つ）が、**section 7.4が記録した25 %の動作点ではどのcandidateもlruに勝たない**。
-`recent_reuse_w2`はlruとbyte単位で完全に一致し、`lfu`は221‰の節約から153‰の悪化へ符号が反転した。
-一方でofflineに対するheadroomは25 %で476‰・50 %で593‰残り、**online candidateはその一切を
-回収していない**。これはledger section 5.1がprerequisite付きでdeferしているscore-based /
-impact-driven prefetchに投資する根拠であって、recency/frequencyの変種を増やす根拠ではない。
-`topk_prefetch`はdecodeデータでも改善しない（k=1でlru比+4 %、k=8で+65 %のbyte）。
+**baselineより有効なpolicyは依然として特定できる**（expert footprintの1.5–12.5 %では
+`recent_reuse`が59–238‰勝つ）が、**section 7.4が記録した25 %の動作点では、decodeを含む2 armの
+どのcandidateもlruに勝たない**。`recent_reuse_w2`はlruとbyte単位で完全に一致し、`lfu`は221‰の
+節約から152‰・190‰の悪化へ符号が反転した。
+
+**その原因はcoverageではなくdecodeである。** control armであるprefill-onlyは同じ25 %のbudgetで
+`lfu`が194‰勝ち、jackknifeも安定（最小186‰）で`BEATS_BASELINE`となる。`recent_reuse_w32`も
+191‰でfloorを越える。つまりsection 7.4の223‰という結果は**8/8 slotでも生き残る**（223‰ → 194‰）
+のであって、6 slot subsampleの産物ではなかった。初期の草稿はworking setの拡大
+（341 MB → 455–488 MB、budgetが2.86倍から2.0–2.14倍へ）を原因としていたが、これは**実測により
+棄却された**: 勝つprefill-only armは2.14倍で、負けるmixed armのprefill位置と7 %しか違わない。
+decodeで何が変わるかはbyte tableが示す。`lru`はdecodeでむしろ**強くなり**（hit 569‰ 対
+prefillの492‰）、`lfu`は**弱くなる**（487‰ 対 592‰）。decodeのexpert分布はprefillより一様で
+（entropy 996 対 992、top-8 mass 163 対 179、64 expert全使用、
+`docs/specs/r2a-expert-trace.md` section 9.2）、frequencyが利用できる偏りが減るためである。
+
+**分離できていない交絡を1つ明示する**: decode graphを除くとstreamは104,960 demand・832位置から
+23,040 demand・192位置へ短くなる。したがってこの実測は「coverageではない」ことは示すが、
+「decodeのrouting統計」と「decodeが生むstream長」を分離しない。長さ一致armは本capabilityでは
+作らない。
+
+一方でofflineに対するheadroomはdecodeを含む2 armで25 %に476‰・50 %に593‰残り、**online
+candidateはその一切を回収していない**。これはledger section 5.1がprerequisite付きでdeferしている
+score-based / impact-driven prefetchに投資する根拠であって、recency/frequencyの変種を増やす
+根拠ではない。`topk_prefetch`は3 armのいずれでも改善しない（mixedでk=1がlru比+4 %、k=8で+65 %の
+byte、prefill-onlyでも-10‰・-343‰）。
 section 7.4の223‰という記録は**書き換えられない**: `scripts/run-residency-sim`はfull-axis document
 を引き続き拒否するため、2つのstreamがpoolされることはない。
 
 限界: greedy（`--temp 0`）固定、`-c 512`、prompt 6 token以下、生成16 tokenの範囲のみ。
-`pooling`は両armとも`continuing`であり、decode-only armも40件の生成を1つのcacheにpoolしている
+`pooling`は3 armとも`continuing`であり、decode-only armも40件の生成を1つのcacheにpoolしている
 （「多数の短いrequestからなるsession」であって「1回の長い生成」ではない）。
 prefill graphの最終層はinstrumentのoutput-token reductionで縮約されるため、layer 15はdecodeで
-初めてdemandされる。時間・帯域・throughputの主張は一切含まない。
+初めてdemandされる（prefill-only armのdemand layerは15、他は16）。
+`one_token_working_set_*`はpooled streamの**先頭token位置1つ**の値であり、armごとの平均ではない
+（mixedとprefill-onlyはprompt tokenの120 key / 454,950,912 B、decode-onlyはgenerated tokenの
+128 key / 487,587,840 B）。sweep表の各行にjackknifeは無い（section 2.8はrequested budgetでのみ
+resamplingする）。時間・帯域・throughputの主張は一切含まない。
 
 ---
 
@@ -1078,12 +1119,21 @@ R2C-DECODE-INSTRUMENT（item 22）がdecode corpusを取得可能にし、R2D-DE
 hotness layoutを支持しない: decode側のhistogramはprefill側より**さらに一様**で
 （entropy 996対992 per mille、top-8 mass 163対179、64 expert全使用、
 `docs/specs/r2a-expert-trace.md` section 9.2）、hotness orderingが前提とするskewは存在しない。
-そしてdecode corpus上のresidency simulationでは、25 %および50 % budgetで**どのcandidateも
-LRUに勝たず**、`topk_prefetch`はk=1で+4 %・k=8で+65 %のbyteを支払って改善しない
-（`docs/specs/r3-residency-sim.md` section 8.2・8.3）。したがってresume条件は
-**充足されたうえで否定的に解消**された: expert hotness orderingとprefetch groupは、
-「decode corpus待ち」ではなく「decode corpusで測ったが正当化されなかった」として引き続きdeferする。
-残る唯一のresume経路はR2bのstratified corpus（language別/task別/repo別）がskewを示すことである。
+そしてdecodeを含むstream上のresidency simulationでは、25 %および50 % budgetで**どのcandidateも
+LRUに勝たず**、`topk_prefetch`は3 armのいずれでも改善しない（mixedでk=1が+4 %・k=8が+65 %のbyte、
+prefill-only armでも-10‰・-343‰）（`docs/specs/r3-residency-sim.md` section 8.2・8.3）。
+したがってresume条件は**充足されたうえで否定的に解消**された: expert hotness orderingと
+prefetch groupは、「decode corpus待ち」ではなく「decode corpusで測ったが正当化されなかった」として
+引き続きdeferする。
+
+**この否定はprefetch group全体に及ぶが、frequency信号そのものに及ぶわけではない。** item 25の
+control armは、同じ25 % budgetのprefill-onlyのstreamでは`lfu`が194‰勝つことを示している
+（`docs/specs/r3-residency-sim.md` section 8.2）。つまりprefillのrouting分布には依然として
+frequencyが利用できる偏りがあり、上の否定は**decodeを含む動作点**についての否定である。
+それでもR4Bのhotness orderingは再開しない: hotness orderingは**静的なpack順**であって
+動的なcache policyではなく、静的順を正当化するのはcorpus横断のskewである。item 24が測った
+decode histogramにそのskewは無く、prefill側のskewはR4が既にlayer-major layoutで扱っている。
+残るresume経路は引き続きR2bのstratified corpus（language別/task別/repo別）がskewを示すことである。
 
 ---
 
@@ -1228,12 +1278,18 @@ planが想定したより小さい**——6 tokenのprefillでlayerのexpert byt
 同一prefixを使う反復coding taskでTTFTが改善すること。
 
 **順序についての実測由来の結論（2026-08-28、R3-DECODE-RESIDENCY、roadmap item 25）。**
-R6はexpert residencyのruntime実装より**先**に着手してよい。decode corpus上のresidency
-simulationでは、25 %および50 %のcache fractionで`lru`を上回るcandidate policyが存在せず
-（両arm `NO_POLICY_BEATS_BASELINE`）、`recent_reuse`が勝つのは1–12 %の狭いbudget帯に限られる
+R6はexpert residencyのruntime実装より**先**に着手してよい。実際の運用に最も近いmixed arm
+（prompt + 生成をpoolした1本のstream）では、25 %および50 %のcache fractionで`lru`を上回る
+candidate policyが存在せず、`recent_reuse`が勝つのは1.5–12.5 %の狭いbudget帯に限られる
 （`docs/specs/r3-residency-sim.md` section 8.3）。つまり「`recent_reuse`をruntimeへ持ち込めば
-広い動作点で効く」という前提は**decodeデータでは成立しない**ため、それをKV tieringに優先させる
-根拠はない。残る476‰のheadroomを取りにいくにはscore-based / impact-driven policyが必要で、
+広い動作点で効く」という前提は**decodeを含むstreamでは成立しない**ため、それをKV tieringに
+優先させる根拠はない。
+
+この結論はcontrol armによって**強められている**。prefill-only armは同じ25 % budgetで`lfu`が
+194‰勝つ（`BEATS_BASELINE`、jackknife最小186‰）ので、25 %でcandidateが勝てないのは
+slot coverageの変化やworking setの拡大ではなく、**streamにdecode demandが含まれること**に
+帰属する。runtimeが実際に扱うのはまさにそのstreamであり、prefillだけのstreamではない。
+残る476‰のheadroomを取りにいくにはscore-based / impact-driven policyが必要で、
 その入力（R2Aの`schema_version: 2` weight column、R4.5/R5の実測transfer cost）はまだ存在しない
 （ledger section 5.1）。したがってTrack Bの次順はKV tieringであり、expert residency policyの
 runtime実装はその前提が揃ってから再評価する。

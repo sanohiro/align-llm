@@ -1087,7 +1087,7 @@ ALIGN_LLM_LLAMA_EVAL_CALLBACK="$(scripts/llama-eval-callback-toolchain ensure in
 | `ALIGN_LLM_LOCALITY_PROMPTS` | `eval/prompts/expert-locality-v1.txt` | the prompt corpus, one prompt per line |
 | `ALIGN_LLM_LOCALITY_PROMPT_COUNT` | `40` | prompts to use, taken from the **top** of the corpus in file order; 1 to 1000, and a value outside that range — `0` included — is an error rather than an empty measurement |
 | `ALIGN_LLM_DECODE_STEPS` | `16` | generated tokens per prompt; 1 to 128, and a value outside that range is an error rather than a silent default |
-| `ALIGN_LLM_RESIDENCY_BUDGET` | 25 per cent of the model's expert byte footprint | the `BUDGET_BYTES` operand, the same point section 7 recorded |
+| `ALIGN_LLM_RESIDENCY_BUDGET` | 25 per cent of the model's expert byte footprint | the `BUDGET_BYTES` operand, the same point section 7 recorded; a positive decimal integer in 1..9,223,372,036,854,775 (the simulator's own `MAX_BYTE_TOTAL`), and anything else is an error rather than a diagnostic from the product an hour later |
 
 A missing or unusable model/instrument prints exactly one of these lines, in this order, and exits 0
 without claiming a measurement; the line must be quoted as the `N/A` reason in the pull request:
@@ -1102,26 +1102,53 @@ decode residency gate: N/A (ALIGN_LLM_GGUF_MODEL is absent)
 The other four variables are **overrides, not switches**: a corpus this script was pointed at and
 cannot read is a broken invocation that exits 1, never `N/A`.
 
-**Two arms, one budget, one rule.** The capture is `scripts/run-decode-locality-gate`'s, flag for
+**Three arms, one budget, one rule.** The capture is `scripts/run-decode-locality-gate`'s, flag for
 flag — `-n N --temp 0 --seed 42 -t 4 -fa off -ctk f32 -ctv f32 -nr -c 512` — so the two decode
 measurements are taken over the same greedy continuations. The capture logic is **deliberately
 duplicated** rather than factored into a shared helper: the two runners differ in their N/A
 prefixes, their per-prompt side work (the locality gate also reads a token fingerprint), and their
-post-capture admission, and a shared helper could not be adopted by `run-decode-locality-gate`
-without changing its output, so it would add a seam and pin nothing.
+post-capture admission, and a shared helper could not be adopted by `run-decode-locality-gate` —
+a merged, measurement-bearing runner — without putting its recorded output and identity at risk.
+The identity claim is therefore **enforced rather than asserted**: `capture-identity` in
+`gmake residency-sim-smoke` extracts the instrument invocation, the corpus-identity block, and the
+transcript size cap from both files and fails if they differ, and also fails if the extracted
+invocation stops containing the flags, so the comparison cannot pass vacuously. A flag added to one
+runner and not the other is a smoke failure, not a silent second measurement.
 
 | Arm | Trace list | What it answers |
 | --- | --- | --- |
 | `mixed` | the documents as captured | a session of short requests, prompt and generation pooled — the regime section 7 was already reading |
 | `decode_only` | the same documents with graph 0 projected away | generation alone, with no prompt tokens in the stream |
+| `prefill_only` | the same documents with every decode graph projected away | the **coverage control**: prompt tokens alone, at the same full eight-slot axis |
 
-The decode-only list is a **projection for the simulator**, not a second R2A document: exactly the
-two arrays `main --simulate-residency` reads — `graphs` and `selections` — are filtered, and every
-other block still describes the whole transcript. **The ordinals are kept.** Renumbering them would
-make the first decode step a `single_token_first_graph`, which is
-`docs/specs/r2a-expert-trace.md` section 2.5.6's name for "the transcript cannot tell a one-token
-prompt from a decode step", and `graph_phases` would stop being able to state what was replayed.
-`gmake residency-sim-smoke` proves the simulator admits the projected form.
+The third arm is what makes the other two interpretable. R2c changed *two* things at once against
+the stream section 7.4 recorded — the router axis went from six printed slots to all eight, and real
+decode graphs appeared — so a verdict that moved could be caused by either. The prefill-only arm
+holds corpus, budget, admission rule, and slot axis fixed and removes only the decode graphs. If it
+agrees with the other two, the movement is a **coverage** effect and must not be attributed to
+decode; only a verdict the prefill-only arm does *not* share is decode-specific.
+
+Each list is a **projection for the simulator**, not a second R2A document: exactly the two arrays
+`main --simulate-residency` reads — `graphs` and `selections` — are filtered, and every other block
+still describes the whole transcript. **The ordinals are kept.** Renumbering them would make the
+first decode step a `single_token_first_graph`, which is `docs/specs/r2a-expert-trace.md` section
+2.5.6's name for "the transcript cannot tell a one-token prompt from a decode step", and
+`graph_phases` would stop being able to state what was replayed.
+
+The projections live in `scripts/residency_projection.py`, **imported by both** this runner and
+`scripts/run-residency-sim-smoke`, so the arms the hosted owner checks against the independent
+oracle are the arms the real-model runner replays. `projection-binding` in that smoke pins the
+import by name and fails if the runner grows a projection of its own. The runner also asserts the
+partition — `mixed` demands equal `prefill_only` plus `decode_only`, demand for demand — and
+asserts each arm's `graph_phases` census, which is the only field that states *which* phase was
+replayed: a projection that filtered nothing, filtered everything, or renumbered an ordinal would
+otherwise still produce a well-formed document with plausible byte totals.
+
+**`one_token_working_set_*` is a first-position quantity, not an arm average.**
+`src/residency_sim.align` scans the pooled stream until the first demand whose token ordinal is not
+0, so the field reports the working set of whichever token position sorts first. In the mixed and
+prefill-only arms that is a prompt token; in the decode-only arm it is a generated one. Read it as
+"a token of this phase demands this much", never as "this arm's tokens demand this much on average".
 
 **Bounds are checked before the instrument runs.** `src/residency_sim.align`'s `MAX_DEMANDS` is
 262,144, and the decode half of the capture is known in advance — every decode graph carries one
@@ -1137,11 +1164,19 @@ prints one human block per arm and one machine-readable line per arm:
 
 ```text
 decode-residency-gate arm=mixed verdict=... budget=... baseline_bytes=... best=... best_bytes=...
-  gain_per_mille=... headroom_per_mille=... jackknife_folds=... jackknife_min_per_mille=...
-  jackknife_stable=... demands=... token_positions=... distinct_keys=...
-  slot_coverage_per_mille=... prefill_graphs=... decode_graphs=... single_first_graphs=...
-  prompts=... decode_steps=...
+  gain_per_mille=... headroom_per_mille=... jackknife_tested=... jackknife_folds=...
+  jackknife_min_per_mille=... jackknife_stable=... demands=... token_positions=...
+  distinct_keys=... slot_coverage_per_mille=... prefill_graphs=... decode_graphs=...
+  single_first_graphs=... one_token_ws_keys=... one_token_ws_bytes=... prompts=... decode_steps=...
 ```
+
+**`jackknife_tested` is the field that keeps two different zeros apart.** Section 2.8 resamples only
+over candidates that clear the pooled effect floor, so when none does, the fold loop never runs and
+`jackknife_min_per_mille` is the untested initial `0` rather than a fold that measured no gain.
+`jackknife_folds` still reports how many folds the stream is *partitioned* into, which is a property
+of the corpus and is true either way. Read `jackknife_min_per_mille` only under
+`jackknife_tested=yes`. The sweep table carries no jackknife at all — section 2.8 resamples at the
+requested budget only — and the human block says so above the rows.
 
 **`best` is `best_policy`, and it is only a winner when `verdict` is `BEATS_BASELINE`.** On the two
 non-winning results the field still names the lowest-byte candidate whenever one fetched fewer bytes
