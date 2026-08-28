@@ -3,7 +3,146 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R6-DECODE-KV-STEP1 (2026-08-29)
+## Active: R6-STEP-N (2026-08-29)
+
+Branch `agent/r6-step-n`, in publication. **Three commits and nothing uncommitted:** `a9c6161` is
+the capability, `6ca1eef` is the consolidated repair of the two disjoint comprehensive reviews'
+findings, and the head is the merge of `origin/main` at `d9a91e4` — R6-DECODE-KV-STEP1, PR #144 —
+taken as `git merge origin/main` and never a rebase, so every recorded commit stays reachable.
+
+**Capability.** An N-step greedy decode loop over the R6 KV plane, dense Qwen2.5-Coder-7B Q4_K_M,
+CPU, gated on **token ids**. `docs/specs/r6-step-n.md` is the authoritative ledger. The design gate
+is triggered on two of its four triggers — a changed public CLI arm and a changed exchanged document
+schema — and the third, a coordinated invariant across three or more modules, is recorded as **not
+fired** with its reason: the invariant is R6's and is unchanged, only its consumers move.
+
+**Complete.** The `STEPS` operand and its two refusals (`R6_STEPS`, and `R6_KV_WIDTH` for
+`T + N > KV_WIDTH`, with the precedence between them asserted); `LOGITS` accepting `-`; the
+write-back of each step's own K and V column into the plane, before verification, with oracle B's
+bound widened from `n_past` to `n_past + 1`; per-step iteration of the node table, the offset mask,
+and the position image; `MAX_PREFILL_TOKENS` 8 -> 32 with `R5_ORACLE_TRUNCATED` byte-unchanged;
+schema 2 with `steps[]`, `decode.token_ids`, and `plane.first_mismatch_step`; the fixture's
+three-step reference loop and four-graph transcript; thirteen new smoke cases including two new
+forced builds; `scripts/run-decode-step` extended with gate G and oracle C' at three checkpoints;
+`scripts/decode_step_fingerprint.py`; roadmap item 28, `docs/align-development.md`, and one
+recorded client line under Align Request 22.
+
+**The `Makefile` is byte-untouched** — no target, no `.PHONY` word — so aggregate membership and
+check topology are unchanged by construction. `src/ggml_ffi.align`, `scripts/ggml_shim.c`, and
+`src/ggml_spike.align` are **byte-unchanged** too: the loop needs no new ggml op, FFI symbol, node
+row, or slot.
+
+**Gate G's load-bearing measurement, taken before the gate was claimed.** The transcript does not
+print the sampled token and `result_output`'s argmax is not derivable from six of 152,064 printed
+values, so the ids are gated through each decode graph's
+`embd = GET_ROWS(token_embd.weight, [d_k])`. Over all 152,064 rows of the qualification model's
+`token_embd.weight` (Q4_K) there are **149,710 distinct printed fingerprints and exactly one
+collision class**, and that class is **precisely the 2,355 all-zero rows** — the unused vocabulary
+slots. Every row with any non-zero element is unique. The gate therefore holds unconditionally on
+the used vocabulary, and the runner refuses per step if a decoded id is ever a member of the
+colliding class. Section 3.2's fallback G3 — a patch bump to log the sampled id — is **not taken**.
+
+**Verification checkpoint, at the repair head.** `gmake build`, `gmake check`, `gmake fmt`,
+`gmake format-check`, `git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
+`gmake layer-forward-smoke` (all five blocks; 52 documented decode-step cases reaching 24 codes;
+34.0 s whole owner, 6.9 s decode block) pass.
+
+`gmake decode-step-qualification` passed on the real model at the capability head, at `N = 16` in
+**8 min 27 s** of the 1800 s cap, so the documented fallback to `N = 8` is not taken; ledger section
+5.1 records every number. It was run **twice** there, and every correctness value reproduced exactly
+— the same 64 ids, gate verdicts, byte counts, and per-step maxima; only the timings moved. Headline
+results: gate G `PASS` on all four prompts over sixteen ids each; oracle B `IDENTICAL` over
+26,607,616 B (`T = 6`) and 21,102,592 B (`T = 3`); oracle C' byte-identical at `k ∈ {1, 8, 16}` on
+all four; oracle A' `PASS` at `max_abs_diff` **0** at every one of sixteen steps on three prompts,
+and `FAIL` on the `T = 6` prompt at 2391/1e-4 at step 1, admitted under R6's rule.
+
+**It was not re-run at the repair head, and the reason is that nothing it reads moved.** The repair
+changes the hosted fixture's synthetic weights, the fifth smoke block's own assertions, the
+error-document accounting rule (which only a document with `status: error` can show, and the
+qualification asserts `ok` on every run), three comment literals, and the *ordering* of one
+`numpy` preflight in `scripts/run-decode-step`, which on a host that has `numpy` changes nothing at
+all. Success-path arithmetic, the goldens the qualification does not read, and every asserted value
+in section 5.1 are untouched.
+
+**Eight mutants were injected into `src/decode_step.align` at the repair head and all eight die
+under `gmake layer-forward-smoke`** (ledger section 5.2): a write-back column off by one and a
+skipped write-back, both as `R6_PLANE_MISMATCH step[1]layer[0]tensor[k]col[3]`; a frozen `n_past` on
+the plane's column count and every per-step oracle; a transcript-graph skip off by one on
+`R6_ORACLE_MISSING step[3]`; **`token = first_token`, the mutant the first review found the owner
+could not see**, now dying on `decoded [24, 24, 24], not the reference loop's [24, 9, 27]`; an
+unsliced position image and an unsliced offset mask, both on per-step oracle A'; and oracle B's
+bound narrowed back to `n_past`, which drops the column its own step wrote. Two more are not
+hosted-reachable and are unchanged: gate G compared against graph `k` or `k+2` disagrees at step 1
+on every prompt, and oracle C' with its step index off by one differs at every checkpoint.
+
+**`scripts/build-ggml-shim` gains two forced-build arms** — `engine+compute-step2` and
+`engine+writeback-offset` — which are inputs to the **stub** shim only and never to an ordinary
+build. That is the one build-adjacent file this capability touches; the `Makefile` itself is
+byte-unchanged, so `gmake baseline-check` needs no re-record. Re-checked at the merge head after
+R5E and R6 both moved `Makefile` and the baseline artifacts: none of the baseline's twenty tracked
+artifacts is in this capability's publication diff, and the source → oracle → finalization chain
+`e61993d` → `3cde6e2` → `cb8d2ce` stays reachable from the merge commit.
+
+**Numbering, reconciled 2026-08-29.** R5E merged as PR #143 (`main` `5ccc2aa`), so roadmap item 26
+is R5E and Align Requests **47 and 48 are real on `main`**. R6-DECODE-KV-STEP1 keeps roadmap item
+**27** and Request 49, so this capability is roadmap item **28** and the next free Request number is
+**50** — which stays free, because this capability proposes none. R5E also moved `Makefile`,
+`.gitattributes`, the baseline artifacts, and `docs/align-development.md`; none is a
+`MAX_PREFILL_TOKENS` consumer and none conflicts with this diff, but all are re-checked at the
+merge.
+
+**The merge, taken and reconciled.** Two conflicts, both resolved by keeping **both** sides:
+`docs/align-development.md` (R5E's "MoE whole-model prefill development" section above this
+capability's renamed `--decode-step` heading) and `scripts/run-layer-forward-smoke` (R5E's fifth
+block above this capability's renamed sixth-block banner). Roadmap item **28** and Align Request
+numbering (**49** real, **50** free) are confirmed unchanged by the merge. R6's own final repair
+`5445c14` had recorded the prefill cap as **8** in `docs/specs/r5a-dense-layer-forward.md` and
+`docs/specs/r5b-model-prefill-forward.md`; the merge commit moves both to **32** — `TOKENS` 1 to 32,
+the range `7 .. 32` open for arithmetic and closed for comparison — with `R5_ORACLE_TRUNCATED`
+byte-unchanged, and brings the two source comments that narrate the lift
+(`src/layer_forward.align`, `src/model_forward.align`) and `docs/align-development.md`'s
+`R5_ORACLE_TRUNCATED` paragraph with them. Ledger sections 8 and 9 record it. **No golden moved:**
+all six golden files were byte-identical to what the merged runner produces, so the documented
+`ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE=1` regeneration was not needed.
+
+**Verification at the merge head.** `gmake build`, `gmake layer-forward-smoke` (all six blocks,
+2 min 32 s), `gmake ggml-spike-smoke`, `gmake format-check`, and `git diff --check` pass.
+`gmake decode-step-qualification` was run a **third** time on the real model, at the merge head, and
+**every correctness value in ledger section 5.1 reproduced exactly** — the same fingerprint
+partition (149,710 / 1 class / 2,355 ids / 0 non-zero), the same 64 ids, gate G `PASS` × 4, oracle B
+`IDENTICAL` over 26,607,616 B and 21,102,592 B, oracle C′ byte-identical at `k ∈ {1, 8, 16}` × 4,
+and oracle A′ identical to the last digit including the `T = 6` prompt's admitted 2391/5878/1295.
+Only the timings moved, downward. Section 5.1 records the third run.
+
+**Next actions, in order.**
+1. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` at the
+   pushed head. The publication diff touches `src/`, goldens, fixtures, and runners, so the
+   classifier selects the executable row and the **hosted** profile: none of its twenty-four
+   `FRESH_IMAGE_PATTERNS` is in the diff, `Makefile` and `.gitattributes` are byte-untouched
+   relative to `origin/main`, and none of the baseline's twenty tracked artifacts (`src/main.align`
+   and `Makefile` among them) moved, so `gmake baseline-check` passes without re-recording the
+   chain. The stamp belongs to the exact unchanged head; re-merge and re-stamp if `main` moves.
+2. The English pull request, with the review envelope and the exact commands and results.
+3. **No further review.** Two disjoint comprehensive reviews read `a9c6161` against base `1671810`
+   and their nine findings are all accepted and consolidated into `6ca1eef`; the repair did not
+   expand scope, change approach, or change behavior, design, specification, or governance, so the
+   final-review rule is not triggered. The merge is a base change and carries **fresh integration
+   evidence** rather than a fresh review: it materially changes no reviewed risk — it adds R5E's
+   already-reviewed sections beside this capability's, and moves two prose caps in the direction the
+   reviewed ledger section 2.5 already specifies.
+
+**Blockers.** None. R6 publication is a sequencing dependency, not a blocker.
+
+**Constraints.** No new Align request is proposed and number **50** stays free. Request 22
+(indexing arrays of Move element types) stays `PROPOSED` and **non-blocking**, and gains one
+recorded line in `docs/align-requests.md`: it is now avoided in a **fourth** place, and the first
+outside a container reader — `model_forward.StepColumns` carries its three string columns as the
+stream-plus-column shape rather than `array<str>`. The tokenizer contact is unchanged: the gate is
+on ids, not text, and the one place text would help — the external `llama-debug` corroboration leg —
+stays hand-measured exactly as R6 left it. Requests 41 and 49 each gain a cited client and no
+workaround is built for either. No hypothetical surface is consumed anywhere.
+
+## Previously active: R6-DECODE-KV-STEP1 (2026-08-29)
 
 Branch `agent/r6-decode-kv-step1`, started from `main` at `c21b9e4` and **merged** twice rather than
 rebased, so its recorded commits stay reachable: with `main` `76246f3` (R3-DECODE-RESIDENCY, PR #142)

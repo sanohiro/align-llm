@@ -849,6 +849,21 @@ MODEL_TOKENS = [3, 17, 5]
 MODEL_ABORT_TOKENS = [1, 25, 5]
 MODEL_KV_WIDTH = 8
 
+# `r6-step-n.md` section 4.7. **The reference loop's greedy ids must not be constant.** With the
+# unmodified generator the chain is a fixed point — vocabulary row 24 is the prefill's argmax and
+# also its own step's argmax, so the three hosted ids are `24, 24, 24` and a decode loop that fed
+# step 1's token to every later step would satisfy every per-step assertion the fifth smoke block
+# makes. One row is therefore re-seeded to break the fixed point, and the chain becomes
+# `24 -> 9 -> 27`.
+#
+# **Row 24 and only row 24**, because no prefill case gathers it: the token lists in play across the
+# whole corpus are `3,17,5` (`MODEL_TOKENS`), `1,25,5` (`MODEL_ABORT_TOKENS`), and `1..8`
+# (`mf-tokens-seven-transcript` / `-eight-no-transcript`), and the out-of-range lists are refused
+# before a gather. Every prefill-derived golden row is therefore byte-unchanged and only the
+# decode-step documents move. The seed is `weight_values`' own per-index shape, `"role@index"`,
+# which `model_tensor` already uses for per-layer tensors.
+MODEL_DECODE_RESEEDED_ROWS = (24,)
+
 ROLE_OUTPUT_NORM = 13
 ROLE_OUTPUT = 14
 
@@ -906,7 +921,13 @@ def model_dims(role, g):
 def model_tensor(role, layer, g):
     dim0, dim1 = model_dims(role, g)
     seed = role if layer < 0 else "%s@%d" % (role, layer)
-    return Tensor([dim0, dim1], weight_values(seed, dim0 * dim1))
+    tensor = Tensor([dim0, dim1], weight_values(seed, dim0 * dim1))
+    if role == "token_embd":
+        # `MODEL_DECODE_RESEEDED_ROWS`' reason, in one place so the pack and the reference forward
+        # cannot disagree: both read this function and neither holds a copy of the row.
+        for row in MODEL_DECODE_RESEEDED_ROWS:
+            tensor.data[row * dim0:(row + 1) * dim0] = weight_values("%s@%d" % (role, row), dim0)
+    return tensor
 
 
 def concat_tensor(a, b, dim):
@@ -1246,16 +1267,27 @@ def write_model_corpus(directory, emit):
 
 
 # =============================================================================================
-# R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md` section 5.1)
+# R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md` section 5.1) and R6-STEP-N
+# (`docs/specs/r6-step-n.md` section 4.7)
 #
-# The same generator, extended with the **second call**: one decode step at `n_past = T` over the
-# KV plane the prefill produced. It is a second implementation of section 2.4's decode layer — the
-# offset mask, the two concat axes, and the pad back to `KV_WIDTH` — and it is the only way oracle A
-# can be checked on a host with no ggml and no model.
+# The same generator, extended from the **second call** to a **loop of `DECODE_STEPS` calls**:
+# prefill, then one decode step per iteration at `n_past = T + k - 1`, each appending its own K and V
+# column to the plane before the next reads it. It is a second implementation of R6 section 2.4's
+# decode layer — the offset mask, the two concat axes, the pad back to `KV_WIDTH`, and now the
+# write-back — and it is the only way oracle A' can be checked on a host with no ggml and no model.
 #
-# The transcript it emits holds **two graphs**, prefill then decode, exactly as `llama-eval-callback
-# -n 1` does, so the arm's own "skip the first graph" rule is exercised rather than assumed.
+# The transcript it emits holds `DECODE_STEPS + 1` graphs, prefill then one per step, exactly as
+# `llama-eval-callback -n N` emits them, so the arm's own "skip `k` graphs" rule is exercised at
+# three different offsets rather than assumed.
+#
+# **Hosted `K` is 3, not 16.** Three steps prove the recurrence: step 1 is R6's exact case, step 2 is
+# the first that *reads* a written-back column, and step 3 is the first where two written-back
+# columns are read. A loop correct for `1 -> 2 -> 3` is correct for `k -> k+1` by the same code path,
+# and 16 would multiply a pure-Python fixture corpus and the smoke's runtime for no new closure cell.
+# The real `N = 16` is the qualification's.
 # =============================================================================================
+
+DECODE_STEPS = 3
 
 
 def model_decode_layer(cur, weights, g, planes, n_past, width, mask, last, records, layer):
@@ -1307,6 +1339,11 @@ def model_decode_layer(cur, weights, g, planes, n_past, width, mask, last, recor
     ffn_out = mul_mat(weights["ffn_down"], ffn_swiglu)
     l_out = broadcast(ffn_out, ffn_inp, lambda x, y: x + y)
 
+    # R6-STEP-N section 2.4's write-back, in the reference. The plane grows by exactly one column of
+    # this layer's post-RoPE K and its reshaped V — the same two nodes the prefill captured, at
+    # `t = 1` — **after** the concats above read the plane as it was. The two byte ranges are
+    # disjoint and the order is upload, compute, write, which is the invariant the arm claims.
+    planes[layer] = (concat_tensor(plane_k, kr, 2), concat_tensor(plane_v, v3, 2))
     weight_name = "blk.%d.attn_output.weight" % layer
     records.extend([
         ("norm" + suffix, "RMS_NORM", "embd" if layer == 0 else "l_out-%d" % (layer - 1), norm),
@@ -1352,7 +1389,7 @@ def model_decode(embed, layers, head, g, planes, token, n_past, width):
 
 
 def write_decode_corpus(g, embed, layers, head, prefill_records, prefill_logits, emit):
-    """Section 5.1's decode corpus: the two-graph transcript, its logits, and the mutations."""
+    """R6-STEP-N section 4.7's decode corpus: the `K+1`-graph transcript, its ids, and the mutations."""
     n_past = len(MODEL_TOKENS)
     planes = []
     # The prefill is recomputed with the planes captured; its records are the ones already emitted,
@@ -1361,36 +1398,65 @@ def write_decode_corpus(g, embed, layers, head, prefill_records, prefill_logits,
                                               MODEL_KV_WIDTH, planes)
     assert replayed_logits.data == prefill_logits.data
     token = max(range(prefill_logits.count()), key=lambda i: prefill_logits.data[i])
-    decode_records, decode_logits = model_decode(
-        embed, layers, head, g, planes, token, n_past, MODEL_KV_WIDTH)
+    # The reference loop. Step `k` consumes `d_k` and produces `d_{k+1}`, and the plane it reads at
+    # step `k+1` is the one step `k` wrote — which is what makes step 2 the first iteration that
+    # exercises the write-back at all.
+    decode_records = []
+    consumed = []
+    decode_logits = prefill_logits
+    per_step = []
+    for step in range(DECODE_STEPS):
+        consumed.append(token)
+        records, decode_logits = model_decode(
+            embed, layers, head, g, planes, token, n_past + step, MODEL_KV_WIDTH)
+        per_step.append(records)
+        decode_records.extend(records)
+        token = max(range(decode_logits.count()), key=lambda i: decode_logits.data[i])
     lines = model_transcript(prefill_records + decode_records, MODEL_TOKENS)
     emit("model-decode-transcript.txt", lines)
     emit("model-decode-logits.bin",
          struct.pack("<%df" % decode_logits.count(), *decode_logits.data))
-    emit("model-decode-argmax.txt", "%d\n" % token)
+    # One id per line, `K` lines: the ids the reference loop **consumed**, which is exactly what
+    # `decode.token_ids` publishes. The smoke asserts the two agree element for element, making "the
+    # arm decoded the tokens the reference decoded" an assertion rather than a coincidence.
+    #
+    # **And the `K` ids must differ**, or that assertion is satisfiable by an arm that decoded step 1
+    # and then re-consumed its own first token forever. `MODEL_DECODE_RESEEDED_ROWS` exists to make
+    # them differ; this is the check that says so at the point the fixture is generated, so a later
+    # geometry or weight change cannot silently restore the fixed point.
+    assert len(set(consumed)) == len(consumed), \
+        "the reference decode loop is degenerate: %r" % (consumed,)
+    emit("model-decode-tokens.txt", "".join("%d\n" % i for i in consumed))
 
     # A transcript holding only the **prefill** graph. The arm skips the first graph, so every
     # oracle row is then missing and the run is `R6_ORACLE_MISSING` rather than a silent comparison
     # against the wrong graph — which is the failure this fixture exists to make visible.
     emit("model-decode-transcript-onegraph.txt", model_transcript(prefill_records, MODEL_TOKENS))
 
-    # A tolerance breach inside the **decode** graph: one printed element of the decode `l_out-0`
-    # moved by 0.0003, three times section 3.4's threshold.
+    # A transcript one graph short of what `STEPS = K` needs: prefill plus `K - 1` decode graphs. The
+    # first `K - 1` steps compare normally and step `K` finds no graph `K + 1`, so the refusal names
+    # the step it happened at rather than the run.
+    emit("model-decode-transcript-short-for-steps.txt",
+         model_transcript(prefill_records + [r for s in per_step[:-1] for r in s], MODEL_TOKENS))
+
+    # A tolerance breach inside the **first decode** graph: one printed element of its `l_out-0`
+    # moved by 0.0003, three times section 3.4's threshold. It is graph 2 and therefore step 1's, so
+    # the case is refused at the first step whatever `STEPS` is.
     rows = lines.split("\n")
     marker = "common_debug_cb_eval:"
     hits = [i for i, line in enumerate(rows) if line.startswith(marker) and " l_out-0 = " in line]
     perturbed = list(rows)
-    row = hits[-1] + 3
+    row = hits[1] + 3
     original = perturbed[row]
     first = original.index("[") + 1
     value = float(original[first:first + 12])
     perturbed[row] = original[:first] + ("%12.4f" % (value + 0.0003)) + original[first + 12:]
     emit("model-decode-transcript-perturbed.txt", "\n".join(perturbed))
 
-    # `kq-0` of the **decode** graph declaring a reduction width the operand does not name.
+    # `kq-0` of the first **decode** graph declaring a reduction width the operand does not name.
     kq_hits = [i for i, line in enumerate(rows) if line.startswith(marker) and " kq-0 = " in line]
     widened = list(rows)
-    widened[kq_hits[-1]] = widened[kq_hits[-1]].replace(
+    widened[kq_hits[1]] = widened[kq_hits[1]].replace(
         "= {%d, " % MODEL_KV_WIDTH, "= {%d, " % (MODEL_KV_WIDTH - 1))
     emit("model-decode-transcript-kv-width.txt", "\n".join(widened))
 

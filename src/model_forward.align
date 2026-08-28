@@ -400,6 +400,84 @@ pub TopColumns { index: array<i64>, bits: array<i64> }
 
 pub fn empty_top() -> TopColumns = TopColumns { index: empty_array(), bits: empty_array() }
 
+// R6-STEP-N (`docs/specs/r6-step-n.md` section 4.4). One row per **completed** decode step, in the
+// shape `steps[]` is rendered from. It is a column set and not a set of `Outcome` fields for that
+// section's reason: `Outcome` is 1,384 bytes at this head — R6 section 10.6 recorded 1,328 and the
+// seven loop scalars below add 56 — and it is passed by value at some twenty-five call sites, so
+// per-step scalars would make it grow with an operand.
+//
+// **`sha256` and `worst_node` are concatenated strings, not `array<str>`.** Indexing an array of a
+// Move element type is Align Request 22 and stays unconsumed here, so the digests are one string of
+// fixed-width hex sliced by `step_digest_at` — exactly the shape `ScheduleColumns.digests` has
+// carried since R5B — and the variable-length node names are one string with a start/end column
+// pair, exactly the shape `GraphMembers.names` has carried since R5A. Neither is a new pattern.
+pub StepColumns {
+  count: i64,
+  n_past: array<i64>,
+  token_id: array<i64>,
+  argmax: array<i64>,
+  bit_sum: array<i64>,
+  element_count: array<i64>,
+  nonfinite_count: array<i64>,
+  compute_ns: array<i64>,
+  node_count: array<i64>,
+  plane_column: array<i64>,
+  oracle_verdict: array<i64>,
+  oracle_max_abs: array<i64>,
+  oracle_max_sum: array<i64>,
+  oracle_elements: array<i64>,
+  oracle_nodes_matched: array<i64>,
+  oracle_nodes_expected: array<i64>,
+  oracle_layers: array<i64>,
+  oracle_graph: array<i64>,
+  oracle_worst_layer: array<i64>,
+  digests: string,
+  worst_names: string,
+  worst_name_start: array<i64>,
+  worst_name_end: array<i64>,
+}
+
+pub fn empty_steps() -> StepColumns = StepColumns {
+  count: 0,
+  n_past: empty_array(),
+  token_id: empty_array(),
+  argmax: empty_array(),
+  bit_sum: empty_array(),
+  element_count: empty_array(),
+  nonfinite_count: empty_array(),
+  compute_ns: empty_array(),
+  node_count: empty_array(),
+  plane_column: empty_array(),
+  oracle_verdict: empty_array(),
+  oracle_max_abs: empty_array(),
+  oracle_max_sum: empty_array(),
+  oracle_elements: empty_array(),
+  oracle_nodes_matched: empty_array(),
+  oracle_nodes_expected: empty_array(),
+  oracle_layers: empty_array(),
+  oracle_graph: empty_array(),
+  oracle_worst_layer: empty_array(),
+  digests: "".clone(),
+  worst_names: "".clone(),
+  worst_name_start: empty_array(),
+  worst_name_end: empty_array(),
+}
+
+pub fn step_digest_at(borrow s: StepColumns, index: i64) -> str {
+  view: str := s.digests
+  start := index * DIGEST_HEX_BYTES
+  if start < 0 || start + DIGEST_HEX_BYTES > view.len() { return "" }
+  return view[start..start + DIGEST_HEX_BYTES]
+}
+
+pub fn step_worst_node_at(borrow s: StepColumns, index: i64) -> str {
+  view: str := s.worst_names
+  start := column_at(s.worst_name_start, index)
+  end := column_at(s.worst_name_end, index)
+  if start < 0 || end < start || end > view.len() { return "" }
+  return view[start..end]
+}
+
 // Everything the run learned that is a scalar or a name, whether or not it finished.
 pub Outcome {
   code: string,
@@ -603,6 +681,16 @@ pub Outcome {
   decode_node_count: i64,
   decode_graph_count: i64,
   decode_slot_high_water: i64,
+  // R6-STEP-N section 2.9's schema-2 loop scalars. Every one is loop-level — a count, a bound, or an
+  // aggregate over the steps — so `Outcome` gains a fixed number of fields and not a number that
+  // grows with the `STEPS` operand. The per-step values live in `StepColumns`.
+  decode_steps_requested: i64,
+  decode_steps_completed: i64,
+  decode_n_past_last: i64,
+  plane_first_mismatch_step: i64,
+  decode_oracle_steps_compared: i64,
+  decode_oracle_worst_step: i64,
+  decode_oracle_graph_last: i64,
 
   tensor_alignment: i64,
   table_drift: i64,
@@ -772,6 +860,13 @@ pub fn empty_outcome() -> Outcome = Outcome {
   decode_node_count: 0,
   decode_graph_count: 0,
   decode_slot_high_water: 0,
+  decode_steps_requested: 0,
+  decode_steps_completed: 0,
+  decode_n_past_last: 0,
+  plane_first_mismatch_step: -1,
+  decode_oracle_steps_compared: 0,
+  decode_oracle_worst_step: -1,
+  decode_oracle_graph_last: 0,
   tensor_alignment: 0,
   table_drift: -1,
   slot_magic_ok: false,
@@ -2868,11 +2963,11 @@ pub fn stage_geometry(
     fail(o, "R5_TOKENS", detail_view)
     return g
   }
-  // R6-DECODE-KV-STEP1 section 2.7's lift of `MAX_PREFILL_TOKENS` from 6 to 8 is the **decode**
-  // arm's, whose per-token tensors are one column wide. A prefill tensor at `T = 7` or `T = 8` is
-  // printed by `llama-eval-callback` as three leading and three trailing rows, and `printed_count`
-  // clamps to six on both sides, so a transcript comparison would check six of seven rows and still
-  // report `PASS`. The oracle refuses itself rather than reporting a verdict about rows it never
+  // R6-DECODE-KV-STEP1 section 2.7's lift of `MAX_PREFILL_TOKENS` from 6 to 8, and R6-STEP-N
+  // section 2.5's lift of it to 32, are the **decode** arm's, whose per-token tensors are one
+  // column wide. A prefill tensor above six tokens is printed by `llama-eval-callback` as three
+  // leading and three trailing rows, and `printed_count` clamps to six on both sides, so a
+  // transcript comparison would check six of the rows it names and still report `PASS`. The oracle refuses itself rather than reporting a verdict about rows it never
   // saw. With no transcript there is no oracle: `--decode-step`'s characterization pass runs this
   // arm at `T + 1` tokens with `-` in the transcript position and is unaffected.
   if o.transcript_present && parsed.count > TRUNCATION_PRINTED {

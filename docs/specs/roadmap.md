@@ -492,7 +492,45 @@ The current forward delivery order is:
     aggregate. `docs/specs/r6-decode-kv-step1.md` is the authoritative ledger. **What it leaves
     open:** the R6 gate below asks that TTFT improve on repeated coding tasks sharing a prefix. One
     step, in memory, with no session reuse, no tiering, and no invalidation does not answer it; the
-    gate stays unmet and the next capability toward it is step 2 and the decode loop.
+    gate stays unmet and the next capability toward it is step 2 and the decode loop, which is
+    item 28.
+
+28. **R6-STEP-N — an N-step greedy decode loop over the Align-owned KV plane, gated on the token
+    ids llama.cpp produces at `--temp 0 -s 0`.** Design and results in
+    [`r6-step-n.md`](r6-step-n.md). Item 27 computes **one** decode step and stops, so the model can
+    answer "what is the next token" and not "what are the next `N` tokens" — which is the question
+    every consumer of a coding model actually asks. This capability ships the smallest change that
+    makes the second answerable: `--decode-step` gains a `STEPS` operand and its document goes to
+    schema 2 with a per-step `steps[]` array and a `decode.token_ids` chain; the plane is grown **in
+    place** one column per step — the buffer was `KV_WIDTH` columns wide from the start, so nothing
+    is reallocated — and every written column is byte-verified inside the step that wrote it, which
+    closes a gap item 27 shipped. The loop needs **no new ggml op, FFI symbol, node row, or slot**:
+    R6's decode row table is already parameterised by `n_past`, and `src/ggml_ffi.align`,
+    `scripts/ggml_shim.c`, and `src/ggml_spike.align` are byte-unchanged. `MAX_PREFILL_TOKENS` moves
+    8 -> 32 so the self-reference oracle can run at `T + N` tokens; `R5_ORACLE_TRUNCATED` is
+    byte-unchanged and still refuses a prefill above six tokens *with* a transcript. Acceptance is
+    correctness, stated once in `r6-step-n.md` section 3.5: **gate G**, the `N` decoded ids equal
+    llama.cpp's — `d_1` byte-exact through item 27's `llama-debug` blob, and `d_1 .. d_N` through
+    transcript graph `k+1`'s `embd = GET_ROWS(token_embd.weight, [d_k])`, over a vocabulary whose
+    printed-fingerprint collision count was **measured** before the gate was claimed (149,710
+    distinct fingerprints over 152,064 rows, one collision class, and that class is exactly the
+    2,355 all-zero unused vocabulary rows, none of which any step decoded); **oracle B**,
+    the plane round trip `IDENTICAL` at every step over `T + k` columns including the one that step
+    wrote; **oracle C'**, the step-`k` logits byte-identical to this arm's own single-shot `T+k`
+    prefill at `k in {1, ceil(N/2), N}`; and **oracle A'**, structurally complete at every step and
+    numerically admitted at step 1 under item 27's own rule. A' is demoted to characterization at
+    steps 2..N for a measured reason: llama.cpp's decode graph takes a different `MUL_MAT`
+    accumulation path from its own multi-column prefill, and gating on a quantity whose growth is a
+    property of the reference implementation would fail the run for something this arm cannot fix.
+    Four prompts x three runs at `N = 16`, `KV_WIDTH` 256, dense Qwen2.5-Coder-7B Q4_K_M, CPU. Owner
+    `gmake layer-forward-smoke`, whose fifth block gains a **three-step** pure-Python reference loop
+    and a four-graph transcript; focused `gmake decode-step-qualification`. **No TTFT or throughput
+    claim** — but the run measures the loop's `O(N x model bytes)` pack-read cost at
+    `N in {1, 4, 16}`, which is the first concrete evidence for the resident-weight work R3/R5
+    design. **What it leaves open:** the R6 gate below still asks that TTFT improve on repeated
+    coding tasks sharing a prefix. `N` steps in memory, with no session reuse, no tiering, no
+    invalidation, and weights re-read once per step, does not answer it; the gate stays unmet and
+    the next capability toward it is resident weights.
 
 ### Status (2026-08-28)
 

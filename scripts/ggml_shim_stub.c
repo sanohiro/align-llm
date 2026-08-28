@@ -500,6 +500,14 @@ static int64_t align_ggml_clamp_size(size_t value) {
 
 /* --- END R4.5 SHARED SHIM CONTRACT --- */
 
+#ifdef ALIGN_GGML_FORCE_COMPUTE_STEP2
+/* R6-STEP-N section 4.1's two pieces of state: the byte count of the first decode step's past-K
+ * upload, and the latch that a later, larger one sets. Both are file-scope statics of a build that
+ * is never produced ordinarily. */
+static int64_t align_force_first_past_bytes = -1;
+static int align_force_compute_step2 = 0;
+#endif
+
 /* ---------------------------------------------------------------------------------------------
  * Availability, the ABI probe, and the type predicate — the four entry points the stub answers
  * ------------------------------------------------------------------------------------------- */
@@ -1646,6 +1654,22 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
         t->data[3] = 0u;
     }
 #endif
+#ifdef ALIGN_GGML_FORCE_COMPUTE_STEP2
+    /* R6-STEP-N section 4.1's `failure` cell: a step that fails at a chosen **step** index, which is
+     * the axis this capability adds. Slot 64 is `MF_SLOT_KPAST` and only a decode layer graph ever
+     * writes it, with `n = n_past * n_head_kv * head_dim * 4`; every layer of one step writes the
+     * same `n`, and every later step writes a strictly larger one because the plane grew. So the
+     * first `n` seen is step 1's and any larger `n` is step 2 or beyond. Keying on the growth rather
+     * than on a token count keeps the build independent of the fixture's `T`. Never defined in an
+     * ordinary build. */
+    if (status == ALIGN_GGML_OK && index == 64) {
+        if (align_force_first_past_bytes < 0) {
+            align_force_first_past_bytes = n;
+        } else if (n > align_force_first_past_bytes) {
+            align_force_compute_step2 = 1;
+        }
+    }
+#endif
 #ifdef ALIGN_GGML_FORCE_MASK_OFFSET
     /* R6 section 11.1's "mask `{KV_WIDTH, 1}` with offset" row, shipped as a build. Slot 14 is
      * `MF_SLOT_MASK`, and `ne[1] == 1` is the decode graph's one-row mask — a prefill mask has `T`
@@ -1676,6 +1700,24 @@ int32_t align_ggml_slot_get(void *slots, int64_t index, void *bytes, int64_t off
     if (t == NULL) {
         return ALIGN_GGML_SLOT;
     }
+#ifdef ALIGN_GGML_FORCE_WRITEBACK_OFFSET
+    /* R6-STEP-N section 4.2's `failure -- round trip` cell, and the shipped regression that proves
+     * oracle B compares the **new** column and not only the past ones. Slot 28 is
+     * `MF_SLOT_NODE_BASE + 12`, the post-RoPE K the write-back reads; the prefill reads it with
+     * `ne[2] == T` and a decode step reads it with `ne[2] == 1`, so the guard below selects the
+     * write-back's own readback and nothing else. Shifting the copied column by one `float` is
+     * exactly the off-by-one lane a write-back can commit: every shape stays valid, the graph
+     * computed what it computed, and the bytes now in the plane are not the bytes the graph
+     * produced -- which oracle B reports at column `T`, the column the step just wrote. Never
+     * defined in an ordinary build. */
+    if (index == 28 && t->ne[2] == 1) {
+        int32_t status = align_ggml_tensor_get((void *) t, bytes, off, n);
+        if (status == ALIGN_GGML_OK && bytes != NULL && n >= 8) {
+            memmove(bytes, (unsigned char *) bytes + 4, (size_t) (n - 4));
+        }
+        return status;
+    }
+#endif
 #ifdef ALIGN_GGML_FORCE_INF_READBACK
     /* R5C section 6, correction C19. A **computed** activation with no ten-thousandths value is a
      * condition no operand can produce: every fixture's inputs are finite and the engine's eleven
@@ -2431,6 +2473,12 @@ int32_t align_ggml_graph_compute(void *backend, void *graph) {
 #ifdef ALIGN_GGML_FORCE_COMPUTE_FAILURE
     /* Section 4.6: a non-success status from an engine that is working correctly. */
     return 2;
+#endif
+#ifdef ALIGN_GGML_FORCE_COMPUTE_STEP2
+    /* R6-STEP-N section 4.1. The same non-success status, withheld until the plane has grown once. */
+    if (align_force_compute_step2) {
+        return 2;
+    }
 #endif
     for (i = 0; i < g->count; i++) {
         if (g->nodes[i]->data == NULL) {

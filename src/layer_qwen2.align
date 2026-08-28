@@ -41,25 +41,40 @@ pub SLOT_NODE_BASE := 16
 // row of a tensor only while `ne1 <= 6`, and an oracle that compares fewer elements as the input
 // grows while still reporting `PASS` is worse than one that refuses.
 //
-// R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md` section 2.7) lifts it from **6 to 8**, and
-// the reason for 6 is unchanged and still respected. A decode graph's per-token tensors have
-// `ne1 = 1`, so the instrument prints them in full at any prefill length, and the cap now binds the
+// R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md` section 2.7) lifted it from **6 to 8**, and
+// R6-STEP-N (`docs/specs/r6-step-n.md` section 2.5) lifts it again, from **8 to 32**. The reason for
+// 6 is unchanged and still respected in both moves. A decode graph's per-token tensors have
+// `ne1 = 1`, so the instrument prints them in full at any prefill length, and the cap binds the
 // prefill pass alone: at `T = 7` a prefill tensor still prints 3+3 of 7 rows, which is exactly why
-// R6 section 3.2 refuses to use a seven-token prefill as an acceptance oracle. 8 rather than 7
-// leaves one position of headroom so a second decode step does not immediately re-open a shared
-// constant; it is not a claim that eight rows are fully printed, because they are not.
+// R6 section 3.2 refuses to use a seven-token prefill as an acceptance oracle.
+//
+// **32 is R6-STEP-N's oracle C′ requirement, not a round number.** That oracle runs `--model-forward`
+// at `TOKENS,d_1..d_k`, which is `T + k` tokens; at the qualification's `T <= 6` and `N = 16` the
+// last checkpoint is 22 tokens and the arm would refuse its own oracle at 8. 32 is the smallest
+// power of two above 22, with headroom for the next capability rather than exactly enough for this
+// one — which is the mistake the 6 → 8 lift made and paid for immediately.
 // `src/layer_olmoe.align`'s own cap stays at 6: OLMoE is a declared non-goal of R6 and a shared lift
 // would widen an arm this capability does not test.
 //
 // **The lift does not weaken any oracle, and that is enforced rather than argued.** The sentence
 // above — "an oracle that compares fewer elements as the input grows while still reporting `PASS` is
-// worse than one that refuses" — is exactly what a seven- or eight-token prefill *with* a transcript
+// worse than one that refuses" — is exactly what a prefill above six tokens *with* a transcript
 // would be, because `printed_count` clamps to six on both sides. `--layer-forward` and
 // `--model-forward` therefore refuse that combination with `R5_ORACLE_TRUNCATED` before any graph is
-// built (`src/layer_forward.align`'s and `src/model_forward.align`'s token stages), so the range
-// `7 .. 8` is admitted for arithmetic and refused for comparison. `--decode-step`'s own tensors are
-// one column wide and are unaffected.
-pub MAX_PREFILL_TOKENS := 8
+// built (`src/layer_forward.align`'s and `src/model_forward.align`'s token stages), and that refusal
+// is **byte-unchanged** by this lift: it fires on `tokens.count > TRUNCATION_PRINTED`, which is 6 and
+// does not move. The range `7 .. 32` is admitted for arithmetic and refused for comparison, at 32
+// exactly as at 8. `--decode-step`'s own decode tensors are one column wide and are unaffected.
+pub MAX_PREFILL_TOKENS := 32
+
+// R6-STEP-N section 2.3. The fail-fast guard on the `STEPS` operand, and deliberately **not** the
+// real limit: the real limit is `T + N <= KV_WIDTH` and it is checked separately, under
+// `R6_KV_WIDTH`, because "the plane is too narrow for this run" is a sentence R6 already owns.
+//
+// 64 is chosen because beyond it the arm is a benchmark rather than a correctness check — at 64
+// steps one run is roughly sixty-four full passes over the weight set — and this capability makes no
+// performance claim. A typo of `--decode-step ... 100000` must not allocate an hour.
+pub MAX_DECODE_STEPS := 64
 
 pub OP_GET_ROWS := 1
 pub OP_RMS_NORM := 2

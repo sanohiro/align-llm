@@ -6574,14 +6574,23 @@ names are one concatenated `string` addressed by explicit `[start, end)` spans i
 Move-array shape rather than exercising it, for the same reason those two did. The active
 R1C-OLMOE-MOE-IR (`docs/specs/r1c-olmoe-moe-ir.md` section 1.3 and section 5.4) inherits the same
 exclusion again, expected and confirmed at implementation: it materializes no tokenizer and reads
-no `array<string>`, so it adds no new client evidence here either. The first consumer
-that would make it blocking is a
+no `array<string>`, so it adds no new client evidence here either. R6-STEP-N
+(`docs/specs/r6-step-n.md` sections 4.4, 8, and 11.3) is the **fourth** instance of the avoidance
+and the first outside a container reader: `model_forward.StepColumns` would naturally carry
+`sha256`, `oracle_verdict`, and `oracle_worst_node` as `array<str>`, and instead carries the digests
+as one fixed-width-sliced `string`, the node names as one `string` with a parallel `[start, end)`
+column pair, and the verdict as the `i64` code every other verdict on the wire already is. It stays
+**non-blocking** and adds no consumer of a hypothetical surface; it does record that the
+stream-plus-column shape is now reached by capabilities that have nothing to do with GGUF, so the
+migration named below gains a third producer surface. R6-STEP-N also deliberately gates on **token ids** rather
+than on decoded text precisely so this request stays non-blocking through the decode loop. The
+first consumer that would make it blocking is a
 tokenizer/vocabulary-inspection capability, which needs `tokenizer.ggml.tokens` and
 `tokenizer.ggml.merges` as addressable data; per `CLAUDE.md`, this request reclassifies as blocking
 the moment that capability becomes the active consumer
 Independent work that may continue: all of R0, R1-QWEN-MODEL-IR, R1B-GPTOSS-MOE-IR,
-R2A-EXPERT-TRACE-CAPTURE, and R1C-OLMOE-MOE-IR, all of which avoid indexing an `array<string>` or an
-array of a Move-field record
+R2A-EXPERT-TRACE-CAPTURE, R1C-OLMOE-MOE-IR, and R6-STEP-N, all of which avoid indexing an
+`array<string>` or an array of a Move-field record
 Resume condition: Align ships borrow indexing for Move arrays. Section 5.2 of
 `docs/specs/r1-qwen-model-ir.md` names the resulting producer surface,
 `gguf.read_string_array(path, key) -> Result<array<string>, Error>`, owned by the future tokenizer
@@ -6595,7 +6604,8 @@ internals can become indexable `array<KvEntry>`/`array<TensorEntry>` records wit
 accessor signature in that document's section 2.3.2, since every accessor is already
 index-in/owned-value-out and the stream-plus-column representation is entirely behind them.
 `docs/specs/r1b-gptoss-moe-ir.md` section 2.3.4 repeats the same stream-plus-column shape in the new
-`BlockPlan`, so both producer surfaces migrate together when this request ships.
+`BlockPlan`, and `model_forward.StepColumns` repeats it again behind `step_digest_at` and
+`step_worst_node_at`, so all three producer surfaces migrate together when this request ships.
 ```
 
 ### Motivation and current sibling evidence

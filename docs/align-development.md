@@ -1482,8 +1482,8 @@ own declared shape yields is `R5_ORACLE_MISSING` with detail `node[<id>]<got>/<e
 
 The same rule now has a third code. `llama-eval-callback` prints a tensor's rows in full only while
 `ne1 <= 6`, so above six prefill tokens both prefill arms compare a **clamped** six of the rows they
-name. Since R6 lifted `MAX_PREFILL_TOKENS` to 8, `--layer-forward` and `--model-forward` refuse a
-prefill of 7 or 8 tokens **when a transcript is supplied**, at their token stage and before any
+name. Since R6 lifted `MAX_PREFILL_TOKENS` to 8 and R6-STEP-N to 32, `--layer-forward` and
+`--model-forward` refuse any prefill above six tokens **when a transcript is supplied**, at their token stage and before any
 container work, with `R5_ORACLE_TRUNCATED` and detail `tokens[<n>]`. The same token count without a
 transcript is admitted; nothing about the arithmetic changed.
 
@@ -1998,14 +1998,16 @@ block. A `Makefile` edit is still an executable-contract boundary, so `scripts/p
 **executable** row and the installed profile rather than the documentation lane. The FFI boundary
 does **not** change: R5E adds no `extern` symbol and neither C shim gains one.
 
-## The `--decode-step` arm (R6-DECODE-KV-STEP1)
+## The `--decode-step` arm (R6-DECODE-KV-STEP1, R6-STEP-N)
 
-`docs/specs/r6-decode-kv-step1.md` is the authoritative ledger. R5B computes a whole prefill and
-stops: `src/model_forward.align` opens three fresh `ggml_context`s per graph and frees them at the
-end of that graph, so every K and V it produces dies with its graph and the model can answer "what
-are the logits for this prompt" and not "what comes next". This arm adds the smallest thing that
-changes that — an **Align-owned KV plane**, host bytes carrying every layer's post-RoPE K and its V
-across the graph boundary, and one decode step at `n_past = T` that reads them.
+`docs/specs/r6-decode-kv-step1.md` and `docs/specs/r6-step-n.md` are the authoritative ledgers.
+R5B computes a whole prefill and stops: `src/model_forward.align` opens three fresh `ggml_context`s
+per graph and frees them at the end of that graph, so every K and V it produces dies with its graph
+and the model can answer "what are the logits for this prompt" and not "what comes next". R6 adds
+the smallest thing that changes that — an **Align-owned KV plane**, host bytes carrying every
+layer's post-RoPE K and its V across the graph boundary, and one decode step at `n_past = T` that
+reads them. R6-STEP-N makes that step a **loop**: `N` greedy steps over the same plane, grown in
+place one column per step, gated on the token ids llama.cpp itself produces.
 
 The arm lives in a new module, `src/decode_step.align`, for `r5b-model-prefill-forward.md` section
 5.5's reason (the checker's per-function cost is superlinear in body length and
@@ -2018,9 +2020,9 @@ gmake layer-forward-smoke        # extended with a fifth block; unchanged aggreg
 gmake decode-step-qualification  # the opt-in real-ggml, real-model, real-instrument qualification
 ```
 
-`--decode-step` is selected by its exact first operand and is five, six, seven, nine, or ten
-operands. **Eight is `R6_ARITY`**, inherited verbatim from `--model-forward` and for the same
-reason: `KV_WIDTH` travels with the transcript.
+`--decode-step` is selected by its exact first operand and is five, six, seven, nine, ten, or
+**eleven** operands. **Eight is `R6_ARITY`**, inherited verbatim from `--model-forward` and for the
+same reason: `KV_WIDTH` travels with the transcript.
 
 ```sh
 ./ggml-spike --decode-step PACK GEOM.json TOKENS                                      # to stdout
@@ -2028,21 +2030,46 @@ reason: `KV_WIDTH` travels with the transcript.
 ./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf                    # + the byte-plane self-reference
 ./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH
 ./ggml-spike --decode-step PACK GEOM.json TOKENS -        REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin
+./ggml-spike --decode-step PACK GEOM.json TOKENS -        REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS
+./ggml-spike --decode-step PACK GEOM.json TOKENS -        REF.gguf TRANSCRIPT.txt KV_WIDTH -          STEPS
 ```
 
-`TOKENS` is the **prefill**; the decoded token is never an operand. The arm computes it as its own
-prefill's `argmax`, because an operand would let a caller pass a token llama.cpp did not sample and
-the transcript oracle would then compare two different sequences and still report `PASS`.
-`KV_WIDTH` is fail-closed with **no default at any arity**: its range is `T + 1 .. 4096`, and below
-nine operands it is simply not supplied and the run is refused at step 6 with `R6_KV_WIDTH` detail
-`kv_width[-1]`. The lower bound is `T + 1` and not `T` because the step's own column has to fit.
-`TRANSCRIPT` accepts `-` for "no transcript", exactly as `--model-forward`'s does.
+`TOKENS` is the **prefill**; no decoded token is ever an operand. The arm computes step 1's as its
+own prefill's `argmax` and every later step's as its own previous step's, because an operand would
+let a caller pass a token llama.cpp did not sample and the transcript oracle would then compare two
+different sequences and still report `PASS`.
 
-**The transcript must hold two graphs.** `llama-eval-callback -n 1` emits a prefill graph and then a
-decode graph, and every node name repeats across them; the arm skips the first, because comparing
-its decode graph against llama.cpp's prefill graph would agree on the seven nodes that do not depend
-on the KV cache and could still report `PASS`. `layer_forward.scan_transcript_after` is that
-instruction and counts graphs by the `embd` header every graph begins with.
+`STEPS` is the number of greedy decode steps `N`, `1 <= N <= MAX_DECODE_STEPS` (64), and
+`T + N <= KV_WIDTH`. **Absent means 1**, which is the arm's only default and exists so that every
+pre-schema-2 invocation keeps its exact meaning; `decode.steps_requested` is published in every
+document, including error documents, so the count is never implicit in the output. `LOGITS` accepts
+`-` for "absent", the same convention `TRANSCRIPT` has used since R5B, so that `STEPS` is reachable
+without a logits blob. Out of range or unparseable is `R6_STEPS` with detail `steps[<n>]`, decided
+**before** `KV_WIDTH`, because `N` must be a number before `T + N` is one.
+
+`KV_WIDTH` is fail-closed with **no default at any arity**: its range is `T + N .. 4096`, and below
+nine operands it is simply not supplied and the run is refused at step 6 with `R6_KV_WIDTH` detail
+`kv_width[-1]`. `T + N` and not `T` because every step's own column has to fit; at `N = 1` that is
+R6's `T + 1` character for character, and "the plane is too narrow for this run" keeps
+`R6_KV_WIDTH` rather than acquiring a second code. `TRANSCRIPT` accepts `-` for "no transcript",
+exactly as `--model-forward`'s does.
+
+The document is `R6_DECODE_STEP` at **schema 2**: `decode` carries the loop
+(`steps_requested`, `steps_completed`, `n_past_first`, `n_past_last`, `token_ids`, and the
+summed/maximised totals) and a new `steps[]` array carries one object per completed step, each with
+its own `n_past`, `token_id`, `argmax`, `sha256`, `plane_column_written`, and `oracle` sub-object.
+A failure at step `k` publishes `steps_completed = k - 1`, the `k - 1` ids decoded so far, `k - 1`
+complete rows — **a partial step publishes no row** — and the raising code's detail prefixed
+`step[<k>]`. `plane.roundtrip_verdict` is never `IDENTICAL` on an error document.
+
+**The transcript must hold `N + 1` graphs.** `llama-eval-callback -n N` emits a prefill graph and
+then one decode graph per step, and every node name repeats across them; step `k` skips `k` graphs,
+because graph `j` consumes `d_{j-1}` and this arm's step `k` consumes `d_k`, so **this arm's `N`
+decode graphs are llama.cpp's graphs 2 through `N+1`, one for one**. Comparing against the prefill
+graph, or against the wrong decode graph, would agree on the nodes that do not depend on the KV
+cache and could still report `PASS`; `layer_forward.scan_transcript_after` is the instruction, it
+counts graphs by the `embd` header every graph begins with, and every step publishes the graph it
+compared as `steps[i].oracle.instrument_graph`.
 
 **The sampler is pinned and it is not optional.** Measured (ledger section 3.1): two runs with
 default sampling produce byte-identical prefill graphs and **different** decode graphs, because a
@@ -2057,8 +2084,27 @@ ALIGN_LLM_GGUF_MODEL=/path/to/qwen2.5-coder-7b.gguf \         # the dense Qwen2 
 ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \  # R2c-patched; oracle A's instrument
 ALIGN_LLM_LLAMA_DEBUG=/path/to/llama-debug \                  # the prefill's byte-exact logits blob
 ALIGN_LLM_DECODE_STEP_TMPDIR=/path/to/scratch \               # where the pack is written; defaults to TMPDIR
+ALIGN_LLM_DECODE_STEPS=16 \                                   # the step count N; defaults to 16
   gmake decode-step-qualification
 ```
+
+`scripts/run-decode-step` runs `N = 16` (`DECODE_STEPS`, one constant at the top of the script) and
+passes `-n 16 --temp 0 -s 0` to the instrument. **The documented fallback is 8**: the whole run is
+estimated at roughly 670 s of the 1800 s cap with pack-read bandwidth the dominant uncertainty, and
+a host that measures more than about 900 s should set `ALIGN_LLM_DECODE_STEPS=8`, which halves every
+term. The fallback changes what is measured, not what is asserted. The runner refuses a prompt whose
+transcript holds any number of graphs other than `N + 1`, because a short transcript means llama.cpp
+stopped at EOS and the two runs would then differ in **length** rather than in arithmetic; the arm
+implements no EOS handling, and that is a decision recorded in `r6-step-n.md` section 2.12 rather
+than an omission. It also needs about **2 GiB** of scratch beyond the pack, because four
+sixteen-step transcripts are roughly 64 MB and covering them by luck is not covering them.
+
+**Gate G needs `numpy`, and its absence is an `N/A` rather than a skipped gate.**
+`scripts/decode_step_fingerprint.py` dequantizes the whole of `token_embd.weight` to measure how
+many vocabulary rows share a printed `embd` fingerprint; without it the runner refuses rather than
+claiming a gate it did not check. It is checked in the **same preflight** as the model and the two
+instruments, before anything is packed, so the `N/A` line arrives in the first second rather than
+after the runs it would invalidate.
 
 `decode-step-qualification` is opt-in and capable-only, in **neither** `HOSTED_CHECK_TARGETS` nor
 `CAPABLE_ONLY_CHECK_TARGETS` and in no aggregate — the same footing as its three siblings. It prints
@@ -2070,16 +2116,32 @@ pinned Homebrew build 10566 (`bb4caa754`) that `scripts/run-model-forward` alrea
 `llama-eval-callback` must be the R2c-patched instrument
 `scripts/llama-eval-callback-toolchain ensure instrument` materializes.
 
-**Three acceptance oracles. `r6-decode-kv-step1.md` section 2.11 states the rule; this is a
-summary, not a second copy of it.** Oracle A compares every comparable node of llama.cpp's own
-decode graph at one ten-thousandth — the instrument's `%12.4f` printing precision — over every layer
-plus the head. Oracle B compares the K and V the decode graph **actually consumed**, read back after
-compute, against the bytes the prefill wrote into the plane, byte for byte; it is the one that tests
-what this capability adds, because a transposed axis, an off-by-one stride, or a K/V swap is
-numerically plausible and survives A's four printed decimals. Oracle C compares the step's logits
-against this arm's own single-shot `T+1` prefill and is **byte identity**. B and C must hold on every
-prompt unconditionally; an A `FAIL` is admitted only inside the 0.5 characterization bound **and**
-with C byte-identical on that prompt, which attributes it to llama.cpp's own kernel selection.
+**One gate and three oracles. `r6-step-n.md` section 3.5 states the rule; this is a summary, not a
+second copy of it.** **Gate G** is on the token ids and is what the capability is named for: `d_1` is
+the argmax of a vector this arm proved byte-identical to `llama-debug --save-logits`, so it is
+llama.cpp's own argmax with no tolerance; `d_1 .. d_N` are compared through transcript graph `k+1`'s
+first node, `embd = GET_ROWS(token_embd.weight, [d_k])`, which is a **copy** of a vocabulary row
+with no arithmetic. That comparison is an id equality only if the printed fingerprint is injective
+over the vocabulary, so the run **measures** the collision count over all 152,064 rows before
+claiming the gate and refuses any step whose decoded id belongs to a colliding class. Oracle A'
+compares every comparable node of llama.cpp's own decode graph at one ten-thousandth — the
+instrument's `%12.4f` printing precision — over every layer plus the head, per step. Oracle B
+compares the K and V the decode graph **actually consumed**, read back after compute, against the
+plane byte for byte over `T + k` columns **including the column that step just wrote**; it is the
+one that tests what this capability adds, because a transposed axis, an off-by-one stride, a K/V
+swap, or a write-back one lane off is numerically plausible and survives A''s four printed decimals.
+Oracle C' compares step `k`'s logits against this arm's own single-shot `T+k` prefill and is **byte
+identity**, at `k in {1, ceil(N/2), N}`.
+
+G, B, and C' must hold on every prompt unconditionally, and A''s structural assertions must hold at
+every step. **A' is numerically gated at step 1 only**, under R6's own admission rule — `PASS`, or
+`FAIL` inside the 0.5 characterization bound *and* with C' at `k = 1` byte-identical. At steps
+2..N it is characterization, and the reason is measured rather than defensive: llama.cpp's decode
+graph takes a different `MUL_MAT` accumulation path from its own multi-column prefill, that
+divergence rises with depth and compounds through the KV cache, and gating on it would fail the run
+for something this arm cannot fix and does not own. What A' still asserts at every step is
+structural and cannot pass vacuously: the graph index, `nodes_matched == nodes_expected`,
+`layers_matched == n_layer`, `elements_compared > 0`, the reduction width, and the tolerance.
 
 There is still no byte-exact **external** reference for the incremental step — `llama-debug
 --save-logits` performs exactly one `llama_decode` and `-n` is inert for it. Ledger section 3.2
@@ -2089,35 +2151,53 @@ measured that for this arm it does**: our decode step at `n_past = T`, our own `
 llama.cpp's own, between its two paths; read the two sections together and do not cite 3.2 alone.
 
 **The hosted corpus is a second implementation.** `scripts/layer_forward_fixture.py --model` gained
-a decode mode: a pure-Python decode step over the plane its own prefill produced, and a transcript
-holding two graphs exactly as the instrument emits them. Both oracles are therefore reachable with
-no ggml and no model, and the fifth `layer-forward-smoke` block asserts oracle A `PASS` at
-`max_abs_diff` **0** and oracle B `IDENTICAL`.
+a decode mode, and R6-STEP-N extended it from a single call to a **three-step loop**: a pure-Python
+decode step per iteration over the plane its own prefill produced and each step grew, a
+`model-decode-tokens.txt` holding the ids that loop consumed, and a four-graph transcript exactly as
+the instrument emits them. Every oracle is therefore reachable with no ggml and no model, and the
+fifth `layer-forward-smoke` block asserts oracle A' `PASS` at `max_abs_diff` **0** against graphs 2,
+3, and 4, oracle B `IDENTICAL`, and `decode.token_ids` equal to the reference loop's own ids.
 
-**`MAX_PREFILL_TOKENS` moves from 6 to 8** (`src/layer_qwen2.align`). The cap's reason is unchanged
-and still respected — `llama-eval-callback` prints every row only while `ne1 <= 6` — and it now
-binds the prefill pass alone, because a decode graph's per-token tensors have `ne1 = 1`. The two
-over-cap smoke fixtures move from seven tokens to nine; `src/layer_olmoe.align` keeps its own cap at
-6, because OLMoE is a declared non-goal here.
+Hosted `K` is 3 and not 16 on purpose: step 1 is R6's exact case, step 2 is the first that *reads* a
+written-back column, and step 3 is the first where two written-back columns are read. A loop correct
+for `1 -> 2 -> 3` is correct for `k -> k+1` by the same code path.
 
-**The lift is enforced, not just documented.** Above six tokens the instrument prints three leading
-and three trailing rows and the scan clamps to six on both sides, so `--layer-forward` and
-`--model-forward` **refuse** `T` of 7 or 8 **when a transcript is supplied**, with the new code
-`R5_ORACLE_TRUNCATED` and detail `tokens[<n>]`, before any container or graph work. The same token
-count without a transcript is admitted, which is what `--decode-step`'s own characterization pass
-needs: it runs `--model-forward` at `T + 1` tokens with `-` in the transcript position. Four cases
-carry the rule: `lf-/mf-tokens-seven-transcript` refused, `lf-/mf-tokens-eight-no-transcript`
-admitted.
+**`MAX_PREFILL_TOKENS` moves from 6 to 8, and then from 8 to 32** (`src/layer_qwen2.align`). The
+cap's reason is unchanged and still respected — `llama-eval-callback` prints every row only while
+`ne1 <= 6` — and it binds the prefill pass alone, because a decode graph's per-token tensors have
+`ne1 = 1`. 32 is R6-STEP-N's oracle C' requirement: that oracle runs `--model-forward` at
+`TOKENS,d_1..d_k`, which is 22 tokens at the qualification's `T <= 6` and `N = 16`, and the arm
+would refuse its own oracle at 8. The three over-cap smoke fixtures move to 33 repetitions of token
+id 1 — not `1,2,...,33`, because the synthetic geometry's `n_vocab` is 32 and an ascending list
+would be refused as out-of-vocabulary and stop being about the cap. `src/layer_olmoe.align` keeps
+its own cap at 6, because OLMoE is a declared non-goal here.
+
+**The lift is enforced, not just documented, and the enforcement is byte-unchanged by the second
+lift.** Above six tokens the instrument prints three leading and three trailing rows and the scan
+clamps to six on both sides, so `--layer-forward` and `--model-forward` **refuse** any `T` above six
+**when a transcript is supplied**, with `R5_ORACLE_TRUNCATED` and detail `tokens[<n>]`, before any
+container or graph work. That refusal fires on `tokens.count > TRUNCATION_PRINTED`, which is 6 and
+does not move, so the range is open for arithmetic and closed for comparison at 32 exactly as at 8.
+The same token count without a transcript is admitted, which is what oracle C' needs: it runs
+`--model-forward` at `T + k` tokens with `-` in the transcript position. Four cases carry the rule:
+`lf-/mf-tokens-seven-transcript` refused, `lf-/mf-tokens-eight-no-transcript` admitted, and all four
+are **byte-unchanged** by the 8 -> 32 lift.
 
 **R6 adds no smoke target and changes no aggregate membership**; it adds one Makefile target, the
 opt-in `decode-step-qualification`, so `scripts/check-gate-topology`'s byte-literal `EXPECTED` does
 not move and `make ci` is not selected by a topology change. A `Makefile` edit is still an
 executable-contract boundary, so `scripts/pre-pr` selects the executable row and the installed
-profile.
+profile. **R6-STEP-N touches the `Makefile` not at all** — no target, no `.PHONY` word, no build
+input — so the topology is unchanged again and by construction.
 
 The shim gains **one** new `extern` symbol, `align_ggml_op_concat`, with its real body and its stub
 kernel; `src/ggml_ffi.align` remains the only file with an `extern` block or an `unsafe` block, and
-the `BEGIN/END R4.5 SHARED SHIM CONTRACT` region stays byte-identical.
+the `BEGIN/END R4.5 SHARED SHIM CONTRACT` region stays byte-identical. **R6-STEP-N adds none**:
+`src/ggml_ffi.align`, `scripts/ggml_shim.c`, and `src/ggml_spike.align` are byte-unchanged, and the
+only change near the seam is two more `slot_mark_output` calls on the decode graph marking rows the
+graph already contains. `scripts/ggml_shim_stub.c` gains two forced-failure builds outside the
+shared region — `engine+compute-step2` and `engine+writeback-offset` — which are never defined in an
+ordinary build.
 
 ## The aarch64 platform-profile gates
 
