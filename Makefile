@@ -34,7 +34,7 @@ $(error capable-checks requires the authenticated fresh worker)
 endif
 endif
 
-.PHONY: check run build fmt format-check ggml-spike ggml-spike-smoke ggml-spike-qualification layer-forward-smoke layer-forward-qualification model-forward-qualification metal-forward-qualification moe-layer-forward-qualification gguf-smoke gguf-reference-parity model-ir-smoke model-ir-parity expert-trace-smoke expert-trace-parity residency-sim-smoke residency-sim-qualification alignpack-smoke alignpack-qualification eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-source-verifier-smoke prompt-snapshot-helper-smoke prompt-fixed-adapter-smoke prompt-evaluate-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke prompt-gate-check baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption c6e-request2-adoption c6f1-request11-adoption c6f2-request14-adoption c6-evaluation-adoption c7-owned-record-source-expiry-adoption c7-persisted-result-cli-smoke c7-persisted-result-lifetime-smoke c7-persisted-result-owned-move-smoke c7-persisted-result-wire-smoke c7-persisted-result-noncanonical-input-smoke c7-persisted-result-independent-destinations-smoke persisted-result-smoke persisted-result-qualification darwin-profile-gate ci
+.PHONY: check run build fmt format-check ggml-spike ggml-spike-smoke ggml-spike-qualification layer-forward-smoke layer-forward-qualification model-forward-qualification metal-forward-qualification moe-layer-forward-qualification moe-model-forward-qualification gguf-smoke gguf-reference-parity model-ir-smoke model-ir-parity expert-trace-smoke expert-trace-parity residency-sim-smoke residency-sim-qualification alignpack-smoke alignpack-qualification eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-source-verifier-smoke prompt-snapshot-helper-smoke prompt-fixed-adapter-smoke prompt-evaluate-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke prompt-gate-check baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption c6e-request2-adoption c6f1-request11-adoption c6f2-request14-adoption c6-evaluation-adoption c7-owned-record-source-expiry-adoption c7-persisted-result-cli-smoke c7-persisted-result-lifetime-smoke c7-persisted-result-owned-move-smoke c7-persisted-result-wire-smoke c7-persisted-result-noncanonical-input-smoke c7-persisted-result-independent-destinations-smoke persisted-result-smoke persisted-result-qualification darwin-profile-gate ci
 
 check:
 	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
@@ -283,6 +283,20 @@ metal-forward-qualification: build
 # aggregate membership and no check topology.
 moe-layer-forward-qualification: build
 	./scripts/run-moe-layer-forward
+
+# The docs/specs/r5e-moe-model-prefill.md section 5.2 focused qualification: a whole OLMoE prefill
+# through sixteen routed layers and the head, against **both** llama.cpp instruments, with all four
+# oracles. It is opt-in through ALIGN_LLM_GGML_INCLUDE, ALIGN_LLM_GGML_LIB, ALIGN_LLM_GGUF_MODEL,
+# ALIGN_LLM_LLAMA_EVAL_CALLBACK, and ALIGN_LLM_LLAMA_DEBUG, prints an explicit N/A line when any is
+# absent or the free space is insufficient, writes a multi-gigabyte pack into a temporary directory
+# outside the work tree and removes it on every exit path, and deliberately stays outside
+# HOSTED_CHECK_TARGETS, CAPABLE_ONLY_CHECK_TARGETS, and every aggregate.
+#
+# The R5E owner is `layer-forward-smoke`, which section 5.1 extends rather than replaces:
+# `layer-forward-smoke` is already a member of HOSTED_CHECK_TARGETS, so this capability changes no
+# aggregate membership and no check topology.
+moe-model-forward-qualification: build
+	./scripts/run-moe-model-forward
 
 verify-loop-smoke: build
 	./scripts/run-verification-loop-smoke

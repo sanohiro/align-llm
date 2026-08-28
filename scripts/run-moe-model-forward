@@ -1,0 +1,591 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# R5E-MOE-MODEL-PREFILL named focused qualification (`docs/specs/r5e-moe-model-prefill.md`
+# section 5.2). **Opt-in and capable-only.** It is in neither HOSTED_CHECK_TARGETS nor
+# CAPABLE_ONLY_CHECK_TARGETS and in no aggregate, exactly as `layer-forward-qualification`,
+# `model-forward-qualification`, and `moe-layer-forward-qualification` are not.
+#
+#   ALIGN_LLM_GGML_INCLUDE              directory holding ggml.h, ggml-alloc.h, ggml-backend.h
+#   ALIGN_LLM_GGML_LIB                  directory holding libggml and libggml-base
+#   ALIGN_LLM_GGUF_MODEL                the **olmoe** GGUF this prefill is read from
+#   ALIGN_LLM_LLAMA_EVAL_CALLBACK       path to `llama-eval-callback`
+#   ALIGN_LLM_LLAMA_DEBUG               path to `llama-debug`
+#   ALIGN_LLM_MOE_MODEL_FORWARD_TMPDIR  where the pack is written; defaults to TMPDIR
+#   ALIGN_LLM_MOE_MODEL_FORWARD_EXCERPT_UPDATE=1  rewrite eval/fixtures/olmoe-model-6tok.txt
+#
+# When any of the **first five** is unset, when the model or either instrument is absent, when the
+# model is not an olmoe container, or when the free space is under the pack's size plus 1 GiB, it
+# prints one explicit N/A line naming the missing input and exits 0. The two below them are
+# optional and have defaults, so neither is ever an N/A condition.
+#
+# It packs the real model into a temporary directory **outside the work tree**, derives the geometry
+# with `main --model-ir`, captures **both** instrument outputs with the exact same flag set section
+# 2.1 established, cross-checks the two instruments against each other *before* running the arm — so
+# an instrument skew is reported as an instrument skew and not as a failing oracle — runs
+# `ggml-spike --moe-model-forward` **twice**, once at the instrument's declared attention width and
+# once at the runtime's own, asserts every recorded value of section 5.2, and removes the pack, both
+# instrument outputs, and the tree on every exit path including a signal.
+#
+# The **second invocation passes `-` in the transcript position**, deliberately and structurally:
+# section 2.8 established that a transcript captured at width 256 describes a differently-routed
+# model from a run at width 6, and step 37's `kq-L` `ne0` validation would refuse the pair as
+# `R5_ORACLE_SHAPE`, which is the design working rather than an inconvenience.
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+
+na() {
+  printf '%s\n' "moe model forward qualification: N/A $1"
+  exit 0
+}
+
+[ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ] || na "ALIGN_LLM_GGML_INCLUDE is unset"
+[ -n "${ALIGN_LLM_GGML_LIB:-}" ] || na "ALIGN_LLM_GGML_LIB is unset"
+[ -n "${ALIGN_LLM_GGUF_MODEL:-}" ] || na "ALIGN_LLM_GGUF_MODEL is unset"
+[ -n "${ALIGN_LLM_LLAMA_EVAL_CALLBACK:-}" ] || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is unset"
+[ -n "${ALIGN_LLM_LLAMA_DEBUG:-}" ] || na "ALIGN_LLM_LLAMA_DEBUG is unset"
+[ -d "${ALIGN_LLM_GGML_INCLUDE}" ] || na "ALIGN_LLM_GGML_INCLUDE is not a directory"
+[ -d "${ALIGN_LLM_GGML_LIB}" ] || na "ALIGN_LLM_GGML_LIB is not a directory"
+[ -f "${ALIGN_LLM_GGUF_MODEL}" ] || na "ALIGN_LLM_GGUF_MODEL is not a file"
+command -v "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" >/dev/null 2>&1 \
+  || [ -x "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" ] \
+  || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable"
+command -v "${ALIGN_LLM_LLAMA_DEBUG}" >/dev/null 2>&1 \
+  || [ -x "${ALIGN_LLM_LLAMA_DEBUG}" ] \
+  || na "ALIGN_LLM_LLAMA_DEBUG is not executable"
+
+model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
+scratch_root="${ALIGN_LLM_MOE_MODEL_FORWARD_TMPDIR:-${TMPDIR:-/tmp}}"
+[ -d "${scratch_root}" ] || na "the scratch root ${scratch_root} does not exist"
+free_kib=$(df -Pk "${scratch_root}" | awk 'NR == 2 { print $4 }')
+need_kib=$(( model_bytes / 1024 + 1048576 ))
+if [ "${free_kib}" -lt "${need_kib}" ]; then
+  na "free space under ${scratch_root} is ${free_kib} KiB, below the ${need_kib} KiB the pack needs"
+fi
+
+work_dir=$(mktemp -d "${scratch_root%/}/align-r5e-XXXXXX")
+# `build/lib/libalign_ggml_shim` is shared state outside the work tree: the forced-failure loop
+# below replaces it, and an early exit used to leave a `-DALIGN_GGML_FORCE_*` library in place for
+# whatever ran next. The trap restores the ordinary real shim before it removes the work directory,
+# so the exit path is total (R5A section 6, correction C22).
+shim_built=0
+cleanup() {
+  status=$?
+  if [ "${shim_built}" = 1 ]; then
+    ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null 2>&1 || true
+  fi
+  rm -rf "${work_dir}"
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+echo "moe model forward qualification: reading the geometry of ${ALIGN_LLM_GGUF_MODEL}"
+"${root_dir}/main" --model-ir "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/geometry.json" >/dev/null
+arch=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["model"]["arch"])' \
+  "${work_dir}/geometry.json")
+# The one N/A detail this runner owns beyond `run-model-forward`'s: the arm refuses any other
+# architecture at step 9, and a qualification that reported that refusal as a failure would be
+# blaming the model for being the wrong model.
+[ "${arch}" = "olmoe" ] || na "ALIGN_LLM_GGUF_MODEL is not an olmoe model"
+
+echo "moe model forward qualification: packing ${ALIGN_LLM_GGUF_MODEL} into ${work_dir}"
+"${root_dir}/main" --pack "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/model.alignpack" \
+  "${work_dir}/pack.json" >/dev/null
+
+# Section 2.1's flag set, contractual and not an invocation detail: build 10566 defaults to
+# `-fa auto`, an f16 KV cache, and repacked quantized weights, and none of those three is the graph
+# R5E computes. `-nr` in particular is worth 0.42 of a logit with the argmax unchanged, which is
+# exactly why it must be contractual rather than checked.
+#
+# The prompt is `def add(a, b` and **not** `def add(a, b):`, because OLMoE's tokenizer produces
+# seven ids for the latter and `MAX_PREFILL_TOKENS` is 6.
+PROMPT="def add(a, b"
+echo "moe model forward qualification: capturing both instruments with -fa off -ctk f32 -ctv f32 -nr"
+"${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" -m "${ALIGN_LLM_GGUF_MODEL}" -p "${PROMPT}" \
+  -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 \
+  > "${work_dir}/transcript.txt" 2> "${work_dir}/transcript.log"
+"${ALIGN_LLM_LLAMA_DEBUG}" -m "${ALIGN_LLM_GGUF_MODEL}" -p "${PROMPT}" \
+  -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 \
+  --save-logits --logits-output-dir "${work_dir}/lg" \
+  > "${work_dir}/debug.log" 2>&1
+
+logits_bin=$(ls "${work_dir}"/lg/*.bin 2>/dev/null | grep -v -- '-tokens\.bin$' | head -1 || true)
+tokens_bin=$(ls "${work_dir}"/lg/*-tokens.bin 2>/dev/null | head -1 || true)
+# An `N/A` line means "a required input is absent from this host". `llama-debug` ran, exited 0, and
+# was asked for `--save-logits`: a missing blob is the instrument disagreeing with its own contract,
+# which is a failure of the qualification and not a reason to skip it.
+if [ -z "${logits_bin}" ]; then
+  echo "moe model forward qualification: FAIL llama-debug exited 0 and wrote no logits file" >&2
+  tail -20 "${work_dir}/debug.log" >&2 || true
+  exit 1
+fi
+if [ -z "${tokens_bin}" ]; then
+  echo "moe model forward qualification: FAIL llama-debug wrote no companion -tokens.bin, so the" \
+    "token-id cross-check cannot run" >&2
+  exit 1
+fi
+echo "moe model forward qualification: llama-debug wrote $(basename "${logits_bin}") and" \
+  "$(basename "${tokens_bin}")"
+
+# The tokenizer produced exactly the six ids the arm is about to be given, asserted **before** the
+# arm runs, so a tokenizer change is a named failure rather than a silent seven-token refusal.
+tokens=$(python3 - "${work_dir}/transcript.log" <<'IDS'
+import re
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8", errors="replace") as handle:
+    lines = handle.read().split("\n")
+at = next(i for i, line in enumerate(lines) if "number of input tokens" in line)
+count = int(re.search(r"number of input tokens = (\d+)", lines[at]).group(1))
+print(",".join(line.split()[-1] for line in lines[at + 1:at + 1 + count]))
+IDS
+)
+if [ "${tokens}" != "1545,823,9,66,13,270" ]; then
+  echo "moe model forward qualification: FAIL the tokenizer produced ${tokens}, not" \
+    "1545,823,9,66,13,270 for 'def add(a, b'" >&2
+  exit 1
+fi
+
+# The instrument cross-check, **before** the arm runs: the f32 sequential sum of the logits file
+# equals the `sum` the transcript prints for `result_output`, and `llama-debug`'s own `-tokens.bin`
+# carries the same six ids. An instrument skew is then reported as an instrument skew.
+python3 - "${work_dir}/transcript.txt" "${logits_bin}" "${tokens_bin}" "${tokens}" <<'PY'
+import struct
+import sys
+
+transcript, logits_path, tokens_path, expected_ids = sys.argv[1:5]
+with open(logits_path, "rb") as handle:
+    raw = handle.read()
+count = len(raw) // 4
+values = struct.unpack("<%df" % count, raw)
+total = 0.0
+for value in values:
+    total = struct.unpack("<f", struct.pack("<f", total + value))[0]
+
+printed = None
+seen = False
+with open(transcript, "r", encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        if line.startswith("common_debug_cb_eval:") and " result_output = " in line:
+            seen = True
+            continue
+        if seen and line.strip().startswith("sum ="):
+            printed = float(line.strip().split("=")[1])
+            break
+failures = []
+if printed is None:
+    failures.append("the transcript prints no sum for result_output")
+elif abs(printed - total) > 1e-3 * max(1.0, abs(printed)):
+    failures.append("the two instruments disagree: transcript sum %r, logits sum %r"
+                    % (printed, total))
+with open(tokens_path, "rb") as handle:
+    token_raw = handle.read()
+ids = ",".join(str(v) for v in struct.unpack("<%di" % (len(token_raw) // 4), token_raw))
+if ids != expected_ids:
+    failures.append("llama-debug tokenized %r, the transcript %r" % (ids, expected_ids))
+if failures:
+    for line in failures:
+        sys.stderr.write("moe model forward qualification: FAIL %s\n" % line)
+    raise SystemExit(1)
+print("moe model forward qualification: the two instruments agree "
+      "(result_output sum %.6f, tokens %s)" % (total, ids))
+PY
+
+shim_dir=$(ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim")
+shim_built=1
+(
+  cd "${root_dir}"
+  LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}" \
+  DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+  LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  "${compiler}" build src/ggml_spike.align >/dev/null
+  mv -f ggml_spike ggml-spike
+)
+
+export DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+# Peak resident set is best-effort: `/usr/bin/time` reports it as kilobytes on Linux and as bytes on
+# this host, and neither spelling is a contract, so the runner records what it got and never fails
+# on it.
+rss_wrapper=()
+if /usr/bin/time -l true >/dev/null 2>&1; then
+  rss_wrapper=(/usr/bin/time -l)
+elif /usr/bin/time -v true >/dev/null 2>&1; then
+  rss_wrapper=(/usr/bin/time -v)
+fi
+
+echo "moe model forward qualification: the reconciliation width (KV_WIDTH 256), all four oracles"
+# `"${rss_wrapper[@]}"` on an empty array is an unbound-variable error under `set -u` on bash 3.2,
+# which is the /bin/bash this host ships; the `+` expansion is the portable spelling that yields no
+# word at all when the array is empty.
+${rss_wrapper[@]+"${rss_wrapper[@]}"} "${root_dir}/ggml-spike" --moe-model-forward "${work_dir}/model.alignpack" \
+  "${work_dir}/geometry.json" 1545,823,9,66,13,270 256 \
+  "${work_dir}/recon.json" "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/transcript.txt" \
+  "${logits_bin}" 2> "${work_dir}/recon.rss" || {
+    status=$?
+    cat "${work_dir}/recon.rss" >&2 || true
+    exit "${status}"
+  }
+grep -Ei "maximum resident|Maximum resident set size" "${work_dir}/recon.rss" \
+  | sed 's/^/moe model forward qualification: /' || true
+
+echo "moe model forward qualification: the runtime width (KV_WIDTH 6), transcript operand '-'"
+"${root_dir}/ggml-spike" --moe-model-forward "${work_dir}/model.alignpack" \
+  "${work_dir}/geometry.json" 1545,823,9,66,13,270 6 \
+  "${work_dir}/runtime.json" "${ALIGN_LLM_GGUF_MODEL}" - "${logits_bin}"
+
+python3 - "${root_dir}" "${work_dir}" "${logits_bin}" <<'PY'
+import json
+import os
+import struct
+import sys
+
+root_dir, work_dir, logits_path = sys.argv[1:4]
+with open(os.path.join(work_dir, "recon.json"), "r", encoding="utf-8") as handle:
+    d = json.load(handle)
+with open(os.path.join(work_dir, "runtime.json"), "r", encoding="utf-8") as handle:
+    rt = json.load(handle)
+
+failures = []
+
+
+def want(label, got, expected):
+    if got != expected:
+        failures.append("%s: %r, expected %r" % (label, got, expected))
+
+
+def at_most(label, got, bound):
+    if got > bound:
+        failures.append("%s: %r, expected at most %r" % (label, got, bound))
+
+
+want("status", d["status"], "ok")
+want("verdict", d["verdict"], "EXTERNAL")
+model = d["model"]
+want("model.arch", model["arch"], "olmoe")
+want("model.n_layer", model["n_layer"], 16)
+want("model.n_embd", model["n_embd"], 2048)
+want("model.n_head", model["n_head"], 16)
+want("model.n_head_kv", model["n_head_kv"], 16)
+want("model.head_dim", model["head_dim"], 128)
+want("model.n_ff_exp", model["n_ff_exp"], 1024)
+want("model.n_vocab", model["n_vocab"], 50304)
+want("model.n_expert", model["n_expert"], 64)
+want("model.n_expert_used", model["n_expert_used"], 8)
+want("model.context_length", model["context_length"], 4096)
+want("model.rms_eps_bits", "%08x" % model["rms_eps_bits"], "3727c5ac")
+want("model.rope_type", model["rope_type"], 2)
+want("model.rope_dim_count", model["rope_dim_count"], 128)
+want("model.rope_freq_base_bits", "%08x" % model["rope_freq_base_bits"], "461c4000")
+want("model.attn_scale_bits", "%08x" % model["attn_scale_bits"], "3db504f3")
+# Section 2.1: `output.weight` is a real Q6_K tensor and is **not** tied to `token_embd`, and the
+# arm derives that rather than assuming it.
+want("model.output_tied", model["output_tied"], False)
+want("model.output_ggml_type", model["output_ggml_type"], 14)
+
+selection = d["selection"]
+want("selection.embedding_block_index", selection["embedding_block_index"], 0)
+want("selection.output_block_index", selection["output_block_index"], 1057)
+want("selection.expert_block_count", selection["expert_block_count"], 1024)
+want("selection.narrow_layer", selection["narrow_layer"], 15)
+want("selection.narrow_index", selection["narrow_index"], 5)
+want("selection.attention_width", selection["attention_width"], 256)
+want("runtime selection.attention_width", rt["selection"]["attention_width"], 6)
+
+schedule = d["schedule"]
+want("schedule length", len(schedule), 16)
+# **The measurement this capability exists to produce**, per layer and cumulatively.
+want("schedule[].routed_count",
+     [row["routed_count"] for row in schedule],
+     [25, 22, 28, 25, 23, 23, 24, 21, 22, 20, 21, 21, 18, 20, 22, 8])
+want("schedule[0].routed", schedule[0]["routed"],
+     [0, 4, 6, 7, 13, 14, 15, 16, 21, 32, 33, 35, 36, 38, 39, 40, 43, 48, 51, 53, 54, 55, 57, 59,
+      61])
+# `r1c-olmoe-moe-ir.md` section 2.5.5's mixed quantization: eight of sixteen layers carry a Q6_K
+# `ffn_down_exps` and `attn_v`, and R5E is the first capability that reaches the other eight.
+want("Q6_K ffn_down_exps layers",
+     [row["layer"] for row in schedule if row["ffn_down_exps_ggml_type"] == 14],
+     [0, 1, 4, 7, 10, 13, 14, 15])
+want("Q6_K dense_bytes",
+     sorted({row["dense_bytes"] for row in schedule}), [9994240, 11075584])
+for row in schedule:
+    expected_bytes = 11075584 if row["ffn_down_exps_ggml_type"] == 14 else 9994240
+    if row["dense_bytes"] != expected_bytes:
+        failures.append("schedule[%d].dense_bytes %d, expected %d"
+                        % (row["layer"], row["dense_bytes"], expected_bytes))
+    if row["t_in"] != 6:
+        failures.append("schedule[%d].t_in %d, not 6" % (row["layer"], row["t_in"]))
+    expected_out = 1 if row["layer"] == 15 else 6
+    if row["t_out"] != expected_out:
+        failures.append("schedule[%d].t_out %d, not %d"
+                        % (row["layer"], row["t_out"], expected_out))
+    flat = [slot for token in row["compact_ids"] for slot in token]
+    if sorted(set(flat)) != list(range(row["routed_count"])):
+        failures.append("schedule[%d].compact_ids is not a bijection onto [0, %d)"
+                        % (row["layer"], row["routed_count"]))
+    for token, ids in enumerate(row["expert_ids"]):
+        if len(set(ids)) != len(ids):
+            failures.append("schedule[%d].expert_ids[%d] repeats an expert" % (row["layer"], token))
+        for slot, expert in enumerate(ids):
+            if row["routed"][row["compact_ids"][token][slot]] != expert:
+                failures.append("schedule[%d].compact_ids[%d][%d] does not name expert %d"
+                                % (row["layer"], token, slot, expert))
+    if row["plane_stride_gate"] != 1179648 or row["plane_stride_up"] != 1179648:
+        failures.append("schedule[%d] gate/up plane %d/%d, not 1,179,648"
+                        % (row["layer"], row["plane_stride_gate"], row["plane_stride_up"]))
+    expected_down = 1720320 if row["ffn_down_exps_ggml_type"] == 14 else 1179648
+    if row["plane_stride_down"] != expected_down:
+        failures.append("schedule[%d] down plane %d, not %d"
+                        % (row["layer"], row["plane_stride_down"], expected_down))
+# The narrowing collapses the last layer's routing to one token and its union to exactly
+# `n_expert_used`, which alone moves the whole-model residency figure by 2.1 points.
+want("schedule[15].routed_count", schedule[15]["routed_count"], 8)
+want("schedule[15].t_out", schedule[15]["t_out"], 1)
+
+residency = d["residency"]
+want("residency.expert_bytes_read", residency["expert_bytes_read"], 1301446656)
+want("residency.expert_bytes_in_model", residency["expert_bytes_in_model"], 3900702720)
+# Section 6, correction: the exact integer ratio is 333,644 ppm; section 2.9's 333,647 is a
+# rounding of the same 33.36% and does not survive the integer arithmetic the document publishes.
+want("residency.expert_bytes_read_ppm", residency["expert_bytes_read_ppm"], 333644)
+want("residency.planes_read", residency["planes_read"], 1029)
+want("residency.planes_in_model", residency["planes_in_model"], 3072)
+want("residency.keys_demanded", residency["keys_demanded"], 343)
+# Within one prefill no `(layer, expert)` key is demanded twice: 343 demands and 343 distinct keys,
+# which is why section 5.4 defers a residency policy to a multi-prefill consumer.
+want("residency.keys_distinct", residency["keys_distinct"], residency["keys_demanded"])
+want("residency.dense_bytes_read", residency["dense_bytes_read"], 168558592)
+want("residency.head_bytes_read", residency["head_bytes_read"], 84518912)
+want("residency.embedding_bytes_read", residency["embedding_bytes_read"], 6912)
+want("residency.total_bytes_read", residency["total_bytes_read"], 1554531072)
+# Section 6, correction: `model_bytes` is the **container's** own `total_bytes`, which is the only
+# model size the arm reads; the GGUF's 4,213,512,192 is a file size the arm never opens on the
+# ordinary path.
+want("residency.model_bytes", residency["model_bytes"], d["pack"]["total_bytes"])
+want("residency.cumulative_expert_bytes[0]", residency["cumulative_expert_bytes"][0], 101990400)
+want("residency.cumulative_expert_bytes[15]", residency["cumulative_expert_bytes"][15],
+     residency["expert_bytes_read"])
+
+window = d["window"]
+want("window.dense_bytes", window["dense_bytes"], 84520960)
+want("window.dense_peak_block_layer", window["dense_peak_block_layer"], -1)
+want("window.dense_peak_block_index", window["dense_peak_block_index"],
+     selection["output_block_index"])
+want("window.claim_bytes", window["claim_bytes"], 195821568)
+want("window.claim_u_max", window["claim_u_max"], 48)
+want("window.claim_peak_use_bytes", window["claim_peak_use_bytes"], 101990400)
+want("window.claim_peak_use_layer", window["claim_peak_use_layer"], 0)
+want("window.reuse_count", window["reuse_count"], 34)
+want("window.pointer_identity_failures", window["pointer_identity_failures"], 0)
+want("window.member_placements", window["member_placements"], 147)
+want("window.claim_placements", window["claim_placements"], 48)
+want("window.residual_bytes", window["residual_bytes"], 2048 * 6 * 4)
+want("window.carried_bytes", window["carried_bytes"], 2 * 2048 * 6 * 4 + 64 * 6 * 4 + 2 * 8 * 6 * 4)
+want("window.logits_bytes", window["logits_bytes"], 50304 * 4)
+
+# Section 7.3's head cell, asserted rather than only claimed: the head's `output` member is
+# 50,304 x 2,048 of Q6_K, and its byte count is what makes `window.dense_bytes` the head's and not
+# a layer's.
+head = d["head"]
+want("head.output_bytes", head["output_bytes"], 84510720)
+want("head.node_count", head["node_count"], 3)
+
+graph = d["graph"]
+want("graph.graph_count", graph["graph_count"], 34)
+want("graph.table_rows_a", graph["table_rows_a"], 35)
+want("graph.table_rows_b", graph["table_rows_b"], 24)
+want("graph.embed_node_count", graph["embed_node_count"], 1)
+want("graph.head_node_count", graph["head_node_count"], 3)
+want("graph.slot_capacity", graph["slot_capacity"], 128)
+# `ggml_gallocr_get_buffer_size` over the 34 graphs. It is reported rather than chosen (section
+# 3.10), but it is an exact integer for a fixed graph set, so section 5.2 asserts it rather than
+# printing it: a change means the graph shapes moved.
+want("graph.activation_bytes_peak", graph["activation_bytes_peak"], 4440064)
+want("abi.tensor_alignment", d["abi"]["tensor_alignment"], 32)
+want("abi.table_drift", d["abi"]["table_drift"], -1)
+want("abi.slot_magic_ok", d["abi"]["slot_magic_ok"], True)
+want("abi.fp_contract_off", d["abi"]["fp_contract_off"], True)
+
+output = d["output"]
+want("output.element_count", output["element_count"], 50304)
+want("output.argmax", output["argmax"], 2262)
+want("output.sha256", output["sha256"],
+     "a56195da2c913d8dd7fa608917a381200c4b59d1c534fae2d4bbb828f80d2383")
+want("output.bit_sum", output["bit_sum"], 149873641306457)
+want("output.nonfinite_count", output["nonfinite_count"], 0)
+
+reference = d["reference"]
+want("reference.verdict", reference["verdict"], "IDENTICAL")
+want("reference.graphs_compared", reference["graphs_compared"], 34)
+want("reference.nodes_compared", reference["nodes_compared"], 227)
+want("reference.nodes_identical", reference["nodes_identical"], 227)
+
+routing_oracle = d["routing_oracle"]
+want("routing_oracle.verdict", routing_oracle["verdict"], "MATCH")
+want("routing_oracle.layers_matched", routing_oracle["layers_matched"], 16)
+want("routing_oracle.ids_total", routing_oracle["ids_total"], 728)
+# The slot axis is 8 and the instrument prints six of eight, so the direct comparison covers 546 of
+# 728 ids and the sixteen exact block sums pin the rest in aggregate.
+want("routing_oracle.ids_printed_compared", routing_oracle["ids_printed_compared"], 546)
+want("routing_oracle.ids_printed_matched", routing_oracle["ids_printed_matched"], 546)
+want("routing_oracle.sums_expected", routing_oracle["sums_expected"], 16)
+want("routing_oracle.sums_matched", routing_oracle["sums_matched"], 16)
+
+oracle = d["oracle"]
+want("oracle.verdict", oracle["verdict"], "PASS")
+want("oracle.layers_matched", oracle["layers_matched"], 16)
+want("oracle.nodes_expected", oracle["nodes_expected"], 227)
+want("oracle.nodes_matched", oracle["nodes_matched"], 227)
+want("oracle.elements_compared", oracle["elements_compared"], 21372)
+want("oracle.instrument_kv_width", oracle["instrument_kv_width"], 256)
+at_most("oracle.max_abs_diff_ten_thousandths", oracle["max_abs_diff_ten_thousandths"], 1)
+want("oracle.tolerance_ten_thousandths", oracle["tolerance_ten_thousandths"], 1)
+want("oracle.sum_tolerance_millionths", oracle["sum_tolerance_millionths"], 1000)
+want("oracle.sum_tolerance_relative_ppm", oracle["sum_tolerance_relative_ppm"], 10)
+# Every compared node carries a block sum in the instrument's own output, so a real transcript
+# matches all 227. A `sums_matched` below `sums_expected` on a `PASS` run means the instrument
+# stopped printing sums, not that the model moved.
+want("oracle.sums_expected", oracle["sums_expected"], 227)
+want("oracle.sums_matched", oracle["sums_matched"], 227)
+
+logits_oracle = d["oracle_logits"]
+want("oracle_logits.verdict", logits_oracle["verdict"], "IDENTICAL")
+want("oracle_logits.compared_pass", logits_oracle["compared_pass"], "reconciliation")
+want("oracle_logits.byte_identical", logits_oracle["byte_identical"], True)
+want("oracle_logits.reference_sha256", logits_oracle["reference_sha256"],
+     "a56195da2c913d8dd7fa608917a381200c4b59d1c534fae2d4bbb828f80d2383")
+
+runtime_logits = rt["oracle_logits"]
+want("runtime oracle_logits.verdict", runtime_logits["verdict"], "WITHIN")
+want("runtime oracle_logits.compared_pass", runtime_logits["compared_pass"], "runtime")
+at_most("runtime oracle_logits.max_abs_diff_ten_thousandths",
+        runtime_logits["max_abs_diff_ten_thousandths"], 5000)
+want("runtime oracle_logits.argmax_primary", runtime_logits["argmax_primary"], 2262)
+want("runtime oracle_logits.argmax_reference", runtime_logits["argmax_reference"], 2262)
+want("runtime oracle_logits.top_k_set_agreement", runtime_logits["top_k_set_agreement"], 10)
+want("runtime oracle.verdict", rt["oracle"]["verdict"], "-")
+want("runtime status", rt["status"], "ok")
+want("runtime verdict", rt["verdict"], "EXTERNAL")
+
+lifetime = d["lifetime"]
+for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                       ("contexts_created", "contexts_freed"),
+                       ("backends_created", "backends_freed"),
+                       ("gallocrs_created", "gallocrs_freed")):
+    want("lifetime.%s == %s" % (created, freed), lifetime[created], lifetime[freed])
+want("lifetime.phase_balance_failures", lifetime["phase_balance_failures"], 0)
+want("lifetime.released_before_owner_scope_end", lifetime["released_before_owner_scope_end"], True)
+
+timings = d["timings"]
+print("moe model forward qualification: backend %s" % graph["backend_name"])
+print("moe model forward qualification: dense pread %.3f ms, claim pread %.3f ms, decide %.3f ms"
+      % (timings["pread_ns"] / 1e6, timings["claim_pread_ns"] / 1e6, timings["decide_ns"] / 1e6))
+print("moe model forward qualification: microbenchmark B = %.3f ms of graph compute for a "
+      "six-token prefill of sixteen routed layers plus the head, at the reconciliation width"
+      % (timings["compute_ns"] / 1e6))
+print("moe model forward qualification: wall %.3f ms, reference compute %.3f ms, oracle %.3f ms"
+      % (timings["elapsed_ns"] / 1e6, timings["reference_compute_ns"] / 1e6,
+         timings["oracle_ns"] / 1e6))
+print("moe model forward qualification: %d graphs, %d ggml nodes (tables %d + %d), activation peak "
+      "%d B, slot high water %d/%d"
+      % (graph["graph_count"], graph["node_count_total"], graph["table_rows_a"],
+         graph["table_rows_b"], graph["activation_bytes_peak"], graph["slot_high_water"],
+         graph["slot_capacity"]))
+print("moe model forward qualification: pack reader %d preads for %d bytes; reference arm %d preads "
+      "for %d bytes"
+      % (d["pack"]["reader_pread_count"], d["pack"]["reader_bytes_read"],
+         reference["pread_count"], reference["bytes_read"]))
+print("moe model forward qualification: dense window %d B, claim window %d B reserved at U_max %d, "
+      "peak use %d B at layer %d"
+      % (window["dense_bytes"], window["claim_bytes"], window["claim_u_max"],
+         window["claim_peak_use_bytes"], window["claim_peak_use_layer"]))
+print("moe model forward qualification: peak resident weight bytes %d against %d for the model — "
+      "%.2f%%"
+      % (window["dense_bytes"] + window["claim_bytes"], residency["model_bytes"],
+         100.0 * (window["dense_bytes"] + window["claim_bytes"]) / residency["model_bytes"]))
+print("moe model forward qualification: **residency** %d/%d expert bytes = %d ppm (%.2f%%), "
+      "%d/%d planes, %d/%d keys"
+      % (residency["expert_bytes_read"], residency["expert_bytes_in_model"],
+         residency["expert_bytes_read_ppm"],
+         100.0 * residency["expert_bytes_read"] / residency["expert_bytes_in_model"],
+         residency["planes_read"], residency["planes_in_model"],
+         residency["keys_demanded"], 16 * model["n_expert"]))
+print("moe model forward qualification: whole prefill %d/%d bytes = %.2f%% of the container"
+      % (residency["total_bytes_read"], residency["model_bytes"],
+         100.0 * residency["total_bytes_read"] / residency["model_bytes"]))
+for row in schedule:
+    print("moe model forward qualification: L%-2d U=%-2d claim %10d B (%5.1f%%) cumulative %10d B "
+          "(%5.2f%%) down=%s A/B %d/%d nodes  sum=%d"
+          % (row["layer"], row["routed_count"], row["claim_bytes"],
+             100.0 * row["routed_count"] / model["n_expert"],
+             residency["cumulative_expert_bytes"][row["layer"]],
+             100.0 * residency["cumulative_expert_bytes"][row["layer"]]
+             / residency["expert_bytes_in_model"],
+             "Q6_K" if row["ffn_down_exps_ggml_type"] == 14 else "Q4_K",
+             row["node_count_a"], row["node_count_b"], row["l_out_f32_sum_millionths"]))
+    print("moe model forward qualification:      routed %s"
+          % ",".join(str(e) for e in row["routed"]))
+print("moe model forward qualification: self-reference %s (%d/%d nodes byte-identical over %d "
+      "graphs)"
+      % (reference["verdict"], reference["nodes_identical"], reference["nodes_compared"],
+         reference["graphs_compared"]))
+print("moe model forward qualification: routing identity %s, %d/%d printed ids over %d slots, "
+      "%d/%d block sums"
+      % (routing_oracle["verdict"], routing_oracle["ids_printed_matched"],
+         routing_oracle["ids_printed_compared"], routing_oracle["ids_total"],
+         routing_oracle["sums_matched"], routing_oracle["sums_expected"]))
+print("moe model forward qualification: transcript %s, %d/%d layers, %d/%d nodes, %d elements, "
+      "max |d| %d ten-thousandths, max |dsum| %d millionths"
+      % (oracle["verdict"], oracle["layers_matched"], oracle["layers_expected"],
+         oracle["nodes_matched"], oracle["nodes_expected"], oracle["elements_compared"],
+         oracle["max_abs_diff_ten_thousandths"], oracle["max_sum_diff_millionths"]))
+print("moe model forward qualification: logits %s at the reconciliation width, sha256 %s"
+      % (logits_oracle["verdict"], output["sha256"]))
+print("moe model forward qualification: logits %s at the runtime width, max |d| %d "
+      "ten-thousandths, argmax %d, top-ten set %d/10, order %d/10"
+      % (runtime_logits["verdict"], runtime_logits["max_abs_diff_ten_thousandths"],
+         runtime_logits["argmax_primary"], runtime_logits["top_k_set_agreement"],
+         runtime_logits["top_k_order_agreement"]))
+print("moe model forward qualification: the runtime-width run read %d expert bytes against the "
+      "reconciliation width's %d"
+      % (rt["residency"]["expert_bytes_read"], residency["expert_bytes_read"]))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("moe model forward qualification: FAIL %s\n" % line)
+    raise SystemExit(1)
+print("moe model forward qualification: every section 5.2 assertion PASS")
+PY
+
+# The two forced builds that no input can produce, run against the **real** shim so the failure
+# paths are exercised rather than reasoned about.
+for force in init compute; do
+  ALIGN_LLM_GGML_FORCE="${force}" "${root_dir}/scripts/build-ggml-shim" >/dev/null
+  set +e
+  "${root_dir}/ggml-spike" --moe-model-forward "${work_dir}/model.alignpack" \
+    "${work_dir}/geometry.json" 1545,823,9,66,13,270 256 - > "${work_dir}/forced.json"
+  status=$?
+  set -e
+  code=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["error_code"])' \
+    "${work_dir}/forced.json")
+  expected="R5_GGML_INIT"
+  [ "${force}" = compute ] && expected="R5_COMPUTE"
+  if [ "${code}" != "${expected}" ] || [ "${status}" = 0 ]; then
+    echo "moe model forward qualification: FAIL forced ${force} produced ${code} (exit ${status})" >&2
+    exit 1
+  fi
+  echo "moe model forward qualification: forced ${force} reached ${code}"
+done
+ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null   # the trap repeats this
+
+# The checked-in excerpt is swept from here, which is what keeps it from going stale.
+if [ "${ALIGN_LLM_MOE_MODEL_FORWARD_EXCERPT_UPDATE:-}" = 1 ]; then
+  python3 "${root_dir}/scripts/sweep-moe-model-forward-excerpt.py" \
+    "${work_dir}/transcript.txt" "${root_dir}/eval/fixtures/olmoe-model-6tok.txt" 16
+  echo "moe model forward qualification: eval/fixtures/olmoe-model-6tok.txt rewritten"
+fi
+
+echo "moe model forward qualification: removing the pack, both instrument outputs, and the tree"

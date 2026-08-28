@@ -11,6 +11,7 @@ import layer_forward
 import gpu_forward
 import model_forward
 import moe_layer_forward
+import moe_model_forward
 
 // R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md`). The whole arm: the CLI, the
 // validation order of section 3.8, the deterministic activation, the reference oracle, the
@@ -1592,6 +1593,13 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   // design, so one arm owning both would own two validation orders.
   if args.len() >= 2 && args[1] == "--moe-layer-forward" {
     return moe_layer_forward.run(args)
+  }
+  // R5E section 3.3: the routed **whole-model** arm, selected by the first operand and nothing
+  // else. Section 3.1 records why this is a fifth arm rather than a widened `--moe-layer-forward`:
+  // that arm computes one layer with no `LAYER` operand and a single graph pair, and one arm owning
+  // both would own two validation orders and two documents.
+  if args.len() >= 2 && args[1] == "--moe-model-forward" {
+    return moe_model_forward.run(args)
   }
   if args.len() >= 2 && args[1].starts_with("--") {
     return Err(Error.Invalid)
