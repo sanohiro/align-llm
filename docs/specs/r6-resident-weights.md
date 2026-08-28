@@ -722,14 +722,21 @@ Host: Apple M1, 8 cores, 16 GiB, macOS 26.5.2, `darwin/arm64`. Compiler pin
 logits blob. Model `qwen2.5-coder-7b-instruct-q4_k_m.gguf`, 4,683,073,536 B; pack 4,677,222,400 B,
 58 blocks, 339 members, `block_align` 4,096.
 
+The recorded run is the one taken at the **merged head** `e547cb0`, after `agent/r6-kv-persist`'s
+review repair and `main` came in, because that is the head the claim is made about:
+
 | `N` | leg | elapsed, median of 3 | spread | decode compute | `weights.step_pack_bytes` | total pack bytes read |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | streamed | 4.882 s | 4.809 .. 5.107 s | 0.153 s | 4,370,560,992 | 8,741,169,024 |
-| 1 | **resident** | 5.647 s | 5.492 .. 6.167 s | 0.810 s | **0** | 4,677,156,960 |
-| 4 | streamed | 7.146 s | 7.143 .. 7.489 s | 0.724 s | 17,482,243,968 | 21,852,852,000 |
-| 4 | **resident** | 8.133 s | 6.513 .. 8.444 s | 0.906 s | **0** | 4,677,156,960 |
-| 16 | streamed | 19.020 s | 18.972 .. 19.846 s | 3.109 s | 69,928,975,872 | 74,299,583,904 |
-| 16 | **resident** | **9.360 s** | 9.121 .. 9.488 s | 3.307 s | **0** | 4,677,156,960 |
+| 1 | streamed | 5.016 s | 4.950 .. 5.028 s | 0.169 s | 4,370,560,992 | 8,741,169,024 |
+| 1 | **resident** | 5.819 s | 5.717 .. 6.367 s | 0.865 s | **0** | 4,677,156,960 |
+| 4 | streamed | 7.117 s | 7.102 .. 7.197 s | 0.697 s | 17,482,243,968 | 21,852,852,000 |
+| 4 | **resident** | 6.440 s | 6.092 .. 6.757 s | 0.747 s | **0** | 4,677,156,960 |
+| 16 | streamed | 18.016 s | 17.577 .. 18.274 s | 2.885 s | 69,928,975,872 | 74,299,583,904 |
+| 16 | **resident** | **8.808 s** | 8.215 .. 8.863 s | 2.928 s | **0** | 4,677,156,960 |
+
+The same measurement was taken twice before the merge, on the pre-merge head, and both are reported
+in the spread discussion below: 449,779 ppm on a host under memory pressure and 507,887 ppm on a
+quiet one. **All three exceed the floor**, and the byte metric was identical in all three.
 
 The fill is 4,669 `pread`s of 4,677,120,000 B, measured at 1.6 to 2.6 s depending on page-cache
 state, and it is paid **once** whatever `N` is: the resident leg's total pack read is the same
@@ -739,11 +746,11 @@ state, and it is paid **once** whatever `N` is: the resident leg's total pack re
 **The floor verdict, printed by the runner and asserted by it:**
 
 ```text
-decode step qualification: R6W floor  baseline (streamed, this session) 19019598917 ns,
-  resident 9359786125 ns, removed 9659812792 ns = 507887 ppm of the fixed task
+decode step qualification: R6W floor  baseline (streamed, this session) 18016366125 ns,
+  resident 8807742250 ns, removed 9208623875 ns = 511125 ppm of the fixed task
   against a 150000 ppm floor: MET
 decode step qualification: R6W the recorded cost ceiling was 586000 ppm and the measured result is
-  507887 ppm, so this is a **ceiling-estimation miss** and is reported as one rather than absorbed
+  511125 ppm, so this is a **ceiling-estimation miss** and is reported as one rather than absorbed
   into a passing claim (docs/specs/c8-speed-first.md section 1)
 decode step qualification: R6W arena 4677533696 B, reproduced from the pack document by an
   independent walk of its 339 member records
@@ -753,18 +760,23 @@ decode step qualification: R6W oracle R PASS -- the resident and streamed docume
   the resident leg
 ```
 
-**507,887 ppm of the `N = 16` fixed task, against a 150,000 ppm floor: MET**, at 3.4× the floor and
+**511,125 ppm of the `N = 16` fixed task, against a 150,000 ppm floor: MET**, at 3.4x the floor and
 87 % of the 586,000 ppm ceiling this document recorded before implementation. The shortfall against
 the ceiling is a **ceiling-estimation miss** and is reported as one: the ceiling assumed the fitted
-4.5 s fixed cost was entirely unavoidable, and the measured fill is 1.6–2.6 s of it rather than
+4.5 s fixed cost was entirely unavoidable, and the measured fill is 1.6-2.6 s of it rather than
 zero.
 
-**Where the crossover is, stated rather than hidden.** Residency is **slower** at `N = 1` (5.647 s
-against 4.882 s) and at `N = 4` (8.133 s against 7.146 s), because the one-time fill costs about
-what one or two streamed steps save. It pays for itself between `N = 4` and `N = 16` and the gap
-grows linearly after that, because the streamed term is `N x 4.37 GB` and the resident term is a
-constant. A caller doing a single-step decode should not ask for `weights`, and the operand being
-opt-in is why they do not have to.
+**Where the crossover is, stated rather than hidden, and it is not a clean number.** Residency is
+**reliably slower at `N = 1`** — 5.819 s against 5.016 s here, and slower on both pre-merge runs
+too — because the one-time fill costs more than one step's saving. At `N = 4` it is **on the
+boundary and the three runs disagree**: 6.440 s against 7.117 s here (resident wins), 8.133 s
+against 7.146 s on the second pre-merge run (streamed wins). By `N = 16` it is decisive on every
+run, and the gap grows linearly after that, because the streamed term is `N x 4.37 GB` and the
+resident term is a constant.
+
+The honest summary is therefore: **`N = 1` no, `N = 4` a coin toss on this host, `N >= 16` yes by a
+factor of two.** A caller doing a one-step decode should not ask for `weights`, and the operand
+being opt-in is why they do not have to.
 
 **Memory footprint**, `/usr/bin/time -l` around one whole `--decode-step` invocation:
 
@@ -811,16 +823,17 @@ git diff --check
 3. **One point on one prompt** (risk 3, third clause). The byte metric is reported at
    `N ∈ {1, 4, 16}` and is exact at all three; the elapsed figure is the median of three runs with
    the spread printed.
-4. **A risk this document did not predict, and what two runs of it showed.** Decode **compute**
+4. **A risk this document did not predict, and what three runs of it showed.** Decode **compute**
    rose sharply in resident mode on the first qualification run — 3.477 s streamed against 4.998 s
-   resident at `N = 16` — and barely moved on the second — 3.109 s against 3.307 s. Residency
-   changes no arithmetic operation, so the first run's 1.5 s was a memory-system effect on a host
-   under pressure (the streamed path's 447 MB window is re-touched thirty times per step and stays
-   hot; a 4.68 GB arena the compressor is holding does not), and the second run on a quieter host is
-   the one to believe. **Both are reported**, the elapsed figures are net of whichever occurred, and
-   the difference between the two runs — 507,887 ppm against 449,779 ppm — is the honest size of
-   this host's measurement noise on the secondary metric. The primary metric was byte-identical
-   across both runs and every repeat within them.
+   resident at `N = 16` — and barely moved on the second (3.109 s against 3.307 s) or the third
+   (2.885 s against 2.928 s). Residency changes no arithmetic operation, so the first run's 1.5 s
+   was a memory-system effect on a host under pressure — the streamed path's 447 MB window is
+   re-touched thirty times per step and stays hot, while a 4.68 GB arena the compressor is holding
+   does not — and the two later runs on a quieter host are the ones to believe. **All three are
+   reported**, the elapsed figures are net of whichever occurred, and the spread across them —
+   449,779, 507,887, and 511,125 ppm — is the honest size of this host's measurement noise on the
+   secondary metric. The primary metric was **byte-identical across all three runs and every repeat
+   within them**, which is why it and not the clock carries the claim.
 
 ### 5.9 Deviations from this document, and why
 
@@ -1194,13 +1207,15 @@ can be read against each other.
    the 339 members) and 11,526 at `N = 16`. The oracle is unchanged —
    `pointer_identity_failures == 0` over all of them — but the number a reader will see is not 339.
 10. **Decode compute is not reliably invariant under residency.** Section 3.4's cost ceiling
-    subtracted 3.049 s of decode compute as a term "which residency does not touch". Across two full
-    qualification runs it moved by 44 % once (3.477 s streamed against 4.998 s resident) and by 6 %
-    the other time (3.109 s against 3.307 s). Residency changes no arithmetic, so the large
-    excursion is a memory-system effect on a host under pressure, not a property of the design; both
-    are reported in section 5.8.1 and both are netted **into** the elapsed figure, never out of it.
-11. **The crossover is between `N = 4` and `N = 16`, and the design did not name one.** Residency is
-    measurably **slower** at `N = 1` and `N = 4` — the one-time fill costs about what one or two
-    streamed steps save. Sections 1.1 and 3.4 argued the claim entirely at `N = 16` and never said
-    where the win begins. Section 5.8.1 now does, and it is the sharpest practical reason the
-    operand is opt-in rather than a default.
+    subtracted 3.049 s of decode compute as a term "which residency does not touch". Across three
+    full qualification runs it moved by 44 % once (3.477 s streamed against 4.998 s resident) and by
+    6 % and 1 % on the other two. Residency changes no arithmetic, so the large excursion is a
+    memory-system effect on a host under pressure, not a property of the design; all three are
+    reported in section 5.8.1 and all three are netted **into** the elapsed figure, never out of it.
+11. **The crossover is around `N = 4`, it is not a clean number, and the design named none.**
+    Residency is reliably slower at `N = 1`. At `N = 4` the three runs **disagree about the sign** —
+    resident won by 0.68 s at the merged head and lost by 0.99 s on the second pre-merge run — so
+    `N = 4` is a coin toss on this host rather than a loss. By `N = 16` it is decisive on every run.
+    Sections 1.1 and 3.4 argued the claim entirely at `N = 16` and never said where the win begins;
+    section 5.8.1 now does, with the disagreement shown rather than averaged away, and it is the
+    sharpest practical reason the operand is opt-in rather than a default.

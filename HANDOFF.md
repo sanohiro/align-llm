@@ -51,16 +51,19 @@ baseline re-taken back to back in the same session, three runs per point:
 
 | `N` | streamed elapsed | resident elapsed | `weights.step_pack_bytes` |
 | --- | --- | --- | --- |
-| 1 | 4.882 s | 5.647 s | 4,370,560,992 -> **0** |
-| 4 | 7.146 s | 8.133 s | 17,482,243,968 -> **0** |
-| 16 | 19.020 s | **9.360 s** | 69,928,975,872 -> **0** |
+| 1 | 5.016 s | 5.819 s | 4,370,560,992 -> **0** |
+| 4 | 7.117 s | 6.440 s | 17,482,243,968 -> **0** |
+| 16 | 18.016 s | **8.808 s** | 69,928,975,872 -> **0** |
 
-**507,887 ppm of the `N = 16` fixed task against a 150,000 ppm floor: MET**, 3.4x the floor and 87 %
+**511,125 ppm of the `N = 16` fixed task against a 150,000 ppm floor: MET**, 3.4x the floor and 87 %
 of the 586,000 ppm ceiling recorded before implementation — reported as a **ceiling-estimation
-miss** rather than absorbed. Arena 4,677,533,696 B, fill 4,669 `pread`s of 4,677,120,000 B in
-1.6–2.6 s, paid once whatever `N` is. Peak footprint 504 MB -> 4.74 GB. **Residency is slower at
-`N = 1` and `N = 4`** and pays for itself between 4 and 16; the crossover is stated in section 5.8.1
-and is the practical reason the operand is opt-in. The streamed leg's total pack reads reproduce
+miss** rather than absorbed. The whole qualification was run **three times** — twice pre-merge, once
+at the merged head, at 449,779 / 507,887 / 511,125 ppm — and the byte metric was **identical in all
+three**, which is why it and not the clock carries the claim. Arena 4,677,533,696 B, fill 4,669
+`pread`s of 4,677,120,000 B in 1.6–2.6 s, paid once whatever `N` is. Peak footprint 504 MB ->
+4.74 GB. **Residency is slower at `N = 1`, a coin toss at `N = 4`** where the three runs disagree
+about the sign, and decisive from 16 up; the crossover is stated in section 5.8.1 with the
+disagreement shown rather than averaged away, and it is the practical reason the operand is opt-in. The streamed leg's total pack reads reproduce
 R6-STEP-N section 5.4's recorded 8,741,169,024 / 21,852,852,000 / 74,299,583,904 **exactly at all
 three points**, so the baseline this claim is made against is that document's, byte for byte.
 Oracle R PASS on the real model at `N = 16` with the transcript, logits blob, and reference GGUF all
