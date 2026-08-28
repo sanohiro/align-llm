@@ -38,6 +38,18 @@ MAX_SIMULATION_STEPS := 4294967296
 MAX_DETAIL_BYTES := 256
 I64_MAX := 9223372036854775807
 
+// The largest prefetch degree section 2.4 ships. It appears here rather than only in `policy_topk`
+// because the byte-total overflow guard (section 6, correction 18) must bound the traffic of the
+// most expensive policy before any replay runs.
+MAX_PREFETCH_DEGREE := 8
+
+// The ceiling on every byte quantity the document reports, and on the `BUDGET_BYTES` operand. It is
+// `I64_MAX / 1000` rather than `I64_MAX` because every ratio in the document is an integer per
+// mille, so each of those totals is multiplied by 1000 before it is divided: bounding the totals
+// here is what makes `per_mille`, the effect-floor comparison, and every gain and headroom term
+// non-wrapping without a guard at each site (section 6, correction 18).
+MAX_BYTE_TOTAL := 9223372036854775
+
 // Section 2.2.2's packed order-plus-payload word. 45 order bits above 17 key bits is 62, so every
 // word is a positive `i64` and the reordering is the shipped comparator-free `array<i64>` sort.
 KEY_BITS := 17
@@ -246,7 +258,9 @@ pub fn valid_path(path: str) -> bool {
 // Section 2.1's second client of `docs/align-requests.md` Request 26: there is no `str`-to-number
 // conversion in the standard library, and a `json.decode` detour would accept `-0`, `1e3`, and
 // leading whitespace, none of which this operand admits. Returns `-1` for a malformed operand,
-// which no valid budget can be.
+// which no valid budget can be. A syntactically valid operand above `MAX_BYTE_TOTAL` is malformed
+// too: the budget is reported as a per-mille ratio of the expert footprint, so a value the ratio
+// cannot express is not a budget this document can describe (section 6, correction 18).
 fn parse_budget(value: str) -> i64 {
   view := value.bytes()
   if view.len() == 0 { return -1 }
@@ -260,6 +274,7 @@ fn parse_budget(value: str) -> i64 {
     total = total * 10 + digit
     at = at + 1
   }
+  if total > MAX_BYTE_TOTAL { return -1 }
   return total
 }
 
@@ -416,6 +431,21 @@ fn model_ir_load(path: str) -> IrLoad {
           arch_view.clone(), bytes_read)
       }
       size := document.blocks[at].byte_size
+      // A block of no bytes is not a residency unit: it would be admitted into every cache for
+      // free, it can never be evicted for capacity, and `sizes`' `-1` sentinel would have to carry
+      // both "no block declared" and "a block of a nonsensical size" (section 6, correction 16).
+      // A negative size is the same refusal and not `R3_MISSING_EXPERT_BLOCK`, which it used to be
+      // misreported as.
+      if size <= 0 {
+        return failed_ir_load("R3_EXPERT_BLOCK_SIZE".clone(), pair_detail(layer, expert),
+          arch_view.clone(), bytes_read)
+      }
+      // Align's integer arithmetic wraps with no trap (rule 5), so the accumulation is guarded
+      // before the addition rather than checked after it (section 6, correction 18).
+      if total > MAX_BYTE_TOTAL - size {
+        return failed_ir_load("R3_BYTE_TOTAL_OVERFLOW".clone(), pair_detail(layer, expert),
+          arch_view.clone(), bytes_read)
+      }
       sizes[key] = size
       if count == 0 || size < smallest { smallest = size }
       if count == 0 || size > largest { largest = size }
@@ -510,7 +540,10 @@ fn trace_load(
     return empty_trace_load("R3_SHAPE_MISMATCH".clone(), detail, bytes_read)
   }
   // Graph admission (section 2.2.1). A graph whose token axis was truncated is excluded and
-  // counted; the truncation table is indexed by graph ordinal.
+  // counted; the table is indexed by graph ordinal and carries three states, because "excluded by
+  // the documented truncation rule" and "named by a selection but never declared" are different
+  // answers and only the first is a silent, counted exclusion (section 6, correction 17):
+  //   1 undeclared, 2 declared and truncated, 0 declared and replayed.
   mut truncated := filled_table(MAX_GRAPHS, 1)
   mut slot_mask := filled_table(MAX_SLOTS, 0)
   mut truncated_graphs := 0
@@ -525,6 +558,7 @@ fn trace_load(
       return empty_trace_load("R3_SELECTION_UNPACKABLE".clone(), detail, bytes_read)
     }
     if document.graphs[graph_at].tokens_truncated {
+      truncated[graph_ordinal] = 2
       truncated_graphs = truncated_graphs + 1
     } else {
       truncated[graph_ordinal] = 0
@@ -551,7 +585,17 @@ fn trace_load(
     token := document.selections[at].token
     slot := document.selections[at].slot
     expert := document.selections[at].expert
-    if graph >= 0 && graph < MAX_GRAPHS && truncated[graph] == 0 {
+    // A graph ordinal that cannot ride the packed word, and a selection naming a graph the
+    // document never declared, both fail closed. Dropping them silently would let a demand stream
+    // shrink to the selections that happen to name a declared graph, which is the same silent
+    // shrink section 2.6's "a trace that fails admission fails the whole run" exists to prevent.
+    if graph < 0 || graph >= MAX_GRAPHS {
+      return empty_trace_load("R3_SELECTION_UNPACKABLE".clone(), detail, bytes_read)
+    }
+    if truncated[graph] == 1 {
+      return empty_trace_load("R3_SELECTION_UNPACKABLE".clone(), detail, bytes_read)
+    }
+    if truncated[graph] == 0 {
       if layer < 0 || layer >= n_layer || expert < 0 || expert >= n_expert {
         return empty_trace_load("R3_EXPERT_OUT_OF_RANGE".clone(), pair_detail(layer, expert),
           bytes_read)
@@ -723,7 +767,9 @@ fn replay(
               if issue >= picked { break }
               candidate := chosen[issue]
               size := sizes[candidate]
-              if resident_size[candidate] == 0 && size >= 0 && size <= budget {
+              // Residency is `resident_pos`, never `resident_size`: a size is a cost, not a
+              // membership bit (section 6, correction 16).
+              if resident_pos[candidate] < 0 && size > 0 && size <= budget {
                 loop {
                   if used + size <= budget { break }
                   if resident_count <= 0 { break }
@@ -762,7 +808,11 @@ fn replay(
                 resident_count = resident_count + 1
                 used = used + size
                 if resident_count > high_water { high_water = resident_count }
-                last_use[candidate] = -1
+                // A prefetched block enters as the most recently used, not as the next victim
+                // (section 6, correction 19). `ordinal` is the position of the demand this token
+                // boundary precedes, so the admission is exactly as recent as an ordinary demand
+                // at this position and no more.
+                last_use[candidate] = ordinal
                 prefetched[candidate] = 1
                 totals[2] = totals[2] + size
                 totals[3] = totals[3] + 1
@@ -785,7 +835,7 @@ fn replay(
         totals[1] = totals[1] + 1
         totals[2] = totals[2] + size
         layer_stats[layer * 2 + 1] = layer_stats[layer * 2 + 1] + 1
-      } else if resident_size[key] > 0 {
+      } else if resident_pos[key] >= 0 {
         totals[0] = totals[0] + 1
         layer_stats[layer * 2] = layer_stats[layer * 2] + 1
         if prefetched[key] != 0 {
@@ -921,12 +971,20 @@ fn build_budgets(total: i64, largest: i64, requested: i64) -> BudgetSweep {
 // ---------------------------------------------------------------------------------------------
 // Section 2.8. The verdict rule, applied at one budget over one order's results.
 //
-// `stable` states whether the jackknife has already qualified the lowest-byte qualifying candidate.
-// The `sweep_best` rows carry the effect floor and the headroom only, because section 2.7 bounds
-// the run at `jackknife_folds * 2` extra replays **at the requested budget alone**
-// (section 6, correction 4).
+// `stable` states whether the jackknife qualified a candidate, and `winner`/`winner_bytes` name the
+// candidate it qualified — which is not necessarily the lowest-byte one, because the lowest-byte
+// candidate may clear the effect floor on the pooled stream and still lose a fold
+// (section 6, correction 20). `winner` is `-1` for the `sweep_best` rows, which carry the effect
+// floor and the headroom only: section 2.7 bounds the run at `jackknife_folds * 2` extra replays
+// **at the requested budget alone** (section 6, correction 4).
 
-fn decide(borrow results: array<i64>, base: i64, stable: bool) -> Verdict {
+fn decide(
+  borrow results: array<i64>,
+  base: i64,
+  stable: bool,
+  winner: i64,
+  winner_bytes: i64,
+) -> Verdict {
   baseline := results[base + POLICY_LRU * RESULT_FIELDS + 2]
   optimal := results[base + POLICY_BELADY * RESULT_FIELDS + 2]
   headroom := if baseline > 0 { (baseline - optimal) * 1000 / baseline } else { 0 }
@@ -944,9 +1002,20 @@ fn decide(borrow results: array<i64>, base: i64, stable: bool) -> Verdict {
     }
     at = at + 1
   }
-  gain := if best >= 0 && baseline > 0 { (baseline - best_bytes) * 1000 / baseline } else { 0 }
   clears := best >= 0 && best_bytes * 1000 <= baseline * (1000 - MARGIN)
-  result := if clears && stable {
+  // The reported candidate is the qualifying one whenever the jackknife named one; otherwise it is
+  // the lowest-byte candidate strictly below the baseline, which is the `—` of a non-winning row.
+  qualified := stable && winner >= 0
+  chosen := if qualified { winner } else { best }
+  chosen_bytes := if qualified {
+    winner_bytes
+  } else if best >= 0 {
+    best_bytes
+  } else {
+    baseline
+  }
+  gain := if chosen >= 0 && baseline > 0 { (baseline - chosen_bytes) * 1000 / baseline } else { 0 }
+  result := if qualified || (clears && stable && winner < 0) {
     0
   } else if headroom < MARGIN {
     2
@@ -954,8 +1023,8 @@ fn decide(borrow results: array<i64>, base: i64, stable: bool) -> Verdict {
     1
   }
   return Verdict {
-    best: best,
-    best_bytes: if best >= 0 { best_bytes } else { baseline },
+    best: chosen,
+    best_bytes: chosen_bytes,
     gain: gain,
     headroom: headroom,
     result: result,
@@ -1531,9 +1600,17 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
       }
       start := written
       mut previous := -1
+      mut overflow := false
       mut scan := 0
       loop {
         if scan >= load.words.len() { break }
+        // `MAX_DEMANDS` is a bound on what is allocated, so it is tested before the element that
+        // would exceed it is appended, not after the whole document has been (section 6,
+        // correction 21).
+        if written >= MAX_DEMANDS {
+          overflow = true
+          break
+        }
         word := load.words[scan]
         ident := word >> (KEY_BITS + LAYER_SLOT_BITS)
         if ident != previous {
@@ -1544,6 +1621,11 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
         token_tok_b.push(token_ordinal - 1)
         written = written + 1
         scan = scan + 1
+      }
+      if overflow {
+        code = "R3_SELECTION_TOO_MANY".clone()
+        detail = int_text(at + 1)
+        break
       }
       doc_start_b.push(start)
       doc_end_b.push(written)
@@ -1559,11 +1641,6 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
         layer_key_b.push(load.observation_key[scan])
         layer_tok_b.push(layer_ordinal - 1)
         scan = scan + 1
-      }
-      if written > MAX_DEMANDS {
-        code = "R3_SELECTION_TOO_MANY".clone()
-        detail = int_text(at + 1)
-        break
       }
       at = at + 1
     }
@@ -1582,6 +1659,19 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
   // Step 10. An empty stream would report a hit rate of zero for every policy and a verdict of
   // NO_HEADROOM, which is a confident wrong answer.
   if code.len() == 0 && demand_count == 0 { code = "R3_EMPTY_STREAM".clone() }
+
+  // Every byte total in the document is an `i64` and Align's arithmetic wraps with no trap
+  // (rule 5), so the largest total any accumulation below could reach is bounded before the first
+  // byte is summed (section 6, correction 18). `demanded_byte_total` charges every demand at most
+  // `largest_expert_bytes`; a `topk_prefetch` replay may in addition admit `n_layer * 8` blocks at
+  // each of at most `demand_count` token boundaries, and that is the most expensive policy in the
+  // set. The bound is deliberately loose: it refuses a run whose totals *could* wrap rather than
+  // measuring which ones do.
+  if code.len() == 0 {
+    largest := meta[6]
+    bound := demand_count + demand_count * meta[0] * MAX_PREFETCH_DEGREE
+    if largest > 0 && bound > MAX_BYTE_TOTAL / largest { code = "R3_BYTE_TOTAL_OVERFLOW".clone() }
+  }
 
   // Stream accounting (section 2.5.4).
   if code.len() == 0 {
@@ -1708,7 +1798,7 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
     mut sweep_at := 0
     loop {
       if sweep_at >= budget_count { break }
-      row := decide(results, sweep_at * POLICY_COUNT * RESULT_FIELDS, true)
+      row := decide(results, sweep_at * POLICY_COUNT * RESULT_FIELDS, true, -1, 0)
       sweep_best[sweep_at * 5] = row.best
       sweep_best[sweep_at * 5 + 1] = row.best_bytes
       sweep_best[sweep_at * 5 + 2] = row.gain
@@ -1728,6 +1818,8 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
     baseline := results[base + POLICY_LRU * RESULT_FIELDS + 2]
     mut ranked := filled_table(POLICY_COUNT, 0)
     mut tested := false
+    mut winner := -1
+    mut winner_bytes := 0
     mut attempt := 0
     loop {
       if attempt >= POLICY_COUNT { break }
@@ -1776,12 +1868,14 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
         if all_clear {
           jackknife_stable = true
           jackknife_min = minimum
+          winner = best
+          winner_bytes = best_bytes
           break
         }
         attempt = attempt + 1
       }
     }
-    answer := decide(results, base, jackknife_stable)
+    answer := decide(results, base, jackknife_stable, winner, winner_bytes)
     verdict[0] = answer.best
     verdict[1] = answer.best_bytes
     verdict[2] = answer.gain

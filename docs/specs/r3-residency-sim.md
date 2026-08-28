@@ -74,8 +74,9 @@ Three properties are load-bearing and each is argued below rather than assumed:
    `scripts/gguf_fixture.py`'s existing olmoe builder, plus an independent Python policy oracle
    `scripts/residency_oracle.py` (section 4.1).
 7. The owner `scripts/run-residency-sim-smoke` and `make residency-sim-smoke`, and the opt-in
-   `scripts/run-residency-sim-qualification` and `make residency-sim-qualification`
-   (sections 4.2 and 4.3).
+   `scripts/run-residency-sim` and `make residency-sim-qualification` (sections 4.2 and 4.3).
+   The script is named `run-residency-sim`, not `run-residency-sim-qualification`; section 6
+   item 22 records the rename.
 
 ### 1.3 Non-goals
 
@@ -118,8 +119,11 @@ R3 discharges it, and the discharge is a numeric verdict rather than an assertio
    so that a reader can see whether the answer is a plateau or a cliff.
 2. **The baseline is `lru`, declared, not inferred.** `docs/specs/align-llm.md` section 7.4 opens
    with "LRUだけに依存しない", so LRU is the thing R3 must beat for the section to be justified.
-3. **The verdict rule is section 2.8**, stated before any measurement, on bytes fetched, with a
-   50-per-mille effect floor and a leave-one-document-out stability requirement.
+3. **The verdict rule is section 2.8**, fixed before the qualification — in the design commit that
+   also carries the section 4.5 probe — on bytes fetched, with a 50-per-mille effect floor and a
+   leave-one-document-out stability requirement. It was not fixed before *any* measurement: the
+   probe came first and the constants were chosen with it in view, which is why section 2.8 states
+   what the floor is and is not.
 4. **`NO_POLICY_BEATS_BASELINE` and `NO_HEADROOM` are answers, not failures.** The gate asks whether
    a better policy *can be identified*. "At this budget LRU is already within 5 per cent of the
    offline optimum" is a numerically identified answer that would correctly stop investment, and the
@@ -402,6 +406,14 @@ cannot distinguish "no candidate policy beat LRU because none is better" from "n
 beat LRU because nothing could". Those two produce opposite investment decisions, and section 2.8's
 `NO_HEADROOM` verdict exists to separate them.
 
+**`belady` is miss-optimal, not byte-optimal, and the document does not claim otherwise.** It evicts
+the resident key whose next use is furthest away without consulting the size table, which is optimal
+for *misses*. On a model whose experts differ in size — `uniform_expert_bytes: false`, the real case
+— the byte-minimizing offline policy is a different, size-aware schedule, and R3 does not compute
+it. So `belady`'s `bytes_fetched` is an **achievable byte total under a miss-optimal reference**,
+not the minimum achievable byte total, and section 2.8's `headroom_per_mille` inherits exactly that
+property. Section 2.8 records the one-directional consequence for `NO_HEADROOM`.
+
 **`recent_reuse` ships as three fixed windows rather than one tuned window** because the section 4.5
 probe showed the window is the dominant parameter — at 25 per cent of expert bytes the policy moves
 from exactly LRU's 488 per mille at `w=2` to 603 per mille at `w=32`. A single window would have
@@ -412,6 +424,18 @@ sub-episode, episode, and multi-episode scale expose the trend and commit to not
 also reports `prefetch_fetches` and `prefetch_useful` per policy — prefetched keys later hit before
 eviction — so a prefetch that never pays for itself is visible as a ratio and not merely as a worse
 total.
+
+**A prefetched block enters the cache as the most recently used**, at the recency of the demand its
+token boundary precedes. This is the insertion recency the plan originally left unstated, and it is
+a contract because the two available answers are not equivalent: an LRU-position insertion makes a
+prefetched block the *next victim*, so under a full cache it is evicted by the very token position
+it was fetched for and the policy degenerates into a pure traffic tax that can never hit. MRU
+insertion is the ordinary cache semantics — an admitted block has just been brought in — and it is
+the only one under which `prefetch_useful` measures the policy rather than the insertion rule. Both
+were evaluated; section 6 item 19 records the measured difference and the fact that it changed no
+verdict, and section 4.5 finding 4's harmful-prefetch claim is restated there as conditional on this
+choice. Ties among blocks admitted at the same boundary are broken by the lowest packed key, as
+everywhere else.
 
 ### 2.5 Exchanged document — `R3_RESIDENCY_SIM`, `schema_version: 1`
 
@@ -688,7 +712,11 @@ necessary.
 
 ### 2.8 The verdict rule
 
-Stated before any measurement, and versioned in the document as `rule_version: 1`.
+Fixed before the qualification — in the design commit that also carries the section 4.5 probe — and
+versioned in the document as `rule_version: 1`. It is **not** a rule stated before any measurement:
+the probe ran first, and the effect floor and the stability test were chosen knowing roughly what
+the candidates do on this corpus. What the rule buys is that it cannot be adjusted *after* the
+qualification to make a particular policy win, and that is the property the version number pins.
 
 **Metric.** `bytes_fetched` on the `token_major` order at the requested budget. Not hit rate:
 experts differ in size on the real model (section 2.5.3), and a prefetch policy moves bytes without
@@ -703,6 +731,13 @@ a demand miss, so only a byte metric charges every policy for everything it does
 `MARGIN` is 50 per mille — 5 per cent. The simulation is deterministic, so the margin is not a noise
 allowance for the replay; it is a *generalization* allowance for the corpus. A 1-per-cent byte
 difference on 40 prompts is not a reason to prefer one eviction rule over another in a runtime.
+
+**The floor is a filter against noise, not a demanding bar, and the document should not be read as
+if it were one.** On the real corpus at the requested budget an entirely untuned `lfu` — no window,
+no aging, no parameter chosen from this corpus — already clears it four times over at 221 per mille
+(33,532,231,680 B against 26,100,006,912 B). A `BEATS_BASELINE` verdict therefore says "this
+candidate is not within the corpus-generalization band of LRU"; it does not say "this candidate was
+hard to find".
 
 **Stability.** A win must survive leave-one-document-out resampling: the inequality above must hold
 on all `admitted_trace_count` streams formed by dropping one document. This is an integer comparison
@@ -728,6 +763,19 @@ headroom_per_mille = 1000 * (bytes_fetched(lru) - bytes_fetched(belady)) / bytes
 The `NO_HEADROOM` row is why `belady` is in the policy set. Without it, the two very different
 findings *"these candidates are wrong"* and *"nothing could do better"* would report the same value,
 and they imply opposite decisions about whether to build a score-based cache.
+
+**`headroom_per_mille` is measured against a miss-optimal reference, not a byte-optimal one.**
+`belady` minimizes misses (section 2.4), so on a model with unequal expert sizes the true
+byte-minimizing offline schedule can fetch *fewer* bytes than `belady` does, and this term can
+therefore understate the real headroom. The consequence is one-directional and worth stating
+plainly: `NO_HEADROOM` is **conservative in one direction only**. When it fires, "LRU is already
+within the effect floor of a miss-optimal reference" is what has been shown, and a size-aware
+offline schedule could still have byte headroom the document did not look for; when it does not
+fire, the headroom it reports is genuinely available. A reader deciding *not* to invest on the
+strength of a `NO_HEADROOM` row is relying on the weaker of the two directions. Computing the
+byte-optimal offline schedule is not deferred for effort — it is a different problem (offline
+caching with unequal costs, which is not solved by any furthest-next-use rule) — and it is recorded
+as such in section 5.8.
 
 `sweep_best` applies the same rule at each budget entry, so the gate is answered as a curve
 rather than as a point.
@@ -779,10 +827,23 @@ CLI arm and the document). Adding a member to that list changes aggregate member
 `scripts/pre-pr` selects executable preflight for the whole change.
 
 `make residency-sim-qualification` stays outside `HOSTED_CHECK_TARGETS`,
-`CAPABLE_ONLY_CHECK_TARGETS`, and every aggregate. It is opt-in through
-`ALIGN_LLM_GGUF_MODEL`, `ALIGN_LLM_LLAMA_EVAL_CALLBACK`, and `ALIGN_LLM_LOCALITY_PROMPTS`, prints one
-exact `N/A` line and exits 0 when any is absent, and follows `scripts/run-expert-locality-gate`'s
-rule that a qualification which silently passes when its subject is missing is worse than none.
+`CAPABLE_ONLY_CHECK_TARGETS`, and every aggregate. It follows
+`scripts/run-expert-locality-gate`'s rule that a qualification which silently passes when its
+subject is missing is worse than none, and it is opt-in through **exactly two** variables, which are
+the two that name the subject:
+
+| Variable | Owner | Default | Absent |
+| --- | --- | --- | --- |
+| `ALIGN_LLM_LLAMA_EVAL_CALLBACK` | `scripts/run-residency-sim` | **none** | one exact `N/A` line, exit 0 — unset, or set to something not executable |
+| `ALIGN_LLM_GGUF_MODEL` | `scripts/run-residency-sim` | **none** | one exact `N/A` line, exit 0 — unset, or naming a file that is not there |
+| `ALIGN_LLM_LOCALITY_PROMPTS` | `scripts/run-residency-sim` | `eval/prompts/expert-locality-v1.txt` | **exit 1.** A missing corpus is a broken checkout, not an absent subject, and it must not read as `N/A` |
+| `ALIGN_LLM_LOCALITY_PROMPT_COUNT` | `scripts/run-residency-sim` | `40` | n/a — exit 1 when the corpus holds fewer prompts than requested |
+| `ALIGN_LLM_RESIDENCY_BUDGET` | `scripts/run-residency-sim` | `total_expert_bytes >> 2`, the section 4.5 probe's 25-per-cent point | n/a |
+| `ALIGN_LLM_RESIDENCY_SIM_UPDATE_GOLDEN` | `scripts/run-residency-sim-smoke` | unset | `1` rewrites `eval/fixtures/residency-sim/sim-basic.golden.json` instead of comparing against it. A maintenance switch; never set in CI |
+
+The `N/A` rule is over the first two rows only. `ALIGN_LLM_LOCALITY_PROMPTS` has a checked-in
+default, so it is not an opt-in switch, and a run that cannot find the corpus it was pointed at
+fails rather than reporting an absent subject (section 6 item 23).
 
 ## 4. Verification
 
@@ -825,7 +886,7 @@ document is compared exactly; no tolerance is used anywhere, because every value
 
 ### 4.3 The qualification: `residency-sim-qualification`
 
-`scripts/run-residency-sim-qualification`, `make residency-sim-qualification`. Captures the 40
+`scripts/run-residency-sim`, `make residency-sim-qualification`. Captures the 40
 prefill transcripts of `eval/prompts/expert-locality-v1.txt` with the flags and safeguards
 `scripts/run-expert-locality-gate` established — `-fa off -ctk f32 -ctv f32 -nr -c 512`, a
 `ulimit -f` cap, a 600-second timeout, deletion of each transcript immediately after conversion, and
@@ -909,6 +970,18 @@ Six findings the design is built around:
    `k=8` issues 6,355 of which 0 are. It adds 2.2 to 24.2 GB of traffic for no measurable hit gain.
    The policy stays in the set because a documented negative is the finding, and because it is the
    only row that exercises the `prefetch_fetches` / `prefetch_useful` accounting.
+
+   **This probe ran with the LRU-position prefetch insertion the shipped code later replaced, and
+   half of the finding does not survive that change.** Section 2.4 now specifies MRU insertion and
+   section 6 item 19 records why. Re-measured on the same corpus with the shipped rule, at 25 per
+   cent `k=1` issues 219 prefetches of which 102 are later hit (465 per mille) and `k=8` issues
+   3,332 of which 1,590 are (477 per mille) — so "prefetch usefulness is 0–3 per mille" was a
+   property of the insertion rule and not of the workload, and it is superseded. What survives is
+   the part the verdict rests on: **every `topk_prefetch` cell still fetches more bytes than `lru`
+   at every budget in both orders**, 34.1 GB against 33.5 GB at 25 per cent for `k=1` and 43.2
+   against 33.5 for `k=8`. The finding is therefore restated as *top-k prefetch buys hits and pays
+   for them with more bytes than it saves*, which is the same investment answer reached for a
+   different reason, and section 7.4 carries the re-measured tables.
 5. **Optimal headroom stays large where the candidates win** — 574 per mille at 25 per cent, of
    which `recent_reuse_w32` captures 223. Roughly 60 per cent of the achievable advantage is left on
    the table by every online policy tested, which is direct evidence *for* section 5.1's score-based
@@ -1005,6 +1078,21 @@ consumes this document belongs to R5 and to `docs/specs/align-llm.md` section 6,
 consume the *curve* in `sweep_best` rather than the single `result`, because section 4.5 shows the
 answer changes three times across the sweep.
 
+### 5.8 A byte-optimal offline reference
+
+`belady` is miss-optimal. The offline schedule that minimizes *bytes* on a model with unequal expert
+sizes is a different object: weighted offline caching, where the furthest-next-use rule is not
+optimal and the natural formulations are not a single backwards pass over a next-use column. R3 does
+not compute it, so `headroom_per_mille` is measured against the miss-optimal reference and
+`NO_HEADROOM` is conservative in one direction only (section 2.8).
+
+Adding it is a real capability rather than a variant: it needs a second offline algorithm, a second
+optimality argument, an independent oracle for it, and a second headroom field so the two references
+stay distinguishable in the document. It is worth doing when a `NO_HEADROOM` row is about to stop
+investment on a model whose `uniform_expert_bytes` is `false`; it is not worth doing to add a number
+beside one that already answers the gate. Until then the document reports what it measured and says
+which direction the error runs.
+
 ## 6. Correction ledger
 
 The capability is now **implemented**. This section records every place where implementation and
@@ -1016,7 +1104,7 @@ names the superseded text. Cases without a runner prefix are cases inside
 | # | Superseded text | Shipped contract | Why | Case |
 | --- | --- | --- | --- | --- |
 | 1 | Section 2.5.4's "`graph_phases` carries R2A's three-valued `phase` forward unchanged" | The trace decode record declares `ordinal`, `n_tokens`, and `tokens_truncated`, and **recomputes** `phase` with `docs/specs/r2a-expert-trace.md` section 2.5.6's rule: `"prefill"` when `n_tokens > 1`, `"decode"` when `n_tokens == 1 && ordinal > 0`, `"single_token_first_graph"` when `n_tokens == 1 && ordinal == 0` | `Option<string>` cannot be read out of an array element at this pin — "reading a Move-type field `Option<string>` out of an array element is not supported yet" — and copying the whole element out is refused as well: "indexing an array of the Move type `TraceGraphRow` is not supported yet". `phase` is a total function of two fields R3 already decodes, so nothing is invented and no transcript is parsed. Section 7.5 item 2 | `sim-basic` (`graph_phases.prefill` 4), `sim-truncated` (1), `sim-multi-graph` (2), and the real run's `{"prefill": 40, "decode": 0, "single_token_first_graph": 0}` |
-| 2 | Section 2.2.1's `R3_TRACE_DISAGREEMENT` row and section 2.6 step 8's code | **Withdrawn.** Every admitted trace is compared against the Model IR's `model.n_expert` and `model.n_expert_used`, so two *admitted* traces cannot disagree; a trace that would disagree fails `R3_SHAPE_MISMATCH` first, whatever the list order. The shipped code set is 29 | A code no fixture can reach is not a contract, exactly as `docs/specs/r2a-expert-trace.md` correction 7 established for `n_expert_source: "router_weight"` | `shape-mismatch`, which mixes an `n_expert = 8` trace with the `n_expert = 2` Model IR |
+| 2 | Section 2.2.1's `R3_TRACE_DISAGREEMENT` row and section 2.6 step 8's code | **Withdrawn.** Every admitted trace is compared against the Model IR's `model.n_expert` and `model.n_expert_used`, so two *admitted* traces cannot disagree; a trace that would disagree fails `R3_SHAPE_MISMATCH` first, whatever the list order. The shipped code set is 31, after items 16 and 18 below added two | A code no fixture can reach is not a contract, exactly as `docs/specs/r2a-expert-trace.md` correction 7 established for `n_expert_source: "router_weight"` | `shape-mismatch`, which mixes an `n_expert = 8` trace with the `n_expert = 2` Model IR |
 | 3 | Section 2.6 steps 5 and 8, "no document is read before its path is guarded", read as a size check | The **path** is guarded before the read, as stated; the **byte cap** (`R3_IR_TOO_LARGE`, `R3_TRACE_TOO_LARGE`) is enforced on the materialized document, because neither `fs.size` nor any metadata-only stat exists at this pin — the same absence `src/alignpack.align:1717` already records | Enforcing a cap before the read requires a surface Align does not ship. The oracle enforces it the same way so the two agree. Section 7.3 records that no fixture reaches either code | not closed by a case; section 7.3 |
 | 4 | Section 2.8's "`sweep_best` applies the same rule at each budget entry" | `sweep_best` applies the **effect floor and the headroom rule** at each budget; the leave-one-document-out stability test runs at the **requested budget only** and is reported once, in `verdict.jackknife_*` | Section 2.7's cost bound is normative and explicit — "`180` replays plus `jackknife_folds * 2` more at the requested budget". Jackknifing all nine budgets would be 720 extra replays on the real corpus, four times the whole study, for a field the plan never gave a per-budget name | `sim-basic` (`jackknife_folds` 4 with eight `sweep_best` rows), `run-residency-sim` (40 folds, minimum gain 213 per mille) |
 | 5 | Section 2.5.1's "every value derived before the failure is present and truthful", read as applying to `stream` | On `status: "error"` the `stream` object is **empty** — zero counts, empty arrays, `pooling: "continuing"` — and `budgets` and `orders` are `[]`. `inputs` and `model` still carry everything settled before the failure | Section 2.6's own rule is that "a trace that fails admission fails the whole run"; a stream pooled from the prefix of the corpus describes a sub-corpus nobody named, which is exactly the silent shrink that rule exists to prevent | every `error_case`, which asserts `stream.demand_count == 0` and empty `budgets`/`orders` |
@@ -1030,6 +1118,20 @@ names the superseded text. Cases without a runner prefix are cases inside
 | 13 | Section 2.3's "exit `0` on `status: "ok"`, `Err(Error.Invalid)` on `status: "error"`" | Unchanged in the arm; the **process exit for `Err(Error.Invalid)` is 2**, not 1, which is what the runtime maps it to and what every other arm already produces | The plan named the Align value, not the process status. Recording the observed number keeps the cases honest | every `error_case` and every arity case |
 | 14 | Section 2.5.7's `best_policy` with no qualifying candidate | `best_policy` is the lowest-`bytes_fetched` candidate whenever that is strictly below the baseline, and `""` when no candidate is — the `—` of the section 4.5 table's 100-per-cent row. When the jackknife disqualifies the lowest-byte candidate and qualifies a later one, `best_policy` names the **qualifying** one, as section 2.8's `BEATS_BASELINE` row requires. Ties are broken by the section 2.4 row order | Section 2.5.7 gave the field no value for the two non-winning results, and section 4.5's own table needed one | `sim-no-headroom` (`best_policy: ""`, `result: "NO_HEADROOM"`); the real run's 100-per-cent sweep row |
 | 15 | Section 3.1's single `replay` owner for the admission path | The eviction-and-insert block is written **twice inside `replay`**, once on the demand path and once on the prefetch path | A shared `admit` helper has to take the eight per-key tables as `borrow mut` parameters, and at this pin passing a local `array<i64>` as `borrow mut` to a function called inside a `loop` invalidates the caller's own later reads of it. Section 7.5 item 1 | `policy-oracle`: every `topk_prefetch` cell agrees with the oracle, whose admission is one function |
+
+Items 16 to 23 are the review repairs. Each names the defect the review found, the shipped contract
+that replaces it, and the case that closes it.
+
+| # | Superseded text | Shipped contract | Why | Case |
+| --- | --- | --- | --- | --- |
+| 16 | Section 1.3's "A wrong `byte_size` in the Model IR is R1C's bug, not R3's to detect", read as licence to admit any integer | New code **`R3_EXPERT_BLOCK_SIZE`**, in step 6 after `R3_EXPERT_BLOCK_DUPLICATE`: an `ExpertBlock` whose `byte_size` is zero or negative is refused, `error_detail` the `(layer, expert)` pair. Residency is tested with `resident_pos[key] >= 0` throughout `replay`, never with `resident_size[key] > 0` | A zero-byte block is not a residency unit: it is admitted into every cache for free and can never be evicted for capacity, so under the old size-as-membership test it was never resident, missed on every demand, and was re-appended to `resident_list` on each one until the list overran its `key_space` and the process took `SIGABRT` ("index out of bounds: the len is 16 but the index is 16"). A negative `byte_size` collided with `sizes`' `-1` "no block declared" sentinel and was misreported as `R3_MISSING_EXPERT_BLOCK`. Both are refusals of the input, not of the simulator | `ir-expert-size-zero` (`0:0`), `ir-expert-size-negative` (`0:0`) |
+| 17 | Section 2.2.1's graph-exclusion rule, which named only `tokens_truncated` | The per-trace graph table carries three states — undeclared, declared and truncated, declared and replayed — and a selection naming a graph the document never declared, or one outside `[0, MAX_GRAPHS)`, fails **`R3_SELECTION_UNPACKABLE`** in step 9 with the list ordinal. Only a *declared* truncated graph is the silent, counted exclusion of section 2.2.1 | The old table conflated "excluded by the documented rule" with "never declared", so a selection naming an undeclared graph was dropped and counted by nothing: a 24-demand trace replayed 23 demands and reported `status: "ok"`. That is exactly the silent corpus shrink section 2.6's "a trace that fails admission fails the whole run" exists to prevent | `selection-undeclared-graph` (graph 7 in a one-graph document, detail `1`) |
+| 18 | Section 2.7's caps, which bounded counts and never the byte totals they multiply into; and section 2.6 step 3's `R3_BUDGET_MALFORMED`, read as "overflow past `i64`" | One ceiling, **`MAX_BYTE_TOTAL = I64_MAX / 1000 = 9,223,372,036,854,775`**, applied at three guards. Step 3 rejects a `BUDGET_BYTES` operand above it as `R3_BUDGET_MALFORMED`. Step 6 accumulates `total_expert_bytes` under a non-wrapping test (`total > MAX_BYTE_TOTAL - size`) and reports new code **`R3_BYTE_TOTAL_OVERFLOW`** with the pair at which it would wrap. After step 10 and *before* the stream accounting, the same code refuses a run whose `demand_count + demand_count * n_layer * 8` exceeds `MAX_BYTE_TOTAL / largest_expert_bytes` — the loosest bound covering `demanded_byte_total` and every policy's `bytes_fetched`, `topk_prefetch_k8`'s per-boundary admissions included | Align's integer arithmetic wraps with no trap (module rule 5). Sixteen experts of 2^60 bytes made `total_expert_bytes` report `0`, `demanded_byte_total` report `0`, and the whole document arrive as a confident, internally consistent, entirely wrong measurement at `status: "ok"`. The ceiling is `I64_MAX / 1000` rather than `I64_MAX` because **every ratio in the document is an integer per mille**, so each of these totals is multiplied by 1000 before it is divided: bounding the totals once is what makes `per_mille`, the effect-floor comparison `best_bytes * 1000 <= baseline * (1000 - MARGIN)`, and every gain, headroom, and fold term non-wrapping without a guard at each site. The bound is deliberately loose: it refuses a run whose totals *could* wrap rather than measuring which ones do, and it is four orders of magnitude above the real model's 3,900,702,720-byte footprint | `ir-byte-total-overflow` (16 experts of 2^50 bytes, refused on the ninth block), `stream-byte-total-overflow` (4 experts of 2^47, whose 60 demands carry `demanded_byte_total` past the ceiling the four blocks alone do not reach), `budget-above-byte-ceiling` (`MAX_BYTE_TOTAL + 1`, which parses as an `i64` and is still refused) |
+| 19 | Section 2.4's `topk_prefetch` rows, which specified what is admitted and not at what recency | A prefetched block enters as the **most recently used**, at the recency of the demand its token boundary precedes; ties among one boundary's admissions break by lowest packed key. Section 2.4 carries the contract | The shipped code inserted at `last_use = -1`, making every prefetched block the immediate next victim — under a full cache it was evicted by the very token position it was fetched for, so the policy could not hit by construction and `prefetch_useful` measured the insertion rule rather than the policy. Both insertions were evaluated. MRU insertion changes only the two `topk_prefetch_*` rows: on `sim-basic`'s requested budget, token-major `topk_prefetch_k1` moves from 6 to 7 hits of 96 demands with `prefetch_useful` 1 to 4, and `topk_prefetch_k8` from 4 to 3 hits with `prefetch_useful` 0 to 3 and 45 more prefetches issued (a prefetched block that survives its own boundary displaces one that would have been re-fetched). **No verdict, no sweep row, and no non-prefetch policy row changes**, in the fixture corpus or on the real 40-prompt corpus. Section 4.5 finding 4's "top-k prefetch is uniformly harmful" therefore stands, but as a claim **conditional on this insertion rule**, and section 7.4 records the re-measured numbers | `sim-prefetch-useless`, plus every `policy-oracle` cell — the oracle carries the identical rule |
+| 20 | Correction 14's "when the jackknife disqualifies the lowest-byte candidate and qualifies a later one, `best_policy` names the **qualifying** one" — stated, not implemented | `decide` takes the qualifying candidate and its bytes from the jackknife loop and reports them; `best_policy`, `best_bytes_fetched`, and `gain_per_mille` all belong to that one policy. With no qualifying candidate the fields keep correction 14's non-winning behaviour, and the `sweep_best` rows are unchanged because they run no jackknife | The shipped `decide` recomputed the lowest-byte candidate and reported it beside `jackknife_stable: true`, so a `BEATS_BASELINE` document could name a policy that had **failed a fold** and attribute another policy's stability to it. Measured on the case fixture: the old code reported `recent_reuse_w8` at a 108-per-mille gain with `jackknife_stable: true`, while the 57-per-mille fold minimum it printed belonged to `lfu`; the repaired code reports `lfu` at 76 per mille with the same minimum | `jackknife-second-candidate`, which asserts that `best_policy` is not the lowest-byte candidate, that the lowest-byte candidate does clear the pooled floor, and that `best_bytes_fetched` belongs to `best_policy` |
+| 21 | Section 2.6 step 9's `R3_SELECTION_TOO_MANY` | `MAX_DEMANDS` is tested **before** the element that would exceed it is appended, inside the per-document append loop, rather than after the whole document has been appended | A cap on what is allocated that is enforced after the allocation is a report, not a bound | not closed by a case; section 7.3, unchanged in reachability |
+| 22 | Sections 1.2 and 4.3's `scripts/run-residency-sim-qualification` | The script is `scripts/run-residency-sim`; the `make` target keeps the name `residency-sim-qualification` | The plan named a file that was never written under that name. The target and the script are allowed to differ; a document naming a path that does not exist is not | `make gate-topology-check`, and `make residency-sim-qualification`, which would not run at all under the other name |
+| 23 | Section 3.3's "opt-in through `ALIGN_LLM_GGUF_MODEL`, `ALIGN_LLM_LLAMA_EVAL_CALLBACK`, and `ALIGN_LLM_LOCALITY_PROMPTS` … `N/A` when any is absent" | The `N/A` rule is over the **two** variables that name the subject and have no default. `ALIGN_LLM_LOCALITY_PROMPTS`, `ALIGN_LLM_LOCALITY_PROMPT_COUNT`, and `ALIGN_LLM_RESIDENCY_BUDGET` have checked-in defaults and are overrides; a corpus that is named and missing is exit 1. Section 3.3's table lists all six variables including the smoke's `ALIGN_LLM_RESIDENCY_SIM_UPDATE_GOLDEN` | The script never behaved as section 3.3 described, and the difference matters in the direction that hides a failure: a broken checkout must not read as an absent subject | `make residency-sim-qualification` with no environment at all, which prints the `N/A` line for the instrument and exits 0 |
 
 **One finding, not a correction.** The jackknife gain of a fold can be negative when the candidate
 loses on that fold, and Align's `/` truncates toward zero while Python's `//` floors. The oracle
@@ -1048,7 +1150,7 @@ numerator, so this is the only place the two languages could have disagreed —
 | `scripts/residency_oracle.py` | the independent Python implementation of sections 2.2 through 2.8; renders the whole document, and is written from this plan and never from `src/` |
 | `scripts/run-residency-sim-smoke` | the narrow durable owner; `make residency-sim-smoke`, in `HOSTED_CHECK_TARGETS` |
 | `scripts/run-residency-sim` | the opt-in focused qualification; `make residency-sim-qualification`, in no aggregate |
-| `eval/fixtures/residency-sim/sim-basic.golden.json` | the checked-in golden: the whole `sim-basic` document with its two path operands normalized and the 1,440-entry per-layer breakdown pinned by SHA-256 |
+| `eval/fixtures/residency-sim/sim-basic.golden.json` | the checked-in golden: the whole `sim-basic` document with its **three** host-dependent values normalized — the two path operands and `inputs.bytes_read` — and the 1,440-entry per-layer breakdown pinned by SHA-256. `bytes_read` is normalized because an `R2_ACTIVATION_TRACE` records its own transcript `path`, so every trace document's length grows with the scratch directory's name: the same four-document corpus reports 38,335 B under a 107-character directory and 38,691 B under a 196-character one, and the golden must not pin a number that a longer `TMPDIR` changes. It is still compared against the oracle on every case, which is where that accounting is owned (section 6, correction 9 measured the same effect between the probe and the qualification) |
 | `eval/prompts/expert-locality-v1.txt` | the 40-prompt corpus the qualification captures, md5 `d7fff23f5a1d4f6237e6f848f3318d8b`, 877 B |
 | `Makefile`, `scripts/check-gate-topology` | the two targets and both pinned aggregate lists |
 
@@ -1066,16 +1168,25 @@ its fixture leaves `make expert-trace-smoke` red on the new `moe.token_reduced_l
 Every applicable cell of section 3.1 maps to a passing case in `scripts/run-residency-sim-smoke`
 except the rows of section 7.3.
 
+Section 4.1's planned case list is now fully shipped. Five of its rows reached the hosted owner only
+with the review repair, and three of those carry a different name than the plan gave them:
+`sim-cyclic`, `sim-uniform-bytes`, and `sim-prefetch-useless` keep theirs; the plan's
+`sim-jackknife-unstable` ships as **`jackknife-unstable`**, and section 3.1's `verdict-no-policy`
+cell ships as a case of that name. `jackknife-second-candidate` is new, has no row in section 4.1,
+and exists because correction 20 needed a case that separates the lowest-byte candidate from the
+qualifying one.
+
 | Section 3.1 cell | Case |
 | --- | --- |
 | Construction — trace list read, path guard, duplicate rejection | `list-empty`, `list-blank-line`, `list-blank-middle`, `list-duplicate`, `list-over-cap`, `list-path-too-long`, `list-unreadable` |
 | Construction — Model IR decode into the subset record | `sim-basic`: the four-field `IrBlockRow` decodes a real-shaped `R1_MODEL_IR` whose blocks carry `index`, `tensor_count`, `first_absolute_offset`, `end_absolute_offset`, `contiguous`, and a nested `tensors` array, none of which the record declares |
-| Formation/validation — steps 1–11, in order | one fixture per reachable code (25 of 29), plus `order-budget-before-list`, `order-list-before-ir`, `order-ir-before-budget-floor` |
+| Formation/validation — steps 1–11, in order | one fixture per reachable code (27 of 31; the four unreachable ones are section 7.3's), plus `order-budget-before-list`, `order-list-before-ir`, `order-ir-before-budget-floor`. The three added by the review repair are `ir-expert-size-zero` / `ir-expert-size-negative` (`R3_EXPERT_BLOCK_SIZE`), `ir-byte-total-overflow` / `stream-byte-total-overflow` (`R3_BYTE_TOTAL_OVERFLOW`, at both guards), and `selection-undeclared-graph` (`R3_SELECTION_UNPACKABLE` on a graph no document declared) |
 | Success — demand stream, both orders | `sim-basic`, `sim-multi-graph`, `sim-truncated`: `token_position_count`, `demand_count`, and both `orders[]` entries against the oracle, which sorts and pools independently |
 | Success — each of the ten policies | `sim-basic`, `sim-mixed-bytes`, `sim-single-trace`, `budget-*`: hits, misses, bytes, prefetch counts, and `resident_key_high_water` for every policy at every sweep budget in both orders, against the oracle, with no tolerance |
 | Success — budget sweep, clamp, requested-point merge | `budget-clamp` (eight entries, `clamped`), `budget-coincides` (eight entries), `budget-inserted` (nine, ascending) |
-| Success — verdict, all three results | `sim-no-headroom` (`NO_HEADROOM`); `run-residency-sim` on the real corpus produces `BEATS_BASELINE` at six sweep points, `NO_POLICY_BEATS_BASELINE` at two, and `NO_HEADROOM` at one, in one document |
-| Success — jackknife | `sim-basic` and `sim-mixed-bytes` compare `jackknife_folds`, `jackknife_min_gain_per_mille`, and `jackknife_stable` against the oracle's own fold loop; `budget-inserted` exercises a negative fold gain |
+| Success — verdict, all three results | `sim-no-headroom` (`NO_HEADROOM`), `verdict-no-policy` (`NO_POLICY_BEATS_BASELINE` with no candidate below the baseline at all and headroom at or above the floor), `jackknife-second-candidate` (`BEATS_BASELINE`); `run-residency-sim` on the real corpus produces all three in one document, at six, two, and one sweep points |
+| Success — jackknife | `sim-basic` and `sim-mixed-bytes` compare `jackknife_folds`, `jackknife_min_gain_per_mille`, and `jackknife_stable` against the oracle's own fold loop; `budget-inserted` exercises a negative fold gain; `jackknife-unstable` (five documents; a candidate clears the pooled floor, a fold takes it back, `jackknife_stable: false` and not `BEATS_BASELINE`); `jackknife-second-candidate` (the lowest-byte candidate fails a fold and a later, larger one passes, so `best_policy` is not the lowest-byte candidate — section 6, correction 20) |
+| Success — the LRU cliff and the prefetch accounting | `sim-cyclic` (a six-key cyclic stream: `lru` hits exactly zero at every sweep budget below `one_token_working_set_bytes` and hits above it, while `lfu` and `belady` clear the cliff at the widest budget under it), `sim-prefetch-useless` (both prefetch degrees issue fetches, none is ever hit before eviction, and both fetch strictly more than `lru`), `sim-uniform-bytes` (a uniform size table makes every non-prefetch policy's bytes exactly its misses times the block size, so the hit and byte orderings are one ordering) |
 | Failure — every code of section 2.6 | as above; `error_case` additionally asserts the partial document's `inputs` and `model` against the oracle |
 | Malformed input | `ir-decode`, `ir-schema-kind`, `ir-schema-version`, `ir-status`, `trace-decode`, `trace-schema`, `trace-status`, `trace-not-moe` |
 | Early exit — arity produces no output; the guard produces no read | four arity cases assert empty stdout and an untouched `OUT.json`; three path-guard cases assert empty stdout |
@@ -1093,7 +1204,8 @@ except the rows of section 7.3.
 | Cell | Status | Reason |
 | --- | --- | --- |
 | `R3_IR_TOO_LARGE`, `R3_TRACE_TOO_LARGE` | **not closed by a case** | `MAX_DOCUMENT_BYTES` is 32 MiB, so each needs a 32 MiB fixture written and read twice per case — not a hosted-smoke cost for a guard that is two comparisons. Both are implemented and ordered before the decode, and correction 3 records that they fire after the read because Align ships no `fs.size` |
-| `R3_SELECTION_TOO_MANY` | **not closed by a case** | `MAX_DEMANDS` is 262,144; the smallest trace document that reaches it is roughly 15 MB of JSON, and `src/expert_trace.align`'s own `MAX_SELECTIONS` binds first on any transcript this repository can produce |
+| `R3_SELECTION_TOO_MANY` | **not closed by a case** | `MAX_DEMANDS` is 262,144; the smallest trace document that reaches it is roughly 15 MB of JSON, and `src/expert_trace.align`'s own `MAX_SELECTIONS` binds first on any transcript this repository can produce. Correction 21 moved the test before the append it bounds; the reachability is unchanged |
+| a byte-optimal offline reference | **deferred** | Section 5.8. `headroom_per_mille` is measured against `belady`, which is miss-optimal, so `NO_HEADROOM` is conservative in one direction only (section 2.8). The document states the direction rather than claiming a bound it did not compute |
 | `R3_SIMULATION_COST` | **bounded by construction** | The guard fires at `demand_count * min(key_space, budget / smallest_expert_bytes) > 2^32`, and `MAX_DEMANDS * MAX_RESIDENCY_KEYS` is `2^18 * 2^14 = 2^32` exactly, so the two caps that *are* fixture-closed bind first everywhere except at both maxima simultaneously. The real corpus evaluates to `17280 * 275 = 4,752,000`, three orders of magnitude inside it |
 | `pooling: "reset"` | **deferred** | Section 5.5, unchanged |
 | `layer_major` bearing a verdict | **deferred** | Section 2.2.2 fixes it at `verdict_bearing: false`; the qualification prints the whole layer-major table beside the token-major one so the sensitivity is visible |
@@ -1105,20 +1217,28 @@ except the rows of section 7.3.
 Host and environment as `docs/align-development.md` records for this machine: GNU make as `gmake`,
 `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib`.
 
+Re-run in full after the review repair (section 6, items 16 to 23); every line below is that run.
+
 ```text
-gmake check                     PASS   check-per-unit over 31 units, 2 m 29 s
-                                       (src/residency_sim.align alone: 8.6 s of that, 32 functions)
-gmake build                     PASS
-gmake fmt                       PASS   no diff; idempotent on src/residency_sim.align
+gmake check                     PASS   check-per-unit over 31 units, 2 m 40 s
+gmake build                     PASS   four `huge struct copy` warnings from this module, all
+                                       `docs/align-requests.md` Request 23's, none new
+gmake fmt                       PASS   no diff, and idempotent: a second run leaves
+                                       src/residency_sim.align byte-identical
 gmake format-check              PASS
 gmake gate-topology-check       PASS   both pinned lists updated
-gmake residency-sim-smoke       PASS   2 synthetic Model IRs, 9 synthetic traces, 10 policies at
+gmake residency-sim-smoke       PASS   2 synthetic Model IRs, 19 synthetic traces, 10 policies at
                                        8 or 9 budgets in 2 orders against the oracle, both CLI
-                                       forms, the golden, determinism, 25 error codes, and CLI
-                                       arity/isolation; about 1.1 s; three runs byte-identical
+                                       forms, the golden, determinism, 27 error codes, and CLI
+                                       arity/isolation; three consecutive runs byte-identical, and a fourth run
+                                       under a 90-byte-longer TMPDIR still matches the checked-in
+                                       golden (section 7.1)
 gmake expert-trace-smoke        PASS   98 fixtures, 17 error codes, the real build-10566 excerpt
 gmake model-ir-smoke            PASS   49 qwen, 31 gpt-oss, 28 olmoe fixtures, 62 R0 fixtures
-gmake residency-sim-qualification  MEASURED   the real 40-prompt corpus; table below
+gmake gguf-smoke                PASS   unchanged
+gmake residency-sim-qualification  MEASURED   the real 40-prompt corpus, three times; the
+                                       documents are identical apart from the elapsed diagnostic;
+                                       tables below
 git diff --check                clean
 ```
 
@@ -1131,8 +1251,9 @@ and no timing claim.
 **The qualification reproduces section 4.5's probe table cell for cell.** Same host, same
 instrument (`version: 0.2.0 (build 10566, commit bb4caa754)`), same model
 (`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`), same corpus (md5 `d7fff23f5a1d4f6237e6f848f3318d8b`,
-877 B, 40 prompts), 51.9 s for 40 captures, every transcript deleted after conversion, model size
-and mtime unchanged. Stream: 40 admitted of 40 listed, 0 truncated graphs, 192 token positions,
+877 B, 40 prompts), 55.7 to 64.1 s for 40 captures across three post-repair runs whose documents are
+identical apart from that diagnostic, every transcript deleted after conversion, model size and
+mtime unchanged. Stream: 40 admitted of 40 listed, 0 truncated graphs, 192 token positions,
 17,280 demands, 938 distinct keys of 1,024, layers 0–14, slots `{0,1,2,5,6,7}` — 750 per mille
 coverage — one token position demanding 90 experts and 341,213,184 bytes.
 
@@ -1141,13 +1262,13 @@ fetched`:
 
 | Budget | % | `null` | `compulsory` | `belady` | `lru` | `lfu` | `recent_w2` | `recent_w8` | `recent_w32` | `topk_k1` | `topk_k8` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 30,474,240 | 0 | 0 / 65.5 | 945 / 3.6 | 69 / 61.0 | 0 / 65.5 | 25 / 63.8 | 1 / 65.4 | 12 / 64.7 | 24 / 63.9 | 0 / 76.1 | 0 / 150.4 |
-| 60,948,480 | 1 | 0 / 65.5 | 945 / 3.6 | 139 / 56.3 | 0 / 65.5 | 59 / 61.6 | 6 / 65.1 | 44 / 62.6 | 56 / 61.8 | 0 / 75.7 | 0 / 147.8 |
-| 121,896,960 | 3 | 0 / 65.5 | 945 / 3.6 | 260 / 48.5 | 0 / 65.5 | 121 / 57.6 | 33 / 63.3 | 112 / 58.2 | 125 / 57.3 | 0 / 74.8 | 0 / 143.1 |
-| 243,793,920 | 6 | 0 / 65.5 | 945 / 3.6 | 409 / 38.7 | 0 / 65.5 | 226 / 50.7 | 103 / 58.7 | 210 / 51.7 | 229 / 50.5 | 0 / 73.0 | 0 / 133.2 |
-| 487,587,840 | 12 | 0 / 65.5 | 945 / 3.6 | 580 / 27.6 | 247 / 49.3 | 376 / 40.8 | 247 / 49.2 | 335 / 43.5 | 360 / 41.9 | 247 / 54.2 | 246 / 100.3 |
-| 975,175,680 | 25 | 0 / 65.5 | 945 / 3.6 | 782 / 14.3 | 488 / 33.5 | 602 / 26.1 | 488 / 33.5 | 520 / 31.4 | 603 / 26.0 | 488 / 35.8 | 488 / 57.7 |
-| 1,950,351,360 | 50 | 0 / 65.5 | 945 / 3.6 | 904 / 6.2 | 812 / 12.3 | 812 / 12.2 | 812 / 12.3 | 812 / 12.3 | 807 / 12.6 | 812 / 13.3 | 812 / 20.7 |
+| 30,474,240 | 0 | 0 / 65.5 | 945 / 3.6 | 69 / 61.0 | 0 / 65.5 | 25 / 63.8 | 1 / 65.4 | 12 / 64.7 | 24 / 63.9 | 0 / 76.4 | 0 / 152.3 |
+| 60,948,480 | 1 | 0 / 65.5 | 945 / 3.6 | 139 / 56.3 | 0 / 65.5 | 59 / 61.6 | 6 / 65.1 | 44 / 62.6 | 56 / 61.8 | 3 / 76.1 | 0 / 152.3 |
+| 121,896,960 | 3 | 0 / 65.5 | 945 / 3.6 | 260 / 48.5 | 0 / 65.5 | 121 / 57.6 | 33 / 63.3 | 112 / 58.2 | 125 / 57.3 | 17 / 74.2 | 0 / 152.3 |
+| 243,793,920 | 6 | 0 / 65.5 | 945 / 3.6 | 409 / 38.7 | 0 / 65.5 | 226 / 50.7 | 103 / 58.7 | 210 / 51.7 | 229 / 50.5 | 34 / 71.0 | 0 / 152.3 |
+| 487,587,840 | 12 | 0 / 65.5 | 945 / 3.6 | 580 / 27.6 | 247 / 49.3 | 376 / 40.8 | 247 / 49.2 | 335 / 43.5 | 360 / 41.9 | 264 / 51.2 | 234 / 107.8 |
+| 975,175,680 | 25 | 0 / 65.5 | 945 / 3.6 | 782 / 14.3 | 488 / 33.5 | 602 / 26.1 | 488 / 33.5 | 520 / 31.4 | 603 / 26.0 | 492 / 34.1 | 533 / 43.2 |
+| 1,950,351,360 | 50 | 0 / 65.5 | 945 / 3.6 | 904 / 6.2 | 812 / 12.3 | 812 / 12.2 | 812 / 12.3 | 812 / 12.3 | 807 / 12.6 | 812 / 12.4 | 811 / 13.5 |
 | 3,900,702,720 | 100 | 0 / 65.5 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 |
 
 Layer-major, reported beside it as the prefill-regime sensitivity and bearing no verdict. It
@@ -1156,14 +1277,19 @@ token-major's 0 and 247, and 381 against 488 at 25 per cent:
 
 | Budget | % | `belady` | `lru` | `lfu` | `recent_w2` | `recent_w8` | `recent_w32` | `topk_k1` | `topk_k8` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 30,474,240 | 0 | 326 / 44.1 | 213 / 51.6 | 37 / 63.1 | 216 / 51.4 | 97 / 59.2 | 24 / 63.9 | 209 / 208.5 | 209 / 1317.0 |
-| 60,948,480 | 1 | 351 / 42.5 | 322 / 44.4 | 71 / 60.8 | 322 / 44.4 | 238 / 49.9 | 62 / 61.4 | 322 / 197.2 | 322 / 1279.4 |
-| 121,896,960 | 3 | 390 / 39.9 | 330 / 43.9 | 133 / 56.8 | 330 / 43.9 | 330 / 43.9 | 127 / 57.2 | 330 / 188.7 | 330 / 1221.4 |
-| 243,793,920 | 6 | 465 / 35.0 | 330 / 43.9 | 236 / 50.0 | 330 / 43.9 | 330 / 43.9 | 329 / 43.9 | 330 / 173.3 | 330 / 1107.6 |
-| 487,587,840 | 12 | 612 / 25.5 | 330 / 43.9 | 386 / 40.2 | 330 / 43.9 | 330 / 43.9 | 330 / 43.9 | 330 / 143.0 | 330 / 882.2 |
-| 975,175,680 | 25 | 788 / 13.9 | 381 / 40.5 | 605 / 25.9 | 381 / 40.5 | 381 / 40.5 | 381 / 40.5 | 383 / 80.8 | 381 / 439.1 |
-| 1,950,351,360 | 50 | 906 / 6.1 | 813 / 12.3 | 817 / 11.9 | 813 / 12.3 | 813 / 12.3 | 813 / 12.3 | 813 / 28.6 | 813 / 145.4 |
+| 30,474,240 | 0 | 326 / 44.1 | 213 / 51.6 | 37 / 63.1 | 216 / 51.4 | 97 / 59.2 | 24 / 63.9 | 27 / 224.2 | 20 / 1356.7 |
+| 60,948,480 | 1 | 351 / 42.5 | 322 / 44.4 | 71 / 60.8 | 322 / 44.4 | 238 / 49.9 | 62 / 61.4 | 54 / 219.7 | 46 / 1353.6 |
+| 121,896,960 | 3 | 390 / 39.9 | 330 / 43.9 | 133 / 56.8 | 330 / 43.9 | 330 / 43.9 | 127 / 57.2 | 351 / 75.7 | 102 / 1346.1 |
+| 243,793,920 | 6 | 465 / 35.0 | 330 / 43.9 | 236 / 50.0 | 330 / 43.9 | 330 / 43.9 | 329 / 43.9 | 355 / 53.5 | 201 / 1327.0 |
+| 487,587,840 | 12 | 612 / 25.5 | 330 / 43.9 | 386 / 40.2 | 330 / 43.9 | 330 / 43.9 | 330 / 43.9 | 356 / 46.7 | 516 / 252.4 |
+| 975,175,680 | 25 | 788 / 13.9 | 381 / 40.5 | 605 / 25.9 | 381 / 40.5 | 381 / 40.5 | 381 / 40.5 | 401 / 41.1 | 532 / 50.0 |
+| 1,950,351,360 | 50 | 906 / 6.1 | 813 / 12.3 | 817 / 11.9 | 813 / 12.3 | 813 / 12.3 | 813 / 12.3 | 813 / 12.4 | 813 / 13.5 |
 | 3,900,702,720 | 100 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 | 945 / 3.6 |
+
+**Only the two `topk_prefetch_*` columns of both tables moved against section 4.5's probe**, and
+they moved because section 2.4 now specifies MRU prefetch insertion (section 6, item 19). Every
+`null`, `compulsory`, `belady`, `lru`, `lfu`, and `recent_reuse_*` cell in both orders is identical
+to the probe's, as is every verdict, every `sweep_best` row, and the jackknife.
 
 The verdict at the requested budget, and `sweep_best`:
 
@@ -1188,20 +1314,28 @@ result           BEATS_BASELINE
 | 1,950,351,360 | 50 | 493 | `lfu` | 2 | `NO_POLICY_BEATS_BASELINE` |
 | 3,900,702,720 | 100 | 0 | — | 0 | `NO_HEADROOM` |
 
-Prefetch accounting at the requested budget: `topk_prefetch_k1` issues 600 prefetches of which 2 are
-later hit before eviction (3 per mille), and `topk_prefetch_k8` issues 6,355 of which 0 are — section
-4.5 finding 4, reproduced exactly.
+Prefetch accounting at the requested budget: `topk_prefetch_k1` issues 219 prefetches of which 102
+are later hit before eviction (465 per mille), and `topk_prefetch_k8` issues 3,332 of which 1,590 are
+(477 per mille). This is the one place the qualification does **not** reproduce section 4.5's probe,
+and the reason is the shipped MRU insertion rule rather than the corpus: under the probe's
+LRU-position insertion a prefetched block was the immediate next victim, so it could not be hit and
+the same corpus reported 600 fetches with 2 useful and 6,355 with 0. The *investment* answer is
+unchanged, because it is a byte answer: `topk_prefetch_k1` fetches 34.1 GB and `topk_prefetch_k8`
+43.2 GB against `lru`'s 33.5 GB at this budget, and no `topk_prefetch` cell is below `lru` at any
+budget in either order. Section 4.5 finding 4 is restated there accordingly.
 
 **The roadmap section R3 gate is discharged.** At the requested hardware condition a policy more
 effective than the baseline is identified numerically, with an effect floor and a stability test
 stated before the measurement, and the answer is a curve rather than a point.
 
-Two numbers differ from section 4.5's probe and both are explained rather than tolerated:
+Three things differ from section 4.5's probe and each is explained rather than tolerated.
 `inputs.bytes_read` is 2,673,069 here against the probe's 2,675,149, because the only host-dependent
 bytes in an `R2_ACTIVATION_TRACE` are its `path` field and the probe's scratch directory was 52 bytes
-longer per document; and `inputs.instrument_builds` is `[]` with `instrument_build_source: "absent"`
-in both, which is the ordinary case R2A finding 8 records. Every hit rate, byte total, verdict, and
-jackknife bound is identical.
+longer per document — the same effect that made the golden's `bytes_read` unpinnable (section 7.1).
+`inputs.instrument_builds` is `[]` with `instrument_build_source: "absent"` in both, which is the
+ordinary case R2A finding 8 records. And the two `topk_prefetch_*` columns differ, for the MRU
+insertion reason recorded above. **Every other hit rate, byte total, verdict, sweep row, and
+jackknife bound is identical to the probe's.**
 
 ### 7.5 Align limitations met while implementing
 

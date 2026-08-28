@@ -11,16 +11,21 @@ set -euo pipefail
 # `R1_MODEL_IR` once with `main --model-ir`, writes the trace list, and runs
 # `main --simulate-residency`.
 #
-#   ALIGN_LLM_GGUF_MODEL             path to a MoE model
-#   ALIGN_LLM_LLAMA_EVAL_CALLBACK    path to llama-eval-callback
-#   ALIGN_LLM_LOCALITY_PROMPTS       prompt corpus (default eval/prompts/expert-locality-v1.txt)
-#   ALIGN_LLM_LOCALITY_PROMPT_COUNT  prompts to use, from the top of the corpus (default 40)
+#   ALIGN_LLM_GGUF_MODEL             path to a MoE model.        NO DEFAULT - absent is N/A, exit 0
+#   ALIGN_LLM_LLAMA_EVAL_CALLBACK    path to llama-eval-callback. NO DEFAULT - absent is N/A, exit 0
+#   ALIGN_LLM_LOCALITY_PROMPTS       prompt corpus (default eval/prompts/expert-locality-v1.txt);
+#                                    named and missing is exit 1, never N/A
+#   ALIGN_LLM_LOCALITY_PROMPT_COUNT  prompts to use, from the top of the corpus (default 40);
+#                                    a corpus holding fewer is exit 1
 #   ALIGN_LLM_RESIDENCY_BUDGET       the BUDGET_BYTES operand; default 25 per cent of the model's
 #                                    expert byte footprint, which is the section 4.5 probe's point
 #
-# Opt-in, never in an aggregate, never in CI. No model variable has a default: a qualification that
-# silently passes when its subject is missing is worse than no qualification, so a missing input
-# prints one exact N/A line and exits 0 without claiming a measurement.
+# Opt-in, never in an aggregate, never in CI. The opt-in is over the two variables that name the
+# subject and nothing else: neither has a default, because a qualification that silently passes when
+# its subject is missing is worse than no qualification, so an absent instrument or model prints one
+# exact N/A line and exits 0 without claiming a measurement. The remaining three have defaults and
+# are overrides, not switches — a corpus this script was pointed at and cannot read is a broken
+# invocation and fails.
 #
 # The qualification is a measurement, not a pass/fail owner test. It exits 0 on every one of the
 # three `verdict.result` values — BEATS_BASELINE, NO_POLICY_BEATS_BASELINE, and NO_HEADROOM are all
@@ -219,7 +224,9 @@ by_key = {}
 for order in document["orders"]:
     for row in order["policies"]:
         by_key[(order["order"], row["budget_bytes"], row["policy"])] = row
-policies = [row["policy"] for row in document["orders"][0]["policies"][:10]]
+EXPECTED_POLICIES = ["null", "compulsory", "belady", "lru", "lfu", "recent_reuse_w2",
+                     "recent_reuse_w8", "recent_reuse_w32", "topk_prefetch_k1", "topk_prefetch_k8"]
+policies = EXPECTED_POLICIES
 budgets = [entry for entry in document["budgets"]]
 sweep = {entry["budget_bytes"]: entry for entry in verdict["sweep_best"]}
 
@@ -239,8 +246,21 @@ if [order["order"] for order in document["orders"]] != ["token_major", "layer_ma
     problems.append("both replay orders of section 2.2.2 are not reported")
 if [order["verdict_bearing"] for order in document["orders"]] != [True, False]:
     problems.append("the verdict-bearing order is not token_major")
-if len(policies) != 10:
-    problems.append("the policy set is not the ten rows of section 2.4")
+# The name *set* over every reported row, not the first ten of a ten-per-budget list: slicing ten
+# entries can only ever see the first budget's block, so it asserts nothing about the policy set the
+# document reports.
+for order in document["orders"]:
+    reported = [row["policy"] for row in order["policies"]]
+    if sorted(set(reported)) != sorted(EXPECTED_POLICIES):
+        problems.append("%s: the policy set is not the ten rows of section 2.4, it is %r"
+                        % (order["order"], sorted(set(reported))))
+    if len(reported) != len(EXPECTED_POLICIES) * len(budgets):
+        problems.append("%s: %d policy rows for %d budget(s) and %d policies"
+                        % (order["order"], len(reported), len(budgets), len(EXPECTED_POLICIES)))
+    for start in range(0, len(reported), len(EXPECTED_POLICIES)):
+        if reported[start:start + len(EXPECTED_POLICIES)] != EXPECTED_POLICIES:
+            problems.append("%s: the rows at %d are not in section 2.4 order"
+                            % (order["order"], start))
 if verdict["order"] != "token_major" or verdict["baseline_policy"] != "lru":
     problems.append("the verdict is not defined on token_major against the lru baseline")
 if verdict["rule_version"] != 1 or verdict["margin_per_mille"] != 50:

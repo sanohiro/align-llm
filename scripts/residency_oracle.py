@@ -28,6 +28,11 @@ MAX_TOKENS = 262144
 MAX_SLOTS = 128
 MAX_SIMULATION_STEPS = 1 << 32
 I64_MAX = (1 << 63) - 1
+# The largest prefetch degree section 2.4 ships, used by the byte-total overflow bound.
+MAX_PREFETCH_DEGREE = 8
+# The ceiling on every byte quantity and on the BUDGET_BYTES operand: `I64_MAX // 1000`, because
+# every ratio is an integer per mille and each total is multiplied by 1000 before it is divided.
+MAX_BYTE_TOTAL = I64_MAX // 1000
 
 POLICIES = (
     ("null", 0),
@@ -68,7 +73,7 @@ def parse_budget(text):
     if not text or any(c not in "0123456789" for c in text):
         raise Fault("R3_BUDGET_MALFORMED", "")
     value = int(text)
-    if value > I64_MAX:
+    if value > MAX_BYTE_TOTAL:
         raise Fault("R3_BUDGET_MALFORMED", "")
     return value
 
@@ -147,6 +152,7 @@ def decode_model_ir(path, state):
             or n_layer > MAX_RESIDENCY_KEYS // n_expert:
         raise Fault("R3_KEY_SPACE_TOO_LARGE", "")
     sizes = {}
+    total = 0
     for block in doc.get("blocks") or []:
         if block.get("kind") != "ExpertBlock":
             continue
@@ -155,7 +161,17 @@ def decode_model_ir(path, state):
             raise Fault("R3_EXPERT_BLOCK_RANGE", "%d:%d" % key)
         if key in sizes:
             raise Fault("R3_EXPERT_BLOCK_DUPLICATE", "%d:%d" % key)
-        sizes[key] = block["byte_size"]
+        size = block["byte_size"]
+        # A block of no bytes is not a residency unit, and a negative one is not a size at all.
+        # Both are refused here rather than misreported later as a missing block (section 6,
+        # correction 16). Align's arithmetic wraps with no trap, so the running total is guarded
+        # before every addition (correction 18); the oracle refuses at the same block.
+        if size <= 0:
+            raise Fault("R3_EXPERT_BLOCK_SIZE", "%d:%d" % key)
+        if total > MAX_BYTE_TOTAL - size:
+            raise Fault("R3_BYTE_TOTAL_OVERFLOW", "%d:%d" % key)
+        total += size
+        sizes[key] = size
     if not sizes:
         raise Fault("R3_IR_NOT_MOE", "")
     state["model_ir_schema_version"] = 2
@@ -205,6 +221,8 @@ def build_stream(paths, sizes, state):
         pair = (moe.get("n_expert"), moe.get("n_expert_used"))
         if pair != (n_expert, model["n_expert_used"]):
             raise Fault("R3_SHAPE_MISMATCH", detail)
+        # Three states, because "excluded by the documented truncation rule" and "named by a
+        # selection but never declared" are different answers (section 6, correction 17).
         truncated = {}
         for graph in doc.get("graphs") or []:
             if not (0 <= graph["ordinal"] < MAX_GRAPHS):
@@ -221,7 +239,11 @@ def build_stream(paths, sizes, state):
         for selection in doc.get("selections") or []:
             graph, layer, token = selection["graph"], selection["layer"], selection["token"]
             slot, expert = selection["slot"], selection["expert"]
-            if not (0 <= graph < MAX_GRAPHS) or truncated.get(graph, True):
+            # A graph ordinal that cannot ride the packed word, and a selection naming a graph the
+            # document never declared, both fail closed rather than shrinking the stream silently.
+            if not (0 <= graph < MAX_GRAPHS) or graph not in truncated:
+                raise Fault("R3_SELECTION_UNPACKABLE", detail)
+            if truncated[graph]:
                 continue
             if not (0 <= layer < n_layer) or not (0 <= expert < n_expert):
                 raise Fault("R3_EXPERT_OUT_OF_RANGE", "%d:%d" % (layer, expert))
@@ -231,6 +253,10 @@ def build_stream(paths, sizes, state):
                     or layer >= MAX_LAYERS:
                 raise Fault("R3_SELECTION_UNPACKABLE", detail)
             observed_slots.add(slot)
+            # `MAX_DEMANDS` bounds what is allocated, so it is tested before the element that would
+            # exceed it is appended (section 6, correction 21).
+            if len(token_major) + len(rows) >= MAX_DEMANDS:
+                raise Fault("R3_SELECTION_TOO_MANY", detail)
             rows.append(((graph, token, layer, slot), (layer, expert)))
             observation.append(((graph, token), (layer, expert)))
         run = doc.get("run") or {}
@@ -265,10 +291,19 @@ def build_stream(paths, sizes, state):
             layer_major.append(key)
             tok_lm.append(next_lm - 1)
         bounds_lm.append((start, len(layer_major)))
-        if len(token_major) > MAX_DEMANDS:
-            raise Fault("R3_SELECTION_TOO_MANY", detail)
     if not token_major:
         raise Fault("R3_EMPTY_STREAM", "")
+    # Every byte total is an `i64` in the Align owner and its arithmetic wraps with no trap, so the
+    # largest total any accumulation below could reach is bounded before the first byte is summed
+    # (section 6, correction 18). `demanded_byte_total` charges every demand at most
+    # `largest_expert_bytes`; a `topk_prefetch` replay may in addition admit `n_layer * 8` blocks at
+    # each of at most `demand_count` token boundaries. Deliberately loose: it refuses a run whose
+    # totals *could* wrap rather than measuring which ones do, and it fires before the accounting so
+    # the failed document reports an empty stream like every other failure.
+    bound = len(token_major) + len(token_major) * n_layer * MAX_PREFETCH_DEGREE
+    largest = model["largest_expert_bytes"]
+    if largest > 0 and bound > MAX_BYTE_TOTAL // largest:
+        raise Fault("R3_BYTE_TOTAL_OVERFLOW", "")
     distinct = set(token_major)
     positions = {(tok_tm[i], token_major[i][0]) for i in range(len(token_major))}
     first = [token_major[i] for i in range(len(token_major)) if tok_tm[i] == 0]
@@ -339,6 +374,11 @@ def replay(keys, toks, sizes, budget, policy, window, topk, n_layer, n_expert, d
     prefetched = set()
     per_layer = {}
     nxt = {}
+    # `belady` is miss-optimal, not byte-optimal: it evicts the resident key whose next use is
+    # furthest away without consulting the size table, so on a model with unequal expert sizes its
+    # `bytes_fetched` is an achievable byte total under a miss-optimal reference and not the
+    # minimum achievable byte total. Section 2.8's `headroom_per_mille` inherits that: it can
+    # understate the true byte headroom, so `NO_HEADROOM` is conservative in one direction only.
     if policy == "belady":
         seen = {}
         for position in reversed(range(len(live))):
@@ -397,7 +437,11 @@ def replay(keys, toks, sizes, budget, policy, window, topk, n_layer, n_expert, d
                         if candidate in resident or sizes[candidate] > budget:
                             continue
                         admit(candidate, sizes[candidate])
-                        last[candidate] = -1
+                        # A prefetched block enters as the most recently used, not as the next
+                        # victim (section 2.4, section 6 correction 19). `position` is the index of
+                        # the demand this token boundary precedes, so the admission is exactly as
+                        # recent as an ordinary demand here and no more.
+                        last[candidate] = position
                         fetched += sizes[candidate]
                         prefetches += 1
                         prefetched.add(candidate)

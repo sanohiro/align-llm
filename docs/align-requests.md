@@ -368,13 +368,13 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > recursive `Drop` frees the same string a second time; reproduced fresh in a minimal probe under the
 > pinned compiler, with a root cause traced to struct-literal field values never setting the move
 > checker's `consuming` flag. It is non-blocking — the shipped fix is one `.clone()`
-> (`src/residency_sim.align:578-590`) — with all of R3-RESIDENCY-SIM as independent work. Request 46
+> (`src/residency_sim.align:612-624`) — with all of R3-RESIDENCY-SIM as independent work. Request 46
 > is two related array-shape gaps, distinct from Request 36's whole-field-replacement restriction,
 > that together force every helper in the module to return owned columns instead of writing through
 > `borrow mut` out-parameters: a local `array<i64>` passed `borrow mut` to a call inside a `loop`
 > invalidates the caller's later reads of it (a record or `buffer` in the same position does not),
 > and an `array<i64>` field of a record cannot be element-assigned at all. It forces `replay`'s
-> eviction-and-insert admission block (`src/residency_sim.align:616-869`) to be written twice rather
+> eviction-and-insert admission block (`src/residency_sim.align:650-910`) to be written twice rather
 > than factored into one helper. It is non-blocking — the duplication is in place and checked against
 > an independent oracle — with all of R3-RESIDENCY-SIM as independent work. R3 also strengthens
 > Request 21 with a narrower client of the `fs.size`/stat absence specifically (R3 itself needs no
@@ -6473,8 +6473,8 @@ same read-only-media failure this request already names for R0's inspection and 
 scan, now on a third distinct input.
 
 **R3-RESIDENCY-SIM is a second, narrower client of the same `fs.size`/stat absence — but not a new
-client of the `fs.open_ro` gap this request asks for.** `src/residency_sim.align:362-363` and
-`:488-489` enforce the Model IR and trace document byte caps (`R3_IR_TOO_LARGE`,
+client of the `fs.open_ro` gap this request asks for.** `src/residency_sim.align:367-368` and
+`:508-509` enforce the Model IR and trace document byte caps (`R3_IR_TOO_LARGE`,
 `R3_TRACE_TOO_LARGE`) on the materialized document after `fs.read_file` returns, rather than before
 the read, because neither `fs.size` nor any metadata-only stat exists at this pin —
 `docs/specs/r3-residency-sim.md` section 6 correction 3 records the same absence
@@ -6855,19 +6855,19 @@ correct in the same file and is quoted here only so it is not mistaken for evide
 `model_ir$Prepared`, 568 bytes) are genuine owned returns.
 
 **Sixth client, from the active R3-RESIDENCY-SIM capability.** `residency_sim$Derived` (440 bytes,
-`src/residency_sim.align:1089`) is a fifth wide read-only record read through a `borrow` parameter.
+`src/residency_sim.align:1148`) is a sixth wide read-only record read through a `borrow` parameter.
 `gmake check` at the pinned toolchain (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`, `alignc 0.5.0`)
 emits, verbatim, all four `huge struct copy` warnings the module produces:
 
 ```text
-src/residency_sim.align:455:71: warning: huge struct copy: returning `TraceLoad` (184 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
-src/residency_sim.align:481:6: warning: huge struct copy: returning `TraceLoad` (184 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
-src/residency_sim.align:1134:30: warning: huge struct copy: `Derived` (440 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
-src/residency_sim.align:1318:68: warning: huge struct copy: returning `ResidencySim` (200 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+src/residency_sim.align:475:71: warning: huge struct copy: returning `residency_sim$TraceLoad` (184 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+src/residency_sim.align:501:6: warning: huge struct copy: returning `residency_sim$TraceLoad` (184 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+src/residency_sim.align:1193:30: warning: huge struct copy: `residency_sim$Derived` (440 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+src/residency_sim.align:1377:68: warning: huge struct copy: returning `residency_sim$ResidencySim` (200 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
 ```
 
-Only the third line, `:1134:30`, is this request's defect: `render_document(borrow d: Derived) ->
-string` (`:1134`) takes `d` by `borrow` and never copies it. The other three lines are the lint
+Only the third line, `:1193:30`, is this request's defect: `render_document(borrow d: Derived) ->
+string` (`:1193`) takes `d` by `borrow` and never copies it. The other three lines are the lint
 working exactly as designed on genuine by-value returns — `empty_trace_load` (`:455`) and
 `trace_load` (`:481`) both return an owned `TraceLoad` by value, and `simulate` (`:1318`) returns an
 owned `ResidencySim` by value — and are quoted, as in the `expert_trace.align` evidence above, only
@@ -7209,9 +7209,9 @@ operand of `--simulate-residency`, needs the same conversion for a reason specif
 operand: a `json.decode` detour would accept `-0`, `1e3`, and leading whitespace, none of which a
 byte budget admits, and `src/expert_trace.align:328`'s existing `parse_uint` is not reusable either
 — it trims `%12.4f`-padded whitespace and tolerates a leading `+`, a contract this operand does not
-want. `src/residency_sim.align:250-264` (`fn parse_budget`, 15 lines) is therefore a second private
+want. `src/residency_sim.align:255-270` (`fn parse_budget`, 16 lines) is therefore a second private
 parser, with its own explicit non-wrapping overflow guard (`if total > (I64_MAX - digit) / 10 {
-return -1 }`, `:259`) rather than a delegation to either existing workaround — the same pattern this
+return -1 }`, `:265`) rather than a delegation to either existing workaround — the same pattern this
 request's own text already established for `src/expert_trace.align`'s private parser: every call
 site that needs an integer out of text and cannot tolerate the JSON detour's grammar writes its own.
 It is non-blocking — the private parser is in place — with all of R3-RESIDENCY-SIM as independent
@@ -8957,7 +8957,7 @@ Resume condition: an Align release either rejects the move at check time with a 
   correctly transfer ownership of the moved-out field so the source record's recursive `Drop` no
   longer frees it a second time.
 Align commit or pull request: none
-align-llm verification: remove the `.clone()` at `src/residency_sim.align:578-590` (move
+align-llm verification: remove the `.clone()` at `src/residency_sim.align:612-624` (move
   `document.run.build_source` directly into `TraceLoad.build_source`) and pass
   `make residency-sim-smoke` without the process aborting.
 ```
@@ -8975,7 +8975,7 @@ aborts the process at `free` with 'pointer being freed was not allocated' when t
 all, so the failure looks like a hang at whatever the last flushed byte was. The fix is one
 `.clone()` through a `str` view. A partial move out of a record is either supported or rejected;
 being accepted by the checker and unsound at run time is the part worth recording."
-`src/residency_sim.align:578-590` carries the shipped workaround: `source_view: str :=
+`src/residency_sim.align:612-624` carries the shipped workaround: `source_view: str :=
 document.run.build_source` followed by `build_source: source_view.clone()`, with the comment "The
 decoded document owns `run.build_source`; moving the field out of it would leave the record's drop
 to free a string this result also owns, so the view is cloned."
@@ -9073,6 +9073,16 @@ type), and fixing this defect would not admit Request 36's shape either. Request
 unrelated: no `raw`/`buffer` Result payload, `array_builder` struct field, or cross-module
 out-parameter is involved in this probe.
 
+**Exact locations, verified in the sibling checkout at the pinned commit
+`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`.** The depth-≥2 field-read handling that this defect
+lives in is `crates/align_sema/src/lib.rs:38650-38670`: it blocks a deep read of a moved root, and
+it emits "moving an owned field out through a nested path is not supported yet — clone it" when
+`consuming && self.is_move_ty(e.ty)` — the branch a struct-literal field initializer never reaches,
+because a struct literal's field values are not checked in a consuming context. The neighbouring
+diagnostic at `crates/align_sema/src/lib.rs:38644-38648` — "moving a nested struct field out of a
+struct is not supported yet — clone it, or move the whole struct" — is Request 36's, and is the
+control this request must leave unchanged.
+
 ### Requested capability
 
 Make the move checker's `consuming` flag (or an equivalent ownership-transfer signal) reach a
@@ -9092,7 +9102,7 @@ align-llm; the defect is the silent, unrecorded acceptance, not a preference bet
    allocator-instrumented build) and the source struct's own `Drop` does not re-free the moved field.
 2. A negative/positive control pins the existing depth-1 behavior (`n := u.name`) and the existing
    depth-≥2 whole-nested-struct rejection (Request 36) unchanged.
-3. `align-llm` verification: the `.clone()` at `src/residency_sim.align:578-590` is removed in favor
+3. `align-llm` verification: the `.clone()` at `src/residency_sim.align:612-624` is removed in favor
    of the direct move, and `make residency-sim-smoke` passes with the process exiting `0` on every
    case (no `SIGTRAP`/`SIGABRT`).
 
@@ -9113,8 +9123,8 @@ Resume condition: an Align release admits a `borrow mut array<T>` local passed t
   `loop` without invalidating the caller's later reads, and/or admits element assignment through an
   `array<T>` field of a record (`s.field[i] = v`).
 Align commit or pull request: none
-align-llm verification: `src/residency_sim.align`'s `replay` function (`:616-869`) collapses its two
-  copies of the eviction-and-insert block (`:726-769` and `:806-858`) into one shared `admit` helper
+align-llm verification: `src/residency_sim.align`'s `replay` function (`:650-910`) collapses its two
+  copies of the eviction-and-insert block (`:762-809` and `:846-898`) into one shared `admit` helper
   taking the per-key tables as `borrow mut array<i64>` parameters, called from both call sites inside
   the demand loop; pass `make residency-sim-smoke` with the `policy-oracle` case unchanged in
   outcome.
@@ -9122,9 +9132,9 @@ align-llm verification: `src/residency_sim.align`'s `replay` function (`:616-869
 
 ### Motivation and current sibling evidence
 
-R3-RESIDENCY-SIM's per-policy cache simulator (`replay`, `src/residency_sim.align:616-869`) needs a
+R3-RESIDENCY-SIM's per-policy cache simulator (`replay`, `src/residency_sim.align:650-910`) needs a
 shared "evict-then-insert" admission step called from two places inside one `loop`-driven demand
-walk — once on the ordinary demand path (`:806-858`), once on the `topk` prefetch path (`:726-769`).
+walk — once on the ordinary demand path (`:846-898`), once on the `topk` prefetch path (`:762-809`).
 Factoring it into one helper needs either a `borrow mut array<i64>` parameter per per-key table
 (eight tables: `resident_size`, `resident_pos`, `resident_list`, `last_use`, `freq`, `recent_count`,
 `next_of`, `prefetched`) called from inside the loop, or an element-assignable `array<i64>` field on
@@ -9171,6 +9181,10 @@ probe_a.align:26:10: error: use of invalidated borrow 'a': its source 'a' was mo
                             source
 ```
 
+**The transcript above is abridged**: `alignc` prints each diagnostic on one line, and the two
+messages are hard-wrapped here for width. The text, the file positions, and the diagnostic count are
+verbatim; the line breaks and the continuation indentation are not.
+
 fires on the loop guard's own next read (`a[i]`, line 23), on the call argument (line 23), and on the
 read after the loop (`a[0]`, line 26). The identical `touch(a, 0)` call once, outside any loop,
 checks clean ("ok: checked 3 function(s)"). `src/alignpack_read.align:335`'s `Counters` (`borrow mut`
@@ -9213,11 +9227,15 @@ $ alignc check probe_b.align
 probe_b.align:17:3: error: invalid assignment target
 ```
 
-Verified in the sibling checkout: `check_place` (`crates/align_sema/src/lib.rs:41368`, doc comment
-"Resolve an assignable place: a `mut` local, or `mut_local.field`") recognizes exactly two
-assignment-target shapes — `local[index] = v` (an `Index` whose receiver resolves directly to a bare
-local via `self.place_local(recv)`, `:41369-41371`) and `local.f0.f1.… = v` (a `FieldAccess` chain
-rooted at a local, `:41599-41613`) — with no case composing the two (`local.field[index] = v`). When
+Verified in the sibling checkout: `check_place` (`crates/align_sema/src/lib.rs:41376-41377`, doc
+comment "Resolve an assignable place: a `mut` local, or `mut_local.field`") recognizes exactly two
+assignment-target shapes rooted at a bare local — `local[index] = v` (an `Index` whose receiver
+resolves directly to a local via `self.place_local(recv)`, `:41379-41383`) and `local.f0.f1.… = v`
+(a `FieldAccess` chain rooted at a local, `:41600-41613`) — with no case composing the two
+(`local.field[index] = v`). The one composed shape it does admit is the mirror of this request and
+not this request: `local[index].f0.f1.… = v`, the leaf-field store into a struct-array or SoA
+**element** (`peel_index_field_chain`, `:41519-41597`), which requires the spine to bottom at an
+`Index` of a local and returns `None` for a pure field path. When
 the `Index` arm's receiver is itself a `FieldAccess` (`s.table`), `self.place_local(recv)` returns
 `None` and the resolver falls straight to `self.diags.error("invalid assignment target", place.span)`
 at `:41381`, regardless of whether `s` is a plain local or a `borrow mut` parameter.
@@ -9233,11 +9251,11 @@ array the field already holds, and the assignment-target resolver rejects it (`:
 field-replacement rule is ever consulted. Fixing Request 36 would not admit this shape, and fixing
 this request would not need Request 36's owned-field-replacement admission either.
 
-**Consequence for the client.** `src/residency_sim.align`'s `replay` function (`:616-869`) cannot
+**Consequence for the client.** `src/residency_sim.align`'s `replay` function (`:650-910`) cannot
 factor its eviction-and-insert step into a helper taking the eight per-key tables as
 `borrow mut array<i64>` parameters (gap 1) or as `borrow mut` fields of one bundling record (gap 2).
 The admission block is written out twice inside `replay` instead — once for the `topk` prefetch path
-(`:726-769`) and once for the ordinary demand path (`:806-858`) — recorded as correction 15 in
+(`:762-809`) and once for the ordinary demand path (`:846-898`) — recorded as correction 15 in
 `docs/specs/r3-residency-sim.md` section 6 and closed by the `policy-oracle` case, which checks every
 `topk_prefetch` cell against an independent oracle whose own admission is one function. Every other
 helper in the module (`ReplayResult`, `BudgetSweep`, `IrLoad`, `TraceLoad`, `Verdict`) returns owned

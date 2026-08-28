@@ -148,6 +148,35 @@ def moe(seed, n_layer, n_tokens, shape, ordinal=0):
     return fixture.moe_graph(n_layer, n_tokens, fixture.Router(seed, n_expert, used), ordinal)
 
 
+class ScriptedRouter:
+    """A router whose selection at `(graph, layer, token)` is a table lookup rather than a seeded
+    draw, so a case can engineer the exact demand stream a contract row needs — the cyclic-reference
+    stream of section 4.5 finding 1, for instance. It presents `fixture.Router`'s interface."""
+
+    def __init__(self, n_expert, n_expert_used, choose):
+        self.n_expert = n_expert
+        self.n_expert_used = n_expert_used
+        self.choose = choose
+
+    def experts(self, graph, layer, token):
+        chosen = list(self.choose(graph, layer, token))
+        if len(chosen) != self.n_expert_used or len(set(chosen)) != len(chosen):
+            raise AssertionError("a scripted router must name %d distinct experts, got %r"
+                                 % (self.n_expert_used, chosen))
+        return chosen
+
+
+def scripted(n_layer, n_tokens, shape, choose, ordinal=0):
+    _, n_expert, used = shape
+    return fixture.moe_graph(n_layer, n_tokens, ScriptedRouter(n_expert, used, choose), ordinal)
+
+
+def by_policy(document, order, budget):
+    """The policy rows of one (order, budget) cell, keyed by policy name."""
+    entries = document["orders"][0 if order == "token_major" else 1]["policies"]
+    return {entry["policy"]: entry for entry in entries if entry["budget_bytes"] == budget}
+
+
 def trace_list(name, documents):
     path = work_dir / ("%s.txt" % name)
     path.write_text("".join("%s\n" % document for document in documents), encoding="utf-8")
@@ -155,11 +184,17 @@ def trace_list(name, documents):
 
 
 def normalized(document):
-    """The golden form: the two path operands are the only host-dependent values in the document,
-    and the 1,440-entry per-layer breakdown is pinned by digest rather than checked in whole."""
+    """The golden form. Three values are host-dependent and none of them is a contract: the two path
+    operands, and `inputs.bytes_read` — an `R2_ACTIVATION_TRACE` records its own transcript `path`,
+    so every trace document's length grows with the scratch directory's name (section 6,
+    correction 9 measured exactly this between the probe and the qualification). The 1,440-entry
+    per-layer breakdown is pinned by digest rather than checked in whole. Every other integer,
+    `bytes_read` included, is still compared against the oracle on every case, which is where that
+    accounting is actually owned."""
     copy = json.loads(json.dumps(document))
     copy["trace_list_path"] = "TRACE_LIST"
     copy["model_ir_path"] = "MODEL_IR"
+    copy["inputs"]["bytes_read"] = "PATH_DEPENDENT"
     for order in copy["orders"]:
         payload = json.dumps(order["per_layer"], separators=(",", ":")).encode("utf-8")
         order["per_layer"] = {"entry_count": len(order["per_layer"]),
@@ -231,8 +266,21 @@ document = check_case("sim-basic", basic_list, uniform_ir, basic_budget, asserts
     "verdict/margin_per_mille": 50,
     "verdict/jackknife_folds": 4,
 })
-if [entry["policy"] for entry in document["orders"][0]["policies"][:10]] != oracle.POLICY_NAMES:
-    fail("sim-basic: the policy set is not the ten rows of section 2.4")
+for order in document["orders"]:
+    names = [entry["policy"] for entry in order["policies"]]
+    # The name *set* over the whole order, not the first ten rows: slicing ten entries off a list
+    # of ten-per-budget rows can only ever see the first budget's block, so it asserts nothing about
+    # the policy set the document actually reports.
+    if sorted(set(names)) != sorted(oracle.POLICY_NAMES):
+        fail("sim-basic/%s: the policy set is not the ten rows of section 2.4, it is %r"
+             % (order["order"], sorted(set(names))))
+    if len(names) != len(oracle.POLICY_NAMES) * len(document["budgets"]):
+        fail("sim-basic/%s: %d policy rows for %d budget(s) and %d policies"
+             % (order["order"], len(names), len(document["budgets"]), len(oracle.POLICY_NAMES)))
+    for start in range(0, len(names), len(oracle.POLICY_NAMES)):
+        if names[start:start + len(oracle.POLICY_NAMES)] != oracle.POLICY_NAMES:
+            fail("sim-basic/%s: the rows at %d are not in section 2.4 order"
+                 % (order["order"], start))
 if document["stream"]["slot_coverage_per_mille"] != 1000:
     fail("sim-basic: a synthetic transcript prints every slot, so coverage must be 1000 per mille")
 
@@ -288,6 +336,156 @@ check_case("sim-no-headroom", basic_list, uniform_ir, uniform_expert_total, asse
     "verdict/result": "NO_HEADROOM",
     "verdict/best_policy": "",
 })
+
+# ---- sim-uniform-bytes: a uniform size table makes hit and byte orderings the same ordering --
+uniform_block = expert_bytes(uniform_doc)[0]
+uniform_case = check_case("sim-uniform-bytes", basic_list, uniform_ir, uniform_expert_total >> 3,
+                          asserts={"model/uniform_expert_bytes": True,
+                                   "model/smallest_expert_bytes": uniform_block,
+                                   "model/largest_expert_bytes": uniform_block})
+for order in ("token_major", "layer_major"):
+    for entry in uniform_case["budgets"]:
+        row = by_policy(uniform_case, order, entry["bytes"])
+        # Every expert costs the same, so a non-prefetch policy's bytes are exactly its misses times
+        # the block size, and more hits is the same statement as fewer bytes. A prefetch policy is
+        # excluded because it fetches bytes without a demand miss, which is section 2.8's whole
+        # reason for measuring bytes rather than hits.
+        plain = [name for name in oracle.POLICY_NAMES if not name.startswith("topk")]
+        for name in plain:
+            if row[name]["bytes_fetched"] != row[name]["misses"] * uniform_block:
+                fail("sim-uniform-bytes: %s/%s bytes are not misses times the block size"
+                     % (order, name))
+        for left in plain:
+            for right in plain:
+                same = ((row[left]["hits"] > row[right]["hits"])
+                        != (row[left]["bytes_fetched"] < row[right]["bytes_fetched"]))
+                if same:
+                    fail("sim-uniform-bytes: %s/%s and %s disagree on hit and byte order at %d"
+                         % (order, left, right, entry["bytes"]))
+
+# ---- sim-cyclic: the LRU cliff at the one-token working set ---------------------------------
+# Every token demands six keys — layer 0's experts 0, 1, 2 every time, and three of layer 1's five
+# on a rotation — which is the cyclic-reference pathology of section 4.5 finding 1: a token touches
+# every layer before returning to layer 0, so LRU evicts each expert exactly before it is needed
+# again. Below the one-token working set LRU cannot hit at all; frequency, which sees that layer 0's
+# three experts are demanded twice as often as layer 1's five, can.
+def cyclic_experts(_graph, layer, token):
+    if layer == 0:
+        return (0, 1, 2)
+    return tuple((token + i) % 5 + 3 for i in range(3))
+
+
+cyclic = [make_trace("cyclic", [scripted(2, 6, UNIFORM, cyclic_experts)])]
+cyclic_list = trace_list("sim-cyclic", cyclic)
+cyclic_case = check_case("sim-cyclic", cyclic_list, uniform_ir, uniform_block * 6, asserts={
+    "stream/one_token_working_set_keys": 6,
+    "stream/one_token_working_set_bytes": uniform_block * 6,
+    "stream/distinct_key_count": 8,
+})
+working_set = cyclic_case["stream"]["one_token_working_set_bytes"]
+below = [e["bytes"] for e in cyclic_case["budgets"] if e["bytes"] < working_set]
+at_or_above = [e["bytes"] for e in cyclic_case["budgets"] if e["bytes"] >= working_set]
+if not below or not at_or_above:
+    fail("sim-cyclic: the sweep does not straddle the one-token working set")
+for budget in below:
+    row = by_policy(cyclic_case, "token_major", budget)
+    if row["lru"]["hits"] != 0:
+        fail("sim-cyclic: lru hit %d time(s) at %d, below the one-token working set %d"
+             % (row["lru"]["hits"], budget, working_set))
+    if row["topk_prefetch_k8"]["bytes_fetched"] <= row["lru"]["bytes_fetched"]:
+        fail("sim-cyclic: topk_prefetch_k8 must be charged for its own traffic at %d" % budget)
+# The cliff is one-sided only for LRU: at the widest budget still under the working set, frequency
+# and the offline optimum both clear it. At one or two blocks nothing can hit a six-key cycle, so
+# the claim is made where it is a claim.
+edge = by_policy(cyclic_case, "token_major", max(below))
+if edge["lfu"]["hits"] <= 0 or edge["belady"]["hits"] <= edge["lfu"]["hits"]:
+    fail("sim-cyclic: lfu must clear the LRU cliff at %d and belady must beat it" % max(below))
+if by_policy(cyclic_case, "token_major", min(at_or_above))["lru"]["hits"] <= 0:
+    fail("sim-cyclic: lru must hit once the budget reaches the one-token working set")
+
+# ---- sim-prefetch-useless: a prefetch that never pays for itself ----------------------------
+# The same cyclic stream at the smallest legal budget. Every prefetched block is evicted by the
+# demands of the token position it precedes, so no prefetch is ever hit, and both degrees fetch
+# strictly more than the baseline. Section 2.4's "topk_prefetch charges its own traffic" and the
+# `prefetch_fetches` / `prefetch_useful` accounting are what this row exercises.
+useless = check_case("sim-prefetch-useless", cyclic_list, uniform_ir, uniform_block)
+for budget in [entry["bytes"] for entry in useless["budgets"]
+               if entry["bytes"] == uniform_block]:
+    row = by_policy(useless, "token_major", budget)
+    for policy in ("topk_prefetch_k1", "topk_prefetch_k8"):
+        if row[policy]["prefetch_fetches"] <= 0:
+            fail("sim-prefetch-useless: %s issued no prefetch at %d" % (policy, budget))
+        if row[policy]["prefetch_useful"] != 0:
+            fail("sim-prefetch-useless: %s reported %d useful prefetch(es) at %d"
+                 % (policy, row[policy]["prefetch_useful"], budget))
+        if row[policy]["bytes_fetched"] <= row["lru"]["bytes_fetched"]:
+            fail("sim-prefetch-useless: %s must fetch more than lru at %d" % (policy, budget))
+
+# ---- verdict-no-policy: headroom is left, and no candidate takes it -------------------------
+# Three documents whose frequency structure leaves every candidate at or above the baseline's byte
+# total while `belady` keeps a large headroom: the gate's "a better policy may exist and none of
+# these is it".
+unstable = [make_trace("jk-%d" % i, [moe(1 + i, 2, 4, UNIFORM)]) for i in range(5)]
+no_policy_case = check_case("verdict-no-policy",
+                            trace_list("verdict-no-policy", unstable[:3]),
+                            uniform_ir, uniform_expert_total >> 1, asserts={
+                                "verdict/result": "NO_POLICY_BEATS_BASELINE",
+                                "verdict/best_policy": "",
+                                "verdict/gain_per_mille": 0,
+                                "verdict/jackknife_stable": False,
+                                "verdict/jackknife_folds": 3,
+                            })
+if no_policy_case["verdict"]["headroom_per_mille"] < 50:
+    fail("verdict-no-policy: NO_POLICY_BEATS_BASELINE requires headroom at or above the floor")
+
+# ---- jackknife-unstable: a candidate clears the floor and one fold takes it back -------------
+unstable_case = check_case("jackknife-unstable", trace_list("jackknife-unstable", unstable),
+                           uniform_ir, uniform_expert_total >> 1, asserts={
+                               "verdict/jackknife_stable": False,
+                               "verdict/jackknife_folds": 5,
+                           })
+if unstable_case["verdict"]["result"] == "BEATS_BASELINE":
+    fail("jackknife-unstable: an unstable win must not be reported as BEATS_BASELINE")
+if unstable_case["verdict"]["jackknife_min_gain_per_mille"] >= 50:
+    fail("jackknife-unstable: the fixture no longer has a fold below the effect floor")
+unstable_row = by_policy(unstable_case, "token_major",
+                         unstable_case["verdict"]["budget_bytes"])
+cleared = [name for name in oracle.CANDIDATES
+           if 1000 * unstable_row[name]["bytes_fetched"]
+           <= (1000 - 50) * unstable_case["verdict"]["baseline_bytes_fetched"]]
+if not cleared:
+    fail("jackknife-unstable: no candidate clears the pooled effect floor, so the jackknife "
+         "never runs and the case asserts nothing")
+
+# ---- jackknife-second-candidate: the qualifying policy is not the lowest-byte one ------------
+# The lowest-byte candidate clears the pooled effect floor and then loses a fold; a later, larger
+# candidate clears every fold. `best_policy` must name the qualifying one, which is what section
+# 2.8's BEATS_BASELINE row requires and what a lowest-byte-only answer gets wrong.
+second = [make_trace("jk2-%d" % i, [moe(44 + i, 2, 4, UNIFORM)]) for i in range(4)]
+second_case = check_case("jackknife-second-candidate",
+                         trace_list("jackknife-second-candidate", second),
+                         uniform_ir, uniform_expert_total >> 2, asserts={
+                             "verdict/result": "BEATS_BASELINE",
+                             "verdict/jackknife_stable": True,
+                             "verdict/jackknife_folds": 4,
+                         })
+second_row = by_policy(second_case, "token_major", second_case["verdict"]["budget_bytes"])
+second_baseline = second_case["verdict"]["baseline_bytes_fetched"]
+lowest_name = min((name for name in oracle.CANDIDATES),
+                  key=lambda name: (second_row[name]["bytes_fetched"],
+                                    oracle.POLICY_NAMES.index(name)))
+if second_case["verdict"]["best_policy"] == lowest_name:
+    fail("jackknife-second-candidate: the fixture no longer separates the lowest-byte candidate "
+         "from the qualifying one")
+if 1000 * second_row[lowest_name]["bytes_fetched"] > (1000 - 50) * second_baseline:
+    fail("jackknife-second-candidate: the lowest-byte candidate must clear the pooled effect floor")
+if (second_row[second_case["verdict"]["best_policy"]]["bytes_fetched"]
+        <= second_row[lowest_name]["bytes_fetched"]):
+    fail("jackknife-second-candidate: the qualifying policy must fetch more than the lowest-byte "
+         "one, or the case proves nothing")
+if second_case["verdict"]["best_bytes_fetched"] != \
+        second_row[second_case["verdict"]["best_policy"]]["bytes_fetched"]:
+    fail("jackknife-second-candidate: best_bytes_fetched does not belong to best_policy")
 
 # ---- budget-clamp: the low sweep points cannot hold the largest expert ----------------------
 clamped = check_case("budget-clamp", basic_list, uniform_ir, uniform_largest)
@@ -376,6 +574,10 @@ error_case("budget-malformed", basic_list, uniform_ir, "12x", "R3_BUDGET_MALFORM
 error_case("budget-negative", basic_list, uniform_ir, "-1", "R3_BUDGET_MALFORMED")
 error_case("budget-empty", basic_list, uniform_ir, "", "R3_BUDGET_MALFORMED")
 error_case("budget-overflow", basic_list, uniform_ir, "9" * 20, "R3_BUDGET_MALFORMED")
+# A budget above `MAX_BYTE_TOTAL` parses as an `i64` and still cannot be reported: the document
+# expresses it as a per-mille ratio of the expert footprint, and that multiplication would wrap.
+error_case("budget-above-byte-ceiling", basic_list, uniform_ir,
+           str(((1 << 63) - 1) // 1000 + 1), "R3_BUDGET_MALFORMED")
 error_case("list-unreadable", missing_list, uniform_ir, basic_budget, "R3_TRACE_LIST_UNREADABLE")
 
 empty_list = work_dir / "empty.txt"
@@ -443,6 +645,47 @@ def range_block(payload):
 
 error_case("ir-expert-range", basic_list, edited_ir("ir-range", range_block), basic_budget,
            "R3_EXPERT_BLOCK_RANGE", detail="0:99")
+
+
+def sized_block(size):
+    def mutate(payload):
+        for block in payload["blocks"]:
+            if block["kind"] == "ExpertBlock" and block["layer"] == 0 and block["expert"] == 0:
+                block["byte_size"] = size
+    return mutate
+
+
+def every_block(size):
+    def mutate(payload):
+        for block in payload["blocks"]:
+            if block["kind"] == "ExpertBlock":
+                block["byte_size"] = size
+    return mutate
+
+
+# A block of no bytes would be admitted into every cache for free and could never be evicted for
+# capacity; a negative one is not a size at all and used to be misreported as a missing block.
+error_case("ir-expert-size-zero", basic_list, edited_ir("ir-size-zero", sized_block(0)),
+           basic_budget, "R3_EXPERT_BLOCK_SIZE", detail="0:0")
+error_case("ir-expert-size-negative", basic_list, edited_ir("ir-size-neg", sized_block(-4096)),
+           basic_budget, "R3_EXPERT_BLOCK_SIZE", detail="0:0")
+# Sixteen experts of 2^50 bytes carry `total_expert_bytes` past MAX_BYTE_TOTAL on the ninth block;
+# four experts of 2^47 do not, but sixty demands against them carry `demanded_byte_total` past it.
+# Both are refused with a code rather than wrapping into a plausible-looking total. Both budgets are
+# themselves legal operands, so step 3 does not fire first.
+error_case("ir-byte-total-overflow", basic_list,
+           edited_ir("ir-huge", every_block(1 << 50)), str(1 << 50), "R3_BYTE_TOTAL_OVERFLOW")
+
+
+def edited_mixed_ir(name, mutate):
+    payload = json.loads(mixed_ir.read_text())
+    mutate(payload)
+    return write_json(name, payload)
+
+
+error_case("stream-byte-total-overflow", trace_list("stream-huge", mixed_traces),
+           edited_mixed_ir("mixed-huge", every_block(1 << 47)), str(1 << 47),
+           "R3_BYTE_TOTAL_OVERFLOW")
 error_case("budget-too-small", basic_list, uniform_ir, uniform_largest - 1, "R3_BUDGET_TOO_SMALL")
 
 absent_trace = work_dir / "absent-trace.txt"
@@ -479,6 +722,17 @@ def unpackable(payload):
 
 error_case("selection-unpackable", trace_list("unpackable", [
     edited_trace("t-unpackable", unpackable)]), uniform_ir, basic_budget,
+    "R3_SELECTION_UNPACKABLE", detail="1")
+
+
+def undeclared_graph(payload):
+    payload["selections"][0]["graph"] = 7
+
+
+# A selection naming a graph the document never declared is not a documented exclusion, so it fails
+# closed rather than shrinking the stream by one demand that nothing counts.
+error_case("selection-undeclared-graph", trace_list("undeclared", [
+    edited_trace("t-undeclared", undeclared_graph)]), uniform_ir, basic_budget,
     "R3_SELECTION_UNPACKABLE", detail="1")
 
 

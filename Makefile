@@ -147,10 +147,15 @@ residency-sim-smoke: build
 	./scripts/run-residency-sim-smoke
 
 # The section 4.3 focused qualification, and the run that discharges the R3 roadmap gate on the real
-# corpus. It is opt-in through ALIGN_LLM_GGUF_MODEL, ALIGN_LLM_LLAMA_EVAL_CALLBACK, and
-# ALIGN_LLM_LOCALITY_PROMPTS, prints an explicit N/A line and exits 0 when any is absent, deletes
-# every captured transcript immediately after conversion, and deliberately stays outside
-# HOSTED_CHECK_TARGETS, CAPABLE_ONLY_CHECK_TARGETS, and every aggregate.
+# corpus. It is opt-in through exactly two variables, ALIGN_LLM_LLAMA_EVAL_CALLBACK and
+# ALIGN_LLM_GGUF_MODEL: either one unset or naming something absent prints an explicit N/A line and
+# exits 0. ALIGN_LLM_LOCALITY_PROMPTS (default eval/prompts/expert-locality-v1.txt),
+# ALIGN_LLM_LOCALITY_PROMPT_COUNT (default 40), and ALIGN_LLM_RESIDENCY_BUDGET (default 25% of the
+# model's expert byte footprint) all have defaults and are overrides rather than switches; a corpus
+# that is named and missing is exit 1, not N/A. The run deletes every captured transcript
+# immediately after conversion and deliberately stays outside HOSTED_CHECK_TARGETS,
+# CAPABLE_ONLY_CHECK_TARGETS, and every aggregate. Section 3.3 of docs/specs/r3-residency-sim.md
+# carries the same table.
 residency-sim-qualification: build
 	./scripts/run-residency-sim
 
