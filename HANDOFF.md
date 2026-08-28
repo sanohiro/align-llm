@@ -77,10 +77,19 @@ gmake ggml-spike-qualification PASS (olmoe) - dense + three expert claims + the 
 **Measurement.** The layout numbers are a claim about this container on this named model, not a
 platform or throughput claim; neither qualification asserts an elapsed bound.
 
-**Next actions, in order.** (1) Re-record the baseline commit chain, since the `Makefile` changed.
-(2) `python3 scripts/pre-pr --owner-test moe-prereq -- make ggml-spike-smoke alignpack-smoke
-gate-topology-check` under the installed profile, then publish and merge. (3) Rebase
-`agent/r3-residency-sim` onto the merged result and continue it.
+**Baseline chain, re-recorded.** The `Makefile` change invalidates the chain that shipped with R5C,
+so the identity-bound chain is re-recorded on this branch as
+`157278c` -> `2dace6c` -> `b2267c7` (clean source -> immutable oracle -> finalization), measured on
+Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) and checked there with `make baseline-check`
+ending `baseline chain: PASS`. Two of the twenty recorded artifacts changed against the R5C chain:
+`Makefile`, and `src/main.align` — the latter from the merged R1C, which changed no `Makefile` and
+so required no re-record of its own. The other eighteen hashes are unchanged and the twenty paths
+are identical. The pull request must merge with a merge commit; squash and rebase merges would make
+these commits unreachable.
+
+**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test moe-prereq -- make
+ggml-spike-smoke alignpack-smoke gate-topology-check` under the installed profile, then publish and
+merge. (2) Rebase `agent/r3-residency-sim` onto the merged result and continue it.
 
 ## Design and implementation in progress elsewhere
 
