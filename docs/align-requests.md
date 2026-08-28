@@ -73,9 +73,9 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-28): Requests 1–20 are CLOSED, Requests 21–43 are PROPOSED and non-blocking, and
-> Request 44 is ALIGN_LLM_VERIFIED pending publication closure. C8-OPTIONAL-TARGETED-STAGE is the
-> active stable candidate; its schema/owner matrix and paired acceptance pass at the adopted pin.
+> **Status (2026-08-28): Requests 1–20 and 44 are CLOSED, and Requests 21–43 are PROPOSED and
+> non-blocking. C8-OPTIONAL-TARGETED-STAGE merged as PR #134; its schema/owner matrix and paired
+> acceptance passed at the adopted pin. R3-RESIDENCY-SIM is the active consumer capability.
 > R5C-METAL-PREFILL-ARM merged as align-llm PR #129, and following the user's
 > decision to download `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, Track B started two consumers on
 > that model: R2-LOCALITY-GATE merged as align-llm PR #131 (`fff5806` -> `546b5cc`) with the R2
@@ -8804,14 +8804,14 @@ reassigned, once that call crosses a module boundary.
 ## Request 44 — compiler: array-to-slice view retype through a borrowed sum projection
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
-Blocking: yes
-Blocked gate or slice: C8-OPTIONAL-TARGETED-STAGE verification task/result schema 2
-Independent work that may continue: every Track B capability and align-coder work unrelated to the optional verification stage
-Resume condition: align-llm adopts an Align revision containing merge 3a34febe912db5096c58c74fede36ff53f223e04 and the complete optional-target owner passes at the managed pin
+Blocking: no
+Blocked gate or slice: none — closed by the merged consumer
+Independent work that may continue: all work; the shipped surface is available at the selected pin
+Resume condition: none — closed
 Align commit or pull request: Align PR #892, merged as 3a34febe912db5096c58c74fede36ff53f223e04
-align-llm verification: `.align-revision` selects 3a34febe912db5096c58c74fede36ff53f223e04; the managed compiler verifies at that identity; whole/per-unit compilation and the schema-v2 Some/absent/null, validation, cleanup, repair, and failure-memory owner pass; the 101-pair fixed-task comparison improves 60,515,456 ns to 40,475,113 ns (331,160 ppm) while projecting only schema 1→2 and the passing targeted-stage removal
+align-llm verification: `.align-revision` selects 3a34febe912db5096c58c74fede36ff53f223e04; the managed compiler verifies at that identity; whole/per-unit compilation and the schema-v2 Some/absent/null, validation, cleanup, repair, and failure-memory owner pass; the 101-pair fixed-task comparison improves 60,515,456 ns to 40,475,113 ns (331,160 ppm) while projecting only schema 1→2 and the passing targeted-stage removal; align-llm PR #134 merged as 4f01553f1ea18b815376d5cd7c082d4406a042ec after exact-head preflight and all required hosted checks passed on integrated head d63a3da918f0738f3cc1fc5e1eed2ea1f1609d0c
 ```
 
 ### Reconciliation and shipped response
@@ -8844,11 +8844,11 @@ replacement, allocation, or cleanup. The merged Align owner covers scalar and Ao
 a mismatched-element malformed-MIR rejection before pointer construction.
 
 Replaying the align-llm prototype in a temporary worktree with a sibling compiler containing
-`3a34febe` makes both `make check` and `make build` pass. The remaining client work is intentionally
-not inferred from that compiler proof: `.align-revision` adoption, exact schema-v2 Some/absent/null
-task vectors, Some/None/Invalid result vectors, validation and cleanup owners, failure-memory
-admission, user documentation, and the paired performance comparison all belong to the active
-consumer capability in `docs/specs/c8-optional-targeted-stage.md`.
+`3a34febe` made both `make check` and `make build` pass. The client then adopted the exact revision,
+shipped schema-v2 Some/absent/null task vectors, Some/None/Invalid result vectors, validation and
+cleanup owners, failure-memory admission, user documentation, and the paired performance
+comparison in `docs/specs/c8-optional-targeted-stage.md`. PR #134 merged that complete consumer as
+`4f01553f1ea18b815376d5cd7c082d4406a042ec`, closing the request.
 
 ### Acceptance criteria
 

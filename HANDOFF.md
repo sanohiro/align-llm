@@ -3,55 +3,42 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: GCC14-FP-CONTRACT-PORTABILITY (2026-08-28)
+## Active: R3-RESIDENCY-SIM (2026-08-28)
 
-Branch `fix/gcc14-fp-contract` repairs a pre-existing hosted-check failure discovered by the R3
-publication preflight. GCC 14.2 diagnoses `#pragma STDC FP_CONTRACT OFF` as unknown, while the shim
-builder compiles with `-Werror`; Clang accepts it. The source pragma is therefore Clang-only, while
-the cross-compiler `-ffp-contract=off` flag and behavioural probe remain mandatory. R3 stays intact
-on `agent/r3-residency-sim` at `2fe1b38` until this prerequisite merges.
+Branch `agent/r3-residency-sim` starts at current `main` `4f01553`, the merge of PR #134.
+`docs/specs/r3-residency-sim.md` is the authoritative public-contract ledger and closure matrix.
+The stale handoff referred to an unavailable commit `198850b`; no local worktree, remote branch,
+pull request, or GitHub commit contains it, so the ledger was reconstructed from the merged R1C and
+R2A producer contracts instead of assuming missing work.
 
-**Next actions.** Run the ggml owner with GCC and Clang, complete executable preflight and review,
-merge the portability repair, then rebase R3 onto refreshed `main` and resume its publication.
+**Current checkpoint.** The design gate is complete. R3 consumes exact R2 `selections[]`, graph
+phases, and truncation provenance, joined to R1 schema-2 `ExpertBlock.byte_size` rows. It compares
+seven deterministic policies under one explicit caller-supplied hardware cost model. The hosted
+owner is synthetic correctness evidence and makes no hardware-speed claim; the roadmap gate remains
+open until the opt-in real-model qualification uses measured costs and identifies a strict non-LRU
+winner. This host does not currently have the OLMoE model or R2 instrument inputs needed for that
+focused qualification.
 
-## Active: C8-OPTIONAL-TARGETED-STAGE (2026-08-28)
+**Next actions, in order.** (1) Commit this reconstructed design checkpoint. (2) Implement the task
+adapter, Align simulator/CLI, independent-oracle smoke owner, and opt-in qualification. (3) Run the
+narrow owners, one comprehensive review, repair accepted findings, exact-head preflight, publish,
+and merge. (4) Refresh `main` and continue the next eligible roadmap capability.
 
-Branch `agent/c8-optional-targeted-stage` has merged current `main` `35a0df6`
-(MOE-PREREQ-DISCHARGE, PR #133). `docs/specs/c8-optional-targeted-stage.md` is the authoritative
-public-contract ledger and closure matrix. The user explicitly prioritized this one bounded C8
-re-entry before returning to Track B.
+## Merged checkpoint: GCC14-FP-CONTRACT-PORTABILITY (2026-08-28)
 
-**Why it reopened.** The fresh `e15e3d3` fixed-task baseline measured the targeted process at
-14,311,285 ns of a 43,886,999 ns parent median, a 326,093 ppm (32.61%) removable ceiling versus
-C8's 2,000 ppm floor; parent binary SHA-256 is `10ff55c084f35ee079f19c4b85fdc835abac0350642485d4d298d84dfffacc16`.
-The fixed full command executes the targeted assertion itself. Align PR #892 merged the genuine compiler prerequisite as
-`3a34febe912db5096c58c74fede36ff53f223e04`; the reconciled client register entry is Request 44.
+PR #136 merged as `aad872f`. The source-level contraction pragma is Clang-only because GCC 14.2
+diagnoses it as unknown under `-Werror`; the cross-compiler `-ffp-contract=off` flag and behavioural
+probe remain mandatory. Both compiler owners, exact-head preflight, comprehensive review, and all
+three GitHub checks passed.
 
-**Preserved evidence.** Local branch `agent/c8-optional-targeted-test` commit `0dcca60` preserves
-the abandoned prototype, reviewed design history, original compiler reproduction, and reference
-handoff. It is not a publication candidate. In a temporary worktree its source passes `make check`
-and `make build` with a compiler containing `3a34febe`; the unchanged owner fails `INVALID`, code 2
-because it still writes schema 1. Do not cherry-pick its conflicting Request 21 or its placeholder-
-argument implementation.
+## Merged checkpoint: C8-OPTIONAL-TARGETED-STAGE (2026-08-28)
 
-**Current checkpoint.** The candidate is consumer-complete. `.align-revision` selects and the
-managed compiler verifies exact Align `3a34febe`. Schema-2 Some/absent/null tasks, Some/None/Invalid
-result goldens, complete semantic/decode validation side-effect checks, Some/None repair, and
-schema-1 failure-memory events pass `make verify-loop-smoke`; whole/per-unit compilation and format
-also pass. The candidate binary SHA-256 is `552790728dea091f6eaa27852bb6be945438b8580a778d0baedbe395df7225b3`.
-The 101-pair acceptance improves parent 60,515,456 ns to candidate 40,475,113 ns, 331,160 ppm
-(33.12%), while the runner admits only result schema 1→2 and removal of the passing targeted stage.
-Request 44 is `ALIGN_LLM_VERIFIED`. Comprehensive review of `02c7564` against base/merge-base
-`e15e3d3` found one P2 documentation gap: exact benchmark commands and host/CPU were omitted. The
-finding was accepted and repaired with the WSL2/Ryzen environment and both 31/101-pair commands;
-there was no implementation finding. Exact-head preflight passed at `5f392ea`, and all three
-GitHub checks passed. PR #133 merged concurrently before #134, so the remaining work is the
-integration merge, publication, and merge. On the integrated tree,
-`CC=clang make verify-loop-smoke ggml-spike-smoke alignpack-smoke gate-topology-check` passes.
-
-**Next actions, in order.** (1) Complete the clean integration of `35a0df6`, rerun the affected
-owner checks and exact-head preflight, and update PR #134 evidence. (2) Merge #134 and refresh
-`main`. (3) Close Request 44 in the next durable checkpoint and continue R3 residency simulation.
+PR #134 merged as `4f01553` after integrating PR #133. The integrated head `d63a3da` preserved the
+C8 owner files byte-for-byte, passed the affected owner set and exact-head preflight, and received
+three fresh passing hosted checks. The fixed 101-pair measurement improves the parent median from
+60,515,456 ns to 40,475,113 ns (331,160 ppm, 33.12%). Its design, measurement environment, review
+finding and repair, and exact commands remain in `docs/specs/c8-optional-targeted-stage.md` and PR
+#134. Request 44 is CLOSED at the selected Align pin `3a34febe`.
 
 ## Merged checkpoint: MOE-PREREQ-DISCHARGE (2026-08-28)
 
@@ -140,14 +127,6 @@ ending `baseline chain: PASS`. Two of the twenty recorded artifacts changed agai
 so required no re-record of its own. The other eighteen hashes are unchanged and the twenty paths
 are identical. PR #133 merged with merge commit `35a0df6`, so these commits remain reachable.
 
-## Design and implementation in progress elsewhere
-
-- `agent/r3-residency-sim` — the R3 residency simulator. Its design ledger
-  `docs/specs/r3-residency-sim.md` is committed at `198850b`; implementation is in progress and
-  uncommitted in its own worktree. It stacks on the pre-rebase R1C commits and must be rebased onto
-  the merged `main` before publication. The merged locality gate is its demand signal and the
-  1,024 non-contiguous `ExpertBlock`s this capability packs are its input.
-
 ## Pending decisions (2026-08-28)
 
 **Decision (a) taken 2026-08-28.** `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai;
@@ -176,8 +155,8 @@ longer fits alongside the downloaded model and its alignpack space; R1B's real-m
 4. **Align Request 41** (non-`Copy` capture in `spawn` closures), Align-side. Unblocks R5's required
    microbenchmark C.
 
-**Align capability requests.** Requests 1-20 CLOSED, Requests 21-43 PROPOSED and non-blocking, and
-Request 44 ALIGN_LLM_VERIFIED pending publication closure. `.align-revision` now selects
+**Align capability requests.** Requests 1-20 and 44 CLOSED; Requests 21-43 are PROPOSED and
+non-blocking. `.align-revision` selects
 `3a34febe`. Top clients by reference count in
 `docs/align-requests.md` (grep-verified against the register): Request 34 (`Result` payloads beyond
 scalars, 9 mentions), Requests 21 and 23 (read-only open; huge-struct-copy lint, 7 each — Request 23
@@ -224,8 +203,8 @@ sign-bit/payload difference (arm64's default NaN vs. x86-64 SSE's QNaN) surfacin
 non-finite-readback goldens, masked in golden normalization alone. Full ledger:
 `docs/specs/r5c-metal-prefill.md`.
 
-**Resume in another environment.** Fetch `origin`, check out `main`, finish the active C8
-publication if it is still open, then resume R3 from its design ledger. Decision 1 is taken; R2's
+**Resume in another environment.** Fetch `origin`, check out `agent/r3-residency-sim`, and resume
+R3 from its design ledger and next actions above. Decision 1 is taken; R2's
 gate, R1C's frontend, R4's per-expert half, and R4.5's expert matmul are merged, so R3 waits on no
 further decision. For the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1);
 decision 3 -> R6 (section R6), R7-R9, and the decode half of R2's gate; decision 4 -> R5's deferred

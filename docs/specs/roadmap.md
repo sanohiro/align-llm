@@ -61,7 +61,7 @@ The current forward delivery order is:
    qualifications; neither joins an aggregate. It is listed after the consumer because the consumer
    defines the exact targets a profile must gate, and because the profiles gate *evidence*, not
    implementation.
-8. **C8 — speed-first optimization. Reopened for one bounded tenth capability.** Nine
+8. **C8 — speed-first optimization. Gate met, closed after one bounded tenth capability.** Nine
    consumer-complete capabilities each preserved
    their correctness contract, named one changed path, and closed a paired fixed-task benchmark
    before claiming an improvement. The section C8 gate is met and `docs/specs/c8-speed-first.md` is
@@ -72,8 +72,8 @@ The current forward delivery order is:
    43,886,999 ns parent median (326,093 ppm), and its Align prerequisite shipped in PR #892. Its authoritative
    contract and stop conditions are in `docs/specs/c8-optional-targeted-stage.md`. Its stable
    candidate passes the schema/owner matrix and improves the 101-pair fixed-task median from
-   60,515,456 ns to 40,475,113 ns (331,160 ppm, 33.12%); review is complete and PR #134 is in final
-   base-integration/publication. Track B resumes after this bounded capability merges. Every other deferred surface retains the normal floor or
+   60,515,456 ns to 40,475,113 ns (331,160 ppm, 33.12%); review and exact-head integration evidence
+   passed and PR #134 merged as `4f01553`. Track B has resumed. Every other deferred surface retains the normal floor or
    genuine-request re-entry rule.
 9. **R0-GGUF-INSPECT — read-only GGUF header, metadata, and tensor-table inspection. Gate met,
    closed.** The first Track B capability. It delivers one consumer-complete path: a caller names a
@@ -276,13 +276,24 @@ The current forward delivery order is:
     The layout numbers are a claim about this container on this named model, not a platform or
     throughput claim. Review, publication, and merge are complete; see `HANDOFF.md`.
 
+21. **R3-RESIDENCY-SIM — seven-policy expert residency simulator. Active.**
+    [`r3-residency-sim.md`](r3-residency-sim.md) is the authoritative public-contract ledger and
+    closure matrix. It joins exact R2 `selections[]` and graph phases to heterogeneous R1 schema-2
+    `ExpertBlock.byte_size` rows, then compares LRU, LFU, recent reuse, score-based, top-k
+    prefetch, impact prefetch, and CPU fallback under one explicit caller-supplied hardware cost
+    model. The hosted synthetic owner proves codecs, joins, validation, policy semantics, and
+    deterministic metrics; it makes no hardware-speed claim. The R3 roadmap gate remains open
+    until the focused real-model qualification uses named measured costs and identifies a strict
+    non-LRU winner.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
 `olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18, 19, and 20 above:
-items 18 and 19 are merged and R2's gate is met, and item 20 — the per-expert half of R4 and R4.5 —
-merged as PR #133. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+items 18 and 19 are merged and R2's gate is met, item 20 — the per-expert half of R4 and R4.5 —
+merged as PR #133, and item 21 is active. C8's bounded tenth capability merged as PR #134 and is
+closed. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is recorded
 **infeasible on this host** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
 a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
@@ -588,12 +599,12 @@ baseline・測定値・host・binary digestは
 2026-08-28に明示的に再開した唯一の例外である。権威あるcontractと停止条件は
 [`c8-optional-targeted-stage.md`](c8-optional-targeted-stage.md)にある。stable candidateはschema/owner
 matrixをpassし、101-pairの固定タスク中央値を60,515,456 nsから40,475,113 nsへ短縮した
-（331,160 ppm、33.12%）。reviewは完了し、PR #134のbase integrationとpublicationが残る。このbounded capabilityの
-merge後にTrack Bへ戻る。R0のgateは達成済みでcloseした。R1（Qwen2 Model IR）のgateも
+（331,160 ppm、33.12%）。review・base integration・publicationは完了し、PR #134としてmergeされた。
+Track Bへ戻り、現在はR3 residency simulationを実装中である。R0のgateは達成済みでcloseした。R1（Qwen2 Model IR）のgateも
 達成済みでcloseし、R1B（gpt-oss/MoEフロントエンド）もPR #123としてmergeされ、R1のgateはgpt-oss側を
 含めてcloseした（gpt-oss実モデルによるqualificationのみ、ユーザー判断待ちのopen項目として残る）。
 現在はR2 locality gate、R1C OLMoE frontend、MoE prerequisite discharge（PR #133）までmerge済みであり、
-このbounded C8 capabilityの次はR3 residency simulationを実装する。
+R3の権威あるcontractとclosure matrixは[`r3-residency-sim.md`](r3-residency-sim.md)にある。
 
 ---
 
@@ -789,6 +800,11 @@ align-sim
 ### Gate
 
 対象ハードウェア条件で、baselineより有効なpolicyを特定できること。
+
+`R3-RESIDENCY-SIM`（delivery item 21）を実装中。hosted synthetic ownerはsimulatorの正しさを
+証明するが、このgateを単独では達成しない。明示したhardware profileのcostを実測値で裏付けた
+focused real-model qualificationが、LRUよりstrictに低costなpolicyを特定した時点でgateを達成する。
+契約: [`r3-residency-sim.md`](r3-residency-sim.md)。
 
 ---
 
