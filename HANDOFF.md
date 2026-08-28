@@ -8,7 +8,9 @@ file records durable project state.
 Branch `agent/r5d-moe-layer-forward`, rebased onto `main` `95c47e7` (the merged R3-RESIDENCY-SIM,
 PR #135, which sits on PR #136's GCC 14 shim fix, C8's optional targeted stage at PR #134 — a
 parallel Codex session's change, not this session's work — and the merged MOE-PREREQ-DISCHARGE at
-PR #133). The branch is `a85e1fc` (design ledger), `7886cee`
+PR #133), and then **merged** with `main` `1b11245` — PR #138, a parallel Codex session's R3
+qualification-prerequisite follow-up — rather than rebased over it, so this branch's recorded
+baseline-chain commits stay reachable. The branch is `a85e1fc` (design ledger), `7886cee`
 (implementation), `a2e2748` (review repair), and the reconciliation and baseline commits on top;
 before the rebase the first three were `3cb8d59`, `e584849`, and `aaedf26`, and the review record on
 the pull request names the pre-rebase heads the reviewers read. Design ledger `docs/specs/r5d-moe-layer-forward.md` is authoritative and
@@ -93,14 +95,41 @@ membership is unchanged, so `make ci` is *not* selected. (2) After merge, refres
 the next eligible roadmap item; R5's deferred microbenchmark C and R6 both wait on pending decisions
 (d) and (c) below.
 
+## Merged checkpoint: R3-QUALIFICATION-PREREQUISITES (2026-08-28)
+
+Branch `fix/r3-qualification-prerequisites` merged as PR #138, merge commit `1b11245` on `main`,
+authored by a **parallel Codex session** rather than by the session that produced R3 and R5D. It
+started from `main` `95c47e7`, the merge of R3 PR #135. A second R3 implementation was independently completed before that merge became visible;
+its duplicate PR #137 is closed and will not be integrated. Its final review nevertheless exposed
+one root-cause class that applies to the merged qualification: the wrapper generated a Model IR but
+did not validate it or the requested budget until after every prompt had invoked the external
+instrument, so a locally knowable defect could consume up to 40 600-second prompt runs.
+
+**Current checkpoint.** `scripts/run-residency-sim` now validates prompt count in the simulator's
+existing `[1, MAX_TRACE_PATHS]` envelope, derives the Model IR and default budget, and asks the
+simulator itself to validate both against a one-row probe list whose trace is deliberately absent.
+Only exact `R3_TRACE_UNREADABLE` step-8 evidence admits instrument `--version` and prompt capture;
+no Model IR or budget validation is duplicated in shell. The hosted owner covers three refusals
+with zero fake-instrument calls and one valid admission through `--version` to the first prompt.
+`make residency-sim-smoke`, `make residency-sim-qualification` (exact N/A), `make format-check`, and
+`make baseline-check` pass. The hardware-name evidence finding from the duplicate implementation is
+not applicable because merged R3 has no hardware-profile string input.
+
+**Review envelope.** One host-native Codex comprehensive review covered the whole follow-up diff at
+`045cb48` against base tip and merge base `95c47e73ec0be1cd79ecd6536e0b84bc254bd871`.
+Verdict: clean; findings: none. The reviewer traced the probe through the simulator's documented
+validation order and CLI exit mapping and ran the direct owner with the existing product binary.
+Its attempt to reacquire the managed compiler lock was N/A because the review sandbox makes the
+user cache read-only; the normal owner run above is the owning build evidence.
+
+Published and merged as PR #138; R5D merges it in rather than rebasing over it, so this branch's
+recorded baseline-chain commits stay reachable.
+
 ## Merged checkpoint: R3-RESIDENCY-SIM (2026-08-28)
 
-Branch `agent/r3-residency-sim` merged as PR #135, merge commit `95c47e7` on `main`, preserving its
-recorded baseline chain with a merge commit. It had been rebased onto `main` `4f01553` (the merged
-C8-OPTIONAL-TARGETED-STAGE, PR #134, which sits on the merged MOE-PREREQ-DISCHARGE, PR #133) and
-carries PR #136's GCC 14 shim fix as its merged prerequisite. Design ledger
-`docs/specs/r3-residency-sim.md` remains authoritative. Implementation, review, publication, and
-merge are complete.
+PR #135 merged as `95c47e7` after all three GitHub checks passed. Design ledger
+`docs/specs/r3-residency-sim.md` remains authoritative. Implementation, real-model qualification,
+review, publication, and merge are complete.
 
 **What it delivers.** The R3 roadmap gate, measured. `main --simulate-residency` replays the demand
 stream implied by a set of real `R2_ACTIVATION_TRACE` documents against ten expert-residency cache
@@ -209,8 +238,8 @@ source -> immutable oracle -> finalization), measured on Linux (aarch64, kernel 
 Python 3.12.3) and checked there with `make baseline-check` ending `baseline chain: PASS`. Three of
 the twenty recorded artifacts changed: `.align-revision` (`4b515f8d` -> `3a34febe`, PR #134's, adopted
 unchanged), `Makefile`, and `src/main.align`, the latter two this capability's own. The other
-seventeen hashes are unchanged and the twenty paths are identical. The pull request must merge with a
-merge commit; squash and rebase merges would make these commits unreachable.
+seventeen hashes are unchanged and the twenty paths are identical. PR #135 merged with merge commit
+`95c47e7`, preserving the recorded source, oracle, and finalization commits.
 
 **Align capability requests.** Implementation added Requests 45 and 46 (filed as 44 and 45 before
 PR #134 took 44), both `PROPOSED`, non-blocking, and shipped around with documented workarounds.
@@ -322,8 +351,9 @@ longer fits alongside the downloaded model and its alignpack space; R1B's real-m
 1. **Small MoE GGUF, 1-4 GB. — TAKEN.** `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (3.9 GiB) is on
    this host. It unblocked the R2 locality gate (merged, PR #131), R1C's `olmoe` frontend (merged,
    PR #132), and R4's per-expert half with R4.5's expert matmul (merged, PR #133). R3's residency
-   simulation (merged, PR #135) and R5D's routed layer, in publication above, follow from the same
-   file rather than from another download.
+   simulation (merged, PR #135), its qualification-prerequisite follow-up (merged, PR #138), and
+   R5D's routed layer, in publication above, follow from the same file rather than from another
+   download.
 2. **`gpt-oss-20b-mxfp4.gguf`, 12.1 GB.** Unblocks R1B's real-model `model-ir-parity` qualification
    and every `ASSUMED` row of `docs/specs/r1b-gptoss-moe-ir.md` section 2.5 — including the two
    rows R1C has now contradicted from the olmoe side. **Infeasible on this host** after decision 1

@@ -277,8 +277,8 @@ The current forward delivery order is:
     throughput claim. Review, publication, and merge are complete; see `HANDOFF.md`.
 
 21. **R3-RESIDENCY-SIM — the R3 cache-simulator gate, measured on the real MoE activation corpus.
-    Merged as PR #135, merge commit `95c47e7` on `main`.** Was on branch `agent/r3-residency-sim`,
-    rebased onto the merged MoE prerequisites and C8's optional targeted stage at `main` `4f01553`. [`r3-residency-sim.md`](r3-residency-sim.md) is the
+    Merged in PR #135.** The merged capability is based on the
+    merged MoE prerequisites and C8's optional targeted stage at `main` `4f01553`. [`r3-residency-sim.md`](r3-residency-sim.md) is the
     authoritative plan and owns the contract ledger, the closure matrix, the correction ledger, the
     probe record, and the cell-to-case map; the design gate triggered on three counts (a new public
     CLI verb `--simulate-residency`, a new exchanged format `R3_RESIDENCY_SIM` `schema_version: 1`,
@@ -299,11 +299,15 @@ The current forward delivery order is:
     column; a miss penalty needs R4.5's and R5's measured transfer costs; CPU fallback needs R5's
     microbenchmark). The result is a policy claim about this named model and this corpus, not a
     platform or throughput claim, and it carries the caveats the section R3 entry below records.
-    Review, publication, and merge are complete; see `HANDOFF.md`.
+    Review, publication, and merge are complete; a follow-up by a parallel session, PR #138 at
+    `1b11245`, moved the qualification wrapper's Model IR and budget validation ahead of the
+    instrument runs. See `HANDOFF.md`.
 22. **R5D-MOE-LAYER-FORWARD — one OLMoE MoE layer computed from Align-owned expert claims, the
     routed half of R5's second gate stage. Implemented and reviewed; in publication.** On branch
     `agent/r5d-moe-layer-forward`, rebased onto the merged R3 residency simulator at `main`
-    `95c47e7`; design ledger `a85e1fc`, implementation `7886cee`, review repair `a2e2748`.
+    `95c47e7` and then merged with `main` `1b11245` (PR #138's follow-up) rather than rebased over
+    it, so the recorded baseline-chain commits stay reachable; design ledger `a85e1fc`,
+    implementation `7886cee`, review repair `a2e2748`.
     [`r5d-moe-layer-forward.md`](r5d-moe-layer-forward.md) is the authoritative plan and owns the
     probe record, the contract ledger, the closure matrix, the correction ledger, and the
     cell-to-case map; the design gate triggered on the new `--moe-layer-forward` CLI arm, its

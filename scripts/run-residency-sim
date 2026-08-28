@@ -65,6 +65,21 @@ if [ ! -x "$root_dir/main" ]; then
   printf '%s\n' "residency sim qualification: the product executable is missing; run 'make build'" >&2
   exit 1
 fi
+if ! prompt_count=$(python3 - "$prompt_count" <<'PY'
+import sys
+
+text = sys.argv[1]
+if not text.isascii() or not text.isdigit():
+    raise SystemExit(1)
+value = int(text)
+if value < 1 or value > 4096:
+    raise SystemExit(1)
+print(value)
+PY
+); then
+  printf '%s\n' "residency sim qualification: ALIGN_LLM_LOCALITY_PROMPT_COUNT must be an integer in [1, 4096]" >&2
+  exit 1
+fi
 
 temp_dir=$(mktemp -d)
 cleanup() {
@@ -80,13 +95,6 @@ info = os.stat(sys.argv[1])
 print("%d %d" % (info.st_size, info.st_mtime_ns))
 PY
 )
-
-"$instrument" --version >"$temp_dir/version.txt" 2>&1 || {
-  status=$?
-  printf '%s\n' "residency sim qualification: the instrument exited $status for --version" >&2
-  tail -20 "$temp_dir/version.txt" >&2 || true
-  exit 1
-}
 
 # The corpus is read once, in file order, and the first `prompt_count` lines are used. The order is
 # part of the corpus identity recorded below, and it is also the trace-list order, which section
@@ -123,6 +131,53 @@ fi
 "$root_dir/main" --model-ir "$model" "$temp_dir/model-ir.json" >/dev/null || {
   status=$?
   printf '%s\n' "residency sim qualification: --model-ir exited $status" >&2
+  exit 1
+}
+
+budget="${ALIGN_LLM_RESIDENCY_BUDGET:-}"
+if [ -z "$budget" ]; then
+  budget=$(python3 - "$temp_dir/model-ir.json" <<'PY'
+import json, sys
+document = json.load(open(sys.argv[1]))
+total = sum(b["byte_size"] for b in document["blocks"] if b["kind"] == "ExpertBlock")
+print(total >> 2)
+PY
+  )
+fi
+
+# Exercise the product's exact validation order before launching the expensive instrument. A valid
+# budget and Model IR reach the deliberately absent trace at step 8; any earlier semantic code is a
+# prerequisite failure. This avoids duplicating the simulator's Model IR and budget rules here.
+printf '%s\n' "$temp_dir/prerequisite-missing.json" >"$temp_dir/prerequisite-traces.txt"
+set +e
+"$root_dir/main" --simulate-residency "$temp_dir/prerequisite-traces.txt" \
+  "$temp_dir/model-ir.json" "$budget" >"$temp_dir/prerequisite-result.json"
+prerequisite_status=$?
+set -e
+python3 - "$temp_dir/prerequisite-result.json" "$prerequisite_status" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+status = int(sys.argv[2])
+try:
+    document = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    raise SystemExit("residency sim qualification: prerequisite validation produced no document: %s"
+                     % exc)
+code = document.get("error_code")
+detail = document.get("error_detail")
+if status != 2 or document.get("status") != "error" \
+        or code != "R3_TRACE_UNREADABLE" or detail != "1":
+    raise SystemExit("residency sim qualification: prerequisite validation failed: %s %s (exit %d)"
+                     % (code or "NO_CODE", detail or "NO_DETAIL", status))
+PY
+
+"$instrument" --version >"$temp_dir/version.txt" 2>&1 || {
+  status=$?
+  printf '%s\n' "residency sim qualification: the instrument exited $status for --version" >&2
+  tail -20 "$temp_dir/version.txt" >&2 || true
   exit 1
 }
 
@@ -177,17 +232,6 @@ fi
 
 # The trace list is the corpus artifact of section 2.3: one path per line, in prompt order.
 find "$temp_dir/documents" -name '*.json' | sort >"$temp_dir/traces.txt"
-
-budget="${ALIGN_LLM_RESIDENCY_BUDGET:-}"
-if [ -z "$budget" ]; then
-  budget=$(python3 - "$temp_dir/model-ir.json" <<'PY'
-import json, sys
-document = json.load(open(sys.argv[1]))
-total = sum(b["byte_size"] for b in document["blocks"] if b["kind"] == "ExpertBlock")
-print(total >> 2)
-PY
-)
-fi
 
 set +e
 "$root_dir/main" --simulate-residency "$temp_dir/traces.txt" "$temp_dir/model-ir.json" \
