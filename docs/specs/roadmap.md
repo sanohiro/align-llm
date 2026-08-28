@@ -378,9 +378,9 @@ The current forward delivery order is:
     router extent of eight above the old six-value threshold. The first comprehensive review found
     four valid cache/recipe/qualification defects, all consolidated and owner-tested. Final repair
     review found three further valid compatibility/safety/parser defects; their consolidated repair,
-    affected owner verification, and real OLMoE requalification pass. Exact-head preflight,
-    publication, and merge remain, after which R6 may consume the instrument in a later work
-    session.
+    affected owner verification, and real OLMoE requalification pass. Preflight, publication, and
+    merge are complete, so R6 may consume the instrument; R2D-DECODE-LOCALITY-GATE, on branch
+    `agent/r2d-decode-locality-gate`, is its first consumer and extends R2's gate past prefill.
 
 ### Status (2026-08-28)
 

@@ -2,7 +2,8 @@
 
 Status: design of record for the R5E capability.
 Owner document for stage 3 of `docs/specs/roadmap.md` section R5's gate **on the routed path**.
-Align pin: `.align-revision` = `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`.
+Align pin: `.align-revision` = `3a34febe912db5096c58c74fede36ff53f223e04`, adopted at reconciliation
+(correction C23); the design and probe record were written at `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`.
 Predecessors, whose contracts this capability extends rather than duplicates:
 [`r5b-model-prefill-forward.md`](r5b-model-prefill-forward.md) (the streaming per-layer window, the
 Align-owned residual carry, the narrowing rows, the KV-width reconciliation, the `--save-logits`
@@ -153,7 +154,7 @@ what ships is section 3's design, and section 5.2's qualification is the probe m
 | Item | Value |
 | --- | --- |
 | Host | `MacBookAir10,1`, Apple M1, 16 GiB, `darwin/arm64` |
-| Align compiler | the managed pinned release toolchain at `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2` |
+| Align compiler | the managed pinned release toolchain at `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2` at probe time; `3a34febe912db5096c58c74fede36ff53f223e04` from correction C23 onward |
 | llama.cpp | `0.2.0 (build 10566)`, Homebrew |
 | ggml | `0.21.0`, Homebrew, headers in `/opt/homebrew/include`, backends `dlopen`ed from `libexec` |
 | Model | `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, 4,213,512,192 bytes, 195 tensors |
@@ -1528,7 +1529,7 @@ unreachable ones remain, now at model scale.
 | Acceptance evidence | Section 5.1 owner, section 5.2 qualification, four oracles, tolerances fixed in section 3.7 |
 | Metrics | Section 5.3; microbenchmark B at whole routed model scale only |
 | Text/wire boundary | UTF-8 JSON, R0's escaping rules, no float rendered anywhere; integer comparisons only |
-| Minimum tool/platform versions | ggml 0.21.0, llama.cpp build 10566, Align `4b515f8d`; section 5.6 records the version risk |
+| Minimum tool/platform versions | ggml 0.21.0, llama.cpp build 10566, Align `3a34febe` (`4b515f8d` at probe time, correction C23); section 5.6 records the version risk |
 | Milestones not consuming a later slice | Sections 1.3 and 5.4: no loader, no residency policy, no decode, no KV cache, no GPU, no gpt-oss |
 | Runtime-inspection fields | `graph.*`, `schedule[].node_count_*`, `abi.*` — producer-owned counters, no reflection |
 | Inapplicable | Concurrency (single-threaded arm, one process) — `N/A`; network — `N/A`, none; schema migration — `N/A`, v1 is the first version |
@@ -1945,7 +1946,7 @@ reconciliation commit renumbers this branch's pair to **47** and **48**. The reg
 resolved numbering note, and nothing outside it cited either number.
 
 - **Request 47 — a `Borrow` argument must be a stable named local or field.** Measured at the pinned
-  `4b515f8d` and re-measured unchanged at the adopted `3a34febe`: `f(w[a..b])`, `f(b.build())`, and `f(if c { x } else { y })` are each refused with
+  `4b515f8d`, and the slice form re-measured unchanged at the adopted `3a34febe`: `f(w[a..b])`, `f(b.build())`, and `f(if c { x } else { y })` are each refused with
   `error: the Borrow argument to 'sink' must be a stable named local or field, not a temporary
   value`, from `crates/align_sema/src/lib.rs:43694`. R5E slices two reused windows on every member
   placement, every reference fill, and every claim plane, so the mitigation — bind the expression to
@@ -2281,14 +2282,39 @@ every prefill — 343 and 343 on the model, 9 and 9 on the synthetic corpus — 
 equality between two derivations rather than a tautology.
 
 **C22 — section 5.5's "no new request is expected" was wrong, and two requests are filed.**
-`docs/align-requests.md` Requests **46** (a `Borrow` argument must be a stable named local or field)
-and **47** (same-call aliasing between a `borrow mut` owner and its own `Copy` scalar field) are both
+`docs/align-requests.md` Requests **47** (a `Borrow` argument must be a stable named local or field)
+and **48** (same-call aliasing between a `borrow mut` owner and its own `Copy` scalar field) are both
 genuine Align gaps, both non-blocking, both with the application-side mitigation R5E ships and with a
-minimal probe verified at the pinned `4b515f8d` and sibling line citations. They are numbered 46 and
-47 rather than 44 and 45 because this branch's register ends at 43 and `agent/r3-residency-sim`
-already holds 44 and 45 unmerged; the register carries a renumbering note. A third refusal — a
+minimal probe verified at the pinned `4b515f8d` and sibling line citations. They were drafted as 46
+and 47 while this branch's register ended at 43 and `agent/r3-residency-sim` held 44 and 45 unmerged;
+correction C23 records the resolved numbering. A third refusal — a
 function whose `->` starts its own line — is an **application concern** caused by Align's
 newline-terminated statement rule and is recorded in section 5.5, not filed.
+
+**C23 — reconciliation with the merged R5D: the pin moves to `3a34febe`, the two new requests
+renumber to 47 and 48, and no golden byte or measured quantity moves.** This capability was designed,
+implemented, and reviewed on a branch based on the merged MOE-PREREQ-DISCHARGE, at pin
+`4b515f8d`. Between then and publication `main` gained PR #134 (which moved `.align-revision` to
+`3a34febe` and took Align Request 44), PR #135 (R3-RESIDENCY-SIM, whose two requests became 45 and
+46), PR #136, PR #138, PR #140 (R2C-DECODE-INSTRUMENT), and PR #139 (R5D itself, including its own
+review repair). The branch **merges** `main` rather than rebasing over it, so its recorded
+baseline-chain commits stay reachable, and it takes main's repaired R5D verbatim: R5D's
+`stage_claim_types` refusal, its stable-insertion-sort stub `argsort`, its `view_2d` F32 gate, and
+its `moe-engine-claim-type-mismatch` case are main's, unmodified by R5E.
+
+Three consequences are recorded rather than absorbed silently. **(1)** The pin is adopted and every
+owner and the real-model qualification are re-run against the managed `3a34febe` compiler; **no
+golden byte changed** — the R5A, R5B, R5C, R5D, R5E, and ggml-spike goldens are byte-identical and
+`layer-forward-smoke` is byte-identical across three runs — and every exact-integer quantity in
+section 7 is identical at the new pin. The Request 47 and 48 probes were re-measured at `3a34febe`:
+the slice-form `Borrow` refusal and both halves of the aliasing asymmetry reproduce unchanged.
+**(2)** The two requests renumber to **47** and **48**, because R3's pair merged first and then took
+45 and 46. **(3)** R5E is appended as a client of Requests 45 and 46 — the two it could only
+anticipate while they lived on `agent/r3-residency-sim` — with the same mitigations it already
+shipped. The only quantity that moved at all is a timing diagnostic already governed by correction
+C16: this qualification measured microbenchmark B at **147.3 ms** and claim `pread` at **560.8 ms**,
+inside the 109.9–252.8 ms and 519.9–612.0 ms spreads C16 records, and the claim read is **3.8x**
+compute, which is the shape the capability's claim rests on.
 
 ---
 

@@ -9402,7 +9402,8 @@ align-llm verification: rewrite `src/moe_model_forward.align`'s window-region an
 ### Motivation and current sibling evidence
 
 Every `borrow` argument must name a stable local or a field. Three ordinary expression forms are
-refused, each measured at the pinned compiler `4b515f8d` on this host:
+refused, each measured at the compiler `4b515f8d` this request was drafted against, on this host.
+The slice form was re-measured unchanged at the adopted pin `3a34febe`:
 
 ```text
 sink(bytes[0..4])           error: the Borrow argument to 'sink' must be a stable named local or
@@ -9469,7 +9470,7 @@ align-llm verification: pass `plan.n_layer`-style scalars directly beside their 
 ### Motivation and current sibling evidence
 
 A `Copy` scalar read out of a record is refused when the same record is also passed `borrow mut` in
-the same call, measured at `4b515f8d`:
+the same call, measured at `4b515f8d` and re-measured unchanged at the adopted pin `3a34febe`:
 
 ```text
 Box { n: i64, total: i64 }
@@ -9495,8 +9496,9 @@ fn peek(borrow b: Box, k: i64) -> i64 { return b.n + k }
 take(box, peek(box, 1))
 ```
 
-**compiles** at the same pin: the inner read-only borrow of the same owner passed beside the outer
-`borrow mut` is accepted, while the direct scalar field read of that owner is not. One of the two
+**compiles** at both pins: the inner read-only borrow of the same owner passed beside the outer
+`borrow mut` is accepted (`ok: checked 3 function(s)` at `3a34febe`), while the direct scalar field
+read of that owner is not. One of the two
 answers is wrong, and the accepted one is the safe one — which is why this is a language-owned
 soundness/precision question and not a style preference.
 
