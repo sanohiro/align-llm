@@ -432,3 +432,7 @@ ships the simulator but does not by itself claim a target-hardware policy win.
 8. A whitespace-only `ALIGN_LLM_R3_MEASUREMENT` previously reached a `MEASURED` report without named
    provenance. The qualification now requires at least one non-whitespace character and the hosted
    owner exercises that refusal before any real-model work.
+9. Review of the redesigned candidate found that Python scalar equality treated `2.0` as schema
+   integer `2`, and truthiness treated a non-empty string as `moe.present: true`. The adapter now
+   requires exact non-boolean integer types for producer schema/extents/ordinals and the literal
+   boolean `true` for MoE presence before it derives task provenance.

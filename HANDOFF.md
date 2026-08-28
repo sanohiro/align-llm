@@ -27,23 +27,30 @@ contract was re-scoped as a redesigned candidate: demand groups retain callback 
 only non-decreasing graph ordinals, contiguity, zero-first/increasing slots, and stable graph phase;
 producer and consumer now enforce one conservative whole-task arithmetic proof; and measurement
 provenance must contain a non-whitespace character. All three findings are accepted and implemented
-in the current uncommitted redesign; none is rejected.
+in redesign commit `999000b`; none is rejected.
+
+One fresh host-native Codex comprehensive review then covered the whole redesigned diff at
+`999000b`, again against base tip and merge base
+`4f01553b1ea18b815376d5cd7c082d4406a042ec`; verdict: changes requested. It found one valid P2:
+Python accepted float/bool schema ordinals and truthy non-boolean `moe.present` values as typed R1/R2
+metadata. The finding is accepted. The current narrow uncommitted repair requires exact integer
+types and literal boolean presence, adds six scalar-type refusals, and changes no public contract or
+policy behavior; it does not trigger another comprehensive review.
 
 `make fmt`, `make build`, `make residency-sim-smoke`, and `make format-check` pass. The owner now
-reports 7 policies, 11 semantic codes, 3 limit cases, 12 adapter refusals, measurement provenance,
+reports 7 policies, 11 semantic codes, 3 limit cases, 18 adapter refusals, measurement provenance,
 and the complete CLI/oracle comparison after rerunning both producer owners. It includes a valid
 layer-1-before-layer-0 trace, a non-contiguous-group refusal, and the reviewer's 2,400-demand
-arithmetic reproducer refused before output creation. `make residency-sim-qualification` previously
-printed its exact `N/A` line because the required model/instrument environment is unavailable; it
-must be refreshed after the redesign. The hosted owner makes no hardware-speed claim, so the roadmap
+arithmetic reproducer refused before output creation. `make residency-sim-qualification` prints its
+exact `N/A` line because the required model/instrument environment is unavailable. The hosted owner
+makes no hardware-speed claim, so the roadmap
 gate remains open until that focused qualification names measured costs and identifies a strict
 non-LRU winner. Existing non-blocking Request 23's sixth client now produces eleven false
 by-value-copy warnings for explicit `borrow task: ResidencyTask` parameters.
 
-**Next actions, in order.** (1) Commit the redesigned candidate. (2) Run the focused owner and
-qualification, then one fresh comprehensive review of the newly scoped stable candidate. (3) Run
-exact-head preflight including the topology-selected fresh `make ci`, publish, and merge. (4)
-Refresh `main` and continue the next eligible roadmap capability.
+**Next actions, in order.** (1) Commit the consolidated scalar-type repair and rerun the affected
+owner. (2) Run exact-head preflight including the topology-selected fresh `make ci`, publish, and
+merge. (3) Refresh `main` and continue the next eligible roadmap capability.
 
 ## Merged checkpoint: GCC14-FP-CONTRACT-PORTABILITY (2026-08-28)
 

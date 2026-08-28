@@ -110,7 +110,9 @@ def load_hardware(path):
 
 def load_model(path):
     raw, document = read_document(path)
-    if document.get("schema_version") != 2 or document.get("kind") != "R1_MODEL_IR":
+    schema_version = document.get("schema_version")
+    if not exact_int(schema_version) or schema_version != 2 \
+            or document.get("kind") != "R1_MODEL_IR":
         raise AdapterError("model IR must be R1_MODEL_IR schema 2")
     if document.get("status") != "ok":
         raise AdapterError("model IR status is not ok")
@@ -151,7 +153,9 @@ def load_model(path):
 
 def append_trace(path, expected, graph_base, demands):
     raw, document = read_document(path)
-    if document.get("schema_version") != 1 or document.get("kind") != "R2_ACTIVATION_TRACE":
+    schema_version = document.get("schema_version")
+    if not exact_int(schema_version) or schema_version != 1 \
+            or document.get("kind") != "R2_ACTIVATION_TRACE":
         raise AdapterError("%s must be R2_ACTIVATION_TRACE schema 1" % path)
     if document.get("status") != "ok":
         raise AdapterError("%s status is not ok" % path)
@@ -164,14 +168,19 @@ def append_trace(path, expected, graph_base, demands):
     )):
         raise AdapterError("%s is missing graph, moe, graphs, or selections" % path)
     n_layer, n_expert, n_expert_used = expected
-    if graph_meta.get("n_layer") != n_layer or not moe.get("present"):
+    trace_n_layer = graph_meta.get("n_layer")
+    if not exact_int(trace_n_layer) or trace_n_layer != n_layer or moe.get("present") is not True:
         raise AdapterError("%s model shape does not match the MoE model" % path)
-    if moe.get("n_expert") != n_expert or moe.get("n_expert_used") != n_expert_used:
+    trace_n_expert = moe.get("n_expert")
+    trace_n_expert_used = moe.get("n_expert_used")
+    if not exact_int(trace_n_expert) or not exact_int(trace_n_expert_used) \
+            or trace_n_expert != n_expert or trace_n_expert_used != n_expert_used:
         raise AdapterError("%s expert extents disagree with the model" % path)
     phases = {}
     truncated = False
     for ordinal, graph in enumerate(graphs):
-        if not isinstance(graph, dict) or graph.get("ordinal") != ordinal:
+        if not isinstance(graph, dict) or not exact_int(graph.get("ordinal")) \
+                or graph.get("ordinal") != ordinal:
             raise AdapterError("%s graph ordinals are not contiguous" % path)
         phase = graph.get("phase")
         if phase not in ("prefill", "decode", "single_token_first_graph"):

@@ -662,12 +662,30 @@ def main():
         bad_model = json.loads(model.read_bytes())
         bad_model["model"]["arch"] = "qwen2"
         adapter_refusal("model-arch", model_value=bad_model)
+        bad_model = json.loads(model.read_bytes())
+        bad_model["schema_version"] = 2.0
+        adapter_refusal("model-schema-type", model_value=bad_model)
         bad_trace = json.loads(traces[0].read_bytes())
         bad_trace["status"] = "error"
         adapter_refusal("trace-status", trace_value=bad_trace)
         bad_trace = json.loads(traces[0].read_bytes())
+        bad_trace["schema_version"] = 1.0
+        adapter_refusal("trace-schema-type", trace_value=bad_trace)
+        bad_trace = json.loads(traces[0].read_bytes())
         bad_trace["moe"]["n_expert"] = 7
         adapter_refusal("trace-extents", trace_value=bad_trace)
+        bad_trace = json.loads(traces[0].read_bytes())
+        bad_trace["moe"]["n_expert"] = 8.0
+        adapter_refusal("trace-extent-type", trace_value=bad_trace)
+        bad_trace = json.loads(traces[0].read_bytes())
+        bad_trace["graph"]["n_layer"] = 2.0
+        adapter_refusal("trace-layer-type", trace_value=bad_trace)
+        bad_trace = json.loads(traces[0].read_bytes())
+        bad_trace["moe"]["present"] = "true"
+        adapter_refusal("trace-present-type", trace_value=bad_trace)
+        bad_trace = json.loads(traces[0].read_bytes())
+        bad_trace["graphs"][0]["ordinal"] = False
+        adapter_refusal("trace-ordinal-type", trace_value=bad_trace)
         bad_trace = json.loads(traces[0].read_bytes())
         bad_trace["selections"] = [
             {"graph": 0, "layer": 1, "token": 0, "slot": 0, "expert": 0},
@@ -774,7 +792,7 @@ def main():
             fail("qualification accepted blank measurement provenance")
 
         print("residency sim smoke: PASS - 7 policies, 11 semantic codes, 3 limit cases, "
-              "12 adapter refusals, measurement provenance, CLI/oracle")
+              "18 adapter refusals, measurement provenance, CLI/oracle")
     return 0
 
 
