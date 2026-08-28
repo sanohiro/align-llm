@@ -637,6 +637,10 @@ int64_t align_ptr_offset(const void *a, const void *b) {
 #define ALIGN_STUB_OP_ARGSORT   13
 #define ALIGN_STUB_OP_MUL_MAT_ID 14
 #define ALIGN_STUB_OP_VIEW      15
+/* R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md` section 2.5). One more kernel, which is
+ * what gives the whole decode arm — the KV plane's readback, its upload, both concat axes, the
+ * offset mask, and both acceptance oracles — a path with no ggml and no model. */
+#define ALIGN_STUB_OP_CONCAT    16
 
 typedef struct align_stub_tensor {
     int32_t type;
@@ -1048,6 +1052,45 @@ static void align_stub_run(align_stub_tensor *t) {
         const unsigned char *from = (const unsigned char *) a->data + t->lp[1];
         for (i1 = 0; i1 < t->ne[1]; i1++) {
             memcpy(d + i1 * t->ne[0], from + i1 * t->lp[0], (size_t) t->ne[0] * 4);
+        }
+    } break;
+    /* R6 section 2.5. `ggml_concat` along `dim`: `a`'s elements keep their own coordinates and
+     * `b`'s are written at the same coordinates shifted by `a->ne[dim]`. Rule 2 of this file — every
+     * view is materialized — applies: the kernel **copies**, it does not alias, so a stride trick
+     * that happened to agree on this geometry cannot hide a layout error. The axis is carried in
+     * `t->ip[0]` because a kernel reads only the node it was handed.
+     *
+     * Both axes the decode table uses run through this one loop nest: K concatenates on axis 1 and
+     * V on axis 0 (section 2.4), and the offset below is applied to whichever coordinate `dim`
+     * names rather than to a fixed one. */
+    case ALIGN_STUB_OP_CONCAT: {
+        int64_t dim = (int64_t) t->ip[0];
+        int64_t at[4];
+        int64_t shift = a->ne[dim];
+        for (i3 = 0; i3 < a->ne[3]; i3++) {
+            for (i2 = 0; i2 < a->ne[2]; i2++) {
+                for (i1 = 0; i1 < a->ne[1]; i1++) {
+                    for (i0 = 0; i0 < a->ne[0]; i0++) {
+                        d[i0 + t->ne[0] * (i1 + t->ne[1] * (i2 + t->ne[2] * i3))] =
+                            x[i0 + a->ne[0] * (i1 + a->ne[1] * (i2 + a->ne[2] * i3))];
+                    }
+                }
+            }
+        }
+        for (i3 = 0; i3 < b->ne[3]; i3++) {
+            for (i2 = 0; i2 < b->ne[2]; i2++) {
+                for (i1 = 0; i1 < b->ne[1]; i1++) {
+                    for (i0 = 0; i0 < b->ne[0]; i0++) {
+                        at[0] = i0;
+                        at[1] = i1;
+                        at[2] = i2;
+                        at[3] = i3;
+                        at[dim] += shift;
+                        d[at[0] + t->ne[0] * (at[1] + t->ne[1] * (at[2] + t->ne[2] * at[3]))] =
+                            y[i0 + b->ne[0] * (i1 + b->ne[1] * (i2 + b->ne[2] * i3))];
+                    }
+                }
+            }
         }
     } break;
     default:
@@ -1880,6 +1923,54 @@ int32_t align_ggml_op_pad(void *ctx, void *slots, int64_t out, int64_t a,
         return ALIGN_GGML_INIT;
     }
     return align_stub_bind(slots, out, t, sa, NULL, ALIGN_STUB_OP_PAD);
+}
+
+/* R6-DECODE-KV-STEP1 section 2.5's one new op, answered from the engine. Signature for signature
+ * with `scripts/ggml_shim.c` and refusing the same inputs: the axis selector, the type agreement,
+ * and the "every axis but `dim` must match" rule are restated here, because a stub that accepted a
+ * shape the linked library refuses would let the hosted owner pass a table the qualification cannot
+ * run.
+ *
+ * The forced build is section 4.5's `ds-stub-concat-axis` cell. A wrong axis is not producible from
+ * any operand the decode table can supply — `dim` is a compiled-in column of the row, 1 for K and 0
+ * for V — so the refusal is exercised by a build rather than reasoned about. It is never defined in
+ * an ordinary build.
+ */
+int32_t align_ggml_op_concat(
+    void *ctx, void *slots, int64_t out, int64_t a, int64_t b, int32_t dim) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    align_stub_tensor *sb = align_stub_slot(slots, b);
+    align_stub_tensor *t = NULL;
+    int64_t ne[4];
+    int axis = 0;
+#ifdef ALIGN_GGML_FORCE_CONCAT_AXIS
+    dim = (dim == 0) ? 1 : 0;
+#endif
+    if (sa == NULL || sb == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (dim < 0 || dim > ALIGN_GGML_MAX_DIM_SELECTOR) {
+        return ALIGN_GGML_INIT;
+    }
+    if (sa->type != sb->type) {
+        return ALIGN_GGML_TYPE;
+    }
+    for (axis = 0; axis <= ALIGN_GGML_MAX_DIM_SELECTOR; axis++) {
+        ne[axis] = sa->ne[axis];
+        if (axis != (int) dim && sa->ne[axis] != sb->ne[axis]) {
+            return ALIGN_GGML_SHAPE;
+        }
+    }
+    ne[dim] = sa->ne[dim] + sb->ne[dim];
+    if (ne[0] * ne[1] * ne[2] * ne[3] > ALIGN_GGML_MAX_PAD_ELEMENTS) {
+        return ALIGN_GGML_SHAPE;
+    }
+    t = align_stub_new(ctx, sa->type, ne[0], ne[1], ne[2], ne[3]);
+    if (t == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    t->ip[0] = (int32_t) dim;
+    return align_stub_bind(slots, out, t, sa, sb, ALIGN_STUB_OP_CONCAT);
 }
 
 /* ---------------------------------------------------------------------------------------------

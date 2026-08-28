@@ -374,6 +374,34 @@ The current forward delivery order is:
     repaired in one consolidated commit; the real-model run was repeated at the repair head and
     reproduced every recorded number.
 
+27. **R6-DECODE-KV-STEP1 — one decode step over an Align-owned KV plane. Implemented; the hosted
+    owner and the real-model qualification are recorded in
+    [`r6-decode-kv-step1.md`](r6-decode-kv-step1.md).** R5B computes a whole prefill and every K and
+    V dies with its graph — `src/model_forward.align` opens three fresh `ggml_context`s per graph
+    and frees them at the end of that graph — so the model can answer "what are the logits for this
+    prompt" and not "what comes next". This capability adds the smallest thing that changes that: an
+    Align-owned KV plane carrying all twenty-eight layers' post-RoPE K and V across the graph
+    boundary, a decode graph at `n_past = T` with positions `[n_past]` and a `{KV_WIDTH, 1}` mask,
+    one new ggml op wrapper (`ggml_concat`) with its shim body and its stub kernel, a split of token
+    ids from positions — one buffer until now — and a lift of `MAX_PREFILL_TOKENS` from 6 to 8. The
+    boundary is deliberately narrow: dense Qwen2.5-Coder-7B Q4_K_M, CPU, **one** step, the plane in
+    memory, no tiering, no invalidation, no Metal, no OLMoE, and no TTFT claim. It is the first
+    consumer of item 22's decode instrument, exactly as
+    [`r2c-decode-instrument.md`](r2c-decode-instrument.md) section 1 anticipated. The gate is
+    correctness, on two oracles: every comparable node of llama.cpp's own **decode** graph matches
+    at the instrument's printing precision of one ten-thousandth over twenty-eight layers plus the
+    head, four prompts x three runs; and the KV plane's round trip through the graph boundary is
+    **byte-identical** across all twenty-eight layers' K and V. The design records, as measured
+    findings, that `llama-debug --save-logits` has no step-1 blob at all — `-n` is inert for it and
+    the R2c patch does not touch it — that the decode graph is not reproducible unless the sampler
+    is pinned to `--temp 0 -s 0`, and that a single-shot `T+1` prefill is **not** a valid byte-exact
+    reference for a decode step, because llama.cpp's own two paths differ by up to 0.17 in
+    activations and 0.054 at the logits through batch-size-dependent kernel selection. The plane is
+    29,360,128 B at KV width 256. The hosted owner is `layer-forward-smoke`, extended with a fifth
+    block whose corpus is a **second implementation** of the decode step in Python and a transcript
+    holding two graphs; `gmake decode-step-qualification` is the opt-in real-model run and joins no
+    aggregate. `docs/specs/r6-decode-kv-step1.md` is the authoritative ledger.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:

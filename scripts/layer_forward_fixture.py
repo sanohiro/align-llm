@@ -906,7 +906,52 @@ def model_tensor(role, layer, g):
     return Tensor([dim0, dim1], weight_values(seed, dim0 * dim1))
 
 
-def model_layer(cur, weights, g, tokens, width, mask, last, records, layer):
+def concat_tensor(a, b, dim):
+    """`ggml_concat`: `b`'s coordinates shifted by `a->ne[dim]`, every other axis identical."""
+    assert all(a.ne[i] == b.ne[i] for i in range(4) if i != dim), (a.ne, b.ne, dim)
+    ne = list(a.ne)
+    ne[dim] = a.ne[dim] + b.ne[dim]
+    out = Tensor(ne)
+    for i3 in range(a.ne[3]):
+        for i2 in range(a.ne[2]):
+            for i1 in range(a.ne[1]):
+                for i0 in range(a.ne[0]):
+                    out.data[i0 + ne[0] * (i1 + ne[1] * (i2 + ne[2] * i3))] = \
+                        a.data[i0 + a.ne[0] * (i1 + a.ne[1] * (i2 + a.ne[2] * i3))]
+    for i3 in range(b.ne[3]):
+        for i2 in range(b.ne[2]):
+            for i1 in range(b.ne[1]):
+                for i0 in range(b.ne[0]):
+                    at = [i0, i1, i2, i3]
+                    at[dim] += a.ne[dim]
+                    out.data[at[0] + ne[0] * (at[1] + ne[1] * (at[2] + ne[2] * at[3]))] = \
+                        b.data[i0 + b.ne[0] * (i1 + b.ne[1] * (i2 + b.ne[2] * i3))]
+    return out
+
+
+def plane_to_past_k(plane, head_dim, n_head_kv, n_past):
+    """`{head_dim, n_head_kv, column}` to the `{head_dim, n_past, n_head_kv}` the decode graph wants."""
+    out = Tensor([head_dim, n_past, n_head_kv])
+    for h in range(n_head_kv):
+        for c in range(n_past):
+            for d in range(head_dim):
+                out.data[d + head_dim * (c + n_past * h)] = \
+                    plane.data[d + head_dim * (h + n_head_kv * c)]
+    return out
+
+
+def plane_to_past_v(plane, head_dim, n_head_kv, n_past):
+    """The same plane as the `{n_past, head_dim, n_head_kv}` the transposed V path wants."""
+    out = Tensor([n_past, head_dim, n_head_kv])
+    for h in range(n_head_kv):
+        for d in range(head_dim):
+            for c in range(n_past):
+                out.data[c + n_past * (d + head_dim * h)] = \
+                    plane.data[d + head_dim * (h + n_head_kv * c)]
+    return out
+
+
+def model_layer(cur, weights, g, tokens, width, mask, last, records, layer, planes=None):
     """One layer of section 3.6's thirty-six-row table, in the order the walk issues it."""
     t = len(tokens)
     head_dim, n_head, n_head_kv = g["head_dim"], g["n_head"], g["n_head_kv"]
@@ -956,6 +1001,10 @@ def model_layer(cur, weights, g, tokens, width, mask, last, records, layer):
     ffn_out = mul_mat(weights["ffn_down"], ffn_swiglu)
     l_out = broadcast(ffn_out, ffn_inp, lambda x, y: x + y)
 
+    if planes is not None:
+        # R6 section 2.2: the plane's two tensors are this layer's **post-RoPE** K and its reshaped
+        # V, both `{head_dim, n_head_kv, T}`, which is the plane's own order.
+        planes.append((kr, v3))
     weight_name = "blk.%d.attn_output.weight" % layer
     records.extend([
         ("norm" + suffix, "RMS_NORM", "embd" if layer == 0 else "l_out-%d" % (layer - 1), norm),
@@ -981,7 +1030,7 @@ def model_layer(cur, weights, g, tokens, width, mask, last, records, layer):
     return l_out
 
 
-def model_forward(embed, layers, head, g, tokens, width):
+def model_forward(embed, layers, head, g, tokens, width, planes=None):
     """The whole prefill: one embedding graph, `n_layer` layer graphs, and the head."""
     t = len(tokens)
     mask = Tensor([width, t], [0.0 if c <= r else float("-inf")
@@ -992,7 +1041,7 @@ def model_forward(embed, layers, head, g, tokens, width):
     cur = embd
     for layer in range(g["n_layer"]):
         cur = model_layer(cur, layers[layer], g, tokens, width, mask, layer == g["n_layer"] - 1,
-                          records, layer)
+                          records, layer, planes)
     norm = rms_norm(cur, g["rms_eps"])
     result_norm = broadcast(norm, head["output_norm"], lambda x, y: x * y)
     result_output = mul_mat(head["output"], result_norm)
@@ -1189,6 +1238,158 @@ def write_model_corpus(directory, emit):
          "\n".join(lines[:novalues_start + 1] + lines[novalues_end:]) + "\n")
 
     emit("model-transcript-garbage.txt", bytes(range(256)) * 8)
+
+    write_decode_corpus(g, embed, layers, head, records, logits, emit)
+
+
+# =============================================================================================
+# R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md` section 5.1)
+#
+# The same generator, extended with the **second call**: one decode step at `n_past = T` over the
+# KV plane the prefill produced. It is a second implementation of section 2.4's decode layer — the
+# offset mask, the two concat axes, and the pad back to `KV_WIDTH` — and it is the only way oracle A
+# can be checked on a host with no ggml and no model.
+#
+# The transcript it emits holds **two graphs**, prefill then decode, exactly as `llama-eval-callback
+# -n 1` does, so the arm's own "skip the first graph" rule is exercised rather than assumed.
+# =============================================================================================
+
+
+def model_decode_layer(cur, weights, g, planes, n_past, width, mask, last, records, layer):
+    """One decode layer: section 2.4's thirty-eight rows, in the order the walk issues them."""
+    head_dim, n_head, n_head_kv = g["head_dim"], g["n_head"], g["n_head_kv"]
+    n_embd = g["n_embd"]
+    eps, freq_base = g["rms_eps"], g["rope_freq_base"]
+    suffix = "-%d" % layer
+    plane_k, plane_v = planes[layer]
+
+    norm = rms_norm(cur, eps)
+    attn_norm = broadcast(norm, weights["attn_norm"], lambda x, y: x * y)
+    q = broadcast(mul_mat(weights["attn_q"], attn_norm), weights["attn_q_bias"],
+                  lambda x, y: x + y)
+    k = broadcast(mul_mat(weights["attn_k"], attn_norm), weights["attn_k_bias"],
+                  lambda x, y: x + y)
+    v = broadcast(mul_mat(weights["attn_v"], attn_norm), weights["attn_v_bias"],
+                  lambda x, y: x + y)
+    q3 = reshape(q, [head_dim, n_head, 1])
+    k3 = reshape(k, [head_dim, n_head_kv, 1])
+    v3 = reshape(v, [head_dim, n_head_kv, 1])
+    # The position is `n_past`, not 0. Section 2.6: the embedding row index and the position are two
+    # different numbers for the first time here.
+    qr = rope_neox(q3, [n_past], g["rope_dim_count"], freq_base)
+    kr = rope_neox(k3, [n_past], g["rope_dim_count"], freq_base)
+    qp = permute(qr, [0, 2, 1, 3])
+    kp = cont(permute(kr, [0, 2, 1, 3]), [head_dim, 1, n_head_kv])
+    kcat = concat_tensor(plane_to_past_k(plane_k, head_dim, n_head_kv, n_past), kp, 1)
+    kpad = pad_tensor(kcat, 0, width - (n_past + 1), 0, 0)
+    kq = mul_mat(kpad, qp)
+    scale = f32(1.0 / math.sqrt(head_dim))
+    kqs = soft_max_ext(kq, mask, scale)
+    vt = cont(permute(v3, [1, 2, 0, 3]), [1, head_dim, n_head_kv])
+    vcat = concat_tensor(plane_to_past_v(plane_v, head_dim, n_head_kv, n_past), vt, 0)
+    vpad = pad_tensor(vcat, width - (n_past + 1), 0, 0, 0)
+    kqv = mul_mat(vpad, kqs)
+    kqv_out = cont(permute(kqv, [0, 2, 1, 3]), [n_embd, 1, 1])
+    attn_out = mul_mat(weights["attn_output"], kqv_out)
+    # The two `WHEN_LAST` rows are kept at `t = 1`, where `get_rows(x, [0])` is the identity
+    # (section 2.4). They have no counterpart in llama.cpp's decode graph and no oracle row names
+    # them, so nothing below records them.
+    narrowed = get_rows(attn_out, [0]) if last else attn_out
+    residual = get_rows(cur, [0]) if last else cur
+    ffn_inp = broadcast(narrowed, residual, lambda x, y: x + y)
+    ffn_norm = broadcast(rms_norm(ffn_inp, eps), weights["ffn_norm"], lambda x, y: x * y)
+    ffn_gate = mul_mat(weights["ffn_gate"], ffn_norm)
+    ffn_up = mul_mat(weights["ffn_up"], ffn_norm)
+    ffn_swiglu = swiglu_split(ffn_gate, ffn_up)
+    ffn_out = mul_mat(weights["ffn_down"], ffn_swiglu)
+    l_out = broadcast(ffn_out, ffn_inp, lambda x, y: x + y)
+
+    weight_name = "blk.%d.attn_output.weight" % layer
+    records.extend([
+        ("norm" + suffix, "RMS_NORM", "embd" if layer == 0 else "l_out-%d" % (layer - 1), norm),
+        ("attn_norm" + suffix, "MUL", "norm" + suffix, attn_norm),
+        ("Qcur" + suffix, "ADD", "Qcur" + suffix, q),
+        ("Vcur" + suffix, "ADD", "Vcur" + suffix, v),
+        ("Kcur" + suffix, "ADD", "Kcur" + suffix, k),
+        ("Qcur" + suffix, "ROPE", "Qcur" + suffix, qr),
+        ("Kcur" + suffix, "ROPE", "Kcur" + suffix, kr),
+        ("kq" + suffix, "MUL_MAT", "cache_k_l%d (view) (permuted)" % layer, kq),
+        ("kq_soft_max" + suffix, "SOFT_MAX", "kq" + suffix, kqs),
+        ("kqv" + suffix, "MUL_MAT", "cache_v_l%d (view) (permuted)" % layer, kqv),
+        ("kqv_out" + suffix, "CONT", "kqv%s (permuted)" % suffix, kqv_out),
+        ("node_%d" % (200 + layer), "MUL_MAT", weight_name, attn_out),
+        ("ffn_inp" + suffix, "ADD", "node_%d" % (200 + layer), ffn_inp),
+        ("ffn_norm" + suffix, "MUL", "norm" + suffix, ffn_norm),
+        ("ffn_gate" + suffix, "MUL_MAT", "blk.%d.ffn_gate.weight" % layer, ffn_gate),
+        ("ffn_up" + suffix, "MUL_MAT", "blk.%d.ffn_up.weight" % layer, ffn_up),
+        ("ffn_swiglu" + suffix, "SWIGLU", "ffn_gate" + suffix, ffn_swiglu),
+        ("ffn_out" + suffix, "MUL_MAT", "blk.%d.ffn_down.weight" % layer, ffn_out),
+        ("l_out" + suffix, "ADD", "ffn_out" + suffix, l_out),
+    ])
+    return l_out
+
+
+def model_decode(embed, layers, head, g, planes, token, n_past, width):
+    """The decode graph set: one embedding gather for the decoded token, the layers, and the head."""
+    mask = Tensor([width, 1], [0.0 if c <= n_past else float("-inf") for c in range(width)])
+    records = []
+    embd = get_rows(embed, [token])
+    records.append(("embd", "GET_ROWS", "token_embd.weight", embd))
+    cur = embd
+    for layer in range(g["n_layer"]):
+        cur = model_decode_layer(cur, layers[layer], g, planes, n_past, width, mask,
+                                 layer == g["n_layer"] - 1, records, layer)
+    norm = rms_norm(cur, g["rms_eps"])
+    result_norm = broadcast(norm, head["output_norm"], lambda x, y: x * y)
+    result_output = mul_mat(head["output"], result_norm)
+    records.append(("norm", "RMS_NORM", "l_out-%d" % (g["n_layer"] - 1), norm))
+    records.append(("result_norm", "MUL", "norm", result_norm))
+    records.append(("result_output", "MUL_MAT", "output.weight", result_output))
+    return records, result_output
+
+
+def write_decode_corpus(g, embed, layers, head, prefill_records, prefill_logits, emit):
+    """Section 5.1's decode corpus: the two-graph transcript, its logits, and the mutations."""
+    n_past = len(MODEL_TOKENS)
+    planes = []
+    # The prefill is recomputed with the planes captured; its records are the ones already emitted,
+    # so the two agree by construction rather than by inspection.
+    replayed, replayed_logits = model_forward(embed, layers, head, g, MODEL_TOKENS,
+                                              MODEL_KV_WIDTH, planes)
+    assert replayed_logits.data == prefill_logits.data
+    token = max(range(prefill_logits.count()), key=lambda i: prefill_logits.data[i])
+    decode_records, decode_logits = model_decode(
+        embed, layers, head, g, planes, token, n_past, MODEL_KV_WIDTH)
+    lines = model_transcript(prefill_records + decode_records, MODEL_TOKENS)
+    emit("model-decode-transcript.txt", lines)
+    emit("model-decode-logits.bin",
+         struct.pack("<%df" % decode_logits.count(), *decode_logits.data))
+    emit("model-decode-argmax.txt", "%d\n" % token)
+
+    # A transcript holding only the **prefill** graph. The arm skips the first graph, so every
+    # oracle row is then missing and the run is `R6_ORACLE_MISSING` rather than a silent comparison
+    # against the wrong graph — which is the failure this fixture exists to make visible.
+    emit("model-decode-transcript-onegraph.txt", model_transcript(prefill_records, MODEL_TOKENS))
+
+    # A tolerance breach inside the **decode** graph: one printed element of the decode `l_out-0`
+    # moved by 0.0003, three times section 3.4's threshold.
+    rows = lines.split("\n")
+    marker = "common_debug_cb_eval:"
+    hits = [i for i, line in enumerate(rows) if line.startswith(marker) and " l_out-0 = " in line]
+    perturbed = list(rows)
+    row = hits[-1] + 3
+    original = perturbed[row]
+    first = original.index("[") + 1
+    value = float(original[first:first + 12])
+    perturbed[row] = original[:first] + ("%12.4f" % (value + 0.0003)) + original[first + 12:]
+    emit("model-decode-transcript-perturbed.txt", "\n".join(perturbed))
+
+    # `kq-0` of the **decode** graph declaring a reduction width the operand does not name.
+    kq_hits = [i for i, line in enumerate(rows) if line.startswith(marker) and " kq-0 = " in line]
+    widened = list(rows)
+    widened[kq_hits[-1]] = widened[kq_hits[-1]].replace(
+        "= {%d, " % MODEL_KV_WIDTH, "= {%d, " % (MODEL_KV_WIDTH - 1))
+    emit("model-decode-transcript-kv-width.txt", "\n".join(widened))
 
 
 # =============================================================================================

@@ -184,6 +184,13 @@ else
                        include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
                                        "-DALIGN_GGML_FORCE_INF_READBACK=1")
                        flavour="stub+engine+gpu+force-inf-readback" ;;
+    # R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md` section 4.5). The decode table names
+    # K's column axis 1 and V's axis 0, so `align_ggml_op_concat`'s axis-mismatch refusal is not
+    # producible from any operand this arm accepts. The build flips the axis inside the shim, which
+    # is what makes `ALIGN_GGML_SHAPE` a run rather than an argument.
+    engine+concat-axis)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_CONCAT_AXIS=1")
+                       flavour="stub+engine+force-concat-axis" ;;
     *)
       printf '%s\n' "build-ggml-shim: unknown stub ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
       exit 1

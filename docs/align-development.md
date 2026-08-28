@@ -1785,6 +1785,110 @@ the `BEGIN/END R4.5 SHARED SHIM CONTRACT` region stays byte-identical (ledger se
 shim is built with `-ffp-contract=off`**, inherited unchanged from R5A, and the runner asserts
 `abi.fp_contract_off` is `true`.
 
+## The `--decode-step` arm (R6-DECODE-KV-STEP1)
+
+`docs/specs/r6-decode-kv-step1.md` is the authoritative ledger. R5B computes a whole prefill and
+stops: `src/model_forward.align` opens three fresh `ggml_context`s per graph and frees them at the
+end of that graph, so every K and V it produces dies with its graph and the model can answer "what
+are the logits for this prompt" and not "what comes next". This arm adds the smallest thing that
+changes that — an **Align-owned KV plane**, host bytes carrying every layer's post-RoPE K and its V
+across the graph boundary, and one decode step at `n_past = T` that reads them.
+
+The arm lives in a new module, `src/decode_step.align`, for `r5b-model-prefill-forward.md` section
+5.5's reason (the checker's per-function cost is superlinear in body length and
+`src/model_forward.align` is already 4,500 lines). It imports the container reader, the plan, the
+member tables, the window discipline, the digests, and every renderer that means the same thing.
+
+```sh
+gmake ggml-spike                 # unchanged; also builds the --decode-step arm
+gmake layer-forward-smoke        # extended with a fifth block; unchanged aggregate membership
+gmake decode-step-qualification  # the opt-in real-ggml, real-model, real-instrument qualification
+```
+
+`--decode-step` is selected by its exact first operand and is five, six, seven, nine, or ten
+operands. **Eight is `R6_ARITY`**, inherited verbatim from `--model-forward` and for the same
+reason: `KV_WIDTH` travels with the transcript.
+
+```sh
+./ggml-spike --decode-step PACK GEOM.json TOKENS                                      # to stdout
+./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json                             # to DOC.json
+./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf                    # + the byte-plane self-reference
+./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH
+./ggml-spike --decode-step PACK GEOM.json TOKENS -        REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin
+```
+
+`TOKENS` is the **prefill**; the decoded token is never an operand. The arm computes it as its own
+prefill's `argmax`, because an operand would let a caller pass a token llama.cpp did not sample and
+the transcript oracle would then compare two different sequences and still report `PASS`.
+`KV_WIDTH` is fail-closed with **no default at any arity**: its range is `T + 1 .. 4096`, and below
+nine operands it is simply not supplied and the run is refused at step 6 with `R6_KV_WIDTH` detail
+`kv_width[-1]`. The lower bound is `T + 1` and not `T` because the step's own column has to fit.
+`TRANSCRIPT` accepts `-` for "no transcript", exactly as `--model-forward`'s does.
+
+**The transcript must hold two graphs.** `llama-eval-callback -n 1` emits a prefill graph and then a
+decode graph, and every node name repeats across them; the arm skips the first, because comparing
+its decode graph against llama.cpp's prefill graph would agree on the seven nodes that do not depend
+on the KV cache and could still report `PASS`. `layer_forward.scan_transcript_after` is that
+instruction and counts graphs by the `embd` header every graph begins with.
+
+**The sampler is pinned and it is not optional.** Measured (ledger section 3.1): two runs with
+default sampling produce byte-identical prefill graphs and **different** decode graphs, because a
+different token is sampled. `scripts/run-decode-step` passes `--temp 0 -s 0` contractually.
+
+**Env vars, read by `scripts/run-decode-step`:**
+
+```sh
+ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include \                # selects the REAL shim; unset selects the stub
+ALIGN_LLM_GGML_LIB=/opt/homebrew/lib \                        # where libggml / libggml-base are
+ALIGN_LLM_GGUF_MODEL=/path/to/qwen2.5-coder-7b.gguf \         # the dense Qwen2 model, also the byte reference
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \  # R2c-patched; oracle A's instrument
+ALIGN_LLM_LLAMA_DEBUG=/path/to/llama-debug \                  # the prefill's byte-exact logits blob
+ALIGN_LLM_DECODE_STEP_TMPDIR=/path/to/scratch \               # where the pack is written; defaults to TMPDIR
+  gmake decode-step-qualification
+```
+
+`decode-step-qualification` is opt-in and capable-only, in **neither** `HOSTED_CHECK_TARGETS` nor
+`CAPABLE_ONLY_CHECK_TARGETS` and in no aggregate — the same footing as its three siblings. It prints
+one explicit `N/A` line naming the missing input and exits 0 rather than skipping silently.
+
+**Instrument provenance is load-bearing.** Ledger section 3.1 measured the same llama.cpp commit
+built two ways producing two different 608,256-byte logits blobs, so `llama-debug` must be the
+pinned Homebrew build 10566 (`bb4caa754`) that `scripts/run-model-forward` already resolves, and
+`llama-eval-callback` must be the R2c-patched instrument
+`scripts/llama-eval-callback-toolchain ensure instrument` materializes.
+
+**Two acceptance oracles, and only one claim of byte identity.** Oracle A compares every comparable
+node of llama.cpp's own decode graph at one ten-thousandth — the instrument's `%12.4f` printing
+precision — over every layer plus the head. Oracle B compares the K and V the decode graph
+**actually consumed**, read back after compute, against the bytes the prefill wrote into the plane,
+byte for byte. B is the one that tests what this capability adds: a transposed axis, an off-by-one
+stride, or a K/V swap is numerically plausible and survives A's four printed decimals. There is no
+byte-exact external reference for the step itself — `llama-debug --save-logits` performs exactly one
+`llama_decode` and `-n` is inert for it — and ledger section 3.2 records why a single-shot `T+1`
+prefill is not one either.
+
+**The hosted corpus is a second implementation.** `scripts/layer_forward_fixture.py --model` gained
+a decode mode: a pure-Python decode step over the plane its own prefill produced, and a transcript
+holding two graphs exactly as the instrument emits them. Both oracles are therefore reachable with
+no ggml and no model, and the fifth `layer-forward-smoke` block asserts oracle A `PASS` at
+`max_abs_diff` **0** and oracle B `IDENTICAL`.
+
+**`MAX_PREFILL_TOKENS` moves from 6 to 8** (`src/layer_qwen2.align`). The cap's reason is unchanged
+and still respected — `llama-eval-callback` prints every row only while `ne1 <= 6` — and it now
+binds the prefill pass alone, because a decode graph's per-token tensors have `ne1 = 1`. The two
+over-cap smoke fixtures move from seven tokens to nine; `src/layer_olmoe.align` keeps its own cap at
+6, because OLMoE is a declared non-goal here.
+
+**R6 adds no smoke target and changes no aggregate membership**; it adds one Makefile target, the
+opt-in `decode-step-qualification`, so `scripts/check-gate-topology`'s byte-literal `EXPECTED` does
+not move and `make ci` is not selected by a topology change. A `Makefile` edit is still an
+executable-contract boundary, so `scripts/pre-pr` selects the executable row and the installed
+profile.
+
+The shim gains **one** new `extern` symbol, `align_ggml_op_concat`, with its real body and its stub
+kernel; `src/ggml_ffi.align` remains the only file with an `extern` block or an `unsafe` block, and
+the `BEGIN/END R4.5 SHARED SHIM CONTRACT` region stays byte-identical.
+
 ## The aarch64 platform-profile gates
 
 C7 evidence is target-bound, so each required non-x86 environment has its own reviewed profile.

@@ -9363,6 +9363,122 @@ Two independent, narrower asks:
 
 ---
 
+## Request 49 — A cross-module call with a `borrow mut` argument refuses every shorter-lived operand
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. R6-DECODE-KV-STEP1 ships with `src/decode_step.align` carrying its own
+  copies of `fail`/`fault_into`/`take`/`take_pack`/`account`/`top_k`, a compact re-implementation of
+  the prefill logits comparison, and a new borrow-free `model_forward.stage_plan_owned` beside the
+  `stage_plan` it could not call. `src/model_forward.align`'s existing `pub` surface is otherwise
+  intact and `--model-forward`'s goldens are byte-unchanged.
+Independent work that may continue: all of R6-DECODE-KV-STEP1, and the second decode step.
+Resume condition: an Align release admits a call into another module that takes the caller's own
+  `borrow mut` parameter together with an operand rooted in the caller's frame — a string literal, a
+  `Result` produced at the call, or a local record — without reporting "cannot retain a
+  shorter-lived view through this mutable borrow"; and stops unioning a foreign call's several
+  `borrow mut` arguments into one region, so that a later write to one does not invalidate reads of
+  another.
+Align commit or pull request: none
+align-llm verification: delete `src/decode_step.align`'s local `fail`, `fault_into`,
+  `pack_fault_into`, `take`, `take_pack`, `account`, `check_types`, `top_k`, and
+  `compare_prefill_logits`, call `src/model_forward.align`'s identical functions instead, replace
+  `model_forward.stage_plan_owned` with the pre-existing `model_forward.stage_plan`, and pass
+  `gmake layer-forward-smoke` with `scripts/decode-step-golden.jsonl` byte-unchanged.
+```
+
+### Motivation and current sibling evidence
+
+R6-DECODE-KV-STEP1 adds a second arm over the whole-model schedule. `src/model_forward.align`
+already owns every part it needs — the failure sink, the container reader, the plan, the member
+tables, the window discipline, the digests, and the renderers — and the repository's own rule is
+that a later arm **imports** an earlier one rather than copying it (`src/model_forward.align`'s own
+header: "the R5A arm is imported rather than copied"). Widening those functions to `pub` is
+mechanical and changes no behaviour. Calling them from a second module is what does not compile.
+
+Two distinct refusals appear, both only across a module boundary and both absent from the identical
+same-module sequence.
+
+**1. A shorter-lived operand beside a `borrow mut` argument.** The failing form is the most ordinary
+line in the arm:
+
+```align
+fn run_step_graph(/* … */ borrow mut o: model_forward.Outcome) {
+  model_forward.take(o, ggml_ffi.slots_init(slot_view, slot_view.len(), "slots"))
+```
+
+```text
+$ alignc build src/ggml_spike.align
+src/decode_step.align:524:25: error: cannot retain a shorter-lived view through this mutable
+  borrow; copy it into the destination region first
+```
+
+`src/model_forward.align:1951` is that exact line, with `o` a `borrow mut` parameter of its own
+`run_graph` and `take` in the same module, and it builds. Moving the two-line body of `take` into
+`src/decode_step.align` — same code, same types, same `Outcome` — makes the diagnostic go away. It
+is not about what the callee does: `take` clones through `fail`, and the checker cannot see that
+across the boundary, so it assumes the `Fault`'s `string` fields could be retained through `o`. The
+same refusal fires for `model_forward.fill_members(pak, m, tokens, window, transient, counters)`
+when `tokens` is the caller's own `borrow mut` parameter and `transient` is a local, and for
+`model_forward.top_k(logits_view, top_index, top_bits)` when all three are locals of the calling
+frame. Measured count: **161 of the 178 errors** in the first cross-module draft of
+`src/decode_step.align` were this one diagnostic, and every one of them disappeared by moving the
+callee into the calling module unchanged.
+
+**2. A foreign call unions its `borrow mut` arguments.** `model_forward.stage_plan` reports through
+four of them:
+
+```align
+window_bytes := model_forward.stage_plan(pak, g, table, tokens.count, plan, ends, o, counters)
+```
+
+```text
+src/decode_step.align:2026:65: error: use of invalidated borrow 'plan': its source 'o' was moved or
+  reassigned (or its storage was reallocated); create a new view from the current source
+src/decode_step.align:2026:24: error: value snapshot was invalidated before the enclosing operation:
+  owner 'o' was moved, reassigned, or reallocated by a later eager operand
+```
+
+`plan` and `o` are two unrelated locals of the caller. After the call the checker treats them as one
+owner, so the next ordinary write to `o` invalidates every later read of `plan` —
+`build_layer_members(table, plan, probe)` twenty lines down. `src/model_forward.align:3128` makes the
+identical call with the identical four locals and builds. This is the same **merging** the R5C
+correction behind Request 43 named, met from the other side: Request 43 is about a caller reading a
+`borrow mut` out-parameter *after* the call, and this is about the call invalidating an argument the
+callee never touched.
+
+**Why this is not Request 43, 42, or 46.** Request 43 asks for one specific read-after-call to be
+admitted and its shipped workaround — return the results in one owned record — is exactly what does
+*not* help here: the failing operands are **inputs**, and refusal 1 has no out-parameter in it at
+all. Request 42 is about `check` missing what `build` catches, which is how both refusals were found
+(`alignc check src/decode_step.align` reported `ok: checked 413 function(s)` against a file with 178
+build errors) but is not what they are. Request 46 is about `array<T>` locals in loops and element
+assignment through an array field; neither shape appears here.
+
+### Proposed surface
+
+No new syntax. Two checker changes:
+
+1. When a foreign call takes a `borrow mut` argument, judge each other operand against that
+   argument's own region rather than against the callee's unknown one — or, minimally, treat a
+   literal, a call result, and a caller-frame local as admissible operands of a foreign call whose
+   signature does not return a view.
+2. Keep a foreign call's several `borrow mut` arguments in **separate** regions unless the callee's
+   signature can actually alias them (no returned view, no shared lifetime parameter). Today they are
+   unioned unconditionally.
+
+### Acceptance criteria
+
+- `src/decode_step.align` calls `model_forward.fail`, `take`, `take_pack`, `account`, `top_k`,
+  `compare_logits`, and `stage_plan` directly, with no local re-implementation of any of them, and
+  `alignc build src/ggml_spike.align` succeeds.
+- `gmake layer-forward-smoke` passes with all five goldens byte-unchanged, which is what makes the
+  removal a refactor rather than a behaviour change.
+- `alignc check` and `alignc build` agree on every one of the shapes above (Request 42's own
+  criterion, restated here because that is how both were discovered).
+
 ## Not requested (respecting Align's design)
 
 These were considered and deliberately **not** requested, because they conflict with Align's design

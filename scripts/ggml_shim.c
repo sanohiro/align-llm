@@ -1463,6 +1463,51 @@ int32_t align_ggml_op_pad(void *ctx, void *slots, int64_t out, int64_t a,
 }
 
 /* ---------------------------------------------------------------------------------------------
+ * R6-DECODE-KV-STEP1 — the one new entry point
+ *
+ * `docs/specs/r6-decode-kv-step1.md` section 2.5. `ggml_concat(ctx, a, b, dim)` joins two tensors
+ * along `dim`; every other axis must agree exactly. It is what turns "the KV plane's past columns"
+ * and "this step's one new column" into the single operand the attention reduces over, and it is
+ * the whole difference between a prefill layer and a decode layer.
+ *
+ * `sb` is fetched **before** `ALIGN_GGML_OP_PROLOGUE_1` because the macro emits declarations and C89
+ * requires them first in the block. The axis check is stated here, before the call, for rule 3's
+ * reason: `ggml_concat` asserts the same relation internally and `GGML_ASSERT` is `abort()` with no
+ * unwinding, no document, and no error code. Section 2.4 records that K and V concatenate on
+ * **different** axes — K's column axis is 1 and V's is 0 — so a single shared constant here would be
+ * a silent transpose, and the shape refusal below is what makes a wrong one a code rather than a
+ * plausible number.
+ */
+int32_t align_ggml_op_concat(
+    void *ctx, void *slots, int64_t out, int64_t a, int64_t b, int32_t dim) {
+    struct ggml_tensor *sb = align_ggml_slot_tensor(slots, b);
+    int axis = 0;
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (sb == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (dim < 0 || dim > ALIGN_GGML_MAX_DIM_SELECTOR) {
+        return ALIGN_GGML_INIT;
+    }
+    if (sa->type != sb->type) {
+        return ALIGN_GGML_TYPE;
+    }
+    for (axis = 0; axis <= ALIGN_GGML_MAX_DIM_SELECTOR; axis++) {
+        if (axis != (int) dim && sa->ne[axis] != sb->ne[axis]) {
+            return ALIGN_GGML_SHAPE;
+        }
+    }
+    result = ggml_concat((struct ggml_context *) ctx, sa, sb, (int) dim);
+    if (result == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    if (ggml_nelements(result) > ALIGN_GGML_MAX_PAD_ELEMENTS) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+/* ---------------------------------------------------------------------------------------------
  * R5D-MOE-LAYER-FORWARD — the five new entry points
  *
  * `docs/specs/r5d-moe-layer-forward.md` section 3.5. Rule 5 is kept: each is exactly one ggml call
