@@ -22,9 +22,15 @@ with zero fake-instrument calls and one valid admission through `--version` to t
 `make baseline-check` pass. The hardware-name evidence finding from the duplicate implementation is
 not applicable because merged R3 has no hardware-profile string input.
 
-**Next actions, in order.** Commit the coherent repair, perform one comprehensive review, run the
-owner and exact-head preflight, publish and merge the follow-up, then refresh `main` and start the
-next eligible roadmap capability.
+**Review envelope.** One host-native Codex comprehensive review covered the whole follow-up diff at
+`045cb48` against base tip and merge base `95c47e73ec0be1cd79ecd6536e0b84bc254bd871`.
+Verdict: clean; findings: none. The reviewer traced the probe through the simulator's documented
+validation order and CLI exit mapping and ran the direct owner with the existing product binary.
+Its attempt to reacquire the managed compiler lock was N/A because the review sandbox makes the
+user cache read-only; the normal owner run above is the owning build evidence.
+
+**Next actions, in order.** Run the exact-head owner and preflight, publish and merge the follow-up,
+then refresh `main` and start the next eligible roadmap capability.
 
 ## Merged checkpoint: R3-RESIDENCY-SIM (2026-08-28)
 
