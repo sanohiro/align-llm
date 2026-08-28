@@ -18,6 +18,17 @@ set -euo pipefail
 #                                   all four. The documented cost fallback is, in order,
 #                                   `ALIGN_LLM_DECODE_STEPS=8` and then
 #                                   `ALIGN_LLM_KV_PERSIST_PROMPTS=2`
+#   ALIGN_LLM_RESIDENT_WEIGHTS      `1` (default) runs R6-RESIDENT-WEIGHTS' resident leg; `0` skips
+#                                   it and says so. The leg needs about 4.7 GB of physical memory
+#                                   for the arena and is refused below 12 GiB with an explicit N/A
+#                                   line, because Align cannot report a failed `buffer` reservation
+#                                   (Request 35) and a host that cannot hold the arena **aborts**
+#                                   rather than producing a document
+#
+# **R6-RESIDENT-WEIGHTS section 3.6's host check lives here and not in the arm.** Align has no
+# host-memory inquiry (`docs/align-requests.md` Request 50), so the only place that can refuse a
+# host too small for the arena is the runner. It prints one explicit `N/A` line naming physical
+# memory, exactly as it does for a missing model or instrument, and it never skips silently.
 #
 # When any is unset, or the model or either instrument is absent, or `numpy` is unavailable, or the
 # free space under the scratch root is under the pack's size plus 2 GiB, it prints one explicit N/A
@@ -85,6 +96,43 @@ command -v "${ALIGN_LLM_LLAMA_DEBUG}" >/dev/null 2>&1 \
 # happened, which is a late exit 1 where the header promises one N/A line.
 python3 -c 'import numpy' >/dev/null 2>&1 \
   || na "numpy is unavailable, so gate G's fingerprint injectivity cannot be measured"
+
+# R6-RESIDENT-WEIGHTS section 3.6, consequence 2. Physical memory, from the platform's own
+# inquiry, before anything is packed. `sysctl -n hw.memsize` on Darwin and `MemTotal` from
+# `/proc/meminfo` on Linux; a host that reports neither is treated as unable to hold the arena,
+# which is the fail-closed reading.
+RESIDENT_MIN_GIB=12
+RESIDENT_LEG="${ALIGN_LLM_RESIDENT_WEIGHTS:-1}"
+physical_bytes=0
+if [ -r /proc/meminfo ]; then
+  physical_bytes=$(( $(awk '/^MemTotal:/ { print $2 }' /proc/meminfo) * 1024 ))
+elif command -v sysctl >/dev/null 2>&1; then
+  physical_bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+fi
+resident_na=""
+if [ "${RESIDENT_LEG}" != 1 ]; then
+  resident_na="ALIGN_LLM_RESIDENT_WEIGHTS=${RESIDENT_LEG}"
+elif [ "${physical_bytes}" -lt $(( RESIDENT_MIN_GIB * 1024 * 1024 * 1024 )) ]; then
+  resident_na="physical memory is ${physical_bytes} B, below the ${RESIDENT_MIN_GIB} GiB the "
+  resident_na="${resident_na}resident arena needs"
+  RESIDENT_LEG=0
+fi
+
+# `vm_stat` on Darwin, `/proc/vmstat` on Linux: the compressor counters R6-RESIDENT-WEIGHTS
+# section 3.4 measurement risk 2 requires to be recorded before and after every timed run. A host
+# that compresses the arena is not holding it resident, and a run whose compressor activity moved
+# materially is reported as such rather than absorbed into the claim.
+compressor_state() {
+  if [ -r /proc/vmstat ]; then
+    awk '/^(pswpin|pswpout|nr_zswpout)/ { printf "%s=%s ", $1, $2 }' /proc/vmstat
+  elif command -v vm_stat >/dev/null 2>&1; then
+    vm_stat | awk -F: '/Pages stored in compressor|Pages occupied by compressor|Swapouts/ {
+      gsub(/^ +| +$|\./, "", $2); gsub(/ /, "_", $1); printf "%s=%s ", $1, $2 }'
+  else
+    printf 'unavailable'
+  fi
+  printf '\n'
+}
 
 model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
 scratch_root="${ALIGN_LLM_DECODE_STEP_TMPDIR:-${TMPDIR:-/tmp}}"
@@ -236,6 +284,7 @@ PY
   echo "decode step qualification:   ${prompt} tokenizes to ${tokens}"
   if [ "${index}" = 1 ]; then
     scaling_tokens="${tokens}"
+    oracle_r_logits="${logits_bin}"
   fi
 
   # R6-STEP-N section 3.5, rule 7. The transcript must hold exactly `N + 1` graphs. Every graph this
@@ -398,21 +447,62 @@ with open(sys.argv[1], 'rb') as handle:
   fi
 done
 
-# R6-STEP-N section 2.10's scaling row, on the first prompt only. It is the measurement that
-# motivates resident weights — the loop re-reads the whole pack once per step — and it is
-# characterization: **no TTFT or tokens-per-second claim is made anywhere in this qualification.**
+# R6-STEP-N section 2.10's scaling row, on the first prompt only, now taken on **both legs, back to
+# back, in one session, three runs each** — which is R6-RESIDENT-WEIGHTS section 3.4's whole
+# mitigation for measurement risks 1 and 5. The streamed leg is the baseline re-taken on this host
+# in this session, not a number quoted from an earlier document; the resident leg is the result.
+#
+# `no transcript, no logits blob` on both legs, so the two differ in the `RESIDENT` operand and in
+# nothing else.
 scaling_dir="${work_dir}/scaling"
 mkdir -p "${scaling_dir}"
+if [ -n "${resident_na}" ]; then
+  printf '%s\n' "decode step qualification: N/A the resident leg: ${resident_na}"
+fi
 for n in 1 4 "${DECODE_STEPS}"; do
-  echo "decode step qualification: scaling run at N=${n} on prompt 1"
-  "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
-    "${work_dir}/geometry.json" "${scaling_tokens}" \
-    "${scaling_dir}/n${n}.json" "${ALIGN_LLM_GGUF_MODEL}" - "${KV_WIDTH}" - "${n}" \
-    > "${scaling_dir}/n${n}.txt" || {
-      echo "decode step qualification: FAIL the scaling run at N=${n} exited non-zero" >&2
-      exit 1
-    }
+  for mode in stream weights; do
+    if [ "${mode}" = weights ] && [ "${RESIDENT_LEG}" != 1 ]; then
+      continue
+    fi
+    for repeat in 1 2 3; do
+      echo "decode step qualification: scaling run at N=${n} mode=${mode} run ${repeat} on prompt 1"
+      compressor_state > "${scaling_dir}/n${n}-${mode}-${repeat}.before"
+      time_invocation "${scaling_dir}/n${n}-${mode}-${repeat}.wall" \
+        "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+        "${work_dir}/geometry.json" "${scaling_tokens}" \
+        "${scaling_dir}/n${n}-${mode}-${repeat}.json" "${ALIGN_LLM_GGUF_MODEL}" - "${KV_WIDTH}" \
+        - "${n}" - - "$( [ "${mode}" = weights ] && echo weights || echo - )" \
+        > "${scaling_dir}/n${n}-${mode}-${repeat}.txt" || {
+          echo "decode step qualification: FAIL the ${mode} scaling run at N=${n} exited" \
+            "non-zero" >&2
+          exit 1
+        }
+      compressor_state > "${scaling_dir}/n${n}-${mode}-${repeat}.after"
+    done
+  done
+  # The row R6-STEP-N's analysis already reads. It is the streamed leg's first run, kept at its old
+  # name so that section 5.4's own reporting is unchanged.
+  cp "${scaling_dir}/n${n}-stream-1.json" "${scaling_dir}/n${n}.json"
 done
+
+# Oracle R (R6-RESIDENT-WEIGHTS section 4.1) on the real model: the same invocation twice, once
+# streamed and once resident, with the transcript, the logits blob, and the reference GGUF all
+# supplied — so every oracle the qualification runs is re-run on the resident leg and the two
+# documents are compared field by field.
+if [ "${RESIDENT_LEG}" = 1 ]; then
+  echo "decode step qualification: oracle R -- prompt 1 streamed and resident at N=${DECODE_STEPS}"
+  for mode in stream weights; do
+    "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+      "${work_dir}/geometry.json" "${scaling_tokens}" \
+      "${scaling_dir}/oracle-r-${mode}.json" "${ALIGN_LLM_GGUF_MODEL}" \
+      "${work_dir}/case1/transcript.txt" "${KV_WIDTH}" "${oracle_r_logits}" "${DECODE_STEPS}" \
+      - - "$( [ "${mode}" = weights ] && echo weights || echo - )" \
+      > "${scaling_dir}/oracle-r-${mode}.txt" || {
+        echo "decode step qualification: FAIL the oracle R ${mode} run exited non-zero" >&2
+        exit 1
+      }
+  done
+fi
 
 # Gate G's load-bearing measurement (section 3.2), taken **once** and before the gate is claimed. It
 # is over `token_embd.weight` of the source GGUF rather than of the pack, and that is equivalent
@@ -494,7 +584,14 @@ def normalize(document):
 # `plane.columns_written`, `roundtrip_verdict`, `roundtrip_bytes_compared`, and every
 # `first_mismatch_*`; `output` and `oracle_logits`; `oracle_decode` in full; and `model`,
 # `selection`, `head`'s digests, and `abi`.
-PERSIST_EXCLUDED_BLOCKS = ("kv", "graph", "schedule", "timings", "lifetime", "reference")
+# R6-RESIDENT-WEIGHTS: `weights` joins the excluded blocks for exactly the reason
+# `pack.reader_*` and `window.reuse_count` are already excluded — a load run skips the prefill, so
+# it wraps fewer windows and reads fewer pack bytes, and `weights.wrap_count` and
+# `weights.step_pack_bytes` are counts of work the load path legitimately did not do. The object's
+# own contents are asserted by the R6W block below, and oracle R compares the two residency modes
+# directly rather than through this one.
+PERSIST_EXCLUDED_BLOCKS = ("kv", "graph", "schedule", "timings", "lifetime", "reference",
+                           "weights")
 PERSIST_EXCLUDED_FIELDS = (
     ("plane", "source"), ("plane", "readback_ns"), ("plane", "upload_ns"),
     ("head", "node_count"), ("head", "pread_ns"), ("head", "compute_ns"),
@@ -999,8 +1096,8 @@ print("decode step qualification: the TTFT proxy above is a labelled diagnostic 
       "`REFERENCE` has no `-` form, so the model is supplied at thirteen operands and its byte "
       "comparison runs inside the prefill pass, which the load direction does not run at all.")
 
-# The scaling row. Characterization, reported and not asserted, and the first concrete evidence for
-# resident weights: the loop re-reads the whole pack once per step.
+# The scaling row. Characterization, reported and not asserted, and the measurement that motivated
+# resident weights: the streamed loop re-reads the whole pack once per step.
 for n in sorted({1, 4, steps}):
     path = os.path.join(work_dir, "scaling", "n%d.json" % n)
     if not os.path.exists(path):
@@ -1014,6 +1111,260 @@ for n in sorted({1, 4, steps}):
           "pack bytes read %d  plane columns %d"
           % (n, scaled["timings"]["elapsed_ns"], scaled["decode"]["compute_ns"],
              scaled["pack"]["reader_bytes_read"], scaled["plane"]["columns_written"]))
+
+# ---------------------------------------------------------------------------------------------
+# R6-RESIDENT-WEIGHTS section 3.4 -- the performance claim, and section 4.1 -- oracle R
+#
+# The primary metric is `weights.step_pack_bytes`: a counter, identical across runs, exactly zero
+# in resident mode. The secondary metric is elapsed at `N = steps`, median of three, with the
+# spread, and the streamed baseline is re-taken **in this session on this host** rather than quoted.
+# ---------------------------------------------------------------------------------------------
+
+# Section 3.2's layout, recomputed **from the pack's own document** rather than compared against a
+# constant. `main --pack` wrote `pack.json` from the packer, and this walks it with the same rule
+# the arm uses — every region rounded up to the container's own `block_align`, in the order
+# `[token_embd][stage][layer 0 .. n-1][head]` — so a layout defect shows up as a disagreement
+# between two implementations that share no code.
+#
+# The design document's section 3.2 predicted 4,677,184,512 B for this model and that arithmetic
+# omitted the container's 4,096-byte block alignment; the measured figure is 4,677,533,696 B, and
+# section 11 of that document records the correction. This oracle is the reason the correction is a
+# fact rather than an opinion.
+MAX_PREFILL_TOKENS = 32
+
+
+def independent_resident_bytes(path):
+    with open(path, "r", encoding="utf-8") as handle:
+        packed = json.load(handle)
+    blocks = packed["blocks"]
+    block_align = packed.get("format", {}).get("block_align")
+    if not block_align:
+        return None
+    members = [(block, member) for block in blocks for member in block["members"]]
+
+    def role(name):
+        for block, member in members:
+            if member["role"] == name:
+                return block, member
+        return None, None
+
+    def up(value):
+        return (value + block_align - 1) // block_align * block_align
+
+    _, embed = role("token_embd")
+    _, norm = role("output_norm")
+    _, out = role("output")
+    if embed is None or norm is None or out is None:
+        return None
+    n_vocab = embed["dims"][1]
+    row_bytes = embed["nbytes"] // n_vocab
+    n_layer = max(block["layer"] for block in blocks) + 1
+    total = up(embed["nbytes"]) + up(row_bytes * MAX_PREFILL_TOKENS)
+    for layer in range(n_layer):
+        total += up(sum(up(member["nbytes"])
+                        for block, member in members if block["layer"] == layer))
+    total += up(up(norm["nbytes"]) + up(out["nbytes"]))
+    return total
+# Section 3.4's shipping floor, in ppm of the `N = steps` streamed elapsed. It is derived from this
+# wave's own measured run-to-run spread (0.86 s against 0.73 s per step on identical byte counts,
+# `0.13 x 16 / 18.235 = 114,000 ppm`) and sits just above it, because a floor below the noise cannot
+# be measured.
+FLOOR_PPM = 150000
+CEILING_PPM = 586000
+
+
+def scaling_documents(n, mode):
+    found = []
+    for repeat in (1, 2, 3):
+        path = os.path.join(work_dir, "scaling", "n%d-%s-%d.json" % (n, mode, repeat))
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as handle:
+                found.append(json.load(handle))
+    return found
+
+
+def wall_samples(n, mode):
+    samples = []
+    for repeat in (1, 2, 3):
+        path = os.path.join(work_dir, "scaling", "n%d-%s-%d.wall" % (n, mode, repeat))
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as handle:
+                samples += [int(line) for line in handle if line.strip()]
+    return samples
+
+
+def median(values):
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2] if ordered else 0
+
+
+resident_documents = scaling_documents(steps, "weights")
+if not resident_documents:
+    print("decode step qualification: N/A the resident leg produced no document, so no "
+          "R6-RESIDENT-WEIGHTS claim is made")
+else:
+    for n in sorted({1, 4, steps}):
+        row = {}
+        for mode in ("stream", "weights"):
+            documents = scaling_documents(n, mode)
+            if not documents:
+                continue
+            for document in documents:
+                if document["status"] != "ok":
+                    failures.append("scaling N=%d %s: %s %s"
+                                    % (n, mode, document["error_code"],
+                                       document["error_detail"]))
+            row[mode] = documents
+        if "stream" not in row or "weights" not in row:
+            continue
+        for mode in ("stream", "weights"):
+            documents = row[mode]
+            elapsed = [d["timings"]["elapsed_ns"] for d in documents]
+            walls = wall_samples(n, mode)
+            weights = documents[0]["weights"]
+            step_bytes = {d["weights"]["step_pack_bytes"] for d in documents}
+            total_bytes = {d["pack"]["reader_bytes_read"] for d in documents}
+            print("decode step qualification: R6W N=%-2d %-8s elapsed median %d ns [%d..%d]  "
+                  "wall median %d ns  decode compute %d ns  step_pack_bytes %s  "
+                  "total pack bytes %s  arena %d B  fill %d preads / %d B"
+                  % (n, mode, median(elapsed), min(elapsed), max(elapsed), median(walls),
+                     documents[0]["decode"]["compute_ns"], sorted(step_bytes),
+                     sorted(total_bytes), weights["resident_bytes"],
+                     weights["fill_pread_count"], weights["fill_bytes"]))
+            if len(step_bytes) != 1 or len(total_bytes) != 1:
+                failures.append("scaling N=%d %s: the byte counters are not identical across the "
+                                "three runs: %r / %r" % (n, mode, step_bytes, total_bytes))
+        # The primary metric, at every `N`.
+        streamed_step_bytes = row["stream"][0]["weights"]["step_pack_bytes"]
+        resident_step_bytes = row["weights"][0]["weights"]["step_pack_bytes"]
+        if resident_step_bytes != 0:
+            failures.append("N=%d: the resident leg read %d pack bytes in its decode steps"
+                            % (n, resident_step_bytes))
+        if streamed_step_bytes <= 0:
+            failures.append("N=%d: the streamed leg read no pack bytes in its decode steps" % n)
+        if n > 1 and streamed_step_bytes % n != 0:
+            print("decode step qualification: R6W N=%d the streamed step-read total %d is not a "
+                  "whole multiple of N; the per-step figure is reported as a mean"
+                  % (n, streamed_step_bytes))
+        print("decode step qualification: R6W N=%-2d primary metric  step_pack_bytes %d -> 0  "
+              "(%d B per step streamed)"
+              % (n, streamed_step_bytes, streamed_step_bytes // max(n, 1)))
+
+    # The secondary metric and the floor verdict, at `N = steps`.
+    streamed = [d["timings"]["elapsed_ns"] for d in scaling_documents(steps, "stream")]
+    resident = [d["timings"]["elapsed_ns"] for d in scaling_documents(steps, "weights")]
+    baseline = median(streamed)
+    result = median(resident)
+    removed = baseline - result
+    ppm = (removed * 1000000) // baseline if baseline else 0
+    verdict = "MET" if ppm >= FLOOR_PPM else "NOT MET"
+    print("decode step qualification: R6W floor  baseline (streamed, this session) %d ns, "
+          "resident %d ns, removed %d ns = %d ppm of the fixed task against a %d ppm floor: %s"
+          % (baseline, result, removed, ppm, FLOOR_PPM, verdict))
+    if ppm < CEILING_PPM:
+        print("decode step qualification: R6W the recorded cost ceiling was %d ppm and the "
+              "measured result is %d ppm, so this is a **ceiling-estimation miss** and is reported "
+              "as one rather than absorbed into a passing claim "
+              "(docs/specs/c8-speed-first.md section 1)" % (CEILING_PPM, ppm))
+    if verdict != "MET":
+        failures.append("the shipping floor of %d ppm was not met: %d ppm" % (FLOOR_PPM, ppm))
+
+    # Section 2.4's arena arithmetic, against the ledger's own number rather than against the arm's
+    # word for it.
+    arena = resident_documents[0]["weights"]["resident_bytes"]
+    expected_arena = independent_resident_bytes(os.path.join(work_dir, "pack.json"))
+    if expected_arena is None:
+        failures.append("the pack document did not describe a layout, so the arena's size could "
+                        "not be checked independently")
+    elif arena != expected_arena:
+        failures.append("the arena is %d B and the pack document's own layout says %d B"
+                        % (arena, expected_arena))
+    else:
+        print("decode step qualification: R6W arena %d B, reproduced from the pack document by an "
+              "independent walk of its 339 member records" % arena)
+    for document in resident_documents:
+        weights = document["weights"]
+        if weights["mode"] != "resident" or weights["wrap_count"] != 1 \
+                or weights["resident_wraps_created"] != 1 \
+                or weights["resident_wraps_freed"] != 1:
+            failures.append("the resident leg's run-scope wrap did not balance: %r" % weights)
+        if document["window"]["pointer_identity_failures"] != 0 \
+                or document["window"]["member_placements"] <= 0:
+            failures.append("the resident leg placed %d of %d tensors away from the arena"
+                            % (document["window"]["pointer_identity_failures"],
+                               document["window"]["member_placements"]))
+        if document["verdict"] != "EXTERNAL":
+            failures.append("the resident leg's verdict is %r, not EXTERNAL" % document["verdict"])
+        if not document["lifetime"]["released_before_owner_scope_end"] \
+                or document["lifetime"]["graph_balance_failures"] != 0:
+            failures.append("the resident leg's teardown did not balance: %r"
+                            % document["lifetime"])
+
+    # Measurement risk 2: the compressor's own counters, before and after every timed run.
+    for n in sorted({1, 4, steps}):
+        for mode in ("stream", "weights"):
+            for repeat in (1, 2, 3):
+                base = os.path.join(work_dir, "scaling", "n%d-%s-%d" % (n, mode, repeat))
+                if not os.path.exists(base + ".before"):
+                    continue
+                with open(base + ".before", "r", encoding="utf-8") as handle:
+                    before = handle.read().strip()
+                with open(base + ".after", "r", encoding="utf-8") as handle:
+                    after = handle.read().strip()
+                if before != after:
+                    print("decode step qualification: R6W compressor N=%d %s run %d moved: "
+                          "%s -> %s" % (n, mode, repeat, before, after))
+
+    # Oracle R on the real model. Byte identity after `normalize`, outside the `weights` object,
+    # the two pack counters, and the per-graph ggml buffer pair the run-scope hoist moves.
+    RESIDENT_EXCLUDED_BLOCKS = ("weights",)
+    RESIDENT_EXCLUDED_FIELDS = (
+        ("pack", "reader_pread_count"), ("pack", "reader_bytes_read"),
+        ("lifetime", "ggml_buffers_created"), ("lifetime", "ggml_buffers_freed"),
+    )
+
+    def normalize_resident(path):
+        with open(path, "r", encoding="utf-8") as handle:
+            document = json.load(handle)
+        for key in document["timings"]:
+            document["timings"][key] = 0
+        for row in document["schedule"]:
+            row["pread_ns"] = 0
+            row["compute_ns"] = 0
+        for row in document["steps"]:
+            row["compute_ns"] = 0
+        document["head"]["pread_ns"] = 0
+        document["head"]["compute_ns"] = 0
+        document["decode"]["compute_ns"] = 0
+        document["plane"]["readback_ns"] = 0
+        document["plane"]["upload_ns"] = 0
+        document["kv"]["write_ns"] = 0
+        document["kv"]["read_ns"] = 0
+        for block in RESIDENT_EXCLUDED_BLOCKS:
+            document.pop(block, None)
+        for block, field in RESIDENT_EXCLUDED_FIELDS:
+            document[block].pop(field, None)
+        return json.dumps(document, sort_keys=True, separators=(",", ":"))
+
+    left_path = os.path.join(work_dir, "scaling", "oracle-r-stream.json")
+    right_path = os.path.join(work_dir, "scaling", "oracle-r-weights.json")
+    if os.path.exists(left_path) and os.path.exists(right_path):
+        left = normalize_resident(left_path)
+        right = normalize_resident(right_path)
+        with open(right_path, "r", encoding="utf-8") as handle:
+            resident_oracle = json.load(handle)
+        if left != right:
+            failures.append("oracle R: the resident and streamed documents differ outside the "
+                            "excluded set")
+        else:
+            print("decode step qualification: R6W oracle R PASS -- the resident and streamed "
+                  "documents are byte-identical after normalize outside the `weights` object, "
+                  "`pack.reader_*`, and the per-graph ggml buffer pair; %d token ids, gate G, "
+                  "oracle A', oracle B, and the logits oracle all re-run on the resident leg"
+                  % len(resident_oracle["decode"]["token_ids"]))
+        if resident_oracle["weights"]["step_pack_bytes"] != 0:
+            failures.append("oracle R: the resident leg read %d pack bytes in its decode steps"
+                            % resident_oracle["weights"]["step_pack_bytes"])
 
 if failures:
     for line in failures:

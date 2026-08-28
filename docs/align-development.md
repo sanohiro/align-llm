@@ -1792,10 +1792,10 @@ the `BEGIN/END R4.5 SHARED SHIM CONTRACT` region stays byte-identical (ledger se
 shim is built with `-ffp-contract=off`**, inherited unchanged from R5A, and the runner asserts
 `abi.fp_contract_off` is `true`.
 
-## The `--decode-step` arm (R6-DECODE-KV-STEP1, R6-STEP-N, R6-KV-PERSIST)
+## The `--decode-step` arm (R6-DECODE-KV-STEP1, R6-STEP-N, R6-KV-PERSIST, R6-RESIDENT-WEIGHTS)
 
-`docs/specs/r6-decode-kv-step1.md`, `docs/specs/r6-step-n.md`, and `docs/specs/r6-kv-persist.md`
-are the authoritative ledgers. R5B computes a whole prefill and stops: `src/model_forward.align` opens three fresh `ggml_context`s
+`docs/specs/r6-decode-kv-step1.md`, `docs/specs/r6-step-n.md`, `docs/specs/r6-kv-persist.md`, and
+`docs/specs/r6-resident-weights.md` are the authoritative ledgers. R5B computes a whole prefill and stops: `src/model_forward.align` opens three fresh `ggml_context`s
 per graph and frees them at the end of that graph, so every K and V it produces dies with its graph
 and the model can answer "what are the logits for this prompt" and not "what comes next". R6 adds
 the smallest thing that changes that — an **Align-owned KV plane**, host bytes carrying every
@@ -1803,7 +1803,9 @@ layer's post-RoPE K and its V across the graph boundary, and one decode step at 
 reads them. R6-STEP-N makes that step a **loop**: `N` greedy steps over the same plane, grown in
 place one column per step, gated on the token ids llama.cpp itself produces. R6-KV-PERSIST makes
 that plane **outlive the process that built it**: an `akvp` v1 container on disk, and a load path
-that skips the prefill entirely.
+that skips the prefill entirely. R6-RESIDENT-WEIGHTS removes the term all three of them left in
+place: the loop re-read the whole 4.37 GB weight set once per decode step, and in resident mode it
+reads it **once for the whole run**.
 
 The arm lives in a new module, `src/decode_step.align`, for `r5b-model-prefill-forward.md` section
 5.5's reason (the checker's per-function cost is superlinear in body length and
@@ -1823,8 +1825,8 @@ the writer. The plane **refill** stays in `src/decode_step.align` because a cros
 byte movement stays with the buffer's owner and no compatibility layer is built around the gap.
 
 `--decode-step` is selected by its exact first operand and is five, six, seven, nine, ten, eleven,
-**twelve, or thirteen** operands. **Eight is `R6_ARITY`**, inherited verbatim from `--model-forward`
-and for the same reason: `KV_WIDTH` travels with the transcript.
+twelve, thirteen, **or fourteen** operands. **Eight is `R6_ARITY`**, inherited verbatim from
+`--model-forward` and for the same reason: `KV_WIDTH` travels with the transcript.
 
 ```sh
 ./ggml-spike --decode-step PACK GEOM.json TOKENS                                      # to stdout
@@ -1836,6 +1838,7 @@ and for the same reason: `KV_WIDTH` travels with the transcript.
 ./ggml-spike --decode-step PACK GEOM.json TOKENS -        REF.gguf TRANSCRIPT.txt KV_WIDTH -          STEPS
 ./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS KV.akvp -
 ./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS -       KV.akvp
+./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS -       -       weights
 ```
 
 `TOKENS` is the **prefill**; no decoded token is ever an operand. The arm computes step 1's as its
@@ -1850,6 +1853,36 @@ document, including error documents, so the count is never implicit in the outpu
 `-` for "absent", the same convention `TRANSCRIPT` has used since R5B, so that `STEPS` is reachable
 without a logits blob. Out of range or unparseable is `R6_STEPS` with detail `steps[<n>]`, decided
 **before** `KV_WIDTH`, because `N` must be a number before `T + N` is one.
+
+`RESIDENT` is the fourteenth operand: `-` (stream the weights, the shipped behaviour, and what an
+absent operand means) or `weights` (hold the whole weight set resident for the process's lifetime).
+Any other value, including the empty string, is `R6_RESIDENT` with detail `resident[<text>]`. It was
+designed at the twelfth position and moved to the fourteenth because `R6-KV-PERSIST` took the
+twelfth and thirteenth first; every earlier position is spoken for and moving one would change the
+meaning of an existing invocation silently.
+
+In resident mode the arm allocates one arena — **4,677,533,696 B** on the reference model — fills it
+once with 4,669 one-mebibyte `pread`s in about 2.6 s, wraps it once, and reads every graph's weights
+out of it by pointer. A decode step then reads **zero** pack bytes and copies 2,016 host bytes for
+its embedding row. The mode, the arena's size, the fill's cost, and the step-read byte count are
+published in the document's `weights` object, which is present in error documents too; the document
+is **schema 4**.
+
+**It is opt-in and it needs memory.** A host that cannot hold the arena **aborts** rather than
+refusing, because Align cannot report a failed `buffer` reservation (Request 35) and `append` cannot
+fail. `scripts/run-decode-step` therefore refuses the resident leg below 12 GiB of physical memory
+and prints one explicit `N/A` line naming it; `ALIGN_LLM_RESIDENT_WEIGHTS=0` skips the leg
+deliberately. `gmake decode-step-qualification` runs both legs back to back in one session and
+asserts the two documents are identical outside the `weights` object, `pack.reader_*`, and the
+per-graph ggml buffer pair the run-scope wrap hoist moves. On the reference host the streamed
+baseline re-taken in that session was 19.823 s at `N = 16` against 13.144 s resident, with
+`weights.step_pack_bytes` going from 69,928,975,872 to exactly 0.
+
+**CPU only.** `--model-forward-gpu` keeps its per-graph wrap and per-graph free, because
+`docs/specs/r5c-metal-prefill.md` section 2.6 measured that an unfreed Metal buffer aborts the
+process at `exit`; the hoist is guarded by the arm and not by a runtime device check.
+`--model-forward` and `--moe-layer-forward` are byte-unchanged: they pay the streaming cost once,
+not `N` times.
 
 `KV_WIDTH` is fail-closed with **no default at any arity**: its range is `T + N .. 4096`, and below
 nine operands it is simply not supplied and the run is refused at step 6 with `R6_KV_WIDTH` detail

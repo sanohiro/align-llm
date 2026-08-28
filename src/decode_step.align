@@ -42,9 +42,12 @@ import model_forward
 // mask, oracle A's second-graph transcript comparison, oracle B's byte round trip, and the document.
 
 // R6-KV-PERSIST section 2.8. Schema 3 adds `plane.source`, the `kv` object, and
-// `timings.first_token_ns`. The **kind is unchanged**: the document describes the same thing, and
-// where the plane came from is a field rather than a kind.
-SCHEMA_VERSION := 3
+// `timings.first_token_ns`. R6-RESIDENT-WEIGHTS section 3.5 takes **schema 4** and adds the
+// `weights` object. Its own section 9.4 predicted 3 and settled the number at merge: KV-PERSIST
+// merged first and took 3, so this capability takes 4. The **kind is unchanged** in both cases: the
+// document describes the same thing, and where the plane came from and where the weights live are
+// fields rather than kinds.
+SCHEMA_VERSION := 4
 DOCUMENT_KIND := "R6_DECODE_STEP"
 
 // Section 2.8's vocabulary. `R6_*` is what this arm owns; the ggml seam's `R5_*` codes reach the
@@ -65,6 +68,14 @@ CODE_PLANE_MISMATCH := "R6_PLANE_MISMATCH"
 CODE_TRANSCRIPT := "R6_TRANSCRIPT"
 CODE_ORACLE_MISSING := "R6_ORACLE_MISSING"
 CODE_GEOMETRY_UNREADABLE := "R6_GEOMETRY_UNREADABLE"
+// R6-RESIDENT-WEIGHTS section 3.1 and 3.2. `R6_RESIDENT` is the operand's grammar; the other two
+// are the arena's own budget and its one observable reservation failure. There is deliberately no
+// code for an out-of-memory host: `buffer(cap)` cannot report a failed reservation and `append`
+// cannot fail (Request 35), so that host **aborts** rather than producing a document. Section 3.6
+// states that rather than hiding it, and `scripts/run-decode-step` preflights physical memory.
+CODE_RESIDENT := "R6_RESIDENT"
+CODE_RESIDENT_BUDGET := "R6_RESIDENT_BUDGET"
+CODE_RESIDENT_UNAVAILABLE := "R6_RESIDENT_UNAVAILABLE"
 // There is deliberately no `R6_ORACLE_SHAPE`. A transcript node whose printed axes do not match the
 // arm's own is `R5_ORACLE_SHAPE`, raised inside `model_forward.compare_transcript_graph` and
 // reaching this document unchanged through `fault_into`, exactly as every other seam code does
@@ -323,6 +334,18 @@ fn prefix_step(borrow mut o: model_forward.Outcome, step: i64) {
   joined := b.to_string()
   joined_view: str := joined
   o.detail = bounded_detail(joined_view)
+}
+
+// R6-RESIDENT-WEIGHTS section 3.1. `resident[<text>]`, bounded to 256 bytes by `bounded_detail`,
+// so an operand of any length names itself in the document without the document growing with it.
+fn resident_detail(value: str) -> string {
+  d := builder()
+  d.write("resident[")
+  bounded := bounded_detail(value)
+  bounded_view: str := bounded
+  d.write(bounded_view)
+  d.write("]")
+  return d.to_string()
 }
 
 fn steps_detail(value: str) -> string {
@@ -800,6 +823,11 @@ DECODE_V_CONCAT_ROW := 22
 fn run_step_graph(
   device: raw,
   backend: raw,
+  // R6-RESIDENT-WEIGHTS section 3.2. `null` is streaming mode and this graph wraps its own window;
+  // a live handle is the run-scope resident wrap, which this graph **places into and does not
+  // free**. The two lifetimes are counted in two different pairs (section 4.3) so that the
+  // per-graph balance check below keeps its exact meaning rather than being loosened.
+  resident_buffer: raw,
   context_bytes: i64,
   borrow spec: model_forward.GraphSpec,
   borrow g: layer_qwen2.Geometry,
@@ -834,6 +862,9 @@ fn run_step_graph(
   mut input_ctx := ggml_ffi.null_handle()
   mut graph_ctx := ggml_ffi.null_handle()
   mut weight_buffer := ggml_ffi.null_handle()
+  // The wrap this graph must free, which is the wrap this graph created. In resident mode it stays
+  // `null` and the teardown below is a no-op for it.
+  mut owned_buffer := ggml_ffi.null_handle()
   mut input_buffer := ggml_ffi.null_handle()
   mut graph := ggml_ffi.null_handle()
   mut galloc := ggml_ffi.null_handle()
@@ -851,7 +882,9 @@ fn run_step_graph(
       o.contexts_created = o.contexts_created + 3
     }
   }
-  if o.code.len() == 0 {
+  if o.code.len() == 0 && !ggml_ffi.handle_absent(resident_buffer) {
+    weight_buffer = resident_buffer
+  } else if o.code.len() == 0 {
     wrap_started := time.instant()
     weight_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
     o.wrap_ns = o.wrap_ns + (time.instant() - wrap_started)
@@ -859,6 +892,7 @@ fn run_step_graph(
     if ggml_ffi.handle_absent(weight_buffer) {
       fail(o, "R5_GGML_INIT", "weight_buffer")
     } else {
+      owned_buffer = weight_buffer
       o.ggml_buffers_created = o.ggml_buffers_created + 1
     }
   }
@@ -998,7 +1032,7 @@ fn run_step_graph(
     }
   }
   model_forward.teardown_graph(
-    galloc, ggml_ffi.null_handle(), graph_ctx, ggml_ffi.null_handle(), weight_buffer, weight_ctx,
+    galloc, ggml_ffi.null_handle(), graph_ctx, ggml_ffi.null_handle(), owned_buffer, weight_ctx,
     ggml_ffi.null_handle(), ggml_ffi.null_handle(), input_buffer, input_ctx, o)
 }
 
@@ -1793,6 +1827,7 @@ fn decode_pass(
   borrow pak: file,
   device: raw,
   backend: raw,
+  resident_buffer: raw,
   context_bytes: i64,
   borrow g: layer_qwen2.Geometry,
   borrow ends: model_forward.Ends,
@@ -1801,6 +1836,8 @@ fn decode_pass(
   borrow tokens: model_forward.TokenColumns,
   borrow head_members: model_forward.GraphMembers,
   borrow window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   borrow slot_view: slice<u8>,
   borrow ids_view: slice<u8>,
   borrow pos_view: slice<u8>,
@@ -1831,8 +1868,17 @@ fn decode_pass(
   mut counters := alignpack_read.new_counters()
   past_bytes := n_past * g.n_head_kv * g.head_dim * 4
   embed_members := decode_embed_members(g, ends, token_id)
-  take_pack(
-    o, model_forward.fill_members(pak, embed_members, tokens, window, transient, counters))
+  embed_base := layout.base[0]
+  embed_view := window[embed_base..embed_base + layout.span[0]]
+  if resident {
+    // Section 3.3, and the whole claim: one 2,016-byte host copy out of the resident table, and
+    // **zero pack bytes** for this step's embedding row.
+    take_pack(o, model_forward.stage_embed_row(
+        window, layout.table_at, embed_base, ends.row_bytes, g.n_vocab, token_id, 0))
+  } else {
+    take_pack(
+      o, model_forward.fill_members(pak, embed_members, tokens, embed_view, transient, counters))
+  }
   if o.code.len() > 0 { return }
   o.window_reuse_count = o.window_reuse_count + 1
   mut embed_result := model_forward.empty_graph_result()
@@ -1840,7 +1886,8 @@ fn decode_pass(
     model_forward.GRAPH_EMBED, 0, -1, 1, width, false, false, 0, 1,
     layer_qwen2.mf_embed_output_slot(), false, true, g.n_embd)
   run_step_graph(
-    device, backend, context_bytes, spec, g, embed_members, embed_nodes, oracle, window, slot_view,
+    device, backend, resident_buffer, context_bytes, spec, g, embed_members, embed_nodes, oracle,
+    embed_view, slot_view,
     residual_view, ids_view, pos_view, mask_view, out_ids_view, plane_view, plane_view, node_view,
     residual_view, plane_view, scan, starts, lengths, true, false, n_past, stride, breach, state,
     embed_result, o)
@@ -1854,9 +1901,13 @@ fn decode_pass(
   loop {
     if layer >= g.n_layer || o.code.len() > 0 { break }
     members := model_forward.build_layer_members(table, plan, layer)
+    layer_base := layout.base[1 + layer]
+    layer_view := window[layer_base..layer_base + layout.span[1 + layer]]
     read_started := time.instant()
-    take_pack(
-      o, model_forward.fill_members(pak, members, tokens, window, transient, counters))
+    if !resident {
+      take_pack(
+        o, model_forward.fill_members(pak, members, tokens, layer_view, transient, counters))
+    }
     o.pread_ns = o.pread_ns + (time.instant() - read_started)
     o.window_reuse_count = o.window_reuse_count + 1
     if o.code.len() > 0 { break }
@@ -1881,7 +1932,8 @@ fn decode_pass(
       layer_qwen2.mf_oracle_layer_base(layer), layer_qwen2.MF_LAYER_ORACLE_COUNT,
       layer_qwen2.mf_decode_layer_output_slot(), false, true, g.n_embd)
     run_step_graph(
-      device, backend, context_bytes, layer_spec, g, members, decode_nodes, oracle, window,
+      device, backend, resident_buffer, context_bytes, layer_spec, g, members, decode_nodes,
+      oracle, layer_view,
       slot_view, residual_view, ids_view, pos_view, mask_view, out_ids_view, past_k_view,
       past_v_view, node_view, residual_view, plane_view, scan, starts, lengths, true, false,
       n_past, stride, breach, state, result, o)
@@ -1898,9 +1950,13 @@ fn decode_pass(
     layer = layer + 1
   }
   if o.code.len() > 0 { return }
+  head_base := layout.base[1 + g.n_layer]
+  head_view := window[head_base..head_base + layout.span[1 + g.n_layer]]
   read_started := time.instant()
-  take_pack(
-    o, model_forward.fill_members(pak, head_members, tokens, window, transient, counters))
+  if !resident {
+    take_pack(
+      o, model_forward.fill_members(pak, head_members, tokens, head_view, transient, counters))
+  }
   o.pread_ns = o.pread_ns + (time.instant() - read_started)
   o.window_reuse_count = o.window_reuse_count + 1
   if o.code.len() > 0 { return }
@@ -1910,7 +1966,8 @@ fn decode_pass(
     layer_qwen2.mf_oracle_head_base(g.n_layer), layer_qwen2.MF_HEAD_ORACLE_COUNT,
     layer_qwen2.mf_head_output_slot(), false, true, g.n_embd)
   run_step_graph(
-    device, backend, context_bytes, head_spec, g, head_members, head_nodes, oracle, window,
+    device, backend, resident_buffer, context_bytes, head_spec, g, head_members, head_nodes,
+    oracle, head_view,
     slot_view, residual_view, ids_view, pos_view, mask_view, out_ids_view, plane_view, plane_view,
     node_view, logits_view, plane_view, scan, starts, lengths, true, false, n_past, stride, breach,
     state, head_result, o)
@@ -1934,6 +1991,11 @@ fn decode_pass(
   decoded.argmax = digest.argmax
   o.reader_pread_count = o.reader_pread_count + counters.pread_count
   o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read
+  // R6-RESIDENT-WEIGHTS section 3.4's **primary metric**: the pack bytes the decode steps alone
+  // read, accumulated here because this function is the only place a decode step reads the pack.
+  // It is a counter and not a clock, it is identical across runs, and in resident mode it is
+  // exactly zero.
+  o.step_pack_bytes = o.step_pack_bytes + counters.bytes_read
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1958,6 +2020,7 @@ fn decode_loop(
   borrow pak: file,
   device: raw,
   backend: raw,
+  resident_buffer: raw,
   context_bytes: i64,
   borrow g: layer_qwen2.Geometry,
   borrow ends: model_forward.Ends,
@@ -1966,6 +2029,8 @@ fn decode_loop(
   borrow tokens: model_forward.TokenColumns,
   borrow head_members: model_forward.GraphMembers,
   borrow window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   borrow slot_view: slice<u8>,
   borrow ids_view: slice<u8>,
   borrow pos_all: slice<u8>,
@@ -2053,7 +2118,8 @@ fn decode_loop(
     before_high_water := decoded.slot_high_water
     decoded.token_id = token
     decode_pass(
-      pak, device, backend, context_bytes, g, ends, table, plan, tokens, head_members, window,
+      pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, tokens,
+      head_members, window, layout, resident,
       slot_view, ids_view, pos_view, mask_view, out_ids_view, residual_view, logits_view, node_view,
       plane_view, oracle, embed_nodes, step_nodes, head_nodes, scan, ranges.start, ranges.length,
       token, n_past, width, stride, breach, activation, state, decoded, o)
@@ -2214,6 +2280,7 @@ fn prefill_pass(
   borrow pak: file,
   device: raw,
   backend: raw,
+  resident_buffer: raw,
   context_bytes: i64,
   borrow g: layer_qwen2.Geometry,
   borrow table: layer_qwen2.MemberTable,
@@ -2222,6 +2289,8 @@ fn prefill_pass(
   borrow embed_members: model_forward.GraphMembers,
   borrow head_members: model_forward.GraphMembers,
   borrow window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   borrow slot_view: slice<u8>,
   borrow index_view: slice<u8>,
   borrow mask_view: slice<u8>,
@@ -2273,9 +2342,28 @@ fn prefill_pass(
   // pin the caller's `borrow mut tokens` cannot travel into a foreign call beside this frame's own
   // scratch buffer. The window is untouched between the two points, so the bytes and the order are
   // the same ones R5B reads.
+  embed_base := layout.base[0]
+  embed_view := window[embed_base..embed_base + layout.span[0]]
   embed_started := time.instant()
-  take_pack(o, model_forward.fill_members(pak, embed_members, tokens, window, transient, counters))
+  if resident {
+    // R6-RESIDENT-WEIGHTS section 3.3. The rows are gathered out of the resident table into the
+    // arena's own staging region: `T` host copies of `row_bytes` each and **no pack read**.
+    mut piece := 0
+    loop {
+      if piece >= tokens.count || o.code.len() > 0 { break }
+      take_pack(o, model_forward.stage_embed_row(
+          window, layout.table_at, embed_base, embed_members.stride[0], g.n_vocab,
+          tokens.ids[piece], piece))
+      piece = piece + 1
+    }
+  } else {
+    take_pack(
+      o, model_forward.fill_members(pak, embed_members, tokens, embed_view, transient, counters))
+  }
   o.pread_ns = o.pread_ns + (time.instant() - embed_started)
+  // `window.reuse_count` counts the graphs that read their weights out of the one Align-owned
+  // region, which is what it has always measured on the streamed path (one refill per graph) and is
+  // the same number in resident mode, where the region is filled once and read by every graph.
   o.window_reuse_count = o.window_reuse_count + 1
   // Oracle B's byte precondition, and R5B's rule unchanged: every member the schedule reads is
   // compared byte for byte against the source GGUF at its own `source_offset` before its graph runs,
@@ -2283,14 +2371,15 @@ fn prefill_pass(
   // describe the model.
   if o.reference_present {
     take_pack(o, model_forward.compare_source_file(
-        reference_path, embed_members, tokens, window, -1, transient, source_counters))
+        reference_path, embed_members, tokens, embed_view, -1, transient, source_counters))
   }
   mut embed_result := model_forward.empty_graph_result()
   spec := model_forward.spec_for(
     model_forward.GRAPH_EMBED, 0, -1, tokens.count, width, false, false, 0, 1,
     layer_qwen2.mf_embed_output_slot(), false, false, g.n_embd)
   run_step_graph(
-    device, backend, context_bytes, spec, g, embed_members, embed_nodes, oracle, window, slot_view,
+    device, backend, resident_buffer, context_bytes, spec, g, embed_members, embed_nodes, oracle,
+    embed_view, slot_view,
     residual_view, index_view, index_view, mask_view, out_ids_view, plane_view, plane_view,
     node_view, residual_view, plane_view, scan, starts, lengths, false, false, tokens.count,
     stride, breach, state, embed_result, o)
@@ -2299,15 +2388,19 @@ fn prefill_pass(
   loop {
     if layer >= g.n_layer || o.code.len() > 0 { break }
     members := model_forward.build_layer_members(table, plan, layer)
+    layer_base := layout.base[1 + layer]
+    layer_view := window[layer_base..layer_base + layout.span[1 + layer]]
     read_started := time.instant()
-    take_pack(
-      o, model_forward.fill_members(pak, members, tokens, window, transient, counters))
+    if !resident {
+      take_pack(
+        o, model_forward.fill_members(pak, members, tokens, layer_view, transient, counters))
+    }
     layer_pread := time.instant() - read_started
     o.pread_ns = o.pread_ns + layer_pread
     o.window_reuse_count = o.window_reuse_count + 1
     if o.code.len() == 0 && o.reference_present {
       take_pack(o, model_forward.compare_source_file(
-          reference_path, members, tokens, window, layer, transient, source_counters))
+          reference_path, members, tokens, layer_view, layer, transient, source_counters))
     }
     if o.code.len() > 0 { break }
     last := layer == g.n_layer - 1
@@ -2317,7 +2410,8 @@ fn prefill_pass(
       layer_qwen2.mf_oracle_layer_base(layer), layer_qwen2.MF_LAYER_ORACLE_COUNT,
       layer_qwen2.mf_layer_output_slot(), false, false, g.n_embd)
     run_step_graph(
-      device, backend, context_bytes, layer_spec, g, members, layer_nodes, oracle, window,
+      device, backend, resident_buffer, context_bytes, layer_spec, g, members, layer_nodes, oracle,
+      layer_view,
       slot_view, residual_view, index_view, index_view, mask_view, out_ids_view, plane_view,
       plane_view, node_view, residual_view, plane_view, scan, starts, lengths, false, true,
       tokens.count, stride, breach, state, result, o)
@@ -2357,7 +2451,8 @@ fn prefill_pass(
   }
   if o.code.len() == 0 {
     prefill_head(
-      pak, device, backend, context_bytes, g, head_members, window, slot_view, index_view,
+      pak, device, backend, resident_buffer, context_bytes, g, head_members, window, layout,
+      resident, slot_view, index_view,
       mask_view, out_ids_view, residual_view, logits_view, node_view, plane_view, oracle,
       head_nodes, scan, starts, lengths, width, stride, tokens, reference_path, breach, state,
       activation, o)
@@ -2393,10 +2488,13 @@ fn prefill_head(
   borrow pak: file,
   device: raw,
   backend: raw,
+  resident_buffer: raw,
   context_bytes: i64,
   borrow g: layer_qwen2.Geometry,
   borrow head_members: model_forward.GraphMembers,
   borrow window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   borrow slot_view: slice<u8>,
   borrow index_view: slice<u8>,
   borrow mask_view: slice<u8>,
@@ -2422,15 +2520,19 @@ fn prefill_head(
   mut transient: buffer := buffer(model_forward.CHUNK_BYTES)
   mut counters := alignpack_read.new_counters()
   mut source_counters := alignpack_read.new_counters()
+  head_base := layout.base[1 + g.n_layer]
+  head_view := window[head_base..head_base + layout.span[1 + g.n_layer]]
   head_started := time.instant()
-  take_pack(
-    o, model_forward.fill_members(pak, head_members, tokens, window, transient, counters))
+  if !resident {
+    take_pack(
+      o, model_forward.fill_members(pak, head_members, tokens, head_view, transient, counters))
+  }
   o.head_pread_ns = time.instant() - head_started
   o.pread_ns = o.pread_ns + o.head_pread_ns
   o.window_reuse_count = o.window_reuse_count + 1
   if o.code.len() == 0 && o.reference_present {
     take_pack(o, model_forward.compare_source_file(
-        reference_path, head_members, tokens, window, g.n_layer, transient, source_counters))
+        reference_path, head_members, tokens, head_view, g.n_layer, transient, source_counters))
   }
   if o.code.len() > 0 { return }
   mut head_result := model_forward.empty_graph_result()
@@ -2439,7 +2541,8 @@ fn prefill_head(
     layer_qwen2.mf_oracle_head_base(g.n_layer), layer_qwen2.MF_HEAD_ORACLE_COUNT,
     layer_qwen2.mf_head_output_slot(), false, false, g.n_embd)
   run_step_graph(
-    device, backend, context_bytes, head_spec, g, head_members, head_nodes, oracle, window,
+    device, backend, resident_buffer, context_bytes, head_spec, g, head_members, head_nodes, oracle,
+    head_view,
     slot_view, residual_view, index_view, index_view, mask_view, out_ids_view, plane_view,
     plane_view, node_view, logits_view, plane_view, scan, starts, lengths, false, false,
     tokens.count, stride, breach, state, head_result, o)
@@ -2457,6 +2560,67 @@ fn prefill_head(
   o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read
   o.reference_pread_count = o.reference_pread_count + source_counters.pread_count
   o.reference_bytes_read = o.reference_bytes_read + source_counters.bytes_read
+}
+
+// ---------------------------------------------------------------------------------------------
+// R6-RESIDENT-WEIGHTS section 3.2 — the one-time fill
+//
+// Every fixed weight member the run touches, read **once**, in graph order, straight into its own
+// interior offset in the arena, through the same `CHUNK_BYTES` rounds `read_into_window` already
+// uses. It runs before the backend opens and before the wrap exists, so a failure here is an
+// ordinary pack failure with an ordinary pack code and nothing has to be released.
+//
+// The full `token_embd.weight` table is read first and at interior offset zero. It is the one
+// member no graph declares, because the graphs declare **gathered rows**; section 3.3 records why
+// holding the whole table is what makes "zero pack bytes per decode step" exactly true rather than
+// approximately true.
+//
+// Section 2.4 measured Darwin's `pread(2)` refusing `nbyte >= 2 GiB`, and Request 38 records that
+// `align_rt_io_file_pread` always asks for the buffer's whole capacity, so a single whole-arena
+// read is not merely undesirable here but impossible. The chunked fill is not a workaround for a
+// hypothetical surface: it is what the streamed path already does.
+// ---------------------------------------------------------------------------------------------
+
+fn fill_resident(
+  borrow pak: file,
+  borrow g: layer_qwen2.Geometry,
+  borrow table: layer_qwen2.MemberTable,
+  borrow plan: model_forward.Plan,
+  borrow ends: model_forward.Ends,
+  borrow tokens: model_forward.TokenColumns,
+  borrow head_members: model_forward.GraphMembers,
+  borrow window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  borrow mut o: model_forward.Outcome,
+) {
+  mut transient: buffer := buffer(model_forward.CHUNK_BYTES)
+  mut counters := alignpack_read.new_counters()
+  started := time.instant()
+  take_pack(o, model_forward.read_into_window(
+      pak, transient, window, layout.table_at, ends.embed_pack_offset, ends.embed_nbytes,
+      "R4_PACK_UNREADABLE", "token_embd", counters))
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer || o.code.len() > 0 { break }
+    members := model_forward.build_layer_members(table, plan, layer)
+    layer_base := layout.base[1 + layer]
+    layer_view := window[layer_base..layer_base + layout.span[1 + layer]]
+    take_pack(
+      o, model_forward.fill_members(pak, members, tokens, layer_view, transient, counters))
+    layer = layer + 1
+  }
+  if o.code.len() == 0 {
+    head_base := layout.base[1 + g.n_layer]
+    head_view := window[head_base..head_base + layout.span[1 + g.n_layer]]
+    take_pack(
+      o, model_forward.fill_members(pak, head_members, tokens, head_view, transient, counters))
+  }
+  o.resident_fill_ns = time.instant() - started
+  o.resident_fill_pread_count = counters.pread_count
+  o.resident_fill_bytes = counters.bytes_read
+  o.pread_ns = o.pread_ns + o.resident_fill_ns
+  o.reader_pread_count = o.reader_pread_count + counters.pread_count
+  o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2479,6 +2643,8 @@ fn schedule_decode(
   borrow embed_members: model_forward.GraphMembers,
   borrow head_members: model_forward.GraphMembers,
   borrow window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   device: raw,
   context_bytes: i64,
   width: i64,
@@ -2627,6 +2793,26 @@ fn schedule_decode(
       o.backend_name = ggml_ffi.backend_name(backend)
     }
   }
+  // Section 3.2's hoist. The arena is filled once and wrapped once, at **run** scope, before the
+  // first graph exists; every graph below places into this one wrap and frees none of it. The pair
+  // of counters is separate from `ggml_buffers_*` on purpose (section 4.3): the per-graph balance
+  // check keeps its exact meaning and this wrap's own balance is asserted at the scope that owns
+  // it, after `backend_close` and before this frame's arena leaves scope.
+  mut resident_buffer := ggml_ffi.null_handle()
+  if o.code.len() == 0 && resident {
+    fill_resident(pak, g, table, plan, ends, tokens, head_members, window, layout, o)
+  }
+  if o.code.len() == 0 && resident {
+    wrap_started := time.instant()
+    resident_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
+    o.wrap_ns = o.wrap_ns + (time.instant() - wrap_started)
+    o.wrap_count = o.wrap_count + 1
+    if ggml_ffi.handle_absent(resident_buffer) {
+      fail(o, "R5_GGML_INIT", "resident_buffer")
+    } else {
+      o.resident_wraps_created = o.resident_wraps_created + 1
+    }
+  }
   loading := kv_load_path.len() > 0
   // R6-KV-PERSIST section 1.1. A load run **skips the prefill entirely**: it builds no prefill
   // graph, so it publishes no prefill graph count. `graph` and `schedule` therefore differ between
@@ -2639,8 +2825,10 @@ fn schedule_decode(
       o)
   } else if o.code.len() == 0 {
     schedule = prefill_pass(
-      pak, device, backend, context_bytes, g, table, plan, tokens, embed_members, head_members,
-      window, slot_view, index_view, mask_wide_view, out_ids_view, residual_view, logits_view,
+      pak, device, backend, resident_buffer, context_bytes, g, table, plan, tokens, embed_members,
+      head_members,
+      window, layout, resident, slot_view, index_view, mask_wide_view, out_ids_view, residual_view,
+      logits_view,
       node_view, plane_view, oracle, embed_nodes, prefill_nodes, head_nodes, scan, ranges.start,
       ranges.length, width, stride, reference_path, breach, state, activation, o)
     if o.code.len() == 0 { o.plane_source = PLANE_SOURCE_PREFILL }
@@ -2676,15 +2864,30 @@ fn schedule_decode(
   if o.code.len() == 0 {
     token_id := decoded_token
     stepped = decode_loop(
-      pak, device, backend, context_bytes, g, ends, table, plan, tokens, head_members, window,
+      pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, tokens,
+      head_members, window, layout, resident,
       slot_view, decode_ids_view, decode_pos_view, mask_decode_view, decode_out_ids_view,
       decode_residual_view, decode_logits_view, node_view, plane_view, oracle, embed_nodes,
       head_nodes, transcript_path, token_id, n_past, steps, width, stride, origin, breach,
       activation, state, decoded, o)
   }
+  // Section 4.3's ordering, on **every** exit path from here: the wrap is freed before the backend
+  // and long before `execute`'s arena leaves scope. There is no path between the arena's
+  // construction and this teardown that returns early, which is what makes one converged teardown
+  // sufficient (section 5.1's early-exit cell).
+  if !ggml_ffi.handle_absent(resident_buffer) {
+    ggml_ffi.buffer_free(resident_buffer)
+    o.resident_wraps_freed = o.resident_wraps_freed + 1
+  }
   if !ggml_ffi.handle_absent(backend) {
     ggml_ffi.backend_close(backend)
     o.backends_freed = o.backends_freed + 1
+  }
+  // Oracle B at run scope. The hoist R5C section 5.4 refused is admitted here only because the
+  // invariant it weakens is re-established at the scope the hoist moved it to: exactly one resident
+  // wrap was created and exactly one was freed.
+  if resident && (o.resident_wraps_created != 1 || o.resident_wraps_freed != 1) {
+    o.graph_balance_failures = o.graph_balance_failures + 1
   }
   o.slot_capacity = ggml_ffi.slots_capacity(slot_view)
   o.slot_magic_ok = ggml_ffi.slots_ok(slot_view)
@@ -2699,6 +2902,7 @@ fn schedule_decode(
     && o.contexts_created == o.contexts_freed
     && o.backends_created == o.backends_freed
     && o.gallocrs_created == o.gallocrs_freed
+    && o.resident_wraps_created == o.resident_wraps_freed
     && o.graph_balance_failures == 0
   o.verdict = if o.code.len() > 0 {
     model_forward.VERDICT_UNAVAILABLE
@@ -2782,6 +2986,7 @@ pub fn execute(
   steps_text: str,
   kv_save_path: str,
   kv_load_path: str,
+  resident_text: str,
   borrow mut tokens: model_forward.TokenColumns,
   borrow mut schedule: model_forward.ScheduleColumns,
   borrow mut graphs: model_forward.GraphColumns,
@@ -2815,6 +3020,17 @@ pub fn execute(
   // refused before either is opened.
   if o.kv_save_requested && o.kv_load_requested {
     fail(o, kv_plane.CODE_ARGS, "kv[save+load]")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // R6-RESIDENT-WEIGHTS section 3.1. `-` is streaming and is what an absent operand means; the
+  // empty string is **not** absence and is refused with everything else that is not `weights`. The
+  // check precedes every path-content check, so a run naming an unknown residency mode is refused
+  // before a file is opened, and `weights.mode` is published in that document too.
+  resident := resident_text == "weights"
+  o.resident_mode = resident
+  if !resident && resident_text != "-" {
+    fail(o, CODE_RESIDENT, resident_detail(resident_text))
     o.elapsed_ns = time.instant() - started
     return o
   }
@@ -2957,18 +3173,37 @@ pub fn execute(
     o.elapsed_ns = time.instant() - started
     return o
   }
-  mut weights: buffer := buffer(window_bytes + model_forward.MAX_TENSOR_ALIGNMENT)
-  model_forward.fill_zero(weights, 1)
-  pad := model_forward.MAX_TENSOR_ALIGNMENT
-    - model_forward.base_mod(weights, model_forward.MAX_TENSOR_ALIGNMENT)
-  model_forward.prime_window(weights, pad - 1 + window_bytes)
-  weights_view := weights.bytes()
-  if weights_view.len() != pad + window_bytes {
-    fail(o, "R4_WINDOW_UNAVAILABLE", "weights")
+  // R6-RESIDENT-WEIGHTS section 3.2. Streaming reserves the peak graph and refills it per graph;
+  // residency reserves the **sum** and fills it once. Both are one `buffer`, one 32-byte-aligned
+  // interior slice, and one length check on the observable consequence of a degraded reservation,
+  // which is the only failure Request 35 leaves visible.
+  layout := if resident {
+    model_forward.plan_resident(staged.plan, staged.ends, staged.block_align)
+  } else {
+    model_forward.stream_layout(window_bytes, g.n_layer)
+  }
+  region_bytes := if resident { layout.bytes } else { window_bytes }
+  o.resident_bytes = if resident { layout.bytes } else { 0 }
+  // The budget, checked **before any allocation**, against the existing window ceiling and the
+  // existing idiom. On the reference model 4,677,184,512 leaves 46 % headroom.
+  if resident && (region_bytes <= 0 || region_bytes > model_forward.MAX_WINDOW_BYTES) {
+    fail(o, CODE_RESIDENT_BUDGET, model_forward.labelled("bytes", region_bytes))
     o.elapsed_ns = time.instant() - started
     return o
   }
-  window_view := weights_view[pad..pad + window_bytes]
+  mut weights: buffer := buffer(region_bytes + model_forward.MAX_TENSOR_ALIGNMENT)
+  model_forward.fill_zero(weights, 1)
+  pad := model_forward.MAX_TENSOR_ALIGNMENT
+    - model_forward.base_mod(weights, model_forward.MAX_TENSOR_ALIGNMENT)
+  model_forward.prime_window(weights, pad - 1 + region_bytes)
+  weights_view := weights.bytes()
+  if weights_view.len() != pad + region_bytes {
+    fail(
+      o, if resident { CODE_RESIDENT_UNAVAILABLE } else { "R4_WINDOW_UNAVAILABLE" }, "weights")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  window_view := weights_view[pad..pad + region_bytes]
   embed_members := model_forward.build_embed_members(g, staged.ends, tokens.count)
   head_members := model_forward.build_head_members(g, staged.ends)
   if !ggml_ffi.available() {
@@ -3022,7 +3257,8 @@ pub fn execute(
     return o
   }
   schedule_decode(
-    pak, g, table, staged.plan, staged.ends, tokens, embed_members, head_members, window_view, device,
+    pak, g, table, staged.plan, staged.ends, tokens, embed_members, head_members, window_view,
+    layout, resident, device,
     context_bytes, width, residual_bytes, logits_bytes, readback_bytes, reference_path,
     transcript_path, logits_path, kv_save_path, kv_load_path, pack_digest, geometry_digest, steps,
     started, schedule, graphs, top, stepped, o)
@@ -3294,6 +3530,34 @@ fn hex_or_dash(borrow value: string) -> str {
 // here rather than there for the reason section 5.3 predicts in bytes: `--model-forward`,
 // `--model-forward-gpu`, `--layer-forward`, and `--moe-layer-forward` share that renderer, and
 // adding a field to it would move four goldens this capability promises are byte-unchanged.
+// R6-RESIDENT-WEIGHTS section 3.5. The `weights` object, present in **every** document including
+// error documents, so the mode a run took is never implicit. `step_pack_bytes` is the capability's
+// primary metric: it is a counter and not a clock, it is identical across runs, and it is exactly
+// zero in resident mode.
+pub fn render_weights(borrow o: model_forward.Outcome) -> string {
+  d := builder()
+  d.write("{\"mode\":")
+  d.write(model_forward.json_string(if o.resident_mode { "resident" } else { "stream" }))
+  d.write(",\"resident_bytes\":")
+  d.write_int(o.resident_bytes)
+  d.write(",\"fill_ns\":")
+  d.write_int(o.resident_fill_ns)
+  d.write(",\"fill_pread_count\":")
+  d.write_int(o.resident_fill_pread_count)
+  d.write(",\"fill_bytes\":")
+  d.write_int(o.resident_fill_bytes)
+  d.write(",\"step_pack_bytes\":")
+  d.write_int(o.step_pack_bytes)
+  d.write(",\"wrap_count\":")
+  d.write_int(o.wrap_count)
+  d.write(",\"resident_wraps_created\":")
+  d.write_int(o.resident_wraps_created)
+  d.write(",\"resident_wraps_freed\":")
+  d.write_int(o.resident_wraps_freed)
+  d.write("}")
+  return d.to_string()
+}
+
 pub fn render_timings_step(borrow o: model_forward.Outcome) -> string {
   d := builder()
   d.write("{\"pread_ns\":")
@@ -3413,6 +3677,8 @@ pub fn render(
   logits_view: str := logits
   kv := render_kv(o)
   kv_view: str := kv
+  weights := render_weights(o)
+  weights_view: str := weights
   timings := render_timings_step(o)
   timings_view: str := timings
   lifetime := model_forward.render_lifetime_abi(o)
@@ -3442,6 +3708,8 @@ pub fn render(
   d.write(logits_view)
   d.write(",\"kv\":")
   d.write(kv_view)
+  d.write(",\"weights\":")
+  d.write(weights_view)
   d.write(",\"timings\":")
   d.write(timings_view)
   d.write(",\"lifetime\":")
@@ -3544,10 +3812,23 @@ fn print_summary(
   }
 }
 
-// R6-STEP-N section 2.2 and R6-KV-PERSIST section 2.2: exactly five, six, seven, nine, ten,
-// eleven, **twelve, or thirteen** operands. **Eight is still `R6_ARITY`**, inherited verbatim from
-// `--model-forward`'s rule and for R6's own reason: `KV_WIDTH` travels with the transcript, so a
-// transcript without a width refuses itself.
+// R6-STEP-N section 2.2, R6-KV-PERSIST section 2.2, and R6-RESIDENT-WEIGHTS section 3.1: exactly
+// five, six, seven, nine, ten, eleven, twelve, thirteen, **or fourteen** operands. **Eight is still
+// `R6_ARITY`**, inherited verbatim from `--model-forward`'s rule and for R6's own reason:
+// `KV_WIDTH` travels with the transcript, so a transcript without a width refuses itself.
+//
+// `RESIDENT` is `args[13]`, the fourteenth operand. R6-RESIDENT-WEIGHTS section 3.1 designed it at
+// `args[11]` against a head where `STEPS` was last; `R6-KV-PERSIST` took `args[11]` and `args[12]`
+// for `KV_SAVE` and `KV_LOAD` before this capability was implemented, and section 9.4 fixed the
+// merge order that makes that so. Taking the next free position rather than displacing either is
+// the same rule `STEPS` followed: every earlier position is spoken for and moving one would change
+// the meaning of an existing invocation silently. Section 11 of that document records the change.
+//
+// `RESIDENT` is `-` (stream the weights, the shipped behaviour, and what an absent operand means)
+// or `weights` (hold the whole weight set resident for the process's lifetime). Its hazard — a
+// caller who wants residency and forgets the operand silently gets streaming — is closed by
+// publishing `weights.mode` in **every** document, including error documents. It takes no path
+// check because it is not a path.
 //
 // `KV_SAVE` (`args[11]`) and `KV_LOAD` (`args[12]`) each accept `-` for "absent", the convention
 // `TRANSCRIPT` has used since R5B and `LOGITS` since R6-STEP-N, and **absence is the pre-existing
@@ -3573,7 +3854,7 @@ fn print_summary(
 // including error documents, so the count is never implicit in the output.
 pub fn run(args: array<str>) -> Result<(), Error> {
   count := args.len()
-  if count < 5 || count == 8 || count > 13 {
+  if count < 5 || count == 8 || count > 14 {
     return Err(Error.Invalid)
   }
   if !layer_forward.valid_path(args[2]) || !layer_forward.valid_path(args[3]) {
@@ -3604,6 +3885,7 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   steps_text := if count >= 11 { args[10] } else { "1" }
   kv_save_path := if count >= 12 && args[11] != "-" { args[11] } else { "" }
   kv_load_path := if count >= 13 && args[12] != "-" { args[12] } else { "" }
+  resident_text := if count >= 14 { args[13] } else { "-" }
   mut tokens := model_forward.empty_tokens()
   mut schedule := model_forward.empty_schedule()
   mut graphs := model_forward.empty_graphs()
@@ -3611,7 +3893,7 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   mut stepped := model_forward.empty_steps()
   outcome := execute(
     args[2], args[3], args[4], reference_path, transcript_path, width_text, logits_path, steps_text,
-    kv_save_path, kv_load_path, tokens, schedule, graphs, top, stepped)
+    kv_save_path, kv_load_path, resident_text, tokens, schedule, graphs, top, stepped)
   document := render(
     outcome, tokens, schedule, graphs, top, stepped, args[2], args[3], reference_path,
     transcript_path, logits_path)

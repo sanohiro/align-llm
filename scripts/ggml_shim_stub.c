@@ -1277,9 +1277,19 @@ void align_ggml_context_close(void *ctx) {
     align_stub_reset_if_idle();
 }
 
-/* The whole engine, reclaimed once nothing points into it. A caller that leaks a context or a
- * buffer simply never triggers it and exhausts a pool instead, which is the failure this file
- * should report rather than hide. */
+/* The engine's own state — graphs, tensor records, and the activation arena — reclaimed once
+ * nothing points into it. A caller that leaks a context simply never triggers it and exhausts a
+ * pool instead, which is the failure this file should report rather than hide.
+ *
+ * R6-RESIDENT-WEIGHTS: **contexts alone gate the reset, not buffers.** A buffer record here is a
+ * borrowed `(base, size)` over the caller's own memory and owns nothing in the arena; every tensor
+ * and every graph is owned by a context. Including buffers in the test made the reset depend on a
+ * lifetime it does not describe, and a caller that legitimately holds one wrap across many graphs —
+ * which is exactly what a resident weight arena is — exhausted `ALIGN_STUB_MAX_GRAPHS` after eight
+ * graphs with every context correctly closed. Real ggml frees a graph with its context and has no
+ * such coupling, so the double was refusing a program the thing it doubles accepts. The teardown
+ * order the arm contracts (`teardown_graph`: gallocr, then contexts) is what keeps this safe: no
+ * gallocr is live across a context close, so nothing points into the arena when it is reclaimed. */
 static void align_stub_reset_if_idle(void) {
     int32_t i = 0;
     for (i = 0; i < ALIGN_STUB_MAX_CONTEXTS; i++) {
@@ -1287,8 +1297,8 @@ static void align_stub_reset_if_idle(void) {
             return;
         }
     }
-    for (i = 0; i < ALIGN_STUB_MAX_BUFFERS; i++) {
-        if (align_stub_buffers[i].used) {
+    for (i = 0; i < ALIGN_STUB_MAX_GALLOCRS; i++) {
+        if (align_stub_gallocrs[i].used) {
             return;
         }
     }

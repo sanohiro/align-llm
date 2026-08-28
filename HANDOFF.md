@@ -3,6 +3,99 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
+## Active: R6-RESIDENT-WEIGHTS (2026-08-29)
+
+Branch `agent/r6-resident-weights`, stacked on `agent/r6-kv-persist` head `9699848`, which is
+brought in by `git merge` — **never a rebase**. When R6-KV-PERSIST's review repair lands, this
+branch merges it and re-checks the roadmap item number, the schema number, the Align Request
+numbering, and `scripts/decode-step-golden.jsonl`. When the R6 branches land on `origin/main` it
+takes `git merge origin/main` and re-checks the same four things.
+
+**Capability.** The whole weight set held **resident for one process's lifetime**, so that after one
+fill every decode step reads exactly zero pack bytes. Dense Qwen2.5-Coder-7B Q4_K_M, **CPU only**.
+`docs/specs/r6-resident-weights.md` is the authoritative ledger; sections 1 to 4 are the
+pre-implementation design, 5.8 to 5.10 the result, and 11.1 the corrections implementation found.
+Three of the design gate's four triggers fire: a changed CLI arm, a changed exchanged format
+(schema 4, a `weights` object), and — the load-bearing one — a changed **ownership/allocation
+boundary**, because the weight `buffer` and its `ggml_backend_buffer` wrap move from per-graph to
+run scope. `docs/specs/r5c-metal-prefill.md` section 5.4 refused that hoist once and said it belongs
+to "the capability that also re-establishes the invariant it weakens"; section 4.3 is that
+re-establishment, in a separate counter pair at run scope.
+
+**Complete.** Cell RW-P1's probe (a 4.68 GB `buffer_from_host` wrap **accepted**, two context
+generations placing into one wrap, interior offsets above `INT_MAX` exact, `RW-P1: PASS`);
+`model_forward.ResidentLayout` + `plan_resident`/`stream_layout`/`stage_embed_row` and eight
+`Outcome` fields; the `RESIDENT` operand at `args[13]` with arity 14; `R6_RESIDENT`,
+`R6_RESIDENT_BUDGET`, `R6_RESIDENT_UNAVAILABLE`; `fill_resident` (one chunked pass, whole
+`token_embd.weight` first); the run-scope wrap with its own counter pair and its teardown before
+`backend_close`; document schema 4 with the `weights` object in **every** document; eight new smoke
+cases with oracle R at one and three steps; `scripts/run-decode-step`'s 12 GiB physical-memory
+preflight, `vm_stat` compressor recording, both scaling legs at three runs each, oracle R on the
+real model, and the arena's size recomputed independently from `pack.json`; roadmap item 30,
+`docs/align-development.md`, **Align Request 50** (`std.os.physical_memory`), Request 35 raised to
+**high** with the 4.68 GB abort as its evidence, and Request 38's measured Darwin `pread` boundary.
+
+**The `Makefile` is byte-untouched.** No target, no `.PHONY` word, no build-list entry, so aggregate
+membership and check topology are unchanged by construction and `scripts/check-gate-topology`'s
+byte-literal EXPECTED does not move. `src/ggml_ffi.align`, `scripts/ggml_shim.c`,
+`src/ggml_spike.align`, and `src/layer_qwen2.align` are **byte-unchanged**: no new shim symbol and
+no new Align surface were needed, because the zero-copy placement path has been the primary weight
+path since R4.5. `scripts/ggml_shim_stub.c` is **not** unchanged — one function in the test double,
+recorded as section 5.9 deviation 1.
+
+**Result.** On the reference host (Apple M1, 16 GiB), `def add(a, b):`, `KV_WIDTH` 256,
+baseline re-taken back to back in the same session, three runs per point:
+
+| `N` | streamed elapsed | resident elapsed | `weights.step_pack_bytes` |
+| --- | --- | --- | --- |
+| 1 | 4.882 s | 5.647 s | 4,370,560,992 -> **0** |
+| 4 | 7.146 s | 8.133 s | 17,482,243,968 -> **0** |
+| 16 | 19.020 s | **9.360 s** | 69,928,975,872 -> **0** |
+
+**507,887 ppm of the `N = 16` fixed task against a 150,000 ppm floor: MET**, 3.4x the floor and 87 %
+of the 586,000 ppm ceiling recorded before implementation — reported as a **ceiling-estimation
+miss** rather than absorbed. Arena 4,677,533,696 B, fill 4,669 `pread`s of 4,677,120,000 B in
+1.6–2.6 s, paid once whatever `N` is. Peak footprint 504 MB -> 4.74 GB. **Residency is slower at
+`N = 1` and `N = 4`** and pays for itself between 4 and 16; the crossover is stated in section 5.8.1
+and is the practical reason the operand is opt-in. The streamed leg's total pack reads reproduce
+R6-STEP-N section 5.4's recorded 8,741,169,024 / 21,852,852,000 / 74,299,583,904 **exactly at all
+three points**, so the baseline this claim is made against is that document's, byte for byte.
+Oracle R PASS on the real model at `N = 16` with the transcript, logits blob, and reference GGUF all
+supplied.
+
+**Goldens.** `scripts/decode-step-golden.jsonl` moves — every row to schema 4 plus a `weights`
+object, and 8 new rows, 101 becoming 109. A programmatic diff of the old and new files confirms the
+**only** fields that changed in a pre-existing row are `.schema_version` and `.weights`, which is
+exactly what section 4.5 predicted. `scripts/layer-forward-golden.jsonl`,
+`scripts/model-forward-golden.jsonl`, `scripts/gpu-forward-golden.jsonl`,
+`scripts/moe-layer-forward-golden.jsonl`, and `scripts/ggml-spike-golden.jsonl` are byte-unchanged,
+verified by regenerating all five and observing no diff.
+
+**`arena` is a reserved word in Align at this pin.** `fn f(borrow arena: slice<u8>)` fails to parse
+with `error: expected ':'` at the parameter name and cascades into a wall of unrelated top-level
+errors. Every identifier is `resident_*`, `pool`, or `layout`. Not filed as a request — a reserved
+word is the language's prerogative — but recorded in section 5.8 because the diagnostic points at
+the wrong line.
+
+**Blockers.** None. Request 35 makes a graceful out-of-memory refusal impossible and Request 50
+makes a host-memory check impossible inside the arm; both are compensated by `RESIDENT` being
+opt-in and by the runner's 12 GiB preflight, and both are recorded rather than worked around.
+
+**Constraints.** CPU only; `--model-forward-gpu` keeps its per-graph wrap because R5C section 2.6
+measured that an unfreed Metal buffer aborts at `exit`. `--model-forward` and `--moe-layer-forward`
+are byte-unchanged and deferred, because they pay the streaming cost once rather than `N` times. The
+measuring host is a 16 GiB Apple M1 that compresses memory under pressure, so every timed run
+records `vm_stat`'s compressor counters.
+
+**Next actions, in order.** (1) Merge `agent/r6-kv-persist`'s review repair and re-check the schema
+number, the golden, the roadmap item, and the request numbering. (2) `python3 scripts/pre-pr
+--owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (3) One comprehensive review; the
+performance-claim row means the review must include measurement risk. (4) Publish.
+
+**Intentional uncommitted files.** None. The RW-P1 probe (`src/r6w_probe.align` and its binary) is a
+throwaway that lives outside the work tree and is not committed; section 5.8 records its whole
+output.
+
 ## Active: R6-KV-PERSIST (2026-08-29)
 
 Branch `agent/r6-kv-persist`, stacked on `agent/r6-step-n`, which is merged into it at `6ca1eef`

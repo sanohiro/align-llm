@@ -483,6 +483,39 @@ reconciliation against whatever has merged by then.
     at 4.37 GB per step. The gate stays unmet and the next capability toward it is prefix-keyed
     lookup on top of resident weights.
 
+30. **R6-RESIDENT-WEIGHTS — the weight set held resident across decode steps.** Design and results
+    in [`r6-resident-weights.md`](r6-resident-weights.md). Item 28 measured the term that dominates
+    a decode loop: **one 4.37 GB pass over the pack per decode step**, 83 % of a sixteen-step run's
+    elapsed time, re-reading weights the previous step already read. This capability removes that
+    term. `--decode-step` gains a fourteenth operand, `RESIDENT` (`-` or `weights`); in resident
+    mode the whole weight set — every layer, the head, and the **full** `token_embd.weight` table —
+    is held in one Align-owned arena of 4,677,533,696 B on the reference model, filled once in 4,669
+    one-mebibyte `pread`s, wrapped once as one `ggml_backend_buffer`, and read by every graph
+    through `ggml_backend_tensor_alloc` at arena offsets. **A decode step then reads zero pack bytes
+    and copies 2,016 host bytes.** No new shim symbol and no new Align surface: the zero-copy
+    placement path has been the primary weight path since item 16. The primary metric is
+    `weights.step_pack_bytes`, a counter and not a clock: **69,928,975,872 → 0** at `N = 16`.
+    Measured on the reference host in one session, three runs per point, baseline re-taken back to
+    back: elapsed 19.020 s → 9.360 s, **507,887 ppm** of the fixed task against a 150,000 ppm floor
+    this capability's own document defines, because no document owned Track B decode performance
+    before it — **MET** at 3.4× the floor, and 87 % of the 586,000 ppm ceiling recorded in advance,
+    which is reported as a ceiling-estimation miss rather than absorbed. Residency is **slower** at
+    `N = 1` and `N = 4` and pays for its one-time fill between 4 and 16, which is stated rather than
+    hidden and is the practical reason the operand is opt-in. Correctness is free: the resident and streamed
+    documents are byte-identical outside the `weights` object, the two pack counters, and the
+    per-graph ggml buffer pair the run-scope hoist moves, so every decoded id, gate G, oracle A′,
+    oracle B, and the logits oracle are re-run on the resident leg rather than inferred. The
+    hoisted wrap is the ownership boundary item 17 refused once; the invariant it weakens is
+    re-established at run scope in its own counter pair rather than loosened. CPU only; the Metal
+    arm keeps the per-graph wrap item 17's abort requires. **Opt-in, because a host that cannot hold
+    the arena aborts rather than refuses** (Request 35), so `scripts/run-decode-step` preflights
+    physical memory and prints one `N/A` line below 12 GiB. Peak footprint rises from 504 MB to
+    4.74 GB, which is the point of the capability and is published as `weights.resident_bytes`.
+    Owner `gmake layer-forward-smoke`, whose fifth block gains eight cases including oracle R at one
+    and three steps; focused `gmake decode-step-qualification`. **The R6 gate is still unmet:** this
+    removes the per-step weight sweep item 29 left in place, and prefix-keyed lookup on top of it is
+    the next capability toward the TTFT gate.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
