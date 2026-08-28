@@ -61,13 +61,20 @@ The current forward delivery order is:
    qualifications; neither joins an aggregate. It is listed after the consumer because the consumer
    defines the exact targets a profile must gate, and because the profiles gate *evidence*, not
    implementation.
-8. **C8 — speed-first optimization. Closed.** Nine consumer-complete capabilities each preserved
+8. **C8 — speed-first optimization. Reopened for one bounded tenth capability.** Nine
+   consumer-complete capabilities each preserved
    their correctness contract, named one changed path, and closed a paired fixed-task benchmark
    before claiming an improvement. The section C8 gate is met and `docs/specs/c8-speed-first.md` is
    authoritative for every baseline and measurement. Its retrospective promoted one reusable rule —
    the ppm-floor rule with a 2,000 ppm shipping floor — into section 1 of that document and one
-   clause into the `CLAUDE.md` performance-claim row. A deferred C8 surface reopens only with a
-   recorded cost ceiling above the floor or as a genuine Align capability request.
+   clause into the `CLAUDE.md` performance-claim row. `C8-OPTIONAL-TARGETED-STAGE` is the one
+   explicitly prioritized re-entry: its fresh current-parent targeted process is 14,311,285 ns of a
+   43,886,999 ns parent median (326,093 ppm), and its Align prerequisite shipped in PR #892. Its authoritative
+   contract and stop conditions are in `docs/specs/c8-optional-targeted-stage.md`. Its stable
+   candidate passes the schema/owner matrix and improves the 101-pair fixed-task median from
+   60,515,456 ns to 40,475,113 ns (331,160 ppm, 33.12%); review is complete and PR #134 is in final
+   base-integration/publication. Track B resumes after this bounded capability merges. Every other deferred surface retains the normal floor or
+   genuine-request re-entry rule.
 9. **R0-GGUF-INSPECT — read-only GGUF header, metadata, and tensor-table inspection. Gate met,
    closed.** The first Track B capability. It delivers one consumer-complete path: a caller names a
    `.gguf` path and receives one canonical `R0_GGUF_INSPECTION` document describing what the file
@@ -249,8 +256,8 @@ The current forward delivery order is:
     limits, and the R2b/R2c work that remains.
 
 20. **MOE-PREREQ-DISCHARGE — the per-expert half of R4 and R4.5, measured on a real MoE model.
-    Implemented and reviewed; in publication.** On branch `agent/moe-prereq-discharge`, rebased onto
-    the merged R1C at `main` `e15e3d3`; design ledger `4656d88`, implementation `eed850e`, review
+    Merged as PR #133 at `35a0df6`.** The branch was rebased onto the merged R1C at `main`
+    `e15e3d3`; design ledger `4656d88`, implementation `eed850e`, review
     repair `4bf25b8`, developer-guide refresh `0dd4ea8`. [`moe-prereq-discharge.md`](moe-prereq-discharge.md) is the authoritative plan
     and owns the probe record, the contract ledger, the closure matrix, the correction ledger, and
     the cell-to-case map. It discharges the two prerequisites items 13 and 14 left open, on
@@ -267,7 +274,7 @@ The current forward delivery order is:
     `ExpertBlock` with no new surface is refuted and removed. R4's expert hotness ordering and
     prefetch groups, and R4.5's GPU expert arm and discrete-VRAM half, stay deferred and unchanged.
     The layout numbers are a claim about this container on this named model, not a platform or
-    throughput claim. Review is complete and publication is in progress; see `HANDOFF.md`.
+    throughput claim. Review, publication, and merge are complete; see `HANDOFF.md`.
 
 ### Status (2026-08-28)
 
@@ -275,7 +282,7 @@ Track B is complete on the dense local model from R0 through R5C (item 17). Deci
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
 `olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18, 19, and 20 above:
 items 18 and 19 are merged and R2's gate is met, and item 20 — the per-expert half of R4 and R4.5 —
-is implemented, reviewed, and in publication. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+merged as PR #133. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
 **infeasible on this host** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
 a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
@@ -297,9 +304,9 @@ than by a separate align-coder capability.
 **ALIGN-ADOPTION is an internal prerequisite checkpoint, not a standalone capability.** Within the
 next consumer branch, batch its merged Align requests into one compiler-pin update, run every named
 focused real-client acceptance target, and then run one final fresh `make ci`. Preserve each
-request's lifecycle evidence without opening a pin-only pull request. As of R5C-METAL-PREFILL-ARM's
-merge (2026-08-28), no Align request has merged since R0; `.align-revision` stays pinned to
-`4b515f8d` and there is nothing to batch.
+request's lifecycle evidence without opening a pin-only pull request. C8-OPTIONAL-TARGETED-STAGE
+adopts Request 44's merged Align prerequisite at `3a34febe`; that adoption and its real-client
+verification remain part of the consumer capability rather than a pin-only pull request.
 
 Only design the next eligible capability in implementation detail; later ledger entries may retain
 their accepted contracts but must not generate speculative implementation pull requests. The
@@ -569,17 +576,24 @@ HEAD repositoryは評価経路で`ok`（candidate 0件、あるいはindexが持
 
 baselineと比べて、固定タスクの中央値でtime to passing patchが短縮すること。
 
-**達成済み。C8は9個のcapabilityでcloseした。** 9個すべてが固定タスクのpaired benchmarkで
+**9個のcapabilityで当初gateを達成し、1個のbounded capabilityだけ再開した。** 9個すべてが固定タスクのpaired benchmarkで
 中央値の短縮を測定しており、最後の第9capabilityは10,793 ppm（1.08%）の短縮を記録した。個々の
 baseline・測定値・host・binary digestは
 [`c8-speed-first.md`](c8-speed-first.md)のsection 3〜11がsource of truthである。同じretrospective
 で**ppm-floor rule**（cost ceilingを実装前にledgerへ記録し、shipping floorである2,000 ppmを
 下回るseamは実装せずdeferred surfacesに記録する）をsection 1へ昇格させた。残るdeferred surface
 は、floorを超えるcost ceilingを持つか、genuineなAlign capability requestになった場合にのみ
-新しいcapabilityとして再開する。R0のgateは達成済みでcloseした。R1（Qwen2 Model IR）のgateも
+新しいcapabilityとして再開する。`C8-OPTIONAL-TARGETED-STAGE`はtargeted processが
+43,886,999 ns中14,311,285 ns（326,093 ppm）であり、必要なAlign修正もPR #892でshipしたため、
+2026-08-28に明示的に再開した唯一の例外である。権威あるcontractと停止条件は
+[`c8-optional-targeted-stage.md`](c8-optional-targeted-stage.md)にある。stable candidateはschema/owner
+matrixをpassし、101-pairの固定タスク中央値を60,515,456 nsから40,475,113 nsへ短縮した
+（331,160 ppm、33.12%）。reviewは完了し、PR #134のbase integrationとpublicationが残る。このbounded capabilityの
+merge後にTrack Bへ戻る。R0のgateは達成済みでcloseした。R1（Qwen2 Model IR）のgateも
 達成済みでcloseし、R1B（gpt-oss/MoEフロントエンド）もPR #123としてmergeされ、R1のgateはgpt-oss側を
 含めてcloseした（gpt-oss実モデルによるqualificationのみ、ユーザー判断待ちのopen項目として残る）。
-次の実装対象はTrack BのR2a（expert trace）である。
+現在はR2 locality gate、R1C OLMoE frontend、MoE prerequisite discharge（PR #133）までmerge済みであり、
+このbounded C8 capabilityの次はR3 residency simulationを実装する。
 
 ---
 
@@ -664,15 +678,15 @@ gpt-oss実モデルに対する`model-ir-parity` qualificationのみ、`gpt-oss-
 ダウンロードに関するユーザー判断待ちのopen項目として残る（決定(b)は本hostでは容量不足のため
 **infeasible**として記録済み、`HANDOFF.md`参照）。
 
-**R1C-OLMOE-MOE-IR**（[`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md)、branch
-`agent/r1c-olmoe-moe-ir`、design ledger commit `83361a9`）は第三のR1 capabilityであり、実MoEモデル
+**R1C-OLMOE-MOE-IR**（[`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md)、PR #132、merge
+`e15e3d3`、design ledger commit `83361a9`）は第三のR1 capabilityであり、実MoEモデル
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`に対する`src/frontend_olmoe.align`と三方向architecture
 dispatchは`45e4ced`で**実装完了**、review指摘の修正commitがその上に載っている（forward order
 item 18）。owner checkは4本ともPASS：`make check`（30 unit）、`make model-ir-smoke`（qwen 49、
 gpt-oss 31、olmoe 29、R0 62 fixtureの再実行）、`make alignpack-smoke`（positive 27、negative source
 128、assertion 20,280）、および実モデル2本に対する`make model-ir-parity`（olmoe 15行＋type census
 `f32` 81 / `q4_K` 97 / `q6_K` 17、qwen2 14行）。olmoeのparityはR1Bが`N/A`としか記録できなかった
-qualificationであり、実MoEモデルに対する初のPASSである。reviewも完了し、残作業はpublicationのみ。
+qualificationであり、実MoEモデルに対する初のPASSである。review・publication・mergeは完了している。
 この実測は、R1Bのsection 2.5が`ASSUMED`としていた2行を**確認ではなく反証**した：stacked gate/up/down axis orderはR1Bの想定と逆であり、R1Bがrequiredとしていたsplit
 expert bias群は実MoEファイルに一切bias tensorが存在しないことで汎用規則としては反証された。
 どちらも実gpt-ossファイルがない以上gpt-oss frontend自体は変更せず、R1B section 7への訂正として

@@ -243,7 +243,7 @@ provider-independent verification loop. A task JSON document has this shape:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "task_id": "task-name",
   "root": "/path/to/worktree",
   "candidate_patch": "/path/to/candidate.patch",
@@ -259,7 +259,10 @@ provider-independent verification loop. A task JSON document has this shape:
 
 Set `repair_patch` to an empty string when the task should stop after the first failing stage.
 `memory_profile` is optional. Set it to a repo-local `.alignprof` path to enable failure memory, or
-omit it to preserve the C4 behavior without persistence.
+omit it to preserve the C4 behavior without persistence. `targeted_test` is also optional: omit it
+or set it to JSON `null` when the required `full_test` command already owns complete acceptance.
+Use a command object only when the caller wants an earlier fast-fail diagnostic. Schema 1 is not a
+compatibility input and is rejected with an `INVALID`, code 2 schema-2 result.
 
 Run it with:
 
@@ -268,22 +271,25 @@ Run it with:
 ```
 
 The loop evaluates the candidate through C3, checks and applies it with `git apply`, then runs
-build, targeted-test, and full-test in order. A failed stage is captured with its exit code,
-duration, summary, stdout, and stderr. The repair prompt includes that diagnostic and the C3
-evaluation document. If a repair patch is configured and the iteration budget permits, it is
-checked and applied once, then the next iteration verifies the repaired worktree. The result uses
-`PASS`, `GAVE_UP`, `EXHAUSTED`, `REPAIR_FAILED`, or `INVALID` status labels and preserves all
-attempts for later provider or failure-memory work.
+build, an optional targeted-test, and the required full-test in order. With no targeted command the
+order is candidate-apply, build, full-test on the first attempt and build, full-test on repaired
+attempts. A failed stage is captured with its exit code, duration, summary, stdout, and stderr. The
+repair prompt includes that diagnostic and the C3 evaluation document. If a repair patch is
+configured and the iteration budget permits, it is checked and applied once, then the next
+iteration verifies the repaired worktree. The compact result uses schema 2, emits only stages that
+actually ran, uses `PASS`, `GAVE_UP`, `EXHAUSTED`, `REPAIR_FAILED`, or `INVALID` status labels, and
+preserves all attempts for later provider or failure-memory work.
 
 ## Failure-memory development
 
 The C5 slice is `src/failure_memory.align`. When `memory_profile` is configured, each completed
-verification appends one JSON object to the profile rather than rewriting a mutable array. The
-event records the task and attempted patch, first failed stage/test, root-cause summary, repair
-result, successful and unsuccessful strategies, recommended tests, risky symbols, iteration
-counts, and risk score. The next run selects up to the three newest events for the same task and
-adds them to every repair prompt. A missing or unreadable profile starts with empty context, and a
-profile write/decode failure does not replace the already-written verification result.
+schema-2 verification appends one schema-1 memory event to the profile rather than rewriting a
+mutable array. The event records the task and attempted patch, first failed stage/test, root-cause
+summary, repair result, successful and unsuccessful strategies, recommended tests, risky symbols,
+iteration counts, and risk score. The next run selects up to the three newest events for the same
+task and adds them to every repair prompt. A missing or unreadable profile starts with empty
+context, and a profile write/decode failure does not replace the already-written verification
+result.
 
 The fixed smoke proves persistence and reuse by running the same task twice:
 

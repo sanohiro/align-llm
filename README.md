@@ -22,11 +22,12 @@ references, semantic resolution status, and test-path candidates, persisted as o
 JSON document. It also provides deterministic path-based related-test selection with ranked
 candidates and persisted selection metadata. C3 now adds a read-only unified-diff evaluator with
 touched-file and symbol records, deterministic risk signals, and recommended tests.
-C4 now adds a bounded verification loop: it evaluates and applies a candidate patch, runs build,
-targeted-test, and full-test commands with timeouts, records structured diagnostics, generates a
-repair prompt, and can apply one deterministic repair patch before re-running the stages. The
-repair patch is the provider-independent seam for the fixed-task gate; model-backed repair is a
-later integration. C5 now persists compact failure-memory events in an append-only JSONL repo
+C4 now adds a bounded verification loop: it evaluates and applies a candidate patch, runs a build,
+an optional targeted-test fast-fail diagnostic, and the required full-test acceptance command with
+timeouts, records structured diagnostics, generates a repair prompt, and can apply one
+deterministic repair patch before re-running the stages. The repair patch is the
+provider-independent seam for the fixed-task gate; model-backed repair is a later integration. C5
+now persists compact failure-memory events in an append-only JSONL repo
 profile and injects matching prior events into the next repair prompt. Memory failures never hide
 the verification result.
 
@@ -107,12 +108,14 @@ Run a bounded verification task from a JSON specification:
 ./main --verify-loop task.json verification-result.json
 ```
 
-The task names the repository root, candidate and repair patch path (use an empty string to disable
-repair), and separate build, targeted-test, and full-test commands. Each command has an argv array,
-expected exit code, and a shared timeout; `max_iterations` bounds the loop. An optional
-`memory_profile` path enables append-only failure-memory persistence and prompt reuse. The result is
-schema-versioned JSON containing the C3 evaluation, every attempt and stage, stdout/stderr,
-failure summaries, and repair prompts.
+The schema-2 task names the repository root, candidate and repair patch path (use an empty string to
+disable repair), required build and full-test commands, and an optional `targeted_test` command.
+Omit `targeted_test` or set it to JSON `null` when full-test already provides the complete
+acceptance gate; provide an object only for a useful earlier fast-fail diagnostic. Each command has
+an argv array, expected exit code, and a shared timeout; `max_iterations` bounds the loop. An
+optional `memory_profile` path enables append-only failure-memory persistence and prompt reuse. The
+schema-2 result contains the C3 evaluation, every actually executed attempt and stage,
+stdout/stderr, failure summaries, and repair prompts.
 
 ## Plans
 

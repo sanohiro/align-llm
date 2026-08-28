@@ -42,7 +42,7 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 ```
 
 The currently pinned Align commit is
-`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`, selected by the closed Request 19 adoption wave. The reviewed
+`3a34febe912db5096c58c74fede36ff53f223e04`, selected by the Request 44 consumer adoption. The reviewed
 `docs/specs/check-gate-topology.md` fresh-compiler design and its FRESH-WORKER/FRESH-IMAGE base
 capabilities are merged. The closed Request 6 installed profile extends that same trust boundary to
 two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not acceptance
@@ -73,13 +73,14 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-28): Requests 1–20 are CLOSED and Requests 21–43 are PROPOSED. No request blocks
-> another consumer. R5C-METAL-PREFILL-ARM merged as align-llm PR #129, and following the user's
+> **Status (2026-08-28): Requests 1–20 are CLOSED, Requests 21–43 are PROPOSED and non-blocking, and
+> Request 44 is ALIGN_LLM_VERIFIED pending publication closure. C8-OPTIONAL-TARGETED-STAGE is the
+> active stable candidate; its schema/owner matrix and paired acceptance pass at the adopted pin.
+> R5C-METAL-PREFILL-ARM merged as align-llm PR #129, and following the user's
 > decision to download `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, Track B started two consumers on
 > that model: R2-LOCALITY-GATE merged as align-llm PR #131 (`fff5806` -> `546b5cc`) with the R2
-> locality gate met in the prefill direction, and R1C-OLMOE-MOE-IR (branch
-> `agent/r1c-olmoe-moe-ir`, an olmoe frontend and the first real-MoE Model IR/Block IR) is the
-> single active consumer, in publication; see the end of this narrative for the next consumer
+> locality gate met in the prefill direction, R1C-OLMOE-MOE-IR merged as align-llm PR #132, and
+> MOE-PREREQ-DISCHARGE merged as align-llm PR #133. See the end of this narrative for the next consumer
 > named for each remaining pending user/Align decision.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
 > R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
 > parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
@@ -8798,6 +8799,70 @@ reassigned, once that call crosses a module boundary.
    `src/gpu_forward.align` calling `src/model_forward.align`'s `execute` directly and reading
    `TokenColumns`/`ScheduleColumns`/`GraphColumns`/`TopColumns` itself instead of routing through
    `render_parts`'s rendered strings — and pass `make layer-forward-smoke`.
+---
+
+## Request 44 — compiler: array-to-slice view retype through a borrowed sum projection
+
+```text
+Status: ALIGN_LLM_VERIFIED
+Priority: high
+Blocking: yes
+Blocked gate or slice: C8-OPTIONAL-TARGETED-STAGE verification task/result schema 2
+Independent work that may continue: every Track B capability and align-coder work unrelated to the optional verification stage
+Resume condition: align-llm adopts an Align revision containing merge 3a34febe912db5096c58c74fede36ff53f223e04 and the complete optional-target owner passes at the managed pin
+Align commit or pull request: Align PR #892, merged as 3a34febe912db5096c58c74fede36ff53f223e04
+align-llm verification: `.align-revision` selects 3a34febe912db5096c58c74fede36ff53f223e04; the managed compiler verifies at that identity; whole/per-unit compilation and the schema-v2 Some/absent/null, validation, cleanup, repair, and failure-memory owner pass; the 101-pair fixed-task comparison improves 60,515,456 ns to 40,475,113 ns (331,160 ppm) while projecting only schema 1→2 and the passing targeted-stage removal
+```
+
+### Reconciliation and shipped response
+
+The request was first filed as Request 21 on the unmerged local branch
+`agent/c8-optional-targeted-test`. Current `main` independently assigned Request 21 to
+`std.fs.open_ro`, so this register records the shipped compiler prerequisite under the next
+non-colliding identifier. Align's plan and PR retain their historical Request 21 wording; Request 44
+is the align-llm-side reconciliation identity for the same compiler defect, not a second compiler
+request.
+
+C8 makes the verification loop's `targeted_test` command optional while retaining `full_test` as
+the complete acceptance owner. The schema decodes an arena-owned `VerificationTask` whose optional
+command and required sibling commands contain dynamic argument arrays. A borrowed helper matches
+the optional payload and passes those arrays as slices without moving, cloning, or replacing the
+decoded owner.
+
+At the pinned Align revision `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`, `make check` accepted
+that source but `make build` rejected `verification_loop` while lowering the borrowed field path:
+
+```text
+alignc: codegen failed for unit 'verification_loop': lowering failed: borrowed place type disagrees with its field path
+```
+
+Align PR #892 repairs that cross-stage type-identity gap. Path replay first recovers the owning
+array type, then admits only the existing layout-identical scalar or AoS array-to-slice view with
+canonical element identity. The owner remains live; the view creates no clone, source nulling,
+replacement, allocation, or cleanup. The merged Align owner covers scalar and AoS arrays under
+`Some`, the `None` arm, sibling fields, repeated use, whole/per-unit execution, source survival, and
+a mismatched-element malformed-MIR rejection before pointer construction.
+
+Replaying the align-llm prototype in a temporary worktree with a sibling compiler containing
+`3a34febe` makes both `make check` and `make build` pass. The remaining client work is intentionally
+not inferred from that compiler proof: `.align-revision` adoption, exact schema-v2 Some/absent/null
+task vectors, Some/None/Invalid result vectors, validation and cleanup owners, failure-memory
+admission, user documentation, and the paired performance comparison all belong to the active
+consumer capability in `docs/specs/c8-optional-targeted-stage.md`.
+
+### Acceptance criteria
+
+1. `.align-revision` selects a shipped Align revision containing `3a34febe`, and the managed
+   compiler/runtime materialize and verify at that exact identity.
+2. The schema-v2 real client checks, builds, and executes with both present and absent/null
+   `targeted_test`; present runs build/target/full and absent/null runs build/full while sibling
+   commands and dynamic argv remain reusable from the decoded arena.
+3. `make verify-loop-smoke` and `make failure-memory-smoke` pass the complete ledger and closure
+   matrix in `docs/specs/c8-optional-targeted-stage.md`.
+4. The paired fixed-task comparison proves that the full command executes the targeted assertion,
+   preserves every undeclared semantic field, and repeatably exceeds the C8 2,000 ppm shipping
+   floor. This measurement owns the performance claim; the pin change alone does not.
+
 ---
 
 ## Not requested (respecting Align's design)

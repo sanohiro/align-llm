@@ -1,10 +1,11 @@
 # C8 Speed-first optimization
 
-Status: closed after the ninth consumer-complete capability. The ninth,
+Status: reopened for one bounded tenth consumer capability. The ninth,
 `C8-SELECTION-SINGLE-GIT-QUERY`, merged as PR #120 on `main` at
-`92c0979`, with a measured 10,793 ppm reduction on the fixed task (section 11).
-The C8 gate is met and no further C8 capability is scheduled; section 12 states the condition under
-which a deferred surface reopens.
+`92c0979`, with a measured 10,793 ppm reduction on the fixed task (section 11). The user explicitly
+prioritized `C8-OPTIONAL-TARGETED-STAGE` on 2026-08-28 after its fresh 326,093 ppm cost ceiling
+and shipped Align prerequisite satisfied both section 12 re-entry conditions. The standalone ledger
+is `docs/specs/c8-optional-targeted-stage.md`.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
 ## 1. Metric and scope
@@ -296,6 +297,17 @@ The two entries must not be allowed to drift into separate ranking implementatio
 to bucket weights, ordering, or the generic fallback belongs in `select_tracked_tests` alone. Adding
 a consumer that needs the revision means calling `select_tests`, not reintroducing `rev-parse` into
 the shared core.
+
+### 2.10 Make the targeted stage explicitly optional
+
+`C8-OPTIONAL-TARGETED-STAGE` is the one explicitly reopened tenth capability. It changes verification
+task and result schema from version 1 to version 2 and makes `targeted_test` optional while retaining
+`full_test` as the complete acceptance owner. Its public-contract ledger, closure matrix, evidence
+inventory, stop conditions, and paired benchmark contract are authoritative in
+[`c8-optional-targeted-stage.md`](c8-optional-targeted-stage.md). This section intentionally does not
+duplicate that contract. The stable candidate's 101-pair acceptance improved the fixed task from
+60,515,456 ns to 40,475,113 ns, or 331,160 ppm (33.12%); the runner projected only the result schema
+change and removal of the passing targeted stage, while full-test executed the targeted assertion.
 
 ## 3. Fixed passing-patch benchmark
 
@@ -838,13 +850,14 @@ platform claim.
 
 ## 12. Deferred C8 surfaces
 
-**C8 is closed.** The gate in `docs/specs/roadmap.md` section C8 — a shorter median time to a passing
-patch on the fixed task than the baseline — is met by all nine measured capabilities, and delivery has
-moved to Track B (`docs/specs/r0-gguf-inspection.md`). The surfaces below are not a backlog. One
-reopens as a new capability only when it carries a recorded cost ceiling above the section 1 shipping
-floor of 2,000 ppm, or when it becomes a genuine Align capability request under the `CLAUDE.md`
-classification rule. Neither condition is met by any surface today, and neither is satisfied by an
-intuition that a seam "looks hot" without a profiled or measured share of the fixed-task total.
+The original C8 gate in `docs/specs/roadmap.md` — a shorter median time to a passing patch than the
+baseline — was met by all nine shipped capabilities before delivery moved to Track B. The surfaces
+below are not a backlog. One reopens as a new capability only when it carries a recorded cost ceiling
+above the section 1 shipping floor of 2,000 ppm, or when it becomes a genuine Align capability
+request under the `CLAUDE.md` classification rule. `C8-OPTIONAL-TARGETED-STAGE` is the sole current
+exception: its fresh 326,093 ppm ceiling exceeds the floor and its Align prerequisite shipped in PR #892,
+so the user explicitly prioritized it on 2026-08-28. Every other deferred surface remains closed;
+intuition that a seam "looks hot" is still insufficient without a profiled or measured share.
 
 Context reduction, stable-context reuse, parallel checks, small-model routing, and persisted static
 analysis remain separate capabilities. In particular, captured concurrent checks require an Align

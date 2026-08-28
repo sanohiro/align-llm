@@ -1,0 +1,24 @@
+module failure_memory_schema_smoke
+
+import failure_memory
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  wrong_schema := failure_memory.remember(
+    "verification-result-v1.json",
+    "wrong-schema-profile.alignprof",
+  )
+  match wrong_schema {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(_) => { print("REJECTED") },
+  }
+
+  current_schema := failure_memory.remember(
+    "verification-result-v2.json",
+    "current-schema-profile.alignprof",
+  )
+  match current_schema {
+    Ok(_) => { print("ACCEPTED") },
+    Err(_) => { return Err(Error.Invalid) },
+  }
+  return Ok(())
+}
