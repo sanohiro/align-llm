@@ -6,12 +6,13 @@ file records durable project state.
 ## Active: R5D-MOE-LAYER-FORWARD (2026-08-28)
 
 Branch `agent/r5d-moe-layer-forward`, rebased onto `main` `95c47e7` (the merged R3-RESIDENCY-SIM,
-PR #135, which sits on PR #136's GCC 14 shim fix, C8's optional targeted stage at PR #134, and the
-merged MOE-PREREQ-DISCHARGE at PR #133). The branch is `a85e1fc` (design ledger), `7886cee`
+PR #135, which sits on PR #136's GCC 14 shim fix, C8's optional targeted stage at PR #134 — a
+parallel Codex session's change, not this session's work — and the merged MOE-PREREQ-DISCHARGE at
+PR #133). The branch is `a85e1fc` (design ledger), `7886cee`
 (implementation), `a2e2748` (review repair), and the reconciliation and baseline commits on top;
 before the rebase the first three were `3cb8d59`, `e584849`, and `aaedf26`, and the review record on
 the pull request names the pre-rebase heads the reviewers read. Design ledger `docs/specs/r5d-moe-layer-forward.md` is authoritative and
-now carries the implementation's corrections C1–C21 and the shipped arm's measured section 7.
+now carries the implementation's corrections C1–C22 and the shipped arm's measured section 7.
 **The capability is implemented and committed**: `src/layer_olmoe.align` and
 `src/moe_layer_forward.align` are new; `scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`,
 `scripts/layer_forward_fixture.py`, `src/ggml_ffi.align`, and `src/ggml_spike.align` are extended;
@@ -71,6 +72,17 @@ gmake format-check             PASS; gmake fmt leaves no diff; git diff --check 
 
 **No golden byte changed at the new pin.** The R5A, R5B, R5C, R5D, and ggml-spike golden documents
 are byte-identical under `3a34febe`, so the pin adoption needs no correction row of its own.
+
+**Baseline chain, re-recorded.** This branch's `Makefile` and `.gitattributes` changes invalidate
+the chain that shipped with R3-RESIDENCY-SIM, so the identity-bound chain is re-recorded here as
+`7c4830a` -> `c6cee0c` -> `09de0fd` (clean source -> immutable oracle -> finalization), measured on
+Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) and checked there with `make baseline-check`
+ending `baseline chain: PASS`. Two of the twenty recorded artifacts changed against the R3 chain:
+`Makefile`, which gains the opt-in `moe-layer-forward-qualification` target and no
+`HOSTED_CHECK_TARGETS` member, and `.gitattributes`, which marks the new olmoe excerpt `-whitespace`.
+`.align-revision` is `3a34febe` on both chains, because R3 already adopted PR #134's move. The other
+eighteen hashes are unchanged and the twenty paths are identical. The pull request must merge with a
+merge commit; squash and rebase merges would make these commits unreachable.
 
 **Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test moe-layer-forward -- make
 layer-forward-smoke gate-topology-check` under the installed profile at the exact head, then publish
@@ -407,7 +419,9 @@ above; the rest, newest first:
   `-Werror`; the pragma is now guarded and the cross-compiler `-ffp-contract=off` flag plus the
   behavioural probe stay mandatory. It was discovered by **this capability's** publication preflight
   and merged as its prerequisite.
-- **C8-OPTIONAL-TARGETED-STAGE** (PR #134, merge `4f01553`): the targeted verification stage becomes
+- **C8-OPTIONAL-TARGETED-STAGE** (PR #134, merge `4f01553`): authored and merged by a **parallel
+  Codex session**, not by the session that produced the R3 and R5D capabilities above; it is recorded
+  here because R3 and R5D both consume its pin move. The targeted verification stage becomes
   optional, `R2`-unrelated, on a fresh fixed-task baseline measuring a 326,093 ppm removable ceiling
   against C8's 2,000 ppm floor; the 101-pair acceptance improves 60,515,456 ns to 40,475,113 ns
   (331,160 ppm). It adopted Align `3a34febe` (Align PR #892) as `.align-revision` and closed
