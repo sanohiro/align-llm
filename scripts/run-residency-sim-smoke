@@ -532,6 +532,41 @@ elif not golden_path.exists():
 elif json.loads(golden_path.read_text()) != golden_actual:
     fail("sim-basic no longer matches the checked-in golden")
 
+# ---- B1: a materially longer scratch directory changes nothing but bytes_read ---------------
+# `inputs.bytes_read` grows with the scratch directory's name because a `--expert-trace` document
+# embeds its own transcript path (section 6, correction 9), and the golden normalizes that one
+# field away rather than pinning it. Setting `TMPDIR` cannot exercise that: BSD `mktemp -d` on
+# macOS ignores `TMPDIR` for a bare `-d` invocation and always resolves under `/var/folders`, so a
+# `TMPDIR`-based control measures the same directory twice. An explicit template forces a real,
+# much longer directory instead.
+short_work_dir = work_dir
+long_root = short_work_dir.parent / ("b1-long-workdir-" + "x" * 131)
+long_root.mkdir(parents=True, exist_ok=True)
+long_work_dir = Path(subprocess.run(
+    ["mktemp", "-d", str(long_root / "tmp.XXXXXXXX")],
+    capture_output=True, text=True, check=True).stdout.strip())
+work_dir = long_work_dir
+try:
+    long_ir, _ = derive_ir("olmoe-full")
+    long_basic = [make_trace("b1-basic-%d" % i, [moe(11 + i, 2, 4, UNIFORM)]) for i in range(4)]
+    long_list = trace_list("sim-basic", long_basic)
+    long_document = check_case("b1-long-workdir", long_list, long_ir, basic_budget)
+finally:
+    work_dir = short_work_dir
+
+if len(str(long_work_dir)) <= len(str(short_work_dir)):
+    fail("b1-long-workdir: the scratch directory did not actually get longer (%d <= %d chars); "
+         "the self-check is not exercising anything"
+         % (len(str(long_work_dir)), len(str(short_work_dir))))
+if long_document["inputs"]["bytes_read"] == document["inputs"]["bytes_read"]:
+    fail("b1-long-workdir: bytes_read did not change with the scratch directory's length")
+if normalized(long_document) != normalized(document):
+    fail("b1-long-workdir: a longer work_dir changed the document beyond the path-dependent fields")
+sys.stderr.write(
+    "residency sim smoke: b1 work_dir %d -> %d chars, bytes_read %d -> %d\n"
+    % (len(str(short_work_dir)), len(str(long_work_dir)),
+       document["inputs"]["bytes_read"], long_document["inputs"]["bytes_read"]))
+
 # -------------------------------------------------------------------------------------------
 # Section 2.6. One fixture per reachable code, plus the ordering assertion.
 
