@@ -436,3 +436,10 @@ ships the simulator but does not by itself claim a target-hardware policy win.
    integer `2`, and truthiness treated a non-empty string as `moe.present: true`. The adapter now
    requires exact non-boolean integer types for producer schema/extents/ordinals and the literal
    boolean `true` for MoE presence before it derives task provenance.
+10. The design added `residency-sim-smoke` to `HOSTED_CHECK_TARGETS` but did not include the
+    identity-bound canonical baseline refresh required whenever `Makefile` or another recorded
+    artifact changes. The installed-profile preflight therefore reached `baseline-check` and
+    rejected the old record because its Align revision differed from `.align-revision`; diagnostic
+    mode confirmed this was the only aggregate failure. R3 records a new chain from one clean final
+    source commit through one immutable-oracle commit and one finalization commit. All three remain
+    ancestors of the reviewed head and the required merge commit; the pending record is not shipped.

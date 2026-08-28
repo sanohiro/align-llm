@@ -52,8 +52,18 @@ gate remains open until that focused qualification names measured costs and iden
 non-LRU winner. Existing non-blocking Request 23's sixth client now produces eleven false
 by-value-copy warnings for explicit `borrow task: ResidencyTask` parameters.
 
-**Next actions, in order.** (1) Run exact-head preflight including the topology-selected fresh
-`make ci`, publish, and merge. (2) Refresh `main` and continue the next eligible roadmap capability.
+The exact-head preflight at `ae7f4dd` passed the owner, hosted aggregate, focused fresh checks, and
+installed image/profile boundaries, then failed its final worker aggregate after `baseline-check`
+reported `baseline Align revision differs from .align-revision`. A diagnostic rerun reproduced the
+same sole cause; both runs cleaned their profile state successfully. R3 changes the identity-bound
+`Makefile` and `src/main.align`, so the existing canonical baseline cannot be reused.
+
+**Next actions, in order.** (1) Commit this correction as the clean implementation source, record
+the two-sample deterministic reference, commit its immutable oracle, and finalize the canonical
+baseline/digest as the required three-commit chain. (2) Run `make baseline-check`, review the final
+whole diff because the repair expands the publication artifact set, and rerun exact-head preflight.
+(3) Publish and merge with a merge commit. (4) Refresh `main` and continue the next eligible roadmap
+capability.
 
 ## Merged checkpoint: GCC14-FP-CONTRACT-PORTABILITY (2026-08-28)
 
