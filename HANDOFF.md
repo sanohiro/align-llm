@@ -85,14 +85,17 @@ bytes change. `decode-step-golden.jsonl` adds the three forced-build rows and ch
 rows in one field, `graph.slot_high_water`, which is repair (2) above.
 
 **Coding-baseline chain, re-recorded — reviewer B's blocker, discharged.** The capability changes
-`Makefile`, one of the twenty recorded baseline artifacts, so the chain that shipped with R5D no
-longer bound this head. (`scripts/build-ggml-shim` also changes but is **not** a recorded artifact
-and does not itself invalidate the chain; an earlier draft of this record said it did.) The
-identity-bound chain is now `e4548b1` → `6d1c152` → `1bbacaa` — clean source, immutable oracle
-projection, finalization — with the pending measurement recorded on Linux (aarch64, kernel
-6.11.11-linuxkit, Python 3.12.3) through the DinD wrapper, exactly as R5D's was. Exactly one of the
-twenty artifact digests moved (`Makefile`); `.align-revision` is unchanged at `3a34febe` and the
-twenty paths are identical. `gmake baseline-check` passes on Linux at the finalized head.
+`Makefile`, one of the twenty recorded baseline artifacts, so the chain on `main` does not bind this
+head. (`scripts/build-ggml-shim` also changes but is **not** a recorded artifact and does not itself
+invalidate the chain; an earlier draft of this record said it did.) The identity-bound chain is
+`e61993d` → `3cde6e2` → `cb8d2ce` — clean source, immutable oracle projection, finalization — with
+the pending measurement recorded on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) through
+the DinD wrapper, exactly as R5D's and R5E's were. Exactly one of the twenty artifact digests moved
+(`Makefile`); `.align-revision` is unchanged at `3a34febe` and the twenty paths are identical.
+`gmake baseline-check` passes on Linux at the finalized head. This chain **supersedes** the one this
+branch first recorded against `main` `76246f3` (`e4548b1` → `6d1c152` → `1bbacaa`), which PR #143
+invalidated by changing recorded artifacts of its own; both chains stay in this branch's history and
+only the later one is named in the finalized baseline.
 
 **Next actions, in order.**
 1. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`, on the
