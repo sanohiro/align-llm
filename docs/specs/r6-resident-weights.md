@@ -16,7 +16,8 @@ advance from one written to fit a result. The one piece of internal evidence is 
 naming: section 3.4's ceiling (586,000 ppm), baseline (18.235 s from R6-STEP-N), and floor
 (150,000 ppm) are **byte-identical to the version of the file that carries the measurement**, and
 all three are arithmetic on R6-STEP-N's published numbers rather than on anything measured here —
-the measured result, 511,125 ppm, is not the ceiling, does not equal it, and sits 13 % below it. A
+the measurement of record, 412,763 ppm (section 5.8.1's run 4), is not the ceiling, does not equal
+it, and sits 30 % below it, and even the highest of the four runs sits 13 % below. A
 reader is entitled to treat "recorded before implementation" as an author's statement rather than as
 a verified fact, and `HANDOFF.md` records the process correction: **the next Track B performance
 capability commits its sections 1 to 4 before the first line of implementation**, so the ordering is
@@ -430,12 +431,12 @@ which this document adopts unchanged.
 > C8's rule says "far below" and its only worked precedent is its ninth capability — 10,793 ppm
 > against a roughly 26,000 ppm ceiling, "more than twice", or 41 % of it. The first implementation's
 > runner printed the miss for **any** shortfall at all, which would have labelled an estimate that
-> was 87 % right the same way it labels one that was 41 % right, and that is the distinction the
+> was 70 % right the same way it labels one that was 41 % right, and that is the distinction the
 > rule exists to draw. `scripts/run-decode-step` now prints the ceiling comparison on every run —
 > a reader should never have to go and find the ceiling to know how the result sits against it — and
 > applies the **miss** label only below one half of the recorded ceiling
-> (`CEILING_MISS_NUMERATOR / CEILING_MISS_DENOMINATOR`). The measured 511,125 ppm is 87 % of the
-> ceiling and is therefore **not** a miss; the shortfall is the one-time fill, which the ceiling
+> (`CEILING_MISS_NUMERATOR / CEILING_MISS_DENOMINATOR`). The measurement of record, 412,763 ppm, is
+> 70 % of the ceiling and is therefore **not** a miss; the shortfall is the one-time fill, which the ceiling
 > assumed away, and section 5.8.1 states it as a shortfall with its cause.
 
 **Shipping floor — 150,000 ppm of the `N = 16` elapsed on the reference prompt.** Calibrated from
@@ -473,17 +474,18 @@ noise cannot be measured. 150,000 ppm sits just above it; the recorded ceiling i
    twenty-minute qualification on an unfanned M1 — package temperature and the frequency ceiling it
    sets, the page cache filling, the compressor starting work — moves the second block relative to
    the first, and **the whole of that movement lands on the resident leg's side of the
-   subtraction**. The mitigation is to remove the confound rather than to argue about its sign, and
-   that judgement is the one the measurement vindicated: `scripts/run-decode-step` now
-   **interleaves** the legs (`repeat` outside, `mode` inside), so any monotone drift is common to
-   both legs to first order, and section 5.8.1's run 4 is the interleaved re-measurement at the
-   repair head. **It moved the result by 98,362 ppm, from 511,125 to 412,763, in the direction that
-   says the blocked order flattered residency** — the opposite of what a thermal argument predicts,
-   because the dominant mechanism on this host is the page cache and the compressor rather than
-   temperature. Section 5.8.1 states the mechanism and the numbers; the point for this row is that
-   an argued direction of bias was worth nothing and the measurement was worth 98,362 ppm. A second, unmitigated clause stands recorded: **every run in this document was taken
-   on one machine in one thermal environment**, and nothing here establishes the result on a fanned
-   host, on a host with more memory, or on a Linux page cache.
+   subtraction**. The mitigation is to remove the confound rather than to argue about its sign:
+   `scripts/run-decode-step` now **interleaves** the legs (`repeat` outside, `mode` inside), so any
+   monotone drift is common to both legs to first order, and section 5.8.1's run 4 is the
+   interleaved re-measurement at the repair head. **What that run establishes is that the confound
+   is gone — not how large it was.** The interleaved result landed 37,016 ppm below the lowest
+   blocked run and 98,362 ppm below the highest, a range comparable to the blocked runs' own
+   61,346 ppm spread; with `n = 1` interleaved run its distance from them is **not separated from
+   this host's noise**, so no order effect of any particular magnitude is claimed. What can be said
+   is negative and is said: **the direction this row argued from thermal drift was not confirmed.**
+   Section 5.8.1 states the numbers. A second, unmitigated clause stands recorded: **every run in
+   this document was taken on one machine in one thermal environment**, and nothing here establishes
+   the result on a fanned host, on a host with more memory, or on a Linux page cache.
 
 ### 3.5 The document — schema 3
 
@@ -595,9 +597,10 @@ still run against the resident document so that the claim is direct rather than 
 
 ### 4.5 The goldens
 
-> **Shipped: schema 4, 116 rows, and the "no other golden moves" prediction held for all six.**
+> **Shipped: schema 4, 117 rows, and the "no other golden moves" prediction held for all six.**
 > Section 5.9 deviation 6 owns the schema number; the row count is 107 -> 115 at the implementation
-> head and 116 after the review repair added one forced case.
+> head, 116 after the review repair added one forced case, and 117 after the final review added the
+> staging-boundary case.
 
 `scripts/decode-step-golden.jsonl` is rewritten at schema 3. No other golden moves: the `weights`
 object is new, and no existing field changes value in streaming mode. Predicted in advance so the
@@ -650,7 +653,10 @@ Construction, success, failure, malformed input, early exit, cleanup, and each a
 > arithmetic structurally (`RESIDENT_TABLE_BYTES`/`RESIDENT_STAGE_BYTES` in
 > `scripts/run-layer-forward-smoke`); `ds-resident-embed` is replaced by oracle R, which compares
 > the two legs' **logits** and so covers the staged rows end to end rather than comparing them
-> directly; and `ds-resident-smoke` (section 5.1) is replaced by `ds-resident-weights-1` and
+> directly — and by `ds-resident-stage-full`, added by the final review, which runs oracle R over a
+> resident prefill of exactly `MAX_PREFILL_TOKENS` distinct ids so that the highest slot
+> `stage_embed_row` can be asked for is a shipped passing case (section 11.1 correction 13); and
+> `ds-resident-smoke` (section 5.1) is replaced by `ds-resident-weights-1` and
 > `ds-resident-weights-steps`. Each replacement is at least as strong as the case it stands in for,
 > which is why they are recorded here rather than deferred in section 7.
 
@@ -922,17 +928,20 @@ decode step qualification: R6W the result is below the recorded ceiling but not 
 byte for byte across all four runs, including the streamed leg's reproduction of R6-STEP-N's
 8,741,169,024 / 21,852,852,000 / 74,299,583,904.
 
-**The order effect is real, it is worth about 98,000 ppm, and it runs the opposite way from the
-prediction.** Section 3.4's measurement risk 4 argued from thermal drift that a streamed-first order
-would *understate* the win. It does not, on this host: interleaving moved the streamed leg from
-18.016 s to 17.112 s and the resident leg from 8.808 s to 10.049 s, so the blocked order
-**flattered** residency by 511,125 − 412,763 = 98,362 ppm, and the argued direction was wrong. The
-mechanism is page cache and compressor rather than temperature — under interleaving every run is
+**What interleaving establishes is that the confound is gone, not how large it was.** Section 3.4's
+measurement risk 4 argued from thermal drift that a streamed-first order would *understate* the win.
+That direction was **not confirmed**: interleaving moved the streamed leg from 18.016 s to 17.112 s
+and the resident leg from 8.808 s to 10.049 s, and the interleaved result landed **37,016 ppm below
+the lowest blocked run (449,779) and 98,362 ppm below the highest (511,125)** — a range comparable
+to the blocked runs' own 61,346 ppm spread. With one interleaved run that distance is **not
+separated from this host's noise**, so this document claims no order effect of any particular
+magnitude. A page-cache and compressor mechanism is plausible — under interleaving every run is
 preceded by a run of the *other* leg, so the resident leg no longer inherits a page cache that three
 consecutive 4.68 GB resident fills had warmed for it, and the alternation between a 4.7 GB and a
-0.5 GB footprint gives the compressor more to do on the resident side. **This is exactly why the
-confound was removed rather than reasoned about**, and it is recorded with the direction it actually
-had rather than the one that was predicted. The conservative reading is the worst of the four runs —
+0.5 GB footprint gives the compressor more to do on the resident side — but it was not measured and
+is not asserted. **This is exactly why the confound was removed rather than reasoned about**: what
+the re-measurement buys is a leg that is no longer confounded with the clock, plus the negative
+finding that the predicted direction did not hold. The conservative reading is the worst of the four runs —
 **412,763 ppm, 2.75x the floor** — and the claim's verdict, its `N = 16` shape, and its primary
 metric are unchanged by any of it.
 
@@ -1079,8 +1088,9 @@ Every one is recorded here rather than left for a reviewer to find.
 ### 5.10 The mutants
 
 A regression that cannot fail is not a regression. Each of these was applied to the shipped source,
-run through `gmake layer-forward-smoke`, and reverted; each died, and the line that killed it is
-named.
+run through `gmake layer-forward-smoke`, and reverted. **Six were injected and five died**; the line
+that killed each of the five is named, and the sixth is recorded as unkilled rather than credited
+with a kill it did not earn.
 
 | Mutant | Caught by |
 | --- | --- |
@@ -1089,7 +1099,7 @@ named.
 | The run-scope wrap is never freed | `the teardown did not balance` and `1 graph boundaries left a ggml object alive` — section 4.3's separate counter pair, folded into `released_before_owner_scope_end` and `graph_balance_failures` |
 | The run-scope wrap is created **twice** (a second `buffer_from_host` beside the first) | The same pair. This is the half of the invariant the repaired condition's `created > 1` clause carries, and it was **not** covered before: the pre-repair `created != 1 \|\| freed != 1` also caught it, so the repair had to keep it explicitly rather than settle for `created == freed` |
 | The run-scope balance condition is restored to its pre-repair form (`created != 1 \|\| freed != 1`) | `ds-force-resident-wrap: a failure before the wrap fabricated a leak`, plus the golden's own `lifetime.graph_balance_failures: 0 != 1` and `released_before_owner_scope_end: true != false`. This is the inverse mutant for correction 12 and it is what makes the repair a regression rather than an assertion |
-| `stage_embed_row`'s destination bound is restored to the whole arena (`stage_at + slot * row_bytes + row_bytes > window.len()`) | Nothing in the shipped corpus, and that is the honest answer: `slot` is bounded by `tokens.count <= MAX_PREFILL_TOKENS` at both call sites, so no input reaches past the stage today. The repair (section 11.1 correction 13) is a *defence in depth* against a later caller, not a fix for a reachable defect, and it is recorded as such rather than credited with a kill |
+| `stage_embed_row`'s destination bound is restored to the whole arena (`stage_at + slot * row_bytes + row_bytes > window.len()`) | Nothing in the shipped corpus, and that is the honest answer: `slot` is bounded by `tokens.count <= MAX_PREFILL_TOKENS` at both call sites, so no input reaches past the stage today, and this mutant loosens the bound rather than tightening it. The repair (section 11.1 correction 13) is a *defence in depth* against a later caller, not a fix for a reachable defect, and it is recorded as such rather than credited with a kill. The bound's **other** side is covered: `ds-resident-stage-full` runs the highest slot a caller can produce as a passing case, so a bound one row too tight dies |
 
 The second mutant is the interesting one: it is caught by **two** independent oracles, one of which
 (the source-byte comparison) predates this capability entirely and needed no change to reach it.
@@ -1108,7 +1118,7 @@ the final diff and its passing evidence, or to an explicit deferral in this plan
 | Surface, owner module | `src/decode_step.align`; `src/ggml_spike.align` byte-unchanged | `git diff --stat` shows no `src/ggml_spike.align` |
 | Operand grammar, arity | `run`'s `count > 14` bound and `resident_text := if count >= 14 { args[13] } else { "-" }` | `ds-arity-15` (no document), `ds-resident-dash` (byte-identical to the thirteen-operand form) |
 | `RESIDENT` values and `R6_RESIDENT` | `execute`'s check before `stage_inputs`, `resident_detail` | `ds-resident-unknown`, `ds-resident-empty`, `ds-resident-case`, `ds-resident-unknown-and-missing`, each asserting the exact detail |
-| Defaults; `weights.mode` in every document | `o.resident_mode` set before any refusal; `render_weights` in `render` | `record()` asserts the `weights` object on **all 115** documented cases |
+| Defaults; `weights.mode` in every document | `o.resident_mode` set before any refusal; `render_weights` in `render` | `record()` asserts the `weights` object on **all 117** documented cases |
 | Position | `args[13]`, section 5.9 deviation 5 | — |
 
 **Section 3.2 — the arena.**
@@ -1133,7 +1143,7 @@ legs; primary metric exact at all three `N`; floor verdict printed by the runner
 (`failures.append` when below). Evidence: section 5.8.1.
 
 **Section 3.5 — the document.** `render_weights`, `SCHEMA_VERSION := 4`, `fill_ns` normalized in
-both runners. Evidence: the golden's 115 rows; the programmatic old-versus-new diff showing only
+both runners. Evidence: the golden's 117 rows; the programmatic old-versus-new diff showing only
 `.schema_version` and `.weights` moved.
 
 **Section 3.6 — the memory ceiling.** The runner's `RESIDENT_MIN_GIB` preflight and its `N/A` line;
@@ -1327,7 +1337,7 @@ merge time and section 8's row is updated then.
 | `HANDOFF.md` | A new `## Active: R6-RESIDENT-WEIGHTS` block above the R6-KV-PERSIST one, which is left byte-unchanged so the merge from `agent/r6-kv-persist` stays clean |
 | `docs/align-development.md` | The `--decode-step` section's heading gains `, R6-RESIDENT-WEIGHTS`; the arity line becomes "twelve, thirteen, **or fourteen**"; a fourteen-operand invocation joins the synopsis; and a `RESIDENT` block records the operand, the arena, schema 4, the opt-in rule with its abort, the runner's 12 GiB preflight, and the CPU-only boundary |
 | the merge itself | `git merge agent/r6-kv-persist` (`bdb34eb`) resolved three conflicts and nothing else: `ds()` in `scripts/run-layer-forward-smoke` gained **both** sides' keyword arguments (`pack` from KV-PERSIST's identity refusals, `resident` from this capability); `docs/align-development.md`'s `--decode-step` heading took this capability's version below R5E's incoming section; and `scripts/decode-step-golden.jsonl` was **regenerated** rather than merged. `src/decode_step.align` and `src/model_forward.align` auto-merged with no conflict and compile clean |
-| `scripts/decode-step-golden.jsonl` | Regenerated with `ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE=1 gmake layer-forward-smoke`: **107 rows -> 115** at the implementation head and **116** after the review repair added `ds-force-resident-wrap`; the 8 new `ds-resident-*` rows plus that one, and **no row removed**. A programmatic walk of the old and new documents confirms the only fields that moved in a pre-existing row are `.schema_version` (3 -> 4) and the new `.weights` object — exactly what section 4.5 predicted, now against KV-PERSIST's post-repair corpus rather than its pre-repair one. The repair's own regeneration moved **one added row and nothing else**: a case-by-case comparison of the 115-row and 116-row files reports one addition, no removal, and no changed row. The other six goldens are byte-identical to the incoming branch's |
+| `scripts/decode-step-golden.jsonl` | Regenerated with `ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE=1 gmake layer-forward-smoke`: **107 rows -> 115** at the implementation head, **116** after the review repair added `ds-force-resident-wrap`, and **117** after the final review added `ds-resident-stage-full`; the 8 new `ds-resident-*` rows plus those two, and **no row removed**. A programmatic walk of the old and new documents confirms the only fields that moved in a pre-existing row are `.schema_version` (3 -> 4) and the new `.weights` object — exactly what section 4.5 predicted, now against KV-PERSIST's post-repair corpus rather than its pre-repair one. Each later regeneration moved **one added row and nothing else**: a case-by-case comparison of the 115-row and 116-row files, and again of the 116-row and 117-row files, reports one addition, no removal, and no changed row. The other six goldens are byte-identical to the incoming branch's |
 | `docs/align-requests.md` | **Request 50** — `std.os.physical_memory` / `available_memory` — filed with every mandatory field, `Blocking: no`, and its acceptance criteria; the review added **Request 51** — the reserved-word diagnostic — on the same terms, and corrected Request 50's `align-llm verification` line, which had named `R6_RESIDENT_HOST` as though it were a shipped code rather than this request's proposal for one. Request 35's priority is raised to **high** with this capability recorded as its second and sharpest client and the 4.68 GB abort stated. Request 38 gains section 2.4's measured Darwin `pread` boundary and this capability as its third consumer. Requests 33, 39, and 49 are cited in section 8 as continuing clients; none changes status |
 
 ## 10. Risks
@@ -1359,8 +1369,8 @@ merge time and section 8's row is updated then.
    a cold cache the result lands below the ceiling. *Mitigation:* the runner prints the result as a
    percentage of the recorded ceiling on **every** run, and applies the **miss** label below one
    half of it, per `docs/specs/c8-speed-first.md` section 1's rule and its worked precedent (section
-   3.4's `Shipped` note). The measured 511,125 ppm is 87 % of the ceiling: a shortfall with a named
-   cause, not a miss, and not absorbed into a passing claim either way.
+   3.4's `Shipped` note). The measurement of record, 412,763 ppm, is 70 % of the ceiling: a
+   shortfall with a named cause, not a miss, and not absorbed into a passing claim either way.
 7. **Peak resident set grows about tenfold**, from the measured 507,969,536 B streamed window to
    roughly 4.9 GB. *Mitigation:* it is the point of the capability, it is bounded by
    `MAX_WINDOW_BYTES` with a refusal, and it is published as `weights.resident_bytes`.
@@ -1441,7 +1451,7 @@ can be read against each other.
     memory-system effect on a host under pressure, not a property of the design; all three are
     reported in section 5.8.1 and all three are netted **into** the elapsed figure, never out of it.
 11. **The crossover is around `N = 4`, it is not a clean number, and the design named none.**
-    Residency is reliably slower at `N = 1`. At `N = 4` the three runs **disagree about the sign** —
+    Residency is reliably slower at `N = 1`. At `N = 4` the four runs **disagree about the sign** —
     resident won by 0.68 s at the merged head and lost by 0.99 s on the second pre-merge run and by
     0.13 s on the interleaved run — so `N = 4` is a coin toss on this host rather than a loss. By `N = 16` it is decisive on every run.
     Sections 1.1 and 3.4 argued the claim entirely at `N = 16` and never said where the win begins;
@@ -1465,8 +1475,8 @@ should not have to know which pass produced a correction to find it.
     perfect. The counters this capability added to answer R5C's deferral would therefore have told
     a reviewer of a real out-of-memory or unreadable-pack incident that the arm leaks. The condition
     is now `created != freed || created > 1`, with a third clause keeping the original "exactly one"
-    reading on a **successful** run, which is what risk 9 actually needs. Section 5.10's fourth,
-    fifth, and sixth mutants are the regressions: the wrap created twice, the wrap never freed, and
+    reading on a **successful** run, which is what risk 9 actually needs. Section 5.10's third,
+    fourth, and fifth mutants are the regressions: the wrap never freed, the wrap created twice, and
     the pre-repair condition restored. The last of those is killed by `ds-force-resident-wrap`, the
     early-exit case section 5.11 had retired as unnecessary — the missing case and the wrong
     assertion were the same omission seen from two directions.
@@ -1478,7 +1488,12 @@ should not have to know which pass produced a correction to find it.
     `0` in the decode step, and `tokens.count <= MAX_PREFILL_TOKENS` is checked long before — so
     this is defence in depth and section 5.10 records honestly that no mutant of it can be killed
     by the current corpus. The function now takes the stage's own span and refuses
-    `slot * row_bytes + row_bytes > stage_bytes`, which is the bound the region owns.
+    `slot * row_bytes + row_bytes > stage_bytes`, which is the bound the region owns. What the
+    corpus *can* pin is the other side of the bound, and now does: `ds-resident-stage-full`
+    (section 5.2) is a resident prefill of exactly `MAX_PREFILL_TOKENS` distinct ids compared
+    against its streamed twin by oracle R, so the highest slot either call site can produce is
+    exercised as a **passing** run over bytes that are checked, and a bound one row too tight would
+    be caught.
 14. **`plan_resident` computed the arena's size with wrapping arithmetic.** Every other module that
     derives a size from a container's own numbers checks the product before it exists
     (`src/kv_plane.align:130`, `src/alignpack_read.align:197`, `src/alignpack.align:316`), and this

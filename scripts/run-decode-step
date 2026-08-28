@@ -1279,7 +1279,7 @@ else:
     # CEILING_MISS_DENOMINATOR` of the ceiling: `docs/specs/c8-speed-first.md` section 1's rule is
     # "a measured result **far below** its recorded ceiling", and its own worked precedent is the
     # ninth capability's 10,793 ppm against a ~26,000 ppm ceiling — "more than twice", 41 % of it.
-    # Reporting every shortfall as a miss would make an estimate that was 87 % right read the same
+    # Reporting every shortfall as a miss would make an estimate that was 70 % right read the same
     # as one that was 41 % right, which is exactly the distinction the rule exists to draw.
     print("decode step qualification: R6W ceiling  the recorded cost ceiling was %d ppm and the "
           "measured result is %d ppm = %d %% of it" % (CEILING_PPM, ppm, (ppm * 100) // CEILING_PPM))

@@ -34,7 +34,8 @@ generations placing into one wrap, interior offsets above `INT_MAX` exact, `RW-P
 `R6_RESIDENT_BUDGET`, `R6_RESIDENT_UNAVAILABLE`; `fill_resident` (one chunked pass, whole
 `token_embd.weight` first); the run-scope wrap with its own counter pair and its teardown before
 `backend_close`; document schema 4 with the `weights` object in **every** document; eight new smoke
-cases with oracle R at one and three steps; `scripts/run-decode-step`'s 12 GiB physical-memory
+cases with oracle R at one and three steps, plus `ds-force-resident-wrap` from the review repair and
+`ds-resident-stage-full` from the final review; `scripts/run-decode-step`'s 12 GiB physical-memory
 preflight, `vm_stat` compressor recording, both scaling legs at three runs each, oracle R on the
 real model, and the arena's size recomputed independently from `pack.json`; roadmap item 30,
 `docs/align-development.md`, **Align Request 50** (`std.os.physical_memory`), Request 35 raised to
@@ -64,13 +65,14 @@ cause** — the one-time fill the ceiling assumed away — and not a ceiling-est
 `docs/specs/c8-speed-first.md` section 1 reserves that label for a result *far* below its ceiling and
 its own worked precedent is 41 % of one. The runner now prints the percentage on every run and
 applies the label only below one half. **The qualification has now been run four times — 412,763 /
-449,779 / 507,887 / 511,125 ppm — and the byte metric was identical in all four.** The 98,362 ppm
-gap between run 4 and the earlier ones is an **order effect**: the first three took all three
-streamed repeats and then all three resident ones, which confounded the leg with the clock, and the
-review found it. Interleaving moved the streamed leg from 18.016 s to 17.112 s and the resident leg
-from 8.808 s to 10.049 s, so the blocked order **flattered** residency — the opposite of the
-direction a thermal argument predicts, because the mechanism here is the page cache and the
-compressor. The conservative reading is the worst of the four, 412,763 ppm. Arena 4,677,533,696 B,
+449,779 / 507,887 / 511,125 ppm — and the byte metric was identical in all four.** Run 4 is the
+interleaved one: the first three took all three streamed repeats and then all three resident ones,
+which confounded the leg with the clock, and the review found it. Interleaving moved the streamed
+leg from 18.016 s to 17.112 s and the resident leg from 8.808 s to 10.049 s, landing **37,016 ppm
+below the lowest blocked run and 98,362 below the highest** — comparable to their own 61,346 ppm
+spread, so with one interleaved run the magnitude is **not separated from noise**. What is
+established is that the confound is removed; the direction section 3.4 argued from thermal drift was
+not confirmed. The conservative reading is the worst of the four, 412,763 ppm. Arena 4,677,533,696 B,
 fill 4,669 `pread`s of 4,677,120,000 B in 1.6–2.6 s, paid once whatever `N` is. Peak footprint
 504 MB -> 4.74 GB. **Residency is slower at `N = 1`, a coin toss at `N = 4`** where the four runs
 disagree about the sign, and decisive from 16 up; the crossover is stated in section 5.8.1 with the
@@ -82,10 +84,11 @@ Oracle R PASS on the real model at `N = 16` with the transcript, logits blob, an
 supplied.
 
 **Goldens.** `scripts/decode-step-golden.jsonl` moves — every row to schema 4 plus a `weights`
-object, and 9 new rows, 107 becoming **116** (115 at the implementation head; the review repair adds
-`ds-force-resident-wrap`). A programmatic diff of the old and new files confirms the **only** fields
+object, and 10 new rows, 107 becoming **117** (115 at the implementation head; the review repair adds
+`ds-force-resident-wrap` and the final review adds `ds-resident-stage-full`). A programmatic diff of
+the old and new files confirms the **only** fields
 that changed in a pre-existing row are `.schema_version` and `.weights`, which is exactly what
-section 4.5 predicted, and the repair's own regeneration is **one added row, no removal, and no
+section 4.5 predicted, and each later regeneration is **one added row, no removal, and no
 changed row**. The other **six** goldens — `scripts/layer-forward-golden.jsonl`,
 `scripts/model-forward-golden.jsonl`, `scripts/gpu-forward-golden.jsonl`,
 `scripts/moe-layer-forward-golden.jsonl`, `scripts/moe-model-forward-golden.jsonl`, and
@@ -112,7 +115,9 @@ records `vm_stat`'s compressor counters.
 **Review.** One comprehensive review of `c73d4b8` was taken as two independent adversarial passes —
 one on implementation and measurement, one on specification, measurement, and governance — and
 returned four major and thirteen minor findings. Every one is dispositioned; the consolidated repair
-is one commit on top of the `origin/main` merge. The load-bearing finding was the run-scope balance
+is one commit on top of the `origin/main` merge. A **delta review of the repair head `6facd56`**
+returned approve-with-minors: six wording and count corrections plus one new hosted case, applied in
+the final commit and changing no emitted byte of a real-model run. The load-bearing finding was the run-scope balance
 assertion (`docs/specs/r6-resident-weights.md` section 11.1 correction 12): it read
 `created != 1 || freed != 1`, so a resident run that failed **before** the wrap existed reported
 `graph_balance_failures: 1` and `released_before_owner_scope_end: false` on a teardown that was in
@@ -120,22 +125,29 @@ fact perfect. It now asserts balance, with "exactly one" kept for successful run
 `ds-force-resident-wrap` — the early-exit case the first implementation retired as unnecessary — is
 its regression.
 
-**Verification checkpoint (repair head).** `gmake build`, `gmake check` (31 units), `gmake fmt`,
-`gmake format-check`, `git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
-`gmake layer-forward-smoke` (all six blocks; **116** documented decode-step cases reaching 41 codes)
-all pass. `gmake decode-step-qualification` **exits 0** on the real model at `N = 16` in 827 s of the
-1800 s cap, with the scaling row interleaved for the first time; oracle R PASS, arena reproduced
-independently from `pack.json`, floor MET at 412,763 ppm. Instruments unchanged:
+**Verification checkpoint (final-minors head).** `gmake build`, `gmake format-check`,
+`git diff --check`, `gmake ggml-spike-smoke`, and
+`gmake layer-forward-smoke` (all six blocks; **117** documented decode-step cases reaching 41 codes)
+all pass at the final head; `gmake check` (31 units), `gmake fmt`, and `gmake gate-topology-check`
+passed at the repair head `6facd56`, whose Align sources and `Makefile` the final commit does not
+touch. `gmake decode-step-qualification` **exits 0** on the real model at `N = 16` in 827 s of the
+1800 s cap at `6facd56`, with the scaling row interleaved for the first time; oracle R PASS, arena
+reproduced independently from `pack.json`, floor MET at 412,763 ppm. It is **not** re-run for the
+final minors: they touch documentation, one hosted case, and one source comment, and change no
+emitted byte of a real-model run. Instruments unchanged:
 `ALIGN_LLM_LLAMA_DEBUG=/opt/homebrew/bin/llama-debug` (Homebrew build 10566, commit `bb4caa754`) and
 the R2c-patched `llama-eval-callback` from the `r2c-v2` cache.
 
-**Six mutants, all killed under `gmake layer-forward-smoke`.** The arena refilled per decode step;
+**Six mutants injected, five killed under `gmake layer-forward-smoke`.** The arena refilled per decode step;
 a layer filled at the wrong arena base; the run-scope wrap never freed; the wrap created **and**
 freed twice (which is what the repaired condition's `created > 1` clause carries); and the
 pre-repair balance condition restored, which `ds-force-resident-wrap` kills by name. A sixth —
 `stage_embed_row`'s bound restored to the whole arena — is **not** killed by anything in the corpus,
 and that is recorded in section 5.10 rather than papered over: the repair is defence in depth
-against a future caller, not a fix for a reachable defect.
+against a future caller, not a fix for a reachable defect. That mutant loosens the bound; its
+**tightening** direction is now covered by `ds-resident-stage-full`, the final review's case, which
+runs a resident prefill of exactly `MAX_PREFILL_TOKENS` distinct ids — the highest slot either call
+site can produce — against its streamed twin under oracle R.
 
 **Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake
 layer-forward-smoke` at the exact publication head. (2) Publish the English pull request with the

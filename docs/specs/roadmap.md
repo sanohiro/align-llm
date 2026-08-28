@@ -582,8 +582,11 @@ The current forward delivery order is:
     `docs/specs/c8-speed-first.md` section 1 reserves that label for a result **far** below its
     ceiling, and its own worked precedent is 41 % of one. The whole qualification was taken four
     times, at 412,763 / 449,779 / 507,887 / 511,125 ppm; the first is the interleaved run and the
-    conservative reading, and the 98,362 ppm gap to the blocked-order runs is an order effect the
-    review found and the re-measurement quantified. The byte metric was identical in every run and
+    conservative reading, and it landed 37,016 ppm below the lowest blocked run and 98,362 below the
+    highest — a range comparable to their own 61,346 ppm spread, so with one interleaved run the
+    magnitude is not separated from noise. What the re-measurement establishes is that the
+    review-found order confound is removed, and that the direction argued from thermal drift was not
+    confirmed. The byte metric was identical in every run and
     the clock is the secondary metric for exactly that reason. Residency is **slower** at
     `N = 1`, a coin toss at `N = 4` where the runs disagree about the sign, and decisive from 16 up
     — stated rather than hidden, and the practical reason the operand is opt-in. Correctness is free: the resident and streamed

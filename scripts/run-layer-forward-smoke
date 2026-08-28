@@ -3490,6 +3490,16 @@ LOGITS = path("model-logits.bin")
 WIDTH = "8"
 STEPS = "3"
 
+# R6-RESIDENT-WEIGHTS section 5.2's staging-boundary case. `MAX_PREFILL_TOKENS` is 32 and this
+# geometry's `n_vocab` is 32, so `0..31` is both the longest prompt the arm admits and a prompt
+# whose every id is in vocabulary — and it stages 32 **distinct** embedding rows rather than one row
+# thirty-two times, so the highest slot carries bytes that belong only to it. The width is `T + N`
+# exactly, the minimum `--decode-step` accepts.
+STAGE_FULL = "ds-resident-stage-full"
+STAGE_FULL_TOKENS = ",".join(str(identifier) for identifier in range(32))
+STAGE_FULL_WIDTH = "33"
+STAGE_FULL_STEPS = "1"
+
 # R6-KV-PERSIST section 5.1. Every container this block writes lands under the runner's own
 # `mktemp -d` tree: the checkout is read-only under the fresh worker and nothing is written inside
 # it. Section 6 risk 2's whole member list is closed here — physical paths, a refusal before any
@@ -3516,13 +3526,15 @@ def kv(mutation):
 
 
 def ds(save="-", load="-", width=WIDTH, geometry=GEOM, steps=STEPS, transcript=None, pack=None,
-       resident=None):
+       resident=None, tokens=None):
     """One thirteen-operand invocation, or a fourteen-operand one when `resident` is given. Every kv
     case is thirteen operands so that the two directions differ in nothing but which position holds
     the path; every R6-RESIDENT-WEIGHTS case is the *same* thirteen plus one operand, so the
     streamed and resident legs differ in nothing but that operand. `pack` is R6-KV-PERSIST's own
-    axis: a container whose identity record the arm must refuse."""
-    operands = [ARM, PACK if pack is None else pack, geometry, TOKENS, "-", SOURCE,
+    axis: a container whose identity record the arm must refuse. `tokens` is the staging boundary's
+    axis and nothing else uses it: every other case runs this block's three-token prompt."""
+    operands = [ARM, PACK if pack is None else pack, geometry,
+                TOKENS if tokens is None else tokens, "-", SOURCE,
                 TRANSCRIPT if transcript is None else transcript, width, "-", steps, save, load]
     if resident is not None:
         operands.append(resident)
@@ -3846,6 +3858,17 @@ ENGINE_CASES = [
     ("ds-resident-stream-1", ds(steps="1"), ""),
     ("ds-resident-weights-1", ds(steps="1", resident="weights"), ""),
     ("ds-resident-weights-steps", ds(resident="weights"), ""),
+    # Section 5.2 and section 11.1 correction 13's bound, approached from the side no refusal
+    # reaches. `slot` is
+    # bounded by `tokens.count` at both `stage_embed_row` call sites, so a prompt of exactly
+    # `MAX_PREFILL_TOKENS` ids stages slot 31 — the highest index any caller can produce — and the
+    # corpus stops containing only three-token prompts. On this fixture the stage's 32 x 16 B of
+    # rows are padded up to `block_align` 4,096, so slot 31 is not the region's last byte; what the
+    # case pins is the **token count**, and a destination bound that were one row too tight would
+    # turn this legal run into `R5_SHAPE`. The block after the loop compares it against its streamed
+    # twin, which is run rather than recorded so the boundary costs one golden row and not two.
+    (STAGE_FULL, ds(tokens=STAGE_FULL_TOKENS, transcript="-", width=STAGE_FULL_WIDTH,
+                    steps=STAGE_FULL_STEPS, resident="weights"), ""),
 ] + [(name, operands, code) for name, operands, code, _, _, _ in KV_REFUSALS]
 
 FORCED_CASES = [
@@ -4188,6 +4211,12 @@ for name, operands, expected in ENGINE_CASES:
         continue
     if document["status"] != "ok":
         continue
+    # Every assertion below is arithmetic on this block's three-token prompt and its width of 8 —
+    # plane bytes, oracle B's compared bytes, `n_past`, the reference id chain. `ds-resident-stage-
+    # full` is deliberately neither, so it carries its own assertions after the loop instead of
+    # forcing sixty lines of shape-specific arithmetic to become parameterised for one case.
+    if name == STAGE_FULL:
+        continue
     graph = document["graph"]
     decode = document["decode"]
     plane = document["plane"]
@@ -4400,6 +4429,39 @@ for streamed_case, resident_case in (("ds-resident-stream-1", "ds-resident-weigh
     if left != right:
         failures.append("oracle R (%s vs %s): %s"
                         % (streamed_case, resident_case, describe_difference(left, right)))
+
+# The staging boundary, pinned from the legal side. A resident prefill of exactly
+# `MAX_PREFILL_TOKENS` ids stages slot 31, the highest index `stage_embed_row` can be asked for, and
+# the twin below makes the case an assertion about the **bytes** that slot carries rather than only
+# about the run not being refused: the streamed leg reads all 32 rows out of the pack, the resident
+# leg copies them out of the arena's table, and oracle R says the two produce the same document.
+stage_full = json.loads(produced[STAGE_FULL])
+if stage_full["error_code"] != "" or stage_full["status"] != "ok":
+    failures.append("%s: a %s-token resident prefill was refused: %r %r"
+                    % (STAGE_FULL, len(STAGE_FULL_TOKENS.split(",")), stage_full["error_code"],
+                       stage_full["error_detail"]))
+else:
+    if stage_full["weights"]["mode"] != "resident" \
+            or stage_full["weights"]["step_pack_bytes"] != 0:
+        failures.append("%s: %r" % (STAGE_FULL, stage_full["weights"]))
+    # The prompt reached the graph at its full length: `n_past` before the first decode step is the
+    # prompt's own token count, and the plane holds `T + N` columns after it.
+    if stage_full["decode"]["n_past_first"] != 32 \
+            or stage_full["plane"]["columns_written"] != 32 + int(STAGE_FULL_STEPS):
+        failures.append("%s: n_past_first %d and %d columns, not 32 and %d"
+                        % (STAGE_FULL, stage_full["decode"]["n_past_first"],
+                           stage_full["plane"]["columns_written"], 32 + int(STAGE_FULL_STEPS)))
+    if stage_full["plane"]["roundtrip_verdict"] != "IDENTICAL":
+        failures.append("%s: oracle B is %r at the staging boundary"
+                        % (STAGE_FULL, stage_full["plane"]["roundtrip_verdict"]))
+stage_full_streamed = normalize_resident(normalize(
+    run(ds(tokens=STAGE_FULL_TOKENS, transcript="-", width=STAGE_FULL_WIDTH,
+           steps=STAGE_FULL_STEPS)).stdout.decode("utf-8")))
+if stage_full_streamed != normalize_resident(produced[STAGE_FULL]):
+    failures.append("oracle R at the staging boundary (%s): %s"
+                    % (STAGE_FULL,
+                       describe_difference(stage_full_streamed,
+                                           normalize_resident(produced[STAGE_FULL]))))
 
 # Section 3.2's layout arithmetic on this fixture, spelled out so the golden's own
 # `weights.resident_bytes` is a number with a derivation rather than a number that was observed.
