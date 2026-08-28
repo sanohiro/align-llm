@@ -3,9 +3,115 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R2C-DECODE-INSTRUMENT (2026-08-28)
+## Active: R5D-MOE-LAYER-FORWARD (2026-08-28)
 
-Branch `agent/r2c-decode-instrument` starts from `main` `1b11245`, the merge of R3 follow-up PR #138.
+Branch `agent/r5d-moe-layer-forward`, rebased onto `main` `95c47e7` (the merged R3-RESIDENCY-SIM,
+PR #135, which sits on PR #136's GCC 14 shim fix, C8's optional targeted stage at PR #134 — a
+parallel Codex session's change, not this session's work — and the merged MOE-PREREQ-DISCHARGE at
+PR #133), and then **merged** with `main` `1b11245` — PR #138, a parallel Codex session's R3
+qualification-prerequisite follow-up — rather than rebased over it, so this branch's recorded
+baseline-chain commits stay reachable. The branch is `a85e1fc` (design ledger), `7886cee`
+(implementation), `a2e2748` (review repair), and the reconciliation and baseline commits on top;
+before the rebase the first three were `3cb8d59`, `e584849`, and `aaedf26`, and the review record on
+the pull request names the pre-rebase heads the reviewers read. Design ledger `docs/specs/r5d-moe-layer-forward.md` is authoritative and
+now carries the implementation's corrections C1–C22 and the shipped arm's measured section 7.
+**The capability is implemented and committed**: `src/layer_olmoe.align` and
+`src/moe_layer_forward.align` are new; `scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`,
+`scripts/layer_forward_fixture.py`, `src/ggml_ffi.align`, and `src/ggml_spike.align` are extended;
+`scripts/run-moe-layer-forward`, `scripts/sweep-moe-layer-forward-excerpt.py`,
+`scripts/moe-layer-forward-golden.jsonl`, and `eval/fixtures/olmoe-blk0-6tok.txt` are new. No
+intentional uncommitted files.
+
+**What it does.** R5's second gate stage for a **routed** OLMoE layer: one prefill of at most six
+tokens through `blk.0`, computed by ggml over attention weights and only the routed experts' planes
+held in Align-owned buffers, checked against llama.cpp's own numbers. Measured by the shipped arm on
+the real model (ledger section 7.1): the routed layer reads **101,990,400 of 261,095,424** expert
+bytes (390,625 ppm, 75 of 192 planes, 25 block reads); the self-reference oracle is 46 of 46
+byte-identical; the routing-identity oracle is `MATCH` at 36 of 48 printed ids plus the exact sum
+1,471; the transcript oracle is `PASS`, 26 nodes, 2,376 elements, max |Δ| 0 ten-thousandths.
+**Required microbenchmark B is 5.64 ms** (phase A 1.452 + phase B 4.185, warm means of five) — the
+probe's 9.4 ms timed a cold graph per arm and the shipped arm's contractual warm-up is what section
+3.5 already required. The residency win is a **decode-time property**: 39% of the layer's expert
+bytes at six prefill tokens, 12.5% at one, 73% at eighteen.
+
+The boundary change is five new FFI symbols (`argsort`, `mul_mat_id`, `view_2d`, a 3-D
+stacked-tensor constructor, a 2-D i32 constructor) plus one widened existing symbol
+(`soft_max_ext` with a null mask). **No new Align capability request was needed.** Four existing
+requests gain R5D as a client, all non-blocking: Requests 45 and 46 (R3's, renumbered from 44 and 45
+when PR #134 took Request 44, and now on `main` with the merged PR #135) and Requests 37 and 42.
+Ledger section 5.5 named all four as to be appended at reconciliation, and the reconciliation commit
+appends R5D's client evidence to each of the four register entries.
+
+**Review.** One comprehensive review of the stable candidate, two independent reviewers over
+disjoint risks. Reviewer A (source) **approve** with 2 medium and 2 low findings; reviewer B
+(governance/record) **approve after repair** with 2 med-high, 3 medium, and 6 low findings. All
+fifteen were validated and **accepted**, and all fifteen are repaired in the consolidated repair
+commit on this branch; ledger corrections C12–C21 record the contract changes, and
+`r5b-model-prefill-forward.md` C26 and `r5c-metal-prefill.md` C22 record the retired
+`layer-forward-smoke` and `check-per-unit` acceptance targets. No finding was rejected. The repair
+adds one behavioural refusal (a claim plane whose `ggml_type` is not its role's first, reproduced
+before and after) and one hosted case, `moe-engine-claim-type-mismatch`; every other change is a
+record, a comment, or an assertion.
+
+**Verification, re-run in full at the rebased head against the managed `3a34febe` compiler** that
+PR #134 pinned, on this host with `gmake` and
+`LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib`:
+
+```text
+gmake check                    ok: checked 31 unit(s) per-unit (137 s)
+gmake build                    ok
+gmake ggml-spike               ok, stub shim and real shim
+gmake ggml-spike-smoke         PASS - 7 no-document, 43 documented cases; olmoe 22 blocks /
+                               69 members, 16 ExpertBlocks, claim surface PASS
+gmake layer-forward-smoke      PASS x3, byte-identical, 28 / 27 / 26 s - 8 no-document and 75
+                               documented R5A/R5B cases, 59 model-forward, 28 gpu-forward, and
+                               R5D's 8 no-document / 78 documented cases, 29 codes, three oracles
+gmake alignpack-smoke          PASS - 27 positive fixtures, 128 negative sources, 20,302 assertions
+gmake residency-sim-smoke      PASS - PR #135's owner, unchanged by this branch
+gmake gate-topology-check      PASS
+gmake format-check             PASS; gmake fmt leaves no diff; git diff --check clean
+```
+
+**No golden byte changed at the new pin.** The R5A, R5B, R5C, R5D, and ggml-spike golden documents
+are byte-identical under `3a34febe`, so the pin adoption needs no correction row of its own.
+
+**Baseline chain, re-recorded.** This branch's `Makefile` and `.gitattributes` changes invalidate
+the chain that shipped with R3-RESIDENCY-SIM, so the identity-bound chain is re-recorded here as
+`7c4830a` -> `c6cee0c` -> `09de0fd` (clean source -> immutable oracle -> finalization), measured on
+Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) and checked there with `make baseline-check`
+ending `baseline chain: PASS`. Two of the twenty recorded artifacts changed against the R3 chain:
+`Makefile`, which gains the opt-in `moe-layer-forward-qualification` target and no
+`HOSTED_CHECK_TARGETS` member, and `.gitattributes`, which marks the new olmoe excerpt `-whitespace`.
+`.align-revision` is `3a34febe` on both chains, because R3 already adopted PR #134's move. The other
+eighteen hashes are unchanged and the twenty paths are identical. The pull request must merge with a
+merge commit; squash and rebase merges would make these commits unreachable.
+
+**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test moe-layer-forward -- make
+layer-forward-smoke gate-topology-check` under the installed profile at the exact head, then publish
+and merge. Note the preflight lane: R5D adds the `moe-layer-forward-qualification` Makefile target,
+so the classifier selects the **executable** row and the installed profile — publication needs the
+**fresh-image (Docker-in-Docker)** preflight, not the documentation lane. `HOSTED_CHECK_TARGETS`
+membership is unchanged, so `make ci` is *not* selected. (2) After merge, refresh `main` and start
+the next eligible roadmap item; R5's deferred microbenchmark C and R6 both wait on pending decisions
+(d) and (c) below.
+
+## Merged checkpoint: R3-QUALIFICATION-PREREQUISITES (2026-08-28)
+
+Branch `fix/r3-qualification-prerequisites` merged as PR #138, merge commit `1b11245` on `main`,
+authored by a **parallel Codex session** rather than by the session that produced R3 and R5D. It
+started from `main` `95c47e7`, the merge of R3 PR #135. A second R3 implementation was independently completed before that merge became visible;
+its duplicate PR #137 is closed and will not be integrated. Its final review nevertheless exposed
+one root-cause class that applies to the merged qualification: the wrapper generated a Model IR but
+did not validate it or the requested budget until after every prompt had invoked the external
+instrument, so a locally knowable defect could consume up to 40 600-second prompt runs.
+Published and merged as PR #138; R5D merges it in rather than rebasing over it, so this branch's
+recorded baseline-chain commits stay reachable.
+
+## Merged checkpoint: R2C-DECODE-INSTRUMENT (2026-08-28)
+
+Branch `agent/r2c-decode-instrument` merged as PR #140, merge commit `89d8721` on `main`, authored
+by a **parallel Codex session** rather than by the session that produced R3 and R5D. It started from
+`main` `1b11245`, the merge of R3 follow-up PR #138.
 The next eligible roadmap dependency is decision (c): source-build llama.cpp at exact commit
 `bb4caa7540188872173c44d161602d9271386413` with the minimal R2c instrument patch, which unblocks
 R6 and therefore R7-R9. R5 microbenchmark C remains independently blocked on Align Request 41.
@@ -58,9 +164,9 @@ R2A parser/source oracle changes, R2A specification correction, roadmap and deve
 changes, and this handoff update belong to this capability. `Makefile` and aggregate topology are
 intentionally unchanged, so the canonical coding baseline artifact set is unchanged.
 
-**Next actions, in order.** Run exact-head preflight, publish the English pull request with both
-review envelopes and finding dispositions, monitor required checks, and merge. Per the user's stop
-point, do not begin R6 after this PR; after merge, refresh `main`, record no active work, and stop.
+Published and merged as PR #140. R5D merges it in rather than rebasing over it, so this branch's
+recorded baseline-chain commits stay reachable; `Makefile` and the canonical baseline artifact set
+are unchanged by it, so R5D's chain still binds.
 
 **Latest durable verification.** On WSL2 x86_64 with GNU 14.2.0 and the managed Align
 `3a34febe` toolchain:
@@ -302,7 +408,9 @@ longer fits alongside the downloaded model and its alignpack space; R1B's real-m
 1. **Small MoE GGUF, 1-4 GB. — TAKEN.** `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (3.9 GiB) is on
    this host. It unblocked the R2 locality gate (merged, PR #131), R1C's `olmoe` frontend (merged,
    PR #132), and R4's per-expert half with R4.5's expert matmul (merged, PR #133). R3's residency
-   simulation, merged in PR #135 above, follows from the same file rather than from another download.
+   simulation (merged, PR #135), its qualification-prerequisite follow-up (merged, PR #138), and
+   R5D's routed layer, in publication above, follow from the same file rather than from another
+   download.
 2. **`gpt-oss-20b-mxfp4.gguf`, 12.1 GB.** Unblocks R1B's real-model `model-ir-parity` qualification
    and every `ASSUMED` row of `docs/specs/r1b-gptoss-moe-ir.md` section 2.5 — including the two
    rows R1C has now contradicted from the olmoe side. **Infeasible on this host** after decision 1
@@ -320,7 +428,12 @@ longer fits alongside the downloaded model and its alignpack space; R1B's real-m
 non-blocking, and Request 44 ALIGN_LLM_VERIFIED, closed by PR #134. `.align-revision` now selects
 `3a34febe`. Requests 45 and 46 are new, filed by R3-RESIDENCY-SIM (see above) and renumbered from
 44 and 45 when PR #134 took 44; Request 45 is priority **high** — an accepted-but-unsound compiler
-defect — rather than the medium/low of the rest of this range. Top clients by reference count in
+defect — rather than the medium/low of the rest of this range. **R5D added no request and appended
+client evidence to four**: Requests 45 and 46 gain `src/layer_olmoe.align`'s `parse_geometry` and its
+routing decision (the two R5D could only anticipate before PR #135 merged them), Request 37 gains
+R5D's per-unit check times — 15.6 s for the arm's own unit against 0.67 s for the 1,403-line module
+beside it, which retires R5B's and R5C's under-10 s single-unit target rather than restating it — and
+Request 42 gains the second exact repeat of one region diagnostic. Top clients by reference count in
 `docs/align-requests.md` (grep-verified against the register): Request 34 (`Result` payloads beyond
 scalars, 9 mentions), Requests 21 and 23 (read-only open; huge-struct-copy lint, 8 each — Request 23
 gained R1C's `src/frontend_olmoe.align` and then R3's `residency_sim$Derived`, making six clients
@@ -367,12 +480,13 @@ non-finite-readback goldens, masked in golden normalization alone. Full ledger:
 `docs/specs/r5c-metal-prefill.md`.
 
 **Resume in another environment.** Fetch `origin`, check out `main`, then check out
-`agent/r3-residency-sim` and read `docs/specs/r3-residency-sim.md` in full before touching
-`src/residency_sim.align`, the oracle, or either runner. Decision 1 is taken; R2's gate, R1C's
-frontend, R4's per-expert half, R4.5's expert matmul, and C8's optional targeted stage are all
-merged, so R3 waits on no further decision. For the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1);
-decision 3 -> R6 (section R6), R7-R9, and the decode half of R2's gate; decision 4 -> R5's deferred
-microbenchmark C (section R5).
+`agent/r5d-moe-layer-forward` and read `docs/specs/r5d-moe-layer-forward.md` in full before touching
+`src/layer_olmoe.align`, `src/moe_layer_forward.align`, the two C shims, or either runner. Decision 1
+is taken; R2's gate, R1C's frontend, R4's per-expert half, R4.5's expert matmul, C8's optional
+targeted stage, and R3's residency simulator are all merged, so R5D waits on no further decision. For
+the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1); decision 3 -> R6 (section
+R6), R7-R9, and the decode half of R2's gate; decision 4 -> R5's deferred microbenchmark C (section
+R5).
 
 **DinD preflight note.** The installed profile requires true Docker-in-Docker on macOS. The recipe
 lives in this session's memory, not in the repository, and the scripts that ran it lived only in a
@@ -382,16 +496,19 @@ exists by the time work resumes; otherwise rebuild from the CLAUDE.md rules (the
 
 ## Merged checkpoints
 
-Track B, dense local model (R0 → R5C), plus the merged R2 locality gate, the R1C olmoe frontend, and
-the MoE prerequisite discharge; C8's optional targeted stage is the one merged Track A re-entry.
-The MOE-PREREQ-DISCHARGE, R2, and R5C checkpoints are above; the rest, newest first:
+Track B, dense local model (R0 → R5C), plus the merged R2 locality gate, the R1C olmoe frontend, the
+MoE prerequisite discharge, and the R3 residency simulator; C8's optional targeted stage is the one
+merged Track A re-entry. The R3-RESIDENCY-SIM, MOE-PREREQ-DISCHARGE, R2, and R5C checkpoints are
+above; the rest, newest first:
 
 - **GCC14-FP-CONTRACT-PORTABILITY** (PR #136, merge `aad872f`): `#pragma STDC FP_CONTRACT OFF` is
   Clang-only, and GCC 14.2 diagnoses it as unknown while `scripts/build-ggml-shim` compiles with
   `-Werror`; the pragma is now guarded and the cross-compiler `-ffp-contract=off` flag plus the
   behavioural probe stay mandatory. It was discovered by **this capability's** publication preflight
   and merged as its prerequisite.
-- **C8-OPTIONAL-TARGETED-STAGE** (PR #134, merge `4f01553`): the targeted verification stage becomes
+- **C8-OPTIONAL-TARGETED-STAGE** (PR #134, merge `4f01553`): authored and merged by a **parallel
+  Codex session**, not by the session that produced the R3 and R5D capabilities above; it is recorded
+  here because R3 and R5D both consume its pin move. The targeted verification stage becomes
   optional, `R2`-unrelated, on a fresh fixed-task baseline measuring a 326,093 ppm removable ceiling
   against C8's 2,000 ppm floor; the 101-pair acceptance improves 60,515,456 ns to 40,475,113 ns
   (331,160 ppm). It adopted Align `3a34febe` (Align PR #892) as `.align-revision` and closed

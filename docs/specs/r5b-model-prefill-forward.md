@@ -1793,6 +1793,34 @@ verbatim to R5B's block and were not there:
   the last 8,192 bytes, so the line naming the case scrolls out of the diagnostic. R5B's documents
   are larger than R5A's, so the same `describe_difference` walk is used here.
 
+### C26 — section 5.5's two acceptance targets are retired
+
+Recorded here by R5D-MOE-LAYER-FORWARD, which is where they were finally exceeded beyond repair;
+`docs/specs/r5d-moe-layer-forward.md` section 6, correction C18 carries the arithmetic and
+`r5c-metal-prefill.md` section 6, correction C22 carries the matching restatement.
+
+Section 5.5's Request 37 entry sets two paired targets: `check-per-unit` of the arm's own unit under
+**10 s**, and `make layer-forward-smoke` under **15 s**, with the stated remedy that "the arm splits
+again along the schedule/oracle boundary rather than absorbing the cost". Measured at the same pin on
+the same class of host: `check-per-unit src/model_forward.align` is **17.21 s** over its graph and
+`src/moe_layer_forward.align` **17.02 s** over its own, of which the arm unit is roughly 15.6 s; and
+`layer-forward-smoke` with R5D's fourth block is **30.57 s** median against 19.41 s for the three
+blocks before it.
+
+**Both targets are retired rather than restated a third time.** R5D applied the named remedy before
+the numbers were taken -- its topology tables, geometry, and routing decision are a separate module,
+`src/layer_olmoe.align`, which checks in 0.67 s -- and the arm unit is still about 15.6 s, because
+the cost is Request 37's superlinearity in one function body and not a module boundary. The 15 s
+figure was set from an 11.0 s baseline in this ledger's own planning session; this host runs the
+same three blocks in 19.4 s, so 11.0 + 11.2 = 22.2 s is outside 15 s even crediting the whole
+difference to the host. A target re-attributed to the host after each measurement is not a gate.
+
+What remains is the fact the targets were a proxy for, and it belongs to Request 37 rather than to
+this ledger: per-unit check time is superlinear in body length. `layer-forward-smoke` is one member
+of `HOSTED_CHECK_TARGETS`, and the budget that binds is that aggregate's and the fresh worker's cap,
+neither of which is near. R5D section 5.5 records the measurements as fresh client evidence for
+Request 37.
+
 ---
 
 ## 7. Closure-matrix evidence

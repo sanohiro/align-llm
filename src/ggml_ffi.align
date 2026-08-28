@@ -218,6 +218,29 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_op_pad(
     ctx: raw, slots: slice<u8>, out: i64, a: i64, p0: i32, p1: i32, p2: i32, p3: i32) -> i32
 
+  // R5D-MOE-LAYER-FORWARD (`docs/specs/r5d-moe-layer-forward.md` section 3.5). The **five** new
+  // symbols the routed half of an OLMoE layer needs, and nothing else. Section 2.8 verified each
+  // against the two C files at the pin: `align_ggml_slot_new_tensor_2d` gates on the `mul_mat`
+  // operand table, which has no `I32` row and must not gain one, so the remapped id tensor gets its
+  // own constructor beside `slot_new_i32_1d`; the stacked expert operand is genuinely 3-D; and
+  // `align_ggml_op_soft_max_ext` is **widened** rather than duplicated, because `mask == -1` is a
+  // new input domain of an existing symbol and R5B correction C1 records that the cheapest new
+  // shim symbol is the one you do not add.
+  //
+  // `align_ggml_op_view_2d` takes dimension **selectors** and never byte counts: `nb1 = a->nb[
+  // nb1_dim]` and `offset = offset_index * a->nb[offset_dim]` are computed in C from the tensor's
+  // own strides, so Align cannot compute a stride or forge an offset and the view's extent is
+  // checked against `a`'s `nbytes` on the C side.
+  fn align_ggml_op_argsort(ctx: raw, slots: slice<u8>, out: i64, a: i64, order: i32) -> i32
+  fn align_ggml_op_mul_mat_id(
+    ctx: raw, slots: slice<u8>, out: i64, as_slot: i64, b: i64, ids: i64) -> i32
+  fn align_ggml_op_view_2d(
+    ctx: raw, slots: slice<u8>, out: i64, a: i64, ne0: i64, ne1: i64,
+    nb1_dim: i32, offset_dim: i32, offset_index: i64) -> i32
+  fn align_ggml_slot_new_tensor_3d(
+    ctx: raw, slots: slice<u8>, out: i64, kind: i32, ne0: i64, ne1: i64, ne2: i64) -> i32
+  fn align_ggml_slot_new_i32_2d(ctx: raw, slots: slice<u8>, out: i64, ne0: i64, ne1: i64) -> i32
+
   // The second new symbol, and section 6 correction C5's whole subject: a bounded `memcpy` between
   // two Align-owned ranges. Align's `buffer` is append-only and `pread` overwrites from index 0, so
   // a window that is allocated once and refilled thirty times cannot be refilled from Align.
@@ -870,6 +893,105 @@ pub fn window_copy(
   unsafe {
     return r5_result(
       align_ggml_window_copy(window, window.len(), offset, source, source.len(), n) as i64, label)
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// R5D — the routed layer's five new wrappers
+//
+// `docs/specs/r5d-moe-layer-forward.md` section 3.5. Each is one `unsafe` block containing one
+// foreign call, in the shape every R5A wrapper already has.
+// ---------------------------------------------------------------------------------------------
+
+// `ggml_argsort`'s two orders, validated in C. `ggml_top_k` is deliberately **not** wrapped: its
+// own header says the indices it returns are in no particular order, and section 2.2 fact 3
+// measured the slot order of `ffn_moe_topk-0` to be descending probability and section 2.3 measured
+// that order to be load-bearing to the last bit.
+pub SORT_ORDER_ASC := 0
+pub SORT_ORDER_DESC := 1
+
+// `mask == -1` means "no mask", which is the widened input domain of `op_soft_max_ext`. It is a
+// named constant rather than a bare `-1` at the call site so the node table reads as data.
+pub SOFT_MAX_NO_MASK := -1
+
+pub fn op_argsort(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, order: i64, label: str,
+) -> Result<(), Fault> {
+  if order != SORT_ORDER_ASC && order != SORT_ORDER_DESC {
+    return Err(r5_fault(STATUS_INIT, label))
+  }
+  unsafe {
+    return r5_result(align_ggml_op_argsort(ctx, slots, out, a, order as i32) as i64, label)
+  }
+}
+
+// The stacked-expert matrix multiply. `as_slot` holds a `{ne0, ne1, U}` tensor, `b` the activation,
+// and `ids` a `{n_expert_used, T}` i32 tensor of **compact** slot indices in `[0, U)`. Section 2.3
+// measured the compact form byte-identical to llama.cpp's whole-tensor shape.
+pub fn op_mul_mat_id(
+  ctx: raw, borrow slots: slice<u8>, out: i64, as_slot: i64, b: i64, ids: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_mul_mat_id(ctx, slots, out, as_slot, b, ids) as i64, label)
+  }
+}
+
+// A 2-D window on a tensor, addressed by dimension **selector**. `nb1_dim` names the axis whose
+// stride becomes the view's row stride and `offset_dim` names the axis the offset counts in, so the
+// caller supplies two small integers in `[0, 3]` and an index — never a byte count and never a
+// pointer. The expert reduction's slot `i` is `view_2d(weighted, n_embd, T, nb1_dim: 2,
+// offset_dim: 1, offset_index: i)`.
+pub fn op_view_2d(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  out: i64,
+  a: i64,
+  ne0: i64,
+  ne1: i64,
+  nb1_dim: i64,
+  offset_dim: i64,
+  offset_index: i64,
+  label: str,
+) -> Result<(), Fault> {
+  if nb1_dim < 0 || nb1_dim > 3 || offset_dim < 0 || offset_dim > 3 {
+    return Err(r5_fault(STATUS_INIT, label))
+  }
+  unsafe {
+    return r5_result(
+      align_ggml_op_view_2d(
+        ctx, slots, out, a, ne0, ne1, nb1_dim as i32, offset_dim as i32, offset_index) as i64,
+      label)
+  }
+}
+
+// The stacked expert operand. It mirrors `slot_new_tensor_2d` — same operand-table gate, same type
+// bound — with `ne2` the compact stack's depth `U`, which is the design's one data-dependent shape
+// parameter.
+pub fn slot_new_tensor_3d(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  out: i64,
+  kind: i64,
+  ne0: i64,
+  ne1: i64,
+  ne2: i64,
+  label: str,
+) -> Result<(), Fault> {
+  if !type_representable(kind) { return Err(r5_fault(STATUS_TYPE, label)) }
+  unsafe {
+    return r5_result(
+      align_ggml_slot_new_tensor_3d(ctx, slots, out, kind as i32, ne0, ne1, ne2) as i64, label)
+  }
+}
+
+// The `{n_expert_used, T}` id tensors. Like `slot_new_i32_1d` it does **not** go through the
+// `mul_mat` operand table, because that table is the left-operand predicate and widening it to
+// admit `I32` would let a quantized-weight path accept an index tensor (section 2.8).
+pub fn slot_new_i32_2d(
+  ctx: raw, borrow slots: slice<u8>, out: i64, ne0: i64, ne1: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_slot_new_i32_2d(ctx, slots, out, ne0, ne1) as i64, label)
   }
 }
 

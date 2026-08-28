@@ -299,10 +299,43 @@ The current forward delivery order is:
     column; a miss penalty needs R4.5's and R5's measured transfer costs; CPU fallback needs R5's
     microbenchmark). The result is a policy claim about this named model and this corpus, not a
     platform or throughput claim, and it carries the caveats the section R3 entry below records.
-    Review, publication, and merge are complete; see `HANDOFF.md`.
+    Review, publication, and merge are complete; a follow-up by a parallel session, PR #138 at
+    `1b11245`, moved the qualification wrapper's Model IR and budget validation ahead of the
+    instrument runs. See `HANDOFF.md`.
+23. **R5D-MOE-LAYER-FORWARD — one OLMoE MoE layer computed from Align-owned expert claims, the
+    routed half of R5's second gate stage. Implemented and reviewed; in publication.** On branch
+    `agent/r5d-moe-layer-forward`, rebased onto the merged R3 residency simulator at `main`
+    `95c47e7` and then merged with `main` `1b11245` (PR #138's follow-up) rather than rebased over
+    it, so the recorded baseline-chain commits stay reachable; design ledger `a85e1fc`,
+    implementation `7886cee`, review repair `a2e2748`.
+    [`r5d-moe-layer-forward.md`](r5d-moe-layer-forward.md) is the authoritative plan and owns the
+    probe record, the contract ledger, the closure matrix, the correction ledger, and the
+    cell-to-case map; the design gate triggered on the new `--moe-layer-forward` CLI arm, its
+    `R5D_*` result codes, and a coordinated invariant across `src/layer_olmoe.align`,
+    `src/moe_layer_forward.align`, `src/ggml_ffi.align`, and both C shims. The ledger's probe record
+    fixes the OLMoE MoE layer's real topology as data — the
+    QK-norm is an RMS norm over `n_embd` taken before the head reshape, the router's 64-way softmax
+    is never renormalized, the top-k node is `ARGSORT` plus `VIEW` rather than `ggml_top_k`, and a
+    compacted, remapped expert stack computed with `mul_mat_id` is bit-identical (28 of 28 dumped
+    nodes) to llama.cpp's own whole-tensor shape and needs no restacking copy. Against a checked-in
+    `llama-eval-callback` transcript the tolerance oracle reaches max `|Δ|` 5.0e-5 (the instrument's
+    own print-rounding bound) over 2,376 sampled elements, and the routing-identity oracle matches
+    the transcript's selected expert ids exactly. **The shipped arm measured on the real model**
+    (ledger section 7.1): the routed layer reads **101,990,400 of 261,095,424** expert bytes,
+    390,625 ppm, 75 of 192 planes over 25 block reads; the self-reference oracle is 46 of 46
+    byte-identical; the routing-identity oracle is `MATCH` at the exact printed ids and their sum
+    1,471; the transcript oracle is `PASS`, 26 of 26 nodes, 2,376 elements, max `|Δ|` 0
+    ten-thousandths. Required microbenchmark B is discharged at **5.64 ms** for one routed layer,
+    six tokens, warm (phase A 1.452 ms, phase B 4.185 ms; the probe's 9.4 ms timed a cold graph per
+    arm). The residency win this capability exists to measure is smaller than the plan assumed and is
+    stated as such: at six prefill tokens R5D reads 39.1% of the layer's expert bytes (12.5% at one
+    token, 73.4% at eighteen), so claim-level expert residency is recorded as a **decode-time**
+    property rather than a prefill win. The result is a correctness and layout claim about this named
+    model, not a throughput claim. No new Align capability request was needed; four existing requests
+    (37, 42, 45, 46) gain R5D as a non-blocking client. See `HANDOFF.md`.
 
-22. **R2C-DECODE-INSTRUMENT — a pinned, source-built decode-graph measurement dependency. Active
-    on branch `agent/r2c-decode-instrument`.** [`r2c-decode-instrument.md`](r2c-decode-instrument.md)
+22. **R2C-DECODE-INSTRUMENT — a pinned, source-built decode-graph measurement dependency. Merged
+    as PR #140, merge commit `89d8721` on `main`, by a parallel session.** [`r2c-decode-instrument.md`](r2c-decode-instrument.md)
     is the authoritative ledger and closure matrix. It pins llama.cpp commit
     `bb4caa7540188872173c44d161602d9271386413` and one two-file patch, builds the patched
     `llama-eval-callback` into an identity-addressed cache outside Git, and extends the existing
@@ -324,14 +357,16 @@ The current forward delivery order is:
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
-`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18, 19, and 20 above:
-items 18, 19, and 20 are merged, R2's gate is met, and R4's and R4.5's per-expert halves are
-discharged. It also unblocked item 21, R3-RESIDENCY-SIM, which is merged with the R3 gate met on the
-real corpus. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18 through 23 above:
+items 18 through 22 are merged, R2's gate is met, R4's and R4.5's per-expert halves are discharged,
+R3's gate is met on the real corpus, and decision (c)'s pinned decode instrument is shipped. It also
+unblocked item 23, R5D-MOE-LAYER-FORWARD, which is implemented, reviewed, and in publication with
+one routed OLMoE layer computed over Align-owned expert claims and agreeing with llama.cpp node for
+node. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
 **infeasible on the host where that decision was recorded** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
-a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch is active as item
-22 and will unblock R6 and, through it, R7-R9 after merge; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
+a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch is **taken** and
+merged as item 22, unblocking R6 and, through it, R7-R9; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
 required microbenchmark C. See `HANDOFF.md`, "Active capabilities", for the full decision list and
 disk-space accounting.
 
@@ -895,6 +930,16 @@ MOE-PREREQ-DISCHARGE（roadmap item 20、[`moe-prereq-discharge.md`](moe-prereq-
 0 → 1,024/1,024 contiguous）。残る**MOE-PREREQ**はgpt-oss固有（6 member ExpertBlock、MXFP4、
 split expert bias、fused `ffn_gate_up_exps`）のみである。
 
+**expert hotness orderingとprefetch groupは引き続きdeferされている。** R4B（hotness layout）を
+評価した結果、R2-LOCALITY-GATEが測定したrouter histogramはほぼuniform（entropy 992 per mille、
+64 expert全使用）であり、この分布下ではprefetchはむしろ有害と判定され、実装は開始しなかった。
+resume条件は、decode corpusまたはskewを示すstratified corpusが得られることである
+（roadmap item 19、`docs/specs/r2a-expert-trace.md`）。R3-RESIDENCY-SIM（roadmap item 21）は
+R4がpackした1,024個のnon-contiguous `ExpertBlock`を入力としてcache policyを比較し、gateは
+`BEATS_BASELINE`で達成済み（25% cache fractionで`recent_reuse_w32` 26.03 GB対LRU 33.53 GB、
+gain 223‰、jackknife最小213‰）。hotness orderingとprefetch groupそのものは、この2つの実測結果を
+resume条件として引き続きdeferされる。
+
 ---
 
 ## R4.5: External Buffer Spike
@@ -1000,6 +1045,26 @@ closureが所有値（`buffer`）をcaptureできず、captureしたタスクが
 この環境では原理的に回答不能というR4.5・R5A・R5Bの結論を引き継ぐ（`r4-5-external-buffer.md`
 section 5.4、`r5a-dense-layer-forward.md` section 5.4、`r5b-model-prefill-forward.md`
 section 5.4、`r5c-metal-prefill.md` section 1.3）。
+
+**単一layerのrouted版（MoE stage 2）はR5D-MOE-LAYER-FORWARD（roadmap item 23、
+`docs/specs/r5d-moe-layer-forward.md`）が対象とする。** branch `agent/r5d-moe-layer-forward`、
+merged R3の上へrebase済み（`main` `95c47e7`）、design ledger `a85e1fc`、実装 `7886cee`、
+review repair `a2e2748`。実装・review・実modelでのqualificationは完了し、publication中である。
+probeはplanの前提を複数覆した——QK-normは`head_dim`単位
+ではなく`n_embd`全体へのRMS normであり、routerのtop-8はrenormalizeされず、top-k nodeは
+`ggml_top_k`ではなく`ARGSORT`＋`VIEW`である。compactしid remapしたexpert stackは`mul_mat_id`で
+llama.cppのwhole-tensor形状とbit一致（28/28 node dump一致）し、restacking copyは不要と判明した。
+transcript oracleはmax`|Δ|` 5.0e-5（instrumentの印字精度上限）、routing-identity oracleは
+selected expert idが完全一致。**実装済みarmの実model計測**（ledger section 7.1）では
+routed layerがexpert byteの**101,990,400 / 261,095,424**（390,625 ppm、75/192 plane、25 block read）
+を読み、self-reference oracleは46/46 node byte一致、routing-identity oracleは`MATCH`（printed id
+完全一致、sum 1,471）、transcript oracleは`PASS`（26/26 node、2,376要素、max`|Δ|` 0
+ten-thousandths）。microbenchmark Bは**5.64 ms**（1 routed layer、6 token、warm；
+phase A 1.452 ms、phase B 4.185 ms。design段階のprobeの9.4 msはarmごとにcold graphを計測したもの）
+で達成。**このcapabilityが測定するresidency winは
+planが想定したより小さい**——6 tokenのprefillでlayerのexpert byteの39.1%を読む
+（1 tokenでは12.5%、18 tokenでは73.4%）ため、claim単位のexpert residencyは
+**decode-time property**として記録され、prefillの勝ちとしては主張されない。
 
 ---
 
