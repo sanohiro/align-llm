@@ -697,6 +697,13 @@ pub fn padding_zero(borrow f: file, borrow h: KvHeader) -> bool {
   return gap_zero(f, add_checked(h.logits_offset, h.logits_bytes), h.plane_offset)
 }
 
+// `false` is this predicate's only failure channel, so a `pread` error or a short read is reported
+// by the caller as `R6_KV_RESERVED("padding")` rather than as `R6_KV_UNREADABLE`. Both reads are
+// unreachable here: L7 has already proven `f.len() == total_bytes` and that every region lies
+// inside `[0, total_bytes)` in the canonical order, so all three gaps are windows of a file whose
+// length is settled, and only an I/O fault racing the open file could reach either arm. The
+// mis-naming is therefore accepted rather than routed: widening the predicate to a `Result` would
+// add a channel no shipped case can exercise.
 fn gap_zero(borrow f: file, start: i64, end: i64) -> bool {
   length := end - start
   if length <= 0 { return true }
