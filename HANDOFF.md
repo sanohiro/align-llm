@@ -5,60 +5,95 @@ file records durable project state.
 
 ## Active: R2D-DECODE-LOCALITY-GATE (2026-08-28)
 
-Branch `agent/r2d-decode-locality-gate` starts from `main` `89d8721`, the merge of R2c PR #140.
-It is the first measurement consumer of the patched instrument and it closes the decode half of the
-R2 roadmap gate. No design gate is triggered: no CLI verb, no exchanged document, and no coordinated
-invariant across three or more modules.
+Branch `agent/r2d-decode-locality-gate` starts from `main` `89d8721`, the merge of R2c PR #140, and
+is merged with `main` `e312bd7` (R5D PR #139) rather than rebased over it, so its recorded commits
+stay reachable. It is the first measurement consumer of the patched instrument and it closes the
+decode half of the R2 roadmap gate. No design gate is triggered: no CLI verb, no exchanged
+document, and no coordinated invariant across three or more modules.
 
-**Current checkpoint.** Implementation and the real-model run are complete and uncommitted on the
-branch. `scripts/run-decode-locality-gate` captures one prompt-plus-decode transcript per prompt
-with `-n 16 --temp 0 --seed 42` on top of the R2 flags, derives one `R2_ACTIVATION_TRACE` per
-transcript, reads one entry-embedding token fingerprint per observed position, deletes the
-transcript, and pools the documents into three verdicts under one rule. Adjacency is over the
-sequence rather than inside a graph, because a decode graph holds one token; the arms are
-`prefill@8` (all eight router slots), `decode@8` (consecutive decode graphs), and the
+**Current checkpoint.** Implementation, the real-model run, one comprehensive review over two
+independent reviewers, and the consolidated repair are complete and committed on the branch. No
+intentional uncommitted files. `scripts/run-decode-locality-gate` captures one prompt-plus-decode
+transcript per prompt with `-n 16 --temp 0 --seed 42` on top of the R2 flags, derives one
+`R2_ACTIVATION_TRACE` per transcript, reads one entry-embedding token fingerprint per observed
+position, deletes the transcript, and pools the documents into three verdicts under one rule.
+Adjacency is over the sequence rather than inside a graph, because a decode graph holds one token;
+the arms are `prefill@8` (all eight router slots), `decode@8` (consecutive decode graphs), and the
 prompt-to-generation `boundary` pair. The aggregation lives in a new full-axis path in
 `scripts/expert_locality_gate.py` (`require_full_router_axes`, `entry_token_fingerprints`,
-`aggregate_decode`, `DECODE_CAVEATS`); the historical compact path and its refusal are untouched.
+`aggregate_decode`, `DECODE_CAVEATS`/`decode_caveats`); the historical compact path and its refusal
+are untouched.
 
 **The gate is met in the decode direction.** On the same 40-prompt corpus against
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, 40 prefill and 640 decode graphs over 832 token positions,
-189.8 s: all three arms `LOCALITY` against a 125 per mille null — `prefill@8` 371 per mille,
-cluster-robust [338, 405], design effect 23.274; `decode@8` **447** per mille, cluster-robust
-[426, 468], design effect 35.375, 16 of 16 layers clearing; `boundary` 364 per mille, cluster-robust
-[325, 405]. Greedy decode's measured token-repetition rate is 51 per mille and excluding those pairs
-leaves the decode arm at 429 per mille, cluster-robust [408, 451], still `LOCALITY`. An optional
-32-step, 8-prompt subset arm reaches 504 per mille and does not weaken any verdict. The full record,
-its limits, and the mutation evidence are `docs/specs/r2a-expert-trace.md` section 9; section 8's
-prefill gate is untouched and its 286 per mille is not rewritten.
+252.9 s at the repair head and 189.8 s before it — elapsed is a load-dependent diagnostic and every
+recorded number is identical across the two runs: all three arms `LOCALITY` against a 125 per mille
+null — `prefill@8` 371 per mille, cluster-robust [338, 405], design effect 23.274; `decode@8`
+**447** per mille, cluster-robust [426, 468], design effect 35.375, 16 of 16 layers clearing;
+`boundary` 364 per mille, cluster-robust [325, 405]. Greedy decode's measured token-repetition rate
+is 51 per mille and excluding those pairs leaves the decode arm at 429 per mille, cluster-robust
+[408, 451], still `LOCALITY`. An optional 32-step, 8-prompt subset arm reaches 504 per mille and
+does not weaken any verdict. The full record, its limits, and the mutation evidence are
+`docs/specs/r2a-expert-trace.md` section 9; section 8's prefill gate is untouched and its 286 per
+mille is not rewritten.
 
-**Defect repaired in passing.** `scripts/run-r2c-instrument-qualification`'s `parse_trace` raised on
-any nonzero status, so the parser-refusal diagnostic below it was unreachable: `main --expert-trace`
-exits 2 on `status: "error"` and still writes the document naming the code and detail. `command()`
-now takes an `accept` set, `parse_trace` passes `(0, 2)`, and a new `parse-trace-statuses` case in
-`scripts/run-r2c-instrument-smoke` proves the refusal diagnostic, an accepted document, and that
-every other nonzero status is still a process failure. Without the fix that case reports
-`error: code 2`.
+**Defect repaired in passing.** `scripts/run-r2c-instrument-qualification`'s `parse_trace` raised
+on any nonzero status, so the parser-refusal diagnostic below it was unreachable:
+`main --expert-trace` exits 2 on `status: "error"` and still writes the document naming the code
+and detail. `command()` now takes an `accept` set, `parse_trace` passes `(0, 2)`, and a new
+`parse-trace-statuses` case in `scripts/run-r2c-instrument-smoke` proves the refusal diagnostic, an
+accepted document, and that every other nonzero status is still a process failure. Without the fix
+that case reports `error: code 2`.
 
-**Candidate contents.** The runner, the aggregation path, the qualification fix, the two smoke
-cases, `docs/specs/r2a-expert-trace.md` section 9, the roadmap R2 and item 22/23 updates, the
+**Candidate contents.** The runner, the aggregation path, the qualification fix, the hosted
+aggregator cases in `expert-trace-smoke` and the `parse-trace-statuses` case in
+`run-r2c-instrument-smoke`, `docs/specs/r2a-expert-trace.md` section 9, the roadmap R2 and item
+22/24 updates, the
 developer-guide section, and this handoff update. **No `Makefile` change**: like
 `run-expert-locality-gate` and `run-r2c-instrument-qualification`, this runner joins no target and
 no aggregate, so aggregate topology and the canonical coding baseline artifact set are unchanged.
 
-**Next actions, in order.** Run exact-head preflight with the owner commands below, obtain one
-comprehensive review of the stable candidate, publish the English pull request with the measurement
-and the review envelope, monitor required checks, and merge.
+**Review and repair.** One comprehensive review of the stable candidate at `5a7ace7`, two
+independent reviewers over disjoint risks. Reviewer B (docs/governance) requested changes: 1
+blocker, 1 major, 4 minor. Reviewer A (executable diff) approved with 7 minor findings. All 13 were
+validated and **accepted**; none was rejected. They are repaired in one consolidated commit on this
+branch, together with the merge of `main` `e312bd7` (R5D PR #139) that the blocker required. The
+repair adds no capability and changes no measured number: `threshold_per_mille` is a reported
+diagnostic corrected from the floored to the ceiled quotient (187 -> 188) in both the decode and
+the merged compact gate, admission now runs before the router-shape read,
+`ALIGN_LLM_LOCALITY_PROMPT_COUNT` is range-checked like `ALIGN_LLM_DECODE_STEPS`, the short-context
+caveat is bound to the measured corpus rather than hard-coded, the fingerprint arm names the prompt
+and reason it could not be read, and five new owner cases pin the materiality boundary from both
+sides, correction 20's token-reduced layer at the real 16-layer shape, a chain gap in the
+working-set runs, a refused document's own `error_code`, and the fingerprint reader's block
+terminator.
 
-**Latest durable verification.** On this macOS arm64 host with the managed Align `3a34febe`
-toolchain:
+**Root-cause audit across the diff.** Every `ALIGN_LLM_*` read in `run-decode-locality-gate` is now
+validated or has an explicit N/A path; every new aggregate function runs behind
+`require_full_router_axes`; and the only other per-mille threshold helper — the merged compact
+gate's — carried the same off-by-one and is corrected with it. One instance of the same class is
+recorded and **not** repaired here, because it belongs to a merged capability outside this diff:
+`scripts/run-expert-locality-gate` also reads `ALIGN_LLM_LOCALITY_PROMPT_COUNT` without validating
+it, so `=0` there still yields an empty measurement. It is a follow-up for that runner's owner.
+
+**Next actions, in order.** Run exact-head preflight with the owner commands below, publish the
+English pull request with the measurement and both review envelopes, monitor required checks, and
+merge. A further comprehensive review is not required: the repair is confined to the recorded
+findings, adds no behaviour beyond the four named guards, and changes no measured result.
+
+**Latest durable verification.** At the repair head, on this macOS arm64 host with the managed
+Align `3a34febe` toolchain:
 
 ```text
-make build                        PASS
-make expert-trace-smoke           PASS, 108 fixtures / 17 error codes, both aggregator units
-make format-check                 PASS
+gmake build                       PASS
+gmake expert-trace-smoke          PASS, 108 fixtures / 17 error codes, both aggregator units,
+                                  14 of 14 mutants killed by the decode unit alone
+gmake format-check                PASS
 git diff --check                  clean
-scripts/run-decode-locality-gate  MEASURED, three LOCALITY verdicts, 189.8 s (section 9.2)
+scripts/run-decode-locality-gate  MEASURED, three LOCALITY verdicts, 252.9 s; every recorded per
+                                  mille, interval, count, and verdict identical to the pre-repair
+                                  run (section 9.2). Elapsed is a load-dependent diagnostic; the
+                                  pre-repair run took 189.8 s on the same host
 scripts/run-r2c-instrument-smoke  PASS, 55 contract groups, on Docker linux/arm64
 ```
 
@@ -189,7 +224,8 @@ microbenchmark C remains independently blocked on Align Request 41.
 
 **What it delivers.** The triggered design ledger is `docs/specs/r2c-decode-instrument.md`
 (`d8e4818`); the reviewed implementation head is `5f1eb3e`, the first consolidated review repair is
-`46432de`, and the final review's three accepted findings are repaired in the current branch tip.
+`46432de`, and the final review's three accepted findings are repaired at `76400f5`, the merged
+branch tip.
 `.llama-revision` and the 2,170-byte patch pin the external source and
 two-file diff. The `r2c-v2` managed builder has completed a fresh CPU build with Metal and
 llama/ggml shared libraries disabled, verified build 10566 / commit `bb4caa7`, and emitted a

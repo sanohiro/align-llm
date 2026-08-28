@@ -405,7 +405,10 @@ def aggregate(documents, labels=None):
         "observed_slots_per_token": observed_slots,
         "null_per_mille": null_per_mille,
         "observed_null_per_mille": observed_null_per_mille,
-        "threshold_per_mille": null_per_mille * 3 // 2,
+        # The smallest per mille that satisfies `materially_above` above: `p^ * 2 >= null * 3`
+        # is `p^ >= 3 * null / 2`, and the floor of that quotient is one short whenever the
+        # null is odd. At the 125 per mille null the boundary is 188, not 187.
+        "threshold_per_mille": (null_per_mille * 3 + 1) // 2,
         "adjacent_pair_count": pairs,
         "reuse_numerator": numerator,
         "reuse_denominator": denominator,
@@ -471,7 +474,7 @@ CAVEATS = (
 # working-set window than the compact path's `printed = min(ne, 6)` ceiling allowed.
 DECODE_WINDOWS = (1, 2, 4, 8)
 
-# `graphs[].phase` is three-valued (`docs/specs/r2a-expert-trace.md` section 2.5.5): a one-token
+# `graphs[].phase` is three-valued (`docs/specs/r2a-expert-trace.md` section 2.5.6): a one-token
 # first graph is `single_token_first_graph`, because the transcript cannot separate a one-token
 # prompt from a decode step. A pair touching one is counted and reported, never silently folded
 # into prefill or decode.
@@ -836,6 +839,12 @@ def aggregate_decode(documents, labels=None, fingerprints=None):
     if fingerprints is not None and len(fingerprints) != len(documents):
         raise GateError("document and fingerprint counts differ")
 
+    # Admission first, and only then any read of the router shape. A refused document — a parser
+    # error document, a dense transcript, a compact R2A document — has `moe` fields that are null
+    # by contract, so deriving the shape before the status check would report "n_expert is null"
+    # where the real diagnostic is the document's own `error_code`.
+    require_full_router_axes(documents, labels)
+
     n_expert = None
     n_expert_used = None
     for label, document in zip(labels, documents):
@@ -848,8 +857,6 @@ def aggregate_decode(documents, labels=None, fingerprints=None):
             raise GateError("%s: router shape (%s, %s) differs from (%s, %s)"
                             % (label, moe["n_expert"], moe["n_expert_used"], n_expert,
                                n_expert_used))
-
-    require_full_router_axes(documents, labels)
 
     # With every slot printed the observed null and the top-k null coincide, so the decode gate's
     # threshold is no longer the conservative approximation the merged prefill gate had to use.
@@ -903,11 +910,19 @@ def aggregate_decode(documents, labels=None, fingerprints=None):
     truncated_documents = 0
     documents_token_reduced = 0
     token_reduced_layers = set()
+    # The longest prompt actually captured, so the short-context caveat states the corpus that was
+    # measured rather than the one the default corpus happens to hold. The prompt graph is the
+    # transcript's first, whatever its phase: a one-token prompt is `single_token_first_graph`.
+    max_prompt_tokens = None
     for document in documents:
         for row in document["graphs"]:
             if row["phase"] in graph_counts:
                 graph_counts[row["phase"]] += 1
             token_positions += row["tokens_observed"] or 0
+        first = document["graphs"][0] if document["graphs"] else None
+        if first is not None and isinstance(first.get("n_tokens"), int):
+            max_prompt_tokens = (first["n_tokens"] if max_prompt_tokens is None
+                                 else max(max_prompt_tokens, first["n_tokens"]))
         if any(row.get("tokens_truncated") for row in document["graphs"]):
             truncated_documents += 1
         reduced = document["moe"].get("token_reduced_layers") or []
@@ -921,9 +936,11 @@ def aggregate_decode(documents, labels=None, fingerprints=None):
         "n_expert_used": n_expert_used,
         "observed_slots_per_token": n_expert_used,
         "null_per_mille": null_per_mille,
-        "threshold_per_mille": null_per_mille * 3 // 2,
+        # ceil(3 * null / 2): the smallest per mille `materially_above_null` accepts.
+        "threshold_per_mille": (null_per_mille * 3 + 1) // 2,
         "graph_counts": graph_counts,
         "token_positions": token_positions,
+        "max_prompt_tokens": max_prompt_tokens,
         "ambiguous_pairs": ambiguous_pairs,
         "truncated_documents": truncated_documents,
         "documents_token_reduced": documents_token_reduced,
@@ -940,8 +957,9 @@ DECODE_CAVEATS = (
     "greedy decode is the contract: the capture pins --temp 0 --seed 42 with the instrument's "
     "default sampler, so the generated sequence is the model's argmax continuation and not a "
     "sample from its distribution; a sampled continuation may route differently",
-    "the context is -c 512 and every prompt is 6 tokens or fewer, so the whole measurement lives "
-    "in the first two dozen positions of a sequence and says nothing about long context",
+    "the context is -c 512 and the corpus's longest prompt is {max_prompt_tokens} token(s), so "
+    "the whole measurement lives in the first few dozen positions of a sequence and says "
+    "nothing about long context",
     "the decode arm observes ALIGN_LLM_DECODE_STEPS generated tokens per prompt and stops early on "
     "an end-of-generation token, so a prompt may contribute fewer decode graphs than requested",
     "greedy decode can enter a repetition loop, whose adjacent tokens are the same token and whose "
@@ -961,4 +979,21 @@ DECODE_CAVEATS = (
     "n_expert_used slots rather than the compact printed six, so its number replaces nothing and "
     "the two are not comparable term by term",
 )
+
+
+def decode_caveats(result):
+    """`DECODE_CAVEATS` with every corpus-dependent placeholder bound to what was measured.
+
+    A caveat that hard-codes the default corpus is wrong the moment `ALIGN_LLM_LOCALITY_PROMPTS`
+    names another one, and a caveat that says nothing concrete is not a caveat. The templates carry
+    named placeholders and this binds them to the run's own numbers.
+    """
+    bound = []
+    for text in DECODE_CAVEATS:
+        bound.append(text.replace("{max_prompt_tokens}",
+                                  "an unknown number of" if result["max_prompt_tokens"] is None
+                                  else str(result["max_prompt_tokens"])))
+    return tuple(bound)
+
+
 # --- R2D: the full-axis, phase-aware decode path (end) ---------------------------------------

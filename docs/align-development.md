@@ -853,7 +853,7 @@ ALIGN_LLM_LLAMA_EVAL_CALLBACK="$(scripts/llama-eval-callback-toolchain ensure in
 | `ALIGN_LLM_GGUF_MODEL` | none | a **MoE** GGUF; the subject model |
 | `ALIGN_LLM_LLAMA_EVAL_CALLBACK` | none | the **patched** callback instrument; a compact-axis build is refused, not silently measured |
 | `ALIGN_LLM_LOCALITY_PROMPTS` | `eval/prompts/expert-locality-v1.txt` | the prompt corpus, one prompt per line |
-| `ALIGN_LLM_LOCALITY_PROMPT_COUNT` | `40` | prompts to use, taken from the **top** of the corpus in file order |
+| `ALIGN_LLM_LOCALITY_PROMPT_COUNT` | `40` | prompts to use, taken from the **top** of the corpus in file order; 1 to 1000, and a value outside that range — `0` included — is an error rather than an empty measurement |
 | `ALIGN_LLM_DECODE_STEPS` | `16` | generated tokens per prompt; 1 to 128, and a value outside that range is an error rather than a silent default |
 
 A missing or unusable model/instrument prints exactly one of these lines, in this order, and exits 0
@@ -895,7 +895,15 @@ of the entry `embd = ... GET_ROWS(token_embd.weight, inp_tokens)` row, a determi
 the token id — for every observed position, reports the measured repetition rate per phase and per
 prompt, and republishes all three verdicts with every token-repeating pair excluded. No headline
 verdict uses the fingerprint, and a block whose row count does not match the graph's `n_tokens`
-disables the arm rather than excluding the wrong pairs.
+disables the arm rather than excluding the wrong pairs. The arm is all-or-nothing across the corpus,
+so the reason is recorded per prompt and reported by label — `token repetition N/A (1 of 40
+prompt(s) could not be read: prompt 007: 7 entry embedding block(s) for 6 graph(s))` — rather than
+lost behind one "could not be read".
+
+**The caveats are bound to the run.** The runner prints the corpus's longest prompt as a header line
+and substitutes it into the short-context caveat, because `ALIGN_LLM_LOCALITY_PROMPTS` can name a
+corpus other than the checked-in one and a caveat that hard-codes the default is false the moment it
+does.
 
 It prints a human table and one machine-readable final line beginning `decode-locality-gate `, with
 `PHASE_KEY=VALUE` fields for each of the three arms plus the repetition rate, the per-phase histogram
@@ -913,12 +921,19 @@ network, and no instrument. It builds full-axis multi-graph documents from a rou
 exactly and requires: a memoryless router to score `NO_LOCALITY` on all three arms; an effect
 confined to one arm to appear in that arm and neither other; a boundary-only effect to move exactly
 one pair per prompt and layer; a detectable-but-immaterial and a material-but-uncertain decode case
-to be refused by the two halves separately; a between-prompt effect to be refused by the
-cluster-robust bound after the naive interval accepts it; and a corpus that loops for half its
-generated tokens to score `LOCALITY` before exclusion and `NO_LOCALITY` after it. It also requires
-that a compact R2A document and a truncated token axis are refused, that a parser `locality` that
-disagrees with a recomputation from its own `selections[]` is refused, and that the fingerprint
-reader identifies a repeated token without reading a non-entry tensor.
+to be refused by the two halves separately; the materiality boundary to be pinned from **both**
+sides, one per mille below it and one per mille above, and again on a second router shape whose
+1.5 × null is an exact integer; a between-prompt effect to be refused by the cluster-robust bound
+after the naive interval accepts it; and a corpus that loops for half its generated tokens to score
+`LOCALITY` before exclusion and `NO_LOCALITY` after it. It reproduces correction 20's token-reduced
+prefill layer at the real model's shape, so the 15/15/16 layer counts the real capture reports are
+a fixture property rather than an accident, and it requires a hole in one layer's chain to break a
+working-set run rather than be unioned across. It also requires that a compact R2A document, a
+truncated token axis, and a `status: "error"` document are refused — the last on its own
+`error_code`, because admission runs before any read of the router shape — that a parser `locality`
+that disagrees with a recomputation from its own `selections[]` is refused, and that the fingerprint
+reader identifies a repeated token without reading a non-entry tensor or the generated text that
+follows the final `sum =` line.
 
 Like the prefill gate, this one joins no aggregate and has no `Makefile` target: R2c's fetched
 measurement dependency stays opt-in, and adding a target would select the fresh-image preflight

@@ -353,7 +353,10 @@ The current forward delivery order is:
     consumer is item 24; R6 may consume the same instrument as its decode-graph source.
 
 24. **R2D-DECODE-LOCALITY-GATE — the decode half of the R2 locality gate, measured on the real
-    model.** [`r2a-expert-trace.md`](r2a-expert-trace.md) section 9 is the authoritative record; no
+    model. Implemented and reviewed; in publication.** On branch `agent/r2d-decode-locality-gate`,
+    started from `main` `89d8721` (R2c PR #140) and merged with `main` `e312bd7` (R5D PR #139)
+    rather than rebased over it, so its recorded commits stay reachable.
+    [`r2a-expert-trace.md`](r2a-expert-trace.md) section 9 is the authoritative record; no
     design gate is triggered, because it adds no CLI verb, no exchanged document, and no coordinated
     invariant. `scripts/run-decode-locality-gate` captures one prompt-plus-decode transcript per
     prompt with item 22's patched instrument at `-n 16 --temp 0 --seed 42`, derives one
@@ -365,7 +368,11 @@ The current forward delivery order is:
     clusters — and every layer clears the null on its own stratum. Greedy decode's token-repetition
     rate is measured at 51 per mille and excluding those pairs leaves every verdict unchanged. The
     historical compact-axis path and section 8's recorded 286 per mille are untouched. The
-    aggregator's owner case is hosted in `expert-trace-smoke` and needs no model or instrument.
+    aggregator's owner case is hosted in `expert-trace-smoke`, needs no model or instrument, and
+    kills all fourteen mutations of the shipped rule. One comprehensive review over two independent
+    reviewers found thirteen findings — one blocker, one major, eleven minor — all accepted and
+    repaired in one consolidated commit; the real-model run was repeated at the repair head and
+    reproduced every recorded number.
 
 ### Status (2026-08-28)
 
@@ -867,7 +874,8 @@ t+1側の制限は分子と分母を同時に動かすため方向は確定で�
 
 **decode方向も満たされた（2026-08-28、R2D-DECODE-LOCALITY-GATE）。** R2cのpatched instrumentを
 使い、同じcorpusの40 promptを`-n 16 --temp 0 --seed 42`（greedy）で捕捉した。40 prefill graphと
-640 decode graph、832 token位置、189.8秒。router slotは8/8すべて印字されるため、印字subset用の
+640 decode graph、832 token位置（所要は診断値でありhost負荷に依存する: repair後の再実行で252.9秒、
+その前は189.8秒。記録した数値はすべて両者で一致する）。router slotは8/8すべて印字されるため、印字subset用の
 小さいnullは存在せず、nullは125 per milleただ一つである。隣接の定義はgraph内ではなく**系列**
 上であり（decode graphは1 tokenなので、graph内定義ではdecode pairが1件も存在しない）、3本の
 arm を同一ruleで判定する。測定器は`scripts/run-decode-locality-gate`、集計は

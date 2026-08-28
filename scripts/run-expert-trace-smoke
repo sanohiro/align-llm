@@ -796,7 +796,7 @@ gate_case("half-material", [built_document([[1, 2]])],
 gate_case("material", [built_document([[1] * 5] * 4 + [[2] * 5] * 4) for _ in range(5)],
           verdict="LOCALITY", excludes_null=True, materially_above_null=True,
           reuse_per_mille=250, reuse_numerator=300, reuse_denominator=1200,
-          ratio_to_null_per_mille=2000, threshold_per_mille=187,
+          ratio_to_null_per_mille=2000, threshold_per_mille=188,
           wilson_low_per_mille=226, cluster_low_per_mille=226, layers_clearing_null=4)
 
 # Clustering, which the naive interval cannot see. Six prompts: two perfectly sticky, four
@@ -837,14 +837,15 @@ gate_case("token-reduced", [reduced_document],
 # inside one graph: the last prompt token and the first generated token are adjacent, and so are
 # two consecutive decode graphs. None of that can be exercised by the generator's single-graph
 # compact corpus, and none of it may be judged by a different rule than the prefill half.
-from expert_locality_gate import (DECODE_CAVEATS, aggregate_decode, entry_token_fingerprints,
-                                  require_full_router_axes)
+from expert_locality_gate import (DECODE_CAVEATS, aggregate_decode, decode_caveats,
+                                  entry_token_fingerprints, require_full_router_axes)
 
 DECODE_SLOTS = 8
 
 
 def built_decode_document(shares, prefill_tokens, decode_graphs, marks=None, layers=4,
-                          n_expert=GATE_N_EXPERT, used=DECODE_SLOTS):
+                          n_expert=GATE_N_EXPERT, used=DECODE_SLOTS, token_reduced_layer=None,
+                          omit=()):
     """One full-axis document whose sequence-adjacent reuse is exactly `shares`.
 
     The chain of one `(document, layer)` is `prefill_tokens` positions of graph 0 followed by one
@@ -855,12 +856,26 @@ def built_decode_document(shares, prefill_tokens, decode_graphs, marks=None, lay
 
     `marks[i]` is the token fingerprint of chain position `i`, used only by the repetition and
     sensitivity arms.
+
+    `token_reduced_layer` reproduces correction 20 on the *prefill* graph: the instrument runs the
+    output-token `GET_ROWS` before the graph's highest layer's feed-forward, so that layer emits no
+    `selections[]` row for graph 0 at all and is listed in `moe.token_reduced_layers`. Its chain
+    therefore starts at the first decode graph, and its first pair is a decode pair rather than the
+    boundary pair -- which is why the real capture reports 16 decode layers against 15 prefill ones.
+
+    `omit` drops the named `(graph, layer)` groups outright, leaving a hole in that layer's chain.
     """
     positions = ([(0, token) for token in range(prefill_tokens)]
                  + [(graph, 0) for graph in range(1, decode_graphs + 1)])
     if len(shares) != len(positions) - 1:
         fail("decode-locality-gate-aggregator: %d share(s) for %d position(s)"
              % (len(shares), len(positions)))
+
+    if token_reduced_layer is not None and token_reduced_layer != layers - 1:
+        fail("decode-locality-gate-aggregator: only the highest layer may be token-reduced")
+    dropped = set(omit)
+    if token_reduced_layer is not None:
+        dropped.add((0, token_reduced_layer))
 
     selections = []
     chosen_by = {}
@@ -877,9 +892,10 @@ def built_decode_document(shares, prefill_tokens, decode_graphs, marks=None, lay
                     cursor += 1
                     if candidate not in previous and candidate not in chosen:
                         chosen.append(candidate)
-            for slot, expert in enumerate(chosen):
-                selections.append({"graph": position[0], "layer": layer, "token": position[1],
-                                   "slot": slot, "expert": expert})
+            if (position[0], layer) not in dropped:
+                for slot, expert in enumerate(chosen):
+                    selections.append({"graph": position[0], "layer": layer, "token": position[1],
+                                       "slot": slot, "expert": expert})
             chosen_by[(layer, position)] = chosen
             previous = chosen
 
@@ -888,6 +904,8 @@ def built_decode_document(shares, prefill_tokens, decode_graphs, marks=None, lay
     # keeps the fixture honest instead of asserting agreement with a number it was handed.
     pairs = numerator = denominator = 0
     for layer in range(layers):
+        if (0, layer) in dropped:
+            continue
         for token in range(prefill_tokens - 1):
             before = set(chosen_by[(layer, (0, token))])
             after = set(chosen_by[(layer, (0, token + 1))])
@@ -902,6 +920,8 @@ def built_decode_document(shares, prefill_tokens, decode_graphs, marks=None, lay
     for width in (1, 2, 4):
         samples = unique_sum = 0
         for layer in range(layers):
+            if (0, layer) in dropped:
+                continue
             for token in range(prefill_tokens):
                 if token + width > prefill_tokens:
                     continue
@@ -924,7 +944,9 @@ def built_decode_document(shares, prefill_tokens, decode_graphs, marks=None, lay
         "status": "ok", "error_code": "",
         "moe": {"present": True, "n_expert": n_expert, "n_expert_used": used,
                 "n_expert_source": "ffn_moe_probs", "topk_layers": list(range(layers)),
-                "token_reduced_layers": [], "slots_truncated": False},
+                "token_reduced_layers": ([] if token_reduced_layer is None
+                                         else [token_reduced_layer]),
+                "slots_truncated": False},
         "graphs": graphs,
         "selections": selections,
         "locality": {"adjacent_pair_count": pairs, "reuse_numerator": numerator or None,
@@ -974,6 +996,24 @@ except GateError as error:
 else:
     fail("decode-locality-gate-aggregator: a compact R2A document entered the decode gate")
 
+# A refused document is refused on its own diagnostic. `main --expert-trace` writes a document
+# with `status: "error"`, an `error_code`, and null `moe` fields, so a gate that derived the router
+# shape before checking the status would report "n_expert is null" and hide the real reason.
+refused, _ = built_decode_document([0] * 6, prefill_tokens=4, decode_graphs=3)
+refused["status"] = "error"
+refused["error_code"] = "R2_TOKEN_COUNT"
+refused["moe"] = {"present": False, "n_expert": None, "n_expert_used": None,
+                  "n_expert_source": None, "topk_layers": [], "token_reduced_layers": [],
+                  "slots_truncated": None}
+try:
+    aggregate_decode([refused], ["refused"])
+except GateError as error:
+    if "R2_TOKEN_COUNT" not in str(error):
+        fail("decode-locality-gate-aggregator: a refused document reported %r rather than its "
+             "own error code" % error)
+else:
+    fail("decode-locality-gate-aggregator: a refused document entered the decode gate")
+
 # A truncated token axis would make an "adjacency" a jump across hidden positions.
 truncated_document, _ = built_decode_document([0] * 6, prefill_tokens=4, decode_graphs=3)
 truncated_document["graphs"][0]["tokens_truncated"] = True
@@ -988,11 +1028,13 @@ else:
 
 # The null is a constant of the router shape. With every slot printed there is only one null left:
 # the compact gate's smaller printed-subset null has no counterpart here, and the 1.5 x threshold
-# is 187 per mille. Asserting both is what makes every ratio below meaningful.
+# is 188 per mille -- ceil(3 * 125 / 2), the smallest integer per mille that satisfies
+# `p^ * 2 >= null * 3`, which the floor of that quotient misses by one. Asserting both is what
+# makes every ratio below meaningful.
 memoryless = decode_case("memoryless",
                          [built_decode_document([0] * 20, prefill_tokens=5, decode_graphs=16)
                           for _ in range(6)],
-                         null_per_mille=125, threshold_per_mille=187,
+                         null_per_mille=125, threshold_per_mille=188,
                          observed_slots_per_token=8, n_expert=64, n_expert_used=8,
                          ambiguous_pairs=0)
 # All three arms must exist before any of them can be judged: an adjacency rule that lost the
@@ -1044,15 +1086,31 @@ decode_case("sticky-boundary",
                "phases.prefill.verdict": "NO_LOCALITY", "phases.prefill.reuse_per_mille": 0,
                "phases.decode.verdict": "NO_LOCALITY", "phases.decode.reuse_per_mille": 0})
 
-# Detectable but immaterial: alternating 1 and 2 shared experts of 8 is 187 per mille, which is
-# exactly the null's 1.5 x threshold and fails it, while 3,840 trials put the interval well clear
-# of 125. Only a conjunction can call this NO_LOCALITY.
+# Detectable but immaterial: alternating 1 and 2 shared experts of 8 is 187 per mille over 4,096
+# trials, one per mille *below* the 188 the materiality half needs (`p^ * 2 >= null * 3` is
+# `p^ >= 187.5`), while the interval is well clear of 125. Only a conjunction can call this
+# NO_LOCALITY, and only the correct boundary: at the floored threshold of 187 this case would pass.
 decode_case("decode-half-detectable",
             [built_decode_document([0] * 5 + [1, 2] * 8, prefill_tokens=5, decode_graphs=17)
              for _ in range(8)],
             **{"phases.decode.verdict": "NO_LOCALITY", "phases.decode.excludes_null": True,
                "phases.decode.materially_above_null": False,
-               "phases.decode.reuse_per_mille": 187})
+               "phases.decode.reuse_per_mille": 187, "threshold_per_mille": 188})
+# The other side of the same boundary, one per mille up: seven prompts at 24 shared experts per
+# decode chain and one at 25 is 772 / 4,096 = 188 per mille, the smallest value the materiality
+# half accepts. A threshold or a comparison off by one in either direction moves exactly one of
+# these two cases, so the pair pins the boundary rather than one side of it.
+decode_case("decode-half-material-boundary",
+            [built_decode_document([0] * 5 + [1, 2] * 8, prefill_tokens=5, decode_graphs=17)
+             for _ in range(7)]
+            + [built_decode_document([0] * 5 + [1, 2] * 7 + [1, 3], prefill_tokens=5,
+                                     decode_graphs=17)],
+            **{"phases.decode.verdict": "LOCALITY", "phases.decode.excludes_null": True,
+               "phases.decode.materially_above_null": True,
+               "phases.decode.reuse_per_mille": 188,
+               "phases.decode.reuse_numerator": 772,
+               "phases.decode.reuse_denominator": 4096,
+               "threshold_per_mille": 188})
 
 # Material but uncertain: two decode pairs in one document at 2 of 8 shared is 250 per mille, twice
 # the null, but sixteen trials cannot exclude it. Only a nonzero z can call this NO_LOCALITY: at
@@ -1136,8 +1194,60 @@ prefill_windows = {row["window"]: row for row in sticky_windows["working_set"]["
 if prefill_windows[8]["sample_count"] or prefill_windows[4]["sample_count"] != 8:
     fail("decode-locality-gate-aggregator: the prefill windows are %r" % prefill_windows)
 
+# Correction 20's token-reduced layer, at the real model's shape: 16 layers, layer 15 reduced out
+# of the prefill graph and present in every one-token decode graph. Its chain therefore begins at
+# the first decode graph, so its first pair is a decode pair and it contributes no prefill or
+# boundary pair at all. That is the whole reason the real capture reports 16 decode layers against
+# 15 prefill ones, and without it the fixture corpus could not tell the two counts apart.
+reduced_tail = decode_case("decode-token-reduced-tail",
+                           [built_decode_document([0] * 5 + [8] * 15, prefill_tokens=5,
+                                                  decode_graphs=16, layers=16,
+                                                  token_reduced_layer=15) for _ in range(6)],
+                           token_reduced_layers=[15], documents_token_reduced=6,
+                           **{"phases.prefill.layer_count": 15,
+                              "phases.boundary.layer_count": 15,
+                              "phases.decode.layer_count": 16,
+                              "phases.decode.layers_clearing_null": 16})
+tail_rows = {row["layer"]: row for row in reduced_tail["phases"]["decode"]["per_layer"]}
+if 15 not in tail_rows or tail_rows[15]["adjacent_pair_count"] != 90:
+    fail("decode-locality-gate-aggregator: the token-reduced layer's decode pairs are %r"
+         % tail_rows.get(15))
+for arm in ("prefill", "boundary"):
+    if any(row["layer"] == 15 for row in reduced_tail["phases"][arm]["per_layer"]):
+        fail("decode-locality-gate-aggregator: the token-reduced layer reached the %s arm" % arm)
+
+# A hole in one layer's chain is not an adjacency. The working-set windows are recomputed over the
+# sequence, so a layer missing from one middle graph must break its run there rather than union
+# across the gap: layer 1 here has no group in decode graph 3, which leaves it a run of two and a
+# run of thirteen instead of one run of sixteen.
+gapped = decode_case("decode-chain-gap",
+                     [built_decode_document([0] * 5 + [8] * 15, prefill_tokens=5, decode_graphs=16,
+                                            omit=((3, 1),))],
+                     **{"phases.decode.adjacent_pair_count": 58,
+                        "phases.prefill.adjacent_pair_count": 16,
+                        "phases.boundary.adjacent_pair_count": 4})
+gap_windows = {row["window"]: row["sample_count"]
+               for row in gapped["working_set"]["decode"]}
+if gap_windows != {1: 63, 2: 58, 4: 49, 8: 33}:
+    fail("decode-locality-gate-aggregator: the gapped decode windows are %r; breaking the run at "
+         "the hole gives {1: 63, 2: 58, 4: 49, 8: 33} and unioning across it gives "
+         "{1: 63, 2: 59, 4: 51, 8: 35}" % gap_windows)
+
+# The materiality half is "at least half again the null", and at this null the boundary is an
+# integer: 16 of 64 makes p0 250 per mille and 1.5 x p0 exactly 375, which the rule must accept.
+# The 125 per mille null can never land on that point, so without a second router shape the
+# difference between `>=` and `>` is unobservable and the shipped contract is not pinned.
+decode_case("decode-materiality-exact",
+            [built_decode_document([0] * 5 + [6] * 15, prefill_tokens=5, decode_graphs=16,
+                                   used=16) for _ in range(6)],
+            null_per_mille=250, threshold_per_mille=375,
+            **{"phases.decode.verdict": "LOCALITY",
+               "phases.decode.reuse_per_mille": 375,
+               "phases.decode.materially_above_null": True,
+               "phases.decode.excludes_null": True})
+
 # A one-token first graph is neither prefill nor decode (`docs/specs/r2a-expert-trace.md` section
-# 2.5.5), so its pairs are counted as ambiguous and reach no arm.
+# 2.5.6), so its pairs are counted as ambiguous and reach no arm.
 ambiguous = decode_case("decode-single-token-first",
                         [built_decode_document([8] * 3, prefill_tokens=1, decode_graphs=3)],
                         ambiguous_pairs=4)
@@ -1185,16 +1295,39 @@ transcript = [
     "        ],\n",
     "    ]\n",
     "    sum = 0.1\n",
+    # The `sum =` line is the block terminator, and the last block in a transcript is the case that
+    # needs it: after the final callback the instrument prints the generated continuation, and this
+    # corpus is code, so a generated line can look exactly like a printed tensor row. Without the
+    # terminator the line below would be read as a second embedding row of a one-token graph.
+    "\n",
+    "def build():\n",
+    "    return [\n",
+    "        [      0.0052,       0.0034,      -0.0094,    ...,       0.0016  ],\n",
+    "    ]\n",
 ]
 blocks = entry_token_fingerprints(transcript)
 if [len(block) for block in blocks] != [2, 1]:
-    fail("decode-locality-gate-aggregator: the entry blocks are %r" % blocks)
+    fail("decode-locality-gate-aggregator: the entry blocks are %r (a block that did not end at "
+         "its `sum =` line reads the generated text as a token row)" % blocks)
 if blocks[0][1] != blocks[1][0] or blocks[0][0] == blocks[0][1]:
     fail("decode-locality-gate-aggregator: the fingerprints do not identify the repeated token")
 if any("RMS_NORM" in "".join(block) or "9.9999" in "".join(block) for block in blocks):
     fail("decode-locality-gate-aggregator: a non-entry tensor was read as a token")
+
+# The caveats are printed with every result, and the corpus-dependent one is bound to the run that
+# was actually measured: a hard-coded "6 tokens or fewer" is false the moment
+# `ALIGN_LLM_LOCALITY_PROMPTS` names another corpus.
 if len(DECODE_CAVEATS) < 5:
     fail("decode-locality-gate-aggregator: the decode caveats went missing")
+if reduced_tail["max_prompt_tokens"] != 5:
+    fail("decode-locality-gate-aggregator: the longest prompt is %r"
+         % reduced_tail["max_prompt_tokens"])
+bound_caveats = decode_caveats(reduced_tail)
+if not any("longest prompt is 5 token(s)" in caveat for caveat in bound_caveats):
+    fail("decode-locality-gate-aggregator: the short-context caveat was not bound to the corpus: "
+         "%r" % (bound_caveats,))
+if any("{max_prompt_tokens}" in caveat for caveat in bound_caveats):
+    fail("decode-locality-gate-aggregator: a caveat placeholder survived binding")
 # --- decode-locality-gate hand-built cases (end) ---
 
 print("expert trace smoke: %d fixtures, %d error codes, the real build-10566 excerpt, both CLI "
