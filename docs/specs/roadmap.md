@@ -471,7 +471,7 @@ reconciliation against whatever has merged by then.
     environment — rather than by a checked-in hex golden. The container's model identity is the
     **pack's** header-region digest and not the GGUF's, because `REFERENCE` is optional and a load
     run may not have the model at all. Owner `gmake layer-forward-smoke`, whose fifth block gains a
-    save/load round trip, a 45-case refusal matrix over 13 independent reject kinds, and
+    save/load round trip, a 51-case refusal matrix over 13 independent reject kinds, and
     `scripts/kv_plane_reader.py` — a complete second implementation of the format, written from the
     specification and driven as a subprocess — plus a **third** implementation in
     `scripts/layer_forward_fixture.py`, whose container the arm loads and decodes. Focused `gmake

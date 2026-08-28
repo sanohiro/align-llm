@@ -1189,6 +1189,15 @@ def write_model_corpus(directory, emit):
          patch(base, member_field(layout, output_index, 40), "<I", 4))
     emit("model-pack-truncated.alignpack", base[:len(base) - 64])
 
+    # R6-KV-PERSIST section 2.4. A pack whose source-identity digest is thirty-two zero bytes
+    # carries **no** model identity, and an all-zero digest compares equal to the all-zero digest a
+    # container written against such a pack would carry — so the identity check would pass over
+    # nothing. This pack is otherwise valid; only the digest slot is degenerate.
+    zero_identity = bytearray(base)
+    at = layout["source_record_offset"] + 48
+    zero_identity[at:at + 32] = bytes(32)
+    emit("model-pack-zero-identity.alignpack", bytes(zero_identity))
+
     emit("model-source.bin", source_image(layout))
     emit("model-source-diverged.bin", source_image(layout, corrupt=14))
     emit("model-source-short.bin", b"\0")
@@ -1487,13 +1496,20 @@ def write_decode_corpus(g, embed, layers, head, prefill_records, prefill_logits,
     geometry_text = json.dumps(geometry_document(g), separators=(",", ":")) + "\n"
     source_record_offset = layout["source_record_offset"]
 
-    def container(mutation=None, text=geometry_text):
-        return kv_container(g, planes, MODEL_TOKENS, prefill_logits, MODEL_KV_WIDTH, pack_bytes,
+    def container(mutation=None, text=geometry_text, tokens=MODEL_TOKENS):
+        return kv_container(g, planes, tokens, prefill_logits, MODEL_KV_WIDTH, pack_bytes,
                             source_record_offset, text, mutation=mutation)
 
     emit("model-kv-good.akvp", container())
     for mutation in KV_MUTATIONS:
         emit("model-kv-%s.akvp" % mutation, container(mutation))
+    # `ds-kv-tokens-count` is **not** a byte patch, and the canonical-layout rule is why: shortening
+    # `token_count` in the header without moving the three regions after it produces a container no
+    # layout can explain, which section 2.3.1's rule now refuses at L7 before the token count is ever
+    # compared. The honest defect is a perfectly well-formed container for a **shorter prompt**, and
+    # that is what this emits -- refused at L12 because the run asked for three ids and the file
+    # holds two.
+    emit("model-kv-tokens-count.akvp", container(tokens=MODEL_TOKENS[:2]))
     # `ds-kv-identity-geometry`'s honest form: a container written against a **different geometry
     # document**, so the refusal is a real second identity rather than a flipped byte. Both are
     # emitted, because the flipped byte proves the field is read and this proves the field means
@@ -1534,6 +1550,10 @@ KV_PLANE_ALIGN = 4096
 KV_REGION_ALIGN = 8
 KV_ENDIAN_PROBE = 0x0102030405060708
 KV_DOCUMENT_SCHEMA_VERSION = 3
+# Section 2.5's three bounds, restated here from the document rather than read from
+# `src/kv_plane.align`, because this generator is a third implementation of the format.
+KV_MAX_PLANE_BYTES = 536870912
+KV_MAX_LOGITS_BYTES = 16777216
 
 
 def kv_plan(g, width, token_count, n_vocab):
@@ -1670,6 +1690,36 @@ def kv_mutate(raw, plan, mutation, g, width, geometry_digest):
         struct.pack_into("<Q", raw, 88, plan["plane_offset"] - 8)
     elif mutation == "plane-not-last":
         struct.pack_into("<Q", raw, 96, plan["plane_bytes"] - 128)
+    elif mutation == "region-noncanonical":
+        # A layout that satisfies containment, alignment, disjointness, and "the plane is last" and
+        # is still **not** section 2.3.1's: the plane pushed one whole `plane_align` forward, with
+        # the gap left zero so the padding rule cannot be what refuses it. Before the canonical rule
+        # was enforced on both sides the arm accepted this file and the independent reader refused
+        # it, which is a format with two meanings.
+        gap = KV_PLANE_ALIGN
+        shifted = bytearray(raw[:plan["plane_offset"]]) + bytearray(gap) \
+            + bytearray(raw[plan["plane_offset"]:])
+        struct.pack_into("<Q", shifted, 88, plan["plane_offset"] + gap)
+        struct.pack_into("<Q", shifted, 40, plan["total_bytes"] + gap)
+        return bytes(shifted)
+    elif mutation == "padding-nonzero":
+        # One byte of the `logits -> plane` padding made non-zero. **No digest covers the gaps**, so
+        # this is the defect that shows the padding rule is enforced rather than implied: the five
+        # digests all still recompute correctly.
+        raw[plan["logits_offset"] + plan["logits_bytes"] + 3] = 1
+    elif mutation == "longer-total":
+        # The other side of `truncated-total`: a file **longer** than its own `total_bytes`. The
+        # header is untouched, so the only disagreement is the length.
+        return bytes(raw) + bytes(64)
+    elif mutation == "plane-too-large":
+        # Section 2.5's bound, declared rather than materialized: the header claims a plane one byte
+        # above `MAX_KV_PLANE_BYTES`, which is refused before the claim is compared against the
+        # file's own length. Materializing a 512 MiB fixture to reach the same refusal would cost
+        # the corpus half a gigabyte and prove nothing more.
+        struct.pack_into("<Q", raw, 96, KV_MAX_PLANE_BYTES + 1)
+    elif mutation == "logits-too-large":
+        struct.pack_into("<Q", raw, 80, KV_MAX_LOGITS_BYTES + 4)
+        struct.pack_into("<I", raw, 128, (KV_MAX_LOGITS_BYTES + 4) // 4)
     elif mutation == "geometry-layers":
         struct.pack_into("<I", raw, 104, g["n_layer"] + 1)
     elif mutation == "geometry-head-dim":
@@ -1688,10 +1738,6 @@ def kv_mutate(raw, plan, mutation, g, width, geometry_digest):
                          struct.unpack_from("<Q", raw, identity + 160)[0] + 1)
     elif mutation == "identity-geometry":
         raw[identity + 32] = raw[identity + 32] ^ 0xFF
-    elif mutation == "tokens-count":
-        struct.pack_into("<I", raw, 124, 2)
-        struct.pack_into("<I", raw, 120, 2)
-        struct.pack_into("<Q", raw, 56, 8)
     elif mutation == "tokens-id":
         at = plan["token_stream_offset"] + 8
         struct.pack_into("<I", raw, at, struct.unpack_from("<I", raw, at)[0] + 1)
@@ -1736,8 +1782,10 @@ KV_MUTATIONS = [
     "reserved", "reserved-u32", "identity-reserved", "high-bit", "truncated-total",
     "region-overlap", "region-outside", "region-misaligned", "plane-not-last", "geometry-layers",
     "geometry-head-dim", "geometry-plane-bytes", "identity-pack", "identity-pack-size",
-    "identity-geometry", "tokens-count", "tokens-id", "digest-tokens", "npast", "argmax",
+    "identity-geometry", "tokens-id", "digest-tokens", "npast", "argmax",
     "digest-logits", "digest-plane", "zero-tail", "magic-and-truncated",
+    "region-noncanonical", "padding-nonzero", "longer-total", "plane-too-large",
+    "logits-too-large",
 ]
 
 

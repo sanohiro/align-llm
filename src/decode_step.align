@@ -1291,6 +1291,14 @@ fn load_plane(
     fail(o, header_code, header_detail)
     return
   }
+  // L6's third part, taken here rather than inside `read_header` because it is the one reserved-space
+  // rule that needs L7's validated offsets: section 2.3's region-order property 4 says every padding
+  // byte is written and zero, and the five digests do not cover the gaps. The independent reader has
+  // always enforced it; the arm enforces it too, because the property belongs to the format.
+  if !kv_plane.padding_zero(src, h) {
+    fail(o, kv_plane.CODE_RESERVED, "padding")
+    return
+  }
   // L8. The shape the file claims against the geometry this run loaded, field by field, so the
   // common mistake reports the field rather than an opaque digest mismatch.
   if h.n_layer != g.n_layer {
@@ -2927,6 +2935,16 @@ pub fn execute(
   pack_digest := pack_identity.bytes()
   if pack_digest.len() != kv_plane.DIGEST_BYTES {
     fail(o, "R4_WINDOW_UNAVAILABLE", "kv_identity")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // Section 2.4. A pack whose source-identity digest is thirty-two zero bytes carries **no** model
+  // identity, and an all-zero digest compares equal to the all-zero digest a container written
+  // against such a pack would hold — so `R6_KV_IDENTITY("pack")` would pass over nothing. The
+  // degenerate value is refused on both directions instead: a container is never written with an
+  // identity that cannot distinguish one model from another, and one is never accepted on it.
+  if kv_requested && kv_plane.all_zero(pack_digest) {
+    fail(o, kv_plane.CODE_IDENTITY, "pack_absent")
     o.elapsed_ns = time.instant() - started
     return o
   }

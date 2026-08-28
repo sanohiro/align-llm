@@ -1882,25 +1882,36 @@ model at `KV_WIDTH` 256, of which 2,048 B (0.007 %) is metadata and padding. `PA
 required **with `KV_LOAD`**: loading skips the prefill, not the model, and every decode step still
 streams the whole weight set.
 
-With `KV_LOAD`, the arm validates the container against the run it was asked for — the file's own
-length, its regions, the pack's header-region digest, the geometry document's digest, `KV_WIDTH`,
-the token ids, the plane layout, and five digests, in that order, cheapest first — and refuses on
-any mismatch with an `R6_KV_*` code. **There is no fallback: a mismatch never silently
-re-prefills.** Model identity is the **pack's** source-identity digest and not the GGUF's, because
-`REFERENCE` is optional and a load run may not have the model; it certifies the pack's metadata
-region and not its payload, which is `--pack-verify`'s question. The document is `R6_DECODE_STEP` at
-**schema 3**, with a `kv` object and `plane.source` (`"PREFILL"` | `"LOADED"`) in **every** document
-at every arity, and `timings.first_token_ns` as a labelled diagnostic. **No durability is promised**
-— Align has no `fsync` at this pin (Request 31) — and a torn container is detected by
-`R6_KV_TRUNCATED` or `R6_KV_DIGEST("plane")`, costing one re-prefill: the plane is a deterministic
-derivative of the pack, the geometry, the token ids, and `KV_WIDTH`, all of which still exist.
+With `KV_LOAD`, the arm validates the container against the run it was asked for — the declared
+sizes against `MAX_KV_PLANE_BYTES` / `MAX_KV_LOGITS_BYTES` / `MAX_KV_CONTAINER_BYTES`, the file's
+own length, its regions and its one canonical layout, its reserved bytes and its padding, the pack's
+header-region digest, the geometry document's digest, `KV_WIDTH`, the token ids, the plane layout,
+and five digests, in that order, cheapest first — and refuses on any mismatch with an `R6_KV_*`
+code. **Every rule the independent reader enforces the arm enforces too**, and the one place they
+name different reasons is deliberate and named below. **There is no fallback: a mismatch never
+silently re-prefills.** Model identity is the **pack's** source-identity digest and not the GGUF's,
+because `REFERENCE` is optional and a load run may not have the model; it certifies the pack's
+metadata region and not its payload, which is `--pack-verify`'s question. The document is
+`R6_DECODE_STEP` at **schema 3**, with a `kv` object and `plane.source` (`"PREFILL"` | `"LOADED"`)
+in **every** document at every arity, and `timings.first_token_ns` as a labelled diagnostic. **No
+durability is promised** — Align has no `fsync` at this pin (Request 31) — and a torn container is
+detected by `R6_KV_TRUNCATED` or `R6_KV_DIGEST("plane")`, costing one re-prefill: the plane is a
+deterministic derivative of the pack, the geometry, the token ids, and `KV_WIDTH`, all of which
+still exist.
 
 `scripts/kv_plane_reader.py` is a **second, independent implementation** of the format, written from
 the specification and driven as a subprocess rather than imported. It reports thirteen coarse reject
 kinds (`MAGIC VERSION HEADER RESERVED REGION TRUNCATED IDENTITY GEOMETRY TOKENS NPAST DIGEST ARGMAX
 ZEROTAIL`), and `ZEROTAIL` is one the arm does not check separately — which is the one case where
 the two implementations refuse the same file for different reasons, and therefore the case that
-proves the reader is not a transcription of the arm.
+proves the reader is not a transcription of the arm. Every other rule is enforced on both sides,
+including the two the arm did not check before this capability's review: **the canonical region
+layout** (there is exactly one layout an `akvp` v1 container may have at a given `token_count`,
+`n_vocab`, and `plane_align`, and a non-canonical one is `R6_KV_REGION("layout")` / `REGION`) and
+**zero padding between regions** (`R6_KV_RESERVED("padding")` / `RESERVED`, and no digest covers the
+gaps). The reader's coarse kinds are deliberately coarser than the arm's codes: a declared size
+above one of the three `MAX_KV_*` bounds is `R6_KV_TOO_LARGE` in the arm and plain `HEADER` in the
+reader, which is a difference in vocabulary and not in which files are accepted.
 
 **The transcript must hold `N + 1` graphs.** `llama-eval-callback -n N` emits a prefill graph and
 then one decode graph per step, and every node name repeats across them; step `k` skips `k` graphs,
@@ -1955,11 +1966,29 @@ after the runs it would invalidate.
 `CAPABLE_ONLY_CHECK_TARGETS` and in no aggregate — the same footing as its three siblings. It prints
 one explicit `N/A` line naming the missing input and exits 0 rather than skipping silently.
 
-**Instrument provenance is load-bearing.** Ledger section 3.1 measured the same llama.cpp commit
-built two ways producing two different 608,256-byte logits blobs, so `llama-debug` must be the
-pinned Homebrew build 10566 (`bb4caa754`) that `scripts/run-model-forward` already resolves, and
-`llama-eval-callback` must be the R2c-patched instrument
-`scripts/llama-eval-callback-toolchain ensure instrument` materializes.
+**Instrument provenance is load-bearing, and this is a rule rather than advice.** Ledger section 3.1
+measured the same llama.cpp commit built two ways producing two different 608,256-byte logits blobs,
+so an instrument built from the pinned source is **not** interchangeable with the pinned build. The
+two variables name two different things and neither has a fallback:
+
+- **`ALIGN_LLM_LLAMA_DEBUG` must be the pinned Homebrew `llama-debug`** — `llama.cpp` 0.2.0,
+  `version: 0.2.0 (build 10566, commit bb4caa754)`, at `/opt/homebrew/bin/llama-debug` on a Homebrew
+  host, the same binary `scripts/run-model-forward` already resolves. Check it with `llama-debug
+  --version` before a qualification and record the line beside the results. **Do not substitute a
+  local source build**, not even one configured from the pinned revision with the toolchain's own
+  cmake arguments: `oracle_logits.verdict` is a byte comparison, a source build has been measured to
+  disagree with the pinned build on a six-token prefill, and "the instrument I built disagrees" is
+  indistinguishable in the document from "the arm is wrong".
+- **`ALIGN_LLM_LLAMA_EVAL_CALLBACK` must be the R2c-patched instrument**
+  `scripts/llama-eval-callback-toolchain ensure instrument` materializes, under
+  `~/.cache/align-llm/llama.cpp/r2c-v2/<revision>-<digest>/build/bin/llama-eval-callback`. **That
+  cache holds `llama-eval-callback` and nothing else** — the builder builds that one target — so it
+  is never a source of `llama-debug`, and the absence of a `llama-debug` under it is not evidence
+  that the host has none.
+
+Neither instrument is provisioned by this repository beyond the R2c builder, and neither variable
+has a default: `scripts/run-decode-step` reads both from the environment and prints one `N/A` line
+when either is missing rather than choosing a binary for you.
 
 **One gate and three oracles. `r6-step-n.md` section 3.5 states the rule; this is a summary, not a
 second copy of it.** **Gate G** is on the token ids and is what the capability is named for: `d_1` is

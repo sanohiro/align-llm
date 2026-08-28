@@ -2693,16 +2693,18 @@ KV_ABSENT = path("kv-absent.akvp")
 KV_GOOD = path("model-kv-good.akvp")
 KV_FOREIGN = path("model-kv-foreign-geometry.akvp")
 KV_HUGE = geom("geometry-kv-too-large")
+KV_ZERO_IDENTITY_PACK = path("model-pack-zero-identity.alignpack")
+KV_IDENTITY_ABSENT_DEST = path("kv-identity-absent.akvp")
 
 
 def kv(mutation):
     return path("model-kv-%s.akvp" % mutation)
 
 
-def ds(save="-", load="-", width=WIDTH, geometry=GEOM, steps=STEPS, transcript=None):
+def ds(save="-", load="-", width=WIDTH, geometry=GEOM, steps=STEPS, transcript=None, pack=None):
     """One thirteen-operand invocation. Every kv case is thirteen operands so that the two
     directions differ in nothing but which position holds the path."""
-    return [ARM, PACK, geometry, TOKENS, "-", SOURCE,
+    return [ARM, PACK if pack is None else pack, geometry, TOKENS, "-", SOURCE,
             TRANSCRIPT if transcript is None else transcript, width, "-", steps, save, load]
 
 
@@ -2723,6 +2725,13 @@ KV_REFUSALS = [
     # destination happens to be taken.
     ("ds-kv-too-large-and-exists", ds(KV_OCCUPIED, geometry=KV_HUGE, width="4096"),
      "R6_KV_TOO_LARGE", "plane[537001984]", None, None),
+    # Section 2.4. The pack's source-identity digest is thirty-two zero bytes, so it cannot
+    # distinguish one model from another and `R6_KV_IDENTITY("pack")` would later compare equal to
+    # it. Step 7 refuses the degenerate value on **both** directions; this is the save direction, so
+    # the assertion below that no container was written is the one that matters.
+    ("ds-kv-pack-identity-absent",
+     ds(KV_IDENTITY_ABSENT_DEST, pack=KV_ZERO_IDENTITY_PACK),
+     "R6_KV_IDENTITY", "pack_absent", None, None),
     ("ds-kv-load-missing", ds("-", KV_ABSENT), "R6_KV_UNREADABLE", "NotFound", None, None),
     ("ds-kv-truncated-header", ds("-", kv("truncated-header")),
      "R6_KV_TRUNCATED", "header", kv("truncated-header"), "TRUNCATED"),
@@ -2764,6 +2773,25 @@ KV_REFUSALS = [
      kv("region-outside"), "REGION"),
     ("ds-kv-region-misaligned", ds("-", kv("region-misaligned")), "R6_KV_REGION", "plane",
      kv("region-misaligned"), "REGION"),
+    # Section 2.3.1's canonical layout, promoted to a rule both implementations enforce: the plane
+    # pushed one whole `plane_align` forward still satisfies containment, alignment, disjointness,
+    # and "the plane is last", and there is exactly one layout an `akvp` v1 container may have.
+    ("ds-kv-region-noncanonical", ds("-", kv("region-noncanonical")), "R6_KV_REGION", "layout",
+     kv("region-noncanonical"), "REGION"),
+    # Section 2.3's region-order property 4. **No digest covers the gaps**, so all five still
+    # recompute correctly on this file and the padding rule is the only thing that refuses it.
+    ("ds-kv-padding-nonzero", ds("-", kv("padding-nonzero")), "R6_KV_RESERVED", "padding",
+     kv("padding-nonzero"), "RESERVED"),
+    # The other side of `ds-kv-truncated-total`: a file **longer** than its own `total_bytes`.
+    ("ds-kv-longer-total", ds("-", kv("longer-total")), "R6_KV_TRUNCATED", "4672!=4608",
+     kv("longer-total"), "TRUNCATED"),
+    # Section 2.5's two remaining bounds on the **load** direction, where every one of the three
+    # numbers comes out of a file this process did not write. The reader reaches its own coarse
+    # `HEADER`, which is the kind it gives every declared-magnitude defect.
+    ("ds-kv-plane-too-large", ds("-", kv("plane-too-large")), "R6_KV_TOO_LARGE",
+     "plane[536870913]", kv("plane-too-large"), "HEADER"),
+    ("ds-kv-logits-too-large", ds("-", kv("logits-too-large")), "R6_KV_TOO_LARGE",
+     "logits[16777220]", kv("logits-too-large"), "HEADER"),
     ("ds-kv-plane-not-last", ds("-", kv("plane-not-last")), "R6_KV_REGION", "plane",
      kv("plane-not-last"), "REGION"),
     ("ds-kv-geometry-layers", ds("-", kv("geometry-layers")), "R6_KV_GEOMETRY", "n_layer",
