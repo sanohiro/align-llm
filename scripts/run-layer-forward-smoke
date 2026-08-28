@@ -2621,6 +2621,820 @@ print("moe layer forward smoke: %d no-document cases (R5D_ARITY, R5D_PATH), %d d
 PY
 
 # ---------------------------------------------------------------------------------------------
+# R5E-MOE-MODEL-PREFILL — the `--moe-model-forward` arm over a synthetic two-layer routed model
+#
+# `docs/specs/r5e-moe-model-prefill.md` section 5.1 extends this runner rather than adding a
+# target, for R5B's, R5C's and R5D's reason: `layer-forward-smoke` is already a member of
+# HOSTED_CHECK_TARGETS, so a fifth block changes no aggregate membership and no check topology.
+#
+# The corpus is `scripts/layer_forward_fixture.py --moe --model`: a twenty-two-block olmoe **model**
+# with `n_expert` 8, `n_expert_used` 3, two layers and a real head, all F32, and a **pure-Python
+# second implementation of the whole routed prefill** — both routing decisions, the narrowing inside
+# layer 1, and the head — whose values the synthetic transcript carries and whose logits the fourth
+# oracle compares against. All four oracles are therefore reachable with no ggml and no model, and
+# the routing-identity oracle reaches **full** element-wise coverage across a whole model, which the
+# real model's eight-slot axis cannot.
+# ---------------------------------------------------------------------------------------------
+
+DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+python3 - "${root_dir}" "${work_dir}" <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+root_dir, work_dir = sys.argv[1:3]
+binary = os.path.join(work_dir, "ggml-spike")
+builder = os.path.join(root_dir, "scripts", "build-ggml-shim")
+golden_path = os.path.join(root_dir, "scripts", "moe-model-forward-golden.jsonl")
+# The arm is pointed at a **writable copy** of the checked-in excerpt, never at the checked-in
+# path: the transcript is opened with `fs.open_rw`, because Align ships no read-only random-access
+# `file` constructor (`docs/align-requests.md` Request 21), and a read-only checkout would refuse
+# the open with `R5_TRANSCRIPT` detail `Denied` before a byte is parsed.
+checked_in_excerpt = os.path.join(root_dir, "eval", "fixtures", "olmoe-model-6tok.txt")
+excerpt = os.path.join(work_dir, "olmoe-model-6tok.txt")
+with open(checked_in_excerpt, "rb") as handle:
+    excerpt_bytes = handle.read()
+with open(excerpt, "wb") as handle:
+    handle.write(excerpt_bytes)
+update = (os.environ.get("ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE") == "1"
+          or os.environ.get("ALIGN_LLM_MOE_MODEL_FORWARD_GOLDEN_UPDATE") == "1")
+
+ARM = "--moe-model-forward"
+PACK = os.path.join(work_dir, "moe-model-pack.alignpack")
+GEOM = os.path.join(work_dir, "moe-model-geometry.json")
+TOKENS = "3,17,16"
+WIDTH = "8"
+RUNTIME = "3"
+SOURCE = os.path.join(work_dir, "moe-model-source.bin")
+TRANSCRIPT = os.path.join(work_dir, "moe-model-transcript.txt")
+LOGITS = os.path.join(work_dir, "moe-model-logits.bin")
+
+# The generator's own second implementation of the whole routed prefill. The document is asserted
+# against **this**, not against itself: a routing that is internally consistent and wrong is the
+# single most dangerous failure mode in this design (section 3.7).
+with open(os.path.join(work_dir, "moe-model-routing.json"), "r", encoding="utf-8") as handle:
+    EXPECTED = json.load(handle)
+
+
+def path(name):
+    return os.path.join(work_dir, name)
+
+
+# Cases whose operands are rejected before any file work: no document at all, non-zero exit.
+NO_DOCUMENT = [
+    ("mm-arity-four", [ARM, PACK, GEOM, TOKENS]),
+    ("mm-arity-ten", [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, TRANSCRIPT, LOGITS, "extra"]),
+    ("mm-path-pack-empty", [ARM, "", GEOM, TOKENS, WIDTH]),
+    ("mm-path-geometry-empty", [ARM, PACK, "", TOKENS, WIDTH]),
+    ("mm-path-long", [ARM, "/" + ("a" * 5000), GEOM, TOKENS, WIDTH]),
+    ("mm-path-doc-empty", [ARM, PACK, GEOM, TOKENS, WIDTH, ""]),
+    ("mm-path-reference-empty", [ARM, PACK, GEOM, TOKENS, WIDTH, "-", ""]),
+    ("mm-path-logits-empty", [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, "-", ""]),
+    # `-` is admitted in exactly two positions, and is `R5E_PATH` in the other four.
+    ("mm-path-dash-pack", [ARM, "-", GEOM, TOKENS, WIDTH]),
+    ("mm-path-dash-geometry", [ARM, PACK, "-", TOKENS, WIDTH]),
+    ("mm-path-dash-reference", [ARM, PACK, GEOM, TOKENS, WIDTH, "-", "-"]),
+    ("mm-path-dash-logits", [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, "-", "-"]),
+    ("mm-arm-unknown-flag", ["--moe-model-backward", PACK, GEOM, TOKENS, WIDTH]),
+    # A path operand that is not UTF-8. Every path is copied into the document as a JSON scalar,
+    # and a raw non-UTF-8 byte there produces a document no conforming reader can decode -- a
+    # malformed output from a malformed input. Step 2 refuses it lexically instead, so there is no
+    # document at all. `surrogateescape` is how the byte survives the list.
+    ("mm-path-not-utf8",
+     [ARM, b"/tmp/\xff\xfe.alignpack".decode("utf-8", "surrogateescape"), GEOM, TOKENS, WIDTH]),
+]
+
+STUB_CASES = [
+    ("mm-stub-unavailable", [ARM, PACK, GEOM, TOKENS, WIDTH], "R5_GGML_UNAVAILABLE"),
+    ("mm-tokens-empty", [ARM, PACK, GEOM, "", WIDTH], "R5_TOKENS"),
+    ("mm-tokens-trailing", [ARM, PACK, GEOM, "1,", WIDTH], "R5_TOKENS"),
+    ("mm-tokens-space", [ARM, PACK, GEOM, "1, 2", WIDTH], "R5_TOKENS"),
+    ("mm-tokens-seven", [ARM, PACK, GEOM, "1,2,3,4,5,6,7", WIDTH], "R5_TOKENS"),
+    ("mm-tokens-vocab", [ARM, PACK, GEOM, "1,32", WIDTH], "R5_TOKENS"),
+    # `KV_WIDTH` is a **mandatory operand five** with no default, because on a routed model the
+    # declared width changes which experts the router selects and therefore which bytes are read.
+    ("mm-kv-width-empty", [ARM, PACK, GEOM, TOKENS, ""], "R5_KV_WIDTH"),
+    ("mm-kv-width-signed", [ARM, PACK, GEOM, TOKENS, "+8"], "R5_KV_WIDTH"),
+    ("mm-kv-width-negative", [ARM, PACK, GEOM, TOKENS, "-1"], "R5_KV_WIDTH"),
+    ("mm-kv-width-below-tokens", [ARM, PACK, GEOM, TOKENS, "2"], "R5_KV_WIDTH"),
+    ("mm-kv-width-over-max", [ARM, PACK, GEOM, TOKENS, "4097"], "R5_KV_WIDTH"),
+    ("mm-geometry-absent", [ARM, PACK, path("absent.json"), TOKENS, WIDTH],
+     "R5_GEOMETRY_UNREADABLE"),
+    ("mm-geometry-not-json", [ARM, PACK, TRANSCRIPT, TOKENS, WIDTH], "R5_GEOMETRY"),
+    ("mm-pack-missing", [ARM, path("absent.alignpack"), GEOM, TOKENS, WIDTH],
+     "R4_PACK_UNREADABLE"),
+    ("mm-pack-truncated", [ARM, path("moe-model-pack-truncated.alignpack"), GEOM, TOKENS, WIDTH],
+     "R4_PACK_TRUNCATED"),
+    ("mm-block-missing", [ARM, path("moe-model-pack-no-head.alignpack"), GEOM, TOKENS, WIDTH],
+     "R5_BLOCK_MISSING"),
+    ("mm-block-ambiguous", [ARM, path("moe-model-pack-ambiguous.alignpack"), GEOM, TOKENS, WIDTH],
+     "R5_BLOCK_AMBIGUOUS"),
+    ("mm-coverage-gap-router", [ARM, path("moe-model-pack-coverage.alignpack"), GEOM, TOKENS,
+                                WIDTH], "R5_LAYER_COVERAGE"),
+    # Step 14: expert coverage is checked **before any routing decision runs**, because discovering
+    # a missing expert after the router has chosen it would make a container defect look like a
+    # routing defect. The default stub reaches it, which is the proof it is before step 22.
+    ("mm-coverage-gap-expert", [ARM, path("moe-model-pack-no-expert.alignpack"), GEOM, TOKENS,
+                                WIDTH], "R5D_CLAIM_MISSING"),
+    ("mm-member-missing", [ARM, path("moe-model-pack-no-qnorm.alignpack"), GEOM, TOKENS, WIDTH],
+     "R5_MEMBER_MISSING"),
+    ("mm-router-shape", [ARM, path("moe-model-pack-router-shape.alignpack"), GEOM, TOKENS, WIDTH],
+     "R5D_ROUTER_SHAPE"),
+    ("mm-shape", [ARM, path("moe-model-pack-shape.alignpack"), GEOM, TOKENS, WIDTH], "R5_SHAPE"),
+    ("mm-slice", [ARM, path("moe-model-pack-slice.alignpack"), GEOM, TOKENS, WIDTH], "R4_5_SLICE"),
+    ("mm-slice-index", [ARM, path("moe-model-pack-slice-index.alignpack"), GEOM, TOKENS, WIDTH],
+     "R5D_CLAIM_MISSING"),
+    ("mm-expert-role", [ARM, path("moe-model-pack-expert-role.alignpack"), GEOM, TOKENS, WIDTH],
+     "R5D_CLAIM_MISSING"),
+    ("mm-claim-plane-mixed", [ARM, path("moe-model-pack-claim-type-mixed.alignpack"), GEOM, TOKENS,
+                              WIDTH], "R5_SHAPE"),
+    # The two window-budget probes. `docs/specs/r5e-moe-model-prefill.md` section 4.5 promised these
+    # two mutations as the fixtures for `R5_WINDOW_BUDGET` and `R5D_CLAIM_BUDGET`; they reach
+    # neither, and that is the point. `alignpack_read` refuses a member whose byte span leaves its
+    # block before any window is sized, and refuses a container whose `total_bytes` is not the
+    # file's length, so no pack smaller than the 8 GiB budget can make either window exceed it. The
+    # two codes are fail-closed guards on an unreachable arithmetic (section 6, correction C17), and
+    # these two cases are the regression that keeps the guard **order** true.
+    ("mm-dense-nbytes-huge", [ARM, path("moe-model-pack-dense-nbytes.alignpack"), GEOM, TOKENS,
+                              WIDTH], "R4_PACK_OFFSET"),
+    ("mm-claim-nbytes-huge", [ARM, path("moe-model-pack-claim-nbytes.alignpack"), GEOM, TOKENS,
+                              WIDTH], "R4_PACK_OFFSET"),
+]
+
+# Section 4.1's "a missing field" cell: one fixture per consumed `model` field, each of which must
+# be `R5_GEOMETRY` naming that field and nothing else.
+GEOMETRY_MISSING = [
+    "arch", "n_layer", "n_embd", "n_head", "n_head_kv", "head_dim", "n_ff_exp", "n_vocab",
+    "n_expert", "n_expert_used", "context_length", "rms_eps_bits",
+    "rope-type", "rope-dim_count", "rope-freq_base_bits", "rope-scaling_type",
+]
+STUB_CASES.extend(("mm-geometry-missing-" + field,
+                   [ARM, PACK, path("moe-model-geometry-missing-" + field + ".json"), TOKENS,
+                    WIDTH],
+                   "R5_GEOMETRY")
+                  for field in GEOMETRY_MISSING)
+
+# One fixture per precondition of steps 6 to 9, including the two the routed arm owns and R5E's own
+# slot-store ceiling on `n_expert_used`.
+GEOMETRY_BROKEN = [
+    "kind", "version", "arch", "rope-type", "rope-scaled", "rope-dims", "inconsistent",
+    "head-kv", "expert-zero", "expert-used-high", "expert-used-huge",
+    "eps-nan", "eps-negative", "rope-base-zero", "rope-base-inf",
+]
+STUB_CASES.extend(("mm-geometry-" + name,
+                   [ARM, PACK, path("moe-model-geometry-" + name + ".json"), TOKENS, WIDTH],
+                   "R5_GEOMETRY")
+                  for name in GEOMETRY_BROKEN)
+
+ENGINE_CASES = [
+    ("mm-engine-ok", [ARM, PACK, GEOM, TOKENS, WIDTH], ""),
+    ("mm-engine-alignment", [ARM, path("moe-model-pack-tight.alignpack"), GEOM, TOKENS, WIDTH],
+     "R5_ALIGNMENT"),
+    ("mm-engine-head-type", [ARM, path("moe-model-pack-type.alignpack"), GEOM, TOKENS, WIDTH],
+     "R5_TYPE_UNSUPPORTED"),
+    ("mm-engine-claim-type", [ARM, path("moe-model-pack-claim-type.alignpack"), GEOM, TOKENS,
+                              WIDTH], "R5_TYPE_UNSUPPORTED"),
+    ("mm-engine-reference", [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE], ""),
+    ("mm-source-diverged-claim",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", path("moe-model-source-diverged.bin")],
+     "R5_SOURCE_DIVERGED"),
+    ("mm-source-short",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", path("moe-model-source-short.bin")],
+     "R5_SOURCE_UNREADABLE"),
+    ("mm-source-missing", [ARM, PACK, GEOM, TOKENS, WIDTH, "-", path("absent.bin")],
+     "R5_SOURCE_UNREADABLE"),
+    ("mm-engine-transcript", [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, TRANSCRIPT], ""),
+    ("mm-transcript-missing-layer",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, path("moe-model-transcript-missing.txt")],
+     "R5_ORACLE_MISSING"),
+    ("mm-transcript-kv-width",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, path("moe-model-transcript-kv-width.txt")],
+     "R5_ORACLE_SHAPE"),
+    ("mm-transcript-perturbed",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, path("moe-model-transcript-perturbed.txt")],
+     ""),
+    ("mm-transcript-headers",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, path("moe-model-transcript-headers.txt")],
+     "R5_ORACLE_MISSING"),
+    ("mm-transcript-novalues",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, path("moe-model-transcript-novalues.txt")],
+     "R5_ORACLE_MISSING"),
+    ("mm-transcript-garbage",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, path("moe-model-transcript-garbage.txt")],
+     "R5_TRANSCRIPT"),
+    # A transcript whose block sums are gone. It is a **successful** run with `oracle.verdict: PASS`
+    # -- every printed element still matches -- and thirty of thirty-one sum comparisons never
+    # happened. `oracle.sums_expected` against `sums_matched` is the only place that is visible.
+    ("mm-transcript-nosums",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, path("moe-model-transcript-nosums.txt")], ""),
+    ("mm-transcript-nonintegral",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, path("moe-model-transcript-nonintegral.txt")],
+     "R2_EXPERT_ID_NOT_INTEGRAL"),
+    # Oracle 3 disagreeing is a **successful run**, and oracle 2 is still evaluated and reported.
+    ("mm-routing-mismatch",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, path("moe-model-transcript-routing.txt")], ""),
+    # The checked-in real-model excerpt. Every record is found by name and op, so the only thing
+    # left to disagree is the shape, which is exactly what a tiny-geometry pack must disagree about.
+    ("mm-transcript-excerpt", [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, excerpt],
+     "R5_ORACLE_SHAPE"),
+    ("mm-logits", [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, TRANSCRIPT, LOGITS], ""),
+    ("mm-logits-short",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, TRANSCRIPT,
+      path("moe-model-logits-short.bin")], "R5_LOGITS_SHAPE"),
+    ("mm-logits-missing",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, TRANSCRIPT, path("absent.bin")],
+     "R5_LOGITS_UNREADABLE"),
+    ("mm-logits-nonfinite",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, TRANSCRIPT,
+      path("moe-model-logits-neg-inf.bin")], "R5_LOGITS_NONFINITE"),
+    ("mm-logits-nan",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, TRANSCRIPT,
+      path("moe-model-logits-nan.bin")], "R5_LOGITS_NONFINITE"),
+    ("mm-logits-huge",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, TRANSCRIPT,
+      path("moe-model-logits-huge.bin")], ""),
+    ("mm-logits-perturbed",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, TRANSCRIPT,
+      path("moe-model-logits-perturbed.bin")], ""),
+    # The runtime width, with `-` in the transcript position: the `-` form is what lets the **arm**,
+    # not the runner, produce the runtime-width `WITHIN` verdict against the same reference blob.
+    ("mm-logits-runtime-width",
+     [ARM, PACK, GEOM, TOKENS, RUNTIME, "-", SOURCE, "-",
+      path("moe-model-logits-runtime.bin")], ""),
+    ("mm-logits-order-swap",
+     [ARM, PACK, GEOM, TOKENS, RUNTIME, "-", SOURCE, "-",
+      path("moe-model-logits-order-swap.bin")], ""),
+]
+
+FORCED_CASES = [
+    ("mm-force-init", "engine+init", [ARM, PACK, GEOM, TOKENS, WIDTH], "R5_GGML_INIT"),
+    ("mm-force-alloc", "engine+alloc", [ARM, PACK, GEOM, TOKENS, WIDTH], "R5_ALLOC"),
+    ("mm-force-compute", "engine+compute", [ARM, PACK, GEOM, TOKENS, WIDTH], "R5_COMPUTE"),
+    ("mm-force-slot-range", "engine+slot-range", [ARM, PACK, GEOM, TOKENS, WIDTH], "R5_SLOT"),
+    ("mm-force-reference", "engine+reference", [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE],
+     "R5_REFERENCE_MISMATCH"),
+    # Section 2.3's bug class, made observable: a routing that names a plane the stack does not
+    # have, and a routing whose two slots of one token name the same expert. Neither is producible
+    # from an input, because the argsort kernel writes a permutation by construction.
+    ("mm-force-routing-id-range", "engine+moe-argsort-range", [ARM, PACK, GEOM, TOKENS, WIDTH],
+     "R5D_EXPERT_ID"),
+    ("mm-force-routing-id-repeat", "engine+moe-argsort-repeat", [ARM, PACK, GEOM, TOKENS, WIDTH],
+     "R5D_EXPERT_ID"),
+    # The residual invariant and the carried-length arm of `R5E_CARRY`, neither of which any input
+    # can produce because both lengths come from the same node table.
+    ("mm-force-residual-short", "engine+moe-residual-short", [ARM, PACK, GEOM, TOKENS, WIDTH],
+     "R5_RESIDUAL"),
+    ("mm-force-carry-short", "engine+moe-carry-short", [ARM, PACK, GEOM, TOKENS, WIDTH],
+     "R5E_CARRY"),
+]
+
+PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
+               "reference_path": "<reference>", "transcript_path": "<transcript>",
+               "logits_path": "<logits>"}
+
+
+def describe_difference(expected_text, actual_text, limit=8):
+    if actual_text is None:
+        return "no document was produced"
+    try:
+        expected = json.loads(expected_text)
+        actual = json.loads(actual_text)
+    except Exception as error:  # noqa: BLE001 - the document is the thing under test
+        return "the documents are not both JSON: %s" % error
+    differences = []
+
+    def walk(left, right, path_text):
+        if len(differences) >= limit:
+            return
+        if type(left) is not type(right):
+            differences.append("%s: %r != %r" % (path_text or ".", left, right))
+        elif isinstance(left, dict):
+            for key in sorted(set(left) | set(right)):
+                if len(differences) >= limit:
+                    return
+                if key not in left:
+                    differences.append("%s.%s: absent != %r" % (path_text, key, right[key]))
+                elif key not in right:
+                    differences.append("%s.%s: %r != absent" % (path_text, key, left[key]))
+                else:
+                    walk(left[key], right[key], "%s.%s" % (path_text, key))
+        elif isinstance(left, list):
+            if len(left) != len(right):
+                differences.append("%s: %d entries != %d" % (path_text, len(left), len(right)))
+                return
+            for index in range(len(left)):
+                if len(differences) >= limit:
+                    return
+                walk(left[index], right[index], "%s[%d]" % (path_text, index))
+        elif left != right:
+            differences.append("%s: %r != %r" % (path_text or ".", left, right))
+
+    walk(expected, actual, "")
+    if not differences:
+        return "the documents differ only in text form"
+    return "expected != actual at " + "; ".join(differences)
+
+
+def normalize(text):
+    """Every nanosecond field is zeroed, wherever it lives. R5E publishes five of them **per
+    schedule row** as well as nine in `timings` and two in `head`, so a normalizer that only
+    reached the `timings` object would leave thirty-two wall-clock numbers in the golden."""
+    document = json.loads(text)
+
+    def scrub(node):
+        if isinstance(node, dict):
+            for key in node:
+                if key.endswith("_ns") and isinstance(node[key], int):
+                    node[key] = 0
+                else:
+                    scrub(node[key])
+        elif isinstance(node, list):
+            for item in node:
+                scrub(item)
+
+    scrub(document)
+    for key, placeholder in PLACEHOLDER.items():
+        if document[key]:
+            document[key] = placeholder
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+def build_shim(force):
+    environment = dict(os.environ)
+    environment.pop("ALIGN_LLM_GGML_INCLUDE", None)
+    environment.pop("ALIGN_LLM_GGML_LIB", None)
+    if force:
+        environment["ALIGN_LLM_GGML_FORCE"] = force
+    else:
+        environment.pop("ALIGN_LLM_GGML_FORCE", None)
+    subprocess.run([builder], check=True, capture_output=True, env=environment)
+
+
+def run(operands):
+    return subprocess.run([binary] + operands, capture_output=True, cwd=work_dir)
+
+
+failures = []
+produced = {}
+codes = set()
+
+
+def record(name, operands, expected):
+    result = run(operands)
+    if result.stdout == b"":
+        failures.append("%s: no document (exit %d): %s"
+                        % (name, result.returncode,
+                           result.stderr.decode("utf-8", "replace")[-400:]))
+        return None
+    try:
+        document = json.loads(result.stdout.decode("utf-8"))
+    except Exception as error:  # noqa: BLE001 - the document is the thing under test
+        failures.append("%s: the document is not valid JSON: %s" % (name, error))
+        return None
+    produced[name] = normalize(result.stdout.decode("utf-8"))
+    codes.add(document["error_code"])
+    if document["error_code"] != expected:
+        failures.append("%s: expected error_code %r, got %r (%r)"
+                        % (name, expected, document["error_code"], document["error_detail"]))
+    expected_exit = 0 if document["status"] == "ok" else 1
+    if (result.returncode == 0) != (expected_exit == 0):
+        failures.append("%s: status %r but exit %d"
+                        % (name, document["status"], result.returncode))
+    if document["kind"] != "R5_MOE_MODEL_FORWARD" or document["schema_version"] != 1:
+        failures.append("%s: wrong document identity %r/%r"
+                        % (name, document["kind"], document["schema_version"]))
+    if not document["abi"]["fp_contract_off"]:
+        failures.append("%s: the shim was not built with -ffp-contract=off; the goldens are not "
+                        "reproducible across compilers" % name)
+    # Cleanup is asserted on **every** document -- stub, engine and forced alike -- and not only on
+    # the successful engine cases, because the cases that stop early are exactly the ones whose
+    # teardown path a leak would hide. `released_before_owner_scope_end` is deliberately not
+    # asserted here: a case that stops before any ggml object exists reports it false and asserts
+    # zero creations instead (section 7.2).
+    lifetime = document.get("lifetime")
+    if lifetime is not None:
+        if lifetime["phase_balance_failures"] != 0:
+            failures.append("%s: %d phase balance failure(s)"
+                            % (name, lifetime["phase_balance_failures"]))
+        for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                               ("contexts_created", "contexts_freed"),
+                               ("backends_created", "backends_freed"),
+                               ("gallocrs_created", "gallocrs_freed")):
+            if lifetime[created] != lifetime[freed]:
+                failures.append("%s: %s %d != %s %d"
+                                % (name, created, lifetime[created], freed, lifetime[freed]))
+    return document
+
+
+for name, operands in NO_DOCUMENT:
+    result = run(operands)
+    if result.returncode == 0:
+        failures.append("%s: expected a non-zero exit, got 0" % name)
+    if result.stdout != b"":
+        failures.append("%s: expected no document, got %d bytes" % (name, len(result.stdout)))
+
+# The four arms before this one are untouched: the first operand selects an arm and nothing else.
+for label, arm, operands, kind in (
+        ("arm-r5a-unchanged", "--layer-forward",
+         [os.path.join(work_dir, "pack.alignpack"), "0",
+          os.path.join(work_dir, "geometry.json"), "3,17,5"], "R5_LAYER_FORWARD"),
+        ("arm-r5b-unchanged", "--model-forward",
+         [os.path.join(work_dir, "model-pack.alignpack"),
+          os.path.join(work_dir, "geometry.json"), "3,17,5"], "R5_MODEL_FORWARD"),
+        ("arm-r5d-unchanged", "--moe-layer-forward",
+         [os.path.join(work_dir, "moe-pack.alignpack"),
+          os.path.join(work_dir, "moe-geometry.json"), "0,1,8"], "R5_MOE_LAYER_FORWARD")):
+    other = run([arm] + operands)
+    if other.stdout == b"":
+        failures.append("%s: the arm produced no document" % label)
+    else:
+        got = json.loads(other.stdout.decode("utf-8"))["kind"]
+        if got != kind:
+            failures.append("%s: the arm emitted %r" % (label, got))
+
+for name, operands, expected in STUB_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    lifetime = document["lifetime"]
+    for key in ("ggml_buffers_created", "contexts_created", "backends_created",
+                "gallocrs_created"):
+        if lifetime[key] != 0:
+            failures.append("%s: lifetime.%s is %d in a default stub build, not 0"
+                            % (name, key, lifetime[key]))
+
+build_shim("engine")
+for name, operands, expected in ENGINE_CASES:
+    document = record(name, operands, expected)
+    if document is None or document["status"] != "ok":
+        continue
+    schedule = document["schedule"]
+    residency = document["residency"]
+    window = document["window"]
+    graph = document["graph"]
+    if document["verdict"] != "EXTERNAL":
+        failures.append("%s: verdict %r, not EXTERNAL" % (name, document["verdict"]))
+    if len(schedule) != 2:
+        failures.append("%s: %d schedule rows, not 2" % (name, len(schedule)))
+        continue
+    # The schedule, against the generator's own independent forward of the same routed model.
+    for row, expect in zip(schedule, EXPECTED["layers"]):
+        for field in ("routed", "routed_count", "expert_ids", "compact_ids", "claim_bytes",
+                      "t_out"):
+            if row[field] != expect[field]:
+                failures.append("%s: schedule[%d].%s is %r, not the generator's %r"
+                                % (name, row["layer"], field, row[field], expect[field]))
+        flat = [slot for token in row["compact_ids"] for slot in token]
+        if sorted(set(flat)) != list(range(row["routed_count"])):
+            failures.append("%s: schedule[%d].compact_ids is not a bijection onto [0, %d)"
+                            % (name, row["layer"], row["routed_count"]))
+        for token, ids in enumerate(row["expert_ids"]):
+            if len(set(ids)) != len(ids):
+                failures.append("%s: schedule[%d].expert_ids[%d] repeats an expert"
+                                % (name, row["layer"], token))
+            for slot, expert in enumerate(ids):
+                if row["routed"][row["compact_ids"][token][slot]] != expert:
+                    failures.append("%s: schedule[%d].compact_ids[%d][%d] does not name expert %d"
+                                    % (name, row["layer"], token, slot, expert))
+    # The narrowing: `T_in` is the token count at every layer and `T_out` is 1 at the last.
+    if schedule[0]["t_in"] != 3 or schedule[0]["t_out"] != 3:
+        failures.append("%s: layer 0 is %d->%d, not 3->3"
+                        % (name, schedule[0]["t_in"], schedule[0]["t_out"]))
+    if schedule[1]["t_in"] != 3 or schedule[1]["t_out"] != 1:
+        failures.append("%s: the narrowing did not land inside the last layer: %d->%d"
+                        % (name, schedule[1]["t_in"], schedule[1]["t_out"]))
+    if schedule[1]["l_out_ne1"] != 1 or schedule[0]["l_out_ne1"] != 3:
+        failures.append("%s: l_out_ne1 %d/%d, not 3/1"
+                        % (name, schedule[0]["l_out_ne1"], schedule[1]["l_out_ne1"]))
+    if document["selection"]["narrow_layer"] != 1 or document["selection"]["narrow_index"] != 2:
+        failures.append("%s: narrow_layer/index %r" % (name, document["selection"]))
+    if document["selection"]["expert_block_count"] != 16:
+        failures.append("%s: expert_block_count %d, not 16"
+                        % (name, document["selection"]["expert_block_count"]))
+    # The residency measurement, against the generator's own arithmetic.
+    for field in ("expert_bytes_read", "expert_bytes_in_model", "planes_read", "planes_in_model",
+                  "keys_demanded", "cumulative_expert_bytes"):
+        if residency[field] != EXPECTED[field]:
+            failures.append("%s: residency.%s is %r, not the generator's %r"
+                            % (name, field, residency[field], EXPECTED[field]))
+    # Within one prefill no `(layer, expert)` key is demanded twice, which is the finding that says
+    # a residency policy needs a multi-prefill consumer before any hit rate is a measurement.
+    if residency["keys_demanded"] != residency["keys_distinct"]:
+        failures.append("%s: keys_demanded %d != keys_distinct %d inside one prefill"
+                        % (name, residency["keys_demanded"], residency["keys_distinct"]))
+    if residency["cumulative_expert_bytes"][-1] != residency["expert_bytes_read"]:
+        failures.append("%s: the union curve does not end at expert_bytes_read" % name)
+    if residency["expert_bytes_read_ppm"] != 562500:
+        failures.append("%s: expert_bytes_read_ppm %d, not the 562,500 of nine keys of sixteen"
+                        % (name, residency["expert_bytes_read_ppm"]))
+    # The claim window is reserved for the **arithmetic** bound and refilled per layer.
+    if window["claim_u_max"] != 8:
+        failures.append("%s: claim_u_max %d, not min(n_expert, n_expert_used * T) = 8"
+                        % (name, window["claim_u_max"]))
+    if window["claim_bytes"] != 12288 or window["claim_peak_use_bytes"] != 9216 \
+            or window["claim_peak_use_layer"] != 0:
+        failures.append("%s: claim window %r" % (name, window))
+    if window["reuse_count"] != 6:
+        failures.append("%s: reuse_count %d, not one per window fill across both windows"
+                        % (name, window["reuse_count"]))
+    if window["member_placements"] != 21 or window["claim_placements"] != 6:
+        failures.append("%s: placements %d/%d, not 21 dense and 6 stacked"
+                        % (name, window["member_placements"], window["claim_placements"]))
+    if window["pointer_identity_failures"] != 0:
+        failures.append("%s: a weight tensor is not at its own window offset" % name)
+    if window["carried_bytes"] != 2 * 8 * 3 * 4 + 8 * 3 * 4 + 2 * 3 * 3 * 4:
+        failures.append("%s: carried_bytes %d is not the five carried tensors"
+                        % (name, window["carried_bytes"]))
+    # Section 3.6's four table row counts, and ggml's own node counts beside them.
+    if graph["graph_count"] != 6 or graph["table_rows_a"] != 35 or graph["table_rows_b"] != 14:
+        failures.append("%s: graph shape %d graphs, tables %d+%d, not 6/35/14"
+                        % (name, graph["graph_count"], graph["table_rows_a"],
+                           graph["table_rows_b"]))
+    if graph["embed_node_count"] != 1 or graph["head_node_count"] != 3:
+        failures.append("%s: end graphs are %d and %d nodes"
+                        % (name, graph["embed_node_count"], graph["head_node_count"]))
+    # The two `node_when == 1` narrowing rows are issued only at the last layer, and the three
+    # `node_when == 2` width rows at both layers because `KV_WIDTH > token_count`.
+    if schedule[1]["node_count_a"] - schedule[0]["node_count_a"] != 2:
+        failures.append("%s: the last layer is %d phase-A nodes against %d, not two more"
+                        % (name, schedule[1]["node_count_a"], schedule[0]["node_count_a"]))
+    if schedule[0]["node_count_b"] != schedule[1]["node_count_b"]:
+        failures.append("%s: phase B is not width- and narrowing-independent" % name)
+    if graph["slot_capacity"] != 128:
+        failures.append("%s: slot_capacity %d, not 128" % (name, graph["slot_capacity"]))
+    if document["output"]["element_count"] != 32:
+        failures.append("%s: output.element_count %d, not n_vocab"
+                        % (name, document["output"]["element_count"]))
+    if not document["abi"]["slot_magic_ok"]:
+        failures.append("%s: the slot store magic did not validate" % name)
+    lifetime = document["lifetime"]
+    if not lifetime["released_before_owner_scope_end"] or lifetime["phase_balance_failures"] != 0:
+        failures.append("%s: the teardown did not balance at every phase boundary" % name)
+    for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                           ("contexts_created", "contexts_freed"),
+                           ("backends_created", "backends_freed"),
+                           ("gallocrs_created", "gallocrs_freed")):
+        if lifetime[created] != lifetime[freed]:
+            failures.append("%s: %s %d != %s %d"
+                            % (name, created, lifetime[created], freed, lifetime[freed]))
+
+reference = json.loads(run([ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE]).stdout)
+if reference["reference"]["verdict"] != "IDENTICAL":
+    failures.append("mm-engine-reference: verdict %r" % reference["reference"]["verdict"])
+if reference["reference"]["graphs_compared"] != 6:
+    failures.append("mm-engine-reference: %d graphs compared, not 6"
+                    % reference["reference"]["graphs_compared"])
+if reference["reference"]["nodes_compared"] != reference["reference"]["nodes_identical"] \
+        or reference["reference"]["nodes_compared"] != 1 + 14 * 2 + 2:
+    failures.append("mm-engine-reference: %d/%d of 31 nodes identical"
+                    % (reference["reference"]["nodes_identical"],
+                       reference["reference"]["nodes_compared"]))
+
+# Section 4.4's oracle cells: an exact pass, full routing coverage, and a breach that is a verdict
+# on a successful run rather than an error code.
+passing = json.loads(run([ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, TRANSCRIPT]).stdout)
+oracle = passing["oracle"]
+routing_oracle = passing["routing_oracle"]
+if oracle["verdict"] != "PASS":
+    failures.append("mm-engine-transcript: verdict %r, worst %r@%d in layer %d, max_abs %d, "
+                    "max_sum %d"
+                    % (oracle["verdict"], oracle["worst_node"], oracle["worst_element_index"],
+                       oracle["worst_layer"], oracle["max_abs_diff_ten_thousandths"],
+                       oracle["max_sum_diff_millionths"]))
+if oracle["nodes_expected"] != 31 or oracle["nodes_matched"] != 31:
+    failures.append("mm-engine-transcript: %d/%d nodes matched"
+                    % (oracle["nodes_matched"], oracle["nodes_expected"]))
+if oracle["layers_expected"] != 2 or oracle["layers_matched"] != 2:
+    failures.append("mm-engine-transcript: %d/%d layers matched"
+                    % (oracle["layers_matched"], oracle["layers_expected"]))
+if oracle["elements_compared"] != 606:
+    failures.append("mm-engine-transcript: %d elements compared, not 606"
+                    % oracle["elements_compared"])
+if oracle["instrument_kv_width"] != 8:
+    failures.append("mm-engine-transcript: instrument_kv_width %d, not the declared operand"
+                    % oracle["instrument_kv_width"])
+# Every compared node is contracted to carry a block sum, so a complete transcript matches all
+# thirty-one of them. The counters exist because a *missing* sum was previously indistinguishable
+# from a matching one.
+if oracle["sums_expected"] != 31 or oracle["sums_matched"] != 31:
+    failures.append("mm-engine-transcript: block sums %d of %d matched"
+                    % (oracle["sums_matched"], oracle["sums_expected"]))
+if oracle["tolerance_ten_thousandths"] != 1 or oracle["sum_tolerance_millionths"] != 1000 \
+        or oracle["sum_tolerance_relative_ppm"] != 10:
+    failures.append("mm-engine-transcript: a tolerance was widened: %r" % oracle)
+if routing_oracle["verdict"] != "MATCH":
+    failures.append("mm-engine-transcript: routing %r, first difference layer %d token %d slot %d"
+                    % (routing_oracle["verdict"], routing_oracle["first_difference_layer"],
+                       routing_oracle["first_difference_token"],
+                       routing_oracle["first_difference_slot"]))
+# Section 5.1: at `n_expert_used = 3` the slot axis is 3, so every id is printed and this corpus is
+# the only place the routing oracle's **full** coverage is reachable across a whole model.
+if routing_oracle["ids_total"] != 12 or routing_oracle["ids_printed_compared"] != 12 \
+        or routing_oracle["ids_printed_matched"] != 12:
+    failures.append("mm-engine-transcript: routing coverage %d/%d of %d is not element-wise "
+                    "complete at n_expert_used 3"
+                    % (routing_oracle["ids_printed_matched"],
+                       routing_oracle["ids_printed_compared"], routing_oracle["ids_total"]))
+if routing_oracle["sums_expected"] != 2 or routing_oracle["sums_matched"] != 2:
+    failures.append("mm-engine-transcript: routing sums %r" % routing_oracle)
+
+breached = json.loads(
+    run([ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE,
+         path("moe-model-transcript-perturbed.txt")]).stdout)
+if breached["status"] != "ok" or breached["oracle"]["verdict"] != "FAIL":
+    failures.append("mm-transcript-perturbed: status %r verdict %r"
+                    % (breached["status"], breached["oracle"]["verdict"]))
+if breached["oracle"]["worst_layer"] != 0 or breached["oracle"]["worst_node"] != "l_out":
+    failures.append("mm-transcript-perturbed: worst %r in layer %d"
+                    % (breached["oracle"]["worst_node"], breached["oracle"]["worst_layer"]))
+if breached["routing_oracle"]["verdict"] != "MATCH":
+    failures.append("mm-transcript-perturbed: a float breach moved the routing verdict")
+
+stripped = json.loads(
+    run([ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE,
+         path("moe-model-transcript-nosums.txt")]).stdout)
+if stripped["status"] != "ok" or stripped["oracle"]["verdict"] != "PASS":
+    failures.append("mm-transcript-nosums: status %r verdict %r"
+                    % (stripped["status"], stripped["oracle"]["verdict"]))
+if stripped["oracle"]["sums_expected"] != 31 or stripped["oracle"]["sums_matched"] != 1:
+    failures.append("mm-transcript-nosums: %d of %d block sums compared -- a transcript that lost "
+                    "its sums is not distinguishable from a complete one"
+                    % (stripped["oracle"]["sums_matched"], stripped["oracle"]["sums_expected"]))
+
+mismatched = json.loads(
+    run([ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE,
+         path("moe-model-transcript-routing.txt")]).stdout)
+if mismatched["status"] != "ok" or mismatched["routing_oracle"]["verdict"] != "MISMATCH":
+    failures.append("mm-routing-mismatch: status %r routing %r"
+                    % (mismatched["status"], mismatched["routing_oracle"]["verdict"]))
+if mismatched["oracle"]["verdict"] == "-" or mismatched["oracle"]["elements_compared"] <= 0:
+    failures.append("mm-routing-mismatch: oracle 2 was skipped: %r" % mismatched["oracle"])
+if mismatched["routing_oracle"]["first_difference_layer"] != 1:
+    failures.append("mm-routing-mismatch: the first difference names layer %d, not 1"
+                    % mismatched["routing_oracle"]["first_difference_layer"])
+
+# Section 3.7's logits table. At the reconciliation width the generator's pure-Python second
+# implementation agrees with the engine to **zero ten-thousandths** and not bit-for-bit, exactly as
+# `--model-forward`'s own synthetic case does, so the hosted verdict is `FAIL` with
+# `max_abs_diff_ten_thousandths: 0` and `IDENTICAL` stays the real model's cell (section 6).
+recon = json.loads(run([ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, TRANSCRIPT, LOGITS]).stdout)
+if recon["oracle_logits"]["compared_pass"] != "reconciliation":
+    failures.append("mm-logits: compared_pass %r" % recon["oracle_logits"]["compared_pass"])
+if recon["oracle_logits"]["max_abs_diff_ten_thousandths"] != 0:
+    failures.append("mm-logits: %d ten-thousandths against the generator's own forward"
+                    % recon["oracle_logits"]["max_abs_diff_ten_thousandths"])
+if recon["oracle_logits"]["argmax_primary"] != recon["oracle_logits"]["argmax_reference"]:
+    failures.append("mm-logits: argmax %d != %r"
+                    % (recon["oracle_logits"]["argmax_primary"],
+                       recon["oracle_logits"]["argmax_reference"]))
+if recon["oracle_logits"]["tolerance_ten_thousandths"] != 5000:
+    failures.append("mm-logits: the runtime bound was widened to %d"
+                    % recon["oracle_logits"]["tolerance_ten_thousandths"])
+
+within = json.loads(
+    run([ARM, PACK, GEOM, TOKENS, RUNTIME, "-", SOURCE, "-",
+         path("moe-model-logits-runtime.bin")]).stdout)
+if within["oracle_logits"]["verdict"] != "WITHIN" \
+        or within["oracle_logits"]["compared_pass"] != "runtime":
+    failures.append("mm-logits-runtime-width: %r" % within["oracle_logits"])
+if within["oracle_logits"]["top_k_set_agreement"] != 10:
+    failures.append("mm-logits-runtime-width: top ten set agreement %d"
+                    % within["oracle_logits"]["top_k_set_agreement"])
+if within["oracle"]["verdict"] != "-":
+    failures.append("mm-logits-runtime-width: `-` in the transcript position still ran oracle 2")
+
+# The order clause is **reported, not required**: a reference whose ranks are permuted inside the
+# top ten is `WITHIN` with `top_k_order_agreement < 10` and `top_k_set_agreement == 10`.
+swapped = json.loads(
+    run([ARM, PACK, GEOM, TOKENS, RUNTIME, "-", SOURCE, "-",
+         path("moe-model-logits-order-swap.bin")]).stdout)
+if swapped["oracle_logits"]["verdict"] != "WITHIN":
+    failures.append("mm-logits-order-swap: verdict %r" % swapped["oracle_logits"]["verdict"])
+if swapped["oracle_logits"]["top_k_set_agreement"] != 10 \
+        or swapped["oracle_logits"]["top_k_order_agreement"] >= 10:
+    failures.append("mm-logits-order-swap: set %d order %d -- the two are not distinguished"
+                    % (swapped["oracle_logits"]["top_k_set_agreement"],
+                       swapped["oracle_logits"]["top_k_order_agreement"]))
+
+# A real failure is not `WITHIN`: a reference shifted by 1.0 keeps the argmax and the top ten and is
+# still refused, so the tolerance alone cannot pass it.
+shifted = json.loads(
+    run([ARM, PACK, GEOM, TOKENS, RUNTIME, "-", SOURCE, "-",
+         path("moe-model-logits-perturbed.bin")]).stdout)
+if shifted["oracle_logits"]["verdict"] != "FAIL" \
+        or shifted["oracle_logits"]["argmax_primary"] \
+        != shifted["oracle_logits"]["argmax_reference"]:
+    failures.append("mm-logits-perturbed-runtime: %r" % shifted["oracle_logits"])
+
+# Both output forms emit byte-identical document bytes (section 3.3).
+document_path = os.path.join(work_dir, "moe-model.json")
+stdout_form = run([ARM, PACK, GEOM, TOKENS, WIDTH]).stdout.decode("utf-8").rstrip("\n")
+run([ARM, PACK, GEOM, TOKENS, WIDTH, document_path])
+with open(document_path, "r", encoding="utf-8") as handle:
+    file_form = handle.read()
+if normalize(stdout_form) != normalize(file_form):
+    failures.append("mm-doc-stdout-identical: the stdout and file forms differ")
+dash_form = run([ARM, PACK, GEOM, TOKENS, WIDTH, "-"]).stdout.decode("utf-8").rstrip("\n")
+if normalize(dash_form) != normalize(stdout_form):
+    failures.append("mm-doc-stdout-identical: the `-` form differs from the five-operand form")
+
+repeats = {normalize(run([ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, TRANSCRIPT, LOGITS])
+                     .stdout.decode("utf-8")) for _ in range(3)}
+if len(repeats) != 1:
+    failures.append("three consecutive runs produced %d distinct documents" % len(repeats))
+
+forced_documents = {}
+for name, force, operands, expected in FORCED_CASES:
+    build_shim(force)
+    forced_documents[name] = record(name, operands, expected)
+
+build_shim(None)
+
+# `R5D_EXPERT_ID`'s detail names the exact `(layer, token, slot)`, and `R5E_CARRY`'s the exact
+# carried input, because "an id is out of range", "two slots of one token name the same expert" and
+# "a carried length disagrees" are three different bugs.
+for case, wanted in (("mm-force-routing-id-range", "layer[0]token[0]slot[0]"),
+                     ("mm-force-routing-id-repeat", "layer[0]token[0]slot[1]"),
+                     ("mm-force-carry-short", "layer[0]input[ffn_norm]"),
+                     ("mm-force-residual-short", "layer[0]")):
+    document = forced_documents.get(case)
+    if document is not None and document["error_detail"] != wanted:
+        failures.append("%s: detail %r, not %r" % (case, document["error_detail"], wanted))
+
+# The denominator, fixed here and nowhere else: the codes `docs/specs/r5e-moe-model-prefill.md`
+# section 3.9 declares under an `R5*` prefix -- R5A's and R5B's re-raised rows, R5D's four, and
+# R5E's four. `R5_INDEX` is **not** in it: section 3.9's inherited-code row named it and the arm
+# emits it nowhere (section 6, correction C17). The container's own `R4_PACK_*` family, `R4_5_SLICE`
+# and `R2_EXPERT_ID_NOT_INTEGRAL` are inherited contracts owned by `alignpack-smoke` and R2A, and
+# are counted separately below.
+DECLARED_R5_CODES = {
+    "R5E_ARITY", "R5E_PATH", "R5E_CARRY", "R5E_CLAIM_OVERFLOW",
+    "R5D_ROUTER_SHAPE", "R5D_EXPERT_ID", "R5D_CLAIM_BUDGET", "R5D_CLAIM_MISSING",
+    "R5_TOKENS", "R5_KV_WIDTH", "R5_GEOMETRY", "R5_GEOMETRY_UNREADABLE",
+    "R5_BLOCK_MISSING", "R5_BLOCK_AMBIGUOUS", "R5_LAYER_COVERAGE", "R5_MEMBER_MISSING",
+    "R5_SHAPE", "R5_WINDOW_BUDGET", "R5_GGML_UNAVAILABLE", "R5_ABI", "R5_TYPE_UNSUPPORTED",
+    "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE", "R5_ALIGNMENT", "R5_RESIDUAL",
+    "R5_SOURCE_UNREADABLE", "R5_SOURCE_DIVERGED", "R5_REFERENCE_MISMATCH", "R5_TRANSCRIPT",
+    "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE",
+    "R5_LOGITS_UNREADABLE", "R5_LOGITS_SHAPE", "R5_LOGITS_NONFINITE",
+}
+# The four this block does not reach, each with the reason section 4.5 records. `R5_ABI` needs a
+# drifted ggml; the other three are fail-closed guards on arithmetic no input can produce.
+UNREACHED_R5_CODES = {"R5_ABI", "R5E_CLAIM_OVERFLOW", "R5_WINDOW_BUDGET", "R5D_CLAIM_BUDGET"}
+# Inherited codes the block also reaches, counted and asserted but outside the R5* denominator.
+INHERITED_CODES = {"R4_PACK_UNREADABLE", "R4_PACK_TRUNCATED", "R4_PACK_OFFSET", "R4_5_SLICE",
+                   "R2_EXPERT_ID_NOT_INTEGRAL"}
+# `R5E_ARITY` and `R5E_PATH` produce no document, so they are reached by the `NO_DOCUMENT` list
+# rather than by a document's `error_code`.
+reached = (codes - {""}) | {"R5E_ARITY", "R5E_PATH"}
+expected_reached = (DECLARED_R5_CODES - UNREACHED_R5_CODES) | INHERITED_CODES
+if reached != expected_reached:
+    if expected_reached - reached:
+        failures.append("codes never reached: %s"
+                        % ", ".join(sorted(expected_reached - reached)))
+    if reached - expected_reached:
+        failures.append("codes reached that this block does not declare: %s"
+                        % ", ".join(sorted(reached - expected_reached)))
+
+ORDER = ([name for name, _, _ in STUB_CASES]
+         + [name for name, _, _ in ENGINE_CASES]
+         + [name for name, _, _, _ in FORCED_CASES])
+
+if update:
+    with open(golden_path, "w", encoding="utf-8") as handle:
+        for name in ORDER:
+            handle.write(json.dumps({"case": name, "document": produced[name]},
+                                    separators=(",", ":"), ensure_ascii=False) + "\n")
+    print("moe model forward smoke: golden rewritten with %d cases" % len(produced))
+else:
+    with open(golden_path, "r", encoding="utf-8") as handle:
+        golden = [json.loads(line) for line in handle if line.strip()]
+    if [row["case"] for row in golden] != ORDER:
+        failures.append("the golden case list does not match the runner's case list")
+    else:
+        for row in golden:
+            if produced.get(row["case"]) != row["document"]:
+                failures.append("golden mismatch for %s: %s"
+                                % (row["case"],
+                                   describe_difference(row["document"],
+                                                       produced.get(row["case"]))))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("moe model forward smoke: FAIL %s\n" % line)
+    raise SystemExit(1)
+
+print("moe model forward smoke: %d no-document cases (R5E_ARITY, R5E_PATH), %d documented cases, "
+      "%d of the %d declared R5* codes reached plus %d inherited R4/R2 codes, all four oracles, the "
+      "routing identity element-wise complete over a whole model, and arm-r5a/r5b/r5d-unchanged PASS"
+      % (len(NO_DOCUMENT), len(ORDER),
+         len(reached & DECLARED_R5_CODES), len(DECLARED_R5_CODES),
+         len(reached & INHERITED_CODES)))
+PY
+
+# ---------------------------------------------------------------------------------------------
 # R6-DECODE-KV-STEP1 and R6-STEP-N — the `--decode-step` arm over the same synthetic two-layer model
 #
 # `docs/specs/r6-decode-kv-step1.md` section 5.1 and `docs/specs/r6-step-n.md` section 5. This block

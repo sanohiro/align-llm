@@ -1060,6 +1060,139 @@ all — which together force every helper here to return owned columns and force
 to be written twice rather than factored into a helper. Read both before restructuring
 `src/residency_sim.align`.
 
+### The R3 decode residency gate
+
+`scripts/run-decode-residency-gate` asks the same R3 question of a stream that contains real
+generated tokens. The recorded R3 result replayed prefill graphs in decode order and says so
+(`docs/specs/r3-residency-sim.md` section 5.2); R2c's patched instrument removed the two limits that
+forced it, and this runner is the residency consumer of the same capture
+`scripts/run-decode-locality-gate` takes. Its numbers are recorded in
+`docs/specs/r3-residency-sim.md` section 8; that section is authoritative for the result and this
+one for how to run it. **`scripts/run-residency-sim` is unchanged and still refuses a full-axis
+document**, so the historical section 7 measurement cannot be quietly rewritten under this runner's
+capture.
+
+It requires the **patched** instrument, exactly as the decode locality gate does.
+
+```sh
+ALIGN_LLM_GGUF_MODEL=/path/to/moe-model.gguf \
+ALIGN_LLM_LLAMA_EVAL_CALLBACK="$(scripts/llama-eval-callback-toolchain ensure instrument)" \
+  scripts/run-decode-residency-gate
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ALIGN_LLM_GGUF_MODEL` | none | a **MoE** GGUF; the subject model |
+| `ALIGN_LLM_LLAMA_EVAL_CALLBACK` | none | the **patched** callback instrument; a compact-axis build is refused by `require_full_router_axes`, not silently measured |
+| `ALIGN_LLM_LOCALITY_PROMPTS` | `eval/prompts/expert-locality-v1.txt` | the prompt corpus, one prompt per line |
+| `ALIGN_LLM_LOCALITY_PROMPT_COUNT` | `40` | prompts to use, taken from the **top** of the corpus in file order; 1 to 1000, and a value outside that range — `0` included — is an error rather than an empty measurement |
+| `ALIGN_LLM_DECODE_STEPS` | `16` | generated tokens per prompt; 1 to 128, and a value outside that range is an error rather than a silent default |
+| `ALIGN_LLM_RESIDENCY_BUDGET` | 25 per cent of the model's expert byte footprint | the `BUDGET_BYTES` operand, the same point section 7 recorded; a positive decimal integer in 1..9,223,372,036,854,775 (the simulator's own `MAX_BYTE_TOTAL`), and anything else is an error rather than a diagnostic from the product an hour later |
+
+A missing or unusable model/instrument prints exactly one of these lines, in this order, and exits 0
+without claiming a measurement; the line must be quoted as the `N/A` reason in the pull request:
+
+```text
+decode residency gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)
+decode residency gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable)
+decode residency gate: N/A (ALIGN_LLM_GGUF_MODEL unset)
+decode residency gate: N/A (ALIGN_LLM_GGUF_MODEL is absent)
+```
+
+The other four variables are **overrides, not switches**: a corpus this script was pointed at and
+cannot read is a broken invocation that exits 1, never `N/A`.
+
+**Four arms, one budget, one rule.** The capture is `scripts/run-decode-locality-gate`'s, flag for
+flag — `-n N --temp 0 --seed 42 -t 4 -fa off -ctk f32 -ctv f32 -nr -c 512` — so the two decode
+measurements are taken over the same greedy continuations. The capture logic is **deliberately
+duplicated** rather than factored into a shared helper: the two runners differ in their N/A
+prefixes, their per-prompt side work (the locality gate also reads a token fingerprint), and their
+post-capture admission, and a shared helper could not be adopted by `run-decode-locality-gate` —
+a merged, measurement-bearing runner — without putting its recorded output and identity at risk.
+The identity claim is therefore **enforced rather than asserted**: `capture-identity` in
+`gmake residency-sim-smoke` extracts the instrument invocation, the corpus-identity block, and the
+transcript size cap from both files and fails if they differ, and also fails if the extracted
+invocation stops containing the flags, so the comparison cannot pass vacuously. A flag added to one
+runner and not the other is a smoke failure, not a silent second measurement.
+
+| Arm | Trace list | What it answers |
+| --- | --- | --- |
+| `mixed` | the documents as captured | a session of short requests, prompt and generation pooled — the regime section 7 was already reading |
+| `decode_only` | the same documents with graph 0 projected away | generation alone, with no prompt tokens in the stream |
+| `prefill_only` | the same documents with every decode graph projected away | the **coverage control**: prompt tokens alone, at the same full eight-slot axis |
+| `decode_head4` | the same documents with graph 0 and every decode graph after the fourth projected away | the **stream-length control**: generation alone at the prefill-only arm's order of length |
+
+The last two arms are what make the first two interpretable, and each removes one confound. R2c
+changed *two* things at once against the stream section 7.4 recorded — the router axis went from six
+printed slots to all eight, and real decode graphs appeared — so a verdict that moved could be
+caused by either. The prefill-only arm holds corpus, budget, admission rule, and slot axis fixed and
+removes only the decode graphs. If it agrees with the other arms, the movement is a **coverage**
+effect and must not be attributed to decode; only a verdict the prefill-only arm does *not* share is
+decode-specific. That control is also much shorter than the decode arms, though — 23,040 demands
+against 81,920 — so a verdict that differs could still belong to the cache pressure the longer
+stream carries rather than to the phase. The head-4 arm keeps the phase and truncates each
+generation to its first `DECODE_HEAD_STEPS` steps, 20,480 demands over 160 positions, so a verdict
+it shares with the decode-only arm is not a **length** effect either.
+
+Each list is a **projection for the simulator**, not a second R2A document: exactly the two arrays
+`main --simulate-residency` reads — `graphs` and `selections` — are filtered, and every other block
+still describes the whole transcript. **The ordinals are kept.** Renumbering them would make the
+first decode step a `single_token_first_graph`, which is `docs/specs/r2a-expert-trace.md` section
+2.5.6's name for "the transcript cannot tell a one-token prompt from a decode step", and
+`graph_phases` would stop being able to state what was replayed.
+
+The projections live in `scripts/residency_projection.py`, **imported by both** this runner and
+`scripts/run-residency-sim-smoke`, so the arms the hosted owner checks against the independent
+oracle are the arms the real-model runner replays. `projection-binding` in that smoke pins the
+import by name and fails if the runner grows a projection of its own. The runner also asserts the
+partition — `mixed` demands equal `prefill_only` plus `decode_only`, demand for demand — that
+`decode_head4` is a strict subset of `decode_only` carrying exactly four decode graphs per prompt,
+and each arm's `graph_phases` census, which is the only field that states *which* phase was
+replayed: a projection that filtered nothing, filtered everything, or renumbered an ordinal would
+otherwise still produce a well-formed document with plausible byte totals.
+
+**`one_token_working_set_*` is a first-position quantity, not an arm average.**
+`src/residency_sim.align` scans the pooled stream until the first demand whose token ordinal is not
+0, so the field reports the working set of whichever token position sorts first. In the mixed and
+prefill-only arms that is a prompt token; in the two decode arms it is a generated one. Read it as
+"a token of this phase demands this much", never as "this arm's tokens demand this much on average".
+
+**Bounds are checked before the instrument runs.** `src/residency_sim.align`'s `MAX_DEMANDS` is
+262,144, and the decode half of the capture is known in advance — every decode graph carries one
+token, every router slot is printed, and a one-token graph has no token-reduced tail — so
+`prompts x steps x n_layer x n_expert_used` is checked against the cap first and names the two knobs
+to lower. The exact pooled total, prefill included, is re-checked after the capture, and the section
+2.7 simulation-cost product is asserted against `MAX_SIMULATION_STEPS` for every arm before any
+replay is launched.
+
+**It is a measurement, not a pass/fail owner test.** It exits 0 on every `verdict.result` of every
+arm and exits nonzero only when the instrument, the corpus, or a parser prevented a measurement. It
+prints one human block per arm and one machine-readable line per arm:
+
+```text
+decode-residency-gate arm=mixed verdict=... budget=... baseline_bytes=... best=... best_bytes=...
+  gain_per_mille=... headroom_per_mille=... jackknife_tested=... jackknife_folds=...
+  jackknife_min_per_mille=... jackknife_stable=... demands=... token_positions=...
+  distinct_keys=... slot_coverage_per_mille=... prefill_graphs=... decode_graphs=...
+  single_first_graphs=... one_token_ws_keys=... one_token_ws_bytes=... prompts=... decode_steps=...
+```
+
+**`jackknife_tested` is the field that keeps two different zeros apart.** Section 2.8 resamples only
+over candidates that clear the pooled effect floor, so when none does, the fold loop never runs and
+`jackknife_min_per_mille` is the untested initial `0` rather than a fold that measured no gain.
+`jackknife_folds` still reports how many folds the stream is *partitioned* into, which is a property
+of the corpus and is true either way. Read `jackknife_min_per_mille` only under
+`jackknife_tested=yes`. The sweep table carries no jackknife at all — section 2.8 resamples at the
+requested budget only — and the human block says so above the rows.
+
+**`best` is `best_policy`, and it is only a winner when `verdict` is `BEATS_BASELINE`.** On the two
+non-winning results the field still names the lowest-byte candidate whenever one fetched fewer bytes
+than the baseline, which is section 2.8's shape and not this runner's. The human block marks the row
+accordingly and lists every candidate that cleared the pooled effect floor, so a reader can see
+whether a win was lost to the jackknife rather than to the floor.
+
+Like every other R2c consumer the gate joins no aggregate, no `Makefile` target, and no CI job.
+
 ## alignpack development
 
 R4-ALIGNPACK-LAYER-MAJOR is merged into `main` as PR #125 (head `a7e72dc`, merge `991eab1`); its
@@ -1349,8 +1482,8 @@ own declared shape yields is `R5_ORACLE_MISSING` with detail `node[<id>]<got>/<e
 
 The same rule now has a third code. `llama-eval-callback` prints a tensor's rows in full only while
 `ne1 <= 6`, so above six prefill tokens both prefill arms compare a **clamped** six of the rows they
-name. Since R6 lifted `MAX_PREFILL_TOKENS` to 8, `--layer-forward` and `--model-forward` refuse a
-prefill of 7 or 8 tokens **when a transcript is supplied**, at their token stage and before any
+name. Since R6 lifted `MAX_PREFILL_TOKENS` to 8 and R6-STEP-N to 32, `--layer-forward` and
+`--model-forward` refuse any prefill above six tokens **when a transcript is supplied**, at their token stage and before any
 container work, with `R5_ORACLE_TRUNCATED` and detail `tokens[<n>]`. The same token count without a
 transcript is admitted; nothing about the arithmetic changed.
 
@@ -1691,9 +1824,10 @@ against the exact head rather than reasoning from this paragraph.
 
 ## MoE layer forward development
 
-R5D-MOE-LAYER-FORWARD is the design of record on branch `agent/r5d-moe-layer-forward`, ledger
-commit `a85e1fc` after the rebase onto the merged R3 residency simulator at `main` `95c47e7`;
-implementation `7886cee` and review repair `a2e2748` are committed, so every field below is
+R5D-MOE-LAYER-FORWARD is merged as PR #139, merge commit `e312bd7`; it was the design of record on
+branch `agent/r5d-moe-layer-forward`, ledger
+commit `a85e1fc` after the rebase onto the merged R3 residency simulator at `main` `95c47e7`, with
+implementation `7886cee` and review repair `a2e2748`, so every field below is
 finalized. Its authoritative plan is `docs/specs/r5d-moe-layer-forward.md`, which owns
 the probe record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
 deferrals, risks, and candidate-request sections. It answers R5's second gate stage for a **routed**
@@ -1791,6 +1925,78 @@ no mask); `src/ggml_ffi.align` remains the only file with an `extern` block or a
 the `BEGIN/END R4.5 SHARED SHIM CONTRACT` region stays byte-identical (ledger section 4.2). **The
 shim is built with `-ffp-contract=off`**, inherited unchanged from R5A, and the runner asserts
 `abi.fp_contract_off` is `true`.
+
+## MoE whole-model prefill development
+
+R5E-MOE-MODEL-PREFILL is the design of record on branch `agent/r5e-moe-model-prefill`, ledger commit
+`5e3356d`, implementation `053de09`, review repair `e7f727f`, merged with the merged R5D at `main`
+`e312bd7`. Its authoritative plan is `docs/specs/r5e-moe-model-prefill.md`, which owns the probe
+record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
+deferrals, risks, and candidate-request sections. It completes R5's second gate stage: a **whole**
+sixteen-layer OLMoE prefill of at most six tokens, per-layer routing, only the routed experts' planes
+read into Align-owned buffers, the output head, and an `R5_MOE_MODEL_FORWARD`, `schema_version: 1`
+document.
+
+It ships as a **fifth arm of the existing `ggml-spike` executable**, `--moe-model-forward`, beside
+R4.5's positional arm, `--layer-forward`, `--model-forward`/`--model-forward-gpu`, and
+`--moe-layer-forward`, and it reuses `src/layer_olmoe.align` — R5D's topology module, extended with
+layer-parameterized tables — rather than adding a second OLMoE description.
+
+```sh
+gmake ggml-spike                        # unchanged; also builds the --moe-model-forward arm
+gmake layer-forward-smoke               # extended with a fifth block; unchanged aggregate membership
+gmake moe-model-forward-qualification   # the opt-in real-ggml, real-model, two-instrument qualification
+```
+
+`--moe-model-forward` is selected by its exact first operand and takes exactly five, six, seven,
+eight, or nine operands — there is no arity gap:
+
+```sh
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json REF.gguf
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json REF.gguf TRANSCRIPT.txt
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json REF.gguf TRANSCRIPT.txt LOGITS.bin
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json REF.gguf -              LOGITS.bin
+```
+
+**`KV_WIDTH` is mandatory and is operand five**, unlike R5B's optional trailing width, because on a
+routed model the declared attention width changes which experts the router selects and therefore
+which bytes the arm reads (ledger section 2.8). `-` is legal in exactly two positions: the document
+position, where it is R0's write-to-stdout convention, and the transcript position, where it means
+the transcript oracle does not run while the logits oracle still does. `-` anywhere else is
+`R5E_PATH`.
+
+**Env vars, read by `scripts/run-moe-model-forward`:**
+
+```sh
+ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include \                # selects the REAL shim; unset selects the stub
+ALIGN_LLM_GGML_LIB=/opt/homebrew/lib \                        # where libggml / libggml-base are
+ALIGN_LLM_GGUF_MODEL=/path/to/olmoe.gguf \                    # the OLMoE model to pack and use as the reference
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \  # the transcript and routing oracles
+ALIGN_LLM_LLAMA_DEBUG=/path/to/llama-debug \                  # the byte-exact logits oracle
+ALIGN_LLM_MOE_MODEL_FORWARD_TMPDIR=/path/to/scratch \         # where the pack is written; defaults to TMPDIR
+ALIGN_LLM_MOE_MODEL_FORWARD_EXCERPT_UPDATE=1 \                # refreshes the checked-in transcript excerpt
+  gmake moe-model-forward-qualification
+```
+
+`ALIGN_LLM_MOE_MODEL_FORWARD_TMPDIR` is deliberately **not** an N/A condition: it selects a location
+and defaults to `TMPDIR`. The other five are, along with a model whose `arch` is not `olmoe` and a
+scratch root with less than `model_bytes / 1024 + 1048576` KiB free — 5,163,334 KiB for
+`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`.
+
+**The qualification runs the arm twice**, once at the instrument's reconciliation width (256 on this
+model at `-c 512`) with the transcript, and once at the runtime width (`KV_WIDTH == token_count`)
+with `-` in the transcript position, so the arm rather than the runner produces the runtime-width
+logits verdict. It asserts the tokenizer produced the six expected ids and that the two instruments
+agree with each other **before** invoking the arm, so an instrument skew is reported as an instrument
+skew rather than as a failing oracle.
+
+**R5E adds no smoke target and changes no aggregate membership**; like R5D it adds one opt-in
+Makefile target, `moe-model-forward-qualification`, and its owner is `layer-forward-smoke`'s fifth
+block. A `Makefile` edit is still an executable-contract boundary, so `scripts/pre-pr` selects the
+**executable** row and the installed profile rather than the documentation lane. The FFI boundary
+does **not** change: R5E adds no `extern` symbol and neither C shim gains one.
 
 ## The `--decode-step` arm (R6-DECODE-KV-STEP1, R6-STEP-N)
 
