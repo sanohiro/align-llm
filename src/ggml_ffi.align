@@ -218,6 +218,18 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_op_pad(
     ctx: raw, slots: slice<u8>, out: i64, a: i64, p0: i32, p1: i32, p2: i32, p3: i32) -> i32
 
+  // R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md` section 2.5). The **one** new symbol:
+  // `ggml_concat`, which joins the KV plane's past columns to this step's single new column. It is
+  // the whole difference between a prefill layer graph and a decode layer graph; every other row of
+  // the decode table is a prefill row with `tokens = 1`.
+  //
+  // `dim` is an axis **selector** in `[0, 3]`, validated in Align before the call and again in C.
+  // Section 2.4 records that K and V concatenate on different axes — K's column axis is 1 after its
+  // `CONT_3D` and V's is 0 after its own — so the selector is a per-row column of the node table and
+  // never a shared constant.
+  fn align_ggml_op_concat(
+    ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64, dim: i32) -> i32
+
   // R5D-MOE-LAYER-FORWARD (`docs/specs/r5d-moe-layer-forward.md` section 3.5). The **five** new
   // symbols the routed half of an OLMoE layer needs, and nothing else. Section 2.8 verified each
   // against the two C files at the pin: `align_ggml_slot_new_tensor_2d` gates on the `mul_mat`
@@ -873,6 +885,24 @@ pub fn op_pad(
     return r5_result(
       align_ggml_op_pad(ctx, slots, out, a, p0 as i32, p1 as i32, p2 as i32, p3 as i32) as i64,
       label)
+  }
+}
+
+// R6 section 2.5. `ggml_concat(a, b, dim)`, modelled on `op_argsort`: the selector is refused in
+// Align before the call so a malformed axis is `R5_GGML_INIT` naming the row rather than a status
+// the shim has to invent a meaning for, and it is narrowed to `i32` only at the call.
+//
+// Section 2.4 is why `dim` is a parameter rather than a constant: a decode layer concatenates K on
+// axis 1 and V on axis 0, and a single shared value here would be a silent transpose that every
+// shape check downstream would accept.
+pub fn op_concat(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, b: i64, dim: i64, label: str,
+) -> Result<(), Fault> {
+  if dim < 0 || dim > 3 {
+    return Err(r5_fault(STATUS_INIT, label))
+  }
+  unsafe {
+    return r5_result(align_ggml_op_concat(ctx, slots, out, a, b, dim as i32) as i64, label)
   }
 }
 

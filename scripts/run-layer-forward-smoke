@@ -227,7 +227,23 @@ STUB_CASES = [
     ("lf-tokens-empty", [ARM, PACK, "0", GEOM, ""], "R5_TOKENS"),
     ("lf-tokens-trailing", [ARM, PACK, "0", GEOM, "1,"], "R5_TOKENS"),
     ("lf-tokens-space", [ARM, PACK, "0", GEOM, "1, 2"], "R5_TOKENS"),
-    ("lf-tokens-seven", [ARM, PACK, "0", GEOM, "1,2,3,4,5,6,7"], "R5_TOKENS"),
+    # R6-DECODE-KV-STEP1 section 2.7 lifts `MAX_PREFILL_TOKENS` from 6 to 8, so the
+    # over-cap fixture is nine tokens rather than seven. The case asserts the cap, not
+    # a particular number, and nine is one past the new one exactly as seven was one
+    # past the old one. `src/layer_olmoe.align` keeps its own cap at 6, so the routed
+    # block below still refuses seven.
+    ("lf-tokens-nine", [ARM, PACK, "0", GEOM, "1,2,3,4,5,6,7,8,9"], "R5_TOKENS"),
+    # The other half of that lift, and the reason it is safe. `llama-eval-callback` prints a
+    # tensor's rows in full only while `ne1 <= 6`; above it prints three leading and three trailing
+    # rows and the scan's `printed_count` clamps to six on **both** sides. A seven- or eight-token
+    # prefill with a transcript would therefore compare six of seven rows and report `PASS` about a
+    # row it never saw, so the oracle refuses itself. The same operands **without** a transcript are
+    # `lf-tokens-eight-no-transcript` below and run to the arm's ordinary stopping point, which is
+    # what makes this a refusal of the oracle and not of the arithmetic.
+    ("lf-tokens-seven-transcript",
+     [ARM, PACK, "0", GEOM, "1,2,3,4,5,6,7", "-", SOURCE, TRANSCRIPT], "R5_ORACLE_TRUNCATED"),
+    ("lf-tokens-eight-no-transcript",
+     [ARM, PACK, "0", GEOM, "1,2,3,4,5,6,7,8", "-", SOURCE], "R5_GGML_UNAVAILABLE"),
     ("lf-tokens-oob", [ARM, PACK, "0", GEOM, "1,32"], "R5_TOKENS"),
     ("lf-geometry-unreadable", [ARM, PACK, "0", path("absent.json"), TOKENS],
      "R5_GEOMETRY_UNREADABLE"),
@@ -644,7 +660,7 @@ REQUIRED_CODES = {
     "R5_BLOCK_MISSING", "R5_MEMBER_MISSING", "R5_SHAPE", "R5_GGML_UNAVAILABLE",
     "R5_TYPE_UNSUPPORTED", "R5_ALIGNMENT", "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE",
     "R5_SOURCE_UNREADABLE", "R5_SOURCE_DIVERGED", "R5_REFERENCE_MISMATCH", "R5_TRANSCRIPT",
-    "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE",
+    "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE", "R5_ORACLE_TRUNCATED",
 }
 missing_codes = REQUIRED_CODES - codes
 if missing_codes:
@@ -762,7 +778,17 @@ STUB_CASES = [
     ("mf-tokens-empty", [ARM, PACK, GEOM, ""], "R5_TOKENS"),
     ("mf-tokens-trailing", [ARM, PACK, GEOM, "1,"], "R5_TOKENS"),
     ("mf-tokens-space", [ARM, PACK, GEOM, "1, 2"], "R5_TOKENS"),
-    ("mf-tokens-seven", [ARM, PACK, GEOM, "1,2,3,4,5,6,7"], "R5_TOKENS"),
+    # R6 section 2.7: the cap is 8 now, so the over-cap fixture is nine tokens.
+    ("mf-tokens-nine", [ARM, PACK, GEOM, "1,2,3,4,5,6,7,8,9"], "R5_TOKENS"),
+    # R6 section 2.7's other half. Above six tokens the instrument prints three leading and three
+    # trailing rows and `printed_count` clamps to six on both sides, so a transcript comparison at
+    # `T = 7` would check six of seven rows and still report `PASS`. The oracle refuses itself. The
+    # same eight-token prefill **without** a transcript is admitted, which is exactly what
+    # `--decode-step`'s characterization pass runs: it supplies `-` in the transcript position.
+    ("mf-tokens-seven-transcript",
+     [ARM, PACK, GEOM, "1,2,3,4,5,6,7", "-", SOURCE, WIDE, WIDTH], "R5_ORACLE_TRUNCATED"),
+    ("mf-tokens-eight-no-transcript",
+     [ARM, PACK, GEOM, "1,2,3,4,5,6,7,8", "-", SOURCE, "-", WIDTH], "R5_GGML_UNAVAILABLE"),
     ("mf-tokens-oob", [ARM, PACK, GEOM, "1,32"], "R5_TOKENS"),
     ("mf-kv-width-empty", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, ""], "R5_KV_WIDTH"),
     ("mf-kv-width-negative", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, "-1"], "R5_KV_WIDTH"),
@@ -1317,8 +1343,8 @@ REQUIRED_CODES = {
     "R5_MEMBER_MISSING", "R5_SHAPE", "R5_GGML_UNAVAILABLE", "R5_TYPE_UNSUPPORTED",
     "R5_ALIGNMENT", "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE", "R5_RESIDUAL",
     "R5_SOURCE_UNREADABLE", "R5_SOURCE_DIVERGED", "R5_REFERENCE_MISMATCH", "R5_TRANSCRIPT",
-    "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE", "R5_LOGITS_UNREADABLE", "R5_LOGITS_SHAPE",
-    "R5_LOGITS_NONFINITE",
+    "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE", "R5_ORACLE_TRUNCATED", "R5_LOGITS_UNREADABLE",
+    "R5_LOGITS_SHAPE", "R5_LOGITS_NONFINITE",
 }
 missing_codes = REQUIRED_CODES - codes
 if missing_codes:
@@ -3400,4 +3426,515 @@ print("moe model forward smoke: %d no-document cases (R5E_ARITY, R5E_PATH), %d d
       % (len(NO_DOCUMENT), len(ORDER),
          len(reached & DECLARED_R5_CODES), len(DECLARED_R5_CODES),
          len(reached & INHERITED_CODES)))
+PY
+
+# ---------------------------------------------------------------------------------------------
+# R6-DECODE-KV-STEP1 — the `--decode-step` arm over the same synthetic two-layer model
+#
+# `docs/specs/r6-decode-kv-step1.md` section 5.1. This block extends the existing runner rather than
+# adding a target: `layer-forward-smoke` is already a member of HOSTED_CHECK_TARGETS, so R6 adds
+# rows to it and changes no aggregate membership and no check topology.
+#
+# Hosted, ggml-free, model-free, llama.cpp-free. The corpus is `layer_forward_fixture.py --model`
+# extended with a **second call**: a pure-Python decode step at `n_past = T` over the KV plane the
+# prefill produced, and a transcript holding **two graphs** exactly as `llama-eval-callback -n 1`
+# emits them. Both acceptance oracles are therefore reachable with no ggml and no model — oracle A
+# against the transcript's second graph, oracle B over the plane's own bytes.
+# ---------------------------------------------------------------------------------------------
+
+DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+python3 - "${root_dir}" "${work_dir}" <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+root_dir, work_dir = sys.argv[1:3]
+binary = os.path.join(work_dir, "ggml-spike")
+builder = os.path.join(root_dir, "scripts", "build-ggml-shim")
+golden_path = os.path.join(root_dir, "scripts", "decode-step-golden.jsonl")
+update = os.environ.get("ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE") == "1"
+
+ARM = "--decode-step"
+
+
+def path(name):
+    return os.path.join(work_dir, name)
+
+
+def geom(name):
+    return os.path.join(work_dir, name + ".json")
+
+
+PACK = path("model-pack.alignpack")
+GEOM = path("geometry.json")
+TOKENS = "3,17,5"
+SOURCE = path("model-source.bin")
+TRANSCRIPT = path("model-decode-transcript.txt")
+LOGITS = path("model-logits.bin")
+WIDTH = "8"
+# The generator's own argmax over its own prefill logits. The arm derives the decoded token from its
+# own logits and never takes it as an operand (section 2.1), so this file is what makes "the arm
+# decoded the token the reference decoded" an assertion rather than a coincidence.
+with open(path("model-decode-argmax.txt"), "r", encoding="utf-8") as handle:
+    EXPECTED_TOKEN = int(handle.read().strip())
+
+# Section 2.1's arity rule: five, six, seven, nine, or ten operands. **Eight is `R6_ARITY`** and the
+# gap is the contract, inherited verbatim from `--model-forward`.
+NO_DOCUMENT = [
+    ("ds-arity-3", [ARM, PACK, GEOM]),
+    ("ds-arity-8", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT]),
+    ("ds-arity-11", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, "extra"]),
+    ("ds-path-pack-empty", [ARM, "", GEOM, TOKENS]),
+    ("ds-path-geometry-empty", [ARM, PACK, "", TOKENS]),
+    ("ds-path-long", [ARM, "/" + ("a" * 5000), GEOM, TOKENS]),
+    ("ds-path-doc-empty", [ARM, PACK, GEOM, TOKENS, ""]),
+    ("ds-path-reference-empty", [ARM, PACK, GEOM, TOKENS, "-", ""]),
+    ("ds-path-logits-empty", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, ""]),
+    ("ds-arm-unknown-flag", ["--decode-steps", PACK, GEOM, TOKENS]),
+]
+
+# Steps 3 to 8 of section 2.8, in order, against the **default** stub: the whole reader, the
+# geometry, the width, the container, the coverage rule, and every member record run for real
+# without ggml, and the arm stops at step 9 with `R5_GGML_UNAVAILABLE`.
+#
+# `KV_WIDTH` has no default at any arity, so every case below nine operands is refused at step 6
+# with `kv_width[-1]`; that is what "fail-closed" means for an arm whose lower bound is `T + 1`.
+STUB_CASES = [
+    ("ds-stub-unavailable", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
+     "R5_GGML_UNAVAILABLE"),
+    ("ds-tokens-empty", [ARM, PACK, GEOM, ""], "R6_TOKENS"),
+    ("ds-tokens-trailing", [ARM, PACK, GEOM, "1,"], "R6_TOKENS"),
+    ("ds-tokens-nine", [ARM, PACK, GEOM, "1,2,3,4,5,6,7,8,9"], "R6_TOKENS"),
+    ("ds-tokens-oob", [ARM, PACK, GEOM, "1,32"], "R6_TOKENS"),
+    ("ds-geometry-unreadable", [ARM, PACK, path("absent.json"), TOKENS],
+     "R6_GEOMETRY_UNREADABLE"),
+    ("ds-geometry-not-json", [ARM, PACK, TRANSCRIPT, TOKENS], "R6_GEOMETRY"),
+    ("ds-geometry-arch", [ARM, PACK, geom("geometry-arch"), TOKENS], "R6_GEOMETRY"),
+    ("ds-geometry-missing-n_layer", [ARM, PACK, geom("geometry-missing-n_layer"), TOKENS],
+     "R6_GEOMETRY"),
+    # Section 1.3's declared non-goal, given a code that says so rather than the generic one.
+    ("ds-arch-unsupported", [ARM, PACK, geom("geometry-expert"), TOKENS], "R6_ARCH_UNSUPPORTED"),
+    ("ds-kv-width-absent", [ARM, PACK, GEOM, TOKENS], "R6_KV_WIDTH"),
+    ("ds-kv-width-empty", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", ""], "R6_KV_WIDTH"),
+    ("ds-kv-width-negative", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", "-1"], "R6_KV_WIDTH"),
+    # The lower bound is `T + 1` and not `T`: the decode step's own column has to fit.
+    ("ds-kv-width-equal-t", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", "3"], "R6_KV_WIDTH"),
+    ("ds-kv-width-over-max", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", "4097"], "R6_KV_WIDTH"),
+    ("ds-pack-missing", [ARM, path("absent.alignpack"), GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
+     "R4_PACK_UNREADABLE"),
+    ("ds-block-missing-output",
+     [ARM, path("model-pack-no-output.alignpack"), GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
+     "R5_BLOCK_MISSING"),
+    ("ds-coverage-gap",
+     [ARM, path("model-pack-coverage.alignpack"), GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
+     "R5_LAYER_COVERAGE"),
+    ("ds-member-missing",
+     [ARM, path("model-pack-member-missing.alignpack"), GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
+     "R5_MEMBER_MISSING"),
+    ("ds-shape", [ARM, path("model-pack-shape.alignpack"), GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
+     "R5_SHAPE"),
+]
+
+ENGINE_CASES = [
+    ("ds-engine-ok", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH], ""),
+    ("ds-engine-transcript", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH], ""),
+    ("ds-engine-logits", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS], ""),
+    # A transcript holding only the prefill graph. The arm skips the first graph by contract
+    # (section 3.3), so nothing is matched and the run is refused rather than compared against the
+    # wrong graph — which is the failure this fixture exists to make visible.
+    ("ds-transcript-onegraph",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-decode-transcript-onegraph.txt"), WIDTH],
+     "R6_ORACLE_MISSING"),
+    ("ds-transcript-kv-width",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-decode-transcript-kv-width.txt"), WIDTH],
+     "R6_KV_WIDTH"),
+    ("ds-transcript-perturbed",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-decode-transcript-perturbed.txt"), WIDTH],
+     ""),
+    ("ds-transcript-garbage",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("model-transcript-garbage.txt"), WIDTH],
+     "R6_TRANSCRIPT"),
+    ("ds-engine-source-diverged",
+     [ARM, PACK, GEOM, TOKENS, "-", path("model-source-diverged.bin"), "-", WIDTH],
+     "R5_SOURCE_DIVERGED"),
+    ("ds-engine-type",
+     [ARM, path("model-pack-type.alignpack"), GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
+     "R5_TYPE_UNSUPPORTED"),
+    ("ds-engine-alignment",
+     [ARM, path("model-pack-tight.alignpack"), GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
+     "R5_ALIGNMENT"),
+    ("ds-logits-short",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH, path("model-logits-short.bin")],
+     "R5_LOGITS_SHAPE"),
+    ("ds-logits-missing",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH, path("absent.bin")],
+     "R5_LOGITS_UNREADABLE"),
+]
+
+FORCED_CASES = [
+    ("ds-force-init", "engine+init", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
+     "R5_GGML_INIT"),
+    ("ds-force-alloc", "engine+alloc", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
+     "R5_ALLOC"),
+    ("ds-force-compute", "engine+compute", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
+     "R5_COMPUTE"),
+    ("ds-force-slot-range", "engine+slot-range", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
+     "R5_SLOT"),
+    # Section 4.5's `ds-stub-concat-axis` cell. A wrong concat axis is not producible from any
+    # operand the decode table can supply — `dim` is a compiled-in column of the row, 1 for K and 0
+    # for V — so the refusal is exercised by a build rather than reasoned about.
+    ("ds-force-concat-axis", "engine+concat-axis",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH], "R5_SHAPE"),
+    # Section 4.2's `plane failure` row and oracle B's own shipped regression. The build shifts the
+    # staged past K by one lane inside slot 64, which only the decode graph writes: every shape stays
+    # valid and the graph computes a plausible answer, and the bytes it consumed no longer equal the
+    # bytes the prefill wrote. Without this case `R6_PLANE_MISMATCH` is reachable only by mutating
+    # the source, which is evidence that lives in a table rather than in a run.
+    ("ds-force-plane-stage-offset", "engine+plane-stage-offset",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH], "R6_PLANE_MISMATCH"),
+    # Section 11.1's "positions are `[n_past]`" and "mask `{KV_WIDTH, 1}` with offset" rows, which
+    # until now cited source mutations. Both are oracle A failures rather than refusals — the run is
+    # `status: ok` with a `FAIL` verdict — so both supply the transcript, and the assertions below
+    # the table are what make them regressions rather than golden rows.
+    ("ds-force-decode-position", "engine+decode-position",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH], ""),
+    ("ds-force-mask-offset", "engine+mask-offset",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH], ""),
+]
+
+
+def describe_difference(expected_text, actual_text, limit=8):
+    if actual_text is None:
+        return "no document was produced"
+    try:
+        expected = json.loads(expected_text)
+        actual = json.loads(actual_text)
+    except Exception as error:  # noqa: BLE001 - the document is the thing under test
+        return "the documents are not both JSON: %s" % error
+    differences = []
+
+    def walk(left, right, path):
+        if len(differences) >= limit:
+            return
+        if type(left) is not type(right):
+            differences.append("%s: %r != %r" % (path or ".", left, right))
+        elif isinstance(left, dict):
+            for key in sorted(set(left) | set(right)):
+                if len(differences) >= limit:
+                    return
+                if key not in left:
+                    differences.append("%s.%s: absent != %r" % (path, key, right[key]))
+                elif key not in right:
+                    differences.append("%s.%s: %r != absent" % (path, key, left[key]))
+                else:
+                    walk(left[key], right[key], "%s.%s" % (path, key))
+        elif isinstance(left, list):
+            if len(left) != len(right):
+                differences.append("%s: %d entries != %d" % (path, len(left), len(right)))
+                return
+            for index in range(len(left)):
+                if len(differences) >= limit:
+                    return
+                walk(left[index], right[index], "%s[%d]" % (path, index))
+        elif left != right:
+            differences.append("%s: %r != %r" % (path or ".", left, right))
+
+    walk(expected, actual, "")
+    if not differences:
+        return "the documents differ only in text form"
+    return "expected != actual at " + "; ".join(differences)
+
+
+PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
+               "reference_path": "<reference>", "transcript_path": "<transcript>",
+               "logits_path": "<logits>"}
+
+
+def normalize(text):
+    document = json.loads(text)
+    for key in document["timings"]:
+        document["timings"][key] = 0
+    for row in document["schedule"]:
+        row["pread_ns"] = 0
+        row["compute_ns"] = 0
+    document["head"]["pread_ns"] = 0
+    document["head"]["compute_ns"] = 0
+    document["decode"]["compute_ns"] = 0
+    document["plane"]["readback_ns"] = 0
+    document["plane"]["upload_ns"] = 0
+    for key, placeholder in PLACEHOLDER.items():
+        if document[key]:
+            document[key] = placeholder
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+def build_shim(force):
+    environment = dict(os.environ)
+    environment.pop("ALIGN_LLM_GGML_INCLUDE", None)
+    environment.pop("ALIGN_LLM_GGML_LIB", None)
+    if force:
+        environment["ALIGN_LLM_GGML_FORCE"] = force
+    else:
+        environment.pop("ALIGN_LLM_GGML_FORCE", None)
+    subprocess.run([builder], check=True, capture_output=True, env=environment)
+
+
+def run(operands):
+    return subprocess.run([binary] + operands, capture_output=True, cwd=work_dir)
+
+
+failures = []
+produced = {}
+codes = set()
+
+
+def record(name, operands, expected):
+    result = run(operands)
+    if result.stdout == b"":
+        failures.append("%s: no document (exit %d): %s"
+                        % (name, result.returncode,
+                           result.stderr.decode("utf-8", "replace")[-400:]))
+        return None
+    try:
+        document = json.loads(result.stdout.decode("utf-8"))
+    except Exception as error:  # noqa: BLE001 - the document is the thing under test
+        failures.append("%s: the document is not valid JSON: %s" % (name, error))
+        return None
+    produced[name] = normalize(result.stdout.decode("utf-8"))
+    codes.add(document["error_code"])
+    if document["error_code"] != expected:
+        failures.append("%s: expected error_code %r, got %r (%r)"
+                        % (name, expected, document["error_code"], document["error_detail"]))
+    expected_exit = 0 if document["status"] == "ok" else 1
+    if (result.returncode == 0) != (expected_exit == 0):
+        failures.append("%s: status %r but exit %d"
+                        % (name, document["status"], result.returncode))
+    if document["kind"] != "R6_DECODE_STEP" or document["schema_version"] != 1:
+        failures.append("%s: wrong document identity %r/%r"
+                        % (name, document["kind"], document["schema_version"]))
+    if not document["abi"]["fp_contract_off"]:
+        failures.append("%s: the shim was not built with -ffp-contract=off" % name)
+    return document
+
+
+for name, operands in NO_DOCUMENT:
+    result = run(operands)
+    if result.returncode == 0:
+        failures.append("%s: expected a non-zero exit, got 0" % name)
+    if result.stdout != b"":
+        failures.append("%s: expected no document, got %d bytes" % (name, len(result.stdout)))
+
+# The R5B arm is untouched: its own flag still selects it and it still emits its own document.
+r5b = run(["--model-forward", PACK, GEOM, TOKENS])
+if r5b.stdout == b"":
+    failures.append("arm-r5b-unchanged: the R5B arm produced no document")
+elif json.loads(r5b.stdout.decode("utf-8"))["kind"] != "R5_MODEL_FORWARD":
+    failures.append("arm-r5b-unchanged: the R5B arm emitted the wrong kind")
+
+for name, operands, expected in STUB_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    lifetime = document["lifetime"]
+    for key in ("ggml_buffers_created", "contexts_created", "backends_created",
+                "gallocrs_created"):
+        if lifetime[key] != 0:
+            failures.append("%s: lifetime.%s is %d in a default stub build, not 0"
+                            % (name, key, lifetime[key]))
+    # Section 4.2's early-exit cell: a run that never reached a graph publishes no plane and no
+    # round-trip verdict, so an error document can never claim `IDENTICAL` over zero bytes.
+    if document["plane"]["roundtrip_verdict"] != "-" or document["plane"]["layers"] != 0:
+        failures.append("%s: an error document published a plane: %r" % (name, document["plane"]))
+
+build_shim("engine")
+for name, operands, expected in ENGINE_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    if document["status"] != "ok":
+        continue
+    graph = document["graph"]
+    decode = document["decode"]
+    plane = document["plane"]
+    if document["verdict"] != "EXTERNAL":
+        failures.append("%s: verdict %r, not EXTERNAL" % (name, document["verdict"]))
+    # Section 2.2's size arithmetic on this geometry: `n_layer * 2 * KV_WIDTH * n_head_kv *
+    # head_dim * 4` is `2 * 2 * 8 * 1 * 4 * 4`.
+    if plane["bytes"] != 512 or plane["stride"] != 128:
+        failures.append("%s: plane %d bytes, stride %d, not 512/128"
+                        % (name, plane["bytes"], plane["stride"]))
+    if plane["layers"] != 2 or plane["columns_written"] != 3:
+        failures.append("%s: the plane holds %d layers and %d columns, not 2 and T"
+                        % (name, plane["layers"], plane["columns_written"]))
+    # Oracle B. Every written byte of both tensors of both layers, compared after the decode graph
+    # consumed them: `2 tensors * 2 layers * 3 columns * 1 head * 4 lanes * 4 bytes`.
+    if plane["roundtrip_verdict"] != "IDENTICAL" or plane["roundtrip_bytes_compared"] != 192:
+        failures.append("%s: oracle B is %r over %d bytes"
+                        % (name, plane["roundtrip_verdict"], plane["roundtrip_bytes_compared"]))
+    if plane["first_mismatch_layer"] != -1 or plane["first_mismatch_tensor"] != "-":
+        failures.append("%s: a passing run named a mismatch: %r" % (name, plane))
+    if decode["n_past"] != 3 or decode["token_id"] != EXPECTED_TOKEN:
+        failures.append("%s: decoded token %d at n_past %d, not %d at 3"
+                        % (name, decode["token_id"], decode["n_past"], EXPECTED_TOKEN))
+    # Section 2.3: the two plane slots sit above the decode table's own node slots, so the arm's
+    # high-water is 66 against a capacity of 128 — and the prefill arm's stays 52.
+    if decode["slot_high_water"] != 66 or graph["slot_capacity"] != 128:
+        failures.append("%s: slots %d/%d, not 66/128"
+                        % (name, decode["slot_high_water"], graph["slot_capacity"]))
+    # The prefill runs at the declared width, so it issues R5B's reconciliation graph: 1 + 34 + 36
+    # + 3. The decode graph issues two more rows per layer — one `CONCAT` on K and one on V — at
+    # `t = 1`: 1 + 36 + 38 + 3.
+    if graph["node_count_total"] != 74:
+        failures.append("%s: prefill node_count_total %d, not 1 + 34 + 36 + 3"
+                        % (name, graph["node_count_total"]))
+    if decode["node_count"] != 78:
+        failures.append("%s: decode node_count %d, not 1 + 36 + 38 + 3"
+                        % (name, decode["node_count"]))
+    if decode["graph_count"] != 4 or graph["graph_count"] != 4:
+        failures.append("%s: %d prefill graphs and %d decode graphs, not 4 and 4"
+                        % (name, graph["graph_count"], decode["graph_count"]))
+    if decode["element_count"] != 32 or decode["nonfinite_count"] != 0:
+        failures.append("%s: %d decode logits, %d non-finite"
+                        % (name, decode["element_count"], decode["nonfinite_count"]))
+    lifetime = document["lifetime"]
+    if not lifetime["released_before_owner_scope_end"]:
+        failures.append("%s: the teardown did not balance" % name)
+    if lifetime["graph_balance_failures"] != 0:
+        failures.append("%s: %d graph boundaries left a ggml object alive"
+                        % (name, lifetime["graph_balance_failures"]))
+    for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                           ("contexts_created", "contexts_freed"),
+                           ("backends_created", "backends_freed"),
+                           ("gallocrs_created", "gallocrs_freed")):
+        if lifetime[created] != lifetime[freed]:
+            failures.append("%s: %s %d != %s %d"
+                            % (name, created, lifetime[created], freed, lifetime[freed]))
+
+# Oracle A. Every comparable node of the transcript's **second** graph, at one ten-thousandth, over
+# both layers plus the head — against a pure-Python decode step that shares none of the engine's
+# code. `max_abs_diff` is zero here and the tolerance is not consulted, which is the strongest form
+# the hosted corpus can take.
+oracle = json.loads(produced["ds-engine-transcript"])["oracle_decode"]
+if oracle["verdict"] != "PASS" or oracle["max_abs_diff_ten_thousandths"] != 0:
+    failures.append("ds-engine-transcript: %r" % oracle)
+if oracle["layers_matched"] != 2 or oracle["nodes_matched"] != oracle["nodes_expected"]:
+    failures.append("ds-engine-transcript: %d/%d layers, %d/%d nodes"
+                    % (oracle["layers_matched"], oracle["layers_expected"],
+                       oracle["nodes_matched"], oracle["nodes_expected"]))
+if oracle["elements_compared"] <= 0:
+    failures.append("ds-engine-transcript: zero elements compared with a PASS verdict")
+if oracle["tolerance_ten_thousandths"] != 1 or oracle["instrument_graph"] != 2:
+    failures.append("ds-engine-transcript: the decode oracle is not the second graph at 1e-4: %r"
+                    % oracle)
+
+breached = json.loads(produced["ds-transcript-perturbed"])
+if breached["status"] != "ok" or breached["oracle_decode"]["verdict"] != "FAIL" \
+        or breached["oracle_decode"]["worst_layer"] != 0 \
+        or breached["oracle_decode"]["worst_node"] != "l_out":
+    failures.append("ds-transcript-perturbed: status %r %r"
+                    % (breached["status"], breached["oracle_decode"]))
+
+# The prefill half is R5B's, and this is the assertion that says so in bytes: the same pack, the
+# same tokens, and the same declared width produce the **same** logits digest through
+# `--model-forward` and through `--decode-step`. Section 4.4's non-regression cell.
+mf = run(["--model-forward", PACK, GEOM, TOKENS, "-", SOURCE, path("model-transcript.txt"), WIDTH])
+mf_document = json.loads(mf.stdout.decode("utf-8"))
+ds_document = json.loads(produced["ds-engine-ok"])
+if mf_document["output"]["sha256"] != ds_document["output"]["sha256"]:
+    failures.append("ds-prefill-matches-r5b: --model-forward %r != --decode-step %r"
+                    % (mf_document["output"]["sha256"], ds_document["output"]["sha256"]))
+if mf_document["graph"]["slot_high_water"] != 52:
+    failures.append("ds-prefill-slots-unmoved: the prefill arm's high-water moved to %d, not 52"
+                    % mf_document["graph"]["slot_high_water"])
+# Section 3.2: the decode step is **not** the prefill's final position. If these agreed, the decode
+# graph would be recomputing the prompt.
+if ds_document["decode"]["sha256"] == ds_document["output"]["sha256"]:
+    failures.append("ds-step-differs: the decode logits equal the prefill's")
+
+# Both output forms emit byte-identical document bytes, and three consecutive runs agree.
+document_path = os.path.join(work_dir, "decode.json")
+stdout_form = run([ARM, PACK, GEOM, TOKENS]).stdout.decode("utf-8").rstrip("\n")
+run([ARM, PACK, GEOM, TOKENS, document_path])
+with open(document_path, "r", encoding="utf-8") as handle:
+    file_form = handle.read()
+if normalize(stdout_form) != normalize(file_form):
+    failures.append("ds-doc-stdout-identical: the stdout and file forms differ")
+repeats = {normalize(run([ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH])
+                     .stdout.decode("utf-8")) for _ in range(3)}
+if len(repeats) != 1:
+    failures.append("three consecutive runs produced %d distinct documents" % len(repeats))
+
+for name, force, operands, expected in FORCED_CASES:
+    build_shim(force)
+    record(name, operands, expected)
+
+build_shim(None)
+
+# Oracle B's shipped regression, asserted beside its golden row: the code alone would not say that
+# the document also names the layer, the tensor, and the column, which is what makes the diagnosis
+# usable. Section 4.2.
+staged = json.loads(produced["ds-force-plane-stage-offset"])["plane"]
+if staged["roundtrip_verdict"] != "MISMATCH" or staged["first_mismatch_layer"] != 0 \
+        or staged["first_mismatch_tensor"] != "k" or staged["first_mismatch_column"] != 0:
+    failures.append("ds-force-plane-stage-offset: oracle B did not name the mismatch: %r" % staged)
+
+# Oracle A's two shipped regressions. Both runs succeed — nothing is malformed — and the verdict is
+# what refuses them, which is the only form these two failures can take: a token roped at position 0
+# and a mask that hides the decoded token's own column are both arithmetically well-formed.
+for name in ("ds-force-decode-position", "ds-force-mask-offset"):
+    mutated = json.loads(produced[name])
+    if mutated["status"] != "ok" or mutated["oracle_decode"]["verdict"] != "FAIL" \
+            or mutated["oracle_decode"]["max_abs_diff_ten_thousandths"] <= 1:
+        failures.append("%s: oracle A did not refuse the mutation: %r"
+                        % (name, mutated["oracle_decode"]))
+    if mutated["plane"]["roundtrip_verdict"] != "IDENTICAL":
+        failures.append("%s: oracle B moved; the mutation was not confined to the graph: %r"
+                        % (name, mutated["plane"]))
+
+REQUIRED_CODES = {
+    "R6_TOKENS", "R6_GEOMETRY", "R6_GEOMETRY_UNREADABLE", "R6_ARCH_UNSUPPORTED", "R6_KV_WIDTH",
+    "R6_TRANSCRIPT", "R6_ORACLE_MISSING", "R6_PLANE_MISMATCH", "R4_PACK_UNREADABLE",
+    "R5_BLOCK_MISSING",
+    "R5_LAYER_COVERAGE", "R5_MEMBER_MISSING", "R5_SHAPE", "R5_GGML_UNAVAILABLE",
+    "R5_TYPE_UNSUPPORTED", "R5_ALIGNMENT", "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE",
+    "R5_SOURCE_DIVERGED", "R5_LOGITS_SHAPE", "R5_LOGITS_UNREADABLE",
+}
+missing_codes = REQUIRED_CODES - codes
+if missing_codes:
+    failures.append("codes never reached: %s" % ", ".join(sorted(missing_codes)))
+
+ORDER = ([name for name, _, _ in STUB_CASES]
+         + [name for name, _, _ in ENGINE_CASES]
+         + [name for name, _, _, _ in FORCED_CASES])
+
+if update:
+    with open(golden_path, "w", encoding="utf-8") as handle:
+        for name in ORDER:
+            handle.write(json.dumps({"case": name, "document": produced[name]},
+                                    separators=(",", ":"), ensure_ascii=False) + "\n")
+    print("decode step smoke: golden rewritten with %d cases" % len(produced))
+else:
+    with open(golden_path, "r", encoding="utf-8") as handle:
+        golden = [json.loads(line) for line in handle if line.strip()]
+    if [row["case"] for row in golden] != ORDER:
+        failures.append("the golden case list does not match the runner's case list")
+    else:
+        for row in golden:
+            if produced.get(row["case"]) != row["document"]:
+                failures.append("golden mismatch for %s: %s"
+                                % (row["case"],
+                                   describe_difference(row["document"],
+                                                       produced.get(row["case"]))))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("decode step smoke: FAIL %s\n" % line)
+    raise SystemExit(1)
+
+print("decode step smoke: %d no-document cases (R6_ARITY, R6_PATH), %d documented cases, "
+      "%d codes reached, oracle A PASS against the transcript's second graph, oracle B IDENTICAL "
+      "over the whole plane, and arm-r5b-unchanged PASS"
+      % (len(NO_DOCUMENT), len(ORDER), len(codes - {""})))
 PY

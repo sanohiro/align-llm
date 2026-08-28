@@ -194,6 +194,28 @@ else
                        include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
                                        "-DALIGN_GGML_FORCE_INF_READBACK=1")
                        flavour="stub+engine+gpu+force-inf-readback" ;;
+    # R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md` section 4.5). The decode table names
+    # K's column axis 1 and V's axis 0, so `align_ggml_op_concat`'s axis-mismatch refusal is not
+    # producible from any operand this arm accepts. The build flips the axis inside the shim, which
+    # is what makes `ALIGN_GGML_SHAPE` a run rather than an argument.
+    engine+concat-axis)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_CONCAT_AXIS=1")
+                       flavour="stub+engine+force-concat-axis" ;;
+    # The other three R6 conditions no operand can produce, each keyed on one slot the decode graph
+    # alone writes (`docs/specs/r6-decode-kv-step1.md` sections 4.2 and 11.1). `plane-stage-offset`
+    # shifts the staged past K by one lane and is the shipped regression for `R6_PLANE_MISMATCH`;
+    # `decode-position` ropes the decoded token at position 0; `mask-offset` masks the decoded
+    # token's own column. The last two are oracle A's own regressions, which until now existed only
+    # as source mutations recorded in a table.
+    engine+plane-stage-offset)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_PLANE_STAGE_OFFSET=1")
+                       flavour="stub+engine+force-plane-stage-offset" ;;
+    engine+decode-position)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_DECODE_POSITION=1")
+                       flavour="stub+engine+force-decode-position" ;;
+    engine+mask-offset)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_MASK_OFFSET=1")
+                       flavour="stub+engine+force-mask-offset" ;;
     *)
       printf '%s\n' "build-ggml-shim: unknown stub ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
       exit 1

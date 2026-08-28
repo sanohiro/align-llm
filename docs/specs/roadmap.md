@@ -457,7 +457,42 @@ The current forward delivery order is:
     **48** (same-call aliasing between a `borrow mut` owner and its own `Copy` scalar field), are
     filed `PROPOSED` and non-blocking. See `HANDOFF.md`.
 
-
+27. **R6-DECODE-KV-STEP1 — one decode step over an Align-owned KV plane. Implemented; the hosted
+    owner and the real-model qualification are recorded in
+    [`r6-decode-kv-step1.md`](r6-decode-kv-step1.md). It does **not** meet R6's own roadmap gate
+    below — TTFT on repeated coding tasks over a shared prefix — and makes no TTFT claim.** R5B computes a whole prefill and every K and
+    V dies with its graph — `src/model_forward.align` opens three fresh `ggml_context`s per graph
+    and frees them at the end of that graph — so the model can answer "what are the logits for this
+    prompt" and not "what comes next". This capability adds the smallest thing that changes that: an
+    Align-owned KV plane carrying all twenty-eight layers' post-RoPE K and V across the graph
+    boundary, a decode graph at `n_past = T` with positions `[n_past]` and a `{KV_WIDTH, 1}` mask,
+    one new ggml op wrapper (`ggml_concat`) with its shim body and its stub kernel, a split of token
+    ids from positions — one buffer until now — and a lift of `MAX_PREFILL_TOKENS` from 6 to 8. The
+    boundary is deliberately narrow: dense Qwen2.5-Coder-7B Q4_K_M, CPU, **one** step, the plane in
+    memory, no tiering, no invalidation, no Metal, no OLMoE, and no TTFT claim. It is the first
+    consumer of item 22's decode instrument, exactly as
+    [`r2c-decode-instrument.md`](r2c-decode-instrument.md) section 1 anticipated. Its own gate is
+    correctness on **three** acceptance oracles, whose exact rule is `r6-decode-kv-step1.md` section
+    2.11 and is stated nowhere else: A, every comparable node of llama.cpp's own **decode** graph at
+    the instrument's printing precision of one ten-thousandth over twenty-eight layers plus the head,
+    four prompts x three runs; B, the KV plane's round trip through the graph boundary,
+    **byte-identical** across all twenty-eight layers' K and V; and C, the step's logits against this
+    arm's own single-shot `T+1` prefill, **byte-identical** on every prompt. An oracle A `FAIL` is
+    admissible only inside the 0.5 characterization bound **and** with C byte-identical, which
+    attributes it to llama.cpp's own kernel selection rather than to this arm. The design records, as
+    measured findings, that `llama-debug --save-logits` has no step-1 blob at all — `-n` is inert for
+    it and the R2c patch does not touch it — and that the decode graph is not reproducible unless the
+    sampler is pinned to `--temp 0 -s 0`. It also records that llama.cpp's own single-shot `T+1`
+    prefill and its own incremental step differ by up to 0.17 in activations and 0.054 at the logits
+    through batch-size-dependent kernel selection — and that **this arm's two paths do not**, which
+    is the measurement that promoted oracle C from characterization to acceptance. The plane is
+    29,360,128 B at KV width 256. The hosted owner is `layer-forward-smoke`, extended with a fifth
+    block whose corpus is a **second implementation** of the decode step in Python and a transcript
+    holding two graphs; `gmake decode-step-qualification` is the opt-in real-model run and joins no
+    aggregate. `docs/specs/r6-decode-kv-step1.md` is the authoritative ledger. **What it leaves
+    open:** the R6 gate below asks that TTFT improve on repeated coding tasks sharing a prefix. One
+    step, in memory, with no session reuse, no tiering, and no invalidation does not answer it; the
+    gate stays unmet and the next capability toward it is step 2 and the decode loop.
 
 ### Status (2026-08-28)
 
@@ -472,11 +507,14 @@ expert claims and agreeing with llama.cpp node for node, item 24, R2D-DECODE-LOC
 as PR #141, which meets R2's locality gate in the decode direction on the same 40-prompt corpus,
 item 25, R3-DECODE-RESIDENCY, merged as PR #142, which meets R3's gate in the decode direction —
 narrowly, with the win confined to budgets at or below 12.5 per cent of the expert footprint and no
-candidate beating `lru` at 25 or 50 per cent — and item 26, R5E-MOE-MODEL-PREFILL, which is
-implemented, reviewed, and in publication: a whole sixteen-layer routed prefill over one reused
-Align-owned claim window, logits byte-identical to `llama-debug`, and 33.36% of the model's expert
-bytes read at six tokens. Item 25 discharges R4B's decode-corpus resume condition negatively and
-orders R6's KV tiering ahead of a runtime expert-residency policy.
+candidate beating `lru` at 25 or 50 per cent — and item 26, R5E-MOE-MODEL-PREFILL, merged as
+PR #143: a whole sixteen-layer routed prefill over one reused Align-owned claim window, logits
+byte-identical to `llama-debug`, and 33.36% of the model's expert bytes read at six tokens. Item 25
+discharges R4B's decode-corpus resume condition negatively and orders R6's KV tiering ahead of a
+runtime expert-residency policy, and **item 27, R6-DECODE-KV-STEP1, is the first capability on that
+order**: one decode step at `n_past = T` over an Align-owned KV plane on the dense model, byte-exact
+against llama.cpp's own single-shot `T+1` prefill. It is a correctness capability and does not meet
+R6's own gate below.
 **R5's gate is therefore complete on the real MoE model for all three stages of the routed path** —
 単一block (R4.5 and MOE-PREREQ-DISCHARGE), 単一layer (R5D), and 最小モデル (R5E).
 Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
@@ -1367,6 +1405,11 @@ policyの測定にはmulti-prefill sessionかdecodeが必要である。
 ### Gate
 
 同一prefixを使う反復coding taskでTTFTが改善すること。
+
+**未達。** item 27（R6-DECODE-KV-STEP1）は`n_past = T`の1 decode stepとAlign所有のKV planeを
+正しさの観点で実装したものであり、session KV・prefix KV・DRAM/NVMe tier・invalidationのいずれも
+持たず、TTFTの主張もしない。このgateを満たすには少なくともstep 2とdecode loop、そのうえで
+prefix再利用とresidency policyが必要である。
 
 **順序についての実測由来の結論（2026-08-28、R3-DECODE-RESIDENCY、roadmap item 25）。**
 R6はexpert residencyのruntime実装より**先**に着手してよい。実際の運用に最も近いmixed arm

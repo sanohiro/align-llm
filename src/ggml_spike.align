@@ -9,6 +9,7 @@ import alignpack_read
 import ggml_ffi
 import layer_forward
 import gpu_forward
+import decode_step
 import model_forward
 import moe_layer_forward
 import moe_model_forward
@@ -1600,6 +1601,14 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   // both would own two validation orders and two documents.
   if args.len() >= 2 && args[1] == "--moe-model-forward" {
     return moe_model_forward.run(args)
+  }
+  // R6 section 2.1: the decode arm, selected by the first operand and nothing else, and inserted
+  // **above** the catch-all below or the flag would become `Err(Error.Invalid)` before it was read.
+  // Section 3.1 records why it is a fifth arm rather than a trailing operand on the third: it runs a
+  // prefill *and* a step, owns a KV plane neither of the other two has, and emits a different
+  // document kind whose `plane` and `decode` objects `--model-forward`'s golden must never grow.
+  if args.len() >= 2 && args[1] == "--decode-step" {
+    return decode_step.run(args)
   }
   if args.len() >= 2 && args[1].starts_with("--") {
     return Err(Error.Invalid)

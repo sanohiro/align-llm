@@ -40,7 +40,26 @@ pub SLOT_NODE_BASE := 16
 // Section 3.3. The cap is the oracle's, not the arithmetic's: `llama-eval-callback` prints every
 // row of a tensor only while `ne1 <= 6`, and an oracle that compares fewer elements as the input
 // grows while still reporting `PASS` is worse than one that refuses.
-pub MAX_PREFILL_TOKENS := 6
+//
+// R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md` section 2.7) lifts it from **6 to 8**, and
+// the reason for 6 is unchanged and still respected. A decode graph's per-token tensors have
+// `ne1 = 1`, so the instrument prints them in full at any prefill length, and the cap now binds the
+// prefill pass alone: at `T = 7` a prefill tensor still prints 3+3 of 7 rows, which is exactly why
+// R6 section 3.2 refuses to use a seven-token prefill as an acceptance oracle. 8 rather than 7
+// leaves one position of headroom so a second decode step does not immediately re-open a shared
+// constant; it is not a claim that eight rows are fully printed, because they are not.
+// `src/layer_olmoe.align`'s own cap stays at 6: OLMoE is a declared non-goal of R6 and a shared lift
+// would widen an arm this capability does not test.
+//
+// **The lift does not weaken any oracle, and that is enforced rather than argued.** The sentence
+// above — "an oracle that compares fewer elements as the input grows while still reporting `PASS` is
+// worse than one that refuses" — is exactly what a seven- or eight-token prefill *with* a transcript
+// would be, because `printed_count` clamps to six on both sides. `--layer-forward` and
+// `--model-forward` therefore refuse that combination with `R5_ORACLE_TRUNCATED` before any graph is
+// built (`src/layer_forward.align`'s and `src/model_forward.align`'s token stages), so the range
+// `7 .. 8` is admitted for arithmetic and refused for comparison. `--decode-step`'s own tensors are
+// one column wide and are unaffected.
+pub MAX_PREFILL_TOKENS := 8
 
 pub OP_GET_ROWS := 1
 pub OP_RMS_NORM := 2
@@ -56,6 +75,11 @@ pub OP_SWIGLU := 11
 // R5B section 3.6: the one new op. `ggml_pad` widens K and V to the instrument's declared
 // attention width so the f32 reduction length matches llama.cpp's padded KV cache.
 pub OP_PAD := 12
+// R6-DECODE-KV-STEP1 section 2.5: the one new op. `ggml_concat` joins the KV plane's past columns
+// to the decode step's single new column. The value mirrors `ALIGN_STUB_OP_CONCAT` one for one, as
+// every other op here does; `13`, `14`, and `15` are the routed arm's kernels and this table has no
+// use for them.
+pub OP_CONCAT := 16
 
 // `r4-alignpack-layer-major.md` section 2.4.4's frozen role list, the thirteen entries this layer
 // needs. Members are located by `role_id` and never by name string and never by position.
@@ -1037,6 +1061,11 @@ pub MAX_ATTENTION_WIDTH := 4096
 pub WHEN_ALWAYS := 0
 pub WHEN_LAST := 1
 pub WHEN_WIDE := 2
+// R6-DECODE-KV-STEP1 section 2.4's fourth condition. A `WHEN_DECODE` row is issued only by the
+// decode graph, and the two rows that carry it are the K and V `CONCAT`s — the only thing a decode
+// layer does that a prefill layer does not. `3` is deliberately skipped: the value is the ledger's,
+// and leaving a gap keeps a future condition from silently inheriting a meaning by adjacency.
+pub WHEN_DECODE := 4
 
 // The slot map, shared by all three graphs. Twelve weights, four inputs, thirty-six nodes: a
 // high-water of 52 against `MAX_NODE_SLOTS` of 128. The embedding graph uses slot 0 for the
@@ -1048,6 +1077,18 @@ pub MF_SLOT_POS := 13
 pub MF_SLOT_MASK := 14
 pub MF_SLOT_OUT_IDS := 15
 pub MF_SLOT_NODE_BASE := 16
+
+// R6-DECODE-KV-STEP1 section 2.3. The decode graph's two extra **inputs**: the KV plane's past K
+// and its past V for this layer, uploaded with `slot_set` from Align-owned host bytes.
+//
+// 64 and 65 rather than 16 and 17 for one reason and it is a golden one. Node slots are
+// `MF_SLOT_NODE_BASE + row` and a decode layer has 38 rows, so the decode arm's own node slots reach
+// 53 and these two sit above them; renumbering the input block instead would move `MF_SLOT_CUR`
+// through `MF_SLOT_OUT_IDS` and every R5A/R5B/R5C/R5D golden with them. Because the prefill arm
+// allocates neither slot, its `slot_high_water` stays 52 and **no existing golden moves**. The
+// decode arm's own high-water is 66, which is asserted in its own golden and in no other.
+pub MF_SLOT_KPAST := 64
+pub MF_SLOT_VPAST := 65
 
 pub MF_LAYER_NODE_COUNT := 36
 pub MF_EMBED_NODE_COUNT := 1
@@ -1601,11 +1642,229 @@ pub fn mf_head_output_slot() -> i64 = MF_SLOT_NODE_BASE + MF_HEAD_NODE_COUNT - 1
 
 // `true` when a row is issued for a graph with these two conditions. One loop in
 // `src/model_forward.align` walks the table and skips a row whose condition does not hold.
+//
+// R6 keeps this signature and defines it as the `decode = false` case of the three-condition form
+// below, so the prefill's issued row set is unchanged by construction.
 pub fn mf_row_issued(condition: i64, last: bool, wide: bool) -> bool {
+  return mf_row_issued_at(condition, last, wide, false)
+}
+
+// R6-DECODE-KV-STEP1 section 2.4. The same predicate with the decode condition, walked by
+// `src/decode_step.align`. A `WHEN_DECODE` row is the K or V `CONCAT`, and the two rows that
+// consume them redirect their `a` operand through `alt_when = WHEN_DECODE` — so dropping the
+// condition does not merely lose two nodes, it feeds the attention the new column alone, which is
+// what the `ds-mutant-no-concat` build asserts is caught.
+pub fn mf_row_issued_at(condition: i64, last: bool, wide: bool, decode: bool) -> bool {
   if condition == WHEN_ALWAYS { return true }
   if condition == WHEN_LAST { return last }
+  if condition == WHEN_DECODE { return decode }
   return wide
 }
+
+// ---------------------------------------------------------------------------------------------
+// R6-DECODE-KV-STEP1 — the decode layer table
+//
+// `docs/specs/r6-decode-kv-step1.md` section 2.4. Thirty-eight rows: the prefill layer's
+// thirty-six at `tokens = 1`, plus one `CONCAT` on K and one on V.
+//
+// The two concats are the whole capability. A prefill layer widens K and V from `T` columns to
+// `KV_WIDTH` with zeros; a decode layer joins the plane's `n_past` real columns to the step's one
+// new column and pads the remainder, so the new column lands at index `n_past` — exactly where the
+// offset mask of section 2.6 unmasks it. Appending without the past, or padding without the concat,
+// puts the new column at index 0 or at index `KV_WIDTH - 1` and answers a different question.
+//
+// K and V concatenate on **different** axes and the table says so per row. After row 15's `CONT_3D`
+// K is `{head_dim, columns, n_head_kv}`, so its column axis is **1**; after row 21's `CONT_3D` V is
+// `{columns, head_dim, n_head_kv}`, so its column axis is **0**. A single shared constant here would
+// be a silent transpose that every downstream shape check accepts.
+// ---------------------------------------------------------------------------------------------
+
+pub MF_DECODE_LAYER_NODE_COUNT := 38
+
+// Rows 0 to 14: the norm, the three projections and their biases, the three reshapes at `ne2 = 1`,
+// the two RoPEs, and the two permutes. Every one is the prefill's row with `tokens = 1`; only
+// `MF_SLOT_POS`'s **contents** differ, and they are `[n_past]` rather than `[0 .. T-1]`.
+fn mf_decode_row_head(borrow g: Geometry, row: i64) -> MfRow {
+  n := MF_SLOT_NODE_BASE
+  if row <= 12 { return mf_layer_row_head(g, 1, row) }
+  mut r := mf_row(OP_PERMUTE, if row == 13 { n + 11 } else { n + 12 }, -1, -1)
+  r.p1 = 2
+  r.p2 = 1
+  r.p3 = 3
+  return r
+}
+
+// Rows 15 to 23: the K path, the attention weights, and the V path — the nine rows the concats live
+// in. `width - (n_past + 1)` is the pad each concatenated operand needs to reach `KV_WIDTH`; it is
+// the decode value on purpose, so a walk that skipped the concats would pad the wrong operand to the
+// wrong extent and be refused as `R5_SHAPE` rather than compute a plausible number.
+fn mf_decode_row_attention(borrow g: Geometry, n_past: i64, width: i64, row: i64) -> MfRow {
+  n := MF_SLOT_NODE_BASE
+  if row == 15 {
+    mut r := mf_row(OP_CONT_3D, n + 14, -1, -1)
+    r.p0 = g.head_dim
+    r.p1 = 1
+    r.p2 = g.n_head_kv
+    return r
+  }
+  if row == 16 {
+    mut r := mf_row(OP_CONCAT, MF_SLOT_KPAST, n + 15, -1)
+    r.p0 = 1
+    r.when = WHEN_DECODE
+    return r
+  }
+  if row == 17 {
+    mut r := mf_row(OP_PAD, n + 15, -1, -1)
+    r.p1 = width - (n_past + 1)
+    r.alt_when = WHEN_DECODE
+    r.alt_a = n + 16
+    return r
+  }
+  if row == 18 { return mf_row(OP_MUL_MAT, n + 17, n + 13, 7) }
+  if row == 19 {
+    mut r := mf_row(OP_SOFT_MAX, n + 18, MF_SLOT_MASK, 8)
+    r.p0 = g.attn_scale_bits
+    r.p1 = MAX_BIAS_BITS
+    return r
+  }
+  if row == 20 {
+    mut r := mf_row(OP_PERMUTE, n + 10, -1, -1)
+    r.p0 = 1
+    r.p1 = 2
+    r.p2 = 0
+    r.p3 = 3
+    return r
+  }
+  if row == 21 {
+    mut r := mf_row(OP_CONT_3D, n + 20, -1, -1)
+    r.p0 = 1
+    r.p1 = g.head_dim
+    r.p2 = g.n_head_kv
+    return r
+  }
+  if row == 22 {
+    mut r := mf_row(OP_CONCAT, MF_SLOT_VPAST, n + 21, -1)
+    r.p0 = 0
+    r.when = WHEN_DECODE
+    return r
+  }
+  mut r := mf_row(OP_PAD, n + 21, -1, -1)
+  r.p0 = width - (n_past + 1)
+  r.alt_when = WHEN_DECODE
+  r.alt_a = n + 22
+  return r
+}
+
+// Rows 24 to 37: the attention reduction, the output projection, the two identity narrowing rows,
+// and the feed-forward block. Section 2.4: the `WHEN_LAST` rows are **kept** at `t = 1`, where
+// `get_rows(x, [0])` is the identity. They cost two redundant nodes and keep one shape rule for both
+// passes; they have no counterpart in llama.cpp's decode graph, so section 3.3 excludes them from
+// oracle A by name and counts them rather than dropping them quietly.
+fn mf_decode_row_tail(borrow g: Geometry, row: i64) -> MfRow {
+  n := MF_SLOT_NODE_BASE
+  if row == 24 { return mf_row(OP_MUL_MAT, n + 23, n + 19, 9) }
+  if row == 25 {
+    mut r := mf_row(OP_PERMUTE, n + 24, -1, -1)
+    r.p1 = 2
+    r.p2 = 1
+    r.p3 = 3
+    return r
+  }
+  if row == 26 {
+    mut r := mf_row(OP_CONT_3D, n + 25, -1, 10)
+    r.p0 = g.n_embd
+    r.p1 = 1
+    r.p2 = 1
+    return r
+  }
+  if row == 27 { return mf_row(OP_MUL_MAT, 7, n + 26, 11) }
+  if row == 28 {
+    mut r := mf_row(OP_GET_ROWS, n + 27, MF_SLOT_OUT_IDS, -1)
+    r.when = WHEN_LAST
+    return r
+  }
+  if row == 29 {
+    mut r := mf_row(OP_GET_ROWS, MF_SLOT_CUR, MF_SLOT_OUT_IDS, -1)
+    r.when = WHEN_LAST
+    return r
+  }
+  if row == 30 {
+    mut r := mf_row(OP_ADD, n + 27, MF_SLOT_CUR, 12)
+    r.alt_when = WHEN_LAST
+    r.alt_a = n + 28
+    r.alt_b = n + 29
+    return r
+  }
+  if row == 31 {
+    mut r := mf_row(OP_RMS_NORM, n + 30, -1, -1)
+    r.p0 = g.rms_eps_bits
+    return r
+  }
+  if row == 32 { return mf_row(OP_MUL, n + 31, 8, 13) }
+  if row == 33 { return mf_row(OP_MUL_MAT, 9, n + 32, 14) }
+  if row == 34 { return mf_row(OP_MUL_MAT, 10, n + 32, 15) }
+  if row == 35 { return mf_row(OP_SWIGLU, n + 33, n + 34, 16) }
+  if row == 36 { return mf_row(OP_MUL_MAT, 11, n + 35, 17) }
+  return mf_row(OP_ADD, n + 36, n + 30, 18)
+}
+
+pub fn mf_decode_layer_node_table(borrow g: Geometry, n_past: i64, width: i64) -> NodeTable {
+  mut op: array_builder<i64> := array_builder()
+  mut a: array_builder<i64> := array_builder()
+  mut b: array_builder<i64> := array_builder()
+  mut out: array_builder<i64> := array_builder()
+  mut p0: array_builder<i64> := array_builder()
+  mut p1: array_builder<i64> := array_builder()
+  mut p2: array_builder<i64> := array_builder()
+  mut p3: array_builder<i64> := array_builder()
+  mut oracle: array_builder<i64> := array_builder()
+  mut when: array_builder<i64> := array_builder()
+  mut alt_when: array_builder<i64> := array_builder()
+  mut alt_a: array_builder<i64> := array_builder()
+  mut alt_b: array_builder<i64> := array_builder()
+  mut row := 0
+  loop {
+    if row >= MF_DECODE_LAYER_NODE_COUNT { break }
+    r := if row <= 14 {
+      mf_decode_row_head(g, row)
+    } else {
+      if row <= 23 { mf_decode_row_attention(g, n_past, width, row) } else { mf_decode_row_tail(g, row) }
+    }
+    op.push(r.op)
+    a.push(r.a)
+    b.push(r.b)
+    out.push(MF_SLOT_NODE_BASE + row)
+    p0.push(r.p0)
+    p1.push(r.p1)
+    p2.push(r.p2)
+    p3.push(r.p3)
+    oracle.push(r.oracle)
+    when.push(r.when)
+    alt_when.push(r.alt_when)
+    alt_a.push(r.alt_a)
+    alt_b.push(r.alt_b)
+    row = row + 1
+  }
+  return NodeTable {
+    count: MF_DECODE_LAYER_NODE_COUNT,
+    op: op.build(),
+    a: a.build(),
+    b: b.build(),
+    out: out.build(),
+    p0: p0.build(),
+    p1: p1.build(),
+    p2: p2.build(),
+    p3: p3.build(),
+    oracle: oracle.build(),
+    when: when.build(),
+    alt_when: alt_when.build(),
+    alt_a: alt_a.build(),
+    alt_b: alt_b.build(),
+  }
+}
+
+pub fn mf_decode_layer_output_slot() -> i64 =
+MF_SLOT_NODE_BASE + MF_DECODE_LAYER_NODE_COUNT - 1
 
 // ---------------------------------------------------------------------------------------------
 // The oracle table for the whole prefill
@@ -1740,14 +1999,41 @@ fn mf_oracle_op_at(n_layer: i64, at: i64) -> str {
   return mf_oracle_op_of(mf_oracle_row_of(n_layer, at))
 }
 
+// R6-DECODE-KV-STEP1 section 2.4. The same nineteen observable nodes in the **decode** layer
+// table's own row numbering. The first seven rows are unmoved because the two concats are inserted
+// after them; everything from `kq` onward shifts by one and then by two.
+fn mf_decode_oracle_node_of(row: i64) -> i64 {
+  if row == 0 { return 0 }
+  if row == 1 { return 1 }
+  if row == 2 { return 3 }
+  if row == 3 { return 5 }
+  if row == 4 { return 7 }
+  if row == 5 { return 11 }
+  if row == 6 { return 12 }
+  if row == 7 { return 18 }
+  if row == 8 { return 19 }
+  if row == 9 { return 24 }
+  if row == 10 { return 26 }
+  if row == 11 { return 27 }
+  if row == 12 { return 30 }
+  if row == 13 { return 32 }
+  if row == 14 { return 33 }
+  if row == 15 { return 34 }
+  if row == 16 { return 35 }
+  if row == 17 { return 36 }
+  return 37
+}
+
 // The node row inside the graph this oracle row belongs to: the embedding graph's only node, the
 // layer table's row, or the head table's `result_norm` / `result_output`.
-fn mf_oracle_node_at(n_layer: i64, at: i64) -> i64 {
+fn mf_oracle_node_at(n_layer: i64, at: i64, decode: bool) -> i64 {
   if at == 0 { return 0 }
   head := mf_oracle_head_row(n_layer, at)
   if head == 0 { return 1 }
   if head == 1 { return 2 }
-  return mf_oracle_node_of(mf_oracle_row_of(n_layer, at))
+  row := mf_oracle_row_of(n_layer, at)
+  if decode { return mf_decode_oracle_node_of(row) }
+  return mf_oracle_node_of(row)
 }
 
 // `kq-L` and `kq_soft_max-L` are matched and shape-checked and never element-compared: llama.cpp
@@ -1787,6 +2073,19 @@ fn mf_oracle_name_at(n_layer: i64, at: i64) -> string {
 }
 
 pub fn mf_oracle_table(n_layer: i64) -> OracleTable {
+  return mf_oracle_table_for(n_layer, false)
+}
+
+// R6 section 3.3's coverage set. The **same** rows, the same names, the same ops, and the same two
+// declared exclusions — only the node row each one observes moves, because a decode layer table has
+// two more rows than a prefill one. Sharing the builder is what makes "oracle A compares the decode
+// graph against llama.cpp's decode graph node for node" a restatement of R5B's rule rather than a
+// second one.
+pub fn mf_decode_oracle_table(n_layer: i64) -> OracleTable {
+  return mf_oracle_table_for(n_layer, true)
+}
+
+fn mf_oracle_table_for(n_layer: i64, decode: bool) -> OracleTable {
   body := builder()
   mut ids: array_builder<i64> := array_builder()
   mut id_ends: array_builder<i64> := array_builder()
@@ -1818,7 +2117,7 @@ pub fn mf_oracle_table(n_layer: i64) -> OracleTable {
     body.write(operation)
     cursor = cursor + operation.len()
     op_ends.push(cursor)
-    nodes.push(mf_oracle_node_at(n_layer, at))
+    nodes.push(mf_oracle_node_at(n_layer, at, decode))
     compared.push(mf_oracle_compared_at(n_layer, at))
     weighted.push(mf_oracle_weight_at(n_layer, at))
     at = at + 1
@@ -1846,13 +2145,31 @@ pub fn mf_oracle_table(n_layer: i64) -> OracleTable {
 // what makes the reconciliation pass's padded lanes contribute nothing: `ggml_pad` zeroes them and
 // the mask masks them, and only the f32 reduction *length* changes (section 2.7).
 pub fn mf_write_mask(borrow mut window: buffer, width: i64, height: i64) {
+  mf_write_mask_offset(window, width, height, 0)
+}
+
+// R6-DECODE-KV-STEP1 section 2.6. The same image with the row index **shifted**: row `r` masks
+// `col <= r + row_offset`.
+//
+// `mf_write_mask` above is correct only when row `r` means position `r`, which is true of every
+// prefill graph and false of every decode graph: a decode row is position `n_past` while its `row`
+// is 0. Writing the prefill's rule at a decode step would mask every past column and produce a
+// confidently wrong answer that every shape check passes, which is why this is a separate writer
+// rather than a wider bound.
+//
+// `mf_write_mask` is defined as the `row_offset = 0` case, so the prefill's bytes are unchanged by
+// construction rather than by inspection. A negative offset is refused: it is not a narrower mask,
+// it is a row that attends to nothing, and no caller has one.
+pub fn mf_write_mask_offset(
+  borrow mut window: buffer, width: i64, height: i64, row_offset: i64) {
+  if row_offset < 0 { return }
   mut row := 0
   loop {
     if row >= height { break }
     mut col := 0
     loop {
       if col >= width { break }
-      bits := if col <= row { MASK_ZERO_BITS } else { MASK_NEG_INFINITY_BITS }
+      bits := if col <= row + row_offset { MASK_ZERO_BITS } else { MASK_NEG_INFINITY_BITS }
       window.put_u32_le(bits as u32)
       col = col + 1
     }

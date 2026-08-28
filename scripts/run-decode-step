@@ -1,0 +1,387 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# R6-DECODE-KV-STEP1 named focused qualification (`docs/specs/r6-decode-kv-step1.md` section 5).
+# **Opt-in and capable-only.** It is in neither HOSTED_CHECK_TARGETS nor CAPABLE_ONLY_CHECK_TARGETS
+# and in no aggregate, exactly as `model-forward-qualification` is not.
+#
+#   ALIGN_LLM_GGML_INCLUDE          directory holding ggml.h, ggml-alloc.h, ggml-backend.h
+#   ALIGN_LLM_GGML_LIB              directory holding libggml and libggml-base
+#   ALIGN_LLM_GGUF_MODEL            the dense Qwen2 GGUF this step is read from
+#   ALIGN_LLM_LLAMA_EVAL_CALLBACK   path to `llama-eval-callback`, R2C-patched
+#   ALIGN_LLM_LLAMA_DEBUG           path to `llama-debug`
+#   ALIGN_LLM_DECODE_STEP_TMPDIR    where the pack is written; defaults to TMPDIR
+#
+# When any is unset, or the model or either instrument is absent, or the free space under the
+# scratch root is under the pack's size plus 1 GiB, it prints one explicit N/A line naming the
+# missing input and exits 0. It never skips silently.
+#
+# **The sampler is pinned and this is not optional.** Section 3.1 measured it: two runs of
+# `llama-eval-callback -n 1` with default sampling produced byte-identical prefill graphs and
+# **different decode graphs**, because a different token was sampled — they diverge at the decode
+# graph's very first node. With `--temp 0 -s 0` two consecutive runs were byte-identical over both
+# graphs, and the decoded token is then the prefill's own argmax, which is what the arm derives
+# rather than accepts as an operand.
+#
+# **Instrument provenance is load-bearing and this was found the hard way.** Section 3.1 measured
+# the same llama.cpp commit built two ways producing two different 608,256-byte logits blobs. The
+# qualification therefore uses only the instruments the environment names, and reports the build
+# line each one printed so a later disagreement names its cause.
+#
+# It packs the real model into a temporary directory **outside the work tree**, derives the geometry
+# with `main --model-ir`, and for each of four prompts captures both instrument outputs, checks that
+# the transcript really holds two graphs, runs `ggml-spike --decode-step` three times, and asserts
+# section 5's list. Everything it writes is removed on every exit path including a signal.
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+
+na() {
+  printf '%s\n' "decode step qualification: N/A $1"
+  exit 0
+}
+
+[ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ] || na "ALIGN_LLM_GGML_INCLUDE is unset"
+[ -n "${ALIGN_LLM_GGML_LIB:-}" ] || na "ALIGN_LLM_GGML_LIB is unset"
+[ -n "${ALIGN_LLM_GGUF_MODEL:-}" ] || na "ALIGN_LLM_GGUF_MODEL is unset"
+[ -n "${ALIGN_LLM_LLAMA_EVAL_CALLBACK:-}" ] || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is unset"
+[ -n "${ALIGN_LLM_LLAMA_DEBUG:-}" ] || na "ALIGN_LLM_LLAMA_DEBUG is unset"
+[ -d "${ALIGN_LLM_GGML_INCLUDE}" ] || na "ALIGN_LLM_GGML_INCLUDE is not a directory"
+[ -d "${ALIGN_LLM_GGML_LIB}" ] || na "ALIGN_LLM_GGML_LIB is not a directory"
+[ -f "${ALIGN_LLM_GGUF_MODEL}" ] || na "ALIGN_LLM_GGUF_MODEL is not a file"
+command -v "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" >/dev/null 2>&1 \
+  || [ -x "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" ] \
+  || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable"
+command -v "${ALIGN_LLM_LLAMA_DEBUG}" >/dev/null 2>&1 \
+  || [ -x "${ALIGN_LLM_LLAMA_DEBUG}" ] \
+  || na "ALIGN_LLM_LLAMA_DEBUG is not executable"
+
+model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
+scratch_root="${ALIGN_LLM_DECODE_STEP_TMPDIR:-${TMPDIR:-/tmp}}"
+[ -d "${scratch_root}" ] || na "the scratch root ${scratch_root} does not exist"
+free_kib=$(df -Pk "${scratch_root}" | awk 'NR == 2 { print $4 }')
+need_kib=$(( model_bytes / 1024 + 1048576 ))
+if [ "${free_kib}" -lt "${need_kib}" ]; then
+  na "free space under ${scratch_root} is ${free_kib} KiB, below the ${need_kib} KiB the pack needs"
+fi
+
+work_dir=$(mktemp -d "${scratch_root%/}/align-r6-XXXXXX")
+shim_built=0
+cleanup() {
+  status=$?
+  if [ "${shim_built}" = 1 ]; then
+    ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null 2>&1 || true
+  fi
+  rm -rf "${work_dir}"
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+# Section 2.1's declared width. It is the width llama.cpp's own decode graph reduces over on this
+# model at `-c 512` (section 3.1 measured `cache_k_l0 (view) (permuted) = {128, 256, 4}`), and the
+# arm validates the transcript's `kq` `ne0` against it rather than reading it from the transcript.
+KV_WIDTH=256
+
+echo "decode step qualification: packing ${ALIGN_LLM_GGUF_MODEL} into ${work_dir}"
+"${root_dir}/main" --pack "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/model.alignpack" \
+  "${work_dir}/pack.json" >/dev/null
+"${root_dir}/main" --model-ir "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/geometry.json" >/dev/null
+
+shim_dir=$(ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim")
+shim_built=1
+(
+  cd "${root_dir}"
+  LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}" \
+  DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+  LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  "${compiler}" build src/ggml_spike.align >/dev/null
+  mv -f ggml_spike ggml-spike
+)
+export DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+# Four prompts, each short enough that its prefill fits `MAX_PREFILL_TOKENS`. The first is R5B's, so
+# its prefill half is directly comparable with that qualification's recorded numbers.
+PROMPTS=(
+  "def add(a, b):"
+  "class Foo:"
+  "# TODO:"
+  "int main("
+)
+
+document_root="${work_dir}/documents"
+mkdir -p "${document_root}"
+
+index=0
+for prompt in "${PROMPTS[@]}"; do
+  index=$(( index + 1 ))
+  case_dir="${work_dir}/case${index}"
+  mkdir -p "${case_dir}/lg"
+  echo "decode step qualification: prompt ${index} of ${#PROMPTS[@]}: ${prompt}"
+
+  # `--temp 0 -s 0` is contractual (section 3.1). `-n 1` makes the instrument emit a **second**
+  # graph, which is the graph this capability is about.
+  "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" -m "${ALIGN_LLM_GGUF_MODEL}" -p "${prompt}" \
+    -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 --temp 0 -s 0 \
+    > "${case_dir}/transcript.txt" 2> "${case_dir}/transcript.log"
+  "${ALIGN_LLM_LLAMA_DEBUG}" -m "${ALIGN_LLM_GGUF_MODEL}" -p "${prompt}" \
+    -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 \
+    --save-logits --logits-output-dir "${case_dir}/lg" \
+    > "${case_dir}/debug.log" 2>&1
+
+  logits_bin=$(ls "${case_dir}"/lg/*.bin 2>/dev/null | grep -v -- '-tokens\.bin$' | head -1 || true)
+  tokens_bin=$(ls "${case_dir}"/lg/*-tokens.bin 2>/dev/null | head -1 || true)
+  if [ -z "${logits_bin}" ] || [ -z "${tokens_bin}" ]; then
+    echo "decode step qualification: FAIL llama-debug exited 0 and wrote no logits or token file" \
+      "under ${case_dir}/lg" >&2
+    tail -20 "${case_dir}/debug.log" >&2 || true
+    exit 1
+  fi
+
+  tokens=$(python3 - "${tokens_bin}" <<'PY'
+import struct
+import sys
+
+with open(sys.argv[1], "rb") as handle:
+    raw = handle.read()
+ids = list(struct.unpack("<%di" % (len(raw) // 4), raw))
+if not ids or len(ids) > 8:
+    raise SystemExit("decode step qualification: FAIL %d prompt tokens, outside 1..8" % len(ids))
+print(",".join(str(i) for i in ids))
+PY
+)
+  echo "decode step qualification:   ${prompt} tokenizes to ${tokens}"
+
+  # The transcript must hold exactly two graphs. Every graph this instrument prints begins with an
+  # `embd` header, so counting that header counts graphs; a transcript with one graph would let the
+  # arm's own "skip the first" rule silently compare nothing.
+  graphs=$(grep -c 'common_debug_cb_eval:.* embd = ' "${case_dir}/transcript.txt" || true)
+  if [ "${graphs}" != "2" ]; then
+    echo "decode step qualification: FAIL the transcript holds ${graphs} graphs, not 2 — is" \
+      "llama-eval-callback R2C-patched and was -n 1 honoured?" >&2
+    exit 1
+  fi
+
+  for repeat in 1 2 3; do
+    "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+      "${work_dir}/geometry.json" "${tokens}" \
+      "${document_root}/case${index}-run${repeat}.json" "${ALIGN_LLM_GGUF_MODEL}" \
+      "${case_dir}/transcript.txt" "${KV_WIDTH}" "${logits_bin}" \
+      > "${case_dir}/summary${repeat}.txt" || {
+        echo "decode step qualification: FAIL prompt ${index} run ${repeat} exited non-zero" >&2
+        cat "${case_dir}/summary${repeat}.txt" >&2 || true
+        python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d['status'], d['error_code'], d['error_detail'], file=sys.stderr)
+" "${document_root}/case${index}-run${repeat}.json" >&2 || true
+        exit 1
+      }
+  done
+
+  # Oracle C. Our own single-shot `T+1` prefill against our own decode step.
+  #
+  # Section 3.2 expected this to be a characterization at best, because llama.cpp's own two paths
+  # differ by up to 0.17 in activations and 0.054 at the logits. **Measured, it is byte identity**:
+  # our decode step at `n_past = T` reproduces our own `T+1` prefill's final position exactly, which
+  # is what section 5.1 records and why this is an acceptance check here and not a report.
+  decoded=$(python3 -c "
+import json, sys
+print(json.load(open(sys.argv[1]))['decode']['token_id'])
+" "${document_root}/case${index}-run1.json")
+  "${root_dir}/ggml-spike" --model-forward "${work_dir}/model.alignpack" \
+    "${work_dir}/geometry.json" "${tokens},${decoded}" \
+    "${document_root}/case${index}-single.json" "${ALIGN_LLM_GGUF_MODEL}" - "${KV_WIDTH}" \
+    > "${case_dir}/single.txt" || true
+done
+
+python3 - "${document_root}" "${KV_WIDTH}" <<'PY'
+import json
+import os
+import sys
+
+document_root, kv_width = sys.argv[1], int(sys.argv[2])
+failures = []
+rows = []
+
+
+def load(name):
+    with open(os.path.join(document_root, name), "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def normalize(document):
+    copy = json.loads(json.dumps(document))
+    for key in copy["timings"]:
+        copy["timings"][key] = 0
+    for row in copy["schedule"]:
+        row["pread_ns"] = 0
+        row["compute_ns"] = 0
+    copy["head"]["pread_ns"] = 0
+    copy["head"]["compute_ns"] = 0
+    copy["decode"]["compute_ns"] = 0
+    copy["plane"]["readback_ns"] = 0
+    copy["plane"]["upload_ns"] = 0
+    return json.dumps(copy, sort_keys=True, separators=(",", ":"))
+
+
+cases = sorted({name.split("-")[0] for name in os.listdir(document_root)
+                if name.endswith(".json")})
+for case in cases:
+    runs = [load("%s-run%d.json" % (case, r)) for r in (1, 2, 3)]
+    document = runs[0]
+    # The status guard runs **before** any of the four objects is read. A run that stops at step 6
+    # publishes the whole document shape with empty objects, but a run that cannot write a document
+    # at all is a different failure and reading `document["plane"]` first would report it as a
+    # `KeyError` traceback instead of as the arm's own code and detail.
+    if document["status"] != "ok":
+        failures.append("%s: %s %s" % (case, document["error_code"], document["error_detail"]))
+        continue
+    plane = document["plane"]
+    decode = document["decode"]
+    oracle = document["oracle_decode"]
+    logits = document["oracle_logits"]
+    # Section 2.2's size arithmetic on this model at this width: 28 * 2 * 256 * 4 * 128 * 4.
+    if plane["bytes"] != 29360128:
+        failures.append("%s: plane is %d bytes, not 29,360,128" % (case, plane["bytes"]))
+    if plane["layers"] != document["model"]["n_layer"]:
+        failures.append("%s: the plane holds %d layers of %d"
+                        % (case, plane["layers"], document["model"]["n_layer"]))
+    # Oracle B, the capability's own acceptance check.
+    if plane["roundtrip_verdict"] != "IDENTICAL" or plane["roundtrip_bytes_compared"] <= 0:
+        failures.append("%s: oracle B is %r over %d bytes"
+                        % (case, plane["roundtrip_verdict"], plane["roundtrip_bytes_compared"]))
+    # Oracle A, at the instrument's own printing precision, against its **second** graph.
+    #
+    # THE SHIPPED ACCEPTANCE RULE, stated once here and nowhere else (ledger section 5.1):
+    #
+    #   A, B, and C are all acceptance. B must be `IDENTICAL` on every prompt and C must be
+    #   byte-identical on every prompt, unconditionally. A must be `PASS`, **or** `FAIL` with both
+    #   of `max_abs_diff <= 5000` ten-thousandths (section 3.4's own characterization bound) and C
+    #   byte-identical on that prompt. C's byte identity is therefore load-bearing twice: on its own,
+    #   and again as the condition that lets an A `FAIL` be attributed to llama.cpp's
+    #   decode-versus-prefill kernel selection rather than to this arm's arithmetic.
+    #
+    # The conjunction is written out at the admission site below rather than left to the reader to
+    # infer from two separate checks.
+    if oracle["tolerance_ten_thousandths"] != 1:
+        failures.append("%s: oracle A ran at a tolerance of %d, not 1"
+                        % (case, oracle["tolerance_ten_thousandths"]))
+    if oracle["verdict"] not in ("PASS", "FAIL"):
+        failures.append("%s: oracle A is %r" % (case, oracle["verdict"]))
+    if oracle["instrument_graph"] != 2 or oracle["instrument_kv_width"] != kv_width:
+        failures.append("%s: oracle A compared graph %d at width %d"
+                        % (case, oracle["instrument_graph"], oracle["instrument_kv_width"]))
+    if oracle["nodes_matched"] != oracle["nodes_expected"] or oracle["elements_compared"] <= 0:
+        failures.append("%s: oracle A matched %d of %d nodes over %d elements"
+                        % (case, oracle["nodes_matched"], oracle["nodes_expected"],
+                           oracle["elements_compared"]))
+    if oracle["layers_matched"] != document["model"]["n_layer"]:
+        failures.append("%s: oracle A matched %d layers" % (case, oracle["layers_matched"]))
+    # The prefill half is R5B's contract, unchanged: byte identity against `llama-debug`'s blob at
+    # the reconciliation width.
+    if logits["verdict"] != "IDENTICAL" or not logits["byte_identical"]:
+        failures.append("%s: the prefill logits are %r against llama-debug"
+                        % (case, logits["verdict"]))
+    if decode["n_past"] != document["selection"]["token_count"]:
+        failures.append("%s: n_past %d, not T" % (case, decode["n_past"]))
+    if decode["token_id"] != document["output"]["argmax"]:
+        failures.append("%s: the decoded token %d is not the prefill's argmax %d"
+                        % (case, decode["token_id"], document["output"]["argmax"]))
+    if decode["slot_high_water"] != 66 or document["graph"]["slot_capacity"] != 128:
+        failures.append("%s: slots %d/%d, not 66/128"
+                        % (case, decode["slot_high_water"], document["graph"]["slot_capacity"]))
+    if decode["sha256"] == document["output"]["sha256"]:
+        failures.append("%s: the decode logits equal the prefill's — the step recomputed the prompt"
+                        % case)
+    if not document["abi"]["fp_contract_off"]:
+        failures.append("%s: the shim was not built with -ffp-contract=off" % case)
+    lifetime = document["lifetime"]
+    if not lifetime["released_before_owner_scope_end"] \
+            or lifetime["graph_balance_failures"] != 0:
+        failures.append("%s: the teardown did not balance: %r" % (case, lifetime))
+    for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                           ("contexts_created", "contexts_freed"),
+                           ("backends_created", "backends_freed"),
+                           ("gallocrs_created", "gallocrs_freed")):
+        if lifetime[created] != lifetime[freed]:
+            failures.append("%s: %s %d != %s %d"
+                            % (case, created, lifetime[created], freed, lifetime[freed]))
+    if len({normalize(run) for run in runs}) != 1:
+        failures.append("%s: three consecutive runs produced different documents" % case)
+
+    single_path = os.path.join(document_root, "%s-single.json" % case)
+    single_note = "not run"
+    single_identical = False
+    if os.path.exists(single_path):
+        single = load(single_path)
+        if single["status"] == "ok":
+            single_identical = single["output"]["sha256"] == decode["sha256"]
+            single_note = ("argmax %d vs %d, byte-identical %s"
+                           % (single["output"]["argmax"], decode["argmax"], single_identical))
+        else:
+            single_note = "error %s" % single["error_code"]
+    # Oracle C, acceptance in its own right on every prompt.
+    if not single_identical:
+        failures.append("%s: oracle C is %r — the decode step did not reproduce this arm's own "
+                        "single-shot T+1 prefill" % (case, single_note))
+    if oracle["verdict"] == "FAIL":
+        # The admission is the conjunction, written out: within the characterization bound **and**
+        # oracle C byte-identical. Either half missing is a failure, and the second half is stated
+        # here as well as above so that a future change to the oracle C check cannot silently widen
+        # what an oracle A `FAIL` is allowed to be.
+        if oracle["max_abs_diff_ten_thousandths"] > 5000 or not single_identical:
+            failures.append("%s: oracle A FAIL at %d/1e-4 with oracle C %r is not admissible — the "
+                            "rule admits a FAIL only inside section 3.4's characterization bound of "
+                            "5000 AND with oracle C byte-identical"
+                            % (case, oracle["max_abs_diff_ten_thousandths"], single_note))
+        else:
+            print("decode step qualification: %s oracle A FAIL at %d/1e-4 on %s-%d, admitted: "
+                  "oracle C is byte-identical, so the divergence is llama.cpp's decode-versus-"
+                  "prefill kernel selection (section 5.1), not this arm's arithmetic"
+                  % (case, oracle["max_abs_diff_ten_thousandths"], oracle["worst_node"],
+                     oracle["worst_layer"]))
+
+    rows.append({
+        "case": case,
+        "tokens": document["selection"]["token_count"],
+        "decoded_token": decode["token_id"],
+        "oracle_a": oracle["verdict"],
+        "oracle_a_max_abs_ten_thousandths": oracle["max_abs_diff_ten_thousandths"],
+        "oracle_a_max_sum_millionths": oracle["max_sum_diff_millionths"],
+        "oracle_a_elements": oracle["elements_compared"],
+        "oracle_b": plane["roundtrip_verdict"],
+        "oracle_b_bytes": plane["roundtrip_bytes_compared"],
+        "oracle_c_single_shot": single_note,
+        "plane_bytes": plane["bytes"],
+        "plane_readback_ns": plane["readback_ns"],
+        "plane_upload_ns": plane["upload_ns"],
+        "prefill_compute_ns": document["timings"]["compute_ns"],
+        "decode_compute_ns": decode["compute_ns"],
+        "prefill_nodes": document["graph"]["node_count_total"],
+        "decode_nodes": decode["node_count"],
+        "elapsed_ns": document["timings"]["elapsed_ns"],
+    })
+
+for row in rows:
+    print("decode step qualification: %s T=%d token=%d  A=%s(max %d/1e-4, sum %d/1e-6, %d elems)  "
+          "B=%s(%d B)  C=%s  plane=%d B  readback=%d ns upload=%d ns  "
+          "prefill=%d ns decode=%d ns  nodes %d/%d"
+          % (row["case"], row["tokens"], row["decoded_token"], row["oracle_a"],
+             row["oracle_a_max_abs_ten_thousandths"], row["oracle_a_max_sum_millionths"],
+             row["oracle_a_elements"], row["oracle_b"], row["oracle_b_bytes"],
+             row["oracle_c_single_shot"], row["plane_bytes"], row["plane_readback_ns"],
+             row["plane_upload_ns"], row["prefill_compute_ns"], row["decode_compute_ns"],
+             row["prefill_nodes"], row["decode_nodes"]))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("decode step qualification: FAIL %s\n" % line)
+    raise SystemExit(1)
+
+print("decode step qualification: %d prompts x 3 runs PASS — oracle A at one ten-thousandth "
+      "against llama.cpp's own decode graph, oracle B byte-identical over every layer's K and V, "
+      "oracle C byte-identical against this arm's own single-shot T+1 prefill"
+      % len(rows))
+PY

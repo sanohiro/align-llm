@@ -637,6 +637,10 @@ int64_t align_ptr_offset(const void *a, const void *b) {
 #define ALIGN_STUB_OP_ARGSORT   13
 #define ALIGN_STUB_OP_MUL_MAT_ID 14
 #define ALIGN_STUB_OP_VIEW      15
+/* R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md` section 2.5). One more kernel, which is
+ * what gives the whole decode arm — the KV plane's readback, its upload, both concat axes, the
+ * offset mask, and both acceptance oracles — a path with no ggml and no model. */
+#define ALIGN_STUB_OP_CONCAT    16
 
 typedef struct align_stub_tensor {
     int32_t type;
@@ -1048,6 +1052,45 @@ static void align_stub_run(align_stub_tensor *t) {
         const unsigned char *from = (const unsigned char *) a->data + t->lp[1];
         for (i1 = 0; i1 < t->ne[1]; i1++) {
             memcpy(d + i1 * t->ne[0], from + i1 * t->lp[0], (size_t) t->ne[0] * 4);
+        }
+    } break;
+    /* R6 section 2.5. `ggml_concat` along `dim`: `a`'s elements keep their own coordinates and
+     * `b`'s are written at the same coordinates shifted by `a->ne[dim]`. Rule 2 of this file — every
+     * view is materialized — applies: the kernel **copies**, it does not alias, so a stride trick
+     * that happened to agree on this geometry cannot hide a layout error. The axis is carried in
+     * `t->ip[0]` because a kernel reads only the node it was handed.
+     *
+     * Both axes the decode table uses run through this one loop nest: K concatenates on axis 1 and
+     * V on axis 0 (section 2.4), and the offset below is applied to whichever coordinate `dim`
+     * names rather than to a fixed one. */
+    case ALIGN_STUB_OP_CONCAT: {
+        int64_t dim = (int64_t) t->ip[0];
+        int64_t at[4];
+        int64_t shift = a->ne[dim];
+        for (i3 = 0; i3 < a->ne[3]; i3++) {
+            for (i2 = 0; i2 < a->ne[2]; i2++) {
+                for (i1 = 0; i1 < a->ne[1]; i1++) {
+                    for (i0 = 0; i0 < a->ne[0]; i0++) {
+                        d[i0 + t->ne[0] * (i1 + t->ne[1] * (i2 + t->ne[2] * i3))] =
+                            x[i0 + a->ne[0] * (i1 + a->ne[1] * (i2 + a->ne[2] * i3))];
+                    }
+                }
+            }
+        }
+        for (i3 = 0; i3 < b->ne[3]; i3++) {
+            for (i2 = 0; i2 < b->ne[2]; i2++) {
+                for (i1 = 0; i1 < b->ne[1]; i1++) {
+                    for (i0 = 0; i0 < b->ne[0]; i0++) {
+                        at[0] = i0;
+                        at[1] = i1;
+                        at[2] = i2;
+                        at[3] = i3;
+                        at[dim] += shift;
+                        d[at[0] + t->ne[0] * (at[1] + t->ne[1] * (at[2] + t->ne[2] * at[3]))] =
+                            y[i0 + b->ne[0] * (i1 + b->ne[1] * (i2 + b->ne[2] * i3))];
+                    }
+                }
+            }
         }
     } break;
     default:
@@ -1577,6 +1620,54 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
         t->data[off] = (unsigned char) (t->data[off] ^ 0x01u);
     }
 #endif
+#ifdef ALIGN_GGML_FORCE_PLANE_STAGE_OFFSET
+    /* R6-DECODE-KV-STEP1 section 4.2's `plane failure` cell, and oracle B's own regression. Slot 64
+     * is `layer_qwen2.MF_SLOT_KPAST`, which **only** the decode arm writes and only with the past-K
+     * columns it staged out of the plane; no other arm allocates the slot at all, so the shift below
+     * perturbs the decode graph's past K and nothing else. One `float` of shift is exactly the
+     * off-by-one stride error section 3.3 says oracle B exists to catch: the graph still has valid
+     * shapes and computes a plausible answer, and the bytes it consumed no longer equal the bytes the
+     * prefill wrote, which is `R6_PLANE_MISMATCH layer[0]tensor[k]col[0]`. Never defined in an
+     * ordinary build. */
+    if (status == ALIGN_GGML_OK && index == 64 && n >= 8) {
+        memmove(t->data + off, t->data + off + 4, (size_t) (n - 4));
+    }
+#endif
+#ifdef ALIGN_GGML_FORCE_DECODE_POSITION
+    /* R6 section 11.1's "positions are `[n_past]`" row, shipped as a build rather than as a source
+     * mutation. Slot 13 is `MF_SLOT_POS`; the decode graph writes exactly **one** `int32` into it and
+     * a prefill graph writes `T` of them, so `n == 4` selects the decode graph's position and only
+     * it. Writing 0 ropes the decoded token at position 0 — a confidently wrong answer every shape
+     * check accepts — and oracle A is what refuses it. Never defined in an ordinary build. */
+    if (status == ALIGN_GGML_OK && index == 13 && n == 4 && off == 0) {
+        t->data[0] = 0u;
+        t->data[1] = 0u;
+        t->data[2] = 0u;
+        t->data[3] = 0u;
+    }
+#endif
+#ifdef ALIGN_GGML_FORCE_MASK_OFFSET
+    /* R6 section 11.1's "mask `{KV_WIDTH, 1}` with offset" row, shipped as a build. Slot 14 is
+     * `MF_SLOT_MASK`, and `ne[1] == 1` is the decode graph's one-row mask — a prefill mask has `T`
+     * rows. `mf_write_mask_offset` unmasks columns `0 ..= n_past`, so the highest `0.0f` in the row
+     * is the decoded token's own column; masking it is `mf_write_mask_offset(.., n_past - 1)`, which
+     * is the off-by-one the offset mask exists to get right. The scan reads the row rather than
+     * taking `n_past` as a constant, because a kernel knows only the node it was handed. Never
+     * defined in an ordinary build. */
+    if (status == ALIGN_GGML_OK && index == 14 && t->ne[1] == 1 && off == 0 && n >= 8) {
+        int64_t lane = 0;
+        int64_t last = -1;
+        float *row = (float *) (void *) t->data;
+        for (lane = 0; lane < n / 4; lane++) {
+            if (row[lane] == 0.0f) {
+                last = lane;
+            }
+        }
+        if (last >= 0) {
+            row[last] = -INFINITY;
+        }
+    }
+#endif
     return status;
 }
 
@@ -1898,6 +1989,54 @@ int32_t align_ggml_op_pad(void *ctx, void *slots, int64_t out, int64_t a,
         return ALIGN_GGML_INIT;
     }
     return align_stub_bind(slots, out, t, sa, NULL, ALIGN_STUB_OP_PAD);
+}
+
+/* R6-DECODE-KV-STEP1 section 2.5's one new op, answered from the engine. Signature for signature
+ * with `scripts/ggml_shim.c` and refusing the same inputs: the axis selector, the type agreement,
+ * and the "every axis but `dim` must match" rule are restated here, because a stub that accepted a
+ * shape the linked library refuses would let the hosted owner pass a table the qualification cannot
+ * run.
+ *
+ * The forced build is section 4.5's `ds-stub-concat-axis` cell. A wrong axis is not producible from
+ * any operand the decode table can supply — `dim` is a compiled-in column of the row, 1 for K and 0
+ * for V — so the refusal is exercised by a build rather than reasoned about. It is never defined in
+ * an ordinary build.
+ */
+int32_t align_ggml_op_concat(
+    void *ctx, void *slots, int64_t out, int64_t a, int64_t b, int32_t dim) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    align_stub_tensor *sb = align_stub_slot(slots, b);
+    align_stub_tensor *t = NULL;
+    int64_t ne[4];
+    int axis = 0;
+#ifdef ALIGN_GGML_FORCE_CONCAT_AXIS
+    dim = (dim == 0) ? 1 : 0;
+#endif
+    if (sa == NULL || sb == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (dim < 0 || dim > ALIGN_GGML_MAX_DIM_SELECTOR) {
+        return ALIGN_GGML_INIT;
+    }
+    if (sa->type != sb->type) {
+        return ALIGN_GGML_TYPE;
+    }
+    for (axis = 0; axis <= ALIGN_GGML_MAX_DIM_SELECTOR; axis++) {
+        ne[axis] = sa->ne[axis];
+        if (axis != (int) dim && sa->ne[axis] != sb->ne[axis]) {
+            return ALIGN_GGML_SHAPE;
+        }
+    }
+    ne[dim] = sa->ne[dim] + sb->ne[dim];
+    if (ne[0] * ne[1] * ne[2] * ne[3] > ALIGN_GGML_MAX_PAD_ELEMENTS) {
+        return ALIGN_GGML_SHAPE;
+    }
+    t = align_stub_new(ctx, sa->type, ne[0], ne[1], ne[2], ne[3]);
+    if (t == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    t->ip[0] = (int32_t) dim;
+    return align_stub_bind(slots, out, t, sa, sb, ALIGN_STUB_OP_CONCAT);
 }
 
 /* ---------------------------------------------------------------------------------------------

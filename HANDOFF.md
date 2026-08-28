@@ -3,7 +3,140 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R5E-MOE-MODEL-PREFILL (2026-08-28)
+## Active: R6-DECODE-KV-STEP1 (2026-08-29)
+
+Branch `agent/r6-decode-kv-step1`, started from `main` at `c21b9e4` and **merged** twice rather than
+rebased, so its recorded commits stay reachable: with `main` `76246f3` (R3-DECODE-RESIDENCY, PR #142)
+and then with `main` `5ccc2aa` (R5E-MOE-MODEL-PREFILL, PR #143). Nothing uncommitted. `73557dc` is
+the capability, `1671810` is the consolidated review repair, and `5445c14` is the narrow repair of
+the final delta review's minors; the rest of the branch is the two merges, the re-recorded baseline
+chain, and its record. Reviewers read `73557dc` against base tip `76246f3` with merge base `c21b9e4`;
+the final delta review read `1671810`.
+
+**Capability.** One decode step at `n_past = T` over an Align-owned KV plane, dense Qwen2.5-Coder-7B
+Q4_K_M, CPU. `docs/specs/r6-decode-kv-step1.md` is the authoritative ledger. The design gate is
+triggered — new public CLI surface, new exchanged format, coordinated invariant across six modules —
+and the design was complete before implementation began.
+
+**Complete and committed.** `align_ggml_op_concat` across the six FFI surfaces; `WHEN_DECODE`,
+`OP_CONCAT`, the two plane slots (64/65), `mf_write_mask_offset`, the thirty-eight-row decode layer
+table and its oracle map in `src/layer_qwen2.align`; the id/position split in
+`src/model_forward.align`; the multi-graph transcript scan in `src/layer_forward.align`;
+`src/decode_step.align` and its `--decode-step` arm; the fixture's decode reference and two-graph
+transcript; the fifth `layer-forward-smoke` block and `scripts/decode-step-golden.jsonl`;
+`scripts/run-decode-step` and the `decode-step-qualification` target; roadmap item 27,
+`docs/align-development.md`, and Align Request 49. The real-model qualification is recorded in
+ledger section 5.1.
+
+**Review and repair.** One comprehensive review of `73557dc` over two independent reviewers on
+disjoint risks. Reviewer B (spec/docs/governance) requested changes: 1 blocker, 4 major, 8 minor.
+Reviewer A (Align/C/FFI) approved with 1 major and 6 minor. All 20 findings have a disposition and
+are repaired in `1671810`, except the blocker, which is a **publication step** rather than a code
+change and is next action 1 below. One final delta review of that repair approved it with three
+minors — the R5A/R5B ledgers still described `MAX_PREFILL_TOKENS` as 6 and carried no
+`R5_ORACLE_TRUNCATED` row; `verify_plane`'s size-disagreement early return named `k` even when only
+the V concat row disagreed; and neither of that function's size guards has a shipped case — and
+`5445c14` repairs all three. The repair narrows records and one diagnostic rather than expanding
+scope, so no further full review is required.
+
+The repair changes behaviour in two places and both are recorded in the ledger:
+
+1. **A new refusal, `R5_ORACLE_TRUNCATED`** (ledger 2.7). Section 2.7 lifted `MAX_PREFILL_TOKENS`
+   from 6 to 8 and documented at the constant that the cap was the oracle's. Documenting it was not
+   a mitigation: `printed_count` clamps to six on both sides, so `--layer-forward`/`--model-forward`
+   would have accepted `T` of 7 or 8 **with a transcript** and reported `PASS` over six of seven
+   rows. Both arms now refuse that combination at their token stage. Without a transcript the same
+   token count is admitted, which is what `--decode-step`'s own characterization pass needs.
+2. **`graph.slot_high_water` is a maximum again.** `src/decode_step.align`'s copy of
+   `model_forward.account` had dropped the `slot_high_water` line, so a run failing inside the
+   prefill published 0.
+
+Everything else is consistency: the shipped acceptance rule is now stated **once**, in ledger
+section 2.11 (A, B, and C are all acceptance; an oracle A `FAIL` is admitted only inside the 0.5
+bound **and** with oracle C byte-identical), with sections 3.3/3.4/5.1/10.2, the runner, the
+roadmap, and `docs/align-development.md` pointing at it rather than paraphrasing it.
+
+**Three mutants became shipped cases.** `ds-force-plane-stage-offset` (`R6_PLANE_MISMATCH`, which
+was previously reachable only by mutating the source and was absent from `REQUIRED_CODES`),
+`ds-force-decode-position`, and `ds-force-mask-offset`. Each is keyed on a slot only the decode
+graph writes.
+
+**Verification checkpoint (repair head).** `gmake build`, `gmake check`, `gmake fmt`,
+`gmake format-check`, `git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
+`gmake layer-forward-smoke` — all five blocks, 40 documented decode-step cases reaching 23 codes —
+pass. The four reviewer mutants and the new plane mutant were re-injected at the repair head and all
+five still die with their distinct diagnoses: `R5_SHAPE node[24]` / `node[22]`, oracle A `FAIL` at
+8092 on `q_rope` / 514 on `kqv`, and `R6_PLANE_MISMATCH layer[0]tensor[k]col[0]`.
+
+**`gmake decode-step-qualification` was re-run on the real model at the repair head and again at the
+publication head; both passed.** Every recorded value in ledger 5.1 reproduced on each: decoded
+tokens 671/715/2691/526, oracle A `FAIL` at 2391 on `ffn_inp-27` for the first prompt and `PASS` at
+0 for the other three over 5,058 elements each, oracle B `IDENTICAL` over 688,128 and 344,064 bytes,
+oracle C byte-identical on all four with the argmax pairs 26312/262/1159/11844, `plane.bytes`
+29,360,128, nodes 958/1014. Only the timings moved. Ledger 5.1 records all four runs. The
+publication-head run took 3 m 48 s wall and was taken concurrently with an unrelated aggregate on
+this host; no structural quantity moved.
+
+**Goldens that moved, and why.** Ledger section 5.3 is exact. `gpu-forward-golden.jsonl` and
+`moe-layer-forward-golden.jsonl` are byte-unchanged. `layer-forward-golden.jsonl` and
+`model-forward-golden.jsonl` each rename one row for the token-cap lift and **add two**
+(`*-tokens-seven-transcript` refused, `*-tokens-eight-no-transcript` admitted); no existing row's
+bytes change. `decode-step-golden.jsonl` adds the three forced-build rows and changes seven existing
+rows in one field, `graph.slot_high_water`, which is repair (2) above.
+
+**Coding-baseline chain, re-recorded — reviewer B's blocker, discharged.** The capability changes
+`Makefile`, one of the twenty recorded baseline artifacts, so the chain on `main` does not bind this
+head. (`scripts/build-ggml-shim` also changes but is **not** a recorded artifact and does not itself
+invalidate the chain; an earlier draft of this record said it did.) The identity-bound chain is
+`e61993d` → `3cde6e2` → `cb8d2ce` — clean source, immutable oracle projection, finalization — with
+the pending measurement recorded on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) through
+the DinD wrapper, exactly as R5D's and R5E's were. Exactly one of the twenty artifact digests moved
+(`Makefile`); `.align-revision` is unchanged at `3a34febe` and the twenty paths are identical.
+`gmake baseline-check` passes on Linux at the finalized head. This chain **supersedes** the one this
+branch first recorded against `main` `76246f3` (`e4548b1` → `6d1c152` → `1bbacaa`), which PR #143
+invalidated by changing recorded artifacts of its own; both chains stay in this branch's history and
+only the later one is named in the finalized baseline.
+
+**Next actions, in order.**
+1. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`, on the
+   unchanged head. The diff touches `Makefile`, `scripts/build-ggml-shim`, and the goldens, so the
+   classifier selects the executable row and the installed fresh-image profile; do not substitute a
+   Docker skip or an ambient `DOCKER_HOST`.
+2. Open the English pull request with the verification table, the review envelope, and the finding
+   dispositions. It must be a **merge** commit: squash and rebase would make the three baseline
+   commits unreachable from `main`.
+3. The next capability is step 2 and the decode loop, which needs a write-back at column `n_past` —
+   the one thing that makes the plane both a read and a write target in one graph.
+
+**Deviations from the ledger, recorded rather than hidden.** Ledger section 10 is authoritative and
+now carries all of them: the decode layer is **thirty-eight** rows and not thirty-six (10.1); oracle
+C is computed by the runner rather than by the arm, though it is acceptance (10.2); there is
+deliberately no `R6_ORACLE_SHAPE` and the seam's `R5_ORACLE_SHAPE` reaches the document unchanged
+(10.3); the golden rows that moved and why (10.4); the deferred closure cells, now including the
+external oracle-C chain the review recommended and why it is deferred (10.5); and the nine
+re-implemented functions, **each diffed against its original with every divergence named**,
+plus the 1,328-byte `model_forward.Outcome` this created (10.6).
+
+**Open decision for the user, unchanged from the design.** Whether to extend the R2c patch to
+`examples/debug/debug.cpp` so a decode step gets a byte-exact external logits reference. It would
+close ledger risk 3 at the cost of a new patch digest, a cache-generation bump to `r2c-v3`, and
+re-running the R2c qualification. R6 ships without it. It is also the honest route to making the
+review's "drive the C chain externally" recommendation possible: the operand `llama-debug` needs is
+a prompt **string** and the runner holds token ids, so an external chain today would have to guess
+the decoded token's text.
+
+**Numbering, re-checked at the merge with `main` `5ccc2aa`.** Roadmap item **27** and Align Request
+**49** are unchanged and are now contiguous rather than reserved: `main` carries roadmap items to
+**26** and requests to **48**, because `agent/r3-decode-residency` landed item 25 as PR #142 and
+`agent/r5e-moe-model-prefill` landed item 26 and Requests 47 and 48 as PR #143. The numbering hazard
+ledger section 8 recorded is therefore closed — the numbers this branch chose against unmerged
+claims are the numbers that are free.
+
+## Merged checkpoint: R5E-MOE-MODEL-PREFILL (2026-08-28)
+
+PR #143 merged as `5ccc2aa` on `main`. The publication and merge named in the next actions below
+are complete; the rest of this record is unchanged.
+
 
 Branch `agent/r5e-moe-model-prefill`, based on the merged MOE-PREREQ-DISCHARGE (PR #133, `35a0df6`)
 and then **merged** with `main` `e312bd7` — the merged R5D at PR #139, which itself carries PR #134's

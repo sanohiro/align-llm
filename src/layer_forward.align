@@ -84,6 +84,9 @@ TRUNCATION_PRINTED := 6
 TRUNCATION_HALF := 3
 
 CB_PREFIX := "common_debug_cb_eval: "
+// R6 section 3.3. The node every graph this instrument prints begins with, and the only
+// boundary a multi-graph transcript offers without a marker the instrument does not write.
+GRAPH_BOUNDARY_NODE := "embd"
 CB_PREFIX_BYTES := 22
 HEADER_NAME_SEP := " = ("
 HEADER_TAIL := "}) = {"
@@ -673,6 +676,29 @@ fn indent_of(text: str) -> i64 {
 // yet matched starts a captured block, and every other block is skipped without being parsed, so a
 // 2 MiB transcript costs one scan and holds at most 4,320 sampled elements.
 pub fn scan_transcript(path: str, borrow oracle: layer_qwen2.OracleTable) -> TranscriptScan {
+  return scan_transcript_after(path, oracle, 0)
+}
+
+// R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md` section 3.3). The same scan over a
+// transcript that holds **more than one graph**.
+//
+// `llama-eval-callback -n 1` emits two: a prefill graph and then a decode graph, and every node
+// name repeats across them. The matcher above takes the **first** occurrence of each name, which is
+// the only correct rule for a one-graph transcript and exactly the wrong one for a decode oracle: it
+// would compare a decode graph against a prefill graph's numbers and could still report `PASS` on
+// the seven nodes that agree.
+//
+// A graph boundary is the `embd` header. Every graph this instrument prints begins with
+// `embd = (f32) GET_ROWS(token_embd.weight{..}, inp_tokens{..})`, in the prefill at `{n_embd, T}`
+// and in the decode step at `{n_embd, 1}`, so counting that one header counts graphs without
+// depending on a marker the instrument does not print. Rows are matched only once `skip_graphs`
+// boundaries have gone by; everything before them is parsed for grammar and counted and never
+// captured, so `transcript_lines` and `transcript_callback_lines` still describe the whole file.
+//
+// `scan_transcript` is `skip_graphs = 0`, so R5A's and R5B's captured element sets are unchanged by
+// construction.
+pub fn scan_transcript_after(
+  path: str, borrow oracle: layer_qwen2.OracleTable, skip_graphs: i64) -> TranscriptScan {
   handle := match fs.open_rw(path) {
     Ok(value) => value,
     Err(failure) => { return empty_scan("R5_TRANSCRIPT", error_name(failure).clone()) },
@@ -726,6 +752,9 @@ pub fn scan_transcript(path: str, borrow oracle: layer_qwen2.OracleTable) -> Tra
   mut callback_count := 0
   mut capture := -1
   mut in_block := false
+  // R6 section 3.3: how many `embd` headers have been seen, so the matcher below can be told which
+  // graph of a multi-graph transcript it is standing in.
+  mut graph_index := 0
   mut o3 := 0
   mut o2 := 0
   mut o1 := 0
@@ -782,7 +811,8 @@ pub fn scan_transcript(path: str, borrow oracle: layer_qwen2.OracleTable) -> Tra
       name := text[header.name_start..header.name_end]
       operation := text[header.op_start..header.op_end]
       source := text[header.src_start..header.src_end]
-      mut candidate := 0
+      if name == GRAPH_BOUNDARY_NODE { graph_index = graph_index + 1 }
+      mut candidate := if graph_index > skip_graphs { 0 } else { oracle.count }
       loop {
         if candidate >= oracle.count { break }
         mut hit := false
@@ -1557,6 +1587,19 @@ fn stage_geometry(
   if !parsed.ok {
     detail_view: str := parsed.detail
     fail(o, "R5_TOKENS", detail_view)
+    return g
+  }
+  // R6-DECODE-KV-STEP1 section 2.7 lifted `MAX_PREFILL_TOKENS` from 6 to 8 for the **decode** arm,
+  // whose per-token tensors are one column wide and are therefore printed in full at any `T`. This
+  // arm's tensors are not. `llama-eval-callback` prints a tensor's rows in full only while
+  // `ne1 <= TRUNCATION_PRINTED`, and above it prints three leading and three trailing rows; the
+  // scan's `printed_count` clamps to six on **both** sides, so at `T = 7` or `T = 8` a transcript
+  // comparison would silently check six of seven rows and report `PASS` on a tensor it never saw.
+  // The oracle refuses itself instead. Without a transcript there is no oracle and the lift is
+  // arithmetic only, which is what `--decode-step`'s own `--model-forward` characterization pass
+  // relies on: it supplies `-` in the transcript position.
+  if o.transcript_present && parsed.count > TRUNCATION_PRINTED {
+    fail(o, "R5_ORACLE_TRUNCATED", labelled("tokens", parsed.count))
     return g
   }
   // A nested struct field cannot be moved out of a struct at this pin, so the column is rebuilt

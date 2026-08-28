@@ -553,15 +553,21 @@ path.
 
 `LAYER` is a non-negative decimal integer in `[0, n_layer)`, no sign, no leading `+`, no whitespace.
 
-`TOKENS` is a comma-separated list of **1 to 6** non-negative decimal integers, no spaces, no
+`TOKENS` is a comma-separated list of **1 to 8** non-negative decimal integers, no spaces, no
 trailing comma, each in `[0, n_vocab)`. Anything else is `R5_TOKENS`.
 
-**`MAX_PREFILL_TOKENS` is 6, and the bound is the oracle's, not the arithmetic's.**
-`llama-eval-callback` prints every row of a tensor only while `ne1 <= 6`; at seven tokens it elides
-the middle and the tolerance oracle would silently compare fewer elements while still reporting
-`PASS`. An oracle that gets weaker as the input grows is worse than one that refuses, so the CLI
-refuses. Section 5.4 records lifting the cap as R5B work, where a KV cache makes longer prefills
-meaningful and the oracle needs a different instrument anyway.
+**`MAX_PREFILL_TOKENS` is 8, and the bound is still the oracle's, not the arithmetic's.** It was 6
+when this arm shipped; `R6-DECODE-KV-STEP1` (`docs/specs/r6-decode-kv-step1.md` section 2.7) lifted
+it to 8 for the decode arm, whose per-token tensors are one column wide and are therefore printed in
+full at any prefill length. This arm's tensors are not. `llama-eval-callback` prints every row of a
+tensor only while `ne1 <= 6`; at seven tokens it elides the middle and the tolerance oracle would
+silently compare fewer elements while still reporting `PASS`. An oracle that gets weaker as the
+input grows is worse than one that refuses, so **this arm refuses the combination rather than the
+range**: a token count above six **with a transcript** is `R5_ORACLE_TRUNCATED` at the token stage,
+before any container or graph work, with detail `tokens[<n>]` (`src/layer_forward.align`). The same
+token count **without** a transcript is admitted, because then there is no oracle to weaken. The
+range `7 .. 8` is therefore open for arithmetic and closed for comparison. Section 5.4 recorded
+lifting the cap as later work; R6 is where it happened.
 
 The summary block, in this exact order, printed exactly when a real document path is given
 (section 6, correction C11). **Each label and its value are printed on their own line** — R4.5's
@@ -900,7 +906,9 @@ step 17, and nothing outside the process is ever written.**
 1. Arm selection and exact arity — five to eight operands. → `R5_ARITY`
 2. Lexical path validation of every path operand; `-` in position six is not a path. → `R5_PATH`
 3. `LAYER` parses as a non-negative decimal integer. → `R5_INDEX`
-4. `TOKENS` parses: 1–6 non-negative decimal integers, comma-separated, no spaces. → `R5_TOKENS`
+4. `TOKENS` parses: 1–8 non-negative decimal integers, comma-separated, no spaces. → `R5_TOKENS`.
+   A count above six **with a transcript** is refused in the same stage, before any container work.
+   → `R5_ORACLE_TRUNCATED`
 5. Geometry document open and read. → `R5_GEOMETRY_UNREADABLE`
 6. Geometry document parses as JSON and carries `kind == "R1_QWEN_MODEL_IR"`, `schema_version == 1`.
    → `R5_GEOMETRY`, detail `kind` / `schema_version`
@@ -960,7 +968,8 @@ step 17, and nothing outside the process is ever written.**
 | `R5_ARITY` | wrong arm or operand count | 1 | `N/A` — no document exists |
 | `R5_PATH` | a path operand is empty, too long, or contains NUL | 2 | `N/A` — no document exists |
 | `R5_INDEX` | `LAYER` does not parse or is out of range | 3, 10 | `layer[<n>]` |
-| `R5_TOKENS` | the token list does not parse, is empty, exceeds six, or names an id `>= n_vocab` | 4, 10 | `token[<i>]` |
+| `R5_TOKENS` | the token list does not parse, is empty, exceeds `MAX_PREFILL_TOKENS` (8), or names an id `>= n_vocab` | 4, 10 | `token[<i>]` |
+| `R5_ORACLE_TRUNCATED` | a transcript is supplied and the token count exceeds six, the width above which `llama-eval-callback` prints a tensor's rows truncated | 4 | `tokens[<n>]` |
 | `R5_GEOMETRY_UNREADABLE` | the geometry document could not be opened or read | 5 | the path's failure |
 | `R5_GEOMETRY` | the geometry document is not a v1 `R1_QWEN_MODEL_IR`, is missing a field, is out of range, is self-inconsistent, or declares an unsupported architecture | 6–9 | the field or relation |
 | `R4_PACK_*` | a container defect, surfaced verbatim from `alignpack_read` | 11, 16 | R4's own details |
@@ -1341,6 +1350,10 @@ roughly 3.9 GiB of weights, which is the number that makes residency worth desig
   loader a one-file consumer. R5B owns the decision; R5A deliberately does not open a v2.
 - **`MAX_PREFILL_TOKENS = 6`.** The cap is the oracle's, not the arithmetic's (section 3.3). Lifting
   it needs an instrument that publishes full tensors, or a different oracle. R5B, with the KV cache.
+  **Discharged by R6-DECODE-KV-STEP1**, and not the way this entry expected: the constant is 8 and
+  the instrument is unchanged, because the decode arm's per-token tensors are printed in full at any
+  prefill length while this arm now refuses a transcript above six tokens with `R5_ORACLE_TRUNCATED`
+  (section 3.3).
 - **Renaming to `align-runtime`.** Section 3.1's stated cost. At the R5B boundary, with `ggml-spike`
   retained as a deprecated alias for one release.
 - **A second architecture.** `src/layer_qwen2.align` is the qwen2 dense layer. A second architecture
