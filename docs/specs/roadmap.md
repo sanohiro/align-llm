@@ -249,9 +249,10 @@ The current forward delivery order is:
     limits, and the R2b/R2c work that remains.
 
 20. **MOE-PREREQ-DISCHARGE — the per-expert half of R4 and R4.5, measured on a real MoE model.
-    Implemented and reviewed; in publication.** On branch `agent/moe-prereq-discharge`, rebased onto
-    the merged R1C at `main` `e15e3d3`; design ledger `4656d88`, implementation `eed850e`, review
-    repair `4bf25b8`, developer-guide refresh `0dd4ea8`. [`moe-prereq-discharge.md`](moe-prereq-discharge.md) is the authoritative plan
+    Merged as PR #133, merge commit `35a0df6` on `main`.** Was on branch
+    `agent/moe-prereq-discharge`, rebased onto the merged R1C at `main` `e15e3d3`; design ledger
+    `4656d88`, implementation `eed850e`, review repair `4bf25b8`, developer-guide refresh `0dd4ea8`.
+    [`moe-prereq-discharge.md`](moe-prereq-discharge.md) is the authoritative plan
     and owns the probe record, the contract ledger, the closure matrix, the correction ledger, and
     the cell-to-case map. It discharges the two prerequisites items 13 and 14 left open, on
     `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` rather than on the synthetic corpus, by turning two
@@ -267,15 +268,40 @@ The current forward delivery order is:
     `ExpertBlock` with no new surface is refuted and removed. R4's expert hotness ordering and
     prefetch groups, and R4.5's GPU expert arm and discrete-VRAM half, stay deferred and unchanged.
     The layout numbers are a claim about this container on this named model, not a platform or
-    throughput claim. Review is complete and publication is in progress; see `HANDOFF.md`.
+    throughput claim.
+21. **R3-RESIDENCY-SIM — the R3 residency simulator over the packed `ExpertBlock` set. Publication
+    in progress.** On branch `agent/r3-residency-sim`; design ledger `docs/specs/r3-residency-sim.md`
+    committed at `198850b`. Final review approved with nits repaired at `967aadf`. **The R3 gate is
+    MET**: `BEATS_BASELINE` at a 25% cache fraction — `recent_reuse_w32` reaches 26.03 GB against
+    LRU's 33.53 GB, a gain of 223‰, with a jackknife minimum of 213‰. Awaiting rebase onto the merged
+    item 20 and publication; see `HANDOFF.md`.
+22. **R5D-MOE-LAYER-FORWARD — one OLMoE MoE layer computed from Align-owned expert claims, the
+    routed half of R5's second gate stage. Active.** On branch `agent/r5d-moe-layer-forward`; design
+    ledger `docs/specs/r5d-moe-layer-forward.md` committed at `3cb8d59`. Implementation is in
+    progress. The ledger's probe record fixes the OLMoE MoE layer's real topology as data — the
+    QK-norm is an RMS norm over `n_embd` taken before the head reshape, the router's 64-way softmax
+    is never renormalized, the top-k node is `ARGSORT` plus `VIEW` rather than `ggml_top_k`, and a
+    compacted, remapped expert stack computed with `mul_mat_id` is bit-identical (28 of 28 dumped
+    nodes) to llama.cpp's own whole-tensor shape and needs no restacking copy. Against a checked-in
+    `llama-eval-callback` transcript the tolerance oracle reaches max `|Δ|` 5.0e-5 (the instrument's
+    own print-rounding bound) over 2,376 sampled elements, and the routing-identity oracle matches
+    the transcript's selected expert ids exactly. Microbenchmark B is discharged at 9.4 ms typical
+    for one routed layer, six tokens, warm (phase A 3.59 ms, phase B 5.77 ms). The residency win this
+    capability exists to measure is smaller than the plan assumed and is stated as such: at six
+    prefill tokens R5D reads 39.1% of the layer's expert bytes (12.5% at one token, 73.4% at
+    eighteen), so claim-level expert residency is recorded as a **decode-time** property rather than
+    a prefill win. No new Align capability request is expected from this capability; see
+    `HANDOFF.md`.
 
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
-`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18, 19, and 20 above:
-items 18 and 19 are merged and R2's gate is met, and item 20 — the per-expert half of R4 and R4.5 —
-is implemented, reviewed, and in publication. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18 through 22 above:
+items 18, 19, and 20 are merged and R2's gate is met; item 21 (R3, the residency simulator) has its
+gate MET (`BEATS_BASELINE` at 25%) and is awaiting rebase and publication; item 22 (R5D, the routed
+half of R5's second gate stage) is active, with implementation in progress on
+`agent/r5d-moe-layer-forward`. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
 **infeasible on this host** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
 a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
@@ -808,6 +834,16 @@ MOE-PREREQ-DISCHARGE（roadmap item 20、[`moe-prereq-discharge.md`](moe-prereq-
 0 → 1,024/1,024 contiguous）。残る**MOE-PREREQ**はgpt-oss固有（6 member ExpertBlock、MXFP4、
 split expert bias、fused `ffn_gate_up_exps`）のみである。
 
+**expert hotness orderingとprefetch groupは引き続きdeferされている。** R4B（hotness layout）を
+評価した結果、R2-LOCALITY-GATEが測定したrouter histogramはほぼuniform（entropy 992 per mille、
+64 expert全使用）であり、この分布下ではprefetchはむしろ有害と判定され、実装は開始しなかった。
+resume条件は、decode corpusまたはskewを示すstratified corpusが得られることである
+（roadmap item 19、`docs/specs/r2a-expert-trace.md`）。R3-RESIDENCY-SIM（roadmap item 21）は
+R4がpackした1,024個のnon-contiguous `ExpertBlock`を入力としてcache policyを比較し、gateは
+`BEATS_BASELINE`で達成済み（25% cache fractionで`recent_reuse_w32` 26.03 GB対LRU 33.53 GB、
+gain 223‰、jackknife最小213‰）。hotness orderingとprefetch groupそのものは、この2つの実測結果を
+resume条件として引き続きdeferされる。
+
 ---
 
 ## R4.5: External Buffer Spike
@@ -913,6 +949,19 @@ closureが所有値（`buffer`）をcaptureできず、captureしたタスクが
 この環境では原理的に回答不能というR4.5・R5A・R5Bの結論を引き継ぐ（`r4-5-external-buffer.md`
 section 5.4、`r5a-dense-layer-forward.md` section 5.4、`r5b-model-prefill-forward.md`
 section 5.4、`r5c-metal-prefill.md` section 1.3）。
+
+**単一layerのrouted版（MoE stage 2）はR5D-MOE-LAYER-FORWARD（roadmap item 22、
+`docs/specs/r5d-moe-layer-forward.md`）が対象とする。** branch `agent/r5d-moe-layer-forward`、
+design ledger `3cb8d59`、実装は進行中。probeはplanの前提を複数覆した——QK-normは`head_dim`単位
+ではなく`n_embd`全体へのRMS normであり、routerのtop-8はrenormalizeされず、top-k nodeは
+`ggml_top_k`ではなく`ARGSORT`＋`VIEW`である。compactしid remapしたexpert stackは`mul_mat_id`で
+llama.cppのwhole-tensor形状とbit一致（28/28 node dump一致）し、restacking copyは不要と判明した。
+transcript oracleはmax`|Δ|` 5.0e-5（instrumentの印字精度上限）、routing-identity oracleは
+selected expert idが完全一致。microbenchmark Bは**9.4 ms**（1 routed layer、6 token、warm；
+phase A 3.59 ms、phase B 5.77 ms）で達成。**このcapabilityが測定するresidency winは
+planが想定したより小さい**——6 tokenのprefillでlayerのexpert byteの39.1%を読む
+（1 tokenでは12.5%、18 tokenでは73.4%）ため、claim単位のexpert residencyは
+**decode-time property**として記録され、prefillの勝ちとしては主張されない。
 
 ---
 

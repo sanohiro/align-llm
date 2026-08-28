@@ -1375,6 +1375,106 @@ entry edits the `Makefile`, an executable contract boundary, so `scripts/verific
 the shared classifier of record, whose verdict is the evidence — is what selects the lane. Run it
 against the exact head rather than reasoning from this paragraph.
 
+## MoE layer forward development
+
+R5D-MOE-LAYER-FORWARD is the design of record on branch `agent/r5d-moe-layer-forward`, ledger
+commit `3cb8d59`; implementation is **in progress** and the fields below marked open are finalized
+with the implementation. Its authoritative plan is `docs/specs/r5d-moe-layer-forward.md`, which owns
+the probe record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
+deferrals, risks, and candidate-request sections. It answers R5's second gate stage for a **routed**
+layer — one prefill of at most six tokens through OLMoE `blk.0`, computed by ggml over attention
+weights and only the routed experts' planes held in Align-owned buffers, checked against
+llama.cpp's own numbers for the same tokens — in an `R5_MOE_LAYER_FORWARD`, `schema_version: 1`
+document.
+
+It ships as a **fourth arm of the existing `ggml-spike` executable**, `--moe-layer-forward`, beside
+R4.5's positional arm, `--layer-forward`, and `--model-forward`/`--model-forward-gpu`, for
+`r5a-dense-layer-forward.md` section 3.1's reasons: the arm shares the pack reader, the FFI module,
+the shim, the slot store, the alignment contract, the teardown order, and the summary-block shape
+with three siblings. `src/layer_qwen2.align` is **not** extended for OLMoE; the topology lives in a
+new module, `src/layer_olmoe.align`, because OLMoE's attention half (QK-norm, no QKV biases) and
+Qwen2's (biases, no QK-norm) are a second architecture behind the same node-table shape.
+
+```sh
+gmake ggml-spike                        # unchanged; also builds the --moe-layer-forward arm
+gmake layer-forward-smoke               # extended with a fourth block; unchanged aggregate membership
+gmake moe-layer-forward-qualification   # the opt-in real-ggml, real-model, real-instrument qualification
+```
+
+The read schedule is in two phases because the set of expert planes the layer needs is a function of
+the router's output, and the router's output is a function of half the layer: phase A reads the
+embedding row, the attention members, and the router members into one Align-owned `dense_window`;
+Align then decides which experts the tokens reached, entirely on bytes it owns (no strided view is
+ever read back — `align_ggml_slot_get` is not stride-aware, and reading one back was the probe's own
+bug, section 2.8 of the ledger); and phase B reads only the selected claims and computes the expert
+half. `--moe-layer-forward` is selected by its exact first operand, has **no `LAYER` operand** (it
+computes layer 0; section 5.4 of the ledger records the cost and what adding one would take), and is
+exactly five, six, seven, or eight operands:
+
+```sh
+./ggml-spike --moe-layer-forward PACK GEOM.json TOKENS                              # to stdout
+./ggml-spike --moe-layer-forward PACK GEOM.json TOKENS DOC.json                     # to DOC.json
+./ggml-spike --moe-layer-forward PACK GEOM.json TOKENS DOC.json REF.gguf            # + self-reference and routing oracles
+./ggml-spike --moe-layer-forward PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt   # + tolerance oracle
+./ggml-spike --moe-layer-forward PACK GEOM.json TOKENS -        REF.gguf TRANSCRIPT.txt   # document to stdout
+```
+
+`GEOM.json` is the same **`R1_MODEL_IR` document at `schema_version: 2`** the other arms read, with
+two fields this arm is the first consumer of: `n_expert_used` (the slot count of every MoE tensor)
+and `n_ff_exp` (the expert planes' inner width). `MAX_PATH_BYTES`, the `-` document convention, and
+`TOKENS` (1 to 6 comma-separated ids, `MAX_PREFILL_TOKENS = 6`) are `r5a-dense-layer-forward.md`
+section 3.3's, verbatim; the prompt `"def add(a, b"` (not `"def add(a, b):"`) is used because
+OLMoE's tokenizer produces seven ids for the latter, one over the cap.
+
+**Env vars, read by `scripts/run-moe-layer-forward` and reused unchanged from `run-layer-forward`
+where named (open — finalized with the implementation):**
+
+```sh
+ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include \                # selects the REAL shim; unset selects the stub
+ALIGN_LLM_GGML_LIB=/opt/homebrew/lib \                        # where libggml / libggml-base are
+ALIGN_LLM_GGUF_MODEL=/path/to/olmoe.gguf \                    # the OLMoE model to pack and use as the reference
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \  # the tolerance- and routing-oracle instrument
+ALIGN_LLM_MOE_LAYER_FORWARD_TMPDIR=/path/to/scratch \         # where the pack is written; defaults to TMPDIR
+ALIGN_LLM_MOE_LAYER_FORWARD_EXCERPT_UPDATE=1 \                # refreshes the checked-in transcript excerpt
+  gmake moe-layer-forward-qualification
+```
+
+`moe-layer-forward-qualification` is opt-in and capable-only, in **neither** `HOSTED_CHECK_TARGETS`
+nor `CAPABLE_ONLY_CHECK_TARGETS` — the same footing as `layer-forward-qualification` and
+`model-forward-qualification`. It reuses `run-layer-forward`'s `na()` detail strings verbatim (unset
+or non-directory `ALIGN_LLM_GGML_INCLUDE`/`ALIGN_LLM_GGML_LIB`, non-file `ALIGN_LLM_GGUF_MODEL`,
+non-executable `ALIGN_LLM_LLAMA_EVAL_CALLBACK`, an absent scratch root, insufficient free space) and
+adds one line of its own, for a model whose `arch` is not `olmoe` (open — final N/A wording finalized
+with the implementation):
+
+```text
+moe layer forward qualification: N/A ALIGN_LLM_GGUF_MODEL is not an olmoe model
+```
+
+The free-space guard is `run-layer-forward`'s own formula, `need_kib = model_bytes / 1024 +
+1048576`; on `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` that is 5,163,334 KiB.
+
+**The corpus is a new `--moe` mode of `scripts/layer_forward_fixture.py`**, not of
+`gguf_fixture.py`: the latter synthesizes olmoe *geometry* only, while the former writes an alignpack
+v1 container directly with real F32 members, at `n_expert 8` / `n_expert_used 3` matching
+`gguf_fixture.py`'s `OLMOE_BASE`. At that `n_expert_used`, the router's slot axis is 3 — `<= 6` — so
+the synthetic corpus is the only place the routing oracle's *full* print coverage is reachable; the
+real model structurally truncates 12 of 48 selected expert ids (ledger section 2.2 fact 6).
+
+**R5D adds no Makefile target and changes no aggregate membership beyond the fourth
+`layer-forward-smoke` block.** A separate `moe-layer-forward-smoke` target would add a
+`HOSTED_CHECK_TARGETS` member, which `docs/specs/check-gate-topology.md` and the `Makefile`'s own
+comment record as a check-topology change selecting `make ci` for publication; R5D keeps the
+topology fixed and stays in the ordinary lane. `moe-layer-forward-qualification` joins no aggregate
+and is named explicitly in the pull request, exactly as its three siblings are.
+
+The shim gains five new `extern` symbols (`argsort`, `mul_mat_id`, `view_2d`, a 3-D stacked-tensor
+constructor, and a 2-D i32 constructor) and one widened one (`soft_max_ext` with `mask == -1` meaning
+no mask); `src/ggml_ffi.align` remains the only file with an `extern` block or an `unsafe` block, and
+the `BEGIN/END R4.5 SHARED SHIM CONTRACT` region stays byte-identical (ledger section 4.2). **The
+shim is built with `-ffp-contract=off`**, inherited unchanged from R5A, and the runner asserts
+`abi.fp_contract_off` is `true`.
+
 ## The aarch64 platform-profile gates
 
 C7 evidence is target-bound, so each required non-x86 environment has its own reviewed profile.

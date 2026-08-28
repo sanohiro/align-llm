@@ -156,7 +156,7 @@ shim_built=1
   mv -f ggml_spike "${work_dir}/ggml-spike"
 )
 
-python3 "${root_dir}/scripts/layer_forward_fixture.py" "${work_dir}" --model >/dev/null
+python3 "${root_dir}/scripts/layer_forward_fixture.py" "${work_dir}" --model --moe >/dev/null
 
 DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
 LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
@@ -2011,5 +2011,574 @@ if failures:
 print("gpu forward smoke: %d no-document cases (R5_ARITY, R5_PATH), %d documented cases, "
       "%d codes reached including all three R5C_*, three oracles, arm-r5b-unchanged, and the whole "
       "two-layer model on a stub GPU device PASS"
+      % (len(NO_DOCUMENT), len(ORDER), len(codes - {""}) + 2))
+PY
+
+# ---------------------------------------------------------------------------------------------
+# R5D-MOE-LAYER-FORWARD — the `--moe-layer-forward` arm over the synthetic routed olmoe layer
+#
+# `docs/specs/r5d-moe-layer-forward.md` section 5.1 extends this runner rather than adding a
+# target, for R5B's and R5C's reason: `layer-forward-smoke` is already a member of
+# HOSTED_CHECK_TARGETS, so a fourth block changes no aggregate membership and no check topology.
+#
+# The corpus is `scripts/layer_forward_fixture.py --moe`: a two-layer olmoe container with
+# `n_expert` 8 and `n_expert_used` 3, all F32, and a **pure-Python second implementation** of the
+# whole routed layer — the router, the descending argsort, the Align-side top-k slice,
+# `mul_mat_id`'s per-`(token, slot)` dot product, and the slot-ordered reduction — whose values the
+# synthetic transcript carries. Both new oracles are therefore reachable with no ggml and no model,
+# and the routing-identity oracle reaches **full** print coverage here, which the real model's
+# eight-slot axis cannot.
+# ---------------------------------------------------------------------------------------------
+
+DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+python3 - "${root_dir}" "${work_dir}" <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+root_dir, work_dir = sys.argv[1:3]
+binary = os.path.join(work_dir, "ggml-spike")
+builder = os.path.join(root_dir, "scripts", "build-ggml-shim")
+golden_path = os.path.join(root_dir, "scripts", "moe-layer-forward-golden.jsonl")
+# The arm is pointed at a **writable copy** of the checked-in excerpt, never at the checked-in
+# path: `moe_layer_forward` opens its transcript with `fs.open_rw`, because Align ships no
+# read-only random-access `file` constructor (`docs/align-requests.md` Request 21), and a read-only
+# checkout would refuse the open with `R5_TRANSCRIPT` detail `Denied` before a byte is parsed.
+checked_in_excerpt = os.path.join(root_dir, "eval", "fixtures", "olmoe-blk0-6tok.txt")
+excerpt = os.path.join(work_dir, "olmoe-blk0-6tok.txt")
+with open(checked_in_excerpt, "rb") as handle:
+    excerpt_bytes = handle.read()
+with open(excerpt, "wb") as handle:
+    handle.write(excerpt_bytes)
+update = os.environ.get("ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE") == "1"
+
+ARM = "--moe-layer-forward"
+PACK = os.path.join(work_dir, "moe-pack.alignpack")
+GEOM = os.path.join(work_dir, "moe-geometry.json")
+TOKENS = "0,1,8"
+SOURCE = os.path.join(work_dir, "moe-source.bin")
+TRANSCRIPT = os.path.join(work_dir, "moe-transcript.txt")
+
+# The generator's own second implementation of the routing decision. The document is asserted
+# against **this**, not against itself: a routing that is internally consistent and wrong is the
+# single most dangerous failure mode in this design (section 3.6).
+with open(os.path.join(work_dir, "moe-routing.json"), "r", encoding="utf-8") as handle:
+    EXPECTED_ROUTING = json.load(handle)
+
+
+def path(name):
+    return os.path.join(work_dir, name)
+
+
+NO_DOCUMENT = [
+    ("moe-arity-four", [ARM, PACK, GEOM]),
+    ("moe-arity-nine", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, "extra"]),
+    ("moe-path-pack-empty", [ARM, "", GEOM, TOKENS]),
+    ("moe-path-geometry-empty", [ARM, PACK, "", TOKENS]),
+    ("moe-path-long", [ARM, "/" + ("a" * 5000), GEOM, TOKENS]),
+    ("moe-path-doc-empty", [ARM, PACK, GEOM, TOKENS, ""]),
+    ("moe-path-reference-empty", [ARM, PACK, GEOM, TOKENS, "-", ""]),
+    ("moe-arm-unknown-flag", ["--moe-layer-backward", PACK, GEOM, TOKENS]),
+]
+
+STUB_CASES = [
+    ("moe-stub-unavailable", [ARM, PACK, GEOM, TOKENS], "R5_GGML_UNAVAILABLE"),
+    ("moe-tokens-empty", [ARM, PACK, GEOM, ""], "R5_TOKENS"),
+    ("moe-tokens-trailing", [ARM, PACK, GEOM, "1,"], "R5_TOKENS"),
+    ("moe-tokens-space", [ARM, PACK, GEOM, "1, 2"], "R5_TOKENS"),
+    ("moe-tokens-seven", [ARM, PACK, GEOM, "1,2,3,4,5,6,7"], "R5_TOKENS"),
+    ("moe-tokens-vocab", [ARM, PACK, GEOM, "1,32"], "R5_TOKENS"),
+    ("moe-geometry-absent", [ARM, PACK, path("absent.json"), TOKENS], "R5_GEOMETRY_UNREADABLE"),
+    ("moe-geometry-not-json", [ARM, PACK, TRANSCRIPT, TOKENS], "R5_GEOMETRY"),
+    ("moe-pack-missing", [ARM, path("absent.alignpack"), GEOM, TOKENS], "R4_PACK_UNREADABLE"),
+    ("moe-pack-truncated", [ARM, path("moe-pack-truncated.alignpack"), GEOM, TOKENS],
+     "R4_PACK_TRUNCATED"),
+    ("moe-block-missing", [ARM, path("moe-pack-no-router.alignpack"), GEOM, TOKENS],
+     "R5_BLOCK_MISSING"),
+    ("moe-block-ambiguous", [ARM, path("moe-pack-ambiguous.alignpack"), GEOM, TOKENS],
+     "R5_BLOCK_AMBIGUOUS"),
+    ("moe-member-missing", [ARM, path("moe-pack-no-qnorm.alignpack"), GEOM, TOKENS],
+     "R5_MEMBER_MISSING"),
+    ("moe-router-shape", [ARM, path("moe-pack-router-shape.alignpack"), GEOM, TOKENS],
+     "R5D_ROUTER_SHAPE"),
+    ("moe-shape", [ARM, path("moe-pack-shape.alignpack"), GEOM, TOKENS], "R5_SHAPE"),
+    # Section 3.8 step 12: expert coverage is checked **before phase A runs**, because discovering
+    # a missing expert after the router has chosen it would make a container defect look like a
+    # routing defect. The default stub reaches it, which is the proof it is before step 16.
+    ("moe-expert-block-missing", [ARM, path("moe-pack-no-expert.alignpack"), GEOM, TOKENS],
+     "R5D_CLAIM_MISSING"),
+]
+
+# Section 4.1's "a missing field" cell: one fixture per consumed `model` field, each of which must
+# be `R5_GEOMETRY` naming that field and nothing else.
+GEOMETRY_MISSING = [
+    "arch", "n_layer", "n_embd", "n_head", "n_head_kv", "head_dim", "n_ff_exp", "n_vocab",
+    "n_expert", "n_expert_used", "context_length", "rms_eps_bits",
+    "rope-type", "rope-dim_count", "rope-freq_base_bits", "rope-scaling_type",
+]
+STUB_CASES.extend(("moe-geometry-missing-" + field,
+                   [ARM, PACK, path("moe-geometry-missing-" + field + ".json"), TOKENS],
+                   "R5_GEOMETRY")
+                  for field in GEOMETRY_MISSING)
+
+# One fixture per precondition of steps 5 to 8, including the two the routed arm owns:
+# `n_expert_used` above `n_expert`, and an `n_expert_used` the node-slot store cannot hold.
+GEOMETRY_BROKEN = [
+    "kind", "version", "arch", "rope-type", "rope-scaled", "rope-dims", "inconsistent",
+    "head-kv", "expert-zero", "expert-used-high", "expert-used-huge",
+    "eps-nan", "eps-negative", "rope-base-zero", "rope-base-inf",
+]
+STUB_CASES.extend(("moe-geometry-" + name,
+                   [ARM, PACK, path("moe-geometry-" + name + ".json"), TOKENS],
+                   "R5_GEOMETRY")
+                  for name in GEOMETRY_BROKEN)
+
+ENGINE_CASES = [
+    ("moe-engine-ok", [ARM, PACK, GEOM, TOKENS], ""),
+    ("moe-engine-alignment", [ARM, path("moe-pack-tight.alignpack"), GEOM, TOKENS],
+     "R5_ALIGNMENT"),
+    ("moe-engine-claim-type", [ARM, path("moe-pack-claim-type.alignpack"), GEOM, TOKENS],
+     "R5_TYPE_UNSUPPORTED"),
+    ("moe-engine-slice", [ARM, path("moe-pack-slice.alignpack"), GEOM, TOKENS], "R4_5_SLICE"),
+    ("moe-engine-slice-index", [ARM, path("moe-pack-slice-index.alignpack"), GEOM, TOKENS],
+     "R5D_CLAIM_MISSING"),
+    ("moe-engine-expert-role", [ARM, path("moe-pack-expert-role.alignpack"), GEOM, TOKENS],
+     "R5D_CLAIM_MISSING"),
+    ("moe-engine-reference", [ARM, PACK, GEOM, TOKENS, "-", SOURCE], ""),
+    ("moe-engine-source-diverged",
+     [ARM, PACK, GEOM, TOKENS, "-", path("moe-source-diverged.bin")], "R5_SOURCE_DIVERGED"),
+    ("moe-engine-source-short",
+     [ARM, PACK, GEOM, TOKENS, "-", path("moe-source-short.bin")], "R5_SOURCE_UNREADABLE"),
+    ("moe-engine-source-missing",
+     [ARM, PACK, GEOM, TOKENS, "-", path("absent.bin")], "R5_SOURCE_UNREADABLE"),
+    ("moe-engine-transcript", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT], ""),
+    ("moe-engine-transcript-missing",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("moe-transcript-missing.txt")],
+     "R5_ORACLE_MISSING"),
+    ("moe-engine-transcript-shape",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("moe-transcript-shape.txt")],
+     "R5_ORACLE_SHAPE"),
+    ("moe-engine-transcript-perturbed",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("moe-transcript-perturbed.txt")], ""),
+    ("moe-engine-transcript-headers",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("moe-transcript-headers.txt")],
+     "R5_ORACLE_MISSING"),
+    ("moe-engine-transcript-novalues",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("moe-transcript-novalues.txt")],
+     "R5_ORACLE_MISSING"),
+    ("moe-engine-transcript-garbage",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("moe-transcript-garbage.txt")], "R5_TRANSCRIPT"),
+    # `r2a-expert-trace.md` section 2.2 finding 5's rule, reaching a consumer: an i32 element the
+    # instrument could not have printed is refused rather than rounded to an expert id.
+    ("moe-engine-transcript-nonintegral",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("moe-transcript-nonintegral.txt")],
+     "R2_EXPERT_ID_NOT_INTEGRAL"),
+    # Oracle 2 disagreeing is a **successful run**, and oracle 3 is still evaluated and reported.
+    ("moe-engine-routing-mismatch",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("moe-transcript-routing.txt")], ""),
+    # The checked-in real-model excerpt. Every one of its twenty-eight records is found by name,
+    # op, and — for the attention output projection — source weight name, so the only thing left to
+    # disagree is the shape, which is exactly what a tiny-geometry pack must disagree about. That
+    # makes this a hosted regression on the oracle's **parsing** against real instrument formatting,
+    # including the two integer blocks no other checked-in excerpt carries.
+    ("moe-engine-transcript-excerpt", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, excerpt],
+     "R5_ORACLE_SHAPE"),
+]
+
+FORCED_CASES = [
+    ("moe-force-init", "engine+init", [ARM, PACK, GEOM, TOKENS], "R5_GGML_INIT"),
+    ("moe-force-alloc", "engine+alloc", [ARM, PACK, GEOM, TOKENS], "R5_ALLOC"),
+    ("moe-force-compute", "engine+compute", [ARM, PACK, GEOM, TOKENS], "R5_COMPUTE"),
+    ("moe-force-slot-range", "engine+slot-range", [ARM, PACK, GEOM, TOKENS], "R5_SLOT"),
+    ("moe-force-slot-empty", "engine+moe-slot-empty", [ARM, PACK, GEOM, TOKENS], "R5_SLOT"),
+    ("moe-force-reference", "engine+moe-reference", [ARM, PACK, GEOM, TOKENS, "-", SOURCE],
+     "R5_REFERENCE_MISMATCH"),
+    # Section 2.8's bug class, made observable: a routing that names a plane the stack does not
+    # have, and a routing whose two slots of one token name the same expert. Neither is producible
+    # from an input, because the argsort kernel writes a permutation by construction.
+    ("moe-force-routing-id-range", "engine+moe-argsort-range", [ARM, PACK, GEOM, TOKENS],
+     "R5D_EXPERT_ID"),
+    ("moe-force-routing-id-repeat", "engine+moe-argsort-repeat", [ARM, PACK, GEOM, TOKENS],
+     "R5D_EXPERT_ID"),
+    # Section 4.2's two new-symbol refusals: a third sort order and a view that reads past its
+    # source. Neither is expressible from the node table.
+    ("moe-force-argsort-order", "engine+moe-argsort-order", [ARM, PACK, GEOM, TOKENS],
+     "R5_GGML_INIT"),
+    ("moe-force-view-extent", "engine+moe-view-extent", [ARM, PACK, GEOM, TOKENS], "R5_SHAPE"),
+]
+
+PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
+               "reference_path": "<reference>", "transcript_path": "<transcript>"}
+
+
+def describe_difference(expected_text, actual_text, limit=8):
+    if actual_text is None:
+        return "no document was produced"
+    try:
+        expected = json.loads(expected_text)
+        actual = json.loads(actual_text)
+    except Exception as error:  # noqa: BLE001 - the document is the thing under test
+        return "the documents are not both JSON: %s" % error
+    differences = []
+
+    def walk(left, right, path_text):
+        if len(differences) >= limit:
+            return
+        if type(left) is not type(right):
+            differences.append("%s: %r != %r" % (path_text or ".", left, right))
+        elif isinstance(left, dict):
+            for key in sorted(set(left) | set(right)):
+                if len(differences) >= limit:
+                    return
+                if key not in left:
+                    differences.append("%s.%s: absent != %r" % (path_text, key, right[key]))
+                elif key not in right:
+                    differences.append("%s.%s: %r != absent" % (path_text, key, left[key]))
+                else:
+                    walk(left[key], right[key], "%s.%s" % (path_text, key))
+        elif isinstance(left, list):
+            if len(left) != len(right):
+                differences.append("%s: %d entries != %d" % (path_text, len(left), len(right)))
+                return
+            for index in range(len(left)):
+                if len(differences) >= limit:
+                    return
+                walk(left[index], right[index], "%s[%d]" % (path_text, index))
+        elif left != right:
+            differences.append("%s: %r != %r" % (path_text or ".", left, right))
+
+    walk(expected, actual, "")
+    if not differences:
+        return "the documents differ only in text form"
+    return "expected != actual at " + "; ".join(differences)
+
+
+def normalize(text):
+    document = json.loads(text)
+    for key in document["timings"]:
+        document["timings"][key] = 0
+    for key, placeholder in PLACEHOLDER.items():
+        if document[key]:
+            document[key] = placeholder
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+def build_shim(force):
+    environment = dict(os.environ)
+    environment.pop("ALIGN_LLM_GGML_INCLUDE", None)
+    environment.pop("ALIGN_LLM_GGML_LIB", None)
+    if force:
+        environment["ALIGN_LLM_GGML_FORCE"] = force
+    else:
+        environment.pop("ALIGN_LLM_GGML_FORCE", None)
+    subprocess.run([builder], check=True, capture_output=True, env=environment)
+
+
+def run(operands):
+    return subprocess.run([binary] + operands, capture_output=True, cwd=work_dir)
+
+
+failures = []
+produced = {}
+codes = set()
+
+
+def record(name, operands, expected):
+    result = run(operands)
+    if result.stdout == b"":
+        failures.append("%s: no document (exit %d): %s"
+                        % (name, result.returncode,
+                           result.stderr.decode("utf-8", "replace")[-400:]))
+        return None
+    try:
+        document = json.loads(result.stdout.decode("utf-8"))
+    except Exception as error:  # noqa: BLE001 - the document is the thing under test
+        failures.append("%s: the document is not valid JSON: %s" % (name, error))
+        return None
+    produced[name] = normalize(result.stdout.decode("utf-8"))
+    codes.add(document["error_code"])
+    if document["error_code"] != expected:
+        failures.append("%s: expected error_code %r, got %r (%r)"
+                        % (name, expected, document["error_code"], document["error_detail"]))
+    expected_exit = 0 if document["status"] == "ok" else 1
+    if (result.returncode == 0) != (expected_exit == 0):
+        failures.append("%s: status %r but exit %d"
+                        % (name, document["status"], result.returncode))
+    if document["kind"] != "R5_MOE_LAYER_FORWARD" or document["schema_version"] != 1:
+        failures.append("%s: wrong document identity %r/%r"
+                        % (name, document["kind"], document["schema_version"]))
+    if not document["abi"]["fp_contract_off"]:
+        failures.append("%s: the shim was not built with -ffp-contract=off; the goldens are not "
+                        "reproducible across compilers" % name)
+    return document
+
+
+for name, operands in NO_DOCUMENT:
+    result = run(operands)
+    if result.returncode == 0:
+        failures.append("%s: expected a non-zero exit, got 0" % name)
+    if result.stdout != b"":
+        failures.append("%s: expected no document, got %d bytes" % (name, len(result.stdout)))
+
+# R5A's arm is untouched: the first operand selects an arm and nothing else.
+r5a = run(["--layer-forward", os.path.join(work_dir, "pack.alignpack"), "0",
+           os.path.join(work_dir, "geometry.json"), "3,17,5"])
+if r5a.stdout == b"":
+    failures.append("arm-r5a-unchanged: the R5A arm produced no document")
+else:
+    kind = json.loads(r5a.stdout.decode("utf-8"))["kind"]
+    if kind != "R5_LAYER_FORWARD":
+        failures.append("arm-r5a-unchanged: the R5A arm emitted %r" % kind)
+
+for name, operands, expected in STUB_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    lifetime = document["lifetime"]
+    for key in ("ggml_buffers_created", "contexts_created", "backends_created",
+                "gallocrs_created"):
+        if lifetime[key] != 0:
+            failures.append("%s: lifetime.%s is %d in a default stub build, not 0"
+                            % (name, key, lifetime[key]))
+
+build_shim("engine")
+for name, operands, expected in ENGINE_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    if document["status"] != "ok":
+        continue
+    routing = document["routing"]
+    residency = document["residency"]
+    if document["verdict"] != "EXTERNAL":
+        failures.append("%s: verdict %r, not EXTERNAL" % (name, document["verdict"]))
+    if len(document["members"]) != 10:
+        failures.append("%s: %d members, not 10" % (name, len(document["members"])))
+    if not all(m["pointer_identity"] for m in document["members"]):
+        failures.append("%s: a dense weight tensor is not at its own window offset" % name)
+    if not all(c["pointer_identity"] for c in document["claims"]):
+        failures.append("%s: an expert claim is not at its own window offset" % name)
+    if document["members"][0]["pread_count"] != 3:
+        failures.append("%s: token_embd pread_count %d, not one per token"
+                        % (name, document["members"][0]["pread_count"]))
+    # The routing, against the generator's own independent forward.
+    for field in ("expert_ids", "routed", "routed_count", "compact_ids"):
+        if routing[field] != EXPECTED_ROUTING[field]:
+            failures.append("%s: routing.%s is %r, not the generator's %r"
+                            % (name, field, routing[field], EXPECTED_ROUTING[field]))
+    if not routing["slot_order_normative"]:
+        failures.append("%s: slot_order_normative is false" % name)
+    # The compaction is a bijection onto `[0, U)`, verified here as well as in the arm.
+    flat = [slot for row in routing["compact_ids"] for slot in row]
+    if sorted(set(flat)) != list(range(routing["routed_count"])):
+        failures.append("%s: compact_ids %r is not a bijection onto [0, %d)"
+                        % (name, routing["compact_ids"], routing["routed_count"]))
+    for field in ("expert_bytes_read", "expert_bytes_in_layer", "planes_read", "planes_in_layer"):
+        if residency[field] != EXPECTED_ROUTING[field]:
+            failures.append("%s: residency.%s is %r, not the generator's %r"
+                            % (name, field, residency[field], EXPECTED_ROUTING[field]))
+    if residency["expert_bytes_read_ppm"] != 625000:
+        failures.append("%s: expert_bytes_read_ppm %d, not the 625,000 of five experts of eight"
+                        % (name, residency["expert_bytes_read_ppm"]))
+    if residency["block_pread_count"] != routing["routed_count"]:
+        failures.append("%s: %d block preads for %d routed experts -- the container's whole "
+                        "contribution is one read per expert"
+                        % (name, residency["block_pread_count"], routing["routed_count"]))
+    if len(document["claims"]) != 3 * routing["routed_count"]:
+        failures.append("%s: %d claims, not 3U" % (name, len(document["claims"])))
+    if any(c["ne2"] != routing["routed_count"] for c in document["claims"]):
+        failures.append("%s: a claim's built ne2 is not U" % name)
+    if any(c["slice_count"] != document["model"]["n_expert"] for c in document["claims"]):
+        failures.append("%s: a claim's recorded slice_count is not n_expert" % name)
+    # Section 3.5's two table row counts, and ggml's own node counts beside them.
+    if document["graph_a"]["table_rows"] != 31 or document["graph_b"]["table_rows"] != 14:
+        failures.append("%s: table rows %d+%d, not 31+14 at n_expert_used 3"
+                        % (name, document["graph_a"]["table_rows"],
+                           document["graph_b"]["table_rows"]))
+    if document["graph"]["slot_capacity"] != 128:
+        failures.append("%s: slot_capacity %d, not 128" % (name, document["graph"]["slot_capacity"]))
+    if document["graph"]["carried_bytes"] != 2 * 8 * 3 * 4 + 8 * 3 * 4 + 2 * 3 * 3 * 4:
+        failures.append("%s: carried_bytes %d is not the five carried tensors"
+                        % (name, document["graph"]["carried_bytes"]))
+    # Section 3.6's three exclusion classes, asserted as exact sets.
+    excluded = [n["id"] for n in document["nodes"] if n["oracle"] == "shape_incomparable"]
+    if excluded != ["kq", "kq_soft_max"]:
+        failures.append("%s: shape_incomparable nodes are %r" % (name, excluded))
+    ambiguous = [n["id"] for n in document["nodes"] if n["oracle"] == "ambiguous_name"]
+    if ambiguous != ["norm_embd", "norm_q", "norm_k", "norm_ffn"]:
+        failures.append("%s: ambiguous_name nodes are %r, not the four norm-0 tensors"
+                        % (name, ambiguous))
+    unstable = [n["id"] for n in document["nodes"] if n["oracle"] == "unstable_name"]
+    if unstable != ["moe_view_0", "moe_view_1", "moe_view_2", "moe_add_0"]:
+        failures.append("%s: unstable_name nodes are %r, not the reduction chain" % (name, unstable))
+    if any(n["transcript_name"] != "norm-0" for n in document["nodes"]
+           if n["oracle"] == "ambiguous_name"):
+        failures.append("%s: an ambiguous_name node does not print under norm-0" % name)
+    # The two integer nodes publish their sum as `bit_sum` and never as a float.
+    integers = [n for n in document["nodes"] if n["ggml_type"] == 26]
+    if [n["id"] for n in integers] != ["ffn_moe_argsort", "ffn_moe_topk"]:
+        failures.append("%s: the i32 nodes are %r" % (name, [n["id"] for n in integers]))
+    if any(n["f32_sum_millionths"] != 0 or n["nonfinite_count"] != 0 for n in integers):
+        failures.append("%s: an i32 node published a float sum" % name)
+    if integers[1]["bit_sum"] != sum(flat_id for row in routing["expert_ids"]
+                                     for flat_id in row):
+        failures.append("%s: ffn_moe_topk's bit_sum is not the sum of the selected ids" % name)
+    if not document["abi"]["slot_magic_ok"]:
+        failures.append("%s: the slot store magic did not validate" % name)
+    lifetime = document["lifetime"]
+    if not lifetime["released_before_owner_scope_end"]:
+        failures.append("%s: the teardown did not balance" % name)
+    for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                           ("contexts_created", "contexts_freed"),
+                           ("backends_created", "backends_freed"),
+                           ("gallocrs_created", "gallocrs_freed")):
+        if lifetime[created] != lifetime[freed]:
+            failures.append("%s: %s %d != %s %d"
+                            % (name, created, lifetime[created], freed, lifetime[freed]))
+
+reference = json.loads(run([ARM, PACK, GEOM, TOKENS, "-", SOURCE]).stdout)
+if reference["reference"]["verdict"] != "IDENTICAL":
+    failures.append("moe-engine-reference: verdict %r" % reference["reference"]["verdict"])
+if reference["reference"]["nodes_compared"] != reference["reference"]["nodes_identical"] \
+        or reference["reference"]["nodes_compared"] != len(reference["nodes"]):
+    failures.append("moe-engine-reference: %d/%d of %d nodes identical"
+                    % (reference["reference"]["nodes_identical"],
+                       reference["reference"]["nodes_compared"], len(reference["nodes"])))
+
+# Section 4.4's oracle cells: an exact pass, full routing coverage, and a breach that is a verdict
+# on a successful run rather than an error code.
+passing = json.loads(run([ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT]).stdout)
+oracle = passing["oracle"]
+routing_oracle = passing["routing_oracle"]
+if oracle["verdict"] != "PASS":
+    failures.append("moe-engine-transcript: verdict %r, worst %r@%d, max_abs %d, max_sum %d"
+                    % (oracle["verdict"], oracle["worst_node"], oracle["worst_element_index"],
+                       oracle["max_abs_diff_ten_thousandths"], oracle["max_sum_diff_millionths"]))
+if oracle["nodes_expected"] != 26 or oracle["nodes_matched"] != 26:
+    failures.append("moe-engine-transcript: %d/%d nodes matched"
+                    % (oracle["nodes_matched"], oracle["nodes_expected"]))
+if oracle["elements_compared"] <= 0:
+    failures.append("moe-engine-transcript: zero elements compared with a PASS verdict")
+if oracle["tolerance_ten_thousandths"] != 1 or oracle["sum_tolerance_millionths"] != 1000 \
+        or oracle["sum_tolerance_relative_ppm"] != 10:
+    failures.append("moe-engine-transcript: a tolerance was widened: %r" % oracle)
+if routing_oracle["verdict"] != "MATCH":
+    failures.append("moe-engine-transcript: routing %r, first difference token %d slot %d"
+                    % (routing_oracle["verdict"], routing_oracle["first_difference_token"],
+                       routing_oracle["first_difference_slot"]))
+# Section 5.1: at `n_expert_used = 3` the slot axis is 3, so every id is printed and this corpus is
+# the only place the routing oracle's **full** coverage is reachable.
+if routing_oracle["ids_total"] != 9 or routing_oracle["ids_printed_compared"] != 9 \
+        or routing_oracle["ids_printed_matched"] != 9:
+    failures.append("moe-engine-transcript: routing coverage %d/%d of %d is not element-wise "
+                    "complete at n_expert_used 3"
+                    % (routing_oracle["ids_printed_matched"],
+                       routing_oracle["ids_printed_compared"], routing_oracle["ids_total"]))
+if not routing_oracle["sum_matches"] \
+        or routing_oracle["sum_expected"] != routing_oracle["sum_observed"]:
+    failures.append("moe-engine-transcript: routing sums %r" % routing_oracle)
+
+breached = json.loads(
+    run([ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("moe-transcript-perturbed.txt")]).stdout)
+if breached["status"] != "ok" or breached["oracle"]["verdict"] != "FAIL":
+    failures.append("moe-engine-transcript-perturbed: status %r verdict %r"
+                    % (breached["status"], breached["oracle"]["verdict"]))
+if breached["oracle"]["worst_node"] != "l_out":
+    failures.append("moe-engine-transcript-perturbed: worst_node %r"
+                    % breached["oracle"]["worst_node"])
+if breached["routing_oracle"]["verdict"] != "MATCH":
+    failures.append("moe-engine-transcript-perturbed: a float breach moved the routing verdict")
+
+mismatched = json.loads(
+    run([ARM, PACK, GEOM, TOKENS, "-", SOURCE, path("moe-transcript-routing.txt")]).stdout)
+if mismatched["status"] != "ok" or mismatched["routing_oracle"]["verdict"] != "MISMATCH":
+    failures.append("moe-engine-routing-mismatch: status %r routing %r"
+                    % (mismatched["status"], mismatched["routing_oracle"]["verdict"]))
+# Section 3.6: oracle 3 is still evaluated and reported when oracle 2 disagrees, because a
+# transcript comparison against a differently-routed layer is exactly the diagnostic a reader needs.
+if mismatched["oracle"]["verdict"] == "-" or mismatched["oracle"]["elements_compared"] <= 0:
+    failures.append("moe-engine-routing-mismatch: oracle 3 was skipped: %r" % mismatched["oracle"])
+if mismatched["routing_oracle"]["first_difference_token"] < 0 \
+        or mismatched["routing_oracle"]["first_difference_slot"] < 0:
+    failures.append("moe-engine-routing-mismatch: the first difference names no (token, slot)")
+
+# Both output forms emit byte-identical document bytes (section 3.3).
+document_path = os.path.join(work_dir, "moe-layer.json")
+stdout_form = run([ARM, PACK, GEOM, TOKENS]).stdout.decode("utf-8").rstrip("\n")
+run([ARM, PACK, GEOM, TOKENS, document_path])
+with open(document_path, "r", encoding="utf-8") as handle:
+    file_form = handle.read()
+if normalize(stdout_form) != normalize(file_form):
+    failures.append("the stdout and file forms differ")
+dash_form = run([ARM, PACK, GEOM, TOKENS, "-"]).stdout.decode("utf-8").rstrip("\n")
+if normalize(dash_form) != normalize(stdout_form):
+    failures.append("the `-` form differs from the four-operand form")
+
+repeats = {normalize(run([ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT])
+                     .stdout.decode("utf-8")) for _ in range(3)}
+if len(repeats) != 1:
+    failures.append("three consecutive runs produced %d distinct documents" % len(repeats))
+
+forced_documents = {}
+for name, force, operands, expected in FORCED_CASES:
+    build_shim(force)
+    forced_documents[name] = record(name, operands, expected)
+
+build_shim(None)
+
+# Section 3.8: `R5D_EXPERT_ID`'s detail names the exact `(token, slot)` pair, because "an id is out
+# of range" and "two slots of one token name the same expert" are different bugs.
+for case, wanted in (("moe-force-routing-id-range", "token[0]slot[0]"),
+                     ("moe-force-routing-id-repeat", "token[0]slot[1]")):
+    document = forced_documents.get(case)
+    if document is not None and document["error_detail"] != wanted:
+        failures.append("%s: detail %r, not %r" % (case, document["error_detail"], wanted))
+
+REQUIRED_CODES = {
+    "R5_TOKENS", "R5_GEOMETRY_UNREADABLE", "R5_GEOMETRY", "R4_PACK_UNREADABLE",
+    "R4_PACK_TRUNCATED", "R5_BLOCK_MISSING", "R5_BLOCK_AMBIGUOUS", "R5_MEMBER_MISSING",
+    "R5_SHAPE", "R5_GGML_UNAVAILABLE", "R5_TYPE_UNSUPPORTED", "R5_ALIGNMENT", "R5_GGML_INIT",
+    "R5_SLOT", "R5_ALLOC", "R5_COMPUTE", "R5_SOURCE_UNREADABLE", "R5_SOURCE_DIVERGED",
+    "R5_REFERENCE_MISMATCH", "R5_TRANSCRIPT", "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE",
+    "R2_EXPERT_ID_NOT_INTEGRAL", "R4_5_SLICE",
+    "R5D_ROUTER_SHAPE", "R5D_EXPERT_ID", "R5D_CLAIM_MISSING",
+}
+missing_codes = REQUIRED_CODES - codes
+if missing_codes:
+    failures.append("codes never reached: %s" % ", ".join(sorted(missing_codes)))
+
+ORDER = ([name for name, _, _ in STUB_CASES]
+         + [name for name, _, _ in ENGINE_CASES]
+         + [name for name, _, _, _ in FORCED_CASES])
+
+if update:
+    with open(golden_path, "w", encoding="utf-8") as handle:
+        for name in ORDER:
+            handle.write(json.dumps({"case": name, "document": produced[name]},
+                                    separators=(",", ":"), ensure_ascii=False) + "\n")
+    print("moe layer forward smoke: golden rewritten with %d cases" % len(produced))
+else:
+    with open(golden_path, "r", encoding="utf-8") as handle:
+        golden = [json.loads(line) for line in handle if line.strip()]
+    if [row["case"] for row in golden] != ORDER:
+        failures.append("the golden case list does not match the runner's case list")
+    else:
+        for row in golden:
+            if produced.get(row["case"]) != row["document"]:
+                failures.append("golden mismatch for %s: %s"
+                                % (row["case"],
+                                   describe_difference(row["document"],
+                                                       produced.get(row["case"]))))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("moe layer forward smoke: FAIL %s\n" % line)
+    raise SystemExit(1)
+
+print("moe layer forward smoke: %d no-document cases (R5D_ARITY, R5D_PATH), %d documented cases, "
+      "%d codes reached, all three oracles, the routing identity element-wise complete, and "
+      "arm-r5a-unchanged PASS"
       % (len(NO_DOCUMENT), len(ORDER), len(codes - {""}) + 2))
 PY

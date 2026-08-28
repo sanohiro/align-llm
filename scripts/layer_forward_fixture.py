@@ -433,7 +433,8 @@ def build_transcript(nodes, layer=0):
 
 
 class Member:
-    def __init__(self, name, role, role_id, block_kind, dim0, dim1, values):
+    def __init__(self, name, role, role_id, block_kind, dim0, dim1, values,
+                 n_dims=2, dim2=1, dim3=1, slice_index=-1, slice_count=-1):
         self.name = name
         self.role = role
         self.role_id = role_id
@@ -441,6 +442,15 @@ class Member:
         self.type_id = TYPE_F32
         self.dim0 = dim0
         self.dim1 = dim1
+        # R5D: a **claim** is one plane of a stacked tensor, so its record declares three dims whose
+        # third is the sliced axis's own extent and whose `nbytes` is the plane's, not the stack's
+        # (`docs/specs/moe-prereq-discharge.md` section 1.1). The defaults are the dense form and
+        # reproduce every R5A and R5B fixture byte for byte.
+        self.n_dims = n_dims
+        self.dim2 = dim2
+        self.dim3 = dim3
+        self.slice_index = slice_index
+        self.slice_count = slice_count
         self.values = values
         self.nbytes = dim0 * dim1 * 4
         self.payload = struct.pack("<%df" % len(values), *values)
@@ -450,10 +460,10 @@ class Member:
 
 
 class Block:
-    def __init__(self, kind, layer, members):
+    def __init__(self, kind, layer, members, expert=-1):
         self.kind = kind
         self.layer = layer
-        self.expert = -1
+        self.expert = expert
         self.members = members
         self.member_start = 0
         self.pack_offset = 0
@@ -540,9 +550,10 @@ def build(blocks, block_align=BLOCK_ALIGN, member_align=MEMBER_ALIGN):
                          len(member.name.encode("utf-8")), member.role_id)
         struct.pack_into("<QQQ", raw, base + 16, member.source_offset, member.nbytes,
                          member.pack_offset)
-        struct.pack_into("<II", raw, base + 40, member.type_id, 2)
-        struct.pack_into("<QQQQ", raw, base + 48, member.dim0, member.dim1, 1, 1)
-        struct.pack_into("<iiQ", raw, base + 80, -1, -1, 0)
+        struct.pack_into("<II", raw, base + 40, member.type_id, member.n_dims)
+        struct.pack_into("<QQQQ", raw, base + 48, member.dim0, member.dim1,
+                         member.dim2, member.dim3)
+        struct.pack_into("<iiQ", raw, base + 80, member.slice_index, member.slice_count, 0)
         raw[member.pack_offset:member.pack_offset + member.nbytes] = member.payload
 
     layout = {
@@ -695,7 +706,7 @@ def geometry_corpus(g):
 # ---------------------------------------------------------------------------------------------
 
 
-def write_corpus(directory, model=False):
+def write_corpus(directory, model=False, moe=False):
     os.makedirs(directory, exist_ok=True)
     written = []
 
@@ -791,16 +802,20 @@ def write_corpus(directory, model=False):
     if model:
         write_model_corpus(directory, emit)
 
+    if moe:
+        write_moe_corpus(directory, emit)
+
     return written
 
 
 def main(argv):
     model = "--model" in argv[1:]
-    rest = [a for a in argv[1:] if a != "--model"]
+    moe = "--moe" in argv[1:]
+    rest = [a for a in argv[1:] if a not in ("--model", "--moe")]
     if len(rest) != 1:
-        sys.stderr.write("usage: layer_forward_fixture.py OUTDIR [--model]\n")
+        sys.stderr.write("usage: layer_forward_fixture.py OUTDIR [--model] [--moe]\n")
         return 2
-    for path in write_corpus(rest[0], model=model):
+    for path in write_corpus(rest[0], model=model, moe=moe):
         print(path)
     return 0
 
@@ -1171,6 +1186,582 @@ def write_model_corpus(directory, emit):
          "\n".join(lines[:novalues_start + 1] + lines[novalues_end:]) + "\n")
 
     emit("model-transcript-garbage.txt", bytes(range(256)) * 8)
+
+
+# =============================================================================================
+# R5D-MOE-LAYER-FORWARD (`docs/specs/r5d-moe-layer-forward.md` section 5.1)
+#
+# The same generator, extended to a **routed** olmoe layer: one embedding `WeightBlock`, and per
+# layer an `AttentionBlock`, a `RouterBlock`, and eight `ExpertBlock`s whose three members are each
+# one plane of a stacked tensor with `slice_index` `0..7` and `slice_count` 8. Every member is
+# `TYPE_F32`, which keeps the fixture readable and keeps `align_ggml_type_ok` on its F32 row; the
+# quantized types are the real model's job.
+#
+# `n_expert` 8 and `n_expert_used` 3 match `gguf_fixture.py`'s `OLMOE_BASE`, so the two corpora
+# describe the same synthetic model. At `n_expert_used = 3` the router's slot axis is 3, which is
+# `<= 6`, so this corpus is the **only** place the routing oracle's full print coverage is
+# reachable: all nine ids are compared element-wise, where the real model prints 36 of 48.
+#
+# The forward pass below is a second implementation of the whole routed layer — the router, the
+# descending argsort, the Align-side top-k slice, `mul_mat_id`'s per-`(token, slot)` dot product,
+# and the slot-ordered reduction — computed in Python with explicit f32 rounding. A second
+# implementation is the only way section 4.4's oracle cells can be checked on a host with no model.
+# =============================================================================================
+
+GEOMETRY_MOE = {
+    "arch": "olmoe",
+    "n_layer": 2,
+    "n_embd": 8,
+    "n_head": 2,
+    "n_head_kv": 2,
+    "head_dim": 4,
+    "n_ff": 16,
+    "n_ff_exp": 16,
+    "n_vocab": 32,
+    "n_expert": 8,
+    "n_expert_used": 3,
+    "context_length": 512,
+    "rms_eps": 1e-05,
+    "rope_freq_base": 10000.0,
+    "rope_dim_count": 4,
+    "rope_type": 2,
+}
+
+# Chosen by sweeping the generator's own forward: these three tokens route to **five** of the
+# eight experts, with three distinct per-token slot orders, so `U < n_expert`, the compact ids
+# differ from the global ids, and the residency ratio is a real fraction rather than 1.
+MOE_TOKENS = [0, 1, 8]
+
+KIND_EXPERT = 3
+KIND_ROUTER = 4
+
+# The ten dense roles in `src/layer_olmoe.align`'s own slot order, with `src/alignpack.align`'s
+# frozen `role_id`s. `ffn_norm` and the router live in the `RouterBlock` — everything the layer
+# needs *before* it knows which experts to fetch.
+MOE_DENSE_ROLES = [
+    ("token_embd", 12, KIND_WEIGHT),
+    ("attn_norm", 0, KIND_ATTENTION),
+    ("attn_q", 1, KIND_ATTENTION),
+    ("attn_q_norm", 27, KIND_ATTENTION),
+    ("attn_k", 3, KIND_ATTENTION),
+    ("attn_k_norm", 28, KIND_ATTENTION),
+    ("attn_v", 5, KIND_ATTENTION),
+    ("attn_output", 7, KIND_ATTENTION),
+    ("ffn_norm", 8, KIND_ROUTER),
+    ("router", 17, KIND_ROUTER),
+]
+
+MOE_EXPERT_ROLES = [
+    ("ffn_gate_exps", 19),
+    ("ffn_up_exps", 21),
+    ("ffn_down_exps", 23),
+]
+
+
+def moe_dense_dims(role, g):
+    heads = g["n_head"] * g["head_dim"]
+    return {
+        "token_embd": (g["n_embd"], g["n_vocab"]),
+        "attn_norm": (g["n_embd"], 1),
+        "attn_q": (g["n_embd"], heads),
+        "attn_q_norm": (g["n_embd"], 1),
+        "attn_k": (g["n_embd"], heads),
+        "attn_k_norm": (g["n_embd"], 1),
+        "attn_v": (g["n_embd"], heads),
+        "attn_output": (g["n_embd"], g["n_embd"]),
+        "ffn_norm": (g["n_embd"], 1),
+        "router": (g["n_embd"], g["n_expert"]),
+    }[role]
+
+
+def moe_claim_dims(role, g):
+    """One **plane**'s dims. The stacked tensor's third axis is `n_expert`."""
+    if role == "ffn_down_exps":
+        return (g["n_ff_exp"], g["n_embd"])
+    return (g["n_embd"], g["n_ff_exp"])
+
+
+def moe_tensor(role, layer, g, expert=None):
+    dim0, dim1 = (moe_claim_dims(role, g) if expert is not None
+                  else moe_dense_dims(role, g))
+    seed = role if layer < 0 else "%s@%d" % (role, layer)
+    if expert is not None:
+        seed = "%s#%d" % (seed, expert)
+    return Tensor([dim0, dim1], weight_values(seed, dim0 * dim1))
+
+
+def soft_max_plain(a):
+    """`ggml_soft_max(ctx, a)`: unit scale, **no mask**, and no renormalization anywhere."""
+    zero = Tensor([a.ne[0], 1], [0.0] * a.ne[0])
+    return soft_max_ext(a, zero, 1.0)
+
+
+def argsort_desc(a):
+    """`ggml_argsort(..., GGML_SORT_ORDER_DESC)`: the permutation of indices, not the values.
+
+    ggml's kernel is a selection sort with a strict comparison, so equal probabilities keep
+    ascending index order; Python's `sorted` is stable, which is the same rule.
+    """
+    ne0 = a.ne[0]
+    rows = a.count() // ne0
+    out = []
+    for r in range(rows):
+        row = a.data[r * ne0:(r + 1) * ne0]
+        out.extend(sorted(range(ne0), key=lambda i: (-row[i], i)))
+    return Tensor(a.ne, [float(v) for v in out])
+
+
+def get_rows_3d(a, ids):
+    """`ggml_get_rows` with a 3-D source and a 2-D index tensor: `{a.ne0, ids.ne0, ids.ne1}`."""
+    nc = a.ne[0]
+    out = [0.0] * (nc * ids.ne[0] * ids.ne[1])
+    for i1 in range(ids.ne[1]):
+        for i0 in range(ids.ne[0]):
+            at = i0 + ids.ne[0] * i1
+            row = int(ids.data[at])
+            base = nc * (row + a.ne[1] * i1)
+            out[at * nc:at * nc + nc] = a.data[base:base + nc]
+    return Tensor([nc, ids.ne[0], ids.ne[1]], out)
+
+
+def mul_mat_id(stack, b, ids, n_ids):
+    """`ggml_mul_mat_id`. `stack` is a list of `[k, m]` planes, `b` is `[k, b1, T]`.
+
+    The accumulation order is `mul_mat`'s own, which is section 2.3's whole point: a compact stack
+    with remapped ids is bit-identical to a whole one because the dot product does not depend on
+    how many planes the stack holds.
+    """
+    k = stack[0].ne[0]
+    m = stack[0].ne[1]
+    tokens = b.ne[2]
+    b1 = b.ne[1]
+    out = [0.0] * (m * n_ids * tokens)
+    for i2 in range(tokens):
+        for i1 in range(n_ids):
+            plane = stack[ids[i1 + n_ids * i2]]
+            base_b = k * ((i1 % b1) + b1 * i2)
+            for i0 in range(m):
+                base_a = k * i0
+                total = 0.0
+                for at in range(k):
+                    total = f32(total + f32(plane.data[base_a + at] * b.data[base_b + at]))
+                out[i0 + m * (i1 + n_ids * i2)] = total
+    return Tensor([m, n_ids, tokens], out)
+
+
+def slot_view(a, slot):
+    """`ggml_view_2d(weighted, n_embd, T, weighted->nb[2], slot * weighted->nb[1])`."""
+    ne0, ne1, ne2 = a.ne[0], a.ne[1], a.ne[2]
+    out = []
+    for i2 in range(ne2):
+        base = ne0 * (slot + ne1 * i2)
+        out.extend(a.data[base:base + ne0])
+    return Tensor([ne0, ne2], out)
+
+
+def moe_forward(dense, experts, g, tokens):
+    """The routed layer, node for node, in the order both node tables issue them."""
+    t = len(tokens)
+    head_dim, n_head = g["head_dim"], g["n_head"]
+    n_embd, n_expert, n_used = g["n_embd"], g["n_expert"], g["n_expert_used"]
+    eps, freq_base = g["rms_eps"], g["rope_freq_base"]
+
+    mask = Tensor([t, t], [0.0 if c <= r else float("-inf")
+                           for r in range(t) for c in range(t)])
+    positions = list(range(t))
+
+    embd = get_rows(dense["token_embd"], tokens)
+    norm_embd = rms_norm(embd, eps)
+    attn_norm = broadcast(norm_embd, dense["attn_norm"], lambda x, y: x * y)
+    # Section 2.2 fact 1: project, RMS-norm over `n_embd`, scale, **then** reshape, then RoPE.
+    q_pre = mul_mat(dense["attn_q"], attn_norm)
+    norm_q = rms_norm(q_pre, eps)
+    q_normed = broadcast(norm_q, dense["attn_q_norm"], lambda x, y: x * y)
+    q3 = reshape(q_normed, [head_dim, n_head, t])
+    q_rope = rope_neox(q3, positions, g["rope_dim_count"], freq_base)
+    k_pre = mul_mat(dense["attn_k"], attn_norm)
+    norm_k = rms_norm(k_pre, eps)
+    k_normed = broadcast(norm_k, dense["attn_k_norm"], lambda x, y: x * y)
+    k3 = reshape(k_normed, [head_dim, n_head, t])
+    k_rope = rope_neox(k3, positions, g["rope_dim_count"], freq_base)
+    v_cur = mul_mat(dense["attn_v"], attn_norm)
+    v3 = reshape(v_cur, [head_dim, n_head, t])
+    kq = mul_mat(permute(k_rope, [0, 2, 1, 3]), permute(q_rope, [0, 2, 1, 3]))
+    kqs = soft_max_ext(kq, mask, f32(1.0 / math.sqrt(head_dim)))
+    vt = cont(permute(v3, [1, 2, 0, 3]), [t, head_dim, n_head])
+    kqv = mul_mat(vt, kqs)
+    kqv_out = cont(permute(kqv, [0, 2, 1, 3]), [n_embd, t, 1])
+    attn_out = mul_mat(dense["attn_output"], kqv_out)
+    ffn_inp = broadcast(attn_out, embd, lambda x, y: x + y)
+    norm_ffn = rms_norm(ffn_inp, eps)
+    ffn_norm = broadcast(norm_ffn, dense["ffn_norm"], lambda x, y: x * y)
+
+    logits = mul_mat(dense["router"], ffn_norm)
+    probs = soft_max_plain(logits)
+    argsort = argsort_desc(probs)
+    topk = [int(argsort.data[token * n_expert + slot])
+            for token in range(t) for slot in range(n_used)]
+    topk_tensor = Tensor([n_used, t], [float(v) for v in topk])
+    probs_r = reshape(probs, [1, n_expert, t])
+    weights = get_rows_3d(probs_r, topk_tensor)
+    ffn_norm_r = reshape(ffn_norm, [n_embd, 1, t])
+    gate = mul_mat_id(experts["ffn_gate_exps"], ffn_norm_r, topk, n_used)
+    up = mul_mat_id(experts["ffn_up_exps"], ffn_norm_r, topk, n_used)
+    swiglu = swiglu_split(gate, up)
+    down = mul_mat_id(experts["ffn_down_exps"], swiglu, topk, n_used)
+    weighted = broadcast(down, weights, lambda x, y: x * y)
+    views = [slot_view(weighted, slot) for slot in range(n_used)]
+    # **Ascending slot order.** Section 2.3 measured a reversed order changing 1,189 of 2,048
+    # elements of one token's `ffn_moe_out`.
+    moe_out = views[0]
+    for slot in range(1, n_used):
+        moe_out = broadcast(moe_out, views[slot], lambda x, y: x + y)
+    l_out = broadcast(moe_out, ffn_inp, lambda x, y: x + y)
+
+    records = [
+        ("embd", "GET_ROWS", "token_embd.weight", embd),
+        ("norm-0", "RMS_NORM", "embd", norm_embd),
+        ("attn_norm-0", "MUL", "norm-0", attn_norm),
+        ("Qcur-0", "MUL_MAT", "blk.0.attn_q.weight", q_pre),
+        ("norm-0", "RMS_NORM", "Qcur-0", norm_q),
+        ("Qcur_normed-0", "MUL", "norm-0", q_normed),
+        ("Qcur-0", "ROPE", "Qcur_normed-0 (reshaped)", q_rope),
+        ("Kcur-0", "MUL_MAT", "blk.0.attn_k.weight", k_pre),
+        ("norm-0", "RMS_NORM", "Kcur-0", norm_k),
+        ("Kcur_normed-0", "MUL", "norm-0", k_normed),
+        ("Kcur-0", "ROPE", "Kcur_normed-0 (reshaped)", k_rope),
+        ("Vcur-0", "MUL_MAT", "blk.0.attn_v.weight", v_cur),
+        ("kq-0", "MUL_MAT", "Kcur-0 (permuted)", kq),
+        ("kq_soft_max-0", "SOFT_MAX", "kq-0", kqs),
+        ("kqv-0", "MUL_MAT", "Vcur-0 (transposed)", kqv),
+        ("kqv_out-0", "CONT", "kqv-0 (permuted)", kqv_out),
+        ("node_32", "MUL_MAT", "blk.0.attn_output.weight", attn_out),
+        ("ffn_inp-0", "ADD", "node_32", ffn_inp),
+        ("norm-0", "RMS_NORM", "ffn_inp-0", norm_ffn),
+        ("ffn_norm-0", "MUL", "norm-0", ffn_norm),
+        ("ffn_moe_logits-0", "MUL_MAT", "blk.0.ffn_gate_inp.weight", logits),
+        ("ffn_moe_probs-0", "SOFT_MAX", "ffn_moe_logits-0", probs),
+        ("ffn_moe_argsort-0", "ARGSORT", "ffn_moe_probs-0", argsort),
+        ("ffn_moe_topk-0", "VIEW", "ffn_moe_argsort-0", topk_tensor),
+        ("ffn_moe_weights-0", "GET_ROWS", "ffn_moe_probs-0 (reshaped)", weights),
+        ("ffn_moe_gate-0", "MUL_MAT_ID", "blk.0.ffn_gate_exps.weight", gate),
+        ("ffn_moe_up-0", "MUL_MAT_ID", "blk.0.ffn_up_exps.weight", up),
+        ("ffn_moe_swiglu-0", "SWIGLU", "ffn_moe_gate-0", swiglu),
+        ("ffn_moe_down-0", "MUL_MAT_ID", "blk.0.ffn_down_exps.weight", down),
+        ("ffn_moe_weighted-0", "MUL", "ffn_moe_down-0", weighted),
+        ("ffn_moe_out-0", "ADD", "node_60", moe_out),
+        ("l_out-0", "ADD", "ffn_moe_out-0", l_out),
+    ]
+    return records, topk
+
+
+def moe_members(g):
+    """`(tag, Member)` pairs in the container's own order."""
+    out = []
+    embed = moe_tensor("token_embd", -1, g)
+    out.append(("embed", Member("token_embd.weight", "token_embd", 12, KIND_WEIGHT,
+                                *moe_dense_dims("token_embd", g), embed.data)))
+    for layer in range(g["n_layer"]):
+        for role, role_id, kind in MOE_DENSE_ROLES:
+            if role == "token_embd":
+                continue
+            dim0, dim1 = moe_dense_dims(role, g)
+            name = "blk.%d.%s.weight" % (layer, "ffn_gate_inp" if role == "router" else role)
+            out.append(("layer%d" % layer,
+                        Member(name, role, role_id, kind, dim0, dim1,
+                               moe_tensor(role, layer, g).data,
+                               n_dims=1 if dim1 == 1 else 2)))
+        for expert in range(g["n_expert"]):
+            for role, role_id in MOE_EXPERT_ROLES:
+                dim0, dim1 = moe_claim_dims(role, g)
+                out.append(("expert%d_%d" % (layer, expert),
+                            Member("blk.%d.%s.weight" % (layer, role), role, role_id,
+                                   KIND_EXPERT, dim0, dim1,
+                                   moe_tensor(role, layer, g, expert=expert).data,
+                                   n_dims=3, dim2=g["n_expert"], dim3=1,
+                                   slice_index=expert, slice_count=g["n_expert"])))
+    return out
+
+
+def moe_blocks(members, g, drop_expert=None, drop_expert_role=None, drop_router_layer=None,
+               duplicate_router=False, drop_role=None):
+    grouped = {}
+    for tag, member in members:
+        grouped.setdefault(tag, []).append(member)
+    blocks = [Block(KIND_WEIGHT, -1, list(grouped["embed"]))]
+    for layer in range(g["n_layer"]):
+        rows = grouped["layer%d" % layer]
+        attention = [m for m in rows if m.block_kind == KIND_ATTENTION
+                     and not (layer == 0 and m.role == drop_role)]
+        blocks.append(Block(KIND_ATTENTION, layer, attention))
+        if layer != drop_router_layer:
+            blocks.append(Block(KIND_ROUTER, layer,
+                                [m for m in rows if m.block_kind == KIND_ROUTER]))
+        if duplicate_router and layer == 0:
+            # Two blocks answering to `(RouterBlock, layer 0)`: the ambiguity section 3.8 step 11
+            # refuses. Fresh records, because `build` assigns each member exactly one `pack_offset`.
+            twin = [Member(m.name, m.role, m.role_id, m.block_kind, m.dim0, m.dim1, m.values,
+                           n_dims=m.n_dims, dim2=m.dim2, dim3=m.dim3,
+                           slice_index=m.slice_index, slice_count=m.slice_count)
+                    for m in rows if m.block_kind == KIND_ROUTER]
+            blocks.append(Block(KIND_ROUTER, layer, twin))
+        for expert in range(g["n_expert"]):
+            if layer == 0 and expert == drop_expert:
+                continue
+            claims = list(grouped["expert%d_%d" % (layer, expert)])
+            if layer == 0 and drop_expert_role is not None and expert == drop_expert_role[0]:
+                claims = [m for m in claims if m.role != drop_expert_role[1]]
+            blocks.append(Block(KIND_EXPERT, layer, claims, expert=expert))
+    return blocks
+
+
+def moe_geometry_document(g):
+    """The `model` object exactly as `main --model-ir` emits it for an olmoe container."""
+    return {
+        "schema_version": 2,
+        "kind": "R1_MODEL_IR",
+        "path": "synthetic-olmoe.gguf",
+        "status": "ok",
+        "error_code": "",
+        "error_detail": "",
+        "model": {
+            "arch": g["arch"],
+            "n_layer": g["n_layer"],
+            "n_embd": g["n_embd"],
+            "n_head": g["n_head"],
+            "n_head_kv": g["n_head_kv"],
+            "head_dim": g["head_dim"],
+            "n_ff": g["n_ff"],
+            "n_ff_exp": g["n_ff_exp"],
+            "n_vocab": g["n_vocab"],
+            "n_expert": g["n_expert"],
+            "n_expert_used": g["n_expert_used"],
+            "context_length": g["context_length"],
+            "rms_eps": g["rms_eps"],
+            "rms_eps_bits": bits32(g["rms_eps"]),
+            "rope": {
+                "type": g["rope_type"],
+                "type_name": "neox",
+                "type_source": "architecture",
+                "freq_base": g["rope_freq_base"],
+                "freq_base_bits": bits32(g["rope_freq_base"]),
+                "dim_count": g["rope_dim_count"],
+                "dim_count_source": "head_dim",
+                "scaling_type": None,
+            },
+        },
+    }
+
+
+MOE_GEOMETRY_FIELDS = [
+    "arch", "n_layer", "n_embd", "n_head", "n_head_kv", "head_dim", "n_ff_exp", "n_vocab",
+    "n_expert", "n_expert_used", "context_length", "rms_eps_bits",
+]
+MOE_ROPE_FIELDS = ["type", "dim_count", "freq_base_bits", "scaling_type"]
+
+
+def moe_geometry_corpus(g):
+    base = moe_geometry_document(g)
+    out = [("moe-geometry", base)]
+    for field in MOE_GEOMETRY_FIELDS:
+        copy = json.loads(json.dumps(base))
+        del copy["model"][field]
+        out.append(("moe-geometry-missing-" + field, copy))
+    for field in MOE_ROPE_FIELDS:
+        copy = json.loads(json.dumps(base))
+        del copy["model"]["rope"][field]
+        out.append(("moe-geometry-missing-rope-" + field, copy))
+    for name, path, value in (
+        ("kind", ("kind",), "R1_OLMOE_MODEL_IR"),
+        ("version", ("schema_version",), 1),
+        ("arch", ("model", "arch"), "qwen2"),
+        ("rope-type", ("model", "rope", "type"), 0),
+        ("rope-scaled", ("model", "rope", "scaling_type"), "yarn"),
+        ("rope-dims", ("model", "rope", "dim_count"), 2),
+        ("inconsistent", ("model", "n_embd"), 9),
+        ("head-kv", ("model", "n_head_kv"), 1),
+        ("expert-zero", ("model", "n_expert"), 0),
+        ("expert-used-high", ("model", "n_expert_used"), 9),
+        ("expert-used-huge", ("model", "n_expert_used"), 64),
+        ("eps-nan", ("model", "rms_eps_bits"), "7fc00000"),
+        ("eps-negative", ("model", "rms_eps_bits"), "bf800000"),
+        ("rope-base-zero", ("model", "rope", "freq_base_bits"), "00000000"),
+        ("rope-base-inf", ("model", "rope", "freq_base_bits"), "7f800000"),
+    ):
+        broken = json.loads(json.dumps(base))
+        node = broken
+        for key in path[:-1]:
+            node = node[key]
+        node[path[-1]] = value
+        out.append(("moe-geometry-" + name, broken))
+    return out
+
+
+def moe_transcript(records, tokens):
+    lines = [
+        "build: 10566 (bb4caa754) with cc for x86_64-unknown-linux-gnu",
+        "number of input tokens = %d" % len(tokens),
+    ]
+    for name, op, source, tensor in records:
+        lines.extend(transcript_block(name, op, source, tensor))
+    return "\n".join(lines) + "\n"
+
+
+def write_moe_corpus(directory, emit):
+    g = GEOMETRY_MOE
+    members = moe_members(g)
+    base, layout = build(moe_blocks(members, g))
+    emit("moe-pack.alignpack", base)
+
+    # `R5_ALIGNMENT`. `block_align = 1` packs the member windows tight, but at this geometry every
+    # dense member is a whole number of 32-byte rows, so tightness alone cannot put one off a
+    # `TENSOR_ALIGNMENT` boundary — unlike R5A's corpus, olmoe declares no bias and its smallest
+    # member is `n_embd` floats. Halving `token_embd`'s declared `nbytes` makes the row stride 16,
+    # so the row-gathered window is 48 bytes and every later window offset is 16 mod 32. The dims
+    # are untouched, which is what keeps the fault an *alignment* fault and not a shape one.
+    tight, tight_layout = build(moe_blocks(moe_members(g), g), block_align=1, member_align=1)
+    emit("moe-pack-tight.alignpack",
+         patch(tight, member_field(tight_layout, 0, 24), "<Q", g["n_vocab"] * 16))
+
+    no_router, _ = build(moe_blocks(moe_members(g), g, drop_router_layer=0))
+    emit("moe-pack-no-router.alignpack", no_router)
+
+    ambiguous, _ = build(moe_blocks(moe_members(g), g, duplicate_router=True))
+    emit("moe-pack-ambiguous.alignpack", ambiguous)
+
+    no_qnorm, _ = build(moe_blocks(moe_members(g), g, drop_role="attn_q_norm"))
+    emit("moe-pack-no-qnorm.alignpack", no_qnorm)
+
+    no_expert, _ = build(moe_blocks(moe_members(g), g, drop_expert=5))
+    emit("moe-pack-no-expert.alignpack", no_expert)
+
+    # The reference forward, which is also what names the routed union the mutations below target.
+    dense = {role: moe_tensor(role, -1 if role == "token_embd" else 0, g)
+             for role, _, _ in MOE_DENSE_ROLES}
+    experts = {role: [moe_tensor(role, 0, g, expert=e) for e in range(g["n_expert"])]
+               for role, _ in MOE_EXPERT_ROLES}
+    records, topk = moe_forward(dense, experts, g, MOE_TOKENS)
+    routed = sorted(set(topk))
+    first_routed = routed[0]
+
+    role_missing, _ = build(moe_blocks(moe_members(g), g,
+                                       drop_expert_role=(first_routed, "ffn_up_exps")))
+    emit("moe-pack-expert-role.alignpack", role_missing)
+
+    # Member indices are arithmetic over the block skeleton, because `build` writes members in
+    # block order: one embedding member, then layer 0's nine dense members, then its experts.
+    dense_layer_members = len(MOE_DENSE_ROLES) - 1
+    claim_base = 1 + dense_layer_members + first_routed * len(MOE_EXPERT_ROLES)
+    router_index = 1 + dense_layer_members - 1
+
+    # `R5D_ROUTER_SHAPE`: a router whose second axis is not `n_expert` silently produces a valid
+    # softmax over the wrong number of experts.
+    emit("moe-pack-router-shape.alignpack",
+         patch(base, member_field(layout, router_index, 56), "<Q", g["n_expert"] - 1))
+    # `R5_SHAPE`: `attn_q`'s row count. Member 2 of the container is layer 0's `attn_q`.
+    emit("moe-pack-shape.alignpack",
+         patch(base, member_field(layout, 2, 56), "<Q", g["n_embd"] + 1))
+    # `R4_5_SLICE`: a claim whose `slice_count` is not the sliced axis's own extent.
+    emit("moe-pack-slice.alignpack",
+         patch(base, member_field(layout, claim_base, 84), "<i", g["n_expert"] - 1))
+    # `R5D_CLAIM_MISSING`: a claim that names a plane other than its own expert.
+    emit("moe-pack-slice-index.alignpack",
+         patch(base, member_field(layout, claim_base, 80), "<i",
+               (first_routed + 1) % g["n_expert"]))
+    # `R5_TYPE_UNSUPPORTED`: a claim declaring a ggml type the operand table does not carry.
+    emit("moe-pack-claim-type.alignpack",
+         patch(base, member_field(layout, claim_base, 40), "<I", 4))
+    emit("moe-pack-truncated.alignpack", base[:len(base) - 64])
+
+    emit("moe-source.bin", source_image(layout))
+    emit("moe-source-diverged.bin", source_image(layout, corrupt=claim_base))
+    emit("moe-source-short.bin", b"\0")
+
+    for name, document in moe_geometry_corpus(g):
+        emit(name + ".json", json.dumps(document, separators=(",", ":")) + "\n")
+
+    transcript = moe_transcript(records, MOE_TOKENS)
+    emit("moe-transcript.txt", transcript)
+
+    lines = transcript.split("\n")
+
+    def header_at(name, op):
+        return next(i for i, line in enumerate(lines)
+                    if line.startswith("common_debug_cb_eval:")
+                    and (" %s = " % name) in line and ("%s(" % op) in line)
+
+    # `R5_ORACLE_MISSING`: the `l_out-0` record is deleted outright.
+    start = header_at("l_out-0", "ADD")
+    emit("moe-transcript-missing.txt", "\n".join(lines[:start]) + "\n")
+
+    # `R5_ORACLE_SHAPE`: `l_out-0` declares one token fewer than the graph computed.
+    reshaped = list(lines)
+    reshaped[start] = reshaped[start].replace(
+        "{%d, %d, 1, 1}" % (g["n_embd"], len(MOE_TOKENS)),
+        "{%d, %d, 1, 1}" % (g["n_embd"], len(MOE_TOKENS) - 1))
+    emit("moe-transcript-shape.txt", "\n".join(reshaped) + "\n")
+
+    # A tolerance breach: one printed element of `l_out-0` moved by 0.0003, three times section
+    # 3.6's threshold, so `oracle.verdict` becomes `FAIL` while `status` stays `ok`.
+    perturbed = list(lines)
+    row = start + 3
+    original = perturbed[row]
+    first = original.index("[") + 1
+    value = float(original[first:first + 12])
+    perturbed[row] = original[:first] + ("%12.4f" % (value + 0.0003)) + original[first + 12:]
+    emit("moe-transcript-perturbed.txt", "\n".join(perturbed) + "\n")
+
+    headers = [line for line in lines
+               if line.startswith("common_debug_cb_eval:") or line.startswith("build: ")
+               or line.startswith("number of input tokens")]
+    emit("moe-transcript-headers.txt", "\n".join(headers) + "\n")
+
+    end = next(i for i, line in enumerate(lines[start:], start)
+               if line.startswith("    sum = "))
+    emit("moe-transcript-novalues.txt", "\n".join(lines[:start + 1] + lines[end:]) + "\n")
+
+    emit("moe-transcript-garbage.txt", bytes(range(256)) * 8)
+
+    # `routing.verdict: MISMATCH` on a **successful** run: one printed expert id of
+    # `ffn_moe_topk-0` is moved to another expert and the block sum moves with it, so both halves
+    # of oracle 2 disagree while oracle 3 is still evaluated and reported.
+    topk_header = header_at("ffn_moe_topk-0", "VIEW")
+    id_row = topk_header + 3
+    mismatch = list(lines)
+    original = mismatch[id_row]
+    first = original.index("[") + 1
+    was = int(float(original[first:first + 12]))
+    now = (was + 1) % g["n_expert"]
+    mismatch[id_row] = original[:first] + ("%12.4f" % now) + original[first + 12:]
+    sum_row = next(i for i, line in enumerate(mismatch[topk_header:], topk_header)
+                   if line.startswith("    sum = "))
+    mismatch[sum_row] = "    sum = %f" % (sum(topk) - was + now)
+    emit("moe-transcript-routing.txt", "\n".join(mismatch) + "\n")
+
+    # `R2_EXPERT_ID_NOT_INTEGRAL`: an i32 element the instrument could not have printed.
+    nonintegral = list(lines)
+    original = nonintegral[id_row]
+    nonintegral[id_row] = original[:first] + ("%12.4f" % (was + 0.5)) + original[first + 12:]
+    emit("moe-transcript-nonintegral.txt", "\n".join(nonintegral) + "\n")
+
+    # The routing the generator's own second implementation produced, so the runner asserts the
+    # document's `routing` object against an independent computation rather than against itself.
+    plane_bytes = sum(moe_claim_dims(role, g)[0] * moe_claim_dims(role, g)[1] * 4
+                      for role, _ in MOE_EXPERT_ROLES)
+    used = g["n_expert_used"]
+    emit("moe-routing.json", json.dumps({
+        "tokens": MOE_TOKENS,
+        "expert_ids": [topk[i * used:(i + 1) * used] for i in range(len(MOE_TOKENS))],
+        "routed": routed,
+        "routed_count": len(routed),
+        "compact_ids": [[routed.index(e) for e in topk[i * used:(i + 1) * used]]
+                        for i in range(len(MOE_TOKENS))],
+        "expert_bytes_read": len(routed) * plane_bytes,
+        "expert_bytes_in_layer": g["n_expert"] * plane_bytes,
+        "planes_read": len(routed) * len(MOE_EXPERT_ROLES),
+        "planes_in_layer": g["n_expert"] * len(MOE_EXPERT_ROLES),
+    }, separators=(",", ":")) + "\n")
+
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))

@@ -1,0 +1,394 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# R5D-MOE-LAYER-FORWARD named focused qualification (`docs/specs/r5d-moe-layer-forward.md`
+# section 5.2). **Opt-in and capable-only.** It is in neither HOSTED_CHECK_TARGETS nor
+# CAPABLE_ONLY_CHECK_TARGETS and in no aggregate, exactly as `layer-forward-qualification` and
+# `model-forward-qualification` are not.
+#
+#   ALIGN_LLM_GGML_INCLUDE              directory holding ggml.h, ggml-alloc.h, ggml-backend.h
+#   ALIGN_LLM_GGML_LIB                  directory holding libggml and libggml-base
+#   ALIGN_LLM_GGUF_MODEL                the **olmoe** GGUF this layer is read from
+#   ALIGN_LLM_LLAMA_EVAL_CALLBACK       path to `llama-eval-callback`
+#   ALIGN_LLM_MOE_LAYER_FORWARD_TMPDIR  where the pack is written; defaults to TMPDIR
+#   ALIGN_LLM_MOE_LAYER_FORWARD_EXCERPT_UPDATE=1  rewrite eval/fixtures/olmoe-blk0-6tok.txt
+#
+# When any is unset, when the model or the instrument is absent, when the model is not an olmoe
+# container, or when the free space is under the pack's size plus 1 GiB, it prints one explicit N/A
+# line naming the missing input and exits 0.
+#
+# It packs the real model into a temporary directory **outside the work tree**, derives the
+# geometry with `main --model-ir`, captures a transcript with the four contractual flags of section
+# 2.1, runs `ggml-spike --moe-layer-forward` with all three oracles, asserts every recorded value
+# of section 5.2, and removes the pack on every exit path.
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+
+na() {
+  printf '%s\n' "moe layer forward qualification: N/A $1"
+  exit 0
+}
+
+[ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ] || na "ALIGN_LLM_GGML_INCLUDE is unset"
+[ -n "${ALIGN_LLM_GGML_LIB:-}" ] || na "ALIGN_LLM_GGML_LIB is unset"
+[ -n "${ALIGN_LLM_GGUF_MODEL:-}" ] || na "ALIGN_LLM_GGUF_MODEL is unset"
+[ -n "${ALIGN_LLM_LLAMA_EVAL_CALLBACK:-}" ] || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is unset"
+[ -d "${ALIGN_LLM_GGML_INCLUDE}" ] || na "ALIGN_LLM_GGML_INCLUDE is not a directory"
+[ -d "${ALIGN_LLM_GGML_LIB}" ] || na "ALIGN_LLM_GGML_LIB is not a directory"
+[ -f "${ALIGN_LLM_GGUF_MODEL}" ] || na "ALIGN_LLM_GGUF_MODEL is not a file"
+command -v "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" >/dev/null 2>&1 \
+  || [ -x "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" ] \
+  || na "ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable"
+
+model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
+scratch_root="${ALIGN_LLM_MOE_LAYER_FORWARD_TMPDIR:-${TMPDIR:-/tmp}}"
+[ -d "${scratch_root}" ] || na "the scratch root ${scratch_root} does not exist"
+free_kib=$(df -Pk "${scratch_root}" | awk 'NR == 2 { print $4 }')
+need_kib=$(( model_bytes / 1024 + 1048576 ))
+if [ "${free_kib}" -lt "${need_kib}" ]; then
+  na "free space under ${scratch_root} is ${free_kib} KiB, below the ${need_kib} KiB the pack needs"
+fi
+
+work_dir=$(mktemp -d "${scratch_root%/}/align-r5d-XXXXXX")
+# `build/lib/libalign_ggml_shim` is shared state outside the work tree: the forced-failure loop
+# below replaces it, and an early exit used to leave a `-DALIGN_GGML_FORCE_*` library in place for
+# whatever ran next. The trap restores the ordinary real shim before it removes the work directory,
+# so the exit path is total (R5A section 6, correction C22).
+shim_built=0
+cleanup() {
+  status=$?
+  if [ "${shim_built}" = 1 ]; then
+    ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null 2>&1 || true
+  fi
+  rm -rf "${work_dir}"
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+echo "moe layer forward qualification: reading the geometry of ${ALIGN_LLM_GGUF_MODEL}"
+"${root_dir}/main" --model-ir "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/geometry.json" >/dev/null
+arch=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["model"]["arch"])' \
+  "${work_dir}/geometry.json")
+# The one N/A detail this runner owns beyond `run-layer-forward`'s: R5D's arm refuses any other
+# architecture at step 8, and a qualification that reported that refusal as a failure would be
+# blaming the model for being the wrong model.
+[ "${arch}" = "olmoe" ] || na "ALIGN_LLM_GGUF_MODEL is not an olmoe model"
+
+echo "moe layer forward qualification: packing ${ALIGN_LLM_GGUF_MODEL} into ${work_dir}"
+"${root_dir}/main" --pack "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/model.alignpack" \
+  "${work_dir}/pack.json" >/dev/null
+
+# Section 2.1's flag set, contractual and not an invocation detail: build 10566 defaults to
+# `-fa auto`, an f16 KV cache, and repacked quantized weights, and none of those three is the graph
+# R5D computes.
+#
+# The prompt is `def add(a, b` and **not** `run-layer-forward`'s `def add(a, b):`, because OLMoE's
+# tokenizer produces seven ids for the latter and `MAX_PREFILL_TOKENS` is 6 (section 2.2 fact 6).
+echo "moe layer forward qualification: capturing the transcript with -fa off -ctk f32 -ctv f32 -nr"
+"${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" -m "${ALIGN_LLM_GGUF_MODEL}" -p "def add(a, b" \
+  -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 \
+  > "${work_dir}/transcript.txt" 2> "${work_dir}/transcript.log"
+
+# The tokenizer produced exactly the six ids the arm is about to be given, asserted **before** the
+# arm runs, so a tokenizer change is a named failure rather than a silent seven-token refusal.
+# The instrument writes `number of input tokens = N` and then one id per line, each behind its own
+# timestamp, so the ids are the last field of the N lines that follow.
+tokens=$(python3 - "${work_dir}/transcript.log" <<'IDS'
+import re
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8", errors="replace") as handle:
+    lines = handle.read().split("\n")
+at = next(i for i, line in enumerate(lines) if "number of input tokens" in line)
+count = int(re.search(r"number of input tokens = (\d+)", lines[at]).group(1))
+print(",".join(line.split()[-1] for line in lines[at + 1:at + 1 + count]))
+IDS
+)
+if [ "${tokens}" != "1545,823,9,66,13,270" ]; then
+  echo "moe layer forward qualification: FAIL the tokenizer produced ${tokens}, not" \
+    "1545,823,9,66,13,270 for 'def add(a, b'" >&2
+  exit 1
+fi
+
+shim_dir=$(ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim")
+shim_built=1
+(
+  cd "${root_dir}"
+  LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}" \
+  DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+  LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  "${compiler}" build src/ggml_spike.align >/dev/null
+  mv -f ggml_spike ggml-spike
+)
+
+export DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+"${root_dir}/ggml-spike" --moe-layer-forward "${work_dir}/model.alignpack" \
+  "${work_dir}/geometry.json" 1545,823,9,66,13,270 \
+  "${work_dir}/moe-layer.json" "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/transcript.txt"
+
+python3 - "${root_dir}" "${work_dir}" <<'PY'
+import json
+import os
+import sys
+
+root_dir, work_dir = sys.argv[1:3]
+with open(os.path.join(work_dir, "moe-layer.json"), "r", encoding="utf-8") as handle:
+    d = json.load(handle)
+
+failures = []
+
+
+def want(label, got, expected):
+    if got != expected:
+        failures.append("%s: %r, expected %r" % (label, got, expected))
+
+
+def at_most(label, got, bound):
+    if got > bound:
+        failures.append("%s: %r, expected at most %r" % (label, got, bound))
+
+
+want("status", d["status"], "ok")
+want("verdict", d["verdict"], "EXTERNAL")
+model = d["model"]
+want("model.arch", model["arch"], "olmoe")
+want("model.n_layer", model["n_layer"], 16)
+want("model.n_embd", model["n_embd"], 2048)
+want("model.n_head", model["n_head"], 16)
+want("model.n_head_kv", model["n_head_kv"], 16)
+want("model.head_dim", model["head_dim"], 128)
+want("model.n_ff_exp", model["n_ff_exp"], 1024)
+want("model.n_vocab", model["n_vocab"], 50304)
+want("model.n_expert", model["n_expert"], 64)
+want("model.n_expert_used", model["n_expert_used"], 8)
+want("model.context_length", model["context_length"], 4096)
+want("model.rms_eps_bits", "%08x" % model["rms_eps_bits"], "3727c5ac")
+want("model.rope_type", model["rope_type"], 2)
+want("model.rope_dim_count", model["rope_dim_count"], 128)
+want("model.rope_freq_base_bits", "%08x" % model["rope_freq_base_bits"], "461c4000")
+want("model.attn_scale_bits", "%08x" % model["attn_scale_bits"], "3db504f3")
+
+members = d["members"]
+want("members count", len(members), 10)
+by_role = {m["role"]: m for m in members}
+if not all(m["pointer_identity"] for m in members):
+    failures.append("a dense weight tensor is not at its own window offset")
+want("token_embd.ne1", by_role["token_embd"]["ne1"], 6)
+want("token_embd.pread_count", by_role["token_embd"]["pread_count"], 6)
+# Section 3.4's dense window content, member by member and in total.
+want("attention member bytes",
+     sum(by_role[r]["nbytes"] for r in
+         ("attn_norm", "attn_q", "attn_q_norm", "attn_k", "attn_k_norm", "attn_v",
+          "attn_output")),
+     10543104)
+want("router member bytes", by_role["ffn_norm"]["nbytes"] + by_role["router"]["nbytes"], 532480)
+want("residency.dense_bytes_read", d["residency"]["dense_bytes_read"], 11082496)
+
+# Section 2.2 fact 1: both QK-norms are `n_embd` wide. A per-head norm would be `head_dim` wide and
+# would have passed every other shape check in the design.
+for role in ("attn_q_norm", "attn_k_norm"):
+    want("%s.ne0" % role, by_role[role]["ne0"], 2048)
+    want("%s.ne1" % role, by_role[role]["ne1"], 1)
+
+routing = d["routing"]
+residency = d["residency"]
+want("routing.routed_count", routing["routed_count"], 25)
+want("routing.routed", routing["routed"],
+     [0, 4, 6, 7, 13, 14, 15, 16, 21, 32, 33, 35, 36, 38, 39, 40, 43, 48, 51, 53, 54, 55, 57, 59,
+      61])
+want("routing.slot_order_normative", routing["slot_order_normative"], True)
+# The compaction is a bijection onto `[0, U)`: verified in the arm and again here, because a
+# routing that is internally consistent and wrong is this design's most dangerous failure mode.
+flat = [slot for row in routing["compact_ids"] for slot in row]
+if sorted(set(flat)) != list(range(routing["routed_count"])):
+    failures.append("routing.compact_ids is not a bijection onto [0, %d)"
+                    % routing["routed_count"])
+for token, row in enumerate(routing["expert_ids"]):
+    if len(set(row)) != len(row):
+        failures.append("routing.expert_ids[%d] repeats an expert: %r" % (token, row))
+    for slot, expert in enumerate(row):
+        if routing["routed"][routing["compact_ids"][token][slot]] != expert:
+            failures.append("routing.compact_ids[%d][%d] does not name expert %d"
+                            % (token, slot, expert))
+
+# **The measurement this capability exists to produce.**
+want("residency.expert_bytes_read", residency["expert_bytes_read"], 101990400)
+want("residency.expert_bytes_in_layer", residency["expert_bytes_in_layer"], 261095424)
+want("residency.expert_bytes_read_ppm", residency["expert_bytes_read_ppm"], 390625)
+want("residency.planes_read", residency["planes_read"], 75)
+want("residency.planes_in_layer", residency["planes_in_layer"], 192)
+# The container's whole contribution: one expert's three claims lie in one contiguous span, so
+# twenty-five experts are twenty-five reads instead of seventy-five (section 2.7).
+want("residency.block_pread_count", residency["block_pread_count"], 25)
+
+claims = d["claims"]
+want("claims count", len(claims), 75)
+if not all(c["pointer_identity"] for c in claims):
+    failures.append("an expert claim is not at its own window offset")
+if any(c["ne2"] != 25 for c in claims):
+    failures.append("a claim's built ne2 is not U")
+if any(c["slice_count"] != 64 for c in claims):
+    failures.append("a claim's recorded slice_count is not n_expert")
+if any(c["slice_index"] != c["expert"] for c in claims):
+    failures.append("a claim names a plane other than its own expert")
+# Section 2.7 reproduces `moe-prereq-discharge.md`'s arithmetic exactly: the gate plane is
+# 1,179,648 bytes and the down plane is 1,720,320.
+by_expert_role = {(c["expert"], c["role"]): c for c in claims}
+want("gate plane bytes", by_expert_role[(0, "ffn_gate_exps")]["nbytes"], 1179648)
+want("up plane bytes", by_expert_role[(0, "ffn_up_exps")]["nbytes"], 1179648)
+want("down plane bytes", by_expert_role[(0, "ffn_down_exps")]["nbytes"], 1720320)
+# Q6_K is 14 and Q4_K is 12: layer 0's `ffn_down_exps` is Q6_K and section 5.4 records that the
+# eight Q4_K layers are unreachable without a `LAYER` operand.
+want("ffn_down_exps.ggml_type", by_expert_role[(0, "ffn_down_exps")]["ggml_type"], 14)
+
+graph_a, graph_b, graph = d["graph_a"], d["graph_b"], d["graph"]
+want("graph_a.table_rows", graph_a["table_rows"], 31)
+want("graph_b.table_rows", graph_b["table_rows"], 24)
+want("graph.slot_capacity", graph["slot_capacity"], 128)
+want("graph.carried_bytes", graph["carried_bytes"], 2 * 2048 * 6 * 4 + 64 * 6 * 4 + 2 * 8 * 6 * 4)
+want("abi.tensor_alignment", d["abi"]["tensor_alignment"], 32)
+want("abi.table_drift", d["abi"]["table_drift"], -1)
+want("abi.slot_magic_ok", d["abi"]["slot_magic_ok"], True)
+want("abi.fp_contract_off", d["abi"]["fp_contract_off"], True)
+
+reference = d["reference"]
+want("reference.verdict", reference["verdict"], "IDENTICAL")
+want("reference.nodes_compared", reference["nodes_compared"], len(d["nodes"]))
+want("reference.nodes_identical", reference["nodes_identical"], len(d["nodes"]))
+
+routing_oracle = d["routing_oracle"]
+want("routing_oracle.verdict", routing_oracle["verdict"], "MATCH")
+want("routing_oracle.ids_total", routing_oracle["ids_total"], 48)
+# Section 2.2 fact 6: the slot axis is 8 and the instrument prints six of eight, so the direct
+# comparison covers 36 of 48 ids and the block's exact integer sum pins the other twelve.
+want("routing_oracle.ids_printed_compared", routing_oracle["ids_printed_compared"], 36)
+want("routing_oracle.ids_printed_matched", routing_oracle["ids_printed_matched"], 36)
+want("routing_oracle.sum_expected", routing_oracle["sum_expected"], 1471)
+want("routing_oracle.sum_observed", routing_oracle["sum_observed"], 1471)
+want("routing_oracle.sum_matches", routing_oracle["sum_matches"], True)
+
+oracle = d["oracle"]
+want("oracle.verdict", oracle["verdict"], "PASS")
+want("oracle.nodes_expected", oracle["nodes_expected"], 26)
+want("oracle.nodes_matched", oracle["nodes_matched"], 26)
+want("oracle.elements_compared", oracle["elements_compared"], 2376)
+at_most("oracle.max_abs_diff_ten_thousandths", oracle["max_abs_diff_ten_thousandths"], 1)
+want("oracle.tolerance_ten_thousandths", oracle["tolerance_ten_thousandths"], 1)
+want("oracle.sum_tolerance_millionths", oracle["sum_tolerance_millionths"], 1000)
+want("oracle.sum_tolerance_relative_ppm", oracle["sum_tolerance_relative_ppm"], 10)
+
+# Section 3.6's three exclusion classes, asserted as exact sets so an exclusion cannot silently
+# widen into a gap.
+excluded = [n["id"] for n in d["nodes"] if n["oracle"] == "shape_incomparable"]
+want("shape_incomparable nodes", excluded, ["kq", "kq_soft_max"])
+ambiguous = [n["id"] for n in d["nodes"] if n["oracle"] == "ambiguous_name"]
+want("ambiguous_name nodes", ambiguous, ["norm_embd", "norm_q", "norm_k", "norm_ffn"])
+unstable = [n["id"] for n in d["nodes"] if n["oracle"] == "unstable_name"]
+want("unstable_name node count", len(unstable), 14)
+compared = [n["id"] for n in d["nodes"] if n["oracle"] == "compared"]
+want("compared node count", len(compared), 26)
+integers = [n for n in d["nodes"] if n["ggml_type"] == 26]
+want("i32 nodes", [n["id"] for n in integers], ["ffn_moe_argsort", "ffn_moe_topk"])
+want("ffn_moe_argsort bit_sum", integers[0]["bit_sum"], 12096)
+want("ffn_moe_topk bit_sum", integers[1]["bit_sum"], 1471)
+
+lifetime = d["lifetime"]
+for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                       ("contexts_created", "contexts_freed"),
+                       ("backends_created", "backends_freed"),
+                       ("gallocrs_created", "gallocrs_freed")):
+    want("lifetime.%s == %s" % (created, freed), lifetime[created], lifetime[freed])
+want("lifetime.released_before_owner_scope_end", lifetime["released_before_owner_scope_end"], True)
+
+print("moe layer forward qualification: backend %s" % graph["backend_name"])
+print("moe layer forward qualification: dense pread %.3f ms, claim pread %.3f ms, decide %.3f ms"
+      % (d["timings"]["pread_ns"] / 1e6, d["timings"]["claim_pread_ns"] / 1e6,
+         d["timings"]["decide_ns"] / 1e6))
+print("moe layer forward qualification: build %.3f + %.3f ms, compute %.3f + %.3f ms "
+      "(warm mean of 5 each)"
+      % (d["timings"]["build_a_ns"] / 1e6, d["timings"]["build_b_ns"] / 1e6,
+         d["timings"]["compute_a_ns"] / 1e6, d["timings"]["compute_b_ns"] / 1e6))
+print("moe layer forward qualification: microbenchmark B = %.3f ms for one routed layer, six "
+      "tokens, warm, over two graphs"
+      % ((d["timings"]["compute_a_ns"] + d["timings"]["compute_b_ns"]) / 1e6))
+print("moe layer forward qualification: reference compute %.3f ms, oracle %.3f ms"
+      % (d["timings"]["reference_compute_ns"] / 1e6, d["timings"]["oracle_ns"] / 1e6))
+print("moe layer forward qualification: graph nodes %d+%d (tables %d+%d), activation %d+%d B, "
+      "slot high water %d/%d"
+      % (graph_a["node_count"], graph_b["node_count"], graph_a["table_rows"],
+         graph_b["table_rows"], graph_a["activation_bytes"], graph_b["activation_bytes"],
+         graph["slot_high_water"], graph["slot_capacity"]))
+print("moe layer forward qualification: residency %d/%d expert bytes = %d ppm, %d/%d planes, "
+      "%d block preads"
+      % (residency["expert_bytes_read"], residency["expert_bytes_in_layer"],
+         residency["expert_bytes_read_ppm"], residency["planes_read"],
+         residency["planes_in_layer"], residency["block_pread_count"]))
+print("moe layer forward qualification: peak resident weight bytes %d against %d for the whole "
+      "layer"
+      % (residency["dense_bytes_read"] + residency["expert_bytes_read"],
+         residency["dense_bytes_read"] + residency["expert_bytes_in_layer"]))
+print("moe layer forward qualification: routed %d/%d experts: %s"
+      % (routing["routed_count"], model["n_expert"],
+         ",".join(str(e) for e in routing["routed"])))
+for token, row in enumerate(routing["expert_ids"]):
+    print("moe layer forward qualification: t%d slots %s -> compact %s"
+          % (token, " ".join("%2d" % e for e in row),
+             " ".join("%2d" % s for s in routing["compact_ids"][token])))
+print("moe layer forward qualification: self-reference %s (%d/%d nodes byte-identical)"
+      % (reference["verdict"], reference["nodes_identical"], reference["nodes_compared"]))
+print("moe layer forward qualification: routing identity %s, %d/%d printed ids, sum %d == %d"
+      % (routing_oracle["verdict"], routing_oracle["ids_printed_matched"],
+         routing_oracle["ids_total"], routing_oracle["sum_observed"],
+         routing_oracle["sum_expected"]))
+print("moe layer forward qualification: transcript %s, %d/%d nodes, %d elements, "
+      "max |d| %d ten-thousandths, max |dsum| %d millionths"
+      % (oracle["verdict"], oracle["nodes_matched"], oracle["nodes_expected"],
+         oracle["elements_compared"], oracle["max_abs_diff_ten_thousandths"],
+         oracle["max_sum_diff_millionths"]))
+print("moe layer forward qualification: l_out sha256 %s bit_sum %d"
+      % (d["output"]["sha256"], d["output"]["bit_sum"]))
+for node in d["nodes"]:
+    print("moe layer forward qualification: node %-16s %-11s %s ne=[%d,%d,%d,%d] sum=%d sha=%s %s"
+          % (node["id"], node["op"], node["phase"], node["ne0"], node["ne1"], node["ne2"],
+             node["ne3"], node["f32_sum_millionths"], node["sha256"][:16], node["oracle"]))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("moe layer forward qualification: FAIL %s\n" % line)
+    raise SystemExit(1)
+print("moe layer forward qualification: every section 5.2 assertion PASS")
+PY
+
+# The two forced builds that no input can produce, run against the **real** shim so the failure
+# paths are exercised rather than reasoned about.
+for force in init compute; do
+  ALIGN_LLM_GGML_FORCE="${force}" "${root_dir}/scripts/build-ggml-shim" >/dev/null
+  set +e
+  "${root_dir}/ggml-spike" --moe-layer-forward "${work_dir}/model.alignpack" \
+    "${work_dir}/geometry.json" 1545,823,9,66,13,270 - > "${work_dir}/forced.json"
+  status=$?
+  set -e
+  code=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["error_code"])' \
+    "${work_dir}/forced.json")
+  expected="R5_GGML_INIT"
+  [ "${force}" = compute ] && expected="R5_COMPUTE"
+  if [ "${code}" != "${expected}" ] || [ "${status}" = 0 ]; then
+    echo "moe layer forward qualification: FAIL forced ${force} produced ${code} (exit ${status})" >&2
+    exit 1
+  fi
+  echo "moe layer forward qualification: forced ${force} reached ${code}"
+done
+ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null   # the trap repeats this
+
+# The checked-in excerpt is swept from here, which is what keeps it from going stale.
+if [ "${ALIGN_LLM_MOE_LAYER_FORWARD_EXCERPT_UPDATE:-}" = 1 ]; then
+  python3 "${root_dir}/scripts/sweep-moe-layer-forward-excerpt.py" \
+    "${work_dir}/transcript.txt" "${root_dir}/eval/fixtures/olmoe-blk0-6tok.txt"
+  echo "moe layer forward qualification: eval/fixtures/olmoe-blk0-6tok.txt rewritten"
+fi
+
+echo "moe layer forward qualification: removing the pack"

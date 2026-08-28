@@ -1405,3 +1405,284 @@ copies of one request in one register is worse than one request in the wrong bra
 | **One layer, one quantization mix.** Layer 0's `ffn_down_exps` is Q6_K; the Q4_K form is unreachable through this arm | Section 5.4's `LAYER` deferral | Named, with the exact layer list, and cheap to close |
 | **The residency claim could be over-read.** A reader who sees "top-8 of 64" may take 12.5% as the capability's number | Section 2.6 is the mitigation and it is in section 1.4's gate table, not buried | The document publishes both integers per run, and section 5.3 lists three prefill lengths rather than one |
 | **Measurement spread.** Phase B's five runs span 4.87–6.77 ms | Section 5.3 states it as ±16% | The document publishes per-run `timings.*`; the residency ratios, which are the metric that matters, are exact |
+
+---
+
+## 6. Implementation-forced corrections
+
+Every row below is a place where writing the capability falsified something section 3, 4, or 5
+asserted. Each names what the design said, what the implementation found, and what now ships. The
+sections above are **not** rewritten: this section is the diff, in `r5a-dense-layer-forward.md`
+section 6's shape.
+
+### C1 — `n_expert_used` needs an upper bound, and it is the slot store's
+
+Section 3.8 step 7 bounds `n_expert_used` only by `1 <= n_expert_used <= n_expert`. Section 3.5
+makes phase B's table `2 * n_expert_used + 8` rows long, at `B_NODE_BASE` 52 in a store of
+`MAX_NODE_SLOTS` 128, so a geometry declaring `n_expert_used` above 34 builds a table the store
+cannot hold. The node walk would then report `R5_SLOT` on whichever row first exceeded the capacity
+— a row that is not at fault — instead of naming the field that is.
+
+`parse_geometry` therefore refuses `B_NODE_BASE + b_node_count(n_expert_used) > MAX_NODE_SLOTS` as
+`R5_GEOMETRY` detail `n_expert_used`, beside the two range relations step 7 already carries. The
+bound is the store's own arithmetic and not an invented ceiling: it moves if and only if
+`MAX_NODE_SLOTS` or the phase-B table does. `moe-geometry-expert-used-huge` is the case, at
+`n_expert_used` 64 against a store that can hold 34.
+
+### C2 — the reduction chain publishes `node_*`, not `node_56`
+
+Section 3.6 excludes `node_56` … `node_61` as `unstable_name` and section 2.2 fact 4 records those
+exact numbers for build 10566 on this model. `nodes[].transcript_name` is a published field, and a
+row that is never matched publishing a name that is right for one build of one model and wrong
+everywhere else is a fact with a decay date. The fourteen excluded reduction rows publish
+`ffn_moe_weighted-0 (view)` for the eight views — that name **is** stable, because it is derived
+from the tensor it views — and the wildcard `node_*` for the six intermediate adds. The exclusion
+class already says the name is not sought; the name field now says the same thing rather than
+contradicting it.
+
+### C3 — the plane stride is the plane, and the claim window is one buffer
+
+Section 3.4 sizes the claim windows as `U * (align_up(gate_plane, block_align) +
+align_up(up_plane, block_align) + align_up(down_plane, block_align))`. That formula pads **every
+plane**. It is a no-op on this model — 1,179,648 and 1,720,320 are both multiples of 4,096 — and it
+is wrong in general, because a stacked 3-D tensor's planes are contiguous. That is section 2.3's own
+finding ("a stacked 3-D tensor over `U` planes is exactly `U` plane-sized regions laid end to end")
+and it is what `ggml_nbytes(stack) == U * plane` asserts; a padded stride makes `mul_mat_id` read
+plane `u` at `u * padded` while the tensor believes it is at `u * plane`.
+
+The synthetic corpus caught it on the first end-to-end run: at 512-byte planes and `block_align`
+4,096 the self-reference oracle reported `R5_REFERENCE_MISMATCH` at `node[ffn_moe_gate]@0`, because
+the reference arm copies plane by plane into ggml-owned memory — contiguously, correctly — while the
+primary arm read the padded window in place. **The bug is invisible on the real model and fatal on
+any model whose plane size is not a multiple of the container's block alignment**, which is exactly
+the class of defect a synthetic corpus exists to find.
+
+What ships: each **region base** is `block_align`-aligned and the planes inside a region are laid
+end to end, so `plane_stride == nbytes` for every claim and the budget is
+`sum over roles of align_up(base) + U * plane`. Section 3.9's "four Align-owned windows" becomes
+**two**: `dense_window`, and one `claim_window` holding three `block_align`-aligned role regions.
+Three separate `ggml_backend_dev_buffer_from_host_ptr` wraps of three separate allocations buy
+nothing and cost two more ggml buffers, two more alignment pads, and two more teardown branches. The
+alignment contract, the pointer-identity contract, `claims[].window_offset`, and the peak resident
+weight bytes are unchanged; `lifetime.ggml_buffers_created` is 3 without the reference arm and 4
+with it, rather than 5 and 6.
+
+### C4 — the transcript scanner is R5D's own, for the third time
+
+Section 3.6 says the transcript is "scanned with `r2a-expert-trace.md` section 2.2's line grammar,
+reusing `src/expert_trace.align`'s scanner". R5A section 6 correction C6 already recorded that this
+reuse is not available: `scan` is module-private, it never captures a node's source names, and it
+parses no element value and no `sum`. `src/layer_forward.align`'s scanner is that grammar made
+reusable — but it is typed against `layer_qwen2.OracleTable`, and R5D's oracle table is a different
+nominal type carrying two columns R5A's does not have: `integer`, and a class that says a row is
+**never sought**.
+
+`src/moe_layer_forward.align` therefore owns its own scanner. It is R5A's grammar with exactly two
+additions: `r2a-expert-trace.md` section 2.2 finding 5's integral-element rule, applied to the two
+i32 blocks and raising `R2_EXPERT_ID_NOT_INTEGRAL`; and an `oracle_scanned` gate, so the four
+`norm-0` rows and the fourteen reduction rows are not candidates for any header and cannot be bound
+by ordinal — which is section 2.2 fact 5's hazard removed by construction rather than by care.
+
+### C5 — two error details are fail-closed guards with no reachable input
+
+`R5D_CLAIM_BUDGET` cannot be produced by any container the reader accepts.
+`alignpack_read.member_at` refuses a member whose `[pack_offset, pack_offset + nbytes)` leaves its
+own block, so a plane large enough to make `U * plane` exceed `MAX_CLAIM_WINDOW_BYTES` (2^33) would
+need an 8 GiB `ExpertBlock` — which no `--pack` writes and no fixture can hold. Section 4.5's
+`moe-claim-budget` case is **withdrawn** rather than faked with a mutation the reader rejects first
+and for a different reason. The check ships: it is the one arithmetic in this arm that multiplies a
+container number by a data-dependent count, and a bound on it is cheaper than reasoning about it.
+
+`R5D_EXPERT_ID` detail `remap` is the same class. `routed[]` and `compact_ids` are computed in one
+pass over the same ids — `routed[u]` is the `u`th expert marked present and `compact_ids[t][s]` is
+that expert's own position — so the bijection cannot fail without corrupting Align's own integer
+arithmetic. The cover check ships as a backstop; the two **reachable** siblings, `token[t]slot[s]`
+for an out-of-range id and for a repeat within a token, are exercised by the forced builds C6 adds
+and are the two the section 2.8 bug actually produced.
+
+### C6 — six new forced shim flavours, and two existing ones that do not fit
+
+`ALIGN_GGML_FORCE_SLOT_EMPTY` targets slot 14 and `..._POS` targets slot 13; R5D's position vector
+is slot 11, so neither fires for this arm. `ALIGN_GGML_FORCE_REFERENCE_PERTURBATION` covers slots 0
+to 11, which for R5D is the ten dense weights **plus the token and position vectors** — and the
+primary arm writes those two through `slot_set`, so the perturbation would reach both arms and the
+mismatch it produced would not be a reference-only mismatch.
+
+`scripts/build-ggml-shim` gains six R5D flavours, each defined in `scripts/ggml_shim_stub.c` alone
+and never in an ordinary build:
+
+| Flavour | Macro | Reaches |
+| --- | --- | --- |
+| `engine+moe-slot-empty` | `ALIGN_GGML_FORCE_SLOT_EMPTY_MOE` | `R5_SLOT` at slot 11, R5D's `inp_pos` |
+| `engine+moe-reference` | `ALIGN_GGML_FORCE_REFERENCE_PERTURBATION_MOE` | `R5_REFERENCE_MISMATCH`, by flipping one bit of a **compact expert stack**, which only the reference arm ever writes |
+| `engine+moe-argsort-range` | `ALIGN_GGML_FORCE_ARGSORT_RANGE` | `R5D_EXPERT_ID` detail `token[0]slot[0]` |
+| `engine+moe-argsort-repeat` | `ALIGN_GGML_FORCE_ARGSORT_REPEAT` | `R5D_EXPERT_ID` detail `token[0]slot[1]` |
+| `engine+moe-argsort-order` | `ALIGN_GGML_FORCE_ARGSORT_ORDER` | section 4.2's `argsort` order refusal, as `R5_GGML_INIT` |
+| `engine+moe-view-extent` | `ALIGN_GGML_FORCE_VIEW_EXTENT` | section 4.2's `view_2d` extent refusal, as `R5_SHAPE` |
+
+The two remaining section 4.2 malformed-input cells — `slot_new_tensor_3d` with `ne2 < 1` and
+`slot_new_i32_2d` with a non-positive extent — stay closed by construction rather than by a case:
+`ne2` is `U`, which is at least 1 because a routed union is non-empty, and both id tensors' extents
+are geometry fields the validation order has already bounded. Adding a build to make an integer that
+cannot be zero be zero would measure the build, not the guard.
+
+### C7 — the stub engine's `get_rows` is ggml's general form, and its tensor record still fits in 128 bytes
+
+`ffn_moe_weights-0` is `get_rows` over a `{1, n_expert, T}` reshape indexed by a **2-D** id tensor,
+whose result is `{1, n_expert_used, T}`. R5A's and R5B's index vectors are 1-D, so the stub's kernel
+only ever implemented the `b->ne[1] == 1` specialisation. It now implements ggml's own rule —
+`src0 + i01*nb01 + i11*nb02` for the id at `(i10, i11)` — of which the 1-D case is a strict subset,
+so every R5A and R5B golden is unchanged to the bit.
+
+`mul_mat_id` needs three graph sources, so `align_stub_tensor` gained `src[2]` and **gave up the
+never-used third `lp` slot** to stay exactly 128 bytes. The stub's `align_ggml_graph_context_bytes`
+is `node_capacity * sizeof(that record) + 4096`, so growing the record by one pointer moved
+`abi.graph_context_bytes` from 20,480 to 21,504 in twenty-one R5A, seventeen R5B, and fourteen R5C
+golden documents — for a change that has nothing to do with any of those arms. All three checked-in
+golden files are byte-identical after this capability.
+
+### C8 — `ffn_moe_topk` is an oracle row over an input, not over a node
+
+Section 3.6 lists `ffn_moe_topk` among the twenty-six compared nodes, and section 2.8 establishes
+that R5D never builds a `VIEW` of `ffn_moe_argsort` at all — the slice is Align's. The tensor the
+row observes is therefore phase B's `topk_ids` **input**, at `SLOT_TOPK`, which holds exactly the
+ids the transcript's `ffn_moe_topk-0` view holds. Two consequences ship: `mark_outputs` skips it,
+because marking a written input as a graph output is meaningless; and `nodes[].op` reports `VIEW`,
+which is the transcript's own op rather than a node-table row that does not exist.
+
+### C9 — block selection is `(kind, layer, role_id)`, and R5A's helper is not enough
+
+Section 3.3 says the arm locates every block "by `(kind, layer, required role_id)` … never by
+computed index", and section 3.8 step 11 repeats it. R5A's `find_block` takes only `(kind, layer)`,
+because a Qwen2 container's two `WeightBlock`s are told apart by a layer index the dense arm has.
+**An olmoe container carries two `WeightBlock`s at layer `-1`** — the embedding and the head — so
+the pair alone is ambiguous for the one block this arm needs, and a `find_block` that returned the
+first match would silently compute the layer from whichever the writer happened to emit first.
+
+The shipped selector scans each candidate block's member records for the required role and refuses a
+second carrier as `R5_BLOCK_AMBIGUOUS`. The three phase-A selections are `(WeightBlock, -1,
+token_embd)`, `(AttentionBlock, 0, attn_norm)`, and `(RouterBlock, 0, router)`. The real model
+reached this for real: before the fix the qualification stopped at `R5_BLOCK_AMBIGUOUS` detail
+`kind[0]layer[-1]`, which is the head block being counted as an embedding block.
+
+### C10 — a Borrow crossing a `borrow mut` must be a parameter of the calling frame
+
+`alignpack_read.member_at(f, x, block, within, c)` takes four Borrows and one `borrow mut`. At this
+pin the block argument may not be a **local** of the calling function when the mutable counters
+cross the same call: `alignc build` refuses it as "cannot retain a shorter-lived view through this
+mutable borrow", whether the local is bound by `:=` inside the loop or declared `mut` outside it.
+The same call compiles when the block is a parameter, which is why `find_member` has always worked.
+
+`alignc check` on the single module accepts both forms and `alignc build` over the whole import
+graph refuses one, so this is only visible at link time — the module checked clean and the executable
+did not. The member scan is therefore its own function, `block_carries_role`, whose block is a
+parameter; C9's selector calls it. This is an application-side workaround for a language-owned
+constraint and it is recorded as one: `docs/align-requests.md` owns the language half, and no
+hypothetical surface is consumed.
+
+### C11 — the summary block, as section 3.3 prints it
+
+Section 3.3's block is implemented verbatim, including the three renamed or added byte lines
+(`expert bytes read`, `expert bytes in layer`, `dense weight bytes`) and the two `a+b` pairs
+(`graph nodes`, `compute ns`). `activation bytes` is the sum of the two graphs' `gallocr` sizes,
+because a reader who wants them apart has `graph_a.activation_bytes` and `graph_b.activation_bytes`
+in the document and the summary block is read positionally.
+
+---
+
+## 7. The final pass: what was measured, and every closure cell's case
+
+### 7.1 What the shipped arm measured on the real model
+
+`make moe-layer-forward-qualification` against `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, one run,
+every section 5.2 assertion passing:
+
+| Quantity | Section 5's expectation | Measured by the shipped arm |
+| --- | --- | --- |
+| routed union | 25 of 64, `0,4,6,7,13,14,15,16,21,32,33,35,36,38,39,40,43,48,51,53,54,55,57,59,61` | **identical**, and every per-token slot row of section 2.4 reproduced in order |
+| `residency.expert_bytes_read` / `expert_bytes_in_layer` | 101,990,400 / 261,095,424 | **identical**; `expert_bytes_read_ppm` 390,625 |
+| planes, block reads | 75 of 192, 25 reads | **identical** |
+| self-reference oracle | "28 of 28" (the probe's dump set) | **46 of 46** — R5D publishes 46 oracle rows, because it publishes its excluded classes as rows rather than omitting them |
+| routing-identity oracle | `MATCH`, 36 of 48 printed, sum 1,471 | **identical** |
+| transcript oracle | `PASS`, 26 nodes, 2,376 elements, max `\|Δ\|` at the 5.0e-5 print bound | **`PASS`, 26/26, 2,376 elements, max `\|Δ\|` 0 ten-thousandths**, max `\|Δsum\|` 30 millionths against a 1,000-millionth floor |
+| graph sizes | tables 31 and 24; ggml counts recorded at first run | ggml counts **31 and 24**, equal to the tables; slot high water 76 of 128 |
+| microbenchmark B | 9.4 ms (probe: A 3.59 + B 5.77, medians of five un-warmed runs) | **5.64 ms** (A 1.452 + B 4.185, warm means of five). The probe timed a cold graph per arm; the shipped arm's contractual warm-up is what section 3.5 already required, and the number is better rather than worse |
+| claim read | 12.0 ms warm for 25 block `pread`s (section 2.7) | 45.3 ms cold on this run, dense read 5.1 ms; the run is cold because the pack was written seconds earlier |
+| peak resident weight bytes | 113,072,896 against 272,171,008 | 113,072,896 against **272,177,920**. Section 3.9's whole-layer figure omits the 6,912 row-gathered embedding bytes the arm actually holds; the ratio is unchanged to four figures |
+
+The measurement that matters is unchanged and exact: **the routed layer reads 101,990,400 of
+261,095,424 expert bytes, and every node of it agrees with llama.cpp.**
+
+### 7.2 Closure cells to cases
+
+`(H)` is the hosted owner, `scripts/run-layer-forward-smoke`'s fourth block. `(Q)` is
+`scripts/run-moe-layer-forward`.
+
+| Section 4 cell | Closed by |
+| --- | --- |
+| 4.1 construction, success | `moe-engine-ok` (H); every `model.*` field asserted (Q) |
+| 4.1 failure, malformed input | 16 `moe-geometry-missing-*` and 15 `moe-geometry-*` cases (H), one per consumed field and one per precondition of steps 5–8, including `expert-zero`, `expert-used-high`, and C1's `expert-used-huge` |
+| 4.1 early exit | every geometry case runs under the **default stub** and asserts `lifetime.*_created == 0`: a geometry fault emits no ggml call (H) |
+| 4.1 cleanup | `lifetime` balance asserted on every documented case (H) and (Q) |
+| 4.1 routing decision | `moe-engine-ok` asserts `routing.expert_ids`, `routed`, `routed_count`, and `compact_ids` against the generator's **independent** forward, and re-derives the bijection (H); `moe-force-routing-id-range` and `-repeat` reach `R5D_EXPERT_ID` with the exact `(token, slot)` detail (H); `remap` withdrawn per C5 |
+| 4.1 slot order | `ffn_moe_out`'s `sha256`, `bit_sum`, and `f32_sum_millionths` are in the golden for every successful case, and the transcript oracle compares it element-wise against a reference that sums the slots in ascending order (H) and against llama.cpp (Q) |
+| 4.2 construction, success | `moe-engine-ok` exercises all five new symbols and the widened one (H) and (Q) |
+| 4.2 failure | `moe-force-argsort-order` → `R5_GGML_INIT`; `moe-force-view-extent` → `R5_SHAPE`; `moe-force-slot-empty` and `moe-force-slot-range` → `R5_SLOT` (H) |
+| 4.2 malformed input | `moe-engine-claim-type` reaches `R5_TYPE_UNSUPPORTED` through a claim declaring a type the operand table does not carry (H); the two remaining cells closed by construction per C6 |
+| 4.2 early exit | the widened `soft_max_ext` takes the null-mask path in every successful run, and `ffn_moe_probs` is compared element-wise by oracle 3 and byte-identically by oracle 1 (H) and (Q) |
+| 4.2 cleanup, shared contract, sole `unsafe`/`extern` | the runner's existing `malloc` grep, byte-identity assertion, and two `src/` scans, all four unchanged and all four passing with the new symbols in place (H) |
+| 4.3 construction | `moe-arity-four`, `moe-arity-nine`, five `moe-path-*`, `moe-arm-unknown-flag` — eight cases that produce **no document and a non-zero exit** (H) |
+| 4.3 success | `moe-engine-ok`: `verdict: EXTERNAL`, `pointer_identity` on all ten members and all `3U` claims (H); the same on the real model with 10 members and 75 claims (Q) |
+| 4.3 failure | section 4.5's map below |
+| 4.3 malformed input | `moe-tokens-empty`, `-trailing`, `-space`, `-seven`, `-vocab` (H) |
+| 4.3 early exit | the eight no-document cases write nothing; `moe-stub-unavailable` creates no ggml state (H) |
+| 4.3 cleanup | `released_before_owner_scope_end` asserted true on every documented case (H) and (Q) |
+| 4.3 two-phase carry | `graph.carried_bytes` asserted equal to the five carried tensors' bytes (H) and (Q) |
+| 4.3 document forms | the `-`, bare, and file forms compared byte-for-byte after timing normalisation; three consecutive runs byte-identical (H) |
+| 4.4 self-reference success | `moe-engine-reference`, 36 of 36 (H); 46 of 46 (Q) |
+| 4.4 self-reference failure | `moe-force-reference` → `R5_REFERENCE_MISMATCH` naming `node[ffn_moe_gate]@0` (H) |
+| 4.4 source divergence | `moe-engine-source-diverged` on a **claim** byte, detail `expert[<e>]role[<name>]` (H) |
+| 4.4 routing success | `moe-engine-transcript` → `MATCH` (H); `MATCH`, 36 of 48 printed, sum 1,471 (Q) |
+| 4.4 routing failure | `moe-engine-routing-mismatch` → `MISMATCH` on a **successful** run, with oracle 3 still evaluated and reporting elements (H) |
+| 4.4 routing coverage | 9 of 9 ids compared element-wise at `n_expert_used` 3 (H) — the full coverage the real model's eight-slot axis cannot reach; 36 of 48 plus the exact sum (Q) |
+| 4.4 transcript success | `PASS`, 26 nodes, 648 elements (H); `PASS`, 26 nodes, 2,376 elements (Q) |
+| 4.4 transcript node absent | `moe-engine-transcript-missing`, `-headers`, `-novalues` → `R5_ORACLE_MISSING`, the last two by element **shortfall** rather than absence (H) |
+| 4.4 transcript shape disagreement | `moe-engine-transcript-shape`, and `moe-engine-transcript-excerpt` against the real model's excerpt (H) |
+| 4.4 tolerance breach | `moe-engine-transcript-perturbed` → `oracle.verdict: FAIL`, `status: ok`, `worst_node: l_out`, routing still `MATCH` (H) |
+| 4.4 integer node non-integral | `moe-engine-transcript-nonintegral` → `R2_EXPERT_ID_NOT_INTEGRAL` (H) |
+| 4.4 exclusions are fields | the exact sets asserted in both runners: `shape_incomparable` is `["kq", "kq_soft_max"]`, `ambiguous_name` is the four `norm-0` tensors, `unstable_name` is the reduction chain (4 rows at `n_expert_used` 3, 14 at 8) |
+
+### 7.3 Error codes to cases
+
+| Code | Case | Runner |
+| --- | --- | --- |
+| `R5D_ARITY` | `moe-arity-four`, `moe-arity-nine`, `moe-arm-unknown-flag` | H |
+| `R5D_PATH` | `moe-path-pack-empty`, `-geometry-empty`, `-long`, `-doc-empty`, `-reference-empty` | H |
+| `R5D_ROUTER_SHAPE` | `moe-router-shape`, detail `ne1[7]` | H |
+| `R5D_EXPERT_ID` | `moe-force-routing-id-range`, `moe-force-routing-id-repeat` | H |
+| `R5D_CLAIM_BUDGET` | **withdrawn**, C5 | — |
+| `R5D_CLAIM_MISSING` | `moe-expert-block-missing` (step 12, default stub), `moe-engine-expert-role`, `moe-engine-slice-index` | H |
+| `R5_TOKENS` | five `moe-tokens-*` | H |
+| `R5_GEOMETRY_UNREADABLE` | `moe-geometry-absent` | H |
+| `R5_GEOMETRY` | 31 cases | H |
+| `R5_BLOCK_MISSING` / `R5_BLOCK_AMBIGUOUS` | `moe-block-missing`, `moe-block-ambiguous` | H |
+| `R5_MEMBER_MISSING` | `moe-member-missing` (`attn_q_norm`) | H |
+| `R5_SHAPE` | `moe-shape`, `moe-force-view-extent` | H |
+| `R5_GGML_UNAVAILABLE` | `moe-stub-unavailable` | H |
+| `R5_TYPE_UNSUPPORTED` | `moe-engine-claim-type` | H |
+| `R5_ALIGNMENT` | `moe-engine-alignment` | H |
+| `R5_GGML_INIT` | `moe-force-init`, `moe-force-argsort-order` | H, Q |
+| `R5_SLOT` | `moe-force-slot-range`, `moe-force-slot-empty` | H |
+| `R5_ALLOC` | `moe-force-alloc`, detail `reserve_a` | H |
+| `R5_COMPUTE` | `moe-force-compute` | H, Q |
+| `R5_SOURCE_UNREADABLE` / `R5_SOURCE_DIVERGED` | `moe-engine-source-short`, `-missing`, `-diverged` | H |
+| `R5_REFERENCE_MISMATCH` | `moe-force-reference` | H |
+| `R5_TRANSCRIPT` | `moe-engine-transcript-garbage` | H |
+| `R5_ORACLE_MISSING` / `R5_ORACLE_SHAPE` | four transcript cases plus the checked-in excerpt | H |
+| `R2_EXPERT_ID_NOT_INTEGRAL` | `moe-engine-transcript-nonintegral` | H |
+| `R4_PACK_UNREADABLE` / `R4_PACK_TRUNCATED` | `moe-pack-missing`, `moe-pack-truncated` | H |
+| `R4_5_SLICE` | `moe-engine-slice` | H |
+| `R5_ABI` | **not reached.** It requires a linked ggml whose operand table or tensor alignment disagrees with the checked-in one; R5A's owner does not reach it either, and manufacturing a drifting library would test the manufactured library | — |
+
+Twenty-nine distinct codes are observed in a document by the hosted owner and two more (`R5D_ARITY`,
+`R5D_PATH`) as the documented **absence** of one.

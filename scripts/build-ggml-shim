@@ -159,6 +159,24 @@ else
     # produce: the first element of every readback is `+inf` and the tensor data is untouched. It is
     # what makes the transcript oracle's saturating conversion and the logits comparison's
     # non-finite *primary* branch reachable hosted, on both arms.
+    engine+moe-slot-empty)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_SLOT_EMPTY_MOE=1")
+                       flavour="stub+engine+force-moe-slot-empty" ;;
+    engine+moe-reference)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_REFERENCE_PERTURBATION_MOE=1")
+                       flavour="stub+engine+force-moe-reference" ;;
+    engine+moe-argsort-range)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_ARGSORT_RANGE=1")
+                       flavour="stub+engine+force-moe-argsort-range" ;;
+    engine+moe-argsort-repeat)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_ARGSORT_REPEAT=1")
+                       flavour="stub+engine+force-moe-argsort-repeat" ;;
+    engine+moe-argsort-order)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_ARGSORT_ORDER=1")
+                       flavour="stub+engine+force-moe-argsort-order" ;;
+    engine+moe-view-extent)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_VIEW_EXTENT=1")
+                       flavour="stub+engine+force-moe-view-extent" ;;
     engine+inf-readback)
                        include_flags+=("${engine}" "-DALIGN_GGML_FORCE_INF_READBACK=1")
                        flavour="stub+engine+force-inf-readback" ;;
