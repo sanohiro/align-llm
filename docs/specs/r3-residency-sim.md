@@ -385,8 +385,11 @@ the existing `ALIGN_LLM_GGUF_MODEL`, `ALIGN_LLM_LLAMA_EVAL_CALLBACK`,
 `ALIGN_LLM_R3_HARDWARE`, the section 2.3 JSON object, and `ALIGN_LLM_R3_MEASUREMENT`, one bounded,
 non-blank line naming the measurement source for those declared costs. It records the task digest, hardware
 profile, capacity, measurement source, all seven policy rows, winner, and whether decode was
-observed. A missing model/instrument/profile/measurement prints one exact `N/A` line. The
-qualification is not in an aggregate.
+observed. The wrapper validates the hardware document with the adapter's exact loader, generates
+and validates the model IR, and checks the model-dependent prefetch bound before invoking the
+instrument for any prompt. Externally controlled strings in human and machine evidence are emitted
+as single-line JSON string literals. A missing model/instrument/profile/measurement prints one
+exact `N/A` line. The qualification is not in an aggregate.
 
 R3's roadmap gate is met only when that focused qualification identifies a strict non-LRU winner
 under a hardware profile whose costs are backed by named measurements. Hosted synthetic evidence
@@ -443,3 +446,8 @@ ships the simulator but does not by itself claim a target-hardware policy win.
     mode confirmed this was the only aggregate failure. R3 records a new chain from one clean final
     source commit through one immutable-oracle commit and one finalization commit. All three remain
     ancestors of the reviewed head and the required merge commit; the pending record is not shipped.
+11. Final review found that the opt-in qualification deferred hardware and generated-model
+    validation until after as many as 40 instrument runs and interpolated a contract-valid hardware
+    name directly into line-oriented evidence. The wrapper now reuses the adapter's exact hardware
+    and model loaders before prompt work, checks the model-dependent prefetch bound, JSON-escapes
+    external report strings, and the hosted owner fixes both validation order and newline refusal.

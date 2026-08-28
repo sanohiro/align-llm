@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,10 @@ root = Path(__file__).resolve().parents[1]
 binary = root / "main"
 adapter = root / "scripts" / "build-residency-task"
 na_line = "residency sim qualification: N/A (required real inputs unavailable)"
+adapter_api = runpy.run_path(str(adapter))
+AdapterError = adapter_api["AdapterError"]
+load_hardware = adapter_api["load_hardware"]
+load_model = adapter_api["load_model"]
 
 
 def unavailable():
@@ -43,6 +48,37 @@ def checked(command, stdout=None, stderr=None, timeout=None):
     if result.returncode != 0:
         fail("%r exited %d" % (command, result.returncode))
     return result
+
+
+def hardware_prerequisite(path):
+    try:
+        return load_hardware(path)
+    except AdapterError as exc:
+        fail("invalid hardware prerequisite: %s" % exc)
+
+
+def model_prerequisite(path, hardware):
+    try:
+        _, _, n_expert, _, _ = load_model(path)
+    except AdapterError as exc:
+        fail("invalid model IR prerequisite: %s" % exc)
+    if hardware["prefetch_count"] > n_expert:
+        fail("invalid hardware prerequisite: prefetch_count exceeds model.n_expert")
+
+
+def evidence_string(value):
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+
+
+def verdict_line(result, hardware_name, prompt_count, decode):
+    return (
+        "residency-sim-qualification verdict=%s best_policy=%s baseline_cost_ns=%d "
+        "best_cost_ns=%d hardware=%s prompts=%d decode_observed=%s" % (
+            "IDENTIFIED" if result["verdict"] == "IMPROVED" else "BASELINE",
+            result["best_policy"], result["baseline_cost_ns"], result["best_cost_ns"],
+            evidence_string(hardware_name), prompt_count, "yes" if decode else "no",
+        )
+    )
 
 
 def main():
@@ -74,12 +110,15 @@ def main():
     if len(prompts) < prompt_count:
         fail("prompt corpus has fewer rows than requested")
     prompts = prompts[:prompt_count]
+    hardware_value = hardware_prerequisite(hardware)
+    hardware_name = hardware_value["name"]
     before = model.stat().st_size, model.stat().st_mtime_ns
 
     with tempfile.TemporaryDirectory(prefix="align-r3-qualification-") as raw_directory:
         directory = Path(raw_directory)
         model_ir = directory / "model-ir.json"
         checked([str(binary), "--model-ir", str(model), str(model_ir)])
+        model_prerequisite(model_ir, hardware_value)
         trace_paths = []
         for ordinal, prompt in enumerate(prompts):
             transcript = directory / "transcript.txt"
@@ -97,10 +136,6 @@ def main():
         if before != after:
             fail("model size or mtime changed during qualification")
 
-        hardware_value = json.loads(hardware.read_text(encoding="utf-8"))
-        hardware_name = hardware_value.get("name")
-        if not isinstance(hardware_name, str) or not hardware_name:
-            fail("hardware document has no name")
         task = directory / "task.json"
         checked([
             str(adapter), "--task-id", "olmoe-residency-qualification",
@@ -119,10 +154,10 @@ def main():
         print("  task sha256        %s" % hashlib.sha256(task.read_bytes()).hexdigest())
         print("  model IR sha256    %s" % result["model_ir_sha256"])
         print("  trace manifest     %s" % result["trace_sha256"])
-        print("  model              %s" % result["model_id"])
-        print("  hardware           %s" % hardware_name)
+        print("  model              %s" % evidence_string(result["model_id"]))
+        print("  hardware           %s" % evidence_string(hardware_name))
         print("  capacity bytes     %d" % result["hardware"]["cache_capacity_bytes"])
-        print("  cost measurement   %s" % measurement)
+        print("  cost measurement   %s" % evidence_string(measurement))
         print("  demands            %d prefill, %d decode" % (prefill, decode))
         print("  truncation         tokens=%s reduced_layers=%d" % (
             "yes" if task_value["tokens_truncated"] else "no",
@@ -136,12 +171,7 @@ def main():
             ))
         print("  winner             %s (%s)" % (result["best_policy"], result["verdict"]))
         print("  decode observed    %s" % ("yes" if decode else "no"))
-        print("residency-sim-qualification verdict=%s best_policy=%s baseline_cost_ns=%d "
-              "best_cost_ns=%d hardware=%s prompts=%d decode_observed=%s" % (
-                  "IDENTIFIED" if result["verdict"] == "IMPROVED" else "BASELINE",
-                  result["best_policy"], result["baseline_cost_ns"], result["best_cost_ns"],
-                  hardware_name, prompt_count, "yes" if decode else "no",
-              ))
+        print(verdict_line(result, hardware_name, prompt_count, decode))
     return 0
 
 

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -791,8 +792,89 @@ def main():
                 or b"one bounded non-blank line" not in qualification.stderr:
             fail("qualification accepted blank measurement provenance")
 
+        qualification_api = runpy.run_path(
+            str(root / "scripts" / "run-residency-sim-qualification")
+        )
+        qualification_main = qualification_api["main"]
+        qualification_globals = qualification_main.__globals__
+        original_checked = qualification_globals["checked"]
+        qualification_environment = {
+            "ALIGN_LLM_GGUF_MODEL": str(model),
+            "ALIGN_LLM_LLAMA_EVAL_CALLBACK": sys.executable,
+            "ALIGN_LLM_R3_HARDWARE": str(hardware),
+            "ALIGN_LLM_R3_MEASUREMENT": "synthetic owner costs",
+            "ALIGN_LLM_LOCALITY_PROMPTS": str(
+                root / "eval" / "prompts" / "expert-locality-v1.txt"
+            ),
+            "ALIGN_LLM_LOCALITY_PROMPT_COUNT": "1",
+        }
+        saved_environment = {
+            key: os.environ.get(key) for key in qualification_environment
+        }
+
+        invalid_qualification_hardware = directory / "qualification-invalid-hardware.json"
+        invalid_hardware = json.loads(hardware.read_bytes())
+        invalid_hardware["prefetch_count"] = 0
+        write_json(invalid_qualification_hardware, invalid_hardware)
+        try:
+            os.environ.update(qualification_environment)
+            os.environ["ALIGN_LLM_R3_HARDWARE"] = str(invalid_qualification_hardware)
+
+            def forbidden_checked(*_args, **_kwargs):
+                fail("qualification started producer work before hardware validation")
+
+            qualification_globals["checked"] = forbidden_checked
+            try:
+                qualification_main()
+                fail("qualification accepted invalid hardware before producer work")
+            except SystemExit as exc:
+                if "invalid hardware prerequisite" not in str(exc):
+                    raise
+
+            os.environ["ALIGN_LLM_R3_HARDWARE"] = str(hardware)
+            invalid_model = json.loads(model.read_bytes())
+            invalid_model["model"]["arch"] = "llama"
+            producer_calls = []
+
+            def model_ir_only(command, stdout=None, stderr=None, timeout=None):
+                del stdout, stderr, timeout
+                if len(command) >= 4 and command[1] == "--model-ir":
+                    producer_calls.append("model-ir")
+                    write_json(Path(command[3]), invalid_model)
+                    return subprocess.CompletedProcess(command, 0)
+                producer_calls.append("expensive-producer")
+                fail("qualification started prompt work before model IR validation")
+
+            qualification_globals["checked"] = model_ir_only
+            try:
+                qualification_main()
+                fail("qualification accepted a non-OLMoE model before prompt work")
+            except SystemExit as exc:
+                if "invalid model IR prerequisite" not in str(exc):
+                    raise
+            if producer_calls != ["model-ir"]:
+                fail("qualification prerequisite validation order changed")
+        finally:
+            qualification_globals["checked"] = original_checked
+            for key, value in saved_environment.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        injected_name = "target-a\nverdict=FORGED"
+        rendered_verdict = qualification_api["verdict_line"]({
+            "verdict": "IMPROVED",
+            "best_policy": "lfu",
+            "baseline_cost_ns": 10,
+            "best_cost_ns": 9,
+        }, injected_name, 1, 0)
+        if len(rendered_verdict.splitlines()) != 1 \
+                or 'hardware="target-a\\nverdict=FORGED"' not in rendered_verdict:
+            fail("qualification verdict did not JSON-escape the hardware name")
+
         print("residency sim smoke: PASS - 7 policies, 11 semantic codes, 3 limit cases, "
-              "18 adapter refusals, measurement provenance, CLI/oracle")
+              "18 adapter refusals, qualification prerequisites/evidence, CLI/oracle")
     return 0
 
 
