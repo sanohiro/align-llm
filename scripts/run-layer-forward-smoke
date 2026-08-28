@@ -2661,6 +2661,12 @@ NO_DOCUMENT = [
     ("mm-path-dash-reference", [ARM, PACK, GEOM, TOKENS, WIDTH, "-", "-"]),
     ("mm-path-dash-logits", [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, "-", "-"]),
     ("mm-arm-unknown-flag", ["--moe-model-backward", PACK, GEOM, TOKENS, WIDTH]),
+    # A path operand that is not UTF-8. Every path is copied into the document as a JSON scalar,
+    # and a raw non-UTF-8 byte there produces a document no conforming reader can decode -- a
+    # malformed output from a malformed input. Step 2 refuses it lexically instead, so there is no
+    # document at all. `surrogateescape` is how the byte survives the list.
+    ("mm-path-not-utf8",
+     [ARM, b"/tmp/\xff\xfe.alignpack".decode("utf-8", "surrogateescape"), GEOM, TOKENS, WIDTH]),
 ]
 
 STUB_CASES = [
@@ -2707,6 +2713,17 @@ STUB_CASES = [
      "R5D_CLAIM_MISSING"),
     ("mm-claim-plane-mixed", [ARM, path("moe-model-pack-claim-type-mixed.alignpack"), GEOM, TOKENS,
                               WIDTH], "R5_SHAPE"),
+    # The two window-budget probes. `docs/specs/r5e-moe-model-prefill.md` section 4.5 promised these
+    # two mutations as the fixtures for `R5_WINDOW_BUDGET` and `R5D_CLAIM_BUDGET`; they reach
+    # neither, and that is the point. `alignpack_read` refuses a member whose byte span leaves its
+    # block before any window is sized, and refuses a container whose `total_bytes` is not the
+    # file's length, so no pack smaller than the 8 GiB budget can make either window exceed it. The
+    # two codes are fail-closed guards on an unreachable arithmetic (section 6, correction C17), and
+    # these two cases are the regression that keeps the guard **order** true.
+    ("mm-dense-nbytes-huge", [ARM, path("moe-model-pack-dense-nbytes.alignpack"), GEOM, TOKENS,
+                              WIDTH], "R4_PACK_OFFSET"),
+    ("mm-claim-nbytes-huge", [ARM, path("moe-model-pack-claim-nbytes.alignpack"), GEOM, TOKENS,
+                              WIDTH], "R4_PACK_OFFSET"),
 ]
 
 # Section 4.1's "a missing field" cell: one fixture per consumed `model` field, each of which must
@@ -2770,6 +2787,11 @@ ENGINE_CASES = [
     ("mm-transcript-garbage",
      [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, path("moe-model-transcript-garbage.txt")],
      "R5_TRANSCRIPT"),
+    # A transcript whose block sums are gone. It is a **successful** run with `oracle.verdict: PASS`
+    # -- every printed element still matches -- and thirty of thirty-one sum comparisons never
+    # happened. `oracle.sums_expected` against `sums_matched` is the only place that is visible.
+    ("mm-transcript-nosums",
+     [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, path("moe-model-transcript-nosums.txt")], ""),
     ("mm-transcript-nonintegral",
      [ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, path("moe-model-transcript-nonintegral.txt")],
      "R2_EXPERT_ID_NOT_INTEGRAL"),
@@ -3139,6 +3161,12 @@ if oracle["elements_compared"] != 606:
 if oracle["instrument_kv_width"] != 8:
     failures.append("mm-engine-transcript: instrument_kv_width %d, not the declared operand"
                     % oracle["instrument_kv_width"])
+# Every compared node is contracted to carry a block sum, so a complete transcript matches all
+# thirty-one of them. The counters exist because a *missing* sum was previously indistinguishable
+# from a matching one.
+if oracle["sums_expected"] != 31 or oracle["sums_matched"] != 31:
+    failures.append("mm-engine-transcript: block sums %d of %d matched"
+                    % (oracle["sums_matched"], oracle["sums_expected"]))
 if oracle["tolerance_ten_thousandths"] != 1 or oracle["sum_tolerance_millionths"] != 1000 \
         or oracle["sum_tolerance_relative_ppm"] != 10:
     failures.append("mm-engine-transcript: a tolerance was widened: %r" % oracle)
@@ -3169,6 +3197,17 @@ if breached["oracle"]["worst_layer"] != 0 or breached["oracle"]["worst_node"] !=
                     % (breached["oracle"]["worst_node"], breached["oracle"]["worst_layer"]))
 if breached["routing_oracle"]["verdict"] != "MATCH":
     failures.append("mm-transcript-perturbed: a float breach moved the routing verdict")
+
+stripped = json.loads(
+    run([ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE,
+         path("moe-model-transcript-nosums.txt")]).stdout)
+if stripped["status"] != "ok" or stripped["oracle"]["verdict"] != "PASS":
+    failures.append("mm-transcript-nosums: status %r verdict %r"
+                    % (stripped["status"], stripped["oracle"]["verdict"]))
+if stripped["oracle"]["sums_expected"] != 31 or stripped["oracle"]["sums_matched"] != 1:
+    failures.append("mm-transcript-nosums: %d of %d block sums compared -- a transcript that lost "
+                    "its sums is not distinguishable from a complete one"
+                    % (stripped["oracle"]["sums_matched"], stripped["oracle"]["sums_expected"]))
 
 mismatched = json.loads(
     run([ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE,
@@ -3270,19 +3309,40 @@ for case, wanted in (("mm-force-routing-id-range", "layer[0]token[0]slot[0]"),
     if document is not None and document["error_detail"] != wanted:
         failures.append("%s: detail %r, not %r" % (case, document["error_detail"], wanted))
 
-REQUIRED_CODES = {
-    "R5_TOKENS", "R5_KV_WIDTH", "R5_GEOMETRY_UNREADABLE", "R5_GEOMETRY", "R4_PACK_UNREADABLE",
-    "R4_PACK_TRUNCATED", "R5_BLOCK_MISSING", "R5_BLOCK_AMBIGUOUS", "R5_LAYER_COVERAGE",
-    "R5_MEMBER_MISSING", "R5_SHAPE", "R5_GGML_UNAVAILABLE", "R5_TYPE_UNSUPPORTED",
-    "R5_ALIGNMENT", "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE", "R5_RESIDUAL",
+# The denominator, fixed here and nowhere else: the codes `docs/specs/r5e-moe-model-prefill.md`
+# section 3.9 declares under an `R5*` prefix -- R5A's and R5B's re-raised rows, R5D's four, and
+# R5E's four. `R5_INDEX` is **not** in it: section 3.9's inherited-code row named it and the arm
+# emits it nowhere (section 6, correction C17). The container's own `R4_PACK_*` family, `R4_5_SLICE`
+# and `R2_EXPERT_ID_NOT_INTEGRAL` are inherited contracts owned by `alignpack-smoke` and R2A, and
+# are counted separately below.
+DECLARED_R5_CODES = {
+    "R5E_ARITY", "R5E_PATH", "R5E_CARRY", "R5E_CLAIM_OVERFLOW",
+    "R5D_ROUTER_SHAPE", "R5D_EXPERT_ID", "R5D_CLAIM_BUDGET", "R5D_CLAIM_MISSING",
+    "R5_TOKENS", "R5_KV_WIDTH", "R5_GEOMETRY", "R5_GEOMETRY_UNREADABLE",
+    "R5_BLOCK_MISSING", "R5_BLOCK_AMBIGUOUS", "R5_LAYER_COVERAGE", "R5_MEMBER_MISSING",
+    "R5_SHAPE", "R5_WINDOW_BUDGET", "R5_GGML_UNAVAILABLE", "R5_ABI", "R5_TYPE_UNSUPPORTED",
+    "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE", "R5_ALIGNMENT", "R5_RESIDUAL",
     "R5_SOURCE_UNREADABLE", "R5_SOURCE_DIVERGED", "R5_REFERENCE_MISMATCH", "R5_TRANSCRIPT",
-    "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE", "R2_EXPERT_ID_NOT_INTEGRAL", "R4_5_SLICE",
-    "R5_LOGITS_SHAPE", "R5_LOGITS_UNREADABLE", "R5_LOGITS_NONFINITE",
-    "R5D_ROUTER_SHAPE", "R5D_EXPERT_ID", "R5D_CLAIM_MISSING", "R5E_CARRY",
+    "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE",
+    "R5_LOGITS_UNREADABLE", "R5_LOGITS_SHAPE", "R5_LOGITS_NONFINITE",
 }
-missing_codes = REQUIRED_CODES - codes
-if missing_codes:
-    failures.append("codes never reached: %s" % ", ".join(sorted(missing_codes)))
+# The four this block does not reach, each with the reason section 4.5 records. `R5_ABI` needs a
+# drifted ggml; the other three are fail-closed guards on arithmetic no input can produce.
+UNREACHED_R5_CODES = {"R5_ABI", "R5E_CLAIM_OVERFLOW", "R5_WINDOW_BUDGET", "R5D_CLAIM_BUDGET"}
+# Inherited codes the block also reaches, counted and asserted but outside the R5* denominator.
+INHERITED_CODES = {"R4_PACK_UNREADABLE", "R4_PACK_TRUNCATED", "R4_PACK_OFFSET", "R4_5_SLICE",
+                   "R2_EXPERT_ID_NOT_INTEGRAL"}
+# `R5E_ARITY` and `R5E_PATH` produce no document, so they are reached by the `NO_DOCUMENT` list
+# rather than by a document's `error_code`.
+reached = (codes - {""}) | {"R5E_ARITY", "R5E_PATH"}
+expected_reached = (DECLARED_R5_CODES - UNREACHED_R5_CODES) | INHERITED_CODES
+if reached != expected_reached:
+    if expected_reached - reached:
+        failures.append("codes never reached: %s"
+                        % ", ".join(sorted(expected_reached - reached)))
+    if reached - expected_reached:
+        failures.append("codes reached that this block does not declare: %s"
+                        % ", ".join(sorted(reached - expected_reached)))
 
 ORDER = ([name for name, _, _ in STUB_CASES]
          + [name for name, _, _ in ENGINE_CASES]
@@ -3313,7 +3373,9 @@ if failures:
     raise SystemExit(1)
 
 print("moe model forward smoke: %d no-document cases (R5E_ARITY, R5E_PATH), %d documented cases, "
-      "%d codes reached, all four oracles, the routing identity element-wise complete over a whole "
-      "model, and arm-r5a/r5b/r5d-unchanged PASS"
-      % (len(NO_DOCUMENT), len(ORDER), len(codes - {""}) + 2))
+      "%d of the %d declared R5* codes reached plus %d inherited R4/R2 codes, all four oracles, the "
+      "routing identity element-wise complete over a whole model, and arm-r5a/r5b/r5d-unchanged PASS"
+      % (len(NO_DOCUMENT), len(ORDER),
+         len(reached & DECLARED_R5_CODES), len(DECLARED_R5_CODES),
+         len(reached & INHERITED_CODES)))
 PY

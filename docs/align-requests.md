@@ -8800,6 +8800,158 @@ reassigned, once that call crosses a module boundary.
    `render_parts`'s rendered strings — and pass `make layer-forward-smoke`.
 ---
 
+> **Numbering note.** `agent/r3-residency-sim` carries two requests numbered 44 and 45 that have not
+> merged into this branch's register, which ends at Request 43. The two below are therefore filed as
+> **46** and **47** rather than 44 and 45, to avoid two different requests sharing a number in two
+> branches. **Renumber them to 44 and 45 at reconciliation only if R3's pair merges first**; if R5E
+> merges first, R3's pair renumbers instead. Nothing outside this register cites either number.
+
+## Request 46 — A `Borrow` argument may be a temporary value
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. R5E-MOE-MODEL-PREFILL ships with the mitigation below throughout
+  `src/moe_model_forward.align`.
+Independent work that may continue: all of R5E-MOE-MODEL-PREFILL and its successors.
+Resume condition: an Align release accepts a call whose `borrow` argument is a slice expression, a
+  builder's `build()` result, or an `if`/`match` expression, materializing the temporary for the
+  duration of the call.
+Align commit or pull request: none
+align-llm verification: rewrite `src/moe_model_forward.align`'s window-region and column-set call
+  sites to pass the expression directly instead of binding a named local first, and pass
+  `make layer-forward-smoke`.
+```
+
+### Motivation and current sibling evidence
+
+Every `borrow` argument must name a stable local or a field. Three ordinary expression forms are
+refused, each measured at the pinned compiler `4b515f8d` on this host:
+
+```text
+sink(bytes[0..4])           error: the Borrow argument to 'sink' must be a stable named local or
+                                   field, not a temporary value
+total(b.build())            error: the Borrow argument to 'total' must be a stable named local or
+                                   field, not a temporary value
+total(if c { x } else { y })  error: the Borrow argument to 'total' must be a stable named local or
+                                   field, not a temporary value
+```
+
+The diagnostic is `crates/align_sema/src/lib.rs:43694` at `4b515f8d`, inside
+`validate_borrow_argument`; the `root` computation immediately above it
+(`crates/align_sema/src/lib.rs:43685-43693`) accepts exactly three expression shapes — a local, a
+field chain, and a single-element `BorrowedIndex` in `Borrow` mode — and returns `None` for
+everything else, a **range** slice expression over such a local included.
+
+**Consequence for the client.** R5E slices two reused windows constantly — every member placement,
+every reference fill, every claim plane is a `window[offset..offset + span]` handed to a function
+that borrows it. Each one has to be bound to a named local on its own line first, which turns a
+one-line call into two lines and, in the loops that place 195 tensors, adds a local whose only
+purpose is to satisfy the rule. The same applies to `array_builder.build()` results, which R5E
+produces once per column set per graph.
+
+### Requested capability
+
+Accept a temporary as a `borrow` argument by materializing it into a compiler-introduced slot whose
+lifetime spans the call, exactly as a named local would. The requested surface is only the
+relaxation; the aliasing analysis, the mutation rules, and the refusal of a `borrow` that outlives
+its owner are unchanged.
+
+### Acceptance criteria
+
+1. A compiler test passes a slice expression, an `array_builder.build()` result, and an `if`
+   expression to a `borrow` parameter; each checks, builds, and runs with the value the named-local
+   spelling produces.
+2. A negative test confirms the temporary does not outlive the call: returning the borrow, or
+   storing it in an outer local, is still refused.
+3. `align-llm` verification: `src/moe_model_forward.align`'s window-region call sites drop their
+   one-line binding locals and `make layer-forward-smoke` passes.
+
+### Application-side mitigation in use
+
+Bind the expression to a named local on the preceding line and pass the local. This is what
+`src/moe_model_forward.align` does at every window slice and every column-set build.
+
+---
+
+## Request 47 — Same-call argument aliasing between a `borrow mut` owner and its own scalar field
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. R5E-MOE-MODEL-PREFILL ships with the mitigation below.
+Independent work that may continue: all of R5E-MOE-MODEL-PREFILL and its successors.
+Resume condition: an Align release accepts a call that passes a `Copy` scalar field of a record
+  beside a `borrow mut` of that record, on the grounds that the scalar is copied at the call.
+Align commit or pull request: none
+align-llm verification: pass `plan.n_layer`-style scalars directly beside their owning record's
+  `borrow mut` in `src/moe_model_forward.align` instead of copying each to a local first, and pass
+  `make layer-forward-smoke`.
+```
+
+### Motivation and current sibling evidence
+
+A `Copy` scalar read out of a record is refused when the same record is also passed `borrow mut` in
+the same call, measured at `4b515f8d`:
+
+```text
+Box { n: i64, total: i64 }
+fn fill(borrow mut b: Box, width: i64) { b.total = b.total + width }
+fill(box, box.n)
+error: borrowed argument 1 to 'fill' aliases argument 2, whose mode may invalidate the same owner
+```
+
+The diagnostic is `crates/align_sema/src/lib.rs:30504` at `4b515f8d`. The conflict table above it
+(`crates/align_sema/src/lib.rs:30478-30493`) makes `(BorrowMut, _)` conflict unconditionally — every
+peer mode, `ByValue` included, with a single carve-out for an `ArenaHandle` — and the overlap test
+that follows (`crates/align_sema/src/lib.rs:30497-30501`) compares the borrowed argument's place
+against each peer's place *and* against the peers' storage roots, which a field read of the same
+local shares. `box.n` is an `i64` and is copied at the call, so the exclusive borrow cannot
+invalidate anything the callee will read from it.
+
+**The analysis is not uniform, and the second shape is the same root cause seen from the other
+side.** The nested form
+
+```text
+fn take(borrow mut b: Box, v: i64) { b.total = b.total + v }
+fn peek(borrow b: Box, k: i64) -> i64 { return b.n + k }
+take(box, peek(box, 1))
+```
+
+**compiles** at the same pin: the inner read-only borrow of the same owner passed beside the outer
+`borrow mut` is accepted, while the direct scalar field read of that owner is not. One of the two
+answers is wrong, and the accepted one is the safe one — which is why this is a language-owned
+soundness/precision question and not a style preference.
+
+**Consequence for the client.** R5E's staging functions take an out-parameter record `borrow mut`
+plus several geometry scalars, many of which live in a record the same call already borrows. Each
+one has to be copied to a local first.
+
+### Requested capability
+
+Treat a `Copy`-typed field read as a value, not as a place aliasing its owner, when deciding whether
+a call's arguments conflict — or, if the conservative answer is the intended one, extend it to the
+nested read-only-borrow form so the two shapes agree and the rule is at least predictable.
+
+### Acceptance criteria
+
+1. A compiler test passes a record's `i64` field beside a `borrow mut` of that record and both
+   checks and builds, producing the value the copy-to-a-local spelling produces.
+2. A negative test confirms a non-`Copy` field of the same record passed by value beside the
+   `borrow mut` is still refused.
+3. A test pins whichever answer is chosen for `take(o, peek(o, 1))` so the two shapes cannot drift
+   apart again.
+4. `align-llm` verification: the scalar-copy locals disappear from `src/moe_model_forward.align`'s
+   staging call sites and `make layer-forward-smoke` passes.
+
+### Application-side mitigation in use
+
+Copy the scalar to a local before the call and pass the local.
+
+---
+
 ## Not requested (respecting Align's design)
 
 These were considered and deliberately **not** requested, because they conflict with Align's design

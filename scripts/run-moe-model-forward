@@ -15,9 +15,10 @@ set -euo pipefail
 #   ALIGN_LLM_MOE_MODEL_FORWARD_TMPDIR  where the pack is written; defaults to TMPDIR
 #   ALIGN_LLM_MOE_MODEL_FORWARD_EXCERPT_UPDATE=1  rewrite eval/fixtures/olmoe-model-6tok.txt
 #
-# When any is unset, when the model or either instrument is absent, when the model is not an olmoe
-# container, or when the free space is under the pack's size plus 1 GiB, it prints one explicit N/A
-# line naming the missing input and exits 0.
+# When any of the **first five** is unset, when the model or either instrument is absent, when the
+# model is not an olmoe container, or when the free space is under the pack's size plus 1 GiB, it
+# prints one explicit N/A line naming the missing input and exits 0. The two below them are
+# optional and have defaults, so neither is ever an N/A condition.
 #
 # It packs the real model into a temporary directory **outside the work tree**, derives the geometry
 # with `main --model-ir`, captures **both** instrument outputs with the exact same flag set section
@@ -217,7 +218,10 @@ elif /usr/bin/time -v true >/dev/null 2>&1; then
 fi
 
 echo "moe model forward qualification: the reconciliation width (KV_WIDTH 256), all four oracles"
-"${rss_wrapper[@]}" "${root_dir}/ggml-spike" --moe-model-forward "${work_dir}/model.alignpack" \
+# `"${rss_wrapper[@]}"` on an empty array is an unbound-variable error under `set -u` on bash 3.2,
+# which is the /bin/bash this host ships; the `+` expansion is the portable spelling that yields no
+# word at all when the array is empty.
+${rss_wrapper[@]+"${rss_wrapper[@]}"} "${root_dir}/ggml-spike" --moe-model-forward "${work_dir}/model.alignpack" \
   "${work_dir}/geometry.json" 1545,823,9,66,13,270 256 \
   "${work_dir}/recon.json" "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/transcript.txt" \
   "${logits_bin}" 2> "${work_dir}/recon.rss" || {
@@ -382,6 +386,13 @@ want("window.residual_bytes", window["residual_bytes"], 2048 * 6 * 4)
 want("window.carried_bytes", window["carried_bytes"], 2 * 2048 * 6 * 4 + 64 * 6 * 4 + 2 * 8 * 6 * 4)
 want("window.logits_bytes", window["logits_bytes"], 50304 * 4)
 
+# Section 7.3's head cell, asserted rather than only claimed: the head's `output` member is
+# 50,304 x 2,048 of Q6_K, and its byte count is what makes `window.dense_bytes` the head's and not
+# a layer's.
+head = d["head"]
+want("head.output_bytes", head["output_bytes"], 84510720)
+want("head.node_count", head["node_count"], 3)
+
 graph = d["graph"]
 want("graph.graph_count", graph["graph_count"], 34)
 want("graph.table_rows_a", graph["table_rows_a"], 35)
@@ -430,6 +441,11 @@ at_most("oracle.max_abs_diff_ten_thousandths", oracle["max_abs_diff_ten_thousand
 want("oracle.tolerance_ten_thousandths", oracle["tolerance_ten_thousandths"], 1)
 want("oracle.sum_tolerance_millionths", oracle["sum_tolerance_millionths"], 1000)
 want("oracle.sum_tolerance_relative_ppm", oracle["sum_tolerance_relative_ppm"], 10)
+# Every compared node carries a block sum in the instrument's own output, so a real transcript
+# matches all 227. A `sums_matched` below `sums_expected` on a `PASS` run means the instrument
+# stopped printing sums, not that the model moved.
+want("oracle.sums_expected", oracle["sums_expected"], 227)
+want("oracle.sums_matched", oracle["sums_matched"], 227)
 
 logits_oracle = d["oracle_logits"]
 want("oracle_logits.verdict", logits_oracle["verdict"], "IDENTICAL")

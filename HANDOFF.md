@@ -3,41 +3,45 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R5D-MOE-LAYER-FORWARD (2026-08-28)
+## Active: R5E-MOE-MODEL-PREFILL (2026-08-28)
 
-Branch `agent/r5d-moe-layer-forward`, based on the merged MOE-PREREQ-DISCHARGE (PR #133,
-`2cdb7bf` → `35a0df6`). Design ledger `docs/specs/r5d-moe-layer-forward.md` committed at `3cb8d59`
-is authoritative. **Implementation is in progress and currently uncommitted**: modified
-`scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`, `scripts/layer_forward_fixture.py`,
-`src/ggml_ffi.align`, `src/ggml_spike.align`; new `src/layer_olmoe.align` and
-`src/moe_layer_forward.align`.
+Branch `agent/r5e-moe-model-prefill`, based on the merged MOE-PREREQ-DISCHARGE (PR #133,
+`2cdb7bf` -> `35a0df6`). The branch carries **both** R5D and R5E: `3cb8d59` and `e584849` are
+R5D-MOE-LAYER-FORWARD's ledger and implementation, `5e3356d` and `053de09` are R5E's, and
+`docs/specs/r5d-moe-layer-forward.md` and `docs/specs/r5e-moe-model-prefill.md` are authoritative
+for their own halves.
 
-**What it targets.** R5's second gate stage for a **routed** OLMoE layer: one prefill of at most
-six tokens through `blk.0`, computed by ggml over attention weights and only the routed experts'
-planes held in Align-owned buffers, checked against llama.cpp's own numbers. The design's probe
-record fixed six facts the plan got wrong before any contract was written: the QK-norm is a real
-node chain — an RMS norm over the full `n_embd` (not per head) applied *before* the head reshape;
-the router's 64-way softmax is gathered at eight descending-probability slots with **no**
-renormalization; the top-k node is `ARGSORT` + `VIEW`, not `ggml_top_k`; a compacted, id-remapped
-expert stack computed with `mul_mat_id` is bit-identical to llama.cpp's own whole-tensor shape
-(28 of 28 dumped nodes) and needs no restacking copy; the transcript oracle reaches max `|Δ|`
-5.0e-5 (the instrument's own print-rounding bound) over 2,376 elements; and microbenchmark B is
-9.4 ms typical for one routed layer, six tokens, warm. The residency win this capability exists to
-measure is a **decode-time property, not a prefill one**: R5D reads 39% of the layer's expert
-bytes at six prefill tokens, 12.5% at one token, and 73% at eighteen.
+**What R5E ships.** `ggml-spike --moe-model-forward` computes a whole sixteen-layer OLMoE prefill of
+at most six tokens: per-layer routing, only the routed experts' planes read into one Align-owned
+claim window reserved at the arithmetic union bound and reused across layers, the narrowing inside
+layer fifteen where the instrument does, and the output head. On the downloaded model the logits are
+byte-identical to `llama-debug --save-logits`, all four oracles pass (227 of 227 self-reference
+nodes, 227 transcript nodes over 21,372 elements, routing identity across all sixteen layers,
+`IDENTICAL` logits), and a six-token prefill reads **333,644 ppm** of the model's expert bytes.
+`layer-forward-smoke` gains a fifth block; no Makefile check target and no aggregate membership
+change.
 
-The boundary change is five new FFI symbols (`argsort`, `mul_mat_id`, `view_2d`, a 3-D
-stacked-tensor constructor, a 2-D i32 constructor) plus one widened existing symbol
-(`soft_max_ext` with a null mask). **No new Align capability request is expected**; two existing
-requests (44, 45, both on the R3 branch — see below) gain R5D as an anticipated, non-blocking
-client with R3's own mitigation.
+**Review and repair.** Two complementary reviewers covered `053de09` on explicitly disjoint risks:
+reviewer A returned no blocker with 1 medium and 4 low findings; reviewer B returned changes
+requested with 3 medium, 3 low, and 2 info findings. **All were accepted and repaired in one
+consolidated commit** on this branch. The repair adds the two window-budget probe fixtures, an
+honest coverage denominator (32 of 36 declared `R5*` codes plus 5 inherited), `oracle.sums_expected`
+/ `sums_matched`, the reference arm's non-aliasing assertion, a run-level `(layer, expert)` key set
+behind `residency.keys_distinct`, a non-UTF-8 path refusal, three qualification-runner fixes, one
+sweep-script assertion, and corrections C17-C22 in section 6 of the R5E ledger. It also **files
+Align Requests 46 and 47** (see below), retracting section 5.5's "no new request is expected".
 
-**Next actions, in order.** (1) Finish the implementation against the ledger's section 3
-contract. (2) Run the owner test — the fourth block of `scripts/run-layer-forward-smoke` — and
-`make moe-layer-forward-qualification` (opt-in, capable-only) on the host holding the model.
-(3) One comprehensive review. (4) `python3 scripts/pre-pr` and publish; this capability adds no
-Makefile target and changes no `HOSTED_CHECK_TARGETS` membership, so it stays in the ordinary
-classifier lane, not `make ci`.
+**Next actions, in order.** (1) `python3 scripts/pre-pr` and publish; this capability adds no
+`HOSTED_CHECK_TARGETS` member and changes no check topology, so it stays in the ordinary classifier
+lane, not `make ci`. (2) Rerun `make moe-model-forward-qualification` on the host holding the model
+if the pack was removed; it needs >= 6 GB free under the scratch root.
+
+**Align capability requests filed here.** Requests **46** (a `Borrow` argument must be a stable
+named local or field) and **47** (same-call aliasing between a `borrow mut` owner and its own `Copy`
+scalar field), both `PROPOSED`, both non-blocking, both with a mitigation R5E ships and a probe
+verified at the pinned `4b515f8d`. They are numbered 46 and 47, not 44 and 45, because
+`agent/r3-residency-sim` already holds 44 and 45 unmerged; the register carries a renumbering note
+and nothing outside it cites either number.
 
 ## Design and implementation in progress elsewhere
 
@@ -50,9 +54,9 @@ carries **Requests 44 and 45** (`docs/align-requests.md`), both non-blocking: Re
 compiler-soundness report (moving a field out of a decoded record double-frees at run time, R3's
 mitigation is a `str`-view clone); Request 45 is `borrow mut` array locals inside loops plus no
 element assignment through an array field (R3's mitigation returns owned columns and writes loop
-bodies inline). **`docs/align-requests.md` is left alone on this branch** because Requests 44 and
-45 exist only on `agent/r3-residency-sim`, which has not merged; that register still ends at
-Request 43 here.
+bodies inline). **Requests 44 and 45 exist only on `agent/r3-residency-sim`**, which has not merged;
+this branch's register runs 1-43 plus the new 46 and 47, with the numbering note recorded above and
+in `docs/align-requests.md`.
 
 ## R4B (hotness layout): evaluated, not started
 
@@ -73,14 +77,15 @@ that shows real skew in expert popularity.
 - **(d) Pending.** Align Request 41 (non-`Copy` capture in `spawn` closures). Unblocks R5's
   required microbenchmark C.
 
-**Align capability requests.** Requests 1-20 CLOSED, Requests 21-43 PROPOSED and non-blocking on
-this branch's register; none has merged since R0; `.align-revision` stays pinned to `4b515f8d`.
-Requests 44 and 45 exist only on `agent/r3-residency-sim` (see above).
+**Align capability requests.** Requests 1-20 CLOSED, Requests 21-43 and the new 46-47 PROPOSED and
+non-blocking on this branch's register; none has merged since R0; `.align-revision` stays pinned to
+`4b515f8d`. Requests 44 and 45 exist only on `agent/r3-residency-sim` (see above).
 
 ## Roadmap order (`docs/specs/roadmap.md`)
 
 Item 20 MOE-PREREQ-DISCHARGE — merged, PR #133. Item 21 R3-RESIDENCY-SIM — gate met, publication
-in progress. Item 22 R5D-MOE-LAYER-FORWARD — active, this branch.
+in progress. Item 22 R5D-MOE-LAYER-FORWARD and item 23 R5E-MOE-MODEL-PREFILL — both committed on
+this branch, review repaired, publication next.
 
 ## Merged checkpoints
 
@@ -134,9 +139,9 @@ Earlier checkpoints, kept for continuity; full evidence in the named specs and g
 
 ## Resume in another environment
 
-Fetch `origin`, check out `main`, then check out `agent/r5d-moe-layer-forward` and read
-`docs/specs/r5d-moe-layer-forward.md` in full before touching `src/` or either qualification
-runner. Decisions (a) and (b) are taken; R2's gate, R1C's frontend, and MOE-PREREQ-DISCHARGE are
+Fetch `origin`, check out `main`, then check out `agent/r5e-moe-model-prefill` and read
+`docs/specs/r5e-moe-model-prefill.md` (and `docs/specs/r5d-moe-layer-forward.md` for the layer
+half) in full before touching `src/` or either qualification runner. Decisions (a) and (b) are taken; R2's gate, R1C's frontend, and MOE-PREREQ-DISCHARGE are
 merged. For the rest: decision (c) → R6 and the decode half of R2's gate; decision (d) → R5's
 deferred microbenchmark C; R4B's resume condition → a decode or skewed-expert corpus.
 

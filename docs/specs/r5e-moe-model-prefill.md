@@ -522,7 +522,7 @@ This is the number the capability exists to produce. `T = 6`, reconciliation wid
 | 15 | **8** | 32,636,928 | 261,095,424 | **12.5** | **1,301,446,656** | **33.36** | Q6_K |
 
 ```text
-expert bytes read  1,301,446,656 of 3,900,702,720          = 33.36%   (333,647 ppm)
+expert bytes read  1,301,446,656 of 3,900,702,720          = 33.36%   (333,644 ppm)
 keys demanded      343 of 1,024 (layer, expert) keys        = 33.50%
 expert planes      1,029 of 3,072                           = 33.50%
 dense bytes read   168,558,592 layers + 84,518,912 head + 6,912 embedding rows
@@ -1037,10 +1037,13 @@ plus the inputs plus the nodes, published as `graph.slot_high_water` against a c
 ### 3.7 The four oracles, and the tolerances fixed before the qualification
 
 **Oracle 1 — bit-exact self-reference.** Present in the seven-, eight-, and nine-operand forms. Per
-graph, the same table is built a second time with that graph's weights created in a second context
-and allocated by `ggml_backend_alloc_ctx_tensors` and filled from the same Align windows; the
-reference arm asserts its tensors' data pointers are **not** the windows', so it cannot pass by
-aliasing. **Every oracle node of every graph must be byte-identical.** Section 2.6 measured 227 of
+graph, the same table is built a second time with that graph's weights created in a second context,
+allocated by `ggml_backend_alloc_ctx_tensors`, and **filled by copy** from the same Align windows.
+Before the first byte is copied, every reference tensor's data offset within the window it is about
+to be filled from is asserted to lie **outside** that window — `< 0` or `>= window.len()`, the same
+`slot_data_offset` primitive `graph_identity` uses for the opposite conclusion — so the oracle
+cannot pass by aliasing: two graphs reading one byte range would agree trivially. A violation is
+`R5_REFERENCE_MISMATCH` with detail `aliased[<role>]`. **Every oracle node of every graph must be byte-identical.** Section 2.6 measured 227 of
 227 plus the logits. Before each block's graph runs, its members' pack bytes are compared
 byte-for-byte against the source GGUF at `member.source_offset` — for dense members and for every
 read claim, where `source_offset` is already the claimed absolute offset per
@@ -1234,6 +1237,7 @@ routing_oracle
 oracle      present (bool), verdict, instrument, instrument_kv_width,
             layers_expected, layers_matched, nodes_expected, nodes_matched,
             elements_compared, max_abs_diff_ten_thousandths, max_sum_diff_millionths,
+            sums_expected, sums_matched,
             tolerance_ten_thousandths, sum_tolerance_millionths, sum_tolerance_relative_ppm,
             worst_layer, worst_node, worst_element_index,
             transcript_lines, transcript_callback_lines
@@ -1265,7 +1269,15 @@ over 6 tokens would still be under 30 KB.
 "where does the win come from" question is answered without re-running anything.
 `residency.keys_demanded` and `keys_distinct` are **equal** on every prefill — that is section 2.9's
 finding, and publishing both is how a future multi-prefill capability will see the moment they stop
-being equal.
+being equal. The two are **derived differently**, which is what makes the equality evidence:
+`keys_demanded` accumulates each layer's `routing.count`, and `keys_distinct` is the cardinality of
+a run-level `(layer, expert)` set built by `merge_keys` (section 6, correction C21).
+
+`oracle.sums_expected` and `sums_matched` publish the second half of oracle 2's evidence.
+Every compared node is contracted to carry a printed block sum; a transcript that lost one prints
+fewer, and the element comparison alone still reports `PASS`. Without the two counters a
+sum that was never compared is indistinguishable from a sum that matched (section 6,
+correction C19).
 
 `window.claim_peak_use_bytes` against `window.claim_bytes` publishes section 3.5's over-reservation
 per run. `window.reuse_count` is 34 and `window.pointer_identity_failures` is 0 on a healthy run;
@@ -1409,9 +1421,17 @@ an `R5E_` prefix for the faults that are new — the same split `r5c-metal-prefi
 | `R5D_EXPERT_ID` | R5D's, now with a layer in the detail | 28 | `layer[<L>]token[<t>]slot[<s>]` / `layer[<L>]remap` |
 | `R5D_CLAIM_BUDGET` | R5D's, now checked once for the whole run at `U_max` | 19 | `bytes[<n>]` |
 | `R5D_CLAIM_MISSING` | R5D's, now over `n_layer * n_expert` blocks | 14, 30 | `layer[<n>]expert[<n>][role[<name>]]` |
-| `R5_TOKENS`, `R5_INDEX`, `R5_GEOMETRY*`, `R5_MEMBER_MISSING`, `R5_SHAPE`, `R5_GGML_*`, `R5_ABI`, `R5_TYPE_UNSUPPORTED`, `R5_ALIGNMENT`, `R5_SLOT`, `R5_ALLOC`, `R5_COMPUTE`, `R5_SOURCE_*`, `R5_REFERENCE_MISMATCH`, `R5_TRANSCRIPT`, `R5_ORACLE_*` | R5A's, unchanged | as above | R5A's, with a layer prefix where the check is per layer |
-| `R4_PACK_*`, `R4_WINDOW_UNAVAILABLE`, `R4_5_SLICE` | re-raised verbatim | 11, 17, 20, 26, 27, 30, 34 | theirs |
+| `R5_TOKENS`, `R5_GEOMETRY`, `R5_GEOMETRY_UNREADABLE`, `R5_MEMBER_MISSING`, `R5_SHAPE`, `R5_GGML_UNAVAILABLE`, `R5_GGML_INIT`, `R5_ABI`, `R5_TYPE_UNSUPPORTED`, `R5_ALIGNMENT`, `R5_SLOT`, `R5_ALLOC`, `R5_COMPUTE`, `R5_SOURCE_UNREADABLE`, `R5_SOURCE_DIVERGED`, `R5_REFERENCE_MISMATCH`, `R5_TRANSCRIPT`, `R5_ORACLE_MISSING`, `R5_ORACLE_SHAPE` | R5A's, unchanged | as above | R5A's, with a layer prefix where the check is per layer |
+| `R4_PACK_UNREADABLE`, `R4_PACK_TRUNCATED`, `R4_PACK_OFFSET`, `R4_WINDOW_UNAVAILABLE`, `R4_5_SLICE` | re-raised verbatim from the container's own contract | 11, 17, 20, 26, 27, 30, 34 | theirs |
 | `R2_EXPERT_ID_NOT_INTEGRAL` | an i32 transcript element is not integral | 37 | R2A's |
+
+**The table above is the denominator, and it is exactly thirty-six `R5*` codes** — R5E's four,
+R5D's four, and R5A's/R5B's twenty-eight. `R5_INDEX` is **not** among them: an earlier draft of this
+row named it and the arm emits it nowhere (section 6, correction C17). The `R4_*` and `R2_*` rows
+are inherited contracts owned by `alignpack_read` and R2A; they are counted separately wherever
+coverage is reported, because R5E does not own their enumeration. `alignpack_read` declares five
+further `R4_PACK_*` codes (`MAGIC`, `VERSION`, `HEADER`, `RESERVED`, `REGION`) that this arm can
+also surface from a corrupted container; `alignpack-smoke` owns their coverage.
 
 **Four codes are new, and two of them exist only because the arm computes a whole routed model.**
 `R5E_CARRY` is the answer to section 2.3's bug class: five values cross a phase boundary sixteen
@@ -1559,8 +1579,8 @@ a section 6 correction, not a quiet edit here.**
 | Formation — arity, five to nine | `parse_operands` | `S` `mm-arity-four`, `mm-arity-ten` → `R5E_ARITY`, no document, non-zero exit |
 | Formation — role-qualified block selection | `find_block_with_role` (`r5d-moe-layer-forward.md` C9's shape) | `S` `mm-block-ambiguous` (two blocks carrying `role_id` 12) → `R5_BLOCK_AMBIGUOUS`; `Q` `embedding_block_index == 0`, `output_block_index == 1057` |
 | Formation — layer and expert coverage | `validate_coverage` | `S` `mm-coverage-gap-router` → `R5_LAYER_COVERAGE` detail `layer[1]`; `mm-coverage-gap-expert` → `R5D_CLAIM_MISSING` detail `layer[1]expert[5]`; `Q` `expert_block_count == 1024` |
-| Construction — dense window sizing | `size_dense_window` | `S` `mm-window-peak`: `window.dense_peak_block_kind` is the head block on the synthetic model too; `Q` `dense_bytes == 84520960`, `dense_peak_block_layer == -1` |
-| Construction — claim window sizing at `U_max` | `size_claim_window` | `S` `mm-claim-umax` asserts `claim_u_max == min(n_expert, n_expert_used*T)`; `mm-claim-budget` on a member record declaring 2^40 bytes → `R5D_CLAIM_BUDGET`; `Q` `claim_bytes == 195821568`, `claim_u_max == 48`, `claim_peak_use_bytes == 101990400`, `claim_peak_use_layer == 0` |
+| Construction — dense window sizing | `size_dense_window` | `S` `window.dense_peak_block_kind` is layer 0's `AttentionBlock` on the synthetic model (correction C8); `mm-dense-nbytes-huge` (a dense member record declaring 2^40 bytes) is refused by the container as `R4_PACK_OFFSET` **before** the sweep runs, which is why `R5_WINDOW_BUDGET` is a fail-closed guard (correction C17); `Q` `dense_bytes == 84520960`, `dense_peak_block_layer == -1` |
+| Construction — claim window sizing at `U_max` | `size_claim_window` | `S` every successful case asserts `claim_u_max == min(n_expert, n_expert_used*T) == 8` and `claim_bytes == 12288`; `mm-claim-nbytes-huge` is `R4_PACK_OFFSET` for the same reason as the row above (correction C17); `Q` `claim_bytes == 195821568`, `claim_u_max == 48`, `claim_peak_use_bytes == 101990400`, `claim_peak_use_layer == 0` |
 | Construction — the read schedule | `stage_read_block` | `S` `schedule[].pread` counts are 1 per dense block and `U_L` per layer's claims; `Q` 381 `pread` groups, `total_bytes_read == 1554531072` |
 | Success — the residual carry | `carry_residual` | `S` `mm-residual` asserts `schedule[L].l_out_ne1` is `T` for `L < n_layer-1` and `1` at the last; `mm-force-residual-short` → `R5_RESIDUAL` detail `layer[<n>]` |
 | Success — the five carried inputs and two id ranges | `carry_phase_inputs` | `S` `mm-carry-length` (a forced short write) and `mm-carry-global-id` (a `topk_ids` entry `>= n_expert`) and `mm-carry-compact-id` (a `compact_ids` entry `>= U_L`) → `R5E_CARRY` with the exact `input[<name>]`; `Q` `window.carried_bytes == 100224` |
@@ -1568,7 +1588,7 @@ a section 6 correction, not a quiet edit here.**
 | Success — the narrowing | the two `node_when == 1` rows | `S` the synthetic model's golden document; `Q` `selection.narrow_layer == 15`, `narrow_index == 5` |
 | Success — the head | `head_node_table`, `stage_head` | `S` golden `output.element_count == 32`; `Q` `== 50304`, `head.output_bytes == 84510720` |
 | Success — window reuse is safe | every buffer freed before the next read | `S` `lifetime.ggml_buffers_created == ggml_buffers_freed` asserted **per phase**, not only at the end; `mm-force-buffer-leak` fails that assertion |
-| Success — the residency accounting | `accumulate_residency` | `S` `residency.keys_demanded == keys_distinct` asserted on every successful case, and `cumulative_expert_bytes[n_layer-1] == expert_bytes_read`; `Q` `expert_bytes_read == 1301446656`, `expert_bytes_in_model == 3900702720`, `expert_bytes_read_ppm == 333647`, `planes_read == 343` |
+| Success — the residency accounting | `accumulate_residency` | `S` `residency.keys_demanded == keys_distinct` asserted on every successful case, and `cumulative_expert_bytes[n_layer-1] == expert_bytes_read`; `Q` `expert_bytes_read == 1301446656`, `expert_bytes_in_model == 3900702720`, `expert_bytes_read_ppm == 333644`, `planes_read == 1029` |
 | Failure — each error code | `stage_*` | section 4.5 |
 | Early exit — `-` document destination | `run` | `S` `mm-doc-stdout-identical` |
 | Return — exit mapping | R0's, verbatim | `S` `mm-exit-codes` |
@@ -1588,6 +1608,8 @@ a section 6 correction, not a quiet edit here.**
 | Transcript — excluded classes are fields | `nodes[].oracle` | `S` the exact sets asserted: `shape_incomparable` is `kq` and `kq_soft_max` in every layer, `ambiguous_name` is the `norm-L` rows, `unstable_name` is the reduction chain |
 | Transcript — a tolerance breach | step 38 | `S` `mm-transcript-perturbed`: one printed value at layer 9 moved by `0.0003` → `verdict: "FAIL"`, `worst_layer: 9`, `status: "ok"`, routing still `MATCH` |
 | Transcript — an exact pass | step 38 | `S` `max_abs_diff_ten_thousandths == 0`; `Q` `== 0` over 21,372 elements and `max_sum_diff_millionths` within the rule |
+| Transcript — a sum that was never compared is visible | `compare_transcript_sum` | `S` `mm-engine-transcript` asserts `sums_expected == sums_matched == 31`; `mm-transcript-nosums` (every `sum =` line but the file's last removed) is `status: ok`, `verdict: PASS`, `sums_expected 31`, `sums_matched 1`; `Q` `227` and `227` |
+| Reference — the second arm does not alias the window | `outside_window` in `reference_weights` and `reference_claims` | `S` every `mm-engine-reference` placement passes the offset assertion before a byte is copied, and `reference.verdict` is `IDENTICAL`; `Q` 227 of 227 over 34 graphs |
 | Routing — success, per layer | `compare_routing` | `S` `mm-engine-transcript` → `MATCH` at both synthetic layers with **full** element-wise coverage at `n_expert_used = 3`; `Q` `MATCH`, `layers_matched == 16`, `ids_printed_compared == 546`, `ids_total == 728`, `sums_matched == 16` |
 | Routing — failure is data, not an error | `compare_routing` | `S` `mm-routing-mismatch` → `MISMATCH` on a **successful** run with `first_difference_layer` set and oracle 2 still evaluated |
 | Routing — a wrong id is refused before it is used | step 28 | `S` `mm-force-routing-id-range`, `mm-force-routing-repeat`, `mm-force-routing-remap` → `R5D_EXPERT_ID` with the exact `layer[<L>]token[<t>]slot[<s>]` |
@@ -1604,19 +1626,19 @@ a section 6 correction, not a quiet edit here.**
 | Code | Stub-reachable | Fixture |
 | --- | --- | --- |
 | `R5E_ARITY` | yes | four and ten operands, and one unknown flag |
-| `R5E_PATH` | yes | empty, 4097 bytes, embedded NUL, on each of six path operands; and `-` in the pack, geometry, reference, and logits positions |
+| `R5E_PATH` | yes | empty, 4097 bytes, embedded NUL, on each of six path operands; a non-UTF-8 operand (section 6, correction C18); and `-` in the pack, geometry, reference, and logits positions |
 | `R5E_CARRY` | yes | forced short write; a `topk_ids` entry `== n_expert`; a `compact_ids` entry `== U_L` |
 | `R5E_CLAIM_OVERFLOW` | **no — not input-reachable** | `N/A`: step 19 reserves for `U_max = min(n_expert, n_expert_used·T)`, which no routing decision can exceed. Marked as fail-closed defence, in the shape `r5b-model-prefill-forward.md` section 4.5 uses for `R4_WINDOW_UNAVAILABLE` |
 | `R5_TOKENS` | yes | ``, `1,`, `1, 2`, seven ids, an id `== n_vocab` |
 | `R5_KV_WIDTH` | yes | ``, `-1`, `+8`, `2` (below the token count), `4097` |
 | `R5_GEOMETRY_UNREADABLE`, `R5_GEOMETRY` | yes | R5D's thirty-one rows, re-pointed, plus the C1 `n_expert_used` ceiling |
-| `R4_PACK_*` | yes | R5A's mutated-pack corpus, reused |
+| `R4_PACK_UNREADABLE`, `R4_PACK_TRUNCATED`, `R4_PACK_OFFSET` | yes | an absent pack; a pack cut short by 64 bytes; the two 2^40-byte member records above. `alignpack_read`'s other five `R4_PACK_*` codes are `alignpack-smoke`'s coverage, not this block's |
 | `R5_BLOCK_MISSING`, `R5_BLOCK_AMBIGUOUS` | yes | a pack with no head `WeightBlock`; a pack with two blocks carrying `role_id` 12 |
 | `R5_LAYER_COVERAGE` | yes | a pack whose layer 1 has no `RouterBlock` |
 | `R5D_CLAIM_MISSING` | yes | a pack missing `(layer 1, expert 5)`; and one whose claim `slice_index` is not its expert |
 | `R5_MEMBER_MISSING`, `R5_SHAPE`, `R5D_ROUTER_SHAPE` | yes | an omitted `attn_q_norm`; an `output` whose `ne1` is not `n_vocab`; a router that is `[n_embd, n_expert+1]` |
 | `R4_5_SLICE` | yes | both admitted `slice` pairs plus one malformed |
-| `R5_WINDOW_BUDGET`, `R5D_CLAIM_BUDGET` | yes | a member record declaring 2^40 bytes, on a dense member and on a claim |
+| `R5_WINDOW_BUDGET`, `R5D_CLAIM_BUDGET` | **no — not input-reachable** (section 6, correction C17) | `mm-dense-nbytes-huge` and `mm-claim-nbytes-huge` are the promised 2^40-byte member records, and they reach `R4_PACK_OFFSET` instead: the container refuses a member whose byte span leaves its block, and refuses a container whose `total_bytes` is not the file's own length, so no pack under the 8 GiB budget can make either window exceed it. The two cases are kept as the regression on that **ordering** |
 | `R4_WINDOW_UNAVAILABLE` | no — not input-reachable | `N/A`, as R5A, R5B and Request 35 record |
 | `R4_PACK_UNREADABLE` | yes | a pack truncated inside layer 1's expert 3 |
 | `R5_GGML_UNAVAILABLE` | yes | the default stub — the whole owner test's baseline |
@@ -1636,6 +1658,14 @@ a section 6 correction, not a quiet edit here.**
 not-reachable with the arithmetic that makes it so rather than being given a fabricated fixture. The
 final matrix-to-diff pass maps every cell above to its implementing function and its passing
 evidence, or to an explicit deferral in this document, before review.
+
+**Four of the thirty-six declared `R5*` codes are not reached by the fifth block**, and each names
+the reason above rather than being counted as covered: `R5_ABI` (`Q` only, and only if the linked
+ggml drifts), `R5E_CLAIM_OVERFLOW`, `R5_WINDOW_BUDGET`, and `R5D_CLAIM_BUDGET`. The last three are
+fail-closed guards on arithmetic no input can produce. Section 7.5 reports **32 of 36**, and
+`scripts/run-layer-forward-smoke`'s fifth block owns the same two sets as executable data, asserted
+in both directions so a code that stops being reached and a code reached outside the declaration are
+both failures.
 
 ---
 
@@ -1747,12 +1777,15 @@ ALIGN_LLM_GGML_LIB                    ggml libraries
 ALIGN_LLM_GGUF_MODEL                  the OLMoE GGUF
 ALIGN_LLM_LLAMA_EVAL_CALLBACK         path to llama-eval-callback
 ALIGN_LLM_LLAMA_DEBUG                 path to llama-debug
-ALIGN_LLM_MOE_MODEL_FORWARD_TMPDIR    where the pack is written; defaults to TMPDIR
 ```
 
 is unset, or the model or either instrument is absent, or `ALIGN_LLM_GGUF_MODEL` is not an olmoe
 model, or free space under the scratch root is under the pack's size plus 1 GiB —
 `need_kib=$(( model_bytes / 1024 + 1048576 ))`, which is **5,163,334 KiB** for this model.
+
+`ALIGN_LLM_MOE_MODEL_FORWARD_TMPDIR` is **not** in that list. It chooses where the pack is written
+and defaults to `TMPDIR`, so it is never an N/A condition; an earlier draft listed it among the
+required inputs and the runner never treated it as one.
 
 Otherwise it packs the model, emits the geometry, captures **both** instrument outputs with the
 **exact same** flag set section 2.1 established, and runs the arm **twice**:
@@ -1794,24 +1827,26 @@ Asserted from the emitted documents, against section 2's recorded values:
 | `schedule[0].routed` | `0,4,6,7,13,14,15,16,21,32,33,35,36,38,39,40,43,48,51,53,54,55,57,59,61` |
 | `schedule[L].ffn_down_exps_ggml_type == 14` | for exactly layers 0,1,4,7,10,13,14,15 |
 | `schedule[L].dense_bytes` | `11075584` for those eight layers, `9994240` for the other eight |
-| `residency.expert_bytes_read` / `expert_bytes_in_model` / `_ppm` | `1301446656` / `3900702720` / `333647` |
+| `residency.expert_bytes_read` / `expert_bytes_in_model` / `_ppm` | `1301446656` / `3900702720` / `333644` |
 | `residency.keys_demanded`, `keys_distinct`, `planes_read`, `planes_in_model` | `343`, `343`, `1029`, `3072` |
-| `residency.total_bytes_read`, `model_bytes` | `1554531072`, `4213512192` |
+| `residency.total_bytes_read`, `model_bytes` | `1554531072`; `model_bytes` is **superseded by correction C2** — it is the container's `pack.total_bytes` (`4212193280`), and the runner asserts that equality rather than the file size `4213512192` |
 | `residency.cumulative_expert_bytes[15]` | `1301446656`, and `[0] == 101990400` |
 | `window.dense_bytes`, `dense_peak_block_layer` | `84520960`, `-1` |
 | `window.claim_bytes`, `claim_u_max`, `claim_peak_use_bytes`, `claim_peak_use_layer` | `195821568`, `48`, `101990400`, `0` |
 | `window.reuse_count`, `pointer_identity_failures`, `member_placements`, `claim_placements` | `34`, `0`, `147`, `48` — 1 embedding + 144 dense + 2 head, and 16 layers x 3 stacked tensors |
 | `graph.graph_count`, `table_rows_a`, `table_rows_b`, `embed_node_count`, `head_node_count` | `34`, `35`, `24`, `1`, `3` |
 | `graph.node_count_total` | recorded as a golden at first run, not a checked-in constant (section 3.6); the probe's harness measured 1,031 at width 256 and 983 at width 6 with extra per-layer view nodes the arm does not build |
-| `pack.reader_pread_count`, `residency.total_bytes_read` (width-256 run) | `382`, `1554531072` |
+| `pack.reader_pread_count`, `residency.total_bytes_read` (width-256 run) | `382` is **superseded by correction C3** — the counter also counts the 3,219 member-record reads and measures **3,939**; the runner prints it and asserts `residency.total_bytes_read == 1554531072`, which is the figure the residency claim rests on |
 | `graph.slot_capacity` | `128` |
 | `graph.activation_bytes_peak` | `4440064` |
+| `head.output_bytes`, `head.node_count` | `84510720`, `3` — the head's `output` member is 50,304 x 2,048 of Q6_K, and it is what makes `window.dense_bytes` the head's rather than a layer's |
 | `output.element_count`, `argmax`, `sha256`, `bit_sum` | `50304`, `2262`, `a56195da2c913d8dd7fa608917a381200c4b59d1c534fae2d4bbb828f80d2383`, `149873641306457` |
 | `reference.verdict`, `graphs_compared`, `nodes_compared`, `nodes_identical` | `IDENTICAL`, `34`, `227`, `227` |
 | `routing_oracle.verdict`, `layers_matched`, `ids_total`, `ids_printed_compared`, `sums_matched` | `MATCH`, `16`, `728`, `546`, `16` |
 | `oracle.verdict`, `layers_matched`, `nodes_expected`, `elements_compared` | `PASS`, `16`, `227`, `21372` |
 | `oracle.max_abs_diff_ten_thousandths`, `tolerance_ten_thousandths` | `0`, `1` |
 | `oracle.sum_tolerance_millionths`, `sum_tolerance_relative_ppm` | `1000`, `10` |
+| `oracle.sums_expected`, `sums_matched` | `227`, `227` |
 | `oracle_logits.verdict`, `byte_identical`, `reference_sha256` | `IDENTICAL`, `true`, `a56195da…` |
 | the runtime run: `oracle_logits.verdict`, `max_abs_diff…`, `argmax_primary`, `top_k_set_agreement` | `WITHIN`, `<= 5000` with **3477** recorded, `2262`, `10` |
 | `lifetime.*_created == *_freed`, `released_before_owner_scope_end` | equal, `true` |
@@ -1893,14 +1928,57 @@ capability should be judged on.
 
 ### 5.5 Candidate Align capability requests
 
-**No new request is expected.** Every construct this design needs compiled in the probe's Align
-neighbours or exists in R5D's shipped module: the four node tables are `array<Node>` of a `Copy`
-record, the sixteen routing decisions are integer arithmetic over `array<i64>`, the two windows are
-`buffer`, and **the FFI boundary does not change at all** — section 3.6 needs no symbol R5D did not
-ship.
+**This section's original claim — "no new request is expected" — was refuted by the implementation,
+and section 6 correction C22 records the retraction.** Two genuine Align gaps were found and are
+registered as **Requests 46 and 47** in `docs/align-requests.md`; a third refusal was classified as
+an application concern and is recorded below. The paragraph the implementation refuted read: every
+construct this design needs compiled in the probe's Align neighbours or exists in R5D's shipped
+module — the four node tables are `array<Node>` of a `Copy` record, the sixteen routing decisions are
+integer arithmetic over `array<i64>`, the two windows are `buffer`, and the FFI boundary does not
+change at all. The last of those is still true: section 3.6 needs no symbol R5D did not ship. The
+first is not.
 
-R5E is new client evidence for six requests that already exist, and an anticipated client for two
-that do not exist in this branch.
+**The two new requests, and why they are 46 and 47 rather than 44 and 45.** This branch's register
+ends at Request 43. Requests 44 and 45 exist only on `agent/r3-residency-sim`, which has not merged
+(see below), so numbering these 44 and 45 would put two different requests under one number in two
+branches. They are filed as 46 and 47 with a numbering note in the register; **renumber at
+reconciliation if R3's pair merges first**.
+
+- **Request 46 — a `Borrow` argument must be a stable named local or field.** Measured at the pinned
+  `4b515f8d`: `f(w[a..b])`, `f(b.build())`, and `f(if c { x } else { y })` are each refused with
+  `error: the Borrow argument to 'sink' must be a stable named local or field, not a temporary
+  value`, from `crates/align_sema/src/lib.rs:43694`. R5E slices two reused windows on every member
+  placement, every reference fill, and every claim plane, so the mitigation — bind the expression to
+  a named local on the preceding line — is applied throughout `src/moe_model_forward.align`.
+  Genuine Align gap, non-blocking.
+- **Request 47 — same-call argument aliasing between a `borrow mut` owner and its own scalar
+  field.** `fill(box, box.n)`, where `fill` takes `borrow mut Box` and an `i64`, is refused with
+  `error: borrowed argument 1 to 'fill' aliases argument 2, whose mode may invalidate the same
+  owner`, from `crates/align_sema/src/lib.rs:30504`. The scalar is `Copy` and is copied at the call.
+  The **second client shape folds into the same request**: `take(o, peek(o, 1))`, an outer
+  `borrow mut` of the same owner beside a nested read-only borrow of it, **compiles** at the same
+  pin — so the analysis is not uniform, and the same root cause gives two different answers. R5E's
+  staging functions take an out-parameter record `borrow mut` plus geometry scalars, and the
+  mitigation is to copy each scalar to a local first. Genuine Align gap, non-blocking.
+
+**One refusal is an application concern and is recorded here rather than filed.** A function whose
+`->` return arrow starts its own line —
+
+```text
+fn wide(
+  a: i64,
+)
+-> i64 {
+```
+
+— is refused with `error: expected '{'`. The cause is Align's newline-terminated statement rule:
+`crates/align_lexer/src/lib.rs:185` makes `)` at end of line emit a statement terminator, and the
+parser's `eat(&TokKind::Arrow)` at `crates/align_parser/src/lib.rs:846` then never sees the arrow.
+That is the language working as designed, not a gap; **keep the arrow on the signature's closing
+line**, which is what `src/moe_model_forward.align` does at every multi-line signature.
+
+Beyond the two it files, R5E is new client evidence for six requests that already exist, and an
+anticipated client for two that do not exist in this branch.
 
 - **Request 37 — per-function check time is superlinear in body length.** R5E is its most direct
   client yet, and it **shapes a module boundary before any code is written**. Measured at this pin on
@@ -1957,9 +2035,9 @@ If `agent/r3-residency-sim` merges before R5E, those two requests' client lists 
 `src/moe_model_forward.align`'s `parse_geometry` and routing decision, and the mitigations become
 removable in the same verification.
 
-**If the implementation refutes this section — as R5A's did, filing two requests from work its design
-had declared clean — the correction belongs in a section 6 of this document, not in a quiet edit
-here.**
+**If the implementation refutes this section — as R5A's did, and as R5E's own did — the correction
+belongs in a section 6 of this document, not in a quiet edit here.** Correction C22 is that record
+for this section.
 
 ### 5.6 Risks
 
@@ -2113,10 +2191,14 @@ from the same window bytes and cannot disagree about them, so a pack/GGUF diverg
 `R5_SOURCE_DIVERGED` and still stops the run. Verified by `mm-source-diverged-claim`, whose mutation
 is placed on a plane the schedule actually reads.
 
-**C15 — `residency.expert_bytes_read_ppm` is 333,644, not section 2.9's 333,647.**
-`1,301,446,656 · 10^6 / 3,900,702,720` is `333,644` in the integer arithmetic the document publishes.
-The percentage the capability claims — **33.36%** — is unchanged; the last digit of the probe's ppm
-rendering did not survive.
+**C15 — `residency.expert_bytes_read_ppm` is 333,644, and 333,647 was arithmetically wrong
+everywhere it appeared.** `1,301,446,656 · 10^6 / 3,900,702,720` is `333,644` in the integer
+arithmetic the document publishes. The percentage the capability claims — **33.36%** — is unchanged.
+The correction is applied **in place** at all three sites rather than only here, because a probe
+record that carries a number the shipped arm contradicts is not evidence: section 2.9's summary
+block, section 4.3's residency cell, and section 5.2's assertion row all now read `333,644`.
+Section 4.3's cell additionally said `planes_read == 343`; the plane count is `343 · 3` roles =
+**1,029**, and 343 is the `(layer, expert)` key count on the row above it.
 
 **C16 — the shipped arm's timings are single runs against a cold page cache, not the probe's warm
 median, and they vary by 2.3x between two consecutive qualifications.** Section 5.3 records
@@ -2131,6 +2213,84 @@ respectively, so on this CPU a six-token routed prefill is I/O bound even with t
 cache, and that is the number a residency policy has to beat. The exact-integer half —
 `expert_bytes_read`, `planes_read`, `keys_demanded`, the per-layer union curve — carries no
 measurement risk at all and is identical in both runs. A warm repeated-run median is R6's to take.
+
+**C17 — `R5_WINDOW_BUDGET` and `R5D_CLAIM_BUDGET` are not input-reachable, `R5_INDEX` is not
+emitted, and the coverage denominator is the thirty-six declared `R5*` codes.** Three separate
+places said otherwise and none of them was measured.
+
+*The two budgets.* Section 4.5 promised "a member record declaring 2^40 bytes, on a dense member and
+on a claim" as their fixtures. Both mutations were built and run at this pin, and both produce
+`R4_PACK_OFFSET` with detail `member[1]` and `member[43]`: `alignpack_read.member_at` refuses a
+member whose `[pack_offset, pack_offset + nbytes)` leaves its block, and `open_pack` refuses a
+container whose `total_bytes` is not the opened file's own length. Growing the block and the header
+to match therefore requires an 8 GiB+ pack, and no smaller container can make either window exceed
+its 8 GiB ceiling. The two codes join `R5E_CLAIM_OVERFLOW` and `R4_WINDOW_UNAVAILABLE` as
+fail-closed guards, marked with the arithmetic that makes them so rather than given a fabricated
+fixture. The two mutations are **kept** as `mm-dense-nbytes-huge` and `mm-claim-nbytes-huge`,
+because the guard *ordering* — container containment before window sizing — is a real property and
+these are its regression.
+
+*`R5_INDEX`.* Section 3.9's inherited-code row listed it among "R5A's, unchanged". The arm emits it
+nowhere; the row is now enumerated code by code with `R5_INDEX` absent.
+
+*The denominator.* Section 7.5 said "34 of the 36" while the runner printed "36 codes reached" — two
+different sets, neither defined. The denominator is now fixed once: the **thirty-six `R5*` codes**
+section 3.9's table declares (R5E's four, R5D's four, R5A's/R5B's twenty-eight). The fifth block
+reaches **32** of them plus **five** inherited `R4_*`/`R2_*` codes, and
+`scripts/run-layer-forward-smoke` owns both sets as data and asserts them **in both directions**, so
+a code that stops being reached and a code reached outside the declaration are both failures.
+
+**C18 — a non-UTF-8 path operand is refused, and the gap it closes is repository-wide.**
+`json_string` renders every path operand through `json.encode`, which escapes the bytes JSON forbids
+*as control characters* but copies a non-UTF-8 byte through raw, so a malformed operand produced a
+document no conforming JSON reader can decode. R5E adds `utf8_ok` to its own step 2 and refuses such
+an operand with `R5E_PATH` and no document at all. The check is **the arm's**, not
+`moe_layer_forward.valid_path`'s, so R5A, R5B, R5C and R5D keep the behaviour their goldens record.
+**Those four arms inherit the defect**: each renders its own path operands the same way, and each
+would emit the same undecodable document. Closing it there is a change to four shipped contracts and
+four golden files and belongs to a capability that owns them, not to this one; it is recorded here
+so the next arm to touch them has the finding rather than rediscovering it. Fixture
+`mm-path-not-utf8`.
+
+**C19 — `oracle.sums_expected` and `sums_matched` are document fields, because an absent block sum
+was silently skipped.** Section 3.7 makes the block sum half of oracle 2's contract, and
+`compare_transcript_sum` returned early on `sum_present != 1` without recording anything. A
+transcript that lost its `sum =` lines therefore produced `verdict: PASS` with
+`max_sum_diff_millionths: 0` — indistinguishable from a transcript whose every sum matched. The two
+counters are added to the `oracle` object: `sums_expected` counts every compared node and
+`sums_matched` counts those whose sum was present and within the rule. Fixture
+`mm-transcript-nosums` (`sums_expected 31`, `sums_matched 1`); the real transcript is `227` and
+`227`. This is a schema addition to `R5_MOE_MODEL_FORWARD` `schema_version: 1` before it has any
+consumer, so the version is not advanced and the R5E goldens are regenerated.
+
+**C20 — the self-reference oracle's non-aliasing property is an assertion, not a description.**
+Section 3.7 said "the reference arm asserts its tensors' data pointers are **not** the windows'".
+No such assertion existed; the property held because `ggml_backend_alloc_ctx_tensors` allocates its
+own buffer, which is an argument and not a check. `outside_window` now runs on every reference
+tensor and every reference claim stack immediately before it is filled, requiring
+`slot_data_offset` against the window it copies from to be `< 0` or `>= window.len()`. A violation
+is `R5_REFERENCE_MISMATCH` detail `aliased[<role>]`. It is the same primitive `graph_identity` uses
+to prove the *primary* arm's tensors **are** at their own window offsets, used here for the opposite
+conclusion.
+
+**C21 — `residency.keys_distinct` is derived from a run-level set.** Section 3.8 presents
+`keys_demanded == keys_distinct` as section 2.9's finding, and the implementation wrote
+`o.keys_demanded += routing.count` and `o.keys_distinct += routing.count` on consecutive lines: one
+accumulator published twice, whose equality proves nothing and which a multi-prefill consumer would
+never see diverge. `keys_distinct` is now the cardinality of `merge_keys`' run-level
+`(layer, expert)` set, and `keys_demanded` keeps its accumulation. Both numbers are unchanged on
+every prefill — 343 and 343 on the model, 9 and 9 on the synthetic corpus — which is now a measured
+equality between two derivations rather than a tautology.
+
+**C22 — section 5.5's "no new request is expected" was wrong, and two requests are filed.**
+`docs/align-requests.md` Requests **46** (a `Borrow` argument must be a stable named local or field)
+and **47** (same-call aliasing between a `borrow mut` owner and its own `Copy` scalar field) are both
+genuine Align gaps, both non-blocking, both with the application-side mitigation R5E ships and with a
+minimal probe verified at the pinned `4b515f8d` and sibling line citations. They are numbered 46 and
+47 rather than 44 and 45 because this branch's register ends at 43 and `agent/r3-residency-sim`
+already holds 44 and 45 unmerged; the register carries a renumbering note. A third refusal — a
+function whose `->` starts its own line — is an **application concern** caused by Align's
+newline-terminated statement rule and is recorded in section 5.5, not filed.
 
 ---
 
@@ -2173,6 +2333,7 @@ Every applicable cell of section 4 against its implementing function and its pas
 | --- | --- | --- |
 | Arm selection | `src/ggml_spike.align`'s first-operand dispatch | `S` `mm-arm-unknown-flag`, and `arm-r5a/r5b/r5d-unchanged` assert the three earlier arms still emit their own `kind` |
 | Arity, five to nine | `run` | `S` `mm-arity-four`, `mm-arity-ten` → no document, non-zero exit |
+| Path operands are lexically valid **and UTF-8** | `mm_valid_path` = `moe_layer_forward.valid_path` + `utf8_ok` | `S` `mm-path-not-utf8` → no document, non-zero exit; the six empty/long/NUL/`-` cases unchanged (C18) |
 | Role-qualified block selection | `find_block_with_role` | `S` `mm-block-missing`, `mm-block-ambiguous`; `Q` `embedding_block_index == 0`, `output_block_index == 1057` |
 | Layer and expert coverage | `validate_layer_coverage`, `validate_expert_coverage` | `S` `mm-coverage-gap-router` → `layer[1]`, `mm-coverage-gap-expert` → `layer[1]expert[5]`; `Q` `expert_block_count == 1024` |
 | Dense window sizing | `size_dense_window` | `S` the peak is layer 0's pair (C8); `Q` `dense_bytes == 84520960`, `dense_peak_block_layer == -1` |
@@ -2182,9 +2343,9 @@ Every applicable cell of section 4 against its implementing function and its pas
 | The five carried inputs and two id ranges | `stage_carry` | `S` `mm-force-carry-short` → `R5E_CARRY` `layer[0]input[ffn_norm]`; the two range arms are fail-closed (C5); `Q` `carried_bytes == 100224` |
 | Global ids feed `get_rows`, compact ids feed `mul_mat_id` | `mm_b_row` rows 1 and 3/4/6 | C7; `S`/`Q` the transcript oracle compares `ffn_moe_weights-L` in every layer at 0 ten-thousandths |
 | The narrowing | the two `WHEN_LAST` rows | `S` golden; `Q` `narrow_layer == 15`, `narrow_index == 5` |
-| The head | `mm_head_node_table`, `run_end_graph(GRAPH_HEAD)` | `S` `output.element_count == 32`; `Q` `== 50304`, `head.output_bytes == 84510720` |
+| The head | `mm_head_node_table`, `run_end_graph(GRAPH_HEAD)` | `S` `output.element_count == 32`; `Q` `== 50304`, and `head.output_bytes == 84510720` / `head.node_count == 3` asserted by the runner |
 | Window reuse is safe | every ggml buffer freed before the next read | `S` `phase_balance_failures == 0` per phase; `Q` the self-reference oracle at 227/227 |
-| The residency accounting | `schedule_model`'s per-layer accumulation, `render_residency` | `S` equal to the generator's; `Q` `1301446656 / 3900702720 = 333644 ppm`, `planes_read == 1029`, `keys_demanded == keys_distinct == 343` |
+| The residency accounting | `schedule_model`'s per-layer accumulation, `merge_keys`, `render_residency` | `S` equal to the generator's, `keys_demanded == keys_distinct == 9` from two different derivations (C21); `Q` `1301446656 / 3900702720 = 333644 ppm`, `planes_read == 1029`, `keys_demanded == keys_distinct == 343` |
 | Each error code | `stage_*` | section 7.5 |
 | `-` document destination | `run` | `S` `mm-doc-stdout-identical` compares the five-operand, `-`, and file forms |
 | Exit mapping | R0's, verbatim | `S` every case asserts `status` against the exit code |
@@ -2196,6 +2357,7 @@ Every applicable cell of section 4 against its implementing function and its pas
 | --- | --- | --- |
 | Reference — bytes equal per block and per claim | `compare_source_members`, `compare_claim_source` | `S` `mm-source-diverged-claim` → `layer[0]expert[1]role[ffn_gate_exps]`; `Q` every dense member and all 343 read claims equal, 2,426 preads for 1,554,531,072 bytes |
 | Reference — nodes identical per graph | `compare_reference_rows` | `S` all 31 nodes of all six synthetic graphs; `mm-force-reference` → `graph[1]layer[0]node[attn_norm]@0`; `Q` **227 of 227 over 34 graphs**, and byte-identical logits |
+| Reference — the second arm does not alias the window | `outside_window`, in `reference_weights` and `reference_claims` | `S` asserted before every reference fill on every graph, `reference.verdict: IDENTICAL`; `Q` the same over 34 graphs (C20) |
 | Transcript — grammar | `moe_layer_forward.scan_transcript`, reused unchanged | `S` `mm-transcript-garbage` → `R5_TRANSCRIPT` |
 | Transcript — every layer matched | `prepare_transcript` | `S` `mm-transcript-missing-layer` → `layer[1]node[l_out]`; `Q` `layers_matched == 16` |
 | Transcript — matched by `(name, shape)` | `compare_transcript_rows`' four-`ne` check | `Q` the real transcript's duplicate `norm-15` at two shapes is never sought, and every compared row's declared shape equals the computed one |
@@ -2203,7 +2365,8 @@ Every applicable cell of section 4 against its implementing function and its pas
 | Transcript — `kq-L` `ne0` against `KV_WIDTH` | `prepare_transcript`'s `ORACLE_SHAPE_INCOMPARABLE` branch | `S` `mm-transcript-kv-width` → `layer[1]node[kq]`, and `mm-transcript-excerpt` → `layer[0]node[kq]` on real instrument formatting |
 | Transcript — excluded classes | the three classes in `mm_oracle_table` | C10; `oracle.nodes_expected == 31` hosted and `== 227` on the model |
 | Transcript — a tolerance breach | `compare_transcript_elements` | `S` `mm-transcript-perturbed` → `verdict: FAIL`, `worst_layer: 0`, `worst_node: l_out`, `status: ok`, routing still `MATCH` |
-| Transcript — an exact pass | `compare_transcript_rows` | `S` `max_abs_diff == 0`; `Q` `== 0` over 21,372 elements, `max_sum_diff_millionths == 0` |
+| Transcript — an exact pass | `compare_transcript_rows` | `S` `max_abs_diff == 0`, `sums_expected == sums_matched == 31`; `Q` `== 0` over 21,372 elements, `max_sum_diff_millionths == 0`, `sums_matched == 227` |
+| Transcript — a sum that was never compared is visible | `compare_transcript_sum`'s two counters | `S` `mm-transcript-nosums` → `status: ok`, `verdict: PASS`, `sums_expected 31`, `sums_matched 1` (C19) |
 | Routing — success per layer | `compare_routing_layer` | `S` `MATCH` at both layers with **full** element-wise coverage (12/12) at `n_expert_used = 3`; `Q` `MATCH`, `ids_printed_compared == 546`, `ids_total == 728`, `sums_matched == 16` |
 | Routing — failure is data | `schedule_model`'s verdict block | `S` `mm-routing-mismatch` → `MISMATCH` on a `status: ok` run with `first_difference_layer: 1`, oracle 2 still evaluated |
 | Routing — a wrong id refused before use | step 28 | `S` `mm-force-routing-id-range` → `layer[0]token[0]slot[0]`, `mm-force-routing-id-repeat` → `layer[0]token[0]slot[1]` |
@@ -2217,8 +2380,21 @@ Every applicable cell of section 4 against its implementing function and its pas
 
 ### 7.5 Error-code coverage
 
-`gmake layer-forward-smoke`'s fifth block reaches **34 of the 36** codes section 3.9 declares, for
-real, with no ggml, no model, and no network. The two it does not are `R5_ABI` (`Q`-only, and only if
-the linked ggml drifts) and `R5E_CLAIM_OVERFLOW` (not input-reachable, section 4.5, with the
-arithmetic that makes it so). Every other code in section 3.9's table has a named case above.
-`R5E_CARRY` is reached through its length arm; C5 records why its two range arms are not.
+`gmake layer-forward-smoke`'s fifth block reaches **32 of the 36 `R5*` codes** section 3.9 declares,
+plus **five inherited `R4_*`/`R2_*` codes**, for real, with no ggml, no model, and no network. The
+runner prints exactly those numbers and owns both sets as data (correction C17).
+
+The four `R5*` codes it does not reach:
+
+| Code | Why |
+| --- | --- |
+| `R5_ABI` | `Q`-only, and only if the linked ggml drifts |
+| `R5E_CLAIM_OVERFLOW` | not input-reachable: step 19 reserves for `U_max`, which no routing decision can exceed |
+| `R5_WINDOW_BUDGET` | not input-reachable: the container refuses a member or block that would make the dense window exceed 8 GiB before the window is sized (correction C17), measured as `mm-dense-nbytes-huge` |
+| `R5D_CLAIM_BUDGET` | the same, on the claim window, measured as `mm-claim-nbytes-huge` |
+
+The five inherited codes it does reach are `R4_PACK_UNREADABLE`, `R4_PACK_TRUNCATED`,
+`R4_PACK_OFFSET`, `R4_5_SLICE`, and `R2_EXPERT_ID_NOT_INTEGRAL`; `alignpack_read`'s other five
+`R4_PACK_*` codes belong to `alignpack-smoke`. Every other code in section 3.9's table has a named
+case above. `R5E_CARRY` is reached through its length arm; C5 records why its two range arms are
+not.

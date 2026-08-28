@@ -2095,6 +2095,19 @@ def write_moe_model_corpus(directory, emit):
          patch(base, member_field(layout, claim_base, 80), "<i", 1))
     emit("moe-model-pack-truncated.alignpack", base[:len(base) - 64])
 
+    # The two window-budget probes of section 4.5, which measure the **order** of the guards rather
+    # than the guards themselves. A member record declaring 2^40 bytes was the fixture section 4.5
+    # promised for `R5_WINDOW_BUDGET` and `R5D_CLAIM_BUDGET`; it cannot reach either, because
+    # `alignpack_read.member_at` refuses a member whose `[pack_offset, pack_offset + nbytes)` leaves
+    # its block, and `open_pack` refuses a container whose `total_bytes` is not the file's own
+    # length. Both codes are therefore fail-closed guards on an arithmetic no input can produce, and
+    # these two cases are what keep that true (section 6, correction C17). Offset 24 is
+    # `member.nbytes`.
+    emit("moe-model-pack-dense-nbytes.alignpack",
+         patch(base, member_field(layout, 1, 24), "<Q", 1 << 40))
+    emit("moe-model-pack-claim-nbytes.alignpack",
+         patch(base, member_field(layout, claim_base, 24), "<Q", 1 << 40))
+
     emit("moe-model-source.bin", source_image(layout))
     emit("moe-model-source-short.bin", b"\0")
 
@@ -2157,14 +2170,6 @@ def write_moe_model_corpus(directory, emit):
     layer0_claim = 1 + dense_attention + 2 + layer0_expert * len(MOE_EXPERT_ROLES)
     emit("moe-model-source-diverged.bin", source_image(layout, corrupt=layer0_claim))
 
-
-    # `R5_SOURCE_DIVERGED` must corrupt a claim the run actually **reads**: a plane no routing
-    # decision names is never compared, so the mutation is placed on layer 0's first routed expert's
-    # gate plane, which the schedule reads at `u = 0`.
-    layer0_expert = sorted(set(routings[0]))[0]
-    layer0_claim = 1 + dense_attention + 2 + layer0_expert * len(MOE_EXPERT_ROLES)
-    emit("moe-model-source-diverged.bin", source_image(layout, corrupt=layer0_claim))
-
     lines = transcript.split("\n")
 
     def header_at(name, op):
@@ -2210,6 +2215,18 @@ def write_moe_model_corpus(directory, emit):
          "\n".join(lines[:novalues_start + 1] + lines[novalues_end:]) + "\n")
 
     emit("moe-model-transcript-garbage.txt", bytes(range(256)) * 8)
+
+    # Every `sum = ` line removed but the file's last. The element comparison still passes on every
+    # node, so the run is `status: ok` with `oracle.verdict: PASS` — and thirty of oracle 2's
+    # thirty-one block sums are simply gone, which before `oracle.sums_expected`/`sums_matched`
+    # existed produced a document indistinguishable from a complete one (section 6, correction
+    # C19). The final record keeps its sum because that line is what closes the last block: a
+    # transcript with no sums at all ends inside a block and is `R5_TRANSCRIPT`, a grammar fault
+    # `mm-transcript-garbage` already owns.
+    sum_rows = [i for i, line in enumerate(lines) if line.startswith("    sum = ")]
+    emit("moe-model-transcript-nosums.txt",
+         "\n".join(line for i, line in enumerate(lines)
+                   if i == sum_rows[-1] or not line.startswith("    sum = ")) + "\n")
 
     # `routing_oracle.verdict: MISMATCH` on a **successful** run: one printed expert id of
     # `ffn_moe_topk-1` is moved to another expert and the block sum moves with it, so both halves of

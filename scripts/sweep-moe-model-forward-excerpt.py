@@ -87,6 +87,21 @@ def main(argv):
     weight = "blk.%d.attn_output.weight" % (n_layer - 1)
     for index, (_, record_op, source, _, _) in enumerate(found):
         if record_op == "MUL_MAT" and source.startswith(weight):
+            # The two followers are asserted to be the narrowing `GET_ROWS` pair rather than
+            # assumed: "the next two records" is a positional claim, and a flag set or an
+            # instrument version that inserts a node between them would silently sweep the wrong
+            # two records into a checked-in fixture.
+            for offset in (1, 2):
+                if index + offset >= len(found):
+                    sys.stderr.write("sweep: %s has no follower at +%d in %s\n"
+                                     % (weight, offset, argv[1]))
+                    return 1
+                follower_op = found[index + offset][1]
+                if follower_op != "GET_ROWS":
+                    sys.stderr.write(
+                        "sweep: the record %d after the %s MUL_MAT is %s, not the narrowing "
+                        "GET_ROWS, in %s\n" % (offset, weight, follower_op, argv[1]))
+                    return 1
             for offset in range(3):
                 if index + offset < len(found) and index + offset not in seen:
                     seen.add(index + offset)

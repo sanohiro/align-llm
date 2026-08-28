@@ -132,6 +132,59 @@ fn json_string(value: str) -> string {
   return encoded[5..encoded.len() - 1].clone()
 }
 
+// Section 3.3's six path operands are copied into the emitted document as JSON scalars. `json.encode`
+// escapes every byte a JSON string may not carry **as a control character**, but a path is an OS
+// byte string and a non-UTF-8 one is copied through raw, producing a document no conforming JSON
+// reader can decode — which is a malformed *output* produced by a malformed *input*. R5E refuses
+// such an operand in its own step 2, with `R5E_PATH` and no document at all. The check is the arm's
+// and not `moe_layer_forward.valid_path`'s, so R5A/R5B/R5C/R5D keep the behaviour their goldens
+// record (section 6, correction C18).
+fn utf8_ok(path: str) -> bool {
+  view := path.bytes()
+  mut at := 0
+  loop {
+    if at >= view.len() { break }
+    lead := view.u8(at) as i64
+    mut extra := 0
+    mut code := 0
+    if lead < 128 {
+      extra = 0
+      code = lead
+    } else if lead >= 194 && lead <= 223 {
+      extra = 1
+      code = lead - 192
+    } else if lead >= 224 && lead <= 239 {
+      extra = 2
+      code = lead - 224
+    } else if lead >= 240 && lead <= 244 {
+      extra = 3
+      code = lead - 240
+    } else {
+      return false
+    }
+    if at + extra >= view.len() { return false }
+    mut k := 1
+    loop {
+      if k > extra { break }
+      continuation := view.u8(at + k) as i64
+      if continuation < 128 || continuation > 191 { return false }
+      code = code * 64 + (continuation - 128)
+      k = k + 1
+    }
+    // Overlong encodings, the UTF-16 surrogate range, and anything above U+10FFFF are refused by
+    // the decoded value rather than by the lead byte alone.
+    if extra == 1 && code < 128 { return false }
+    if extra == 2 && (code < 2048 || (code >= 55296 && code <= 57343)) { return false }
+    if extra == 3 && (code < 65536 || code > 1114111) { return false }
+    at = at + extra + 1
+  }
+  return true
+}
+
+fn mm_valid_path(path: str) -> bool {
+  return moe_layer_forward.valid_path(path) && utf8_ok(path)
+}
+
 fn bounded_detail(value: str) -> string {
   if value.len() <= MAX_DETAIL_BYTES { return value.clone() }
   return value[0..MAX_DETAIL_BYTES].clone()
@@ -541,6 +594,8 @@ pub Outcome {
   oracle_elements: i64,
   oracle_max_abs: i64,
   oracle_max_sum: i64,
+  oracle_sums_expected: i64,
+  oracle_sums_matched: i64,
   oracle_worst_layer: i64,
   oracle_worst_node: string,
   oracle_worst_element: i64,
@@ -706,6 +761,8 @@ pub fn empty_outcome() -> Outcome = Outcome {
   oracle_elements: 0,
   oracle_max_abs: 0,
   oracle_max_sum: 0,
+  oracle_sums_expected: 0,
+  oracle_sums_matched: 0,
   oracle_worst_layer: -1,
   oracle_worst_node: "".clone(),
   oracle_worst_element: -1,
@@ -2075,6 +2132,57 @@ fn graph_weights(
   return Ok(())
 }
 
+// Section 3.7's non-aliasing assertion for oracle 1, made real. A reference tensor is created in a
+// second context and allocated by `ggml_backend_alloc_ctx_tensors`, so its bytes must live in
+// ggml's own buffer and **not** in the Align window the primary arm placed its tensors on. Without
+// this the bit-exact oracle could pass by aliasing: two graphs reading one byte range agree
+// trivially. `slot_data_offset` is `graph_identity`'s own primitive, used here for the opposite
+// conclusion (section 6, correction C20).
+fn outside_window(borrow slots: slice<u8>, index: i64, borrow window: slice<u8>) -> bool {
+  landed := ggml_ffi.slot_data_offset(slots, index, window)
+  return landed < 0 || landed >= window.len()
+}
+
+// The run-level `(layer, expert)` key set behind `residency.keys_distinct`. A key is
+// `layer * n_expert + expert`, and a demand already in the set does not extend it. Within one
+// prefill the layers are walked once each and a layer's `routed[]` is already a distinct ascending
+// union, so the set grows by exactly `routing.count` every layer — which is section 2.9's finding
+// and is now a *derived* equality rather than the same accumulator written twice. A multi-prefill
+// consumer walking a layer twice is where the two numbers separate, and this is the function that
+// will see it first.
+fn merge_keys(
+  borrow seen: array<i64>,
+  borrow routing: layer_olmoe.Routing,
+  layer: i64,
+  n_expert: i64,
+) -> array<i64> {
+  mut next: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= seen.len() { break }
+    next.push(seen[at])
+    at = at + 1
+  }
+  mut which := 0
+  loop {
+    if which >= routing.routed.len() { break }
+    key := layer * n_expert + routing.routed[which]
+    mut found := false
+    mut probe := 0
+    loop {
+      if probe >= seen.len() { break }
+      if seen[probe] == key {
+        found = true
+        break
+      }
+      probe = probe + 1
+    }
+    if !found { next.push(key) }
+    which = which + 1
+  }
+  return next.build()
+}
+
 // `verdict` is `EXTERNAL` only when **every** weight tensor of **every** graph landed at its own
 // window offset. `window.pointer_identity_failures` is what makes that a measurement across 195
 // placements rather than a claim.
@@ -2323,6 +2431,11 @@ fn compare_transcript_sum(
   borrow mut breach: bool,
   borrow mut o: Outcome,
 ) {
+  // Every compared row is contracted to carry a block sum, so the two counters are published
+  // whether or not the transcript printed one: a `sum` line the instrument dropped silently
+  // removes half of this oracle's evidence for that node, and `oracle.sums_matched` against
+  // `sums_expected` is the only place a reader can see it (section 6, correction C19).
+  o.oracle_sums_expected = o.oracle_sums_expected + 1
   if scan.sum_present[row] != 1 { return }
   integer := oracle.integer[row] == 1
   mut accumulator: f32 := 0.0 as f32
@@ -2363,7 +2476,7 @@ fn compare_transcript_sum(
     if relative > bound { bound = relative }
   }
   if magnitude > o.oracle_max_sum { o.oracle_max_sum = magnitude }
-  if magnitude > bound { breach = true }
+  if magnitude > bound { breach = true } else { o.oracle_sums_matched = o.oracle_sums_matched + 1 }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2675,6 +2788,9 @@ fn reference_weights(
     if at >= m.count { break }
     label := graph_member_label(m, at)
     if fill {
+      if !outside_window(slots, at, window) {
+        return Err(ffi_fault("R5_REFERENCE_MISMATCH", named("aliased", label)))
+      }
       offset := m.window[at]
       region := window[offset..offset + m.nbytes[at]]
       ggml_ffi.slot_set(slots, at, region, 0, m.nbytes[at], label)?
@@ -2717,6 +2833,9 @@ fn reference_claims(
     slot := mm_claim_slot(role)
     plane := planes[role]
     if fill {
+      if !outside_window(slots, slot, claim_window) {
+        return Err(ffi_fault("R5_REFERENCE_MISMATCH", named("aliased", label)))
+      }
       mut u := 0
       loop {
         if u >= routed_count { break }
@@ -4053,6 +4172,11 @@ fn schedule_model(
   rows := builder()
   mut schedule_rows := 0
   mut running := 0
+  // The run-level `(layer, expert)` key set of section 3.8, kept as a real set rather than as a
+  // second accumulator of the same per-layer count. Section 2.9's finding — that a prefill
+  // demands 343 keys and 343 distinct keys, so no cache can hit — is only evidence if the two
+  // numbers are derived differently (section 6, correction C21).
+  mut seen_keys: array<i64> := empty_array()
 
   mut backend := ggml_ffi.null_handle()
   if o.code.len() == 0 {
@@ -4137,7 +4261,8 @@ fn schedule_model(
       o.expert_bytes_read = o.expert_bytes_read + result.claim_bytes
       o.planes_read = o.planes_read + result.claim_planes
       o.keys_demanded = o.keys_demanded + routing.count
-      o.keys_distinct = o.keys_distinct + routing.count
+      seen_keys = merge_keys(seen_keys, routing, layer, g.n_expert)
+      o.keys_distinct = seen_keys.len()
       running = running + result.claim_bytes
       cumulative.push(running)
       if result.claim_bytes > o.claim_peak_use_bytes {
@@ -4785,7 +4910,10 @@ pub fn render_head(borrow o: Outcome, borrow tokens: TokenColumns) -> string {
 // "where does the win come from" question is answered without re-running anything.
 // `keys_demanded` and `keys_distinct` are **equal** on every prefill — that is section 2.9's
 // finding, and publishing both is how a future multi-prefill capability will see the moment they
-// stop being equal.
+// stop being equal. The two are derived differently on purpose: `keys_demanded` accumulates each
+// layer's `routing.count`, and `keys_distinct` is the cardinality of `merge_keys`' run-level
+// `(layer, expert)` set. An equality between one accumulator written twice would be a tautology
+// and would prove nothing (section 6, correction C21).
 pub fn render_residency(borrow o: Outcome, borrow curve: CurveColumns) -> string {
   total_read := o.expert_bytes_read + o.dense_bytes_read + o.head_bytes_read
     + o.embedding_bytes_read
@@ -5040,6 +5168,10 @@ pub fn render_transcript_oracle(borrow o: Outcome) -> string {
   d.write_int(o.oracle_max_abs)
   d.write(",\"max_sum_diff_millionths\":")
   d.write_int(o.oracle_max_sum)
+  d.write(",\"sums_expected\":")
+  d.write_int(o.oracle_sums_expected)
+  d.write(",\"sums_matched\":")
+  d.write_int(o.oracle_sums_matched)
   d.write(",\"tolerance_ten_thousandths\":")
   d.write_int(TOLERANCE_TEN_THOUSANDTHS)
   d.write(",\"sum_tolerance_millionths\":")
@@ -5368,22 +5500,22 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   if count < 6 || count > 10 {
     return Err(Error.Invalid)
   }
-  if !moe_layer_forward.valid_path(args[2]) || args[2] == "-" {
+  if !mm_valid_path(args[2]) || args[2] == "-" {
     return Err(Error.Invalid)
   }
-  if !moe_layer_forward.valid_path(args[3]) || args[3] == "-" {
+  if !mm_valid_path(args[3]) || args[3] == "-" {
     return Err(Error.Invalid)
   }
-  if count >= 7 && args[6] != "-" && !moe_layer_forward.valid_path(args[6]) {
+  if count >= 7 && args[6] != "-" && !mm_valid_path(args[6]) {
     return Err(Error.Invalid)
   }
-  if count >= 8 && (!moe_layer_forward.valid_path(args[7]) || args[7] == "-") {
+  if count >= 8 && (!mm_valid_path(args[7]) || args[7] == "-") {
     return Err(Error.Invalid)
   }
-  if count >= 9 && args[8] != "-" && !moe_layer_forward.valid_path(args[8]) {
+  if count >= 9 && args[8] != "-" && !mm_valid_path(args[8]) {
     return Err(Error.Invalid)
   }
-  if count == 10 && (!moe_layer_forward.valid_path(args[9]) || args[9] == "-") {
+  if count == 10 && (!mm_valid_path(args[9]) || args[9] == "-") {
     return Err(Error.Invalid)
   }
   reference_path := if count >= 8 { args[7] } else { "" }
