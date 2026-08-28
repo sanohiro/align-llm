@@ -795,11 +795,15 @@ here. Roadmap item **27** is in `docs/specs/roadmap.md`; the `HANDOFF.md` active
 `docs/align-development.md` carries the arm, its operand grammar, its environment inputs, and the
 `MAX_PREFILL_TOKENS` lift.
 
-The numbering hazard section 8 recorded was real and both numbers moved. `main` carries roadmap
-items to **24** and requests to **46**; `agent/r3-decode-residency` claims roadmap **25** and
-`agent/r5e-moe-model-prefill` claims roadmap **26** and requests **47/48**. This capability therefore
-takes roadmap **27** and Align Request **49**, and both must be re-checked at reconciliation against
-whatever has merged by then.
+The numbering hazard section 8 recorded was real and both numbers moved. When this section was first
+written, `main` carried roadmap items to **24** and requests to **46**, `agent/r3-decode-residency`
+claimed roadmap **25**, and `agent/r5e-moe-model-prefill` claimed roadmap **26** and requests
+**47/48**. **Re-checked at publication**, against `main` `76246f3` (the merge of PR #142) which this
+branch merges: `agent/r3-decode-residency` has landed and roadmap item **25** is on `main`;
+`agent/r5e-moe-model-prefill` has **not**, so roadmap **26** and requests **47 and 48** remain
+claimed-and-unmerged and are reserved rather than free. Requests on `main` still end at **46**. This
+capability therefore keeps roadmap **27** and Align Request **49**, and `docs/specs/roadmap.md`
+records the reserved gap at item 26 in place so the step from 25 to 27 is not read as an error.
 
 ## 10. Deviations from this ledger, and why
 
