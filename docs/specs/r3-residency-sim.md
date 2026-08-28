@@ -837,7 +837,7 @@ the two that name the subject:
 | `ALIGN_LLM_LLAMA_EVAL_CALLBACK` | `scripts/run-residency-sim` | **none** | one exact `N/A` line, exit 0 — unset, or set to something not executable |
 | `ALIGN_LLM_GGUF_MODEL` | `scripts/run-residency-sim` | **none** | one exact `N/A` line, exit 0 — unset, or naming a file that is not there |
 | `ALIGN_LLM_LOCALITY_PROMPTS` | `scripts/run-residency-sim` | `eval/prompts/expert-locality-v1.txt` | **exit 1.** A missing corpus is a broken checkout, not an absent subject, and it must not read as `N/A` |
-| `ALIGN_LLM_LOCALITY_PROMPT_COUNT` | `scripts/run-residency-sim` | `40` | n/a — exit 1 when the corpus holds fewer prompts than requested |
+| `ALIGN_LLM_LOCALITY_PROMPT_COUNT` | `scripts/run-residency-sim` | `40` | n/a — an ASCII integer in `[1, 4096]`, matching `MAX_TRACE_PATHS`; exit 1 outside that range or when the corpus holds fewer prompts than requested |
 | `ALIGN_LLM_RESIDENCY_BUDGET` | `scripts/run-residency-sim` | `total_expert_bytes >> 2`, the section 4.5 probe's 25-per-cent point | n/a |
 | `ALIGN_LLM_RESIDENCY_SIM_UPDATE_GOLDEN` | `scripts/run-residency-sim-smoke` | unset | `1` rewrites `eval/fixtures/residency-sim/sim-basic.golden.json` instead of comparing against it. A maintenance switch; never set in CI |
 
@@ -891,7 +891,11 @@ prefill transcripts of `eval/prompts/expert-locality-v1.txt` with the flags and 
 `scripts/run-expert-locality-gate` established — `-fa off -ctk f32 -ctv f32 -nr -c 512`, a
 `ulimit -f` cap, a 600-second timeout, deletion of each transcript immediately after conversion, and
 a model size-and-mtime read-only proof — converts each with `main --expert-trace`, derives the Model
-IR once with `main --model-ir`, writes the trace list, and runs the arm. It records the corpus
+IR once with `main --model-ir`, writes the trace list, and runs the arm. Before invoking the
+instrument, it validates the prompt count and asks the simulator to validate the generated Model IR
+and requested/default budget against a one-row probe list whose trace is deliberately absent. Only
+the exact expected `R3_TRACE_UNREADABLE` result admits prompt capture; an earlier model or budget
+error fails before external work. It records the corpus
 identity, the instrument version block, and the whole verdict, and it exits 0 on every one of the
 three `result` values because all three are answers to the roadmap gate. It exits nonzero only when
 the instrument, the corpus, or a parser prevented a measurement.
@@ -1133,6 +1137,7 @@ that replaces it, and the case that closes it.
 | 21 | Section 2.6 step 9's `R3_SELECTION_TOO_MANY` | `MAX_DEMANDS` is tested **before** the element that would exceed it is appended, inside the per-document append loop, rather than after the whole document has been appended | A cap on what is allocated that is enforced after the allocation is a report, not a bound | not closed by a case; section 7.3, unchanged in reachability |
 | 22 | Sections 1.2 and 4.3's `scripts/run-residency-sim-qualification` | The script is `scripts/run-residency-sim`; the `make` target keeps the name `residency-sim-qualification` | The plan named a file that was never written under that name. The target and the script are allowed to differ; a document naming a path that does not exist is not | `make gate-topology-check`, and `make residency-sim-qualification`, which would not run at all under the other name |
 | 23 | Section 3.3's "opt-in through `ALIGN_LLM_GGUF_MODEL`, `ALIGN_LLM_LLAMA_EVAL_CALLBACK`, and `ALIGN_LLM_LOCALITY_PROMPTS` … `N/A` when any is absent" | The `N/A` rule is over the **two** variables that name the subject and have no default. `ALIGN_LLM_LOCALITY_PROMPTS`, `ALIGN_LLM_LOCALITY_PROMPT_COUNT`, and `ALIGN_LLM_RESIDENCY_BUDGET` have checked-in defaults and are overrides; a corpus that is named and missing is exit 1. Section 3.3's table lists all six variables including the smoke's `ALIGN_LLM_RESIDENCY_SIM_UPDATE_GOLDEN` | The script never behaved as section 3.3 described, and the difference matters in the direction that hides a failure: a broken checkout must not read as an absent subject | `make residency-sim-qualification` with no environment at all, which prints the `N/A` line for the instrument and exits 0 |
+| 24 | Section 4.3's capture order, which generated a Model IR but did not validate it or the budget until after every prompt had invoked the instrument | Prompt count is validated in `[1, MAX_TRACE_PATHS]`; after Model IR generation and default-budget derivation, the wrapper runs the simulator against one deliberately absent trace and admits capture only on exact `R3_TRACE_UNREADABLE` step-8 evidence. Model and budget failures therefore precede instrument `--version` and prompt work | At the default 40 prompts and 600-second per-prompt timeout, a non-MoE model, malformed/too-small budget, or impossible prompt count could otherwise consume hours before the simulator reported an input defect already knowable without a transcript. Reusing the simulator keeps one validation owner and avoids a shell-side schema copy | `residency-sim-smoke`: `qualification-prompt-count`, `qualification-budget`, and `qualification-model` assert refusal with no fake-instrument invocation; `qualification-admission` asserts valid defaults reach `--version` and the first prompt |
 
 **One finding, not a correction.** The jackknife gain of a fold can be negative when the candidate
 loses on that fold, and Align's `/` truncates toward zero while Python's `//` floors. The oracle

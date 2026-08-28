@@ -3,12 +3,40 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R3-RESIDENCY-SIM (2026-08-28)
+## Active: R3-QUALIFICATION-PREREQUISITES (2026-08-28)
 
-Branch `agent/r3-residency-sim`, rebased onto `main` `4f01553` (the merged C8-OPTIONAL-TARGETED-STAGE,
-PR #134, which sits on the merged MOE-PREREQ-DISCHARGE, PR #133). Design ledger
-`docs/specs/r3-residency-sim.md` is authoritative. Implementation and review are complete;
-publication is in progress and is the only remaining step.
+Branch `fix/r3-qualification-prerequisites` starts from current `main` `95c47e7`, the merge of R3
+PR #135. A second R3 implementation was independently completed before that merge became visible;
+its duplicate PR #137 is closed and will not be integrated. Its final review nevertheless exposed
+one root-cause class that applies to the merged qualification: the wrapper generated a Model IR but
+did not validate it or the requested budget until after every prompt had invoked the external
+instrument, so a locally knowable defect could consume up to 40 600-second prompt runs.
+
+**Current checkpoint.** `scripts/run-residency-sim` now validates prompt count in the simulator's
+existing `[1, MAX_TRACE_PATHS]` envelope, derives the Model IR and default budget, and asks the
+simulator itself to validate both against a one-row probe list whose trace is deliberately absent.
+Only exact `R3_TRACE_UNREADABLE` step-8 evidence admits instrument `--version` and prompt capture;
+no Model IR or budget validation is duplicated in shell. The hosted owner covers three refusals
+with zero fake-instrument calls and one valid admission through `--version` to the first prompt.
+`make residency-sim-smoke`, `make residency-sim-qualification` (exact N/A), `make format-check`, and
+`make baseline-check` pass. The hardware-name evidence finding from the duplicate implementation is
+not applicable because merged R3 has no hardware-profile string input.
+
+**Review envelope.** One host-native Codex comprehensive review covered the whole follow-up diff at
+`045cb48` against base tip and merge base `95c47e73ec0be1cd79ecd6536e0b84bc254bd871`.
+Verdict: clean; findings: none. The reviewer traced the probe through the simulator's documented
+validation order and CLI exit mapping and ran the direct owner with the existing product binary.
+Its attempt to reacquire the managed compiler lock was N/A because the review sandbox makes the
+user cache read-only; the normal owner run above is the owning build evidence.
+
+**Next actions, in order.** Run the exact-head owner and preflight, publish and merge the follow-up,
+then refresh `main` and start the next eligible roadmap capability.
+
+## Merged checkpoint: R3-RESIDENCY-SIM (2026-08-28)
+
+PR #135 merged as `95c47e7` after all three GitHub checks passed. Design ledger
+`docs/specs/r3-residency-sim.md` remains authoritative. Implementation, real-model qualification,
+review, publication, and merge are complete.
 
 **What it delivers.** The R3 roadmap gate, measured. `main --simulate-residency` replays the demand
 stream implied by a set of real `R2_ACTIVATION_TRACE` documents against ten expert-residency cache
@@ -117,8 +145,8 @@ source -> immutable oracle -> finalization), measured on Linux (aarch64, kernel 
 Python 3.12.3) and checked there with `make baseline-check` ending `baseline chain: PASS`. Three of
 the twenty recorded artifacts changed: `.align-revision` (`4b515f8d` -> `3a34febe`, PR #134's, adopted
 unchanged), `Makefile`, and `src/main.align`, the latter two this capability's own. The other
-seventeen hashes are unchanged and the twenty paths are identical. The pull request must merge with a
-merge commit; squash and rebase merges would make these commits unreachable.
+seventeen hashes are unchanged and the twenty paths are identical. PR #135 merged with merge commit
+`95c47e7`, preserving the recorded source, oracle, and finalization commits.
 
 **Align capability requests.** Implementation added Requests 45 and 46 (filed as 44 and 45 before
 PR #134 took 44), both `PROPOSED`, non-blocking, and shipped around with documented workarounds.
@@ -128,11 +156,6 @@ diagnostic and the built program corrupts the heap at run time on the decoded re
 `Drop`; the shipped fix is one `.clone()`. Request 46 is two related array-shape gaps
 (`borrow mut array<T>` loop invalidation, and no element assignment through an array field). R3 also
 strengthened Requests 21, 23, and 26 with new client evidence.
-
-**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test residency-sim -- make
-residency-sim-smoke gate-topology-check` under the installed profile at the exact head, then publish
-and merge. (2) Refresh `main` and start the next eligible roadmap item; R5's deferred microbenchmark
-C and R6 both wait on pending decisions (d) and (c) below.
 
 ## Merged checkpoint: MOE-PREREQ-DISCHARGE (2026-08-28)
 
@@ -235,7 +258,7 @@ longer fits alongside the downloaded model and its alignpack space; R1B's real-m
 1. **Small MoE GGUF, 1-4 GB. — TAKEN.** `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (3.9 GiB) is on
    this host. It unblocked the R2 locality gate (merged, PR #131), R1C's `olmoe` frontend (merged,
    PR #132), and R4's per-expert half with R4.5's expert matmul (merged, PR #133). R3's residency
-   simulation, in publication above, follows from the same file rather than from another download.
+   simulation, merged in PR #135 above, follows from the same file rather than from another download.
 2. **`gpt-oss-20b-mxfp4.gguf`, 12.1 GB.** Unblocks R1B's real-model `model-ir-parity` qualification
    and every `ASSUMED` row of `docs/specs/r1b-gptoss-moe-ir.md` section 2.5 — including the two
    rows R1C has now contradicted from the olmoe side. **Infeasible on this host** after decision 1
