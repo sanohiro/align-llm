@@ -1414,3 +1414,227 @@ edit; this section is the client evidence.
    `IrBlockRow` decodes 1,058 blocks and never materializes the 3,219 nested tensor records, and the
    whole decode-plus-sum runs in 0.4 s. It is what makes this module simple, and it is recorded here
    so the next client can rely on it.
+
+## 8. R3 decode residency measurement
+
+Section 7.4 recorded the R3 gate discharged on a stream that section 5.2 named as its own first
+limit: **prefill graphs only, six of eight router slots printed, replayed in decode order because
+decode is the regime being modelled and not because decode was observed.**
+[`r2c-decode-instrument.md`](r2c-decode-instrument.md) shipped the instrument that removes both
+limits and [`r2a-expert-trace.md`](r2a-expert-trace.md) section 9 is its first measurement consumer.
+This section records the residency measurement that follows.
+
+It **adds** to section 7.4 and overwrites nothing there. Section 7's 223-per-mille
+`recent_reuse_w32` win is the recorded result of *that* capability on *that* stream, and
+`scripts/run-residency-sim` still refuses a full-axis document so it cannot be silently restated.
+The capability that produced this section is **R3-DECODE-RESIDENCY**: no new CLI verb, no new
+exchanged document, no Align source change, and no coordinated invariant, so it triggers no design
+gate. It is one opt-in runner, two cases in the existing hosted owner, and this record.
+
+### 8.1 Subject, corpus, and the two arms
+
+```text
+model      OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf (olmoe, 16 layers, n_expert 64, n_expert_used 8)
+instrument llama-eval-callback, version: 0.2.0-dev (build 10566, commit bb4caa7), PATCHED
+           r2c-v2 managed build, built with AppleClang 21.0.0.21000101 for Darwin arm64
+corpus     eval/prompts/expert-locality-v1.txt
+           40 prompts, md5 d7fff23f5a1d4f6237e6f848f3318d8b, 877 bytes
+runner     scripts/run-decode-residency-gate
+flags      -n 16 --temp 0 --seed 42 -t 4 -fa off -ctk f32 -ctv f32 -nr -c 512,
+           one invocation per prompt — R2D's capture, flag for flag
+admission  scripts/expert_locality_gate.py require_full_router_axes (R2D's rule, shared verbatim)
+budget     975175680 B = 250 per mille of the 3,900,702,720 B expert footprint — section 7.4's point
+```
+
+The capture is R2D's: **40 prefill graphs and 640 decode graphs**, 16 of 16 requested steps for
+every prompt, over 832 token positions. Every transcript is deleted immediately; the 40 documents
+are the evidence.
+
+Two trace lists are built from those 40 documents and each is replayed by
+`main --simulate-residency` at the same budget:
+
+| Arm | Trace list | Stream |
+| --- | --- | --- |
+| `mixed` | the documents as captured | 104,960 demands over 832 token positions, 1,024 of 1,024 distinct keys |
+| `decode_only` | the same documents with graph 0 projected away | 81,920 demands over 640 token positions, 1,024 of 1,024 distinct keys |
+
+The decode-only list is a **projection for the simulator**, not a re-derived R2A document: exactly
+the two arrays the simulator reads — `graphs` and `selections` — are filtered, and every other block
+(`input`, `graph`, R2A's own `locality`) still describes the whole transcript. **The ordinals are
+kept as captured**, so the sixteen one-token graphs stay `decode`; renumbering would make the first
+of them a `single_token_first_graph` (section 2.5.6 of R2A) and `graph_phases` would stop being able
+to state what was replayed. The simulator admits the projected form unchanged — `graph 0` becomes
+undeclared and no selection names it — and `sim-full-axis-decode` in
+`scripts/run-residency-sim-smoke` is the hosted proof of that, with no model and no instrument.
+
+**What is different from section 7.4's stream, and it is not a small difference.** Slot coverage is
+1,000 per mille rather than 750, so no rate is a printed subsample any more; all sixteen layers are
+demanded rather than fifteen, because a one-token decode graph has no output-token reduction and
+layer 15 is demanded for the first time in decode; and the stream is 6.1× longer, 104,960 demands
+against 17,280. Every `(layer, expert)` pair in the model is now demanded — 1,024 of 1,024 keys,
+against 938 before. **The one-token working set, which section 4.5 finding 1 identified as the LRU
+cliff, moves with it**: 120 experts and 454,950,912 B in the mixed arm and 128 experts and
+487,587,840 B in the decode-only arm, against 90 experts and 341,213,184 B in section 4.5. The
+decode-only figure is exactly `16 layers × 8 slots`; the mixed arm's 120 is `15 × 8`, the prefill
+graph's reduced layer. The requested budget is therefore 2.0× to 2.1× the one-token working set
+here, where it was 2.86× in section 7.4 — **the same absolute budget is a materially tighter cache
+on this stream**, and that is the single fact the rest of this section turns on.
+
+Bounds are checked before the instrument runs and asserted before the replays: the decode half of
+the capture is `40 × 16 × 16 × 8 = 81,920` demands against `MAX_DEMANDS` 262,144, the exact pooled
+totals are 104,960 and 81,920, and the section 2.7 cost product is 28,864,000 and 22,528,000 against
+`MAX_SIMULATION_STEPS` 2^32 at a resident bound of 275 keys.
+
+### 8.2 Result at the requested budget
+
+`token_major`, the verdict-bearing order, at 975,175,680 B. Bytes fetched, and hit per mille over
+**every** router slot rather than over a printed subset:
+
+| Policy | `mixed` bytes | GB | hit ‰ | `decode_only` bytes | GB | hit ‰ |
+| --- | --- | --- | --- | --- | --- | --- |
+| `null` | 399,406,792,704 | 399.4 | 0 | 312,056,217,600 | 312.1 | 0 |
+| `compulsory` | 3,900,702,720 | 3.9 | 990 | 3,900,702,720 | 3.9 | 987 |
+| `belady` | 92,438,200,320 | 92.4 | 769 | 70,931,496,960 | 70.9 | 773 |
+| **`lru` (baseline)** | **176,661,381,120** | **176.7** | **558** | **134,615,285,760** | **134.6** | **569** |
+| `lfu` | 203,681,808,384 | 203.7 | 491 | 160,290,471,936 | 160.3 | 487 |
+| `recent_reuse_w2` | 176,661,381,120 | 176.7 | 558 | 134,615,285,760 | 134.6 | 569 |
+| `recent_reuse_w8` | 181,278,081,024 | 181.3 | 546 | 140,051,152,896 | 140.1 | 551 |
+| `recent_reuse_w32` | 183,905,255,424 | 183.9 | 540 | 145,546,985,472 | 145.5 | 534 |
+| `topk_prefetch_k1` | 183,566,204,928 | 183.6 | 558 | 140,189,368,320 | 140.2 | 568 |
+| `topk_prefetch_k8` | 291,705,962,496 | 291.7 | 539 | 223,084,412,928 | 223.1 | 552 |
+
+```text
+mixed        baseline lru 176661381120 B   best_policy -   gain 0‰   headroom 476‰
+             jackknife 40 fold(s), minimum gain 0‰, stable no
+             result NO_POLICY_BEATS_BASELINE
+
+decode_only  baseline lru 134615285760 B   best_policy -   gain 0‰   headroom 473‰
+             jackknife 40 fold(s), minimum gain 0‰, stable no
+             result NO_POLICY_BEATS_BASELINE
+```
+
+**No candidate clears the 50-per-mille effect floor on either arm, and none even fetches fewer bytes
+than `lru`**, which is why `best_policy` is `""` rather than a named-but-disqualified row
+(correction 14). The jackknife's `minimum gain 0` is the no-candidate-tested value, not a measured
+fold: section 2.8's resampling runs only over candidates that clear the pooled floor, and here there
+are none.
+
+`recent_reuse_w2` is **byte-identical to `lru`** on both arms, which is section 2.4's own prediction
+for a two-position window made visible. The frequency policies have changed sign against section
+7.4: `lfu` fetched 26.1 GB against `lru`'s 33.5 GB there, a 221-per-mille saving, and here it
+fetches 203.7 GB against 176.7 GB, a 153-per-mille **loss**.
+
+### 8.3 The sweep — the gate is answered as a curve, and the curve moved
+
+| Budget | % | `mixed` best | gain | headroom | `mixed` result | `decode_only` best | gain | headroom | `decode_only` result |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 30,474,240 | 0 | `lfu` | 23 | 52 | `NO_POLICY_BEATS_BASELINE` | `lfu` | 21 | 51 | `NO_POLICY_BEATS_BASELINE` |
+| 60,948,480 | 1 | `recent_reuse_w32` | 59 | 113 | **`BEATS_BASELINE`** | `recent_reuse_w32` | 59 | 112 | **`BEATS_BASELINE`** |
+| 121,896,960 | 3 | `recent_reuse_w32` | 137 | 227 | **`BEATS_BASELINE`** | `recent_reuse_w32` | 134 | 226 | **`BEATS_BASELINE`** |
+| 243,793,920 | 6 | `recent_reuse_w32` | 238 | 406 | **`BEATS_BASELINE`** | `recent_reuse_w8` | 232 | 408 | **`BEATS_BASELINE`** |
+| 487,587,840 | 12 | `recent_reuse_w32` | 59 | 404 | **`BEATS_BASELINE`** | `recent_reuse_w8` | 70 | 420 | **`BEATS_BASELINE`** |
+| 975,175,680 | 25 | — | 0 | 476 | `NO_POLICY_BEATS_BASELINE` | — | 0 | 473 | `NO_POLICY_BEATS_BASELINE` |
+| 1,950,351,360 | 50 | — | 0 | 593 | `NO_POLICY_BEATS_BASELINE` | — | 0 | 583 | `NO_POLICY_BEATS_BASELINE` |
+| 3,900,702,720 | 100 | — | 0 | 0 | `NO_HEADROOM` | — | 0 | 0 | `NO_HEADROOM` |
+
+**The R3 gate is met in the decode direction, and its answer is narrower than section 7.4's.** A
+policy more effective than the baseline is still identified numerically — `recent_reuse` at 1, 3, 6,
+and 12 per cent of the expert footprint, peaking at 238 per mille on the mixed arm — but the win is
+now confined to budgets **at or below 12 per cent**, and at section 7.4's own 25-per-cent operating
+point it is gone on both arms. The two arms agree on every verdict at every budget, so the answer is
+not an artefact of pooling the prompt with its generation.
+
+The mechanism is the one section 8.1 names: at a fixed absolute budget, a stream whose one-token
+working set grew from 341 MB to 455–488 MB is a tighter cache, and the 25-per-cent budget that was
+2.86 working sets is now 2.0–2.1. On this stream `lru` at that budget already hits 558–569 per mille
+and no candidate improves on it; the same policies win at the smaller budgets where the cliff is
+still ahead of them. Nothing here says `recent_reuse_w32` stopped working — it says the budget at
+which it was measured is no longer the budget at which it helps.
+
+**The headroom does not go away, and that is the finding worth acting on.** At 25 per cent, 476 and
+473 per mille of the baseline's bytes are still recoverable by the offline optimum and **no online
+candidate in the set captures any of them**; at 50 per cent the headroom is larger still, 593 and
+583 per mille, and again no candidate takes it. Section 4.5 finding 5 measured the same shape with
+223 per mille captured; here the captured fraction is zero. This is direct evidence **for** section
+5.1's score-based and impact-driven work — the inputs those policies need do not exist yet, and this
+is now the strongest single argument for adding them — and against spending further effort on more
+recency/frequency variants at this operating point.
+
+`topk_prefetch` is unchanged as an investment answer, for the third time and now on decode data: it
+buys no bytes at either degree, `k=1` fetching 4 per cent more than `lru` for the same hit rate and
+`k=8` fetching 65 per cent more.
+
+### 8.4 What this measurement does and does not license
+
+- **It does not rewrite section 7.4.** That result stands as the recorded measurement of the
+  prefill-only, six-slot stream, and `scripts/run-residency-sim` still enforces
+  `require_compact_router_axes` so the two corpora can never be pooled under one capability name.
+  The two are different measurements of the same simulator on different demand streams, and the
+  honest comparison is the one section 8.1 makes explicit: coverage, layer count, stream length, and
+  working set all moved at once.
+- **It is one continuation per prompt.** Greedy decode (`--temp 0 --seed 42`), 16 steps, `-c 512`,
+  prompts of at most six tokens. A sampled continuation may route differently and nothing here
+  measures that.
+- **Cross-prompt reuse still carries part of the pressure in both arms.** The pooled stream is
+  `pooling: "continuing"` (section 2.2.3) and the decode-only arm still pools 40 generations into
+  one cache. It is a session of short requests measured on generated tokens, not a single long
+  generation.
+- **Layer 15 is a compulsory miss the prefill capture never charged.** The instrument reduces the
+  prefill graph's last layer token axis, so on this stream layer 15 is first demanded in decode.
+  That is an instrument property, reported through `layers_demanded`, and it is part of why the
+  working set grew.
+- **`headroom_per_mille` is still measured against a miss-optimal reference** (sections 2.8 and
+  5.8), so the 476 and 473 per mille are conservative in one direction only. Since they are being read
+  here as an argument *for* investment rather than against it, that direction is the safe one.
+- **No time, no bandwidth, no throughput claim.** Bytes only, as section 5.3 requires. The elapsed
+  415.8 s for 40 captures is a load-dependent diagnostic — other checks ran concurrently on this
+  host during the capture — and nothing rests on it.
+
+### 8.5 Verification
+
+Host and environment as section 7.4 records: GNU make as `gmake`,
+`LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib`,
+managed Align `3a34febe` toolchain.
+
+```text
+scripts/run-decode-residency-gate  MEASURED, both arms NO_POLICY_BEATS_BASELINE at the requested
+                                   budget and BEATS_BASELINE at 1/3/6/12 per cent, exit 0, 415.8 s
+                                   for 40 captures (section 8.2 and 8.3)
+gmake residency-sim-smoke          PASS, 2 model IRs, 27 traces, every policy at every sweep budget
+                                   against the independent oracle, both CLI forms, the golden,
+                                   determinism, the section 2.6 error corpus, and the two new cases
+gmake expert-trace-smoke           PASS
+gmake build                        PASS
+gmake format-check                 PASS
+gmake gate-topology-check          PASS, no aggregate membership changed
+git diff --check                   clean
+```
+
+`residency-sim-smoke` is **not python-only** — it needs the built `main` for `--model-ir`,
+`--expert-trace`, and `--simulate-residency` — so it was not run under a read-only
+`python:3.12-slim` container; the Align toolchain and a Linux build of the product are its
+prerequisites, and hosted CI already owns that graph.
+
+Two cases were added to `scripts/run-residency-sim-smoke`. Neither touches the existing golden or
+`scripts/residency_oracle.py`.
+
+| Case | Shape | Required |
+| --- | --- | --- |
+| `sim-full-axis-decode` | four documents, each a 4-token prefill graph followed by four one-token decode graphs at ordinals 1–4, from a `ScriptedRouter` whose selection is a table over the real sequence position | the whole document against the oracle with zero tolerance; `graph_phases` `{prefill: 4, decode: 16, single_token_first_graph: 0}`; 32 token positions; slot coverage 1,000 per mille; a repeated run reproduces `normalized()` exactly, per-layer digest included |
+| `sim-full-axis-decode-only` | the same four documents with graph 0 projected away and the ordinals kept | the simulator admits the projection; `graph_phases` `{prefill: 0, decode: 16, ...}`; 16 token positions; a strictly smaller stream and a different `lru` byte total on both orders, so the two arms cannot be the same measurement |
+| `full-axis-admission` | one compact and one full-axis `R2_ACTIVATION_TRACE` at `n_expert_used` 8, both derived by `main --expert-trace` from rendered transcripts | the compact document carries exactly slots `{0,1,2,5,6,7}` with `slots_truncated` true and the full one carries `0..7` with it false; `require_compact_router_axes` admits the first and refuses the second with *full-axis R2c input refused*; `require_full_router_axes` is the exact mirror; and the two runners still bind to their own rule and to neither the other's |
+
+Both `sim-full-axis-decode` cases assert that a candidate clears the pooled effect floor and that
+`jackknife_min_gain_per_mille` differs from `gain_per_mille`, so the jackknife is doing work on the
+fixture rather than being trivially satisfied.
+
+Three mutations were each applied to a throwaway copy of `scripts/residency_oracle.py` and run
+against the whole smoke:
+
+| Mutation | Result | Killed by |
+| --- | --- | --- |
+| the per-document demand sort loses its graph term, `(graph, token, layer, slot)` → `(token, layer, slot)` | **KILLED** | `sim-full-axis-decode`, `sim-full-axis-decode-only`, `sim-multi-graph` |
+| a `decode`-phase graph is treated as excluded, so decode demands never reach the stream | **KILLED** | `sim-full-axis-decode`, `sim-full-axis-decode-only` — **and nothing else in the file**, because every other case replays prefill graphs only |
+| the jackknife stops resampling: the fold loop runs once over the whole stream | **KILLED** | `sim-full-axis-decode`, `sim-full-axis-decode-only`, `jackknife-unstable`, `jackknife-second-candidate`, and five more |
+
+The unmutated smoke passes.

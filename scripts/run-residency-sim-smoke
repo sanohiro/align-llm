@@ -320,6 +320,232 @@ check_case("sim-multi-graph", trace_list("sim-multi", [multi]), uniform_ir, basi
                     "stream/token_position_count": 8,
                     "stream/graph_phases/prefill": 2})
 
+# ---- sim-full-axis-decode: a prefill graph followed by real one-token decode graphs ----------
+# Every other case in this file replays prefill graphs only, because that is all build 10566 could
+# produce (section 5.2). R2c's patched instrument evaluates one graph per decode step, so a trace
+# is now `[prefill, decode, decode, ...]` and `scripts/run-decode-residency-gate` replays it in two
+# arms: the mixed list as captured, and a decode-only list with graph 0 projected away and every
+# remaining ordinal left as captured. Both arms are exercised here against the oracle, with no
+# model and no instrument.
+#
+# Keeping the ordinals is the point of the projection: `docs/specs/r2a-expert-trace.md` section
+# 2.5.6 classifies a one-token graph at ordinal 0 as `single_token_first_graph`, so renumbering
+# would turn the first decode step into a phase it is not, and `graph_phases` would stop being able
+# to state what was replayed.
+DECODE_STEPS = 4
+PREFILL_TOKENS = 4
+
+
+def full_axis_choose(offset):
+    """A scripted router over the real sequence position, not the token index.
+
+    A decode graph carries one token, so `token` is always 0 there and the position that matters is
+    the graph ordinal. Layer 0 drifts one expert at a time, which is the conditional locality R2D
+    measured; layer 1 rotates faster, so the two layers do not agree and a frequency policy and a
+    recency policy see different streams.
+    """
+    def choose(graph, layer, token):
+        position = token if graph == 0 else PREFILL_TOKENS + graph - 1
+        if layer == 0:
+            base = (position // 2 + offset) % 8
+            return ((base + 0) % 8, (base + 1) % 8, (base + 2) % 8)
+        base = (position * 3 + offset) % 8
+        return ((base + 0) % 8, (base + 3) % 8, (base + 5) % 8)
+    return choose
+
+
+def full_axis_graphs(offset):
+    graphs = [scripted(2, PREFILL_TOKENS, UNIFORM, full_axis_choose(offset), 0)]
+    for step in range(1, DECODE_STEPS + 1):
+        graphs.append(scripted(2, 1, UNIFORM, full_axis_choose(offset), step))
+    return graphs
+
+
+def decode_only(name, source):
+    """The captured document with graph 0 projected away and the ordinals left as captured.
+
+    Exactly the two arrays the simulator reads are filtered — `graphs` and `selections` — which is
+    what `scripts/run-decode-residency-gate` writes for its second arm. The result must be a legal
+    schema-1 input: graph 0 becomes undeclared and no selection names it, so nothing fails closed.
+    """
+    payload = json.loads(Path(source).read_text())
+    payload["graphs"] = [row for row in payload["graphs"] if row["ordinal"] != 0]
+    payload["selections"] = [row for row in payload["selections"] if row["graph"] != 0]
+    path = work_dir / ("%s.json" % name)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+mixed_docs = [make_trace("full-axis-%d" % offset, full_axis_graphs(offset)) for offset in range(4)]
+mixed_positions = 4 * (PREFILL_TOKENS + DECODE_STEPS)
+full_axis_budget = uniform_expert_total >> 2
+mixed_case = check_case("sim-full-axis-decode", trace_list("sim-full-axis", mixed_docs),
+                        uniform_ir, full_axis_budget, asserts={
+                            "inputs/admitted_trace_count": 4,
+                            "stream/omitted_truncated_graphs": 0,
+                            "stream/token_position_count": mixed_positions,
+                            "stream/demand_count": mixed_positions * 2 * 3,
+                            "stream/graph_phases/prefill": 4,
+                            "stream/graph_phases/decode": 4 * DECODE_STEPS,
+                            "stream/graph_phases/single_token_first_graph": 0,
+                            "verdict/jackknife_folds": 4,
+                        })
+if mixed_case["stream"]["slot_coverage_per_mille"] != 1000:
+    fail("sim-full-axis-decode: the capture must print every router slot")
+
+decode_docs = [decode_only("full-axis-decode-only-%d" % index, path)
+               for index, path in enumerate(mixed_docs)]
+decode_positions = 4 * DECODE_STEPS
+decode_list = trace_list("sim-full-axis-decode", decode_docs)
+decode_case = check_case("sim-full-axis-decode-only", decode_list, uniform_ir,
+                         full_axis_budget, asserts={
+                             "inputs/admitted_trace_count": 4,
+                             "stream/omitted_truncated_graphs": 0,
+                             "stream/token_position_count": decode_positions,
+                             "stream/demand_count": decode_positions * 2 * 3,
+                             "stream/graph_phases/prefill": 0,
+                             "stream/graph_phases/decode": 4 * DECODE_STEPS,
+                             "stream/graph_phases/single_token_first_graph": 0,
+                             "verdict/jackknife_folds": 4,
+                         })
+# The projection must be a *different measurement*, not a relabelling of the same one. If the two
+# arms produced the same stream the decode-only arm would be answering nothing.
+if decode_case["stream"]["demand_count"] >= mixed_case["stream"]["demand_count"]:
+    fail("sim-full-axis-decode: the decode-only projection did not drop the prefill graph")
+for order in ("token_major", "layer_major"):
+    mixed_rows = by_policy(mixed_case, order, full_axis_budget)
+    decode_rows = by_policy(decode_case, order, full_axis_budget)
+    if mixed_rows["lru"]["bytes_fetched"] == decode_rows["lru"]["bytes_fetched"]:
+        fail("sim-full-axis-decode: %s baseline bytes are identical across the two arms, so the "
+             "case cannot tell the arms apart" % order)
+
+# The graph ordinal is part of the replay order, not decoration: within one document the demands of
+# graph `g` all precede those of graph `g + 1`, and the token ordinals the document reports must be
+# strictly increasing along that order. A stream sorted without the graph term interleaves the
+# decode graphs into the prefill graph's token positions and cannot produce this count.
+for case, positions in ((mixed_case, mixed_positions), (decode_case, decode_positions)):
+    if case["stream"]["token_position_count"] != positions:
+        fail("sim-full-axis-decode: %d token position(s) for %d expected"
+             % (case["stream"]["token_position_count"], positions))
+    if case["stream"]["one_token_working_set_keys"] != 2 * 3:
+        fail("sim-full-axis-decode: one token demands %d key(s), the router names 6"
+             % case["stream"]["one_token_working_set_keys"])
+
+# The jackknife must be doing work on this fixture, or a `decide` that never resampled would agree
+# with it and the case would not be able to see the difference.
+for name, case in (("mixed", mixed_case), ("decode-only", decode_case)):
+    verdict = case["verdict"]
+    rows = by_policy(case, "token_major", full_axis_budget)
+    cleared = [policy for policy in oracle.CANDIDATES
+               if 1000 * rows[policy]["bytes_fetched"]
+               <= (1000 - 50) * verdict["baseline_bytes_fetched"]]
+    if not cleared:
+        fail("sim-full-axis-decode/%s: no candidate clears the pooled effect floor, so the "
+             "jackknife never runs and the arm asserts nothing about it" % name)
+    elif verdict["jackknife_min_gain_per_mille"] == verdict["gain_per_mille"]:
+        fail("sim-full-axis-decode/%s: the jackknife minimum equals the pooled gain (%d per "
+             "mille), so a verdict that skipped resampling would report the same numbers"
+             % (name, verdict["gain_per_mille"]))
+    if verdict["result"] == "BEATS_BASELINE" and verdict["best_policy"] not in cleared:
+        fail("sim-full-axis-decode/%s: BEATS_BASELINE named a policy that does not clear the "
+             "pooled floor" % name)
+
+# The normalized form is what a golden pins, and it includes the per-layer breakdown by digest. A
+# second run of the identical inputs must reproduce it exactly on both arms; the checked-in golden
+# belongs to `sim-basic` and is not touched.
+for name, listing, expected in (
+        ("mixed", trace_list("sim-full-axis", mixed_docs), mixed_case),
+        ("decode-only", trace_list("sim-full-axis-decode", decode_docs), decode_case)):
+    again = json.loads(run(["--simulate-residency", str(listing), str(uniform_ir),
+                            str(full_axis_budget)], expect_exit=0).stdout)
+    if normalized(again) != normalized(expected):
+        fail("sim-full-axis-decode/%s: a repeated run changed the normalized document" % name)
+
+# ---- full-axis-admission: the compact runner's refusal and the decode runner's mirror --------
+# `scripts/run-residency-sim` admits only the historical compact print form and
+# `scripts/run-decode-residency-gate` admits only R2c's full one. The two rules are the reason the
+# two corpora can never be pooled under one capability name, so the refusals are pinned here on
+# real documents rather than assumed from the R2 owner's synthetic dicts. `n_expert_used` is 8
+# because the two forms only differ above the printer's six-slot threshold.
+from expert_locality_gate import (GateError,                                   # noqa: E402
+                                  require_compact_router_axes, require_full_router_axes)
+
+WIDE = (2, 16, 8)
+
+
+def wide_trace(name, full):
+    transcript = work_dir / ("%s.log" % name)
+    transcript.write_text(fixture.render(
+        [fixture.moe_graph(2, 4, fixture.Router(61, WIDE[1], WIDE[2]), 0, full_topk=full)]),
+        encoding="utf-8")
+    document = work_dir / ("%s.json" % name)
+    run(["--expert-trace", str(transcript), str(document)], expect_exit=0)
+    transcript.unlink()
+    parsed = json.loads(document.read_text())
+    if parsed["status"] != "ok":
+        fail("full-axis-admission: %s trace: %s %s"
+             % (name, parsed["error_code"], parsed["error_detail"]))
+    return parsed
+
+
+compact_document = wide_trace("admission-compact", False)
+full_document = wide_trace("admission-full", True)
+
+
+def slot_sets(document):
+    groups = {}
+    for row in document["selections"]:
+        groups.setdefault((row["graph"], row["layer"], row["token"]), set()).add(row["slot"])
+    return {frozenset(slots) for slots in groups.values()}
+
+
+if compact_document["moe"]["slots_truncated"] is not True:
+    fail("full-axis-admission: the compact fixture does not report a truncated slot axis")
+if slot_sets(compact_document) != {frozenset({0, 1, 2, 5, 6, 7})}:
+    fail("full-axis-admission: the compact fixture is not the printer's three-plus-three form")
+if full_document["moe"]["slots_truncated"] is not False:
+    fail("full-axis-admission: the full-axis fixture reports a truncated slot axis")
+if slot_sets(full_document) != {frozenset(range(8))}:
+    fail("full-axis-admission: the full-axis fixture does not carry every router slot")
+
+
+def admits(rule, document, label):
+    try:
+        rule([document], [label])
+    except GateError as error:
+        return str(error)
+    return None
+
+
+for rule, name, accepted, refused, marker in (
+        (require_compact_router_axes, "compact", compact_document, full_document,
+         "full-axis R2c input refused"),
+        (require_full_router_axes, "full", full_document, compact_document,
+         "compact R2A input refused")):
+    reason = admits(rule, accepted, name)
+    if reason is not None:
+        fail("full-axis-admission: the %s rule refused its own corpus: %s" % (name, reason))
+    reason = admits(rule, refused, name)
+    if reason is None:
+        fail("full-axis-admission: the %s rule admitted the other print form" % name)
+    elif marker not in reason:
+        fail("full-axis-admission: the %s rule refused with %r, expected %r"
+             % (name, reason, marker))
+
+# The runners are what those rules protect, and a runner that stopped calling one would still pass
+# every assertion above. Both bindings are therefore pinned by name, exactly as
+# `scripts/run-r2c-instrument-smoke` pins the historical one.
+for relative, expected in (("scripts/run-residency-sim", "require_compact_router_axes"),
+                           ("scripts/run-decode-residency-gate", "require_full_router_axes")):
+    source = (Path(root_dir) / relative).read_text(encoding="utf-8")
+    if expected not in source:
+        fail("full-axis-admission: %s no longer calls %s" % (relative, expected))
+    if relative == "scripts/run-residency-sim" and "require_full_router_axes" in source:
+        fail("full-axis-admission: the historical runner gained the full-axis admission")
+    if relative == "scripts/run-decode-residency-gate" \
+            and "require_compact_router_axes" in source:
+        fail("full-axis-admission: the decode runner gained the compact admission")
+
 # ---- sim-mixed-bytes: the real model's per-layer mixed quantization -------------------------
 mixed_traces = [make_trace("mixed-%d" % i, [moe(41 + i, 2, 5, MIXED)]) for i in range(3)]
 mixed_document = check_case("sim-mixed-bytes", trace_list("sim-mixed", mixed_traces), mixed_ir,

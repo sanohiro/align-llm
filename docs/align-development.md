@@ -1060,6 +1060,97 @@ all — which together force every helper here to return owned columns and force
 to be written twice rather than factored into a helper. Read both before restructuring
 `src/residency_sim.align`.
 
+### The R3 decode residency gate
+
+`scripts/run-decode-residency-gate` asks the same R3 question of a stream that contains real
+generated tokens. The recorded R3 result replayed prefill graphs in decode order and says so
+(`docs/specs/r3-residency-sim.md` section 5.2); R2c's patched instrument removed the two limits that
+forced it, and this runner is the residency consumer of the same capture
+`scripts/run-decode-locality-gate` takes. Its numbers are recorded in
+`docs/specs/r3-residency-sim.md` section 8; that section is authoritative for the result and this
+one for how to run it. **`scripts/run-residency-sim` is unchanged and still refuses a full-axis
+document**, so the historical section 7 measurement cannot be quietly rewritten under this runner's
+capture.
+
+It requires the **patched** instrument, exactly as the decode locality gate does.
+
+```sh
+ALIGN_LLM_GGUF_MODEL=/path/to/moe-model.gguf \
+ALIGN_LLM_LLAMA_EVAL_CALLBACK="$(scripts/llama-eval-callback-toolchain ensure instrument)" \
+  scripts/run-decode-residency-gate
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ALIGN_LLM_GGUF_MODEL` | none | a **MoE** GGUF; the subject model |
+| `ALIGN_LLM_LLAMA_EVAL_CALLBACK` | none | the **patched** callback instrument; a compact-axis build is refused by `require_full_router_axes`, not silently measured |
+| `ALIGN_LLM_LOCALITY_PROMPTS` | `eval/prompts/expert-locality-v1.txt` | the prompt corpus, one prompt per line |
+| `ALIGN_LLM_LOCALITY_PROMPT_COUNT` | `40` | prompts to use, taken from the **top** of the corpus in file order; 1 to 1000, and a value outside that range — `0` included — is an error rather than an empty measurement |
+| `ALIGN_LLM_DECODE_STEPS` | `16` | generated tokens per prompt; 1 to 128, and a value outside that range is an error rather than a silent default |
+| `ALIGN_LLM_RESIDENCY_BUDGET` | 25 per cent of the model's expert byte footprint | the `BUDGET_BYTES` operand, the same point section 7 recorded |
+
+A missing or unusable model/instrument prints exactly one of these lines, in this order, and exits 0
+without claiming a measurement; the line must be quoted as the `N/A` reason in the pull request:
+
+```text
+decode residency gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)
+decode residency gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable)
+decode residency gate: N/A (ALIGN_LLM_GGUF_MODEL unset)
+decode residency gate: N/A (ALIGN_LLM_GGUF_MODEL is absent)
+```
+
+The other four variables are **overrides, not switches**: a corpus this script was pointed at and
+cannot read is a broken invocation that exits 1, never `N/A`.
+
+**Two arms, one budget, one rule.** The capture is `scripts/run-decode-locality-gate`'s, flag for
+flag — `-n N --temp 0 --seed 42 -t 4 -fa off -ctk f32 -ctv f32 -nr -c 512` — so the two decode
+measurements are taken over the same greedy continuations. The capture logic is **deliberately
+duplicated** rather than factored into a shared helper: the two runners differ in their N/A
+prefixes, their per-prompt side work (the locality gate also reads a token fingerprint), and their
+post-capture admission, and a shared helper could not be adopted by `run-decode-locality-gate`
+without changing its output, so it would add a seam and pin nothing.
+
+| Arm | Trace list | What it answers |
+| --- | --- | --- |
+| `mixed` | the documents as captured | a session of short requests, prompt and generation pooled — the regime section 7 was already reading |
+| `decode_only` | the same documents with graph 0 projected away | generation alone, with no prompt tokens in the stream |
+
+The decode-only list is a **projection for the simulator**, not a second R2A document: exactly the
+two arrays `main --simulate-residency` reads — `graphs` and `selections` — are filtered, and every
+other block still describes the whole transcript. **The ordinals are kept.** Renumbering them would
+make the first decode step a `single_token_first_graph`, which is
+`docs/specs/r2a-expert-trace.md` section 2.5.6's name for "the transcript cannot tell a one-token
+prompt from a decode step", and `graph_phases` would stop being able to state what was replayed.
+`gmake residency-sim-smoke` proves the simulator admits the projected form.
+
+**Bounds are checked before the instrument runs.** `src/residency_sim.align`'s `MAX_DEMANDS` is
+262,144, and the decode half of the capture is known in advance — every decode graph carries one
+token, every router slot is printed, and a one-token graph has no token-reduced tail — so
+`prompts x steps x n_layer x n_expert_used` is checked against the cap first and names the two knobs
+to lower. The exact pooled total, prefill included, is re-checked after the capture, and the section
+2.7 simulation-cost product is asserted against `MAX_SIMULATION_STEPS` for both arms before any
+replay is launched.
+
+**It is a measurement, not a pass/fail owner test.** It exits 0 on every `verdict.result` of every
+arm and exits nonzero only when the instrument, the corpus, or a parser prevented a measurement. It
+prints one human block per arm and one machine-readable line per arm:
+
+```text
+decode-residency-gate arm=mixed verdict=... budget=... baseline_bytes=... best=... best_bytes=...
+  gain_per_mille=... headroom_per_mille=... jackknife_folds=... jackknife_min_per_mille=...
+  jackknife_stable=... demands=... token_positions=... distinct_keys=...
+  slot_coverage_per_mille=... prefill_graphs=... decode_graphs=... single_first_graphs=...
+  prompts=... decode_steps=...
+```
+
+**`best` is `best_policy`, and it is only a winner when `verdict` is `BEATS_BASELINE`.** On the two
+non-winning results the field still names the lowest-byte candidate whenever one fetched fewer bytes
+than the baseline, which is section 2.8's shape and not this runner's. The human block marks the row
+accordingly and lists every candidate that cleared the pooled effect floor, so a reader can see
+whether a win was lost to the jackknife rather than to the floor.
+
+Like every other R2c consumer the gate joins no aggregate, no `Makefile` target, and no CI job.
+
 ## alignpack development
 
 R4-ALIGNPACK-LAYER-MAJOR is merged into `main` as PR #125 (head `a7e72dc`, merge `991eab1`); its

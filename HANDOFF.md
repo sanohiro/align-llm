@@ -3,7 +3,90 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R2D-DECODE-LOCALITY-GATE (2026-08-28)
+## Active: R3-DECODE-RESIDENCY (2026-08-28)
+
+Branch `agent/r3-decode-residency`, stacked on `agent/r2d-decode-locality-gate` at `d48bde0` (the
+R2D review-repair head, published and merging — see the next section). It is the residency consumer
+of R2D's capture and closes the decode half of the R3 roadmap gate. No design gate is triggered: no
+CLI verb, no exchanged document, **no Align source change**, and no coordinated invariant.
+
+**Current checkpoint. Implementation and the real-model run are complete; review has not started.**
+`scripts/run-decode-residency-gate` is new and opt-in — no `Makefile` target, no aggregate, no CI,
+the standing every R2c consumer has. It takes `scripts/run-decode-locality-gate`'s capture flag for
+flag (40 prompts, `-n 16 --temp 0 --seed 42 -t 4 -fa off -ctk f32 -ctv f32 -nr -c 512`), derives one
+`R2_ACTIVATION_TRACE` per transcript, deletes the transcript, admits the corpus with R2D's
+`require_full_router_axes`, and runs `main --simulate-residency` twice at section 7.4's own
+975,175,680 B budget: the **mixed** list as captured and a **decode-only** list with graph 0
+projected away and the ordinals kept. The capture logic is deliberately **duplicated** rather than
+factored into a shared `scripts/moe_capture_helper`: the two runners differ in N/A prefixes,
+per-prompt side work (the locality gate also reads a token fingerprint), and post-capture admission,
+so a shared helper could not be adopted by `run-decode-locality-gate` without changing its output
+and identity. That is recorded in `docs/align-development.md`.
+
+**The gate is met in the decode direction and the answer is narrower than the recorded one.** On the
+same 40-prompt corpus, mixed 104,960 demands over 832 token positions and decode-only 81,920 over
+640, slot coverage 1,000 per mille and 16 of 16 layers demanded (against 750 and 15 in section 7.4):
+`recent_reuse` beats `lru` by 59 to 238 per mille at 1/3/6/12 per cent on **both** arms, and at 25
+and 50 per cent **no candidate beats the baseline at all** — both arms `NO_POLICY_BEATS_BASELINE`,
+`recent_reuse_w2` byte-identical to `lru`, `lfu` flipped from a 221-per-mille saving to a
+153-per-mille loss. 476 and 473 per mille of headroom stay uncaptured by every online candidate. The
+mechanism is the working set: 341 MB before, 455–488 MB here, so the same absolute budget is 2.0–2.1
+working sets rather than 2.86. Section 7.4's 223-per-mille result is untouched and
+`scripts/run-residency-sim` still refuses a full-axis document, so the two streams can never be
+pooled. Full record, limits, and mutation evidence: `docs/specs/r3-residency-sim.md` section 8.
+
+**Consequences recorded in the roadmap.** R4B's decode-corpus resume condition is **discharged
+negatively** — the corpus now exists, the decode histogram is more uniform than prefill's
+(entropy 996), and no candidate policy or prefetch degree is justified on it, so hotness ordering
+and prefetch groups stay deferred as *measured and not justified* rather than *awaiting evidence*;
+the only remaining resume path is R2b's stratified corpus. R6 is ordered **ahead** of a runtime
+expert-residency policy, because the premise that `recent_reuse` would pay off across a wide
+operating band does not hold on decode data.
+
+**Candidate contents.** `scripts/run-decode-residency-gate` (new), two cases in
+`scripts/run-residency-sim-smoke`, `docs/specs/r3-residency-sim.md` section 8, the roadmap R3/R4B/R6
+paragraphs and item 25, the developer-guide section, and this handoff update. **No Align source
+change, no `Makefile` change, no aggregate membership change**; `gate-topology-check` passes
+unchanged. `scripts/residency_oracle.py`, `src/residency_sim.align`, `src/main.align`, and
+`eval/fixtures/residency-sim/sim-basic.golden.json` are all untouched. No intentional uncommitted
+files beyond the candidate itself. Per-phase byte accounting is **deferred**: it would need
+`R3_RESIDENCY_SIM` `schema_version: 2`, `RESULT_FIELDS` 7 → 9, and an oracle and golden rewrite, and
+that is a design gate this capability does not need to answer its question.
+
+**Next actions, in order.** Commit the candidate, run one comprehensive review, repair findings, run
+exact-head preflight, and publish stacked on R2D (or rebase onto `main` once R2D merges).
+
+**Latest durable verification.** On this macOS arm64 host with the managed Align `3a34febe`
+toolchain:
+
+```text
+gmake build                          PASS
+gmake residency-sim-smoke            PASS, 2 model IRs, 27 traces, every policy at every sweep
+                                     budget against the independent oracle, both CLI forms, the
+                                     golden, determinism, the section 2.6 error corpus, and the
+                                     two new cases; 3 of 3 oracle mutants killed, and the
+                                     ignore-decode-graphs mutant is killed by the new cases alone
+gmake expert-trace-smoke             PASS
+gmake format-check                   PASS
+gmake gate-topology-check            PASS
+git diff --check                     clean
+scripts/run-decode-residency-gate    MEASURED, both arms NO_POLICY_BEATS_BASELINE at the requested
+                                     budget and BEATS_BASELINE at 1/3/6/12 per cent, exit 0,
+                                     415.8 s for 40 captures. Elapsed is a load-dependent
+                                     diagnostic — other checks ran concurrently — and nothing
+                                     rests on it
+```
+
+`gmake residency-sim-smoke` was **not** run under a read-only `python:3.12-slim` container: it is
+not python-only, needing the built `main` for `--model-ir`, `--expert-trace`, and
+`--simulate-residency`. Hosted CI already owns that graph.
+
+## Published: R2D-DECODE-LOCALITY-GATE (2026-08-28)
+
+**Status: published and merging.** The record below is the implementation checkpoint; the pull
+request is open with the measurement and both review envelopes, and this capability's branch
+`agent/r3-decode-residency` is stacked on its `d48bde0` head. Do not modify
+`agent/r2d-decode-locality-gate`.
 
 Branch `agent/r2d-decode-locality-gate` starts from `main` `89d8721`, the merge of R2c PR #140, and
 is merged with `main` `e312bd7` (R5D PR #139) rather than rebased over it, so its recorded commits
