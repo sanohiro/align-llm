@@ -30,14 +30,16 @@ schema-1 failure-memory events pass `make verify-loop-smoke`; whole/per-unit com
 also pass. The candidate binary SHA-256 is `552790728dea091f6eaa27852bb6be945438b8580a778d0baedbe395df7225b3`.
 The 101-pair acceptance improves parent 60,515,456 ns to candidate 40,475,113 ns, 331,160 ppm
 (33.12%), while the runner admits only result schema 1→2 and removal of the passing targeted stage.
-Request 44 is `ALIGN_LLM_VERIFIED`. Review and publication remain.
+Request 44 is `ALIGN_LLM_VERIFIED`. Comprehensive review of `02c7564` against base/merge-base
+`e15e3d3` found one P2 documentation gap: exact benchmark commands and host/CPU were omitted. The
+finding was accepted and repaired with the WSL2/Ryzen environment and both 31/101-pair commands;
+there was no implementation finding. Exact-head preflight and publication remain.
 
-**Next actions, in order.** (1) Finish the ledger-to-diff consistency pass and commit the stable
-candidate. (2) Run one comprehensive `codex review --base main`, disposition findings, and rerun
-affected owners. (3) Run exact-head `scripts/pre-pr` with `make verify-loop-smoke`, publish the
-English PR/review envelope, wait for required checks, and merge. (4) Refresh `main`, close Request
-44 in the next durable checkpoint, rebase `agent/moe-prereq-discharge` onto the merge, and implement
-that next eligible Track B capability before R3 residency simulation.
+**Next actions, in order.** (1) Commit the consolidated documentation repair and run exact-head
+`scripts/pre-pr` with `make verify-loop-smoke`. (2) Publish the English PR/review envelope, wait for
+required checks, and merge. (3) Refresh `main`, close Request 44 in the next durable checkpoint,
+rebase `agent/moe-prereq-discharge` onto the merge, and implement that next eligible Track B
+capability before R3 residency simulation.
 
 ## Merged checkpoint: R1C-OLMOE-MOE-IR (2026-08-28)
 

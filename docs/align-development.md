@@ -285,10 +285,11 @@ preserves all attempts for later provider or failure-memory work.
 The C5 slice is `src/failure_memory.align`. When `memory_profile` is configured, each completed
 schema-2 verification appends one schema-1 memory event to the profile rather than rewriting a
 mutable array. The event records the task and attempted patch, first failed stage/test, root-cause
-summary, repair result, successful and unsuccessful strategies, recommended tests, risky symbols, iteration
-counts, and risk score. The next run selects up to the three newest events for the same task and
-adds them to every repair prompt. A missing or unreadable profile starts with empty context, and a
-profile write/decode failure does not replace the already-written verification result.
+summary, repair result, successful and unsuccessful strategies, recommended tests, risky symbols,
+iteration counts, and risk score. The next run selects up to the three newest events for the same
+task and adds them to every repair prompt. A missing or unreadable profile starts with empty
+context, and a profile write/decode failure does not replace the already-written verification
+result.
 
 The fixed smoke proves persistence and reuse by running the same task twice:
 

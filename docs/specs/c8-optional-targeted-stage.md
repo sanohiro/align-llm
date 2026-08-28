@@ -1,7 +1,8 @@
 # C8 optional targeted stage: re-entry plan and evidence ledger
 
-Status: **CANDIDATE — implementation, owners, pin adoption, and paired acceptance pass; review and
-publication pending.**
+Status: **REVIEWED CANDIDATE — implementation, owners, pin adoption, paired acceptance, and
+comprehensive review pass after one documentation repair; exact-head preflight and publication
+pending.**
 
 This document preserves the useful contract and implementation evidence from
 `agent/c8-optional-targeted-test` without treating that stale branch as a merge candidate. The user
@@ -137,7 +138,7 @@ processes remain explicit and sequential.
 7. **Complete.** Run `make fmt`, the verification/failure-memory owner, managed-toolchain verification required by
    the pin adoption, and the paired benchmark. Do not infer a broad or native platform gate from the
    pin change alone.
-8. **Active.** Perform the ledger-to-diff and matrix-to-evidence pass, then one comprehensive review of the
+8. **Complete.** Perform the ledger-to-diff and matrix-to-evidence pass, then one comprehensive review of the
    stable executable candidate. Publish only if exact-head preflight and the paired performance gate
    pass with no unresolved finding.
 
@@ -179,13 +180,37 @@ parent targeted:     19,632,536 ns
 Both paired runs used parent binary SHA-256
 `10ff55c084f35ee079f19c4b85fdc835abac0350642485d4d298d84dfffacc16`, the same temporary fixture,
 alternating order, and two discarded warm-up pairs. The acceptance exceeds the 2,000 ppm shipping
-floor by more than two orders of magnitude.
+floor by more than two orders of magnitude. They ran on Linux
+`6.18.33.2-microsoft-standard-WSL2` x86_64 with an AMD Ryzen 9 5950X and 32 logical CPUs. The
+implementation and claim are platform-independent; this environment identifies the measurement
+rather than making a target-specific claim. The exact diagnostic and acceptance invocations were:
+
+```text
+scripts/run-c8-selection-signal-benchmark compare-optional-targeted /tmp/align-llm-c8-optional-parent-e15e3d3.bin /tmp/align-llm-c8-optional-candidate-uncommitted.bin 31
+scripts/run-c8-selection-signal-benchmark compare-optional-targeted /tmp/align-llm-c8-optional-parent-e15e3d3.bin /tmp/align-llm-c8-optional-candidate-uncommitted.bin 101
+```
+
+For reproduction, build detached `e15e3d3` and `02c7564` worktrees through each checkout's managed
+wrapper, freeze their `main` executables, verify the two SHA-256 values above, and substitute those
+paths in the same commands. `02c7564` is the reviewed candidate; the observed temporary filename
+predates its commit, but its recorded SHA-256 is byte-identical to the executable built from that
+production source before the documentation-only review repair.
 
 The ledger-to-diff pass maps task/result validation and ownership to `verification_loop`, schema-2
 memory admission to `failure_memory`, the six wire documents and closure rows to
 `run-verification-loop-smoke`, user guidance to README/development docs, prerequisite identity to
 `.align-revision` and Request 44, and the performance claim to the paired runner above. No ledger
-cell is deferred. Review and exact-head publication preflight remain.
+cell is deferred.
+
+The comprehensive review covered candidate head `02c7564`, base tip and merge base
+`e15e3d353abdb00b7a5051063a9db72aad076137`, with Codex `gpt-5.6-sol` at xhigh reasoning through
+`codex review --base main`. Verdict: implementation and focused owner pass; one P2 documentation
+finding. The finding correctly observed that the performance evidence omitted the exact command and
+host/CPU environment, despite recording digests, samples, and medians. It was accepted and repaired
+above; the same root-cause class was audited across the other changed performance summaries. No
+implementation finding or unresolved finding remains. The documentation-only repair neither
+changes approach nor materially changes behavior, so it does not trigger another comprehensive
+review. Exact-head publication preflight remains.
 
 ## 7. Stop conditions
 
