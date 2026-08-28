@@ -2,7 +2,10 @@
 
 Status: design of record for the R5D capability.
 Owner document for the **MoE half** of stage 2 of `docs/specs/roadmap.md` section R5's gate.
-Align pin: `.align-revision` = `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`.
+Align pin: `.align-revision` = `3a34febe912db5096c58c74fede36ff53f223e04`, adopted at
+reconciliation from the merged PR #134. Every number in this document was first taken at
+`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2` and re-taken at the new pin; correction C22 records the
+re-run and the one quantity that moved.
 Predecessors, whose contracts this capability extends rather than duplicates:
 [`r5a-dense-layer-forward.md`](r5a-dense-layer-forward.md) (the node-slot store, the one-op
 wrappers, the transcript oracle and its tolerances, the summary block, the validation ladder),
@@ -143,7 +146,7 @@ what ships is section 3's design, and section 5.2's qualification is the probe m
 | Item | Value |
 | --- | --- |
 | Host | `MacBookAir10,1`, Apple M1, 16 GiB, `darwin/arm64` |
-| Align compiler | the managed pinned release toolchain at `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2` |
+| Align compiler | the managed pinned release toolchain at `3a34febe912db5096c58c74fede36ff53f223e04` (design and first measurement at `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; correction C22) |
 | llama.cpp | `0.2.0 (build 10566)`, Homebrew |
 | ggml | `0.21.0`, Homebrew, headers in `/opt/homebrew/include`, backends `dlopen`ed from `libexec` |
 | Model | `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, 4,213,512,192 bytes |
@@ -1115,7 +1118,7 @@ exists to produce, and section 2.6 is the honest reading of it.
 | Prerequisites | alignpack v1 with claim members (`moe-prereq-discharge.md`); `R1_MODEL_IR` v2 olmoe geometry; ggml 0.21 CPU |
 | Acceptance evidence | Section 5.1 (owner), 5.2 (qualification) |
 | Metrics | Section 5.3 |
-| Minimum tool/platform versions | ggml 0.21.0, llama.cpp build 10566, Align `4b515f8d`; section 5.6 records the version risk |
+| Minimum tool/platform versions | ggml 0.21.0, llama.cpp build 10566, Align `3a34febe`; section 5.6 records the version risk |
 | Milestones not consuming a later slice | Sections 1.3 and 5.4: no loader, no decode, no model, no GPU, no `LAYER` |
 | Runtime-inspection fields | `graph_*.node_count`, `slot_high_water`, `abi.*` — producer-owned counters, no reflection |
 
@@ -1419,32 +1422,33 @@ the probe or exists in R5A's shipped module: the node tables are `array<Node>` o
 the routing decision is integer arithmetic over `array<i64>`, the four windows are `buffer`, and the
 FFI additions are five `extern` declarations in the one file that already has them.
 
-Two existing requests gain R5D as an additional client, with one caveat this document has to record
-honestly: **Requests 44 and 45 are not in this branch's `docs/align-requests.md`.** That register
-ends at Request 43. Both requests exist only on `agent/r3-residency-sim`, which has not merged. R5D
-therefore names them as *anticipated* clients and takes no dependency on them:
+Two existing requests gain R5D as an additional client. When this section was written they were
+**Requests 44 and 45 and were not in this branch's `docs/align-requests.md`**, because both existed
+only on `agent/r3-residency-sim`, which had not merged. That branch has since merged as PR #135, and
+PR #134 took Request 44 first, so the two are now **Requests 45 and 46** on `main` and this branch's
+reconciliation appends R5D to each of their client lists (correction C22). They are named below by
+their original numbers with the current number beside each; R5D takes no dependency on either:
 
-- **Request 44** (compiler soundness: moving a field out of a decoded record double-frees at run
+- **Request 44, now Request 45** (compiler soundness: moving a field out of a decoded record double-frees at run
   time). R5D decodes an `R1_MODEL_IR` document and moves fields out of it in `parse_geometry`,
   which is the same shape as the R3 client. R5D's mitigation is R3's: clone through a `str` view
   rather than move. Non-blocking.
-- **Request 45** (`borrow mut` array locals inside loops, and no element assignment through an array
-  field). R5D's routing decision wants a helper taking the per-token id tables as
+- **Request 45, now Request 46** (`borrow mut` array locals inside loops, and no element assignment
+  through an array field). R5D's routing decision wants a helper taking the per-token id tables as
   `borrow mut array<i64>` and called inside the token loop, and wants `routing.compact_ids[t][s] = v`
-  through a record field. Both are the constructs Request 45 names. R5D's mitigation is R3's: return
+  through a record field. Both are the constructs Request 46 names. R5D's mitigation is R3's: return
   owned columns from helpers and write the loop body inline. Non-blocking.
 
-If `agent/r3-residency-sim` merges before R5D, the two requests' client lists gain
-`src/layer_olmoe.align`'s `parse_geometry` and routing decision respectively, and R5D's mitigations
-become removable in the same verification. If it does not, R5D **does not** re-register them: two
-copies of one request in one register is worse than one request in the wrong branch, and
-`CLAUDE.md`'s lifecycle has no merge step for duplicates.
+`agent/r3-residency-sim` merged before R5D, so the branch took the first of the two paths this
+section named: the two client lists gain `src/layer_olmoe.align`'s `parse_geometry` and its routing
+decision respectively. R5D's mitigations stay in place — removing them needs the Align-side fixes,
+not the merge — and R5D **does not** re-register either request.
 
 **Two more existing requests gain R5D as a client, and both were found by writing the code rather
 than by planning it** (correction C20). Neither is blocking and neither is edited into
 `docs/align-requests.md` from this branch — the register on `main` owns Requests 1–43 and this
 branch changes none of them, so both entries below are **to be appended at reconciliation**, in the
-same pass that resolves Requests 44 and 45.
+same pass that resolves Requests 44 and 45 — done in the reconciliation commit, correction C22.
 
 - **Request 37 — per-function check time is superlinear in body length.** R5D is now its largest
   client. Measured at this pin on the host of section 2.1, warm, with the exact commands:
@@ -1840,6 +1844,29 @@ detail `json`. The case existed and ran; only the count and the row it sat under
 rows now name it explicitly, because "a file that opens and does not parse" is the one geometry
 fault a reader is most likely to expect under the *unreadable* code.
 
+### C22 — the pin moved under the branch, and the two anticipated requests are now real
+
+R5D was designed, implemented, and reviewed at `.align-revision` `4b515f8d`. Two pull requests
+merged into `main` while it was in review: **PR #134**, which moved the pin to `3a34febe` and took
+Request 44 for itself, and **PR #135** (R3-RESIDENCY-SIM), which merged the two requests R5D's
+section 5.5 could only anticipate — renumbered to **45** and **46** by PR #134's claim on 44.
+Reconciliation therefore does four things and each is recorded rather than silently applied.
+
+1. **The pin is adopted, not asserted to be harmless.** Every owner and the real-model qualification
+   are re-run at `3a34febe` (`HANDOFF.md` records the exact commands and results). **No golden byte
+   changed**: the R5A, R5B, R5C, R5D, and ggml-spike golden documents are byte-identical under the
+   new compiler, so this correction is a record and not a behavioural row. Section 7.1 records the
+   re-run and the single quantity that moved, which is a timing.
+2. **Section 5.5's two anticipated requests are appended for real.** `src/layer_olmoe.align`'s
+   `parse_geometry` joins Request 45's client list and its routing decision joins Request 46's, which
+   is the first of the two paths section 5.5 named. R5D's mitigations stay: what removes them is the
+   Align-side fix, not the merge.
+3. **C20's two more requests are appended in the same pass.** Request 37 gains R5D's per-unit check
+   times and Request 42 gains correction C10's diagnostic, as C20 said they would.
+4. **`.align-revision` is one of the twenty recorded baseline artifacts**, so the pin move invalidates
+   the chain that shipped with R5C exactly as this branch's own `Makefile` change does. The chain is
+   re-recorded on this branch and `HANDOFF.md` names its three commits.
+
 ---
 
 ## 7. The final pass: what was measured, and every closure cell's case
@@ -1865,6 +1892,16 @@ every section 5.2 assertion passing:
 
 The measurement that matters is unchanged and exact: **the routed layer reads 101,990,400 of
 261,095,424 expert bytes, and every node of it agrees with llama.cpp.**
+
+**Re-run at the adopted pin `3a34febe`** (correction C22), same host, same model, same instrument:
+every structural quantity in the table above is **identical** — the routed union and each per-token
+slot row, 101,990,400 / 261,095,424 at 390,625 ppm, 75 of 192 planes over 25 block `pread`s, the
+46-of-46 self-reference oracle, `MATCH` with sum 1,471, `PASS` at 26 of 26 nodes and 2,376 elements
+with max `|Δ|` 0 ten-thousandths and max `|Δsum|` 30 millionths, graph nodes 31 + 24, slot high water
+76 of 128, and peak resident weight bytes 113,072,896 against 272,177,920. The one quantity that
+moved is the timing: microbenchmark B is **4.761 ms** (A 1.260 + B 3.592, warm means of five) against
+the 5.64 ms above, a 16% difference that is inside section 5.3's own ±16% run-to-run spread and is a
+diagnostic rather than a claim.
 
 ### 7.2 Closure cells to cases
 

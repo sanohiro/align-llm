@@ -1502,8 +1502,9 @@ against the exact head rather than reasoning from this paragraph.
 ## MoE layer forward development
 
 R5D-MOE-LAYER-FORWARD is the design of record on branch `agent/r5d-moe-layer-forward`, ledger
-commit `3cb8d59`; implementation is **in progress** and the fields below marked open are finalized
-with the implementation. Its authoritative plan is `docs/specs/r5d-moe-layer-forward.md`, which owns
+commit `a85e1fc` after the rebase onto the merged R3 residency simulator at `main` `95c47e7`;
+implementation `7886cee` and review repair `a2e2748` are committed, so every field below is
+finalized. Its authoritative plan is `docs/specs/r5d-moe-layer-forward.md`, which owns
 the probe record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
 deferrals, risks, and candidate-request sections. It answers R5's second gate stage for a **routed**
 layer — one prefill of at most six tokens through OLMoE `blk.0`, computed by ggml over attention
@@ -1551,7 +1552,7 @@ section 3.3's, verbatim; the prompt `"def add(a, b"` (not `"def add(a, b):"`) is
 OLMoE's tokenizer produces seven ids for the latter, one over the cap.
 
 **Env vars, read by `scripts/run-moe-layer-forward` and reused unchanged from `run-layer-forward`
-where named (open — finalized with the implementation):**
+where named:**
 
 ```sh
 ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include \                # selects the REAL shim; unset selects the stub
@@ -1568,8 +1569,7 @@ nor `CAPABLE_ONLY_CHECK_TARGETS` — the same footing as `layer-forward-qualific
 `model-forward-qualification`. It reuses `run-layer-forward`'s `na()` detail strings verbatim (unset
 or non-directory `ALIGN_LLM_GGML_INCLUDE`/`ALIGN_LLM_GGML_LIB`, non-file `ALIGN_LLM_GGUF_MODEL`,
 non-executable `ALIGN_LLM_LLAMA_EVAL_CALLBACK`, an absent scratch root, insufficient free space) and
-adds one line of its own, for a model whose `arch` is not `olmoe` (open — final N/A wording finalized
-with the implementation):
+adds one line of its own, for a model whose `arch` is not `olmoe`:
 
 ```text
 moe layer forward qualification: N/A ALIGN_LLM_GGUF_MODEL is not an olmoe model

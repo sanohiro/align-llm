@@ -8276,6 +8276,32 @@ src/layer_forward.align` is 6 s and `make check` is 86 s for 29 units — a shap
 the compiler fast, not because it reads better than the one-`Outcome`-per-stage design that section
 3.7 originally wrote down (see Request 36).
 
+**Largest client to date, from R5D-MOE-LAYER-FORWARD** (`docs/specs/r5d-moe-layer-forward.md`
+section 5.5, correction C20). R5D applied the remedy this request's own client evidence prescribes —
+the topology tables, the geometry, and the routing decision are a separate module
+(`src/layer_olmoe.align`) from the arm (`src/moe_layer_forward.align`) — and the arm's unit is still
+the dominant cost. Measured warm on the section 2.1 host of that ledger, at
+`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`:
+
+```text
+alignc check-per-unit src/moe_layer_forward.align   (4-unit graph)   17.02 s
+alignc check-per-unit src/model_forward.align       (7-unit graph)   17.21 s
+alignc check-per-unit src/layer_olmoe.align                           0.67 s
+alignc check-per-unit src/ggml_ffi.align                              0.18 s
+alignc check-per-unit src/alignpack_read.align                        0.60 s
+make check                                          (30 units)       134 s
+```
+
+The arm's own unit is therefore roughly **15.6 s** of its graph's 17.0 s, against 0.67 s for the
+1,403-line `src/layer_olmoe.align` beside it — a 23x time ratio for a 3.3x line ratio, on a module
+written after this request was filed. Splitting the arm again would move the cost, not remove it,
+which is why R5D records this as language-owned rather than as an application task, and why
+`r5b-model-prefill-forward.md` correction C26 and `r5c-metal-prefill.md` correction C22 **retire**
+the under-10 s single-unit acceptance target those ledgers carried instead of restating it a third
+time. This request's own `align-llm verification` line above is unchanged: it names
+`src/layer_forward.align`, not the R5D arm.
+3.7 originally wrote down (see Request 36).
+
 ### Requested capability
 
 No specific mechanism is proposed — this is a compiler performance property, not a missing language
@@ -8741,6 +8767,27 @@ underlying gap (no diagnostic class is a strict superset of another across `chec
 `execute`/`stage_geometry` call chain is larger and checked clean under all of `check` and
 `check-per-unit` before failing only at `build`.
 
+**Third client, and the second exact repeat of one diagnostic, from R5D-MOE-LAYER-FORWARD**
+(`docs/specs/r5d-moe-layer-forward.md` section 5.5, correction C10). `src/moe_layer_forward.align`
+checked clean per unit and the executable then refused to link, in the region checker, with
+
+```text
+cannot retain a shorter-lived view through this mutable borrow; copy it into the destination
+region first
+```
+
+for `alignpack_read.member_at(f, x, block, within, c)` called with a **local** `block` while the same
+call crosses a `borrow mut Counters`. `r5b-model-prefill-forward.md` section 6 correction C7 records
+the identical sentence for the identical function at the same pin, and `r5c-metal-prefill.md` section
+6 correction C5 records two further region diagnostics behind the same `check`/`build` gap. R5D's
+mitigation is C10's: the member scan became its own function, `block_carries_role`
+(`src/moe_layer_forward.align:1483-1520`), whose block is a parameter rather than a local. Whether
+the recurrence is one request or two — the parity gap, and a separate constraint that a `Borrow`
+crossing a `borrow mut` must be a parameter of the calling frame rather than a local — is left to
+this register; R5D records the evidence and takes no dependency on either surface.
+`execute`/`stage_geometry` call chain is larger and checked clean under all of `check` and
+`check-per-unit` before failing only at `build`.
+
 ### Requested capability
 
 Make `alignc check` (and, if it remains a distinct verb, `alignc check-per-unit`) run the same
@@ -9086,6 +9133,16 @@ diagnostic at `crates/align_sema/src/lib.rs:38644-38648` — "moving a nested st
 struct is not supported yet — clone it, or move the whole struct" — is Request 36's, and is the
 control this request must leave unchanged.
 
+**Second client, from R5D-MOE-LAYER-FORWARD** (`docs/specs/r5d-moe-layer-forward.md` section 5.5,
+correction C22). `layer_olmoe.parse_geometry` (`src/layer_olmoe.align:248-410`) decodes an
+`R1_MODEL_IR`-shaped geometry document and reads owned fields out of it, which is the same shape as
+the R3 client. R5D's mitigation is R3's and it is in the shipped source:
+`g.arch = value.clone()` at `src/layer_olmoe.align:269` clones through the `str` view rather than
+moving the decoded field out. R5D was written against this register entry as an *anticipated* client
+before PR #135 merged it, so the mitigation was in place from the first commit and no run-time
+corruption was ever observed in this client. Non-blocking, with all of R5D as independent work.
+control this request must leave unchanged.
+
 ### Requested capability
 
 Make the move checker's `consuming` flag (or an equivalent ownership-transfer signal) reach a
@@ -9262,6 +9319,18 @@ The admission block is written out twice inside `replay` instead — once for th
 `docs/specs/r3-residency-sim.md` section 6 and closed by the `policy-oracle` case, which checks every
 `topk_prefetch` cell against an independent oracle whose own admission is one function. Every other
 helper in the module (`ReplayResult`, `BudgetSweep`, `IrLoad`, `TraceLoad`, `Verdict`) returns owned
+columns inside a record instead of writing through `borrow mut` out-parameters for the same reason
+(`docs/specs/r3-residency-sim.md` section 7.5 item 1).
+
+**Second client, from R5D-MOE-LAYER-FORWARD** (`docs/specs/r5d-moe-layer-forward.md` section 5.5,
+correction C22), and it hits **both** gaps. `layer_olmoe.decide`
+(`src/layer_olmoe.align:1279-1403`) wants a helper taking the per-token id tables as
+`borrow mut array<i64>` and called inside the token loop (gap 1), and wants
+`routing.compact_ids[t][s] = v` through a record field (gap 2). Neither compiles at this pin, so the
+whole routing decision — the union pass, the pairwise-distinct check, the ascending remap, and the
+bijection cover — is written inline in one function over `array_builder` locals, and every helper
+around it returns owned columns inside a record. That is the same workaround R3 wrote, reached
+independently on a different data shape. Non-blocking, with all of R5D as independent work.
 columns inside a record instead of writing through `borrow mut` out-parameters for the same reason
 (`docs/specs/r3-residency-sim.md` section 7.5 item 1).
 

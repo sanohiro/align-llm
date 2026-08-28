@@ -277,8 +277,8 @@ The current forward delivery order is:
     throughput claim. Review, publication, and merge are complete; see `HANDOFF.md`.
 
 21. **R3-RESIDENCY-SIM — the R3 cache-simulator gate, measured on the real MoE activation corpus.
-    Implemented and reviewed; in publication.** On branch `agent/r3-residency-sim`, rebased onto the
-    merged MoE prerequisites and C8's optional targeted stage at `main` `4f01553`. [`r3-residency-sim.md`](r3-residency-sim.md) is the
+    Merged as PR #135, merge commit `95c47e7` on `main`.** Was on branch `agent/r3-residency-sim`,
+    rebased onto the merged MoE prerequisites and C8's optional targeted stage at `main` `4f01553`. [`r3-residency-sim.md`](r3-residency-sim.md) is the
     authoritative plan and owns the contract ledger, the closure matrix, the correction ledger, the
     probe record, and the cell-to-case map; the design gate triggered on three counts (a new public
     CLI verb `--simulate-residency`, a new exchanged format `R3_RESIDENCY_SIM` `schema_version: 1`,
@@ -299,33 +299,47 @@ The current forward delivery order is:
     column; a miss penalty needs R4.5's and R5's measured transfer costs; CPU fallback needs R5's
     microbenchmark). The result is a policy claim about this named model and this corpus, not a
     platform or throughput claim, and it carries the caveats the section R3 entry below records.
-    Review is complete and publication is in progress; see `HANDOFF.md`.
+    Review, publication, and merge are complete; see `HANDOFF.md`.
 22. **R5D-MOE-LAYER-FORWARD — one OLMoE MoE layer computed from Align-owned expert claims, the
-    routed half of R5's second gate stage. Active.** On branch `agent/r5d-moe-layer-forward`; design
-    ledger `docs/specs/r5d-moe-layer-forward.md` committed at `3cb8d59`. Implementation is in
-    progress. The ledger's probe record fixes the OLMoE MoE layer's real topology as data — the
+    routed half of R5's second gate stage. Implemented and reviewed; in publication.** On branch
+    `agent/r5d-moe-layer-forward`, rebased onto the merged R3 residency simulator at `main`
+    `95c47e7`; design ledger `a85e1fc`, implementation `7886cee`, review repair `a2e2748`.
+    [`r5d-moe-layer-forward.md`](r5d-moe-layer-forward.md) is the authoritative plan and owns the
+    probe record, the contract ledger, the closure matrix, the correction ledger, and the
+    cell-to-case map; the design gate triggered on the new `--moe-layer-forward` CLI arm, its
+    `R5D_*` result codes, and a coordinated invariant across `src/layer_olmoe.align`,
+    `src/moe_layer_forward.align`, `src/ggml_ffi.align`, and both C shims. The ledger's probe record
+    fixes the OLMoE MoE layer's real topology as data — the
     QK-norm is an RMS norm over `n_embd` taken before the head reshape, the router's 64-way softmax
     is never renormalized, the top-k node is `ARGSORT` plus `VIEW` rather than `ggml_top_k`, and a
     compacted, remapped expert stack computed with `mul_mat_id` is bit-identical (28 of 28 dumped
     nodes) to llama.cpp's own whole-tensor shape and needs no restacking copy. Against a checked-in
     `llama-eval-callback` transcript the tolerance oracle reaches max `|Δ|` 5.0e-5 (the instrument's
     own print-rounding bound) over 2,376 sampled elements, and the routing-identity oracle matches
-    the transcript's selected expert ids exactly. Microbenchmark B is discharged at 9.4 ms typical
-    for one routed layer, six tokens, warm (phase A 3.59 ms, phase B 5.77 ms). The residency win this
-    capability exists to measure is smaller than the plan assumed and is stated as such: at six
-    prefill tokens R5D reads 39.1% of the layer's expert bytes (12.5% at one token, 73.4% at
-    eighteen), so claim-level expert residency is recorded as a **decode-time** property rather than
-    a prefill win. No new Align capability request is expected from this capability; see
-    `HANDOFF.md`.
+    the transcript's selected expert ids exactly. **The shipped arm measured on the real model**
+    (ledger section 7.1): the routed layer reads **101,990,400 of 261,095,424** expert bytes,
+    390,625 ppm, 75 of 192 planes over 25 block reads; the self-reference oracle is 46 of 46
+    byte-identical; the routing-identity oracle is `MATCH` at the exact printed ids and their sum
+    1,471; the transcript oracle is `PASS`, 26 of 26 nodes, 2,376 elements, max `|Δ|` 0
+    ten-thousandths. Required microbenchmark B is discharged at **5.64 ms** for one routed layer,
+    six tokens, warm (phase A 1.452 ms, phase B 4.185 ms; the probe's 9.4 ms timed a cold graph per
+    arm). The residency win this capability exists to measure is smaller than the plan assumed and is
+    stated as such: at six prefill tokens R5D reads 39.1% of the layer's expert bytes (12.5% at one
+    token, 73.4% at eighteen), so claim-level expert residency is recorded as a **decode-time**
+    property rather than a prefill win. The result is a correctness and layout claim about this named
+    model, not a throughput claim. No new Align capability request was needed; four existing requests
+    (37, 42, 45, 46) gain R5D as a non-blocking client. See `HANDOFF.md`.
 
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
-`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18, 19, and 20 above:
-items 18, 19, and 20 are merged, R2's gate is met, and R4's and R4.5's per-expert halves are
-discharged. It also unblocked item 21, R3-RESIDENCY-SIM, which is implemented, reviewed, and in
-publication with the R3 gate met on the real corpus. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18 through 22 above:
+items 18, 19, 20, and 21 are merged, R2's gate is met, R4's and R4.5's per-expert halves are
+discharged, and R3's gate is met on the real corpus. It also unblocked item 22,
+R5D-MOE-LAYER-FORWARD, which is implemented, reviewed, and in publication with one routed OLMoE
+layer computed over Align-owned expert claims and agreeing with llama.cpp node for node.
+Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
 **infeasible on this host** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
 a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
@@ -1006,13 +1020,20 @@ section 5.4、`r5c-metal-prefill.md` section 1.3）。
 
 **単一layerのrouted版（MoE stage 2）はR5D-MOE-LAYER-FORWARD（roadmap item 22、
 `docs/specs/r5d-moe-layer-forward.md`）が対象とする。** branch `agent/r5d-moe-layer-forward`、
-design ledger `3cb8d59`、実装は進行中。probeはplanの前提を複数覆した——QK-normは`head_dim`単位
+merged R3の上へrebase済み（`main` `95c47e7`）、design ledger `a85e1fc`、実装 `7886cee`、
+review repair `a2e2748`。実装・review・実modelでのqualificationは完了し、publication中である。
+probeはplanの前提を複数覆した——QK-normは`head_dim`単位
 ではなく`n_embd`全体へのRMS normであり、routerのtop-8はrenormalizeされず、top-k nodeは
 `ggml_top_k`ではなく`ARGSORT`＋`VIEW`である。compactしid remapしたexpert stackは`mul_mat_id`で
 llama.cppのwhole-tensor形状とbit一致（28/28 node dump一致）し、restacking copyは不要と判明した。
 transcript oracleはmax`|Δ|` 5.0e-5（instrumentの印字精度上限）、routing-identity oracleは
-selected expert idが完全一致。microbenchmark Bは**9.4 ms**（1 routed layer、6 token、warm；
-phase A 3.59 ms、phase B 5.77 ms）で達成。**このcapabilityが測定するresidency winは
+selected expert idが完全一致。**実装済みarmの実model計測**（ledger section 7.1）では
+routed layerがexpert byteの**101,990,400 / 261,095,424**（390,625 ppm、75/192 plane、25 block read）
+を読み、self-reference oracleは46/46 node byte一致、routing-identity oracleは`MATCH`（printed id
+完全一致、sum 1,471）、transcript oracleは`PASS`（26/26 node、2,376要素、max`|Δ|` 0
+ten-thousandths）。microbenchmark Bは**5.64 ms**（1 routed layer、6 token、warm；
+phase A 1.452 ms、phase B 4.185 ms。design段階のprobeの9.4 msはarmごとにcold graphを計測したもの）
+で達成。**このcapabilityが測定するresidency winは
 planが想定したより小さい**——6 tokenのprefillでlayerのexpert byteの39.1%を読む
 （1 tokenでは12.5%、18 tokenでは73.4%）ため、claim単位のexpert residencyは
 **decode-time property**として記録され、prefillの勝ちとしては主張されない。

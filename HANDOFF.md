@@ -5,8 +5,12 @@ file records durable project state.
 
 ## Active: R5D-MOE-LAYER-FORWARD (2026-08-28)
 
-Branch `agent/r5d-moe-layer-forward`, based on the merged MOE-PREREQ-DISCHARGE (PR #133,
-`2cdb7bf` → `35a0df6`). Design ledger `docs/specs/r5d-moe-layer-forward.md` is authoritative and
+Branch `agent/r5d-moe-layer-forward`, rebased onto `main` `95c47e7` (the merged R3-RESIDENCY-SIM,
+PR #135, which sits on PR #136's GCC 14 shim fix, C8's optional targeted stage at PR #134, and the
+merged MOE-PREREQ-DISCHARGE at PR #133). The branch is `a85e1fc` (design ledger), `7886cee`
+(implementation), `a2e2748` (review repair), and the reconciliation and baseline commits on top;
+before the rebase the first three were `3cb8d59`, `e584849`, and `aaedf26`, and the review record on
+the pull request names the pre-rebase heads the reviewers read. Design ledger `docs/specs/r5d-moe-layer-forward.md` is authoritative and
 now carries the implementation's corrections C1–C21 and the shipped arm's measured section 7.
 **The capability is implemented and committed**: `src/layer_olmoe.align` and
 `src/moe_layer_forward.align` are new; `scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`,
@@ -30,9 +34,10 @@ bytes at six prefill tokens, 12.5% at one, 73% at eighteen.
 The boundary change is five new FFI symbols (`argsort`, `mul_mat_id`, `view_2d`, a 3-D
 stacked-tensor constructor, a 2-D i32 constructor) plus one widened existing symbol
 (`soft_max_ext` with a null mask). **No new Align capability request was needed.** Four existing
-requests gain R5D as a client, all non-blocking and none editable from this branch: Requests 44 and
-45 (on the R3 branch, see below) and Requests 37 and 42 (on `main`) — ledger section 5.5 records
-the evidence and marks all four **to be appended at reconciliation**.
+requests gain R5D as a client, all non-blocking: Requests 45 and 46 (R3's, renumbered from 44 and 45
+when PR #134 took Request 44, and now on `main` with the merged PR #135) and Requests 37 and 42.
+Ledger section 5.5 named all four as to be appended at reconciliation, and the reconciliation commit
+appends R5D's client evidence to each of the four register entries.
 
 **Review.** One comprehensive review of the stable candidate, two independent reviewers over
 disjoint risks. Reviewer A (source) **approve** with 2 medium and 2 low findings; reviewer B
@@ -45,29 +50,45 @@ adds one behavioural refusal (a claim plane whose `ggml_type` is not its role's 
 before and after) and one hosted case, `moe-engine-claim-type-mismatch`; every other change is a
 record, a comment, or an assertion.
 
-**Verification after the repair**, on this host with `gmake` and
+**Verification, re-run in full at the rebased head against the managed `3a34febe` compiler** that
+PR #134 pinned, on this host with `gmake` and
 `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib`:
-`gmake check` (30 units, 134 s) PASS; `gmake build` PASS; `gmake ggml-spike` and
-`gmake ggml-spike-smoke` PASS on both the stub and the real shim; `gmake layer-forward-smoke` PASS
-three consecutive times, byte-identical, 30.57 / 36.12 / 27.37 s, with the R5A, R5B, and R5C golden
-files **byte-unchanged** and exactly one line added to R5D's; `gmake alignpack-smoke`,
-`gmake gate-topology-check`, `gmake format-check` PASS; `gmake fmt` and `git diff --check` clean.
-`make moe-layer-forward-qualification` rerun once against the real OLMoE model, every section 5.2
-assertion PASS.
 
-**Next actions, in order.** (1) `python3 scripts/pre-pr` and publish. Note the preflight lane:
-R5D adds the `moe-layer-forward-qualification` Makefile target, so the classifier selects the
-**executable** row and the installed profile — publication needs the **fresh-image
-(Docker-in-Docker)** preflight, not the documentation lane. `HOSTED_CHECK_TARGETS` membership is
-unchanged, so `make ci` is *not* selected. (2) After merge, refresh `main` and start the next
-eligible roadmap item.
+```text
+gmake check                    ok: checked 31 unit(s) per-unit (137 s)
+gmake build                    ok
+gmake ggml-spike               ok, stub shim and real shim
+gmake ggml-spike-smoke         PASS - 7 no-document, 43 documented cases; olmoe 22 blocks /
+                               69 members, 16 ExpertBlocks, claim surface PASS
+gmake layer-forward-smoke      PASS x3, byte-identical, 28 / 27 / 26 s - 8 no-document and 75
+                               documented R5A/R5B cases, 59 model-forward, 28 gpu-forward, and
+                               R5D's 8 no-document / 78 documented cases, 29 codes, three oracles
+gmake alignpack-smoke          PASS - 27 positive fixtures, 128 negative sources, 20,302 assertions
+gmake residency-sim-smoke      PASS - PR #135's owner, unchanged by this branch
+gmake gate-topology-check      PASS
+gmake format-check             PASS; gmake fmt leaves no diff; git diff --check clean
+```
+
+**No golden byte changed at the new pin.** The R5A, R5B, R5C, R5D, and ggml-spike golden documents
+are byte-identical under `3a34febe`, so the pin adoption needs no correction row of its own.
+
+**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test moe-layer-forward -- make
+layer-forward-smoke gate-topology-check` under the installed profile at the exact head, then publish
+and merge. Note the preflight lane: R5D adds the `moe-layer-forward-qualification` Makefile target,
+so the classifier selects the **executable** row and the installed profile — publication needs the
+**fresh-image (Docker-in-Docker)** preflight, not the documentation lane. `HOSTED_CHECK_TARGETS`
+membership is unchanged, so `make ci` is *not* selected. (2) After merge, refresh `main` and start
+the next eligible roadmap item; R5's deferred microbenchmark C and R6 both wait on pending decisions
+(d) and (c) below.
 
 ## Merged checkpoint: R3-RESIDENCY-SIM (2026-08-28)
 
-Branch `agent/r3-residency-sim`, rebased onto `main` `4f01553` (the merged C8-OPTIONAL-TARGETED-STAGE,
-PR #134, which sits on the merged MOE-PREREQ-DISCHARGE, PR #133). Design ledger
-`docs/specs/r3-residency-sim.md` is authoritative. Implementation and review are complete;
-publication is in progress and is the only remaining step.
+Branch `agent/r3-residency-sim` merged as PR #135, merge commit `95c47e7` on `main`, preserving its
+recorded baseline chain with a merge commit. It had been rebased onto `main` `4f01553` (the merged
+C8-OPTIONAL-TARGETED-STAGE, PR #134, which sits on the merged MOE-PREREQ-DISCHARGE, PR #133) and
+carries PR #136's GCC 14 shim fix as its merged prerequisite. Design ledger
+`docs/specs/r3-residency-sim.md` remains authoritative. Implementation, review, publication, and
+merge are complete.
 
 **What it delivers.** The R3 roadmap gate, measured. `main --simulate-residency` replays the demand
 stream implied by a set of real `R2_ACTIVATION_TRACE` documents against ten expert-residency cache
@@ -188,11 +209,6 @@ diagnostic and the built program corrupts the heap at run time on the decoded re
 (`borrow mut array<T>` loop invalidation, and no element assignment through an array field). R3 also
 strengthened Requests 21, 23, and 26 with new client evidence.
 
-**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test residency-sim -- make
-residency-sim-smoke gate-topology-check` under the installed profile at the exact head, then publish
-and merge. (2) Refresh `main` and start the next eligible roadmap item; R5's deferred microbenchmark
-C and R6 both wait on pending decisions (d) and (c) below.
-
 ## Merged checkpoint: MOE-PREREQ-DISCHARGE (2026-08-28)
 
 Branch `agent/moe-prereq-discharge` merged as PR #133 at `35a0df6`, preserving its recorded
@@ -294,7 +310,8 @@ longer fits alongside the downloaded model and its alignpack space; R1B's real-m
 1. **Small MoE GGUF, 1-4 GB. — TAKEN.** `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (3.9 GiB) is on
    this host. It unblocked the R2 locality gate (merged, PR #131), R1C's `olmoe` frontend (merged,
    PR #132), and R4's per-expert half with R4.5's expert matmul (merged, PR #133). R3's residency
-   simulation, in publication above, follows from the same file rather than from another download.
+   simulation (merged, PR #135) and R5D's routed layer, in publication above, follow from the same
+   file rather than from another download.
 2. **`gpt-oss-20b-mxfp4.gguf`, 12.1 GB.** Unblocks R1B's real-model `model-ir-parity` qualification
    and every `ASSUMED` row of `docs/specs/r1b-gptoss-moe-ir.md` section 2.5 — including the two
    rows R1C has now contradicted from the olmoe side. **Infeasible on this host** after decision 1
@@ -312,7 +329,12 @@ longer fits alongside the downloaded model and its alignpack space; R1B's real-m
 non-blocking, and Request 44 ALIGN_LLM_VERIFIED, closed by PR #134. `.align-revision` now selects
 `3a34febe`. Requests 45 and 46 are new, filed by R3-RESIDENCY-SIM (see above) and renumbered from
 44 and 45 when PR #134 took 44; Request 45 is priority **high** — an accepted-but-unsound compiler
-defect — rather than the medium/low of the rest of this range. Top clients by reference count in
+defect — rather than the medium/low of the rest of this range. **R5D added no request and appended
+client evidence to four**: Requests 45 and 46 gain `src/layer_olmoe.align`'s `parse_geometry` and its
+routing decision (the two R5D could only anticipate before PR #135 merged them), Request 37 gains
+R5D's per-unit check times — 15.6 s for the arm's own unit against 0.67 s for the 1,403-line module
+beside it, which retires R5B's and R5C's under-10 s single-unit target rather than restating it — and
+Request 42 gains the second exact repeat of one region diagnostic. Top clients by reference count in
 `docs/align-requests.md` (grep-verified against the register): Request 34 (`Result` payloads beyond
 scalars, 9 mentions), Requests 21 and 23 (read-only open; huge-struct-copy lint, 8 each — Request 23
 gained R1C's `src/frontend_olmoe.align` and then R3's `residency_sim$Derived`, making six clients
@@ -359,12 +381,13 @@ non-finite-readback goldens, masked in golden normalization alone. Full ledger:
 `docs/specs/r5c-metal-prefill.md`.
 
 **Resume in another environment.** Fetch `origin`, check out `main`, then check out
-`agent/r3-residency-sim` and read `docs/specs/r3-residency-sim.md` in full before touching
-`src/residency_sim.align`, the oracle, or either runner. Decision 1 is taken; R2's gate, R1C's
-frontend, R4's per-expert half, R4.5's expert matmul, and C8's optional targeted stage are all
-merged, so R3 waits on no further decision. For the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1);
-decision 3 -> R6 (section R6), R7-R9, and the decode half of R2's gate; decision 4 -> R5's deferred
-microbenchmark C (section R5).
+`agent/r5d-moe-layer-forward` and read `docs/specs/r5d-moe-layer-forward.md` in full before touching
+`src/layer_olmoe.align`, `src/moe_layer_forward.align`, the two C shims, or either runner. Decision 1
+is taken; R2's gate, R1C's frontend, R4's per-expert half, R4.5's expert matmul, C8's optional
+targeted stage, and R3's residency simulator are all merged, so R5D waits on no further decision. For
+the rest: decision 2 -> R1B's `model-ir-parity` qualification (section R1); decision 3 -> R6 (section
+R6), R7-R9, and the decode half of R2's gate; decision 4 -> R5's deferred microbenchmark C (section
+R5).
 
 **DinD preflight note.** The installed profile requires true Docker-in-Docker on macOS. The recipe
 lives in this session's memory, not in the repository, and the scripts that ran it lived only in a
@@ -374,9 +397,10 @@ exists by the time work resumes; otherwise rebuild from the CLAUDE.md rules (the
 
 ## Merged checkpoints
 
-Track B, dense local model (R0 → R5C), plus the merged R2 locality gate, the R1C olmoe frontend, and
-the MoE prerequisite discharge; C8's optional targeted stage is the one merged Track A re-entry.
-The MOE-PREREQ-DISCHARGE, R2, and R5C checkpoints are above; the rest, newest first:
+Track B, dense local model (R0 → R5C), plus the merged R2 locality gate, the R1C olmoe frontend, the
+MoE prerequisite discharge, and the R3 residency simulator; C8's optional targeted stage is the one
+merged Track A re-entry. The R3-RESIDENCY-SIM, MOE-PREREQ-DISCHARGE, R2, and R5C checkpoints are
+above; the rest, newest first:
 
 - **GCC14-FP-CONTRACT-PORTABILITY** (PR #136, merge `aad872f`): `#pragma STDC FP_CONTRACT OFF` is
   Clang-only, and GCC 14.2 diagnoses it as unknown while `scripts/build-ggml-shim` compiles with
