@@ -116,10 +116,12 @@ for prompt in "${selected[@]}"; do
   # The flags are contractual, not incidental. `-fa off` keeps attention unfused so the graph shape
   # stays the one section 2.2 was measured against; `-ctk f32 -ctv f32` keeps the cache tensors in
   # a printable type; `-nr` suppresses the reasoning wrapper so the prompt reaches the tokenizer
-  # verbatim; `-c 512` bounds the context. `ulimit -f` caps the transcript at 256 MiB.
+  # verbatim; `-c 512` bounds the context. `-n 0` is explicit because R2c gives positive `-n` its
+  # intended decode meaning, while this historical gate remains prefill-only. `ulimit -f` caps the
+  # transcript at 256 MiB.
   (
     ulimit -f 262144
-    exec $instrument_timeout "$instrument" -m "$model" -p "$prompt" -n 1 -t 4 \
+    exec $instrument_timeout "$instrument" -m "$model" -p "$prompt" -n 0 -t 4 \
       -fa off -ctk f32 -ctv f32 -nr -c 512 \
       </dev/null >"$transcript" 2>"$temp_dir/instrument.log"
   ) || {

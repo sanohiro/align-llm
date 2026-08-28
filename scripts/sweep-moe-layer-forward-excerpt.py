@@ -21,7 +21,7 @@ ATTN_OUTPUT_RE = re.compile(r"blk\.\d+\.attn_output\.weight$")
 
 # The twenty-eight records this oracle **scans**: the twenty-six of section 3.6 plus `kq-0` and
 # `kq_soft_max-0`, which are matched and then excluded from element comparison by contract. The
-# four `norm-0` records and the fifteen reduction records are deliberately absent — section 2.2
+# four `norm-0` records and the fourteen reduction records are deliberately absent — section 2.2
 # facts 4 and 5 record that their names are ambiguous and unstable, so the arm never seeks them.
 WANT = [
     ("embd", "GET_ROWS"), ("attn_norm-0", "MUL"),
@@ -46,7 +46,7 @@ HEADER = """# R5D-MOE-LAYER-FORWARD checked-in transcript excerpt.
 # kq-0 and kq_soft_max-0, which are present, matched, and excluded from element comparison by
 # contract because llama.cpp's n_kv is a padded KV-cache width and R5D has no cache.
 #
-# The four norm-0 records and the fifteen ffn_moe_weighted-0 (view) / node_NN reduction records
+# The four norm-0 records and the fourteen ffn_moe_weighted-0 (view) / node_NN reduction records
 # are deliberately absent: section 2.2 facts 4 and 5 record that four different tensors of one
 # OLMoE layer print under the name norm-0 and that the reduction chain's names are positional, so
 # the arm never seeks either class and each is published as an oracle exclusion instead.

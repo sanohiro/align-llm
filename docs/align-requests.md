@@ -42,7 +42,7 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 ```
 
 The currently pinned Align commit is
-`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`, selected by the closed Request 19 adoption wave. The reviewed
+`3a34febe912db5096c58c74fede36ff53f223e04`, selected by the Request 44 consumer adoption. The reviewed
 `docs/specs/check-gate-topology.md` fresh-compiler design and its FRESH-WORKER/FRESH-IMAGE base
 capabilities are merged. The closed Request 6 installed profile extends that same trust boundary to
 two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not acceptance
@@ -73,13 +73,16 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-28): Requests 1–20 are CLOSED and Requests 21–43 are PROPOSED. No request blocks
-> another consumer. R5C-METAL-PREFILL-ARM merged as align-llm PR #129, and following the user's
+> **Status (2026-08-28): Requests 1–20 are CLOSED, Requests 21–43 and 45–46 are PROPOSED and non-blocking, and
+> Request 44 is ALIGN_LLM_VERIFIED pending publication closure. C8-OPTIONAL-TARGETED-STAGE is the
+> active stable candidate; its schema/owner matrix and paired acceptance pass at the adopted pin.
+> R5C-METAL-PREFILL-ARM merged as align-llm PR #129, and following the user's
 > decision to download `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, Track B started two consumers on
 > that model: R2-LOCALITY-GATE merged as align-llm PR #131 (`fff5806` -> `546b5cc`) with the R2
-> locality gate met in the prefill direction, and R1C-OLMOE-MOE-IR (branch
-> `agent/r1c-olmoe-moe-ir`, an olmoe frontend and the first real-MoE Model IR/Block IR) is the
-> single active consumer, in publication; see the end of this narrative for the next consumer
+> locality gate met in the prefill direction, R1C-OLMOE-MOE-IR merged as align-llm PR #132, and
+> MOE-PREREQ-DISCHARGE merged as align-llm PR #133. R3-RESIDENCY-SIM (branch
+> `agent/r3-residency-sim`, the expert-residency policy simulator) is the single active Track B
+> consumer, in publication. See the end of this narrative for the next consumer
 > named for each remaining pending user/Align decision.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
 > R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
 > parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
@@ -352,6 +355,37 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > R6 (Persistent KV) and, through it, R7-R9; and Request 41 itself is still the next consumer for
 > R5's deferred required microbenchmark C. None of these decisions changes any request's status;
 > Requests 21-43 remain PROPOSED and non-blocking, and none has merged since R0.
+> R3-RESIDENCY-SIM (`docs/specs/r3-residency-sim.md`) is now the active capability, on branch
+> `agent/r3-residency-sim`, rebased onto the merged MoE prerequisites at `main` `35a0df6` so that
+> the corrected `src/expert_trace.align` its qualification depends on now comes from `main` rather
+> than from a prerequisite carried on the branch. **Implementation and review are complete;
+> publication is the only remaining step.** It simulates ten expert-residency cache policies against a
+> real-model activation-trace corpus and discharges the roadmap R3 gate: at the requested 250-per-
+> mille budget, `recent_reuse_w32` beats the `lru` baseline by 223 per mille with headroom 574 per
+> mille to the offline optimum, a 40-fold leave-one-document-out jackknife minimum gain of 213 per
+> mille, `BEATS_BASELINE`. It consumes no `PROPOSED` request. Implementation added two requests and
+> strengthened three. Request 45 is a compiler soundness defect, not a missing admission: the region
+> checker silently accepts a move of a Move-typed field out of a `json.decode`d record through a
+> two-hop field-access chain (`document.run.build_source`) with no diagnostic, and the built program
+> aborts at run time — a heap-corruption trap, not a clean `SIGABRT` — when the decoded record's
+> recursive `Drop` frees the same string a second time; reproduced fresh in a minimal probe under the
+> pinned compiler, with a root cause traced to struct-literal field values never setting the move
+> checker's `consuming` flag. It is non-blocking — the shipped fix is one `.clone()`
+> (`src/residency_sim.align:624-634`) — with all of R3-RESIDENCY-SIM as independent work. Request 46
+> is two related array-shape gaps, distinct from Request 36's whole-field-replacement restriction,
+> that together force every helper in the module to return owned columns instead of writing through
+> `borrow mut` out-parameters: a local `array<i64>` passed `borrow mut` to a call inside a `loop`
+> invalidates the caller's later reads of it (a record or `buffer` in the same position does not),
+> and an `array<i64>` field of a record cannot be element-assigned at all. It forces `replay`'s
+> eviction-and-insert admission block (`src/residency_sim.align:660-920`) to be written twice rather
+> than factored into one helper. It is non-blocking — the duplication is in place and checked against
+> an independent oracle — with all of R3-RESIDENCY-SIM as independent work. R3 also strengthens
+> Request 21 with a narrower client of the `fs.size`/stat absence specifically (R3 itself needs no
+> `fs.open_ro`, since `fs.read_file` does not demand `O_RDWR`), Request 23 with a sixth wide-record
+> `borrow`-parameter false positive (`residency_sim$Derived`), and Request 26 with a second private
+> `str`-to-integer parser (`parse_budget`) that a `json.decode` detour and the existing `parse_uint`
+> both fail to match. None of this changes any request's status; Requests 21-43 and 45-46 remain PROPOSED and
+> non-blocking, and none has merged since R0.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -6441,6 +6475,19 @@ from the ABI enumeration at the pinned commit `4b515f8d37de2e9a9ba06170c5842fd12
 same read-only-media failure this request already names for R0's inspection and R2A's transcript
 scan, now on a third distinct input.
 
+**R3-RESIDENCY-SIM is a second, narrower client of the same `fs.size`/stat absence — but not a new
+client of the `fs.open_ro` gap this request asks for.** `src/residency_sim.align:377-378` and
+`:518-519` enforce the Model IR and trace document byte caps (`R3_IR_TOO_LARGE`,
+`R3_TRACE_TOO_LARGE`) on the materialized document after `fs.read_file` returns, rather than before
+the read, because neither `fs.size` nor any metadata-only stat exists at this pin —
+`docs/specs/r3-residency-sim.md` section 6 correction 3 records the same absence
+`src/alignpack.align:1717` already cites. Unlike every other client above, R3 does **not** need
+`fs.open_ro` itself: it reads documents with `fs.read_file`, which does not demand `O_RDWR`, so its
+qualification can read a Model IR or trace document from a read-only artifact directory where
+R2A's `fs.open_rw`-based scan cannot. This is additional evidence for the `fs.size`/stat sub-issue
+this request's motivation already names (from R4's paragraph above), not a seventh client of the
+`fs.open_ro` constructor itself.
+
 ### Requested capability
 
 One read-only sibling of the existing `file` constructors, following the established `_rw`/`_ro`
@@ -6810,8 +6857,28 @@ correct in the same file and is quoted here only so it is not mistaken for evide
 `src/frontend_olmoe.align:182:67` (returning `model_ir$ModelIr`, 176 bytes) and `:189:49` (returning
 `model_ir$Prepared`, 568 bytes) are genuine owned returns.
 
-The count is now five clients across four wide records (`GgufTable`, `BlockPlan`, `TranscriptScan`,
-`PackPlan`) and every architecture frontend in the repository. The status stays `PROPOSED` and
+**Sixth client, from the active R3-RESIDENCY-SIM capability.** `residency_sim$Derived` (440 bytes,
+`src/residency_sim.align:1158`) is a sixth wide read-only record read through a `borrow` parameter.
+`gmake check` at the pinned toolchain (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`, `alignc 0.5.0`)
+emits, verbatim, all four `huge struct copy` warnings the module produces:
+
+```text
+src/residency_sim.align:485:71: warning: huge struct copy: returning `residency_sim$TraceLoad` (184 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+src/residency_sim.align:511:6: warning: huge struct copy: returning `residency_sim$TraceLoad` (184 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+src/residency_sim.align:1203:30: warning: huge struct copy: `residency_sim$Derived` (440 bytes) is passed by value — every call copies it; narrow the struct (split hot/cold fields) or pass a `slice`/view
+src/residency_sim.align:1387:68: warning: huge struct copy: returning `residency_sim$ResidencySim` (200 bytes) by value copies it out; narrow the struct (split hot/cold fields) or return a handle
+```
+
+Only the third line, `:1203:30`, is this request's defect: `render_document(borrow d: Derived) ->
+string` (`:1203`) takes `d` by `borrow` and never copies it. The other three lines are the lint
+working exactly as designed on genuine by-value returns — `empty_trace_load` (`:485`) and
+`trace_load` (`:511`) both return an owned `TraceLoad` by value, and `simulate` (`:1387`) returns an
+owned `ResidencySim` by value — and are quoted, as in the `expert_trace.align` evidence above, only
+so the one line that is evidence can be told apart from the three that are not. Four sites in the
+module in total: one instance of this request's false positive, three correctly-targeted warnings.
+
+The count is now six clients across five wide records (`GgufTable`, `BlockPlan`, `TranscriptScan`,
+`PackPlan`, `Derived`) and every architecture frontend in the repository. The status stays `PROPOSED` and
 `Blocking: no`; no workaround is written, and none of these sites is restructured to silence a
 diagnostic that is wrong about them.
 
@@ -7139,6 +7206,19 @@ document's number grammar, its overflow behavior, and its whitespace rules for a
 JSON, and nobody reading them would notice. A workaround existing does not make this a purely
 application concern — it is exactly the class of duplication `CLAUDE.md`'s request-register rule
 exists to surface.
+
+**Second client, from the active R3-RESIDENCY-SIM capability.** `BUDGET_BYTES`, the fourth CLI
+operand of `--simulate-residency`, needs the same conversion for a reason specific to *this*
+operand: a `json.decode` detour would accept `-0`, `1e3`, and leading whitespace, none of which a
+byte budget admits, and `src/expert_trace.align:328`'s existing `parse_uint` is not reusable either
+— it trims `%12.4f`-padded whitespace and tolerates a leading `+`, a contract this operand does not
+want. `src/residency_sim.align:264-279` (`fn parse_budget`, 16 lines) is therefore a second private
+parser, with its own explicit non-wrapping overflow guard (`if total > (I64_MAX - digit) / 10 {
+return -1 }`, `:273`) rather than a delegation to either existing workaround — the same pattern this
+request's own text already established for `src/expert_trace.align`'s private parser: every call
+site that needs an integer out of text and cannot tolerate the JSON detour's grammar writes its own.
+It is non-blocking — the private parser is in place — with all of R3-RESIDENCY-SIM as independent
+work.
 
 ### Requested capability
 
@@ -8196,6 +8276,32 @@ src/layer_forward.align` is 6 s and `make check` is 86 s for 29 units — a shap
 the compiler fast, not because it reads better than the one-`Outcome`-per-stage design that section
 3.7 originally wrote down (see Request 36).
 
+**Largest client to date, from R5D-MOE-LAYER-FORWARD** (`docs/specs/r5d-moe-layer-forward.md`
+section 5.5, correction C20). R5D applied the remedy this request's own client evidence prescribes —
+the topology tables, the geometry, and the routing decision are a separate module
+(`src/layer_olmoe.align`) from the arm (`src/moe_layer_forward.align`) — and the arm's unit is still
+the dominant cost. Measured warm on the section 2.1 host of that ledger, at
+`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`:
+
+```text
+alignc check-per-unit src/moe_layer_forward.align   (4-unit graph)   17.02 s
+alignc check-per-unit src/model_forward.align       (7-unit graph)   17.21 s
+alignc check-per-unit src/layer_olmoe.align                           0.67 s
+alignc check-per-unit src/ggml_ffi.align                              0.18 s
+alignc check-per-unit src/alignpack_read.align                        0.60 s
+make check                                          (30 units)       134 s
+```
+
+The arm's own unit is therefore roughly **15.6 s** of its graph's 17.0 s, against 0.67 s for the
+1,403-line `src/layer_olmoe.align` beside it — a 23x time ratio for a 3.3x line ratio, on a module
+written after this request was filed. Splitting the arm again would move the cost, not remove it,
+which is why R5D records this as language-owned rather than as an application task, and why
+`r5b-model-prefill-forward.md` correction C26 and `r5c-metal-prefill.md` correction C22 **retire**
+the under-10 s single-unit acceptance target those ledgers carried instead of restating it a third
+time. This request's own `align-llm verification` line above is unchanged: it names
+`src/layer_forward.align`, not the R5D arm.
+3.7 originally wrote down (see Request 36).
+
 ### Requested capability
 
 No specific mechanism is proposed — this is a compiler performance property, not a missing language
@@ -8661,6 +8767,27 @@ underlying gap (no diagnostic class is a strict superset of another across `chec
 `execute`/`stage_geometry` call chain is larger and checked clean under all of `check` and
 `check-per-unit` before failing only at `build`.
 
+**Third client, and the second exact repeat of one diagnostic, from R5D-MOE-LAYER-FORWARD**
+(`docs/specs/r5d-moe-layer-forward.md` section 5.5, correction C10). `src/moe_layer_forward.align`
+checked clean per unit and the executable then refused to link, in the region checker, with
+
+```text
+cannot retain a shorter-lived view through this mutable borrow; copy it into the destination
+region first
+```
+
+for `alignpack_read.member_at(f, x, block, within, c)` called with a **local** `block` while the same
+call crosses a `borrow mut Counters`. `r5b-model-prefill-forward.md` section 6 correction C7 records
+the identical sentence for the identical function at the same pin, and `r5c-metal-prefill.md` section
+6 correction C5 records two further region diagnostics behind the same `check`/`build` gap. R5D's
+mitigation is C10's: the member scan became its own function, `block_carries_role`
+(`src/moe_layer_forward.align:1483-1520`), whose block is a parameter rather than a local. Whether
+the recurrence is one request or two — the parity gap, and a separate constraint that a `Borrow`
+crossing a `borrow mut` must be a parameter of the calling frame rather than a local — is left to
+this register; R5D records the evidence and takes no dependency on either surface.
+`execute`/`stage_geometry` call chain is larger and checked clean under all of `check` and
+`check-per-unit` before failing only at `build`.
+
 ### Requested capability
 
 Make `alignc check` (and, if it remains a distinct verb, `alignc check-per-unit`) run the same
@@ -8798,15 +8925,463 @@ reassigned, once that call crosses a module boundary.
    `src/gpu_forward.align` calling `src/model_forward.align`'s `execute` directly and reading
    `TokenColumns`/`ScheduleColumns`/`GraphColumns`/`TopColumns` itself instead of routing through
    `render_parts`'s rendered strings — and pass `make layer-forward-smoke`.
+
 ---
 
-> **Numbering note.** `agent/r3-residency-sim` carries two requests numbered 44 and 45 that have not
-> merged into this branch's register, which ends at Request 43. The two below are therefore filed as
-> **46** and **47** rather than 44 and 45, to avoid two different requests sharing a number in two
-> branches. **Renumber them to 44 and 45 at reconciliation only if R3's pair merges first**; if R5E
-> merges first, R3's pair renumbers instead. Nothing outside this register cites either number.
+## Request 44 — compiler: array-to-slice view retype through a borrowed sum projection
 
-## Request 46 — A `Borrow` argument may be a temporary value
+```text
+Status: ALIGN_LLM_VERIFIED
+Priority: high
+Blocking: yes
+Blocked gate or slice: C8-OPTIONAL-TARGETED-STAGE verification task/result schema 2
+Independent work that may continue: every Track B capability and align-coder work unrelated to the optional verification stage
+Resume condition: align-llm adopts an Align revision containing merge 3a34febe912db5096c58c74fede36ff53f223e04 and the complete optional-target owner passes at the managed pin
+Align commit or pull request: Align PR #892, merged as 3a34febe912db5096c58c74fede36ff53f223e04
+align-llm verification: `.align-revision` selects 3a34febe912db5096c58c74fede36ff53f223e04; the managed compiler verifies at that identity; whole/per-unit compilation and the schema-v2 Some/absent/null, validation, cleanup, repair, and failure-memory owner pass; the 101-pair fixed-task comparison improves 60,515,456 ns to 40,475,113 ns (331,160 ppm) while projecting only schema 1→2 and the passing targeted-stage removal
+```
+
+### Reconciliation and shipped response
+
+The request was first filed as Request 21 on the unmerged local branch
+`agent/c8-optional-targeted-test`. Current `main` independently assigned Request 21 to
+`std.fs.open_ro`, so this register records the shipped compiler prerequisite under the next
+non-colliding identifier. Align's plan and PR retain their historical Request 21 wording; Request 44
+is the align-llm-side reconciliation identity for the same compiler defect, not a second compiler
+request.
+
+C8 makes the verification loop's `targeted_test` command optional while retaining `full_test` as
+the complete acceptance owner. The schema decodes an arena-owned `VerificationTask` whose optional
+command and required sibling commands contain dynamic argument arrays. A borrowed helper matches
+the optional payload and passes those arrays as slices without moving, cloning, or replacing the
+decoded owner.
+
+At the pinned Align revision `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`, `make check` accepted
+that source but `make build` rejected `verification_loop` while lowering the borrowed field path:
+
+```text
+alignc: codegen failed for unit 'verification_loop': lowering failed: borrowed place type disagrees with its field path
+```
+
+Align PR #892 repairs that cross-stage type-identity gap. Path replay first recovers the owning
+array type, then admits only the existing layout-identical scalar or AoS array-to-slice view with
+canonical element identity. The owner remains live; the view creates no clone, source nulling,
+replacement, allocation, or cleanup. The merged Align owner covers scalar and AoS arrays under
+`Some`, the `None` arm, sibling fields, repeated use, whole/per-unit execution, source survival, and
+a mismatched-element malformed-MIR rejection before pointer construction.
+
+Replaying the align-llm prototype in a temporary worktree with a sibling compiler containing
+`3a34febe` makes both `make check` and `make build` pass. The remaining client work is intentionally
+not inferred from that compiler proof: `.align-revision` adoption, exact schema-v2 Some/absent/null
+task vectors, Some/None/Invalid result vectors, validation and cleanup owners, failure-memory
+admission, user documentation, and the paired performance comparison all belong to the active
+consumer capability in `docs/specs/c8-optional-targeted-stage.md`.
+
+### Acceptance criteria
+
+1. `.align-revision` selects a shipped Align revision containing `3a34febe`, and the managed
+   compiler/runtime materialize and verify at that exact identity.
+2. The schema-v2 real client checks, builds, and executes with both present and absent/null
+   `targeted_test`; present runs build/target/full and absent/null runs build/full while sibling
+   commands and dynamic argv remain reusable from the decoded arena.
+3. `make verify-loop-smoke` and `make failure-memory-smoke` pass the complete ledger and closure
+   matrix in `docs/specs/c8-optional-targeted-stage.md`.
+4. The paired fixed-task comparison proves that the full command executes the targeted assertion,
+   preserves every undeclared semantic field, and repeatably exceeds the C8 2,000 ppm shipping
+   floor. This measurement owns the performance claim; the pin change alone does not.
+
+---
+
+## Request 45 — Compiler soundness: moving a field out of a decoded record double-frees at run time
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none. R3-RESIDENCY-SIM (`docs/specs/r3-residency-sim.md` section 7.5 item 3)
+  ships on a one-line `.clone()` through a `str` view rather than the move the region checker
+  silently accepted.
+Independent work that may continue: all of R3-RESIDENCY-SIM.
+Resume condition: an Align release either rejects the move at check time with a named diagnostic
+  (the same family Request 36 already gets for a whole nested Move-struct field), or makes codegen
+  correctly transfer ownership of the moved-out field so the source record's recursive `Drop` no
+  longer frees it a second time.
+Align commit or pull request: none
+align-llm verification: remove the `.clone()` at `src/residency_sim.align:624-634` (move
+  `document.run.build_source` directly into `TraceLoad.build_source`) and pass
+  `make residency-sim-smoke` without the process aborting.
+```
+
+### Motivation and current sibling evidence
+
+R3-RESIDENCY-SIM's trace decoder needs one owned `string` field, `TraceRunSection.build_source`, out
+of a `json.decode`d `TraceDocument`. The straightforward move —
+`build_source: document.run.build_source` inside a new record literal — compiles cleanly under both
+`alignc check` and `alignc build`, runs, prints the moved string correctly, and then aborts the
+process when the decoded document is dropped. `docs/specs/r3-residency-sim.md` section 7.5 item 3
+records it directly in-repo: "`build_source: document.run.build_source` compiles cleanly and then
+aborts the process at `free` with 'pointer being freed was not allocated' when the decoded
+`TraceDocument` is dropped — SIGABRT, no message, and, because stdout is block-buffered, no output at
+all, so the failure looks like a hang at whatever the last flushed byte was. The fix is one
+`.clone()` through a `str` view. A partial move out of a record is either supported or rejected;
+being accepted by the checker and unsound at run time is the part worth recording."
+`src/residency_sim.align:624-634` carries the shipped workaround: `source_view: str :=
+document.run.build_source` followed by `build_source: source_view.clone()`, with the comment "The
+decoded document owns `run.build_source`; moving the field out of it would leave the record's drop
+to free a string this result also owns, so the view is cloned."
+
+**Reproduced fresh** against the pinned managed compiler (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`,
+`alignc 0.5.0`) with a minimal two-hop field-access probe in a scratch directory:
+
+```align
+module probe
+import core.json
+
+Run { build_source: string }
+Doc { run: Run }
+Out { build_source: string }
+
+fn load(s: str) -> Result<Doc, Error> {
+  d: Doc := json.decode(s)?
+  return Ok(d)
+}
+
+fn main() -> Result<(), Error> {
+  document := load("{\"run\":{\"build_source\":\"abcdefghijklmnopqrstuvwxyz0123456789\"}}")?
+  out := Out { build_source: document.run.build_source }
+  print(out.build_source)
+  return Ok(())
+}
+```
+
+```text
+$ alignc check probe.align
+ok: checked 2 function(s)
+
+$ alignc build probe.align -o probe
+alignc: built executable: probe
+
+$ ./probe
+abcdefghijklmnopqrstuvwxyz0123456789
+[1]    68974 trace trap  ./probe
+```
+
+Exit status 133 (signal 5, `SIGTRAP`), not the classic `SIGABRT` (134): macOS's `xzone` `libmalloc`
+raises the corruption trap through `__builtin_trap`, not `abort()`, for this class of failure. Under
+`lldb`, the trap decodes to a genuine heap-corruption assertion, not a benign breakpoint — verbatim:
+
+```text
+* thread #1, stop reason = EXC_BREAKPOINT (code=1, subcode=0x184584fd4)
+    frame #0: libsystem_malloc.dylib`mfm_free.cold.4 + 36
+libsystem_malloc.dylib`mfm_free.cold.4:
+->  brk    #0x1
+libsystem_malloc.dylib`_xzm_introspect_map_zone_and_main.cold.1:
+    "BUG IN LIBMALLOC: malloc assertion "main_address" failed
+     (.../libmalloc/src/xzone_malloc/xzone_introspect.c:838)"
+```
+
+Restoring the one-line `.clone()` (`view: str := document.run.build_source; out := Out {
+build_source: view.clone() }`) on the identical program runs to exit `0` with no crash, confirming
+the clone is what the shipped file relies on rather than an unrelated variable.
+
+**Root cause, verified in the sibling checkout at the pinned commit.** The move checker's
+`ExprKind::Field` handling (`crates/align_sema/src/lib.rs:38581`) branches on field-access depth.
+The single-hop case (`path.len() == 1`, e.g. `document.build_source`) records a move —
+`moved.insert(MovedKey::Field(*base, fld))` — for a `string`/`Option`/handle/Move-enum leaf when
+`consuming` is true (`:38587-38634`), and separately rejects a whole nested Move-**struct** field
+outright with "moving a nested struct field out of a struct is not supported yet — clone it, or move
+the whole struct" (`:38638-38642`, Request 36's already-registered gap). The **depth ≥ 2** branch
+(`:38645-38669`, own comment: "a borrow is fine; the read is invalid only if the root struct was
+moved … Moving a field out through a nested path is deferred") only raises its own diagnostic,
+"moving an owned field out through a nested path is not supported yet — clone it", when `consuming &&
+self.is_move_ty(e.ty)` (`:38663-38668`) — and, critically, only ever *records* a move at depth 1; no
+branch at depth ≥ 2 calls `moved.insert(...)` at all, diagnosed or not.
+
+Whether either the diagnostic or the move-recording branch is even reached depends on `consuming`,
+and a struct-literal field value never sets it: `ExprKind::StructLit { fields, .. }`
+(`:38770-38773`) dispatches every field through `move_expr_deferred!(self, field, moved)`
+unconditionally, and `move_expr_deferred!` (`:28040-28046`) calls `expr_deferred_action`
+(`:35192-35194`), which calls `self.expr_with_action_mode(e, moved, /* consuming */ false, false,
+true)` — `consuming` is hard-coded `false` for every struct-literal field. So
+`Out { build_source: document.run.build_source }` reaches the depth-≥2 `ExprKind::Field` arm with
+`consuming = false`: neither the deferred-nested-path diagnostic fires (it is gated on `consuming`)
+nor is the field ever marked moved. The checker treats the whole two-hop chain as an inert borrow —
+which is why `alignc check` reports it clean — while codegen, elsewhere, still copies the field's
+owned string pointer into the new struct literal without nulling the source. `document`'s recursive
+`Drop` then frees `run.build_source` a second time. No sema regression test anywhere in the
+repository names this shape: `grep -rln "nested struct field out of a struct\|nested path is not
+supported"` across the whole sibling checkout returns only `align_sema/src/lib.rs` itself, so not
+even the sibling depth-1 restriction has a pinned test, let alone this depth-≥2 soundness gap.
+
+**Distinct from the already-registered Request 36.** Request 36 covers the checker *rejecting* a
+move of a whole nested Move-typed **struct** field with a named diagnostic — overly conservative, but
+sound. This request covers the opposite defect on a *different* shape: a move through a two-hop
+field-access chain whose leaf is a scalar-ish `string` (not itself a struct) is *silently accepted*
+by both `check` and `build`, and the generated program is unsound. Fixing Request 36's admission gap
+would not touch this path (struct-literal fields never set `consuming`, regardless of the leaf's
+type), and fixing this defect would not admit Request 36's shape either. Requests 34, 40, and 43 are
+unrelated: no `raw`/`buffer` Result payload, `array_builder` struct field, or cross-module
+out-parameter is involved in this probe.
+
+**Exact locations, verified in the sibling checkout at the pinned commit
+`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`.** The depth-≥2 field-read handling that this defect
+lives in is `crates/align_sema/src/lib.rs:38650-38670`: it blocks a deep read of a moved root, and
+it emits "moving an owned field out through a nested path is not supported yet — clone it" when
+`consuming && self.is_move_ty(e.ty)` — the branch a struct-literal field initializer never reaches,
+because a struct literal's field values are not checked in a consuming context. The neighbouring
+diagnostic at `crates/align_sema/src/lib.rs:38644-38648` — "moving a nested struct field out of a
+struct is not supported yet — clone it, or move the whole struct" — is Request 36's, and is the
+control this request must leave unchanged.
+
+**Second client, from R5D-MOE-LAYER-FORWARD** (`docs/specs/r5d-moe-layer-forward.md` section 5.5,
+correction C22). `layer_olmoe.parse_geometry` (`src/layer_olmoe.align:248-410`) decodes an
+`R1_MODEL_IR`-shaped geometry document and reads owned fields out of it, which is the same shape as
+the R3 client. R5D's mitigation is R3's and it is in the shipped source:
+`g.arch = value.clone()` at `src/layer_olmoe.align:269` clones through the `str` view rather than
+moving the decoded field out. R5D was written against this register entry as an *anticipated* client
+before PR #135 merged it, so the mitigation was in place from the first commit and no run-time
+corruption was ever observed in this client. Non-blocking, with all of R5D as independent work.
+
+**Third client, from R5E-MOE-MODEL-PREFILL** (`docs/specs/r5e-moe-model-prefill.md` section 5.5).
+R5E reuses `layer_olmoe.parse_geometry` unchanged for the whole-model geometry and therefore
+inherits the same shape and the same `str`-view clone; no new mitigation was needed and no run-time
+corruption was observed. Non-blocking, with all of R5E as independent work.
+control this request must leave unchanged.
+
+### Requested capability
+
+Make the move checker's `consuming` flag (or an equivalent ownership-transfer signal) reach a
+struct-literal field's initializer expression, so a depth-≥2 field-access chain used as a moved
+struct-literal value is treated the same as any other consuming context: either it records the move
+(nulling the source field, matching depth-1 handling) or it is rejected with the existing "moving an
+owned field out through a nested path is not supported yet — clone it" diagnostic — never silently
+accepted with neither effect. Whichever Align prefers (admit-and-null, or reject) is acceptable to
+align-llm; the defect is the silent, unrecorded acceptance, not a preference between the two.
+
+### Acceptance criteria
+
+1. A compiler test constructs a struct literal whose field value is a depth-≥2 field-access chain
+   (`a.b.c`, where `c` is an owned `string`) rooted at a `json.decode`d (or otherwise owned) local,
+   and asserts one of: (a) the program is rejected at check time with a named diagnostic, or (b) the
+   program compiles, and a runtime test asserts no double free occurs (e.g. under an
+   allocator-instrumented build) and the source struct's own `Drop` does not re-free the moved field.
+2. A negative/positive control pins the existing depth-1 behavior (`n := u.name`) and the existing
+   depth-≥2 whole-nested-struct rejection (Request 36) unchanged.
+3. `align-llm` verification: the `.clone()` at `src/residency_sim.align:624-634` is removed in favor
+   of the direct move, and `make residency-sim-smoke` passes with the process exiting `0` on every
+   case (no `SIGTRAP`/`SIGABRT`).
+
+---
+
+## Request 46 — `borrow mut` array locals inside loops, and no element assignment through an array field
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. R3-RESIDENCY-SIM (`docs/specs/r3-residency-sim.md` section 7.5 item 1)
+  ships every helper returning owned columns inside a record instead of writing through
+  `borrow mut` out-parameters, and correction 15 (section 6) writes the eviction-and-insert
+  admission block twice inside `replay` rather than once in a shared helper.
+Independent work that may continue: all of R3-RESIDENCY-SIM.
+Resume condition: an Align release admits a `borrow mut array<T>` local passed to a call inside a
+  `loop` without invalidating the caller's later reads, and/or admits element assignment through an
+  `array<T>` field of a record (`s.field[i] = v`).
+Align commit or pull request: none
+align-llm verification: `src/residency_sim.align`'s `replay` function (`:660-920`) collapses its two
+  copies of the eviction-and-insert block (`:772-812` and `:856-908`) into one shared `admit` helper
+  taking the per-key tables as `borrow mut array<i64>` parameters, called from both call sites inside
+  the demand loop; pass `make residency-sim-smoke` with the `policy-oracle` case unchanged in
+  outcome.
+```
+
+### Motivation and current sibling evidence
+
+R3-RESIDENCY-SIM's per-policy cache simulator (`replay`, `src/residency_sim.align:660-920`) needs a
+shared "evict-then-insert" admission step called from two places inside one `loop`-driven demand
+walk — once on the ordinary demand path (`:856-908`), once on the `topk` prefetch path (`:772-812`).
+Factoring it into one helper needs either a `borrow mut array<i64>` parameter per per-key table
+(eight tables: `resident_size`, `resident_pos`, `resident_list`, `last_use`, `freq`, `recent_count`,
+`next_of`, `prefetched`) called from inside the loop, or an element-assignable `array<i64>` field on
+a record bundling them. Both are refused at this pin, for two independent reasons.
+
+**1. A local `array<i64>` passed as `borrow mut` to a call inside a `loop` invalidates every later
+read of it in the caller — a record or `buffer` in the same position does not.** Reproduced fresh
+against the pinned managed compiler (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`, `alignc 0.5.0`) with
+a minimal probe in a scratch directory:
+
+```align
+fn filled(n: i64, value: i64) -> array<i64> {
+  mut b: array_builder<i64> := array_builder()
+  mut at := 0
+  loop { if at >= n { break }
+    b.push(value)
+    at = at + 1
+  }
+  return b.build()
+}
+
+fn touch(borrow mut a: array<i64>, k: i64) {
+  a[k] = a[k] + 1
+}
+
+fn main() -> i32 {
+  mut a := filled(4, 0)
+  mut i := 0
+  loop {
+    if i >= 4 { break }
+    if a[i] == 0 { touch(a, i) }
+    i = i + 1
+  }
+  return a[0] as i32
+}
+```
+
+```text
+$ alignc check probe_a.align
+probe_a.align:23:8: error: use of invalidated borrow 'a': its source 'a' was moved or reassigned (or
+                          its storage was reallocated); create a new view from the current source
+probe_a.align:26:10: error: use of invalidated borrow 'a': its source 'a' was moved or reassigned
+                            (or its storage was reallocated); create a new view from the current
+                            source
+```
+
+**The transcript above is abridged**: `alignc` prints each diagnostic on one line, and the two
+messages are hard-wrapped here for width. The text, the file positions, and the diagnostic count are
+verbatim; the line breaks and the continuation indentation are not.
+
+fires on the loop guard's own next read (`a[i]`, line 23), on the call argument (line 23), and on the
+read after the loop (`a[0]`, line 26). The identical `touch(a, 0)` call once, outside any loop,
+checks clean ("ok: checked 3 function(s)"). `src/alignpack_read.align:335`'s `Counters` (`borrow mut`
+of a **record**) and every `borrow mut buffer` call in this repository both survive the same shape
+inside a loop, so the gap is specific to `array<T>`.
+
+Root cause, verified in the sibling checkout at the pinned commit: `indexed_backing_type`
+(`crates/align_sema/src/lib.rs:15840-15850`) classifies `array<T>` (with `StructArray`/`DynArray`/
+`DynStructArray`/`Slice`/`Soa`/`SoaParam`) as a type whose backing storage a call might reallocate,
+but does **not** classify a record (`Ty::Struct`) or `buffer` the same way. A `BorrowMut` call
+argument only computes a `borrow_mut_replacement_snapshot` — the machinery that treats the call as
+potentially replacing the whole backing storage and ends the local's generation — when
+`self.indexed_backing_type(destination.ty)` holds (`crates/align_sema/src/lib.rs:22528-22530`), so
+only `array<T>`/slice/SoA arguments take this path. The governing doc comment
+(`crates/align_sema/src/lib.rs:34273-34275`, on `invalidate_storage`) states the policy directly:
+"End every generation `storage` owns — a reallocating mutation invalidates views of the buffer
+whatever names it." Inside a `loop`, this per-call generation-end is not scoped to the call's own
+continuation; it invalidates the state merged across the loop's back edge, so the guard's next read,
+the call argument, and every read after the loop all see an ended generation. A record's `borrow mut`
+never enters `indexed_backing_type`, and `buffer` mutation is gated separately, on actual
+reflow-causing operations (`put_u8` and similar) rather than on every call — which is why both
+survive the identical shape unchanged. No existing regression pins this either way:
+`crates/align_driver/tests/borrowed_params.rs` has loop/array cases (lines 651-761), but none repeats
+a `borrow mut array<T>` **call** inside a `loop` with reads before and after — an undiscovered gap,
+not a documented restriction.
+
+**2. An `array<T>` field of a record cannot be element-assigned at all, independent of the loop
+question above.** Reproduced fresh, same pin:
+
+```align
+S { table: array<i64> }
+
+fn set(borrow mut s: S, k: i64, v: i64) {
+  s.table[k] = v
+}
+```
+
+```text
+$ alignc check probe_b.align
+probe_b.align:17:3: error: invalid assignment target
+```
+
+Verified in the sibling checkout: `check_place` (`crates/align_sema/src/lib.rs:41376-41377`, doc
+comment "Resolve an assignable place: a `mut` local, or `mut_local.field`") recognizes exactly two
+assignment-target shapes rooted at a bare local — `local[index] = v` (an `Index` whose receiver
+resolves directly to a local via `self.place_local(recv)`, `:41379-41383`) and `local.f0.f1.… = v`
+(a `FieldAccess` chain rooted at a local, `:41600-41613`) — with no case composing the two
+(`local.field[index] = v`). The one composed shape it does admit is the mirror of this request and
+not this request: `local[index].f0.f1.… = v`, the leaf-field store into a struct-array or SoA
+**element** (`peel_index_field_chain`, `:41519-41597`), which requires the spine to bottom at an
+`Index` of a local and returns `None` for a pure field path. When
+the `Index` arm's receiver is itself a `FieldAccess` (`s.table`), `self.place_local(recv)` returns
+`None` and the resolver falls straight to `self.diags.error("invalid assignment target", place.span)`
+at `:41381`, regardless of whether `s` is a plain local or a `borrow mut` parameter.
+
+**Distinct from the already-registered Request 36.** Request 36 asks for **whole-field
+replacement** — assigning an entirely new `array<i64>` to an already-initialized field
+(`o.column := new_ids`) — refused only because owned-field replacement is restricted to
+`string`/`Option<string>` leaves. This request is about two different things: **element assignment**
+through an array field (`s.table[i] = v`), and, separately, **loop-scoped borrow invalidation** of a
+plain `array<T>` local. Neither shape reaches Request 36's field-replacement code path at all —
+`s.table[k] = v` never replaces the field's array value or its identity, it writes one element of the
+array the field already holds, and the assignment-target resolver rejects it (`:41381`) before any
+field-replacement rule is ever consulted. Fixing Request 36 would not admit this shape, and fixing
+this request would not need Request 36's owned-field-replacement admission either.
+
+**Consequence for the client.** `src/residency_sim.align`'s `replay` function (`:660-920`) cannot
+factor its eviction-and-insert step into a helper taking the eight per-key tables as
+`borrow mut array<i64>` parameters (gap 1) or as `borrow mut` fields of one bundling record (gap 2).
+The admission block is written out twice inside `replay` instead — once for the `topk` prefetch path
+(`:772-812`) and once for the ordinary demand path (`:856-908`) — recorded as correction 15 in
+`docs/specs/r3-residency-sim.md` section 6 and closed by the `policy-oracle` case, which checks every
+`topk_prefetch` cell against an independent oracle whose own admission is one function. Every other
+helper in the module (`ReplayResult`, `BudgetSweep`, `IrLoad`, `TraceLoad`, `Verdict`) returns owned
+columns inside a record instead of writing through `borrow mut` out-parameters for the same reason
+(`docs/specs/r3-residency-sim.md` section 7.5 item 1).
+
+**Second client, from R5D-MOE-LAYER-FORWARD** (`docs/specs/r5d-moe-layer-forward.md` section 5.5,
+correction C22), and it hits **both** gaps. `layer_olmoe.decide`
+(`src/layer_olmoe.align:1279-1403`) wants a helper taking the per-token id tables as
+`borrow mut array<i64>` and called inside the token loop (gap 1), and wants
+`routing.compact_ids[t][s] = v` through a record field (gap 2). Neither compiles at this pin, so the
+whole routing decision — the union pass, the pairwise-distinct check, the ascending remap, and the
+bijection cover — is written inline in one function over `array_builder` locals, and every helper
+around it returns owned columns inside a record. That is the same workaround R3 wrote, reached
+independently on a different data shape. Non-blocking, with all of R5D as independent work.
+
+**Third client, from R5E-MOE-MODEL-PREFILL** (`docs/specs/r5e-moe-model-prefill.md` section 5.5).
+R5E repeats the same two gaps sixteen times rather than once: each layer's routing decision wants a
+helper taking that layer's per-token id tables as `borrow mut array<i64>` inside the token loop, and
+wants `schedule[L].compact_ids[t][s] = v` through a record field. Neither compiles at this pin, so
+every per-layer decision is written inline over `array_builder` locals and every helper around it
+returns owned columns. Non-blocking, with all of R5E as independent work.
+columns inside a record instead of writing through `borrow mut` out-parameters for the same reason
+(`docs/specs/r3-residency-sim.md` section 7.5 item 1).
+
+### Requested capability
+
+Two independent, narrower asks:
+
+1. Either narrow `indexed_backing_type`'s conservative whole-backing-replacement treatment so a
+   `borrow mut array<T>` call that never actually reassigns/reallocates the array does not end the
+   local's generation on every call, or scope generation-ending to the call's own continuation rather
+   than the state merged across a `loop`'s back edge — on the same footing `buffer`'s reflow-gated
+   invalidation already gets.
+2. Admit `local.field[index] = v` as an assignment target when `field` is an `array<T>` (or
+   `slice<T>`) field of a record reachable through `local` (directly or through a `borrow mut`
+   parameter), for the same Copy-scalar element set `local[index] = v` already admits.
+
+### Acceptance criteria
+
+1. A compiler test declares `fn touch(borrow mut a: array<i64>, k: i64)` mutating one element, and a
+   caller that calls it repeatedly inside a `loop`, then reads the array after the loop: the program
+   checks and builds, and the post-loop read observes every mutation.
+2. A compiler test declares a record with an `array<i64>` field and a function taking it `borrow mut`
+   that assigns one element through the field (`s.table[k] = v`): the program checks and builds, and
+   a caller observes the write.
+3. A negative control in the same tests: assigning a whole new array to the field (`s.table :=
+   new_ids`) is unaffected by either fix and continues to be governed solely by Request 36.
+4. `align-llm` verification: `src/residency_sim.align`'s `replay` function collapses its two copies of
+   the eviction-and-insert block into one `admit` helper called from both call sites inside the loop;
+   `make residency-sim-smoke` passes with the `policy-oracle` case unchanged in outcome.
+
+---
+
+> **Numbering note, resolved at reconciliation.** These two were drafted on
+> `agent/r5e-moe-model-prefill` as **46** and **47** while `agent/r3-residency-sim` still held 44 and
+> 45 unmerged. R3's pair merged first (PR #135) and then took 45 and 46 when PR #134 claimed 44, so
+> the two below are renumbered to **47** and **48**. Nothing outside this register cited either
+> number.
+
+## Request 47 — A `Borrow` argument may be a temporary value
 
 ```text
 Status: PROPOSED
@@ -8875,7 +9450,7 @@ Bind the expression to a named local on the preceding line and pass the local. T
 
 ---
 
-## Request 47 — Same-call argument aliasing between a `borrow mut` owner and its own scalar field
+## Request 48 — Same-call argument aliasing between a `borrow mut` owner and its own scalar field
 
 ```text
 Status: PROPOSED

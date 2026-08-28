@@ -220,9 +220,10 @@ esac
 # target: Apple clang on arm64 contracts by default, GCC 13 on x86-64 does not. The stub engine's
 # kernels are what `scripts/layer-forward-golden.jsonl` is generated from, so a contraction
 # difference is twelve of forty-eight goldens disagreeing on a host that is otherwise correct.
-# Both C files also carry `#pragma STDC FP_CONTRACT OFF`; the flag is what covers a compiler that
-# does not honour the pragma, and `-DALIGN_GGML_FP_CONTRACT_OFF=1` is what lets the two runners
-# assert that the library they loaded was built this way.
+# Both C files also carry a Clang-guarded `#pragma STDC FP_CONTRACT OFF`; the flag is what covers a
+# compiler that does not honour or implement the pragma (including GCC 14.2), and
+# `-DALIGN_GGML_FP_CONTRACT_OFF=1` is what lets the two runners assert that the library they loaded
+# was built this way.
 "${compiler}" -O2 -ffp-contract=off -DALIGN_GGML_FP_CONTRACT_OFF=1 \
   -fPIC -shared -Wall -Wextra -Werror \
   "${include_flags[@]+"${include_flags[@]}"}" \

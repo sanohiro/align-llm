@@ -2,7 +2,10 @@
 
 Status: design of record for the R5D capability.
 Owner document for the **MoE half** of stage 2 of `docs/specs/roadmap.md` section R5's gate.
-Align pin: `.align-revision` = `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`.
+Align pin: `.align-revision` = `3a34febe912db5096c58c74fede36ff53f223e04`, adopted at
+reconciliation from the merged PR #134. Every number in this document was first taken at
+`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2` and re-taken at the new pin; correction C22 records the
+re-run and the one quantity that moved.
 Predecessors, whose contracts this capability extends rather than duplicates:
 [`r5a-dense-layer-forward.md`](r5a-dense-layer-forward.md) (the node-slot store, the one-op
 wrappers, the transcript oracle and its tolerances, the summary block, the validation ladder),
@@ -143,7 +146,7 @@ what ships is section 3's design, and section 5.2's qualification is the probe m
 | Item | Value |
 | --- | --- |
 | Host | `MacBookAir10,1`, Apple M1, 16 GiB, `darwin/arm64` |
-| Align compiler | the managed pinned release toolchain at `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2` |
+| Align compiler | the managed pinned release toolchain at `3a34febe912db5096c58c74fede36ff53f223e04` (design and first measurement at `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`; correction C22) |
 | llama.cpp | `0.2.0 (build 10566)`, Homebrew |
 | ggml | `0.21.0`, Homebrew, headers in `/opt/homebrew/include`, backends `dlopen`ed from `libexec` |
 | Model | `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, 4,213,512,192 bytes |
@@ -880,7 +883,7 @@ error_detail      string, "" when ok
 verdict           "EXTERNAL" | "COPIED" | "UNAVAILABLE"
 
 pack        format_version, block_align, member_align, block_count, member_count,
-            total_bytes, payload_offset
+            total_bytes, payload_offset, reader_pread_count, reader_bytes_read
 model       arch, n_layer, n_embd, n_head, n_head_kv, head_dim, n_ff_exp, n_vocab,
             n_expert, n_expert_used, context_length, rms_eps_bits, rope_type,
             rope_dim_count, rope_freq_base_bits, attn_scale_bits
@@ -922,7 +925,8 @@ routing_oracle
 oracle      present (bool), verdict, instrument, nodes_expected, nodes_matched,
             elements_compared, max_abs_diff_ten_thousandths, max_sum_diff_millionths,
             tolerance_ten_thousandths, sum_tolerance_millionths,
-            sum_tolerance_relative_ppm, worst_node, worst_element_index
+            sum_tolerance_relative_ppm, worst_node, worst_element_index,
+            transcript_lines, transcript_callback_lines
 timings     pread_ns, claim_pread_ns, decide_ns, build_a_ns, build_b_ns,
             reserve_ns, compute_a_ns, compute_b_ns, reference_compute_ns,
             oracle_ns, elapsed_ns
@@ -961,6 +965,15 @@ them would make the slot-capacity budget unauditable. Section 2.3's probe measur
 nodes, at a phase boundary drawn three rows later than section 3.5's: the probe computed
 `ffn_moe_weights` and the two reshapes in phase A, and the design computes them in phase B, where
 they belong beside the operands they feed.
+
+**Four fields the shipped document carries that this list first omitted** are named here rather
+than left to a reader of the JSON (correction C14). `pack.reader_pread_count` and
+`pack.reader_bytes_read` are `alignpack_read`'s own counters, published for R4's reason: a
+container read that costs more syscalls than it should is visible before any timing is.
+`oracle.transcript_lines` and `oracle.transcript_callback_lines` are the scanner's view of the file
+it was handed — total lines, and how many of them were instrument records — so an oracle that
+matched nothing because it was given the wrong file is distinguishable from one that matched
+nothing because the numbers disagreed. All four are producer-owned counters and none is compared.
 
 `schema_version` is `1` and nominal. A consumer keys on `kind` plus `schema_version`.
 
@@ -1105,7 +1118,7 @@ exists to produce, and section 2.6 is the honest reading of it.
 | Prerequisites | alignpack v1 with claim members (`moe-prereq-discharge.md`); `R1_MODEL_IR` v2 olmoe geometry; ggml 0.21 CPU |
 | Acceptance evidence | Section 5.1 (owner), 5.2 (qualification) |
 | Metrics | Section 5.3 |
-| Minimum tool/platform versions | ggml 0.21.0, llama.cpp build 10566, Align `4b515f8d`; section 5.6 records the version risk |
+| Minimum tool/platform versions | ggml 0.21.0, llama.cpp build 10566, Align `3a34febe`; section 5.6 records the version risk |
 | Milestones not consuming a later slice | Sections 1.3 and 5.4: no loader, no decode, no model, no GPU, no `LAYER` |
 | Runtime-inspection fields | `graph_*.node_count`, `slot_high_water`, `abi.*` — producer-owned counters, no reflection |
 
@@ -1212,7 +1225,11 @@ layers.
 
 ### 5.1 Owner — a fourth block in `scripts/run-layer-forward-smoke`
 
-**R5D adds no Makefile target and changes no aggregate membership.** `layer-forward-smoke` is
+**R5D adds no smoke target and changes no aggregate membership** (corrected — see C15). It does add
+one Makefile target, the opt-in `moe-layer-forward-qualification` of section 5.2, which is in no
+aggregate and in neither `HOSTED_CHECK_TARGETS` nor `CAPABLE_ONLY_CHECK_TARGETS`; a Makefile edit
+is still an executable-contract boundary, so publication selects the installed profile at preflight
+whatever this paragraph says about topology. `layer-forward-smoke` is
 already a member of `HOSTED_CHECK_TARGETS`, and `r5b-model-prefill-forward.md` and
 `r5c-metal-prefill.md` both extended that one script with a new block for exactly this reason. A new
 `moe-layer-forward-smoke` target would change `HOSTED_CHECK_TARGETS`, which
@@ -1222,8 +1239,9 @@ publication in the ordinary lane.
 
 The block follows the existing three: `build_shim("engine")` for the forced-failure loop, then
 `build_shim(None)` to restore, with the `cleanup` trap rebuilding the default shim. Goldens live in
-`scripts/moe-layer-forward-golden.jsonl`, refreshed by
-`ALIGN_LLM_MOE_LAYER_FORWARD_GOLDEN_UPDATE=1`.
+`scripts/moe-layer-forward-golden.jsonl`, refreshed by the runner's **one** golden variable,
+`ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE=1`, which rewrites all four blocks' goldens together
+(correction C16).
 
 **The corpus is a new MoE mode of `scripts/layer_forward_fixture.py`, not of `gguf_fixture.py`.**
 The two generators have different jobs and only one of them writes numbers: `gguf_fixture.py`
@@ -1257,6 +1275,28 @@ section 4.4's `moe-routing-coverage` case.
 
 The block never skips: it is ggml-free, model-free, and network-free, exactly as the three blocks
 before it.
+
+**The runner's wall clock, measured, and what it costs the R5B/R5C target** (correction C17). Paired
+and alternating on the host of section 2.1, three runs each, the fourth block's own commit against
+its parent `3cb8d59`:
+
+| Quantity | Result |
+| --- | --- |
+| `gmake layer-forward-smoke`, three blocks, at `3cb8d59` | **19.41 s** median (19.27–20.54) |
+| the same, with R5D's fourth block | **30.57 s** median (27.37–36.12) |
+| **R5D's own cost** | **+11.2 s, +58%** — 78 documented cases, 8 no-document cases, and twelve shim builds (one `engine`, ten forced flavours, one restore) |
+
+`r5b-model-prefill-forward.md` section 5.5 and `r5c-metal-prefill.md` sections 5.1 and 6 (C11, C19)
+set an acceptance target of **under 15 s** for this runner. **R5D exceeds it and the target is
+retired rather than met, split, or excused**; corrections C18 there and here record the decision, and
+the reason is stated as arithmetic rather than as a preference. The target was set from an 11.0 s
+baseline; this host runs the same three blocks in 19.4 s, so 11.0 + 11.2 = **22.2 s** is outside 15 s
+even against the baseline the target was set from. No split of R5D's block recovers it: the
+alternative to the fourth block is a fifth `HOSTED_CHECK_TARGETS` member, which is the check-topology
+change section 5.1 exists to avoid and which would not reduce the aggregate's own cost by one second.
+
+What replaces it is stated in C18: the runner's budget belongs to `HOSTED_CHECK_TARGETS` as a whole
+and to the fresh worker's cap, not to a per-capability wall clock on one developer's laptop.
 
 ### 5.2 Named qualification — `make moe-layer-forward-qualification`, `scripts/run-moe-layer-forward`
 
@@ -1307,7 +1347,7 @@ Asserted, from the emitted document:
 | `residency.expert_bytes_read` / `expert_bytes_in_layer` | 101,990,400 / 261,095,424 |
 | `residency.expert_bytes_read_ppm` | 390,625 |
 | `residency.planes_read` / `planes_in_layer` | 75 / 192 |
-| `graph_a.node_count` / `graph_b.node_count` | the goldens recorded from the shipped arm at first run; `graph_a.table_rows` / `graph_b.table_rows` are 31 / 24 |
+| `graph_a.node_count` / `graph_b.node_count` | **31 / 24**, asserted (correction C19); `graph_a.table_rows` / `graph_b.table_rows` are 31 / 24 |
 | `graph.slot_capacity` | 128 |
 | `verdict` | `EXTERNAL` |
 | `reference.verdict` | `IDENTICAL`, 28/28 |
@@ -1319,6 +1359,15 @@ Asserted, from the emitted document:
 
 A forced-failure loop over `for force in init compute` against the **real** shim expects
 `R5_GGML_INIT` and `R5_COMPUTE`, as `run-layer-forward`'s does.
+
+**Peak resident set is measured, best effort** (correction C19). The arm runs under
+`/usr/bin/time -l` on BSD/macOS or `/usr/bin/time -v` on GNU, and the runner prints the peak in KiB;
+a host with neither prints one explicit `peak RSS unmeasured` line instead of nothing. It is **not**
+an assertion and not a gate. Section 3.9's window arithmetic is the bound this capability owns and
+it is exact integers; peak RSS additionally holds both readback windows, the reference arm's
+ggml-owned copies, and the allocator's slack, so it bounds the window arithmetic from above and
+does not check it. Recording it is how a later regression in *total* footprint — the thing a loader
+will care about — becomes visible without inventing a threshold nobody has evidence for.
 
 The checked-in transcript excerpt is `eval/fixtures/olmoe-blk0-6tok.txt`, copied to a writable path
 before use because the arm opens it with `fs.open_rw` (Align Request 21).
@@ -1373,26 +1422,73 @@ the probe or exists in R5A's shipped module: the node tables are `array<Node>` o
 the routing decision is integer arithmetic over `array<i64>`, the four windows are `buffer`, and the
 FFI additions are five `extern` declarations in the one file that already has them.
 
-Two existing requests gain R5D as an additional client, with one caveat this document has to record
-honestly: **Requests 44 and 45 are not in this branch's `docs/align-requests.md`.** That register
-ends at Request 43. Both requests exist only on `agent/r3-residency-sim`, which has not merged. R5D
-therefore names them as *anticipated* clients and takes no dependency on them:
+Two existing requests gain R5D as an additional client. When this section was written they were
+**Requests 44 and 45 and were not in this branch's `docs/align-requests.md`**, because both existed
+only on `agent/r3-residency-sim`, which had not merged. That branch has since merged as PR #135, and
+PR #134 took Request 44 first, so the two are now **Requests 45 and 46** on `main` and this branch's
+reconciliation appends R5D to each of their client lists (correction C22). They are named below by
+their original numbers with the current number beside each; R5D takes no dependency on either:
 
-- **Request 44** (compiler soundness: moving a field out of a decoded record double-frees at run
+- **Request 44, now Request 45** (compiler soundness: moving a field out of a decoded record double-frees at run
   time). R5D decodes an `R1_MODEL_IR` document and moves fields out of it in `parse_geometry`,
   which is the same shape as the R3 client. R5D's mitigation is R3's: clone through a `str` view
   rather than move. Non-blocking.
-- **Request 45** (`borrow mut` array locals inside loops, and no element assignment through an array
-  field). R5D's routing decision wants a helper taking the per-token id tables as
+- **Request 45, now Request 46** (`borrow mut` array locals inside loops, and no element assignment
+  through an array field). R5D's routing decision wants a helper taking the per-token id tables as
   `borrow mut array<i64>` and called inside the token loop, and wants `routing.compact_ids[t][s] = v`
-  through a record field. Both are the constructs Request 45 names. R5D's mitigation is R3's: return
+  through a record field. Both are the constructs Request 46 names. R5D's mitigation is R3's: return
   owned columns from helpers and write the loop body inline. Non-blocking.
 
-If `agent/r3-residency-sim` merges before R5D, the two requests' client lists gain
-`src/layer_olmoe.align`'s `parse_geometry` and routing decision respectively, and R5D's mitigations
-become removable in the same verification. If it does not, R5D **does not** re-register them: two
-copies of one request in one register is worse than one request in the wrong branch, and
-`CLAUDE.md`'s lifecycle has no merge step for duplicates.
+`agent/r3-residency-sim` merged before R5D, so the branch took the first of the two paths this
+section named: the two client lists gain `src/layer_olmoe.align`'s `parse_geometry` and its routing
+decision respectively. R5D's mitigations stay in place — removing them needs the Align-side fixes,
+not the merge — and R5D **does not** re-register either request.
+
+**Two more existing requests gain R5D as a client, and both were found by writing the code rather
+than by planning it** (correction C20). Neither is blocking and neither is edited into
+`docs/align-requests.md` from this branch — the register on `main` owns Requests 1–43 and this
+branch changes none of them, so both entries below are **to be appended at reconciliation**, in the
+same pass that resolves Requests 44 and 45 — done in the reconciliation commit, correction C22.
+
+- **Request 37 — per-function check time is superlinear in body length.** R5D is now its largest
+  client. Measured at this pin on the host of section 2.1, warm, with the exact commands:
+
+  | Command | Result |
+  | --- | --- |
+  | `alignc check-per-unit src/moe_layer_forward.align` (4-unit graph) | **17.02 s** |
+  | `alignc check-per-unit src/model_forward.align` (7-unit graph) | **17.21 s** |
+  | `alignc check-per-unit src/layer_olmoe.align` | **0.67 s** |
+  | `alignc check-per-unit src/ggml_ffi.align` / `src/alignpack_read.align` | **0.18 s** / **0.60 s** |
+  | `gmake check`, 30 units | **134 s** |
+
+  The arm's own unit is therefore roughly **15.6 s** of its graph's 17.0 s, against 0.67 s for the
+  1,403-line `src/layer_olmoe.align` beside it — a 23× time ratio for a 3.3× line ratio, which is
+  the superlinearity Request 37 names, measured again on a module written after it was filed. R5B's
+  under-10 s acceptance target for a single arm unit is **exceeded by both** `src/model_forward.align`
+  and `src/moe_layer_forward.align`, and correction C18 retires it with the runner target it was
+  paired with: R5D already applied the remedy the target was supposed to force — the topology tables,
+  the geometry, and the routing decision are a separate module — and the arm unit is still 15.6 s.
+  Splitting the arm again would move the cost, not remove it, which is precisely why this is a
+  language request and not an application task.
+- **Request 42 — `alignc check` as a superset of `alignc build`.** Correction C10 is fresh client
+  evidence: `src/moe_layer_forward.align` checked clean per unit and the executable refused to
+  link, in the region checker, with
+
+  ```text
+  cannot retain a shorter-lived view through this mutable borrow; copy it into the destination
+  region first
+  ```
+
+  for `alignpack_read.member_at(f, x, block, within, c)` called with a **local** block while the
+  same call crosses a `borrow mut Counters`. This is the **third** capability to hit the class and
+  the **second** to hit this exact diagnostic: `r5b-model-prefill-forward.md` section 6 correction
+  C7 records the same sentence for the same function at the same pin, and `r5c-metal-prefill.md`
+  section 6 correction C5 records two other region diagnostics behind the same `check`/`build` gap.
+  R5D's mitigation is C10's: the member scan is its own function, `block_carries_role`, whose block
+  is a parameter. Whether the recurrence is one request or two — the parity gap, and a separate
+  constraint that a Borrow crossing a `borrow mut` must be a parameter of the calling frame rather
+  than a local — is for the register on `main` to decide when it is appended; R5D records the
+  evidence and takes no dependency on either surface.
 
 ### 5.6 Risks
 
@@ -1400,6 +1496,7 @@ copies of one request in one register is worse than one request in the wrong bra
 | --- | --- | --- |
 | **`mul_mat_id` semantics could change across ggml versions.** The whole design rests on a compact `{ne0, ne1, U}` stack with remapped ids being identical to a `{ne0, ne1, n_expert}` stack with global ids | Section 2.3 measured it at ggml 0.21.0 on the CPU: 28 of 28 nodes byte-identical. It is not a documented guarantee | The self-reference oracle runs the same compact stack twice and would not catch this; the **transcript** oracle would, and the qualification runs it. Section 2.3 also establishes that the `split` fallback is exact, so a divergence has a known, already-measured answer rather than a redesign |
 | **Top-k ties.** `ggml_argsort` on a row with equal probabilities has an implementation-defined order, and a different order changes the slot order, which section 2.3 shows is load-bearing to the last bit | Measured, not assumed: over the eighteen router rows of the longest probe prompt, **no row held a duplicate probability**, and the smallest relative gap across the rank-8/rank-9 boundary — the one that decides membership — was **1.35e-2**. Exact ties are improbable here but not impossible, and a degenerate or freshly-initialized router would make them common | R5D and llama.cpp call the **same** `ggml_argsort` on the **same** bytes on the same backend, so a tie is broken identically and the routing oracle still matches. The risk is real only for a **different backend**, which is why section 5.4 defers the Metal arm rather than adding it. The document publishes `routing.expert_ids` so a tie-induced difference is visible as data |
+| **The same ties on the hosted arm, where the two sorts are different programs** (correction C12). The stub engine's `argsort` is not ggml's: ggml 0.21.0's CPU kernel is a `std::sort` over the index array, whose order among equal keys above the introsort insertion threshold is **unspecified**, and `ne0` is 64 on the real model — comfortably above it. The stub is a **stable insertion sort**, agreeing with `scripts/layer_forward_fixture.py`'s independent forward, which is the only order the hosted goldens can be written against | Two different tie orders, and neither corpus can tell them apart today: the real corpus has **0 duplicate probabilities** in its router rows (measured, above), and the synthetic corpus's eight-expert rows are generated from distinct values. The gap is therefore real and currently unobservable, which is exactly the shape of risk that becomes a bug when a model changes | Stated rather than asserted away: the shim comment claims stability for **the stub** and explicitly disclaims it for ggml. The three defenses that catch a wrong routing regardless of its cause — `R5D_EXPERT_ID`'s range and pairwise-distinct checks, the step-25 bijection, and the routing-identity oracle against llama.cpp — are unaffected by tie order, because they compare against the instrument rather than against an assumed order. A tie that the two sorts break differently surfaces as `routing_oracle.verdict: MISMATCH` on the qualification with the exact `(token, slot)`, not as a silent divergence |
 | **The transcript oracle's coverage of `ffn_moe_topk` is structurally truncated.** 36 of 48 ids print at `n_expert_used = 8` | Section 2.2 fact 6. The block's exact integer sum pins the remaining twelve in aggregate, which is strong but not element-wise | Stated as a contract in section 3.6 and published as `routing_oracle.ids_printed_compared` / `ids_total`. The synthetic corpus at `n_expert_used = 3` reaches full coverage (section 5.1), so the *comparison logic* is exercised element-wise even though the real model's is not |
 | **A wrong routing produces finite, plausible, wrong numbers.** Section 2.8's probe bug did exactly this and passed every shape check | The single most dangerous failure mode in this design | Three independent defenses: `R5D_EXPERT_ID`'s range and pairwise-distinct checks, the step-25 bijection check, and the routing oracle. And the design removes the cause: no strided view is ever read back |
 | **One layer, one quantization mix.** Layer 0's `ffn_down_exps` is Q6_K; the Q4_K form is unreachable through this arm | Section 5.4's `LAYER` deferral | Named, with the exact layer list, and cheap to close |
@@ -1535,11 +1632,12 @@ only ever implemented the `b->ne[1] == 1` specialisation. It now implements ggml
 so every R5A and R5B golden is unchanged to the bit.
 
 `mul_mat_id` needs three graph sources, so `align_stub_tensor` gained `src[2]` and **gave up the
-never-used third `lp` slot** to stay exactly 128 bytes. The stub's `align_ggml_graph_context_bytes`
-is `node_capacity * sizeof(that record) + 4096`, so growing the record by one pointer moved
+never-used third `lp` slot** to stay exactly 128 bytes. That trade is why the record's size is
+unchanged, and the size is why nothing else moved: the stub's `align_ggml_graph_context_bytes` is
+`node_capacity * sizeof(that record) + 4096`, so a record grown by one pointer **would have moved**
 `abi.graph_context_bytes` from 20,480 to 21,504 in twenty-one R5A, seventeen R5B, and fourteen R5C
-golden documents — for a change that has nothing to do with any of those arms. All three checked-in
-golden files are byte-identical after this capability.
+golden documents — for a change that has nothing to do with any of those arms. It did not, and all
+three checked-in golden files are byte-identical after this capability.
 
 ### C8 — `ffn_moe_topk` is an oracle row over an input, not over a node
 
@@ -1588,6 +1686,187 @@ Section 3.3's block is implemented verbatim, including the three renamed or adde
 because a reader who wants them apart has `graph_a.activation_bytes` and `graph_b.activation_bytes`
 in the document and the summary block is read positionally.
 
+### C12 — one type per role, not one type per stack, and the stub sort that was neither
+
+Two findings of the comprehensive review, repaired together because they are the same fact about
+this arm's argsort-and-stack path.
+
+**Every plane of a role must declare the role's own `ggml_type`.** Section 3.8 step 18 validates
+"the three claim types", and the implementation read that literally: `stage_claim_types` checked
+`claims.ggml_type[0..3]`, which are `routed[0]`'s three planes. But **both arms build one compact
+stack per role from that first plane's type** — `stage_claim_tensors` and `stage_reference_weights`
+both index `claims.ggml_type` by role — so a later plane declaring a different type is staged as if
+it carried the first's encoding. Nothing downstream notices. `nbytes` agrees, because the arm's
+shape rule is over `nbytes` and F32 at *n* elements and F16 at 2*n* are the same byte count. The
+self-reference oracle agrees, because both arms build from the same first type. The transcript
+oracle agrees, because it compares the *values the arm computed* from the stack the arm built. A
+container that mislabels one plane therefore produced `status: ok`, `verdict: EXTERNAL`, and silently
+wrong arithmetic — reproduced before the repair on `moe-pack-claim-type-mismatch.alignpack`.
+
+What ships is a second walk in `stage_claim_types`, over **every** claim, refusing
+`claims.ggml_type[at] != claims.ggml_type[its role's first plane]` as `R5_TYPE_UNSUPPORTED` with
+detail `expert[<n>]role[<r>]`. Two placement details are load-bearing. It runs **after** the
+operand-table rows, so a genuinely unsupported first plane still names its own role rather than the
+second plane that disagrees with it — placing the gate earlier, in `stage_claims`, shadowed
+`moe-engine-claim-type` and made the operand-table check unreachable, which is a coverage loss
+disguised as a fix. And it runs **before** any ggml object exists, so one check covers the primary
+arm and the reference arm alike rather than being restated in each.
+
+The case is `moe-engine-claim-type-mismatch` (H) — the reviewer's `moe-claim-type-mismatch`, under
+this runner's `moe-engine-` prefix — a container whose `routed[1]` gate plane declares F16 where
+`routed[0]`'s declares F32 at an identical `nbytes`. Golden: `R5_TYPE_UNSUPPORTED`, detail
+`expert[1]role[ffn_gate_exps]`. Section 7.3's `R5_TYPE_UNSUPPORTED` row now names both cases.
+
+**The stub's `argsort` agreed with neither ggml nor its own comment.** The kernel was an exchange
+sort whose comment claimed it was "ggml's own selection sort" and that "equal probabilities keep
+ascending index order". Both halves were wrong. Exchange sort is not stable — on `[3, 1, 3, 1]`
+ascending it emits indices `1, 3, 2, 0`, putting index 2 before index 0 for equal keys — and ggml
+0.21.0's CPU kernel is not a selection sort at all but a `std::sort` over the index array, whose
+order among equal keys above the introsort insertion threshold is unspecified, at an `ne0` of 64 on
+the real model. What ships is a **stable insertion sort**, which is a claim only about the stub: it
+is the order `scripts/layer_forward_fixture.py`'s independent forward produces, and therefore the
+only order the hosted goldens can be written against. The comment now says that and explicitly
+disclaims ggml's. Section 5.6 gains the honest row: two different tie orders, neither corpus able to
+tell them apart today (0 duplicate probabilities measured in the real router rows), and the three
+routing defenses unaffected because all three compare against the instrument rather than an assumed
+order. No golden moved: neither corpus holds an exact tie.
+
+### C13 — the `view_2d` type gate was in one file of two
+
+`scripts/ggml_shim_stub.c`'s `align_ggml_op_view_2d` refuses a non-F32 source and
+`scripts/ggml_shim.c`'s did not, so the two files disagreed about what the boundary accepts — the
+one asymmetry section 4.2's "the shared contract region is byte-identical" assertion cannot catch,
+because the region is the constants and these are the entry points. The gate matters for the same
+reason the extent test does: `ne0` is an element count, `ggml_row_size` is the only place the type
+enters the span arithmetic, and a quantized source would make the extent test a statement about
+block counts while the node table means elements. Both files now refuse anything but F32, which is
+the only type either node table views. No case changes: the node table cannot express a non-F32
+view, and manufacturing one would test the manufactured build.
+
+### C14 — four published fields the schema did not list
+
+`pack.reader_pread_count`, `pack.reader_bytes_read`, `oracle.transcript_lines`, and
+`oracle.transcript_callback_lines` are emitted by the shipped arm and were absent from section 3.7's
+field list. A published field a consumer can read and the schema does not name is an undocumented
+promise, so section 3.7 now names all four and says what each is for. No document changed.
+
+### C15 — R5D does add a Makefile target
+
+Section 5.1 asserted "R5D adds no Makefile target and changes no aggregate membership." The second
+half is true and the first is false: `moe-layer-forward-qualification` is a new target, and a
+Makefile edit is an executable-contract boundary whatever it does to check topology, so publication
+selects the installed profile at preflight rather than the documentation lane. Section 5.1 now says
+"adds no **smoke** target", which is the claim that was actually load-bearing — `HOSTED_CHECK_TARGETS`
+is unchanged and `docs/specs/check-gate-topology.md`'s gate is not tripped — and states the preflight
+consequence rather than leaving it to be discovered at `scripts/pre-pr`.
+
+### C16 — the golden variable is the runner's, not this block's
+
+Section 5.1 named `ALIGN_LLM_MOE_LAYER_FORWARD_GOLDEN_UPDATE=1`. No such variable exists.
+`scripts/run-layer-forward-smoke` has one golden switch for all four blocks,
+`ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE=1`, which is the point of extending the runner rather than
+adding one: a reader who refreshes R5D's goldens refreshes R5A's, R5B's, and R5C's in the same run
+and sees immediately if any of them moved.
+
+### C17 — the runner's cost, measured, and C18's input
+
+Section 5.1 asserted the fourth block's shape and said nothing about its wall clock. It is
+**+11.2 s, +58%** — 30.57 s median against 19.41 s for the same runner at `3cb8d59`, three paired
+runs each. Section 5.1 carries the table. This is the measurement C18 acts on.
+
+### C18 — the 15 s `layer-forward-smoke` target is retired, not met
+
+`r5b-model-prefill-forward.md` section 5.5 and `r5c-metal-prefill.md` sections 5.1, 6 (C11), and 6
+(C19) set two paired acceptance targets: `make layer-forward-smoke` under **15 s**, and
+`check-per-unit` of the arm's own unit under **10 s**. R5D exceeds both — 30.6 s and ≈15.6 s — and
+neither is met by any split available to this capability.
+
+The 15 s figure was set from an 11.0 s baseline in R5B's planning session. On this host the
+unchanged three-block runner is 19.4 s, so even crediting the whole 8.4 s difference to the host,
+11.0 + 11.2 = **22.2 s** is outside 15 s. R5C's C19 already recorded the target being exceeded by
+0.08 s and kept it by attributing the overrun to the host; that arithmetic does not survive a second
+capability, and repeating it would be choosing which number to report. The 10 s check target is in
+the same position: R5D already applied the remedy the target exists to force — the node tables, the
+geometry, and the routing decision live in `src/layer_olmoe.align`, checked in 0.67 s — and the arm
+unit is still 15.6 s, because the cost is Request 37's superlinearity and not a module boundary.
+
+**Both targets are retired**, with restatements recorded in `r5b-model-prefill-forward.md` section 6
+and `r5c-metal-prefill.md` section 6 so the ledgers that set them do not keep asserting them. What
+replaces them is not another number: `layer-forward-smoke` is one member of `HOSTED_CHECK_TARGETS`
+and its budget belongs to that aggregate and to the fresh worker's cap, neither of which is near.
+A per-capability wall clock on one developer's laptop measured the laptop. Section 5.3's discipline
+applies here too — a target that is restated after every measurement instead of acted on is not a
+gate, and saying so is cheaper than a third excuse.
+
+### C19 — two numbers the qualification printed and did not check, and one it never took
+
+**`graph_a.node_count` and `graph_b.node_count` are asserted, not just printed.** Section 5.2's
+table left them as "the goldens recorded from the shipped arm at first run", and section 7.1
+recorded 31 and 24; the runner then printed them beside the table rows and compared neither. A
+published number nothing compares is not a budget, and section 3.7's whole reason for publishing
+both counts is to make the slot-capacity budget auditable. `scripts/run-moe-layer-forward` now
+asserts **31** and **24** against the section 7.1 goldens, beside the two `table_rows` it already
+asserted.
+
+**Peak resident set is measured, best effort.** Section 5.2 asserted section 3.9's window
+arithmetic and measured no process footprint at all.
+`scripts/run-moe-layer-forward` now runs the arm under `/usr/bin/time -l` (BSD/macOS) or
+`-v` (GNU) and prints the peak in KiB, or one explicit `peak RSS unmeasured` line on a host with
+neither. It is best effort and it is not an assertion: the window arithmetic is exact and peak RSS
+additionally carries the readback windows, the reference arm's ggml-owned copies, and allocator
+slack. Section 5.2 records both the measurement and why it is not a threshold.
+
+### C20 — two more requests gain R5D as a client
+
+Section 5.5 named Requests 44 and 45 as anticipated clients and stopped there. Writing the arm
+produced client evidence for two more: **Request 37**, whose per-unit check times are now measured
+on this branch's modules and whose 10 s target C18 retires, and **Request 42**, for which correction
+C10 is the third capability and the second exact repeat of one diagnostic. Both are recorded in
+section 5.5 with their evidence and both are marked **to be appended at reconciliation**: the
+register on `main` owns Requests 1–43, this branch edits none of them, and appending a client list
+here would fork the register the same way re-registering Requests 44 and 45 would.
+
+### C21 — two overclaims in the final pass itself
+
+Section 7 is the record, so its own inaccuracies are corrections like any other.
+
+Section 7.2 said `released_before_owner_scope_end` is "asserted true on every documented case". It
+is not, and it cannot be: the flag is computed by `stage_teardown`, so the 48 cases that stop before
+step 20 creates the first ggml object — the whole pre-ggml ladder plus `moe-stub-unavailable`'s
+`UNAVAILABLE` verdict and `moe-engine-alignment`'s step-19 refusal — report `false` and always did.
+The goldens pin that value; what those cases assert positively is `lifetime.*_created == 0`. The
+7.2 rows now state the split, which is exhaustive over all 78 documented cases.
+
+Section 7.3's `R5_GEOMETRY` row said "31 cases" and the geometry corpus is 32: `moe-geometry-absent`
+reaches `R5_GEOMETRY_UNREADABLE`, and `moe-geometry-not-json` — a readable file that is not JSON,
+which the arm is handed by passing the transcript in the geometry position — reaches `R5_GEOMETRY`
+detail `json`. The case existed and ran; only the count and the row it sat under were wrong. Both
+rows now name it explicitly, because "a file that opens and does not parse" is the one geometry
+fault a reader is most likely to expect under the *unreadable* code.
+
+### C22 — the pin moved under the branch, and the two anticipated requests are now real
+
+R5D was designed, implemented, and reviewed at `.align-revision` `4b515f8d`. Two pull requests
+merged into `main` while it was in review: **PR #134**, which moved the pin to `3a34febe` and took
+Request 44 for itself, and **PR #135** (R3-RESIDENCY-SIM), which merged the two requests R5D's
+section 5.5 could only anticipate — renumbered to **45** and **46** by PR #134's claim on 44.
+Reconciliation therefore does four things and each is recorded rather than silently applied.
+
+1. **The pin is adopted, not asserted to be harmless.** Every owner and the real-model qualification
+   are re-run at `3a34febe` (`HANDOFF.md` records the exact commands and results). **No golden byte
+   changed**: the R5A, R5B, R5C, R5D, and ggml-spike golden documents are byte-identical under the
+   new compiler, so this correction is a record and not a behavioural row. Section 7.1 records the
+   re-run and the single quantity that moved, which is a timing.
+2. **Section 5.5's two anticipated requests are appended for real.** `src/layer_olmoe.align`'s
+   `parse_geometry` joins Request 45's client list and its routing decision joins Request 46's, which
+   is the first of the two paths section 5.5 named. R5D's mitigations stay: what removes them is the
+   Align-side fix, not the merge.
+3. **C20's two more requests are appended in the same pass.** Request 37 gains R5D's per-unit check
+   times and Request 42 gains correction C10's diagnostic, as C20 said they would.
+4. **`.align-revision` is one of the twenty recorded baseline artifacts**, so the pin move invalidates
+   the chain that shipped with R5C exactly as this branch's own `Makefile` change does. The chain is
+   re-recorded on this branch and `HANDOFF.md` names its three commits.
+
 ---
 
 ## 7. The final pass: what was measured, and every closure cell's case
@@ -1605,13 +1884,24 @@ every section 5.2 assertion passing:
 | self-reference oracle | "28 of 28" (the probe's dump set) | **46 of 46** — R5D publishes 46 oracle rows, because it publishes its excluded classes as rows rather than omitting them |
 | routing-identity oracle | `MATCH`, 36 of 48 printed, sum 1,471 | **identical** |
 | transcript oracle | `PASS`, 26 nodes, 2,376 elements, max `\|Δ\|` at the 5.0e-5 print bound | **`PASS`, 26/26, 2,376 elements, max `\|Δ\|` 0 ten-thousandths**, max `\|Δsum\|` 30 millionths against a 1,000-millionth floor |
-| graph sizes | tables 31 and 24; ggml counts recorded at first run | ggml counts **31 and 24**, equal to the tables; slot high water 76 of 128 |
+| graph sizes | tables 31 and 24; ggml counts recorded at first run | ggml counts **31 and 24**, equal to the tables; slot high water 76 of 128. Correction C19 turns these two into runner assertions rather than printed values |
 | microbenchmark B | 9.4 ms (probe: A 3.59 + B 5.77, medians of five un-warmed runs) | **5.64 ms** (A 1.452 + B 4.185, warm means of five). The probe timed a cold graph per arm; the shipped arm's contractual warm-up is what section 3.5 already required, and the number is better rather than worse |
 | claim read | 12.0 ms warm for 25 block `pread`s (section 2.7) | 45.3 ms cold on this run, dense read 5.1 ms; the run is cold because the pack was written seconds earlier |
 | peak resident weight bytes | 113,072,896 against 272,171,008 | 113,072,896 against **272,177,920**. Section 3.9's whole-layer figure omits the 6,912 row-gathered embedding bytes the arm actually holds; the ratio is unchanged to four figures |
+| peak resident set of the whole process | not measured by the plan (correction C19) | **500,416 KiB** and **500,624 KiB** over two runs, `/usr/bin/time -l`. Roughly 4.4× the 113 MB of weights: the two readback windows, the reference arm's ggml-owned copy of every weight, `gallocr`'s 0.9 + 1.8 MB of activations, and allocator slack. Reported, not asserted — the exact bound is the row above |
 
 The measurement that matters is unchanged and exact: **the routed layer reads 101,990,400 of
 261,095,424 expert bytes, and every node of it agrees with llama.cpp.**
+
+**Re-run at the adopted pin `3a34febe`** (correction C22), same host, same model, same instrument:
+every structural quantity in the table above is **identical** — the routed union and each per-token
+slot row, 101,990,400 / 261,095,424 at 390,625 ppm, 75 of 192 planes over 25 block `pread`s, the
+46-of-46 self-reference oracle, `MATCH` with sum 1,471, `PASS` at 26 of 26 nodes and 2,376 elements
+with max `|Δ|` 0 ten-thousandths and max `|Δsum|` 30 millionths, graph nodes 31 + 24, slot high water
+76 of 128, and peak resident weight bytes 113,072,896 against 272,177,920. The one quantity that
+moved is the timing: microbenchmark B is **4.761 ms** (A 1.260 + B 3.592, warm means of five) against
+the 5.64 ms above, a 16% difference that is inside section 5.3's own ±16% run-to-run spread and is a
+diagnostic rather than a claim.
 
 ### 7.2 Closure cells to cases
 
@@ -1623,12 +1913,12 @@ The measurement that matters is unchanged and exact: **the routed layer reads 10
 | 4.1 construction, success | `moe-engine-ok` (H); every `model.*` field asserted (Q) |
 | 4.1 failure, malformed input | 16 `moe-geometry-missing-*` and 15 `moe-geometry-*` cases (H), one per consumed field and one per precondition of steps 5–8, including `expert-zero`, `expert-used-high`, and C1's `expert-used-huge` |
 | 4.1 early exit | every geometry case runs under the **default stub** and asserts `lifetime.*_created == 0`: a geometry fault emits no ggml call (H) |
-| 4.1 cleanup | `lifetime` balance asserted on every documented case (H) and (Q) |
+| 4.1 cleanup | `lifetime` balance asserted on every **engine** case (H) and (Q); see the 4.3 cleanup row for what the pre-ggml cases assert instead |
 | 4.1 routing decision | `moe-engine-ok` asserts `routing.expert_ids`, `routed`, `routed_count`, and `compact_ids` against the generator's **independent** forward, and re-derives the bijection (H); `moe-force-routing-id-range` and `-repeat` reach `R5D_EXPERT_ID` with the exact `(token, slot)` detail (H); `remap` withdrawn per C5 |
 | 4.1 slot order | `ffn_moe_out`'s `sha256`, `bit_sum`, and `f32_sum_millionths` are in the golden for every successful case, and the transcript oracle compares it element-wise against a reference that sums the slots in ascending order (H) and against llama.cpp (Q) |
 | 4.2 construction, success | `moe-engine-ok` exercises all five new symbols and the widened one (H) and (Q) |
 | 4.2 failure | `moe-force-argsort-order` → `R5_GGML_INIT`; `moe-force-view-extent` → `R5_SHAPE`; `moe-force-slot-empty` and `moe-force-slot-range` → `R5_SLOT` (H) |
-| 4.2 malformed input | `moe-engine-claim-type` reaches `R5_TYPE_UNSUPPORTED` through a claim declaring a type the operand table does not carry (H); the two remaining cells closed by construction per C6 |
+| 4.2 malformed input | `moe-engine-claim-type` reaches `R5_TYPE_UNSUPPORTED` through a claim declaring a type the operand table does not carry, and C12's `moe-engine-claim-type-mismatch` reaches it through a later routed plane declaring a **supported** type that is not its role's first (H); the two remaining cells closed by construction per C6 |
 | 4.2 early exit | the widened `soft_max_ext` takes the null-mask path in every successful run, and `ffn_moe_probs` is compared element-wise by oracle 3 and byte-identically by oracle 1 (H) and (Q) |
 | 4.2 cleanup, shared contract, sole `unsafe`/`extern` | the runner's existing `malloc` grep, byte-identity assertion, and two `src/` scans, all four unchanged and all four passing with the new symbols in place (H) |
 | 4.3 construction | `moe-arity-four`, `moe-arity-nine`, five `moe-path-*`, `moe-arm-unknown-flag` — eight cases that produce **no document and a non-zero exit** (H) |
@@ -1636,7 +1926,7 @@ The measurement that matters is unchanged and exact: **the routed layer reads 10
 | 4.3 failure | section 4.5's map below |
 | 4.3 malformed input | `moe-tokens-empty`, `-trailing`, `-space`, `-seven`, `-vocab` (H) |
 | 4.3 early exit | the eight no-document cases write nothing; `moe-stub-unavailable` creates no ggml state (H) |
-| 4.3 cleanup | `released_before_owner_scope_end` asserted true on every documented case (H) and (Q) |
+| 4.3 cleanup | `released_before_owner_scope_end` asserted **true on every successful case** — the 30 that reach the teardown (H) and (Q). It is `false` on the 48 that stop before step 20 creates the first ggml object, `moe-stub-unavailable` and the `UNAVAILABLE` path included, because the flag is the teardown's own arithmetic and those runs have no teardown to reach. Those cases assert the 4.1 early-exit row instead — `lifetime.*_created == 0` under the default stub — which is the stronger statement for a path that created nothing, and the golden pins the flag's value for all 78 either way. The pair is exhaustive; neither half was ever "every documented case", and correction C21 records that the original wording said so |
 | 4.3 two-phase carry | `graph.carried_bytes` asserted equal to the five carried tensors' bytes (H) and (Q) |
 | 4.3 document forms | the `-`, bare, and file forms compared byte-for-byte after timing normalisation; three consecutive runs byte-identical (H) |
 | 4.4 self-reference success | `moe-engine-reference`, 36 of 36 (H); 46 of 46 (Q) |
@@ -1663,13 +1953,13 @@ The measurement that matters is unchanged and exact: **the routed layer reads 10
 | `R5D_CLAIM_BUDGET` | **withdrawn**, C5 | — |
 | `R5D_CLAIM_MISSING` | `moe-expert-block-missing` (step 12, default stub), `moe-engine-expert-role`, `moe-engine-slice-index` | H |
 | `R5_TOKENS` | five `moe-tokens-*` | H |
-| `R5_GEOMETRY_UNREADABLE` | `moe-geometry-absent` | H |
-| `R5_GEOMETRY` | 31 cases | H |
+| `R5_GEOMETRY_UNREADABLE` | `moe-geometry-absent`. `moe-geometry-not-json` is its neighbour and **not** this code: the file opens and reads, so it reaches `R5_GEOMETRY` detail `json` at step 5 (correction C21) | H |
+| `R5_GEOMETRY` | 32 cases: `moe-geometry-not-json`, 16 `moe-geometry-missing-*`, and 15 `moe-geometry-*` | H |
 | `R5_BLOCK_MISSING` / `R5_BLOCK_AMBIGUOUS` | `moe-block-missing`, `moe-block-ambiguous` | H |
 | `R5_MEMBER_MISSING` | `moe-member-missing` (`attn_q_norm`) | H |
 | `R5_SHAPE` | `moe-shape`, `moe-force-view-extent` | H |
 | `R5_GGML_UNAVAILABLE` | `moe-stub-unavailable` | H |
-| `R5_TYPE_UNSUPPORTED` | `moe-engine-claim-type` | H |
+| `R5_TYPE_UNSUPPORTED` | `moe-engine-claim-type` (a type the operand table does not carry), `moe-engine-claim-type-mismatch` (C12: a supported type that is not its role's first, detail `expert[1]role[ffn_gate_exps]`) | H |
 | `R5_ALIGNMENT` | `moe-engine-alignment` | H |
 | `R5_GGML_INIT` | `moe-force-init`, `moe-force-argsort-order` | H, Q |
 | `R5_SLOT` | `moe-force-slot-range`, `moe-force-slot-empty` | H |

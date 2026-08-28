@@ -61,13 +61,20 @@ The current forward delivery order is:
    qualifications; neither joins an aggregate. It is listed after the consumer because the consumer
    defines the exact targets a profile must gate, and because the profiles gate *evidence*, not
    implementation.
-8. **C8 — speed-first optimization. Closed.** Nine consumer-complete capabilities each preserved
+8. **C8 — speed-first optimization. Reopened for one bounded tenth capability.** Nine
+   consumer-complete capabilities each preserved
    their correctness contract, named one changed path, and closed a paired fixed-task benchmark
    before claiming an improvement. The section C8 gate is met and `docs/specs/c8-speed-first.md` is
    authoritative for every baseline and measurement. Its retrospective promoted one reusable rule —
    the ppm-floor rule with a 2,000 ppm shipping floor — into section 1 of that document and one
-   clause into the `CLAUDE.md` performance-claim row. A deferred C8 surface reopens only with a
-   recorded cost ceiling above the floor or as a genuine Align capability request.
+   clause into the `CLAUDE.md` performance-claim row. `C8-OPTIONAL-TARGETED-STAGE` is the one
+   explicitly prioritized re-entry: its fresh current-parent targeted process is 14,311,285 ns of a
+   43,886,999 ns parent median (326,093 ppm), and its Align prerequisite shipped in PR #892. Its authoritative
+   contract and stop conditions are in `docs/specs/c8-optional-targeted-stage.md`. Its stable
+   candidate passes the schema/owner matrix and improves the 101-pair fixed-task median from
+   60,515,456 ns to 40,475,113 ns (331,160 ppm, 33.12%); review is complete and PR #134 is in final
+   base-integration/publication. Track B resumes after this bounded capability merges. Every other deferred surface retains the normal floor or
+   genuine-request re-entry rule.
 9. **R0-GGUF-INSPECT — read-only GGUF header, metadata, and tensor-table inspection. Gate met,
    closed.** The first Track B capability. It delivers one consumer-complete path: a caller names a
    `.gguf` path and receives one canonical `R0_GGUF_INSPECTION` document describing what the file
@@ -249,10 +256,9 @@ The current forward delivery order is:
     limits, and the R2b/R2c work that remains.
 
 20. **MOE-PREREQ-DISCHARGE — the per-expert half of R4 and R4.5, measured on a real MoE model.
-    Merged as PR #133, merge commit `35a0df6` on `main`.** Was on branch
-    `agent/moe-prereq-discharge`, rebased onto the merged R1C at `main` `e15e3d3`; design ledger
-    `4656d88`, implementation `eed850e`, review repair `4bf25b8`, developer-guide refresh `0dd4ea8`.
-    [`moe-prereq-discharge.md`](moe-prereq-discharge.md) is the authoritative plan
+    Merged as PR #133 at `35a0df6`.** The branch was rebased onto the merged R1C at `main`
+    `e15e3d3`; design ledger `4656d88`, implementation `eed850e`, review
+    repair `4bf25b8`, developer-guide refresh `0dd4ea8`. [`moe-prereq-discharge.md`](moe-prereq-discharge.md) is the authoritative plan
     and owns the probe record, the contract ledger, the closure matrix, the correction ledger, and
     the cell-to-case map. It discharges the two prerequisites items 13 and 14 left open, on
     `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` rather than on the synthetic corpus, by turning two
@@ -268,44 +274,130 @@ The current forward delivery order is:
     `ExpertBlock` with no new surface is refuted and removed. R4's expert hotness ordering and
     prefetch groups, and R4.5's GPU expert arm and discrete-VRAM half, stay deferred and unchanged.
     The layout numbers are a claim about this container on this named model, not a platform or
-    throughput claim.
-21. **R3-RESIDENCY-SIM — the R3 residency simulator over the packed `ExpertBlock` set. Publication
-    in progress.** On branch `agent/r3-residency-sim`; design ledger `docs/specs/r3-residency-sim.md`
-    committed at `198850b`. Final review approved with nits repaired at `967aadf`. **The R3 gate is
-    MET**: `BEATS_BASELINE` at a 25% cache fraction — `recent_reuse_w32` reaches 26.03 GB against
-    LRU's 33.53 GB, a gain of 223‰, with a jackknife minimum of 213‰. Awaiting rebase onto the merged
-    item 20 and publication; see `HANDOFF.md`.
-22. **R5D-MOE-LAYER-FORWARD — one OLMoE MoE layer computed from Align-owned expert claims, the
-    routed half of R5's second gate stage. Active.** On branch `agent/r5d-moe-layer-forward`; design
-    ledger `docs/specs/r5d-moe-layer-forward.md` committed at `3cb8d59`. Implementation is in
-    progress. The ledger's probe record fixes the OLMoE MoE layer's real topology as data — the
+    throughput claim. Review, publication, and merge are complete; see `HANDOFF.md`.
+
+21. **R3-RESIDENCY-SIM — the R3 cache-simulator gate, measured on the real MoE activation corpus.
+    Merged in PR #135.** The merged capability is based on the
+    merged MoE prerequisites and C8's optional targeted stage at `main` `4f01553`. [`r3-residency-sim.md`](r3-residency-sim.md) is the
+    authoritative plan and owns the contract ledger, the closure matrix, the correction ledger, the
+    probe record, and the cell-to-case map; the design gate triggered on three counts (a new public
+    CLI verb `--simulate-residency`, a new exchanged format `R3_RESIDENCY_SIM` `schema_version: 1`,
+    and a coordinated invariant across three modules plus the `Makefile`). It replays a demand stream
+    derived from real `R2_ACTIVATION_TRACE` documents against ten residency policies over four
+    families — `lru`, `lfu`, three fixed-window `recent_reuse`, two `topk_prefetch` degrees, and the
+    `null` / `compulsory` / `belady` references — at a nine-point budget sweep, with a
+    leave-one-document-out jackknife over the corpus and a headroom measure against the miss-optimal
+    offline reference. **The R3 gate is met**: at the requested 975,175,680 B budget (250 per mille
+    of the 3,900,702,720 B expert footprint), `recent_reuse_w32` fetches 26,033,848,320 B against the
+    `lru` baseline's 33,532,231,680 B — 223 per mille fewer, against a 50-per-mille materiality
+    floor — with a 40-fold jackknife minimum gain of 213 per mille and 574 per mille of headroom
+    still left to the offline optimum, verdict `BEATS_BASELINE`. Across the sweep the verdict is
+    `BEATS_BASELINE` at 1/3/6/12/25 per cent, `NO_POLICY_BEATS_BASELINE` at 0 and 50 per cent, and
+    `NO_HEADROOM` at 100 per cent. Roadmap section R3's remaining three policies — score-based,
+    impact-driven prefetch, and CPU fallback — are deferred with named prerequisites rather than
+    simulated against invented constants (router scores need an R2A `schema_version: 2` weight
+    column; a miss penalty needs R4.5's and R5's measured transfer costs; CPU fallback needs R5's
+    microbenchmark). The result is a policy claim about this named model and this corpus, not a
+    platform or throughput claim, and it carries the caveats the section R3 entry below records.
+    Review, publication, and merge are complete; a follow-up by a parallel session, PR #138 at
+    `1b11245`, moved the qualification wrapper's Model IR and budget validation ahead of the
+    instrument runs. See `HANDOFF.md`.
+23. **R5D-MOE-LAYER-FORWARD — one OLMoE MoE layer computed from Align-owned expert claims, the
+    routed half of R5's second gate stage. Merged as PR #139, merge commit `e312bd7` on `main`.**
+    Was on branch
+    `agent/r5d-moe-layer-forward`, rebased onto the merged R3 residency simulator at `main`
+    `95c47e7` and then merged with `main` `1b11245` (PR #138's follow-up) rather than rebased over
+    it, so the recorded baseline-chain commits stay reachable; design ledger `a85e1fc`,
+    implementation `7886cee`, review repair `a2e2748`.
+    [`r5d-moe-layer-forward.md`](r5d-moe-layer-forward.md) is the authoritative plan and owns the
+    probe record, the contract ledger, the closure matrix, the correction ledger, and the
+    cell-to-case map; the design gate triggered on the new `--moe-layer-forward` CLI arm, its
+    `R5D_*` result codes, and a coordinated invariant across `src/layer_olmoe.align`,
+    `src/moe_layer_forward.align`, `src/ggml_ffi.align`, and both C shims. The ledger's probe record
+    fixes the OLMoE MoE layer's real topology as data — the
     QK-norm is an RMS norm over `n_embd` taken before the head reshape, the router's 64-way softmax
     is never renormalized, the top-k node is `ARGSORT` plus `VIEW` rather than `ggml_top_k`, and a
     compacted, remapped expert stack computed with `mul_mat_id` is bit-identical (28 of 28 dumped
     nodes) to llama.cpp's own whole-tensor shape and needs no restacking copy. Against a checked-in
     `llama-eval-callback` transcript the tolerance oracle reaches max `|Δ|` 5.0e-5 (the instrument's
     own print-rounding bound) over 2,376 sampled elements, and the routing-identity oracle matches
-    the transcript's selected expert ids exactly. Microbenchmark B is discharged at 9.4 ms typical
-    for one routed layer, six tokens, warm (phase A 3.59 ms, phase B 5.77 ms). The residency win this
-    capability exists to measure is smaller than the plan assumed and is stated as such: at six
-    prefill tokens R5D reads 39.1% of the layer's expert bytes (12.5% at one token, 73.4% at
-    eighteen), so claim-level expert residency is recorded as a **decode-time** property rather than
-    a prefill win. No new Align capability request is expected from this capability; see
-    `HANDOFF.md`.
+    the transcript's selected expert ids exactly. **The shipped arm measured on the real model**
+    (ledger section 7.1): the routed layer reads **101,990,400 of 261,095,424** expert bytes,
+    390,625 ppm, 75 of 192 planes over 25 block reads; the self-reference oracle is 46 of 46
+    byte-identical; the routing-identity oracle is `MATCH` at the exact printed ids and their sum
+    1,471; the transcript oracle is `PASS`, 26 of 26 nodes, 2,376 elements, max `|Δ|` 0
+    ten-thousandths. Required microbenchmark B is discharged at **5.64 ms** for one routed layer,
+    six tokens, warm (phase A 1.452 ms, phase B 4.185 ms; the probe's 9.4 ms timed a cold graph per
+    arm). The residency win this capability exists to measure is smaller than the plan assumed and is
+    stated as such: at six prefill tokens R5D reads 39.1% of the layer's expert bytes (12.5% at one
+    token, 73.4% at eighteen), so claim-level expert residency is recorded as a **decode-time**
+    property rather than a prefill win. The result is a correctness and layout claim about this named
+    model, not a throughput claim. No new Align capability request was needed; four existing requests
+    (37, 42, 45, 46) gain R5D as a non-blocking client. See `HANDOFF.md`.
+24. **R5E-MOE-MODEL-PREFILL — a whole sixteen-layer OLMoE prefill computed from Align-owned expert
+    claims, completing R5's second gate stage. Implemented and reviewed; in publication.** On branch
+    `agent/r5e-moe-model-prefill`, merged with the merged R5D at `main` `e312bd7` rather than rebased
+    over it, so the recorded baseline-chain commits stay reachable; design ledger `5e3356d`,
+    implementation `053de09`, review repair `e7f727f`.
+    [`r5e-moe-model-prefill.md`](r5e-moe-model-prefill.md) is the authoritative plan and owns the
+    probe record, the contract ledger, the closure matrix, the correction ledger, and the
+    cell-to-case map; the design gate triggered on the new `--moe-model-forward` CLI arm, its
+    `R5E_*` result codes, and a coordinated invariant across `src/layer_olmoe.align`,
+    `src/moe_model_forward.align`, and the two window budgets. The arm streams all sixteen routed
+    layers and the output head with per-layer routing, reads only the selected experts' planes into
+    **one** Align-owned claim window reserved at the arithmetic union bound and reused across layers,
+    narrows inside layer fifteen where the instrument does, and emits the per-layer union curve.
+    **Measured on the real model**: the final logits are **byte-identical** to
+    `llama-debug --save-logits` (sha256 `a56195da…`, `IDENTICAL`); the self-reference oracle is
+    **227 of 227** nodes byte-identical; the transcript oracle is `PASS` over **227 nodes and 21,372
+    elements**; the routing-identity oracle is `MATCH` at **546 of 546** compared selections across
+    all sixteen layers. A six-token prefill reads **1,301,446,656 of 3,900,702,720** expert bytes —
+    **333,644 ppm**, 33.36% — so two thirds of this model's expert weights are never touched by a
+    prefill; peak resident weight bytes are 280,342,528, 6.65% of a 4.21 GB model. Microbenchmark B
+    is **121.3 ms** median of five for the whole routed prefill (per-layer phase A 3.1 ms, phase B
+    4.4 ms, head 2.2 ms), against **~227 ms warm of claim `pread`** — so a six-token routed prefill
+    of this model on this CPU is **I/O bound even with the file in page cache**, which is the number
+    a residency policy has to beat. Any residency **policy** and any cache-hit claim stay deferred:
+    within one prefill there are 343 demands and 343 distinct keys, so no cache can hit. Two new
+    Align capability requests, **47** (a `Borrow` argument must be a stable named local or field) and
+    **48** (same-call aliasing between a `borrow mut` owner and its own `Copy` scalar field), are
+    filed `PROPOSED` and non-blocking. See `HANDOFF.md`.
+
+22. **R2C-DECODE-INSTRUMENT — a pinned, source-built decode-graph measurement dependency. Merged
+    as PR #140, merge commit `89d8721` on `main`, by a parallel session.** [`r2c-decode-instrument.md`](r2c-decode-instrument.md)
+    is the authoritative ledger and closure matrix. It pins llama.cpp commit
+    `bb4caa7540188872173c44d161602d9271386413` and one two-file patch, builds the patched
+    `llama-eval-callback` into an identity-addressed cache outside Git, and extends the existing
+    schema-1 parser to accept either the upstream three-plus-three router axes or exact full axes.
+    Positive `-n` values now emit bounded one-token decode graphs while omitted/nonpositive `-n`
+    retains one prefill graph; only `ffn_moe_topk` prints every slot and token. Existing R2/R3
+    measurement wrappers now pass explicit `-n 0` and reject full-axis documents, preserving their
+    historical prefill-only, compact six-slot semantics. The deterministic owner, dense
+    qualification, and real OLMoE qualification pass;
+    the latter records three graphs including decode, 48 full-width groups, 384 selections, and a
+    router extent of eight above the old six-value threshold. The first comprehensive review found
+    four valid cache/recipe/qualification defects, all consolidated and owner-tested. Final repair
+    review found three further valid compatibility/safety/parser defects; their consolidated repair,
+    affected owner verification, and real OLMoE requalification pass. Exact-head preflight,
+    publication, and merge remain, after which R6 may consume the instrument in a later work
+    session.
 
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
-`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18 through 22 above:
-items 18, 19, and 20 are merged and R2's gate is met; item 21 (R3, the residency simulator) has its
-gate MET (`BEATS_BASELINE` at 25%) and is awaiting rebase and publication; item 22 (R5D, the routed
-half of R5's second gate stage) is active, with implementation in progress on
-`agent/r5d-moe-layer-forward`. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
-**infeasible on this host** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
+`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18 through 24 above:
+items 18 through 23 are merged, R2's gate is met, R4's and R4.5's per-expert halves are discharged,
+R3's gate is met on the real corpus, decision (c)'s pinned decode instrument is shipped, and R5D
+computes one routed OLMoE layer over Align-owned expert claims, agreeing with llama.cpp node for
+node. It also unblocked item 24, R5E-MOE-MODEL-PREFILL, which is implemented, reviewed, and in
+publication: a whole sixteen-layer routed prefill over one reused Align-owned claim window, logits
+byte-identical to `llama-debug`, and 33.36% of the model's expert bytes read at six tokens.
+**R5's second gate stage is therefore complete on the real MoE model.** Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+**infeasible on the host where that decision was recorded** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
-a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
-through it, R7-R9; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
+a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch is **taken** and
+merged as item 22, unblocking R6 and, through it, R7-R9; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
 required microbenchmark C. See `HANDOFF.md`, "Active capabilities", for the full decision list and
 disk-space accounting.
 
@@ -323,9 +415,9 @@ than by a separate align-coder capability.
 **ALIGN-ADOPTION is an internal prerequisite checkpoint, not a standalone capability.** Within the
 next consumer branch, batch its merged Align requests into one compiler-pin update, run every named
 focused real-client acceptance target, and then run one final fresh `make ci`. Preserve each
-request's lifecycle evidence without opening a pin-only pull request. As of R5C-METAL-PREFILL-ARM's
-merge (2026-08-28), no Align request has merged since R0; `.align-revision` stays pinned to
-`4b515f8d` and there is nothing to batch.
+request's lifecycle evidence without opening a pin-only pull request. C8-OPTIONAL-TARGETED-STAGE
+adopts Request 44's merged Align prerequisite at `3a34febe`; that adoption and its real-client
+verification remain part of the consumer capability rather than a pin-only pull request.
 
 Only design the next eligible capability in implementation detail; later ledger entries may retain
 their accepted contracts but must not generate speculative implementation pull requests. The
@@ -595,17 +687,24 @@ HEAD repositoryは評価経路で`ok`（candidate 0件、あるいはindexが持
 
 baselineと比べて、固定タスクの中央値でtime to passing patchが短縮すること。
 
-**達成済み。C8は9個のcapabilityでcloseした。** 9個すべてが固定タスクのpaired benchmarkで
+**9個のcapabilityで当初gateを達成し、1個のbounded capabilityだけ再開した。** 9個すべてが固定タスクのpaired benchmarkで
 中央値の短縮を測定しており、最後の第9capabilityは10,793 ppm（1.08%）の短縮を記録した。個々の
 baseline・測定値・host・binary digestは
 [`c8-speed-first.md`](c8-speed-first.md)のsection 3〜11がsource of truthである。同じretrospective
 で**ppm-floor rule**（cost ceilingを実装前にledgerへ記録し、shipping floorである2,000 ppmを
 下回るseamは実装せずdeferred surfacesに記録する）をsection 1へ昇格させた。残るdeferred surface
 は、floorを超えるcost ceilingを持つか、genuineなAlign capability requestになった場合にのみ
-新しいcapabilityとして再開する。R0のgateは達成済みでcloseした。R1（Qwen2 Model IR）のgateも
+新しいcapabilityとして再開する。`C8-OPTIONAL-TARGETED-STAGE`はtargeted processが
+43,886,999 ns中14,311,285 ns（326,093 ppm）であり、必要なAlign修正もPR #892でshipしたため、
+2026-08-28に明示的に再開した唯一の例外である。権威あるcontractと停止条件は
+[`c8-optional-targeted-stage.md`](c8-optional-targeted-stage.md)にある。stable candidateはschema/owner
+matrixをpassし、101-pairの固定タスク中央値を60,515,456 nsから40,475,113 nsへ短縮した
+（331,160 ppm、33.12%）。reviewは完了し、PR #134のbase integrationとpublicationが残る。このbounded capabilityの
+merge後にTrack Bへ戻る。R0のgateは達成済みでcloseした。R1（Qwen2 Model IR）のgateも
 達成済みでcloseし、R1B（gpt-oss/MoEフロントエンド）もPR #123としてmergeされ、R1のgateはgpt-oss側を
 含めてcloseした（gpt-oss実モデルによるqualificationのみ、ユーザー判断待ちのopen項目として残る）。
-次の実装対象はTrack BのR2a（expert trace）である。
+現在はR2 locality gate、R1C OLMoE frontend、MoE prerequisite discharge（PR #133）までmerge済みであり、
+このbounded C8 capabilityの次はR3 residency simulationを実装する。
 
 ---
 
@@ -690,15 +789,15 @@ gpt-oss実モデルに対する`model-ir-parity` qualificationのみ、`gpt-oss-
 ダウンロードに関するユーザー判断待ちのopen項目として残る（決定(b)は本hostでは容量不足のため
 **infeasible**として記録済み、`HANDOFF.md`参照）。
 
-**R1C-OLMOE-MOE-IR**（[`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md)、branch
-`agent/r1c-olmoe-moe-ir`、design ledger commit `83361a9`）は第三のR1 capabilityであり、実MoEモデル
+**R1C-OLMOE-MOE-IR**（[`r1c-olmoe-moe-ir.md`](r1c-olmoe-moe-ir.md)、PR #132、merge
+`e15e3d3`、design ledger commit `83361a9`）は第三のR1 capabilityであり、実MoEモデル
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`に対する`src/frontend_olmoe.align`と三方向architecture
 dispatchは`45e4ced`で**実装完了**、review指摘の修正commitがその上に載っている（forward order
 item 18）。owner checkは4本ともPASS：`make check`（30 unit）、`make model-ir-smoke`（qwen 49、
 gpt-oss 31、olmoe 29、R0 62 fixtureの再実行）、`make alignpack-smoke`（positive 27、negative source
 128、assertion 20,280）、および実モデル2本に対する`make model-ir-parity`（olmoe 15行＋type census
 `f32` 81 / `q4_K` 97 / `q6_K` 17、qwen2 14行）。olmoeのparityはR1Bが`N/A`としか記録できなかった
-qualificationであり、実MoEモデルに対する初のPASSである。reviewも完了し、残作業はpublicationのみ。
+qualificationであり、実MoEモデルに対する初のPASSである。review・publication・mergeは完了している。
 この実測は、R1Bのsection 2.5が`ASSUMED`としていた2行を**確認ではなく反証**した：stacked gate/up/down axis orderはR1Bの想定と逆であり、R1Bがrequiredとしていたsplit
 expert bias群は実MoEファイルに一切bias tensorが存在しないことで汎用規則としては反証された。
 どちらも実gpt-ossファイルがない以上gpt-oss frontend自体は変更せず、R1B section 7への訂正として
@@ -726,6 +825,10 @@ R2aのauthoritative planは[`r2a-expert-trace.md`](r2a-expert-trace.md)である
 `llama-eval-callback`のtranscriptを`R2_ACTIVATION_TRACE`（`schema_version: 1`）document
 へ変換し、token・layerごとのexpert idとlocality aggregateを記録する。dense（非MoE）transcript
 は`moe: false`を返す。
+
+R2cのauthoritative planは[`r2c-decode-instrument.md`](r2c-decode-instrument.md)である。Exact
+llama.cpp pinと最小の2-file patch、out-of-tree managed builder、full-axis schema-1 parser
+adoptionを一つのconsumer-complete capabilityとして実装する。
 
 ### 測定
 
@@ -769,13 +872,14 @@ trialは1 prompt内で相関するため（1 promptが全層・全token位置を
 したがって「局所性が弱ければrepo expert profileへの投資を縮小する」は**発動しない**。R3の
 residency simulationは実測されたdemand signalを前提にしてよい。
 
-ただし**prefillのみ**である。build 10566は1 invocationにつき1 graphしか評価しないため
+ただし**この測定結果はprefillのみ**である。当時の未patch build 10566は1 invocationにつき1 graphしか評価しないため
 decodeの測定は存在せず（`phase_split.decode` は `null`）、decode時reuseやcache policyについては
 何も主張しない。また1 promptあたり6 token位置まで、reuseは印字された3+3スロットのみの観測である。
 このうち厳密に言えるのは**t側**の制限だけで、これはhitのみを取り除くのでp^を**低く**偏らせる。
 t+1側の制限は分子と分母を同時に動かすため方向は確定できず、真のtop-8 reuseが286 per milleより
 上か下かはここでは主張しない。最終層はinstrumentがoutput-token reductionを先に適用するため寄与しない
-（section 6 correction 20）。R2bのcorpus横断層別（language別/task別/repo別偏り）とR2cのdecode測定は
+（section 6 correction 20）。R2cの測定器はitem 22で実装中だが、この過去の数値を書き換えない。
+R2bのcorpus横断層別（language別/task別/repo別偏り）とR2c instrumentを使うdecode locality測定は
 未達のまま残る。
 
 ---
@@ -801,6 +905,29 @@ align-sim
 ### Gate
 
 対象ハードウェア条件で、baselineより有効なpolicyを特定できること。
+
+このgateはR3-RESIDENCY-SIM（roadmap item 21、[`r3-residency-sim.md`](r3-residency-sim.md)）が所有
+する。実装・contract ledger・closure matrix・fixture設計・correction ledger・probe recordはすべて
+同ledgerにある。実MoE model `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`と実corpus
+`eval/prompts/expert-locality-v1.txt`（40 prompt、md5 `d7fff23f5a1d4f6237e6f848f3318d8b`）から
+`R2_ACTIVATION_TRACE`を40件導出し、938 distinct key / 17,280 demandのstreamを10 policyで
+replayした結果、**gateは達成**である: 要求budget 975,175,680 B（expert footprint
+3,900,702,720 Bの250‰）で`recent_reuse_w32`が26,033,848,320 Bをfetchし、baselineの`lru`の
+33,532,231,680 Bに対して223‰少ない（materiality floorは50‰）。40-fold
+leave-one-document-out jackknifeの最小gainは213‰でstable、offline optimumまでのheadroomは574‰、
+verdictは`BEATS_BASELINE`。9点sweepでは1/3/6/12/25 %が`BEATS_BASELINE`、0 %と50 %が
+`NO_POLICY_BEATS_BASELINE`、100 %が`NO_HEADROOM`である。上のpolicy一覧のうち実装したのは
+LRU・LFU・recent reuse・top-k prefetchの4系統で、score-based・impact-driven prefetch・CPU
+fallbackはledger section 5.1のとおりprerequisite付きでdeferしている（router scoreはR2Aの
+`schema_version: 2` weight column、miss penaltyはR4.5/R5の実測transfer cost、CPU fallbackはR5の
+microbenchmarkが前提）。
+
+**この結果が主張する範囲**（ledger section 4.5末尾および5.2-5.3）: prefill graphのみをdecode順で
+replayしたものであり、decodeを観測したものではない。instrumentが印字するrouter slotは8中6、
+prompt長は最大6 tokenで192 token positionしかなく、cache pressureの大半はprompt間のreuseに
+由来する。比較指標はfetch byte数のみで、時間・帯域・throughputの主張は一切含まない。したがって
+読み方は「短いrequestが多数並ぶsessionにおいて、frequency-awareなresidencyはrecencyに勝つ」で
+あり、「1回の生成の内部でexpert reuseが高い」ではない。後者にはR2cのdecode traceが必要である。
 
 ---
 
@@ -950,18 +1077,44 @@ closureが所有値（`buffer`）をcaptureできず、captureしたタスクが
 section 5.4、`r5a-dense-layer-forward.md` section 5.4、`r5b-model-prefill-forward.md`
 section 5.4、`r5c-metal-prefill.md` section 1.3）。
 
-**単一layerのrouted版（MoE stage 2）はR5D-MOE-LAYER-FORWARD（roadmap item 22、
+**単一layerのrouted版（MoE stage 2）はR5D-MOE-LAYER-FORWARD（roadmap item 23、
 `docs/specs/r5d-moe-layer-forward.md`）が対象とする。** branch `agent/r5d-moe-layer-forward`、
-design ledger `3cb8d59`、実装は進行中。probeはplanの前提を複数覆した——QK-normは`head_dim`単位
+merged R3の上へrebase済み（`main` `95c47e7`）、design ledger `a85e1fc`、実装 `7886cee`、
+review repair `a2e2748`。PR #139（merge commit `e312bd7`）としてmerge済みである。
+probeはplanの前提を複数覆した——QK-normは`head_dim`単位
 ではなく`n_embd`全体へのRMS normであり、routerのtop-8はrenormalizeされず、top-k nodeは
 `ggml_top_k`ではなく`ARGSORT`＋`VIEW`である。compactしid remapしたexpert stackは`mul_mat_id`で
 llama.cppのwhole-tensor形状とbit一致（28/28 node dump一致）し、restacking copyは不要と判明した。
 transcript oracleはmax`|Δ|` 5.0e-5（instrumentの印字精度上限）、routing-identity oracleは
-selected expert idが完全一致。microbenchmark Bは**9.4 ms**（1 routed layer、6 token、warm；
-phase A 3.59 ms、phase B 5.77 ms）で達成。**このcapabilityが測定するresidency winは
+selected expert idが完全一致。**実装済みarmの実model計測**（ledger section 7.1）では
+routed layerがexpert byteの**101,990,400 / 261,095,424**（390,625 ppm、75/192 plane、25 block read）
+を読み、self-reference oracleは46/46 node byte一致、routing-identity oracleは`MATCH`（printed id
+完全一致、sum 1,471）、transcript oracleは`PASS`（26/26 node、2,376要素、max`|Δ|` 0
+ten-thousandths）。microbenchmark Bは**5.64 ms**（1 routed layer、6 token、warm；
+phase A 1.452 ms、phase B 4.185 ms。design段階のprobeの9.4 msはarmごとにcold graphを計測したもの）
+で達成。**このcapabilityが測定するresidency winは
 planが想定したより小さい**——6 tokenのprefillでlayerのexpert byteの39.1%を読む
 （1 tokenでは12.5%、18 tokenでは73.4%）ため、claim単位のexpert residencyは
 **decode-time property**として記録され、prefillの勝ちとしては主張されない。
+
+**whole modelのrouted版（MoE stage 2の完成形）はR5E-MOE-MODEL-PREFILL（roadmap item 24、
+`docs/specs/r5e-moe-model-prefill.md`）が対象とする。** branch `agent/r5e-moe-model-prefill`、
+merged R5D（`main` `e312bd7`）とmergeし、design ledger `5e3356d`、実装 `053de09`、
+review repair `e7f727f`。実装・review・実modelでのqualificationは完了し、publication中である。
+armは16 layerすべてをper-layer routingで流し、選択されたexpertのplaneのみを
+**単一の**Align所有claim window（arithmetic union boundで確保し、layer間で再利用）へ読み込み、
+layer 15内部でinstrumentと同じ位置でnarrowingし、output headまで計算する。**実model計測**では
+最終logitsが`llama-debug --save-logits`と**byte一致**（sha256 `a56195da…`、`IDENTICAL`）、
+self-reference oracleは**227/227** node byte一致、transcript oracleは**227 node・21,372要素**で
+`PASS`、routing-identity oracleは全16 layerで**546/546** `MATCH`。6 tokenのprefillは
+expert byteの**1,301,446,656 / 3,900,702,720＝333,644 ppm（33.36%）**しか読まない——すなわち
+この modelのexpert weightの2/3はprefillで一度も触れられない。peak resident weight byteは
+280,342,528（4.21 GB modelの6.65%）。microbenchmark Bはwhole routed prefillで**121.3 ms**
+（5回のmedian；per-layer phase A 3.1 ms、phase B 4.4 ms、head 2.2 ms）であり、
+claim `pread`の**warm ~227 ms**がそれを上回る——**page cacheに載っていてもI/O boundである**ことが、
+residency policyが超えるべき数値である。**residency policyとcache hitの主張は引き続きdeferされる**
+——1回のprefill内では343 demandに対しdistinct keyも343であり、cacheは原理的にhitしないため、
+policyの測定にはmulti-prefill sessionかdecodeが必要である。
 
 ---
 

@@ -126,9 +126,39 @@ shim_built=1
 export DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-"${root_dir}/ggml-spike" --moe-layer-forward "${work_dir}/model.alignpack" \
-  "${work_dir}/geometry.json" 1545,823,9,66,13,270 \
-  "${work_dir}/moe-layer.json" "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/transcript.txt"
+# Section 5.2's resident-set measurement, and it is best effort by contract: BSD/macOS
+# `/usr/bin/time -l` prints "maximum resident set size" in bytes, GNU `/usr/bin/time -v` prints it
+# in kibibytes, and a host with neither gets an explicit "unmeasured" line rather than silence. It
+# is not a gate. The bound this capability actually owns is `residency.*`, which is exact integers;
+# peak RSS additionally carries both readback windows, the reference arm's ggml-owned copies, and
+# the allocator's own slack, so it is an upper bound on the window arithmetic and not a check of it.
+rss_log="${work_dir}/rss.txt"
+rss_flag=""
+if /usr/bin/time -l true >/dev/null 2>&1; then
+  rss_flag="-l"
+elif /usr/bin/time -v true >/dev/null 2>&1; then
+  rss_flag="-v"
+fi
+if [ -n "${rss_flag}" ]; then
+  /usr/bin/time "${rss_flag}" "${root_dir}/ggml-spike" --moe-layer-forward \
+    "${work_dir}/model.alignpack" "${work_dir}/geometry.json" 1545,823,9,66,13,270 \
+    "${work_dir}/moe-layer.json" "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/transcript.txt" \
+    2>"${rss_log}"
+  peak_kib=$(awk '
+    /maximum resident set size/ { printf "%d\n", $1 / 1024; exit }
+    /Maximum resident set size/ { printf "%d\n", $NF; exit }
+  ' "${rss_log}")
+  if [ -n "${peak_kib}" ]; then
+    echo "moe layer forward qualification: peak RSS ${peak_kib} KiB (/usr/bin/time ${rss_flag})"
+  else
+    echo "moe layer forward qualification: peak RSS unmeasured, /usr/bin/time printed no maximum"
+  fi
+else
+  "${root_dir}/ggml-spike" --moe-layer-forward "${work_dir}/model.alignpack" \
+    "${work_dir}/geometry.json" 1545,823,9,66,13,270 \
+    "${work_dir}/moe-layer.json" "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/transcript.txt"
+  echo "moe layer forward qualification: peak RSS unmeasured, no /usr/bin/time -l or -v"
+fi
 
 python3 - "${root_dir}" "${work_dir}" <<'PY'
 import json
@@ -248,6 +278,11 @@ want("ffn_down_exps.ggml_type", by_expert_role[(0, "ffn_down_exps")]["ggml_type"
 graph_a, graph_b, graph = d["graph_a"], d["graph_b"], d["graph"]
 want("graph_a.table_rows", graph_a["table_rows"], 31)
 want("graph_b.table_rows", graph_b["table_rows"], 24)
+# Section 7.1's measured goldens. ggml's own node counts equal the two tables on this build, and
+# they are asserted rather than only printed: section 3.7 exists to make the slot-capacity budget
+# auditable, and a printed number nothing compares is not a budget.
+want("graph_a.node_count", graph_a["node_count"], 31)
+want("graph_b.node_count", graph_b["node_count"], 24)
 want("graph.slot_capacity", graph["slot_capacity"], 128)
 want("graph.carried_bytes", graph["carried_bytes"], 2 * 2048 * 6 * 4 + 64 * 6 * 4 + 2 * 8 * 6 * 4)
 want("abi.tensor_alignment", d["abi"]["tensor_alignment"], 32)

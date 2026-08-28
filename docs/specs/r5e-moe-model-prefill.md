@@ -1930,7 +1930,7 @@ capability should be judged on.
 
 **This section's original claim — "no new request is expected" — was refuted by the implementation,
 and section 6 correction C22 records the retraction.** Two genuine Align gaps were found and are
-registered as **Requests 46 and 47** in `docs/align-requests.md`; a third refusal was classified as
+registered as **Requests 47 and 48** in `docs/align-requests.md`; a third refusal was classified as
 an application concern and is recorded below. The paragraph the implementation refuted read: every
 construct this design needs compiled in the probe's Align neighbours or exists in R5D's shipped
 module — the four node tables are `array<Node>` of a `Copy` record, the sixteen routing decisions are
@@ -1938,20 +1938,20 @@ integer arithmetic over `array<i64>`, the two windows are `buffer`, and the FFI 
 change at all. The last of those is still true: section 3.6 needs no symbol R5D did not ship. The
 first is not.
 
-**The two new requests, and why they are 46 and 47 rather than 44 and 45.** This branch's register
-ends at Request 43. Requests 44 and 45 exist only on `agent/r3-residency-sim`, which has not merged
-(see below), so numbering these 44 and 45 would put two different requests under one number in two
-branches. They are filed as 46 and 47 with a numbering note in the register; **renumber at
-reconciliation if R3's pair merges first**.
+**The two new requests, and why they are 47 and 48.** They were drafted as 46 and 47 while this
+branch's register ended at Request 43 and `agent/r3-residency-sim` still held 44 and 45 unmerged.
+R3's pair merged first (PR #135) and then took 45 and 46 when PR #134 claimed 44, so the
+reconciliation commit renumbers this branch's pair to **47** and **48**. The register carries the
+resolved numbering note, and nothing outside it cited either number.
 
-- **Request 46 — a `Borrow` argument must be a stable named local or field.** Measured at the pinned
-  `4b515f8d`: `f(w[a..b])`, `f(b.build())`, and `f(if c { x } else { y })` are each refused with
+- **Request 47 — a `Borrow` argument must be a stable named local or field.** Measured at the pinned
+  `4b515f8d` and re-measured unchanged at the adopted `3a34febe`: `f(w[a..b])`, `f(b.build())`, and `f(if c { x } else { y })` are each refused with
   `error: the Borrow argument to 'sink' must be a stable named local or field, not a temporary
   value`, from `crates/align_sema/src/lib.rs:43694`. R5E slices two reused windows on every member
   placement, every reference fill, and every claim plane, so the mitigation — bind the expression to
   a named local on the preceding line — is applied throughout `src/moe_model_forward.align`.
   Genuine Align gap, non-blocking.
-- **Request 47 — same-call argument aliasing between a `borrow mut` owner and its own scalar
+- **Request 48 — same-call argument aliasing between a `borrow mut` owner and its own scalar
   field.** `fill(box, box.n)`, where `fill` takes `borrow mut Box` and an `i64`, is refused with
   `error: borrowed argument 1 to 'fill' aliases argument 2, whose mode may invalidate the same
   owner`, from `crates/align_sema/src/lib.rs:30504`. The scalar is `Copy` and is copied at the call.
@@ -2015,25 +2015,23 @@ anticipated client for two that do not exist in this branch.
   larger is 196 MB.
 - **Request 21 — a read-only open.** Section 5.4's sixth client.
 
-**Two requests exist only on `agent/r3-residency-sim` and R5E takes no dependency on either.** That
-branch has not merged and this branch's register ends at Request 43, exactly as
-`r5d-moe-layer-forward.md` section 5.5 records. R5E names them as *anticipated* clients with the
-same mitigations and **does not re-register them**, because two copies of one request in one
-register is worse than one request in the wrong branch and `CLAUDE.md`'s lifecycle has no merge step
-for duplicates:
+**Two requests R5E could only anticipate have since merged, and R5E is now a recorded non-blocking
+client of both.** They arrived on `agent/r3-residency-sim` as 44 and 45 while this branch's register
+still ended at Request 43, exactly as `r5d-moe-layer-forward.md` section 5.5 records; PR #135 merged
+them and PR #134's Request 44 pushed them to **45** and **46**. The reconciliation commit appends
+R5E to each client list; R5E takes no dependency on either surface and ships both mitigations:
 
-- **Request 44** (moving a field out of a decoded record double-frees at run time). R5E decodes an
+- **Request 45** (moving a field out of a decoded record double-frees at run time). R5E decodes an
   `R1_MODEL_IR` document and moves fields out of it in `parse_geometry`. Mitigation: clone through a
   `str` view rather than move. Non-blocking.
-- **Request 45** (`borrow mut` array locals inside loops, and no element assignment through an array
+- **Request 46** (`borrow mut` array locals inside loops, and no element assignment through an array
   field). R5E's sixteen routing decisions want a helper taking the per-token id tables as
   `borrow mut array<i64>` called inside the token loop, and want `schedule[L].compact_ids[t][s] = v`
   through a record field. Mitigation: return owned columns from helpers and write the loop body
   inline. Non-blocking.
 
-If `agent/r3-residency-sim` merges before R5E, those two requests' client lists gain
-`src/moe_model_forward.align`'s `parse_geometry` and routing decision, and the mitigations become
-removable in the same verification.
+Both mitigations become removable in the same verification whenever those requests reach
+`ALIGN_MERGED` in Align itself.
 
 **If the implementation refutes this section — as R5A's did, and as R5E's own did — the correction
 belongs in a section 6 of this document, not in a quiet edit here.** Correction C22 is that record

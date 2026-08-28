@@ -156,10 +156,13 @@ def parse(path):
     skipped = 0
     line_count = 0
     entry_name = None
-    current = {"n_tokens": None, "nodes": 0}
+    current = {"n_tokens": None, "nodes": 0,
+               "tokens_observed": None, "tokens_truncated": None}
     block = None
     row_position = 0
     n_layer = -1
+    topk_present = False
+    slots_truncated = None
     with path.open("r", encoding="utf-8", errors="strict") as handle:
         for raw in handle:
             line_count += 1
@@ -176,7 +179,8 @@ def parse(path):
                     entry_name = name
                 elif name == entry_name and current["nodes"]:
                     graphs.append(current)
-                    current = {"n_tokens": None, "nodes": 0}
+                    current = {"n_tokens": None, "nodes": 0,
+                               "tokens_observed": None, "tokens_truncated": None}
                 current["nodes"] += 1
                 ops.add(match.group("op"))
                 suffix = SUFFIX.match(name)
@@ -190,6 +194,7 @@ def parse(path):
                 if name == "embd":
                     current["n_tokens"] = ne[1]
                 topk = bool(suffix) and suffix.group("family") == "ffn_moe_topk"
+                topk_present = topk_present or topk
                 # Build 10566 applies the output-token `GET_ROWS` reduction *before* the last
                 # layer's feed-forward, so that layer's `ffn_moe_topk` carries a shorter token axis
                 # than the graph and the leaf naming the retained tokens is never printed. Such a
@@ -200,7 +205,7 @@ def parse(path):
                 if reduced:
                     reduced_layers.add(layer)
                 block = {"name": name, "ne": ne, "layer": layer, "topk": topk,
-                         "reduced": reduced}
+                         "reduced": reduced, "token_marked": False, "graph": current}
                 row_position = 0
                 continue
             if block is None:
@@ -209,10 +214,13 @@ def parse(path):
             row = ROW.match(line)
             if row:
                 if block["topk"]:
-                    token = printed_indices(block["ne"][1])[row_position]
-                    slots = printed_indices(block["ne"][0])
-                    pieces = [piece for piece in row.group("body").split(", ")
-                              if piece != "   ..."]
+                    token = (printed_indices(block["ne"][1])[row_position]
+                             if block["token_marked"] else row_position)
+                    raw_pieces = row.group("body").split(", ")
+                    slot_marked = "   ..." in raw_pieces
+                    slots = (printed_indices(block["ne"][0]) if slot_marked
+                             else list(range(block["ne"][0])))
+                    pieces = [piece for piece in raw_pieces if piece != "   ..."]
                     if len(pieces) != len(slots):
                         fail("independent parse: %s row %d has %d elements, expected %d"
                              % (block["name"], row_position, len(pieces), len(slots)))
@@ -226,13 +234,35 @@ def parse(path):
                         selections.append({"graph": len(graphs), "layer": block["layer"],
                                            "token": token, "slot": slot,
                                            "expert": int(element.group("whole"))})
+                    if block["ne"][0] > TRUNCATION_PRINTED:
+                        if slots_truncated is None:
+                            slots_truncated = slot_marked
+                        elif slots_truncated != slot_marked:
+                            fail("independent parse: mixed full and compact slot axes")
                 row_position += 1
                 continue
             if line.startswith("    sum = "):
+                if block["topk"]:
+                    expected_rows = (TRUNCATION_PRINTED if block["token_marked"]
+                                     else block["ne"][1])
+                    if row_position != expected_rows:
+                        fail("independent parse: %s has %d rows, expected %d"
+                             % (block["name"], row_position, expected_rows))
+                    if not block["reduced"]:
+                        graph = block["graph"]
+                        if graph["tokens_observed"] is None:
+                            graph["tokens_observed"] = row_position
+                            graph["tokens_truncated"] = block["token_marked"]
+                        elif (graph["tokens_observed"] != row_position
+                              or graph["tokens_truncated"] != block["token_marked"]):
+                            fail("independent parse: mixed full and compact token axes")
                 block = None
                 continue
+            if line == "            ..., ":
+                block["token_marked"] = True
+                continue
             if line in ("    [", "    ]", "        [", "        ],", "        ..., ",
-                        "            ..., "):
+                        ):
                 continue
             fail("independent parse: unrecognized line inside a block: %r" % line)
     if current["nodes"]:
@@ -240,7 +270,8 @@ def parse(path):
     return {"families": sorted(families), "plains": sorted(plains), "ops": sorted(ops),
             "graphs": graphs, "selections": selections, "callback_lines": callback_lines,
             "skipped": skipped, "line_count": line_count, "n_layer": n_layer,
-            "reduced_layers": sorted(reduced_layers)}
+            "reduced_layers": sorted(reduced_layers), "topk_present": topk_present,
+            "slots_truncated": bool(slots_truncated)}
 
 
 reference = parse(transcript)
@@ -265,7 +296,9 @@ rows = [
     ("graph.node_families", document["graph"]["node_families"], reference["families"]),
     ("graph.unsuffixed_nodes", document["graph"]["unsuffixed_nodes"], reference["plains"]),
     ("graph.ops", document["graph"]["ops"], reference["ops"]),
-    ("moe.present", document["moe"]["present"], bool(reference["selections"])),
+    ("moe.present", document["moe"]["present"], reference["topk_present"]),
+    ("moe.slots_truncated", document["moe"]["slots_truncated"],
+     reference["slots_truncated"]),
     ("moe.token_reduced_layers", document["moe"]["token_reduced_layers"],
      reference["reduced_layers"]),
     ("selections", document["selections"], reference["selections"]),
@@ -284,6 +317,16 @@ for index, (ours, theirs) in enumerate(zip(document["graphs"], reference["graphs
                       ("single_token_first_graph" if index == 0 else "decode"))
     if ours["phase"] != expected_phase:
         fail("graphs[%d].phase %r, expected %r" % (index, ours["phase"], expected_phase))
+    observed = (theirs["tokens_observed"] if theirs["tokens_observed"] is not None
+                else len(printed_indices(theirs["n_tokens"])))
+    truncated = (theirs["tokens_truncated"] if theirs["tokens_truncated"] is not None
+                 else theirs["n_tokens"] > TRUNCATION_PRINTED)
+    indices = (printed_indices(theirs["n_tokens"]) if truncated
+               else list(range(theirs["n_tokens"])))
+    if (ours["tokens_observed"] != observed or ours["tokens_truncated"] != truncated
+            or ours["observed_token_indices"] != indices):
+        fail("graphs[%d] print form %r, the independent parse says %r/%r/%r"
+             % (index, ours, observed, truncated, indices))
 
 # The section 4.6 secondary metric: the reader streams rather than re-scanning.
 size = document["source"]["file_size"]

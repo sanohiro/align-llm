@@ -14,6 +14,7 @@ candidate_patch="$temp_dir/candidate.patch"
 repair_patch="$temp_dir/repair.patch"
 bad_repair_patch="$temp_dir/bad-repair.patch"
 bad_candidate_patch="$temp_dir/bad-candidate.patch"
+wire_candidate_patch="$temp_dir/wire-candidate.patch"
 task_path="$temp_dir/task.json"
 result_path="$temp_dir/result.json"
 second_result_path="$temp_dir/second-result.json"
@@ -24,7 +25,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-python3 - "$repo_dir" "$candidate_patch" "$repair_patch" "$bad_repair_patch" "$bad_candidate_patch" "$task_path" "$profile_path" <<'PY'
+python3 - "$repo_dir" "$candidate_patch" "$repair_patch" "$bad_repair_patch" "$bad_candidate_patch" "$wire_candidate_patch" "$task_path" "$profile_path" <<'PY'
 import difflib
 import json
 import sys
@@ -35,8 +36,9 @@ candidate_patch = Path(sys.argv[2])
 repair_patch = Path(sys.argv[3])
 bad_repair_patch = Path(sys.argv[4])
 bad_candidate_patch = Path(sys.argv[5])
-task_path = Path(sys.argv[6])
-profile_path = Path(sys.argv[7])
+wire_candidate_patch = Path(sys.argv[6])
+task_path = Path(sys.argv[7])
+profile_path = Path(sys.argv[8])
 
 (repo / "src").mkdir(parents=True)
 (repo / "tests").mkdir()
@@ -48,6 +50,19 @@ base_source = (
 candidate_source = base_source.replace("stop + 1", "stop + 2")
 (repo / "src" / "value.py").write_text(base_source, encoding="utf-8")
 (repo / "src" / "other.py").write_text("OTHER = 1\n", encoding="utf-8")
+(repo / "src" / "wire.py").write_text("WIRE = 0\n", encoding="utf-8")
+(repo / "full_acceptance.py").write_text(
+    "import sys\n"
+    "from pathlib import Path\n\n"
+    "sys.path.insert(0, str(Path(__file__).resolve().parent / 'src'))\n"
+    "from value import inclusive_range\n\n"
+    "targeted_value = inclusive_range(1, 3)\n"
+    "if targeted_value != [1, 2, 3]:\n"
+    "    Path('full-ran-before-repair.marker').write_text('unexpected\\n', encoding='utf-8')\n"
+    "assert targeted_value == [1, 2, 3]\n"
+    "assert inclusive_range(4, 4) == [4]\n",
+    encoding="utf-8",
+)
 (repo / "tests" / "test_value.py").write_text(
     "def test_value_path_signal():\n    assert True\n",
     encoding="utf-8",
@@ -91,9 +106,13 @@ bad_candidate_patch.write_text(
     + patch_for_path("src/other.py", "OTHER = 999\n", "OTHER = 2\n"),
     encoding="utf-8",
 )
+wire_candidate_patch.write_text(
+    patch_for_path("src/wire.py", "WIRE = 0\n", "WIRE = 1\n"),
+    encoding="utf-8",
+)
 
 task = {
-    "schema_version": 1,
+    "schema_version": 2,
     "task_id": "verification-loop-inclusive-range",
     "root": str(repo),
     "candidate_patch": str(candidate_patch),
@@ -111,7 +130,7 @@ task = {
     },
     "full_test": {
         "cmd": "/usr/bin/python3",
-        "argv": ["/usr/bin/python3", "-m", "unittest", "discover", "-s", "tests"],
+        "argv": ["/usr/bin/python3", "full_acceptance.py"],
         "expected_code": 0,
     },
     "timeout_ns": 10_000_000_000,
@@ -126,6 +145,110 @@ git -C "$repo_dir" config user.name "Verification Loop Smoke"
 git -C "$repo_dir" add --all
 git -C "$repo_dir" commit -qm initial
 
+python3 - "$root_dir" "$repo_dir" "$wire_candidate_patch" "$temp_dir" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+repo = Path(sys.argv[2])
+wire_patch = Path(sys.argv[3])
+temp = Path(sys.argv[4])
+binary = root / "main"
+fixtures = root / "scripts" / "fixtures"
+revision = subprocess.run(
+    ["git", "rev-parse", "HEAD"],
+    cwd=repo,
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.strip()
+
+
+def normalized(value, none_case=False):
+    if isinstance(value, dict):
+        return {
+            key: 0 if key == "duration_ns" else normalized(item, none_case)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [normalized(item, none_case) for item in value]
+    if value == str(repo):
+        return "<ROOT>"
+    if value == str(wire_patch):
+        return "<CANDIDATE_PATCH>"
+    if value == revision:
+        return "<REVISION>"
+    if none_case and value in (
+        "verification-loop-wire-none-absent",
+        "verification-loop-wire-none-null",
+    ):
+        return "<NONE_TASK_ID>"
+    return value
+
+
+cases = (
+    (
+        "verification-task-v2-some.json",
+        "verification-result-v2-some.normalized.json",
+        ["candidate-apply", "build", "targeted-test", "full-test"],
+        False,
+    ),
+    (
+        "verification-task-v2-none-absent.json",
+        "verification-result-v2-none.normalized.json",
+        ["candidate-apply", "build", "full-test"],
+        True,
+    ),
+    (
+        "verification-task-v2-none-null.json",
+        "verification-result-v2-none.normalized.json",
+        ["candidate-apply", "build", "full-test"],
+        True,
+    ),
+)
+
+for ordinal, (task_name, result_name, expected_stages, none_case) in enumerate(cases):
+    subprocess.run(
+        ["git", "reset", "--hard", "-q", "HEAD"],
+        cwd=repo,
+        check=True,
+    )
+    task = json.loads((fixtures / task_name).read_text(encoding="utf-8"))
+    task["root"] = str(repo)
+    task["candidate_patch"] = str(wire_patch)
+    if task_name == "verification-task-v2-none-null.json":
+        task = dict(reversed(tuple(task.items())))
+    task_path = temp / f"wire-task-{ordinal}.json"
+    result_path = temp / f"wire-result-{ordinal}.json"
+    task_path.write_text(json.dumps(task, separators=(",", ":")), encoding="utf-8")
+    completed = subprocess.run(
+        [str(binary), "--verify-loop", str(task_path), str(result_path)],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    raw = result_path.read_text(encoding="utf-8")
+    result = json.loads(raw)
+    assert raw == json.dumps(result, separators=(",", ":")), raw
+    assert result["schema_version"] == 2, result
+    assert result["status"] == "PASS", result
+    assert [stage["stage"] for stage in result["attempts"][0]["stages"]] == expected_stages, result
+    actual = normalized(result, none_case)
+    expected_path = fixtures / result_name
+    if not expected_path.is_file():
+        raise AssertionError(
+            f"missing {result_name} golden:\n"
+            + json.dumps(actual, separators=(",", ":"))
+        )
+    expected_raw = expected_path.read_text(encoding="utf-8").removesuffix("\n")
+    actual_raw = json.dumps(actual, separators=(",", ":"))
+    assert actual_raw == expected_raw, (result_name, actual_raw, expected_raw)
+PY
+
 "$root_dir/main" --verify-loop "$task_path" "$result_path"
 
 python3 - "$repo_dir" "$result_path" "$profile_path" <<'PY'
@@ -138,7 +261,7 @@ repo = Path(sys.argv[1])
 result = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
 profile = Path(sys.argv[3])
 
-assert result["schema_version"] == 1, result
+assert result["schema_version"] == 2, result
 assert result["task_id"] == "verification-loop-inclusive-range", result
 assert result["status"] == "PASS", result
 assert result["error_code"] == -1, result
@@ -206,6 +329,7 @@ expected_memory_recommendations = (
     '{"path":"tests/test_value.py","score":100,"reason":"basename-match"}]'
 )
 assert event["recommended_tests"] == expected_memory_recommendations, event
+assert not (repo / "full-ran-before-repair.marker").exists()
 PY
 
 git -C "$repo_dir" reset --hard -q HEAD
@@ -351,6 +475,254 @@ assert subprocess.run(
 ).returncode == 0
 PY
 
+# A full-test failure remains repairable in both option states. The Some row deliberately uses a
+# passing targeted command so that full-test, rather than targeted-test, owns the diagnostic. The
+# None row proves the same transition without allocating or emitting any targeted stage.
+git -C "$repo_dir" reset --hard -q HEAD
+python3 - "$root_dir" "$repo_dir" "$task_path" "$candidate_patch" "$repair_patch" "$temp_dir" <<'PY'
+import copy
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+repo = Path(sys.argv[2])
+base_task = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+candidate_patch = Path(sys.argv[4])
+repair_patch = Path(sys.argv[5])
+temp = Path(sys.argv[6])
+binary = root / "main"
+
+for option_state in ("some", "none"):
+    subprocess.run(["git", "reset", "--hard", "-q", "HEAD"], cwd=repo, check=True)
+    task = copy.deepcopy(base_task)
+    task["task_id"] = f"verification-loop-full-failure-{option_state}"
+    task["candidate_patch"] = str(candidate_patch)
+    task["repair_patch"] = str(repair_patch)
+    task["full_test"] = {
+        "cmd": "/usr/bin/python3",
+        "argv": ["/usr/bin/python3", "-m", "unittest", "discover", "-s", "tests"],
+        "expected_code": 0,
+    }
+    profile = temp / f"full-failure-{option_state}.alignprof"
+    task["memory_profile"] = str(profile)
+    if option_state == "some":
+        task["targeted_test"] = {
+            "cmd": "/usr/bin/python3",
+            "argv": ["/usr/bin/python3", "-c", "pass"],
+            "expected_code": 0,
+        }
+        first_stages = [
+            "candidate-apply", "build", "targeted-test", "full-test", "repair-apply"
+        ]
+        second_stages = ["build", "targeted-test", "full-test"]
+    else:
+        task.pop("targeted_test")
+        first_stages = ["candidate-apply", "build", "full-test", "repair-apply"]
+        second_stages = ["build", "full-test"]
+
+    task_file = temp / f"full-failure-{option_state}.task.json"
+    result_file = temp / f"full-failure-{option_state}.result.json"
+    task_file.write_text(json.dumps(task, separators=(",", ":")), encoding="utf-8")
+    completed = subprocess.run(
+        [str(binary), "--verify-loop", str(task_file), str(result_file)],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, (option_state, completed.stderr)
+    result = json.loads(result_file.read_text(encoding="utf-8"))
+    assert result["status"] == "PASS", result
+    assert result["iteration_count"] == 2, result
+    assert result["repair_count"] == 1, result
+    assert [stage["stage"] for stage in result["attempts"][0]["stages"]] == first_stages, result
+    assert [stage["stage"] for stage in result["attempts"][1]["stages"]] == second_stages, result
+    assert result["attempts"][0]["stages"][-2]["stage"] == "full-test", result
+    assert result["attempts"][0]["stages"][-2]["status"] == "FAIL", result
+    assert "stage: full-test" in result["attempts"][0]["repair_prompt"], result
+    assert all(
+        stage["stage"] != "targeted-test"
+        for attempt in result["attempts"]
+        for stage in attempt["stages"]
+    ) == (option_state == "none"), result
+
+    events = [json.loads(line) for line in profile.read_text(encoding="utf-8").splitlines() if line]
+    assert len(events) == 1, events
+    assert events[0]["schema_version"] == 1, events[0]
+    assert events[0]["task_id"] == task["task_id"], events[0]
+    assert events[0]["failure_stage"] == "full-test", events[0]
+    assert events[0]["failed_test"] == "full-test", events[0]
+    assert events[0]["repair_result"] == "PASS_AFTER_REPAIR", events[0]
+    assert subprocess.run(
+        ["git", "diff", "--exit-code"],
+        cwd=repo,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+PY
+
+# Semantic validation is complete before patch evaluation, command execution, or profile access.
+# Each row carries otherwise valid side-effecting commands; any ordering regression creates the
+# process sentinel, changes the worktree, or mutates the profile and fails this owner immediately.
+git -C "$repo_dir" reset --hard -q HEAD
+python3 - "$root_dir" "$repo_dir" "$wire_candidate_patch" "$temp_dir" <<'PY'
+import copy
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+repo = Path(sys.argv[2])
+wire_patch = Path(sys.argv[3])
+temp = Path(sys.argv[4])
+binary = root / "main"
+fixtures = root / "scripts" / "fixtures"
+invalid_golden = (fixtures / "verification-result-v2-invalid.json").read_text(
+    encoding="utf-8"
+).removesuffix("\n")
+sentinel = temp / "invalid-command-ran"
+profile = temp / "invalid-profile.alignprof"
+profile_bytes = b"UNCHANGED\n"
+profile.write_bytes(profile_bytes)
+
+
+def command():
+    return {
+        "cmd": "/usr/bin/touch",
+        "argv": ["/usr/bin/touch", str(sentinel)],
+        "expected_code": 0,
+    }
+
+
+def base_task():
+    return {
+        "schema_version": 2,
+        "task_id": "verification-loop-wire-invalid",
+        "root": str(repo),
+        "candidate_patch": str(wire_patch),
+        "repair_patch": "",
+        "memory_profile": str(profile),
+        "build": command(),
+        "targeted_test": command(),
+        "full_test": command(),
+        "timeout_ns": 10_000_000_000,
+        "max_iterations": 1,
+    }
+
+
+def set_nested(task, owner, field, value):
+    task[owner][field] = value
+
+
+cases = (
+    ("schema", lambda task: task.__setitem__("schema_version", 1), True),
+    ("task-id-empty", lambda task: task.__setitem__("task_id", ""), False),
+    ("task-id-nul", lambda task: task.__setitem__("task_id", "task\0id"), False),
+    ("root-empty", lambda task: task.__setitem__("root", ""), False),
+    ("root-nul", lambda task: task.__setitem__("root", "root\0path"), False),
+    ("candidate-empty", lambda task: task.__setitem__("candidate_patch", ""), False),
+    ("candidate-nul", lambda task: task.__setitem__("candidate_patch", "patch\0path"), False),
+    ("repair-nul", lambda task: task.__setitem__("repair_patch", "patch\0path"), False),
+    ("memory-nul", lambda task: task.__setitem__("memory_profile", "profile\0path"), False),
+    ("timeout-zero", lambda task: task.__setitem__("timeout_ns", 0), False),
+    ("iterations-zero", lambda task: task.__setitem__("max_iterations", 0), False),
+    ("build-cmd-empty", lambda task: set_nested(task, "build", "cmd", ""), False),
+    ("build-cmd-nul", lambda task: set_nested(task, "build", "cmd", "bad\0cmd"), False),
+    ("build-argv-empty", lambda task: set_nested(task, "build", "argv", []), False),
+    ("build-argv-nul", lambda task: set_nested(task, "build", "argv", ["bad\0arg"]), False),
+    ("target-cmd-empty", lambda task: set_nested(task, "targeted_test", "cmd", ""), False),
+    ("target-cmd-nul", lambda task: set_nested(task, "targeted_test", "cmd", "bad\0cmd"), False),
+    ("target-argv-empty", lambda task: set_nested(task, "targeted_test", "argv", []), False),
+    ("target-argv-nul", lambda task: set_nested(task, "targeted_test", "argv", ["bad\0arg"]), False),
+    ("full-cmd-empty", lambda task: set_nested(task, "full_test", "cmd", ""), False),
+    ("full-cmd-nul", lambda task: set_nested(task, "full_test", "cmd", "bad\0cmd"), False),
+    ("full-argv-empty", lambda task: set_nested(task, "full_test", "argv", []), False),
+    ("full-argv-nul", lambda task: set_nested(task, "full_test", "argv", ["bad\0arg"]), False),
+    (
+        "multi-invalid",
+        lambda task: (task.__setitem__("schema_version", 1), task.__setitem__("root", "")),
+        False,
+    ),
+)
+
+for ordinal, (name, mutate, exact_golden) in enumerate(cases):
+    subprocess.run(["git", "reset", "--hard", "-q", "HEAD"], cwd=repo, check=True)
+    sentinel.unlink(missing_ok=True)
+    profile.write_bytes(profile_bytes)
+    task = copy.deepcopy(base_task())
+    mutate(task)
+    task_file = temp / f"invalid-{ordinal}.task.json"
+    result_file = temp / f"invalid-{ordinal}.result.json"
+    result_file.unlink(missing_ok=True)
+    task_file.write_text(json.dumps(task, separators=(",", ":")), encoding="utf-8")
+    completed = subprocess.run(
+        [str(binary), "--verify-loop", str(task_file), str(result_file)],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode != 0, (name, completed.stdout, completed.stderr)
+    raw = result_file.read_text(encoding="utf-8")
+    result = json.loads(raw)
+    assert result["schema_version"] == 2, (name, result)
+    assert result["status"] == "INVALID", (name, result)
+    assert result["error_code"] == 2, (name, result)
+    assert result["iteration_count"] == 0, (name, result)
+    assert result["repair_count"] == 0, (name, result)
+    assert result["attempts"] == [], (name, result)
+    if exact_golden:
+        assert raw == invalid_golden, (name, raw, invalid_golden)
+    assert not sentinel.exists(), name
+    assert profile.read_bytes() == profile_bytes, name
+    assert subprocess.run(
+        ["git", "diff", "--exit-code"],
+        cwd=repo,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0, name
+
+decode_cases = (
+    ("malformed-json", b"{"),
+    ("invalid-utf8", b'{"schema_version":2,"task_id":"\xff"}'),
+    (
+        "missing-required-field",
+        json.dumps({key: value for key, value in base_task().items() if key != "full_test"}).encode(),
+    ),
+)
+for ordinal, (name, payload) in enumerate(decode_cases):
+    subprocess.run(["git", "reset", "--hard", "-q", "HEAD"], cwd=repo, check=True)
+    sentinel.unlink(missing_ok=True)
+    profile.write_bytes(profile_bytes)
+    task_file = temp / f"decode-{ordinal}.task.json"
+    result_file = temp / f"decode-{ordinal}.result.json"
+    result_file.unlink(missing_ok=True)
+    task_file.write_bytes(payload)
+    completed = subprocess.run(
+        [str(binary), "--verify-loop", str(task_file), str(result_file)],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode != 0, (name, completed.stdout, completed.stderr)
+    assert not result_file.exists(), name
+    assert not sentinel.exists(), name
+    assert profile.read_bytes() == profile_bytes, name
+    assert subprocess.run(
+        ["git", "diff", "--exit-code"],
+        cwd=repo,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0, name
+PY
+
 # Unborn-HEAD task. The index is populated but the repository has no commit, so
 # `git rev-parse --verify HEAD` fails while `git ls-files -z` succeeds. The evaluation selection
 # entry queries only `ls-files`, so the task runs to completion instead of short-circuiting to an
@@ -359,7 +731,7 @@ unborn_repo_dir="$temp_dir/unborn-repository"
 unborn_task_path="$temp_dir/unborn-task.json"
 unborn_result_path="$temp_dir/unborn-result.json"
 mkdir -p "$unborn_repo_dir"
-cp -R "$repo_dir/src" "$repo_dir/tests" "$unborn_repo_dir/"
+cp -R "$repo_dir/src" "$repo_dir/tests" "$repo_dir/full_acceptance.py" "$unborn_repo_dir/"
 # Drop any __pycache__ directories copied from earlier cases so the tracked listing stays
 # deterministic regardless of the ambient PYTHONDONTWRITEBYTECODE setting.
 find "$unborn_repo_dir" -name __pycache__ -type d -prune -exec rm -rf {} +
@@ -426,4 +798,54 @@ assert [(stage["stage"], stage["status"]) for stage in second["stages"]] == [
 ], second
 PY
 
-printf '%s\n' "verification loop smoke: atomic patch application, rejection rollback, repair, full pass, unborn-HEAD selection, and bounded iteration PASS"
+# `failure_memory.remember` is also a public persisted-result admission boundary. Compile and run
+# its small owner directly so schema 1 is rejected for the schema guard—not for a decode error—and
+# the otherwise identical schema-2 document still appends one schema-1 memory event.
+schema_owner_output="$temp_dir/failure-memory-schema-owner.out"
+python3 - "$root_dir" "$temp_dir" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+temp = Path(sys.argv[2])
+result = json.loads(
+    (root / "scripts" / "fixtures" / "verification-result-v2-some.normalized.json").read_text(
+        encoding="utf-8"
+    )
+)
+(temp / "verification-result-v2.json").write_text(
+    json.dumps(result, separators=(",", ":")), encoding="utf-8"
+)
+result["schema_version"] = 1
+(temp / "verification-result-v1.json").write_text(
+    json.dumps(result, separators=(",", ":")), encoding="utf-8"
+)
+(temp / "wrong-schema-profile.alignprof").write_text("UNCHANGED\n", encoding="utf-8")
+PY
+
+(
+  cd "$temp_dir"
+  "$root_dir/scripts/alignc" run "$root_dir/src/failure_memory_schema_smoke.align" >"$schema_owner_output"
+)
+
+python3 - "$schema_owner_output" "$temp_dir" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+output = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+temp = Path(sys.argv[2])
+assert output == ["REJECTED", "ACCEPTED"], output
+assert (temp / "wrong-schema-profile.alignprof").read_text(encoding="utf-8") == "UNCHANGED\n"
+events = [
+    json.loads(line)
+    for line in (temp / "current-schema-profile.alignprof").read_text(encoding="utf-8").splitlines()
+    if line
+]
+assert len(events) == 1, events
+assert events[0]["schema_version"] == 1, events[0]
+assert events[0]["task_id"] == "verification-loop-wire-some", events[0]
+PY
+
+printf '%s\n' "verification loop smoke: schema-v2 Some/None wire, validation, repair, memory, atomic rollback, and unborn-HEAD selection PASS"

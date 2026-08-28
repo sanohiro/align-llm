@@ -2141,6 +2141,11 @@ ENGINE_CASES = [
      "R5_ALIGNMENT"),
     ("moe-engine-claim-type", [ARM, path("moe-pack-claim-type.alignpack"), GEOM, TOKENS],
      "R5_TYPE_UNSUPPORTED"),
+    # Correction C12. `routed[1]`'s gate plane declares F16 where `routed[0]`'s declares F32, at an
+    # identical `nbytes`: the type the compact stack is built from is the first plane's, so every
+    # later plane must agree with it and no oracle can notice that one did not.
+    ("moe-engine-claim-type-mismatch",
+     [ARM, path("moe-pack-claim-type-mismatch.alignpack"), GEOM, TOKENS], "R5_TYPE_UNSUPPORTED"),
     ("moe-engine-slice", [ARM, path("moe-pack-slice.alignpack"), GEOM, TOKENS], "R4_5_SLICE"),
     ("moe-engine-slice-index", [ARM, path("moe-pack-slice-index.alignpack"), GEOM, TOKENS],
      "R5D_CLAIM_MISSING"),

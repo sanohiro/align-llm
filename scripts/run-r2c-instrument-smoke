@@ -1,0 +1,702 @@
+#!/usr/bin/env python3
+"""Deterministic owner for the R2c managed llama-eval-callback instrument."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Callable, Iterator
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parent.parent
+TOOL_PATH = ROOT / "scripts" / "llama-eval-callback-toolchain"
+EXPECTED_REVISION = "bb4caa7540188872173c44d161602d9271386413"
+EXPECTED_PATCH_SHA256 = "fcab7ca9b6bbdc760da19e075a2c66d670d4737d7f7f07074676ec67dbd7d0ab"
+EXPECTED_PATCH_BYTES = 2170
+EXPECTED_PATHS = (
+    "common/debug.cpp",
+    "examples/eval-callback/eval-callback.cpp",
+)
+
+
+class SmokeFailure(RuntimeError):
+    pass
+
+
+def load_tool() -> object:
+    loader = importlib.machinery.SourceFileLoader("r2c_toolchain", os.fspath(TOOL_PATH))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise SmokeFailure("cannot create the toolchain module spec")
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+tool = load_tool()
+
+
+def load_qualification() -> object:
+    path = ROOT / "scripts" / "run-r2c-instrument-qualification"
+    loader = importlib.machinery.SourceFileLoader("r2c_qualification", os.fspath(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise SmokeFailure("cannot create the qualification module spec")
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+qualification = load_qualification()
+case_count = 0
+
+
+def checked(name: str, action: Callable[[], None]) -> None:
+    global case_count
+    try:
+        action()
+    except BaseException as error:
+        raise SmokeFailure(f"{name}: {error}") from error
+    case_count += 1
+
+
+def expect_tool_error(name: str, action: Callable[[], object], fragment: str) -> None:
+    global case_count
+    try:
+        action()
+    except tool.ToolchainError as error:
+        if fragment not in str(error):
+            raise SmokeFailure(f"{name}: expected {fragment!r}, received {error!r}") from error
+    else:
+        raise SmokeFailure(f"{name}: expected ToolchainError")
+    case_count += 1
+
+
+def patch_contract() -> None:
+    revision, patch, digest = tool.read_identity()
+    if revision != EXPECTED_REVISION:
+        raise SmokeFailure(f"wrong revision {revision}")
+    if digest != EXPECTED_PATCH_SHA256 or len(patch) != EXPECTED_PATCH_BYTES:
+        raise SmokeFailure("wrong patch identity")
+    text = patch.decode("utf-8")
+    paths = tuple(re.findall(r"^diff --git a/(.+?) b/(.+?)$", text, re.MULTILINE))
+    if paths != tuple((path, path) for path in EXPECTED_PATHS):
+        raise SmokeFailure(f"wrong patch paths {paths!r}")
+    required = (
+        'static constexpr char moe_topk_prefix[] = "ffn_moe_topk";',
+        "return 3;",
+        "return *std::max_element(t->ne, t->ne + GGML_MAX_DIMS);",
+        '#include "sampling.h"',
+        "if (params.n_predict <= 0)",
+        "common_sampler_sample(sampler.get(), ctx, -1)",
+        "llama_vocab_is_eog(vocab, token)",
+        "llama_batch_get_one(&token, 1)",
+    )
+    missing = [fragment for fragment in required if fragment not in text]
+    if missing:
+        raise SmokeFailure(f"patch is missing semantic markers {missing!r}")
+    tool_text = TOOL_PATH.read_text(encoding="utf-8")
+    for marker in (
+        "fcntl.flock(descriptor, fcntl.LOCK_EX)",
+        'tempfile.mkdtemp(prefix=f".{name}.tmp-", dir=root)',
+        "os.rename(staging, entry)",
+        "except KeyboardInterrupt:",
+    ):
+        if marker not in tool_text:
+            raise SmokeFailure(f"toolchain is missing lifecycle marker {marker!r}")
+    for relative in ("scripts/run-expert-locality-gate", "scripts/run-residency-sim"):
+        runner = (ROOT / relative).read_text(encoding="utf-8")
+        if ' -n 0 -t 4 ' not in runner or ' -n 1 -t 4 ' in runner:
+            raise SmokeFailure(f"{relative} does not preserve its prefill-only capture")
+        if relative.endswith("run-expert-locality-gate") and "aggregate(documents, labels)" not in runner:
+            raise SmokeFailure(f"{relative} bypasses compact-axis admission in aggregate")
+        if relative.endswith("run-residency-sim") and "require_compact_router_axes" not in runner:
+            raise SmokeFailure(f"{relative} does not enforce historical compact router axes")
+
+
+def identity_refusals() -> None:
+    real_patch = (ROOT / "patches/llama.cpp/r2c-decode-instrument.patch").read_bytes()
+    with tempfile.TemporaryDirectory(prefix="r2c-identity-") as temporary:
+        project = Path(temporary)
+        patch_path = project / tool.PATCH_PATH
+        patch_path.parent.mkdir(parents=True)
+        patch_path.write_bytes(real_patch)
+        with mock.patch.object(tool, "PROJECT", project):
+            for value in (b"", b"A" * 40 + b"\n", b"0" * 39 + b"\n", b"0" * 40):
+                (project / ".llama-revision").write_bytes(value)
+                expect_tool_error(
+                    "malformed-pin-inner",
+                    tool.read_identity,
+                    "one lowercase 40-hex SHA",
+                )
+            (project / ".llama-revision").write_text(EXPECTED_REVISION + "\n", encoding="ascii")
+            patch_path.write_bytes(real_patch + b"\n")
+            expect_tool_error("patch-identity-inner", tool.read_identity, "identity differs")
+
+
+def cache_contract() -> None:
+    explicit = tool.cache_root({"ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT": "/cache"})
+    xdg = tool.cache_root({"XDG_CACHE_HOME": "/xdg"})
+    home = tool.cache_root({"HOME": "/home/test"})
+    if explicit != Path("/cache/r2c-v2"):
+        raise SmokeFailure(f"wrong explicit root {explicit}")
+    if xdg != Path("/xdg/align-llm/llama.cpp/r2c-v2"):
+        raise SmokeFailure(f"wrong XDG root {xdg}")
+    if home != Path("/home/test/.cache/align-llm/llama.cpp/r2c-v2"):
+        raise SmokeFailure(f"wrong HOME root {home}")
+    entry = tool.entry_path(explicit, EXPECTED_REVISION, EXPECTED_PATCH_SHA256)
+    if tool.selected_path(entry, "source") != entry / "source":
+        raise SmokeFailure("wrong source path")
+    if tool.selected_path(entry, "instrument") != entry / tool.INSTRUMENT:
+        raise SmokeFailure("wrong instrument path")
+    with tempfile.TemporaryDirectory(prefix="r2c-cache-boundary-") as temporary:
+        boundary = Path(temporary)
+        project = boundary / "checkout"
+        project.mkdir()
+        outside = boundary / "outside"
+        outside.mkdir()
+        linked_checkout = outside / "checkout-link"
+        linked_checkout.symlink_to(project, target_is_directory=True)
+        with mock.patch.object(tool, "PROJECT", project):
+            for name, environment in (
+                ("explicit-in-checkout", {"ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT": str(project / "cache")}),
+                ("xdg-in-checkout", {"XDG_CACHE_HOME": str(project / "cache")}),
+                ("home-in-checkout", {"HOME": str(project / "home")}),
+                ("symlink-into-checkout",
+                 {"ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT": str(linked_checkout / "cache")}),
+            ):
+                expect_tool_error(name, lambda environment=environment: tool.cache_root(environment),
+                                  "outside the align-llm checkout")
+
+
+def cmake_contract() -> None:
+    actual = tool.cmake_arguments("cmake", Path("/source"), Path("/build"))
+    expected = (
+        "cmake",
+        "-S",
+        "/source",
+        "-B",
+        "/build",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DBUILD_SHARED_LIBS=OFF",
+        "-DGGML_NATIVE=OFF",
+        "-DGGML_METAL=OFF",
+        "-DGGML_OPENMP=OFF",
+        "-DGGML_CCACHE=OFF",
+        "-DLLAMA_CURL=OFF",
+        "-DLLAMA_BUILD_EXAMPLES=ON",
+        "-DLLAMA_BUILD_TESTS=OFF",
+        "-DLLAMA_BUILD_NUMBER=10566",
+        "-DLLAMA_BUILD_COMMIT=bb4caa7",
+    )
+    if actual != expected:
+        raise SmokeFailure(f"CMake contract differs: {actual!r}")
+
+
+def subprocess_cli() -> None:
+    with tempfile.TemporaryDirectory(prefix="r2c-cli-") as temporary:
+        environment = dict(os.environ)
+        environment["ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT"] = temporary
+        good = subprocess.run(
+            (os.fspath(TOOL_PATH), "path", "instrument"),
+            cwd=ROOT,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True,
+        )
+        if good.returncode != 0 or not good.stdout.rstrip().endswith("llama-eval-callback") or good.stderr:
+            raise SmokeFailure(f"valid CLI differed: {good.returncode} {good.stdout!r} {good.stderr!r}")
+        for arguments in ((), ("path",), ("path", "other"), ("verify", "extra"), ("attest", "source")):
+            result = subprocess.run(
+                (os.fspath(TOOL_PATH), *arguments),
+                cwd=ROOT,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                text=True,
+            )
+            if result.returncode != 2 or result.stdout or "usage:" not in result.stderr:
+                raise SmokeFailure(f"invalid CLI {arguments!r} did not fail through argparse")
+        if list(Path(temporary).iterdir()):
+            raise SmokeFailure("path or invalid CLI wrote into the cache")
+
+
+def make_instrument(path: Path, *, version: str = "version: build 10566, commit bb4caa7") -> bytes:
+    body = f"#!/bin/sh\nprintf '%s\\n' '{version}' >&2\n".encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return body
+
+
+@contextmanager
+def admitted_entry() -> Iterator[tuple[Path, Path, bytes, Callable[..., bytes]]]:
+    with tempfile.TemporaryDirectory(prefix="r2c-entry-") as temporary:
+        root = Path(temporary)
+        entry = root / "entry"
+        (entry / "source").mkdir(parents=True)
+        (entry / "build").mkdir()
+        body = make_instrument(entry / tool.INSTRUMENT)
+        _, patch, _ = tool.read_identity()
+
+        def fake_git(source: Path, *arguments: str) -> bytes:
+            del source
+            if arguments == ("rev-parse", "HEAD"):
+                return (EXPECTED_REVISION + "\n").encode("ascii")
+            if arguments == ("ls-files", "--others"):
+                return b""
+            if arguments[:2] == ("diff", "--no-ext-diff"):
+                return patch
+            raise SmokeFailure(f"unexpected git call {arguments!r}")
+
+        yield entry, root, body, fake_git
+
+
+def verify_success() -> None:
+    with admitted_entry() as (entry, _, _, fake_git):
+        with mock.patch.object(tool, "git", side_effect=fake_git):
+            version = tool.verify_entry(entry, EXPECTED_REVISION, tool.read_identity()[1])
+        if "build 10566, commit bb4caa7" not in version:
+            raise SmokeFailure(f"wrong version {version!r}")
+
+
+def verify_wrong_revision() -> None:
+    with admitted_entry() as (entry, _, _, fake_git):
+        def wrong(source: Path, *arguments: str) -> bytes:
+            if arguments == ("rev-parse", "HEAD"):
+                return b"0" * 40 + b"\n"
+            return fake_git(source, *arguments)
+
+        with mock.patch.object(tool, "git", side_effect=wrong):
+            expect_tool_error(
+                "verify-wrong-revision-inner",
+                lambda: tool.verify_entry(entry, EXPECTED_REVISION, tool.read_identity()[1]),
+                "revision differs",
+            )
+
+
+def verify_untracked() -> None:
+    with admitted_entry() as (entry, _, _, fake_git):
+        def untracked(source: Path, *arguments: str) -> bytes:
+            if arguments == ("ls-files", "--others"):
+                return b"extra\0"
+            return fake_git(source, *arguments)
+
+        with mock.patch.object(tool, "git", side_effect=untracked):
+            expect_tool_error(
+                "verify-untracked-inner",
+                lambda: tool.verify_entry(entry, EXPECTED_REVISION, tool.read_identity()[1]),
+                "untracked",
+            )
+
+
+def verify_patch_drift() -> None:
+    with admitted_entry() as (entry, _, _, fake_git):
+        def drift(source: Path, *arguments: str) -> bytes:
+            if arguments[:2] == ("diff", "--no-ext-diff"):
+                return b"different"
+            return fake_git(source, *arguments)
+
+        with mock.patch.object(tool, "git", side_effect=drift):
+            expect_tool_error(
+                "verify-patch-drift-inner",
+                lambda: tool.verify_entry(entry, EXPECTED_REVISION, tool.read_identity()[1]),
+                "source diff differs",
+            )
+
+
+def verify_staged_drift() -> None:
+    with admitted_entry() as (entry, _, _, fake_git):
+        saw_head = False
+
+        def staged(source: Path, *arguments: str) -> bytes:
+            nonlocal saw_head
+            if arguments[:2] == ("diff", "--no-ext-diff"):
+                saw_head = "HEAD" in arguments
+                return tool.read_identity()[1] + b"staged drift"
+            return fake_git(source, *arguments)
+
+        with mock.patch.object(tool, "git", side_effect=staged):
+            expect_tool_error(
+                "verify-staged-drift-inner",
+                lambda: tool.verify_entry(entry, EXPECTED_REVISION, tool.read_identity()[1]),
+                "source diff differs",
+            )
+        if not saw_head:
+            raise SmokeFailure("source verification did not compare staged state to HEAD")
+
+
+def verify_output_refusals() -> None:
+    patch = tool.read_identity()[1]
+    with admitted_entry() as (entry, _, _, fake_git):
+        instrument = entry / tool.INSTRUMENT
+        instrument.unlink()
+        with mock.patch.object(tool, "git", side_effect=fake_git):
+            expect_tool_error("missing-output", lambda: tool.verify_entry(entry, EXPECTED_REVISION, patch), "unavailable")
+    with admitted_entry() as (entry, _, _, fake_git):
+        instrument = entry / tool.INSTRUMENT
+        instrument.unlink()
+        instrument.mkdir()
+        with mock.patch.object(tool, "git", side_effect=fake_git):
+            expect_tool_error("directory-output", lambda: tool.verify_entry(entry, EXPECTED_REVISION, patch), "not a regular")
+    with admitted_entry() as (entry, _, _, fake_git):
+        instrument = entry / tool.INSTRUMENT
+        instrument.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        with mock.patch.object(tool, "git", side_effect=fake_git):
+            expect_tool_error("non-executable-output", lambda: tool.verify_entry(entry, EXPECTED_REVISION, patch), "not executable")
+    with admitted_entry() as (entry, _, _, fake_git):
+        make_instrument(entry / tool.INSTRUMENT, version="version: build 1, commit bb4caa7")
+        with mock.patch.object(tool, "git", side_effect=fake_git):
+            expect_tool_error("wrong-version", lambda: tool.verify_entry(entry, EXPECTED_REVISION, patch), "version differs")
+
+
+def verify_boundary_refusals() -> None:
+    patch = tool.read_identity()[1]
+    with tempfile.TemporaryDirectory(prefix="r2c-boundary-") as temporary:
+        root = Path(temporary)
+        target = root / "target"
+        target.mkdir()
+        entry = root / "entry"
+        entry.symlink_to(target, target_is_directory=True)
+        expect_tool_error("entry-symlink", lambda: tool.verify_entry(entry, EXPECTED_REVISION, patch), "not a real directory")
+    with admitted_entry() as (entry, root, _, fake_git):
+        source = entry / "source"
+        source.rmdir()
+        target = root / "source-target"
+        target.mkdir()
+        source.symlink_to(target, target_is_directory=True)
+        with mock.patch.object(tool, "git", side_effect=fake_git):
+            expect_tool_error("source-symlink", lambda: tool.verify_entry(entry, EXPECTED_REVISION, patch), "not a real directory")
+    with admitted_entry() as (entry, root, _, fake_git):
+        build = entry / "build"
+        instrument_bytes = (entry / tool.INSTRUMENT).read_bytes()
+        for child in sorted(build.rglob("*"), reverse=True):
+            if child.is_file():
+                child.unlink()
+            elif child.is_dir():
+                child.rmdir()
+        build.rmdir()
+        target = root / "build-target"
+        target.mkdir()
+        make_instrument(target / "bin" / "llama-eval-callback")
+        build.symlink_to(target, target_is_directory=True)
+        with mock.patch.object(tool, "git", side_effect=fake_git):
+            expect_tool_error("build-symlink", lambda: tool.verify_entry(entry, EXPECTED_REVISION, patch), "not a real directory")
+        del instrument_bytes
+    with admitted_entry() as (entry, root, _, fake_git):
+        instrument = entry / tool.INSTRUMENT
+        instrument.unlink()
+        target = root / "instrument-target"
+        make_instrument(target)
+        instrument.symlink_to(target)
+        with mock.patch.object(tool, "git", side_effect=fake_git):
+            expect_tool_error("instrument-symlink", lambda: tool.verify_entry(entry, EXPECTED_REVISION, patch), "not a regular")
+
+
+def attestation_contract() -> None:
+    with admitted_entry() as (entry, _, body, fake_git):
+        with mock.patch.object(tool, "git", side_effect=fake_git):
+            document = tool.attest(entry, EXPECTED_REVISION, tool.read_identity()[1], EXPECTED_PATCH_SHA256)
+        expected = {
+            "attestation_schema_version": 1,
+            "generation": "r2c-v2",
+            "revision": EXPECTED_REVISION,
+            "patch_sha256": EXPECTED_PATCH_SHA256,
+            "patch_bytes": EXPECTED_PATCH_BYTES,
+            "instrument_bytes": len(body),
+        }
+        for field, value in expected.items():
+            if document.get(field) != value:
+                raise SmokeFailure(f"attestation {field}: {document.get(field)!r} != {value!r}")
+        if len(document.get("instrument_sha256", "")) != 64:
+            raise SmokeFailure("attestation instrument digest is absent")
+        json.dumps(document, sort_keys=True)
+
+
+def fake_prepare_dependencies(
+    patch: bytes,
+    *,
+    fail: str | None = None,
+) -> tuple[Callable[..., tuple[bytes, bytes]], Callable[..., bytes], list[str]]:
+    events: list[str] = []
+
+    def fake_execute(arguments: tuple[str, ...], **kwargs: object) -> tuple[bytes, bytes]:
+        del kwargs
+        if arguments[:3] == ("git", "init", "--quiet"):
+            events.append("git-init")
+            if fail == "git-init":
+                raise tool.ToolchainError("injected git init")
+            Path(arguments[3]).mkdir(parents=True)
+            return b"", b""
+        if "-S" in arguments and "-B" in arguments:
+            events.append("configure")
+            if fail == "configure":
+                raise tool.ToolchainError("injected configure")
+            Path(arguments[arguments.index("-B") + 1]).mkdir(parents=True)
+            return b"", b""
+        if "--build" in arguments:
+            events.append("build")
+            if fail == "build":
+                raise tool.ToolchainError("injected build")
+            build = Path(arguments[arguments.index("--build") + 1])
+            make_instrument(build / "bin" / "llama-eval-callback")
+            return b"", b""
+        if arguments[-1:] == ("--version",):
+            events.append("version")
+            if fail == "version":
+                return b"", b"version: build 1, commit bb4caa7\n"
+            return b"", b"version: build 10566, commit bb4caa7\n"
+        raise SmokeFailure(f"unexpected execute call {arguments!r}")
+
+    def fake_git(source: Path, *arguments: str) -> bytes:
+        del source
+        if arguments[:3] == ("remote", "add", "origin"):
+            events.append("remote")
+            return b""
+        if arguments[:3] == ("fetch", "--depth=1", "--no-tags"):
+            events.append("fetch")
+            if fail == "fetch":
+                raise tool.ToolchainError("injected fetch")
+            return b""
+        if arguments[:3] == ("checkout", "--detach", "--quiet"):
+            events.append("checkout")
+            return b""
+        if arguments == ("rev-parse", "HEAD"):
+            return (("0" * 40 if fail == "revision" else EXPECTED_REVISION) + "\n").encode("ascii")
+        if arguments == ("rev-parse", "FETCH_HEAD"):
+            return (EXPECTED_REVISION + "\n").encode("ascii")
+        if arguments == ("status", "--porcelain=v1", "--untracked-files=all"):
+            return b""
+        if arguments[:3] == ("apply", "--unidiff-zero", "--check"):
+            events.append("apply-check")
+            if fail == "apply":
+                raise tool.ToolchainError("injected apply")
+            return b""
+        if arguments[:2] == ("apply", "--unidiff-zero"):
+            events.append("apply")
+            return b""
+        if arguments == ("ls-files", "--others"):
+            return b""
+        if arguments[:2] == ("diff", "--no-ext-diff"):
+            return patch
+        raise SmokeFailure(f"unexpected git call {arguments!r}")
+
+    return fake_execute, fake_git, events
+
+
+def prepare_success_and_reuse() -> None:
+    revision, patch, digest = tool.read_identity()
+    with tempfile.TemporaryDirectory(prefix="r2c-prepare-") as temporary:
+        root = Path(temporary) / "root"
+        fake_execute, fake_git, events = fake_prepare_dependencies(patch)
+        with mock.patch.object(tool, "execute", side_effect=fake_execute), mock.patch.object(
+            tool, "git", side_effect=fake_git
+        ), mock.patch.dict(os.environ, {"ALIGN_LLM_LLAMA_REPOSITORY": "/fixture", "CMAKE": "cmake"}, clear=False):
+            first = tool.prepare(root, revision, patch, digest)
+            first_preparation_events = tuple(event for event in events if event != "version")
+            second = tool.prepare(root, revision, patch, digest)
+        if first != second or not first.is_dir():
+            raise SmokeFailure("prepare did not publish and reuse one entry")
+        if first_preparation_events != tuple(event for event in events if event != "version"):
+            raise SmokeFailure("existing entry launched preparation commands")
+        if any(path.name.startswith("." + tool.identity_name(revision, digest) + ".tmp-") for path in root.iterdir()):
+            raise SmokeFailure("successful prepare retained staging")
+
+
+def prepare_failures() -> None:
+    revision, patch, digest = tool.read_identity()
+    for phase in ("git-init", "fetch", "revision", "apply", "configure", "build", "version"):
+        with tempfile.TemporaryDirectory(prefix="r2c-failure-") as temporary:
+            root = Path(temporary) / "root"
+            fake_execute, fake_git, _ = fake_prepare_dependencies(patch, fail=phase)
+            with mock.patch.object(tool, "execute", side_effect=fake_execute), mock.patch.object(
+                tool, "git", side_effect=fake_git
+            ), mock.patch.dict(os.environ, {"ALIGN_LLM_LLAMA_REPOSITORY": "/fixture", "CMAKE": "cmake"}, clear=False):
+                expect_tool_error(
+                    f"prepare-{phase}",
+                    lambda: tool.prepare(root, revision, patch, digest),
+                    "revision" if phase == "revision" else "injected" if phase != "version" else "version differs",
+                )
+            destination = tool.entry_path(root, revision, digest)
+            if destination.exists() or destination.is_symlink():
+                raise SmokeFailure(f"prepare {phase} published a destination")
+            leftovers = [path.name for path in root.iterdir() if ".tmp-" in path.name]
+            if leftovers:
+                raise SmokeFailure(f"prepare {phase} retained staging {leftovers!r}")
+
+
+def prepare_collision() -> None:
+    revision, patch, digest = tool.read_identity()
+    with tempfile.TemporaryDirectory(prefix="r2c-collision-") as temporary:
+        root = Path(temporary) / "root"
+        fake_execute, fake_git, _ = fake_prepare_dependencies(patch)
+        destination = tool.entry_path(root, revision, digest)
+        calls = 0
+
+        def collide(entry: Path, selected_revision: str, selected_patch: bytes) -> str:
+            nonlocal calls
+            del selected_revision, selected_patch
+            calls += 1
+            if calls == 1:
+                destination.mkdir()
+            return "version: build 10566, commit bb4caa7"
+
+        with mock.patch.object(tool, "execute", side_effect=fake_execute), mock.patch.object(
+            tool, "git", side_effect=fake_git
+        ), mock.patch.object(tool, "verify_entry", side_effect=collide), mock.patch.dict(
+            os.environ, {"ALIGN_LLM_LLAMA_REPOSITORY": "/fixture", "CMAKE": "cmake"}, clear=False
+        ):
+            expect_tool_error(
+                "prepare-collision-inner",
+                lambda: tool.prepare(root, revision, patch, digest),
+                "destination appeared",
+            )
+        if not destination.is_dir():
+            raise SmokeFailure("collision destination was removed")
+        if any(".tmp-" in path.name for path in root.iterdir()):
+            raise SmokeFailure("collision retained staging")
+
+
+def prepare_interruption() -> None:
+    revision, patch, digest = tool.read_identity()
+    with tempfile.TemporaryDirectory(prefix="r2c-interrupt-") as temporary:
+        root = Path(temporary) / "root"
+        fake_execute, fake_git, _ = fake_prepare_dependencies(patch)
+
+        def interrupt(arguments: tuple[str, ...], **kwargs: object) -> tuple[bytes, bytes]:
+            if "-S" in arguments and "-B" in arguments:
+                raise KeyboardInterrupt()
+            return fake_execute(arguments, **kwargs)
+
+        with mock.patch.object(tool, "execute", side_effect=interrupt), mock.patch.object(
+            tool, "git", side_effect=fake_git
+        ), mock.patch.dict(os.environ, {"ALIGN_LLM_LLAMA_REPOSITORY": "/fixture", "CMAKE": "cmake"}, clear=False):
+            try:
+                tool.prepare(root, revision, patch, digest)
+            except KeyboardInterrupt:
+                pass
+            else:
+                raise SmokeFailure("prepare interruption did not propagate")
+        if tool.entry_path(root, revision, digest).exists():
+            raise SmokeFailure("interrupted prepare published a destination")
+        if any(".tmp-" in path.name for path in root.iterdir()):
+            raise SmokeFailure("interrupted prepare retained staging")
+
+
+def tiny_model_atomic_download() -> None:
+    good = b"pinned tiny model"
+    digest = hashlib.sha256(good).hexdigest()
+    with tempfile.TemporaryDirectory(prefix="r2c-tiny-model-") as temporary:
+        root = Path(temporary)
+        source = root / "source"
+        build = root / "build"
+        (source / "cmake").mkdir(parents=True)
+        (source / "cmake" / "download-models.cmake").write_text("fixture\n", encoding="utf-8")
+
+        def interrupted(arguments: tuple[str, ...], **kwargs: object) -> object:
+            del kwargs
+            destination = Path(next(value[7:] for value in arguments if value.startswith("-DDEST=")))
+            destination.write_bytes(b"partial")
+            raise qualification.QualificationError("injected download failure")
+
+        with mock.patch.object(qualification, "TINY_SHA256", digest), mock.patch.object(
+            qualification, "command", side_effect=interrupted
+        ):
+            try:
+                qualification.ensure_tiny_model(source, build)
+            except qualification.QualificationError as error:
+                if "injected download failure" not in str(error):
+                    raise
+            else:
+                raise SmokeFailure("interrupted tiny-model download succeeded")
+        model = build / qualification.TINY_NAME
+        if model.exists() or any(path.name.startswith(f".{model.name}.tmp-") for path in model.parent.iterdir()):
+            raise SmokeFailure("interrupted tiny-model download poisoned the cache")
+
+        def succeeded(arguments: tuple[str, ...], **kwargs: object) -> object:
+            del kwargs
+            destination = Path(next(value[7:] for value in arguments if value.startswith("-DDEST=")))
+            destination.write_bytes(good)
+            return subprocess.CompletedProcess(arguments, 0)
+
+        with mock.patch.object(qualification, "TINY_SHA256", digest), mock.patch.object(
+            qualification, "command", side_effect=succeeded
+        ):
+            selected = qualification.ensure_tiny_model(source, build)
+        if selected != model or model.read_bytes() != good:
+            raise SmokeFailure("successful tiny-model download was not atomically published")
+        if any(path.name.startswith(f".{model.name}.tmp-") for path in model.parent.iterdir()):
+            raise SmokeFailure("successful tiny-model download retained staging")
+
+
+def moe_full_axis_threshold() -> None:
+    def document(used: int, tokens: int) -> dict[str, object]:
+        return {
+            "moe": {"present": True, "n_expert_used": used, "slots_truncated": False},
+            "graphs": [{"phase": "decode", "tokens_truncated": False}],
+            "selections": [
+                {"graph": 0, "layer": 0, "token": token, "slot": slot}
+                for token in range(tokens)
+                for slot in range(used)
+            ],
+        }
+
+    for used, tokens in ((7, 1), (4, 7)):
+        evidence = qualification.assert_moe(document(used, tokens))
+        if evidence[3] != 7:
+            raise SmokeFailure(f"wrong full-axis extent evidence {evidence!r}")
+    try:
+        qualification.assert_moe(document(4, 2))
+    except qualification.QualificationError as error:
+        if "above six" not in str(error):
+            raise
+    else:
+        raise SmokeFailure("compact-only MoE trace satisfied the full-axis qualification")
+
+
+checked("pin-patch-contract", patch_contract)
+checked("identity-refusals", identity_refusals)
+checked("cache-contract", cache_contract)
+checked("cmake-contract", cmake_contract)
+for name, environment, fragment in (
+    ("relative-explicit-root", {"ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT": "relative"}, "absolute"),
+    ("unsafe-explicit-root", {"ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT": "/has space"}, "without whitespace"),
+    ("missing-home", {}, "HOME"),
+):
+    expect_tool_error(name, lambda environment=environment: tool.cache_root(environment), fragment)
+expect_tool_error("unsafe-repository", lambda: tool.safe_value("repository", "two words"), "without whitespace")
+expect_tool_error("unsafe-cmake", lambda: tool.safe_value("CMAKE", ""), "non-empty")
+expect_tool_error("bad-kind", lambda: tool.selected_path(Path("/entry"), "bad"), "unsupported")
+checked("cli", subprocess_cli)
+checked("verify-success", verify_success)
+checked("verify-wrong-revision", verify_wrong_revision)
+checked("verify-untracked", verify_untracked)
+checked("verify-patch-drift", verify_patch_drift)
+checked("verify-staged-drift", verify_staged_drift)
+checked("verify-output-refusals", verify_output_refusals)
+checked("verify-boundary-refusals", verify_boundary_refusals)
+checked("attestation", attestation_contract)
+checked("prepare-success-reuse", prepare_success_and_reuse)
+checked("prepare-failures", prepare_failures)
+checked("prepare-collision", prepare_collision)
+checked("prepare-interruption", prepare_interruption)
+checked("tiny-model-atomic-download", tiny_model_atomic_download)
+checked("moe-full-axis-threshold", moe_full_axis_threshold)
+
+print(f"r2c instrument smoke: PASS - {case_count} contract groups")

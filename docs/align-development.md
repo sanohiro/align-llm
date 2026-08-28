@@ -243,7 +243,7 @@ provider-independent verification loop. A task JSON document has this shape:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "task_id": "task-name",
   "root": "/path/to/worktree",
   "candidate_patch": "/path/to/candidate.patch",
@@ -259,7 +259,10 @@ provider-independent verification loop. A task JSON document has this shape:
 
 Set `repair_patch` to an empty string when the task should stop after the first failing stage.
 `memory_profile` is optional. Set it to a repo-local `.alignprof` path to enable failure memory, or
-omit it to preserve the C4 behavior without persistence.
+omit it to preserve the C4 behavior without persistence. `targeted_test` is also optional: omit it
+or set it to JSON `null` when the required `full_test` command already owns complete acceptance.
+Use a command object only when the caller wants an earlier fast-fail diagnostic. Schema 1 is not a
+compatibility input and is rejected with an `INVALID`, code 2 schema-2 result.
 
 Run it with:
 
@@ -268,22 +271,25 @@ Run it with:
 ```
 
 The loop evaluates the candidate through C3, checks and applies it with `git apply`, then runs
-build, targeted-test, and full-test in order. A failed stage is captured with its exit code,
-duration, summary, stdout, and stderr. The repair prompt includes that diagnostic and the C3
-evaluation document. If a repair patch is configured and the iteration budget permits, it is
-checked and applied once, then the next iteration verifies the repaired worktree. The result uses
-`PASS`, `GAVE_UP`, `EXHAUSTED`, `REPAIR_FAILED`, or `INVALID` status labels and preserves all
-attempts for later provider or failure-memory work.
+build, an optional targeted-test, and the required full-test in order. With no targeted command the
+order is candidate-apply, build, full-test on the first attempt and build, full-test on repaired
+attempts. A failed stage is captured with its exit code, duration, summary, stdout, and stderr. The
+repair prompt includes that diagnostic and the C3 evaluation document. If a repair patch is
+configured and the iteration budget permits, it is checked and applied once, then the next
+iteration verifies the repaired worktree. The compact result uses schema 2, emits only stages that
+actually ran, uses `PASS`, `GAVE_UP`, `EXHAUSTED`, `REPAIR_FAILED`, or `INVALID` status labels, and
+preserves all attempts for later provider or failure-memory work.
 
 ## Failure-memory development
 
 The C5 slice is `src/failure_memory.align`. When `memory_profile` is configured, each completed
-verification appends one JSON object to the profile rather than rewriting a mutable array. The
-event records the task and attempted patch, first failed stage/test, root-cause summary, repair
-result, successful and unsuccessful strategies, recommended tests, risky symbols, iteration
-counts, and risk score. The next run selects up to the three newest events for the same task and
-adds them to every repair prompt. A missing or unreadable profile starts with empty context, and a
-profile write/decode failure does not replace the already-written verification result.
+schema-2 verification appends one schema-1 memory event to the profile rather than rewriting a
+mutable array. The event records the task and attempted patch, first failed stage/test, root-cause
+summary, repair result, successful and unsuccessful strategies, recommended tests, risky symbols,
+iteration counts, and risk score. The next run selects up to the three newest events for the same
+task and adds them to every repair prompt. A missing or unreadable profile starts with empty
+context, and a profile write/decode failure does not replace the already-written verification
+result.
 
 The fixed smoke proves persistence and reuse by running the same task twice:
 
@@ -675,6 +681,71 @@ is a hard failure and never a skip. The runner also asserts the `bytes_read` bou
 model's size and modification time are unchanged, which is the read-only proof. The instrument runs
 under a 600-second `timeout` so a run that fails to terminate is a bounded failure.
 
+### The pinned R2c decode instrument
+
+R2c's authoritative external-dependency contract is
+`docs/specs/r2c-decode-instrument.md`. `.llama-revision` pins llama.cpp commit
+`bb4caa7540188872173c44d161602d9271386413`, and
+`patches/llama.cpp/r2c-decode-instrument.patch` is the reviewed two-file diff. It changes the
+measurement example only: `ffn_moe_topk` axes print in full, and a positive `-n N` evaluates up to N
+sampled non-EOG tokens as one-token decode graphs. No llama.cpp source or binary is committed.
+
+The managed builder writes outside the work tree and binds its cache entry to both full source
+identities:
+
+```sh
+scripts/llama-eval-callback-toolchain path instrument
+scripts/llama-eval-callback-toolchain ensure instrument
+scripts/llama-eval-callback-toolchain verify
+scripts/llama-eval-callback-toolchain attest instrument
+```
+
+`path` is read-only and need not name an existing entry. `ensure` performs a one-commit fetch, exact
+patch application, a fixed CPU CMake build with Metal and llama/ggml shared libraries disabled,
+admission, and atomic publication. `verify` rejects source revision or staged/unstaged diff drift
+from `HEAD`, untracked source, symlink boundaries, missing or non-executable output, and anything
+whose version is not build 10566 / commit `bb4caa7`. `attest instrument` emits the source and patch
+identities plus the platform-local instrument digest.
+
+The cache root is `ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT/r2c-v2` when explicitly set, otherwise
+`$XDG_CACHE_HOME/align-llm/llama.cpp/r2c-v2` or `$HOME/.cache/align-llm/llama.cpp/r2c-v2`.
+The resolved generation path must be outside the align-llm checkout; lexical containment and a
+cache path that reaches the checkout through a symlink are both refused before any write.
+`ALIGN_LLM_LLAMA_REPOSITORY` overrides the public upstream URL for an offline/local source, `CMAKE`
+selects one CMake command, and `CMAKE_BUILD_PARALLEL_LEVEL` controls build scheduling. Unsafe,
+relative, whitespace-containing, or semantically drifted inputs fail; no ambient llama.cpp checkout
+or binary is selected.
+
+The schema-1 parser now selects compact versus full axes from the actual ellipsis. Existing
+build-10566 compact transcripts retain first/last-three indices and byte-identical documents; an
+R2c router axis reports every slot/token and false truncation flags. The deterministic owners are:
+
+```sh
+scripts/run-r2c-instrument-smoke
+make expert-trace-smoke
+make residency-sim-smoke
+```
+
+The compiled focused qualification materializes the instrument, downloads upstream's SHA-pinned
+15M dense test model into a temporary sibling, atomically publishes it only after hash validation,
+and proves legacy one-prefill versus patched one-prefill-plus-two-decode behavior through
+`main --expert-trace`:
+
+```sh
+scripts/run-r2c-instrument-qualification
+
+ALIGN_LLM_GGUF_MODEL=/path/to/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf \
+  scripts/run-r2c-instrument-qualification
+```
+
+The first command must pass the dense half, proving omitted, zero, and negative `-n` each retain
+one prefill graph while `-n 2` adds two decode graphs, and prints exact N/A for the optional MoE
+half. The second additionally requires `moe.present: true`, at least one decode graph, no slot/token
+truncation, every observed routing group to contain all `n_expert_used` slots, and at least one
+retained router axis extent above six so the changed full-axis branch is actually exercised. Any
+selected model/instrument failure is a hard failure, transcripts are bounded to 256 MiB and removed,
+and no latency or locality claim is made.
+
 ### The R2 locality gate
 
 `scripts/run-expert-locality-gate` is the R2 roadmap gate's measurement: it captures one prefill
@@ -682,6 +753,10 @@ transcript per prompt from a checked-in corpus, derives one `R2_ACTIVATION_TRACE
 with `main --expert-trace`, deletes the transcript, and pools every document into one verdict. The
 numbers it produced, and every caveat they carry, are recorded in `docs/specs/r2a-expert-trace.md`
 section 8; that section is authoritative for the result and this one for how to run it.
+The runner passes explicit `-n 0`, so positive-`-n` decode cannot enter this historical prefill
+gate. It also requires the original compact first/last-three router-slot form: selecting the R2c
+full-axis instrument is a controlled measurement failure, not a silent change from six to eight
+observed slots. Use `run-r2c-instrument-qualification` for R2c full-axis/decode evidence.
 
 ```sh
 ALIGN_LLM_GGUF_MODEL=/path/to/moe-model.gguf \
@@ -752,6 +827,127 @@ comparison, so the verdict is a comparison of integers.
 
 The gate joins no aggregate and no `Makefile` target: adding one would select the fresh-image
 preflight profile for a runner that cannot execute in CI anyway.
+
+## Residency simulation development
+
+R3-RESIDENCY-SIM's authoritative plan is `docs/specs/r3-residency-sim.md`, which owns the contract
+ledger, the policy set, the exchanged document, the validation order, the closure matrix, the
+correction ledger, and the probe record. It replays the demand stream implied by a set of
+`R2_ACTIVATION_TRACE` documents against ten expert-residency cache policies at a nine-point budget
+sweep, and answers the roadmap section R3 gate question — is any policy materially better than the
+baseline on this hardware condition — with a measured verdict rather than an opinion. It needs no
+model, no instrument, and no GPU: its inputs are two documents this repository already produces.
+
+The CLI arm has the same two forms every other document verb has:
+
+```sh
+./main --simulate-residency TRACES.txt MODEL-IR.json BUDGET_BYTES
+./main --simulate-residency TRACES.txt MODEL-IR.json BUDGET_BYTES RESIDENCY.json
+```
+
+`TRACES.txt` is a list of `R2_ACTIVATION_TRACE` document paths, one per line; `MODEL-IR.json` is an
+`R1_MODEL_IR` document, from which only the `ExpertBlock` rows and their `byte_size` are read;
+`BUDGET_BYTES` is the requested residency budget in bytes, parsed by the module's own decimal parser
+rather than through a `json.decode` detour. The three-operand form prints the whole
+`R3_RESIDENCY_SIM` (`schema_version: 1`) document and nothing else, and the four-operand form writes
+it to `RESIDENCY.json` and prints the stable human summary block instead; both forms produce a
+byte-identical document, which the owner asserts on every case. All four operands are validated
+lexically against `MAX_PATH_BYTES` (4096) and rejected for a NUL byte before any file work, so an
+unusable destination never costs a simulation. Every rate in the summary carries the router-slot
+coverage it is conditional on: the instrument prints six of eight slots on the subject model, so no
+number is a hit rate without the qualifier "over printed slots".
+
+**The narrow durable owner is `gmake residency-sim-smoke`**, and it is a member of
+`HOSTED_CHECK_TARGETS` alongside `gguf-smoke`, `model-ir-smoke`, and `expert-trace-smoke` — the same
+justification admitted all four. It builds its own synthetic olmoe Model IRs and MoE transcripts,
+needs no model, no network, no instrument, and no GPU, writes well under a megabyte into a temporary
+tree, and runs in about a second. `scripts/check-gate-topology` pins the member list in two places
+and `gmake gate-topology-check` fails if either drifts.
+
+**The oracle is an independent Python re-implementation, not a self-check.** `scripts/residency_oracle.py`
+implements sections 2.2 through 2.8 of the plan from the plan and never from `src/`, renders the
+whole document itself, and the smoke compares every integer of every policy at every sweep budget in
+both demand orders, with no tolerance. One case is additionally pinned by a checked-in golden,
+`eval/fixtures/residency-sim/sim-basic.golden.json`, with its three host-dependent values normalized
+(the two path operands and `inputs.bytes_read`, which grows with the scratch directory's name).
+Regenerate the golden deliberately, never by hand:
+
+```sh
+ALIGN_LLM_RESIDENCY_SIM_UPDATE_GOLDEN=1 gmake residency-sim-smoke
+```
+
+That switch rewrites the file and prints `residency sim smoke: golden rewritten`; review the diff
+before committing it, because the golden is a contract record and not a cache.
+
+**The focused qualification is `gmake residency-sim-qualification`**, which runs
+`scripts/run-residency-sim`. It is the run that discharges the roadmap section R3 gate on the real
+corpus: it captures one prefill transcript per prompt with the flags and safeguards
+`scripts/run-expert-locality-gate` established, derives one `R2_ACTIVATION_TRACE` per transcript with
+`main --expert-trace`, deletes each transcript immediately, derives the `R1_MODEL_IR` once with
+`main --model-ir`, and runs `main --simulate-residency` over the result.
+The shared capture flags include explicit `-n 0`, and the wrapper reuses R2's historical
+compact-axis admission before simulation. An R2c full-axis document is therefore refused rather
+than changing the measured six-slot demand stream under the old R3 capability name.
+
+```sh
+ALIGN_LLM_GGUF_MODEL=/path/to/moe-model.gguf \
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \
+  gmake residency-sim-qualification
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ALIGN_LLM_GGUF_MODEL` | none | a **MoE** GGUF; the subject model |
+| `ALIGN_LLM_LLAMA_EVAL_CALLBACK` | none | the callback instrument executable |
+| `ALIGN_LLM_LOCALITY_PROMPTS` | `eval/prompts/expert-locality-v1.txt` | the prompt corpus, one prompt per line |
+| `ALIGN_LLM_LOCALITY_PROMPT_COUNT` | `40` | prompts to use, taken from the **top** of the corpus in file order |
+| `ALIGN_LLM_RESIDENCY_BUDGET` | 25 per cent of the model's expert byte footprint | the `BUDGET_BYTES` operand |
+| `ALIGN_LLM_RESIDENCY_SIM_UPDATE_GOLDEN` | unset | owner-only; `1` rewrites the checked-in golden instead of comparing against it |
+
+**The opt-in is over exactly the two variables that name the subject.** Neither has a default,
+because a qualification that silently passes when its subject is missing is worse than no
+qualification. A missing or unusable subject prints exactly one of these lines, in this order, and
+exits 0 without claiming a measurement; the line must be quoted as the `N/A` reason in the pull
+request:
+
+```text
+residency sim qualification: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)
+residency sim qualification: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable)
+residency sim qualification: N/A (ALIGN_LLM_GGUF_MODEL unset)
+residency sim qualification: N/A (ALIGN_LLM_GGUF_MODEL is absent)
+```
+
+The other three variables are **overrides, not switches**: they have defaults, and a corpus this
+script was pointed at and cannot read is a broken invocation that exits 1, never `N/A`.
+
+**The qualification is a measurement, not a pass/fail owner test.** It exits 0 on all three
+`verdict.result` values — `BEATS_BASELINE`, `NO_POLICY_BEATS_BASELINE`, and `NO_HEADROOM` are all
+answers to the roadmap question — and exits nonzero only when the instrument, the corpus, or a
+parser prevented a measurement from being taken. It prints human tables and one machine-readable
+final line:
+
+```text
+residency-sim verdict=... budget=... baseline_bytes=... best=... best_bytes=... gain_per_mille=...
+  headroom_per_mille=... jackknife_folds=... jackknife_min_per_mille=... jackknife_stable=...
+  demands=... token_positions=... distinct_keys=... slot_coverage_per_mille=...
+```
+
+It deliberately joins no aggregate — not `HOSTED_CHECK_TARGETS`, not `CAPABLE_ONLY_CHECK_TARGETS`,
+and not `ci` — because it needs a multi-gigabyte model and an external instrument that CI does not
+have. Its elapsed time is printed as a diagnostic and is not a performance claim; the whole result
+compares fetched bytes only.
+
+**Two Align capability requests came out of implementing this module**, both recorded in
+`docs/align-requests.md` with fresh sibling probes under the pinned compiler and neither blocking:
+**Request 45** (priority high) is a compiler soundness defect — the region checker accepts a move of
+a Move-typed field out of a `json.decode`d record through a two-hop field-access chain with no
+diagnostic, and the built program corrupts the heap at run time when the decoded record's recursive
+`Drop` frees the same string again; the shipped fix is one `.clone()`. **Request 46** is two related
+array-shape gaps — a local `array<i64>` passed `borrow mut` into a call inside a `loop` invalidates
+the caller's later reads of it, and an `array<i64>` field of a record cannot be element-assigned at
+all — which together force every helper here to return owned columns and force one admission block
+to be written twice rather than factored into a helper. Read both before restructuring
+`src/residency_sim.align`.
 
 ## alignpack development
 
@@ -1377,9 +1573,11 @@ against the exact head rather than reasoning from this paragraph.
 
 ## MoE layer forward development
 
-R5D-MOE-LAYER-FORWARD is the design of record on branch `agent/r5d-moe-layer-forward`, ledger
-commit `3cb8d59`; implementation is **in progress** and the fields below marked open are finalized
-with the implementation. Its authoritative plan is `docs/specs/r5d-moe-layer-forward.md`, which owns
+R5D-MOE-LAYER-FORWARD is merged as PR #139, merge commit `e312bd7`; it was the design of record on
+branch `agent/r5d-moe-layer-forward`, ledger
+commit `a85e1fc` after the rebase onto the merged R3 residency simulator at `main` `95c47e7`, with
+implementation `7886cee` and review repair `a2e2748`, so every field below is
+finalized. Its authoritative plan is `docs/specs/r5d-moe-layer-forward.md`, which owns
 the probe record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
 deferrals, risks, and candidate-request sections. It answers R5's second gate stage for a **routed**
 layer — one prefill of at most six tokens through OLMoE `blk.0`, computed by ggml over attention
@@ -1427,7 +1625,7 @@ section 3.3's, verbatim; the prompt `"def add(a, b"` (not `"def add(a, b):"`) is
 OLMoE's tokenizer produces seven ids for the latter, one over the cap.
 
 **Env vars, read by `scripts/run-moe-layer-forward` and reused unchanged from `run-layer-forward`
-where named (open — finalized with the implementation):**
+where named:**
 
 ```sh
 ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include \                # selects the REAL shim; unset selects the stub
@@ -1444,8 +1642,7 @@ nor `CAPABLE_ONLY_CHECK_TARGETS` — the same footing as `layer-forward-qualific
 `model-forward-qualification`. It reuses `run-layer-forward`'s `na()` detail strings verbatim (unset
 or non-directory `ALIGN_LLM_GGML_INCLUDE`/`ALIGN_LLM_GGML_LIB`, non-file `ALIGN_LLM_GGUF_MODEL`,
 non-executable `ALIGN_LLM_LLAMA_EVAL_CALLBACK`, an absent scratch root, insufficient free space) and
-adds one line of its own, for a model whose `arch` is not `olmoe` (open — final N/A wording finalized
-with the implementation):
+adds one line of its own, for a model whose `arch` is not `olmoe`:
 
 ```text
 moe layer forward qualification: N/A ALIGN_LLM_GGUF_MODEL is not an olmoe model
@@ -1461,12 +1658,15 @@ v1 container directly with real F32 members, at `n_expert 8` / `n_expert_used 3`
 the synthetic corpus is the only place the routing oracle's *full* print coverage is reachable; the
 real model structurally truncates 12 of 48 selected expert ids (ledger section 2.2 fact 6).
 
-**R5D adds no Makefile target and changes no aggregate membership beyond the fourth
-`layer-forward-smoke` block.** A separate `moe-layer-forward-smoke` target would add a
+**R5D adds no smoke target and changes no aggregate membership**; it does add one Makefile target,
+the opt-in `moe-layer-forward-qualification`. A separate `moe-layer-forward-smoke` target would add a
 `HOSTED_CHECK_TARGETS` member, which `docs/specs/check-gate-topology.md` and the `Makefile`'s own
-comment record as a check-topology change selecting `make ci` for publication; R5D keeps the
-topology fixed and stays in the ordinary lane. `moe-layer-forward-qualification` joins no aggregate
-and is named explicitly in the pull request, exactly as its three siblings are.
+comment record as a check-topology change selecting `make ci` for publication; R5D's fourth
+`layer-forward-smoke` block keeps the topology fixed, so `make ci` is not selected.
+`moe-layer-forward-qualification` joins no aggregate and is named explicitly in the pull request,
+exactly as its three siblings are — but a `Makefile` edit is still an executable-contract boundary,
+so `scripts/pre-pr` selects the **executable** row and the installed profile, not the documentation
+lane (ledger section 6, correction C15).
 
 The shim gains five new `extern` symbols (`argsort`, `mul_mat_id`, `view_2d`, a 3-D stacked-tensor
 constructor, and a 2-D i32 constructor) and one widened one (`soft_max_ext` with `mask == -1` meaning
@@ -1474,6 +1674,78 @@ no mask); `src/ggml_ffi.align` remains the only file with an `extern` block or a
 the `BEGIN/END R4.5 SHARED SHIM CONTRACT` region stays byte-identical (ledger section 4.2). **The
 shim is built with `-ffp-contract=off`**, inherited unchanged from R5A, and the runner asserts
 `abi.fp_contract_off` is `true`.
+
+## MoE whole-model prefill development
+
+R5E-MOE-MODEL-PREFILL is the design of record on branch `agent/r5e-moe-model-prefill`, ledger commit
+`5e3356d`, implementation `053de09`, review repair `e7f727f`, merged with the merged R5D at `main`
+`e312bd7`. Its authoritative plan is `docs/specs/r5e-moe-model-prefill.md`, which owns the probe
+record, the contract ledger, the closure matrix, and the fixtures, qualification, metrics,
+deferrals, risks, and candidate-request sections. It completes R5's second gate stage: a **whole**
+sixteen-layer OLMoE prefill of at most six tokens, per-layer routing, only the routed experts' planes
+read into Align-owned buffers, the output head, and an `R5_MOE_MODEL_FORWARD`, `schema_version: 1`
+document.
+
+It ships as a **fifth arm of the existing `ggml-spike` executable**, `--moe-model-forward`, beside
+R4.5's positional arm, `--layer-forward`, `--model-forward`/`--model-forward-gpu`, and
+`--moe-layer-forward`, and it reuses `src/layer_olmoe.align` — R5D's topology module, extended with
+layer-parameterized tables — rather than adding a second OLMoE description.
+
+```sh
+gmake ggml-spike                        # unchanged; also builds the --moe-model-forward arm
+gmake layer-forward-smoke               # extended with a fifth block; unchanged aggregate membership
+gmake moe-model-forward-qualification   # the opt-in real-ggml, real-model, two-instrument qualification
+```
+
+`--moe-model-forward` is selected by its exact first operand and takes exactly five, six, seven,
+eight, or nine operands — there is no arity gap:
+
+```sh
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json REF.gguf
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json REF.gguf TRANSCRIPT.txt
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json REF.gguf TRANSCRIPT.txt LOGITS.bin
+./ggml-spike --moe-model-forward PACK GEOM.json TOKENS KV_WIDTH DOC.json REF.gguf -              LOGITS.bin
+```
+
+**`KV_WIDTH` is mandatory and is operand five**, unlike R5B's optional trailing width, because on a
+routed model the declared attention width changes which experts the router selects and therefore
+which bytes the arm reads (ledger section 2.8). `-` is legal in exactly two positions: the document
+position, where it is R0's write-to-stdout convention, and the transcript position, where it means
+the transcript oracle does not run while the logits oracle still does. `-` anywhere else is
+`R5E_PATH`.
+
+**Env vars, read by `scripts/run-moe-model-forward`:**
+
+```sh
+ALIGN_LLM_GGML_INCLUDE=/opt/homebrew/include \                # selects the REAL shim; unset selects the stub
+ALIGN_LLM_GGML_LIB=/opt/homebrew/lib \                        # where libggml / libggml-base are
+ALIGN_LLM_GGUF_MODEL=/path/to/olmoe.gguf \                    # the OLMoE model to pack and use as the reference
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \  # the transcript and routing oracles
+ALIGN_LLM_LLAMA_DEBUG=/path/to/llama-debug \                  # the byte-exact logits oracle
+ALIGN_LLM_MOE_MODEL_FORWARD_TMPDIR=/path/to/scratch \         # where the pack is written; defaults to TMPDIR
+ALIGN_LLM_MOE_MODEL_FORWARD_EXCERPT_UPDATE=1 \                # refreshes the checked-in transcript excerpt
+  gmake moe-model-forward-qualification
+```
+
+`ALIGN_LLM_MOE_MODEL_FORWARD_TMPDIR` is deliberately **not** an N/A condition: it selects a location
+and defaults to `TMPDIR`. The other five are, along with a model whose `arch` is not `olmoe` and a
+scratch root with less than `model_bytes / 1024 + 1048576` KiB free — 5,163,334 KiB for
+`OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`.
+
+**The qualification runs the arm twice**, once at the instrument's reconciliation width (256 on this
+model at `-c 512`) with the transcript, and once at the runtime width (`KV_WIDTH == token_count`)
+with `-` in the transcript position, so the arm rather than the runner produces the runtime-width
+logits verdict. It asserts the tokenizer produced the six expected ids and that the two instruments
+agree with each other **before** invoking the arm, so an instrument skew is reported as an instrument
+skew rather than as a failing oracle.
+
+**R5E adds no smoke target and changes no aggregate membership**; like R5D it adds one opt-in
+Makefile target, `moe-model-forward-qualification`, and its owner is `layer-forward-smoke`'s fifth
+block. A `Makefile` edit is still an executable-contract boundary, so `scripts/pre-pr` selects the
+**executable** row and the installed profile rather than the documentation lane. The FFI boundary
+does **not** change: R5E adds no `extern` symbol and neither C shim gains one.
 
 ## The aarch64 platform-profile gates
 

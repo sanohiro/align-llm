@@ -214,6 +214,7 @@ pub TranscriptScan {
   n_expert: i64,
   n_expert_used: i64,
   n_expert_source: i64,
+  slots_truncated: bool,
   dense_ffn_present: bool,
 
   // Distinct node names, in first-seen order. `family_len` is the length of the `-N` family prefix,
@@ -232,6 +233,9 @@ pub TranscriptScan {
 
   // One entry per graph evaluation, in transcript order.
   graph_tokens: array<i64>,
+  graph_tokens_observed: array<i64>,
+  // `1` means the accepted token axis carried the build-10566 ellipsis; `0` means full.
+  graph_tokens_truncated: array<i64>,
   graph_nodes: array<i64>,
 
   // The selection table, in observation order, plus the packed sort key of the same rows.
@@ -311,8 +315,8 @@ fn valid_path(path: str) -> bool {
   return !path.contains("\0")
 }
 
-// Section 2.2 finding 6. `printed` is `min(ne, 6)`; `axis_index` maps a printed ordinal back to the
-// exact index it stands for, which is what makes a truncated prefill yield exact token indices.
+// Section 2.2 finding 6's compact form. `printed_count` is the fallback for nodes the R2c patch
+// leaves unchanged; `axis_index` maps a compact ordinal back to the exact first/last-three index.
 fn printed_count(ne: i64) -> i64 {
   if ne < 0 { return 0 }
   if ne <= TRUNCATION_PRINTED { return ne }
@@ -323,6 +327,28 @@ fn axis_index(ordinal: i64, ne: i64) -> i64 {
   if ne <= TRUNCATION_PRINTED { return ordinal }
   if ordinal < TRUNCATION_HALF { return ordinal }
   return ne - TRUNCATION_PRINTED + ordinal
+}
+
+// R2c keeps the build-10566 compact grammar and adds the patched instrument's full-axis form.
+// Before a marker, ordinals are direct. After the exact marker at ordinal three, the remaining
+// ordinals name the tail. `axis_complete` is the one close rule for axes 0, 1, and 2.
+fn axis_capacity(ne: i64, marked: bool, allow_full: bool) -> i64 {
+  if ne < 0 { return 0 }
+  if marked { return TRUNCATION_PRINTED }
+  if !allow_full && ne > TRUNCATION_PRINTED { return TRUNCATION_HALF }
+  return ne
+}
+
+fn axis_complete(count: i64, ne: i64, marked: bool, allow_full: bool) -> bool {
+  if ne < 0 { return false }
+  if marked { return ne > TRUNCATION_PRINTED && count == TRUNCATION_PRINTED }
+  if !allow_full && ne > TRUNCATION_PRINTED { return false }
+  return count == ne
+}
+
+fn observed_axis_index(ordinal: i64, ne: i64, marked: bool) -> i64 {
+  if marked { return axis_index(ordinal, ne) }
+  return ordinal
 }
 
 // The bounded decimal integer parse Align has no standard-library form of (section 5.5.2). `-1`
@@ -853,6 +879,7 @@ fn empty_scan(code: str, detail: string, file_size: i64, bytes_read: i64) -> Tra
     n_expert: -1,
     n_expert_used: -1,
     n_expert_source: SOURCE_NONE,
+    slots_truncated: false,
     dense_ffn_present: false,
     name_count: 0,
     names: "".clone(),
@@ -864,6 +891,8 @@ fn empty_scan(code: str, detail: string, file_size: i64, bytes_read: i64) -> Tra
     op_start: filled_table(0, 0),
     op_end: filled_table(0, 0),
     graph_tokens: filled_table(0, 0),
+    graph_tokens_observed: filled_table(0, 0),
+    graph_tokens_truncated: filled_table(0, 0),
     graph_nodes: filled_table(0, 0),
     selection_count: 0,
     sel_graph: filled_table(0, 0),
@@ -932,10 +961,16 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
   mut op_stream_len := 0
 
   mut graph_tokens_column: array_builder<i64> := array_builder()
+  mut graph_tokens_observed_column: array_builder<i64> := array_builder()
+  mut graph_tokens_truncated_column: array_builder<i64> := array_builder()
   mut graph_nodes_column: array_builder<i64> := array_builder()
   mut graph_index := 0
   mut graph_nodes := 0
   mut graph_tokens := -1
+  // The first non-reduced top-k block settles the graph's actual token print form. `-1` means a
+  // dense/no-router graph, which retains the entry tensor's compact build-10566 form.
+  mut graph_tokens_observed := -1
+  mut graph_tokens_truncated := -1
   // The one layer of the current graph accepted as token-reduced, or -1. Section 6 item 20's
   // exemption is the instrument's *tail* reduction, so at most one layer may claim it and it must
   // be the graph's highest layer index.
@@ -947,6 +982,13 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
   mut dense_ffn_present := false
   mut topk_present := false
   mut n_expert_used := -1
+  // Applicable only when n_expert_used > 6: 0 is full, 1 is compact, -1 is not settled.
+  mut slots_print_form := -1
+  mut slots_truncated := false
+  // Applicable only to a top-k axis 2 extent above 6. The transcript has no schema field for this
+  // structural axis, so one global form prevents groups or blocks with different denominators from
+  // being accepted into one document.
+  mut slices_print_form := -1
   mut probs_experts := -1
   mut logits_experts := -1
 
@@ -1044,7 +1086,7 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
         }
       } else if block_state == BLOCK_GROUP {
         if text == A2_OPEN {
-          if block_slices >= printed_count(block_ne2) {
+          if block_slices >= axis_capacity(block_ne2, block_a2_marked, block_is_topk) {
             failure = fault("R2_ROW_COUNT", block_name.clone())
             break
           }
@@ -1059,10 +1101,18 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
           }
           block_a2_marked = true
         } else if text == A3_CLOSE {
-          if block_slices != printed_count(block_ne2)
-            || (block_ne2 > TRUNCATION_PRINTED && !block_a2_marked) {
+          if !axis_complete(block_slices, block_ne2, block_a2_marked, block_is_topk) {
             failure = fault("R2_ROW_COUNT", block_name.clone())
             break
+          }
+          if block_is_topk && block_ne2 > TRUNCATION_PRINTED {
+            slice_form := if block_a2_marked { 1 } else { 0 }
+            if slices_print_form < 0 {
+              slices_print_form = slice_form
+            } else if slices_print_form != slice_form {
+              failure = fault("R2_ROW_COUNT", block_name.clone())
+              break
+            }
           }
           block_state = BLOCK_OUTER
         } else {
@@ -1071,10 +1121,20 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
         }
       } else {
         if text == A2_CLOSE {
-          if block_rows != printed_count(block_ne1)
-            || (block_ne1 > TRUNCATION_PRINTED && !block_a1_marked) {
+          if !axis_complete(block_rows, block_ne1, block_a1_marked, block_is_topk) {
             failure = fault("R2_ROW_COUNT", block_name.clone())
             break
+          }
+          if block_is_topk && !block_is_reduced {
+            token_form := if block_a1_marked { 1 } else { 0 }
+            if graph_tokens_observed < 0 {
+              graph_tokens_observed = block_rows
+              graph_tokens_truncated = token_form
+            } else if graph_tokens_observed != block_rows
+              || graph_tokens_truncated != token_form {
+              failure = fault("R2_ROW_COUNT", block_name.clone())
+              break
+            }
           }
           block_state = BLOCK_GROUP
         } else if text == A1_TRUNC {
@@ -1086,11 +1146,11 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
         } else if text.len() >= ROW_OPEN.len() + ROW_CLOSE.len()
           && text.starts_with(ROW_OPEN)
           && text.ends_with(ROW_CLOSE) {
-          if block_rows >= printed_count(block_ne1) {
+          if block_rows >= axis_capacity(block_ne1, block_a1_marked, block_is_topk) {
             failure = fault("R2_ROW_COUNT", block_name.clone())
             break
           }
-          token := axis_index(block_rows, block_ne1)
+          token := observed_axis_index(block_rows, block_ne1, block_a1_marked)
           block_rows = block_rows + 1
           // Both offsets are proved by the ASCII `starts_with` / `ends_with` pair above.
           inner := text[ROW_OPEN.len()..text.len() - ROW_CLOSE.len()]
@@ -1114,7 +1174,12 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
               }
               marked = true
             } else {
-              slot := axis_index(elements, block_ne0)
+              if elements >= axis_capacity(block_ne0, marked, block_is_topk) {
+                failure = fault("R2_ROW_COUNT", block_name.clone())
+                row_failed = true
+                break
+              }
+              slot := observed_axis_index(elements, block_ne0, marked)
               elements = elements + 1
               if block_is_topk {
                 expert := parse_integral_element(piece)
@@ -1153,10 +1218,19 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
             at = at + cut + 2
           }
           if row_failed { break }
-          if elements != printed_count(block_ne0)
-            || (block_ne0 > TRUNCATION_PRINTED && !marked) {
+          if !axis_complete(elements, block_ne0, marked, block_is_topk) {
             failure = fault("R2_ROW_COUNT", block_name.clone())
             break
+          }
+          if block_is_topk && block_ne0 > TRUNCATION_PRINTED {
+            row_form := if marked { 1 } else { 0 }
+            if slots_print_form < 0 {
+              slots_print_form = row_form
+              slots_truncated = marked
+            } else if slots_print_form != row_form {
+              failure = fault("R2_ROW_COUNT", block_name.clone())
+              break
+            }
           }
         } else {
           failure = fault("R2_VALUE_GRAMMAR", int_text(line.offset))
@@ -1237,6 +1311,13 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
         entry_name = name_index
       } else if name_index == entry_name && graph_nodes > 0 {
         graph_tokens_column.push(graph_tokens)
+        if graph_tokens_observed >= 0 {
+          graph_tokens_observed_column.push(graph_tokens_observed)
+          graph_tokens_truncated_column.push(graph_tokens_truncated)
+        } else {
+          graph_tokens_observed_column.push(printed_count(graph_tokens))
+          graph_tokens_truncated_column.push(if graph_tokens > TRUNCATION_PRINTED { 1 } else { 0 })
+        }
         graph_nodes_column.push(graph_nodes)
         graph_count = graph_index + 1
         if graph_index + 1 >= MAX_GRAPHS {
@@ -1246,6 +1327,8 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
         graph_index = graph_index + 1
         graph_nodes = 0
         graph_tokens = -1
+        graph_tokens_observed = -1
+        graph_tokens_truncated = -1
         graph_reduced_layer = -1
       }
       graph_nodes = graph_nodes + 1
@@ -1424,6 +1507,13 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
     // reported as `n_tokens: null` and `phase: null` rather than refused: nothing is fabricated,
     // and a capture that began mid-graph stays diagnosable (section 6, item 6).
     graph_tokens_column.push(graph_tokens)
+    if graph_tokens_observed >= 0 {
+      graph_tokens_observed_column.push(graph_tokens_observed)
+      graph_tokens_truncated_column.push(graph_tokens_truncated)
+    } else {
+      graph_tokens_observed_column.push(printed_count(graph_tokens))
+      graph_tokens_truncated_column.push(if graph_tokens > TRUNCATION_PRINTED { 1 } else { 0 })
+    }
     graph_nodes_column.push(graph_nodes)
     graph_count = graph_index + 1
   }
@@ -1500,6 +1590,7 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
       n_expert: n_expert,
       n_expert_used: n_expert_used,
       n_expert_source: n_expert_source,
+      slots_truncated: slots_truncated,
       dense_ffn_present: dense_ffn_present,
       name_count: name_count,
       names: names_text,
@@ -1511,6 +1602,8 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
       op_start: op_start,
       op_end: op_end,
       graph_tokens: graph_tokens_column.build(),
+      graph_tokens_observed: graph_tokens_observed_column.build(),
+      graph_tokens_truncated: graph_tokens_truncated_column.build(),
       graph_nodes: graph_nodes_column.build(),
       selection_count: selection_count,
       sel_graph: selections_graph,
@@ -1738,7 +1831,8 @@ pub fn build(borrow t: TranscriptScan, path: str) -> ExpertTrace {
     if graph_at >= t.graph_count { break }
     n_tokens := t.graph_tokens[graph_at]
     known := n_tokens >= 1
-    observed := printed_count(n_tokens)
+    observed := t.graph_tokens_observed[graph_at]
+    truncated := t.graph_tokens_truncated[graph_at] == 1
     phase := phase_code(n_tokens, graph_at)
     phase_column.push(phase)
     if phase == 1 { prefill_seen = true }
@@ -1761,13 +1855,13 @@ pub fn build(borrow t: TranscriptScan, path: str) -> ExpertTrace {
     graphs_body.write(",\"tokens_observed\":")
     graphs_body.write_int(observed)
     graphs_body.write(",\"tokens_truncated\":")
-    graphs_body.write(bool_text(known && n_tokens > TRUNCATION_PRINTED))
+    graphs_body.write(bool_text(known && truncated))
     graphs_body.write(",\"observed_token_indices\":[")
     mut index_at := 0
     loop {
       if index_at >= observed { break }
       if index_at > 0 { graphs_body.write(",") }
-      graphs_body.write_int(axis_index(index_at, n_tokens))
+      graphs_body.write_int(observed_axis_index(index_at, n_tokens, truncated))
       index_at = index_at + 1
     }
     graphs_body.write("],\"node_count\":")
@@ -2155,7 +2249,7 @@ pub fn build(borrow t: TranscriptScan, path: str) -> ExpertTrace {
     reduced_render = reduced_render + 1
   }
   document.write("],\"slots_truncated\":")
-  document.write(bool_text(t.moe_present && t.n_expert_used > TRUNCATION_PRINTED))
+  document.write(bool_text(t.moe_present && t.slots_truncated))
   document.write("},\"graphs\":[")
   document.write(graphs_view)
   document.write("],\"selections\":[")

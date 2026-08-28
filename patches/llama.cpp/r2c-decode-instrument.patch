@@ -1,0 +1,51 @@
+diff --git a/common/debug.cpp b/common/debug.cpp
+index 102c692..e07fd68 100644
+--- a/common/debug.cpp
++++ b/common/debug.cpp
+@@ -5,0 +6 @@
++#include <algorithm>
+@@ -6,0 +8 @@
++#include <cstring>
+@@ -76,0 +79,11 @@ static float common_ggml_get_float_value(const uint8_t * data,
++static int64_t common_debug_print_limit(const ggml_tensor * t) {
++    static constexpr char moe_topk_prefix[] = "ffn_moe_topk";
++    static constexpr size_t moe_topk_prefix_length = sizeof(moe_topk_prefix) - 1;
++    if (std::strncmp(t->name, moe_topk_prefix, moe_topk_prefix_length) != 0 ||
++        (t->name[moe_topk_prefix_length] != '\0' && t->name[moe_topk_prefix_length] != '-')) {
++        return 3;
++    }
++
++    return *std::max_element(t->ne, t->ne + GGML_MAX_DIMS);
++}
++
+@@ -186 +199,2 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
+-        common_debug_print_tensor(data, t->type, t->ne, t->nb, 3, pimpl->abort_on_nan);
++        common_debug_print_tensor(
++            data, t->type, t->ne, t->nb, common_debug_print_limit(t), pimpl->abort_on_nan);
+diff --git a/examples/eval-callback/eval-callback.cpp b/examples/eval-callback/eval-callback.cpp
+index 4ce8d60..00ed51d 100644
+--- a/examples/eval-callback/eval-callback.cpp
++++ b/examples/eval-callback/eval-callback.cpp
+@@ -5,0 +6 @@
++#include "sampling.h"
+@@ -11 +12 @@
+-static bool run(llama_context * ctx, const common_params & params) {
++static bool run(llama_context * ctx, common_params & params) {
+@@ -33,0 +35,17 @@ static bool run(llama_context * ctx, const common_params & params) {
++    if (params.n_predict <= 0) {
++        return true;
++    }
++
++    common_sampler_ptr sampler(common_sampler_init(model, params.sampling));
++    for (int32_t i = 0; i < params.n_predict; ++i) {
++        llama_token token = common_sampler_sample(sampler.get(), ctx, -1);
++        if (llama_vocab_is_eog(vocab, token)) {
++            break;
++        }
++        common_sampler_accept(sampler.get(), token, true);
++        if (llama_decode(ctx, llama_batch_get_one(&token, 1))) {
++            LOG_ERR("%s : failed to eval decode step %d\n", __func__, i);
++            return false;
++        }
++    }
++
