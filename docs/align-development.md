@@ -756,7 +756,8 @@ section 8; that section is authoritative for the result and this one for how to 
 The runner passes explicit `-n 0`, so positive-`-n` decode cannot enter this historical prefill
 gate. It also requires the original compact first/last-three router-slot form: selecting the R2c
 full-axis instrument is a controlled measurement failure, not a silent change from six to eight
-observed slots. Use `run-r2c-instrument-qualification` for R2c full-axis/decode evidence.
+observed slots. Use `run-r2c-instrument-qualification` for R2c instrument evidence and
+`scripts/run-decode-locality-gate` — the next section — for the full-axis and decode measurement.
 
 ```sh
 ALIGN_LLM_GGUF_MODEL=/path/to/moe-model.gguf \
@@ -827,6 +828,101 @@ comparison, so the verdict is a comparison of integers.
 
 The gate joins no aggregate and no `Makefile` target: adding one would select the fresh-image
 preflight profile for a runner that cannot execute in CI anyway.
+
+### The R2D decode locality gate
+
+`scripts/run-decode-locality-gate` is the decode half of the same roadmap question, and it is the
+first measurement consumer of R2c's patched instrument. It captures one prompt-plus-decode
+transcript per prompt from the same checked-in corpus, derives one `R2_ACTIVATION_TRACE` document
+from each with `main --expert-trace`, reads one token fingerprint per observed position, deletes the
+transcript, and publishes **three** verdicts under one rule. The numbers it produced are recorded in
+`docs/specs/r2a-expert-trace.md` section 9; that section is authoritative for the result and this one
+for how to run it.
+
+It requires the **patched** instrument. `scripts/llama-eval-callback-toolchain ensure instrument`
+prints the path to build.
+
+```sh
+ALIGN_LLM_GGUF_MODEL=/path/to/moe-model.gguf \
+ALIGN_LLM_LLAMA_EVAL_CALLBACK="$(scripts/llama-eval-callback-toolchain ensure instrument)" \
+  scripts/run-decode-locality-gate
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ALIGN_LLM_GGUF_MODEL` | none | a **MoE** GGUF; the subject model |
+| `ALIGN_LLM_LLAMA_EVAL_CALLBACK` | none | the **patched** callback instrument; a compact-axis build is refused, not silently measured |
+| `ALIGN_LLM_LOCALITY_PROMPTS` | `eval/prompts/expert-locality-v1.txt` | the prompt corpus, one prompt per line |
+| `ALIGN_LLM_LOCALITY_PROMPT_COUNT` | `40` | prompts to use, taken from the **top** of the corpus in file order |
+| `ALIGN_LLM_DECODE_STEPS` | `16` | generated tokens per prompt; 1 to 128, and a value outside that range is an error rather than a silent default |
+
+A missing or unusable model/instrument prints exactly one of these lines, in this order, and exits 0
+without claiming a measurement:
+
+```text
+decode locality gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)
+decode locality gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable)
+decode locality gate: N/A (ALIGN_LLM_GGUF_MODEL unset)
+decode locality gate: N/A (ALIGN_LLM_GGUF_MODEL is absent)
+```
+
+**Greedy decode is the contract.** The capture pins `-n N --temp 0 --seed 42` on top of the R2
+flags (`-t 4 -fa off -ctk f32 -ctv f32 -nr -c 512`), so the generated continuation is the model's
+argmax and is reproducible. The seed is recorded even though temperature zero makes it inert, so a
+sampled arm can never be mistaken for this one. `-n N` is R2c's "at most N decode graphs": a prompt
+that reaches an end-of-generation token contributes fewer.
+
+**Three arms, one rule.** Adjacency here is over the *sequence*, not inside one graph, because every
+decode graph holds exactly one token — which is why the merged prefill gate reports
+`phase_split.decode` as `null` even on a multi-graph transcript. One chain per `(document, layer)`
+is ordered by `(graph ordinal, token index)`, and two consecutive points are adjacent when they are
+consecutive tokens of one graph or the last token of graph `g` and the first token of `g + 1`:
+
+| Arm | Pairs | Note |
+| --- | --- | --- |
+| `prefill@8` | adjacent prompt tokens | **not** comparable to section 8's 286 per mille: that observed 6 printed slots of 8, this observes all 8 |
+| `decode@8` | adjacent generated tokens | the measurement build 10566 could not take at all |
+| `boundary` | last prompt token against first generated token | exactly one pair per prompt and layer, reported on its own |
+
+Each arm is judged by the rule the prefill gate uses — the cluster-robust lower bound must exclude
+`p0 = k/n`, and `p^` must be at least 1.5 × `p0` — and a pair touching a `single_token_first_graph`
+graph reaches no arm and is counted as ambiguous. With every slot printed the compact gate's smaller
+printed-subset null has no counterpart: there is one null, 125 per mille on this model.
+
+**The repetition arm.** Greedy decode can enter a loop, and the experts of one token are trivially
+the experts of the same token. The runner therefore reads a token fingerprint — the printed values
+of the entry `embd = ... GET_ROWS(token_embd.weight, inp_tokens)` row, a deterministic function of
+the token id — for every observed position, reports the measured repetition rate per phase and per
+prompt, and republishes all three verdicts with every token-repeating pair excluded. No headline
+verdict uses the fingerprint, and a block whose row count does not match the graph's `n_tokens`
+disables the arm rather than excluding the wrong pairs.
+
+It prints a human table and one machine-readable final line beginning `decode-locality-gate `, with
+`PHASE_KEY=VALUE` fields for each of the three arms plus the repetition rate, the per-phase histogram
+statistics, and the sensitivity verdicts.
+
+**Transcripts are captured one at a time and deleted immediately.** A 40-prompt run at 16 steps
+against this 16-layer MoE model writes and removes roughly 600 MB of transcript, one 15 MB file at a
+time, and the file is capped at 256 MiB by `ulimit -f`.
+
+**The aggregation is the same importable module**, `scripts/expert_locality_gate.py`. The historical
+compact path and its refusal are untouched; the decode path is `require_full_router_axes`,
+`entry_token_fingerprints`, and `aggregate_decode`, and its owner is
+`scripts/run-expert-trace-smoke`'s `decode-locality-gate-aggregator` case, which needs no model, no
+network, and no instrument. It builds full-axis multi-graph documents from a router it specifies
+exactly and requires: a memoryless router to score `NO_LOCALITY` on all three arms; an effect
+confined to one arm to appear in that arm and neither other; a boundary-only effect to move exactly
+one pair per prompt and layer; a detectable-but-immaterial and a material-but-uncertain decode case
+to be refused by the two halves separately; a between-prompt effect to be refused by the
+cluster-robust bound after the naive interval accepts it; and a corpus that loops for half its
+generated tokens to score `LOCALITY` before exclusion and `NO_LOCALITY` after it. It also requires
+that a compact R2A document and a truncated token axis are refused, that a parser `locality` that
+disagrees with a recomputation from its own `selections[]` is refused, and that the fingerprint
+reader identifies a repeated token without reading a non-entry tensor.
+
+Like the prefill gate, this one joins no aggregate and has no `Makefile` target: R2c's fetched
+measurement dependency stays opt-in, and adding a target would select the fresh-image preflight
+profile for a runner that cannot execute in CI anyway.
 
 ## Residency simulation development
 

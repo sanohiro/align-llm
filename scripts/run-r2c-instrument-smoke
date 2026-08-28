@@ -123,6 +123,13 @@ def patch_contract() -> None:
             raise SmokeFailure(f"{relative} bypasses compact-axis admission in aggregate")
         if relative.endswith("run-residency-sim") and "require_compact_router_axes" not in runner:
             raise SmokeFailure(f"{relative} does not enforce historical compact router axes")
+    # The R2D decode gate is the opposite consumer: it is the only runner that asks the patched
+    # instrument for decode graphs, and its sampler must stay pinned so the recorded measurement is
+    # the argmax continuation rather than whatever the default sampler does next.
+    decode_gate = (ROOT / "scripts/run-decode-locality-gate").read_text(encoding="utf-8")
+    for fragment in ('-n "$decode_steps" --temp 0 --seed 42 -t 4', "aggregate_decode("):
+        if fragment not in decode_gate:
+            raise SmokeFailure(f"run-decode-locality-gate does not pin {fragment!r}")
 
 
 def identity_refusals() -> None:
@@ -645,6 +652,71 @@ def tiny_model_atomic_download() -> None:
             raise SmokeFailure("successful tiny-model download retained staging")
 
 
+def parse_trace_statuses() -> None:
+    """`main --expert-trace` exits 2 on a refused transcript and still writes its document.
+
+    `docs/specs/r2a-expert-trace.md` section 2.3 maps `status: "error"` to `Err(Error.Invalid)`,
+    which the product reports as exit 2 with only `error: code 2` on stderr. The qualification's
+    refusal diagnostic reads the document instead, so status 2 must reach it rather than being
+    rejected as a process failure; every other nonzero status still is one.
+    """
+    document = {
+        "schema_version": 1,
+        "kind": "R2_ACTIVATION_TRACE",
+        "status": "error",
+        "error_code": "R2_ROW_COUNT",
+        "error_detail": "ffn_moe_topk-0",
+    }
+    accepted = {"schema_version": 1, "kind": "R2_ACTIVATION_TRACE", "status": "ok",
+                "error_code": "", "error_detail": ""}
+
+    def make_product(path: Path, payload: dict[str, object], status: int, message: str) -> None:
+        body = (
+            "#!/bin/sh\n"
+            f"printf '%s' '{json.dumps(payload)}' >\"$3\"\n"
+            f"printf '%s\\n' '{message}' >&2\n"
+            f"exit {status}\n"
+        )
+        path.write_text(body, encoding="utf-8")
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+    with tempfile.TemporaryDirectory(prefix="r2c-parse-trace-") as temporary:
+        work = Path(temporary)
+        transcript = work / "capture.txt"
+        transcript.write_text("fixture\n", encoding="utf-8")
+
+        refusing = work / "refusing-main"
+        make_product(refusing, document, 2, "error: code 2")
+        with mock.patch.object(qualification, "PRODUCT", refusing):
+            try:
+                qualification.parse_trace(transcript, work / "refused.json")
+            except qualification.QualificationError as error:
+                expected = "parser refused transcript: R2_ROW_COUNT ffn_moe_topk-0"
+                if str(error) != expected:
+                    raise SmokeFailure(
+                        f"refusal diagnostic is {str(error)!r}, expected {expected!r}")
+            else:
+                raise SmokeFailure("a refused transcript was accepted as a parsed document")
+
+        passing = work / "passing-main"
+        make_product(passing, accepted, 0, "")
+        with mock.patch.object(qualification, "PRODUCT", passing):
+            parsed = qualification.parse_trace(transcript, work / "accepted.json")
+        if parsed != accepted:
+            raise SmokeFailure(f"an accepted document was altered: {parsed!r}")
+
+        failing = work / "failing-main"
+        make_product(failing, accepted, 1, "product diagnostic")
+        with mock.patch.object(qualification, "PRODUCT", failing):
+            try:
+                qualification.parse_trace(transcript, work / "failed.json")
+            except qualification.QualificationError as error:
+                if str(error) != "product diagnostic":
+                    raise SmokeFailure(f"process failure diagnostic is {str(error)!r}")
+            else:
+                raise SmokeFailure("a nonzero non-refusal status was accepted")
+
+
 def moe_full_axis_threshold() -> None:
     def document(used: int, tokens: int) -> dict[str, object]:
         return {
@@ -697,6 +769,7 @@ checked("prepare-failures", prepare_failures)
 checked("prepare-collision", prepare_collision)
 checked("prepare-interruption", prepare_interruption)
 checked("tiny-model-atomic-download", tiny_model_atomic_download)
+checked("parse-trace-statuses", parse_trace_statuses)
 checked("moe-full-axis-threshold", moe_full_axis_threshold)
 
 print(f"r2c instrument smoke: PASS - {case_count} contract groups")

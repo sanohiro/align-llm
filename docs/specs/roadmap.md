@@ -301,8 +301,8 @@ The current forward delivery order is:
     platform or throughput claim, and it carries the caveats the section R3 entry below records.
     Review, publication, and merge are complete; see `HANDOFF.md`.
 
-22. **R2C-DECODE-INSTRUMENT — a pinned, source-built decode-graph measurement dependency. Active
-    on branch `agent/r2c-decode-instrument`.** [`r2c-decode-instrument.md`](r2c-decode-instrument.md)
+22. **R2C-DECODE-INSTRUMENT — a pinned, source-built decode-graph measurement dependency. Merged
+    as PR #140, merge `89d8721`.** [`r2c-decode-instrument.md`](r2c-decode-instrument.md)
     is the authoritative ledger and closure matrix. It pins llama.cpp commit
     `bb4caa7540188872173c44d161602d9271386413` and one two-file patch, builds the patched
     `llama-eval-callback` into an identity-addressed cache outside Git, and extends the existing
@@ -316,9 +316,23 @@ The current forward delivery order is:
     router extent of eight above the old six-value threshold. The first comprehensive review found
     four valid cache/recipe/qualification defects, all consolidated and owner-tested. Final repair
     review found three further valid compatibility/safety/parser defects; their consolidated repair,
-    affected owner verification, and real OLMoE requalification pass. Exact-head preflight,
-    publication, and merge remain, after which R6 may consume the instrument in a later work
-    session.
+    affected owner verification, and real OLMoE requalification pass. Its first measurement
+    consumer is item 23; R6 may consume the same instrument as its decode-graph source.
+
+23. **R2D-DECODE-LOCALITY-GATE — the decode half of the R2 locality gate, measured on the real
+    model.** [`r2a-expert-trace.md`](r2a-expert-trace.md) section 9 is the authoritative record; no
+    design gate is triggered, because it adds no CLI verb, no exchanged document, and no coordinated
+    invariant. `scripts/run-decode-locality-gate` captures one prompt-plus-decode transcript per
+    prompt with item 22's patched instrument at `-n 16 --temp 0 --seed 42`, derives one
+    `R2_ACTIVATION_TRACE` per transcript, deletes the transcript, and pools the documents into three
+    verdicts under one rule: `prefill@8` over all eight router slots, `decode@8` between consecutive
+    decode graphs, and the prompt-to-generation `boundary` pair reported separately. On the same
+    40-prompt corpus all three are `LOCALITY` — 371, **447**, and 364 per mille against a 125 per
+    mille null, with cluster-robust intervals [338, 405], [426, 468], and [325, 405] over 40 prompt
+    clusters — and every layer clears the null on its own stratum. Greedy decode's token-repetition
+    rate is measured at 51 per mille and excluding those pairs leaves every verdict unchanged. The
+    historical compact-axis path and section 8's recorded 286 per mille are untouched. The
+    aggregator's owner case is hosted in `expert-trace-smoke` and needs no model or instrument.
 
 ### Status (2026-08-28)
 
@@ -330,8 +344,9 @@ discharged. It also unblocked item 21, R3-RESIDENCY-SIM, which is merged with th
 real corpus. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
 **infeasible on the host where that decision was recorded** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
-a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch is active as item
-22 and will unblock R6 and, through it, R7-R9 after merge; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
+a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch is **taken** and
+merged as item 22, which unblocks R6 and, through it, R7-R9, and which item 23 has already consumed
+to meet R2's gate in the decode direction; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
 required microbenchmark C. See `HANDOFF.md`, "Active capabilities", for the full decision list and
 disk-space accounting.
 
@@ -812,9 +827,41 @@ decodeの測定は存在せず（`phase_split.decode` は `null`）、decode時r
 このうち厳密に言えるのは**t側**の制限だけで、これはhitのみを取り除くのでp^を**低く**偏らせる。
 t+1側の制限は分子と分母を同時に動かすため方向は確定できず、真のtop-8 reuseが286 per milleより
 上か下かはここでは主張しない。最終層はinstrumentがoutput-token reductionを先に適用するため寄与しない
-（section 6 correction 20）。R2cの測定器はitem 22で実装中だが、この過去の数値を書き換えない。
-R2bのcorpus横断層別（language別/task別/repo別偏り）とR2c instrumentを使うdecode locality測定は
-未達のまま残る。
+（section 6 correction 20）。R2cの測定器（item 22、merge済み）はこの過去の数値を書き換えない。
+
+**decode方向も満たされた（2026-08-28、R2D-DECODE-LOCALITY-GATE）。** R2cのpatched instrumentを
+使い、同じcorpusの40 promptを`-n 16 --temp 0 --seed 42`（greedy）で捕捉した。40 prefill graphと
+640 decode graph、832 token位置、189.8秒。router slotは8/8すべて印字されるため、印字subset用の
+小さいnullは存在せず、nullは125 per milleただ一つである。隣接の定義はgraph内ではなく**系列**
+上であり（decode graphは1 tokenなので、graph内定義ではdecode pairが1件も存在しない）、3本の
+arm を同一ruleで判定する。測定器は`scripts/run-decode-locality-gate`、集計は
+`scripts/expert_locality_gate.py`の`aggregate_decode`である。
+
+```text
+p0 = 125 per mille (k/n = 8/64), 40 prompt clusters, LOCALITY threshold 1.5x
+
+prefill@8  (prompt内の隣接token)          verdict=LOCALITY  p^=371  Wilson [364,378]
+                                          cluster-robust [338,405] (deff 23.274)  2.97x  15/15層
+decode@8   (生成tokenの隣接)              verdict=LOCALITY  p^=447  Wilson [443,450]
+                                          cluster-robust [426,468] (deff 35.375)  3.58x  16/16層
+boundary   (prompt末尾 -> 最初の生成token) verdict=LOCALITY  p^=364  Wilson [350,378]
+                                          cluster-robust [325,405] (deff 8.794)   2.91x  15/15層
+
+histogram entropy: prefill 992 / decode 996 per mille of uniform, top-8 mass 179 / 163
+working set (decode) w=2: 12.420 vs null 15.000 / w=4: 19.105 vs 26.484 / w=8: 28.328 vs 42.009
+```
+
+数値の意味と限界は[`r2a-expert-trace.md`](r2a-expert-trace.md) section 9にある。要点のみ:
+**decodeのreuseはprefillより高く**（447 対 371、cluster-robust区間は重ならない）、decode側の
+histogramはprefill側より一様なので（entropy 996 対 992）popularity偏りではない。8 token連続の
+decodeで触れるexpertは28.33（独立仮定なら42.01）で、window拡大に伴い不足幅が広がる。greedy decode
+のloop（同一tokenの連続）は測定済みで**51 per mille**にとどまり、該当pairを除外しても
+decode@8は429 per mille・cluster-robust [408,451]・LOCALITYのまま変わらない。
+
+限界: greedy（`--temp 0`）固定、`-c 512`、prompt 6 token以下、生成16 tokenの範囲のみ。
+prefill@8の371 per milleは8 slot分母の別測定であり、section 8の286 per mille（印字6 slot）を
+**書き換えるものではない**。1 model・1 corpus・1 hostである。R2bのcorpus横断層別
+（language別/task別/repo別偏り）がR2で唯一未達のまま残る。
 
 ---
 

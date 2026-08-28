@@ -1733,3 +1733,277 @@ true, `excludes_null` forced true, the null computed from the printed subset ins
 `Z_95` set to zero, and the materiality threshold raised from 1.5× to 3.0× — were each applied to a
 scratch copy of `scripts/expert_locality_gate.py` and run against these cases; all six fail, and the
 unmutated module passes.
+
+## 9. R2D decode locality gate measurement
+
+Section 8 answered the R2 gate in the prefill direction and stated its own first caveat plainly:
+*prefill only. Build 10566 evaluates one graph per invocation. No decode measurement exists.*
+[`r2c-decode-instrument.md`](r2c-decode-instrument.md) shipped the patched instrument that removes
+that limit and the six-slot print limit with it. This section records the measurement that follows.
+It **adds** to section 8 and overwrites nothing there: the merged prefill gate's 286 per mille was
+measured over the compact printed six slots of eight and remains the recorded value of that
+capability.
+
+The capability that produced it is **R2D-DECODE-LOCALITY-GATE**: no new CLI verb, no new exchanged
+document, and no new coordinated invariant, so it triggers no design gate. It is one qualification
+runner, a full-axis phase-aware path in the existing aggregation module, an owner case in the
+existing hosted smoke, and this record.
+
+### 9.1 Subject, corpus, and instrument
+
+```text
+model      OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf (olmoe, 16 layers, n_expert 64, n_expert_used 8)
+instrument llama-eval-callback, version: 0.2.0-dev (build 10566, commit bb4caa7), PATCHED
+           r2c-v2 managed build, patch sha256 fcab7ca9b6bbdc760da19e075a2c66d670d4737d7f7f07074676ec67dbd7d0ab
+           built with AppleClang 21.0.0.21000101 for Darwin arm64
+corpus     eval/prompts/expert-locality-v1.txt
+           40 prompts, md5 d7fff23f5a1d4f6237e6f848f3318d8b, 877 bytes
+runner     scripts/run-decode-locality-gate
+aggregator scripts/expert_locality_gate.py (aggregate_decode)
+flags      -n 16 --temp 0 --seed 42 -t 4 -fa off -ctk f32 -ctv f32 -nr -c 512,
+           one invocation per prompt
+```
+
+Two things changed against section 8's capture, and both are contractual rather than incidental.
+**Every router slot is printed**, so `moe.slots_truncated` is false and reuse is measured over all
+eight of `n_expert_used` rather than the printed six; the smaller printed-subset null therefore has
+no counterpart here and there is one null, 125 per mille. **Decode is greedy**: `--temp 0 --seed 42`
+with the instrument's default sampler, so the generated continuation is the model's argmax and is
+reproducible. The seed is recorded even though temperature zero makes it inert, so that a sampled
+arm can never be mistaken for this one.
+
+The capture produced **40 prefill graphs and 640 decode graphs** — 16 of 16 requested steps for
+every prompt, so no prompt stopped early on an end-of-generation token — over **832 token
+positions**. No document had a truncated token axis; all 40 dropped layer 15 of the *prefill* graph
+to the instrument's output-token reduction (correction 20), while a one-token decode graph has no
+reduction and carries all 16 layers.
+
+**Adjacency is over the sequence, not inside one graph.** Every decode graph holds exactly one
+token, so section 2.5.7's within-graph rule finds no decode pair at all — which is exactly why
+`phase_split.decode` is `null` even on a multi-graph transcript. The decode gate orders one chain
+per `(document, layer)` by `(graph ordinal, token index)` and pairs consecutive points, which yields
+three disjoint kinds of pair, judged separately by the same rule:
+
+| Arm | Pairs | Trials |
+| --- | --- | --- |
+| `prefill@8` — adjacent prompt tokens | 2,280 | 18,240 |
+| `decode@8` — adjacent generated tokens | 9,600 | 76,800 |
+| `boundary` — last prompt token against first generated token | 600 | 4,800 |
+
+Transcripts are captured one at a time and **deleted immediately**. The 40 documents are the
+evidence; roughly 600 MB of transcript is not retained.
+
+### 9.2 Result
+
+```text
+decode-locality-gate prompts=40 decode_steps=16 p0_per_mille=125 n_expert=64 n_expert_used=8
+  prefill_verdict=LOCALITY  prefill_reuse_per_mille=371 prefill_wilson=[364,378]
+    prefill_cluster=[338,405] prefill_deff_per_mille=23274 prefill_ratio_per_mille=2968
+    prefill_pairs=2280 prefill_hits=6775 prefill_trials=18240 prefill_layers_clearing=15/15
+  decode_verdict=LOCALITY   decode_reuse_per_mille=447  decode_wilson=[443,450]
+    decode_cluster=[426,468] decode_deff_per_mille=35375 decode_ratio_per_mille=3576
+    decode_pairs=9600 decode_hits=34362 decode_trials=76800 decode_layers_clearing=16/16
+  boundary_verdict=LOCALITY boundary_reuse_per_mille=364 boundary_wilson=[350,378]
+    boundary_cluster=[325,405] boundary_deff_per_mille=8794 boundary_ratio_per_mille=2912
+    boundary_pairs=600 boundary_hits=1749 boundary_trials=4800 boundary_layers_clearing=15/15
+  decode_repetition_per_mille=51
+  prefill_verdict_excluding_repeats=LOCALITY decode_verdict_excluding_repeats=LOCALITY
+  boundary_verdict_excluding_repeats=LOCALITY
+  entropy_prefill_per_mille=992 entropy_decode_per_mille=996
+  top8_prefill_per_mille=179  top8_decode_per_mille=163  token_reduced_layers=15
+```
+
+| Quantity | `prefill@8` | `decode@8` | `boundary` |
+| --- | --- | --- | --- |
+| Verdict | **LOCALITY** | **LOCALITY** | **LOCALITY** |
+| Observed reuse `p̂` | **371** per mille | **447** per mille | **364** per mille |
+| Hits / trials | 6,775 / 18,240 | 34,362 / 76,800 | 1,749 / 4,800 |
+| Adjacent pairs | 2,280 | 9,600 | 600 |
+| 95% Wilson (independent trials) | [364, 378] | [443, 450] | [350, 378] |
+| Measured design effect (40 prompt clusters) | 23.274 | 35.375 | 8.794 |
+| **95% cluster-robust — the one the verdict uses** | **[338, 405]** | **[426, 468]** | **[325, 405]** |
+| `p̂ / p0` (threshold 1.5×) | 2.97× | 3.58× | 2.91× |
+| Layers clearing the null on their own stratum | 15 of 15 | **16 of 16** | 15 of 15 |
+| Per-layer `p̂` range | 296 (L10) to 435 (L0) | 355 (L1) to 508 (L5) | 243 (L3) to 468 (L13) |
+| Per-layer design effect range | 1.198 to 4.382 | 1.514 to 8.253 | 1.000 to 1.769 |
+
+Common to all three arms: null `p0` = `k/n` = 8/64 = **125** per mille, 40 prompt clusters, 64 of 64
+experts used.
+
+| Quantity | prefill graphs | decode graphs |
+| --- | --- | --- |
+| Selections contributing to the histogram | 23,040 | 81,920 |
+| Distinct experts | 64 of 64 | 64 of 64 |
+| Normalized histogram entropy | 992 per mille of uniform | 996 per mille |
+| Top-8 expert mass (uniform is 125) | 179 per mille | 163 per mille |
+| Working set `w = 2` | 13.028 vs. null 15.000 (deficit 1.972) | 12.420 vs. 15.000 (2.580) |
+| Working set `w = 4` | 19.871 vs. null 26.484 (deficit 6.613) | 19.105 vs. 26.484 (7.379) |
+| Working set `w = 8` | not observed (prompts are ≤ 6 tokens) | **28.328 vs. 42.009 (13.681)** |
+
+**Verdict: LOCALITY on all three arms.** Both halves of the rule hold on each: the cluster-robust
+interval excludes the null (426 > 125 on decode) and the point estimate is 2.9× to 3.6× the null,
+above the 1.5× materiality threshold. Every one of the 16 layers a decode graph carries clears the
+null on its own stratum under the same cluster-robust rule, so the effect is not carried by a few
+layers.
+
+**Decode reuse is higher than prefill reuse, not lower**, on the same eight-slot denominator: 447
+against 371 per mille, with disjoint cluster-robust intervals ([426, 468] against [338, 405]). The
+boundary pair is the weakest of the three at 364 per mille — the transition from the prompt's last
+token to the first generated token retains slightly less than either steady state — but it still
+clears the null by a factor of 2.9 and is not a discontinuity.
+
+**On the clustering.** The 76,800 decode trials are not 76,800 independent draws: one prompt supplies
+every layer and every position it has. The measured decode design effect is **35.375**, so the
+effective sample is roughly 2,171 trials and the honest interval is [426, 468] rather than
+[443, 450]. The effect survives that correction with a factor of three to spare. The design effect
+is floored at 1, so clustering may widen an interval and never narrow it.
+
+### 9.3 The repetition control
+
+Greedy decode can fall into a loop, and the experts of one token are trivially the experts of the
+same token; a decode locality number that did not separate the two would be measuring the loop. The
+runner therefore reads a **token fingerprint** for every observed position — the printed values of
+the entry `embd = ... GET_ROWS(token_embd.weight, inp_tokens)` row, which is a deterministic
+function of the token id — and reports the repetition it actually measured:
+
+| Quantity | Value |
+| --- | --- |
+| Decode position pairs that repeat their token | **31 of 600 = 51 per mille** |
+| Prefill / boundary position pairs that repeat | 0 of 152 / 0 of 40 |
+| Per-prompt decode repetition | min 0, median 66, max **133** per mille; no prompt at 1000 |
+| Distinct generated tokens per prompt (of 16) | min 9, median 14, max 16 |
+
+**Sensitivity: excluding every token-repeating pair does not change any verdict.** 496 of the 9,600
+decode pair records are dropped, and the decode arm becomes 31,304 / 72,832 = **429** per mille,
+Wilson [426, 433], design effect 36.161, cluster-robust **[408, 451]**, 3.43× the null, 16 of 16
+layers clearing — still **LOCALITY**. The prefill and boundary arms drop no pair and are unchanged.
+The 18-per-mille difference between 447 and 429 is the whole contribution of the repetition loops.
+
+This is a fingerprint of the printed embedding row, not a decoded token id, and it is used for this
+diagnostic and this sensitivity arm only. No headline verdict uses it, and a block whose printed row
+count does not match the graph's `n_tokens` disables the arm rather than excluding the wrong pairs.
+
+### 9.4 What the number does and does not license
+
+- **Decode-time conditional locality exists and is stronger than prefill's**, on the same
+  denominator, and it is not a popularity artefact: the decode histogram is *more* uniform than the
+  prefill one (entropy 996 against 992 per mille, top-8 mass 163 against 179), so the 3.58× is
+  dominated by token-to-token conditioning rather than by a skewed router.
+- **Working-set growth is sublinear in the same direction and further out.** Eight consecutive
+  generated tokens touch 28.33 distinct experts of 64 where independence predicts 42.01 — a deficit
+  of 13.68 experts, or 21 per cent of the model's experts, which is the quantity a residency cache
+  converts into hit rate. That window did not exist before this capture: prompts are six tokens or
+  fewer, so `w = 8` has no prefill sample at all.
+- **It is not a loop artefact** (section 9.3), and it is not carried by a few layers (16 of 16).
+
+The caveats the runner prints with every result, and which this record repeats rather than softens:
+
+1. **Greedy decode is the contract.** `--temp 0` makes the continuation the argmax; a sampled
+   continuation may route differently, and nothing here measures that.
+2. **Short context.** `-c 512`, prompts of six tokens or fewer, 16 generated tokens: the whole
+   measurement lives in the first two dozen positions of a sequence. Long-context decode is
+   unmeasured.
+3. **One model, one corpus, one host.** R2b's cross-corpus stratification (language別 / task別 /
+   repo別偏り) remains open and is not claimed here.
+4. **Prefill and decode are measured on different layer sets.** The prefill graph's last layer is
+   token-reduced and contributes nothing; a one-token decode graph is not reduced. That is why the
+   decode arm has 16 layers and the other two have 15, and it is reported rather than reconciled.
+5. **The boundary arm is the smallest**, one pair per prompt and layer, and its interval is
+   correspondingly the widest of the three.
+6. **The trials are clustered by prompt**, and each verdict uses the widened interval, not the naive
+   one. Between-prompt structure alone cannot pass this gate — the aggregator's
+   `decode-between-prompt` case is exactly that corpus and is required to score `NO_LOCALITY`.
+7. **This prefill arm is not section 8's prefill gate.** 371 per mille over eight slots and 286 per
+   mille over the printed six are different measurements of the same phenomenon on different
+   denominators; neither replaces the other, and section 8's number stands as recorded.
+
+**Consequence for the roadmap.** Section R2's gate is now met in **both** directions. Section 8's
+contingency ("局所性が弱ければ、repo expert profileへの投資を縮小する") remains untriggered, and R3's
+residency simulation — which explicitly noted that its demand signal was prefill-only and that
+"1回の生成の内部でexpert reuseが高い" needed R2c decode traces — now has the decode evidence it named.
+R2b's stratification remains the open half of R2.
+
+### 9.5 Verification
+
+```text
+scripts/run-decode-locality-gate  MEASURED, three LOCALITY verdicts, 189.8 s for 40 invocations
+                                  (section 9.2); the 32-step subset arm is section 9.6
+make expert-trace-smoke           PASS 108 fixtures, 17 error codes, the aggregate oracle, the
+                                  locality-gate aggregator, and the new decode-locality-gate
+                                  aggregator
+scripts/run-r2c-instrument-smoke  PASS 55 contract groups (Docker linux/arm64; the macOS host fails
+                                  the pre-existing `cache-contract` `/home` firmlink case)
+make build                        PASS with the pinned 3a34febe toolchain
+make format-check                 PASS
+git diff --check                  clean
+```
+
+The decode aggregator has its own owner case inside `scripts/run-expert-trace-smoke`
+(`decode-locality-gate-aggregator`), which needs no model, no network, and no instrument. It builds
+full-axis multi-graph documents from a router the file specifies exactly — `built_decode_document`
+names the per-pair overlap of a chain that runs from the prompt's tokens through the decode graphs
+— and requires:
+
+| Case | Shape | Required |
+| --- | --- | --- |
+| `memoryless` | disjoint experts everywhere, 6 documents | `NO_LOCALITY` on all three arms; `null_per_mille` **125** and `threshold_per_mille` **187** asserted directly; the 96/24/360 pair partition asserted; every arm non-empty |
+| `sticky-decode` | decode repeats, prompt does not | decode `LOCALITY` at 1000, prefill and boundary `NO_LOCALITY` at 0 |
+| `sticky-prefill` | prompt repeats, decode does not | the mirror image |
+| `sticky-boundary` | only the boundary pair repeats | boundary `LOCALITY` at 1000 over exactly 24 pairs, both neighbours at 0 |
+| `decode-half-detectable` | 1 and 2 of 8 alternating, 4,096 trials | `excludes_null` true, `materially_above_null` **false** → `NO_LOCALITY` at exactly 187 per mille |
+| `decode-half-material` | 4 of 16 trials | `materially_above_null` true, `excludes_null` **false** → `NO_LOCALITY` at 250 per mille |
+| `decode-between-prompt` | 2 sticky and 4 memoryless prompts | Wilson clears 125 and the cluster-robust bound does not → `NO_LOCALITY` |
+| `decode-repetition` | 6 prompts that loop for 8 of 16 generated tokens | `LOCALITY` at 466 before exclusion, 168 pairs dropped, `NO_LOCALITY` at 0 after; the measured repetition rate 466 per mille and 9 distinct generated tokens |
+| `decode-repetition-unknown` | one missing fingerprint | the 8 affected pairs are **kept**, not dropped |
+| `decode-working-set` | perfectly sticky decode | `w = 8` exists with 36 samples at 8.000 experts, and the prefill chain has none |
+| `decode-single-token-first` | a one-token first graph | its pairs are counted as ambiguous and reach no arm |
+
+Two refusals close the boundary in both directions: `require_full_router_axes` rejects a compact
+R2A document and a truncated token axis, and section 8's `require_compact_router_axes` still rejects
+a full-axis one, so the two corpora can never be pooled. A document whose `locality.phase_split`
+disagrees with a recomputation from its own `selections[]` is refused on the one arm where the
+parser's within-graph definition and this module's sequence definition coincide. The fingerprint
+reader has its own case over a synthetic transcript containing a non-entry tensor.
+
+Nine mutations of the shipped rule were each applied to a scratch copy of
+`scripts/expert_locality_gate.py` and run against these cases: the six from section 8.4 —
+`and`→`or`, `materially_above` forced true, `excludes_null` forced true, a halved null, `Z_95` set
+to zero, and the materiality threshold raised from 1.5× to 3.0× — and three that only a sequence
+gate can have: cross-graph adjacency removed, the boundary pair folded into the decode arm, and the
+repetition exclusion inverted. **All nine are killed by the decode unit alone**, and the unmutated
+module passes.
+
+### 9.6 The 32-step subset arm
+
+`ALIGN_LLM_DECODE_STEPS` is an override rather than a switch, and a longer run over a prompt subset
+is the documented variation. It is not a second headline result; it is the check that the 16-step
+arm is not an artefact of where the sequence was cut.
+
+```sh
+ALIGN_LLM_DECODE_STEPS=32 ALIGN_LLM_LOCALITY_PROMPT_COUNT=8 scripts/run-decode-locality-gate
+```
+
+The first 8 prompts of the same corpus, 32 generated tokens each — 8 prefill and 256 decode graphs,
+293 token positions, 66.6 s:
+
+| Quantity | `prefill@8` | `decode@8` | `boundary` |
+| --- | --- | --- | --- |
+| Verdict | LOCALITY | LOCALITY | LOCALITY |
+| Observed reuse `p̂` | 438 per mille (1,527 / 3,480) | **504** per mille (16,011 / 31,744) | 454 per mille (436 / 960) |
+| 95% cluster-robust (8 clusters) | [391, 487], deff 8.517 | **[481, 527]**, deff 17.509 | [342, 570], deff 13.734 |
+| `p̂ / p0` | 3.50× | 4.03× | 3.63× |
+| Layers clearing | 15 of 15 | 16 of 16 | 15 of 15 |
+
+Decode repetition is **28 per mille** (7 of 248 position pairs), lower than the 16-step arm's 51,
+with 18 to 30 distinct tokens per prompt of 32; excluding the 112 affected pair records leaves the
+decode arm at 497 per mille, cluster-robust [472, 522], still LOCALITY. The `w = 8` decode working
+set is 25.614 experts against a null of 42.009 — a deficit of 16.395, wider than the 16-step arm's
+13.681.
+
+**Two things change at once between the arms** and the record does not pretend otherwise: the run is
+longer *and* the corpus is an 8-prompt subset. The subset is itself above the full-corpus average —
+its `prefill@8` arm is 438 per mille where the 40-prompt pooled value is 371 — so the decode arm's
+rise from 447 to 504 is not attributable to length alone. What this arm does establish is the thing
+it was run for: **doubling the observed decode window does not weaken the effect**, on any arm, and
+the working-set deficit continues to widen with the window. The 40-prompt, 16-step run of section
+9.2 remains the recorded result.

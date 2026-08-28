@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R2D-DECODE-LOCALITY-GATE: the decode half of roadmap section R2's question —
+# 条件付き局所性が存在するか、数値で判断できること — asked of generated tokens rather than of the prompt.
+#
+# `docs/specs/r2a-expert-trace.md` section 8 answered the prefill half with the unpatched
+# instrument: 286 per mille against a 125 per mille null, cluster-robust [262, 311]. It could not
+# answer the decode half at all, because build 10566 evaluates one graph per invocation and prints only six of
+# the eight router slots. `docs/specs/r2c-decode-instrument.md` shipped the patched instrument that
+# removes both limits. This runner is its first measurement consumer.
+#
+# It captures one prompt-plus-decode transcript per prompt from the same checked-in corpus, derives
+# one `R2_ACTIVATION_TRACE` document per transcript with `main --expert-trace`, extracts one token
+# fingerprint per observed position, deletes the transcript, and pools every document into three
+# verdicts through `scripts/expert_locality_gate.py`:
+#
+#   prefill@8   adjacent prompt tokens, now over all n_expert_used slots
+#   decode@8    adjacent generated tokens, across consecutive decode graphs
+#   boundary    the last prompt token and the first generated token, reported on its own
+#
+#   ALIGN_LLM_GGUF_MODEL            path to a MoE model
+#   ALIGN_LLM_LLAMA_EVAL_CALLBACK   path to the PATCHED llama-eval-callback
+#                                   (scripts/llama-eval-callback-toolchain ensure instrument)
+#   ALIGN_LLM_LOCALITY_PROMPTS      prompt corpus (default eval/prompts/expert-locality-v1.txt)
+#   ALIGN_LLM_LOCALITY_PROMPT_COUNT prompts to use, from the top of the corpus (default 40)
+#   ALIGN_LLM_DECODE_STEPS          generated tokens per prompt (default 16)
+#
+# Opt-in, never in an aggregate, never in CI, and no `Makefile` target: R2c's fetched measurement
+# dependency stays opt-in, exactly as `scripts/run-expert-locality-gate` and
+# `scripts/run-r2c-instrument-qualification` do. A missing input prints one exact N/A line and
+# exits 0 without claiming a measurement.
+#
+# The gate is a measurement, not a pass/fail owner test. It exits 0 on any combination of verdicts
+# and exits nonzero only when the instrument, the corpus, or the parser prevented a measurement.
+
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+instrument="${ALIGN_LLM_LLAMA_EVAL_CALLBACK:-}"
+model="${ALIGN_LLM_GGUF_MODEL:-}"
+prompts="${ALIGN_LLM_LOCALITY_PROMPTS:-$root_dir/eval/prompts/expert-locality-v1.txt}"
+prompt_count="${ALIGN_LLM_LOCALITY_PROMPT_COUNT:-40}"
+decode_steps="${ALIGN_LLM_DECODE_STEPS:-16}"
+
+if [ -z "$instrument" ]; then
+  printf '%s\n' "decode locality gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK unset)"
+  exit 0
+fi
+if [ ! -x "$instrument" ]; then
+  printf '%s\n' "decode locality gate: N/A (ALIGN_LLM_LLAMA_EVAL_CALLBACK is not executable)"
+  exit 0
+fi
+if [ -z "$model" ]; then
+  printf '%s\n' "decode locality gate: N/A (ALIGN_LLM_GGUF_MODEL unset)"
+  exit 0
+fi
+if [ ! -f "$model" ]; then
+  printf '%s\n' "decode locality gate: N/A (ALIGN_LLM_GGUF_MODEL is absent)"
+  exit 0
+fi
+if [ ! -f "$prompts" ]; then
+  printf '%s\n' "decode locality gate: the prompt corpus $prompts is absent" >&2
+  exit 1
+fi
+if [ ! -x "$root_dir/main" ]; then
+  printf '%s\n' "decode locality gate: the product executable is missing; run 'make build'" >&2
+  exit 1
+fi
+# A named override that cannot be honoured is an error, not a silent default: the recorded arm is
+# 16 steps and a 32-step subset arm is the documented variation, so the bound is generous but real.
+case "$decode_steps" in
+  ''|*[!0-9]*)
+    printf '%s\n' "decode locality gate: ALIGN_LLM_DECODE_STEPS must be a positive integer" >&2
+    exit 1 ;;
+esac
+if [ "$decode_steps" -lt 1 ] || [ "$decode_steps" -gt 128 ]; then
+  printf '%s\n' "decode locality gate: ALIGN_LLM_DECODE_STEPS must be between 1 and 128" >&2
+  exit 1
+fi
+
+temp_dir=$(mktemp -d)
+cleanup() {
+  rm -rf "$temp_dir"
+}
+# A signal must remove the transcript too: one 16-step transcript is roughly fifteen megabytes, and
+# a run interrupted at the terminal is the ordinary way this gate ends early.
+trap cleanup EXIT HUP INT TERM
+
+before=$(python3 - "$model" <<'PY'
+import os, sys
+info = os.stat(sys.argv[1])
+print("%d %d" % (info.st_size, info.st_mtime_ns))
+PY
+)
+
+"$instrument" --version >"$temp_dir/version.txt" 2>&1 || {
+  status=$?
+  printf '%s\n' "decode locality gate: the instrument exited $status for --version" >&2
+  tail -20 "$temp_dir/version.txt" >&2 || true
+  exit 1
+}
+
+# The corpus is read once, in file order, and the first `prompt_count` lines are used. The order is
+# part of the corpus identity recorded below, so a reordered file is a different corpus.
+selected=()
+while IFS= read -r line || [ -n "$line" ]; do
+  [ -n "$line" ] || continue
+  selected+=("$line")
+  [ "${#selected[@]}" -lt "$prompt_count" ] || break
+done <"$prompts"
+if [ "${#selected[@]}" -lt "$prompt_count" ]; then
+  printf '%s\n' "decode locality gate: the corpus holds ${#selected[@]} prompts, $prompt_count requested" >&2
+  exit 1
+fi
+
+corpus_identity=$(python3 - "$prompts" "$prompt_count" <<'PY'
+import hashlib, sys
+from pathlib import Path
+raw = Path(sys.argv[1]).read_bytes()
+print("%s %s %d %d"
+      % (Path(sys.argv[1]).name, hashlib.md5(raw).hexdigest(), len(raw), int(sys.argv[2])))
+PY
+)
+
+instrument_timeout=""
+if command -v timeout >/dev/null 2>&1; then
+  instrument_timeout="timeout 900"
+elif command -v gtimeout >/dev/null 2>&1; then
+  instrument_timeout="gtimeout 900"
+fi
+
+mkdir -p "$temp_dir/documents" "$temp_dir/fingerprints"
+printf '%s\n' "decode locality gate: capturing ${#selected[@]} transcripts at -n $decode_steps" >&2
+start_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+index=0
+for prompt in "${selected[@]}"; do
+  transcript="$temp_dir/transcript.txt"
+  # The flags are contractual, not incidental. `-fa off` keeps attention unfused so the graph shape
+  # stays the one R2A section 2.2 was measured against; `-ctk f32 -ctv f32` keeps the cache tensors
+  # in a printable type; `-nr` suppresses the reasoning wrapper so the prompt reaches the tokenizer
+  # verbatim; `-c 512` bounds the context. `-n N` is R2c's decode meaning: at most N additional
+  # one-token graphs, stopping before an end-of-generation token. `--temp 0 --seed 42` pins greedy
+  # decode with the instrument's default sampler: the contract is the argmax continuation, and the
+  # seed is recorded so a sampled arm can never be mistaken for this one. `ulimit -f` caps the
+  # transcript at 256 MiB.
+  (
+    ulimit -f 262144
+    exec $instrument_timeout "$instrument" -m "$model" -p "$prompt" \
+      -n "$decode_steps" --temp 0 --seed 42 -t 4 \
+      -fa off -ctk f32 -ctv f32 -nr -c 512 \
+      </dev/null >"$transcript" 2>"$temp_dir/instrument.log"
+  ) || {
+    status=$?
+    if [ -n "$instrument_timeout" ] && [ "$status" -eq 124 ]; then
+      printf '%s\n' "decode locality gate: the instrument did not finish within 900 s on prompt $index" >&2
+    else
+      printf '%s\n' "decode locality gate: the instrument exited $status on prompt $index" >&2
+    fi
+    tail -20 "$temp_dir/instrument.log" >&2 || true
+    exit 1
+  }
+  label=$(printf '%03d' "$index")
+  "$root_dir/main" --expert-trace "$transcript" >"$temp_dir/documents/$label.json" || {
+    status=$?
+    printf '%s\n' "decode locality gate: --expert-trace exited $status on prompt $index" >&2
+    python3 - "$temp_dir/documents/$label.json" <<'PY' >&2 || true
+import json, sys
+from pathlib import Path
+try:
+    document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+print("decode locality gate: the parser refused the transcript: %s %s"
+      % (document.get("error_code"), document.get("error_detail")))
+PY
+    exit 1
+  }
+  # The token fingerprints, read from the same transcript before it is deleted. They buy the
+  # repetition diagnostic and the sensitivity arm only; every headline verdict is computed without
+  # them, and an unreadable block disables the arm rather than excluding the wrong pairs.
+  python3 - "$transcript" "$temp_dir/documents/$label.json" \
+    "$temp_dir/fingerprints/$label.json" "$root_dir/scripts" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[4])
+from expert_locality_gate import entry_token_fingerprints
+
+document = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+with open(sys.argv[1], "r", encoding="utf-8", errors="replace") as handle:
+    blocks = entry_token_fingerprints(handle)
+
+graphs = document.get("graphs") or []
+marks = None
+if len(blocks) == len(graphs):
+    marks = {}
+    for row, block in zip(graphs, blocks):
+        if len(block) != row["n_tokens"]:
+            marks = None
+            break
+        for token, fingerprint in enumerate(block):
+            marks["%d,%d" % (row["ordinal"], token)] = fingerprint
+Path(sys.argv[3]).write_text(json.dumps(marks), encoding="utf-8")
+PY
+  # The transcripts are the bulk of the run and none is retained: the documents are the evidence.
+  rm -f "$transcript"
+  index=$((index + 1))
+done
+end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+
+after=$(python3 - "$model" <<'PY'
+import os, sys
+info = os.stat(sys.argv[1])
+print("%d %d" % (info.st_size, info.st_mtime_ns))
+PY
+)
+if [ "$before" != "$after" ]; then
+  printf '%s\n' "decode locality gate: the model's size or mtime changed during the run" >&2
+  exit 1
+fi
+
+python3 - "$temp_dir/documents" "$temp_dir/fingerprints" "$temp_dir/version.txt" \
+  "$corpus_identity" "$start_ns" "$end_ns" "$decode_steps" "$root_dir/scripts" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[8])
+from expert_locality_gate import DECODE_CAVEATS, GateError, aggregate_decode
+
+document_dir = Path(sys.argv[1])
+fingerprint_dir = Path(sys.argv[2])
+version_text = Path(sys.argv[3]).read_text(encoding="utf-8", errors="replace").strip()
+corpus_identity = sys.argv[4]
+elapsed_ns = int(sys.argv[6]) - int(sys.argv[5])
+decode_steps = int(sys.argv[7])
+
+paths = sorted(document_dir.glob("*.json"))
+documents = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+labels = [path.stem for path in paths]
+
+fingerprints = []
+for path in paths:
+    raw = json.loads((fingerprint_dir / path.name).read_text(encoding="utf-8"))
+    if raw is None:
+        fingerprints = None
+        break
+    fingerprints.append({tuple(int(part) for part in key.split(",")): value
+                         for key, value in raw.items()})
+
+try:
+    result = aggregate_decode(documents, labels, fingerprints)
+except GateError as error:
+    raise SystemExit("decode locality gate: the measurement could not be taken: %s" % error)
+
+ARMS = (("prefill", "prefill@8   adjacent prompt tokens"),
+        ("decode", "decode@8    adjacent generated tokens"),
+        ("boundary", "boundary    last prompt token -> first generated token"))
+
+
+def shown(value):
+    return "-" if value is None else value
+
+
+def arm_block(title, row, indent="  "):
+    if title:
+        print("%s%s" % (indent, title))
+    if row is None:
+        print("%s  N/A - no pair of this kind was observed" % indent)
+        return
+    print("%s  verdict          %s" % (indent, row["verdict"]))
+    print("%s  observed p^      %d per mille (%d / %d) over %d pair(s)"
+          % (indent, row["reuse_per_mille"], row["reuse_numerator"], row["reuse_denominator"],
+             row["adjacent_pair_count"]))
+    print("%s  95%% Wilson       [%d, %d] per mille (independent-trial assumption)"
+          % (indent, row["wilson_low_per_mille"], row["wilson_high_per_mille"]))
+    print("%s  95%% clustered    [%d, %d] per mille over %d prompt cluster(s), design effect %d "
+          "per mille%s"
+          % (indent, row["cluster_low_per_mille"], row["cluster_high_per_mille"],
+             row["cluster_count"], row["design_effect_per_mille"],
+             "" if row["design_effect_estimated"] else " (not estimable; floored at 1000)"))
+    print("%s  p^ / p0          %d per mille (threshold for LOCALITY: 1500)"
+          % (indent, row["ratio_to_null_per_mille"]))
+    print("%s  excludes null    %s (on the clustered lower bound)"
+          % (indent, "yes" if row["excludes_null"] else "no"))
+    print("%s  >= 1.5 x null    %s" % (indent, "yes" if row["materially_above_null"] else "no"))
+    print("%s  layers clearing  %d of %d"
+          % (indent, row["layers_clearing_null"], row["layer_count"]))
+
+
+print("decode locality gate: MEASURED")
+print("  instrument build")
+for line in version_text.splitlines():
+    print("    %s" % line.strip())
+print("  corpus             %s" % corpus_identity)
+print("  decode steps       %d requested per prompt (greedy: --temp 0 --seed 42)" % decode_steps)
+print("  prompts            %d captured" % result["document_count"])
+print("  router             n_expert %d, n_expert_used %d, all %d slot(s) printed per token"
+      % (result["n_expert"], result["n_expert_used"], result["observed_slots_per_token"]))
+print("  graphs             %d prefill, %d decode, %d single-token-first"
+      % (result["graph_counts"]["prefill"], result["graph_counts"]["decode"],
+         result["graph_counts"]["single_token_first_graph"]))
+print("  observed           %d token position(s); %d pair(s) skipped as phase-ambiguous"
+      % (result["token_positions"], result["ambiguous_pairs"]))
+print("  omitted            %d document(s) with a truncated token axis; %d with a token-reduced "
+      "layer" % (result["truncated_documents"], result["documents_token_reduced"]))
+print("  token-reduced      layer(s) %s (the prefill graph's tail; a one-token decode graph has "
+      "none)" % (", ".join(str(layer) for layer in result["token_reduced_layers"]) or "none"))
+print("  null p0            %d per mille (k/n = %d/%d); with every slot printed the observed null "
+      "and the top-k null coincide"
+      % (result["null_per_mille"], result["n_expert_used"], result["n_expert"]))
+print()
+print("  the three verdicts")
+for name, title in ARMS:
+    arm_block(title, result["phases"][name], indent="    ")
+    print()
+
+for name, title in ARMS:
+    row = result["phases"][name]
+    if row is None:
+        continue
+    print("  per-layer strata - %s (%d of %d layers clear the null)"
+          % (name, row["layers_clearing_null"], row["layer_count"]))
+    print("    layer  pairs  reuse       p^   wilson lo/hi    deff  cluster lo/hi   clears")
+    for layer_row in row["per_layer"]:
+        print("    %5d  %5d  %5d/%-5d  %4d  %5d / %-5d  %6d  %5d / %-5d  %s"
+              % (layer_row["layer"], layer_row["adjacent_pair_count"],
+                 layer_row["reuse_numerator"], layer_row["reuse_denominator"],
+                 layer_row["reuse_per_mille"], layer_row["wilson_low_per_mille"],
+                 layer_row["wilson_high_per_mille"], layer_row["design_effect_per_mille"],
+                 layer_row["cluster_low_per_mille"], layer_row["cluster_high_per_mille"],
+                 "yes" if layer_row["clears_null"] else "no"))
+    print()
+
+print("  expert-use histogram by graph phase")
+print("    phase     selections  distinct  entropy  top8 mass  (per mille)")
+for name in ("prefill", "decode"):
+    row = result["histogram"][name]
+    print("    %-8s  %10d  %8d  %7s  %9s"
+          % (name, row["selection_count"], row["distinct_experts"],
+             shown(row["entropy_per_mille"]), shown(row["top8_mass_per_mille"])))
+print()
+
+print("  working-set growth over w consecutive observed positions of one phase")
+for name in ("prefill", "decode"):
+    print("    %s" % name)
+    print("         w  samples  observed mean  null mean  deficit  (per mille of one expert)")
+    for row in result["working_set"][name]:
+        print("      %4d  %7d  %13s  %9d  %7s"
+              % (row["window"], row["sample_count"], shown(row["unique_mean_per_mille"]),
+                 row["null_unique_mean_per_mille"], shown(row["deficit_per_mille"])))
+print()
+
+repetition = result["repetition"]
+if repetition is None:
+    print("  token repetition   N/A (the entry-embedding fingerprints could not be read)")
+    print("  sensitivity        N/A (no fingerprint, so no degenerate pair can be excluded)")
+else:
+    pooled = repetition["pooled"]
+    print("  token repetition (greedy decode can loop; a repeated token reuses experts trivially)")
+    for name in ("prefill", "boundary", "decode"):
+        row = pooled[name]
+        print("    %-9s %d of %d adjacent position pair(s) repeat the token = %s per mille"
+              % (name, row["repeated"], row["pairs"], shown(row["repetition_per_mille"])))
+    rates = sorted(row["decode_repetition_per_mille"] for row in repetition["per_document"]
+                   if row["decode_repetition_per_mille"] is not None)
+    if rates:
+        middle = rates[len(rates) // 2]
+        print("    per prompt decode repetition: min %d, median %d, max %d per mille; %d prompt(s) "
+              "at 1000" % (rates[0], middle, rates[-1], sum(1 for rate in rates if rate == 1000)))
+    distinct = sorted(row["distinct_generated_tokens"] for row in repetition["per_document"])
+    print("    distinct generated tokens per prompt: min %d, median %d, max %d"
+          % (distinct[0], distinct[len(distinct) // 2], distinct[-1]))
+    print()
+    excluded = result["excluding_repeats"]
+    print("  sensitivity: the same three verdicts with every token-repeating pair excluded")
+    for name, title in ARMS:
+        print("    %s (dropped %d pair(s))" % (title, excluded["dropped_pairs"][name]))
+        arm_block("", excluded["phases"][name], indent="      ")
+    print("    %d pair(s) had no fingerprint on one side and were kept"
+          % excluded["unknown_pairs"])
+print()
+
+print("  caveats")
+for caveat in DECODE_CAVEATS:
+    print("    - %s" % caveat)
+print()
+print("  elapsed            %.1f s for %d invocation(s) (diagnostic only; no performance claim)"
+      % (elapsed_ns / 1e9, result["document_count"]))
+print("  transcripts        deleted; the %d document(s) are the evidence"
+      % result["document_count"])
+print()
+
+
+def field(row, name, key):
+    return "%s_%s=%s" % (name, key, "none" if row is None else row[key])
+
+
+summary = ["decode-locality-gate",
+           "prompts=%d" % result["document_count"],
+           "decode_steps=%d" % decode_steps,
+           "p0_per_mille=%d" % result["null_per_mille"],
+           "n_expert=%d" % result["n_expert"],
+           "n_expert_used=%d" % result["n_expert_used"]]
+for name, _ in ARMS:
+    row = result["phases"][name]
+    for key in ("verdict", "reuse_per_mille", "wilson_low_per_mille", "wilson_high_per_mille",
+                "cluster_low_per_mille", "cluster_high_per_mille", "design_effect_per_mille",
+                "ratio_to_null_per_mille", "adjacent_pair_count", "reuse_numerator",
+                "reuse_denominator", "cluster_count", "layer_count", "layers_clearing_null"):
+        summary.append(field(row, name, key))
+if repetition is None:
+    summary.append("decode_repetition_per_mille=none")
+    for name, _ in ARMS:
+        summary.append("%s_verdict_excluding_repeats=none" % name)
+else:
+    summary.append("decode_repetition_per_mille=%s"
+                   % repetition["pooled"]["decode"]["repetition_per_mille"])
+    for name, _ in ARMS:
+        summary.append(field(result["excluding_repeats"]["phases"][name],
+                             name, "verdict").replace("_verdict=", "_verdict_excluding_repeats="))
+summary.append("entropy_prefill_per_mille=%s" % result["histogram"]["prefill"]["entropy_per_mille"])
+summary.append("entropy_decode_per_mille=%s" % result["histogram"]["decode"]["entropy_per_mille"])
+summary.append("top8_prefill_per_mille=%s" % result["histogram"]["prefill"]["top8_mass_per_mille"])
+summary.append("top8_decode_per_mille=%s" % result["histogram"]["decode"]["top8_mass_per_mille"])
+summary.append("token_reduced_layers=%s"
+               % (",".join(str(layer) for layer in result["token_reduced_layers"]) or "none"))
+print(" ".join(summary))
+PY
+
+printf '%s\n' "decode locality gate: model size and mtime unchanged (read-only proof)"

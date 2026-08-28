@@ -448,3 +448,517 @@ CAVEATS = (
     "the verdict is judged against k/n, the null for the full top-k set; the null for the printed "
     "subset is smaller, which makes the threshold conservative",
 )
+
+
+# --- R2D: the full-axis, phase-aware decode path (begin) -------------------------------------
+#
+# Everything above this line is the historical R2/R3 compact-axis gate and is unchanged. R2c's
+# patched instrument prints every router slot and evaluates decode graphs, which makes two
+# measurements possible that the compact path deliberately refuses: prefill reuse over all
+# `n_expert_used` slots, and reuse between the tokens of consecutive decode graphs.
+#
+# The historical path can never be reused for that, and not only because of the print form. Its
+# adjacency is *within one graph*: `_reuse_triple` pairs token `t` with token `t + 1` of the same
+# `(document, graph, layer)` stratum. Every decode graph carries exactly one token, so that
+# definition finds no decode pair at all — it is why the merged prefill gate reports
+# `phase_split.decode` as `null` even on a multi-graph transcript. The decode gate therefore
+# defines adjacency over the *sequence*: one chain of observation points per `(document, layer)`,
+# ordered by `(graph ordinal, token index)`, where two consecutive points are adjacent when they
+# are consecutive token positions of one graph, or the last token of graph `g` and the first token
+# of graph `g + 1`.
+
+# The decode gate observes 17 sequence positions per prompt at `-n 16`, so it can afford a wider
+# working-set window than the compact path's `printed = min(ne, 6)` ceiling allowed.
+DECODE_WINDOWS = (1, 2, 4, 8)
+
+# `graphs[].phase` is three-valued (`docs/specs/r2a-expert-trace.md` section 2.5.5): a one-token
+# first graph is `single_token_first_graph`, because the transcript cannot separate a one-token
+# prompt from a decode step. A pair touching one is counted and reported, never silently folded
+# into prefill or decode.
+PAIR_PHASES = ("prefill", "decode", "boundary")
+
+
+def require_full_router_axes(documents, labels=None):
+    """Admit only complete R2c router observations.
+
+    The decode gate's denominator is the full `n_expert_used` set, and its adjacency is only real
+    when no token position is hidden. Both are properties of the print form, so both are checked
+    here rather than assumed: every retained `(graph, layer, token)` group must carry exactly slots
+    `0 .. n_expert_used - 1`, `moe.slots_truncated` must be false, and no graph may report a
+    truncated token axis. A compact build-10566 document fails all three, which is the mirror image
+    of `require_compact_router_axes` and keeps the two corpora from ever being pooled.
+    """
+    if labels is None:
+        labels = [str(index) for index in range(len(documents))]
+    if len(labels) != len(documents):
+        raise GateError("document and label counts differ")
+
+    for label, document in zip(labels, documents):
+        moe = document.get("moe") or {}
+        used = moe.get("n_expert_used")
+        if document.get("status") != "ok":
+            raise GateError("%s: status %r (%s)"
+                            % (label, document.get("status"), document.get("error_code")))
+        if not moe.get("present"):
+            raise GateError("%s: moe.present is false" % label)
+        if not isinstance(used, int) or isinstance(used, bool) or used <= 0:
+            raise GateError("%s: n_expert_used is not a positive integer" % label)
+        if moe.get("slots_truncated") is not False:
+            raise GateError(
+                "%s: decode gate requires full router axes; compact R2A input refused" % label)
+        for row in document.get("graphs") or []:
+            if row.get("tokens_truncated"):
+                raise GateError(
+                    "%s: graph %r has a truncated token axis; adjacency would not be real"
+                    % (label, row.get("ordinal")))
+        expected = set(range(used))
+        groups = {}
+        for row in document.get("selections") or []:
+            key = (row.get("graph"), row.get("layer"), row.get("token"))
+            groups.setdefault(key, set()).add(row.get("slot"))
+        for key, slots in groups.items():
+            if slots != expected:
+                raise GateError("%s: decode gate requires full router axes; group %r has slots %r"
+                                % (label, key, sorted(slots)))
+
+
+def entry_token_fingerprints(lines):
+    """One printed-value fingerprint per token position of every graph, in graph order.
+
+    The `R2_ACTIVATION_TRACE` document carries no token identity, and greedy decode can fall into a
+    repetition loop whose adjacent "tokens" are the same token. Distinguishing conditional locality
+    from a degenerate loop needs token identity, so this reads the one place the transcript states
+    it: the entry `embd = ... GET_ROWS(token_embd.weight..., inp_tokens...)` block, whose row `i` is
+    the embedding row of token `i`. The printed values of that row are a deterministic function of
+    the token id, so equal fingerprints mean the same token.
+
+    This is a *fingerprint*, not a token id, and it is read for one diagnostic and one sensitivity
+    arm only; no headline verdict depends on it. It returns one list of fingerprints per entry
+    block, in transcript order, and the caller is required to check that each list has exactly the
+    graph's `n_tokens` entries — anything else means the block was truncated or the grammar moved,
+    and the caller must then report the arm as unavailable rather than exclude the wrong pairs.
+    """
+    blocks = []
+    current = None
+    for line in lines:
+        text = line.rstrip("\n").rstrip("\r")
+        if text.startswith("common_debug_cb_eval:"):
+            if "GET_ROWS(token_embd.weight" in text:
+                current = []
+                blocks.append(current)
+            else:
+                current = None
+            continue
+        if current is None:
+            continue
+        stripped = text.strip()
+        if stripped.startswith("sum ="):
+            current = None
+            continue
+        if not stripped.startswith("[") or not stripped.endswith("],"):
+            continue
+        body = stripped[1:-2].strip()
+        if not body:
+            continue
+        current.append(",".join(part.strip() for part in body.split(",")))
+    return blocks
+
+
+def _pair_phase(first_phase, second_phase):
+    """The phase of one adjacent pair, or `None` when either side is not prefill or decode."""
+    if first_phase == "prefill" and second_phase == "prefill":
+        return "prefill"
+    if first_phase == "decode" and second_phase == "decode":
+        return "decode"
+    if first_phase == "prefill" and second_phase == "decode":
+        return "boundary"
+    return None
+
+
+def _sequence_adjacent(first, second, graphs):
+    """True when `second` is the token position immediately after `first` in the real sequence."""
+    if first[0] == second[0]:
+        return second[1] == first[1] + 1
+    if second[0] != first[0] + 1 or second[1] != 0:
+        return False
+    n_tokens = graphs.get(first[0], {}).get("n_tokens")
+    return isinstance(n_tokens, int) and first[1] == n_tokens - 1
+
+
+def _decode_pairs(documents, fingerprints=None):
+    """Every sequence-adjacent observation pair of every `(document, layer)` chain.
+
+    Each record is `(cluster, layer, phase, hits, trials, repeated)`, where `repeated` is `True`
+    when both sides carry the same token fingerprint, `False` when they carry different ones, and
+    `None` when no fingerprint was supplied for that document.
+    """
+    records = []
+    ambiguous = 0
+    for index, document in enumerate(documents):
+        graphs = {row["ordinal"]: row for row in document["graphs"]}
+        experts = {}
+        for row in document["selections"]:
+            experts.setdefault((row["graph"], row["layer"], row["token"]), set()).add(row["expert"])
+        chains = {}
+        for graph, layer, token in experts:
+            chains.setdefault(layer, []).append((graph, token))
+        marks = fingerprints[index] if fingerprints is not None else None
+        for layer, positions in sorted(chains.items()):
+            positions.sort()
+            for first, second in zip(positions, positions[1:]):
+                if not _sequence_adjacent(first, second, graphs):
+                    continue
+                phase = _pair_phase(graphs[first[0]]["phase"], graphs[second[0]]["phase"])
+                if phase is None:
+                    ambiguous += 1
+                    continue
+                before = experts[(first[0], layer, first[1])]
+                after = experts[(second[0], layer, second[1])]
+                repeated = None
+                if marks is not None:
+                    left, right = marks.get(first), marks.get(second)
+                    repeated = None if left is None or right is None else left == right
+                records.append((index, layer, phase, len(before & after), len(after), repeated))
+    return records, ambiguous
+
+
+def _phase_verdict(records, n_expert, n_expert_used, null_per_mille):
+    """Pool one phase's pair records into the same verdict the historical gate uses."""
+    hits = sum(record[3] for record in records)
+    trials = sum(record[4] for record in records)
+    if not trials:
+        return None
+
+    clusters = {}
+    layers = {}
+    layer_clusters = {}
+    for cluster, layer, _, record_hits, record_trials, _ in records:
+        entry = clusters.setdefault(cluster, [0, 0])
+        entry[0] += record_hits
+        entry[1] += record_trials
+        layer_entry = layers.setdefault(layer, [0, 0, 0])
+        layer_entry[0] += record_hits
+        layer_entry[1] += record_trials
+        layer_entry[2] += 1
+        layer_cluster = layer_clusters.setdefault(layer, {}).setdefault(cluster, [0, 0])
+        layer_cluster[0] += record_hits
+        layer_cluster[1] += record_trials
+
+    per_mille = hits * 1000 // trials
+    low, high = wilson_bounds(hits, trials)
+    cluster_low, cluster_high, deff, deff_estimated = cluster_bounds(
+        [tuple(entry) for entry in clusters.values()], hits, trials)
+    cluster_low_per_mille = int(cluster_low * 1000)
+
+    per_layer = []
+    layers_clearing = 0
+    for layer in sorted(layers):
+        layer_hits, layer_trials, layer_pairs = layers[layer]
+        layer_low, layer_high = wilson_bounds(layer_hits, layer_trials)
+        layer_cluster_low, layer_cluster_high, layer_deff, _ = cluster_bounds(
+            [tuple(entry) for entry in layer_clusters[layer].values()], layer_hits, layer_trials)
+        clears = bool(layer_trials and int(layer_cluster_low * 1000) > null_per_mille)
+        if clears:
+            layers_clearing += 1
+        per_layer.append({
+            "layer": layer,
+            "adjacent_pair_count": layer_pairs,
+            "reuse_numerator": layer_hits,
+            "reuse_denominator": layer_trials,
+            "reuse_per_mille": layer_hits * 1000 // layer_trials,
+            "wilson_low_per_mille": int(layer_low * 1000),
+            "wilson_high_per_mille": int(layer_high * 1000),
+            "cluster_low_per_mille": int(layer_cluster_low * 1000),
+            "cluster_high_per_mille": int(layer_cluster_high * 1000),
+            "design_effect_per_mille": int(layer_deff * 1000),
+            "clears_null": clears,
+        })
+
+    excludes_null = cluster_low_per_mille > null_per_mille
+    materially_above = per_mille * 2 >= null_per_mille * 3
+    return {
+        "verdict": "LOCALITY" if (excludes_null and materially_above) else "NO_LOCALITY",
+        "excludes_null": excludes_null,
+        "materially_above_null": materially_above,
+        "adjacent_pair_count": len(records),
+        "reuse_numerator": hits,
+        "reuse_denominator": trials,
+        "reuse_per_mille": per_mille,
+        "wilson_low_per_mille": int(low * 1000),
+        "wilson_high_per_mille": int(high * 1000),
+        "cluster_count": len(clusters),
+        "design_effect_per_mille": int(deff * 1000),
+        "design_effect_estimated": deff_estimated,
+        "cluster_low_per_mille": cluster_low_per_mille,
+        "cluster_high_per_mille": int(cluster_high * 1000),
+        "ratio_to_null_per_mille": per_mille * 1000 // null_per_mille,
+        "layer_count": len(per_layer),
+        "layers_clearing_null": layers_clearing,
+        "per_layer": per_layer,
+    }
+
+
+def _graph_phase_histograms(documents, n_expert):
+    """The expert-use histogram of every selection, split by the phase of its graph."""
+    counts = {"prefill": {}, "decode": {}}
+    for document in documents:
+        phases = {row["ordinal"]: row["phase"] for row in document["graphs"]}
+        for row in document["selections"]:
+            bucket = counts.get(phases.get(row["graph"]))
+            if bucket is None:
+                continue
+            bucket[row["expert"]] = bucket.get(row["expert"], 0) + 1
+    summary = {}
+    for name, histogram in counts.items():
+        values = list(histogram.values())
+        summary[name] = {
+            "selection_count": sum(values),
+            "distinct_experts": len(histogram),
+            "entropy_per_mille": entropy_per_mille(values, n_expert),
+            "top8_mass_per_mille": top_mass_per_mille(values, 8),
+        }
+    return summary
+
+
+def _phase_working_sets(documents, n_expert, observed_slots):
+    """Working-set growth over `w` consecutive observed positions of one graph phase.
+
+    Recomputed here rather than read from `locality.working_set`, because the document's own
+    windows never cross a graph boundary and a decode graph holds one token: every decode window
+    above `w = 1` exists only in the sequence view.
+    """
+    runs = {"prefill": {width: [0, 0] for width in DECODE_WINDOWS},
+            "decode": {width: [0, 0] for width in DECODE_WINDOWS}}
+    for document in documents:
+        graphs = {row["ordinal"]: row for row in document["graphs"]}
+        experts = {}
+        for row in document["selections"]:
+            experts.setdefault((row["graph"], row["layer"], row["token"]), set()).add(row["expert"])
+        chains = {}
+        for graph, layer, token in experts:
+            chains.setdefault(layer, []).append((graph, token))
+        for layer, positions in chains.items():
+            positions.sort()
+            for start in range(len(positions)):
+                phase = graphs[positions[start][0]]["phase"]
+                if phase not in runs:
+                    continue
+                union = set()
+                for step in range(max(DECODE_WINDOWS)):
+                    if start + step >= len(positions):
+                        break
+                    point = positions[start + step]
+                    if graphs[point[0]]["phase"] != phase:
+                        break
+                    if step and not _sequence_adjacent(positions[start + step - 1], point, graphs):
+                        break
+                    union |= experts[(point[0], layer, point[1])]
+                    width = step + 1
+                    if width in runs[phase]:
+                        runs[phase][width][0] += 1
+                        runs[phase][width][1] += len(union)
+
+    result = {}
+    for phase, widths in runs.items():
+        rows = []
+        for width in DECODE_WINDOWS:
+            samples, unique_sum = widths[width]
+            null_unique = n_expert * (1.0 - (1.0 - observed_slots / n_expert) ** width)
+            rows.append({
+                "window": width,
+                "sample_count": samples,
+                "unique_sum": unique_sum,
+                "unique_mean_per_mille": (unique_sum * 1000 // samples) if samples else None,
+                "null_unique_mean_per_mille": int(null_unique * 1000),
+                "deficit_per_mille": ((int(null_unique * 1000) - unique_sum * 1000 // samples)
+                                      if samples else None),
+            })
+        result[phase] = rows
+    return result
+
+
+def _repetition(documents, fingerprints):
+    """The token-repetition rate of every prompt's generated sequence.
+
+    One rate per document over the *sequence*, counted once per position rather than once per
+    layer: a repeated token is a property of the decode loop, not of a layer. `boundary` counts the
+    single last-prompt-token / first-generated-token pair.
+    """
+    per_document = []
+    pooled = {"decode": [0, 0], "boundary": [0, 0], "prefill": [0, 0]}
+    for index, document in enumerate(documents):
+        graphs = {row["ordinal"]: row for row in document["graphs"]}
+        marks = fingerprints[index]
+        points = sorted(marks)
+        counts = {"decode": [0, 0], "boundary": [0, 0], "prefill": [0, 0]}
+        for first, second in zip(points, points[1:]):
+            if not _sequence_adjacent(first, second, graphs):
+                continue
+            phase = _pair_phase(graphs[first[0]]["phase"], graphs[second[0]]["phase"])
+            if phase is None:
+                continue
+            counts[phase][1] += 1
+            if marks[first] == marks[second]:
+                counts[phase][0] += 1
+        for phase, entry in counts.items():
+            pooled[phase][0] += entry[0]
+            pooled[phase][1] += entry[1]
+        per_document.append({
+            "document": index,
+            "decode_repeated": counts["decode"][0],
+            "decode_pairs": counts["decode"][1],
+            "decode_repetition_per_mille": (counts["decode"][0] * 1000 // counts["decode"][1])
+                                           if counts["decode"][1] else None,
+            "distinct_generated_tokens": len({marks[point] for point in points
+                                              if graphs[point[0]]["phase"] == "decode"}),
+        })
+    summary = {}
+    for phase, entry in pooled.items():
+        summary[phase] = {
+            "repeated": entry[0],
+            "pairs": entry[1],
+            "repetition_per_mille": (entry[0] * 1000 // entry[1]) if entry[1] else None,
+        }
+    return {"pooled": summary, "per_document": per_document}
+
+
+def aggregate_decode(documents, labels=None, fingerprints=None):
+    """Pool full-axis multi-graph documents into the three R2D verdicts.
+
+    `fingerprints` is optional and, when given, is one `{(graph, token): fingerprint}` mapping per
+    document. It buys the token-repetition diagnostic and the sensitivity arm that excludes every
+    pair whose two positions carry the same token; the three headline verdicts never use it.
+    """
+    if not documents:
+        raise GateError("no documents")
+    if labels is None:
+        labels = [str(index) for index in range(len(documents))]
+    if fingerprints is not None and len(fingerprints) != len(documents):
+        raise GateError("document and fingerprint counts differ")
+
+    n_expert = None
+    n_expert_used = None
+    for label, document in zip(labels, documents):
+        moe = document["moe"]
+        if moe["n_expert"] is None:
+            raise GateError("%s: n_expert is null" % label)
+        if n_expert is None:
+            n_expert, n_expert_used = moe["n_expert"], moe["n_expert_used"]
+        elif (moe["n_expert"], moe["n_expert_used"]) != (n_expert, n_expert_used):
+            raise GateError("%s: router shape (%s, %s) differs from (%s, %s)"
+                            % (label, moe["n_expert"], moe["n_expert_used"], n_expert,
+                               n_expert_used))
+
+    require_full_router_axes(documents, labels)
+
+    # With every slot printed the observed null and the top-k null coincide, so the decode gate's
+    # threshold is no longer the conservative approximation the merged prefill gate had to use.
+    null_per_mille = n_expert_used * 1000 // n_expert
+    records, ambiguous_pairs = _decode_pairs(documents, fingerprints)
+    if not records:
+        raise GateError("no sequence-adjacent pair in %d document(s); the corpus cannot answer the "
+                        "gate" % len(documents))
+
+    by_phase = {name: [] for name in PAIR_PHASES}
+    for record in records:
+        by_phase[record[2]].append(record)
+
+    # The parser owns within-graph adjacency and this module owns the sequence view. Where the two
+    # definitions coincide — pairs inside one prefill graph — they must agree exactly, or one of
+    # them is wrong and no verdict below means anything.
+    parser_hits = parser_trials = parser_pairs = 0
+    for document in documents:
+        row = (document["locality"].get("phase_split") or {}).get("prefill")
+        if row:
+            parser_pairs += row["adjacent_pair_count"]
+            parser_hits += row["reuse_numerator"] or 0
+            parser_trials += row["reuse_denominator"] or 0
+    prefill_records = by_phase["prefill"]
+    recomputed = (len(prefill_records), sum(record[3] for record in prefill_records),
+                  sum(record[4] for record in prefill_records))
+    if recomputed != (parser_pairs, parser_hits, parser_trials):
+        raise GateError("the pooled prefill recomputation %d/%d over %d pair(s) disagrees with the "
+                        "parser's %d/%d over %d pair(s)"
+                        % (recomputed[1], recomputed[2], recomputed[0], parser_hits, parser_trials,
+                           parser_pairs))
+
+    phases = {name: _phase_verdict(by_phase[name], n_expert, n_expert_used, null_per_mille)
+              for name in PAIR_PHASES}
+
+    excluded = None
+    repetition = None
+    if fingerprints is not None:
+        repetition = _repetition(documents, fingerprints)
+        kept = {name: [record for record in by_phase[name] if record[5] is not True]
+                for name in PAIR_PHASES}
+        excluded = {
+            "phases": {name: _phase_verdict(kept[name], n_expert, n_expert_used, null_per_mille)
+                       for name in PAIR_PHASES},
+            "dropped_pairs": {name: len(by_phase[name]) - len(kept[name]) for name in PAIR_PHASES},
+            "unknown_pairs": sum(1 for record in records if record[5] is None),
+        }
+
+    graph_counts = {"prefill": 0, "decode": 0, "single_token_first_graph": 0}
+    token_positions = 0
+    truncated_documents = 0
+    documents_token_reduced = 0
+    token_reduced_layers = set()
+    for document in documents:
+        for row in document["graphs"]:
+            if row["phase"] in graph_counts:
+                graph_counts[row["phase"]] += 1
+            token_positions += row["tokens_observed"] or 0
+        if any(row.get("tokens_truncated") for row in document["graphs"]):
+            truncated_documents += 1
+        reduced = document["moe"].get("token_reduced_layers") or []
+        if reduced:
+            documents_token_reduced += 1
+            token_reduced_layers.update(reduced)
+
+    return {
+        "document_count": len(documents),
+        "n_expert": n_expert,
+        "n_expert_used": n_expert_used,
+        "observed_slots_per_token": n_expert_used,
+        "null_per_mille": null_per_mille,
+        "threshold_per_mille": null_per_mille * 3 // 2,
+        "graph_counts": graph_counts,
+        "token_positions": token_positions,
+        "ambiguous_pairs": ambiguous_pairs,
+        "truncated_documents": truncated_documents,
+        "documents_token_reduced": documents_token_reduced,
+        "token_reduced_layers": sorted(token_reduced_layers),
+        "phases": phases,
+        "excluding_repeats": excluded,
+        "repetition": repetition,
+        "histogram": _graph_phase_histograms(documents, n_expert),
+        "working_set": _phase_working_sets(documents, n_expert, n_expert_used),
+    }
+
+
+DECODE_CAVEATS = (
+    "greedy decode is the contract: the capture pins --temp 0 --seed 42 with the instrument's "
+    "default sampler, so the generated sequence is the model's argmax continuation and not a "
+    "sample from its distribution; a sampled continuation may route differently",
+    "the context is -c 512 and every prompt is 6 tokens or fewer, so the whole measurement lives "
+    "in the first two dozen positions of a sequence and says nothing about long context",
+    "the decode arm observes ALIGN_LLM_DECODE_STEPS generated tokens per prompt and stops early on "
+    "an end-of-generation token, so a prompt may contribute fewer decode graphs than requested",
+    "greedy decode can enter a repetition loop, whose adjacent tokens are the same token and whose "
+    "reuse is therefore trivially high; the gate reports the measured repetition rate and repeats "
+    "every verdict with those pairs excluded",
+    "token identity is a fingerprint of the printed entry-embedding row, not a decoded token id; "
+    "it is used only for the repetition rate and the sensitivity arm",
+    "prefill and decode are measured on different layer sets: a prefill graph's last layer is "
+    "token-reduced by the instrument and contributes nothing, while a one-token decode graph has "
+    "no reduction, so the decode arm can carry one layer the prefill arm cannot",
+    "the boundary arm holds exactly one pair per prompt and layer, so it is the smallest of the "
+    "three and its interval is correspondingly wide",
+    "the trials are clustered by prompt: one prompt supplies every layer and every position it "
+    "has. Each verdict uses the cluster-robust lower bound, with the design effect measured over "
+    "prompt clusters and floored at 1",
+    "the prefill arm here is NOT the merged prefill gate of section 8: it observes all "
+    "n_expert_used slots rather than the compact printed six, so its number replaces nothing and "
+    "the two are not comparable term by term",
+)
+# --- R2D: the full-axis, phase-aware decode path (end) ---------------------------------------
