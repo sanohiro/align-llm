@@ -228,6 +228,12 @@ else
     engine+writeback-offset)
                        include_flags+=("${engine}" "-DALIGN_GGML_FORCE_WRITEBACK_OFFSET=1")
                        flavour="stub+engine+force-writeback-offset" ;;
+    # R6-RESIDENT-WEIGHTS section 5.1's early-exit cell. `buffer_from_host` refuses, which is the
+    # only input-reachable way to reach a resident run whose arena is filled and live and whose wrap
+    # does not exist — the exact shape of the run-scope balance invariant's failure path.
+    engine+resident-wrap)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_HOST_WRAP_FAILURE=1")
+                       flavour="stub+engine+force-resident-wrap" ;;
     *)
       printf '%s\n' "build-ggml-shim: unknown stub ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
       exit 1

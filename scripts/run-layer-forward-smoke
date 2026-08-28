@@ -3887,6 +3887,17 @@ FORCED_CASES = [
     # compared and not only the past ones.
     ("ds-force-writeback-offset", "engine+writeback-offset",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH], "R6_PLANE_MISMATCH"),
+    # R6-RESIDENT-WEIGHTS section 5.1's early-exit cell, restored by section 11.1 correction 12.
+    # The design named this case and the first implementation retired it as "unnecessary", on the
+    # reasoning that no early `return` exists between the arena's construction and the converged
+    # teardown. That reasoning was right about control flow and wrong about the **invariant**: a
+    # resident run can still *fail* in that window — the fill can raise `R4_PACK_UNREADABLE`, or the
+    # wrap itself can be refused — and the run-scope balance check has to stay silent when it does.
+    # `buffer_from_host` refusing is the one way an input can reach that window, and the run it
+    # produces has a filled, live arena, no wrap, and one teardown ahead of it.
+    ("ds-force-resident-wrap", "engine+resident-wrap",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH, "-", STEPS, "-", "-", "weights"],
+     "R5_GGML_INIT"),
 ]
 
 
@@ -4680,6 +4691,44 @@ if shifted["plane"]["first_mismatch_column"] != 3 \
         or shifted["error_detail"] != "step[1]layer[0]tensor[k]col[3]":
     failures.append("ds-force-writeback-offset: oracle B did not name the new column: %r %r"
                     % (shifted["plane"], shifted["error_detail"]))
+
+# R6-RESIDENT-WEIGHTS section 11.1 correction 12's regression, and the one case in this corpus
+# where a **resident** run fails. Everything asserted here was wrong before the correction: the
+# run-scope balance check read `created != 1 || freed != 1`, so a run that created no wrap because
+# it never got one reported a balance failure and `released_before_owner_scope_end: false` — a
+# fabricated leak on a run whose teardown was perfect. The pack code is not reachable here for the
+# reason section 5.9 deviation 4 records about `R6_RESIDENT_BUDGET` — a container whose members
+# validate cannot make a later `pread` short — so the wrap's own refusal stands for the whole
+# window, which is the same window and the same invariant.
+unwrapped = json.loads(produced["ds-force-resident-wrap"])
+if unwrapped["error_detail"] != "resident_buffer":
+    failures.append("ds-force-resident-wrap: error_detail %r, not the refused wrap"
+                    % unwrapped["error_detail"])
+if unwrapped["weights"]["mode"] != "resident":
+    failures.append("ds-force-resident-wrap: a resident run that failed published mode %r"
+                    % unwrapped["weights"]["mode"])
+# The fill ran to completion before the wrap was asked for, so the arena was live and full when the
+# run failed. Without this the case would prove nothing about the window it is here to cover.
+if unwrapped["weights"]["fill_bytes"] <= 0 or unwrapped["weights"]["fill_pread_count"] <= 0 \
+        or unwrapped["weights"]["resident_bytes"] <= 0:
+    failures.append("ds-force-resident-wrap: the arena was not filled before the wrap was refused:"
+                    " %r" % unwrapped["weights"])
+if unwrapped["weights"]["resident_wraps_created"] != 0 \
+        or unwrapped["weights"]["resident_wraps_freed"] != 0:
+    failures.append("ds-force-resident-wrap: a refused wrap was counted: %r"
+                    % unwrapped["weights"])
+# The finding itself: nothing was created, so nothing leaked, and the document must say so.
+if unwrapped["lifetime"]["graph_balance_failures"] != 0 \
+        or not unwrapped["lifetime"]["released_before_owner_scope_end"]:
+    failures.append("ds-force-resident-wrap: a failure before the wrap fabricated a leak: %r"
+                    % unwrapped["lifetime"])
+for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                       ("contexts_created", "contexts_freed"),
+                       ("backends_created", "backends_freed"),
+                       ("gallocrs_created", "gallocrs_freed")):
+    if unwrapped["lifetime"][created] != unwrapped["lifetime"][freed]:
+        failures.append("ds-force-resident-wrap: %s != %s: %r"
+                        % (created, freed, unwrapped["lifetime"]))
 
 staged = json.loads(produced["ds-force-plane-stage-offset"])["plane"]
 if staged["roundtrip_verdict"] != "MISMATCH" or staged["first_mismatch_layer"] != 0 \

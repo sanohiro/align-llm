@@ -11,8 +11,10 @@ carries `main` `3df063b` (R6-STEP-N, PR #145) and R5E-MOE-MODEL-PREFILL — by `
 rebase**, so every stacked branch's recorded commits stay reachable. The four things that merge
 re-checks all held: roadmap item **30** (29 is KV-PERSIST), document schema **4** (KV-PERSIST took
 3), Align Request **50** (1–49 taken), and `scripts/decode-step-golden.jsonl` regenerated from the
-merged head. When the R6 branches land on `origin/main` this branch takes `git merge origin/main`
-and re-checks the same four.
+merged head. Both R6 branches have now landed: `origin/main` is at `a6e545b` (R6-KV-PERSIST, PR #146, carrying
+its final review minors `5c53ea1`), taken here by `git merge origin/main` — a clean merge, two files,
+no conflict — and all four re-checks held again: roadmap item **30**, schema **4**, the next free
+Align request number (now **52**, because this capability's review filed **51**), and the golden.
 
 **Capability.** The whole weight set held **resident for one process's lifetime**, so that after one
 fill every decode step reads exactly zero pack bytes. Dense Qwen2.5-Coder-7B Q4_K_M, **CPU only**.
@@ -46,42 +48,56 @@ no new Align surface were needed, because the zero-copy placement path has been 
 path since R4.5. `scripts/ggml_shim_stub.c` is **not** unchanged — one function in the test double,
 recorded as section 5.9 deviation 1.
 
-**Result.** On the reference host (Apple M1, 16 GiB), `def add(a, b):`, `KV_WIDTH` 256,
-baseline re-taken back to back in the same session, three runs per point:
+**Result** (run 4, the **interleaved** re-measurement at the repair head, which is the measurement
+of record). On the reference host (Apple M1, 16 GiB), `def add(a, b):`, `KV_WIDTH` 256, baseline
+re-taken back to back in the same session, three runs per point, legs alternating:
 
 | `N` | streamed elapsed | resident elapsed | `weights.step_pack_bytes` |
 | --- | --- | --- | --- |
-| 1 | 5.016 s | 5.819 s | 4,370,560,992 -> **0** |
-| 4 | 7.117 s | 6.440 s | 17,482,243,968 -> **0** |
-| 16 | 18.016 s | **8.808 s** | 69,928,975,872 -> **0** |
+| 1 | 5.355 s | 6.800 s | 4,370,560,992 -> **0** |
+| 4 | 7.594 s | 7.721 s | 17,482,243,968 -> **0** |
+| 16 | 17.112 s | **10.049 s** | 69,928,975,872 -> **0** |
 
-**511,125 ppm of the `N = 16` fixed task against a 150,000 ppm floor: MET**, 3.4x the floor and 87 %
-of the 586,000 ppm ceiling recorded before implementation — reported as a **ceiling-estimation
-miss** rather than absorbed. The whole qualification was run **three times** — twice pre-merge, once
-at the merged head, at 449,779 / 507,887 / 511,125 ppm — and the byte metric was **identical in all
-three**, which is why it and not the clock carries the claim. Arena 4,677,533,696 B, fill 4,669
-`pread`s of 4,677,120,000 B in 1.6–2.6 s, paid once whatever `N` is. Peak footprint 504 MB ->
-4.74 GB. **Residency is slower at `N = 1`, a coin toss at `N = 4`** where the three runs disagree
-about the sign, and decisive from 16 up; the crossover is stated in section 5.8.1 with the
-disagreement shown rather than averaged away, and it is the practical reason the operand is opt-in. The streamed leg's total pack reads reproduce
+**412,763 ppm of the `N = 16` fixed task against a 150,000 ppm floor: MET**, 2.75x the floor and
+70 % of the 586,000 ppm ceiling recorded before implementation. That is a **shortfall with a named
+cause** — the one-time fill the ceiling assumed away — and not a ceiling-estimation miss:
+`docs/specs/c8-speed-first.md` section 1 reserves that label for a result *far* below its ceiling and
+its own worked precedent is 41 % of one. The runner now prints the percentage on every run and
+applies the label only below one half. **The qualification has now been run four times — 412,763 /
+449,779 / 507,887 / 511,125 ppm — and the byte metric was identical in all four.** The 98,362 ppm
+gap between run 4 and the earlier ones is an **order effect**: the first three took all three
+streamed repeats and then all three resident ones, which confounded the leg with the clock, and the
+review found it. Interleaving moved the streamed leg from 18.016 s to 17.112 s and the resident leg
+from 8.808 s to 10.049 s, so the blocked order **flattered** residency — the opposite of the
+direction a thermal argument predicts, because the mechanism here is the page cache and the
+compressor. The conservative reading is the worst of the four, 412,763 ppm. Arena 4,677,533,696 B,
+fill 4,669 `pread`s of 4,677,120,000 B in 1.6–2.6 s, paid once whatever `N` is. Peak footprint
+504 MB -> 4.74 GB. **Residency is slower at `N = 1`, a coin toss at `N = 4`** where the four runs
+disagree about the sign, and decisive from 16 up; the crossover is stated in section 5.8.1 with the
+disagreement shown rather than averaged away, and it is the practical reason the operand is opt-in.
+The streamed leg's total pack reads reproduce
 R6-STEP-N section 5.4's recorded 8,741,169,024 / 21,852,852,000 / 74,299,583,904 **exactly at all
 three points**, so the baseline this claim is made against is that document's, byte for byte.
 Oracle R PASS on the real model at `N = 16` with the transcript, logits blob, and reference GGUF all
 supplied.
 
 **Goldens.** `scripts/decode-step-golden.jsonl` moves — every row to schema 4 plus a `weights`
-object, and 8 new rows, 107 becoming 115. A programmatic diff of the old and new files confirms the
-**only** fields that changed in a pre-existing row are `.schema_version` and `.weights`, which is
-exactly what section 4.5 predicted. `scripts/layer-forward-golden.jsonl`,
+object, and 9 new rows, 107 becoming **116** (115 at the implementation head; the review repair adds
+`ds-force-resident-wrap`). A programmatic diff of the old and new files confirms the **only** fields
+that changed in a pre-existing row are `.schema_version` and `.weights`, which is exactly what
+section 4.5 predicted, and the repair's own regeneration is **one added row, no removal, and no
+changed row**. The other **six** goldens — `scripts/layer-forward-golden.jsonl`,
 `scripts/model-forward-golden.jsonl`, `scripts/gpu-forward-golden.jsonl`,
-`scripts/moe-layer-forward-golden.jsonl`, and `scripts/ggml-spike-golden.jsonl` are byte-unchanged,
-verified by regenerating all five and observing no diff.
+`scripts/moe-layer-forward-golden.jsonl`, `scripts/moe-model-forward-golden.jsonl`, and
+`scripts/ggml-spike-golden.jsonl` — are byte-unchanged, verified by regenerating all six and
+observing no diff.
 
 **`arena` is a reserved word in Align at this pin.** `fn f(borrow arena: slice<u8>)` fails to parse
 with `error: expected ':'` at the parameter name and cascades into a wall of unrelated top-level
-errors. Every identifier is `resident_*`, `pool`, or `layout`. Not filed as a request — a reserved
-word is the language's prerogative — but recorded in section 5.8 because the diagnostic points at
-the wrong line.
+errors; `arena := 3` reports at the `:=`, one token past the cause. Every identifier is
+`resident_*`, `pool`, or `layout`. The reserved word is the language's prerogative and is not
+requested; the **diagnostic** is **Align Request 51**, filed by the review repair with three minimal
+repros at the pin.
 
 **Blockers.** None. Request 35 makes a graceful out-of-memory refusal impossible and Request 50
 makes a host-memory check impossible inside the arm; both are compensated by `RESIDENT` being
@@ -93,16 +109,51 @@ are byte-unchanged and deferred, because they pay the streaming cost once rather
 measuring host is a 16 GiB Apple M1 that compresses memory under pressure, so every timed run
 records `vm_stat`'s compressor counters.
 
-**Next actions, in order.** (1) Merge `agent/r6-kv-persist`'s review repair and re-check the schema
-number, the golden, the roadmap item, and the request numbering. (2) `python3 scripts/pre-pr
---owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (3) One comprehensive review; the
-performance-claim row means the review must include measurement risk. (4) Publish.
+**Review.** One comprehensive review of `c73d4b8` was taken as two independent adversarial passes —
+one on implementation and measurement, one on specification, measurement, and governance — and
+returned four major and thirteen minor findings. Every one is dispositioned; the consolidated repair
+is one commit on top of the `origin/main` merge. The load-bearing finding was the run-scope balance
+assertion (`docs/specs/r6-resident-weights.md` section 11.1 correction 12): it read
+`created != 1 || freed != 1`, so a resident run that failed **before** the wrap existed reported
+`graph_balance_failures: 1` and `released_before_owner_scope_end: false` on a teardown that was in
+fact perfect. It now asserts balance, with "exactly one" kept for successful runs, and
+`ds-force-resident-wrap` — the early-exit case the first implementation retired as unnecessary — is
+its regression.
+
+**Verification checkpoint (repair head).** `gmake build`, `gmake check` (31 units), `gmake fmt`,
+`gmake format-check`, `git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
+`gmake layer-forward-smoke` (all six blocks; **116** documented decode-step cases reaching 41 codes)
+all pass. `gmake decode-step-qualification` **exits 0** on the real model at `N = 16` in 827 s of the
+1800 s cap, with the scaling row interleaved for the first time; oracle R PASS, arena reproduced
+independently from `pack.json`, floor MET at 412,763 ppm. Instruments unchanged:
+`ALIGN_LLM_LLAMA_DEBUG=/opt/homebrew/bin/llama-debug` (Homebrew build 10566, commit `bb4caa754`) and
+the R2c-patched `llama-eval-callback` from the `r2c-v2` cache.
+
+**Six mutants, all killed under `gmake layer-forward-smoke`.** The arena refilled per decode step;
+a layer filled at the wrong arena base; the run-scope wrap never freed; the wrap created **and**
+freed twice (which is what the repaired condition's `created > 1` clause carries); and the
+pre-repair balance condition restored, which `ds-force-resident-wrap` kills by name. A sixth —
+`stage_embed_row`'s bound restored to the whole arena — is **not** killed by anything in the corpus,
+and that is recorded in section 5.10 rather than papered over: the repair is defence in depth
+against a future caller, not a fix for a reachable defect.
+
+**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake
+layer-forward-smoke` at the exact publication head. (2) Publish the English pull request with the
+review envelope, every finding's disposition, and the exact commands and results. (3) Merge once the
+required checks pass.
+
+**Process correction this capability owes the next one.** Sections 1 to 4 of
+`docs/specs/r6-resident-weights.md` were written before implementation, but the file's first commit
+is the implementation commit, so the repository holds **no evidence** of that ordering and a reviewer
+is right to say so. **The next Track B performance capability commits its sections 1 to 4 — ledger,
+baseline, cost ceiling, and floor — before the first line of implementation**, so the ordering is a
+fact about the repository rather than a claim in a document.
 
 **Intentional uncommitted files.** None. The RW-P1 probe (`src/r6w_probe.align` and its binary) is a
 throwaway that lives outside the work tree and is not committed; section 5.8 records its whole
 output.
 
-## In review: R6-KV-PERSIST (2026-08-29)
+## Merged checkpoint: R6-KV-PERSIST (PR #146, 2026-08-29)
 
 Branch `agent/r6-kv-persist`, stacked on `agent/r6-step-n`, which is merged into it at `6ca1eef`
 (the STEP-N review repair) by `git merge` — **never a rebase**, so both stacked branches' recorded
@@ -215,17 +266,9 @@ that is not evidence about `llama-debug`.
 `gmake baseline-check` is `N/A` — no `Makefile` line and no build input moved — and
 must be re-checked at the publication head, because R5E moved `Makefile` and the baseline artifacts.
 
-**Next actions, in order.**
-1. One comprehensive review of the merged candidate. The repair added four refusals to a persisted
-   format's contract, so the reviewer is asked explicitly whether that is a narrow repair of
-   recorded findings or a material change of behaviour requiring a final delta review.
-2. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` at the
-   exact publication head. The diff touches goldens, fixtures, and a new source module, so the
-   classifier selects the executable row; the stamp belongs to the exact unchanged head, so take it
-   last, after the review repairs and any amend. **`baseline-check` needs re-checking there**: this
-   branch changes no `Makefile` line and no build input, but the merge brought `main`'s `Makefile`
-   and `.gitattributes` changes in, so the classifier sees them in the merged tree.
-3. The English pull request, with the review envelope and the exact commands and results.
+**Merged.** PR #146, `origin/main` at `a6e545b`, carrying the final review minors `5c53ea1`. The
+comprehensive review's finding that the repair's four added refusals were contract additions rather
+than bug fixes is recorded in `docs/specs/r6-kv-persist.md` section 11.4. Nothing here is open.
 
 **Reproducing the qualification on this host.** Both instruments exist and neither is built here.
 `ALIGN_LLM_LLAMA_DEBUG` **must** be the pinned Homebrew `llama-debug`, `version: 0.2.0 (build 10566,

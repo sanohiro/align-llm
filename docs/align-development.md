@@ -2080,9 +2080,13 @@ fail. `scripts/run-decode-step` therefore refuses the resident leg below 12 GiB 
 and prints one explicit `N/A` line naming it; `ALIGN_LLM_RESIDENT_WEIGHTS=0` skips the leg
 deliberately. `gmake decode-step-qualification` runs both legs back to back in one session and
 asserts the two documents are identical outside the `weights` object, `pack.reader_*`, and the
-per-graph ggml buffer pair the run-scope wrap hoist moves. On the reference host the streamed
-baseline re-taken in that session was 19.823 s at `N = 16` against 13.144 s resident, with
-`weights.step_pack_bytes` going from 69,928,975,872 to exactly 0.
+per-graph ggml buffer pair the run-scope wrap hoist moves. On the reference host (Apple M1, 16 GiB)
+the streamed baseline re-taken back to back in that session was **17.112 s** at `N = 16` against
+**10.049 s** resident — the median of three runs each with the two legs interleaved, recorded as run
+4 in `docs/specs/r6-resident-weights.md` section 5.8.1 — with `weights.step_pack_bytes` going from
+69,928,975,872 to exactly 0. That is 412,763 ppm of the `N = 16` fixed task, the most conservative
+of the four qualification runs that document reports. Residency is *slower* at `N = 1` and a coin
+toss at `N = 4`; the win is decisive from `N = 16` up, which is why the operand is opt-in.
 
 **CPU only.** `--model-forward-gpu` keeps its per-graph wrap and per-graph free, because
 `docs/specs/r5c-metal-prefill.md` section 2.6 measured that an unfreed Metal buffer aborts the

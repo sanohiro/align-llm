@@ -1888,8 +1888,12 @@ fn decode_pass(
   if resident {
     // Section 3.3, and the whole claim: one 2,016-byte host copy out of the resident table, and
     // **zero pack bytes** for this step's embedding row.
+    // `embed_members.stride[0]` and not `ends.row_bytes`: the two are the same number by
+    // construction, and this is the stride of the member the graph is about to read, which is the
+    // one the copy has to agree with. The prefill's own call below uses the same source.
     take_pack(o, model_forward.stage_embed_row(
-        window, layout.table_at, embed_base, ends.row_bytes, g.n_vocab, token_id, 0))
+        window, layout.table_at, embed_base, layout.span[0], embed_members.stride[0], g.n_vocab,
+        token_id, 0))
   } else {
     take_pack(
       o, model_forward.fill_members(pak, embed_members, tokens, embed_view, transient, counters))
@@ -2367,7 +2371,7 @@ fn prefill_pass(
     loop {
       if piece >= tokens.count || o.code.len() > 0 { break }
       take_pack(o, model_forward.stage_embed_row(
-          window, layout.table_at, embed_base, embed_members.stride[0], g.n_vocab,
+          window, layout.table_at, embed_base, layout.span[0], embed_members.stride[0], g.n_vocab,
           tokens.ids[piece], piece))
       piece = piece + 1
     }
@@ -2899,9 +2903,23 @@ fn schedule_decode(
     o.backends_freed = o.backends_freed + 1
   }
   // Oracle B at run scope. The hoist R5C section 5.4 refused is admitted here only because the
-  // invariant it weakens is re-established at the scope the hoist moved it to: exactly one resident
-  // wrap was created and exactly one was freed.
-  if resident && (o.resident_wraps_created != 1 || o.resident_wraps_freed != 1) {
+  // invariant it weakens is re-established at the scope the hoist moved it to: **every resident
+  // wrap this run created was freed, and it created at most one.**
+  //
+  // Section 11.1 correction 12: the invariant is *balance*, not *presence*. A resident run that
+  // fails before the wrap exists — the fill raising `R4_PACK_UNREADABLE`, or `buffer_from_host`
+  // itself refusing (`ds-force-resident-wrap`) — created nothing and freed nothing, and asserting
+  // `created == 1` there fabricated a leak on every one of those paths: `graph_balance_failures`
+  // rose and `released_before_owner_scope_end` went false on a run whose teardown was in fact
+  // perfect. `created != freed` still catches the wrap that is never freed (section 5.10's third
+  // mutant) and `created > 1` still catches a wrap created twice, which is the other half of "one
+  // lifetime for the whole run". A **successful** resident run keeps the original "exactly one"
+  // reading, which is risk 9's guard against a run that silently streamed: it is stated as the
+  // third clause rather than as the whole condition.
+  if resident
+    && (o.resident_wraps_created != o.resident_wraps_freed
+      || o.resident_wraps_created > 1
+      || (o.code.len() == 0 && o.resident_wraps_created != 1)) {
     o.graph_balance_failures = o.graph_balance_failures + 1
   }
   o.slot_capacity = ggml_ffi.slots_capacity(slot_view)

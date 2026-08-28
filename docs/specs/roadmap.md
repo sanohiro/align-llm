@@ -571,15 +571,20 @@ The current forward delivery order is:
     one-mebibyte `pread`s, wrapped once as one `ggml_backend_buffer`, and read by every graph
     through `ggml_backend_tensor_alloc` at arena offsets. **A decode step then reads zero pack bytes
     and copies 2,016 host bytes.** No new shim symbol and no new Align surface: the zero-copy
-    placement path has been the primary weight path since item 16. The primary metric is
+    placement path has been the primary weight path since item 14 (R4.5). The primary metric is
     `weights.step_pack_bytes`, a counter and not a clock: **69,928,975,872 → 0** at `N = 16`.
-    Measured on the reference host in one session, three runs per point, baseline re-taken back to
-    back: elapsed 18.016 s → 8.808 s, **511,125 ppm** of the fixed task against a 150,000 ppm floor
-    this capability's own document defines, because no document owned Track B decode performance
-    before it — **MET** at 3.4× the floor, and 87 % of the 586,000 ppm ceiling recorded in advance,
-    which is reported as a ceiling-estimation miss rather than absorbed. The whole qualification was
-    taken three times, at 449,779 / 507,887 / 511,125 ppm; the byte metric was identical in all
-    three and the clock is the secondary metric for exactly that reason. Residency is **slower** at
+    Measured on the reference host in one session, three runs per point with the two legs
+    **interleaved**, baseline re-taken back to back: elapsed 17.112 s → 10.049 s, **412,763 ppm** of
+    the fixed task against a 150,000 ppm floor this capability's own document defines, because no
+    document owned Track B decode performance before it — **MET** at 2.75× the floor, and 70 % of
+    the 586,000 ppm ceiling recorded in advance, which the runner reports as a shortfall with its
+    cause (the one-time fill) rather than as a ceiling-estimation miss:
+    `docs/specs/c8-speed-first.md` section 1 reserves that label for a result **far** below its
+    ceiling, and its own worked precedent is 41 % of one. The whole qualification was taken four
+    times, at 412,763 / 449,779 / 507,887 / 511,125 ppm; the first is the interleaved run and the
+    conservative reading, and the 98,362 ppm gap to the blocked-order runs is an order effect the
+    review found and the re-measurement quantified. The byte metric was identical in every run and
+    the clock is the secondary metric for exactly that reason. Residency is **slower** at
     `N = 1`, a coin toss at `N = 4` where the runs disagree about the sign, and decisive from 16 up
     — stated rather than hidden, and the practical reason the operand is opt-in. Correctness is free: the resident and streamed
     documents are byte-identical outside the `weights` object, the two pack counters, and the
@@ -591,8 +596,8 @@ The current forward delivery order is:
     the arena aborts rather than refuses** (Request 35), so `scripts/run-decode-step` preflights
     physical memory and prints one `N/A` line below 12 GiB. Peak footprint rises from 504 MB to
     4.74 GB, which is the point of the capability and is published as `weights.resident_bytes`.
-    Owner `gmake layer-forward-smoke`, whose fifth block gains eight cases including oracle R at one
-    and three steps; focused `gmake decode-step-qualification`. **The R6 gate is still unmet:** this
+    Owner `gmake layer-forward-smoke`, whose fifth block gains nine cases including oracle R at one
+    and three steps and a forced build in which a resident run fails with its arena live; focused `gmake decode-step-qualification`. **The R6 gate is still unmet:** this
     removes the per-step weight sweep item 29 left in place, and prefix-keyed lookup on top of it is
     the next capability toward the TTFT gate.
 

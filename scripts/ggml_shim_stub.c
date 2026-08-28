@@ -683,10 +683,15 @@ typedef struct align_stub_graph {
  * the graph pool, and the arena are exhausted after the eighth graph. */
 static void align_stub_reset_if_idle(void);
 
+/* `owns_arena` separates the two kinds of buffer record this file hands out, and the reset below is
+ * the only thing that reads it: a `buffer_from_host` wrap borrows the **caller's** memory and owns
+ * no engine state, while the record `align_ggml_alloc_remaining` returns describes
+ * `align_stub_arena` itself. */
 typedef struct align_stub_buffer {
     unsigned char *base;
     int64_t size;
     int32_t used;
+    int32_t owns_arena;
 } align_stub_buffer;
 
 typedef struct align_stub_gallocr {
@@ -1289,7 +1294,15 @@ void align_ggml_context_close(void *ctx) {
  * graphs with every context correctly closed. Real ggml frees a graph with its context and has no
  * such coupling, so the double was refusing a program the thing it doubles accepts. The teardown
  * order the arm contracts (`teardown_graph`: gallocr, then contexts) is what keeps this safe: no
- * gallocr is live across a context close, so nothing points into the arena when it is reclaimed. */
+ * gallocr is live across a context close, so nothing points into the arena when it is reclaimed.
+ *
+ * **The narrowing is by ownership, not by kind.** Section 11.1 correction 15: dropping the buffer
+ * test outright also dropped the one buffer record that *does* describe arena memory — the record
+ * `align_ggml_alloc_remaining` returns over `align_stub_arena` for the reference arm's tensors. A
+ * caller that closes its context while still holding that record would have had the bytes under it
+ * reclaimed and handed out again. `owns_arena` is exactly the old test restricted to the records
+ * that own something, so a resident weight wrap over the caller's own memory no longer gates the
+ * reset and an arena-backed record still does. */
 static void align_stub_reset_if_idle(void) {
     int32_t i = 0;
     for (i = 0; i < ALIGN_STUB_MAX_CONTEXTS; i++) {
@@ -1299,6 +1312,11 @@ static void align_stub_reset_if_idle(void) {
     }
     for (i = 0; i < ALIGN_STUB_MAX_GALLOCRS; i++) {
         if (align_stub_gallocrs[i].used) {
+            return;
+        }
+    }
+    for (i = 0; i < ALIGN_STUB_MAX_BUFFERS; i++) {
+        if (align_stub_buffers[i].used && align_stub_buffers[i].owns_arena) {
             return;
         }
     }
@@ -1318,6 +1336,16 @@ static void align_stub_reset_if_idle(void) {
  */
 void *align_ggml_buffer_from_host(void *device, void *ptr, int64_t size) {
     int32_t i = 0;
+#ifdef ALIGN_GGML_FORCE_HOST_WRAP_FAILURE
+    /* R6-RESIDENT-WEIGHTS section 5.1's early-exit cell, `ds-force-resident-wrap`. The wrap is the
+     * first thing after the resident fill, so refusing it is the one input-reachable way to reach a
+     * resident run that has a live, filled arena, no wrap, and a converged teardown ahead of it.
+     * Never defined in an ordinary build. */
+    (void) device;
+    (void) ptr;
+    (void) size;
+    return NULL;
+#endif
     if (device == NULL || ptr == NULL || size <= 0) {
         return NULL;
     }
@@ -1339,6 +1367,7 @@ void *align_ggml_buffer_from_host(void *device, void *ptr, int64_t size) {
             align_stub_buffers[i].used = 1;
             align_stub_buffers[i].base = (unsigned char *) ptr;
             align_stub_buffers[i].size = size;
+            align_stub_buffers[i].owns_arena = 0;
             return (void *) &align_stub_buffers[i];
         }
     }
@@ -1404,6 +1433,7 @@ void *align_ggml_alloc_remaining(void *ctx, void *backend) {
             align_stub_buffers[slot].used = 1;
             align_stub_buffers[slot].base = align_stub_arena;
             align_stub_buffers[slot].size = ALIGN_STUB_ARENA_BYTES;
+            align_stub_buffers[slot].owns_arena = 1;
             return (void *) &align_stub_buffers[slot];
         }
     }
