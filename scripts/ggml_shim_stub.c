@@ -1478,6 +1478,24 @@ int64_t align_ggml_slot_nbytes(const void *slots, int64_t index) {
         return align_stub_nbytes(t) - 4;
     }
 #endif
+#ifdef ALIGN_GGML_FORCE_MOE_RESIDUAL_SHORT
+    /* R5E section 4.5, the same class one slot map over: `src/moe_model_forward.align`'s phase-B
+     * `l_out` is slot 69 at the synthetic corpus's `n_expert_used = 3`
+     * (`MM_B_NODE_BASE` 56 + `2u + 8` - 1), and under-reporting it by one element makes the
+     * per-layer residual invariant refuse for real. Never defined in an ordinary build. */
+    if (index == 69) {
+        return align_stub_nbytes(t) - 4;
+    }
+#endif
+#ifdef ALIGN_GGML_FORCE_MOE_CARRY_SHORT
+    /* R5E section 3.9 step 31's length arm. `ffn_norm-L` is phase A's node at
+     * `MM_A_NODE_BASE` 21 + 31 = 52, and it is one of the five values that cross the phase
+     * boundary; under-reporting it makes `R5E_CARRY` reachable without corrupting a table the arm
+     * has already validated. Never defined in an ordinary build. */
+    if (index == 52) {
+        return align_stub_nbytes(t) - 4;
+    }
+#endif
     return align_stub_nbytes(t);
 }
 

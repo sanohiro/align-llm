@@ -1101,13 +1101,20 @@ fn verify_plane(
     fail(o, CODE_PLANE_MISMATCH, plane_column_detail(layer, "k", -1))
     return
   }
-  if ggml_ffi.slot_nbytes(slots, nodes.out[DECODE_K_CONCAT_ROW]) != span
-    || ggml_ffi.slot_nbytes(slots, nodes.out[DECODE_V_CONCAT_ROW]) != span {
+  // The two concat rows are checked together but reported separately: naming `k` when only the V
+  // concat is the wrong size would send a reader to the wrong half of the layout. K is named when
+  // it is the row that disagrees, otherwise V is.
+  k_bytes := ggml_ffi.slot_nbytes(slots, nodes.out[DECODE_K_CONCAT_ROW])
+  v_bytes := ggml_ffi.slot_nbytes(slots, nodes.out[DECODE_V_CONCAT_ROW])
+  if k_bytes != span || v_bytes != span {
+    mut tensor := PLANE_TENSOR_V
+    if k_bytes != span { tensor = PLANE_TENSOR_K }
+    label: str := plane_tensor_label(tensor)
     state.roundtrip_verdict = ROUNDTRIP_MISMATCH
     state.first_mismatch_layer = layer
-    state.first_mismatch_tensor = PLANE_TENSOR_K
+    state.first_mismatch_tensor = tensor
     state.first_mismatch_column = -1
-    fail(o, CODE_PLANE_MISMATCH, plane_column_detail(layer, "k", -1))
+    fail(o, CODE_PLANE_MISMATCH, plane_column_detail(layer, label, -1))
     return
   }
   take(

@@ -1353,12 +1353,11 @@ Classified per `CLAUDE.md`. **None blocks this capability, and no new request is
 | Indexing arrays of Move element types | Genuine Align gap, recorded | **Request 22, `PROPOSED`, non-blocking.** The token stream is a fixed-width `u32` region and the digests are fixed-width slices of one string — the same avoidance R6-STEP-N deviation 1 records. Cited; no new client shape |
 | Non-`Copy` capture in `spawn` closures | Genuine Align gap, recorded | **Request 41, `PROPOSED`.** Relevant only to parallelising the qualification, which is not attempted (section 4.7) |
 
-**No new request is proposed, and the numbering is recorded because it is a live hazard.** This
-branch's `docs/align-requests.md` runs 1–46 plus 49; requests **47 and 48 exist on `main`** (R5E, PR
-#143) and reach this branch only through the merge R6-STEP-N section 8 schedules. The next free number
-is therefore **50**, it is **not claimed by this capability**, and every gap above resolves to an
-existing entry. If a genuine new gap appears during implementation, it takes 50 — **re-checked at
-branch time**, after `git merge origin/main`, because a second branch could claim it first.
+**No new request is proposed, and the numbering is recorded because it is a live hazard.** At the
+implementation head this branch's `docs/align-requests.md` ran 1–46 plus 49, with requests **47 and
+48** on `main` only (R5E, PR #143). The merge of `origin/main` at `3df063b` has since brought them
+in, so the register now runs **1–49** here and the next free number is **50**. It is **not claimed by
+this capability**, and every gap above resolves to an existing entry.
 
 ## 9. Reconciliation drafts
 

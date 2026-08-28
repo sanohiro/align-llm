@@ -524,7 +524,7 @@ length; the arm under test is `--decode-step`.
 | --- | --- |
 | Owner, during development | `gmake layer-forward-smoke` — the owner for R5A–R5D and now R6, already a member of `HOSTED_CHECK_TARGETS` |
 | Focused qualification | `gmake decode-step-qualification` → `scripts/run-decode-step`, opt-in, capable-only, **outside every aggregate** |
-| Coding-baseline chain | `gmake baseline-check`, **re-recorded before publication.** This capability changes `Makefile` and `scripts/build-ggml-shim`, both of which the chain covers, so the recorded source → oracle → finalization chain at the merge base does not describe this head. Re-record it, then re-run `gmake baseline-check` at the exact publication head |
+| Coding-baseline chain | `gmake baseline-check`, **re-recorded before publication.** This capability changes `Makefile`, one of the twenty recorded baseline artifacts, so the recorded source → oracle → finalization chain at the merge base does not describe this head. (`scripts/build-ggml-shim` also changes but is not a recorded artifact.) Re-recorded on Linux as `e61993d` → `3cde6e2` → `cb8d2ce` after the merge with `main` `5ccc2aa`, superseding this branch's earlier chain `e4548b1` → `6d1c152` → `1bbacaa` which PR #143 invalidated; `gmake baseline-check` passes at the finalized head |
 | Publication | `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`, on the unchanged head the baseline chain was recorded against |
 | Formatting | `gmake fmt` before committing Align source; `gmake format-check` and `git diff --check` clean |
 
@@ -577,16 +577,22 @@ of 264–456 ms and a decode graph of 114–157 ms. The two crossings together a
 4.0 ms; the 3.6 ms upload is one prompt on one run and the other three are under 1 ms, so the figure
 is load-dependent and no ratio is claimed from it.
 
-The run was performed three times — twice around the writing of the acceptance rule, and once more
-at the review-repair head. **Every recorded value above is identical across all three**: the same
+The run was performed **four** times — twice around the writing of the acceptance rule, once at the
+review-repair head, and once at the publication head after the final review's repair.
+**Every recorded value above is identical across all four**: the same
 decoded tokens (671, 715, 2691, 526), the same oracle A verdicts and maxima (`FAIL` at 2391 on
 `ffn_inp-27` for the first prompt, `PASS` at 0 for the other three, 5,058 elements each), the same
 oracle B byte counts (688,128 and 344,064), the same `plane.bytes` 29,360,128, and the same node
 counts 958/1014. Oracle C is byte-identical on all four prompts in every run, with the argmax pair
 agreeing (26312, 262, 1159, 11844). Only the elapsed timings moved, which is what makes them a
 diagnostic: the repair-head run measured `plane.readback_ns` 108,961–386,167 and `plane.upload_ns`
-882,083–1,000,464 against prefills of 252–493 ms and decode graphs of 111–127 ms, inside the ranges
-the paragraph above records and confirming that the 3.6 ms upload was load, not structure.
+882,083–1,000,464 against prefills of 252–493 ms and decode graphs of 111–127 ms, and the
+publication-head run measured `plane.readback_ns` 226,709–320,749 and `plane.upload_ns`
+513,792–1,020,544 against prefills of 264–454 ms and decode graphs of 112–147 ms. Both are inside
+the ranges the paragraph above records, which confirms that the 3.6 ms upload was load, not
+structure. The publication-head run was taken **concurrently with an unrelated aggregate on the same
+host**, and the structural quantities did not move at all — which is what a correctness
+qualification should show and why nothing here is a performance claim.
 
 ### The finding that changes section 3.2
 
@@ -782,11 +788,11 @@ Encountered while designing, classified per `CLAUDE.md`. **None blocks this capa
 | `alignc check` is not a superset of `alignc build` | Genuine Align gap | Request 42, unchanged |
 | Release of rebound `buffer` allocations before frame exit | Genuine Align gap | Request 39 — relevant because the plane is 28 MiB held across two passes; a workaround exists (scope it) and is used |
 
-**Numbering hazard, recorded because it has already bitten this repository twice.** `main` carries
-requests through **46**. The `agent/r5e-moe-model-prefill` branch **holds 47 and 48** and they are
-not free; this capability therefore takes **49**. If that branch merges with different numbers, or
-another branch claims 49 first, this request is renumbered at reconciliation — the number is not a
-contract. The same applies to the roadmap item number in section 9.
+**Numbering hazard, recorded because it has already bitten this repository twice.** When this
+section was written `main` carried requests through **46** and the `agent/r5e-moe-model-prefill`
+branch held 47 and 48 unmerged, so this capability took **49**. That branch has since merged
+(PR #143), 47 and 48 are real on `main`, and 49 is still this capability's. The number was never a
+contract; section 9 records the re-check.
 
 ## 9. Reconciliation — applied
 
@@ -795,11 +801,15 @@ here. Roadmap item **27** is in `docs/specs/roadmap.md`; the `HANDOFF.md` active
 `docs/align-development.md` carries the arm, its operand grammar, its environment inputs, and the
 `MAX_PREFILL_TOKENS` lift.
 
-The numbering hazard section 8 recorded was real and both numbers moved. `main` carries roadmap
-items to **24** and requests to **46**; `agent/r3-decode-residency` claims roadmap **25** and
-`agent/r5e-moe-model-prefill` claims roadmap **26** and requests **47/48**. This capability therefore
-takes roadmap **27** and Align Request **49**, and both must be re-checked at reconciliation against
-whatever has merged by then.
+The numbering hazard section 8 recorded was real and both numbers moved. When this section was first
+written, `main` carried roadmap items to **24** and requests to **46**, `agent/r3-decode-residency`
+claimed roadmap **25**, and `agent/r5e-moe-model-prefill` claimed roadmap **26** and requests
+**47/48**. **Re-checked at publication**, against `main` `5ccc2aa`, which this branch merges: both claims
+landed while this capability was in review. `agent/r3-decode-residency` took roadmap item **25**
+(PR #142) and `agent/r5e-moe-model-prefill` took roadmap item **26** and Align Requests **47** and
+**48** (PR #143). `main` therefore carries roadmap items to 26 and requests to 48, and this
+capability keeps roadmap **27** and Align Request **49** — the numbers it chose against unmerged
+claims are exactly the numbers that are free, with no gap and no renumbering.
 
 ## 10. Deviations from this ledger, and why
 
@@ -894,6 +904,16 @@ whole reason for choosing slots 64 and 65.
   one lane inside the slot only the decode graph writes, and oracle B reports
   `R6_PLANE_MISMATCH layer[0]tensor[k]col[0]`. It is a shipped case (`ds-force-plane-stage-offset`),
   not a mutation someone has to re-apply.
+- **Neither of `verify_plane`'s two size guards is reached by a case.** Oracle B's own early
+  returns — a span that does not fit the node window, and a `CONCAT` row whose `slot_nbytes`
+  disagrees with the span the arm computed — publish `R6_PLANE_MISMATCH` with
+  `roundtrip_verdict: "MISMATCH"` and `col[-1]`, the extent-level column. Both conditions are
+  arithmetic the arm derives from the same geometry it built the graph with, so no operand and no
+  forced build reaches them, and **the `col[-1]` form of the detail is therefore unexercised**; the
+  shipped `R6_PLANE_MISMATCH` case, `ds-force-plane-stage-offset`, reaches the *comparison* path and
+  reports a real column. The guards stay because they are the difference between a wrong answer and
+  a refusal if a future row table changes a shape, and they are deferred rather than met — like
+  `R6_PLANE_UNAVAILABLE` and `R6_PLANE_WRITE` above and for the same reason.
 - **`ds-concat-dim-invalid`** is deferred. `dim` is a compiled-in column of the row table and no
   operand reaches `op_concat`'s `[0,3]` guard; the *axis* refusal it is adjacent to is shipped as
   `ds-force-concat-axis`.

@@ -717,6 +717,17 @@ reproduced exactly** — the same 64 ids, the same gate G verdicts, the same ora
 same three C′ identities per prompt, and the same per-step A′ maxima to the last digit. Only the
 timings moved, and section 5.1's timing table is the second run's.
 
+**Run three, at the merge commit.** The same command was run a third time on the merged head, after
+`git merge origin/main` brought R6-DECODE-KV-STEP1 and R5E in. **Every correctness value in this
+section reproduced exactly a third time:** the same 149,710/1/2,355/0 fingerprint partition, the same
+64 ids in the same order, gate G `PASS` on all four prompts, oracle B `IDENTICAL` over 26,607,616 B
+and 21,102,592 B, oracle C′ byte-identical at `k ∈ {1, 8, 16}` on all four, and oracle A′ `PASS` at 0
+at every step on three prompts with the `T = 6` prompt's admitted `FAIL` curve identical to the last
+digit — 2391 at step 1, 5878 at step 9, 1295 at step 14. Only the timings moved again, and downward
+on a quieter host: 12.24 s, 15.80 s, 14.76 s, and 15.34 s elapsed with 1.55–2.18 s of decode compute.
+That is the third independent confirmation that the timing columns are diagnostics and the
+correctness columns are the result.
+
 **The fingerprint measurement, taken before gate G was claimed** (section 3.2, and the one number
 the acceptance rule depends on):
 
@@ -1081,7 +1092,13 @@ This capability proposes **no new request**, so 50 stays free and the hazard R6 
 does not apply. R5E also moved `Makefile`, `.gitattributes`, the baseline artifacts, and
 `docs/align-development.md`; none of those is a `MAX_PREFILL_TOKENS` consumer and none conflicts
 with this capability's diff, but the merge is still taken as `git merge origin/main` — never a
-rebase — after R6 lands, and re-checked then.
+rebase — after R6 lands, and re-checked then. **Taken:** R6-DECODE-KV-STEP1 merged as PR #144
+(`main` `d9a91e4`) and its own review repair recorded the cap as **8** in
+`docs/specs/r5a-dense-layer-forward.md` and `docs/specs/r5b-model-prefill-forward.md`, which are
+`MAX_PREFILL_TOKENS` consumers in prose. The merge commit therefore moves both to **32** with
+`R5_ORACLE_TRUNCATED` unmoved, together with the two source comments that narrate the lift
+(`src/layer_forward.align`, `src/model_forward.align`). Roadmap item **28** and request numbering
+(49 real, 50 free) are confirmed unchanged.
 
 ## 9. Reconciliation
 
@@ -1096,6 +1113,7 @@ A quoted copy that can disagree with its original is a second source of truth, s
 | --- | --- | --- |
 | Roadmap item **28** | `docs/specs/roadmap.md`, item 28 | The capability, its acceptance rule with the **measured** collision count, the A′ demotion and its reason, and what the R6 gate still leaves open |
 | Handoff active block | `HANDOFF.md`, the active block | Branch, head, implementation and verification state, exact next actions, blockers, constraints |
+| The two prefill arms' recorded cap | `docs/specs/r5a-dense-layer-forward.md` sections 3.3, 4.2 and 5.4; `docs/specs/r5b-model-prefill-forward.md` sections 3.3, 4.2 and 5.4 | `TOKENS` is 1 to 32, `MAX_PREFILL_TOKENS` is 32, the range `7 .. 32` is open for arithmetic and closed for comparison, and `R5_ORACLE_TRUNCATED` still refuses **any** transcript above six tokens. Applied in the merge commit, because R6-DECODE-KV-STEP1's own review repair had set these to 8 |
 | The `--decode-step` arm's operands, schema 2, the constant lift, and the qualification's inputs | `docs/align-development.md`, "The `--decode-step` arm (R6-DECODE-KV-STEP1, R6-STEP-N)" | The eleven-operand grammar and the `-` form of `LOGITS`, `STEPS` and its "absent means 1" default, schema 2's `steps[]` and per-step failure shape, `MAX_PREFILL_TOKENS` 8 → 32 with `R5_ORACLE_TRUNCATED` unmoved, `N = 16` with its documented fallback, the `N + 1`-graph refusal, the `numpy` prerequisite, and the gate-and-three-oracles summary |
 
 **Numbering.** Item 28 assumes R6-DECODE-KV-STEP1 keeps roadmap item **27**, which it holds on
