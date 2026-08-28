@@ -1589,6 +1589,19 @@ fn stage_geometry(
     fail(o, "R5_TOKENS", detail_view)
     return g
   }
+  // R6-DECODE-KV-STEP1 section 2.7 lifted `MAX_PREFILL_TOKENS` from 6 to 8 for the **decode** arm,
+  // whose per-token tensors are one column wide and are therefore printed in full at any `T`. This
+  // arm's tensors are not. `llama-eval-callback` prints a tensor's rows in full only while
+  // `ne1 <= TRUNCATION_PRINTED`, and above it prints three leading and three trailing rows; the
+  // scan's `printed_count` clamps to six on **both** sides, so at `T = 7` or `T = 8` a transcript
+  // comparison would silently check six of seven rows and report `PASS` on a tensor it never saw.
+  // The oracle refuses itself instead. Without a transcript there is no oracle and the lift is
+  // arithmetic only, which is what `--decode-step`'s own `--model-forward` characterization pass
+  // relies on: it supplies `-` in the transcript position.
+  if o.transcript_present && parsed.count > TRUNCATION_PRINTED {
+    fail(o, "R5_ORACLE_TRUNCATED", labelled("tokens", parsed.count))
+    return g
+  }
   // A nested struct field cannot be moved out of a struct at this pin, so the column is rebuilt
   // rather than lifted out of the parser's own record (section 6, correction C9).
   mut ids: array_builder<i64> := array_builder()

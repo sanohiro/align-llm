@@ -223,7 +223,6 @@ def normalize(document):
     copy["decode"]["compute_ns"] = 0
     copy["plane"]["readback_ns"] = 0
     copy["plane"]["upload_ns"] = 0
-    copy["window"]["reuse_count"] = copy["window"]["reuse_count"]
     return json.dumps(copy, sort_keys=True, separators=(",", ":"))
 
 
@@ -232,13 +231,17 @@ cases = sorted({name.split("-")[0] for name in os.listdir(document_root)
 for case in cases:
     runs = [load("%s-run%d.json" % (case, r)) for r in (1, 2, 3)]
     document = runs[0]
+    # The status guard runs **before** any of the four objects is read. A run that stops at step 6
+    # publishes the whole document shape with empty objects, but a run that cannot write a document
+    # at all is a different failure and reading `document["plane"]` first would report it as a
+    # `KeyError` traceback instead of as the arm's own code and detail.
+    if document["status"] != "ok":
+        failures.append("%s: %s %s" % (case, document["error_code"], document["error_detail"]))
+        continue
     plane = document["plane"]
     decode = document["decode"]
     oracle = document["oracle_decode"]
     logits = document["oracle_logits"]
-    if document["status"] != "ok":
-        failures.append("%s: %s %s" % (case, document["error_code"], document["error_detail"]))
-        continue
     # Section 2.2's size arithmetic on this model at this width: 28 * 2 * 256 * 4 * 128 * 4.
     if plane["bytes"] != 29360128:
         failures.append("%s: plane is %d bytes, not 29,360,128" % (case, plane["bytes"]))
@@ -251,11 +254,17 @@ for case in cases:
                         % (case, plane["roundtrip_verdict"], plane["roundtrip_bytes_compared"]))
     # Oracle A, at the instrument's own printing precision, against its **second** graph.
     #
-    # `PASS` is the acceptance form. A `FAIL` is admitted only under the two conditions section 5.1
-    # measured and named, and never on its own: the divergence must stay inside section 3.4's own
-    # characterization bound of 0.5, and oracle C must be **byte-identical**, which says the decode
-    # step reproduced the batched path exactly and therefore that what oracle A is measuring is
-    # llama.cpp's decode-versus-prefill kernel divergence rather than this arm's arithmetic.
+    # THE SHIPPED ACCEPTANCE RULE, stated once here and nowhere else (ledger section 5.1):
+    #
+    #   A, B, and C are all acceptance. B must be `IDENTICAL` on every prompt and C must be
+    #   byte-identical on every prompt, unconditionally. A must be `PASS`, **or** `FAIL` with both
+    #   of `max_abs_diff <= 5000` ten-thousandths (section 3.4's own characterization bound) and C
+    #   byte-identical on that prompt. C's byte identity is therefore load-bearing twice: on its own,
+    #   and again as the condition that lets an A `FAIL` be attributed to llama.cpp's
+    #   decode-versus-prefill kernel selection rather than to this arm's arithmetic.
+    #
+    # The conjunction is written out at the admission site below rather than left to the reader to
+    # infer from two separate checks.
     if oracle["tolerance_ten_thousandths"] != 1:
         failures.append("%s: oracle A ran at a tolerance of %d, not 1"
                         % (case, oracle["tolerance_ten_thousandths"]))
@@ -313,14 +322,20 @@ for case in cases:
                            % (single["output"]["argmax"], decode["argmax"], single_identical))
         else:
             single_note = "error %s" % single["error_code"]
+    # Oracle C, acceptance in its own right on every prompt.
     if not single_identical:
         failures.append("%s: oracle C is %r — the decode step did not reproduce this arm's own "
                         "single-shot T+1 prefill" % (case, single_note))
     if oracle["verdict"] == "FAIL":
-        if oracle["max_abs_diff_ten_thousandths"] > 5000:
-            failures.append("%s: oracle A diverges by %d ten-thousandths, outside section 3.4's "
-                            "characterization bound of 5000"
-                            % (case, oracle["max_abs_diff_ten_thousandths"]))
+        # The admission is the conjunction, written out: within the characterization bound **and**
+        # oracle C byte-identical. Either half missing is a failure, and the second half is stated
+        # here as well as above so that a future change to the oracle C check cannot silently widen
+        # what an oracle A `FAIL` is allowed to be.
+        if oracle["max_abs_diff_ten_thousandths"] > 5000 or not single_identical:
+            failures.append("%s: oracle A FAIL at %d/1e-4 with oracle C %r is not admissible — the "
+                            "rule admits a FAIL only inside section 3.4's characterization bound of "
+                            "5000 AND with oracle C byte-identical"
+                            % (case, oracle["max_abs_diff_ten_thousandths"], single_note))
         else:
             print("decode step qualification: %s oracle A FAIL at %d/1e-4 on %s-%d, admitted: "
                   "oracle C is byte-identical, so the divergence is llama.cpp's decode-versus-"

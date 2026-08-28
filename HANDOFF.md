@@ -5,65 +5,109 @@ file records durable project state.
 
 ## Active: R6-DECODE-KV-STEP1 (2026-08-29)
 
-Branch `agent/r6-decode-kv-step1`, off `main` at `c21b9e4`. **Nothing is committed on it yet**:
-every file below is an intentional uncommitted change in the worktree.
+Branch `agent/r6-decode-kv-step1`, off `main` at `c21b9e4`. **Two commits, and nothing uncommitted:**
+`73557dc` is the capability and the commit after it is the consolidated review repair. Reviewers'
+base tip was `76246f3`; the merge base is `c21b9e4`.
 
 **Capability.** One decode step at `n_past = T` over an Align-owned KV plane, dense Qwen2.5-Coder-7B
 Q4_K_M, CPU. `docs/specs/r6-decode-kv-step1.md` is the authoritative ledger. The design gate is
 triggered — new public CLI surface, new exchanged format, coordinated invariant across six modules —
 and the design was complete before implementation began.
 
-**Complete.** `align_ggml_op_concat` across the six FFI surfaces; `WHEN_DECODE`, `OP_CONCAT`, the
-two plane slots (64/65), `mf_write_mask_offset`, the thirty-eight-row decode layer table and its
-oracle map in `src/layer_qwen2.align`; the id/position split in `src/model_forward.align`; the
-multi-graph transcript scan in `src/layer_forward.align`; `src/decode_step.align` and its
-`--decode-step` arm; the fixture's decode reference and two-graph transcript; the fifth
-`layer-forward-smoke` block and `scripts/decode-step-golden.jsonl`; `scripts/run-decode-step` and
-the `decode-step-qualification` target; roadmap item 27, `docs/align-development.md`, and Align
-Request 49.
+**Complete and committed.** `align_ggml_op_concat` across the six FFI surfaces; `WHEN_DECODE`,
+`OP_CONCAT`, the two plane slots (64/65), `mf_write_mask_offset`, the thirty-eight-row decode layer
+table and its oracle map in `src/layer_qwen2.align`; the id/position split in
+`src/model_forward.align`; the multi-graph transcript scan in `src/layer_forward.align`;
+`src/decode_step.align` and its `--decode-step` arm; the fixture's decode reference and two-graph
+transcript; the fifth `layer-forward-smoke` block and `scripts/decode-step-golden.jsonl`;
+`scripts/run-decode-step` and the `decode-step-qualification` target; roadmap item 27,
+`docs/align-development.md`, and Align Request 49. The real-model qualification is recorded in
+ledger section 5.1.
 
-**Verification checkpoint.** `gmake build`, `gmake format-check`, `git diff --check`, and
-`gmake layer-forward-smoke` (all five blocks, 37 new documented decode-step cases, 22 codes) pass.
-Five mutants die with distinct diagnoses: dropping the K concat and swapping the V concat axis are
-`R5_SHAPE`; roping at position 0 and an off-by-one mask are oracle-A `FAIL` at 8092 and 514
-ten-thousandths; transposing the K plane is `R6_PLANE_MISMATCH layer[0]tensor[k]col[0]`, which is
-the failure oracle B exists for. `gmake decode-step-qualification` is the real-model run; its
-recorded numbers are section 5 of the ledger.
+**Review and repair.** One comprehensive review of `73557dc` over two independent reviewers on
+disjoint risks. Reviewer B (spec/docs/governance) requested changes: 1 blocker, 4 major, 8 minor.
+Reviewer A (Align/C/FFI) approved with 1 major and 6 minor. All 20 findings have a disposition and
+are repaired in one consolidated commit, except the blocker, which is a **publication step** rather
+than a code change and is next action 2 below.
 
-**Goldens that moved, and why.** Exactly two lines, one per file: `lf-tokens-seven` becomes
-`lf-tokens-nine` and `mf-tokens-seven` becomes `mf-tokens-nine`, because section 2.7 lifts
-`MAX_PREFILL_TOKENS` from 6 to 8 and those two cases assert the cap. `gpu-forward-golden.jsonl` and
-`moe-layer-forward-golden.jsonl` are byte-unchanged, and every other row of the two that moved is
-byte-unchanged.
+The repair changes behaviour in two places and both are recorded in the ledger:
 
-**Next actions.**
-1. Record the real-model result in `docs/specs/r6-decode-kv-step1.md` section 5 if the run finished
-   after this file was last written, then commit the branch.
-2. One comprehensive review of the stable candidate, then `python3 scripts/pre-pr --owner-test
-   layer-forward-smoke -- gmake layer-forward-smoke`.
-3. The next capability is step 2 and the decode loop, which needs a write-back at column `n_past` —
+1. **A new refusal, `R5_ORACLE_TRUNCATED`** (ledger 2.7). Section 2.7 lifted `MAX_PREFILL_TOKENS`
+   from 6 to 8 and documented at the constant that the cap was the oracle's. Documenting it was not
+   a mitigation: `printed_count` clamps to six on both sides, so `--layer-forward`/`--model-forward`
+   would have accepted `T` of 7 or 8 **with a transcript** and reported `PASS` over six of seven
+   rows. Both arms now refuse that combination at their token stage. Without a transcript the same
+   token count is admitted, which is what `--decode-step`'s own characterization pass needs.
+2. **`graph.slot_high_water` is a maximum again.** `src/decode_step.align`'s copy of
+   `model_forward.account` had dropped the `slot_high_water` line, so a run failing inside the
+   prefill published 0.
+
+Everything else is consistency: the shipped acceptance rule is now stated **once**, in ledger
+section 2.11 (A, B, and C are all acceptance; an oracle A `FAIL` is admitted only inside the 0.5
+bound **and** with oracle C byte-identical), with sections 3.3/3.4/5.1/10.2, the runner, the
+roadmap, and `docs/align-development.md` pointing at it rather than paraphrasing it.
+
+**Three mutants became shipped cases.** `ds-force-plane-stage-offset` (`R6_PLANE_MISMATCH`, which
+was previously reachable only by mutating the source and was absent from `REQUIRED_CODES`),
+`ds-force-decode-position`, and `ds-force-mask-offset`. Each is keyed on a slot only the decode
+graph writes.
+
+**Verification checkpoint (repair head).** `gmake build`, `gmake check`, `gmake fmt`,
+`gmake format-check`, `git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
+`gmake layer-forward-smoke` — all five blocks, 40 documented decode-step cases reaching 23 codes —
+pass. The four reviewer mutants and the new plane mutant were re-injected at the repair head and all
+five still die with their distinct diagnoses: `R5_SHAPE node[24]` / `node[22]`, oracle A `FAIL` at
+8092 on `q_rope` / 514 on `kqv`, and `R6_PLANE_MISMATCH layer[0]tensor[k]col[0]`.
+
+**`gmake decode-step-qualification` was re-run on the real model at the repair head and passed.**
+Every recorded value in ledger 5.1 reproduced: decoded tokens 671/715/2691/526, oracle A `FAIL` at
+2391 on `ffn_inp-27` for the first prompt and `PASS` at 0 for the other three over 5,058 elements
+each, oracle B `IDENTICAL` over 688,128 and 344,064 bytes, oracle C byte-identical on all four,
+`plane.bytes` 29,360,128, nodes 958/1014. Only the timings moved. Ledger 5.1 records the run.
+
+**Goldens that moved, and why.** Ledger section 5.3 is exact. `gpu-forward-golden.jsonl` and
+`moe-layer-forward-golden.jsonl` are byte-unchanged. `layer-forward-golden.jsonl` and
+`model-forward-golden.jsonl` each rename one row for the token-cap lift and **add two**
+(`*-tokens-seven-transcript` refused, `*-tokens-eight-no-transcript` admitted); no existing row's
+bytes change. `decode-step-golden.jsonl` adds the three forced-build rows and changes seven existing
+rows in one field, `graph.slot_high_water`, which is repair (2) above.
+
+**Next actions, in order.**
+1. Nothing further on the repair: it is committed and owner-tested.
+2. **Re-record the coding-baseline chain and re-run `gmake baseline-check`.** It fails at this head
+   because the capability changes `Makefile` and `scripts/build-ggml-shim`, which the recorded
+   source → oracle → finalization chain covers. This is reviewer B's blocker and it belongs to
+   whoever publishes, because the stamp binds to the exact unchanged head.
+3. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`, on the
+   unchanged head from step 2. The diff touches `Makefile`, `scripts/build-ggml-shim`, and the
+   goldens, so the classifier selects the executable row and the installed fresh-image profile; do
+   not substitute a Docker skip or an ambient `DOCKER_HOST`.
+4. Open the English pull request with the verification table, the review envelope, and the finding
+   dispositions.
+5. The next capability is step 2 and the decode loop, which needs a write-back at column `n_past` —
    the one thing that makes the plane both a read and a write target in one graph.
 
-**Deviations from the ledger, recorded rather than hidden.** The decode layer is **thirty-eight**
-rows and not thirty-six: section 2.4's own arithmetic needs `CONT_3D` + `CONCAT` + `PAD` on each of
-K and V, because a concat appends at the end and the new column must land at index `n_past`, where
-the offset mask unmasks it. Its "same count" sentence is wrong and the node counts the arm records
-(74 prefill, 78 decode on the hosted fixture) are the derived truth. Oracle C is **characterization
-reported by the runner** from two documents rather than a second prefill inside the arm; the arm
-would have to run a whole second thirty-graph schedule to compute it and section 3.3 already says it
-gates nothing. The container stage, the failure sink, `top_k`, and the prefill logits comparison are
-re-implemented inside `src/decode_step.align` rather than called across the module boundary, for the
-measured region-checker gap now filed as Request 49.
+**Deviations from the ledger, recorded rather than hidden.** Ledger section 10 is authoritative and
+now carries all of them: the decode layer is **thirty-eight** rows and not thirty-six (10.1); oracle
+C is computed by the runner rather than by the arm, though it is acceptance (10.2); there is
+deliberately no `R6_ORACLE_SHAPE` and the seam's `R5_ORACLE_SHAPE` reaches the document unchanged
+(10.3); the golden rows that moved and why (10.4); the deferred closure cells, now including the
+external oracle-C chain the review recommended and why it is deferred (10.5); and the nine
+re-implemented functions, **each diffed against its original with every divergence named**,
+plus the 1,328-byte `model_forward.Outcome` this created (10.6).
 
 **Open decision for the user, unchanged from the design.** Whether to extend the R2c patch to
 `examples/debug/debug.cpp` so a decode step gets a byte-exact external logits reference. It would
 close ledger risk 3 at the cost of a new patch digest, a cache-generation bump to `r2c-v3`, and
-re-running the R2c qualification. R6 ships without it.
+re-running the R2c qualification. R6 ships without it. It is also the honest route to making the
+review's "drive the C chain externally" recommendation possible: the operand `llama-debug` needs is
+a prompt **string** and the runner holds token ids, so an external chain today would have to guess
+the decoded token's text.
 
 **Numbering.** Roadmap item **27** and Align Request **49**, both chosen against the branches in
 flight: `main` carries roadmap items to 24 and requests to 46, `agent/r3-decode-residency` claims
-roadmap 25, and `agent/r5e-moe-model-prefill` claims roadmap 26 and requests 47/48. Both must be
-re-checked at reconciliation.
+roadmap 25, and `agent/r5e-moe-model-prefill` claims roadmap 26 and **holds requests 47/48 — they
+are not free**. Both must be re-checked at reconciliation.
 
 ## Previously active: R2D-DECODE-LOCALITY-GATE (2026-08-28)
 

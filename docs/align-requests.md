@@ -8785,8 +8785,29 @@ mitigation is C10's: the member scan became its own function, `block_carries_rol
 the recurrence is one request or two — the parity gap, and a separate constraint that a `Borrow`
 crossing a `borrow mut` must be a parameter of the calling frame rather than a local — is left to
 this register; R5D records the evidence and takes no dependency on either surface.
-`execute`/`stage_geometry` call chain is larger and checked clean under all of `check` and
-`check-per-unit` before failing only at `build`.
+
+**Fourth client, and the largest measured gap so far, from R6-DECODE-KV-STEP1**
+(`docs/specs/r6-decode-kv-step1.md` section 10.6). The first cross-module draft of
+`src/decode_step.align` — the module that calls `src/model_forward.align`'s failure sink, plan,
+`top_k`, and logits comparison directly — produced this:
+
+```text
+$ alignc check src/decode_step.align
+ok: checked 413 function(s)
+
+$ alignc build src/ggml_spike.align
+… 178 errors, of which 161 are:
+src/decode_step.align:524:25: error: cannot retain a shorter-lived view through this mutable
+  borrow; copy it into the destination region first
+```
+
+`check` reported 413 functions clean; `build` reported 178 errors on the same source, all in the
+region checker. This is the same parity gap as the three clients above, at a scale that made it the
+capability's dominant implementation cost: the workaround was to move nine callees into the calling
+module unchanged, and the *other* half of the finding — that the refusals are cross-module only —
+is filed separately as Request 49. Request 42's own acceptance criteria are unchanged by it; it is
+recorded here because a request with four clients and a 413-versus-178 measurement is a different
+priority from one with three.
 
 ### Requested capability
 
@@ -9478,6 +9499,8 @@ No new syntax. Two checker changes:
   removal a refactor rather than a behaviour change.
 - `alignc check` and `alignc build` agree on every one of the shapes above (Request 42's own
   criterion, restated here because that is how both were discovered).
+
+---
 
 ## Not requested (respecting Align's design)
 

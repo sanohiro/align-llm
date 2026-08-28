@@ -233,6 +233,17 @@ STUB_CASES = [
     # past the old one. `src/layer_olmoe.align` keeps its own cap at 6, so the routed
     # block below still refuses seven.
     ("lf-tokens-nine", [ARM, PACK, "0", GEOM, "1,2,3,4,5,6,7,8,9"], "R5_TOKENS"),
+    # The other half of that lift, and the reason it is safe. `llama-eval-callback` prints a
+    # tensor's rows in full only while `ne1 <= 6`; above it prints three leading and three trailing
+    # rows and the scan's `printed_count` clamps to six on **both** sides. A seven- or eight-token
+    # prefill with a transcript would therefore compare six of seven rows and report `PASS` about a
+    # row it never saw, so the oracle refuses itself. The same operands **without** a transcript are
+    # `lf-tokens-eight-no-transcript` below and run to the arm's ordinary stopping point, which is
+    # what makes this a refusal of the oracle and not of the arithmetic.
+    ("lf-tokens-seven-transcript",
+     [ARM, PACK, "0", GEOM, "1,2,3,4,5,6,7", "-", SOURCE, TRANSCRIPT], "R5_ORACLE_TRUNCATED"),
+    ("lf-tokens-eight-no-transcript",
+     [ARM, PACK, "0", GEOM, "1,2,3,4,5,6,7,8", "-", SOURCE], "R5_GGML_UNAVAILABLE"),
     ("lf-tokens-oob", [ARM, PACK, "0", GEOM, "1,32"], "R5_TOKENS"),
     ("lf-geometry-unreadable", [ARM, PACK, "0", path("absent.json"), TOKENS],
      "R5_GEOMETRY_UNREADABLE"),
@@ -649,7 +660,7 @@ REQUIRED_CODES = {
     "R5_BLOCK_MISSING", "R5_MEMBER_MISSING", "R5_SHAPE", "R5_GGML_UNAVAILABLE",
     "R5_TYPE_UNSUPPORTED", "R5_ALIGNMENT", "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE",
     "R5_SOURCE_UNREADABLE", "R5_SOURCE_DIVERGED", "R5_REFERENCE_MISMATCH", "R5_TRANSCRIPT",
-    "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE",
+    "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE", "R5_ORACLE_TRUNCATED",
 }
 missing_codes = REQUIRED_CODES - codes
 if missing_codes:
@@ -769,6 +780,15 @@ STUB_CASES = [
     ("mf-tokens-space", [ARM, PACK, GEOM, "1, 2"], "R5_TOKENS"),
     # R6 section 2.7: the cap is 8 now, so the over-cap fixture is nine tokens.
     ("mf-tokens-nine", [ARM, PACK, GEOM, "1,2,3,4,5,6,7,8,9"], "R5_TOKENS"),
+    # R6 section 2.7's other half. Above six tokens the instrument prints three leading and three
+    # trailing rows and `printed_count` clamps to six on both sides, so a transcript comparison at
+    # `T = 7` would check six of seven rows and still report `PASS`. The oracle refuses itself. The
+    # same eight-token prefill **without** a transcript is admitted, which is exactly what
+    # `--decode-step`'s characterization pass runs: it supplies `-` in the transcript position.
+    ("mf-tokens-seven-transcript",
+     [ARM, PACK, GEOM, "1,2,3,4,5,6,7", "-", SOURCE, WIDE, WIDTH], "R5_ORACLE_TRUNCATED"),
+    ("mf-tokens-eight-no-transcript",
+     [ARM, PACK, GEOM, "1,2,3,4,5,6,7,8", "-", SOURCE, "-", WIDTH], "R5_GGML_UNAVAILABLE"),
     ("mf-tokens-oob", [ARM, PACK, GEOM, "1,32"], "R5_TOKENS"),
     ("mf-kv-width-empty", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, ""], "R5_KV_WIDTH"),
     ("mf-kv-width-negative", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, WIDE, "-1"], "R5_KV_WIDTH"),
@@ -1323,8 +1343,8 @@ REQUIRED_CODES = {
     "R5_MEMBER_MISSING", "R5_SHAPE", "R5_GGML_UNAVAILABLE", "R5_TYPE_UNSUPPORTED",
     "R5_ALIGNMENT", "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE", "R5_RESIDUAL",
     "R5_SOURCE_UNREADABLE", "R5_SOURCE_DIVERGED", "R5_REFERENCE_MISMATCH", "R5_TRANSCRIPT",
-    "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE", "R5_LOGITS_UNREADABLE", "R5_LOGITS_SHAPE",
-    "R5_LOGITS_NONFINITE",
+    "R5_ORACLE_MISSING", "R5_ORACLE_SHAPE", "R5_ORACLE_TRUNCATED", "R5_LOGITS_UNREADABLE",
+    "R5_LOGITS_SHAPE", "R5_LOGITS_NONFINITE",
 }
 missing_codes = REQUIRED_CODES - codes
 if missing_codes:
@@ -2753,6 +2773,21 @@ FORCED_CASES = [
     # for V — so the refusal is exercised by a build rather than reasoned about.
     ("ds-force-concat-axis", "engine+concat-axis",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH], "R5_SHAPE"),
+    # Section 4.2's `plane failure` row and oracle B's own shipped regression. The build shifts the
+    # staged past K by one lane inside slot 64, which only the decode graph writes: every shape stays
+    # valid and the graph computes a plausible answer, and the bytes it consumed no longer equal the
+    # bytes the prefill wrote. Without this case `R6_PLANE_MISMATCH` is reachable only by mutating
+    # the source, which is evidence that lives in a table rather than in a run.
+    ("ds-force-plane-stage-offset", "engine+plane-stage-offset",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH], "R6_PLANE_MISMATCH"),
+    # Section 11.1's "positions are `[n_past]`" and "mask `{KV_WIDTH, 1}` with offset" rows, which
+    # until now cited source mutations. Both are oracle A failures rather than refusals — the run is
+    # `status: ok` with a `FAIL` verdict — so both supply the transcript, and the assertions below
+    # the table are what make them regressions rather than golden rows.
+    ("ds-force-decode-position", "engine+decode-position",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH], ""),
+    ("ds-force-mask-offset", "engine+mask-offset",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH], ""),
 ]
 
 
@@ -3023,9 +3058,31 @@ for name, force, operands, expected in FORCED_CASES:
 
 build_shim(None)
 
+# Oracle B's shipped regression, asserted beside its golden row: the code alone would not say that
+# the document also names the layer, the tensor, and the column, which is what makes the diagnosis
+# usable. Section 4.2.
+staged = json.loads(produced["ds-force-plane-stage-offset"])["plane"]
+if staged["roundtrip_verdict"] != "MISMATCH" or staged["first_mismatch_layer"] != 0 \
+        or staged["first_mismatch_tensor"] != "k" or staged["first_mismatch_column"] != 0:
+    failures.append("ds-force-plane-stage-offset: oracle B did not name the mismatch: %r" % staged)
+
+# Oracle A's two shipped regressions. Both runs succeed — nothing is malformed — and the verdict is
+# what refuses them, which is the only form these two failures can take: a token roped at position 0
+# and a mask that hides the decoded token's own column are both arithmetically well-formed.
+for name in ("ds-force-decode-position", "ds-force-mask-offset"):
+    mutated = json.loads(produced[name])
+    if mutated["status"] != "ok" or mutated["oracle_decode"]["verdict"] != "FAIL" \
+            or mutated["oracle_decode"]["max_abs_diff_ten_thousandths"] <= 1:
+        failures.append("%s: oracle A did not refuse the mutation: %r"
+                        % (name, mutated["oracle_decode"]))
+    if mutated["plane"]["roundtrip_verdict"] != "IDENTICAL":
+        failures.append("%s: oracle B moved; the mutation was not confined to the graph: %r"
+                        % (name, mutated["plane"]))
+
 REQUIRED_CODES = {
     "R6_TOKENS", "R6_GEOMETRY", "R6_GEOMETRY_UNREADABLE", "R6_ARCH_UNSUPPORTED", "R6_KV_WIDTH",
-    "R6_TRANSCRIPT", "R6_ORACLE_MISSING", "R4_PACK_UNREADABLE", "R5_BLOCK_MISSING",
+    "R6_TRANSCRIPT", "R6_ORACLE_MISSING", "R6_PLANE_MISMATCH", "R4_PACK_UNREADABLE",
+    "R5_BLOCK_MISSING",
     "R5_LAYER_COVERAGE", "R5_MEMBER_MISSING", "R5_SHAPE", "R5_GGML_UNAVAILABLE",
     "R5_TYPE_UNSUPPORTED", "R5_ALIGNMENT", "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE",
     "R5_SOURCE_DIVERGED", "R5_LOGITS_SHAPE", "R5_LOGITS_UNREADABLE",

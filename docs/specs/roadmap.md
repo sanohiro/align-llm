@@ -374,9 +374,15 @@ The current forward delivery order is:
     repaired in one consolidated commit; the real-model run was repeated at the repair head and
     reproduced every recorded number.
 
+**Items 25 and 26 are claimed and unmerged**, which is why this list steps from 24 to 27:
+`agent/r3-decode-residency` holds **25** and `agent/r5e-moe-model-prefill` holds **26** (and Align
+Requests 47/48). Both are reserved rather than skipped, and item 27's own number is re-checked at
+reconciliation against whatever has merged by then.
+
 27. **R6-DECODE-KV-STEP1 — one decode step over an Align-owned KV plane. Implemented; the hosted
     owner and the real-model qualification are recorded in
-    [`r6-decode-kv-step1.md`](r6-decode-kv-step1.md).** R5B computes a whole prefill and every K and
+    [`r6-decode-kv-step1.md`](r6-decode-kv-step1.md). It does **not** meet R6's own roadmap gate
+    below — TTFT on repeated coding tasks over a shared prefix — and makes no TTFT claim.** R5B computes a whole prefill and every K and
     V dies with its graph — `src/model_forward.align` opens three fresh `ggml_context`s per graph
     and frees them at the end of that graph — so the model can answer "what are the logits for this
     prompt" and not "what comes next". This capability adds the smallest thing that changes that: an
@@ -387,20 +393,28 @@ The current forward delivery order is:
     boundary is deliberately narrow: dense Qwen2.5-Coder-7B Q4_K_M, CPU, **one** step, the plane in
     memory, no tiering, no invalidation, no Metal, no OLMoE, and no TTFT claim. It is the first
     consumer of item 22's decode instrument, exactly as
-    [`r2c-decode-instrument.md`](r2c-decode-instrument.md) section 1 anticipated. The gate is
-    correctness, on two oracles: every comparable node of llama.cpp's own **decode** graph matches
-    at the instrument's printing precision of one ten-thousandth over twenty-eight layers plus the
-    head, four prompts x three runs; and the KV plane's round trip through the graph boundary is
-    **byte-identical** across all twenty-eight layers' K and V. The design records, as measured
-    findings, that `llama-debug --save-logits` has no step-1 blob at all — `-n` is inert for it and
-    the R2c patch does not touch it — that the decode graph is not reproducible unless the sampler
-    is pinned to `--temp 0 -s 0`, and that a single-shot `T+1` prefill is **not** a valid byte-exact
-    reference for a decode step, because llama.cpp's own two paths differ by up to 0.17 in
-    activations and 0.054 at the logits through batch-size-dependent kernel selection. The plane is
+    [`r2c-decode-instrument.md`](r2c-decode-instrument.md) section 1 anticipated. Its own gate is
+    correctness on **three** acceptance oracles, whose exact rule is `r6-decode-kv-step1.md` section
+    2.11 and is stated nowhere else: A, every comparable node of llama.cpp's own **decode** graph at
+    the instrument's printing precision of one ten-thousandth over twenty-eight layers plus the head,
+    four prompts x three runs; B, the KV plane's round trip through the graph boundary,
+    **byte-identical** across all twenty-eight layers' K and V; and C, the step's logits against this
+    arm's own single-shot `T+1` prefill, **byte-identical** on every prompt. An oracle A `FAIL` is
+    admissible only inside the 0.5 characterization bound **and** with C byte-identical, which
+    attributes it to llama.cpp's own kernel selection rather than to this arm. The design records, as
+    measured findings, that `llama-debug --save-logits` has no step-1 blob at all — `-n` is inert for
+    it and the R2c patch does not touch it — and that the decode graph is not reproducible unless the
+    sampler is pinned to `--temp 0 -s 0`. It also records that llama.cpp's own single-shot `T+1`
+    prefill and its own incremental step differ by up to 0.17 in activations and 0.054 at the logits
+    through batch-size-dependent kernel selection — and that **this arm's two paths do not**, which
+    is the measurement that promoted oracle C from characterization to acceptance. The plane is
     29,360,128 B at KV width 256. The hosted owner is `layer-forward-smoke`, extended with a fifth
     block whose corpus is a **second implementation** of the decode step in Python and a transcript
     holding two graphs; `gmake decode-step-qualification` is the opt-in real-model run and joins no
-    aggregate. `docs/specs/r6-decode-kv-step1.md` is the authoritative ledger.
+    aggregate. `docs/specs/r6-decode-kv-step1.md` is the authoritative ledger. **What it leaves
+    open:** the R6 gate below asks that TTFT improve on repeated coding tasks sharing a prefix. One
+    step, in memory, with no session reuse, no tiering, and no invalidation does not answer it; the
+    gate stays unmet and the next capability toward it is step 2 and the decode loop.
 
 ### Status (2026-08-28)
 
@@ -1165,6 +1179,11 @@ planが想定したより小さい**——6 tokenのprefillでlayerのexpert byt
 ### Gate
 
 同一prefixを使う反復coding taskでTTFTが改善すること。
+
+**未達。** item 27（R6-DECODE-KV-STEP1）は`n_past = T`の1 decode stepとAlign所有のKV planeを
+正しさの観点で実装したものであり、session KV・prefix KV・DRAM/NVMe tier・invalidationのいずれも
+持たず、TTFTの主張もしない。このgateを満たすには少なくともstep 2とdecode loop、そのうえで
+prefix再利用とresidency policyが必要である。
 
 ---
 

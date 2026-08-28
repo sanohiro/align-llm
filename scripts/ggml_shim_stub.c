@@ -1602,6 +1602,54 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
         t->data[off] = (unsigned char) (t->data[off] ^ 0x01u);
     }
 #endif
+#ifdef ALIGN_GGML_FORCE_PLANE_STAGE_OFFSET
+    /* R6-DECODE-KV-STEP1 section 4.2's `plane failure` cell, and oracle B's own regression. Slot 64
+     * is `layer_qwen2.MF_SLOT_KPAST`, which **only** the decode arm writes and only with the past-K
+     * columns it staged out of the plane; no other arm allocates the slot at all, so the shift below
+     * perturbs the decode graph's past K and nothing else. One `float` of shift is exactly the
+     * off-by-one stride error section 3.3 says oracle B exists to catch: the graph still has valid
+     * shapes and computes a plausible answer, and the bytes it consumed no longer equal the bytes the
+     * prefill wrote, which is `R6_PLANE_MISMATCH layer[0]tensor[k]col[0]`. Never defined in an
+     * ordinary build. */
+    if (status == ALIGN_GGML_OK && index == 64 && n >= 8) {
+        memmove(t->data + off, t->data + off + 4, (size_t) (n - 4));
+    }
+#endif
+#ifdef ALIGN_GGML_FORCE_DECODE_POSITION
+    /* R6 section 11.1's "positions are `[n_past]`" row, shipped as a build rather than as a source
+     * mutation. Slot 13 is `MF_SLOT_POS`; the decode graph writes exactly **one** `int32` into it and
+     * a prefill graph writes `T` of them, so `n == 4` selects the decode graph's position and only
+     * it. Writing 0 ropes the decoded token at position 0 — a confidently wrong answer every shape
+     * check accepts — and oracle A is what refuses it. Never defined in an ordinary build. */
+    if (status == ALIGN_GGML_OK && index == 13 && n == 4 && off == 0) {
+        t->data[0] = 0u;
+        t->data[1] = 0u;
+        t->data[2] = 0u;
+        t->data[3] = 0u;
+    }
+#endif
+#ifdef ALIGN_GGML_FORCE_MASK_OFFSET
+    /* R6 section 11.1's "mask `{KV_WIDTH, 1}` with offset" row, shipped as a build. Slot 14 is
+     * `MF_SLOT_MASK`, and `ne[1] == 1` is the decode graph's one-row mask — a prefill mask has `T`
+     * rows. `mf_write_mask_offset` unmasks columns `0 ..= n_past`, so the highest `0.0f` in the row
+     * is the decoded token's own column; masking it is `mf_write_mask_offset(.., n_past - 1)`, which
+     * is the off-by-one the offset mask exists to get right. The scan reads the row rather than
+     * taking `n_past` as a constant, because a kernel knows only the node it was handed. Never
+     * defined in an ordinary build. */
+    if (status == ALIGN_GGML_OK && index == 14 && t->ne[1] == 1 && off == 0 && n >= 8) {
+        int64_t lane = 0;
+        int64_t last = -1;
+        float *row = (float *) (void *) t->data;
+        for (lane = 0; lane < n / 4; lane++) {
+            if (row[lane] == 0.0f) {
+                last = lane;
+            }
+        }
+        if (last >= 0) {
+            row[last] = -INFINITY;
+        }
+    }
+#endif
     return status;
 }
 

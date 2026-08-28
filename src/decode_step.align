@@ -47,8 +47,11 @@ CODE_PLANE_WRITE := "R6_PLANE_WRITE"
 CODE_PLANE_MISMATCH := "R6_PLANE_MISMATCH"
 CODE_TRANSCRIPT := "R6_TRANSCRIPT"
 CODE_ORACLE_MISSING := "R6_ORACLE_MISSING"
-CODE_ORACLE_SHAPE := "R6_ORACLE_SHAPE"
 CODE_GEOMETRY_UNREADABLE := "R6_GEOMETRY_UNREADABLE"
+// There is deliberately no `R6_ORACLE_SHAPE`. A transcript node whose printed axes do not match the
+// arm's own is `R5_ORACLE_SHAPE`, raised inside `model_forward.compare_transcript_graph` and
+// reaching this document unchanged through `fault_into`, exactly as every other seam code does
+// (section 10.3). A second name for one condition would make two documents disagree about it.
 
 // Section 2.2. The plane is one `buffer`, and this is the ceiling a malformed width would have to
 // clear before a single byte is reserved. It is `MAX_ATTENTION_WIDTH` times the largest geometry
@@ -191,7 +194,13 @@ fn take(borrow mut o: model_forward.Outcome, outcome: Result<(), ggml_ffi.Fault>
   }
 }
 
-// The per-graph bookkeeping, module-local for the same reason the failure sink is.
+// The per-graph bookkeeping, module-local for the same reason the failure sink is. It is
+// `model_forward.account` line for line except for its last statement: that module accumulates
+// `r.reference_compute_ns`, and this arm runs no second ggml context — its self-reference oracle is
+// the byte-plane source comparison (section 2.8 step 15) — so `run_step_graph` never sets that
+// field and accumulating a value nothing writes would be dead. The `slot_high_water` maximum below
+// is **not** optional and dropping it was a defect: without it a run that fails inside the prefill
+// publishes `graph.slot_high_water` 0 and the document says nothing about how far the schedule got.
 fn account(
   borrow r: model_forward.GraphResult,
   primary: bool,
@@ -200,6 +209,7 @@ fn account(
 ) {
   graphs.push(r.activation_bytes)
   if r.activation_bytes > o.activation_bytes_peak { o.activation_bytes_peak = r.activation_bytes }
+  if r.slot_high_water > o.slot_high_water { o.slot_high_water = r.slot_high_water }
   if primary {
     o.node_count_total = o.node_count_total + r.node_count
     o.compute_ns = o.compute_ns + r.compute_ns
@@ -946,12 +956,25 @@ fn verify_plane(
   span := columns * plane_column_bytes(g)
   k_at := plane_k_offset(stride, layer)
   v_at := plane_v_offset(stride, layer)
+  // Both refusals below are `R6_PLANE_MISMATCH`, so both must leave the record the code names.
+  // A document that carried the code and still reported `roundtrip_verdict: "-"` with
+  // `first_mismatch_layer: -1` would say "the round trip failed" and "the round trip was never
+  // attempted" in the same breath; `column: -1` is the honest column, because the disagreement is
+  // the operand's whole extent and not one of its columns.
   if span <= 0 || span > node_window.len() {
+    state.roundtrip_verdict = ROUNDTRIP_MISMATCH
+    state.first_mismatch_layer = layer
+    state.first_mismatch_tensor = PLANE_TENSOR_K
+    state.first_mismatch_column = -1
     fail(o, CODE_PLANE_MISMATCH, plane_column_detail(layer, "k", -1))
     return
   }
   if ggml_ffi.slot_nbytes(slots, nodes.out[DECODE_K_CONCAT_ROW]) != span
     || ggml_ffi.slot_nbytes(slots, nodes.out[DECODE_V_CONCAT_ROW]) != span {
+    state.roundtrip_verdict = ROUNDTRIP_MISMATCH
+    state.first_mismatch_layer = layer
+    state.first_mismatch_tensor = PLANE_TENSOR_K
+    state.first_mismatch_column = -1
     fail(o, CODE_PLANE_MISMATCH, plane_column_detail(layer, "k", -1))
     return
   }
@@ -1827,7 +1850,12 @@ fn schedule_decode(
   }
   o.slot_capacity = ggml_ffi.slots_capacity(slot_view)
   o.slot_magic_ok = ggml_ffi.slots_ok(slot_view)
-  o.slot_high_water = decoded.slot_high_water
+  // `graph.slot_high_water` is the **maximum over every graph this run built**, prefill and decode
+  // alike, exactly as `--model-forward`'s is: `account` has raised it for each prefill graph, and
+  // the decode pass's own maximum joins it here rather than replacing it. On a successful run the
+  // decode pass is the higher of the two and the value is 66 (section 2.3); on a run that fails
+  // inside the prefill it is the prefill's, which is the number the document should carry.
+  if decoded.slot_high_water > o.slot_high_water { o.slot_high_water = decoded.slot_high_water }
   o.released_before_owner_scope_end =
   o.ggml_buffers_created == o.ggml_buffers_freed
     && o.contexts_created == o.contexts_freed

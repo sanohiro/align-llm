@@ -50,6 +50,15 @@ pub SLOT_NODE_BASE := 16
 // constant; it is not a claim that eight rows are fully printed, because they are not.
 // `src/layer_olmoe.align`'s own cap stays at 6: OLMoE is a declared non-goal of R6 and a shared lift
 // would widen an arm this capability does not test.
+//
+// **The lift does not weaken any oracle, and that is enforced rather than argued.** The sentence
+// above — "an oracle that compares fewer elements as the input grows while still reporting `PASS` is
+// worse than one that refuses" — is exactly what a seven- or eight-token prefill *with* a transcript
+// would be, because `printed_count` clamps to six on both sides. `--layer-forward` and
+// `--model-forward` therefore refuse that combination with `R5_ORACLE_TRUNCATED` before any graph is
+// built (`src/layer_forward.align`'s and `src/model_forward.align`'s token stages), so the range
+// `7 .. 8` is admitted for arithmetic and refused for comparison. `--decode-step`'s own tensors are
+// one column wide and are unaffected.
 pub MAX_PREFILL_TOKENS := 8
 
 pub OP_GET_ROWS := 1

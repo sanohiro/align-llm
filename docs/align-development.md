@@ -1347,6 +1347,13 @@ renames, reshapes, or truncates a node fails loudly (`R5_ORACLE_MISSING`/`R5_ORA
 than silently comparing fewer elements: a matched node that carries fewer printed elements than its
 own declared shape yields is `R5_ORACLE_MISSING` with detail `node[<id>]<got>/<expected>`.
 
+The same rule now has a third code. `llama-eval-callback` prints a tensor's rows in full only while
+`ne1 <= 6`, so above six prefill tokens both prefill arms compare a **clamped** six of the rows they
+name. Since R6 lifted `MAX_PREFILL_TOKENS` to 8, `--layer-forward` and `--model-forward` refuse a
+prefill of 7 or 8 tokens **when a transcript is supplied**, at their token stage and before any
+container work, with `R5_ORACLE_TRUNCATED` and detail `tokens[<n>]`. The same token count without a
+transcript is admitted; nothing about the arithmetic changed.
+
 **The shim is built with `-ffp-contract=off`**, and both runners assert `abi.fp_contract_off` is
 `true`. That is a correctness flag, not an optimisation preference: `a * b + c` contracts into one
 fused multiply-add under Apple clang on `arm64` and does not under GCC 13 on `x86-64`, and the stub
@@ -1857,15 +1864,23 @@ pinned Homebrew build 10566 (`bb4caa754`) that `scripts/run-model-forward` alrea
 `llama-eval-callback` must be the R2c-patched instrument
 `scripts/llama-eval-callback-toolchain ensure instrument` materializes.
 
-**Two acceptance oracles, and only one claim of byte identity.** Oracle A compares every comparable
-node of llama.cpp's own decode graph at one ten-thousandth — the instrument's `%12.4f` printing
-precision — over every layer plus the head. Oracle B compares the K and V the decode graph
-**actually consumed**, read back after compute, against the bytes the prefill wrote into the plane,
-byte for byte. B is the one that tests what this capability adds: a transposed axis, an off-by-one
-stride, or a K/V swap is numerically plausible and survives A's four printed decimals. There is no
-byte-exact external reference for the step itself — `llama-debug --save-logits` performs exactly one
-`llama_decode` and `-n` is inert for it — and ledger section 3.2 records why a single-shot `T+1`
-prefill is not one either.
+**Three acceptance oracles. `r6-decode-kv-step1.md` section 2.11 states the rule; this is a
+summary, not a second copy of it.** Oracle A compares every comparable node of llama.cpp's own
+decode graph at one ten-thousandth — the instrument's `%12.4f` printing precision — over every layer
+plus the head. Oracle B compares the K and V the decode graph **actually consumed**, read back after
+compute, against the bytes the prefill wrote into the plane, byte for byte; it is the one that tests
+what this capability adds, because a transposed axis, an off-by-one stride, or a K/V swap is
+numerically plausible and survives A's four printed decimals. Oracle C compares the step's logits
+against this arm's own single-shot `T+1` prefill and is **byte identity**. B and C must hold on every
+prompt unconditionally; an A `FAIL` is admitted only inside the 0.5 characterization bound **and**
+with C byte-identical on that prompt, which attributes it to llama.cpp's own kernel selection.
+
+There is still no byte-exact **external** reference for the incremental step — `llama-debug
+--save-logits` performs exactly one `llama_decode` and `-n` is inert for it. Ledger section 3.2
+argued that a single-shot `T+1` prefill could not stand in for one either, and **section 5.1
+measured that for this arm it does**: our decode step at `n_past = T`, our own `T+1` prefill, and
+`llama-debug`'s blob on the extended prompt are the same 608,256 bytes. Section 3.2's divergence is
+llama.cpp's own, between its two paths; read the two sections together and do not cite 3.2 alone.
 
 **The hosted corpus is a second implementation.** `scripts/layer_forward_fixture.py --model` gained
 a decode mode: a pure-Python decode step over the plane its own prefill produced, and a transcript
@@ -1878,6 +1893,15 @@ and still respected — `llama-eval-callback` prints every row only while `ne1 <
 binds the prefill pass alone, because a decode graph's per-token tensors have `ne1 = 1`. The two
 over-cap smoke fixtures move from seven tokens to nine; `src/layer_olmoe.align` keeps its own cap at
 6, because OLMoE is a declared non-goal here.
+
+**The lift is enforced, not just documented.** Above six tokens the instrument prints three leading
+and three trailing rows and the scan clamps to six on both sides, so `--layer-forward` and
+`--model-forward` **refuse** `T` of 7 or 8 **when a transcript is supplied**, with the new code
+`R5_ORACLE_TRUNCATED` and detail `tokens[<n>]`, before any container or graph work. The same token
+count without a transcript is admitted, which is what `--decode-step`'s own characterization pass
+needs: it runs `--model-forward` at `T + 1` tokens with `-` in the transcript position. Four cases
+carry the rule: `lf-/mf-tokens-seven-transcript` refused, `lf-/mf-tokens-eight-no-transcript`
+admitted.
 
 **R6 adds no smoke target and changes no aggregate membership**; it adds one Makefile target, the
 opt-in `decode-step-qualification`, so `scripts/check-gate-topology`'s byte-literal `EXPECTED` does

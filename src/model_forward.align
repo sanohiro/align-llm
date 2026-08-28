@@ -2868,6 +2868,17 @@ pub fn stage_geometry(
     fail(o, "R5_TOKENS", detail_view)
     return g
   }
+  // R6-DECODE-KV-STEP1 section 2.7's lift of `MAX_PREFILL_TOKENS` from 6 to 8 is the **decode**
+  // arm's, whose per-token tensors are one column wide. A prefill tensor at `T = 7` or `T = 8` is
+  // printed by `llama-eval-callback` as three leading and three trailing rows, and `printed_count`
+  // clamps to six on both sides, so a transcript comparison would check six of seven rows and still
+  // report `PASS`. The oracle refuses itself rather than reporting a verdict about rows it never
+  // saw. With no transcript there is no oracle: `--decode-step`'s characterization pass runs this
+  // arm at `T + 1` tokens with `-` in the transcript position and is unaffected.
+  if o.transcript_present && parsed.count > TRUNCATION_PRINTED {
+    fail(o, "R5_ORACLE_TRUNCATED", labelled("tokens", parsed.count))
+    return g
+  }
   mut ids: array_builder<i64> := array_builder()
   mut copy_at := 0
   loop {
