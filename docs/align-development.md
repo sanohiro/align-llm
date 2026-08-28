@@ -1998,16 +1998,18 @@ block. A `Makefile` edit is still an executable-contract boundary, so `scripts/p
 **executable** row and the installed profile rather than the documentation lane. The FFI boundary
 does **not** change: R5E adds no `extern` symbol and neither C shim gains one.
 
-## The `--decode-step` arm (R6-DECODE-KV-STEP1, R6-STEP-N)
+## The `--decode-step` arm (R6-DECODE-KV-STEP1, R6-STEP-N, R6-KV-PERSIST)
 
-`docs/specs/r6-decode-kv-step1.md` and `docs/specs/r6-step-n.md` are the authoritative ledgers.
-R5B computes a whole prefill and stops: `src/model_forward.align` opens three fresh `ggml_context`s
+`docs/specs/r6-decode-kv-step1.md`, `docs/specs/r6-step-n.md`, and `docs/specs/r6-kv-persist.md`
+are the authoritative ledgers. R5B computes a whole prefill and stops: `src/model_forward.align` opens three fresh `ggml_context`s
 per graph and frees them at the end of that graph, so every K and V it produces dies with its graph
 and the model can answer "what are the logits for this prompt" and not "what comes next". R6 adds
 the smallest thing that changes that — an **Align-owned KV plane**, host bytes carrying every
 layer's post-RoPE K and its V across the graph boundary, and one decode step at `n_past = T` that
 reads them. R6-STEP-N makes that step a **loop**: `N` greedy steps over the same plane, grown in
-place one column per step, gated on the token ids llama.cpp itself produces.
+place one column per step, gated on the token ids llama.cpp itself produces. R6-KV-PERSIST makes
+that plane **outlive the process that built it**: an `akvp` v1 container on disk, and a load path
+that skips the prefill entirely.
 
 The arm lives in a new module, `src/decode_step.align`, for `r5b-model-prefill-forward.md` section
 5.5's reason (the checker's per-function cost is superlinear in body length and
@@ -2020,9 +2022,15 @@ gmake layer-forward-smoke        # extended with a fifth block; unchanged aggreg
 gmake decode-step-qualification  # the opt-in real-ggml, real-model, real-instrument qualification
 ```
 
-`--decode-step` is selected by its exact first operand and is five, six, seven, nine, ten, or
-**eleven** operands. **Eight is `R6_ARITY`**, inherited verbatim from `--model-forward` and for the
-same reason: `KV_WIDTH` travels with the transcript.
+The format itself lives in a second module, `src/kv_plane.align`: the constants, the 192-byte
+header, the 192-byte identity record, the region arithmetic, the five `crypto.sha256` digests, and
+the writer. The plane **refill** stays in `src/decode_step.align` because a cross-module call taking
+`borrow mut buffer` beside the caller's other locals is the shape Align Request 49 refuses, so the
+byte movement stays with the buffer's owner and no compatibility layer is built around the gap.
+
+`--decode-step` is selected by its exact first operand and is five, six, seven, nine, ten, eleven,
+**twelve, or thirteen** operands. **Eight is `R6_ARITY`**, inherited verbatim from `--model-forward`
+and for the same reason: `KV_WIDTH` travels with the transcript.
 
 ```sh
 ./ggml-spike --decode-step PACK GEOM.json TOKENS                                      # to stdout
@@ -2032,6 +2040,8 @@ same reason: `KV_WIDTH` travels with the transcript.
 ./ggml-spike --decode-step PACK GEOM.json TOKENS -        REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin
 ./ggml-spike --decode-step PACK GEOM.json TOKENS -        REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS
 ./ggml-spike --decode-step PACK GEOM.json TOKENS -        REF.gguf TRANSCRIPT.txt KV_WIDTH -          STEPS
+./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS KV.akvp -
+./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS -       KV.akvp
 ```
 
 `TOKENS` is the **prefill**; no decoded token is ever an operand. The arm computes step 1's as its
@@ -2062,6 +2072,53 @@ A failure at step `k` publishes `steps_completed = k - 1`, the `k - 1` ids decod
 complete rows — **a partial step publishes no row** — and the raising code's detail prefixed
 `step[<k>]`. `plane.roundtrip_verdict` is never `IDENTICAL` on an error document.
 
+`KV_SAVE` (`args[11]`) and `KV_LOAD` (`args[12]`) each accept `-` for "absent", the convention
+`TRANSCRIPT` has used since R5B and `LOGITS` since R6-STEP-N. **Supplying both is `R6_KV_ARGS`**,
+not a copy: a run that both restores a plane and persists it is two capabilities sharing one
+invocation, and the second would persist a plane it did not compute. Neither operand has a default
+and neither is read from the environment; `args.len() == 12` with `KV_SAVE` of `-` is exactly
+`args.len() == 11`, character for character.
+
+With `KV_SAVE`, the arm writes an **`akvp` v1** container **after the prefill and before the first
+decode step**: a 192-byte header, the prompt's token ids as little-endian `u32`, a 192-byte identity
+record of five `crypto.sha256` digests plus the pack's `total_bytes`, the prefill's last-position
+logit vector, and the plane itself, page-aligned and **last** — which is what makes a chunked
+reader's tail read short rather than an over-read. The container is 29,970,432 B on the reference
+model at `KV_WIDTH` 256, of which 2,048 B (0.007 %) is metadata and padding. `PACK` is still
+required **with `KV_LOAD`**: loading skips the prefill, not the model, and every decode step still
+streams the whole weight set.
+
+With `KV_LOAD`, the arm validates the container against the run it was asked for — the declared
+sizes against `MAX_KV_PLANE_BYTES` / `MAX_KV_LOGITS_BYTES` / `MAX_KV_CONTAINER_BYTES`, the file's
+own length, its regions and its one canonical layout, its reserved bytes and its padding, the pack's
+header-region digest, the geometry document's digest, `KV_WIDTH`, the token ids, the plane layout,
+and five digests, in that order, cheapest first — and refuses on any mismatch with an `R6_KV_*`
+code. **Every rule the independent reader enforces the arm enforces too**, and the one place they
+name different reasons is deliberate and named below. **There is no fallback: a mismatch never
+silently re-prefills.** Model identity is the **pack's** source-identity digest and not the GGUF's,
+because `REFERENCE` is optional and a load run may not have the model; it certifies the pack's
+metadata region and not its payload, which is `--pack-verify`'s question. The document is
+`R6_DECODE_STEP` at **schema 3**, with a `kv` object and `plane.source` (`"PREFILL"` | `"LOADED"`)
+in **every** document at every arity, and `timings.first_token_ns` as a labelled diagnostic. **No
+durability is promised** — Align has no `fsync` at this pin (Request 31) — and a torn container is
+detected by `R6_KV_TRUNCATED` or `R6_KV_DIGEST("plane")`, costing one re-prefill: the plane is a
+deterministic derivative of the pack, the geometry, the token ids, and `KV_WIDTH`, all of which
+still exist.
+
+`scripts/kv_plane_reader.py` is a **second, independent implementation** of the format, written from
+the specification and driven as a subprocess rather than imported. It reports thirteen coarse reject
+kinds (`MAGIC VERSION HEADER RESERVED REGION TRUNCATED IDENTITY GEOMETRY TOKENS NPAST DIGEST ARGMAX
+ZEROTAIL`), and `ZEROTAIL` is one the arm does not check separately — which is the one case where
+the two implementations refuse the same file for different reasons, and therefore the case that
+proves the reader is not a transcription of the arm. Every other rule is enforced on both sides,
+including the two the arm did not check before this capability's review: **the canonical region
+layout** (there is exactly one layout an `akvp` v1 container may have at a given `token_count`,
+`n_vocab`, and `plane_align`, and a non-canonical one is `R6_KV_REGION("layout")` / `REGION`) and
+**zero padding between regions** (`R6_KV_RESERVED("padding")` / `RESERVED`, and no digest covers the
+gaps). The reader's coarse kinds are deliberately coarser than the arm's codes: a declared size
+above one of the three `MAX_KV_*` bounds is `R6_KV_TOO_LARGE` in the arm and plain `HEADER` in the
+reader, which is a difference in vocabulary and not in which files are accepted.
+
 **The transcript must hold `N + 1` graphs.** `llama-eval-callback -n N` emits a prefill graph and
 then one decode graph per step, and every node name repeats across them; step `k` skips `k` graphs,
 because graph `j` consumes `d_{j-1}` and this arm's step `k` consumes `d_k`, so **this arm's `N`
@@ -2085,6 +2142,7 @@ ALIGN_LLM_LLAMA_EVAL_CALLBACK=/path/to/llama-eval-callback \  # R2c-patched; ora
 ALIGN_LLM_LLAMA_DEBUG=/path/to/llama-debug \                  # the prefill's byte-exact logits blob
 ALIGN_LLM_DECODE_STEP_TMPDIR=/path/to/scratch \               # where the pack is written; defaults to TMPDIR
 ALIGN_LLM_DECODE_STEPS=16 \                                   # the step count N; defaults to 16
+ALIGN_LLM_KV_PERSIST_PROMPTS=4 \                              # prompts getting the save/load leg
   gmake decode-step-qualification
 ```
 
@@ -2096,8 +2154,12 @@ term. The fallback changes what is measured, not what is asserted. The runner re
 transcript holds any number of graphs other than `N + 1`, because a short transcript means llama.cpp
 stopped at EOS and the two runs would then differ in **length** rather than in arithmetic; the arm
 implements no EOS handling, and that is a decision recorded in `r6-step-n.md` section 2.12 rather
-than an omission. It also needs about **2 GiB** of scratch beyond the pack, because four
-sixteen-step transcripts are roughly 64 MB and covering them by luck is not covering them.
+than an omission. It also needs about **3 GiB** of scratch beyond the pack: four sixteen-step transcripts are roughly
+64 MB, R6-KV-PERSIST's leg adds a second `N = 16` transcript per prompt plus four 29,970,432-byte
+containers and two determinism duplicates, and covering them by luck is not covering them. The
+persistence leg's own documented cost fallback is, in order, `ALIGN_LLM_DECODE_STEPS=8` and then
+`ALIGN_LLM_KV_PERSIST_PROMPTS=2`, which costs one prompt's coverage of the equality oracle and no
+closure cell.
 
 **Gate G needs `numpy`, and its absence is an `N/A` rather than a skipped gate.**
 `scripts/decode_step_fingerprint.py` dequantizes the whole of `token_embd.weight` to measure how
@@ -2110,11 +2172,29 @@ after the runs it would invalidate.
 `CAPABLE_ONLY_CHECK_TARGETS` and in no aggregate — the same footing as its three siblings. It prints
 one explicit `N/A` line naming the missing input and exits 0 rather than skipping silently.
 
-**Instrument provenance is load-bearing.** Ledger section 3.1 measured the same llama.cpp commit
-built two ways producing two different 608,256-byte logits blobs, so `llama-debug` must be the
-pinned Homebrew build 10566 (`bb4caa754`) that `scripts/run-model-forward` already resolves, and
-`llama-eval-callback` must be the R2c-patched instrument
-`scripts/llama-eval-callback-toolchain ensure instrument` materializes.
+**Instrument provenance is load-bearing, and this is a rule rather than advice.** Ledger section 3.1
+measured the same llama.cpp commit built two ways producing two different 608,256-byte logits blobs,
+so an instrument built from the pinned source is **not** interchangeable with the pinned build. The
+two variables name two different things and neither has a fallback:
+
+- **`ALIGN_LLM_LLAMA_DEBUG` must be the pinned Homebrew `llama-debug`** — `llama.cpp` 0.2.0,
+  `version: 0.2.0 (build 10566, commit bb4caa754)`, at `/opt/homebrew/bin/llama-debug` on a Homebrew
+  host, the same binary `scripts/run-model-forward` already resolves. Check it with `llama-debug
+  --version` before a qualification and record the line beside the results. **Do not substitute a
+  local source build**, not even one configured from the pinned revision with the toolchain's own
+  cmake arguments: `oracle_logits.verdict` is a byte comparison, a source build has been measured to
+  disagree with the pinned build on a six-token prefill, and "the instrument I built disagrees" is
+  indistinguishable in the document from "the arm is wrong".
+- **`ALIGN_LLM_LLAMA_EVAL_CALLBACK` must be the R2c-patched instrument**
+  `scripts/llama-eval-callback-toolchain ensure instrument` materializes, under
+  `~/.cache/align-llm/llama.cpp/r2c-v2/<revision>-<digest>/build/bin/llama-eval-callback`. **That
+  cache holds `llama-eval-callback` and nothing else** — the builder builds that one target — so it
+  is never a source of `llama-debug`, and the absence of a `llama-debug` under it is not evidence
+  that the host has none.
+
+Neither instrument is provisioned by this repository beyond the R2c builder, and neither variable
+has a default: `scripts/run-decode-step` reads both from the environment and prints one `N/A` line
+when either is missing rather than choosing a binary for you.
 
 **One gate and three oracles. `r6-step-n.md` section 3.5 states the rule; this is a summary, not a
 second copy of it.** **Gate G** is on the token ids and is what the capability is named for: `d_1` is

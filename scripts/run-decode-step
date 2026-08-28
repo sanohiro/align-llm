@@ -14,6 +14,10 @@ set -euo pipefail
 #   ALIGN_LLM_LLAMA_DEBUG           path to `llama-debug`
 #   ALIGN_LLM_DECODE_STEP_TMPDIR    where the pack is written; defaults to TMPDIR
 #   ALIGN_LLM_DECODE_STEPS          the step count `N`; defaults to 16
+#   ALIGN_LLM_KV_PERSIST_PROMPTS    how many prompts get R6-KV-PERSIST's save/load leg; defaults to
+#                                   all four. The documented cost fallback is, in order,
+#                                   `ALIGN_LLM_DECODE_STEPS=8` and then
+#                                   `ALIGN_LLM_KV_PERSIST_PROMPTS=2`
 #
 # When any is unset, or the model or either instrument is absent, or `numpy` is unavailable, or the
 # free space under the scratch root is under the pack's size plus 2 GiB, it prints one explicit N/A
@@ -86,9 +90,12 @@ model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
 scratch_root="${ALIGN_LLM_DECODE_STEP_TMPDIR:-${TMPDIR:-/tmp}}"
 [ -d "${scratch_root}" ] || na "the scratch root ${scratch_root} does not exist"
 free_kib=$(df -Pk "${scratch_root}" | awk 'NR == 2 { print $4 }')
-# R6-STEP-N section 6 risk 2. The pack plus **2 GiB**, not 1: at `-n 16` one transcript is roughly
-# 16 MB and four prompts are roughly 64 MB, and covering them by luck is not covering them.
-need_kib=$(( model_bytes / 1024 + 2097152 ))
+# R6-STEP-N section 6 risk 2, raised by R6-KV-PERSIST section 5.4. The pack plus **3 GiB**, not 2:
+# at `-n 16` one transcript is roughly 16 MB and four prompts are roughly 64 MB, and the persistence
+# leg adds four 29,970,432-byte containers plus two determinism duplicates plus a second `N = 16`
+# transcript per prompt. The check runs **before the first byte is written**, not after a failure
+# path is asked to be pleasant.
+need_kib=$(( model_bytes / 1024 + 3145728 ))
 if [ "${free_kib}" -lt "${need_kib}" ]; then
   na "free space under ${scratch_root} is ${free_kib} KiB, below the ${need_kib} KiB the pack needs"
 fi
@@ -119,6 +126,37 @@ if [ "${DECODE_STEPS}" -lt 1 ] || [ "${DECODE_STEPS}" -gt 64 ]; then
   na "ALIGN_LLM_DECODE_STEPS=${DECODE_STEPS} is outside 1..MAX_DECODE_STEPS (64)"
 fi
 
+# R6-KV-PERSIST section 5.4. The persistence leg re-runs the `N`-step loop once per prompt, so it is
+# the dominant new cost and it has a documented two-step fallback: `ALIGN_LLM_DECODE_STEPS=8` halves
+# every term first, and only then does this drop to two prompts, which costs one prompt's coverage
+# of oracle Q and **no closure cell**.
+PERSIST_PROMPTS="${ALIGN_LLM_KV_PERSIST_PROMPTS:-4}"
+case "${PERSIST_PROMPTS}" in
+  ''|*[!0-9]*) na "ALIGN_LLM_KV_PERSIST_PROMPTS=${PERSIST_PROMPTS} is not a decimal prompt count" ;;
+esac
+
+# The TTFT proxy's outer bound. It measures **process start to exit** around one whole invocation,
+# so it includes `dyld`, the pack open, and the geometry parse on both sides -- which is the point:
+# `timings.first_token_ns` is the arm's own interval and this is the one a caller would feel. Both
+# are labelled diagnostic and **no rate, speedup, or per-token figure is derived from either**.
+time_invocation() {
+  destination="$1"
+  shift
+  python3 -c '
+import subprocess
+import sys
+import time
+
+destination = sys.argv[1]
+started = time.monotonic_ns()
+result = subprocess.run(sys.argv[2:], capture_output=True)
+elapsed = time.monotonic_ns() - started
+with open(destination, "a", encoding="utf-8") as handle:
+    handle.write("%d\n" % elapsed)
+sys.exit(result.returncode)
+' "${destination}" "$@"
+}
+
 echo "decode step qualification: packing ${ALIGN_LLM_GGUF_MODEL} into ${work_dir}"
 "${root_dir}/main" --pack "${ALIGN_LLM_GGUF_MODEL}" "${work_dir}/model.alignpack" \
   "${work_dir}/pack.json" >/dev/null
@@ -148,6 +186,10 @@ PROMPTS=(
 
 document_root="${work_dir}/documents"
 mkdir -p "${document_root}"
+# R6-KV-PERSIST's own documents live apart from the loop's, so the analysis below can enumerate one
+# set without filtering the other.
+persist_root="${work_dir}/persist"
+mkdir -p "${persist_root}"
 
 index=0
 for prompt in "${PROMPTS[@]}"; do
@@ -256,6 +298,104 @@ print(','.join(str(i) for i in ids))
       "${document_root}/case${index}-single${k}.json" "${ALIGN_LLM_GGUF_MODEL}" - "${KV_WIDTH}" \
       > "${case_dir}/single${k}.txt" || true
   done
+
+  # -------------------------------------------------------------------------------------------
+  # R6-KV-PERSIST section 5.4. Save, then a **separate process** load, then the comparison.
+  # -------------------------------------------------------------------------------------------
+  if [ "${index}" -le "${PERSIST_PROMPTS}" ]; then
+    kv="${case_dir}/plane.akvp"
+    kv_second="${case_dir}/plane-second.akvp"
+    kv_perturbed="${case_dir}/plane-perturbed.akvp"
+    echo "decode step qualification:   prompt ${index} save -> ${KV_WIDTH}-column container"
+    # Step 1. An ordinary run that also writes. A save that fails at or after W1 removes its own
+    # partial file, and the runner removes it again here rather than trusting that it did.
+    "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+      "${work_dir}/geometry.json" "${tokens}" "${persist_root}/case${index}-save.json" \
+      "${ALIGN_LLM_GGUF_MODEL}" "${case_dir}/transcript.txt" "${KV_WIDTH}" "${logits_bin}" \
+      "${DECODE_STEPS}" "${kv}" - > "${case_dir}/save.txt" || {
+        echo "decode step qualification: FAIL prompt ${index} save run exited non-zero" >&2
+        rm -f "${kv}"
+        exit 1
+      }
+    # Step 2. The independent reader, driven as a subprocess and never imported, on the file the arm
+    # just wrote -- from the specification rather than from `src/kv_plane.align`.
+    python3 "${root_dir}/scripts/kv_plane_reader.py" --plane "${kv}" \
+      --pack "${work_dir}/model.alignpack" --geometry "${work_dir}/geometry.json" \
+      --tokens "${tokens}" > "${case_dir}/reader.txt" || {
+        echo "decode step qualification: FAIL prompt ${index} independent reader refused the" \
+          "container" >&2
+        exit 1
+      }
+    # Step 3. `du` against the header's own `total_bytes`: the assertion that makes section 2.3's
+    # explicit padding real rather than a sparse file that happens to read back.
+    du -k "${kv}" | awk '{ print $1 }' > "${case_dir}/du.txt"
+    # Step 4. A separate process, the same operands, and the two kv positions swapped.
+    echo "decode step qualification:   prompt ${index} load <- container, ${DECODE_STEPS} steps"
+    "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+      "${work_dir}/geometry.json" "${tokens}" "${persist_root}/case${index}-load.json" \
+      "${ALIGN_LLM_GGUF_MODEL}" "${case_dir}/transcript.txt" "${KV_WIDTH}" "${logits_bin}" \
+      "${DECODE_STEPS}" - "${kv}" > "${case_dir}/load.txt" || {
+        echo "decode step qualification: FAIL prompt ${index} load run exited non-zero" >&2
+        exit 1
+      }
+    # Steps 6 and 7. Determinism of the writer, by double write, then again under a perturbed
+    # environment. This is alignpack's method and it is taken deliberately in place of a hex golden.
+    "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+      "${work_dir}/geometry.json" "${tokens}" "${persist_root}/case${index}-save2.json" \
+      "${ALIGN_LLM_GGUF_MODEL}" - "${KV_WIDTH}" - "${DECODE_STEPS}" "${kv_second}" - \
+      > "${case_dir}/save2.txt" || {
+        echo "decode step qualification: FAIL prompt ${index} second save exited non-zero" >&2
+        rm -f "${kv_second}"
+        exit 1
+      }
+    TZ=Pacific/Kiritimati LANG=de_DE.UTF-8 LC_ALL=de_DE.UTF-8 SOURCE_DATE_EPOCH=1 PWD=/ \
+      "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+      "${work_dir}/geometry.json" "${tokens}" "${persist_root}/case${index}-save3.json" \
+      "${ALIGN_LLM_GGUF_MODEL}" - "${KV_WIDTH}" - "${DECODE_STEPS}" "${kv_perturbed}" - \
+      > "${case_dir}/save3.txt" || {
+        echo "decode step qualification: FAIL prompt ${index} perturbed save exited non-zero" >&2
+        rm -f "${kv_perturbed}"
+        exit 1
+      }
+    for container in "${kv}" "${kv_second}" "${kv_perturbed}"; do
+      python3 -c "
+import hashlib, sys
+with open(sys.argv[1], 'rb') as handle:
+    print(hashlib.sha256(handle.read()).hexdigest())
+" "${container}" >> "${case_dir}/container-digests.txt"
+    done
+    # Step 8. The TTFT proxy, three runs each direction at `STEPS = 1`, with no transcript and no
+    # logits blob. Reported as a range, never as a rate.
+    kv_ttft="${case_dir}/ttft.akvp"
+    for repeat in 1 2 3; do
+      rm -f "${kv_ttft}"
+      time_invocation "${case_dir}/ttft-save-wall.txt" \
+        "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+        "${work_dir}/geometry.json" "${tokens}" "${persist_root}/case${index}-ttft-save.json" \
+        "${ALIGN_LLM_GGUF_MODEL}" - "${KV_WIDTH}" - 1 "${kv_ttft}" - > /dev/null || {
+          echo "decode step qualification: FAIL prompt ${index} TTFT save ${repeat} exited" \
+            "non-zero" >&2
+          rm -f "${kv_ttft}"
+          exit 1
+        }
+      cp "${persist_root}/case${index}-ttft-save.json" \
+        "${persist_root}/case${index}-ttft-save-${repeat}.json"
+      time_invocation "${case_dir}/ttft-load-wall.txt" \
+        "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+        "${work_dir}/geometry.json" "${tokens}" "${persist_root}/case${index}-ttft-load.json" \
+        "${ALIGN_LLM_GGUF_MODEL}" - "${KV_WIDTH}" - 1 - "${kv_ttft}" > /dev/null || {
+          echo "decode step qualification: FAIL prompt ${index} TTFT load ${repeat} exited" \
+            "non-zero" >&2
+          exit 1
+        }
+      cp "${persist_root}/case${index}-ttft-load.json" \
+        "${persist_root}/case${index}-ttft-load-${repeat}.json"
+    done
+    rm -f "${kv_ttft}"
+    # The two determinism duplicates have served their purpose; the load path's own container stays
+    # until the analysis has read its size.
+    rm -f "${kv_second}" "${kv_perturbed}"
+  fi
 done
 
 # R6-STEP-N section 2.10's scaling row, on the first prompt only. It is the measurement that
@@ -299,7 +439,8 @@ python3 "${root_dir}/scripts/decode_step_fingerprint.py" "${ALIGN_LLM_GGUF_MODEL
   }
 
 python3 - "${document_root}" "${KV_WIDTH}" "${DECODE_STEPS}" "${work_dir}/fingerprints.json" \
-  "${work_dir}" <<'PY'
+  "${work_dir}" "${persist_root}" "${PERSIST_PROMPTS}" <<'PY'
+import hashlib
 import json
 import os
 import re
@@ -307,6 +448,7 @@ import sys
 
 document_root, kv_width, steps = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 fingerprint_path, work_dir = sys.argv[4], sys.argv[5]
+persist_root, persist_prompts = sys.argv[6], int(sys.argv[7])
 failures = []
 rows = []
 
@@ -338,7 +480,42 @@ def normalize(document):
         row["compute_ns"] = 0
     copy["plane"]["readback_ns"] = 0
     copy["plane"]["upload_ns"] = 0
+    # R6-KV-PERSIST section 2.9: two single intervals and one labelled diagnostic, all wall clock.
+    copy["kv"]["write_ns"] = 0
+    copy["kv"]["read_ns"] = 0
     return json.dumps(copy, sort_keys=True, separators=(",", ":"))
+
+
+# R6-KV-PERSIST section 3, oracle Q. `normalize` plus the keys that are **counts of work the load
+# path legitimately did not do** -- a prefill pack read, a prefill head graph, a prefill-time source
+# comparison, a prefill window fill -- and nothing else. What stays inside the comparison is the
+# point: `decode` in full including `token_ids`, every object of `steps[]` including each step's
+# `sha256`, `argmax`, `n_past`, `plane_column_written`, and complete `oracle` sub-object;
+# `plane.columns_written`, `roundtrip_verdict`, `roundtrip_bytes_compared`, and every
+# `first_mismatch_*`; `output` and `oracle_logits`; `oracle_decode` in full; and `model`,
+# `selection`, `head`'s digests, and `abi`.
+PERSIST_EXCLUDED_BLOCKS = ("kv", "graph", "schedule", "timings", "lifetime", "reference")
+PERSIST_EXCLUDED_FIELDS = (
+    ("plane", "source"), ("plane", "readback_ns"), ("plane", "upload_ns"),
+    ("head", "node_count"), ("head", "pread_ns"), ("head", "compute_ns"),
+    ("pack", "reader_pread_count"), ("pack", "reader_bytes_read"),
+    ("window", "reuse_count"), ("window", "member_placements"),
+)
+
+
+def normalize_persist(document):
+    copy = json.loads(normalize(document))
+    for block in PERSIST_EXCLUDED_BLOCKS:
+        copy.pop(block, None)
+    for block, field in PERSIST_EXCLUDED_FIELDS:
+        copy[block].pop(field, None)
+    return json.dumps(copy, sort_keys=True, separators=(",", ":"))
+
+
+def median_and_spread(values):
+    ordered = sorted(values)
+    middle = ordered[len(ordered) // 2]
+    return middle, ordered[0], ordered[-1]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -631,6 +808,197 @@ for row in rows:
              row["plane_readback_ns"], row["plane_upload_ns"], row["elapsed_ns"],
              row["reader_bytes"]))
 
+# ---------------------------------------------------------------------------------------------
+# R6-KV-PERSIST section 3's shipped acceptance rule, on the real model.
+#
+# Rule 1 is the loop above, unchanged, on the save run. Rules 2 to 8 are here.
+# ---------------------------------------------------------------------------------------------
+
+persist_rows = []
+for index in range(1, persist_prompts + 1):
+    case = "case%d" % index
+    save_path = os.path.join(persist_root, "%s-save.json" % case)
+    load_path = os.path.join(persist_root, "%s-load.json" % case)
+    if not (os.path.exists(save_path) and os.path.exists(load_path)):
+        failures.append("%s: the persistence leg produced no documents" % case)
+        continue
+    with open(save_path, "r", encoding="utf-8") as handle:
+        save = json.load(handle)
+    with open(load_path, "r", encoding="utf-8") as handle:
+        load = json.load(handle)
+    if save["status"] != "ok" or load["status"] != "ok":
+        failures.append("%s: save %s %s / load %s %s"
+                        % (case, save["error_code"], save["error_detail"],
+                           load["error_code"], load["error_detail"]))
+        continue
+    container = os.path.join(work_dir, case, "plane.akvp")
+    size = os.path.getsize(container) if os.path.exists(container) else -1
+
+    # Rule 2. The save run writes, and the header describes the run it came from.
+    if save["kv"]["verdict"] != "SAVED" or save["kv"]["destination"] != "WRITTEN" \
+            or save["plane"]["source"] != "PREFILL":
+        failures.append("%s: the save run is %r" % (case, save["kv"]))
+    if save["kv"]["total_bytes"] != size:
+        failures.append("%s: kv.total_bytes is %d and the file is %d bytes"
+                        % (case, save["kv"]["total_bytes"], size))
+    if save["kv"]["columns_persisted"] != save["selection"]["token_count"] \
+            or save["kv"]["plane_bytes"] != save["plane"]["bytes"] \
+            or save["kv"]["prefill_argmax"] != save["output"]["argmax"]:
+        failures.append("%s: the container's header disagrees with its own run: %r"
+                        % (case, save["kv"]))
+    # `du -k` against `total_bytes`: the sparse-file check that makes explicit padding an assertion.
+    du_path = os.path.join(work_dir, case, "du.txt")
+    du_kib = None
+    if os.path.exists(du_path):
+        with open(du_path, "r", encoding="utf-8") as handle:
+            du_kib = int(handle.read().split()[0])
+        if du_kib * 1024 < save["kv"]["total_bytes"]:
+            failures.append("%s: the container occupies %d KiB on disk for %d bytes -- it is sparse"
+                            % (case, du_kib, save["kv"]["total_bytes"]))
+
+    # Rule 3, oracle P. A separate process loaded the file; the digests it republishes are the ones
+    # the save run wrote; and the plane its graphs consumed matches, through a different node.
+    if load["kv"]["verdict"] != "LOADED" or load["plane"]["source"] != "LOADED":
+        failures.append("%s: the load run is %r / %r"
+                        % (case, load["kv"]["verdict"], load["plane"]["source"]))
+    for field in ("plane_sha256", "logits_sha256", "tokens_sha256", "geometry_sha256",
+                  "source_header_region_sha256", "total_bytes", "plane_offset", "plane_bytes",
+                  "columns_persisted", "prefill_argmax", "pack_total_bytes"):
+        if save["kv"][field] != load["kv"][field]:
+            failures.append("%s: kv.%s is %r on the save run and %r on the load run"
+                            % (case, field, save["kv"][field], load["kv"][field]))
+    # Rule 6, oracle B on the load path, at the same checkpoints and with the same byte counts.
+    if load["plane"]["roundtrip_verdict"] != "IDENTICAL" \
+            or load["plane"]["roundtrip_bytes_compared"] \
+            != save["plane"]["roundtrip_bytes_compared"] \
+            or load["plane"]["columns_written"] != save["plane"]["columns_written"]:
+        failures.append("%s: oracle B on the load path is %r over %d bytes, not %r over %d"
+                        % (case, load["plane"]["roundtrip_verdict"],
+                           load["plane"]["roundtrip_bytes_compared"],
+                           save["plane"]["roundtrip_verdict"],
+                           save["plane"]["roundtrip_bytes_compared"]))
+
+    # Rule 4, oracle Q. The two runs are the same run.
+    equal_ids = save["decode"]["token_ids"] == load["decode"]["token_ids"]
+    equal_documents = normalize_persist(save) == normalize_persist(load)
+    if not equal_ids:
+        failures.append("%s: the load run decoded %r, the save run %r"
+                        % (case, load["decode"]["token_ids"], save["decode"]["token_ids"]))
+    if not equal_documents:
+        failures.append("%s: oracle Q -- the two documents differ outside the exclusion list"
+                        % case)
+
+    # Rule 5. Gate G on the load run: G2 at every step against the same transcript, and G1
+    # **inherited** through `oracle_logits` over the persisted vector rather than re-derived.
+    transcript = os.path.join(work_dir, case, "transcript.txt")
+    load_gate = gate_g("%s-load" % case, load, transcript)
+    if load["oracle_logits"]["verdict"] != "IDENTICAL" \
+            or not load["oracle_logits"]["byte_identical"]:
+        failures.append("%s: the persisted vector is %r against llama-debug on the load path"
+                        % (case, load["oracle_logits"]["verdict"]))
+    if load["output"]["argmax"] != load["kv"]["prefill_argmax"] \
+            or load["decode"]["token_ids"][0] != load["kv"]["prefill_argmax"]:
+        failures.append("%s: the id chain's root is not the container's own prefill_argmax: %r"
+                        % (case, load["kv"]["prefill_argmax"]))
+    # Rule 6, oracle C' on the load path, at the same three checkpoints.
+    load_checkpoints = []
+    for k in CHECKPOINTS:
+        single_path = os.path.join(document_root, "%s-single%d.json" % (case, k))
+        note = "k=%d not run" % k
+        if os.path.exists(single_path):
+            with open(single_path, "r", encoding="utf-8") as handle:
+                single = json.load(handle)
+            if single["status"] == "ok":
+                same = single["output"]["sha256"] == load["steps"][k - 1]["sha256"]
+                note = "k=%d %s" % (k, "byte-identical" if same else "DIFFERS")
+                if not same:
+                    failures.append("%s: oracle C' on the load path differs at k=%d" % (case, k))
+            else:
+                note = "k=%d error %s" % (k, single["error_code"])
+                failures.append("%s: oracle C' at k=%d did not run" % (case, k))
+        else:
+            failures.append("%s: oracle C' at k=%d did not run" % (case, k))
+        load_checkpoints.append(note)
+
+    # Rule 7. Two saves and one perturbed-environment save produce one digest.
+    digest_path = os.path.join(work_dir, case, "container-digests.txt")
+    digests = []
+    if os.path.exists(digest_path):
+        with open(digest_path, "r", encoding="utf-8") as handle:
+            digests = [line.strip() for line in handle if line.strip()]
+    if len(digests) != 3 or len(set(digests)) != 1:
+        failures.append("%s: three writes produced %d distinct containers: %r"
+                        % (case, len(set(digests)), digests))
+
+    # Section 1.4's two labelled diagnostics. **Reported, never claimed**: no acceptance decision is
+    # taken from either and no rate is derived from them.
+    proxy = {}
+    for direction in ("save", "load"):
+        wall_path = os.path.join(work_dir, case, "ttft-%s-wall.txt" % direction)
+        walls = []
+        if os.path.exists(wall_path):
+            with open(wall_path, "r", encoding="utf-8") as handle:
+                walls = [int(line) for line in handle if line.strip()]
+        arm = []
+        for repeat in (1, 2, 3):
+            one = os.path.join(persist_root, "%s-ttft-%s-%d.json" % (case, direction, repeat))
+            if os.path.exists(one):
+                with open(one, "r", encoding="utf-8") as handle:
+                    arm.append(json.load(handle)["timings"]["first_token_ns"])
+        proxy[direction] = {"wall": walls, "arm": arm}
+
+    persist_rows.append({
+        "case": case,
+        "container_bytes": size,
+        "du_kib": du_kib,
+        "plane_sha256": save["kv"]["plane_sha256"][:12],
+        "equality": "IDENTICAL" if equal_documents and equal_ids else "DIFFERS",
+        "gate_g_load": load_gate,
+        "oracle_b_load": load["plane"]["roundtrip_verdict"],
+        "oracle_b_bytes": load["plane"]["roundtrip_bytes_compared"],
+        "oracle_c_load": load_checkpoints,
+        "write_ns": save["kv"]["write_ns"],
+        "read_ns": load["kv"]["read_ns"],
+        "save_elapsed_ns": save["timings"]["elapsed_ns"],
+        "load_elapsed_ns": load["timings"]["elapsed_ns"],
+        "proxy": proxy,
+        "determinism": "one digest" if len(set(digests)) == 1 else "DIFFERS",
+    })
+
+for row in persist_rows:
+    print("decode step qualification: %s kv  equality=%s  G(load)=%s  B(load)=%s(%d B)  "
+          "C'(load)=[%s]  determinism=%s"
+          % (row["case"], row["equality"], row["gate_g_load"], row["oracle_b_load"],
+             row["oracle_b_bytes"], ", ".join(row["oracle_c_load"]), row["determinism"]))
+    print("decode step qualification: %s kv  container %d B (du %s KiB) plane sha %s  "
+          "write %d ns  read %d ns"
+          % (row["case"], row["container_bytes"],
+             "?" if row["du_kib"] is None else row["du_kib"], row["plane_sha256"],
+             row["write_ns"], row["read_ns"]))
+    for direction in ("save", "load"):
+        arm = row["proxy"][direction]["arm"]
+        wall = row["proxy"][direction]["wall"]
+        if not arm or not wall:
+            continue
+        arm_median, arm_low, arm_high = median_and_spread(arm)
+        wall_median, wall_low, wall_high = median_and_spread(wall)
+        # DIAGNOSTIC. Section 1.4: no TTFT claim, no rate, no speedup. The gate this number looks
+        # like it is about -- TTFT on repeated coding tasks sharing a prefix -- is **not met**, and
+        # section 1.4 gives four concrete reasons why a figure measured here cannot bear it. A
+        # fifth belongs to this measurement specifically and is printed with it below: `REFERENCE`
+        # has no `-` form, so at thirteen operands the model is always supplied, and the byte
+        # comparison against it lives in the **prefill pass** -- so the save direction pays for a
+        # whole second sweep of the GGUF that the load direction has no prefill to run. The
+        # difference between the two numbers therefore overstates what loading saves.
+        print("decode step qualification: %s kv  TTFT proxy (DIAGNOSTIC, no claim) %s: "
+              "first_token %d ns [%d..%d], invocation wall %d ns [%d..%d] over 3 runs at STEPS=1"
+              % (row["case"], direction, arm_median, arm_low, arm_high,
+                 wall_median, wall_low, wall_high))
+print("decode step qualification: the TTFT proxy above is a labelled diagnostic and no rate, "
+      "speedup, or per-token figure is derived from it. It also **overstates** what loading saves: "
+      "`REFERENCE` has no `-` form, so the model is supplied at thirteen operands and its byte "
+      "comparison runs inside the prefill pass, which the load direction does not run at all.")
+
 # The scaling row. Characterization, reported and not asserted, and the first concrete evidence for
 # resident weights: the loop re-reads the whole pack once per step.
 for n in sorted({1, 4, steps}):
@@ -658,4 +1026,15 @@ print("decode step qualification: %d prompts x 3 runs at N=%d PASS -- gate G on 
       "B byte-identical over every layer's K and V at every step including the column that step "
       "wrote, oracle C' byte-identical at k in %s, and oracle A' structurally complete at every "
       "step" % (len(rows), steps, measurement["collision_classes"], CHECKPOINTS))
+print("decode step qualification: %d prompts x akvp v1 PASS -- the container written after the "
+      "prefill, accepted by an independent reader, and reloaded in a **separate process** that "
+      "decoded the same %d ids and published a byte-identical document outside %d excluded key "
+      "groups, with gate G and oracles B and C' carried forward onto the load path and the "
+      "writer's determinism proved by triple-write digest equality including under a perturbed "
+      "environment. The TTFT proxy above is a labelled diagnostic: **no TTFT claim is made and the "
+      "R6 roadmap gate stays unmet**, because there is no prefix-sharing corpus, no key, no "
+      "lookup, and no invalidation, and loading removes one prefill pass while keeping every "
+      "per-step weight sweep."
+      % (len(persist_rows), steps,
+         len(PERSIST_EXCLUDED_BLOCKS) + len(PERSIST_EXCLUDED_FIELDS)))
 PY

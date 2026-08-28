@@ -532,6 +532,35 @@ The current forward delivery order is:
     invalidation, and weights re-read once per step, does not answer it; the gate stays unmet and
     the next capability toward it is resident weights.
 
+29. **R6-KV-PERSIST — the KV plane persisted to disk and reloaded in a fresh process.** Design and
+    results in [`r6-kv-persist.md`](r6-kv-persist.md). Items 27 and 28 build a correct KV plane and
+    throw it away when the process exits, so every invocation on the same prompt recomputes the
+    prefill. This capability ships the first of the five mechanisms the R6 gate lists — **session
+    KV** — and nothing else: `--decode-step` gains `KV_SAVE` and `KV_LOAD` operands, and a new
+    `akvp` v1 container holds the prefill plane, the prompt's token ids, the prefill's last-position
+    logit vector, and an identity record binding all three to the exact pack, geometry, width, and
+    plane layout that produced them. **Every mismatch is a refusal, never a silent re-prefill**:
+    nineteen `R6_KV_*` codes plus item 27's own `R6_KV_WIDTH`, in a stated validation order,
+    cheapest first, so a wrong file costs 192 bytes and one `fstat` rather than 29 MB. Acceptance is
+    that the two paths are the same run — a separate process loading a saved plane decodes the same
+    `N` ids and publishes a byte-identical document outside a named exclusion list, with item 28's
+    gate G, oracle B, and oracle C′ carried forward and asserted on both processes, and with the
+    writer's determinism proved by triple-write digest equality — including under a perturbed
+    environment — rather than by a checked-in hex golden. The container's model identity is the
+    **pack's** header-region digest and not the GGUF's, because `REFERENCE` is optional and a load
+    run may not have the model at all. Owner `gmake layer-forward-smoke`, whose fifth block gains a
+    save/load round trip, a 51-case refusal matrix over 13 independent reject kinds, and
+    `scripts/kv_plane_reader.py` — a complete second implementation of the format, written from the
+    specification and driven as a subprocess — plus a **third** implementation in
+    `scripts/layer_forward_fixture.py`, whose container the arm loads and decodes. Focused `gmake
+    decode-step-qualification`. **No TTFT claim.** The run reports `timings.first_token_ns` and the
+    invocation wall clock for prefill-then-decode against load-then-decode as a labelled
+    diagnostic. **What it leaves open:** the R6 gate asks that TTFT improve on repeated coding tasks
+    *sharing a prefix*. There is no prefix-sharing corpus, no key, no lookup, and no invalidation;
+    loading removes one prefill pass and keeps every per-step weight sweep, which item 28 measured
+    at 4.37 GB per step. The gate stays unmet and the next capability toward it is prefix-keyed
+    lookup on top of resident weights.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
@@ -1447,7 +1476,9 @@ policyの測定にはmulti-prefill sessionかdecodeが必要である。
 **未達。** item 27（R6-DECODE-KV-STEP1）は`n_past = T`の1 decode stepとAlign所有のKV planeを
 正しさの観点で実装したものであり、session KV・prefix KV・DRAM/NVMe tier・invalidationのいずれも
 持たず、TTFTの主張もしない。このgateを満たすには少なくともstep 2とdecode loop、そのうえで
-prefix再利用とresidency policyが必要である。
+prefix再利用とresidency policyが必要である。item 29（R6-KV-PERSIST）はKV planeをディスクに
+永続化し別プロセスで再読み込みする——5項目のうちsession KVのみ——が、prefix共有・DRAM/NVMe tier・
+invalidationは持たず、TTFTの主張もしない。
 
 **順序についての実測由来の結論（2026-08-28、R3-DECODE-RESIDENCY、roadmap item 25）。**
 R6はexpert residencyのruntime実装より**先**に着手してよい。実際の運用に最も近いmixed arm
