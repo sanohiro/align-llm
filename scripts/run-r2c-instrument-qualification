@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""Build and qualify the pinned R2c llama-eval-callback against real GGUF inputs."""
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+import resource
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Sequence
+
+
+ROOT = Path(__file__).resolve().parent.parent
+TOOL = ROOT / "scripts" / "llama-eval-callback-toolchain"
+PRODUCT = ROOT / "main"
+TINY_NAME = "tinyllamas/stories15M-q4_0.gguf"
+TINY_SHA256 = "66967fbece6dbe97886593fdbb73589584927e29119ec31f08090732d1861739"
+TRANSCRIPT_LIMIT = 256 * 1024 * 1024
+INSTRUMENT_TIMEOUT = 600
+
+
+class QualificationError(RuntimeError):
+    pass
+
+
+def command(
+    arguments: Sequence[str],
+    *,
+    capture: bool = False,
+    timeout: int | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        result = subprocess.run(
+            arguments,
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE if capture else None,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise QualificationError(f"cannot run {arguments[0]}: {error}") from error
+    if result.returncode != 0:
+        detail = (result.stderr or b"").decode("utf-8", "replace").strip()
+        raise QualificationError(detail or f"{arguments[0]} exited {result.returncode}")
+    return result
+
+
+def one_path(result: subprocess.CompletedProcess[bytes], label: str) -> Path:
+    try:
+        value = result.stdout.decode("utf-8", "strict").strip()
+    except UnicodeError as error:
+        raise QualificationError(f"{label} path is not UTF-8") from error
+    if not value or "\n" in value:
+        raise QualificationError(f"{label} returned an invalid path")
+    path = Path(value)
+    if not path.is_absolute():
+        raise QualificationError(f"{label} returned a relative path")
+    return path
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError as error:
+        raise QualificationError(f"cannot hash {path}: {error}") from error
+    return digest.hexdigest()
+
+
+def ensure_tiny_model(source: Path, build: Path) -> Path:
+    model = build / TINY_NAME
+    lock_path = build / ".r2c-tiny-model.lock"
+    build.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        model.parent.mkdir(parents=True, exist_ok=True)
+        parent_metadata = model.parent.lstat()
+        if not stat.S_ISDIR(parent_metadata.st_mode) or stat.S_ISLNK(parent_metadata.st_mode):
+            raise QualificationError("tiny model cache parent is not a real directory")
+        if model.exists() or model.is_symlink():
+            model_metadata = model.lstat()
+            if not stat.S_ISREG(model_metadata.st_mode) or stat.S_ISLNK(model_metadata.st_mode):
+                raise QualificationError("cached tiny model is not a regular non-symlink file")
+            if sha256(model) != TINY_SHA256:
+                raise QualificationError("cached tiny model has the wrong SHA-256")
+            return model
+
+        cmake = os.environ.get("CMAKE", "cmake")
+        if not cmake or any(character.isspace() or character == "\0" for character in cmake):
+            raise QualificationError("CMAKE must be one non-empty command without whitespace")
+        download = source / "cmake" / "download-models.cmake"
+        with tempfile.TemporaryDirectory(prefix=f".{model.name}.tmp-", dir=model.parent) as temporary:
+            candidate = Path(temporary) / model.name
+            command(
+                (
+                    cmake,
+                    f"-DDEST={candidate}",
+                    f"-DNAME={TINY_NAME}",
+                    f"-DHASH=SHA256={TINY_SHA256}",
+                    "-P",
+                    os.fspath(download),
+                ),
+                timeout=INSTRUMENT_TIMEOUT,
+            )
+            if not candidate.is_file() or candidate.is_symlink() or sha256(candidate) != TINY_SHA256:
+                raise QualificationError("tiny model download did not produce the pinned bytes")
+            os.replace(candidate, model)
+        return model
+    finally:
+        os.close(descriptor)
+
+
+def bound_transcript() -> None:
+    resource.setrlimit(resource.RLIMIT_FSIZE, (TRANSCRIPT_LIMIT, TRANSCRIPT_LIMIT))
+
+
+def capture(
+    instrument: Path,
+    model: Path,
+    transcript: Path,
+    log: Path,
+    *,
+    decode_steps: int | None,
+) -> int:
+    arguments = [
+        os.fspath(instrument),
+        "-m",
+        os.fspath(model),
+        "--prompt",
+        "hello",
+        "--seed",
+        "42",
+        "-ngl",
+        "0",
+        "-t",
+        "4",
+        "-fa",
+        "off",
+        "-ctk",
+        "f32",
+        "-ctv",
+        "f32",
+        "-nr",
+        "-c",
+        "128",
+    ]
+    if decode_steps is not None:
+        arguments.extend(("-n", str(decode_steps)))
+    started = time.monotonic_ns()
+    try:
+        with transcript.open("wb") as output, log.open("wb") as diagnostic:
+            result = subprocess.run(
+                arguments,
+                cwd=ROOT,
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=diagnostic,
+                timeout=INSTRUMENT_TIMEOUT,
+                preexec_fn=bound_transcript,
+                check=False,
+            )
+    except subprocess.TimeoutExpired as error:
+        raise QualificationError("instrument exceeded the 600-second bound") from error
+    except OSError as error:
+        raise QualificationError(f"cannot capture transcript: {error}") from error
+    if result.returncode != 0:
+        try:
+            tail = log.read_bytes()[-4096:].decode("utf-8", "replace").strip()
+        except OSError:
+            tail = ""
+        raise QualificationError(
+            tail or f"instrument exited {result.returncode} while capturing a transcript"
+        )
+    size = transcript.stat().st_size
+    if size <= 0 or size > TRANSCRIPT_LIMIT:
+        raise QualificationError(f"instrument produced invalid transcript size {size}")
+    return max(0, time.monotonic_ns() - started)
+
+
+def parse_trace(transcript: Path, destination: Path) -> dict[str, object]:
+    command(
+        (os.fspath(PRODUCT), "--expert-trace", os.fspath(transcript), os.fspath(destination)),
+        capture=True,
+    )
+    try:
+        document = json.loads(destination.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise QualificationError(f"cannot decode parser output: {error}") from error
+    if not isinstance(document, dict) or document.get("status") != "ok":
+        raise QualificationError(
+            f"parser refused transcript: {document.get('error_code')} {document.get('error_detail')}"
+        )
+    return document
+
+
+def assert_dense(
+    prefill_documents: list[tuple[str, dict[str, object]]], decode: dict[str, object]
+) -> None:
+    for label, prefill in prefill_documents:
+        if prefill.get("graph", {}).get("graph_count") != 1:
+            raise QualificationError(f"{label} dense capture did not contain exactly one graph")
+        if [(row.get("n_tokens"), row.get("phase")) for row in prefill.get("graphs", [])] != [
+            (2, "prefill")
+        ]:
+            raise QualificationError(f"{label} dense capture did not preserve its prefill graph")
+        if prefill.get("moe", {}).get("present"):
+            raise QualificationError(f"{label} tiny dense capture was reported as MoE")
+    expected = [(2, "prefill"), (1, "decode"), (1, "decode")]
+    actual = [(row.get("n_tokens"), row.get("phase")) for row in decode.get("graphs", [])]
+    if decode.get("graph", {}).get("graph_count") != 3 or actual != expected:
+        raise QualificationError(f"patched dense capture graph rows differ: {actual!r}")
+    if decode.get("moe", {}).get("present"):
+        raise QualificationError("tiny dense model was reported as MoE")
+
+
+def assert_moe(document: dict[str, object]) -> tuple[int, int, int, int]:
+    moe = document.get("moe", {})
+    if not isinstance(moe, dict) or moe.get("present") is not True:
+        raise QualificationError("capable model did not produce a MoE trace")
+    used = moe.get("n_expert_used")
+    if not isinstance(used, int) or used < 1:
+        raise QualificationError("MoE trace has no positive n_expert_used")
+    if moe.get("slots_truncated") is not False:
+        raise QualificationError("patched MoE trace still reports truncated router slots")
+    graphs = document.get("graphs", [])
+    if not isinstance(graphs, list) or not any(row.get("phase") == "decode" for row in graphs):
+        raise QualificationError("patched MoE trace contains no decode graph")
+    if any(row.get("tokens_truncated") for row in graphs):
+        raise QualificationError("patched MoE trace still reports a truncated token axis")
+
+    groups: dict[tuple[int, int, int], set[int]] = {}
+    tokens_by_layer: dict[tuple[int, int], set[int]] = {}
+    selections = document.get("selections", [])
+    if not isinstance(selections, list) or not selections:
+        raise QualificationError("patched MoE trace contains no selections")
+    for row in selections:
+        key = (row.get("graph"), row.get("layer"), row.get("token"))
+        slot = row.get("slot")
+        if not all(isinstance(value, int) for value in (*key, slot)):
+            raise QualificationError("patched MoE trace contains a non-integer selection key")
+        groups.setdefault(key, set()).add(slot)
+        tokens_by_layer.setdefault((key[0], key[1]), set()).add(key[2])
+    expected_slots = set(range(used))
+    for key, slots in groups.items():
+        if slots != expected_slots:
+            raise QualificationError(f"selection group {key!r} has slots {sorted(slots)!r}")
+    full_axis_extent = max(used, *(len(tokens) for tokens in tokens_by_layer.values()))
+    if full_axis_extent <= 6:
+        raise QualificationError("MoE trace did not exercise a full router axis above six")
+    return len(graphs), len(groups), len(selections), full_axis_extent
+
+
+def main() -> int:
+    if not PRODUCT.is_file() or not os.access(PRODUCT, os.X_OK):
+        raise QualificationError("product executable is missing; run 'make build'")
+
+    instrument = one_path(command((os.fspath(TOOL), "ensure", "instrument"), capture=True), "ensure")
+    source = one_path(command((os.fspath(TOOL), "path", "source"), capture=True), "path source")
+    command((os.fspath(TOOL), "verify"), capture=True)
+    attestation_result = command((os.fspath(TOOL), "attest", "instrument"), capture=True)
+    try:
+        attestation = json.loads(attestation_result.stdout.decode("utf-8", "strict"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise QualificationError(f"cannot decode instrument attestation: {error}") from error
+    if attestation.get("instrument_path") != os.fspath(instrument):
+        raise QualificationError("attestation names a different instrument path")
+
+    build = source.parent / "build"
+    tiny_model = ensure_tiny_model(source, build)
+    with tempfile.TemporaryDirectory(prefix="r2c-qualification-") as temporary:
+        work = Path(temporary)
+        decode_transcript = work / "dense-decode.txt"
+        prefill_documents: list[tuple[str, dict[str, object]]] = []
+        prefill_evidence: list[tuple[str, int, int]] = []
+        for label, steps in (("omitted", None), ("zero", 0), ("negative", -1)):
+            transcript = work / f"dense-prefill-{label}.txt"
+            elapsed_ns = capture(
+                instrument,
+                tiny_model,
+                transcript,
+                work / f"dense-prefill-{label}.log",
+                decode_steps=steps,
+            )
+            document = parse_trace(transcript, work / f"dense-prefill-{label}.json")
+            prefill_documents.append((label, document))
+            prefill_evidence.append((label, transcript.stat().st_size, elapsed_ns))
+        decode_ns = capture(
+            instrument, tiny_model, decode_transcript, work / "dense-decode.log", decode_steps=2
+        )
+        decode = parse_trace(decode_transcript, work / "dense-decode.json")
+        assert_dense(prefill_documents, decode)
+
+        print("r2c instrument qualification (dense): PASS")
+        print(f"  revision           {attestation['revision']}")
+        print(f"  patch sha256       {attestation['patch_sha256']}")
+        print(f"  instrument sha256  {attestation['instrument_sha256']}")
+        print(f"  model sha256       {TINY_SHA256}")
+        print("  graphs             omitted/zero/negative 1 prefill; positive 1 prefill + 2 decode")
+        print(
+            "  transcript bytes   "
+            + "; ".join(f"{label} {size}" for label, size, _ in prefill_evidence)
+            + f"; positive {decode_transcript.stat().st_size}"
+        )
+        print(
+            "  elapsed            "
+            + "; ".join(f"{label} {elapsed / 1e9:.3f} s" for label, _, elapsed in prefill_evidence)
+            + f"; positive {decode_ns / 1e9:.3f} s"
+        )
+
+        moe_text = os.environ.get("ALIGN_LLM_GGUF_MODEL", "")
+        if not moe_text:
+            print("r2c instrument qualification (MoE): N/A (ALIGN_LLM_GGUF_MODEL unset)")
+            return 0
+        model = Path(moe_text)
+        if not model.is_file():
+            print("r2c instrument qualification (MoE): N/A (ALIGN_LLM_GGUF_MODEL is absent)")
+            return 0
+        before = model.stat()
+        moe_transcript = work / "moe-decode.txt"
+        moe_ns = capture(instrument, model, moe_transcript, work / "moe-decode.log", decode_steps=2)
+        moe_document = parse_trace(moe_transcript, work / "moe-decode.json")
+        graph_count, group_count, selection_count, full_axis_extent = assert_moe(moe_document)
+        after = model.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise QualificationError("MoE model size or mtime changed during qualification")
+        print("r2c instrument qualification (MoE): PASS")
+        print(f"  model              {model.name} ({before.st_size} bytes)")
+        print(f"  graphs             {graph_count}, including decode")
+        print(f"  selection groups   {group_count}, all full-width")
+        print(f"  selections         {selection_count}")
+        print(f"  full-axis extent   {full_axis_extent} (> 6)")
+        print(f"  transcript bytes   {moe_transcript.stat().st_size}")
+        print(f"  elapsed            {moe_ns / 1e9:.3f} s (diagnostic only)")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("r2c instrument qualification: interrupted", file=sys.stderr)
+        raise SystemExit(130)
+    except QualificationError as error:
+        print(f"r2c instrument qualification: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)

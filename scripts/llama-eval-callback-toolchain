@@ -1,0 +1,397 @@
+#!/usr/bin/env python3
+"""Materialize the pinned, patched R2c llama-eval-callback instrument."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Mapping, Sequence
+
+
+PROJECT = Path(__file__).resolve().parent.parent
+DEFAULT_REPOSITORY = "https://github.com/ggml-org/llama.cpp.git"
+GENERATION = "r2c-v2"
+REVISION_PATTERN = re.compile(rb"[0-9a-f]{40}\n")
+PATCH_PATH = Path("patches/llama.cpp/r2c-decode-instrument.patch")
+PATCH_SHA256 = "fcab7ca9b6bbdc760da19e075a2c66d670d4737d7f7f07074676ec67dbd7d0ab"
+PATCH_BYTES = 2170
+ATTESTATION_SCHEMA_VERSION = 1
+BUILD_NUMBER = "10566"
+BUILD_COMMIT = "bb4caa7"
+INSTRUMENT = Path("build/bin") / ("llama-eval-callback.exe" if os.name == "nt" else "llama-eval-callback")
+DIGEST_CHUNK = 1024 * 1024
+
+
+class ToolchainError(RuntimeError):
+    """A controlled materialization or admission failure."""
+
+
+def read_identity() -> tuple[str, bytes, str]:
+    try:
+        revision_bytes = (PROJECT / ".llama-revision").read_bytes()
+    except OSError as error:
+        raise ToolchainError(f"cannot read .llama-revision: {error}") from error
+    if REVISION_PATTERN.fullmatch(revision_bytes) is None:
+        raise ToolchainError(".llama-revision must contain one lowercase 40-hex SHA followed by LF")
+
+    try:
+        patch = (PROJECT / PATCH_PATH).read_bytes()
+    except OSError as error:
+        raise ToolchainError(f"cannot read {PATCH_PATH}: {error}") from error
+    patch_digest = hashlib.sha256(patch).hexdigest()
+    if len(patch) != PATCH_BYTES or patch_digest != PATCH_SHA256:
+        raise ToolchainError(
+            f"{PATCH_PATH} identity differs from the R2c contract"
+        )
+    return revision_bytes[:-1].decode("ascii"), patch, patch_digest
+
+
+def safe_value(name: str, value: str) -> str:
+    if not value or any(character.isspace() or character == "\0" for character in value):
+        raise ToolchainError(f"{name} must be a non-empty value without whitespace")
+    return value
+
+
+def cache_root(environment: Mapping[str, str] | None = None) -> Path:
+    selected = os.environ if environment is None else environment
+    explicit = selected.get("ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT")
+    if explicit is not None:
+        base = Path(safe_value("ALIGN_LLM_LLAMA_TOOLCHAIN_ROOT", explicit))
+    elif selected.get("XDG_CACHE_HOME") is not None:
+        base = (
+            Path(safe_value("XDG_CACHE_HOME", selected["XDG_CACHE_HOME"]))
+            / "align-llm"
+            / "llama.cpp"
+        )
+    else:
+        base = (
+            Path(safe_value("HOME", selected.get("HOME", "")))
+            / ".cache"
+            / "align-llm"
+            / "llama.cpp"
+        )
+    if not base.is_absolute():
+        raise ToolchainError("managed llama.cpp toolchain root must be absolute")
+    try:
+        root = (base / GENERATION).resolve()
+        project = PROJECT.resolve()
+    except (OSError, RuntimeError) as error:
+        raise ToolchainError(f"cannot resolve managed llama.cpp toolchain root: {error}") from error
+    try:
+        root.relative_to(project)
+    except ValueError:
+        pass
+    else:
+        raise ToolchainError(
+            "managed llama.cpp toolchain root must be outside the align-llm checkout"
+        )
+    return root
+
+
+def identity_name(revision: str, patch_digest: str) -> str:
+    return f"{revision}-{patch_digest}"
+
+
+def entry_path(root: Path, revision: str, patch_digest: str) -> Path:
+    return root / identity_name(revision, patch_digest)
+
+
+def selected_path(entry: Path, kind: str) -> Path:
+    if kind == "source":
+        return entry / "source"
+    if kind == "instrument":
+        return entry / INSTRUMENT
+    raise ToolchainError(f"unsupported path kind: {kind}")
+
+
+def isolated_git_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    for name in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        environment.pop(name, None)
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    environment["GIT_CONFIG_SYSTEM"] = os.devnull
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    return environment
+
+
+def execute(
+    arguments: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    capture: bool = False,
+    environment: Mapping[str, str] | None = None,
+) -> tuple[bytes, bytes]:
+    try:
+        result = subprocess.run(
+            arguments,
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if capture else sys.stderr,
+            stderr=subprocess.PIPE if capture else sys.stderr,
+            check=False,
+        )
+    except OSError as error:
+        raise ToolchainError(f"cannot execute {arguments[0]}: {error}") from error
+    stdout = result.stdout if capture else b""
+    stderr = result.stderr if capture else b""
+    if result.returncode != 0:
+        detail = stderr.decode("utf-8", "replace").strip() if capture else ""
+        raise ToolchainError(detail or f"{arguments[0]} failed with status {result.returncode}")
+    return stdout, stderr
+
+
+def git(source: Path, *arguments: str) -> bytes:
+    stdout, _ = execute(
+        (
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.eol=lf",
+            "-c",
+            f"core.hooksPath={source / '.git' / 'disabled-hooks'}",
+            "-C",
+            os.fspath(source),
+            *arguments,
+        ),
+        capture=True,
+        environment=isolated_git_environment(),
+    )
+    return stdout
+
+
+def require_real_directory(path: Path, label: str) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ToolchainError(f"{label} is unavailable: {error}") from error
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise ToolchainError(f"{label} is not a real directory")
+
+
+def instrument_version(path: Path) -> str:
+    stdout, stderr = execute((os.fspath(path), "--version"), capture=True)
+    version = (stdout + stderr).decode("utf-8", "replace").strip()
+    if f"build {BUILD_NUMBER}, commit {BUILD_COMMIT}" not in version:
+        raise ToolchainError("managed instrument version differs from build 10566 at bb4caa7")
+    return version
+
+
+def tracked_diff_from_head(source: Path) -> bytes:
+    return git(
+        source,
+        "diff",
+        "--no-ext-diff",
+        "--binary",
+        "--unified=0",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "HEAD",
+        "--",
+    )
+
+
+def verify_entry(entry: Path, revision: str, patch: bytes) -> str:
+    source = entry / "source"
+    build = entry / "build"
+    require_real_directory(entry, "managed llama.cpp entry")
+    require_real_directory(source, "managed llama.cpp source")
+    require_real_directory(build, "managed llama.cpp build")
+
+    head = git(source, "rev-parse", "HEAD").decode("ascii", "strict").strip()
+    if head != revision:
+        raise ToolchainError("managed llama.cpp checkout revision differs from .llama-revision")
+    # Include ignored paths: an ignored source-tree file can still affect a build, and the cache
+    # contract admits only the pinned checkout plus the exact tracked patch.
+    if git(source, "ls-files", "--others"):
+        raise ToolchainError("managed llama.cpp source has untracked paths")
+    # Diff from HEAD, not the mutable index: staged and unstaged tracked drift are both part of the
+    # source tree that the build can consume.
+    actual_patch = tracked_diff_from_head(source)
+    if actual_patch != patch:
+        raise ToolchainError("managed llama.cpp source diff differs from the checked-in R2c patch")
+
+    instrument = entry / INSTRUMENT
+    try:
+        metadata = instrument.lstat()
+    except OSError as error:
+        raise ToolchainError(f"managed instrument is unavailable: {error}") from error
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise ToolchainError("managed instrument is not a regular non-symlink file")
+    if not os.access(instrument, os.X_OK):
+        raise ToolchainError("managed instrument is not executable")
+    return instrument_version(instrument)
+
+
+def digest_file(path: Path) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    length = 0
+    try:
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(DIGEST_CHUNK)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                length += len(chunk)
+    except OSError as error:
+        raise ToolchainError(f"cannot read managed instrument: {error}") from error
+    return digest.hexdigest(), length
+
+
+def attest(entry: Path, revision: str, patch: bytes, patch_digest: str) -> dict[str, object]:
+    version = verify_entry(entry, revision, patch)
+    instrument = entry / INSTRUMENT
+    instrument_digest, instrument_bytes = digest_file(instrument)
+    return {
+        "attestation_schema_version": ATTESTATION_SCHEMA_VERSION,
+        "generation": GENERATION,
+        "revision": revision,
+        "patch_path": os.fspath(PATCH_PATH),
+        "patch_sha256": patch_digest,
+        "patch_bytes": len(patch),
+        "source_path": os.fspath(entry / "source"),
+        "instrument_path": os.fspath(instrument),
+        "instrument_sha256": instrument_digest,
+        "instrument_bytes": instrument_bytes,
+        "instrument_version": version,
+    }
+
+
+def verify_unpatched_source(source: Path, revision: str) -> None:
+    head = git(source, "rev-parse", "HEAD").decode("ascii", "strict").strip()
+    if head != revision:
+        raise ToolchainError("fetched llama.cpp revision differs from .llama-revision")
+    status = git(source, "status", "--porcelain=v1", "--untracked-files=all")
+    if status:
+        raise ToolchainError("fresh llama.cpp checkout is dirty before patching")
+    if git(source, "ls-files", "--others"):
+        raise ToolchainError("fresh llama.cpp checkout has untracked paths before patching")
+
+
+def cmake_arguments(cmake: str, source: Path, build: Path) -> tuple[str, ...]:
+    return (
+        cmake,
+        "-S",
+        os.fspath(source),
+        "-B",
+        os.fspath(build),
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DBUILD_SHARED_LIBS=OFF",
+        "-DGGML_NATIVE=OFF",
+        "-DGGML_METAL=OFF",
+        "-DGGML_OPENMP=OFF",
+        "-DGGML_CCACHE=OFF",
+        "-DLLAMA_CURL=OFF",
+        "-DLLAMA_BUILD_EXAMPLES=ON",
+        "-DLLAMA_BUILD_TESTS=OFF",
+        f"-DLLAMA_BUILD_NUMBER={BUILD_NUMBER}",
+        f"-DLLAMA_BUILD_COMMIT={BUILD_COMMIT}",
+    )
+
+
+def prepare(root: Path, revision: str, patch: bytes, patch_digest: str) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    name = identity_name(revision, patch_digest)
+    lock_path = root / f".{name}.lock"
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    staging: Path | None = None
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        entry = entry_path(root, revision, patch_digest)
+        if entry.exists() or entry.is_symlink():
+            verify_entry(entry, revision, patch)
+            return entry
+
+        staging = Path(tempfile.mkdtemp(prefix=f".{name}.tmp-", dir=root))
+        source = staging / "source"
+        build = staging / "build"
+        repository = safe_value(
+            "ALIGN_LLM_LLAMA_REPOSITORY",
+            os.environ.get("ALIGN_LLM_LLAMA_REPOSITORY", DEFAULT_REPOSITORY),
+        )
+        cmake = safe_value("CMAKE", os.environ.get("CMAKE", "cmake"))
+        git_environment = isolated_git_environment()
+
+        execute(("git", "init", "--quiet", os.fspath(source)), environment=git_environment)
+        git(source, "remote", "add", "origin", repository)
+        git(source, "fetch", "--depth=1", "--no-tags", "origin", revision)
+        fetched = git(source, "rev-parse", "FETCH_HEAD").decode("ascii", "strict").strip()
+        if fetched != revision:
+            raise ToolchainError("fetched llama.cpp revision differs from .llama-revision")
+        git(source, "checkout", "--detach", "--quiet", "FETCH_HEAD")
+        verify_unpatched_source(source, revision)
+        git(source, "apply", "--unidiff-zero", "--check", os.fspath(PROJECT / PATCH_PATH))
+        git(source, "apply", "--unidiff-zero", os.fspath(PROJECT / PATCH_PATH))
+
+        actual_patch = tracked_diff_from_head(source)
+        if actual_patch != patch:
+            raise ToolchainError("applied llama.cpp diff differs from the checked-in R2c patch")
+
+        execute(cmake_arguments(cmake, source, build))
+        execute((cmake, "--build", os.fspath(build), "--target", "llama-eval-callback"))
+        verify_entry(staging, revision, patch)
+        if entry.exists() or entry.is_symlink():
+            raise ToolchainError("managed llama.cpp destination appeared during preparation")
+        os.rename(staging, entry)
+        staging = None
+        verify_entry(entry, revision, patch)
+        return entry
+    finally:
+        if staging is not None:
+            try:
+                shutil.rmtree(staging)
+            except FileNotFoundError:
+                pass
+        os.close(descriptor)
+
+
+def parse(arguments: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for command in ("path", "ensure"):
+        child = subparsers.add_parser(command)
+        child.add_argument("kind", choices=("source", "instrument"))
+    subparsers.add_parser("verify")
+    attestation = subparsers.add_parser("attest")
+    attestation.add_argument("kind", choices=("instrument",))
+    return parser.parse_args(arguments)
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    try:
+        values = parse(sys.argv[1:] if arguments is None else arguments)
+        revision, patch, patch_digest = read_identity()
+        root = cache_root()
+        entry = entry_path(root, revision, patch_digest)
+        if values.command == "path":
+            print(selected_path(entry, values.kind))
+        elif values.command == "ensure":
+            print(selected_path(prepare(root, revision, patch, patch_digest), values.kind))
+        elif values.command == "verify":
+            verify_entry(entry, revision, patch)
+            print(revision)
+        else:
+            print(json.dumps(attest(entry, revision, patch, patch_digest), indent=2, sort_keys=True))
+        return 0
+    except KeyboardInterrupt:
+        print("llama-eval-callback-toolchain: interrupted", file=sys.stderr)
+        return 130
+    except (OSError, ToolchainError, UnicodeError) as error:
+        print(f"llama-eval-callback-toolchain: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

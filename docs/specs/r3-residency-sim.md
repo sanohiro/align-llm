@@ -888,7 +888,7 @@ document is compared exactly; no tolerance is used anywhere, because every value
 
 `scripts/run-residency-sim`, `make residency-sim-qualification`. Captures the 40
 prefill transcripts of `eval/prompts/expert-locality-v1.txt` with the flags and safeguards
-`scripts/run-expert-locality-gate` established — `-fa off -ctk f32 -ctv f32 -nr -c 512`, a
+`scripts/run-expert-locality-gate` established — `-n 0 -fa off -ctk f32 -ctv f32 -nr -c 512`, a
 `ulimit -f` cap, a 600-second timeout, deletion of each transcript immediately after conversion, and
 a model size-and-mtime read-only proof — converts each with `main --expert-trace`, derives the Model
 IR once with `main --model-ir`, writes the trace list, and runs the arm. Before invoking the
@@ -899,6 +899,11 @@ error fails before external work. It records the corpus
 identity, the instrument version block, and the whole verdict, and it exits 0 on every one of the
 three `result` values because all three are answers to the roadmap gate. It exits nonzero only when
 the instrument, the corpus, or a parser prevented a measurement.
+
+R2c makes positive `-n` values emit decode graphs. The runner therefore uses explicit `-n 0` and,
+after conversion, requires R2's original compact first/last-three router-slot form. A pinned R2c
+full-axis instrument is a controlled qualification failure rather than a silent change to this
+already-recorded six-slot demand stream; R2c's own qualification owns decode and full-axis capture.
 
 ### 4.4 What is not run
 

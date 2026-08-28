@@ -302,7 +302,7 @@ The current forward delivery order is:
     Review, publication, and merge are complete; a follow-up by a parallel session, PR #138 at
     `1b11245`, moved the qualification wrapper's Model IR and budget validation ahead of the
     instrument runs. See `HANDOFF.md`.
-22. **R5D-MOE-LAYER-FORWARD — one OLMoE MoE layer computed from Align-owned expert claims, the
+23. **R5D-MOE-LAYER-FORWARD — one OLMoE MoE layer computed from Align-owned expert claims, the
     routed half of R5's second gate stage. Implemented and reviewed; in publication.** On branch
     `agent/r5d-moe-layer-forward`, rebased onto the merged R3 residency simulator at `main`
     `95c47e7` and then merged with `main` `1b11245` (PR #138's follow-up) rather than rebased over
@@ -334,20 +334,39 @@ The current forward delivery order is:
     model, not a throughput claim. No new Align capability request was needed; four existing requests
     (37, 42, 45, 46) gain R5D as a non-blocking client. See `HANDOFF.md`.
 
+22. **R2C-DECODE-INSTRUMENT — a pinned, source-built decode-graph measurement dependency. Merged
+    as PR #140, merge commit `89d8721` on `main`, by a parallel session.** [`r2c-decode-instrument.md`](r2c-decode-instrument.md)
+    is the authoritative ledger and closure matrix. It pins llama.cpp commit
+    `bb4caa7540188872173c44d161602d9271386413` and one two-file patch, builds the patched
+    `llama-eval-callback` into an identity-addressed cache outside Git, and extends the existing
+    schema-1 parser to accept either the upstream three-plus-three router axes or exact full axes.
+    Positive `-n` values now emit bounded one-token decode graphs while omitted/nonpositive `-n`
+    retains one prefill graph; only `ffn_moe_topk` prints every slot and token. Existing R2/R3
+    measurement wrappers now pass explicit `-n 0` and reject full-axis documents, preserving their
+    historical prefill-only, compact six-slot semantics. The deterministic owner, dense
+    qualification, and real OLMoE qualification pass;
+    the latter records three graphs including decode, 48 full-width groups, 384 selections, and a
+    router extent of eight above the old six-value threshold. The first comprehensive review found
+    four valid cache/recipe/qualification defects, all consolidated and owner-tested. Final repair
+    review found three further valid compatibility/safety/parser defects; their consolidated repair,
+    affected owner verification, and real OLMoE requalification pass. Exact-head preflight,
+    publication, and merge remain, after which R6 may consume the instrument in a later work
+    session.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
 `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf` (allenai, 4,213,512,192 B, sha256 `4ddc0e53159e…`, arch
-`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18 through 22 above:
-items 18, 19, 20, and 21 are merged, R2's gate is met, R4's and R4.5's per-expert halves are
-discharged, and R3's gate is met on the real corpus. It also unblocked item 22,
-R5D-MOE-LAYER-FORWARD, which is implemented, reviewed, and in publication with one routed OLMoE
-layer computed over Align-owned expert claims and agreeing with llama.cpp node for node.
-Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
-**infeasible on this host** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
+`olmoe`, 16 layers, 64 experts top-8) is downloaded, and it unblocked items 18 through 23 above:
+items 18 through 22 are merged, R2's gate is met, R4's and R4.5's per-expert halves are discharged,
+R3's gate is met on the real corpus, and decision (c)'s pinned decode instrument is shipped. It also
+unblocked item 23, R5D-MOE-LAYER-FORWARD, which is implemented, reviewed, and in publication with
+one routed OLMoE layer computed over Align-owned expert claims and agreeing with llama.cpp node for
+node. Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+**infeasible on the host where that decision was recorded** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
-a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch unblocks R6 and,
-through it, R7-R9; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
+a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch is **taken** and
+merged as item 22, unblocking R6 and, through it, R7-R9; (d) Align Request 41 (non-`Copy` capture in `spawn` closures) unblocks R5's
 required microbenchmark C. See `HANDOFF.md`, "Active capabilities", for the full decision list and
 disk-space accounting.
 
@@ -776,6 +795,10 @@ R2aのauthoritative planは[`r2a-expert-trace.md`](r2a-expert-trace.md)である
 へ変換し、token・layerごとのexpert idとlocality aggregateを記録する。dense（非MoE）transcript
 は`moe: false`を返す。
 
+R2cのauthoritative planは[`r2c-decode-instrument.md`](r2c-decode-instrument.md)である。Exact
+llama.cpp pinと最小の2-file patch、out-of-tree managed builder、full-axis schema-1 parser
+adoptionを一つのconsumer-complete capabilityとして実装する。
+
 ### 測定
 
 ```text
@@ -818,13 +841,14 @@ trialは1 prompt内で相関するため（1 promptが全層・全token位置を
 したがって「局所性が弱ければrepo expert profileへの投資を縮小する」は**発動しない**。R3の
 residency simulationは実測されたdemand signalを前提にしてよい。
 
-ただし**prefillのみ**である。build 10566は1 invocationにつき1 graphしか評価しないため
+ただし**この測定結果はprefillのみ**である。当時の未patch build 10566は1 invocationにつき1 graphしか評価しないため
 decodeの測定は存在せず（`phase_split.decode` は `null`）、decode時reuseやcache policyについては
 何も主張しない。また1 promptあたり6 token位置まで、reuseは印字された3+3スロットのみの観測である。
 このうち厳密に言えるのは**t側**の制限だけで、これはhitのみを取り除くのでp^を**低く**偏らせる。
 t+1側の制限は分子と分母を同時に動かすため方向は確定できず、真のtop-8 reuseが286 per milleより
 上か下かはここでは主張しない。最終層はinstrumentがoutput-token reductionを先に適用するため寄与しない
-（section 6 correction 20）。R2bのcorpus横断層別（language別/task別/repo別偏り）とR2cのdecode測定は
+（section 6 correction 20）。R2cの測定器はitem 22で実装中だが、この過去の数値を書き換えない。
+R2bのcorpus横断層別（language別/task別/repo別偏り）とR2c instrumentを使うdecode locality測定は
 未達のまま残る。
 
 ---
@@ -1022,7 +1046,7 @@ closureが所有値（`buffer`）をcaptureできず、captureしたタスクが
 section 5.4、`r5a-dense-layer-forward.md` section 5.4、`r5b-model-prefill-forward.md`
 section 5.4、`r5c-metal-prefill.md` section 1.3）。
 
-**単一layerのrouted版（MoE stage 2）はR5D-MOE-LAYER-FORWARD（roadmap item 22、
+**単一layerのrouted版（MoE stage 2）はR5D-MOE-LAYER-FORWARD（roadmap item 23、
 `docs/specs/r5d-moe-layer-forward.md`）が対象とする。** branch `agent/r5d-moe-layer-forward`、
 merged R3の上へrebase済み（`main` `95c47e7`）、design ledger `a85e1fc`、実装 `7886cee`、
 review repair `a2e2748`。実装・review・実modelでのqualificationは完了し、publication中である。
