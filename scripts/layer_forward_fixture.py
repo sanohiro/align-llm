@@ -846,6 +846,21 @@ MODEL_TOKENS = [3, 17, 5]
 MODEL_ABORT_TOKENS = [1, 25, 5]
 MODEL_KV_WIDTH = 8
 
+# `r6-step-n.md` section 4.7. **The reference loop's greedy ids must not be constant.** With the
+# unmodified generator the chain is a fixed point — vocabulary row 24 is the prefill's argmax and
+# also its own step's argmax, so the three hosted ids are `24, 24, 24` and a decode loop that fed
+# step 1's token to every later step would satisfy every per-step assertion the fifth smoke block
+# makes. One row is therefore re-seeded to break the fixed point, and the chain becomes
+# `24 -> 9 -> 27`.
+#
+# **Row 24 and only row 24**, because no prefill case gathers it: the token lists in play across the
+# whole corpus are `3,17,5` (`MODEL_TOKENS`), `1,25,5` (`MODEL_ABORT_TOKENS`), and `1..8`
+# (`mf-tokens-seven-transcript` / `-eight-no-transcript`), and the out-of-range lists are refused
+# before a gather. Every prefill-derived golden row is therefore byte-unchanged and only the
+# decode-step documents move. The seed is `weight_values`' own per-index shape, `"role@index"`,
+# which `model_tensor` already uses for per-layer tensors.
+MODEL_DECODE_RESEEDED_ROWS = (24,)
+
 ROLE_OUTPUT_NORM = 13
 ROLE_OUTPUT = 14
 
@@ -903,7 +918,13 @@ def model_dims(role, g):
 def model_tensor(role, layer, g):
     dim0, dim1 = model_dims(role, g)
     seed = role if layer < 0 else "%s@%d" % (role, layer)
-    return Tensor([dim0, dim1], weight_values(seed, dim0 * dim1))
+    tensor = Tensor([dim0, dim1], weight_values(seed, dim0 * dim1))
+    if role == "token_embd":
+        # `MODEL_DECODE_RESEEDED_ROWS`' reason, in one place so the pack and the reference forward
+        # cannot disagree: both read this function and neither holds a copy of the row.
+        for row in MODEL_DECODE_RESEEDED_ROWS:
+            tensor.data[row * dim0:(row + 1) * dim0] = weight_values("%s@%d" % (role, row), dim0)
+    return tensor
 
 
 def concat_tensor(a, b, dim):
@@ -1395,6 +1416,13 @@ def write_decode_corpus(g, embed, layers, head, prefill_records, prefill_logits,
     # One id per line, `K` lines: the ids the reference loop **consumed**, which is exactly what
     # `decode.token_ids` publishes. The smoke asserts the two agree element for element, making "the
     # arm decoded the tokens the reference decoded" an assertion rather than a coincidence.
+    #
+    # **And the `K` ids must differ**, or that assertion is satisfiable by an arm that decoded step 1
+    # and then re-consumed its own first token forever. `MODEL_DECODE_RESEEDED_ROWS` exists to make
+    # them differ; this is the check that says so at the point the fixture is generated, so a later
+    # geometry or weight change cannot silently restore the fixed point.
+    assert len(set(consumed)) == len(consumed), \
+        "the reference decode loop is degenerate: %r" % (consumed,)
     emit("model-decode-tokens.txt", "".join("%d\n" % i for i in consumed))
 
     # A transcript holding only the **prefill** graph. The arm skips the first graph, so every

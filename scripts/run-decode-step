@@ -74,6 +74,13 @@ command -v "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}" >/dev/null 2>&1 \
 command -v "${ALIGN_LLM_LLAMA_DEBUG}" >/dev/null 2>&1 \
   || [ -x "${ALIGN_LLM_LLAMA_DEBUG}" ] \
   || na "ALIGN_LLM_LLAMA_DEBUG is not executable"
+# `numpy` is a real prerequisite, so it is checked **here** with every other one and not discovered
+# eleven minutes in. `scripts/decode_step_fingerprint.py` dequantizes 152,064 Q4_K rows to measure
+# gate G's injectivity (section 3.2) and refuses to claim a gate it did not check; without this line
+# that refusal arrives after the packing, four instrument runs, and twelve arm runs have already
+# happened, which is a late exit 1 where the header promises one N/A line.
+python3 -c 'import numpy' >/dev/null 2>&1 \
+  || na "numpy is unavailable, so gate G's fingerprint injectivity cannot be measured"
 
 model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
 scratch_root="${ALIGN_LLM_DECODE_STEP_TMPDIR:-${TMPDIR:-/tmp}}"

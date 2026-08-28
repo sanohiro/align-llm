@@ -2678,6 +2678,16 @@ STEPS = "3"
 with open(path("model-decode-tokens.txt"), "r", encoding="utf-8") as handle:
     EXPECTED_TOKENS = [int(line) for line in handle.read().split()]
 EXPECTED_TOKEN = EXPECTED_TOKENS[0]
+# R6-STEP-N section 4.7. **The reference chain must be non-degenerate, and this block refuses to run
+# if it is not.** Every per-step assertion below — `token_ids` against the reference, the
+# `argmax`-to-next-`token_id` chain, and the distinct digests — is satisfied by an arm that decoded
+# step 1 and then fed its own first token to every later step, so long as the reference ids are all
+# equal. They are not equal by construction (`MODEL_DECODE_RESEEDED_ROWS`), and this is the guard
+# that keeps them that way rather than trusting the generator.
+if len(set(EXPECTED_TOKENS)) != len(EXPECTED_TOKENS):
+    sys.stderr.write("decode step smoke: FAIL the reference decode loop is degenerate: %r\n"
+                     % (EXPECTED_TOKENS,))
+    raise SystemExit(1)
 
 # R6-STEP-N section 2.2's arity rule: five, six, seven, nine, ten, or **eleven** operands. **Eight is
 # still `R6_ARITY`** and the gap is the contract, inherited verbatim from `--model-forward`.
@@ -2967,6 +2977,25 @@ def record(name, operands, expected):
                         % (name, document["kind"], document["schema_version"]))
     if not document["abi"]["fp_contract_off"]:
         failures.append("%s: the shim was not built with -ffp-contract=off" % name)
+    # R6-STEP-N section 2.8, on **every** document including the error ones: the loop-level
+    # aggregates are aggregates over the completed steps, and a partial step contributes no row and
+    # therefore no counts. Without this a document could report work that no published row accounts
+    # for, which is the same defect as a half-filled row wearing a different name.
+    rows = document["steps"]
+    decode = document["decode"]
+    if decode["steps_completed"] != len(rows):
+        failures.append("%s: steps_completed %d with %d rows"
+                        % (name, decode["steps_completed"], len(rows)))
+    if decode["node_count"] != sum(row["node_count"] for row in rows):
+        failures.append("%s: decode.node_count %d is not the sum of the %d published rows"
+                        % (name, decode["node_count"], len(rows)))
+    # `n_layer + 2` graphs per step on this geometry: the embedding gather, both layers, the head.
+    if decode["graph_count"] != 4 * len(rows):
+        failures.append("%s: decode.graph_count %d, not 4 x %d completed steps"
+                        % (name, decode["graph_count"], len(rows)))
+    if (decode["slot_high_water"] > 0) != bool(rows):
+        failures.append("%s: slot_high_water %d with %d completed steps"
+                        % (name, decode["slot_high_water"], len(rows)))
     return document
 
 

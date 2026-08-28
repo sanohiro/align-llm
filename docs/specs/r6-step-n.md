@@ -223,7 +223,8 @@ The requirement is that a partial run publishes what it completed. Exactly:
 | `decode.token_ids` | The `k - 1` ids decoded before the failure, in order. `[]` when `k = 1` |
 | `steps[]` | `k - 1` complete objects. **A partial step publishes no object**: a half-filled step row is a row that says a step happened, and no step happened |
 | `plane.columns_written` | `T + k - 1` |
-| `plane.roundtrip_verdict` | The last completed step's, or `-` when no step completed. **Never `IDENTICAL` on an error document** |
+| `plane.roundtrip_verdict` | `-`, unless some step's own comparison already reported `MISMATCH`, which is sticky and keeps its verdict. **Never `IDENTICAL` on an error document**, even when every completed step's comparison passed: `IDENTICAL` would read as a claim about the run, and the number of columns a completed step actually verified is published as `columns_written` |
+| `decode.compute_ns` / `node_count` / `graph_count` / `slot_high_water` | The aggregate over the `k - 1` completed steps and nothing else. **The partial step contributes no counts**, for the same reason it contributes no row: a sum that no published row accounts for is a half-filled row wearing a different name. How far the failing step got is named by `error_detail`, which is where that belongs |
 | `oracle_decode` | The aggregate over the `k - 1` completed steps, or the empty record |
 | The plane itself | **Freed.** It is an ordinary `buffer` at `schedule_decode`'s scope, freed on every path including this one |
 
@@ -240,8 +241,8 @@ exactly the number of columns some completed step verified".
 | --- | --- |
 | `kind` | **`R6_DECODE_STEP`, unchanged.** The document describes the same thing — a decode over an Align-owned KV plane — and `N = 1` is a degenerate loop, not a different object. A new kind would force `scripts/run-decode-step` and the smoke to branch on kind for no semantic difference. This is what schema versions exist for |
 | `schema_version` | **2** |
-| Removed at 2 | The scalar `decode.{token_id, argmax, sha256, bit_sum, element_count, nonfinite_count, compute_ns, node_count}`. They described *the* step and there is no longer exactly one |
-| `decode` at 2 | Loop-level only: `steps_requested`, `steps_completed`, `n_past_first`, `n_past_last`, `token_ids` (an array of `steps_completed` integers — **the field the gate reads**), `compute_ns` (sum), `node_count` (sum), `graph_count` (sum), `slot_high_water` (max over steps) |
+| Removed at 2 | The scalar `decode.{token_id, argmax, sha256, bit_sum, element_count, nonfinite_count}`, which described *the* step and there is no longer exactly one; they move to `steps[i]`. `decode.n_past` is **renamed**, to the pair `n_past_first`/`n_past_last`, and `oracle_decode.instrument_graph` likewise to `instrument_graph_first`/`instrument_graph_last`. `decode.compute_ns` and `decode.node_count` are **retained** and change meaning from a scalar to a sum, which is why they are named here rather than left to be inferred |
+| `decode` at 2 | Loop-level only: `steps_requested`, `steps_completed`, `n_past_first`, `n_past_last`, `token_ids` (an array of `steps_completed` integers — **the field the gate reads**), `compute_ns` (sum), `node_count` (sum), `graph_count` (sum), `slot_high_water` (max over steps). **Every one of the four aggregates is over the `steps_completed` published rows and nothing else**, on a success document and on an error document alike (2.8) |
 | `steps[]` at 2 | `steps_completed` objects, in order, each: `index` (1-based), `n_past`, `token_id`, `argmax`, `sha256`, `bit_sum`, `element_count`, `nonfinite_count`, `compute_ns`, `node_count`, `plane_column_written`, and an `oracle` sub-object (`verdict`, `max_abs_diff_ten_thousandths`, `max_sum_diff_millionths`, `elements_compared`, `nodes_matched`, `nodes_expected`, `layers_matched`, `worst_node`, `worst_layer`, `instrument_graph`) |
 | `plane` at 2 | R6's fields, with `columns_written` now `T + N`, `roundtrip_bytes_compared` summed over steps, `roundtrip_verdict` `IDENTICAL` **iff every step's was**, `readback_ns`/`upload_ns` summed, and one new `first_mismatch_step` beside the existing layer/tensor/column |
 | `oracle_decode` at 2 | The aggregate: `steps_compared`, `verdict` (`PASS` iff every step `PASS`), `max_abs_diff_ten_thousandths` (max), `max_sum_diff_millionths` (max), `worst_step`, `worst_node`, `worst_layer`, `elements_compared` (sum), `nodes_matched`/`nodes_expected` (sums), `instrument_graph_first` (2), `instrument_graph_last` (`N + 1`), `instrument_kv_width`, `tolerance_ten_thousandths` |
@@ -281,6 +282,7 @@ here saturates and nothing needs a widened accumulator.
 | Everything R6 lists | Shipped, unchanged |
 | `R6-DECODE-KV-STEP1` merged, or this branch stacked on its head | **Stacked** on `1671810`. If R6 merges with repairs, this capability takes `git merge origin/main` — never a rebase, so R6's recorded commits stay reachable — and re-runs its owner |
 | `llama-eval-callback`, R2C-patched, at the pin, honouring `-n N` | **Probed and confirmed** at `-n 4` (section 3.1). Generation `r2c-v2` is unchanged and **no patch change is taken** |
+| `numpy`, importable by the `python3` on `PATH` | **New, and it is a prerequisite rather than an implementation detail.** `scripts/decode_step_fingerprint.py` dequantizes 152,064 Q4_K rows to measure gate G's injectivity (3.2) and refuses to claim a gate it did not check, so its absence is an absent input and not a defect. `scripts/run-decode-step` checks it in the same preflight as the model and the two instruments and prints one `N/A` line; it is the only new prerequisite this capability adds |
 | Align language features | None new. Section 8 records the gaps encountered; none blocks this capability |
 
 ### 2.12 Greedy, and no EOS handling
@@ -621,7 +623,7 @@ step count, `k` a step index.
 | Phase | Implementation | Regression |
 | --- | --- | --- |
 | Construction | One new column set, `StepColumns { n_past, token_id, argmax, bit_sum, element_count, nonfinite_count, compute_ns, node_count, plane_column, oracle_max_abs, oracle_max_sum, oracle_elements, oracle_nodes_matched, oracle_nodes_expected, oracle_layers, oracle_graph : array<i64>; sha256, oracle_verdict, oracle_worst_node : array<str> }`, built by `schedule_decode` and handed out as an out-parameter beside `ScheduleColumns`/`TopColumns`/`GraphColumns` | `ds-steps-3`'s golden is the shape |
-| **Why a column set and not `Outcome` fields** | R6 section 10.6 records that `model_forward.Outcome` is already **1,328 bytes**, passed by value at ~25 new call sites, and that the compiler warns. Adding `N` per-step scalars would make it grow with an operand. Column sets are the module's existing answer for callee-local `array<i64>` and they keep `Outcome` at its current size | the compiler's own size warning, unchanged in count |
+| **Why a column set and not `Outcome` fields** | R6 section 10.6 records that `model_forward.Outcome` is passed by value at ~25 new call sites and that the compiler warns about it; at this head the compiler reports **1,384 bytes** — R6's 1,328 plus 56 for section 2.9's seven loop scalars. Adding `N` per-step scalars would make it grow with an operand. Column sets are the module's existing answer for callee-local `array<i64>` and they keep `Outcome` at its current size | the compiler's own size warning, unchanged in count |
 | Success | the prefill path is untouched; `graph_input_values`'s id/position split is R6's, unchanged | `model-forward-golden.jsonl` byte-unchanged but for the cap row |
 | Failure | a length mismatch between a column set and `steps_completed` | asserted in `render`: every array in `StepColumns` has `steps_completed` entries or the document is not written |
 | Malformed input / Early exit / Cleanup | unchanged | existing `mf-*` cases |
@@ -650,7 +652,8 @@ golden.
 | Construction | `write_decode_corpus` extends its **two-call** reference to a **loop of `K` calls**: prefill, then `K` iterations of `model_decode` at `n_past = T + k - 1`, each appending its own K and V column to `planes` before the next. `model_decode_layer` is unchanged — it already takes `n_past` and `planes` | the emitted `(K+1)`-graph transcript, consumed by `ds-steps-3` |
 | **Hosted `K` is 3, not 16** | Three steps prove the recurrence: step 1 is R6's exact case, step 2 is the first that *reads* a written-back column, step 3 is the first where two written-back columns are read. A loop correct for `1 → 2 → 3` is correct for `k → k+1` by the same code path, and 16 would multiply a pure-Python fixture corpus and the smoke's runtime for **no new closure cell**. The real `N = 16` is the qualification's | `ds-steps-3` |
 | Success | `model-decode-transcript.txt` holds `K + 1` graphs; `model-decode-argmax.txt` becomes `model-decode-tokens.txt`, one id per line, `K` lines — the generator's own greedy ids, which the smoke asserts against `decode.token_ids` | `ds-steps-3` asserts the two agree element for element, making "the arm decoded the tokens the reference decoded" an assertion rather than a coincidence |
-| Failure | N/A — the generator is total over its own fixed inputs and reads no external file | stated, with reason |
+| **The `K` ids must be distinct, and one weight row is moved so that they are** | The unmodified generator's chain is a **fixed point**: vocabulary row 24 is the prefill's argmax and also its own step's argmax, so the three ids are `24, 24, 24` — and every per-step assertion in 4.8 (`token_ids` against the reference, the `argmax`-to-next-`token_id` chain, the distinct digests) is then satisfied by an arm that decoded step 1 and re-consumed its own first token forever. `MODEL_DECODE_RESEEDED_ROWS` re-seeds **row 24 and only row 24** with `weight_values`' own per-index seed shape, and the chain becomes `24 → 9 → 27`. **No prefill case gathers row 24** — the corpus's token lists are `3,17,5`, `1,25,5`, and `1..8`, and the out-of-range lists are refused before a gather — so this moves only the decode-step documents (5.3) | The generator asserts the ids are distinct as it emits them; the fifth block asserts it again on the file it reads, and refuses to run on a degenerate chain rather than testing vacuously. The **mutant** is `token = first_token` in `decode_loop`, and it is named in 5.2 |
+| Failure | N/A — the generator is total over its own fixed inputs and reads no external file. The degeneracy check above is an `assert`, which is a generator defect and not an input failure | stated, with reason |
 | Malformed input | mutated fixtures | `ds-transcript-onegraph` (retained; now "fewer graphs than `N+1`"), **new** `ds-transcript-short-for-steps` (a 3-graph transcript with `STEPS` of 3 → `R6_ORACLE_MISSING` detail `step[3]`), `ds-transcript-kv-width`, `ds-transcript-perturbed`, `ds-transcript-garbage` (all retained) |
 | Early exit | argv guard rejects an option-shaped operand, as today | existing |
 | Cleanup | writes into `OUTDIR` the harness owns and removes | stated, with reason |
@@ -785,8 +788,13 @@ paths differ. The `T = 3` prompts do not trip that selection at all. **Step 9 of
 reaches 5878/1e-4, above the 5000 admission bound** — and it is not an acceptance failure, because
 the bound applies at step 1 only, where the measurement is 2391 and C′ is byte-identical. Had A′
 been gated numerically at every step, this run would have failed for a property of the reference
-implementation, which is the outcome the demotion exists to prevent and the reason it was taken
-before the run rather than after it.
+implementation, which is the outcome the demotion exists to prevent. **The demotion is not a
+post-hoc accommodation of this run, and the evidence for that is a prior document rather than a
+claim about authoring order:** `docs/specs/r6-decode-kv-step1.md` section 5.1 already records
+`FAIL` at 2391/1e-4 on `ffn_inp-27` for this same prompt at step 1, against an admission rule that
+document states and this one inherits verbatim at step 1 (section 3.4). The divergence and its
+admission were therefore measured and ruled on one capability earlier, and section 3.4 restates the
+rule it cannot keep at steps 2..N.
 
 Every structural assertion of section 3.4's table held at all 64 compared steps: the graph index is
 `k + 1`, `nodes_matched == nodes_expected` (5,058 elements per step over 28 layers plus the head),
@@ -825,21 +833,26 @@ upload under 76 ms across sixteen steps of twenty-eight layers.
 
 All five blocks pass. The fifth block runs **52 documented cases** reaching **24 error codes**
 (23 of R6's plus the new `R6_STEPS`) and 10 no-document cases, against a two-layer synthetic model,
-no ggml, no llama.cpp, and no GGUF. The whole owner takes **34.3 s** on this host, of which the
-decode-step block is **7.1 s** — 62 cases and eight forced-build shim recompiles. The owner stays a
+no ggml, no llama.cpp, and no GGUF. The whole owner takes **34.0 s** on this host, of which the
+decode-step block is **6.9 s** — 62 cases and **ten** forced-build shim recompiles. The owner stays a
 seconds-scale hosted check, which is what admitted it to `HOSTED_CHECK_TARGETS` in the first place;
 the hosted `K = 3` of section 4.7 is the reason it stays there.
 
 - `ds-engine-ok` at `N = 1` (absent `STEPS`): `columns_written` 4 at `T = 3`, oracle B `IDENTICAL`
   over 256 B, `decode.node_count` 78, `graph_count` 4.
 - `ds-steps-3` at `N = 3`: `columns_written` 6, oracle B `IDENTICAL` over **960 B**
-  (`Σ_{k=1..3} 2·2·(3+k)·1·4·4`), `decode.token_ids` equal to `model-decode-tokens.txt` element for
-  element, `steps[i].n_past == 3 + i`, `plane_column_written == 3 + i`, three distinct digests, and
-  oracle A′ `PASS` at `max_abs_diff` **0** against transcript graphs **2, 3, and 4** with
-  `nodes_matched == nodes_expected` (37 per step, 111 total) and `layers_matched == 2` at each.
+  (`Σ_{k=1..3} 2·2·(3+k)·1·4·4`), `decode.token_ids` **`[24, 9, 27]`** — three *distinct* ids, equal
+  to `model-decode-tokens.txt` element for element — `steps[i].n_past == 3 + i`,
+  `plane_column_written == 3 + i`, three distinct digests, and oracle A′ `PASS` at `max_abs_diff`
+  **0** against transcript graphs **2, 3, and 4** with `nodes_matched == nodes_expected` (37 per
+  step, 111 total) and `layers_matched == 2` at each. **The ids differ because section 4.7 makes them
+  differ.** With the unmodified generator the chain was `24, 24, 24`, and every assertion in this
+  bullet held for a loop that decoded step 1 and re-consumed its own first token for ever; the
+  `token = first_token` mutant below is what that would have been, and it now dies here by name.
 - `ds-force-compute-step2`: `R5_COMPUTE` with detail `step[2]layer[0]status[2]`,
-  `steps_completed` 1, one `steps[]` row, one id, `columns_written` 4, and a round-trip verdict that
-  is **not** `IDENTICAL`.
+  `steps_completed` 1, one `steps[]` row, one id, `columns_written` 4, a round-trip verdict that
+  is **not** `IDENTICAL`, and `decode.node_count` **78** — the completed step's, with the partial
+  step's 37 nodes rolled back (2.8), so the sum equals the one published row.
 - `ds-force-writeback-offset`: `R6_PLANE_MISMATCH` with detail `step[1]layer[0]tensor[k]col[3]` and
   `plane.first_mismatch_step` 1 — column **3** is `T`, which is the column that step wrote, and is
   the evidence that oracle B compares the new column and not only the past ones.
@@ -860,17 +873,37 @@ the hosted `K = 3` of section 4.7 is the reason it stays there.
 - The R6 cases are retained and still pass: `ds-force-plane-stage-offset` still names
   `layer[0]tensor[k]col[0]`, and `ds-force-decode-position` / `ds-force-mask-offset` are still
   oracle-A′ `FAIL`s on an otherwise `ok` run with oracle B unmoved.
+- On **every** documented case, success and error alike, `decode.node_count` equals the sum of the
+  published `steps[]` rows, `decode.graph_count` equals `4 × steps_completed`, and
+  `decode.slot_high_water` is non-zero exactly when a step completed (2.8). The four forced cases
+  that stop inside a step — `ds-force-concat-axis`, `ds-force-plane-stage-offset`,
+  `ds-force-writeback-offset`, and `ds-force-compute-step2` — are where that rule is visible.
 
-**Five ledger-named mutants were injected at this head and all five die.**
+**Eight mutants were injected into `src/decode_step.align` at this head and all eight die under
+`gmake layer-forward-smoke`.** The first four are the ledger's own. The fifth is the one this
+capability's first comprehensive review found the owner **could not** see, and it is listed with the
+rest rather than in a footnote, because a mutant an owner cannot kill is the finding. The last three
+are new, and they exist because that review verified the write-back's ordering, the mask and
+position slicing, and oracle B's widened bound by *reading* them; each is now checked by killing a
+mutant instead.
 
 | Mutant | Diagnosis |
 | --- | --- |
 | Write-back column off by one (`first_column = n_past + 1`) | `R6_PLANE_MISMATCH step[1]layer[0]tensor[k]col[3]` on every engine case |
 | Write-back skipped entirely | the same, on every engine case |
-| Plane not grown (`n_past` frozen at `T`) | `columns_written` 4 instead of 6, oracle B over 768 B instead of 960, `n_past` 3..3 instead of 3..5, and per-step A′ `FAIL` at 1520 and 2702/1e-4 |
-| Transcript graph skip off by one (step `k` vs graph `k+2`) | `R6_ORACLE_MISSING step[3]layer[-1]node[embd]` plus A′ `FAIL` at 4401/1e-4 on `q_rope` at step 1 |
-| Gate G compared against graph `k` or `k+2` | printed rows disagree at step 1 on every prompt (checked offline against the real transcript and the measured fingerprints) |
-| Oracle C′ step index off by one | the `--model-forward` digest differs from `steps[k-1].sha256` at every checkpoint |
+| Plane not grown (`n_past` frozen at `T`) | `columns_written` 4 instead of 6, oracle B over 768 B instead of 960, `n_past` 3..3 instead of 3..5, and per-step A′ `FAIL` |
+| Transcript graph skip off by one (step `k` vs graph `k+2`) | `R6_ORACLE_MISSING step[3]layer[-1]node[embd]` on `ds-steps-3`, plus `ds-transcript-kv-width` no longer refused and A′ `FAIL` on `ds-engine-transcript` |
+| **The chain never advances (`token = first_token` instead of `token = decoded.argmax`)** | `ds-steps-3: decoded [24, 24, 24], not the reference loop's [24, 9, 27]`, and `steps[0] produced 9 and steps[1] consumed 24 — the chain broke`. **This mutant survived the owner before section 4.7's reseeding**, because the reference chain was itself `24, 24, 24` and every per-step assertion was satisfied by it |
+| Position image not sliced per step (`pos_all[0..4]` at every step) | per-step A′ `FAIL` at 3678 and 9152/1e-4 at steps 2 and 3 of `ds-steps-3`, with step 1 unmoved |
+| Offset mask not sliced per step (`mask_all[0..width*4]` at every step) | per-step A′ `FAIL` at 712 and 1694/1e-4 at steps 2 and 3, with step 1 unmoved — a smaller signal than the position mutant and still outside the tolerance |
+| Oracle B's bound drops the new column (`columns = n_past`) | `R6_PLANE_MISMATCH step[1]layer[0]tensor[k]col[-1]` on every engine case: the shortened comparison stops matching the plane's own accounting, so the bound cannot be silently narrowed back to R6's |
+
+Two further ledger-named mutants are **not** hosted-reachable and were not re-injected here, because
+neither has a hosted consumer and neither is touched by this document's fifth-block work: **gate G
+compared against graph `k` or `k+2`** needs the real transcript and the measured fingerprints, where
+the printed rows disagree at step 1 on every prompt; and **oracle C′'s step index off by one** lives
+in `scripts/run-decode-step`, where the `--model-forward` digest then differs from
+`steps[k-1].sha256` at every checkpoint.
 
 ### 5.3 The goldens that moved — predicted in advance, and reconciled
 
@@ -900,6 +933,21 @@ tokens are still admitted without a transcript at a cap of 32. `lf-tokens-seven-
 **The arm rename cost zero golden bytes, as section 2.1 predicted.** `ds-arity-11` becomes
 `ds-arity-12` and `ds-arm-unknown-flag` moves from `--decode-steps` to `--decode-stepped`; both are
 `NO_DOCUMENT` cases and neither carries a golden row.
+
+**The review repair moved thirteen decode-step rows and nothing else, and the counts above are
+unchanged.** Section 4.7's reseeding moves the six rows whose run reaches a decode step
+(`ds-engine-ok`, `ds-engine-transcript`, `ds-engine-logits`, `ds-logits-dash`, `ds-steps-3`,
+`ds-transcript-perturbed`) plus `ds-transcript-short-for-steps`, `ds-force-decode-position`,
+`ds-force-mask-offset`, and `ds-force-compute-step2` — every one of them a step's `token_id`,
+`argmax`, `sha256`, and `bit_sum`; section 2.8's aggregate rule additionally moves
+`ds-force-concat-axis`, `ds-force-plane-stage-offset`, `ds-force-writeback-offset`, and
+`ds-force-compute-step2`, whose `decode.node_count`, `graph_count`, and `slot_high_water` drop the
+partial step's share. All thirteen are rows this capability already rewrote at schema 2, so
+`decode-step-golden.jsonl` stays **39 changed, 13 added, 1 removed** against `1671810`, and
+`layer-forward-golden.jsonl`, `model-forward-golden.jsonl`, `gpu-forward-golden.jsonl`,
+`moe-layer-forward-golden.jsonl`, and `ggml-spike-golden.jsonl` are unmoved by the repair — which is
+the property the "row 24 is gathered by no prefill case" argument of section 4.7 predicts, checked
+rather than asserted.
 
 ### 5.4 Result — the scaling measurement (section 2.10)
 
@@ -1037,106 +1085,25 @@ rebase — after R6 lands, and re-checked then.
 
 ## 9. Reconciliation
 
-**Applied.** All three drafts below were written into their owning documents at implementation time
-and are reproduced here as the record of what was applied, not as pending work. Numbering assumes
-R6-DECODE-KV-STEP1 keeps roadmap item **27**, which it holds on `agent/r6-decode-kv-step1` at
-`1671810`; `main` carried roadmap items to 24 when this branch was cut, `agent/r3-decode-residency`
-claims 25, and `agent/r5e-moe-model-prefill` claims 26. **This must be re-checked when R6 merges:**
-this branch takes `git merge origin/main` — never a rebase, so R6's recorded commits stay reachable
-— and if `main` has moved the numbering, item 28 and every cross-reference to it move with it.
+**Applied, and the applied text is the record.** Each change below was written into its owning
+document at implementation time. This section names where it landed rather than reproducing it: an
+earlier revision quoted the pre-implementation drafts here and the quotes drifted from what was
+actually applied — one of them still described the fingerprint collision count as zero, which
+sections 3.2 and 5.1 measure as **one class of 2,355 all-zero unused vocabulary rows**, not zero.
+A quoted copy that can disagree with its original is a second source of truth, so there is none.
 
-### 9.1 `docs/specs/roadmap.md` — item 28, applied
+| Change | Where it is applied | What to read |
+| --- | --- | --- |
+| Roadmap item **28** | `docs/specs/roadmap.md`, item 28 | The capability, its acceptance rule with the **measured** collision count, the A′ demotion and its reason, and what the R6 gate still leaves open |
+| Handoff active block | `HANDOFF.md`, the active block | Branch, head, implementation and verification state, exact next actions, blockers, constraints |
+| The `--decode-step` arm's operands, schema 2, the constant lift, and the qualification's inputs | `docs/align-development.md`, "The `--decode-step` arm (R6-DECODE-KV-STEP1, R6-STEP-N)" | The eleven-operand grammar and the `-` form of `LOGITS`, `STEPS` and its "absent means 1" default, schema 2's `steps[]` and per-step failure shape, `MAX_PREFILL_TOKENS` 8 → 32 with `R5_ORACLE_TRUNCATED` unmoved, `N = 16` with its documented fallback, the `N + 1`-graph refusal, the `numpy` prerequisite, and the gate-and-three-oracles summary |
 
-> 28. **R6-STEP-N — an N-step greedy decode loop over the Align-owned KV plane, gated on the token
->     ids llama.cpp produces at `--temp 0 -s 0`.** Design in `docs/specs/r6-step-n.md`. `--decode-step`
->     gains a `STEPS` operand and its document goes to schema 2; the plane is grown in place one
->     column per step and every written column is byte-verified inside the step that wrote it. The
->     loop needs **no new ggml op, FFI symbol, node row, or slot** — R6's decode row table is already
->     parameterised by `n_past`. Acceptance: the `N` decoded ids equal llama.cpp's (byte-exact for
->     `d_1` against `llama-debug`, and per step against the transcript's `embd` fingerprint over a
->     vocabulary whose collision count is measured to be zero); the plane round trip is
->     `IDENTICAL` at every step; and the step-`k` logits are byte-identical to this arm's own
->     single-shot `T+k` prefill at `k ∈ {1, ⌈N/2⌉, N}`. Four prompts × three runs at `N = 16`,
->     `KV_WIDTH` 256, dense Qwen2.5-Coder-7B Q4_K_M, CPU. Owner `gmake layer-forward-smoke`; focused
->     `gmake decode-step-qualification`. **No TTFT or throughput claim** — but the run measures the
->     loop's `O(N × model bytes)` pack-read cost at `N ∈ {1, 4, 16}`, which is the first concrete
->     evidence for the resident-weight work R3/R5 designs.
-
-### 9.2 `HANDOFF.md` — active block, applied
-
-Applied in the shape below, with the implementation and verification state of section 5.1 substituted for "design only".
-
-> ## Active: R6-STEP-N (2026-08-29)
->
-> Branch `agent/r6-step-n`, stacked on `agent/r6-decode-kv-step1` at `1671810`, which is in
-> publication. **Implemented and owner-tested; nothing committed yet.**
->
-> **Capability.** An N-step greedy decode loop over the R6 KV plane, dense Qwen2.5-Coder-7B Q4_K_M,
-> CPU, gated on token ids. `docs/specs/r6-step-n.md` is the authoritative ledger. The design gate is
-> triggered — a changed public CLI arm and a changed exchanged document schema — and the design is
-> complete before implementation begins.
->
-> **Probe result (recorded, section 3.1).** The patched `llama-eval-callback -n N --temp 0 -s 0`
-> emits exactly `N + 1` graphs (measured at `-n 4`: five graphs, 5.06 s, 5.25 MB) and its KV width
-> is 256 in every graph. **It does not print the sampled token**: `inp_tokens` is a leaf whose value
-> never appears, `result_output` prints six of 152,064 values so its argmax is not derivable, and
-> stderr lists only the prompt's ids. The token is recovered from each graph's
-> `embd = GET_ROWS(token_embd.weight, [d_k])`, whose injectivity over the vocabulary is measured as
-> part of the qualification.
->
-> **Next actions, in order.**
-> 1. Land R6-DECODE-KV-STEP1; **merge** `origin/main` into this branch — never rebase.
-> 2. Implement in one consumer-complete capability: `STEPS` operand and its two refusals, the
->    write-back and the widened oracle B bound, the per-step iteration of the node table / mask /
->    position, schema 2 and its `normalize` additions, the fixture's `K = 3` loop, the new smoke
->    cases, and the runner's gate G.
-> 3. Measure the fingerprint collision count **before** claiming gate G; if it is not 0, take the
->    G3 patch (section 3.2) instead.
-> 4. `gmake fmt`, `gmake layer-forward-smoke`, then `gmake decode-step-qualification`.
-> 5. Record sections 5.1–5.4; apply the section 9 reconciliation drafts.
->
-> **Blockers.** None. R6 publication is a sequencing dependency, not a blocker: the design is
-> complete and the implementation merges.
->
-> **Constraints.** No new Align request is proposed. Request 22 (tokenizer) stays non-blocking and
-> gains no client — the gate is on ids, not text. Requests 41 and 49 gain a cited client each and no
-> workaround is built for either.
-
-### 9.3 `docs/align-development.md` — additions, applied
-
-Under **The `--decode-step` arm**, replace the operand list and add the loop paragraphs:
-
-> `--decode-step` is selected by its exact first operand and is five, six, seven, nine, ten, or
-> **eleven** operands. **Eight is `R6_ARITY`**, inherited verbatim from `--model-forward`.
->
-> ```text
-> ./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS
-> ./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH -          STEPS
-> ```
->
-> `STEPS` is the number of greedy decode steps `N`, `1 <= N <= MAX_DECODE_STEPS` (64), and
-> `T + N <= KV_WIDTH`. **Absent means 1**, which is the arm's only default and exists so that every
-> pre-schema-2 invocation keeps its meaning; `decode.steps_requested` is published in every document
-> so the count is never implicit. `LOGITS` accepts `-` for "absent", the same convention `TRANSCRIPT`
-> has used since R5B, so that `STEPS` is reachable without a logits blob.
->
-> The document is `R6_DECODE_STEP` at **schema 2**: `decode` carries the loop
-> (`steps_requested`, `steps_completed`, `token_ids`, and the summed/maximised totals) and a new
-> `steps[]` array carries one object per completed step. A failure at step `k` publishes
-> `steps_completed = k - 1` and the ids decoded so far, with the raising code's detail prefixed
-> `step[<k>]`.
->
-> `MAX_PREFILL_TOKENS` moves **8 → 32** so that the self-reference oracle can run
-> `--model-forward` at `TOKENS,d_1..d_16`. The cap's reason is unchanged and still enforced:
-> `--layer-forward` and `--model-forward` refuse more than six tokens **with a transcript** with
-> `R5_ORACLE_TRUNCATED`, because `llama-eval-callback` prints every row only while `ne1 <= 6`. The
-> range is open for arithmetic and closed for comparison.
->
-> `scripts/run-decode-step` runs `N = 16` (`DECODE_STEPS`, one constant at the top of the script,
-> with a documented fallback to 8) and passes `-n 16 --temp 0 -s 0` to the instrument. The
-> instrument emits `N + 1` graphs; the runner refuses a prompt whose transcript holds any other
-> number, because a short transcript means llama.cpp stopped at EOS and the two runs would differ in
-> length rather than in arithmetic.
+**Numbering.** Item 28 assumes R6-DECODE-KV-STEP1 keeps roadmap item **27**, which it holds on
+`agent/r6-decode-kv-step1` at `1671810`; `main` carried roadmap items to 24 when this branch was
+cut, `agent/r3-decode-residency` claims 25, and `agent/r5e-moe-model-prefill` claims 26. **This must
+be re-checked when R6 merges:** this branch takes `git merge origin/main` — never a rebase, so R6's
+recorded commits stay reachable — and if `main` has moved the numbering, item 28 and every
+cross-reference to it move with it.
 
 ## 10. Author consistency pass
 
@@ -1212,6 +1179,7 @@ diff is named and given its reason rather than omitted.
 | 2.7 `step[<k>]` detail prefix | `prefix_step`, one call site per exit | `ds-force-compute-step2` (`step[2]...`), `ds-transcript-short-for-steps` (`step[3]...`), `ds-force-writeback-offset` (`step[1]...`) |
 | 2.8 partial step publishes no row | `decode_loop` pushes columns only after a completed step | `ds-force-compute-step2`: `steps_completed 1`, one row, one id, `columns_written 4` |
 | 2.8 never `IDENTICAL` on an error document | `decode_loop`'s promotion guarded by `o.code.len() == 0` | `ds-force-compute-step2` asserts it |
+| 2.8 the loop-level aggregates exclude the partial step | `decode_loop` rolls `node_count`, `compute_ns`, and `slot_high_water` back to their pre-step values on the failure path; `graph_count` advances only on a completed pass and needs none | asserted on **every** documented case in the fifth block: `decode.node_count` equals the sum of the published rows, `graph_count` equals `4 x steps_completed`, and `slot_high_water` is non-zero exactly when a step completed. `ds-force-compute-step2`, `ds-force-writeback-offset`, `ds-force-plane-stage-offset`, and `ds-force-concat-axis` are the cases that move |
 | 2.9 schema 2, `decode` loop-level, `steps[]`, `token_ids` | `SCHEMA_VERSION`, `render_decode`, `render_steps` | every `decode-step-golden.jsonl` row; `record()` asserts `schema_version == 2` |
 | 2.9 `token_ids[i] == steps[i].token_id` | `render_decode` reads `StepColumns.token_id` | asserted in the smoke and in the qualification |
 | 2.9 `normalize` zeroes `steps[i].compute_ns` | both runners' `normalize` | three-consecutive-runs check in both |
@@ -1224,7 +1192,7 @@ diff is named and given its reason rather than omitted.
 | 3.4 A' structural at every step | `steps[i].oracle.*`, asserted in both runners | mutants M4a/M4b die |
 | 4.5 `ggml_ffi.align` / `ggml_shim.c` byte-unchanged | not edited | `git diff --stat` names neither; the smoke's shared-region, `unsafe`, `extern`, and no-`malloc` scans pass |
 | 4.6 `ggml_spike.align` byte-unchanged | not edited | `ds-arm-unknown-flag` on `--decode-stepped` |
-| 4.7 fixture `K = 3` loop, `model-decode-tokens.txt` | `write_decode_corpus` | `ds-steps-3` asserts `token_ids` equals the reference loop's ids |
+| 4.7 fixture `K = 3` loop, `model-decode-tokens.txt`, **distinct ids** | `write_decode_corpus`, `MODEL_DECODE_RESEEDED_ROWS`, `model_tensor` | `ds-steps-3` asserts `token_ids` equals the reference loop's three **distinct** ids; the generator and the fifth block each refuse a degenerate chain; the `token = first_token` mutant dies |
 | 5 `Makefile` untouched | not edited | `gmake gate-topology-check`; `baseline-check` is `N/A` |
 
 ### 11.2 Closure matrix cells with no counterpart, named
@@ -1239,7 +1207,11 @@ diff is named and given its reason rather than omitted.
 
 ### 11.3 Deviations from the ledger, with reasons
 
-Ten, each recorded rather than absorbed.
+Nine, each recorded rather than absorbed. A tenth is not listed because it is no
+longer a deviation: an earlier revision of section 2.8 said `plane.roundtrip_verdict` on an error
+document was both "the last completed step's" and "never `IDENTICAL`", which disagree whenever
+every completed step passed. The ledger row now states the stronger sentence alone, and the
+implementation already matched it.
 
 1. **`StepColumns` carries no `array<str>`.** Section 4.4 declares `sha256, oracle_verdict,
    oracle_worst_node : array<str>`. Indexing an array of a Move element type is **Align Request 22**,
@@ -1268,20 +1240,16 @@ Ten, each recorded rather than absorbed.
 6. **Step 14's detail keeps R6's shape.** Section 2.7 illustrates `step[<k>]kq[<n>]ne0[<n>]`; the
    implementation emits `step[<k>]layer[<n>]node[<id>]`, which is R6's own detail with the prefix
    added. Changing the inner shape would move a detail no reader asked to move.
-7. **`plane.roundtrip_verdict` on an error document is `-`, never the last completed step's.**
-   Section 2.8 says both "the last completed step's" and "never `IDENTICAL` on an error document".
-   The two disagree whenever every completed step passed, and the stronger sentence wins;
-   `columns_written` is where the number of verified columns is published.
-8. **The per-step mask and position images are one buffer each, sliced per step.** Section 2.6 says
+7. **The per-step mask and position images are one buffer each, sliced per step.** Section 2.6 says
    "rewritten in place". Align's `buffer` is append-only, so the honest form is one buffer holding
    every step's row, written once in order. The bytes and the order are identical and no reservation
    happens inside the loop.
-9. **`ds-logits-dash` is an engine case, not a malformed-input case.** Section 4.1 lists it under
+8. **`ds-logits-dash` is an engine case, not a malformed-input case.** Section 4.1 lists it under
    malformed input. `-` is a *valid* operand, so the case succeeds and its golden row is a success
    document; listing it under malformed input would have made a passing case look like a refusal.
-10. **Section 8 said this capability adds no client evidence to Request 22; it adds one.** The
-    tokenizer half of that claim is unchanged and correct. The other half is not: deviation 1's
-    `StepColumns` is a fourth avoidance of the Move-array shape and the first outside a container
-    reader, which is exactly the kind of thing that request's entry already tracks. One line was
-    added to `docs/align-requests.md` recording it. No hypothetical surface is consumed, the request
-    stays `PROPOSED` and non-blocking, and no new request is proposed — number 50 stays free.
+9. **Section 8 said this capability adds no client evidence to Request 22; it adds one.** The
+   tokenizer half of that claim is unchanged and correct. The other half is not: deviation 1's
+   `StepColumns` is a fourth avoidance of the Move-array shape and the first outside a container
+   reader, which is exactly the kind of thing that request's entry already tracks. One line was
+   added to `docs/align-requests.md` recording it. No hypothetical surface is consumed, the request
+   stays `PROPOSED` and non-blocking, and no new request is proposed — number 50 stays free.

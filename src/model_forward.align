@@ -402,8 +402,9 @@ pub fn empty_top() -> TopColumns = TopColumns { index: empty_array(), bits: empt
 
 // R6-STEP-N (`docs/specs/r6-step-n.md` section 4.4). One row per **completed** decode step, in the
 // shape `steps[]` is rendered from. It is a column set and not a set of `Outcome` fields for that
-// section's reason: `Outcome` is already 1,328 bytes and passed by value at some twenty-five call
-// sites, and per-step scalars would make it grow with an operand.
+// section's reason: `Outcome` is 1,384 bytes at this head — R6 section 10.6 recorded 1,328 and the
+// seven loop scalars below add 56 — and it is passed by value at some twenty-five call sites, so
+// per-step scalars would make it grow with an operand.
 //
 // **`sha256` and `worst_node` are concatenated strings, not `array<str>`.** Indexing an array of a
 // Move element type is Align Request 22 and stays unconsumed here, so the digests are one string of

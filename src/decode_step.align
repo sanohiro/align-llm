@@ -1574,8 +1574,9 @@ fn decode_pass(
 // per-step input.
 //
 // The per-step results are a **column set** rather than `Outcome` fields, for R6 section 10.6's
-// reason: `model_forward.Outcome` is already 1,328 bytes and passed by value at some twenty-five
-// call sites, and `N` per-step scalars would make it grow with an operand.
+// reason: `model_forward.Outcome` is 1,384 bytes at this head — R6 recorded 1,328 and section 2.9's
+// seven loop scalars add 56 — and it is passed by value at some twenty-five call sites, so `N`
+// per-step scalars would make it grow with an operand.
 fn decode_loop(
   borrow pak: file,
   device: raw,
@@ -1671,6 +1672,7 @@ fn decode_loop(
     mask_view := mask_all[(step - 1) * width * 4..step * width * 4]
     before_nodes := decoded.node_count
     before_compute := decoded.compute_ns
+    before_high_water := decoded.slot_high_water
     decoded.token_id = token
     decode_pass(
       pak, device, backend, context_bytes, g, ends, table, plan, tokens, head_members, window,
@@ -1683,6 +1685,15 @@ fn decode_loop(
       // that says a step happened and no step happened. The plane keeps the `T + k - 1` columns some
       // completed step verified, and nothing reads the rest, because this loop is the only reader
       // and it has stopped.
+      //
+      // **And no counts either.** The loop-level `node_count`, `compute_ns`, `graph_count`, and
+      // `slot_high_water` are aggregates over the published rows, so the partial step's own share is
+      // rolled back here rather than left in a sum no row accounts for. `graph_count` is advanced
+      // once per completed pass and needs no rollback; the other three accumulate per graph and do.
+      // The step that failed is named by `error_detail`, which is where "how far it got" belongs.
+      decoded.node_count = before_nodes
+      decoded.compute_ns = before_compute
+      decoded.slot_high_water = before_high_water
       if state.roundtrip_verdict == ROUNDTRIP_MISMATCH && state.first_mismatch_step < 0 {
         state.first_mismatch_step = step
       }

@@ -1896,7 +1896,9 @@ sixteen-step transcripts are roughly 64 MB and covering them by luck is not cove
 **Gate G needs `numpy`, and its absence is an `N/A` rather than a skipped gate.**
 `scripts/decode_step_fingerprint.py` dequantizes the whole of `token_embd.weight` to measure how
 many vocabulary rows share a printed `embd` fingerprint; without it the runner refuses rather than
-claiming a gate it did not check.
+claiming a gate it did not check. It is checked in the **same preflight** as the model and the two
+instruments, before anything is packed, so the `N/A` line arrives in the first second rather than
+after the runs it would invalidate.
 
 `decode-step-qualification` is opt-in and capable-only, in **neither** `HOSTED_CHECK_TARGETS` nor
 `CAPABLE_ONLY_CHECK_TARGETS` and in no aggregate — the same footing as its three siblings. It prints

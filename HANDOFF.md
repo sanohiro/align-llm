@@ -6,9 +6,10 @@ file records durable project state.
 ## Active: R6-STEP-N (2026-08-29)
 
 Branch `agent/r6-step-n`, stacked on `agent/r6-decode-kv-step1` at `1671810`, which is in
-publication. **Implemented and owner-tested; nothing committed yet.** When R6 lands on `origin/main`
-this branch takes `git merge origin/main` — never a rebase, so R6's recorded commits stay reachable
-— and reconciles.
+publication. **Two commits and nothing uncommitted:** `a9c6161` is the capability and the commit
+after it — this branch's head — is the consolidated repair of the first comprehensive review's
+findings. When R6 lands on `origin/main` this branch takes `git merge origin/main` — never a rebase,
+so R6's recorded commits stay reachable — and reconciles.
 
 **Capability.** An N-step greedy decode loop over the R6 KV plane, dense Qwen2.5-Coder-7B Q4_K_M,
 CPU, gated on **token ids**. `docs/specs/r6-step-n.md` is the authoritative ledger. The design gate
@@ -42,22 +43,38 @@ slots. Every row with any non-zero element is unique. The gate therefore holds u
 the used vocabulary, and the runner refuses per step if a decoded id is ever a member of the
 colliding class. Section 3.2's fallback G3 — a patch bump to log the sampled id — is **not taken**.
 
-**Verification checkpoint.** `gmake build`, `gmake check`, `gmake fmt`, `gmake format-check`,
-`git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
-`gmake layer-forward-smoke` (all five blocks; 52 documented decode-step cases reaching 24 codes)
-pass. `gmake decode-step-qualification` passes on the real model at `N = 16` in **8 min 27 s** of the
-1800 s cap, so the documented fallback to `N = 8` is not taken; ledger section 5.1 records every
-number. It was run **twice**, and every correctness value reproduced exactly — the same 64 ids,
-gate verdicts, byte counts, and per-step maxima; only the timings moved. Headline results: gate G `PASS` on all four prompts over sixteen ids each; oracle B
-`IDENTICAL` over 26,607,616 B (`T = 6`) and 21,102,592 B (`T = 3`); oracle C' byte-identical at
-`k ∈ {1, 8, 16}` on all four; oracle A' `PASS` at `max_abs_diff` **0** at every one of sixteen steps
-on three prompts, and `FAIL` on the `T = 6` prompt at 2391/1e-4 at step 1, admitted under R6's rule.
+**Verification checkpoint, at the repair head.** `gmake build`, `gmake check`, `gmake fmt`,
+`gmake format-check`, `git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
+`gmake layer-forward-smoke` (all five blocks; 52 documented decode-step cases reaching 24 codes;
+34.0 s whole owner, 6.9 s decode block) pass.
 
-Five ledger-named mutants were injected and all five die: a write-back column off by one and a
-skipped write-back both as `R6_PLANE_MISMATCH step[1]layer[0]tensor[k]col[3]`, a frozen `n_past` on
-the plane's column count and every per-step oracle, a transcript-graph skip off by one on
-`R6_ORACLE_MISSING step[3]` plus the oracle's own verdict, and gate G compared against graph `k` or
-`k+2` instead of `k+1`. Oracle C' with its step index off by one differs at every checkpoint.
+`gmake decode-step-qualification` passed on the real model at the capability head, at `N = 16` in
+**8 min 27 s** of the 1800 s cap, so the documented fallback to `N = 8` is not taken; ledger section
+5.1 records every number. It was run **twice** there, and every correctness value reproduced exactly
+— the same 64 ids, gate verdicts, byte counts, and per-step maxima; only the timings moved. Headline
+results: gate G `PASS` on all four prompts over sixteen ids each; oracle B `IDENTICAL` over
+26,607,616 B (`T = 6`) and 21,102,592 B (`T = 3`); oracle C' byte-identical at `k ∈ {1, 8, 16}` on
+all four; oracle A' `PASS` at `max_abs_diff` **0** at every one of sixteen steps on three prompts,
+and `FAIL` on the `T = 6` prompt at 2391/1e-4 at step 1, admitted under R6's rule.
+
+**It was not re-run at the repair head, and the reason is that nothing it reads moved.** The repair
+changes the hosted fixture's synthetic weights, the fifth smoke block's own assertions, the
+error-document accounting rule (which only a document with `status: error` can show, and the
+qualification asserts `ok` on every run), three comment literals, and the *ordering* of one
+`numpy` preflight in `scripts/run-decode-step`, which on a host that has `numpy` changes nothing at
+all. Success-path arithmetic, the goldens the qualification does not read, and every asserted value
+in section 5.1 are untouched.
+
+**Eight mutants were injected into `src/decode_step.align` at the repair head and all eight die
+under `gmake layer-forward-smoke`** (ledger section 5.2): a write-back column off by one and a
+skipped write-back, both as `R6_PLANE_MISMATCH step[1]layer[0]tensor[k]col[3]`; a frozen `n_past` on
+the plane's column count and every per-step oracle; a transcript-graph skip off by one on
+`R6_ORACLE_MISSING step[3]`; **`token = first_token`, the mutant the first review found the owner
+could not see**, now dying on `decoded [24, 24, 24], not the reference loop's [24, 9, 27]`; an
+unsliced position image and an unsliced offset mask, both on per-step oracle A'; and oracle B's
+bound narrowed back to `n_past`, which drops the column its own step wrote. Two more are not
+hosted-reachable and are unchanged: gate G compared against graph `k` or `k+2` disagrees at step 1
+on every prompt, and oracle C' with its step index off by one differs at every checkpoint.
 
 **`scripts/build-ggml-shim` gains two forced-build arms** — `engine+compute-step2` and
 `engine+writeback-offset` — which are inputs to the **stub** shim only and never to an ordinary
@@ -76,12 +93,17 @@ merge.
 **Next actions, in order.**
 1. Wait for R6-DECODE-KV-STEP1 to land on `origin/main` — **do not merge `main` before then** — then
    `git merge origin/main` (never a rebase) and re-check the roadmap item number, the ledger's
-   section 9 reconciliation, and `docs/align-development.md`, which R5E also edited.
-2. Commit; `gmake fmt` is already run.
-3. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`. The diff
-   touches goldens and fixtures, so the classifier selects the executable row; `gmake baseline-check`
-   is `N/A` because no `Makefile` line and no build input moved.
-4. One comprehensive review, then the English pull request.
+   section 9 reconciliation table, and `docs/align-development.md`, which R5E also edited.
+2. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` at the
+   merged head. The diff touches goldens and fixtures, so the classifier selects the executable row;
+   it selects the **hosted** profile and not the fresh-image one, and `gmake baseline-check` is
+   `N/A` because no `Makefile` line and no build input moved. The stamp belongs to the exact
+   unchanged head, so take it after the merge and after any further amend.
+3. One comprehensive review of the merged candidate — the first review's findings are recorded and
+   consolidated into the repair commit at this branch's head, and a narrow repair does not require
+   another full review, but the merge with `main` is a base change and its integration evidence is
+   fresh.
+4. The English pull request, with the review envelope and the exact commands and results.
 
 **Blockers.** None. R6 publication is a sequencing dependency, not a blocker.
 
