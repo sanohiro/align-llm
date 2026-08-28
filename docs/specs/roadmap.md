@@ -335,7 +335,7 @@ The current forward delivery order is:
     model, not a throughput claim. No new Align capability request was needed; four existing requests
     (37, 42, 45, 46) gain R5D as a non-blocking client. See `HANDOFF.md`.
 24. **R5E-MOE-MODEL-PREFILL — a whole sixteen-layer OLMoE prefill computed from Align-owned expert
-    claims, completing R5's second gate stage. Implemented and reviewed; in publication.** On branch
+    claims, completing R5's **third** gate stage. Implemented and reviewed; in publication.** On branch
     `agent/r5e-moe-model-prefill`, merged with the merged R5D at `main` `e312bd7` rather than rebased
     over it, so the recorded baseline-chain commits stay reachable; design ledger `5e3356d`,
     implementation `053de09`, review repair `e7f727f`.
@@ -353,11 +353,15 @@ The current forward delivery order is:
     elements**; the routing-identity oracle is `MATCH` at **546 of 546** compared selections across
     all sixteen layers. A six-token prefill reads **1,301,446,656 of 3,900,702,720** expert bytes —
     **333,644 ppm**, 33.36% — so two thirds of this model's expert weights are never touched by a
-    prefill; peak resident weight bytes are 280,342,528, 6.65% of a 4.21 GB model. Microbenchmark B
-    is **121.3 ms** median of five for the whole routed prefill (per-layer phase A 3.1 ms, phase B
-    4.4 ms, head 2.2 ms), against **~227 ms warm of claim `pread`** — so a six-token routed prefill
-    of this model on this CPU is **I/O bound even with the file in page cache**, which is the number
-    a residency policy has to beat. Any residency **policy** and any cache-hit claim stay deferred:
+    prefill; peak resident weight bytes are 280,342,528, **6.66%** of the 4,212,193,280-byte
+    container. Microbenchmark B is discharged as a **shape, not a single number**: the probe's warm C
+    harness measured **121.3 ms** of compute against **~227 ms** of claim `pread`, and the shipped
+    arm's qualification runs measured **252.8 / 109.9 / 147.3 ms** of compute against **612.0 /
+    519.9 / 560.8 ms** — the claim read is **1.9×–4.7× compute** in every run, so a six-token routed
+    prefill of this model on this CPU is **I/O bound even with the file in page cache**, which is
+    what a residency policy has to beat. Every timing here is a single run or a small median and
+    carries the variance ledger correction **C16** records; the exact-integer residency half carries
+    none. Any residency **policy** and any cache-hit claim stay deferred:
     within one prefill there are 343 demands and 343 distinct keys, so no cache can hit. Two new
     Align capability requests, **47** (a `Borrow` argument must be a stable named local or field) and
     **48** (same-call aliasing between a `borrow mut` owner and its own `Copy` scalar field), are
@@ -393,7 +397,8 @@ computes one routed OLMoE layer over Align-owned expert claims, agreeing with ll
 node. It also unblocked item 24, R5E-MOE-MODEL-PREFILL, which is implemented, reviewed, and in
 publication: a whole sixteen-layer routed prefill over one reused Align-owned claim window, logits
 byte-identical to `llama-debug`, and 33.36% of the model's expert bytes read at six tokens.
-**R5's second gate stage is therefore complete on the real MoE model.** Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
+**R5's gate is therefore complete on the real MoE model for all three stages of the routed path** —
+単一block (R4.5 and MOE-PREREQ-DISCHARGE), 単一layer (R5D), and 最小モデル (R5E). Decision (b), `gpt-oss-20b-mxfp4.gguf` at 12.1 GB, is now recorded
 **infeasible on the host where that decision was recorded** (disk free ~16 GiB after decision (a)); it still unblocks R1B's
 real-model `model-ir-parity` qualification whenever a host with enough free space is available. (c)
 a source build of llama.cpp at `bb4caa754` plus the R2c minimal instrument patch is **taken** and
@@ -1097,7 +1102,7 @@ planが想定したより小さい**——6 tokenのprefillでlayerのexpert byt
 （1 tokenでは12.5%、18 tokenでは73.4%）ため、claim単位のexpert residencyは
 **decode-time property**として記録され、prefillの勝ちとしては主張されない。
 
-**whole modelのrouted版（MoE stage 2の完成形）はR5E-MOE-MODEL-PREFILL（roadmap item 24、
+**whole modelのrouted版（MoE stage 3）はR5E-MOE-MODEL-PREFILL（roadmap item 24、
 `docs/specs/r5e-moe-model-prefill.md`）が対象とする。** branch `agent/r5e-moe-model-prefill`、
 merged R5D（`main` `e312bd7`）とmergeし、design ledger `5e3356d`、実装 `053de09`、
 review repair `e7f727f`。実装・review・実modelでのqualificationは完了し、publication中である。
@@ -1109,10 +1114,13 @@ self-reference oracleは**227/227** node byte一致、transcript oracleは**227 
 `PASS`、routing-identity oracleは全16 layerで**546/546** `MATCH`。6 tokenのprefillは
 expert byteの**1,301,446,656 / 3,900,702,720＝333,644 ppm（33.36%）**しか読まない——すなわち
 この modelのexpert weightの2/3はprefillで一度も触れられない。peak resident weight byteは
-280,342,528（4.21 GB modelの6.65%）。microbenchmark Bはwhole routed prefillで**121.3 ms**
-（5回のmedian；per-layer phase A 3.1 ms、phase B 4.4 ms、head 2.2 ms）であり、
-claim `pread`の**warm ~227 ms**がそれを上回る——**page cacheに載っていてもI/O boundである**ことが、
-residency policyが超えるべき数値である。**residency policyとcache hitの主張は引き続きdeferされる**
+280,342,528（4,212,193,280 B containerの**6.66%**）。microbenchmark Bは**単一の数値ではなく形状**
+として達成される——probeのwarm C harnessはcompute **121.3 ms**対claim `pread` **~227 ms**、
+shipped armのqualificationは**252.8 / 109.9 / 147.3 ms**対**612.0 / 519.9 / 560.8 ms**であり、
+いずれのrunでもclaim readはcomputeの**1.9〜4.7倍**である。すなわち
+**page cacheに載っていてもI/O boundである**ことが、residency policyが超えるべき数値である。
+ここでのtimingはすべて単一runまたは小さなmedianであり、ledger correction **C16**が記録する
+分散を伴う（exact integerのresidency側にはその risk はない）。**residency policyとcache hitの主張は引き続きdeferされる**
 ——1回のprefill内では343 demandに対しdistinct keyも343であり、cacheは原理的にhitしないため、
 policyの測定にはmulti-prefill sessionかdecodeが必要である。
 

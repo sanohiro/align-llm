@@ -1305,8 +1305,9 @@ def soft_max_plain(a):
 def argsort_desc(a):
     """`ggml_argsort(..., GGML_SORT_ORDER_DESC)`: the permutation of indices, not the values.
 
-    ggml's kernel is a selection sort with a strict comparison, so equal probabilities keep
-    ascending index order; Python's `sorted` is stable, which is the same rule.
+    This matches the stub shim's stable insertion sort exactly, and it is deliberately *not* a
+    claim about ggml: ggml 0.21.0's CPU `argsort` is a `std::sort` over the index array, whose tie
+    order above the introsort insertion threshold is unspecified. No corpus row holds an exact tie.
     """
     ne0 = a.ne[0]
     rows = a.count() // ne0
@@ -2101,8 +2102,16 @@ def write_moe_model_corpus(directory, emit):
     # `R5_SHAPE`: one expert of a layer disagreeing with its neighbours about a plane's ggml type.
     # `mul_mat_id` reads plane `u` at `u * plane` and one stride serves the whole stack, so a layer
     # whose experts disagree cannot be stacked at all.
+    #
+    # The mutated expert is a **later** one and the type it declares is a different but perfectly
+    # **supported** one (F16 == 1) at an unchanged `nbytes`, which is R5D correction C12's shape,
+    # not the unsupported-type shape of `claim-type` above: the plane still fills its region, the
+    # stack is still exactly `U` planes, and only the encoding the stack was built from is wrong --
+    # which no oracle can see, because all four read the stack the arm built. Patching expert 0 to
+    # an unsupported type would be refused by `stage_claim_types` even if the plane-consistency
+    # check were deleted, so it would not pin this check at all.
     emit("moe-model-pack-claim-type-mixed.alignpack",
-         patch(base, member_field(layout, claim_base, 40), "<I", 4))
+         patch(base, member_field(layout, claim_base + len(MOE_EXPERT_ROLES), 40), "<I", 1))
     emit("moe-model-pack-slice.alignpack",
          patch(base, member_field(layout, claim_base, 84), "<i", g["n_expert"] - 1))
     emit("moe-model-pack-slice-index.alignpack",

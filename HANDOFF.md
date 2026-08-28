@@ -12,7 +12,7 @@ than rebased over it, so this branch's recorded baseline-chain commits stay reac
 `5e3356d` (design ledger), `053de09` (implementation), `e7f727f` (review repair), the merge commit,
 and the reconciliation and baseline commits on top. Design ledger
 `docs/specs/r5e-moe-model-prefill.md` is authoritative and carries the implementation's corrections
-C1–C23 and the cell-to-case map. **The capability is implemented, reviewed, verified, and committed**;
+C1–C25 and the cell-to-case map. **The capability is implemented, reviewed, verified, and committed**;
 `src/moe_model_forward.align`, `scripts/run-moe-model-forward`,
 `scripts/sweep-moe-model-forward-excerpt.py`, `scripts/moe-model-forward-golden.jsonl`, and
 `eval/fixtures/olmoe-model-6tok.txt` are new, and `src/layer_olmoe.align`, `src/ggml_spike.align`,
@@ -20,7 +20,8 @@ C1–C23 and the cell-to-case map. **The capability is implemented, reviewed, ve
 and `scripts/ggml_shim_stub.c` are extended. **No `extern` symbol is added and `scripts/ggml_shim.c`
 is unchanged.** No intentional uncommitted files. Merge is the only remaining step.
 
-**What it does.** R5's second gate stage, completed: `ggml-spike --moe-model-forward` computes a
+**What it does.** R5's **third** gate stage — 最小モデル on the routed path, after R4.5/MOE-PREREQ's
+単一block and R5D's 単一layer: `ggml-spike --moe-model-forward` computes a
 whole sixteen-layer OLMoE prefill of at most six tokens — per-layer routing, only the routed experts'
 planes read into **one** Align-owned claim window reserved at the arithmetic union bound and reused
 across layers, the narrowing inside layer fifteen where the instrument does, and the output head —
@@ -63,7 +64,10 @@ guards and `R5_INDEX` as never emitted), fixed the coverage denominator at the 3
 real run-level set cardinality, refused a non-UTF-8 path with `R5E_PATH`, and corrected
 `expert_bytes_read_ppm` to 333,644 at all three sites. After the merge with `main` a **final
 comprehensive review of the merged candidate** was run because the merge brought in R5D's own review
-repair, which this branch had not carried; its envelope is on the pull request.
+repair, which this branch had not carried. It returned **approve after repair** with 13 findings — 1
+high, 3 medium, 9 low/info — **no defect in shipped behaviour**; all were validated and accepted and
+repaired in one consolidated commit, recorded as corrections **C24** and **C25** plus in-place record
+fixes. Its envelope and every finding's disposition are on the pull request.
 
 **Align capability requests.** Two new, both `PROPOSED` and non-blocking: **Request 47** (a `Borrow`
 argument must be a stable named local or field) and **Request 48** (same-call aliasing between a

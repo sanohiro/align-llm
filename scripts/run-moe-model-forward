@@ -400,6 +400,10 @@ want("graph.table_rows_b", graph["table_rows_b"], 24)
 want("graph.embed_node_count", graph["embed_node_count"], 1)
 want("graph.head_node_count", graph["head_node_count"], 3)
 want("graph.slot_capacity", graph["slot_capacity"], 128)
+# `ggml_gallocr_get_buffer_size` over the 34 graphs. It is reported rather than chosen (section
+# 3.10), but it is an exact integer for a fixed graph set, so section 5.2 asserts it rather than
+# printing it: a change means the graph shapes moved.
+want("graph.activation_bytes_peak", graph["activation_bytes_peak"], 4440064)
 want("abi.tensor_alignment", d["abi"]["tensor_alignment"], 32)
 want("abi.table_drift", d["abi"]["table_drift"], -1)
 want("abi.slot_magic_ok", d["abi"]["slot_magic_ok"], True)

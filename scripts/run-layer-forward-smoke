@@ -2976,6 +2976,23 @@ def record(name, operands, expected):
     if not document["abi"]["fp_contract_off"]:
         failures.append("%s: the shim was not built with -ffp-contract=off; the goldens are not "
                         "reproducible across compilers" % name)
+    # Cleanup is asserted on **every** document -- stub, engine and forced alike -- and not only on
+    # the successful engine cases, because the cases that stop early are exactly the ones whose
+    # teardown path a leak would hide. `released_before_owner_scope_end` is deliberately not
+    # asserted here: a case that stops before any ggml object exists reports it false and asserts
+    # zero creations instead (section 7.2).
+    lifetime = document.get("lifetime")
+    if lifetime is not None:
+        if lifetime["phase_balance_failures"] != 0:
+            failures.append("%s: %d phase balance failure(s)"
+                            % (name, lifetime["phase_balance_failures"]))
+        for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                               ("contexts_created", "contexts_freed"),
+                               ("backends_created", "backends_freed"),
+                               ("gallocrs_created", "gallocrs_freed")):
+            if lifetime[created] != lifetime[freed]:
+                failures.append("%s: %s %d != %s %d"
+                                % (name, created, lifetime[created], freed, lifetime[freed]))
     return document
 
 
