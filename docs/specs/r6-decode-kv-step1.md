@@ -894,6 +894,16 @@ whole reason for choosing slots 64 and 65.
   one lane inside the slot only the decode graph writes, and oracle B reports
   `R6_PLANE_MISMATCH layer[0]tensor[k]col[0]`. It is a shipped case (`ds-force-plane-stage-offset`),
   not a mutation someone has to re-apply.
+- **Neither of `verify_plane`'s two size guards is reached by a case.** Oracle B's own early
+  returns — a span that does not fit the node window, and a `CONCAT` row whose `slot_nbytes`
+  disagrees with the span the arm computed — publish `R6_PLANE_MISMATCH` with
+  `roundtrip_verdict: "MISMATCH"` and `col[-1]`, the extent-level column. Both conditions are
+  arithmetic the arm derives from the same geometry it built the graph with, so no operand and no
+  forced build reaches them, and **the `col[-1]` form of the detail is therefore unexercised**; the
+  shipped `R6_PLANE_MISMATCH` case, `ds-force-plane-stage-offset`, reaches the *comparison* path and
+  reports a real column. The guards stay because they are the difference between a wrong answer and
+  a refusal if a future row table changes a shape, and they are deferred rather than met — like
+  `R6_PLANE_UNAVAILABLE` and `R6_PLANE_WRITE` above and for the same reason.
 - **`ds-concat-dim-invalid`** is deferred. `dim` is a compiled-in column of the row table and no
   operand reaches `op_concat`'s `[0,3]` guard; the *axis* refusal it is adjacent to is shipped as
   `ds-force-concat-axis`.
