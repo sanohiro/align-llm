@@ -1198,6 +1198,120 @@ def drive_usage():
         require(line in help_text, "usage-diff: an existing usage line disappeared: %r" % line)
 
 
+def expert_by_kind(verify, side):
+    """The `ExpertBlock` row of one side of a `--pack-verify` document's `sequential_read`."""
+    stats = as_dict(as_dict(verify["sequential_read"])[side])
+    for entry in stats["by_kind"]:
+        record = as_dict(entry)
+        if record["kind"] == "ExpertBlock":
+            return record
+    return None
+
+
+def drive_qualification_verdicts(moe_source, moe_verify, dense_source):
+    """`qualification-verdict` (`docs/specs/moe-prereq-discharge.md` section 4.4).
+
+    The MoE verdict of `scripts/run-alignpack-qualification` is a **rule over the block set the run
+    measured**, so it is exercised here by giving that runner two synthetic containers of different
+    shapes and reading what it decided. Both are small enough to pack in milliseconds, and the
+    runner reclaims each pack itself.
+
+    `qwen2-permuted` rather than `qwen2-full` is the dense case on purpose: `qwen2-full`'s data
+    section is already in block order, so its `(sequential read)` verdict is a deliberate `FAIL`
+    (section 4.4 of `r4-alignpack-layer-major.md`) and the run never reaches the MoE line.
+
+    The MoE verdict's numbers are asserted **exactly**, and against this smoke's own
+    `--pack-verify` document for the same fixture rather than against constants written here. A
+    substring match on `PASS ExpertBlock ` would accept a verdict that printed any numbers at all,
+    including numbers from a different side of the comparison; the fixture and the runner pack the
+    same file with the same writer, so the two documents must agree row for row.
+    """
+    source_expert = expert_by_kind(moe_verify, "source")
+    pack_expert = expert_by_kind(moe_verify, "pack")
+    require(source_expert is not None and pack_expert is not None,
+            "qualification-verdict moe: the fixture has no ExpertBlock by_kind row to compare")
+    # Section 3.5's eight assertions, checked here against the fixture's own numbers as well: a
+    # corpus that no longer satisfies them would make the runner print `FAIL`, and this says which
+    # of the two is wrong.
+    for label, held in (
+            ("source.contiguous_block_count == 0", source_expert["contiguous_block_count"] == 0),
+            ("source.range_count > pack.range_count",
+             source_expert["range_count"] > pack_expert["range_count"]),
+            ("source.span_bytes > pack.span_bytes",
+             source_expert["span_bytes"] > pack_expert["span_bytes"]),
+            ("source.amplification_ppm > pack.amplification_ppm",
+             source_expert["amplification_ppm"] > pack_expert["amplification_ppm"]),
+            ("pack.contiguous_block_count == pack.block_count",
+             pack_expert["contiguous_block_count"] == pack_expert["block_count"]),
+            ("pack.range_count == pack.block_count",
+             pack_expert["range_count"] == pack_expert["block_count"]),
+            ("pack.amplification_ppm == 1000000", pack_expert["amplification_ppm"] == 1000000),
+            ("pack.span_bytes == pack.payload_bytes",
+             pack_expert["span_bytes"] == pack_expert["payload_bytes"])):
+        require(held, "qualification-verdict moe: the fixture does not satisfy %r" % label)
+
+    moe_lines = [
+        b"alignpack qualification (MoE): PASS  ExpertBlock %d blocks" % pack_expert["block_count"],
+        b"    src  %d ranges / %d span / %d contiguous / %d ppm"
+        % (source_expert["range_count"], source_expert["span_bytes"],
+           source_expert["contiguous_block_count"], source_expert["amplification_ppm"]),
+        b"    pack %d ranges / %d span / %d contiguous / %d ppm"
+        % (pack_expert["range_count"], pack_expert["span_bytes"],
+           pack_expert["contiguous_block_count"], pack_expert["amplification_ppm"]),
+        b"alignpack qualification (gpt-oss MoE): N/A",
+    ]
+    runner = str(Path(root_dir) / "scripts" / "run-alignpack-qualification")
+    measured = 0
+    for label, source, expected in (
+            ("moe", moe_source, moe_lines),
+            ("dense", dense_source,
+             [b"alignpack qualification (MoE): N/A - the packed model has no ExpertBlock"])):
+        destination = Path(work_dir) / ("qualification-verdict-" + label)
+        destination.mkdir(exist_ok=True)
+        environment = dict(os.environ)
+        environment["ALIGN_LLM_GGUF_MODEL"] = str(source)
+        environment["ALIGN_LLM_ALIGNPACK_TMPDIR"] = str(destination)
+        outcome = subprocess.run([runner], capture_output=True, env=environment)
+        require(outcome.returncode == 0,
+                "qualification-verdict %s: exited %d: %s"
+                % (label, outcome.returncode, outcome.stderr.decode("utf-8", "replace")[-400:]))
+        # The runner's own environmental refusals — headroom, an unusable temporary directory, an
+        # occupied destination — are its contract (`qualification-skip` asserts them), and they are
+        # a property of the host rather than of this fixture. A runner that refused wrote nothing
+        # and claimed nothing, so this case names the refusal and does not assert a verdict it
+        # never produced. It is **not** silence: the reason is printed, and a refusal for a reason
+        # other than the runner's own vocabulary still fails below. This is reachable in practice —
+        # the fresh worker's aggregate runs with far less than the `model_size + 1 GiB` of headroom
+        # the runner requires before it writes anything.
+        refusals = [line for line in outcome.stdout.splitlines()
+                    if line.startswith(b"alignpack qualification: N/A (")]
+        if refusals:
+            require(len(refusals) == 1,
+                    "qualification-verdict %s: %d N/A lines, expected exactly one"
+                    % (label, len(refusals)))
+            require(not list(destination.iterdir()),
+                    "qualification-verdict %s: the runner refused and still wrote files" % label)
+            print("alignpack smoke: qualification-verdict %s N/A - the runner refused this host: %s"
+                  % (label, refusals[0].decode("utf-8", "replace")))
+            continue
+        for line in expected:
+            require(line in outcome.stdout,
+                    "qualification-verdict %s: the verdict does not contain %r; the runner printed "
+                    "%r" % (label, line, outcome.stdout.decode("utf-8", "replace")[-600:]))
+        require(not list(destination.iterdir()),
+                "qualification-verdict %s: the runner left files behind" % label)
+        measured += 1
+    if measured == 2:
+        print("alignpack smoke: qualification-verdict MoE PASS (ExpertBlock %d blocks, %d -> %d "
+              "ranges, %d -> %d ppm) and dense N/A"
+              % (pack_expert["block_count"], source_expert["range_count"],
+                 pack_expert["range_count"], source_expert["amplification_ppm"],
+                 pack_expert["amplification_ppm"]))
+    else:
+        print("alignpack smoke: qualification-verdict %d of 2 verdicts measured on this host"
+              % measured)
+
+
 def drive_qualification_skips(sample_source):
     """`qualification-skip` (section 3.7): every refusal of `scripts/run-alignpack-qualification`
     prints exactly one `N/A` line and exits 0 without claiming a pass. The runner is driven here
@@ -1376,6 +1490,8 @@ drive_limits(qwen["source"])
 drive_environment(qwen["source"])
 drive_single_producer()
 drive_usage()
+drive_qualification_verdicts(results["olmoe-full"]["source"], results["olmoe-full"]["verify"],
+                             results["qwen2-permuted"]["source"])
 drive_qualification_skips(qwen["source"])
 drive_full_filesystem(qwen["source"])
 

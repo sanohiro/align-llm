@@ -214,8 +214,69 @@ print("alignpack qualification: layout payload %d, padding %d, duplicated %d"
 if not improved:
     raise SystemExit(1)
 
-# The MoE half is verified synthetically only; no gpt-oss GGUF exists on this host.
-print("alignpack qualification (MoE): N/A - no gpt-oss GGUF on this host; see "
-      "docs/specs/r4-alignpack-layer-major.md section 4.5.")
+# The MoE verdict, derived from the **shape of the block set this run measured** and from nothing
+# else (`docs/specs/moe-prereq-discharge.md` sections 1.5 and 3.5). A second environment variable
+# saying "this one is a MoE model" would let a caller assert a verdict the run did not measure, and
+# the constant this replaced printed an N/A about a missing gpt-oss file directly underneath a table
+# listing real ExpertBlocks.
+REQUIRED_KIND_FIELDS = ("block_count", "range_count", "span_bytes", "payload_bytes",
+                        "contiguous_block_count", "amplification_ppm")
+
+
+def expert_entry(stats, side):
+    for entry in stats["by_kind"]:
+        if entry["kind"] != "ExpertBlock":
+            continue
+        missing = [field for field in REQUIRED_KIND_FIELDS if field not in entry]
+        if missing:
+            raise SystemExit("alignpack qualification: FAIL the %s ExpertBlock by_kind entry is "
+                             "missing %s" % (side, ", ".join(missing)))
+        return entry
+    return None
+
+
+source_expert = expert_entry(source_stats, "source")
+pack_expert = expert_entry(pack_stats, "pack")
+if source_expert is None and pack_expert is None:
+    print("alignpack qualification (MoE): N/A - the packed model has no ExpertBlock; see "
+          "docs/specs/moe-prereq-discharge.md section 5.5.")
+else:
+    if source_expert is None or pack_expert is None:
+        raise SystemExit("alignpack qualification: FAIL only one side reports an ExpertBlock kind")
+    # Section 3.5's eight assertions. `source.contiguous_block_count == 0` is asserted rather than
+    # merely reported: a source in which some expert is already contiguous is a *different* model
+    # shape, and the verdict should say so by failing rather than by averaging it away.
+    moe_checks = (
+        ("source.contiguous_block_count == 0", source_expert["contiguous_block_count"] == 0),
+        ("source.range_count > pack.range_count",
+         source_expert["range_count"] > pack_expert["range_count"]),
+        ("source.span_bytes > pack.span_bytes",
+         source_expert["span_bytes"] > pack_expert["span_bytes"]),
+        ("source.amplification_ppm > pack.amplification_ppm",
+         source_expert["amplification_ppm"] > pack_expert["amplification_ppm"]),
+        ("pack.contiguous_block_count == pack.block_count",
+         pack_expert["contiguous_block_count"] == pack_expert["block_count"]),
+        ("pack.range_count == pack.block_count",
+         pack_expert["range_count"] == pack_expert["block_count"]),
+        ("pack.amplification_ppm == 1000000", pack_expert["amplification_ppm"] == 1000000),
+        ("pack.span_bytes == pack.payload_bytes",
+         pack_expert["span_bytes"] == pack_expert["payload_bytes"]),
+    )
+    moe_failed = [label for label, held in moe_checks if not held]
+    print("alignpack qualification (MoE): %s  ExpertBlock %d blocks"
+          % ("FAIL" if moe_failed else "PASS", pack_expert["block_count"]))
+    print("    src  %d ranges / %d span / %d contiguous / %d ppm"
+          % (source_expert["range_count"], source_expert["span_bytes"],
+             source_expert["contiguous_block_count"], source_expert["amplification_ppm"]))
+    print("    pack %d ranges / %d span / %d contiguous / %d ppm"
+          % (pack_expert["range_count"], pack_expert["span_bytes"],
+             pack_expert["contiguous_block_count"], pack_expert["amplification_ppm"]))
+    if moe_failed:
+        for label in moe_failed:
+            sys.stderr.write("alignpack qualification: FAIL %s\n" % label)
+        raise SystemExit(1)
+    print("alignpack qualification (gpt-oss MoE): N/A - every gpt-oss-shaped cell — a six-member "
+          "ExpertBlock, MXFP4 geometry, split expert biases, the fused ffn_gate_up_exps — stays "
+          "synthetic; see docs/specs/moe-prereq-discharge.md section 5.5.")
 print("alignpack qualification: PASS")
 PY

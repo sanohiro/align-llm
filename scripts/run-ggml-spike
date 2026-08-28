@@ -11,9 +11,19 @@ set -euo pipefail
 #   ALIGN_LLM_GGML_LIB       directory holding `libggml` and `libggml-base`    (required)
 #   ALIGN_LLM_GGUF_MODEL     path to the model                                 (required)
 #   ALIGN_LLM_GGML_SPIKE_TMPDIR  directory for the pack        (optional; default `mktemp -d`)
-#   ALIGN_LLM_GGML_SPIKE_SHA256  the expected output digest    (optional; default the probe's)
+#   ALIGN_LLM_GGML_SPIKE_SHA256  the dense arm's expected output digest         (optional)
+#   ALIGN_LLM_GGML_SPIKE_EXPERT_SHA256
+#                                the expert arm's first member's digest         (optional)
 #
 # Every refusal prints exactly one `N/A` line and exits 0 without claiming a pass.
+#
+# Since MOE-PREREQ-DISCHARGE (`docs/specs/moe-prereq-discharge.md` section 3.5) the two arms are
+# selected from the **shape of the pack this run wrote**, by `role_id`, and never from a model path,
+# a file name, or a variable a caller sets: a qualification whose verdict does not depend on what it
+# measured is not a qualification. The golden digests are keyed by the pack document's
+# `source.header_region_sha256`, which is what lets one script hold values for more than one model
+# without keying on a path; an unknown identity degrades to one `N/A` for the digests alone and
+# still runs every invariant, including the bit-exact GGUF reference that carries the gate.
 #
 # Like `scripts/run-alignpack-qualification`, this writes a multi-gigabyte file, and its contract is
 # written around that fact: it refuses a temporary directory inside the work tree, checks free space
@@ -110,11 +120,15 @@ reclaim() {
     echo "ggml spike qualification: reclaimed ${size} bytes"
   fi
   # Every file this runner creates, not only the two named ones: a caller-supplied temporary
-  # directory is not ours to leave litter in, and `forced-*.json` is litter.
+  # directory is not ours to leave litter in, and `forced-*.json` is litter. The expert documents
+  # are removed by pattern rather than by a fixed list of member positions, because how many the
+  # expert arm writes is a property of the packed model's own `ExpertBlock` and not of this script.
   rm -f "${pack_document}" "${spike_document}" "${tmpdir}/spike.err" \
     "${tmpdir}/absent.json" "${tmpdir}/diverged.json" \
     "${tmpdir}/forced-init.json" "${tmpdir}/forced-compute.json" \
-    "${tmpdir}/forced-reference.json"
+    "${tmpdir}/forced-reference.json" \
+    "${tmpdir}"/expert-*.json \
+    "${tmpdir}/selection.json"
   if [ "${owned_tmpdir}" = 1 ]; then
     rmdir "${tmpdir}" 2>/dev/null || true
   fi
@@ -158,16 +172,85 @@ run_spike() {
   "${root_dir}/ggml-spike" "$@"
 }
 
-# The primary arm: block 1, member 1 — `blk.0.attn_q.weight` — with the original GGUF as the
-# reference oracle.
+# Section 3.5's selection, resolved by `role_id` out of the pack document this run just wrote.
+# The rule itself lives in `scripts/ggml_spike_select.py` so that it has one owner and a hosted
+# case can run it: this runner refuses before this point on any host without ggml.
+python3 "${root_dir}/scripts/ggml_spike_select.py" "${pack_document}" >"${tmpdir}/selection.json"
+
+# Five scalars out of the selection document, each named rather than computed in the shell.
+read_selection() {
+  python3 - "${tmpdir}/selection.json" "$1" <<'PY'
+import json
+import sys
+
+selection = json.load(open(sys.argv[1], encoding="utf-8"))
+field = sys.argv[2]
+if field == "dense_block":
+    print(selection["dense"]["block"])
+elif field == "dense_member":
+    print(selection["dense"]["member"])
+elif field == "expert_block":
+    print(selection["expert"]["block"] if selection["expert"] else -1)
+elif field == "expert_members":
+    print(" ".join(str(m) for m in selection["expert"]["members"]) if selection["expert"] else "")
+elif field == "expert_last_block":
+    last = selection["expert"]["last_block"] if selection["expert"] else None
+    print(last if last is not None else -1)
+else:
+    raise SystemExit("unknown selection field %r" % field)
+PY
+}
+dense_block=$(read_selection dense_block)
+dense_member=$(read_selection dense_member)
+expert_block=$(read_selection expert_block)
+expert_members=$(read_selection expert_members)
+expert_last_block=$(read_selection expert_last_block)
+
+# The dense arm, with the original GGUF as the reference oracle.
 set +e
-run_spike "${pack}" 1 1 "${spike_document}" "${model}" >/dev/null 2>"${tmpdir}/spike.err"
+run_spike "${pack}" "${dense_block}" "${dense_member}" "${spike_document}" "${model}" \
+  >/dev/null 2>"${tmpdir}/spike.err"
 primary_status=$?
 set -e
 if [ "${primary_status}" != 0 ]; then
-  echo "ggml spike qualification: FAIL the primary arm exited ${primary_status}" >&2
+  echo "ggml spike qualification: FAIL the dense arm exited ${primary_status}" >&2
   tail -c 2000 "${tmpdir}/spike.err" >&2 || true
   exit 1
+fi
+
+# The expert arm: **all three** members of the first `ExpertBlock`, not one. Section 2.5 finding 3
+# measured that member 0's interior offset is zero and therefore does not exercise interior
+# addressing at all; members 1 and 2 do, and member 2 is the transposed axis order at the larger
+# offset. Three runs cost about three seconds.
+run_expert() {
+  set +e
+  run_spike "${pack}" "$1" "$2" "$3" "${model}" >/dev/null 2>"${tmpdir}/spike.err"
+  expert_status=$?
+  set -e
+  if [ "${expert_status}" != 0 ]; then
+    echo "ggml spike qualification: FAIL the expert arm exited ${expert_status}" \
+      "on block $1 member $2" >&2
+    tail -c 2000 "${tmpdir}/spike.err" >&2 || true
+    exit 1
+  fi
+}
+
+expert_count=0
+if [ "${expert_block}" != "-1" ]; then
+  for member in ${expert_members}; do
+    run_expert "${expert_block}" "${member}" "${tmpdir}/expert-${member}.json"
+    expert_count=$((expert_count + 1))
+  done
+fi
+
+# And member 0 of the **last** `ExpertBlock`, which is the only run here whose `slice_index` is not
+# zero: every member of the first block is plane 0 of its stacked tensor, so without this one no
+# real model exercises interior addressing at a plane index greater than zero and section 5.4 would
+# have to record that as a gap the synthetic corpus alone covers. One more run, about one second.
+expert_last=0
+if [ "${expert_last_block}" != "-1" ]; then
+  run_expert "${expert_last_block}" 0 "${tmpdir}/expert-last.json"
+  expert_last=1
 fi
 
 # The four failures no input can produce, each with the shim rebuilt exactly as section 4.6 names.
@@ -177,7 +260,7 @@ declare -a forced_codes=()
 for flavour in init compute reference; do
   build_shim "${flavour}" >/dev/null
   set +e
-  run_spike "${pack}" 1 1 "${tmpdir}/forced-${flavour}.json" "${model}" >/dev/null 2>&1
+  run_spike "${pack}" "${dense_block}" "${dense_member}" "${tmpdir}/forced-${flavour}.json" "${model}" >/dev/null 2>&1
   set -e
   code=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["error_code"])' \
     "${tmpdir}/forced-${flavour}.json")
@@ -190,22 +273,22 @@ build_shim "" >/dev/null
 # one — a file of the right length holding entirely different bytes there — which costs nothing and
 # proves the byte check reports the divergence rather than a numeric difference.
 set +e
-run_spike "${pack}" 1 1 "${tmpdir}/absent.json" "${tmpdir}/no-such-model.gguf" >/dev/null 2>&1
-run_spike "${pack}" 1 1 "${tmpdir}/diverged.json" "${pack}" >/dev/null 2>&1
+run_spike "${pack}" "${dense_block}" "${dense_member}" "${tmpdir}/absent.json" "${tmpdir}/no-such-model.gguf" >/dev/null 2>&1
+run_spike "${pack}" "${dense_block}" "${dense_member}" "${tmpdir}/diverged.json" "${pack}" >/dev/null 2>&1
 set -e
 
-python3 - "${spike_document}" "${tmpdir}" "${pack_size}" "${forced_codes[@]}" <<'PY'
+python3 - "${pack_document}" "${spike_document}" "${tmpdir}" "${pack_size}" "${expert_count}" \
+  "${expert_last}" "${forced_codes[@]}" <<'PY'
 import json
+import os
 import sys
 
-document_path, tmpdir, pack_size = sys.argv[1:4]
-forced = dict(entry.split("=", 1) for entry in sys.argv[4:])
+pack_document_path, document_path, tmpdir, pack_size, expert_count, expert_last = sys.argv[1:7]
+forced = dict(entry.split("=", 1) for entry in sys.argv[7:])
+expert_count = int(expert_count)
+expert_last = int(expert_last)
+pack_document = json.load(open(pack_document_path, encoding="utf-8"))
 document = json.load(open(document_path, encoding="utf-8"))
-
-import os
-expected_sha = os.environ.get(
-    "ALIGN_LLM_GGML_SPIKE_SHA256",
-    "2ccc7dc778108df3b626128895347f203795a2d82b502805806fb8472457e044")
 
 failures = []
 
@@ -215,61 +298,233 @@ def expect(label, got, want):
         failures.append("%s: got %r, expected %r" % (label, got, want))
 
 
-expect("status", document["status"], "ok")
-expect("verdict", document["verdict"], "EXTERNAL")
-expect("selection.name", document["selection"]["name"], "blk.0.attn_q.weight")
-expect("tensor.ggml_type", document["tensor"]["ggml_type"], 12)
-expect("tensor.ne0", document["tensor"]["ne0"], 3584)
-expect("tensor.ne1", document["tensor"]["ne1"], 3584)
-expect("tensor.nbytes", document["tensor"]["nbytes"], 7225344)
-expect("tensor.elements_per_row_ok", document["tensor"]["elements_per_row_ok"], True)
-expect("buffer.interior_offset", document["buffer"]["interior_offset"], 14336)
-expect("buffer.tensor_data_offset", document["buffer"]["tensor_data_offset"], 14336)
-expect("buffer.pointer_identity", document["buffer"]["pointer_identity"], True)
-expect("buffer.output_pointer_identity", document["buffer"]["output_pointer_identity"], True)
+# ---- the model-keyed digest table (section 3.5) ---------------------------------------------
+#
+# Keyed by `source.header_region_sha256`, which `r4-alignpack-layer-major.md` section 2.4.6 already
+# computes and which identifies a model down to the last tensor's placement. Each digest is correct
+# for **this** model, member, activation, ggml version, and CPU backend; none is portable. A failure
+# here means the kernel or the model changed — see `docs/specs/r4-5-external-buffer.md` section
+# 5.2 — and is not a corruption report.
+GOLDEN = {
+    "df727e6ef8f16650aacabfa673463efc22a51e5d552c64c5ed23bfe516e1a0ba": {
+        "label": "qwen2.5-coder-7b-instruct-q4_k_m",
+        "dense": "2ccc7dc778108df3b626128895347f203795a2d82b502805806fb8472457e044",
+        "expert": [],
+    },
+    "ce233b8aa20f77d6002ce9fd4f81adea8e5e2f2b4fc16b810bb67a01fe85fee4": {
+        "label": "OLMoE-1B-7B-0125-Instruct-Q4_K_M",
+        "dense": "f7430e7beefe2d3322f3b115f2cd25683c49db31b96fa38f37d7a19c14f763a7",
+        "expert": [
+            "237ffed519b03a78ff1219aa0a89af8c2bf6876f1931bef4f9874145f6f5220f",
+            "1a5ceeeaad4c03d43e2e73fafe1b73f2b74edb86970ec021b65018c2cda91c1a",
+            "6436a1ff2caac9446fc784e7c6b74bda70ee14d2a9ca051905fbc9a7ef21f8ef",
+        ],
+        # Member 0 of the **last** `ExpertBlock`: the `slice_index > 0` plane.
+        "expert_last": "7891a6cc8ad9bce54026849a613c808c653a79acedbdc32d40569b1b6ce4ea20",
+    },
+}
+identity = pack_document["source"]["header_region_sha256"]
+golden = GOLDEN.get(identity)
+dense_override = os.environ.get("ALIGN_LLM_GGML_SPIKE_SHA256")
+expert_override = os.environ.get("ALIGN_LLM_GGML_SPIKE_EXPERT_SHA256")
 
-# The compensation, asserted against the real allocator rather than only the synthetic corpus: the
-# member's interior offset is the only thing the alignment gate may depend on, and the pads are the
-# arm's own answer to a base it does not control (section 6, correction C14).
-alignment = document["abi"]["tensor_alignment"]
-if alignment > 0:
-    if document["buffer"]["interior_offset"] % alignment != 0:
-        failures.append("buffer.interior_offset %d is not %d-aligned but the run continued"
-                        % (document["buffer"]["interior_offset"], alignment))
-    for key, low, high in (("weights_pad", 1, 64), ("output_pad", 0, 63)):
-        if not low <= document["buffer"][key] <= high:
-            failures.append("buffer.%s is %d, outside [%d, %d]"
-                            % (key, document["buffer"][key], low, high))
+blocks = {block["index"]: block for block in pack_document["blocks"]}
 
-expect("abi.tensor_alignment", document["abi"]["tensor_alignment"], 32)
-expect("abi.q4k_blck_size", document["abi"]["q4k_blck_size"], 256)
-expect("abi.q4k_type_size", document["abi"]["q4k_type_size"], 144)
-expect("abi.table_drift", document["abi"]["table_drift"], -1)
-expect("reference.present", document["reference"]["present"], True)
-expect("reference.bytes_equal", document["reference"]["bytes_equal"], True)
-expect("reference.verdict", document["reference"]["verdict"], "IDENTICAL")
-expect("reference.differing_elements", document["reference"]["differing_elements"], 0)
-expect("output.element_count", document["output"]["element_count"], 14336)
 
-lifetime = document["lifetime"]
-for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
-                       ("contexts_created", "contexts_freed"),
-                       ("backends_created", "backends_freed")):
-    if lifetime[created] != lifetime[freed]:
-        failures.append("lifetime %s %d != %s %d"
-                        % (created, lifetime[created], freed, lifetime[freed]))
-expect("lifetime.released_before_owner_scope_end",
-       lifetime["released_before_owner_scope_end"], True)
+def member_record(spike):
+    """The pack document's own record for the member this spike run selected."""
+    block = blocks[spike["selection"]["block_index"]]
+    return block, block["members"][spike["selection"]["member_index_in_block"]]
 
-# The digest is asserted as an exact value and that is a deliberate, narrow claim: it is correct for
-# this model, this member, this activation, this ggml version, and this CPU backend. It is not a
-# portable golden value. A failure here means the kernel or the model changed — see
-# docs/specs/r4-5-external-buffer.md section 5.2 — and is not a corruption report.
-if document["output"]["sha256"] != expected_sha:
-    failures.append("output.sha256 is %s, not %s — the ggml kernel, the model, or the activation "
-                    "changed; see docs/specs/r4-5-external-buffer.md section 5.2"
-                    % (document["output"]["sha256"], expected_sha))
 
+def invariants(label, spike):
+    """Section 3.5's invariants: they hold for every model and every member, and they carry the gate.
+
+    Everything here is checked against the **pack document**, so the assertions do not encode one
+    model's extents and a second model needs no new constant.
+    """
+    block, member = member_record(spike)
+    expect("%s status" % label, spike["status"], "ok")
+    expect("%s verdict" % label, spike["verdict"], "EXTERNAL")
+    expect("%s selection.name" % label, spike["selection"]["name"], member["name"])
+    expect("%s selection.role_id" % label, spike["selection"]["role_id"], member["role_id"])
+    expect("%s tensor.ggml_type" % label, spike["tensor"]["ggml_type"], member["ggml_type"])
+    expect("%s tensor.n_dims" % label, spike["tensor"]["n_dims"], member["n_dims"])
+    expect("%s tensor.ne0" % label, spike["tensor"]["ne0"], member["dims"][0])
+    expect("%s tensor.ne1" % label, spike["tensor"]["ne1"], member["dims"][1])
+    expect("%s tensor.nbytes" % label, spike["tensor"]["nbytes"], member["nbytes"])
+    expect("%s tensor.slice_index" % label, spike["tensor"]["slice_index"], member["slice_index"])
+    expect("%s tensor.slice_count" % label, spike["tensor"]["slice_count"], member["slice_count"])
+    expect("%s tensor.elements_per_row_ok" % label, spike["tensor"]["elements_per_row_ok"], True)
+    expect("%s buffer.interior_offset" % label, spike["buffer"]["interior_offset"],
+           member["pack_offset"] - block["pack_offset"])
+    expect("%s buffer.tensor_data_offset" % label, spike["buffer"]["tensor_data_offset"],
+           spike["buffer"]["interior_offset"])
+    expect("%s buffer.pointer_identity" % label, spike["buffer"]["pointer_identity"], True)
+    expect("%s buffer.output_pointer_identity" % label,
+           spike["buffer"]["output_pointer_identity"], True)
+    expect("%s reference.present" % label, spike["reference"]["present"], True)
+    expect("%s reference.bytes_equal" % label, spike["reference"]["bytes_equal"], True)
+    expect("%s reference.verdict" % label, spike["reference"]["verdict"], "IDENTICAL")
+    expect("%s reference.differing_elements" % label, spike["reference"]["differing_elements"], 0)
+    expect("%s output.element_count" % label, spike["output"]["element_count"],
+           member["dims"][1] * 4)
+    expect("%s abi.tensor_alignment" % label, spike["abi"]["tensor_alignment"], 32)
+    expect("%s abi.q4k_blck_size" % label, spike["abi"]["q4k_blck_size"], 256)
+    expect("%s abi.q4k_type_size" % label, spike["abi"]["q4k_type_size"], 144)
+    expect("%s abi.table_drift" % label, spike["abi"]["table_drift"], -1)
+
+    # The compensation, asserted against the real allocator rather than only the synthetic corpus:
+    # the member's interior offset is the only thing the alignment gate may depend on, and the pads
+    # are the arm's own answer to a base it does not control (section 6, correction C14).
+    alignment = spike["abi"]["tensor_alignment"]
+    if alignment > 0:
+        if spike["buffer"]["interior_offset"] % alignment != 0:
+            failures.append("%s: buffer.interior_offset %d is not %d-aligned but the run continued"
+                            % (label, spike["buffer"]["interior_offset"], alignment))
+        for key, low, high in (("weights_pad", 1, 64), ("output_pad", 0, 63)):
+            if not low <= spike["buffer"][key] <= high:
+                failures.append("%s: buffer.%s is %d, outside [%d, %d]"
+                                % (label, key, spike["buffer"][key], low, high))
+
+    lifetime = spike["lifetime"]
+    for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                           ("contexts_created", "contexts_freed"),
+                           ("backends_created", "backends_freed")):
+        if lifetime[created] != lifetime[freed]:
+            failures.append("%s: lifetime %s %d != %s %d"
+                            % (label, created, lifetime[created], freed, lifetime[freed]))
+    expect("%s lifetime.released_before_owner_scope_end" % label,
+           lifetime["released_before_owner_scope_end"], True)
+    return block, member
+
+
+def report(label, spike, block, member):
+    print("ggml spike qualification (%s): block %d member %d %s role %d %s %dx%d slice %s "
+          "nbytes %d interior %d"
+          % (label, spike["selection"]["block_index"], spike["selection"]["member_index_in_block"],
+             spike["selection"]["name"], spike["selection"]["role_id"],
+             spike["selection"]["kind"], spike["tensor"]["ne0"], spike["tensor"]["ne1"],
+             ("%d/%d" % (spike["tensor"]["slice_index"], spike["tensor"]["slice_count"]))
+             if spike["tensor"]["slice_index"] >= 0 else "-",
+             spike["tensor"]["nbytes"], spike["buffer"]["interior_offset"]))
+    print("ggml spike qualification (%s): verdict %s, reference %s, differing_elements %d, "
+          "sha256 %s, bit_sum %d, nonfinite %d, block bytes %d"
+          % (label, spike["verdict"], spike["reference"]["verdict"],
+             spike["reference"]["differing_elements"], spike["output"]["sha256"],
+             spike["output"]["bit_sum"], spike["output"]["nonfinite_count"],
+             spike["buffer"]["block_pack_bytes"]))
+    timings = spike["timings"]
+    print("ggml spike qualification (%s): pread %d ns, compute %d ns (warm mean of %d), "
+          "reference pread %d ns, reference compute %d ns, elapsed %d ns"
+          % (label, timings["pread_ns"], timings["compute_ns"], spike["compute"]["timed_calls"],
+             timings["reference_pread_ns"], timings["reference_compute_ns"],
+             timings["elapsed_ns"]))
+
+
+# ---- the dense arm ---------------------------------------------------------------------------
+expect("schema_version", document["schema_version"], 2)
+dense_block, dense_member = invariants("dense", document)
+print("ggml spike qualification: model identity %s (%s), pack %s bytes, %d blocks / %d members"
+      % (identity, golden["label"] if golden else "unknown to the digest table", pack_size,
+         pack_document["pack"]["block_count"], pack_document["pack"]["member_count"]))
+print("ggml spike qualification: backend %s, base_alignment %d, weights_pad %d, "
+      "output_base_alignment %d, output_pad %d"
+      % (document["compute"]["backend_name"], document["buffer"]["base_alignment"],
+         document["buffer"]["weights_pad"], document["buffer"]["output_base_alignment"],
+         document["buffer"]["output_pad"]))
+report("dense", document, dense_block, dense_member)
+
+# ---- the expert arm --------------------------------------------------------------------------
+expert_documents = []
+for position in range(expert_count):
+    path = os.path.join(tmpdir, "expert-%d.json" % position)
+    spike = json.load(open(path, encoding="utf-8"))
+    expert_documents.append(spike)
+    expect("expert-%d schema_version" % position, spike["schema_version"], 2)
+    block, member = invariants("expert-%d" % position, spike)
+    if block["kind"] != "ExpertBlock":
+        failures.append("expert-%d: selected a %s" % (position, block["kind"]))
+    if member["slice_index"] < 0 or member["slice_count"] < 1:
+        failures.append("expert-%d: the member is not a claim (%r/%r)"
+                        % (position, member["slice_index"], member["slice_count"]))
+    report("expert-%d" % position, spike, block, member)
+
+# The last `ExpertBlock`'s member 0, which is where a `slice_index` greater than zero is measured on
+# a real model rather than on the synthetic corpus (section 5.4). A container with exactly one
+# `ExpertBlock` writes no such document, and the plane it would address is the one already measured.
+last_document = None
+if expert_last:
+    last_document = json.load(open(os.path.join(tmpdir, "expert-last.json"), encoding="utf-8"))
+    expect("expert-last schema_version", last_document["schema_version"], 2)
+    last_block, last_member = invariants("expert-last", last_document)
+    if last_block["kind"] != "ExpertBlock":
+        failures.append("expert-last: selected a %s" % last_block["kind"])
+    if last_member["slice_index"] < 1:
+        failures.append("expert-last: slice_index is %r, so no plane past the first was measured"
+                        % (last_member["slice_index"],))
+    report("expert-last", last_document, last_block, last_member)
+
+if expert_count == 0:
+    # Section 5.5: a dense model has nothing to discharge here, and saying so is not a pass.
+    print("ggml spike qualification (expert block): N/A - the packed model has no ExpertBlock; "
+          "see docs/specs/moe-prereq-discharge.md section 5.5.")
+else:
+    print("ggml spike qualification (expert block): PASS  %d claims of block %d, all EXTERNAL and "
+          "IDENTICAL against the GGUF plane at source_offset"
+          % (expert_count, expert_documents[0]["selection"]["block_index"]))
+    if last_document is None:
+        print("ggml spike qualification (expert plane index): N/A - the packed model holds one "
+              "ExpertBlock, so every plane it can address is plane 0. See "
+              "docs/specs/moe-prereq-discharge.md section 5.4.")
+    else:
+        print("ggml spike qualification (expert plane index): PASS  block %d member 0 is plane "
+              "%d/%d, EXTERNAL and IDENTICAL"
+              % (last_document["selection"]["block_index"],
+                 last_document["tensor"]["slice_index"], last_document["tensor"]["slice_count"]))
+
+# ---- the digests, keyed by model identity ------------------------------------------------------
+expected_dense = dense_override or (golden["dense"] if golden else None)
+expected_expert = golden["expert"] if golden else []
+if expert_override and expert_documents:
+    expected_expert = [expert_override] + list(expected_expert[1:])
+expected_last = golden.get("expert_last") if golden else None
+if expected_dense is None and not expected_expert and expected_last is None:
+    print("ggml spike qualification (digests): N/A - model identity %s is not in the digest table "
+          "and no override was given; every invariant above still ran. See "
+          "docs/specs/moe-prereq-discharge.md section 3.5." % identity)
+else:
+    checked_dense = 0
+    if expected_dense is not None:
+        checked_dense = 1
+        if document["output"]["sha256"] != expected_dense:
+            failures.append("dense output.sha256 is %s, not %s — the ggml kernel, the model, or "
+                            "the activation changed; see docs/specs/r4-5-external-buffer.md "
+                            "section 5.2" % (document["output"]["sha256"], expected_dense))
+    for position, spike in enumerate(expert_documents):
+        if position >= len(expected_expert):
+            continue
+        if spike["output"]["sha256"] != expected_expert[position]:
+            failures.append("expert-%d output.sha256 is %s, not %s — the ggml kernel, the model, "
+                            "or the activation changed; see "
+                            "docs/specs/r4-5-external-buffer.md section 5.2"
+                            % (position, spike["output"]["sha256"], expected_expert[position]))
+    checked_last = 0
+    if expected_last is not None and last_document is not None:
+        checked_last = 1
+        if last_document["output"]["sha256"] != expected_last:
+            failures.append("expert-last output.sha256 is %s, not %s — the ggml kernel, the model, "
+                            "or the activation changed; see "
+                            "docs/specs/r4-5-external-buffer.md section 5.2"
+                            % (last_document["output"]["sha256"], expected_last))
+    # Each count is what this run actually compared, so a model whose identity supplies only some of
+    # the three arms' digests cannot report a check it did not make.
+    print("ggml spike qualification (digests): checked %d dense, %d expert, and %d last-plane "
+          "digests against model identity %s"
+          % (checked_dense, min(len(expert_documents), len(expected_expert)), checked_last,
+             identity))
+
+# ---- the failures no input can produce ---------------------------------------------------------
 expect("forced init", forced.get("init"), "R4_5_GGML_INIT")
 expect("forced compute", forced.get("compute"), "R4_5_COMPUTE")
 expect("forced reference", forced.get("reference"), "R4_5_REFERENCE_MISMATCH")
@@ -279,43 +534,13 @@ expect("absent reference", absent["error_code"], "R4_5_SOURCE_UNREADABLE")
 diverged = json.load(open(tmpdir + "/diverged.json", encoding="utf-8"))
 expect("diverged reference", diverged["error_code"], "R4_5_SOURCE_DIVERGED")
 expect("diverged bytes_equal", diverged["reference"]["bytes_equal"], False)
-
-print("ggml spike qualification: verdict %s, name %s, type %d, dims %dx%d, nbytes %d"
-      % (document["verdict"], document["selection"]["name"], document["tensor"]["ggml_type"],
-         document["tensor"]["ne0"], document["tensor"]["ne1"], document["tensor"]["nbytes"]))
-print("ggml spike qualification: interior_offset %d, tensor_data_offset %d, pointer_identity %s"
-      % (document["buffer"]["interior_offset"], document["buffer"]["tensor_data_offset"],
-         document["buffer"]["pointer_identity"]))
-print("ggml spike qualification: base_alignment %d, weights_pad %d, output_base_alignment %d, "
-      "output_pad %d" % (document["buffer"]["base_alignment"], document["buffer"]["weights_pad"],
-                         document["buffer"]["output_base_alignment"],
-                         document["buffer"]["output_pad"]))
-print("ggml spike qualification: backend %s, sha256 %s, bit_sum %d, nonfinite %d"
-      % (document["compute"]["backend_name"], document["output"]["sha256"],
-         document["output"]["bit_sum"], document["output"]["nonfinite_count"]))
-print("ggml spike qualification: reference %s, differing_elements %d, bytes_equal %s"
-      % (document["reference"]["verdict"], document["reference"]["differing_elements"],
-         document["reference"]["bytes_equal"]))
-timings = document["timings"]
-print("ggml spike qualification: pread %d ns for %d bytes, compute %d ns (warm mean of %d), "
-      "reference pread %d ns, reference compute %d ns, elapsed %d ns"
-      % (timings["pread_ns"], document["buffer"]["block_pack_bytes"], timings["compute_ns"],
-         document["compute"]["timed_calls"], timings["reference_pread_ns"],
-         timings["reference_compute_ns"], timings["elapsed_ns"]))
-print("ggml spike qualification: lifetime buffers %d/%d, contexts %d/%d, backends %d/%d, "
-      "released_before_owner_scope_end %s"
-      % (lifetime["ggml_buffers_created"], lifetime["ggml_buffers_freed"],
-         lifetime["contexts_created"], lifetime["contexts_freed"],
-         lifetime["backends_created"], lifetime["backends_freed"],
-         lifetime["released_before_owner_scope_end"]))
 print("ggml spike qualification: forced failures %s"
       % ", ".join("%s -> %s" % (k, v) for k, v in sorted(forced.items())))
 
-# Deliberately named as N/A rather than left silent (section 5.4).
-print("ggml spike qualification (expert block): N/A - this host's only model is dense; the CLI "
-      "already addresses an ExpertBlock by its block index with no new surface. See "
-      "docs/specs/r4-5-external-buffer.md section 5.4 and "
-      "docs/specs/r4-alignpack-layer-major.md section 4.5.")
+# Deliberately named as N/A rather than left silent (section 5.4). The `(expert block)` line is no
+# longer one of them: `docs/specs/moe-prereq-discharge.md` section 2.4 measured that the shipped arm
+# refused an expert claim with `R4_5_SHAPE`, detail `n_dims[3]`, so the sentence it printed was
+# false and step 7a/7b replaced it.
 print("ggml spike qualification (GPU arm): N/A - deliberately not shipped. Section 2.5 measured the "
       "Metal backend taking the same host pointer with no copy, and also measured that its output "
       "differs from the CPU's in every element; a GPU arm needs a tolerance oracle and a different "
