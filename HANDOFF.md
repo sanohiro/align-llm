@@ -3,7 +3,46 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R6-RESIDENT-WEIGHTS (2026-08-29)
+## Active: MF-SINGLE-TOKEN-LOGITS (2026-08-29)
+
+Branch `agent/mf-single-token-logits` from `origin/main` `553563e` (PR #147, R6-RESIDENT-WEIGHTS).
+Roadmap item **36**: 31 to 35 are reserved by capabilities on branches or in draft, and this one
+merged out of order. A **bug fix**, filed by `R6-PREFIX-SUFFIX-PREFILL` 11.2;
+`docs/specs/mf-single-token-logits.md` is the authoritative record and carries the result in its
+section 5. No design gate (no CLI operand, exchanged or persisted format, or ownership boundary
+moves), no Align gap, no new Align request.
+
+**Defect.** `fill_members` and `compare_source` gathered a member's rows by token id only where
+`m.pieces[at] > 1` — the piece count used as a proxy for "this member is the per-token embedding row
+set". `build_embed_members` sets `pieces = tokens`, so a **one-token prefill** took the whole-member
+branch and read row 0 of the embedding table instead of the prompt's row: wrong logits with
+`status: ok` on four public arms — `--model-forward`, `--model-forward-gpu`, `--moe-model-forward`,
+and `--decode-step`'s prefill. `--layer-forward` and `--moe-layer-forward` gather unconditionally
+and were never affected. The resident path was **not** immune, correcting 11.2 of the filing
+document: `stage_embed_row` staged the right row while `compare_source` still expected row 0, so a
+one-token non-zero resident run with a reference reported `R5_SOURCE_DIVERGED` over a correct
+result.
+
+**Fix.** `gathered: bool` on both `GraphMembers` records, `true` from `build_embed_members` whatever
+the count and `false` from the other four builders across nine construction sites in three modules,
+and the predicate `m.gathered && at == 0` at all four sites. `gathered` is true exactly where
+`pieces > 1` was, so `T >= 2` is byte-identical.
+
+**Evidence.** Six **new** golden rows and **no changed row** — verified mechanically: all six
+corpora are pure appends, `mf-tokens-one-zero` keeps the `62a46efd…` digest the defect produced for
+every one-token run and `mf-tokens-one` is now `867ebc4e…`, which `gf-tokens-one`, `ds-tokens-one`
+and `ds-tokens-one-resident` also carry. Two mutants were run: reverting the four predicates to
+`pieces > 1` kills exactly the six new rows and nothing else, and restores the
+`R5_SOURCE_DIVERGED` false alarm on `ds-tokens-one-resident`; setting `gathered: false` at
+`model_forward.build_embed_members` kills the three-token corpus as well.
+
+**Not started / next.** Publication (`python3 scripts/pre-pr --owner-test layer-forward-smoke --
+gmake layer-forward-smoke`) and one comprehensive review. When `R6-PREFIX-SUFFIX-PREFILL` lands, its
+`T_prefix >= 2` refusal exists only because of this defect and must be lifted: drop the bound and
+`ds-suffix-prefix-one`, restore the `T_prefix = 1` case its 5.1 dropped, and correct its 11.2 (four
+arms, nine sites, the resident path not immune).
+
+## Merged checkpoint: R6-RESIDENT-WEIGHTS (PR #147, 2026-08-29)
 
 Branch `agent/r6-resident-weights`. Implemented on `agent/r6-kv-persist` head `9699848`, then
 **merged** with that branch's review repair `1971c61` and its own `main` merge `bdb34eb` — which

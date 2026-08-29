@@ -560,6 +560,102 @@ if failures:
 print("moe model forward qualification: every section 5.2 assertion PASS")
 PY
 
+# MF-SINGLE-TOKEN-LOGITS section 5 (`docs/specs/mf-single-token-logits.md`). `moe_model_forward`
+# carries its own copy of the two predicates the fix moved, so the routed arm is qualified on the
+# real model rather than inferred from the dense one: at `T = 1` the gather used to read row 0 of
+# the embedding table instead of the prompt's row and report `status: ok` over a wrong 50,304-logit
+# vector, and `compare_source` used to compare that same wrong row.
+#
+# **Tokenization is checked, not assumed**: a prepended BOS makes a one-token prompt two ids, and a
+# BOS of id 0 would mask the defect, so the leg reads `llama-debug`'s own `<stem>-tokens.bin` and
+# prints `N/A` with the ids it observed rather than substituting prompts until one fits.
+ONE_PROMPT="def"
+echo "moe model forward qualification: one-token leg, llama-debug -p '${ONE_PROMPT}'"
+"${ALIGN_LLM_LLAMA_DEBUG}" -m "${ALIGN_LLM_GGUF_MODEL}" -p "${ONE_PROMPT}" \
+  -n 1 -t 4 -ngl 0 -fa off -ctk f32 -ctv f32 -nr -c 512 \
+  --save-logits --logits-output-dir "${work_dir}/lg1" \
+  > "${work_dir}/debug1.log" 2>&1
+one_logits=$(ls "${work_dir}"/lg1/*.bin 2>/dev/null | grep -v -- '-tokens\.bin$' | head -1 || true)
+one_tokens=$(ls "${work_dir}"/lg1/*-tokens.bin 2>/dev/null | head -1 || true)
+if [ -z "${one_logits}" ] || [ -z "${one_tokens}" ]; then
+  echo "moe model forward qualification: FAIL llama-debug exited 0 and wrote no one-token logits" \
+    "under ${work_dir}/lg1" >&2
+  tail -20 "${work_dir}/debug1.log" >&2 || true
+  exit 1
+fi
+one_id=$(python3 - "${one_tokens}" <<'PY'
+import struct
+import sys
+
+with open(sys.argv[1], "rb") as handle:
+    raw = handle.read()
+ids = list(struct.unpack("<%di" % (len(raw) // 4), raw))
+if len(ids) != 1 or ids[0] == 0:
+    sys.stderr.write("moe model forward qualification: N/A the one-token prompt tokenized to %r "
+                     "on this host, which is not exactly one non-zero id; no substitute prompt is "
+                     "chosen to make the leg pass\n" % (ids,))
+else:
+    sys.stdout.write("%d" % ids[0])
+PY
+)
+if [ -z "${one_id}" ]; then
+  echo "moe model forward qualification: N/A the one-token leg needs one non-zero id (see above)"
+else
+  echo "moe model forward qualification: one-token prefill of id ${one_id} against llama-debug"
+  "${root_dir}/ggml-spike" --moe-model-forward "${work_dir}/model.alignpack" \
+    "${work_dir}/geometry.json" "${one_id}" 256 "${work_dir}/one.json" \
+    "${ALIGN_LLM_GGUF_MODEL}" - "${one_logits}" >/dev/null
+  python3 - "${work_dir}/one.json" "${one_logits}" "${one_id}" <<'PY'
+import hashlib
+import json
+import struct
+import sys
+
+document_path, logits_path, one_id = sys.argv[1:4]
+with open(document_path, "r", encoding="utf-8") as handle:
+    d = json.load(handle)
+with open(logits_path, "rb") as handle:
+    blob = handle.read()
+values = struct.unpack("<%df" % (len(blob) // 4), blob)
+
+failures = []
+
+
+def want(label, got, expected):
+    if got != expected:
+        failures.append("%s: %r, expected %r" % (label, got, expected))
+
+
+want("one-token status", d["status"], "ok")
+want("one-token verdict", d["verdict"], "EXTERNAL")
+want("one-token output.element_count", d["output"]["element_count"], len(values))
+want("one-token schedule length", len(d["schedule"]), 16)
+for row in d["schedule"]:
+    if row["t_in"] != 1 or row["t_out"] != 1:
+        failures.append("one-token schedule[%d] is %d->%d, expected 1->1"
+                        % (row["layer"], row["t_in"], row["t_out"]))
+reference = d["reference"]
+want("one-token reference.verdict", reference["verdict"], "IDENTICAL")
+want("one-token reference.nodes_identical", reference["nodes_identical"],
+     reference["nodes_compared"])
+logits = d["oracle_logits"]
+want("one-token oracle_logits.compared_pass", logits["compared_pass"], "reconciliation")
+want("one-token oracle_logits.verdict", logits["verdict"], "IDENTICAL")
+want("one-token oracle_logits.byte_identical", logits["byte_identical"], True)
+want("one-token reference logits sha256", logits["reference_sha256"],
+     hashlib.sha256(blob).hexdigest())
+want("one-token argmax", d["output"]["argmax"], max(range(len(values)), key=values.__getitem__))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("moe model forward qualification: FAIL %s\n" % line)
+    raise SystemExit(1)
+print("moe model forward qualification: one-token prefill of id %s is byte-identical to "
+      "llama-debug over %d logits (sha256 %s, argmax %d)"
+      % (one_id, d["output"]["element_count"], d["output"]["sha256"], d["output"]["argmax"]))
+PY
+fi
+
 # The two forced builds that no input can produce, run against the **real** shim so the failure
 # paths are exercised rather than reasoned about.
 for force in init compute; do

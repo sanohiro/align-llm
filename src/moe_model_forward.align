@@ -1547,6 +1547,13 @@ pub GraphMembers {
   pack: array<i64>,
   pieces: array<i64>,
   stride: array<i64>,
+  // MF-SINGLE-TOKEN-LOGITS (roadmap item 36). True on exactly the member whose `pack`/`source`
+  // are the **base of a row table** the run gathers by token id, whatever the token count. The
+  // predicate used to be `pieces > 1`, a proxy that is false for a one-token prefill and read row
+  // 0 of the embedding table instead of the prompt's row; `decode_step`'s own one-row member
+  // legitimately carries `pieces == 1` with the offset already baked in, so the two meanings of
+  // `pieces == 1` are indistinguishable and only this flag separates them.
+  gathered: bool,
 }
 
 pub fn empty_graph_members() -> GraphMembers = GraphMembers {
@@ -1564,6 +1571,7 @@ pub fn empty_graph_members() -> GraphMembers = GraphMembers {
   pack: empty_array(),
   pieces: empty_array(),
   stride: empty_array(),
+  gathered: false,
 }
 
 pub fn graph_member_label(borrow m: GraphMembers, index: i64) -> str {
@@ -1614,6 +1622,7 @@ fn build_embed_members(borrow g: layer_olmoe.Geometry, borrow e: Ends, tokens: i
     pack: pack.build(),
     pieces: pieces.build(),
     stride: stride.build(),
+    gathered: true,
   }
 }
 
@@ -1672,6 +1681,7 @@ fn build_head_members(borrow g: layer_olmoe.Geometry, borrow e: Ends) -> GraphMe
     pack: pack.build(),
     pieces: pieces.build(),
     stride: stride.build(),
+    gathered: false,
   }
 }
 
@@ -1727,6 +1737,7 @@ fn build_layer_members(
     pack: pack.build(),
     pieces: pieces.build(),
     stride: stride.build(),
+    gathered: false,
   }
 }
 
@@ -1801,7 +1812,7 @@ fn fill_members(
     loop {
       if piece >= m.pieces[at] { break }
       span := m.stride[at]
-      source_at := if m.pieces[at] > 1 {
+      source_at := if m.gathered && at == 0 {
         m.pack[at] + tokens.ids[piece] * span
       } else {
         m.pack[at]
@@ -1885,7 +1896,7 @@ fn compare_source_members(
     loop {
       if piece >= m.pieces[at] { break }
       span := m.stride[at]
-      source_at := if m.pieces[at] > 1 {
+      source_at := if m.gathered && at == 0 {
         m.source[at] + tokens.ids[piece] * span
       } else {
         m.source[at]

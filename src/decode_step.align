@@ -1692,6 +1692,7 @@ fn decode_embed_members(
     pack: pack.build(),
     pieces: pieces.build(),
     stride: stride.build(),
+    gathered: false,
   }
 }
 

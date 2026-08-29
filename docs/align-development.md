@@ -2316,6 +2316,51 @@ graph already contains. `scripts/ggml_shim_stub.c` gains two forced-failure buil
 shared region — `engine+compute-step2` and `engine+writeback-offset` — which are never defined in an
 ordinary build.
 
+## One-token prefills (MF-SINGLE-TOKEN-LOGITS)
+
+`docs/specs/mf-single-token-logits.md`. Until this fix a prefill of exactly one token read **row 0
+of the embedding table** instead of the prompt's row, and reported `status: ok` over the resulting
+logits. The proxy is gone: `GraphMembers` now carries `gathered: bool`, set `true` by
+`build_embed_members` in `src/model_forward.align` and `src/moe_model_forward.align` whatever the
+token count and `false` by every other builder, and the two gather predicates in each module read
+
+```text
+source_at := if m.gathered && at == 0 { base + tokens.ids[piece] * span } else { base }
+```
+
+rather than `m.pieces[at] > 1`. **Do not reintroduce a count-derived test for "gather this member
+by id".** `decode_step.decode_embed_members` legitimately builds a one-row member with
+`pieces = 1` and `token * row_bytes` already baked into `pack`/`source`, so `pieces == 1` has two
+meanings and only the flag separates them.
+
+Four arms read those predicates and were affected: `--model-forward`, `--model-forward-gpu` (through
+`render_parts` -> `execute`), `--moe-model-forward`, and `--decode-step`'s prefill.
+`--layer-forward` and `--moe-layer-forward` were **not** — they gather unconditionally on member 0.
+The resident weight path was not immune: `stage_embed_row` staged the correct row while
+`compare_source` still expected row 0, so a one-token non-zero resident run **with** a reference
+reported `R5_SOURCE_DIVERGED` over a correct result. Both predicates therefore move together.
+
+`gathered` is true exactly where `pieces > 1` was, so every `T >= 2` document is byte-identical and
+the six checked-in golden corpora are unchanged byte for byte. The regression is six **new** rows in
+`gmake layer-forward-smoke`: `mf-tokens-one` with its `mf-tokens-one-zero` control, `gf-tokens-one`,
+`mm-tokens-one`, and the `ds-tokens-one` / `ds-tokens-one-resident` pair oracle R compares. They run
+outside each block's `ENGINE_CASES` loop, whose assertions are arithmetic on that block's
+three-token prompt.
+
+Both real-model qualifications gained a one-token leg on the same opt-in inputs they already use:
+
+```sh
+gmake model-forward-qualification       # Qwen2, --model-forward
+gmake moe-model-forward-qualification   # OLMoE, --moe-model-forward
+```
+
+Each captures `llama-debug -p def --save-logits`, reads the companion `<stem>-tokens.bin`, and
+requires **exactly one id, and that id != 0** before running the arm; anything else prints one `N/A`
+line naming the ids it observed rather than substituting prompts until one fits, because a
+prepended BOS makes a one-token prompt two ids and a BOS of id 0 would mask the defect. The arm is
+then run at that id with the reference and the one-token logits blob, and
+`oracle_logits.byte_identical` must be `true`.
+
 ## The aarch64 platform-profile gates
 
 C7 evidence is target-bound, so each required non-x86 environment has its own reviewed profile.

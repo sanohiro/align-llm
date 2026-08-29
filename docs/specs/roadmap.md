@@ -604,6 +604,33 @@ The current forward delivery order is:
     removes the per-step weight sweep item 29 left in place, and prefix-keyed lookup on top of it is
     the next capability toward the TTFT gate.
 
+36. **MF-SINGLE-TOKEN-LOGITS — the one-token prefill reads the prompt's embedding row.** Design,
+    blast radius, and results in
+    [`mf-single-token-logits.md`](mf-single-token-logits.md). A bug fix, filed by
+    R6-PREFIX-SUFFIX-PREFILL and numbered 36 because **31 to 35 are reserved by capabilities that
+    are on branches or in draft at the time of writing** and this one merged out of order; the
+    numbering is a name, not a delivery order. `fill_members` and `compare_source` gathered a
+    member's rows by token id only where `pieces > 1` — the piece count used as a **proxy** for
+    "this member is the per-token embedding row set". `build_embed_members` sets `pieces = tokens`,
+    so a one-token prefill took the whole-member branch and read **row 0 of the embedding table**
+    instead of the prompt's row: wrong logits with `status: ok`. Four public arms were affected —
+    `--model-forward`, `--model-forward-gpu`, `--moe-model-forward`, and `--decode-step`'s prefill —
+    across nine `GraphMembers` construction sites in three modules; `--layer-forward` and
+    `--moe-layer-forward` were not, because they gather unconditionally. The resident path was not
+    immune either: `stage_embed_row` staged the right row while `compare_source` still expected
+    row 0, so a one-token non-zero resident run **with** a reference reported `R5_SOURCE_DIVERGED`
+    over a correct result. The fix is a `gathered: bool` on both `GraphMembers` records and the
+    predicate `m.gathered && at == 0`, which is true exactly where `pieces > 1` was, so `T >= 2` is
+    byte-identical and the whole existing six-corpus golden is unchanged byte for byte. The
+    regression is therefore **six new rows** rather than a changed one — a one-token control at
+    id 0 and a one-token non-zero id on each affected arm, plus the streamed/resident equality pair
+    whose `R5_SOURCE_DIVERGED` false alarm disappears — and the real-model half is
+    `--model-forward` at one non-zero token byte-identical to `llama-debug --save-logits` on the
+    same one-token prompt, with the tokenization checked rather than assumed. Owner
+    `gmake layer-forward-smoke`; focused `gmake model-forward-qualification` and
+    `gmake moe-model-forward-qualification`. No Align gap and no design gate: no CLI operand,
+    persisted format, or ownership boundary moves.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
