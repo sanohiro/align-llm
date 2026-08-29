@@ -318,9 +318,20 @@ from that attempt's own redacted validation status, summary, stdout, and stderr,
 generation child a second time, and validates again. It is a diagnostics-driven second attempt: the
 failing edit set is not reachable outside the adapter, which is a frozen corpus member.
 `PROMPT_TASK_ROW` moves to `schema_version: 2` with an ordered per-attempt list; version-1 rows keep
-their exact meaning and are never migrated, and a `PromptTaskRowV2` record exists precisely because
-the pinned `json.decode` requires every declared field exactly once, so one record cannot decode
-both shapes.
+their exact meaning and are never migrated. There is **one** `PromptTaskRow` record, not a
+version-2 twin: its three version-2 members are declared `Option`, the canonical encoder omits an
+`Option::None`, and the frozen version-1 documents therefore round-trip byte-identically. Presence
+is never how the version is chosen — the scorer reads `schema_version` first and then requires
+every version-2 member to be present at version 2 and absent at version 1, rejecting either
+mismatch.
+
+Each attempt is its own contained invocation, so each one carries the four digests of the trace
+records it produced: `snapshot_request_sha256`, `before_snapshot_result_sha256`,
+`after_snapshot_result_sha256`, and `input_snapshot_sha256`, present exactly when the attempt ran.
+`snapshot_attestations` still holds one record per row, so without them a repair invocation's
+records would be referenced by nothing. Naming is not enough and is not what is checked: each
+digest must resolve to exactly one persisted record of that row's task, and the resolved records
+face the same closure and artifact-equality rules the row's attestation faces.
 
 Two repair loops therefore exist, deliberately: the in-process Align loop above, whose provider is a
 `fn (str, str, i64) -> bool` input boundary, and the cross-process evaluator loop, whose provider is

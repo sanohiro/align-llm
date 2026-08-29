@@ -120,6 +120,24 @@ def bind_declared_inputs(result: dict[str, Any]) -> None:
         attestation["before_input_snapshot_sha256"] = input_digest
         attestation["after_input_snapshot_sha256"] = input_digest
         bind(attestation)
+    # C4-REPAIR-MEASURED: at version 2 a row may run more than one contained invocation, and one
+    # positional attestation per row can no longer reach the second one's trace records. Every
+    # attempt that ran therefore names them itself, and the fixture binds them to the same
+    # persisted documents the attestation names, so an attempt digest resolves inside this
+    # document's own pools exactly as a real run's does.
+    for row in result["rows"]:
+        attempts = row.get("attempts")
+        if not attempts:
+            continue
+        for attempt in attempts:
+            if attempt["status"] == "SKIPPED":
+                continue
+            attempt["snapshot_request_sha256"] = request_digest
+            attempt["before_snapshot_result_sha256"] = snapshot_digest
+            attempt["after_snapshot_result_sha256"] = snapshot_digest
+            attempt["input_snapshot_sha256"] = input_digest
+            bind(attempt)
+        bind(row)
     bind(result["workspace_preflight_request"])
     bind(result["workspace_preflight"])
     for source_name, artifact_name in (
@@ -195,6 +213,14 @@ def attempt_record(
         "rendered_prompt_sha256": rendered,
         "repair_prompt_source": copy.deepcopy(repair_prompt_source),
         "adapter_request_sha256": adapter_request,
+        # The four trace digests of this attempt's own contained invocation, in the producer's
+        # declared order. They are filled by `bind_declared_inputs` once the trace streams are
+        # bound, because an attempt must name records this document actually persists — a
+        # synthetic digest here would make the whole rule vacuous.
+        "snapshot_request_sha256": None,
+        "before_snapshot_result_sha256": None,
+        "after_snapshot_result_sha256": None,
+        "input_snapshot_sha256": None,
         "generation_request": copy.deepcopy(measurement["generation_request"]),
         "seed_attestation": copy.deepcopy(measurement["seed_attestation"]),
         "paired_seed": paired_seed,

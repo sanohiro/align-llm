@@ -605,8 +605,8 @@ The current forward delivery order is:
     the next capability toward the TTFT gate.
 
 31. **C4-REPAIR-MEASURED — one bounded model repair attempt in the provider-backed measurement
-    path.** The first Track A capability since the C6-MEASURED wave, and the one that closes C4's
-    roadmap gate with a model instead of a scripted patch. Design and results in
+    path.** The first Track A capability since the C6-MEASURED wave, and the one that asks whether
+    C4's roadmap gate can be closed with a model instead of a scripted patch. Design and results in
     [`c4-repair-measured.md`](c4-repair-measured.md), which owns the contract ledger, closure
     matrix, repair-prompt contract, cost ceiling, gate statement, and the implementation record.
     The design gate triggered on the `PROMPT_TASK_ROW` schema-2 per-attempt identity, a new frozen
@@ -623,17 +623,29 @@ The current forward delivery order is:
     members of `canonical-v1`, so the loop is evaluator-owned and the corpus is a new freeze,
     `eval/prompt/canonical-v1r/` over the same three tasks with `maximum_repair_loops: 1` so the
     manifest itself is the cap. The 24 shared file-set members carry identical digests in both
-    manifests, and `make prompt-gate-check` staying green is the machine-checkable proof that C6's
-    merged evidence was not disturbed. The gate: on 3 tasks x 2 variants x 2 paired samples at
-    temperature 0 and `PAIRED_FIXED`, at least one (task, variant) pair fails at attempt 1 and
-    passes at attempt 2 in **both** samples. Ten of the twelve frozen C6 rows fail at attempt 1, so
-    the arm is substantial. **A measured negative is a published result, not a hidden one.** No
-    speed claim is made: the two C6 timings for one identical prompt at temperature 0 differ by
-    3.5x (81.12 s and 23.40 s), so `n=2` supports no baseline, and the version-2 totals are a
-    superset of the version-1 ones anyway. Recorded run-cost ceiling 60 minutes, expected 15-40, at
-    most 22 provider calls. Named focused qualification `make c4-repair-gate`; it joins no
-    aggregate. Multi-repair, corpus expansion, failure-memory feedback, and converging the Align
-    `verification_loop`/`repair` modules with this loop are deferred with resume conditions.
+    manifests. The gate: on 3 tasks x 2 variants x 2 paired samples at temperature 0 and
+    `PAIRED_FIXED`, at least one (task, variant) pair fails at attempt 1 and passes at attempt 2 in
+    **both** samples.
+
+    **The gate is `NOT_MET`, and that is the published result.** The run made all 22 provider calls
+    the ceiling allowed — 12 initial plus 10 repair — in 881.7 s (14 min 42 s) against a recorded
+    60-minute ceiling. Every one of the ten repair prompts assembled from the run's own persisted
+    diagnostics, re-derived byte-exactly against its own output, and fitted the budget at 8,123 to
+    16,129 bytes of 65,536, so no section was ever dropped. **None of the ten recovered:**
+    `repair_recovery_count` and `repair_recovery_paired_count` are both 0. The mechanism is
+    delivered — measured, bounded, contained, re-derivable — and **C4's gate remains unmet by a
+    model.** In the one failure mode where the model emitted an applicable patch at all
+    (`record-codec-round-trip`, all four rows), attempt 2's patch had the same 1,008 bytes and the
+    same observable `TEST` failure as attempt 1; only `patch_size_bytes` is persisted, so that is an
+    inference and not a verified identity, and a patch digest is now a named deferral. In the other
+    mode (`layer-precedence-frozen-module`, all four rows) attempt 1 already produced an empty
+    patch, so more diagnostics were not the missing input. That splits the case for carrying the
+    failing edit set into the repair prompt: it addresses the first mode and not the second.
+    **No speed claim is made** — the 22 calls span 8.13 s to 73.82 s, a 9.1x ratio, and the
+    version-2 totals are a superset of the version-1 ones anyway. Named focused qualification
+    `make c4-repair-gate`; it joins no aggregate. Multi-repair, corpus expansion, failure-memory
+    feedback, a persisted patch digest, and converging the Align `verification_loop`/`repair`
+    modules with this loop are deferred with resume conditions.
 
 ### Status (2026-08-28)
 
@@ -843,10 +855,16 @@ repair
 ### First measured consumer: C4-REPAIR-MEASURED
 
 C4's gate was met in mechanism by `make verify-loop-smoke`, whose repair patch is a checked-in
-deterministic input rather than a model. `docs/specs/c4-repair-measured.md` is the authoritative
-plan for meeting it with a real provider on the C6 measurement path. It is provider-independent —
-no provider module changes — and it does not modify `src/repair.align` or
-`src/verification_loop.align`; converging the two loops is a named deferral in that document.
+deterministic input rather than a model. Item 31 above ran it with a real provider on the C6
+measurement path, and `docs/specs/c4-repair-measured.md` section 10.3 is the authoritative record
+of what came back. **The loop is delivered and C4's gate is still not met by a model.** Ten repair
+attempts were rendered from the run's own diagnostics, measured, bounded, and contained; none
+recovered, so `repair_recovery_paired_count` is 0 and the qualification's verdict is `NOT_MET`.
+That is a measured negative, published as a result. It is provider-independent — no provider module
+changes — and it does not modify `src/repair.align` or `src/verification_loop.align`; converging
+the two loops is a named deferral in that document. The next capability toward a model-met C4 gate
+is the one that carries the failing edit set into the repair prompt, which needs either a re-freeze
+of `canonical-v1` or a second reviewed corpus-member adapter.
 
 ---
 

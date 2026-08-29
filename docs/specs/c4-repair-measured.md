@@ -441,6 +441,10 @@ TaskAttemptRecord:
   rendered_prompt_sha256
   repair_prompt_source: Option<RepairPromptSource>   Some exactly when attempt_kind == REPAIR
   adapter_request_sha256
+  snapshot_request_sha256                  present iff the attempt ran
+  before_snapshot_result_sha256            present iff the attempt ran
+  after_snapshot_result_sha256             present iff the attempt ran
+  input_snapshot_sha256                    present iff the attempt ran
   generation_request: GenerationRequestIdentity
   seed_attestation: SeedCapabilityAttestation
   paired_seed: i64
@@ -465,9 +469,24 @@ RepairPromptSource:
   content_sha256
 ```
 
+**The four trace digests are the attempt's own contained invocation.** Each attempt seals its own
+prompt and runs the validation runner in its own workspace, so it produces its own
+`SNAPSHOT_REQUEST`, its own before/after `SNAPSHOT_RESULT`, and its own `TASK_INPUT_SNAPSHOT`.
+`snapshot_attestations` stays **one record per row** because its schedule check binds it
+positionally, so it reaches the first invocation only; without these four, a repair invocation's
+trace records would be referenced by nothing. Naming is not sufficient and is not the rule: each
+digest must resolve to **exactly one** persisted record of that row's task, the before and after
+results must be the same observation, both must be closed over the resolved request, and the input
+snapshot must be that task's and carry the snapshot's own artifact digests — the same checks the
+row's attestation is held to (`verifier_attempt_trace_cross_valid`,
+`src/prompt_score.align`). The `input_snapshots` upper bound therefore moves from one per row to
+one per **invocation**; at version 1 that is the same bound, because a version-1 row runs exactly
+once.
+
 **A `SKIPPED` attempt carries only identity, not a run.** `rendered_prompt_sha256`,
-`adapter_request_sha256`, `generation_request`, `seed_attestation`, `measurement`,
-`measurement_sha256`, and `adapter_overhead_ns` are all absent; `adapter_elapsed_ns` is `0`;
+`adapter_request_sha256`, the four trace digests, `generation_request`, `seed_attestation`,
+`measurement`, `measurement_sha256`, and `adapter_overhead_ns` are all absent;
+`adapter_elapsed_ns` is `0`;
 `repair_preparation_ns` records the assembly work that reached the skip decision;
 `repair_prompt_source` is present with its `dropped_sections` when the skip was
 `REPAIR_PROMPT_BUDGET`, and absent otherwise. A `SKIPPED` attempt is never counted in
@@ -477,9 +496,10 @@ RepairPromptSource:
 final attempt's — ladder row 18 asserts it. One measurement is duplicated per multi-attempt row,
 which is deliberate: version-1-shaped consumers keep reading `row.measurement` unchanged, and the
 per-attempt copy keeps attempt 1's status, diagnostics, and patch size retrievable after attempt 2
-overwrites the row-level view. At 22 measurements for a full gate run the result document grows to
-roughly three times the frozen 283,727 bytes, far inside `RESULT_LIMIT` (268,435,456) and the
-evidence sidecar inside `EVIDENCE_LIMIT` (8,388,608), so `compact_oversized_result`'s
+overwrites the row-level view. At 22 measurements the measured gate run's result document is
+614,438 bytes against the frozen 283,727 — **2.17x**, not the "roughly three times" this section
+estimated before the run — far inside `RESULT_LIMIT` (268,435,456), with the evidence sidecar at
+16,756 bytes inside `EVIDENCE_LIMIT` (8,388,608), so `compact_oversized_result`'s
 `PROMPT_TRACE_OVERFLOW` path is not reached and is not relied upon.
 
 `PROMPT_EVALUATION_RESULT` moves to `schema_version: 2` in lockstep. **A document's rows must all
@@ -520,22 +540,31 @@ At version 1 the authority is unchanged: `row.measurement.repair_loop_count` is 
 must not be given compatibility defaults for them.** The scorer selects by version, not by presence.
 
 **Decode dispatch is by version, before field decoding, and it is a real constraint on the Align
-side.** `src/prompt_artifacts.align:614-627` declares `PromptTaskRow` with an exact field set, and
-the pinned `json.decode` requires every declared field exactly once while skipping undeclared keys.
-One record therefore cannot decode both shapes: declaring `attempts` as required would reject every
-version-1 row, and omitting it would silently drop the version-2 fields while they still contribute
-to `content_sha256`. The contract is:
+side.** The pinned `json.decode` requires every declared field exactly once while skipping
+undeclared keys, so a record whose version-2 members were *required* would reject every version-1
+row, and one that simply omitted them would drop fields that still contribute to `content_sha256`.
 
-- `PromptTaskRow` keeps its exact version-1 field set, unchanged.
-- A new `PromptTaskRowV2` declares the superset of section 3.2.
-- The container's `schema_version` is read first and selects the record; a row whose own
-  `schema_version` disagrees with the container's is rejected before any field decode.
+**One record with `Option` members ships, and there is no `PromptTaskRowV2`.** This is what is in
+the tree, and it is stated here rather than in the deviation list alone (section 10.2 deviation 10
+records how the choice was reached). `src/prompt_artifacts.align` declares a single
+`PromptTaskRow` whose version-2 members — `repair_loop_count`, `generation_to_passing_patch_ns`,
+and `attempts` — are `Option`. The canonical encoder omits an `Option::None`, so the frozen
+version-1 documents decode and re-encode byte-identically and their persisted digests still
+verify. The contract is:
+
+- `PromptTaskRow` decodes both shapes; every version-2 member is `Option` on the wire.
+- **Presence is never how the version is detected.** The scorer reads `schema_version` first and
+  then requires every version-2 member to be present at version 2 and absent at version 1,
+  rejecting either mismatch (`verifier_row_v2_members_absent`). There is no compatibility default
+  and no presence sniffing.
+- A row whose own `schema_version` disagrees with the container's is rejected before any field
+  decode.
 - Neither shape is ever migrated into the other, per `c6-prompt-context-optimizer.md`'s
   schema-version-1 rule.
 
-Implementation confirms at the pinned compiler that a version peek before full record decode is
-expressible with the shipped surface. If it is not, that is a genuine Align gap, filed in
-`docs/align-requests.md` under the normal lifecycle — not worked around with a permissive record.
+The version peek this section once flagged as a possible Align gap is a non-issue under that
+design: the row's own `schema_version` is an ordinary decoded field, read before any version-2
+member is consulted. No unshipped Align surface is consumed.
 
 ### 3.4 New and reused corpus assets
 
@@ -717,7 +746,7 @@ First applicable row wins. Rows 1–9 run before any provider call or any worksp
 | 8 | The `PROVIDER_SERVICE_PROBE` document is present, decodes, and matches `provider_service_revision` | `ERROR` / `PROVIDER_IDENTITY` |
 | 9 | Prompt rendering and generation-request identity for attempt 1 — unchanged | as today |
 | — | *attempt 1 runs* | |
-| 10 | The adapter result decodes as `TASK_MEASUREMENT` v1 with `repair_loop_count == 0` | `ERROR` / `ADAPTER` |
+| 10 | The adapter result decodes as `TASK_MEASUREMENT` v1, and — **only when the task's `maximum_repair_loops >= 1`** — with `repair_loop_count == 0` (deviation 1; enforced identically by `scripts/prompt-gate-validator.py` and `src/prompt_score.align`) | `ERROR` / `ADAPTER` |
 | 11 | The evaluator's independently rendered prompt digest equals the adapter's `rendered_prompt_sha256` | `ERROR` / `ADAPTER` |
 | 12 | If `status != FAIL`, or `maximum_repair_loops == 0`: the row closes with one attempt | — |
 | 13 | Repair inputs are available: at least one of `measurement.diagnostic_summary`, `diagnostic_stdout`, `diagnostic_stderr` is non-empty, and attempt 1's cleanup and containment both passed | attempt 2 `SKIPPED` / `REPAIR_INPUT_UNAVAILABLE` |
@@ -729,6 +758,9 @@ First applicable row wins. Rows 1–9 run before any provider call or any worksp
 | 18 | `row.measurement` is byte-equal to the final attempt's measurement | `INVALID_INPUT` / `MEASUREMENT_BINDING` |
 | 19 | The section 3.6 sums are exact, within bounds, and `None`/`Some` agrees with the §5.2 state machine | `INVALID_INPUT` / `TIMING` |
 | 20 | One `PROMPT_EXPECTED_INPUT_DIGEST` per attempt: no duplicate, missing, or extra identity | `INVALID_INPUT` / `EVIDENCE_BINDING` |
+| 21 | Every attempt that ran carries all four trace digests, and a `SKIPPED` attempt carries none of them | `INVALID_INPUT` / `SCHEMA` |
+| 22 | Each of the four resolves to **exactly one** persisted record of that row's task; before and after are the same observation; both are closed over the resolved request; the input snapshot is that task's and carries the snapshot's own artifact digests | `INVALID_INPUT` / `SCHEMA` |
+| 23 | `input_snapshots` is bounded by the run's **invocation** count, not its row count | `INVALID_INPUT` / `SCHEMA` |
 
 Rows 12, 13, and 14 are terminal-but-not-error: the row closes with a recorded `SKIPPED` repair
 attempt carrying its reason. A skipped repair is a measured outcome; it never becomes a silent
@@ -861,6 +893,16 @@ and invite the model to repair a failure it can only half see. Every dropped sec
 preamble, headers, task prompt, and `STATUS`, the repair attempt is `SKIPPED` /
 `REPAIR_PROMPT_BUDGET` and no provider call is made.
 
+**`included_sections` and `dropped_sections` are not a partition of the four kinds.** `included` is
+what the assembled prompt carries; `dropped` is what this ladder removed. A section whose source is
+**empty** was never emitted and was never a drop candidate, so it appears in neither list — the
+adapter produced nothing for it, and recording that as a "drop" would report a budget decision that
+was never taken. The measured run shows the case: all four `layer-precedence-frozen-module` repairs
+have an empty `diagnostic_stdout` and record `included_sections: [STATUS, SUMMARY, STDERR]` with
+`dropped_sections: []`. A consumer asking "was this section available at all" must read
+`attempt.measurement`; the two lists do not answer it. Re-derivation (section 4.4) is unaffected,
+because it consumes `included_sections` and the measurement fields directly.
+
 **Truncation is only ever a whole-section drop, never a byte cut**, so no UTF-8 code point is ever
 split by this capability. The adapter's own UTF-8-safe truncation at 16,384 already happened before
 these bytes were persisted, with redaction applied first — `bounded_diagnostic` in
@@ -939,9 +981,9 @@ The narrow owners. None of these calls a provider; all are hosted-check candidat
 | `scripts/run-prompt-score-smoke` | Version-2 row decode; version-1 row decode **unchanged**; mixed-version container rejection; the row-level vs measurement-level `repair_loop_count` selection; `REPAIR_LOOPS` at `repair_loop_count: 2` against `maximum_repair_loops: 1`; the new aggregates; `repair_recovery_paired_count` on all four sample patterns |
 | `scripts/run-prompt-render-parity-smoke` | The section 4.4 re-derivation as a golden: fixed synthetic attempt-1 fields → an exact repair-prompt byte golden; each drop-ladder step as its own golden; the budget-exhaustion `SKIPPED` case; a redaction case proving no credential, endpoint, or evaluator-constructed path survives assembly |
 | `scripts/run-prompt-gate-validator-smoke` | Version-2 evidence with one expected-input digest per attempt; duplicate/missing/extra attempt identity rejection; the new aggregates recomputed by `rescore`; the variant-symmetric `REPAIR_LOOPS` check; **and a regression asserting the frozen version-1 chain still validates and rescores byte-identically** |
-| `make prompt-gate-check` | **Unchanged and must stay green.** Its passing is the machine-checkable proof that `canonical-v1`, `eval/prompt/gate/`, `run-coding-task.py`, and `prompt-measurement-adapter.py` were not moved |
+| `make prompt-gate-check` | **Unchanged and must stay green.** Its passing is the machine-checkable proof that `canonical-v1`, `eval/prompt/gate/`, `run-coding-task.py`, and `prompt-measurement-adapter.py` were not moved. **It was not run on the implementing host** — it needs a source bundle and the Linux process-containment floor. Section 10.3 records the `N/A` and names the substitute evidence for each claim it would have carried; hosted CI owns the full proof |
 | `make check`, `make fmt` | The Align side: `src/prompt_model.align`, `src/prompt_artifacts.align`, `src/prompt_score.align`, `src/prompt_evaluate.align` (the section 3.10 pin and window) |
-| Row-bearing fixtures | `src/prompt_score_smoke.align`, `src/prompt_score_prefix_smoke.align`, `src/prompt_verifier_smoke.align`, and `eval/fixtures/c6-prompt-state/templates.jsonl` each gain version-2 cases and keep their version-1 cases unchanged |
+| Row-bearing fixtures | **Narrowed during implementation, and recorded as deviation 18.** `src/prompt_verifier_smoke.align` is the single Align owner of every version-2 row case: it gains thirteen (`complete_result_v2` defects 0-12) and keeps its version-1 cases unchanged. `src/prompt_score_smoke.align` and `src/prompt_score_prefix_smoke.align` are unchanged and stay version-1 owners, because `prompt_score.verify_result` is the one entry point every version-2 rule is reached through, and duplicating the row fixtures across three Align smokes would have produced three copies of one assertion. `eval/fixtures/c6-prompt-state/templates.jsonl` is unchanged: it is a frozen version-1 fixture and deviation 11 records why the repair-template pairing rule is enforced at version 2 only, precisely so it stays frozen |
 
 The version-1 back-compatibility cases are not optional politeness. `prompt-gate-check` re-decodes
 the frozen version-1 evaluation with the *current* scorer; a version-2-only decoder deletes C6's
@@ -1009,8 +1051,11 @@ repository family, one language.
 
 If `repair_recovery_paired_count == 0`, the reported result is: the loop ran, N repair attempts were
 made and measured, none recovered, and here are the realized repair prompts' digests, the realized
-diagnostics, and the model's realized second-attempt edits. That is a **negative result about this
-model on these three tasks** and it is published as one.
+diagnostics, and each attempt's realized `patch_size_bytes`, status, and failure kind. **The
+second-attempt edits themselves are not among them** — the patch lives only inside the frozen
+adapter (2.6), so the row records its size and its outcome and not its content. That is a
+**negative result about this model on these three tasks** and it is published as one; section 10.3
+states which conclusions that evidence does and does not support.
 
 ### 5.4 Deferred surfaces
 
@@ -1022,6 +1067,7 @@ model on these three tasks** and it is published as one.
 | More than one repair attempt | Each extra attempt multiplies run cost by up to 81 s per row and reopens `c6-prompt-context-optimizer.md` §9's "exactly one bound provider generation call per sample" coverage argument, which this capability already stretches to two | A `MET` gate at one repair, plus a measured recovery rate that shows a second attempt would recover a task the first did not |
 | Corpus expansion | Three tasks is the frozen corpus; a fourth is a new fixture, a new freeze, and a new baseline activation | A later Track A capability. No `C9` label exists in this repository today; if one is created it registers in `docs/specs/roadmap.md` §2 |
 | Failure-memory feedback between attempts | C5 memory would make attempt 2's prompt depend on prior *runs*, destroying section 4.4's re-derivability from a single row | A design that persists the selected memory events into the attempt record so re-derivation still closes |
+| A patch digest, or the patch body, in `TaskMeasurement` | Only `patch_size_bytes` is persisted, so "attempt 2 re-emitted attempt 1's patch" is an inference from equal sizes and identical observable failures, never a verified fact (section 10.3). `TASK_MEASUREMENT` is at `schema_version: 1` and is written by the frozen adapter, so adding a field there is the same frozen-corpus problem as the edit set itself | The same re-freeze or second reviewed adapter that unblocks the edit set. A digest is the cheap half and should land first: it costs one field and settles the question the `NOT_MET` result raised without carrying model output into evidence |
 | Raising `maximum_repair_loops` above 1 in the corpus | Unenforced headroom no test can reach (section 3.4) | Multi-repair above |
 | Relaxing `maximum_repair_loop_regression_count` | Weakening an acceptance policy to make a measurement look better is exactly backwards (section 3.7) | A design that shows the rule is wrong, not that a run failed it |
 | Converging `src/repair.align` / `src/verification_loop.align` with this loop | Two loops now exist: an Align in-process loop with a scripted provider, and an evaluator cross-process loop with a real one. Merging them is a real capability, not a refactor | After this gate resolves either way; the answer may be that the Align loop becomes the provider-backed one |
@@ -1137,10 +1183,10 @@ unless marked **(S)** for `run-prompt-score-smoke`, **(R)** for `run-prompt-rend
 
 | Cell | Required implementation | Exact regression or evidence |
 | --- | --- | --- |
-| Construction | `PromptTaskRowV2`, `TaskAttemptRecord`, `RepairPromptSource`, `AttemptKind`, `AttemptStatus`, `SkipReason` declarations, version-dispatched decode (§3.3), label mappings, canonical digests | `score-attempt-records` (S), `score-version-dispatch` (S), `score-label-map` (S) |
+| Construction | The version-2 members of `PromptTaskRow` as `Option` (deviation 10 — **not** a `PromptTaskRowV2` twin), `TaskAttemptRecord` including its four trace digests, `RepairPromptSource`, `AttemptKind`, `AttemptStatus`, `SkipReason` declarations, version-dispatched decode (§3.3), label mappings, canonical digests | `score-attempt-records` (S), `score-version-dispatch` (S), `score-label-map` (S) |
 | Success | Version-2 decode and score; version-1 decode **byte-identical to today**, including a rescore of the frozen gate evidence | `score-v2-decode` (S), `score-v1-unchanged` (S), `score-frozen-rescore` (G) |
 | Failure | `REPAIR_LOOPS` at `repair_loop_count: 2` against `maximum_repair_loops: 1`, for **both** variants; repair-loop regression counted unchanged | `score-repair-loops-candidate` (S), `score-repair-loops-parent` (S), `score-repair-regression` (S) |
-| Malformed input | Mixed-version container; non-dense `attempt_index`; two `INITIAL`; two `REPAIR`; `row.measurement` not equal to the final attempt's; `attempts` longer than `1 + maximum_repair_loops` | `score-attempt-*` (S) |
+| Malformed input | Mixed-version container; non-dense `attempt_index`; two `INITIAL`; two `REPAIR` that ran; `row.measurement` not equal to the final attempt's; `attempts` longer than `1 + maximum_repair_loops`; an attempt that ran attesting no trace record; a trace digest that resolves to no record; a persisted trace record nothing references | `score-attempt-*` (S) |
 | Early exit | First-applicable ladder order preserved; a version-1 row never consults version-2 fields | `score-ladder-order` (S), `score-v1-no-v2-fields` (S) |
 | Cleanup | Bounded slice allocation checked before use; owned records outlive their input buffer as today | `score-attempt-lifetime` (S) |
 | Aggregates | Task and corpus repair aggregates recomputed by the pure verifier, never trusted from the document | `score-aggregate-recompute` (S), `score-recovery-paired` (S) |
@@ -1176,7 +1222,9 @@ Every code introduced by section 3.8 — `SCHEMA`, `DIGEST`, `SOURCE`, `REPAIR_B
 `TIMING`, `EVIDENCE_BINDING` — has exactly one owning case above, and the smoke asserts coverage in
 **both directions**: every declared code is reached by some case, and no case reaches an undeclared
 code. Before review, the matrix-to-diff pass replaces each planned case name with its actual file
-and line, or records an explicit deferral in this document.
+and line, or records an explicit deferral in this document. **That pass is section 9.2**; the case
+names in the tables above are the plan's, and 9.2 is where each one is bound to the file and line
+that actually carries it, or to its deferral.
 
 ---
 
@@ -1241,8 +1289,16 @@ One pass, ledger against prose, performed before this document was finished.
 
 ## 8. Reconciliation drafts
 
-Not applied on this branch. Each is a draft for the reconciliation commit of the capability that
-implements this plan.
+**Applied.** These were drafts while this document was design-only; the capability that implements
+the plan applied all three, so each block below is kept only as the record of what was drafted.
+The shipped text is authoritative and is not here:
+
+- section 8.1 shipped as `docs/specs/roadmap.md` item 31 and the `## C4: Verification Loop`
+  addition, both rewritten against the measured result;
+- section 8.2's `HANDOFF.md` section was superseded before it was ever applied — the draft below
+  describes a design-only branch, and the branch has since implemented, run, and published the
+  gate. `HANDOFF.md` at head is the record;
+- section 8.3 shipped in `docs/align-development.md`.
 
 ### 8.1 `docs/specs/roadmap.md` — new forward-order item 31
 
@@ -1292,6 +1348,11 @@ no provider module changes — and it does not modify `src/repair.align` or
 ```
 
 ### 8.2 `HANDOFF.md` — replacement "Active" section
+
+**Obsolete draft, kept as a record.** It was written when the branch was design-only. Every
+"will do" below has been done, next action 1 through 5 are complete, and item 4's
+`make prompt-gate-check` was **not** run — section 10.3 records that and names the substitute
+evidence. Read `HANDOFF.md` at head instead.
 
 ```markdown
 ## Active: C4-REPAIR-MEASURED (2026-08-29)
@@ -1389,7 +1450,9 @@ file, and a Linux container, so it is a focused qualification and joins no aggre
 1. **Ledger-to-prose.** Section 7, ten items, complete.
 2. **Matrix-to-diff preparation.** Section 6 names a planned case for every applicable cell and
    section 6.6 fixes the both-directions coverage rule; the pass that replaces planned names with
-   actual file and line runs before review.
+   actual file and line runs before review. **That pass has now been run** — section 9.2 records
+   it, section 6's tables carry the actual file and line or an explicit deferral, and deviations
+   15, 16, and 18 record the three cells whose owner moved or whose case is deferred.
 3. **Source-of-truth check.** `c6-prompt-context-optimizer.md` keeps ownership of every reused
    artifact; this document owns only the additions of section 1.2. Sections 8.1 and 8.3 are the only
    places other documents change.
@@ -1403,6 +1466,71 @@ file, and a Linux container, so it is a focused qualification and joins no aggre
    "Cross-cutting closure matrix", "Evaluation and repository integrity", and "Align correctness"
    sections all trigger. One comprehensive review of the stable candidate.
 
+### 9.2 Matrix-to-diff pass
+
+Section 6.6 requires each planned case name to be replaced by its actual file and line, or by an
+explicit deferral, before review. This is that pass, run against the repair head. Line numbers are
+the head's; the labels are literal strings in the named files, so a moved line is still findable.
+
+**Three planned owners moved, and the moves are deviations 15, 16, and 18.** Section 6 assumed the
+`(S)` cases would land in `scripts/run-prompt-score-smoke`. They did not: `prompt_score.verify_result`
+is the single entry point every version-2 rule is reached through, so the Align-side row cases live
+in `src/prompt_verifier_smoke.align` and the document-level rejections live in
+`scripts/run-prompt-gate-validator-smoke`. Nothing was dropped; the owner is different from the
+plan's guess and the table below names the real one.
+
+| Planned case | Actual owner |
+| --- | --- |
+| `attempt-record-order` | `scripts/run-prompt-evaluate-smoke:1181` (declared field order and the skipped shape); `:3113` against a real published document |
+| `attempt-workspace-distinct` | `scripts/run-prompt-evaluate-smoke:1360`; `:3189` for the run-local suffix |
+| `attempt-pass-first` | `scripts/run-prompt-evaluate-smoke:3113` — every row of the end-to-end fixture run declares `maximum_repair_loops: 0` and closes with one `INITIAL` attempt |
+| `attempt-repair-recovers` | `scripts/run-prompt-evaluate-smoke:1259`, at the module boundary, including the assertion that the prompt carries *this* attempt's diagnostics. **Not** an end-to-end `./main prompt evaluate` run: deviation 16 |
+| `attempt-repair-fails` | Deferred with deviation 16; the failing arm is covered at the document level by `src/prompt_verifier_smoke.align:2209` (defect 0 is fail-then-pass) and by the measured run, where ten rows repaired and none recovered |
+| `attempt-adapter-schema`, `attempt-digest-mismatch` | Unchanged C6 checks. The adapter-result decode and the rendered-prompt digest equality are the same code paths version 1 used, reached by the existing evaluate-smoke fixture run; this capability adds no new rule there |
+| `attempt-adapter-repair-count` | `scripts/run-prompt-evaluate-smoke:1370`; document level `scripts/run-prompt-gate-validator-smoke:1043` |
+| `attempt-mixed-version` | `scripts/run-prompt-gate-validator-smoke:902`; Align side `src/prompt_verifier_smoke.align:2234` (defect 5) |
+| `attempt-no-repair-offered` | `scripts/run-prompt-evaluate-smoke:1169`; end to end `:2086` and `:3113`; Align side `src/prompt_verifier_smoke.align:2197` (defect 7) |
+| `attempt-skip-budget` | `scripts/run-prompt-evaluate-smoke:1238` |
+| `attempt-skip-inputs` | `scripts/run-prompt-evaluate-smoke:1208` |
+| `attempt-skip-cleanup` | `scripts/run-prompt-evaluate-smoke:1227` — the same rule as `attempt-cleanup-suppresses-repair`; the plan named one rule twice |
+| `ladder-01` … `ladder-03`, `ladder-07`, `ladder-09` | Unchanged C6 ladder rows; no new rule, no new case |
+| `ladder-04` | `scripts/run-prompt-gate-validator-smoke:989` (`v2-repair-bound`) and `:1302` (every `prompt-v1r` task declares exactly one loop) |
+| `ladder-05`, `ladder-06` | `scripts/run-prompt-render-parity-smoke:140` (`repair_template_cases`), including `:194` for a non-UTF-8 template |
+| `ladder-08` | `scripts/run-prompt-evaluate-smoke:1459`, `:1479` |
+| `attempt-cleanup-order` | `scripts/run-prompt-evaluate-smoke:1360` |
+| `attempt-cleanup-suppresses-repair` | `scripts/run-prompt-evaluate-smoke:1227` |
+| `attempt-timing-sum`, `attempt-timing-none`, `attempt-timing-bound` | `scripts/run-prompt-evaluate-smoke:1300`; document level `scripts/run-prompt-gate-validator-smoke:1013` |
+| `attempt-overhead-presence` | `scripts/run-prompt-evaluate-smoke:1370`; document level `scripts/run-prompt-gate-validator-smoke:1025` |
+| `attempt-path-length` | `scripts/run-prompt-evaluate-smoke:1340` |
+| `repair-template-decode`, `repair-sections-order`, `repair-template-*` | `scripts/run-prompt-render-parity-smoke:140`-`196` |
+| `repair-prompt-golden` | `scripts/run-prompt-render-parity-smoke:197` |
+| `repair-input-status` | `scripts/run-prompt-render-parity-smoke:204` |
+| `repair-input-empty` | `scripts/run-prompt-render-parity-smoke:239` |
+| `repair-input-utf8` | **N/A with a reason.** The three diagnostic strings are fields of a `TASK_MEASUREMENT` the evaluator has already decoded from UTF-8 JSON, so a non-UTF-8 diagnostic cannot reach assembly; the decode is the check. `repair-template-utf8` covers the one input that is read as bytes |
+| `repair-drop-stdout`, `repair-drop-stderr`, `repair-drop-summary` | `scripts/run-prompt-render-parity-smoke:275`, `:285`, `:291` |
+| `repair-budget-exhausted` | `scripts/run-prompt-render-parity-smoke:298` |
+| `repair-rederive-self` | `scripts/run-prompt-render-parity-smoke:306`; the producer runs the same re-derivation against its own output at ladder row 15 |
+| `repair-rederive-sidecar` | **Deferred, recorded here rather than faked.** `scripts/prompt-gate-validator.py:1550` validates the `REPAIR_PROMPT_SOURCE` record's shape, bounds, section order, and disjointness, but it cannot recompute the prompt bytes: the sidecar never receives attempt 1's rendered text, which the evaluator holds only in the run workspace. Re-derivation is the producer's (`repair-rederive-self`) and stays there until a capability persists the rendered text |
+| `repair-redaction`, `repair-inherits-sandbox-path` | `scripts/run-prompt-render-parity-smoke:323` |
+| `score-attempt-records` | `src/prompt_verifier_smoke.align:2209` (defect 0, accepted) and the twelve rejection defects below |
+| `score-version-dispatch`, `score-v1-no-v2-fields` | `src/prompt_verifier_smoke.align:2234` (defect 5); `verifier_row_v2_members_absent`, `src/prompt_score.align:3196` |
+| `score-label-map` | `src/prompt_score.align:2948`-`2960` (`verifier_attempt_kind_valid`, `verifier_attempt_status_valid`, `verifier_skip_reason_valid`); the declared skip-reason set is asserted at `scripts/run-prompt-evaluate-smoke:1205` |
+| `score-v2-decode` | `src/prompt_verifier_smoke.align:2209`, plus the round-trip regression at `:2184` |
+| `score-v1-unchanged` | `src/prompt_verifier_smoke.align:2188`-`2192` (version-1 round trip and seal) |
+| `score-frozen-rescore` | `scripts/run-prompt-gate-validator-smoke:1178` (`frozen_version_one_chain`) |
+| `score-repair-loops-candidate`, `score-repair-loops-parent` | `scripts/run-prompt-gate-validator-smoke:1163` (`v2-parent-repair-loops`); the candidate direction is C6's existing check, reused unchanged |
+| `score-repair-regression` | `scripts/run-prompt-gate-validator-smoke:1172` (`v2-aggregate-recompute`) |
+| `score-attempt-*` (malformed input) | `src/prompt_verifier_smoke.align:2214` (defect 1, sparse index), `:2219` (2, two `INITIAL`), `:2224` (3, measurement not final), `:2229` (4, overlong), `:2239` (6, count skew), `:2245` (8, untraced attempt), `:2252` (9, overlong with a skipped tail), `:2258` (10, two repairs that ran), `:2265` (11, unreferenced trace record), `:2272` (12, unresolved trace digest); document level `scripts/run-prompt-gate-validator-smoke:902`-`1151` |
+| `score-ladder-order` | `src/prompt_score.align:5954` — `verify_result` is one statement per predicate, in the ladder's order; the split is recorded there |
+| `score-attempt-lifetime` | `src/prompt_score.align:3144` bounds the attempt list before it is walked; the round-trip regression at `src/prompt_verifier_smoke.align:2184` is the owned-record lifetime assertion |
+| `score-aggregate-recompute`, `score-recovery-paired` | `scripts/run-prompt-gate-validator-smoke:1172`; Align side `src/prompt_score.align:5386` recomputes every repair aggregate from the attempts and `src/prompt_verifier_smoke.align`'s defects 7, 9, and 10 each move the recomputed values |
+| `corpus-v1r-manifest`, `corpus-v1r-shared-digests`, `corpus-v1r-digest-drift`, `corpus-v1r-repair-bound` | `scripts/run-prompt-gate-validator-smoke:1237` (`frozen_corpus_rows`), which asserts the 24 shared members, their identical digests, the exact added set, every member's bytes against its frozen digest, and `maximum_repair_loops: 1` with the pinned template on all three tasks |
+| `corpus-v1r-scope` | The section 5.2 qualification (Q). The scope resolved, every digest recomputed, and the baseline activation bound in the measured run; section 10.3 records it |
+| `provider-probe-shape`, `provider-probe-mismatch` x4, `provider-probe-malformed` | `scripts/run-prompt-evaluate-smoke:1430`, `:1459`, `:1479` |
+| Non-mutation (6.4) | `scripts/run-prompt-gate-validator-smoke:1237`; `git diff 3df063b..HEAD` over `scripts/prompt-measurement-adapter.py`, `scripts/prompt-fixed-adapter.py`, `scripts/prompt-snapshot-helper.py`, `eval/runners/run-coding-task.py`, `eval/tasks/prompt-v1/`, `eval/prompt/canonical-v1/`, and `eval/prompt/gate/` is empty. `make prompt-gate-check` was **not** run; section 10.3 records that and its substitute |
+| Section 6.6 both-directions coverage | Deviation 15: the assertion has three owners, not one, and is not faked in the two smoke files |
+| `make prompt-evaluate-smoke` itself | **Run, and it caught three defects.** It does not run on the implementing macOS host: the evaluator's retained-executable launch reads `/proc/self/fd`, and the validation runner needs `bwrap`. The recipe is a `linux/arm64` container from `c4-repair-measure:latest` with deviation 17's four privilege values, the checkout bind-mounted **at its own absolute path** (a linked worktree's `.git` names a common directory that must be mounted read-only at its own path, and the worktree's `gitdir` file must resolve), and `ALIGNC` pointed at the pinned Linux compiler. Under that recipe the merge base `3df063b` passes and the capability head did not; deviation 21 records the three defects and their fixes |
+
 ---
 
 ## 10. Implementation record
@@ -1413,8 +1541,9 @@ file, and a Linux container, so it is a focused qualification and joins no aggre
 | --- | --- | --- |
 | Evaluator-owned attempt loop | 3.1 | `scripts/prompt-evaluate.py`, the `run_attempt` closure and `build_repair_attempt` inside `evaluate` |
 | Adapter and runner byte-identical | 3.1, 6.4 | `git diff` over `scripts/prompt-measurement-adapter.py`, `scripts/prompt-fixed-adapter.py`, `scripts/prompt-snapshot-helper.py`, `eval/runners/run-coding-task.py`, `eval/tasks/prompt-v1/`, `eval/prompt/canonical-v1/`, `eval/prompt/gate/` is empty; the 24 shared file-set members carry identical digests in both manifests |
-| `PROMPT_TASK_ROW` v2 | 3.2 | `scripts/prompt-evaluate.py` row assembly; `PromptTaskRowV2` in `src/prompt_artifacts.align` |
-| `TaskAttemptRecord`, `RepairPromptSource` | 3.2 | `ATTEMPT_RECORD_FIELDS`, `REPAIR_PROMPT_SOURCE_FIELDS`, `skipped_attempt_record`, `repair_prompt_source_record` |
+| `PROMPT_TASK_ROW` v2 | 3.2 | `scripts/prompt-evaluate.py:4353` row assembly; the single `PromptTaskRow` with `Option` version-2 members in `src/prompt_artifacts.align` (deviation 10) |
+| `TaskAttemptRecord`, `RepairPromptSource` | 3.2 | `ATTEMPT_RECORD_FIELDS`, `REPAIR_PROMPT_SOURCE_FIELDS` in `scripts/prompt-gate-validator.py`; `skipped_attempt_record`, `repair_prompt_source_record` in `scripts/prompt-evaluate.py`; `TaskAttemptRecord` in `src/prompt_artifacts.align`. The four declarations of the attempt record's field order — Align record, validator tuple, evaluator literal, fixture literal — are asserted equal against the published document |
+| Attempt-owned trace records | 3.2, 3.8 rows 21-23 | `verifier_attempt_trace_cross_valid` and the three resolvers in `src/prompt_score.align:4870`; `ATTEMPT_TRACE_POOLS` and the presence rule in `scripts/prompt-gate-validator.py` |
 | One producer per field | 3.3 | `row_repair_loop_count`, `row_generation_ns`, `row_repair_attempted`, `row_repair_recovered` select by version, never by presence |
 | New corpus assets | 3.4 | `eval/prompt/canonical-v1r/`, `eval/tasks/prompt-v1r/`, minted reproducibly by `scripts/freeze-canonical-v1r` |
 | Provider topology and evidence | 3.5 | `scripts/probe-provider-service`, `scripts/run-c4-repair-gate`, the container-local `socat` forwarder |
@@ -1430,7 +1559,7 @@ file, and a Linux container, so it is a focused qualification and joins no aggre
 Each was found by implementation, is recorded here rather than absorbed, and changes a promise this
 document made.
 
-1. **Ladder row 10 is narrowed.** Section 3.3 requires every attempt's
+1. **Ladder row 10 is narrowed, in all three implementations.** Section 3.3 requires every attempt's
    `measurement.repair_loop_count` to be `0` and calls a non-zero value `ERROR`/`ADAPTER`. That
    assumed every adapter emits the literal `0`, which the provider-backed
    `scripts/prompt-measurement-adapter.py` does. The deterministic `scripts/prompt-fixed-adapter.py`
@@ -1440,6 +1569,11 @@ document made.
    exactly where double-counting is possible: a task whose `maximum_repair_loops >= 1`. Where no
    repair is offered, the adapter's value is carried verbatim in `attempt.measurement` and simply is
    not the authority, because at version 2 `row.repair_loop_count` is.
+
+   **The Align verifier did not apply the narrowing, and that is deviation 21.** It was written
+   with the rule unconditional, which rejected every version-2 document the deterministic adapter
+   produced from an expected-failure row. `make prompt-evaluate-smoke` catches it; neither review
+   did, because neither ran that owner. See deviation 21.
 2. **`PROMPT_EVALUATION_TASK` grows two fields and stays at `schema_version: 1`.** Section 3.11
    listed it as unchanged, but the task manifest is where `repair_template_path` and
    `repair_template_sha256` must live. They are declared `Option`, and the canonical encoding omits
@@ -1455,7 +1589,7 @@ document made.
    and section 3.2's own rule is that a document's members and its container share one version.
 5. **The evaluator size window widened to four chunks.** Section 3.10 named this as the escape and
    required it to be decided before implementation. It was, and it was needed:
-   `scripts/prompt-evaluate.py` is now 212,879 bytes against an old ceiling of 196,608. The
+   `scripts/prompt-evaluate.py` is now 217,056 bytes against an old ceiling of 196,608. The
    admissible window is 196,609…262,144 bytes and `EVALUATOR_BOOTSTRAP` pops four arguments.
 6. **A parent `REPAIR_LOOPS` reason is a new record shape, not the candidate's.** Section 3.7 asked
    only that the check become variant-symmetric. The candidate record keeps its exact existing
@@ -1505,12 +1639,26 @@ document made.
 12. **`verifier_reason_capacity` grows.** The variant-symmetric `REPAIR_LOOPS` check adds a tenth
     per-pair serious-regression reason, so `pairs * 9` becomes `pairs * 10` and the cap `9_282`
     becomes `10_306` (`task_count <= 64`, `sample_count <= 16`, so `1024 * 10 + 64 + 2`).
-13. **Four attempt invariants have no single-point mutation coverage, and that is reported rather
-    than hidden.** Removing the declared-versus-recomputed `repair_loop_count` check, the
-    attempt-list length bound, the exactly-one-`INITIAL` rule, or the version-2 expected-input
-    per-attempt binding did not turn any owner test red, because each remains enforced by another
-    layer even in combination. The invariants are implemented and the clean case is accepted, but
-    single-point coverage is not claimed for those four.
+13. **Single-point mutation coverage, re-measured after review, and one clause that no input can
+    reach.** The first implementation reported four attempt invariants with no single-point
+    coverage. Review showed the cause was fixture shape rather than the invariants: every defect
+    case had a three-attempt row that three separate rules rejected, so weakening any one of them
+    left the owner green. Three new `src/prompt_verifier_smoke.align` cases fix that — defect 9 (a
+    three-attempt row whose third attempt was skipped, which only the `1 + maximum_repair_loops`
+    bound rejects), defect 10 (two repairs that both ran against a task cap of two, which only
+    `repair_count > 1` rejects), and defect 11 (a persisted trace record that nothing references,
+    which only `verifier_all_trace_records_referenced` rejects) — and defect 12 covers the new
+    trace-resolution rule. Six mutants were injected into `src/prompt_score.align` at the repair
+    head and run under `make prompt-verifier-smoke`: the attempt-length bound, the repair-count
+    bound, **both together**, `verifier_row_references_trace` returning `true` for any row, and
+    the attempt-trace resolution all die. The sixth, weakening
+    `declared_loops > task.regression_limits.maximum_repair_loops` in
+    `verifier_row_repair_facts`, **survives and always will**: the walk already bounds
+    `repair_count` at one and the list at `1 + maximum_repair_loops`, and the preceding clause pins
+    `declared_loops` to `facts.repair_loop_count`, so no document can make that comparison true. It
+    is redundant defence in depth, is commented as such at the call site, and single-point coverage
+    is not claimed for it. The version-2 expected-input per-attempt binding is covered at the
+    document level by `v2-expected-duplicate`, `v2-expected-missing`, and `v2-expected-extra`.
 
 14. **A checked-in smoke fixture had to move off `maximum_repair_loops: 2`.** The fixture corpus in
     `scripts/run-prompt-evaluate-smoke` declared `2`, which ladder row 4 now rejects, so it moved to
@@ -1541,6 +1689,82 @@ document made.
     is deliberately rejected as broader. The validation sandbox itself is unchanged: `bwrap` still
     drops all capabilities inside it, and `containment_passed` is still verified per attempt.
 
+18. **The version-2 row cases have one Align owner, not four.** Section 5.1's "Row-bearing
+    fixtures" row planned version-2 cases in `src/prompt_score_smoke.align`,
+    `src/prompt_score_prefix_smoke.align`, `src/prompt_verifier_smoke.align`, and
+    `eval/fixtures/c6-prompt-state/templates.jsonl`. Only the third has them.
+    `prompt_score.verify_result` is the single entry point every version-2 rule is reached through,
+    so the other two Align smokes would have carried copies of one assertion, and the `jsonl`
+    fixture is a frozen version-1 input that deviation 11 exists to keep frozen. The
+    document-level rejections that section 6.3 labelled `(S)` live in
+    `scripts/run-prompt-gate-validator-smoke` for the same reason. Section 9.2 binds every planned
+    case to its real owner.
+19. **`TaskAttemptRecord` gained four trace digests after the first completed run, and the
+    `input_snapshots` bound moved with them.** Section 3.2 did not have them: the first run
+    produced the identical 22 calls and the identical verdict but was rejected by
+    `verifier_all_trace_records_referenced`, because `snapshot_attestations` carries exactly one
+    record per row and a row can now run twice, so the repair invocation's snapshot request,
+    before/after results, and input snapshot were referenced by nothing. The record therefore
+    carries `snapshot_request_sha256`, `before_snapshot_result_sha256`,
+    `after_snapshot_result_sha256`, and `input_snapshot_sha256`, present exactly on an attempt that
+    ran; the per-row `input_snapshots` bound became per **invocation**, which is the same bound at
+    version 1. Section 3.2's field order, section 3.8 rows 21-23, and the section 3.11 ledger
+    record it. Review then found that naming was all the verifier checked, so the digests are now
+    resolved: each must name exactly one persisted record of that row's task, and the resolved
+    records are held to the same closure, before/after equality, and artifact-equality rules the
+    row's attestation is held to.
+20. **`included_sections` and `dropped_sections` are not a partition, and section 4.3 now says
+    so.** A section whose source is empty appears in neither list: `included` is what the prompt
+    carries and `dropped` is what the budget ladder removed, and an empty section was never a
+    candidate for either. All four `layer-precedence-frozen-module` repairs in the measured run
+    show it — empty `diagnostic_stdout`, `included_sections: [STATUS, SUMMARY, STDERR]`,
+    `dropped_sections: []`. A consumer that needs "was this section available" must read
+    `attempt.measurement`, not infer it from the two lists.
+
+21. **`make prompt-evaluate-smoke` was red on the capability head — three defects, none of which
+    either review found, because neither ran that owner.** The owner passes at the merge base
+    `3df063b` and failed at the capability head. All three are fixed and it passes again.
+
+    **(a) Deviation 1 was applied in only two of its three implementations.**
+    `verifier_ran_attempt_valid` in
+    `src/prompt_score.align` required `attempt.measurement.repair_loop_count == 0` for **every**
+    task, while `scripts/prompt-evaluate.py` and `scripts/prompt-gate-validator.py` bind it only
+    where `maximum_repair_loops >= 1`. `scripts/prompt-fixed-adapter.py:612` — a byte-frozen
+    `canonical-v1` member — emits `1` on its expected-failure path, so the Align verifier refused
+    every version-2 document that fixture corpus produced from such a row:
+    `./main prompt evaluate` published nothing and exited `EVALUATION_FAILED`. The three
+    implementations now bind the rule identically, and `src/prompt_verifier_smoke.align` defect 13
+    is the regression: a task offering no repair, whose attempt carries an adapter-reported repair
+    loop, must be **accepted**.
+
+    **(b) A terminal adapter measurement aborted before its own row was persisted, leaving trace
+    records referenced by nothing.** At version 1 the evaluator appended the row, its
+    expected-input identity, and its `COMPLETE` attestation and only *then* returned the terminal
+    `ERROR`/`ADAPTER_RESULT` result, so the failing row stayed in the published document. The
+    attempt loop moved that check inside `run_attempt`, before any of them, so the invocation's
+    snapshot request, before/after results, and input snapshot were persisted with no row, no
+    attempt, and no attestation naming them — and this capability's own "no unreferenced trace
+    record" rule then refused to publish the document at all. `scripts/prompt-evaluate.py` now
+    raises the terminal error in the caller, after `rows.append(row)`, which is the version-1
+    order. The owner asserts the published shape: one row, `measurement.status: ERROR`, one
+    `COMPLETE` attestation.
+
+    **(c) The owner itself read an omitted `Option` with `[]`.** A non-passing attempt has no
+    `adapter_overhead_ns` key, because the canonical encoder omits an `Option::None`; the
+    assertion that overhead is present exactly on a passing attempt raised `KeyError` on the first
+    published non-passing row instead of testing anything. It reads `.get(...)` now.
+
+    **How it escaped both reviews, and what that says about the owner.** The owner test that
+    catches it does not run on the implementing macOS host: the evaluator's retained-executable
+    launch path reads `/proc/self/fd`, and the validation runner needs `bwrap`, which needs the
+    four container privilege values of deviation 17. Running it means a Linux container with those
+    privileges and the pinned compiler mounted. The merge base `3df063b` passes it under exactly
+    that recipe and the capability head did not, which is how the defect was isolated. The recipe
+    is recorded in `HANDOFF.md`; it is the substitute for a Linux CI run and should be used before
+    any future change to this evaluator or its verifier. Defects (b) and (c) are the direct cost of
+    not having run it during implementation: (b) is a published-artifact defect on an error path
+    the qualification never reached, and (c) is an assertion that could never have passed.
+
 Nothing here required an unshipped Align surface. The version peek that section 3.3 flagged as a
 possible Align gap is a non-issue under deviation 10: the row's own `schema_version` is an ordinary
 decoded field, read before any version-2 member is consulted.
@@ -1558,27 +1782,33 @@ hit during implementation is the already-filed Request 22 and is not re-filed.
 
 **The gate is `NOT_MET`.** `repair_recovery_paired_count` is **0**, and so is `repair_recovery_count`:
 across ten repair attempts on the three-task corpus, **not one row recovered**. This is a delivered
-result, reported exactly as section 1.4 and section 5.3 fixed before the run.
+result, reported exactly as section 1.4 and section 5.3 fixed before the run. Every figure below is
+recomputed from `eval/prompt/c4-repair-gate/c4-repair-evaluation.json` and its gate record.
 
 Run: 12 rows, 3 tasks x 2 variants x 2 paired samples, `temperature_micros: 0`,
 `seed_mode: PAIRED_FIXED`, **22 provider generation calls** — precisely the section 5.2 estimate of
-12 initial plus 10 repair. Wall clock about 10 minutes, inside the 60-minute recorded ceiling and
-below the 15-40 minute expectation.
+12 initial plus 10 repair. Wall clock **881.673 s = 14 min 42 s**, inside the 60-minute recorded
+ceiling and inside the 15-40 minute expectation.
 
 | Task | Sample | Variant | Attempt 1 | Attempt 2 | Loops |
 | --- | --- | --- | --- | --- | --- |
-| `duration-half-away-from-zero` | 1 | PARENT | FAIL | FAIL | 1 |
+| `duration-half-away-from-zero` | 1 | PARENT | FAIL (`TEST`) | FAIL (`TEST`) | 1 |
 | `duration-half-away-from-zero` | 1 | CANDIDATE | **PASS** | — | 0 |
 | `duration-half-away-from-zero` | 2 | CANDIDATE | **PASS** | — | 0 |
-| `duration-half-away-from-zero` | 2 | PARENT | FAIL | FAIL | 1 |
-| `layer-precedence-frozen-module` | 1 | PARENT | FAIL | FAIL (`PATCH`) | 1 |
-| `layer-precedence-frozen-module` | 1 | CANDIDATE | FAIL | **POLICY_VIOLATION** | 1 |
-| `layer-precedence-frozen-module` | 2 | CANDIDATE | FAIL | **POLICY_VIOLATION** | 1 |
-| `layer-precedence-frozen-module` | 2 | PARENT | FAIL | FAIL (`PATCH`) | 1 |
-| `record-codec-round-trip` | 1 | PARENT | FAIL | FAIL | 1 |
-| `record-codec-round-trip` | 1 | CANDIDATE | FAIL | FAIL | 1 |
-| `record-codec-round-trip` | 2 | CANDIDATE | FAIL | FAIL | 1 |
-| `record-codec-round-trip` | 2 | PARENT | FAIL | FAIL | 1 |
+| `duration-half-away-from-zero` | 2 | PARENT | FAIL (`TEST`) | FAIL (`TEST`) | 1 |
+| `layer-precedence-frozen-module` | 1 | PARENT | FAIL (`PATCH`) | FAIL (`PATCH`) | 1 |
+| `layer-precedence-frozen-module` | 1 | CANDIDATE | FAIL (`PATCH`) | **POLICY_VIOLATION** | 1 |
+| `layer-precedence-frozen-module` | 2 | CANDIDATE | FAIL (`PATCH`) | **POLICY_VIOLATION** | 1 |
+| `layer-precedence-frozen-module` | 2 | PARENT | FAIL (`PATCH`) | FAIL (`PATCH`) | 1 |
+| `record-codec-round-trip` | 1 | PARENT | FAIL (`TEST`) | FAIL (`TEST`) | 1 |
+| `record-codec-round-trip` | 1 | CANDIDATE | FAIL (`TEST`) | FAIL (`TEST`) | 1 |
+| `record-codec-round-trip` | 2 | CANDIDATE | FAIL (`TEST`) | FAIL (`TEST`) | 1 |
+| `record-codec-round-trip` | 2 | PARENT | FAIL (`TEST`) | FAIL (`TEST`) | 1 |
+
+The failure kind is shown on **both** attempts: every `layer-precedence-frozen-module` attempt,
+attempt 1 included, failed at `PATCH` with `patch_size_bytes: 0` — the model produced nothing
+applicable there from the start, and reading the table as if attempt 1 had produced a patch would
+misstate the result.
 
 The two passes are first-shot CANDIDATE passes on `duration-half-away-from-zero`, reproducing C6's
 distribution exactly; they needed no repair and took none. Every one of the other ten rows made its
@@ -1592,25 +1822,57 @@ without being relaxed). The C6 acceptance verdict is `SERIOUS_REGRESSION`, from 
 
 **What the mechanism proved.** All ten repair prompts assembled from the run's own persisted
 diagnostics, re-derived byte-exactly against their own output, and stayed far inside the prompt
-budget: 8,123 to 16,129 assembled bytes against 65,536, so **no section was ever dropped** and the
-drop ladder never fired in anger. Timing: `adapter_elapsed_ns` ranged 11.40 s to 81.19 s, median
-27.47 s. `adapter_overhead_ns` on the two passing attempts was **113.7 ms and 115.2 ms** — the
-section 3.6 redefinition costs about 0.4% of a passing row's total, which is now measured rather
-than argued.
+budget: **8,123 to 16,129** assembled bytes against 65,536, so **no section was ever dropped** and
+the drop ladder never fired in anger. Four of the ten carried three sections rather than four
+because `diagnostic_stdout` was empty; section 4.3 records why that is not a drop.
 
-**Why the model did not recover, and what it means for section 5.7.** The two `record-codec-round-trip`
-CANDIDATE rows produced `patch_size_bytes: 1008` on **both** attempts, identical to attempt 1: given
-its own failing diagnostics, the model re-emitted the same patch. Both
-`layer-precedence-frozen-module` CANDIDATE repairs came back `POLICY_VIOLATION` with
-`patch_size_bytes: 0`, and both PARENT repairs there failed at `PATCH` with an empty patch — the
-model produced nothing applicable. That is direct evidence for section 5.7's stated tie-breaker: a
-`NOT_MET` gate in which attempt 2 repeats attempt 1's mistake is exactly the case where **the
-missing edit set is the binding constraint**, and it makes option B — a second corpus-member adapter
-that carries the failing edits into the repair prompt — the obvious next capability rather than a
-speculative one. The deferral in section 5.4 should be re-read in that light.
+**Timing, recomputed from the 22 attempt records.**
 
-**No speed claim is made**, and none is available: the 11.4 s to 81.2 s spread over 22 calls at
-temperature 0 reproduces the 3.5x spread section 2.1 recorded at `n=2`.
+```text
+adapter_elapsed_ns over 22 calls:  min 8.13 s   max 73.82 s
+                                   mean 27.47 s  median 18.27 s
+                                   max/min 9.1x
+sum of the 22 calls:               604.3 s
+invocation wall clock:             881.673 s  (14 min 42 s)
+adapter_overhead_ns:               65.74 ms and 74.11 ms, on the two passing attempts
+                                   0.45 % and 0.86 % of those rows' own elapsed spans
+```
+
+The earlier draft of this section reported "11.40 s to 81.19 s, median 27.47 s" and
+"113.7 ms and 115.2 ms". Those were wrong: the range was taken from the wrong rows, 27.47 s is the
+**mean** and not the median, and the two overhead figures were not the persisted ones. The numbers
+above are the artifact's. The section 3.6 redefinition therefore costs under one per cent of a
+passing row's total, which is now measured rather than argued.
+
+**Why the model did not recover, and what it means for section 5.7.** This is an inference from
+`patch_size_bytes` and the observable failure, and its limits are stated before it is drawn: the
+patch body and a patch digest are **not** persisted — only its size is — so "the same patch" is not
+directly verifiable from this evidence, and the claim below is scoped to what is.
+
+- **`record-codec-round-trip`, all four rows** (both variants, both samples): attempt 1 and
+  attempt 2 each produced `patch_size_bytes: 1008` and each failed identically at `TEST`. A patch
+  of the same size failing in the same observable way twice is consistent with the model
+  re-emitting its previous answer, and is not proof of it. Persisting a patch digest would settle
+  it, and is a named deferral in section 5.4.
+- **`layer-precedence-frozen-module`, all four rows**: attempt 1 already produced
+  `patch_size_bytes: 0` and failed at `PATCH`. The two CANDIDATE repairs came back
+  `POLICY_VIOLATION` with `patch_size_bytes: 0`, and the two PARENT repairs failed at `PATCH` with
+  an empty patch. **Nothing here is "repeating attempt 1's mistake"** in the record-codec sense:
+  the model produced nothing applicable on either attempt, which is a different failure mode, and
+  more diagnostics are not obviously the missing input for it.
+
+So the evidence for section 5.7's tie-breaker is real but **narrower** than the first draft claimed:
+in the one mode where the model does emit an applicable patch, the second attempt's patch has the
+same size and the same observable failure as the first, which is the case where the missing edit
+set is the plausible binding constraint. Option B — a second corpus-member adapter that carries the
+failing edits into the repair prompt — addresses **that** mode. It does not address the
+`layer-precedence-frozen-module` mode, where no patch was produced at all. The deferral in section
+5.4 should be re-read in that light, and a patch digest should land with it so the next run can
+answer the question directly instead of by inference.
+
+**No speed claim is made**, and none is available: the 8.13 s to 73.82 s spread over 22 calls at
+temperature 0 is a **9.1x** ratio, wider than the 3.5x section 2.1 recorded at `n=2` and drawn from
+a sample that mixes three tasks and two prompt lengths.
 
 **Published through the Align path.** `make c4-repair-gate` completed with `PUBLISHED`; the
 artifacts in `eval/prompt/c4-repair-gate/` are the Align publisher's own canonical encoding, with
@@ -1619,8 +1881,23 @@ every `Option::None` omitted rather than written as `null`. Digests:
 `c4-repair-evaluation-evidence.json`
 `67153d54a7cf77051dfd71da82c6e8de31b96d4622c66ed070815a1c50e93b2e`;
 `c4-repair-gate-record.json` `e3b4d334e3c6d975a3f878ca7b01e92832034af4f82d5179730e4b02b3913e96`.
-Wall clock 881.7 s. `gate_eligible` is `false` because the branch is uncommitted at run time, so
-source reachability cannot verify; the C4 verdict does not consume it.
+`gate_eligible` is `false` because the branch was uncommitted at run time, so source reachability
+could not verify; the C4 verdict does not consume it.
+
+**`make prompt-gate-check` was not run: `N/A`, with its reason and its substitute.** Section 5.1
+calls it "unchanged and must stay green" and section 8.2's superseded draft listed it as next
+action 4. It needs a source bundle and the Linux process-containment floor, neither of which this
+macOS host provides, and the containerized path exists only for the gate qualification. What was
+run instead, and what each part covers:
+
+| Claim `prompt-gate-check` would carry | Substitute evidence |
+| --- | --- |
+| The frozen version-1 chain still validates and rescores byte-identically | `scripts/run-prompt-gate-validator-smoke:1178` drives `validate_acceptance_policy` and `rescore` directly against the merged C6 evidence and asserts `IMPROVED` with byte-identical aggregates |
+| `canonical-v1`, `eval/prompt/gate/`, `eval/tasks/prompt-v1/`, `run-coding-task.py`, and `prompt-measurement-adapter.py` were not moved | `scripts/run-prompt-gate-validator-smoke:1237` asserts the 24 shared file-set members carry identical digests in both manifests and that every `canonical-v1r` member's bytes still hash to its frozen digest; `git diff 3df063b..HEAD` over those paths is empty |
+| The Align scorer still accepts the frozen version-1 documents | `src/prompt_verifier_smoke.align:2188`-`2192` round-trips and re-seals a version-1 document; `make prompt-verifier-smoke` is green |
+
+That is not the same thing as running the gate, and it is not claimed to be. `make prompt-gate-check`
+remains the full proof and belongs in hosted CI, where the floor exists.
 
 **The publish defect that this run closed.** The first completed run produced the identical 22
 calls and the identical verdict, but `prompt_score.verify_result` rejected the document. Bisecting
@@ -1631,24 +1908,25 @@ binds it positionally, and a row can now run **twice** — so the repair attempt
 request, before/after results, and input snapshot were referenced by nothing. `TaskAttemptRecord`
 therefore gained `snapshot_request_sha256`, `before_snapshot_result_sha256`,
 `after_snapshot_result_sha256`, and `input_snapshot_sha256`, present exactly on an attempt that
-ran and absent on a skipped one, and the referencing check now accepts an attempt record as the
-referent. The universal "no unreferenced trace record" guarantee is **preserved, not relaxed**. The
-`input_snapshots` upper bound moved from one-per-row to one-per-invocation, which is the same bound
-at version 1 because a version-1 row runs exactly once. `src/prompt_verifier_smoke.align` defect 8
-is the regression, and it was mutation-tested: removing the presence rule turns the smoke red.
+ran and absent on a skipped one, and the referencing check accepts an attempt record as the
+referent. The `input_snapshots` upper bound moved from one-per-row to one-per-invocation, which is
+the same bound at version 1 because a version-1 row runs exactly once.
 
-**Superseded note.** The paragraphs below were written before the run completed and are kept only
-as the record of what was unresolved at that point.
+**Review found that naming was not resolving, and the guarantee is now what the comment claims.**
+The first implementation checked only that the four digests were well-formed and present. An
+attempt could therefore have named a digest belonging to no record, or to another task's record,
+and the "no unreferenced trace record" guarantee would have been satisfied by the naming alone.
+`verifier_attempt_trace_cross_valid` (`src/prompt_score.align:4870`) now resolves each digest to
+**exactly one** persisted record of that row's task and applies the attestation path's own checks
+to the resolved records: before and after are the same observation, both are closed over the
+resolved request, and the input snapshot is that task's and carries the snapshot's artifact
+digests. The rule was validated against this published document before it shipped — all 22 attempts
+resolve and cross-validate — so the checked-in evidence is admitted by the tighter verifier, not
+grandfathered past it. `scripts/prompt-gate-validator.py` carries the matching shape and pool rules,
+and its fixture emits the four digests, which it previously did not: without that, every version-2
+attempt case in the validator smoke was vacuous.
 
-**Not yet obtained.** The run reached the provider — the probe passed, the container-local
-forwarder carried generation to the host `llama-server`, and real completions were produced — but
-every row aborts with `ERROR` / `ADAPTER_RESULT`, `contained validation runner failed`, because the
-`bwrap` containment that `eval/runners/run-coding-task.py` wraps each fixture command in does not
-come up inside the Docker container. `HANDOFF.md` records the five defects already found and fixed
-on the way, the container privileges that moved the run forward without resolving it, and the
-namespace probe that is the next step.
-
-No verdict is recorded here, and none is implied. `repair_recovery_paired_count` has not been
-observed; whether this model recovers on this corpus is still an open question, exactly as it was
-before the run. Section 5.3 fixed the reporting for both outcomes before the run precisely so that
-an unfinished run is reported as unfinished rather than shaded toward either result.
+`src/prompt_verifier_smoke.align` defects 8, 11, and 12 are the regressions — an attempt attesting
+no trace record, a persisted record nothing references, and a well-formed digest that resolves to
+nothing — and all three were mutation-tested; deviation 13 records the mutants and the one clause
+no input can reach.

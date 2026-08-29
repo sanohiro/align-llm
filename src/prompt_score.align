@@ -3026,9 +3026,22 @@ fn verifier_ran_attempt_valid(
   return match attempt.measurement {
     None => false,
     Some(measurement) => verifier_measurement_valid(measurement, task) &&
-    // Each adapter invocation is single-attempt by construction, so a non-zero count here means
-    // the adapter reported a loop it cannot have run.
-    measurement.repair_loop_count == 0 &&
+    // Each adapter invocation is single-attempt by construction, so a non-zero count here would
+    // double-count against the evaluator-owned row total. The rule therefore binds exactly where
+    // double-counting is possible — a task that offers a repair attempt — and not everywhere.
+    //
+    // Section 10.2 deviation 1 records why. `scripts/prompt-fixed-adapter.py` is a byte-frozen
+    // `canonical-v1` file-set member and emits `repair_loop_count: 1` on its expected-failure
+    // path; editing it would break `make prompt-gate-check` against C6's merged evidence. Where a
+    // task offers no repair, that value is carried verbatim in `attempt.measurement` and simply is
+    // not the authority, because at version 2 `row.repair_loop_count` is — and this walk
+    // recomputes that from the attempt list rather than trusting it.
+    //
+    // `scripts/prompt-gate-validator.py` binds the same rule the same way. The two must not
+    // disagree: an unconditional rule here rejected every version-2 document the deterministic
+    // fixed adapter produced from an expected-failure row, which is what
+    // `make prompt-evaluate-smoke` caught.
+    (task.regression_limits.maximum_repair_loops < 1 || measurement.repair_loop_count == 0) &&
     measurement.status == attempt.status &&
     match attempt.measurement_sha256 {
       None => false,
@@ -3233,6 +3246,11 @@ fn verifier_row_repair_facts(
     None => -1,
     Some(value) => value,
   }
+  // The second clause is redundant defence in depth and is kept as such rather than presented as
+  // a tested rule: `verifier_attempts_walk` already refuses a list longer than
+  // `1 + maximum_repair_loops` and a `repair_count` above one, so `facts.repair_loop_count` — and
+  // therefore `declared_loops`, which the first clause pins to it — can never exceed the cap. No
+  // input can reach it, so no owner case can cover it; section 10.2 deviation 13 records that.
   if declared_loops != facts.repair_loop_count ||
   declared_loops > task.regression_limits.maximum_repair_loops {
     return Err(Error.Invalid)
@@ -4541,9 +4559,16 @@ fn verifier_attestation_references_input(
 
 // A row may now run more than one contained invocation, and each one produces its own snapshot
 // request, before/after results, and input snapshot. `snapshot_attestations` still carries exactly
-// one record per row, so a repair attempt's trace records are attested by the attempt record
-// instead. Every trace record therefore remains bound to the invocation that produced it: the
-// universal "no unreferenced trace record" guarantee is preserved, not weakened.
+// one record per row, so a repair attempt's trace records are reached through the attempt record
+// instead.
+//
+// This function answers only "is this record named by some attempt". Naming alone would let an
+// orphan record be admitted by any attempt that happened to point at it, so it is not the whole
+// guarantee: `verifier_attempt_trace_cross_valid` resolves each attempt's four digests to exactly
+// one persisted record of that row's task and holds the resolved records to the same closure,
+// before/after equality, and artifact-equality rules the attestation path applies. The two
+// together are what keep every trace record bound to the invocation that produced it, so the
+// universal "no unreferenced trace record" guarantee is preserved rather than weakened.
 fn verifier_attempt_references(
   borrow attempt: prompt_artifacts.TaskAttemptRecord,
   digest: str,
@@ -4796,6 +4821,145 @@ fn verifier_complete_attestation_cross_valid(
   return verifier_row_cross_identity_valid(row, task, result)
 }
 
+// --- Attempt-owned trace records ---------------------------------------------------------------
+// Each resolver answers "exactly one persisted record of this task carries this digest", and
+// returns its index or -1. A count that is not exactly one is a refusal, not a first match: a
+// duplicated trace record would otherwise let two invocations share one observation.
+
+fn verifier_resolve_snapshot_request(
+  borrow value: Option<string>,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  task_id: str,
+) -> i64 {
+  count := match value {
+    None => 0,
+    Some(digest) => verifier_count_snapshot_requests(result, digest, task_id),
+  }
+  if count != 1 { return -1 }
+  return match value {
+    None => -1,
+    Some(digest) => verifier_find_snapshot_request(result, digest, task_id),
+  }
+}
+
+fn verifier_resolve_snapshot_result(
+  borrow value: Option<string>,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  task_id: str,
+) -> i64 {
+  count := match value {
+    None => 0,
+    Some(digest) => verifier_count_snapshot_results(result, digest, task_id),
+  }
+  if count != 1 { return -1 }
+  return match value {
+    None => -1,
+    Some(digest) => verifier_find_snapshot_result(result, digest, task_id),
+  }
+}
+
+fn verifier_resolve_input_snapshot(
+  borrow value: Option<string>,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  task_id: str,
+) -> i64 {
+  count := match value {
+    None => 0,
+    Some(digest) => verifier_count_input_snapshots(result, digest, task_id),
+  }
+  if count != 1 { return -1 }
+  return match value {
+    None => -1,
+    Some(digest) => verifier_find_input_snapshot(result, digest, task_id),
+  }
+}
+
+// The attempt-record analogue of `verifier_complete_attestation_cross_valid`. An attempt that ran
+// made its own contained invocation, and this holds that invocation's four trace records to the
+// same rules the row's own attestation is held to: each digest resolves to exactly one persisted
+// record of this task; the before and after observations are the same observation, so the
+// invocation reports no drift; both are closed over the request that asked for them; and the
+// input snapshot is this task's and carries the same artifact digests the snapshot observed.
+fn verifier_attempt_trace_cross_valid(
+  borrow attempt: prompt_artifacts.TaskAttemptRecord,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  // A skipped repair made no invocation. `verifier_skipped_attempt_valid` already requires all
+  // four digests to be absent, so there is nothing here to resolve.
+  if verifier_attempt_is_status(attempt, "SKIPPED") { return true }
+  request_index := verifier_resolve_snapshot_request(
+    attempt.snapshot_request_sha256,
+    result,
+    task.task_id,
+  )
+  before_index := verifier_resolve_snapshot_result(
+    attempt.before_snapshot_result_sha256,
+    result,
+    task.task_id,
+  )
+  after_index := verifier_resolve_snapshot_result(
+    attempt.after_snapshot_result_sha256,
+    result,
+    task.task_id,
+  )
+  input_index := verifier_resolve_input_snapshot(
+    attempt.input_snapshot_sha256,
+    result,
+    task.task_id,
+  )
+  if request_index < 0 || before_index < 0 || after_index < 0 || input_index < 0 { return false }
+  if !verifier_snapshot_results_equal(
+    result.snapshot_results[before_index],
+    result.snapshot_results[after_index],
+  ) {
+    return false
+  }
+  return verifier_snapshot_artifact_closure(
+    result.snapshot_requests[request_index],
+    result.snapshot_results[before_index],
+  ) &&
+  verifier_snapshot_artifact_closure(
+    result.snapshot_requests[request_index],
+    result.snapshot_results[after_index],
+  ) &&
+  verifier_input_snapshot_matches_task(result.input_snapshots[input_index], task, result) &&
+  verifier_snapshot_input_cross_valid(
+    result.snapshot_results[before_index],
+    result.input_snapshots[input_index],
+    result,
+  )
+}
+
+fn verifier_attempt_traces_valid(
+  borrow attempts: array<prompt_artifacts.TaskAttemptRecord>,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  mut index := 0
+  loop {
+    if index >= attempts.len() { break }
+    if !verifier_attempt_trace_cross_valid(attempts[index], task, result) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+// A version-1 row runs exactly once and carries no attempt list, so its trace records are reached
+// by its attestation alone and nothing here applies.
+fn verifier_row_attempt_traces_valid(
+  borrow row: prompt_artifacts.PromptTaskRow,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if row.schema_version != 2 { return true }
+  if row.task_id != task.task_id { return false }
+  return match row.attempts {
+    None => false,
+    Some(attempts) => verifier_attempt_traces_valid(attempts, task, result),
+  }
+}
+
 fn verifier_snapshot_input_cross_valid(
   borrow snapshot: prompt_artifacts.SnapshotResult,
   borrow input: prompt_artifacts.TaskInputSnapshot,
@@ -4886,6 +5050,14 @@ fn verifier_rows_and_attestations_valid(borrow result: prompt_artifacts.PromptEv
     !verifier_attestation_schedule_valid(result.snapshot_attestations[index], index, result) ||
     !verifier_complete_attestation_cross_valid(
       result.snapshot_attestations[index],
+      result.rows[index],
+      result.tasks[task_ordinal],
+      result,
+    ) ||
+    // The attestation above covers the row's own invocation. A version-2 row may have run a
+    // second one, whose trace records no attestation reaches, so each attempt resolves and
+    // cross-validates its own four.
+    !verifier_row_attempt_traces_valid(
       result.rows[index],
       result.tasks[task_ordinal],
       result,
@@ -5787,6 +5959,11 @@ fn verifier_complete_score(
   return Ok(PromptScoreStatus.CompleteIneligible)
 }
 
+// The predicate groups that used to share one `if` are now one statement each. The order and the
+// short-circuit behaviour are unchanged; what changed is that a refusal names a single predicate.
+// C4-REPAIR-MEASURED's first completed gate run was rejected here, and isolating the cause meant
+// bisecting a seven-predicate conjunction by hand. The split is kept so the next such run does not
+// pay that again — it is a diagnosability change, not a semantic one.
 pub fn verify_result(
   borrow result: prompt_artifacts.PromptEvaluationResult,
   borrow evidence: prompt_artifacts.PromptEvaluationEvidence,

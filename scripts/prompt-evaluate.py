@@ -1578,6 +1578,16 @@ def assemble_repair_prompt(
     preamble, headers, attempt-1 text, and `STATUS` exceed the generation policy's prompt budget.
     A drop is always whole-section: a half-truncated stream would end mid-traceback and invite the
     model to repair a failure it can only half see.
+
+    **The two lists are not a partition of `REPAIR_SECTION_KINDS`, deliberately.** `included` is
+    what the assembled prompt actually carries and `dropped` is what the budget ladder removed. A
+    section whose source is empty was never a candidate, so it appears in neither: the adapter
+    produced nothing for it, and calling that a "drop" would report a budget decision that was
+    never taken. The published gate evidence shows the case — all four
+    `layer-precedence-frozen-module` repairs have an empty `diagnostic_stdout`, and record
+    `included_sections: [STATUS, SUMMARY, STDERR]` with `dropped_sections: []`. Section 4.3 of
+    `docs/specs/c4-repair-measured.md` states the same rule; a consumer that needs "was this
+    section available" must read `attempt.measurement` and not infer it from these two lists.
     """
     included = [kind for kind in REPAIR_SECTION_KINDS if sources[kind]]
     dropped: list[str] = []
@@ -4209,13 +4219,15 @@ def evaluate(
                                 checkpoint,
                                 cleanup_diagnosed=True,
                             )
-                        if measurement.get("status") == "ERROR":
-                            failure_detail = measurement.get("diagnostic_summary") or "measurement adapter returned an error"
-                            failure_code = "CLEANUP_FAILED" if not measurement.get("cleanup_passed", True) else "ADAPTER_RESULT"
-                            raise AbortEvaluation(
-                                evaluation_result("ERROR", failure_code, failure_detail[:4096]), checkpoint,
-                                cleanup_diagnosed=failure_code == "CLEANUP_FAILED",
-                            )
+                        # A terminal adapter measurement does NOT abort here. The invocation ran:
+                        # it produced a snapshot request, before/after results, and an input
+                        # snapshot, and every one of those must be referenced by the record of the
+                        # invocation that produced it. Aborting inside the attempt would leave them
+                        # in the persisted streams with no row, no attempt, and no attestation
+                        # naming them, and the "no unreferenced trace record" rule would reject the
+                        # whole document at publish time. The row is completed and attested exactly
+                        # as it was at version 1, and the caller raises the terminal error after
+                        # appending it.
                         if not any(item["content_sha256"] == input_snapshot["content_sha256"] for item in input_snapshots):
                             input_snapshots.append(input_snapshot)
                         overhead_ns: int | None = None
@@ -4356,6 +4368,25 @@ def evaluate(
                         "measurement": final["measurement"], "content_sha256": "",
                     })
                     rows.append(row)
+                    # Terminal adapter error, raised only now that the row, its attempts, its
+                    # expected-input identities, and its attestation are all persisted. This is
+                    # the version-1 order and it is deliberate: the published `ERROR` document
+                    # keeps the failing row, and `make prompt-evaluate-smoke` asserts exactly that.
+                    if final["measurement"].get("status") == "ERROR":
+                        failure_detail = (
+                            final["measurement"].get("diagnostic_summary")
+                            or "measurement adapter returned an error"
+                        )
+                        failure_code = (
+                            "CLEANUP_FAILED"
+                            if not final["measurement"].get("cleanup_passed", True)
+                            else "ADAPTER_RESULT"
+                        )
+                        return finish(
+                            evaluation_result("ERROR", failure_code, failure_detail[:4096]),
+                            checkpoint,
+                            cleanup_diagnosed=failure_code == "CLEANUP_FAILED",
+                        )
 
     status, gate, task_aggregates, corpus_aggregate, reasons = complete_score(
         tasks, rows, request["sample_count"], acceptance, trust, environment, control,

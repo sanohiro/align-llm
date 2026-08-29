@@ -323,6 +323,17 @@ ATTEMPT_RECORD_FIELDS = (
     "rendered_prompt_sha256",
     "repair_prompt_source",
     "adapter_request_sha256",
+    # Each attempt is its own contained invocation, so it produces its own snapshot request,
+    # before/after snapshot results, and input snapshot. `snapshot_attestations` stays one record
+    # per row because its schedule check binds it positionally, so these four are what keep a
+    # repair invocation's trace records bound to the attempt that produced them. Declared in the
+    # producer's order (`scripts/prompt-evaluate.py`, the `TASK_ATTEMPT_RECORD` literal) and in
+    # `src/prompt_artifacts.align`'s `TaskAttemptRecord`: after `adapter_request_sha256` and
+    # before `generation_request`.
+    "snapshot_request_sha256",
+    "before_snapshot_result_sha256",
+    "after_snapshot_result_sha256",
+    "input_snapshot_sha256",
     "generation_request",
     "seed_attestation",
     "paired_seed",
@@ -342,12 +353,24 @@ ATTEMPT_RECORD_OPTIONAL = frozenset(
         "rendered_prompt_sha256",
         "repair_prompt_source",
         "adapter_request_sha256",
+        "snapshot_request_sha256",
+        "before_snapshot_result_sha256",
+        "after_snapshot_result_sha256",
+        "input_snapshot_sha256",
         "generation_request",
         "seed_attestation",
         "measurement",
         "adapter_overhead_ns",
         "measurement_sha256",
     }
+)
+# The four trace digests an attempt that ran must carry, paired with the persisted stream each one
+# must name. Mirrors the attestation rule below, which binds the row-level documents the same way.
+ATTEMPT_TRACE_POOLS = (
+    ("snapshot_request_sha256", "snapshot_requests"),
+    ("before_snapshot_result_sha256", "snapshot_results"),
+    ("after_snapshot_result_sha256", "snapshot_results"),
+    ("input_snapshot_sha256", "input_snapshots"),
 )
 REPAIR_PROMPT_SOURCE_FIELDS = (
     "schema_version",
@@ -1556,7 +1579,12 @@ def validate_repair_prompt_source(value: Any, policy: Mapping[str, Any], label: 
 
 
 def validate_attempt_record(
-    value: Any, row: Mapping[str, Any], policy: Mapping[str, Any], ordinal: int, label: str
+    value: Any,
+    row: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    pools: Mapping[str, set[str]],
+    ordinal: int,
+    label: str,
 ) -> dict[str, Any]:
     """One attempt: its identity, its per-status presence rule, and its own timing bounds."""
     attempt = exact_record(value, ATTEMPT_RECORD_FIELDS, label, ATTEMPT_RECORD_OPTIONAL)
@@ -1581,16 +1609,27 @@ def validate_attempt_record(
     )
     if attempt["attempt_kind"] == "INITIAL" and attempt["repair_preparation_ns"] != 0:
         raise GateError(f"{label} initial attempt records repair preparation work")
-    # Section 3.2: a `SKIPPED` attempt carries only identity, not a run.
+    # Section 3.2: a `SKIPPED` attempt carries only identity, not a run. The four trace digests
+    # belong to the same rule: a skipped repair made no contained invocation, so it produced no
+    # snapshot request, no snapshot result, and no input snapshot to name.
     run_bound = (
-        "rendered_prompt_sha256", "adapter_request_sha256", "generation_request",
-        "seed_attestation", "measurement", "measurement_sha256",
+        "rendered_prompt_sha256", "adapter_request_sha256", "snapshot_request_sha256",
+        "before_snapshot_result_sha256", "after_snapshot_result_sha256", "input_snapshot_sha256",
+        "generation_request", "seed_attestation", "measurement", "measurement_sha256",
     )
     for name in run_bound:
         present = attempt.get(name) is not None
         if present == skipped:
             state = "carries" if present else "omits"
             raise GateError(f"{label} {state} {name} against its status")
+    if not skipped:
+        # Section 10.3: `snapshot_attestations` no longer reaches a repair invocation's trace
+        # records, so the attempt record is what keeps them bound. Every digest it names must be a
+        # record this same document persists.
+        for name, pool in ATTEMPT_TRACE_POOLS:
+            digest = require_digest(attempt[name], f"{label} {name}")
+            if digest not in pools[pool]:
+                raise GateError(f"{label} {name} names no persisted record")
     if skipped:
         if attempt["adapter_elapsed_ns"] != 0:
             raise GateError(f"{label} skipped attempt records adapter time")
@@ -1636,7 +1675,11 @@ def validate_attempt_record(
 
 
 def validate_attempts(
-    row: Mapping[str, Any], task: Mapping[str, Any], policy: Mapping[str, Any], label: str
+    row: Mapping[str, Any],
+    task: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    pools: Mapping[str, set[str]],
+    label: str,
 ) -> None:
     """Section 3.8 rows 16 to 19: attempt order, the repair bound, binding, and timing."""
     attempts = row["attempts"]
@@ -1647,7 +1690,7 @@ def validate_attempts(
     if len(attempts) > 1 + maximum_repair_loops:
         raise GateError(f"{label} carries more attempts than its task admits")
     records = [
-        validate_attempt_record(item, row, policy, ordinal, f"{label} attempt {ordinal}")
+        validate_attempt_record(item, row, policy, pools, ordinal, f"{label} attempt {ordinal}")
         for ordinal, item in enumerate(attempts, start=1)
     ]
     kinds = [item["attempt_kind"] for item in records]
@@ -2128,8 +2171,14 @@ def validate_corpus_coverage(result: Mapping[str, Any], scope: Mapping[str, Any]
         raise GateError("the input snapshots cover a task the corpus does not declare")
 
 
-def validate_snapshot_closure(result: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> None:
-    """Require complete, matching before/after snapshot observation for every scored row."""
+def validate_snapshot_closure(
+    result: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+) -> dict[str, set[str]]:
+    """Require complete, matching before/after snapshot observation for every scored row.
+
+    Returns the persisted-digest pool per trace stream, so an attempt record's own four trace
+    digests are checked against exactly the documents this validator already admitted.
+    """
     pools: dict[str, set[str]] = {}
     for name, fields, kind, label in (
         ("snapshot_requests", None, "SNAPSHOT_REQUEST", "snapshot request"),
@@ -2192,6 +2241,7 @@ def validate_snapshot_closure(result: Mapping[str, Any], rows: Sequence[Mapping[
         ):
             if require_digest(attestation[field], f"attestation {field}") not in pools[pool]:
                 raise GateError(f"a snapshot attestation {field} names no persisted record")
+    return pools
 
 
 def validate_workspace_preflight(result: Mapping[str, Any], evaluation_id: str) -> None:
@@ -2366,7 +2416,7 @@ def validate_evaluation_pair(
     rows = result["rows"]
     if not isinstance(rows, list) or not rows:
         raise GateError("gate evaluation has no rows")
-    validate_snapshot_closure(result, rows)
+    trace_pools = validate_snapshot_closure(result, rows)
     row_fields = TASK_ROW_V1_FIELDS if version == 1 else TASK_ROW_V2_FIELDS
     row_optional = TASK_ROW_V1_OPTIONAL if version == 1 else TASK_ROW_V2_OPTIONAL
     tasks_by_id = {task["task_id"]: task for task in result["tasks"]}
@@ -2392,7 +2442,9 @@ def validate_evaluation_pair(
             task = tasks_by_id.get(row["task_id"])
             if task is None:
                 raise GateError(f"evaluation row {index} names a task the corpus does not declare")
-            validate_attempts(row, task, generation_policy, f"evaluation row {index}")
+            validate_attempts(
+                row, task, generation_policy, trace_pools, f"evaluation row {index}"
+            )
 
     expected_inputs = evidence["expected_inputs"]
     if not isinstance(expected_inputs, list):

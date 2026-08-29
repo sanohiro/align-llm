@@ -5,7 +5,7 @@ import prompt_score
 import std.process
 
 EVALUATOR_SOURCE_RELATIVE := "scripts/prompt-evaluate.py"
-EVALUATOR_SOURCE_SHA256 := "58e65bebe5a1221da8ae21205d9ba01ddaec838b7ee002878cc3d21e00b4253f"
+EVALUATOR_SOURCE_SHA256 := "53bcf1c3a6fd384918dbfce380d0b7f35faa66c8dce5aad239649bfec90cfee4"
 // C4-REPAIR-MEASURED widened the launch contract from three argument chunks to four. The attempt
 // loop, the repair-prompt assembly, and the version-2 row assembly do not fit the previous
 // 196,608-byte ceiling; `docs/specs/c4-repair-measured.md` section 3.10 records the widening as a

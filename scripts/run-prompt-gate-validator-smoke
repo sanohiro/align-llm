@@ -1059,6 +1059,33 @@ def repair_attempt_rows(root: Path) -> None:
         contains="carries rendered_prompt_sha256 against its status",
     )
 
+    def attempt_trace_unbound(evaluation, evidence) -> None:
+        # One positional attestation per row cannot reach a repair invocation's trace records, so
+        # the attempt record is what binds them. A well-formed digest that names no persisted
+        # record must be rejected, not merely a missing one.
+        row = evaluation["rows"][0]
+        row["attempts"][1]["input_snapshot_sha256"] = "f" * 64
+        fixture.bind(row["attempts"][1])
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-trace-unbound", attempt_trace_unbound),
+        "an attempt trace digest that names no persisted record",
+        contains="input_snapshot_sha256 names no persisted record",
+    )
+
+    def attempt_trace_missing(evaluation, evidence) -> None:
+        row = evaluation["rows"][0]
+        row["attempts"][1]["snapshot_request_sha256"] = None
+        fixture.bind(row["attempts"][1])
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-trace-missing", attempt_trace_missing),
+        "an attempt that ran and attests no snapshot request",
+        contains="omits snapshot_request_sha256 against its status",
+    )
+
     def dropped_status_section(evaluation, evidence) -> None:
         row = evaluation["rows"][0]
         source = row["attempts"][1]["repair_prompt_source"]

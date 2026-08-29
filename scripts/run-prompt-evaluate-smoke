@@ -398,6 +398,17 @@ def verify_descendant_cleanup_boundary() -> None:
             task_ns < outer and provider_ns < outer and task_ns + provider_ns < outer,
             f"an inner adapter deadline is not strictly smaller than the outer sum {outer}",
         )
+    # Everything above is a source and arithmetic boundary and runs anywhere. Everything below
+    # drives real process groups and asserts that no descendant outlives its owner, which is the
+    # Linux process-containment floor this repository's containment rules are written against.
+    # `scripts/run-prompt-gate-validator-smoke` reports SKIP for the same reason rather than
+    # asserting a containment guarantee the host does not provide.
+    if not sys.platform.startswith("linux"):
+        print(
+            "prompt evaluate smoke: descendant cleanup boundary SKIP "
+            "(requires the Linux process-containment floor)"
+        )
+        return
     original_cleanup = module.cleanup_process_group
     cleanup_calls = 0
 
@@ -3143,8 +3154,12 @@ def main() -> int:
                 f"row {ordinal} attempt identity or timing is not evaluator-observed",
             )
             passed = row["measurement"]["status"] == "PASS"
+            # The canonical encoder omits an `Option::None`, so a non-passing attempt has no
+            # `adapter_overhead_ns` key at all. Absent and `null` are the same statement here, and
+            # reading it with `[]` turned this assertion into a `KeyError` on every published
+            # non-passing row.
             require(
-                (records[0]["adapter_overhead_ns"] is not None) is passed,
+                (records[0].get("adapter_overhead_ns") is not None) is passed,
                 f"row {ordinal} publishes adapter overhead on a non-passing attempt",
             )
             if passed:

@@ -1498,6 +1498,12 @@ fn attempt_measurement(passing: bool, window: i64, seed: i64) -> prompt_artifact
   }
 }
 
+fn adapter_repair_measurement(seed: i64) -> prompt_artifacts.TaskMeasurement {
+  mut value := attempt_measurement(true, 30, seed)
+  value.repair_loop_count = 1
+  return value
+}
+
 fn drifted_measurement(seed: i64) -> prompt_artifacts.TaskMeasurement {
   mut value := attempt_measurement(true, 30, seed)
   value.diagnostic_summary = "a summary the final attempt never reported".clone()
@@ -1535,10 +1541,13 @@ fn initial_attempt(index: i64, seed: i64) -> prompt_artifacts.TaskAttemptRecord 
     rendered_prompt_sha256: Some(digest_a()),
     repair_prompt_source: None,
     adapter_request_sha256: Some(digest_a()),
+    // The single persisted snapshot request, snapshot result, and input snapshot all carry
+    // `digest_a()`, so every one of these resolves to exactly one record of this row's task —
+    // which is what `verifier_attempt_trace_cross_valid` requires of a real run.
     snapshot_request_sha256: Some(digest_a()),
-    before_snapshot_result_sha256: Some(digest_b()),
-    after_snapshot_result_sha256: Some(digest_b()),
-    input_snapshot_sha256: Some(digest_c()),
+    before_snapshot_result_sha256: Some(digest_a()),
+    after_snapshot_result_sha256: Some(digest_a()),
+    input_snapshot_sha256: Some(digest_a()),
     generation_request: Some(generation_request(seed)),
     seed_attestation: Some(seed_attestation("LOCAL_OPENAI", seed)),
     paired_seed: seed,
@@ -1562,10 +1571,13 @@ fn repair_attempt(index: i64, seed: i64) -> prompt_artifacts.TaskAttemptRecord {
     rendered_prompt_sha256: Some(digest_a()),
     repair_prompt_source: Some(repair_source()),
     adapter_request_sha256: Some(digest_a()),
+    // The single persisted snapshot request, snapshot result, and input snapshot all carry
+    // `digest_a()`, so every one of these resolves to exactly one record of this row's task —
+    // which is what `verifier_attempt_trace_cross_valid` requires of a real run.
     snapshot_request_sha256: Some(digest_a()),
-    before_snapshot_result_sha256: Some(digest_b()),
-    after_snapshot_result_sha256: Some(digest_b()),
-    input_snapshot_sha256: Some(digest_c()),
+    before_snapshot_result_sha256: Some(digest_a()),
+    after_snapshot_result_sha256: Some(digest_a()),
+    input_snapshot_sha256: Some(digest_a()),
     generation_request: Some(generation_request(seed)),
     seed_attestation: Some(seed_attestation("LOCAL_OPENAI", seed)),
     paired_seed: seed,
@@ -1589,10 +1601,13 @@ fn passing_initial_attempt(seed: i64) -> prompt_artifacts.TaskAttemptRecord {
     rendered_prompt_sha256: Some(digest_a()),
     repair_prompt_source: None,
     adapter_request_sha256: Some(digest_a()),
+    // The single persisted snapshot request, snapshot result, and input snapshot all carry
+    // `digest_a()`, so every one of these resolves to exactly one record of this row's task —
+    // which is what `verifier_attempt_trace_cross_valid` requires of a real run.
     snapshot_request_sha256: Some(digest_a()),
-    before_snapshot_result_sha256: Some(digest_b()),
-    after_snapshot_result_sha256: Some(digest_b()),
-    input_snapshot_sha256: Some(digest_c()),
+    before_snapshot_result_sha256: Some(digest_a()),
+    after_snapshot_result_sha256: Some(digest_a()),
+    input_snapshot_sha256: Some(digest_a()),
     generation_request: Some(generation_request(seed)),
     seed_attestation: Some(seed_attestation("LOCAL_OPENAI", seed)),
     paired_seed: seed,
@@ -1612,6 +1627,81 @@ fn untraced_initial_attempt(index: i64, seed: i64) -> prompt_artifacts.TaskAttem
   mut attempt := initial_attempt(index, seed)
   attempt.snapshot_request_sha256 = None
   return attempt
+}
+
+// Defect 9: a third attempt that never ran. `repair_count` counts only repairs that ran, so it
+// stays 1 and the row's declared count still matches it; the structural `1 + maximum_repair_loops`
+// bound is then the only check that rejects the list, which is what gives that bound single-point
+// coverage instead of leaving it shadowed by two other rules.
+fn skipped_repair_attempt(index: i64, seed: i64) -> prompt_artifacts.TaskAttemptRecord {
+  return prompt_artifacts.TaskAttemptRecord {
+    schema_version: 1,
+    artifact_kind: "TASK_ATTEMPT_RECORD".clone(),
+    attempt_index: index,
+    attempt_kind: "REPAIR".clone(),
+    status: "SKIPPED".clone(),
+    skip_reason: "REPAIR_PROMPT_BUDGET".clone(),
+    rendered_prompt_sha256: None,
+    repair_prompt_source: Some(repair_source()),
+    adapter_request_sha256: None,
+    snapshot_request_sha256: None,
+    before_snapshot_result_sha256: None,
+    after_snapshot_result_sha256: None,
+    input_snapshot_sha256: None,
+    generation_request: None,
+    seed_attestation: None,
+    paired_seed: seed,
+    measurement: None,
+    repair_preparation_ns: 10,
+    adapter_elapsed_ns: 0,
+    adapter_overhead_ns: None,
+    measurement_sha256: None,
+    content_sha256: digest_a(),
+  }
+}
+
+// Defect 12: an attempt whose input-snapshot digest is well formed but names no persisted record.
+// Presence alone admits it, and the record it should have named is still referenced by the row's
+// attestation, so only resolution rejects it.
+fn unresolved_trace_attempt(index: i64, seed: i64) -> prompt_artifacts.TaskAttemptRecord {
+  mut attempt := repair_attempt(index, seed)
+  attempt.input_snapshot_sha256 = Some(digest_b())
+  return attempt
+}
+
+// Defect 13 is an ACCEPTANCE case, not a rejection. `scripts/prompt-fixed-adapter.py` is a
+// byte-frozen corpus member that emits `repair_loop_count: 1` on its expected-failure path, and a
+// task that offers no repair must still admit that document: the adapter's value is carried
+// verbatim and is not the authority. Rejecting it turned every version-2 publish from the
+// deterministic fixture corpus into `EVALUATION_FAILED`.
+//
+// Written as a whole record rather than as `attempt.measurement = Some(...)`: the pinned compiler
+// supports owned field replacement only for `string` and `Option<string>` leaves.
+fn adapter_repair_initial_attempt(seed: i64) -> prompt_artifacts.TaskAttemptRecord {
+  return prompt_artifacts.TaskAttemptRecord {
+    schema_version: 1,
+    artifact_kind: "TASK_ATTEMPT_RECORD".clone(),
+    attempt_index: 1,
+    attempt_kind: "INITIAL".clone(),
+    status: "PASS".clone(),
+    skip_reason: "NONE".clone(),
+    rendered_prompt_sha256: Some(digest_a()),
+    repair_prompt_source: None,
+    adapter_request_sha256: Some(digest_a()),
+    snapshot_request_sha256: Some(digest_a()),
+    before_snapshot_result_sha256: Some(digest_a()),
+    after_snapshot_result_sha256: Some(digest_a()),
+    input_snapshot_sha256: Some(digest_a()),
+    generation_request: Some(generation_request(seed)),
+    seed_attestation: Some(seed_attestation("LOCAL_OPENAI", seed)),
+    paired_seed: seed,
+    measurement: Some(adapter_repair_measurement(seed)),
+    repair_preparation_ns: 0,
+    adapter_elapsed_ns: 90,
+    adapter_overhead_ns: Some(60),
+    measurement_sha256: Some(digest_b()),
+    content_sha256: digest_a(),
+  }
 }
 
 fn attempts_for(defect: i64, seed: i64) -> array<prompt_artifacts.TaskAttemptRecord> {
@@ -1639,6 +1729,29 @@ fn attempts_for(defect: i64, seed: i64) -> array<prompt_artifacts.TaskAttemptRec
     values.push(passing_initial_attempt(seed))
     return values.build()
   }
+  if defect == 13 {
+    values.push(adapter_repair_initial_attempt(seed))
+    return values.build()
+  }
+  if defect == 9 {
+    values.push(initial_attempt(1, seed))
+    values.push(repair_attempt(2, seed))
+    values.push(skipped_repair_attempt(3, seed))
+    return values.build()
+  }
+  if defect == 10 {
+    // Two repairs that both ran, against a task whose cap is two: the length bound admits the
+    // list and the declared count matches it, so `repair_count > 1` is the only rejection.
+    values.push(initial_attempt(1, seed))
+    values.push(repair_attempt(2, seed))
+    values.push(repair_attempt(3, seed))
+    return values.build()
+  }
+  if defect == 12 {
+    values.push(initial_attempt(1, seed))
+    values.push(unresolved_trace_attempt(2, seed))
+    return values.build()
+  }
   values.push(initial_attempt(1, seed))
   // Defect 1 breaks the dense ascending attempt index.
   values.push(repair_attempt(if defect == 1 { 3 } else { 2 }, seed))
@@ -1658,7 +1771,13 @@ fn row_v2(sample: i64, parent: bool, defect: i64) -> prompt_artifacts.PromptTask
     variant_sha256: if parent { digest_b() } else { digest_c() },
     prompt_preparation_ns: 10,
     // Defect 6 makes the row's own count disagree with its attempt list.
-    repair_loop_count: Some(if defect == 6 || defect == 7 { 0 } else { 1 }),
+    repair_loop_count: Some(if defect == 6 || defect == 7 || defect == 13 {
+        0
+      } else if defect == 10 {
+        2
+      } else {
+        1
+      }),
     generation_to_passing_patch_ns: Some(90),
     time_to_passing_patch_ns: Some(100),
     attempts: Some(attempts_for(defect, seed)),
@@ -1667,11 +1786,66 @@ fn row_v2(sample: i64, parent: bool, defect: i64) -> prompt_artifacts.PromptTask
     // no aggregate reads, so ladder row 18 is the only check that can reject it.
     measurement: if defect == 3 {
       drifted_measurement(seed)
+    } else if defect == 13 {
+      adapter_repair_measurement(seed)
     } else {
       attempt_measurement(true, 30, seed)
     },
     content_sha256: digest_a(),
   }
+}
+
+// Defect 10 needs a task whose cap admits three attempts, so that the two-repair rule is reached
+// on its own rather than shadowed by the structural bound.
+fn task_with_repair_cap(cap: i64) -> prompt_artifacts.PromptEvaluationTask {
+  mut value := task()
+  value.regression_limits = prompt_artifacts.RegressionLimits {
+    maximum_unrelated_diff_count: 10,
+    maximum_patch_size_bytes: 1_000,
+    maximum_public_api_change_count: 10,
+    maximum_repair_loops: cap,
+    maximum_benchmark_regression_ppm: None,
+  }
+  return value
+}
+
+// Defect 13 needs a task that offers no repair at all: at version 2 a task must declare a repair
+// template exactly when its cap is at least one, so the cap and the template move together.
+fn task_without_repair() -> prompt_artifacts.PromptEvaluationTask {
+  mut value := task_with_repair_cap(0)
+  value.repair_template_path = None
+  value.repair_template_sha256 = None
+  return value
+}
+
+fn tasks_array_v2(defect: i64) -> array<prompt_artifacts.PromptEvaluationTask> {
+  mut values: array_builder<prompt_artifacts.PromptEvaluationTask> := array_builder()
+  if defect == 10 {
+    values.push(task_with_repair_cap(2))
+  } else if defect == 13 {
+    values.push(task_without_repair())
+  } else {
+    values.push(task())
+  }
+  return values.build()
+}
+
+// Defect 11: a second persisted input snapshot that no attestation and no attempt names. It is a
+// valid record of a declared task with a distinct digest, so every structural check admits it and
+// only the universal "no unreferenced trace record" rule rejects the document.
+fn unreferenced_input_snapshot() -> prompt_artifacts.TaskInputSnapshot {
+  mut value := input_snapshot()
+  value.content_sha256 = digest_b()
+  return value
+}
+
+fn input_snapshots_array_v2(defect: i64) -> array<prompt_artifacts.TaskInputSnapshot> {
+  mut values: array_builder<prompt_artifacts.TaskInputSnapshot> := array_builder()
+  values.push(input_snapshot())
+  if defect == 11 {
+    values.push(unreferenced_input_snapshot())
+  }
+  return values.build()
 }
 
 fn rows_v2(defect: i64) -> array<prompt_artifacts.PromptTaskRow> {
@@ -1683,8 +1857,17 @@ fn rows_v2(defect: i64) -> array<prompt_artifacts.PromptTaskRow> {
   return values.build()
 }
 
+// Defects 9 and 10 both produce a three-attempt row, and the section 1.4 recovery predicate is
+// exactly two attempts, so neither recovers. The aggregates are recomputed by the verifier from
+// the attempts, so they have to agree here or the document would be rejected by an aggregate
+// mismatch instead of by the one rule each defect is written to reach.
+fn attempt_recovers(defect: i64) -> bool {
+  return defect != 7 && defect != 9 && defect != 10 && defect != 13
+}
+
 fn task_aggregate_v2(defect: i64) -> prompt_artifacts.TaskAggregate {
-  repairs := if defect == 6 || defect == 7 { 0 } else { 2 }
+  repairs := if defect == 6 || defect == 7 || defect == 13 { 0 } else if defect == 10 { 4 } else { 2 }
+  recoveries := if attempt_recovers(defect) { 2 } else { 0 }
   return prompt_artifacts.TaskAggregate {
     task_id: "task".clone(),
     parent_pass_count: 2,
@@ -1696,11 +1879,11 @@ fn task_aggregate_v2(defect: i64) -> prompt_artifacts.TaskAggregate {
     candidate_paired_median_time_ns: Some(100),
     time_improvement_ppm: Some(0),
     time_regression_ppm: Some(0),
-    parent_repair_attempt_count: Some(if defect == 7 { 0 } else { 2 }),
-    candidate_repair_attempt_count: Some(if defect == 7 { 0 } else { 2 }),
-    parent_repair_recovery_count: Some(if defect == 7 { 0 } else { 2 }),
-    candidate_repair_recovery_count: Some(if defect == 7 { 0 } else { 2 }),
-    repair_recovery_paired: Some(defect != 7),
+    parent_repair_attempt_count: Some(if defect == 7 || defect == 13 { 0 } else { 2 }),
+    candidate_repair_attempt_count: Some(if defect == 7 || defect == 13 { 0 } else { 2 }),
+    parent_repair_recovery_count: Some(recoveries),
+    candidate_repair_recovery_count: Some(recoveries),
+    repair_recovery_paired: Some(attempt_recovers(defect)),
   }
 }
 
@@ -1711,7 +1894,7 @@ fn task_aggregates_v2(defect: i64) -> array<prompt_artifacts.TaskAggregate> {
 }
 
 fn corpus_aggregate_v2(defect: i64) -> prompt_artifacts.CorpusAggregate {
-  repairs := if defect == 6 || defect == 7 { 0 } else { 2 }
+  repairs := if defect == 6 || defect == 7 || defect == 13 { 0 } else if defect == 10 { 4 } else { 2 }
   return prompt_artifacts.CorpusAggregate {
     task_count: 1,
     sample_count: 2,
@@ -1726,9 +1909,9 @@ fn corpus_aggregate_v2(defect: i64) -> prompt_artifacts.CorpusAggregate {
     time_improvement_ppm: Some(0),
     time_regression_ppm: Some(0),
     repair_loop_regression_count: 0,
-    repair_attempt_count: Some(if defect == 7 { 0 } else { 4 }),
-    repair_recovery_count: Some(if defect == 7 { 0 } else { 4 }),
-    repair_recovery_paired_count: Some(if defect == 7 { 0 } else { 2 }),
+    repair_attempt_count: Some(if defect == 7 || defect == 13 { 0 } else { 4 }),
+    repair_recovery_count: Some(if attempt_recovers(defect) { 4 } else { 0 }),
+    repair_recovery_paired_count: Some(if attempt_recovers(defect) { 2 } else { 0 }),
   }
 }
 
@@ -1760,10 +1943,10 @@ fn expected_inputs_v2(defect: i64) -> array<prompt_artifacts.PromptExpectedInput
     sample := if index < 2 { 1 } else { 2 }
     parent := index == 0 || index == 3
     values.push(expected_input_v2(sample, parent, 1))
-    if defect != 7 {
+    if defect != 7 && defect != 13 {
       values.push(expected_input_v2(sample, parent, second))
     }
-    if defect == 4 {
+    if defect == 4 || defect == 10 {
       values.push(expected_input_v2(sample, parent, 3))
     }
     index = index + 1
@@ -1800,7 +1983,7 @@ fn complete_result_v2(defect: i64) -> prompt_artifacts.PromptEvaluationResult {
     candidate_variant: Some(variant(false)),
     corpus_source: Some(reference("PROMPT_EVALUATION_CORPUS", "corpus", digest_a())),
     corpus: Some(corpus()),
-    tasks: tasks_array(),
+    tasks: tasks_array_v2(defect),
     acceptance_policy_source: Some(reference("PROMPT_ACCEPTANCE_POLICY", "policy", digest_a())),
     acceptance_policy: Some(acceptance_policy()),
     generation_policy_source: Some(reference("GENERATION_POLICY", "generation", digest_a())),
@@ -1813,7 +1996,7 @@ fn complete_result_v2(defect: i64) -> prompt_artifacts.PromptEvaluationResult {
     environment: Some(environment()),
     snapshot_requests: snapshot_requests_array(),
     snapshot_results: snapshot_results_array(),
-    input_snapshots: input_snapshots_array(),
+    input_snapshots: input_snapshots_array_v2(defect),
     snapshot_attestations: attestations(false),
     trace_failure: None,
     sample_count: 2,
@@ -2120,6 +2303,44 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   untraced := complete_result_v2(8)
   untraced_evidence := evidence_v2(8)
   expect_invalid(untraced, untraced_evidence)?
+
+  // A three-attempt list whose third attempt was skipped: `repair_count` is still 1 and the row's
+  // declared count still matches it, so `1 + maximum_repair_loops` is the only bound that rejects
+  // it. Without this case, weakening that bound alone leaves every owner test green.
+  overlong_with_skip := complete_result_v2(9)
+  overlong_with_skip_evidence := evidence_v2(9)
+  expect_invalid(overlong_with_skip, overlong_with_skip_evidence)?
+
+  // Two repairs that both ran, against a task whose cap admits three attempts: the structural
+  // bound and the declared count both pass, so "at most one repair attempt" is the only rejection.
+  two_repairs := complete_result_v2(10)
+  two_repairs_evidence := evidence_v2(10)
+  expect_invalid(two_repairs, two_repairs_evidence)?
+
+  // A persisted input snapshot that no attestation and no attempt names. Only the universal
+  // "no unreferenced trace record" rule rejects it, so this is what keeps that rule honest now
+  // that a row's attempts are a second way to reference one.
+  unreferenced_trace := complete_result_v2(11)
+  unreferenced_trace_evidence := evidence_v2(11)
+  expect_invalid(unreferenced_trace, unreferenced_trace_evidence)?
+
+  // An attempt whose trace digest is well formed but resolves to no persisted record of its task.
+  // Presence admits it and the real record is still referenced by the attestation, so resolution
+  // is the only rule that can reject it.
+  unresolved_trace := complete_result_v2(12)
+  unresolved_trace_evidence := evidence_v2(12)
+  expect_invalid(unresolved_trace, unresolved_trace_evidence)?
+
+  // A task that offers no repair must still admit an adapter document whose own
+  // `repair_loop_count` is non-zero: the byte-frozen `scripts/prompt-fixed-adapter.py` emits `1`
+  // on its expected-failure path, and at version 2 the row's own count is the authority. This is
+  // an acceptance case, and requiring zero unconditionally broke every version-2 publish from the
+  // deterministic fixture corpus.
+  adapter_repair := complete_result_v2(13)
+  adapter_repair_evidence := evidence_v2(13)
+  if verdict_code(prompt_score.verify_result(adapter_repair, adapter_repair_evidence)?) != 2 {
+    return Err(Error.Invalid)
+  }
 
   // A version-2 document may not be paired with version-1 evidence.
   version_split := complete_result_v2(0)

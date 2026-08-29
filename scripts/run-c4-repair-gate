@@ -30,6 +30,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -462,15 +463,22 @@ def on_host(values: argparse.Namespace) -> int:
             "consumes `repair_recovery_paired_count` only.\n"
         )
 
+    # Every interpolated value is quoted for the shell, without exception. These are operator
+    # inputs — a scope path, an output directory, a probe path, a host name — and one space or
+    # quote in any of them would otherwise be re-split by `sh -lc` into a different command.
+    def quoted(value: object) -> str:
+        return shlex.quote(str(value))
+
     forwarder = (
-        f"socat TCP-LISTEN:{port},fork,reuseaddr,bind=127.0.0.1 "
-        f"TCP:{values.endpoint_host}:{port} & sleep 1; "
+        f"socat TCP-LISTEN:{quoted(port)},fork,reuseaddr,bind=127.0.0.1 "
+        f"TCP:{quoted(values.endpoint_host)}:{quoted(port)} & sleep 1; "
     )
     driver = (
-        f"exec /usr/bin/python3 {CONTAINER_ROOT}/scripts/run-c4-repair-gate --in-container "
-        f"--scope {values.scope} --run-relative {run_relative} "
-        f"--provider-probe {values.provider_probe} --out {values.out} "
-        f"--endpoint-host {values.endpoint_host}"
+        f"exec /usr/bin/python3 {quoted(CONTAINER_ROOT + '/scripts/run-c4-repair-gate')} "
+        f"--in-container "
+        f"--scope {quoted(values.scope)} --run-relative {quoted(run_relative)} "
+        f"--provider-probe {quoted(values.provider_probe)} --out {quoted(values.out)} "
+        f"--endpoint-host {quoted(values.endpoint_host)}"
         + (" --diagnose" if values.diagnose else "")
         + (" --diagnose-sandbox" if values.diagnose_sandbox else "")
     )
