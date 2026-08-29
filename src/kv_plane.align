@@ -1,0 +1,1116 @@
+module kv_plane
+
+import std.crypto
+import std.encoding
+import std.fs
+import std.time
+import layer_qwen2
+
+// R6-KV-PERSIST (`docs/specs/r6-kv-persist.md`). The `akvp` v1 container: the format's constants,
+// its 192-byte header, its 192-byte identity record, its region arithmetic, its five digests, and
+// every `R6_KV_*` code that names a container defect.
+//
+// **Why this is a module of its own, and why the plane refill is not in it.** Section 2.7: this
+// module owns everything that can be expressed with borrowed views and by-value returns — the
+// constants, encode and decode, the arithmetic, the digests, and a writer that takes the plane as a
+// read-only `slice<u8>`. The **refill** — the byte movement out of a loaded container and into
+// `src/decode_step.align`'s own `mut plane: buffer` — stays with the buffer's owner, because at
+// this pin a cross-module call taking `borrow mut buffer` beside the caller's other locals is the
+// shape Request 49 refuses. The split is therefore checkable rather than aesthetic: the format has
+// one authority, and no compatibility layer is built around the language gap.
+//
+// It holds no `unsafe` and no `extern`; `src/ggml_ffi.align` remains this repository's only module
+// that does.
+//
+// **Endianness is little-endian, everywhere, unconditionally** — alignpack v1's decision
+// (`docs/specs/r4-alignpack-layer-major.md` section 2.4.1) for its reasons. The one thing added is
+// `endian_probe`: a canary, not a mode switch. It cannot select a second decode path, it costs
+// eight bytes, and it turns "a big-endian host silently mis-decoded every `u64` in this header"
+// into one named refusal before any offset derived from those `u64`s addresses a region.
+
+// ---------------------------------------------------------------------------------------------
+// Section 2.3's constants
+// ---------------------------------------------------------------------------------------------
+
+pub FORMAT_VERSION := 1
+pub HEADER_BYTES := 192
+pub IDENTITY_RECORD_BYTES := 192
+pub ELEMENT_TYPE_F32 := 0
+pub PLANE_LAYOUT_VERSION := 1
+pub PLANE_ALIGN := 4096
+pub DOCUMENT_SCHEMA_VERSION := 3
+pub REGION_ALIGN := 8
+pub DIGEST_BYTES := 32
+pub MAX_ALIGNMENT := 65536
+
+// `0x0102030405060708`, written little-endian and validated on read.
+pub ENDIAN_PROBE := 72623859790382856
+
+// Section 2.5. The **persisted-and-digested** bound, deliberately smaller than
+// `decode_step.MAX_PLANE_BYTES` (the in-memory one): `crypto.sha256` is one-shot over one byte view
+// at this pin (Request 29), so a plane this capability would refuse to digest is a plane it refuses
+// to persist rather than one it persists without an identity. 512 MiB covers `KV_WIDTH` up to
+// `MAX_ATTENTION_WIDTH` on the reference model — 448 MiB — with headroom, so on every geometry this
+// capability ships against the bound cannot fire.
+pub MAX_KV_PLANE_BYTES := 536870912
+pub MAX_KV_LOGITS_BYTES := 16777216
+pub MAX_KV_CONTAINER_BYTES := 1073741824
+
+MAX_DETAIL_BYTES := 256
+I64_MAX := 9223372036854775807
+
+HEX_DIGITS := "0123456789abcdef"
+
+// Section 2.6's vocabulary. Nineteen codes this module owns, plus `R6_KV_WIDTH`, which is
+// `src/decode_step.align`'s existing code deliberately reused at L11: the condition there is "the
+// plane is not the width this run needs", and R6 already owns that sentence.
+pub CODE_ARGS := "R6_KV_ARGS"
+pub CODE_TOO_LARGE := "R6_KV_TOO_LARGE"
+pub CODE_EXISTS := "R6_KV_EXISTS"
+pub CODE_UNREADABLE := "R6_KV_UNREADABLE"
+pub CODE_UNWRITABLE := "R6_KV_UNWRITABLE"
+pub CODE_WRITE_FAILED := "R6_KV_WRITE_FAILED"
+pub CODE_SIZE_MISMATCH := "R6_KV_SIZE_MISMATCH"
+pub CODE_CLEANUP_FAILED := "R6_KV_CLEANUP_FAILED"
+pub CODE_TRUNCATED := "R6_KV_TRUNCATED"
+pub CODE_MAGIC := "R6_KV_MAGIC"
+pub CODE_VERSION := "R6_KV_VERSION"
+pub CODE_HEADER := "R6_KV_HEADER"
+pub CODE_RESERVED := "R6_KV_RESERVED"
+pub CODE_REGION := "R6_KV_REGION"
+pub CODE_GEOMETRY := "R6_KV_GEOMETRY"
+pub CODE_IDENTITY := "R6_KV_IDENTITY"
+pub CODE_TOKENS := "R6_KV_TOKENS"
+pub CODE_NPAST := "R6_KV_NPAST"
+pub CODE_DIGEST := "R6_KV_DIGEST"
+
+// Section 2.8's `kv.verdict` and `kv.destination` words, as scalars so that no record below carries
+// an owned string it does not need.
+pub VERDICT_ABSENT := 0
+pub VERDICT_SAVED := 1
+pub VERDICT_LOADED := 2
+
+pub DESTINATION_UNTOUCHED := 0
+pub DESTINATION_WRITTEN := 1
+pub DESTINATION_REMOVED := 2
+
+pub fn verdict_label(value: i64) -> str {
+  if value == VERDICT_SAVED { return "SAVED" }
+  if value == VERDICT_LOADED { return "LOADED" }
+  return "-"
+}
+
+pub fn destination_label(value: i64) -> str {
+  if value == DESTINATION_WRITTEN { return "WRITTEN" }
+  if value == DESTINATION_REMOVED { return "REMOVED" }
+  return "-"
+}
+
+// The identity record's five digest slots, in its own field order (section 2.3.3).
+pub DIGEST_PACK := 0
+pub DIGEST_GEOMETRY := 1
+pub DIGEST_TOKENS := 2
+pub DIGEST_LOGITS := 3
+pub DIGEST_PLANE := 4
+
+// ---------------------------------------------------------------------------------------------
+// Arithmetic that must not wrap (section 2.9, risk 3)
+//
+// Every offset, length, and sum below is formed from bytes this process did not write, and Align's
+// `i64` arithmetic wraps silently. `src/model_ir.align` rule 2's non-wrapping style is used
+// throughout: a sum is checked before it exists, never after.
+// ---------------------------------------------------------------------------------------------
+
+pub fn add_checked(left: i64, right: i64) -> i64 {
+  if left < 0 || right < 0 { return -1 }
+  if left > I64_MAX - right { return -1 }
+  return left + right
+}
+
+pub fn mul_checked(left: i64, right: i64) -> i64 {
+  if left < 0 || right < 0 { return -1 }
+  if right == 0 { return 0 }
+  if left > I64_MAX / right { return -1 }
+  return left * right
+}
+
+pub fn align_up(value: i64, alignment: i64) -> i64 {
+  if value < 0 || alignment <= 1 { return value }
+  remainder := value % alignment
+  if remainder == 0 { return value }
+  return add_checked(value, alignment - remainder)
+}
+
+fn is_power_of_two(value: i64) -> bool {
+  if value <= 0 { return false }
+  return (value & (value - 1)) == 0
+}
+
+fn region_inside(start: i64, length: i64, total: i64) -> bool {
+  if start < 0 || length < 0 || total < 0 { return false }
+  if start > total { return false }
+  return length <= total - start
+}
+
+fn disjoint(a_start: i64, a_len: i64, b_start: i64, b_len: i64) -> bool {
+  if a_len <= 0 || b_len <= 0 { return true }
+  if a_start + a_len <= b_start { return true }
+  if b_start + b_len <= a_start { return true }
+  return false
+}
+
+// The plane's byte length for a shape, computed non-wrapping. `-1` is "this shape does not describe
+// a plane this repository can represent", which every caller refuses rather than rounds.
+pub fn plane_bytes_for_shape(n_layer: i64, n_head_kv: i64, head_dim: i64, kv_width: i64) -> i64 {
+  if n_layer < 1 || n_head_kv < 1 || head_dim < 1 || kv_width < 1 { return -1 }
+  stride := mul_checked(mul_checked(mul_checked(kv_width, n_head_kv), head_dim), 4)
+  if stride < 0 { return -1 }
+  return mul_checked(mul_checked(n_layer, 2), stride)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Details and faults
+// ---------------------------------------------------------------------------------------------
+
+fn bounded_detail(value: str) -> string {
+  if value.len() <= MAX_DETAIL_BYTES { return value.clone() }
+  return value[0..MAX_DETAIL_BYTES].clone()
+}
+
+pub fn int_text(value: i64) -> string {
+  b := builder()
+  b.write_int(value)
+  return b.to_string()
+}
+
+pub fn labelled(label: str, value: i64) -> string {
+  b := builder()
+  b.write(label)
+  b.write("[")
+  b.write_int(value)
+  b.write("]")
+  return b.to_string()
+}
+
+pub fn pair_text(left: i64, right: i64) -> string {
+  b := builder()
+  b.write_int(left)
+  b.write("!=")
+  b.write_int(right)
+  return b.to_string()
+}
+
+fn error_name(e: Error) -> str = match e {
+  NotFound => "NotFound",
+  Invalid => "Invalid",
+  Denied => "Denied",
+  Timeout => "Timeout",
+  Code(_) => "Code",
+}
+
+fn hex_escape(borrow view: slice<u8>, at: i64, count: i64) -> string {
+  out := builder()
+  mut index := 0
+  loop {
+    if index >= count { break }
+    byte := view.u8(at + index) as i64
+    high := byte / 16
+    low := byte % 16
+    out.write("\\x")
+    out.write(HEX_DIGITS[high..high + 1])
+    out.write(HEX_DIGITS[low..low + 1])
+    index = index + 1
+  }
+  return out.to_string()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The decoded header (section 2.3.1)
+//
+// Twenty-seven scalars and the two strings that name the first defect. It is returned **by value**
+// and holds no view, so it has nothing that could outlive the file handle it was decoded from.
+// `pack_total_bytes` lives here rather than in a separate identity record because the document
+// publishes it beside the header's own integers and because a second by-value record would double
+// the plumbing for one number.
+// ---------------------------------------------------------------------------------------------
+
+pub KvHeader {
+  ok: bool,
+  code: string,
+  detail: string,
+  format_version: i64,
+  header_bytes: i64,
+  identity_record_bytes: i64,
+  element_type: i64,
+  plane_layout_version: i64,
+  flags: i64,
+  plane_align: i64,
+  endian_probe: i64,
+  total_bytes: i64,
+  token_stream_offset: i64,
+  token_stream_bytes: i64,
+  identity_offset: i64,
+  logits_offset: i64,
+  logits_bytes: i64,
+  plane_offset: i64,
+  plane_bytes: i64,
+  n_layer: i64,
+  n_head_kv: i64,
+  head_dim: i64,
+  kv_width: i64,
+  columns_persisted: i64,
+  token_count: i64,
+  n_vocab: i64,
+  prefill_argmax: i64,
+  document_schema_version: i64,
+  reserved_u32: i64,
+  pack_total_bytes: i64,
+}
+
+pub fn empty_header() -> KvHeader = KvHeader {
+  ok: false,
+  code: "".clone(),
+  detail: "".clone(),
+  format_version: 0,
+  header_bytes: 0,
+  identity_record_bytes: 0,
+  element_type: 0,
+  plane_layout_version: 0,
+  flags: 0,
+  plane_align: 0,
+  endian_probe: 0,
+  total_bytes: 0,
+  token_stream_offset: 0,
+  token_stream_bytes: 0,
+  identity_offset: 0,
+  logits_offset: 0,
+  logits_bytes: 0,
+  plane_offset: 0,
+  plane_bytes: 0,
+  n_layer: 0,
+  n_head_kv: 0,
+  head_dim: 0,
+  kv_width: 0,
+  columns_persisted: 0,
+  token_count: 0,
+  n_vocab: 0,
+  prefill_argmax: -1,
+  document_schema_version: 0,
+  reserved_u32: 0,
+  pack_total_bytes: 0,
+}
+
+fn refused(borrow mut h: KvHeader, code: str, detail: str) {
+  if h.code.len() == 0 {
+    h.ok = false
+    h.code = code.clone()
+    h.detail = bounded_detail(detail)
+  }
+}
+
+// Section 2.6, the writer's side. Every field of the container is fixed **here**, before anything
+// touches the filesystem, so a layout that cannot be represented is refused with no file created.
+pub fn plan_header(
+  n_layer: i64,
+  n_head_kv: i64,
+  head_dim: i64,
+  kv_width: i64,
+  token_count: i64,
+  n_vocab: i64,
+  prefill_argmax: i64,
+  pack_total_bytes: i64,
+) -> KvHeader {
+  mut h := empty_header()
+  h.format_version = FORMAT_VERSION
+  h.header_bytes = HEADER_BYTES
+  h.identity_record_bytes = IDENTITY_RECORD_BYTES
+  h.element_type = ELEMENT_TYPE_F32
+  h.plane_layout_version = PLANE_LAYOUT_VERSION
+  h.flags = 0
+  h.plane_align = PLANE_ALIGN
+  h.endian_probe = ENDIAN_PROBE
+  h.n_layer = n_layer
+  h.n_head_kv = n_head_kv
+  h.head_dim = head_dim
+  h.kv_width = kv_width
+  h.columns_persisted = token_count
+  h.token_count = token_count
+  h.n_vocab = n_vocab
+  h.prefill_argmax = prefill_argmax
+  h.document_schema_version = DOCUMENT_SCHEMA_VERSION
+  h.reserved_u32 = 0
+  h.pack_total_bytes = pack_total_bytes
+  // The same three derivations `read_header`'s L7 re-derives, so the writer and the validator
+  // cannot drift: there is one canonical layout and one expression of it.
+  h.token_stream_offset = HEADER_BYTES
+  h.token_stream_bytes = mul_checked(token_count, 4)
+  h.identity_offset = canonical_identity_offset(token_count)
+  h.logits_offset = canonical_logits_offset(token_count)
+  h.logits_bytes = mul_checked(n_vocab, 4)
+  h.plane_offset = canonical_plane_offset(token_count, n_vocab, PLANE_ALIGN)
+  h.plane_bytes = plane_bytes_for_shape(n_layer, n_head_kv, head_dim, kv_width)
+  h.total_bytes = add_checked(h.plane_offset, h.plane_bytes)
+  if h.token_stream_bytes < 0 || h.identity_offset < 0 || h.logits_offset < 0
+    || h.logits_bytes < 0 || h.plane_offset < 0 || h.plane_bytes < 0 || h.total_bytes < 0 {
+    refused(h, CODE_HEADER, "total_bytes")
+    return h
+  }
+  h.ok = true
+  return h
+}
+
+// ---------------------------------------------------------------------------------------------
+// L2 to L7 (section 2.6's load order), in order, cheapest first
+//
+// A wrong, foreign, stale, or corrupt file is refused after reading at most 192 bytes plus one
+// `fstat`, because every fixed-size region precedes the two large ones and every field a later
+// offset is derived from is validated before that offset is formed.
+// ---------------------------------------------------------------------------------------------
+
+fn decode_u64(borrow view: slice<u8>, at: i64, field: str, borrow mut h: KvHeader) -> i64 {
+  raw := view.u64_le(at)
+  if (raw >> 63) != 0 {
+    refused(h, CODE_HEADER, field)
+    return -1
+  }
+  return raw as i64
+}
+
+pub fn read_header(borrow f: file) -> KvHeader {
+  mut h := empty_header()
+  // L2. `bytes.u64(off)` **aborts** on an out-of-range read (the language spec is explicit and the
+  // policy is `slice[i]`'s), so a container shorter than one header is refused from its length
+  // before a single field is decoded. A truncated file must produce a document, and an abort
+  // cannot produce one.
+  size := match f.len() {
+    Ok(value) => value,
+    Err(failure) => {
+      refused(h, CODE_UNREADABLE, error_name(failure))
+      return h
+    },
+  }
+  if size < HEADER_BYTES {
+    refused(h, CODE_TRUNCATED, "header")
+    return h
+  }
+  mut window: buffer := buffer(HEADER_BYTES)
+  count := match f.pread(window, 0) {
+    Ok(value) => value,
+    Err(failure) => {
+      refused(h, CODE_UNREADABLE, error_name(failure))
+      return h
+    },
+  }
+  if count != HEADER_BYTES {
+    refused(h, CODE_TRUNCATED, "header")
+    return h
+  }
+  view := window.bytes()
+  if view.len() != HEADER_BYTES {
+    refused(h, CODE_TRUNCATED, "header")
+    return h
+  }
+  // L3. `AKVP`.
+  if view.u8(0) as i64 != 65 || view.u8(1) as i64 != 75
+    || view.u8(2) as i64 != 86 || view.u8(3) as i64 != 80 {
+    escaped := hex_escape(view, 0, 4)
+    escaped_view: str := escaped
+    refused(h, CODE_MAGIC, escaped_view)
+    return h
+  }
+  // L4.
+  h.format_version = view.u32_le(4) as i64
+  if h.format_version != FORMAT_VERSION {
+    text := int_text(h.format_version)
+    text_view: str := text
+    refused(h, CODE_VERSION, text_view)
+    return h
+  }
+  // L5. The fixed widths, the two versions, the alignment, the probe, then every `u64` offset and
+  // length with its high bit clear, then every `u32` count against the bound this format states for
+  // it: `kv_width` against `MAX_ATTENTION_WIDTH`, `token_count` against `MAX_PREFILL_TOKENS`,
+  // `columns_persisted` against `kv_width`, `prefill_argmax` against `n_vocab`, and
+  // `n_layer`/`n_head_kv`/`head_dim`/`n_vocab` against `1` — those four have no `MAX_*` of their
+  // own, and the shapes they imply are bounded at L7 by `MAX_KV_PLANE_BYTES` and
+  // `MAX_KV_LOGITS_BYTES` and at L8 against the geometry this run loaded.
+  h.header_bytes = view.u32_le(8) as i64
+  if h.header_bytes != HEADER_BYTES {
+    refused(h, CODE_HEADER, "header_bytes")
+    return h
+  }
+  h.identity_record_bytes = view.u32_le(12) as i64
+  if h.identity_record_bytes != IDENTITY_RECORD_BYTES {
+    refused(h, CODE_HEADER, "identity_record_bytes")
+    return h
+  }
+  h.element_type = view.u32_le(16) as i64
+  if h.element_type != ELEMENT_TYPE_F32 {
+    refused(h, CODE_HEADER, "element_type")
+    return h
+  }
+  h.plane_layout_version = view.u32_le(20) as i64
+  if h.plane_layout_version != PLANE_LAYOUT_VERSION {
+    refused(h, CODE_HEADER, "plane_layout_version")
+    return h
+  }
+  // L6 for `flags`, taken here because the field is read here; the reserved bytes follow below in
+  // their own step so that a non-zero reserved byte is never reported as a flag.
+  h.flags = view.u32_le(24) as i64
+  if h.flags != 0 {
+    refused(h, CODE_RESERVED, "flags")
+    return h
+  }
+  h.plane_align = view.u32_le(28) as i64
+  if !is_power_of_two(h.plane_align) || h.plane_align < REGION_ALIGN
+    || h.plane_align > MAX_ALIGNMENT {
+    refused(h, CODE_HEADER, "plane_align")
+    return h
+  }
+  // The canary. It cannot select a second decode path; it names the cause of a class the checks
+  // below would otherwise report as an opaque region defect.
+  h.endian_probe = decode_u64(view, 32, "endian_probe", h)
+  if h.code.len() > 0 { return h }
+  if h.endian_probe != ENDIAN_PROBE {
+    refused(h, CODE_HEADER, "endian_probe")
+    return h
+  }
+  h.total_bytes = decode_u64(view, 40, "total_bytes", h)
+  if h.code.len() > 0 { return h }
+  h.token_stream_offset = decode_u64(view, 48, "token_stream_offset", h)
+  if h.code.len() > 0 { return h }
+  h.token_stream_bytes = decode_u64(view, 56, "token_stream_bytes", h)
+  if h.code.len() > 0 { return h }
+  h.identity_offset = decode_u64(view, 64, "identity_offset", h)
+  if h.code.len() > 0 { return h }
+  h.logits_offset = decode_u64(view, 72, "logits_offset", h)
+  if h.code.len() > 0 { return h }
+  h.logits_bytes = decode_u64(view, 80, "logits_bytes", h)
+  if h.code.len() > 0 { return h }
+  h.plane_offset = decode_u64(view, 88, "plane_offset", h)
+  if h.code.len() > 0 { return h }
+  h.plane_bytes = decode_u64(view, 96, "plane_bytes", h)
+  if h.code.len() > 0 { return h }
+  h.n_layer = view.u32_le(104) as i64
+  h.n_head_kv = view.u32_le(108) as i64
+  h.head_dim = view.u32_le(112) as i64
+  h.kv_width = view.u32_le(116) as i64
+  h.columns_persisted = view.u32_le(120) as i64
+  h.token_count = view.u32_le(124) as i64
+  h.n_vocab = view.u32_le(128) as i64
+  h.prefill_argmax = view.i32_le(132) as i64
+  h.document_schema_version = view.u32_le(136) as i64
+  h.reserved_u32 = view.u32_le(140) as i64
+  if h.n_layer < 1 {
+    refused(h, CODE_HEADER, "n_layer")
+    return h
+  }
+  if h.n_head_kv < 1 {
+    refused(h, CODE_HEADER, "n_head_kv")
+    return h
+  }
+  if h.head_dim < 1 {
+    refused(h, CODE_HEADER, "head_dim")
+    return h
+  }
+  if h.kv_width < 1 || h.kv_width > layer_qwen2.MAX_ATTENTION_WIDTH {
+    refused(h, CODE_HEADER, "kv_width")
+    return h
+  }
+  if h.token_count < 1 || h.token_count > layer_qwen2.MAX_PREFILL_TOKENS {
+    refused(h, CODE_HEADER, "token_count")
+    return h
+  }
+  if h.columns_persisted < 1 || h.columns_persisted > h.kv_width {
+    refused(h, CODE_HEADER, "columns_persisted")
+    return h
+  }
+  if h.n_vocab < 1 {
+    refused(h, CODE_HEADER, "n_vocab")
+    return h
+  }
+  if h.prefill_argmax < 0 || h.prefill_argmax >= h.n_vocab {
+    refused(h, CODE_HEADER, "prefill_argmax")
+    return h
+  }
+  if h.document_schema_version != DOCUMENT_SCHEMA_VERSION {
+    refused(h, CODE_HEADER, "document_schema_version")
+    return h
+  }
+  // L6, the rest. `reserved_u32` and the forty-eight reserved header bytes.
+  if h.reserved_u32 != 0 {
+    refused(h, CODE_RESERVED, "reserved_u32")
+    return h
+  }
+  mut at := 144
+  loop {
+    if at >= HEADER_BYTES { break }
+    if view.u8(at) as i64 != 0 {
+      refused(h, CODE_RESERVED, "reserved")
+      return h
+    }
+    at = at + 1
+  }
+  // L7. Section 2.5's three bounds first — on a load run every one of them is a number out of a
+  // file this process did not write, so the header's own claim is refused before it is compared
+  // against anything — then the file's own length, then containment, then alignment, then
+  // disjointness, then the three shape identities, then the canonical layout.
+  // `plane_offset + plane_bytes == total_bytes` is what makes the chunked refill's short tail read
+  // a proof rather than a hope (section 2.3, region-order property 1).
+  if h.plane_bytes > MAX_KV_PLANE_BYTES {
+    text := labelled("plane", h.plane_bytes)
+    text_view: str := text
+    refused(h, CODE_TOO_LARGE, text_view)
+    return h
+  }
+  if h.logits_bytes > MAX_KV_LOGITS_BYTES {
+    text := labelled("logits", h.logits_bytes)
+    text_view: str := text
+    refused(h, CODE_TOO_LARGE, text_view)
+    return h
+  }
+  if h.total_bytes > MAX_KV_CONTAINER_BYTES {
+    text := labelled("container", h.total_bytes)
+    text_view: str := text
+    refused(h, CODE_TOO_LARGE, text_view)
+    return h
+  }
+  if size != h.total_bytes {
+    text := pair_text(size, h.total_bytes)
+    text_view: str := text
+    refused(h, CODE_TRUNCATED, text_view)
+    return h
+  }
+  if !region_inside(0, HEADER_BYTES, h.total_bytes) {
+    refused(h, CODE_TRUNCATED, "header")
+    return h
+  }
+  if !region_inside(h.token_stream_offset, h.token_stream_bytes, h.total_bytes) {
+    refused(h, CODE_TRUNCATED, "token_stream")
+    return h
+  }
+  if !region_inside(h.identity_offset, IDENTITY_RECORD_BYTES, h.total_bytes) {
+    refused(h, CODE_TRUNCATED, "identity")
+    return h
+  }
+  if !region_inside(h.logits_offset, h.logits_bytes, h.total_bytes) {
+    refused(h, CODE_TRUNCATED, "logits")
+    return h
+  }
+  if !region_inside(h.plane_offset, h.plane_bytes, h.total_bytes) {
+    refused(h, CODE_TRUNCATED, "plane")
+    return h
+  }
+  if h.token_stream_offset % REGION_ALIGN != 0 {
+    refused(h, CODE_REGION, "token_stream")
+    return h
+  }
+  if h.identity_offset % REGION_ALIGN != 0 {
+    refused(h, CODE_REGION, "identity")
+    return h
+  }
+  if h.logits_offset % REGION_ALIGN != 0 {
+    refused(h, CODE_REGION, "logits")
+    return h
+  }
+  if h.plane_offset % REGION_ALIGN != 0 || h.plane_offset % h.plane_align != 0 {
+    refused(h, CODE_REGION, "plane")
+    return h
+  }
+  if !disjoint(0, HEADER_BYTES, h.token_stream_offset, h.token_stream_bytes) {
+    refused(h, CODE_REGION, "token_stream")
+    return h
+  }
+  if !disjoint(0, HEADER_BYTES, h.identity_offset, IDENTITY_RECORD_BYTES)
+    || !disjoint(h.token_stream_offset, h.token_stream_bytes, h.identity_offset,
+    IDENTITY_RECORD_BYTES) {
+    refused(h, CODE_REGION, "identity")
+    return h
+  }
+  if !disjoint(0, HEADER_BYTES, h.logits_offset, h.logits_bytes)
+    || !disjoint(h.token_stream_offset, h.token_stream_bytes, h.logits_offset, h.logits_bytes)
+    || !disjoint(h.identity_offset, IDENTITY_RECORD_BYTES, h.logits_offset, h.logits_bytes) {
+    refused(h, CODE_REGION, "logits")
+    return h
+  }
+  if !disjoint(0, HEADER_BYTES, h.plane_offset, h.plane_bytes)
+    || !disjoint(h.token_stream_offset, h.token_stream_bytes, h.plane_offset, h.plane_bytes)
+    || !disjoint(h.identity_offset, IDENTITY_RECORD_BYTES, h.plane_offset, h.plane_bytes)
+    || !disjoint(h.logits_offset, h.logits_bytes, h.plane_offset, h.plane_bytes)
+    || add_checked(h.plane_offset, h.plane_bytes) != h.total_bytes {
+    refused(h, CODE_REGION, "plane")
+    return h
+  }
+  if h.token_stream_bytes != mul_checked(h.token_count, 4) {
+    refused(h, CODE_REGION, "token_stream")
+    return h
+  }
+  if h.logits_bytes != mul_checked(h.n_vocab, 4) {
+    refused(h, CODE_REGION, "logits")
+    return h
+  }
+  // L7's last rule, and it is a **format** rule rather than a writer's habit (section 2.3.1). The
+  // region order, the two alignments, and the region sizes together determine every offset, so
+  // there is exactly one layout an `akvp` v1 container can have at a given `token_count`,
+  // `n_vocab`, and `plane_align`. Re-deriving it here rather than accepting any offset that merely
+  // satisfies the containment, alignment, and disjointness rules is what keeps the arm and
+  // `scripts/kv_plane_reader.py` — which re-derives the same offsets — refusing the same files: a
+  // reader that computes an offset and a writer that publishes a different one is a format with two
+  // meanings, and a gap-bearing variant would also defeat the padding rule below.
+  if h.token_stream_offset != HEADER_BYTES
+    || h.identity_offset != canonical_identity_offset(h.token_count)
+    || h.logits_offset != canonical_logits_offset(h.token_count)
+    || h.plane_offset != canonical_plane_offset(h.token_count, h.n_vocab, h.plane_align) {
+    refused(h, CODE_REGION, "layout")
+    return h
+  }
+  h.ok = true
+  return h
+}
+
+// Section 2.3's region order, derived from the two counts and the declared alignment. `plan_header`
+// forms the same three offsets on the writing side; they are stated once here and used by both.
+fn canonical_identity_offset(token_count: i64) -> i64 =
+align_up(add_checked(HEADER_BYTES, mul_checked(token_count, 4)), REGION_ALIGN)
+
+fn canonical_logits_offset(token_count: i64) -> i64 =
+align_up(add_checked(canonical_identity_offset(token_count), IDENTITY_RECORD_BYTES), REGION_ALIGN)
+
+fn canonical_plane_offset(token_count: i64, n_vocab: i64, plane_align: i64) -> i64 =
+align_up(add_checked(canonical_logits_offset(token_count), mul_checked(n_vocab, 4)), plane_align)
+
+// L6's third part, and section 2.3's region-order property 4: **every padding byte is written, not
+// left as a hole**, so a reader validating "padding is zero" validates bytes that exist. Section
+// 2.3 states the property of the *format*, so the arm enforces it as well as the independent reader
+// does — a container carrying data in its gaps is not a container this format describes, and the
+// digests do not cover the gaps.
+//
+// The three gaps are bounded by construction: the first two are under `REGION_ALIGN` and the third
+// is under `plane_align` (at most `MAX_ALIGNMENT`), so this is three short `pread`s and never a
+// second pass over a region.
+pub fn padding_zero(borrow f: file, borrow h: KvHeader) -> bool {
+  if !gap_zero(f, add_checked(h.token_stream_offset, h.token_stream_bytes), h.identity_offset) {
+    return false
+  }
+  if !gap_zero(f, add_checked(h.identity_offset, IDENTITY_RECORD_BYTES), h.logits_offset) {
+    return false
+  }
+  return gap_zero(f, add_checked(h.logits_offset, h.logits_bytes), h.plane_offset)
+}
+
+// `false` is this predicate's only failure channel, so a `pread` error or a short read is reported
+// by the caller as `R6_KV_RESERVED("padding")` rather than as `R6_KV_UNREADABLE`. Both reads are
+// unreachable here: L7 has already proven `f.len() == total_bytes` and that every region lies
+// inside `[0, total_bytes)` in the canonical order, so all three gaps are windows of a file whose
+// length is settled, and only an I/O fault racing the open file could reach either arm. The
+// mis-naming is therefore accepted rather than routed: widening the predicate to a `Result` would
+// add a channel no shipped case can exercise.
+fn gap_zero(borrow f: file, start: i64, end: i64) -> bool {
+  length := end - start
+  if length <= 0 { return true }
+  if length > MAX_ALIGNMENT { return false }
+  mut window: buffer := buffer(length)
+  count := match f.pread(window, start) {
+    Ok(value) => value,
+    Err(_) => { return false },
+  }
+  if count != length { return false }
+  view := window.bytes()
+  if view.len() != length { return false }
+  mut at := 0
+  loop {
+    if at >= length { break }
+    if view.u8(at) as i64 != 0 { return false }
+    at = at + 1
+  }
+  return true
+}
+
+// ---------------------------------------------------------------------------------------------
+// The digests (section 2.3.3)
+//
+// **Every one is `crypto.sha256`. `hash64` appears in no persisted field, ever** — the pinned
+// runtime documents its own wyhash as "NOT cryptographic ... not a stable on-disk/wire format", and
+// a value persisted into a container must not change when the compiler is rebuilt.
+// ---------------------------------------------------------------------------------------------
+
+pub fn digest_hex(borrow region: slice<u8>) -> string {
+  raw := crypto.sha256(region)
+  return encoding.hex_encode(raw[0..raw.len()])
+}
+
+fn digest_at(index: i64) -> i64 = index * DIGEST_BYTES
+
+// The record's own hex, decoded at its declared offset rather than recomputed, so that the document
+// publishes what the file claims and the comparisons below decide whether the claim is true.
+pub fn identity_hex(borrow record: slice<u8>, index: i64) -> string {
+  at := digest_at(index)
+  if index < 0 || index > DIGEST_PLANE || record.len() < at + DIGEST_BYTES { return "".clone() }
+  return encoding.hex_encode(record[at..at + DIGEST_BYTES])
+}
+
+// Section 2.4. A digest of thirty-two zero bytes is not an identity: it compares equal to every
+// other absent identity, so a comparison against it decides nothing. The arm refuses the degenerate
+// value rather than passing over it.
+pub fn all_zero(borrow view: slice<u8>) -> bool {
+  mut at := 0
+  loop {
+    if at >= view.len() { break }
+    if view.u8(at) as i64 != 0 { return false }
+    at = at + 1
+  }
+  return true
+}
+
+pub fn identity_matches(borrow record: slice<u8>, index: i64, borrow expected: slice<u8>) -> bool {
+  at := digest_at(index)
+  if index < 0 || index > DIGEST_PLANE || record.len() < at + DIGEST_BYTES { return false }
+  if expected.len() != DIGEST_BYTES { return false }
+  return crypto.constant_time_equal(record[at..at + DIGEST_BYTES], expected)
+}
+
+// `sha256(region)` against the record's slot, in one call, so a caller never holds a digest it did
+// not immediately compare.
+pub fn region_matches(borrow region: slice<u8>, borrow record: slice<u8>, index: i64) -> bool {
+  raw := crypto.sha256(region)
+  computed := raw[0..raw.len()]
+  return identity_matches(record, index, computed)
+}
+
+pub fn identity_pack_total_bytes(borrow record: slice<u8>) -> i64 {
+  if record.len() < IDENTITY_RECORD_BYTES { return -1 }
+  raw := record.u64_le(160)
+  if (raw >> 63) != 0 { return -1 }
+  return raw as i64
+}
+
+// L6's second half over the identity record: its twenty-four reserved bytes.
+pub fn identity_reserved_ok(borrow record: slice<u8>) -> bool {
+  if record.len() < IDENTITY_RECORD_BYTES { return false }
+  mut at := 168
+  loop {
+    if at >= IDENTITY_RECORD_BYTES { break }
+    if record.u8(at) as i64 != 0 { return false }
+    at = at + 1
+  }
+  return true
+}
+
+// L12's element-wise leg. The ids the container carries, against the ids this run parsed. The
+// stream is carried rather than recomputed from the `TOKENS` operand because the container must be
+// able to say **which** prompt's plane it holds without being handed that prompt.
+pub fn token_at(borrow stream: slice<u8>, index: i64) -> i64 {
+  at := mul_checked(index, 4)
+  if at < 0 || stream.len() < at + 4 { return -1 }
+  return stream.u32_le(at) as i64
+}
+
+// ---------------------------------------------------------------------------------------------
+// Writing the container (section 2.6, W1 to W4)
+// ---------------------------------------------------------------------------------------------
+
+pub KvWrite {
+  failed: bool,
+  code: string,
+  detail: string,
+  destination: i64,
+  write_ns: i64,
+  tokens_sha256: string,
+  logits_sha256: string,
+  plane_sha256: string,
+}
+
+fn empty_write() -> KvWrite = KvWrite {
+  failed: false,
+  code: "".clone(),
+  detail: "".clone(),
+  destination: DESTINATION_UNTOUCHED,
+  write_ns: 0,
+  tokens_sha256: "".clone(),
+  logits_sha256: "".clone(),
+  plane_sha256: "".clone(),
+}
+
+fn write_failure(code: str, detail: str, destination: i64) -> KvWrite {
+  mut w := empty_write()
+  w.failed = true
+  w.code = code.clone()
+  w.detail = bounded_detail(detail)
+  w.destination = destination
+  return w
+}
+
+fn write_fault_detail(e: Error, at: i64) -> string {
+  b := builder()
+  b.write(error_name(e))
+  b.write("@")
+  b.write_int(at)
+  return b.to_string()
+}
+
+fn encode_header_image(borrow mut b: buffer, borrow h: KvHeader) {
+  b.put_u8(65)
+  b.put_u8(75)
+  b.put_u8(86)
+  b.put_u8(80)
+  b.put_u32_le(h.format_version as u32)
+  b.put_u32_le(h.header_bytes as u32)
+  b.put_u32_le(h.identity_record_bytes as u32)
+  b.put_u32_le(h.element_type as u32)
+  b.put_u32_le(h.plane_layout_version as u32)
+  b.put_u32_le(h.flags as u32)
+  b.put_u32_le(h.plane_align as u32)
+  b.put_u64_le(h.endian_probe as u64)
+  b.put_u64_le(h.total_bytes as u64)
+  b.put_u64_le(h.token_stream_offset as u64)
+  b.put_u64_le(h.token_stream_bytes as u64)
+  b.put_u64_le(h.identity_offset as u64)
+  b.put_u64_le(h.logits_offset as u64)
+  b.put_u64_le(h.logits_bytes as u64)
+  b.put_u64_le(h.plane_offset as u64)
+  b.put_u64_le(h.plane_bytes as u64)
+  b.put_u32_le(h.n_layer as u32)
+  b.put_u32_le(h.n_head_kv as u32)
+  b.put_u32_le(h.head_dim as u32)
+  b.put_u32_le(h.kv_width as u32)
+  b.put_u32_le(h.columns_persisted as u32)
+  b.put_u32_le(h.token_count as u32)
+  b.put_u32_le(h.n_vocab as u32)
+  b.put_i32_le(h.prefill_argmax as i32)
+  b.put_u32_le(h.document_schema_version as u32)
+  b.put_u32_le(h.reserved_u32 as u32)
+  mut zero := 144
+  loop {
+    if zero >= HEADER_BYTES { break }
+    b.put_u8(0)
+    zero = zero + 1
+  }
+}
+
+fn encode_identity_image(
+  borrow mut b: buffer,
+  borrow pack_digest: slice<u8>,
+  borrow geometry_digest: slice<u8>,
+  borrow tokens_digest: slice<u8>,
+  borrow logits_digest: slice<u8>,
+  borrow plane_digest: slice<u8>,
+  pack_total_bytes: i64,
+) {
+  b.append(pack_digest[0..DIGEST_BYTES])
+  b.append(geometry_digest[0..DIGEST_BYTES])
+  b.append(tokens_digest[0..DIGEST_BYTES])
+  b.append(logits_digest[0..DIGEST_BYTES])
+  b.append(plane_digest[0..DIGEST_BYTES])
+  b.put_u64_le(pack_total_bytes as u64)
+  mut zero := 168
+  loop {
+    if zero >= IDENTITY_RECORD_BYTES { break }
+    b.put_u8(0)
+    zero = zero + 1
+  }
+}
+
+fn write_view(borrow dst: file, borrow value: slice<u8>, at: i64) -> Result<(), Error> {
+  match dst.pwrite(value, at) {
+    Ok(_) => { return Ok(()) },
+    Err(failure) => { return Err(failure) },
+  }
+}
+
+// Padding is **written**, not left as a hole. A `pwrite` past the current end extends the file with
+// a zero hole; a sparse file and a dense file of the same plane report different sizes to `du`, and
+// a reader validating "padding is zero" should validate bytes that exist. One `PAD` buffer of
+// `plane_align` zero bytes is built once and each pad is one `pwrite` of a sub-slice of it.
+fn write_padding(borrow dst: file, borrow pad: slice<u8>, at: i64, n: i64) -> Result<(), Error> {
+  if n <= 0 { return Ok(()) }
+  mut remaining := n
+  mut d := at
+  loop {
+    if remaining <= 0 { break }
+    chunk := if remaining > pad.len() { pad.len() } else { remaining }
+    match dst.pwrite(pad[0..chunk], d) {
+      Ok(_) => {},
+      Err(failure) => { return Err(failure) },
+    }
+    d = d + chunk
+    remaining = remaining - chunk
+  }
+  return Ok(())
+}
+
+// W1 to W4. Every field is fixed before `fs.create_rw`, so from the first line below a file exists
+// at the caller's path and **every** later failure removes it and says so.
+//
+// **The plane is one `pwrite`, and that is verified rather than assumed**: `f.pwrite` writes all of
+// its argument, looping over partial writes internally and retrying `EINTR`
+// (`align_rt_io_file_pwrite` -> `write_all_at`, read at the pin). `COPY_WINDOW_BYTES` chunking is
+// alignpack's answer to a *file-to-file* copy and has no role here.
+//
+// **`ENOSPC` gets no distinct code**, for alignpack's reason: the writer cannot distinguish a full
+// disk from an exhausted quota through the mapped error, and inventing a code that claims the
+// difference would be a guess.
+pub fn write_container(
+  destination: str,
+  borrow h: KvHeader,
+  borrow pack_digest: slice<u8>,
+  borrow geometry_digest: slice<u8>,
+  borrow ids: slice<u8>,
+  borrow logits: slice<u8>,
+  borrow plane: slice<u8>,
+) -> KvWrite {
+  started := time.instant()
+  if !h.ok {
+    code_view: str := h.code
+    detail_view: str := h.detail
+    return write_failure(code_view, detail_view, DESTINATION_UNTOUCHED)
+  }
+  if ids.len() != h.token_stream_bytes || logits.len() != h.logits_bytes
+    || plane.len() != h.plane_bytes {
+    return write_failure(CODE_SIZE_MISMATCH, "region", DESTINATION_UNTOUCHED)
+  }
+  if pack_digest.len() != DIGEST_BYTES || geometry_digest.len() != DIGEST_BYTES {
+    return write_failure(CODE_SIZE_MISMATCH, "identity", DESTINATION_UNTOUCHED)
+  }
+  tokens_raw := crypto.sha256(ids)
+  logits_raw := crypto.sha256(logits)
+  plane_raw := crypto.sha256(plane)
+  mut head: buffer := buffer(HEADER_BYTES)
+  encode_header_image(head, h)
+  mut record: buffer := buffer(IDENTITY_RECORD_BYTES)
+  tokens_view := tokens_raw[0..tokens_raw.len()]
+  logits_view := logits_raw[0..logits_raw.len()]
+  plane_view := plane_raw[0..plane_raw.len()]
+  encode_identity_image(
+    record, pack_digest, geometry_digest, tokens_view, logits_view, plane_view,
+    h.pack_total_bytes)
+  mut pad: buffer := buffer(PLANE_ALIGN)
+  mut zero := 0
+  loop {
+    if zero >= PLANE_ALIGN { break }
+    pad.put_u8(0)
+    zero = zero + 1
+  }
+  head_view := head.bytes()
+  record_view := record.bytes()
+  pad_view := pad.bytes()
+  if head_view.len() != HEADER_BYTES || record_view.len() != IDENTITY_RECORD_BYTES
+    || pad_view.len() != PLANE_ALIGN {
+    return write_failure(CODE_SIZE_MISMATCH, "image", DESTINATION_UNTOUCHED)
+  }
+  mut result := empty_write()
+  result.tokens_sha256 = encoding.hex_encode(tokens_view)
+  result.logits_sha256 = encoding.hex_encode(logits_view)
+  result.plane_sha256 = encoding.hex_encode(plane_view)
+  // W1.
+  dst := match fs.create_rw(destination) {
+    Ok(handle) => handle,
+    Err(failure) => {
+      return write_failure(CODE_UNWRITABLE, error_name(failure), DESTINATION_UNTOUCHED)
+    },
+  }
+  // W2. Header, token stream, padding, identity record, logits, padding, plane — each one
+  // `pwrite` at its declared offset, strictly forward, so the file is extended by at most one
+  // region at a time.
+  mut failed_code := "".clone()
+  mut failed_detail := "".clone()
+  match write_view(dst, head_view, 0) {
+    Ok(_) => {},
+    Err(failure) => {
+      failed_code = CODE_WRITE_FAILED.clone()
+      failed_detail = write_fault_detail(failure, 0)
+    },
+  }
+  if failed_code.len() == 0 {
+    match write_view(dst, ids, h.token_stream_offset) {
+      Ok(_) => {},
+      Err(failure) => {
+        failed_code = CODE_WRITE_FAILED.clone()
+        failed_detail = write_fault_detail(failure, h.token_stream_offset)
+      },
+    }
+  }
+  if failed_code.len() == 0 {
+    gap_at := h.token_stream_offset + h.token_stream_bytes
+    match write_padding(dst, pad_view, gap_at, h.identity_offset - gap_at) {
+      Ok(_) => {},
+      Err(failure) => {
+        failed_code = CODE_WRITE_FAILED.clone()
+        failed_detail = write_fault_detail(failure, gap_at)
+      },
+    }
+  }
+  if failed_code.len() == 0 {
+    match write_view(dst, record_view, h.identity_offset) {
+      Ok(_) => {},
+      Err(failure) => {
+        failed_code = CODE_WRITE_FAILED.clone()
+        failed_detail = write_fault_detail(failure, h.identity_offset)
+      },
+    }
+  }
+  if failed_code.len() == 0 {
+    match write_view(dst, logits, h.logits_offset) {
+      Ok(_) => {},
+      Err(failure) => {
+        failed_code = CODE_WRITE_FAILED.clone()
+        failed_detail = write_fault_detail(failure, h.logits_offset)
+      },
+    }
+  }
+  if failed_code.len() == 0 {
+    gap_at := h.logits_offset + h.logits_bytes
+    match write_padding(dst, pad_view, gap_at, h.plane_offset - gap_at) {
+      Ok(_) => {},
+      Err(failure) => {
+        failed_code = CODE_WRITE_FAILED.clone()
+        failed_detail = write_fault_detail(failure, gap_at)
+      },
+    }
+  }
+  if failed_code.len() == 0 {
+    match write_view(dst, plane, h.plane_offset) {
+      Ok(_) => {},
+      Err(failure) => {
+        failed_code = CODE_WRITE_FAILED.clone()
+        failed_detail = write_fault_detail(failure, h.plane_offset)
+      },
+    }
+  }
+  // W3. A live `fstat`, not the writer's memory of what it intended.
+  if failed_code.len() == 0 {
+    match dst.len() {
+      Ok(observed) => {
+        if observed != h.total_bytes {
+          failed_code = CODE_SIZE_MISMATCH.clone()
+          failed_detail = pair_text(observed, h.total_bytes)
+        }
+      },
+      Err(failure) => {
+        failed_code = CODE_UNWRITABLE.clone()
+        failed_detail = error_name(failure).clone()
+      },
+    }
+  }
+  // W4. From W1 onward a file exists at the caller's path; every failure removes it and reports
+  // whether the removal succeeded.
+  if failed_code.len() > 0 {
+    mut state := DESTINATION_WRITTEN
+    mut cleanup_code := "".clone()
+    match fs.remove(destination) {
+      Ok(_) => { state = DESTINATION_REMOVED },
+      Err(_) => { cleanup_code = CODE_CLEANUP_FAILED.clone() },
+    }
+    failed_view: str := failed_code
+    detail_view: str := failed_detail
+    mut out := write_failure(failed_view, detail_view, state)
+    if cleanup_code.len() > 0 {
+      cleanup_view: str := cleanup_code
+      out.code = cleanup_view.clone()
+      out.detail = bounded_detail(destination)
+    }
+    out.write_ns = time.instant() - started
+    return out
+  }
+  result.destination = DESTINATION_WRITTEN
+  result.write_ns = time.instant() - started
+  return result
+}

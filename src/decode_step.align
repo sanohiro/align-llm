@@ -1,10 +1,12 @@
 module decode_step
 
 import std.crypto
+import std.encoding
 import std.fs
 import std.time
 import alignpack_read
 import ggml_ffi
+import kv_plane
 import layer_forward
 import layer_qwen2
 import model_forward
@@ -39,7 +41,13 @@ import model_forward
 // order, the plane's layout and lifetime, the decode graph's inputs, both concat axes, the offset
 // mask, oracle A's second-graph transcript comparison, oracle B's byte round trip, and the document.
 
-SCHEMA_VERSION := 2
+// R6-KV-PERSIST section 2.8. Schema 3 adds `plane.source`, the `kv` object, and
+// `timings.first_token_ns`. R6-RESIDENT-WEIGHTS section 3.5 takes **schema 4** and adds the
+// `weights` object. Its own section 9.4 predicted 3 and settled the number at merge: KV-PERSIST
+// merged first and took 3, so this capability takes 4. The **kind is unchanged** in both cases: the
+// document describes the same thing, and where the plane came from and where the weights live are
+// fields rather than kinds.
+SCHEMA_VERSION := 4
 DOCUMENT_KIND := "R6_DECODE_STEP"
 
 // Section 2.8's vocabulary. `R6_*` is what this arm owns; the ggml seam's `R5_*` codes reach the
@@ -60,6 +68,14 @@ CODE_PLANE_MISMATCH := "R6_PLANE_MISMATCH"
 CODE_TRANSCRIPT := "R6_TRANSCRIPT"
 CODE_ORACLE_MISSING := "R6_ORACLE_MISSING"
 CODE_GEOMETRY_UNREADABLE := "R6_GEOMETRY_UNREADABLE"
+// R6-RESIDENT-WEIGHTS section 3.1 and 3.2. `R6_RESIDENT` is the operand's grammar; the other two
+// are the arena's own budget and its one observable reservation failure. There is deliberately no
+// code for an out-of-memory host: `buffer(cap)` cannot report a failed reservation and `append`
+// cannot fail (Request 35), so that host **aborts** rather than producing a document. Section 3.6
+// states that rather than hiding it, and `scripts/run-decode-step` preflights physical memory.
+CODE_RESIDENT := "R6_RESIDENT"
+CODE_RESIDENT_BUDGET := "R6_RESIDENT_BUDGET"
+CODE_RESIDENT_UNAVAILABLE := "R6_RESIDENT_UNAVAILABLE"
 // There is deliberately no `R6_ORACLE_SHAPE`. A transcript node whose printed axes do not match the
 // arm's own is `R5_ORACLE_SHAPE`, raised inside `model_forward.compare_transcript_graph` and
 // reaching this document unchanged through `fault_into`, exactly as every other seam code does
@@ -77,6 +93,19 @@ PLANE_TENSOR_V := 1
 ROUNDTRIP_ABSENT := 0
 ROUNDTRIP_IDENTICAL := 1
 ROUNDTRIP_MISMATCH := 2
+
+// R6-KV-PERSIST section 2.8's `plane.source`. `"-"` is "the plane does not exist", which is what a
+// document refused before step 9 must say; it is never `"PREFILL"` by default, because a default
+// would claim a pass this arm did not run.
+PLANE_SOURCE_ABSENT := 0
+PLANE_SOURCE_PREFILL := 1
+PLANE_SOURCE_LOADED := 2
+
+pub fn plane_source_label(value: i64) -> str {
+  if value == PLANE_SOURCE_PREFILL { return "PREFILL" }
+  if value == PLANE_SOURCE_LOADED { return "LOADED" }
+  return "-"
+}
 
 // Section 3.3, oracle B. The one place this capability claims byte identity, and it claims it about
 // bytes rather than about arithmetic.
@@ -305,6 +334,18 @@ fn prefix_step(borrow mut o: model_forward.Outcome, step: i64) {
   joined := b.to_string()
   joined_view: str := joined
   o.detail = bounded_detail(joined_view)
+}
+
+// R6-RESIDENT-WEIGHTS section 3.1. `resident[<text>]`, bounded to 256 bytes by `bounded_detail`,
+// so an operand of any length names itself in the document without the document growing with it.
+fn resident_detail(value: str) -> string {
+  d := builder()
+  d.write("resident[")
+  bounded := bounded_detail(value)
+  bounded_view: str := bounded
+  d.write(bounded_view)
+  d.write("]")
+  return d.to_string()
 }
 
 fn steps_detail(value: str) -> string {
@@ -782,6 +823,11 @@ DECODE_V_CONCAT_ROW := 22
 fn run_step_graph(
   device: raw,
   backend: raw,
+  // R6-RESIDENT-WEIGHTS section 3.2. `null` is streaming mode and this graph wraps its own window;
+  // a live handle is the run-scope resident wrap, which this graph **places into and does not
+  // free**. The two lifetimes are counted in two different pairs (section 4.3) so that the
+  // per-graph balance check below keeps its exact meaning rather than being loosened.
+  resident_buffer: raw,
   context_bytes: i64,
   borrow spec: model_forward.GraphSpec,
   borrow g: layer_qwen2.Geometry,
@@ -816,6 +862,9 @@ fn run_step_graph(
   mut input_ctx := ggml_ffi.null_handle()
   mut graph_ctx := ggml_ffi.null_handle()
   mut weight_buffer := ggml_ffi.null_handle()
+  // The wrap this graph must free, which is the wrap this graph created. In resident mode it stays
+  // `null` and the teardown below is a no-op for it.
+  mut owned_buffer := ggml_ffi.null_handle()
   mut input_buffer := ggml_ffi.null_handle()
   mut graph := ggml_ffi.null_handle()
   mut galloc := ggml_ffi.null_handle()
@@ -833,7 +882,9 @@ fn run_step_graph(
       o.contexts_created = o.contexts_created + 3
     }
   }
-  if o.code.len() == 0 {
+  if o.code.len() == 0 && !ggml_ffi.handle_absent(resident_buffer) {
+    weight_buffer = resident_buffer
+  } else if o.code.len() == 0 {
     wrap_started := time.instant()
     weight_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
     o.wrap_ns = o.wrap_ns + (time.instant() - wrap_started)
@@ -841,6 +892,7 @@ fn run_step_graph(
     if ggml_ffi.handle_absent(weight_buffer) {
       fail(o, "R5_GGML_INIT", "weight_buffer")
     } else {
+      owned_buffer = weight_buffer
       o.ggml_buffers_created = o.ggml_buffers_created + 1
     }
   }
@@ -980,7 +1032,7 @@ fn run_step_graph(
     }
   }
   model_forward.teardown_graph(
-    galloc, ggml_ffi.null_handle(), graph_ctx, ggml_ffi.null_handle(), weight_buffer, weight_ctx,
+    galloc, ggml_ffi.null_handle(), graph_ctx, ggml_ffi.null_handle(), owned_buffer, weight_ctx,
     ggml_ffi.null_handle(), ggml_ffi.null_handle(), input_buffer, input_ctx, o)
 }
 
@@ -1127,6 +1179,348 @@ fn verify_plane(
   }
   state.roundtrip_bytes_compared =
   state.roundtrip_bytes_compared + 2 * columns * plane_column_bytes(g)
+}
+
+// ---------------------------------------------------------------------------------------------
+// R6-KV-PERSIST: the container, in both directions
+//
+// Section 2.7's module split lands here. `src/kv_plane.align` owns the format — the constants, the
+// header, the identity record, the region arithmetic, the digests, and the writer, all of which are
+// expressible with borrowed views and by-value returns. The two functions below are what stays with
+// the plane's **owner**: the token image the writer needs, and the chunked refill that writes into
+// this frame's own `mut plane: buffer`. A cross-module call taking `borrow mut buffer` beside this
+// frame's other locals is exactly the shape Request 49 refuses, so the byte movement stays here and
+// no compatibility layer is built around the gap.
+// ---------------------------------------------------------------------------------------------
+
+fn kv_width_detail(from_file: i64, from_operand: i64) -> string {
+  b := builder()
+  b.write("kv_width[")
+  b.write_int(from_file)
+  b.write("]!=[")
+  b.write_int(from_operand)
+  b.write("]")
+  return b.to_string()
+}
+
+fn kv_columns_detail(columns: i64, tokens: i64) -> string {
+  b := builder()
+  b.write("columns[")
+  b.write_int(columns)
+  b.write("]!=[")
+  b.write_int(tokens)
+  b.write("]")
+  return b.to_string()
+}
+
+fn publish_header(borrow h: kv_plane.KvHeader, borrow mut o: model_forward.Outcome) {
+  o.kv_format_version = h.format_version
+  o.kv_plane_layout_version = h.plane_layout_version
+  o.kv_total_bytes = h.total_bytes
+  o.kv_header_bytes = h.header_bytes
+  o.kv_plane_offset = h.plane_offset
+  o.kv_plane_bytes = h.plane_bytes
+  o.kv_logits_bytes = h.logits_bytes
+  o.kv_columns_persisted = h.columns_persisted
+  o.kv_token_count = h.token_count
+  o.kv_n_vocab = h.n_vocab
+  o.kv_prefill_argmax = h.prefill_argmax
+  o.kv_pack_total_bytes = h.pack_total_bytes
+}
+
+// Steps W1 to W4 of section 2.6, run only after step 10 has verified the prefill plane and only
+// after the prefill's own logit vector has been digested. The whole container is assembled from
+// values this process computed; nothing is read back, because a read-back of bytes written a
+// microsecond ago proves this process's arithmetic and not the file — and this process's arithmetic
+// is what `scripts/kv_plane_reader.py` checks independently, from the specification.
+fn save_plane(
+  destination: str,
+  borrow g: layer_qwen2.Geometry,
+  borrow tokens: model_forward.TokenColumns,
+  borrow plane_view: slice<u8>,
+  borrow logits_view: slice<u8>,
+  borrow pack_digest: slice<u8>,
+  borrow geometry_digest: slice<u8>,
+  width: i64,
+  prefill_argmax: i64,
+  pack_total_bytes: i64,
+  borrow mut o: model_forward.Outcome,
+) {
+  mut ids: buffer := buffer(tokens.count * 4)
+  mut at := 0
+  loop {
+    if at >= tokens.count { break }
+    ids.put_u32_le(model_forward.column_at(tokens.ids, at) as u32)
+    at = at + 1
+  }
+  ids_view := ids.bytes()
+  if ids_view.len() != tokens.count * 4 {
+    fail(o, "R4_WINDOW_UNAVAILABLE", "kv_tokens")
+    return
+  }
+  h := kv_plane.plan_header(
+    g.n_layer, g.n_head_kv, g.head_dim, width, tokens.count, g.n_vocab, prefill_argmax,
+    pack_total_bytes)
+  publish_header(h, o)
+  if !h.ok {
+    header_code: str := h.code
+    header_detail: str := h.detail
+    fail(o, header_code, header_detail)
+    return
+  }
+  written := kv_plane.write_container(
+    destination, h, pack_digest, geometry_digest, ids_view, logits_view, plane_view)
+  o.kv_destination = written.destination
+  o.kv_write_ns = written.write_ns
+  o.kv_geometry_sha256 = encoding.hex_encode(geometry_digest)
+  o.kv_source_sha256 = encoding.hex_encode(pack_digest)
+  tokens_sha: str := written.tokens_sha256
+  logits_sha: str := written.logits_sha256
+  plane_sha: str := written.plane_sha256
+  o.kv_tokens_sha256 = tokens_sha.clone()
+  o.kv_logits_sha256 = logits_sha.clone()
+  o.kv_plane_sha256 = plane_sha.clone()
+  if written.failed {
+    write_code: str := written.code
+    write_detail: str := written.detail
+    fail(o, write_code, write_detail)
+    return
+  }
+  o.kv_verdict = kv_plane.VERDICT_SAVED
+}
+
+// Steps L1 to L14 of section 2.6, in order, cheapest first: a wrong file costs 384 bytes and one
+// `fstat`, and the plane's 29 MB is read only once every field agrees.
+//
+// **The refill is chunked, and that is forced by the language.** Align's `buffer` is append-only
+// and `f.pread` overwrites from index 0 and always requests the destination's whole capacity, so a
+// short read cannot be resumed mid-buffer. The plane is read in `model_forward.CHUNK_BYTES` rounds
+// through one transient that is refilled in place and **never rebound** (Request 39's measured
+// cost), and each round crosses into the plane through `model_forward.window_put` — the bounded
+// `memcpy` R5B added, Request 38's second consumer, with no new shim symbol.
+//
+// The tail read is short **by exactly the remaining bytes** rather than an over-read, and that is a
+// proof rather than a hope: the plane is the container's last region and `f.len() == total_bytes`
+// was established at L7 before this function reads a byte of it.
+fn load_plane(
+  source: str,
+  borrow g: layer_qwen2.Geometry,
+  borrow tokens: model_forward.TokenColumns,
+  borrow plane_view: slice<u8>,
+  borrow logits_view: slice<u8>,
+  borrow pack_digest: slice<u8>,
+  borrow geometry_digest: slice<u8>,
+  width: i64,
+  borrow mut state: Plane,
+  borrow mut o: model_forward.Outcome,
+) {
+  started := time.instant()
+  // L1.
+  src := match fs.open_rw(source) {
+    Ok(handle) => handle,
+    Err(failure) => {
+      fail(o, kv_plane.CODE_UNREADABLE, model_forward.error_name(failure))
+      return
+    },
+  }
+  // L2 to L7, inside the format owner.
+  h := kv_plane.read_header(src)
+  publish_header(h, o)
+  if !h.ok {
+    header_code: str := h.code
+    header_detail: str := h.detail
+    fail(o, header_code, header_detail)
+    return
+  }
+  // L6's third part, taken here rather than inside `read_header` because it is the one reserved-space
+  // rule that needs L7's validated offsets: section 2.3's region-order property 4 says every padding
+  // byte is written and zero, and the five digests do not cover the gaps. The independent reader has
+  // always enforced it; the arm enforces it too, because the property belongs to the format.
+  if !kv_plane.padding_zero(src, h) {
+    fail(o, kv_plane.CODE_RESERVED, "padding")
+    return
+  }
+  // L8. The shape the file claims against the geometry this run loaded, field by field, so the
+  // common mistake reports the field rather than an opaque digest mismatch.
+  if h.n_layer != g.n_layer {
+    fail(o, kv_plane.CODE_GEOMETRY, "n_layer")
+    return
+  }
+  if h.n_head_kv != g.n_head_kv {
+    fail(o, kv_plane.CODE_GEOMETRY, "n_head_kv")
+    return
+  }
+  if h.head_dim != g.head_dim {
+    fail(o, kv_plane.CODE_GEOMETRY, "head_dim")
+    return
+  }
+  if h.n_vocab != g.n_vocab {
+    fail(o, kv_plane.CODE_GEOMETRY, "n_vocab")
+    return
+  }
+  derived := kv_plane.plane_bytes_for_shape(g.n_layer, g.n_head_kv, g.head_dim, h.kv_width)
+  if h.plane_bytes != derived {
+    fail(o, kv_plane.CODE_GEOMETRY, "plane_bytes")
+    return
+  }
+  mut counters := alignpack_read.new_counters()
+  mut record: buffer := buffer(0)
+  take_pack(o, alignpack_read.read_exact(
+      src, record, counters, kv_plane.CODE_UNREADABLE, h.identity_offset,
+      kv_plane.IDENTITY_RECORD_BYTES))
+  if o.code.len() > 0 { return }
+  record_view := record.bytes()
+  if record_view.len() != kv_plane.IDENTITY_RECORD_BYTES {
+    fail(o, kv_plane.CODE_TRUNCATED, "identity")
+    return
+  }
+  o.kv_source_sha256 = kv_plane.identity_hex(record_view, kv_plane.DIGEST_PACK)
+  o.kv_geometry_sha256 = kv_plane.identity_hex(record_view, kv_plane.DIGEST_GEOMETRY)
+  o.kv_tokens_sha256 = kv_plane.identity_hex(record_view, kv_plane.DIGEST_TOKENS)
+  o.kv_logits_sha256 = kv_plane.identity_hex(record_view, kv_plane.DIGEST_LOGITS)
+  o.kv_plane_sha256 = kv_plane.identity_hex(record_view, kv_plane.DIGEST_PLANE)
+  // L6's second half: the identity record's own twenty-four reserved bytes.
+  if !kv_plane.identity_reserved_ok(record_view) {
+    fail(o, kv_plane.CODE_RESERVED, "identity_reserved")
+    return
+  }
+  // L9. Model identity is the **pack's** header-region digest, not the GGUF's: `REFERENCE` is
+  // optional and a load run may not have the model at all, so binding to an operand the caller did
+  // not supply would make the identity unverifiable on the ordinary path.
+  if !kv_plane.identity_matches(record_view, kv_plane.DIGEST_PACK, pack_digest) {
+    fail(o, kv_plane.CODE_IDENTITY, "pack")
+    return
+  }
+  pack_total := kv_plane.identity_pack_total_bytes(record_view)
+  o.kv_pack_total_bytes = pack_total
+  if pack_total != o.total_bytes {
+    fail(o, kv_plane.CODE_IDENTITY, "pack_total_bytes")
+    return
+  }
+  // L10.
+  if !kv_plane.identity_matches(record_view, kv_plane.DIGEST_GEOMETRY, geometry_digest) {
+    fail(o, kv_plane.CODE_IDENTITY, "geometry")
+    return
+  }
+  // L11. R6's existing code, deliberately reused: the condition is "the plane is not the width this
+  // run needs", and two codes for one condition is how two documents come to disagree about it.
+  if h.kv_width != width {
+    detail := kv_width_detail(h.kv_width, width)
+    detail_view: str := detail
+    fail(o, CODE_KV_WIDTH, detail_view)
+    return
+  }
+  // L12. The ids the container carries, against the ids this run parsed, then the stream's digest.
+  if h.token_count != tokens.count {
+    fail(o, kv_plane.CODE_TOKENS, model_forward.labelled("count", h.token_count))
+    return
+  }
+  mut stream: buffer := buffer(0)
+  take_pack(o, alignpack_read.read_exact(
+      src, stream, counters, kv_plane.CODE_UNREADABLE, h.token_stream_offset,
+      h.token_stream_bytes))
+  if o.code.len() > 0 { return }
+  stream_view := stream.bytes()
+  if stream_view.len() != h.token_stream_bytes {
+    fail(o, kv_plane.CODE_TRUNCATED, "token_stream")
+    return
+  }
+  mut index := 0
+  loop {
+    if index >= tokens.count { break }
+    if kv_plane.token_at(stream_view, index) != model_forward.column_at(tokens.ids, index) {
+      fail(o, kv_plane.CODE_TOKENS, kv_plane.int_text(index))
+      return
+    }
+    index = index + 1
+  }
+  if !kv_plane.region_matches(stream_view, record_view, kv_plane.DIGEST_TOKENS) {
+    fail(o, kv_plane.CODE_DIGEST, "tokens")
+    return
+  }
+  // L13.
+  if h.columns_persisted != h.token_count {
+    detail := kv_columns_detail(h.columns_persisted, h.token_count)
+    detail_view: str := detail
+    fail(o, kv_plane.CODE_NPAST, detail_view)
+    return
+  }
+  // L14. The two large regions, in one reused transient, digested **after** they land in this
+  // frame's buffers — so the comparison covers the refill as well as the file.
+  mut transient: buffer := buffer(model_forward.CHUNK_BYTES)
+  if !refill(src, transient, logits_view, h.logits_offset, h.logits_bytes, "kv_logits", o) {
+    return
+  }
+  if !kv_plane.region_matches(logits_view, record_view, kv_plane.DIGEST_LOGITS) {
+    fail(o, kv_plane.CODE_DIGEST, "logits")
+    return
+  }
+  loaded := model_forward.digest_region(logits_view)
+  if loaded.argmax != h.prefill_argmax {
+    fail(o, kv_plane.CODE_HEADER, "prefill_argmax")
+    return
+  }
+  if !refill(src, transient, plane_view, h.plane_offset, h.plane_bytes, "kv_plane", o) {
+    return
+  }
+  if !kv_plane.region_matches(plane_view, record_view, kv_plane.DIGEST_PLANE) {
+    fail(o, kv_plane.CODE_DIGEST, "plane")
+    return
+  }
+  o.reader_pread_count = o.reader_pread_count + counters.pread_count
+  o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read
+  o.kv_read_ns = time.instant() - started
+  o.kv_verdict = kv_plane.VERDICT_LOADED
+  o.plane_source = PLANE_SOURCE_LOADED
+  // The prefill's own two publications, made by the load instead: `layers` is a maximum over the
+  // layers the plane holds and `columns_written` is the prefill's column count, both exactly what
+  // `capture_plane` would have set had the prefill run.
+  state.layers = g.n_layer
+  state.columns_written = h.columns_persisted
+}
+
+// One region, moved from the container into a caller-owned view in `CHUNK_BYTES` rounds. `true` is
+// "the whole region landed"; every other path has already named its code.
+fn refill(
+  borrow src: file,
+  borrow mut transient: buffer,
+  borrow destination: slice<u8>,
+  offset: i64,
+  bytes: i64,
+  label: str,
+  borrow mut o: model_forward.Outcome,
+) -> bool {
+  if bytes < 0 || destination.len() != bytes {
+    fail(o, kv_plane.CODE_TRUNCATED, label)
+    return false
+  }
+  mut copied := 0
+  loop {
+    if copied >= bytes { break }
+    count := match src.pread(transient, offset + copied) {
+      Ok(value) => value,
+      Err(failure) => {
+        fail(o, kv_plane.CODE_UNREADABLE, model_forward.error_name(failure))
+        return false
+      },
+    }
+    if count <= 0 {
+      fail(o, kv_plane.CODE_TRUNCATED, label)
+      return false
+    }
+    view := transient.bytes()
+    remaining := bytes - copied
+    take := if count > remaining { remaining } else { count }
+    if view.len() < take {
+      fail(o, kv_plane.CODE_TRUNCATED, label)
+      return false
+    }
+    piece := view[0..take]
+    take_pack(o, model_forward.window_put(destination, copied, piece, take, label))
+    if o.code.len() > 0 { return false }
+    copied = copied + take
+  }
+  return true
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1315,6 +1709,7 @@ fn stage_inputs(
   width_text: str,
   steps_text: str,
   geometry_path: str,
+  kv_requested: bool,
   borrow mut tokens: model_forward.TokenColumns,
   borrow mut o: model_forward.Outcome,
 ) -> layer_qwen2.Geometry {
@@ -1390,6 +1785,29 @@ fn stage_inputs(
     fail(o, CODE_KV_WIDTH, model_forward.labelled("kv_width", width))
     return g
   }
+  // Step 6a (R6-KV-PERSIST section 2.5). The persisted-and-digested bounds, checked **before the
+  // pack is opened and long before a prefill runs**, so a caller who asks for an unpersistable
+  // configuration learns it in milliseconds rather than after paying for a prefill. It refuses
+  // rather than skipping the digest: a persisted artifact whose identity cannot be computed is not
+  // an identity, and the one thing the digest exists to catch — a torn write — would go undetected.
+  if kv_requested {
+    planned := kv_plane.plan_header(
+      g.n_layer, g.n_head_kv, g.head_dim, width, parsed.count, g.n_vocab, 0, 0)
+    plane_bytes := kv_plane.plane_bytes_for_shape(g.n_layer, g.n_head_kv, g.head_dim, width)
+    logits_bytes := kv_plane.mul_checked(g.n_vocab, 4)
+    if plane_bytes < 0 || plane_bytes > kv_plane.MAX_KV_PLANE_BYTES {
+      fail(o, kv_plane.CODE_TOO_LARGE, model_forward.labelled("plane", plane_bytes))
+      return g
+    }
+    if logits_bytes < 0 || logits_bytes > kv_plane.MAX_KV_LOGITS_BYTES {
+      fail(o, kv_plane.CODE_TOO_LARGE, model_forward.labelled("logits", logits_bytes))
+      return g
+    }
+    if !planned.ok || planned.total_bytes > kv_plane.MAX_KV_CONTAINER_BYTES {
+      fail(o, kv_plane.CODE_TOO_LARGE, model_forward.labelled("container", planned.total_bytes))
+      return g
+    }
+  }
   mut ids: array_builder<i64> := array_builder()
   mut copy_at := 0
   loop {
@@ -1424,6 +1842,7 @@ fn decode_pass(
   borrow pak: file,
   device: raw,
   backend: raw,
+  resident_buffer: raw,
   context_bytes: i64,
   borrow g: layer_qwen2.Geometry,
   borrow ends: model_forward.Ends,
@@ -1432,6 +1851,8 @@ fn decode_pass(
   borrow tokens: model_forward.TokenColumns,
   borrow head_members: model_forward.GraphMembers,
   borrow window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   borrow slot_view: slice<u8>,
   borrow ids_view: slice<u8>,
   borrow pos_view: slice<u8>,
@@ -1462,8 +1883,21 @@ fn decode_pass(
   mut counters := alignpack_read.new_counters()
   past_bytes := n_past * g.n_head_kv * g.head_dim * 4
   embed_members := decode_embed_members(g, ends, token_id)
-  take_pack(
-    o, model_forward.fill_members(pak, embed_members, tokens, window, transient, counters))
+  embed_base := layout.base[0]
+  embed_view := window[embed_base..embed_base + layout.span[0]]
+  if resident {
+    // Section 3.3, and the whole claim: one 2,016-byte host copy out of the resident table, and
+    // **zero pack bytes** for this step's embedding row.
+    // `embed_members.stride[0]` and not `ends.row_bytes`: the two are the same number by
+    // construction, and this is the stride of the member the graph is about to read, which is the
+    // one the copy has to agree with. The prefill's own call below uses the same source.
+    take_pack(o, model_forward.stage_embed_row(
+        window, layout.table_at, embed_base, layout.span[0], embed_members.stride[0], g.n_vocab,
+        token_id, 0))
+  } else {
+    take_pack(
+      o, model_forward.fill_members(pak, embed_members, tokens, embed_view, transient, counters))
+  }
   if o.code.len() > 0 { return }
   o.window_reuse_count = o.window_reuse_count + 1
   mut embed_result := model_forward.empty_graph_result()
@@ -1471,7 +1905,8 @@ fn decode_pass(
     model_forward.GRAPH_EMBED, 0, -1, 1, width, false, false, 0, 1,
     layer_qwen2.mf_embed_output_slot(), false, true, g.n_embd)
   run_step_graph(
-    device, backend, context_bytes, spec, g, embed_members, embed_nodes, oracle, window, slot_view,
+    device, backend, resident_buffer, context_bytes, spec, g, embed_members, embed_nodes, oracle,
+    embed_view, slot_view,
     residual_view, ids_view, pos_view, mask_view, out_ids_view, plane_view, plane_view, node_view,
     residual_view, plane_view, scan, starts, lengths, true, false, n_past, stride, breach, state,
     embed_result, o)
@@ -1485,9 +1920,13 @@ fn decode_pass(
   loop {
     if layer >= g.n_layer || o.code.len() > 0 { break }
     members := model_forward.build_layer_members(table, plan, layer)
+    layer_base := layout.base[1 + layer]
+    layer_view := window[layer_base..layer_base + layout.span[1 + layer]]
     read_started := time.instant()
-    take_pack(
-      o, model_forward.fill_members(pak, members, tokens, window, transient, counters))
+    if !resident {
+      take_pack(
+        o, model_forward.fill_members(pak, members, tokens, layer_view, transient, counters))
+    }
     o.pread_ns = o.pread_ns + (time.instant() - read_started)
     o.window_reuse_count = o.window_reuse_count + 1
     if o.code.len() > 0 { break }
@@ -1512,7 +1951,8 @@ fn decode_pass(
       layer_qwen2.mf_oracle_layer_base(layer), layer_qwen2.MF_LAYER_ORACLE_COUNT,
       layer_qwen2.mf_decode_layer_output_slot(), false, true, g.n_embd)
     run_step_graph(
-      device, backend, context_bytes, layer_spec, g, members, decode_nodes, oracle, window,
+      device, backend, resident_buffer, context_bytes, layer_spec, g, members, decode_nodes,
+      oracle, layer_view,
       slot_view, residual_view, ids_view, pos_view, mask_view, out_ids_view, past_k_view,
       past_v_view, node_view, residual_view, plane_view, scan, starts, lengths, true, false,
       n_past, stride, breach, state, result, o)
@@ -1529,9 +1969,13 @@ fn decode_pass(
     layer = layer + 1
   }
   if o.code.len() > 0 { return }
+  head_base := layout.base[1 + g.n_layer]
+  head_view := window[head_base..head_base + layout.span[1 + g.n_layer]]
   read_started := time.instant()
-  take_pack(
-    o, model_forward.fill_members(pak, head_members, tokens, window, transient, counters))
+  if !resident {
+    take_pack(
+      o, model_forward.fill_members(pak, head_members, tokens, head_view, transient, counters))
+  }
   o.pread_ns = o.pread_ns + (time.instant() - read_started)
   o.window_reuse_count = o.window_reuse_count + 1
   if o.code.len() > 0 { return }
@@ -1541,7 +1985,8 @@ fn decode_pass(
     layer_qwen2.mf_oracle_head_base(g.n_layer), layer_qwen2.MF_HEAD_ORACLE_COUNT,
     layer_qwen2.mf_head_output_slot(), false, true, g.n_embd)
   run_step_graph(
-    device, backend, context_bytes, head_spec, g, head_members, head_nodes, oracle, window,
+    device, backend, resident_buffer, context_bytes, head_spec, g, head_members, head_nodes,
+    oracle, head_view,
     slot_view, residual_view, ids_view, pos_view, mask_view, out_ids_view, plane_view, plane_view,
     node_view, logits_view, plane_view, scan, starts, lengths, true, false, n_past, stride, breach,
     state, head_result, o)
@@ -1565,6 +2010,11 @@ fn decode_pass(
   decoded.argmax = digest.argmax
   o.reader_pread_count = o.reader_pread_count + counters.pread_count
   o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read
+  // R6-RESIDENT-WEIGHTS section 3.4's **primary metric**: the pack bytes the decode steps alone
+  // read, accumulated here because this function is the only place a decode step reads the pack.
+  // It is a counter and not a clock, it is identical across runs, and in resident mode it is
+  // exactly zero.
+  o.step_pack_bytes = o.step_pack_bytes + counters.bytes_read
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1581,13 +2031,15 @@ fn decode_pass(
 // per-step input.
 //
 // The per-step results are a **column set** rather than `Outcome` fields, for R6 section 10.6's
-// reason: `model_forward.Outcome` is 1,384 bytes at this head — R6 recorded 1,328 and section 2.9's
-// seven loop scalars add 56 — and it is passed by value at some twenty-five call sites, so `N`
+// reason: `model_forward.Outcome` is 1,608 bytes at this head — R6 recorded 1,328, R6-STEP-N
+// section 2.9's seven loop scalars add 56, and R6-KV-PERSIST section 2.8's `kv` object and
+// `plane.source` add 224 — and it is passed by value at some twenty-five call sites, so `N`
 // per-step scalars would make it grow with an operand.
 fn decode_loop(
   borrow pak: file,
   device: raw,
   backend: raw,
+  resident_buffer: raw,
   context_bytes: i64,
   borrow g: layer_qwen2.Geometry,
   borrow ends: model_forward.Ends,
@@ -1596,6 +2048,8 @@ fn decode_loop(
   borrow tokens: model_forward.TokenColumns,
   borrow head_members: model_forward.GraphMembers,
   borrow window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   borrow slot_view: slice<u8>,
   borrow ids_view: slice<u8>,
   borrow pos_all: slice<u8>,
@@ -1614,6 +2068,7 @@ fn decode_loop(
   steps: i64,
   width: i64,
   stride: i64,
+  origin: i64,
   borrow mut breach: bool,
   borrow mut activation: array_builder<i64>,
   borrow mut state: Plane,
@@ -1682,7 +2137,8 @@ fn decode_loop(
     before_high_water := decoded.slot_high_water
     decoded.token_id = token
     decode_pass(
-      pak, device, backend, context_bytes, g, ends, table, plan, tokens, head_members, window,
+      pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, tokens,
+      head_members, window, layout, resident,
       slot_view, ids_view, pos_view, mask_view, out_ids_view, residual_view, logits_view, node_view,
       plane_view, oracle, embed_nodes, step_nodes, head_nodes, scan, ranges.start, ranges.length,
       token, n_past, width, stride, breach, activation, state, decoded, o)
@@ -1707,6 +2163,11 @@ fn decode_loop(
       prefix_step(o, step)
       break
     }
+    // R6-KV-PERSIST section 1.4's labelled diagnostic, taken at the one instant it names: step 1's
+    // argmax is available. It is **reported and never claimed** — section 1.4 gives four concrete
+    // reasons why a number measured on this host cannot bear a TTFT claim — and `normalize` zeroes
+    // it, so no golden and no acceptance decision depends on it.
+    if step == 1 { o.first_token_ns = time.instant() - origin }
     if breach { any_breach = true }
     step_verdict := if !o.transcript_present {
       model_forward.ORACLE_ABSENT
@@ -1838,6 +2299,7 @@ fn prefill_pass(
   borrow pak: file,
   device: raw,
   backend: raw,
+  resident_buffer: raw,
   context_bytes: i64,
   borrow g: layer_qwen2.Geometry,
   borrow table: layer_qwen2.MemberTable,
@@ -1846,6 +2308,8 @@ fn prefill_pass(
   borrow embed_members: model_forward.GraphMembers,
   borrow head_members: model_forward.GraphMembers,
   borrow window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   borrow slot_view: slice<u8>,
   borrow index_view: slice<u8>,
   borrow mask_view: slice<u8>,
@@ -1897,9 +2361,28 @@ fn prefill_pass(
   // pin the caller's `borrow mut tokens` cannot travel into a foreign call beside this frame's own
   // scratch buffer. The window is untouched between the two points, so the bytes and the order are
   // the same ones R5B reads.
+  embed_base := layout.base[0]
+  embed_view := window[embed_base..embed_base + layout.span[0]]
   embed_started := time.instant()
-  take_pack(o, model_forward.fill_members(pak, embed_members, tokens, window, transient, counters))
+  if resident {
+    // R6-RESIDENT-WEIGHTS section 3.3. The rows are gathered out of the resident table into the
+    // arena's own staging region: `T` host copies of `row_bytes` each and **no pack read**.
+    mut piece := 0
+    loop {
+      if piece >= tokens.count || o.code.len() > 0 { break }
+      take_pack(o, model_forward.stage_embed_row(
+          window, layout.table_at, embed_base, layout.span[0], embed_members.stride[0], g.n_vocab,
+          tokens.ids[piece], piece))
+      piece = piece + 1
+    }
+  } else {
+    take_pack(
+      o, model_forward.fill_members(pak, embed_members, tokens, embed_view, transient, counters))
+  }
   o.pread_ns = o.pread_ns + (time.instant() - embed_started)
+  // `window.reuse_count` counts the graphs that read their weights out of the one Align-owned
+  // region, which is what it has always measured on the streamed path (one refill per graph) and is
+  // the same number in resident mode, where the region is filled once and read by every graph.
   o.window_reuse_count = o.window_reuse_count + 1
   // Oracle B's byte precondition, and R5B's rule unchanged: every member the schedule reads is
   // compared byte for byte against the source GGUF at its own `source_offset` before its graph runs,
@@ -1907,14 +2390,15 @@ fn prefill_pass(
   // describe the model.
   if o.reference_present {
     take_pack(o, model_forward.compare_source_file(
-        reference_path, embed_members, tokens, window, -1, transient, source_counters))
+        reference_path, embed_members, tokens, embed_view, -1, transient, source_counters))
   }
   mut embed_result := model_forward.empty_graph_result()
   spec := model_forward.spec_for(
     model_forward.GRAPH_EMBED, 0, -1, tokens.count, width, false, false, 0, 1,
     layer_qwen2.mf_embed_output_slot(), false, false, g.n_embd)
   run_step_graph(
-    device, backend, context_bytes, spec, g, embed_members, embed_nodes, oracle, window, slot_view,
+    device, backend, resident_buffer, context_bytes, spec, g, embed_members, embed_nodes, oracle,
+    embed_view, slot_view,
     residual_view, index_view, index_view, mask_view, out_ids_view, plane_view, plane_view,
     node_view, residual_view, plane_view, scan, starts, lengths, false, false, tokens.count,
     stride, breach, state, embed_result, o)
@@ -1923,15 +2407,19 @@ fn prefill_pass(
   loop {
     if layer >= g.n_layer || o.code.len() > 0 { break }
     members := model_forward.build_layer_members(table, plan, layer)
+    layer_base := layout.base[1 + layer]
+    layer_view := window[layer_base..layer_base + layout.span[1 + layer]]
     read_started := time.instant()
-    take_pack(
-      o, model_forward.fill_members(pak, members, tokens, window, transient, counters))
+    if !resident {
+      take_pack(
+        o, model_forward.fill_members(pak, members, tokens, layer_view, transient, counters))
+    }
     layer_pread := time.instant() - read_started
     o.pread_ns = o.pread_ns + layer_pread
     o.window_reuse_count = o.window_reuse_count + 1
     if o.code.len() == 0 && o.reference_present {
       take_pack(o, model_forward.compare_source_file(
-          reference_path, members, tokens, window, layer, transient, source_counters))
+          reference_path, members, tokens, layer_view, layer, transient, source_counters))
     }
     if o.code.len() > 0 { break }
     last := layer == g.n_layer - 1
@@ -1941,7 +2429,8 @@ fn prefill_pass(
       layer_qwen2.mf_oracle_layer_base(layer), layer_qwen2.MF_LAYER_ORACLE_COUNT,
       layer_qwen2.mf_layer_output_slot(), false, false, g.n_embd)
     run_step_graph(
-      device, backend, context_bytes, layer_spec, g, members, layer_nodes, oracle, window,
+      device, backend, resident_buffer, context_bytes, layer_spec, g, members, layer_nodes, oracle,
+      layer_view,
       slot_view, residual_view, index_view, index_view, mask_view, out_ids_view, plane_view,
       plane_view, node_view, residual_view, plane_view, scan, starts, lengths, false, true,
       tokens.count, stride, breach, state, result, o)
@@ -1981,7 +2470,8 @@ fn prefill_pass(
   }
   if o.code.len() == 0 {
     prefill_head(
-      pak, device, backend, context_bytes, g, head_members, window, slot_view, index_view,
+      pak, device, backend, resident_buffer, context_bytes, g, head_members, window, layout,
+      resident, slot_view, index_view,
       mask_view, out_ids_view, residual_view, logits_view, node_view, plane_view, oracle,
       head_nodes, scan, starts, lengths, width, stride, tokens, reference_path, breach, state,
       activation, o)
@@ -2017,10 +2507,13 @@ fn prefill_head(
   borrow pak: file,
   device: raw,
   backend: raw,
+  resident_buffer: raw,
   context_bytes: i64,
   borrow g: layer_qwen2.Geometry,
   borrow head_members: model_forward.GraphMembers,
   borrow window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   borrow slot_view: slice<u8>,
   borrow index_view: slice<u8>,
   borrow mask_view: slice<u8>,
@@ -2046,15 +2539,19 @@ fn prefill_head(
   mut transient: buffer := buffer(model_forward.CHUNK_BYTES)
   mut counters := alignpack_read.new_counters()
   mut source_counters := alignpack_read.new_counters()
+  head_base := layout.base[1 + g.n_layer]
+  head_view := window[head_base..head_base + layout.span[1 + g.n_layer]]
   head_started := time.instant()
-  take_pack(
-    o, model_forward.fill_members(pak, head_members, tokens, window, transient, counters))
+  if !resident {
+    take_pack(
+      o, model_forward.fill_members(pak, head_members, tokens, head_view, transient, counters))
+  }
   o.head_pread_ns = time.instant() - head_started
   o.pread_ns = o.pread_ns + o.head_pread_ns
   o.window_reuse_count = o.window_reuse_count + 1
   if o.code.len() == 0 && o.reference_present {
     take_pack(o, model_forward.compare_source_file(
-        reference_path, head_members, tokens, window, g.n_layer, transient, source_counters))
+        reference_path, head_members, tokens, head_view, g.n_layer, transient, source_counters))
   }
   if o.code.len() > 0 { return }
   mut head_result := model_forward.empty_graph_result()
@@ -2063,7 +2560,8 @@ fn prefill_head(
     layer_qwen2.mf_oracle_head_base(g.n_layer), layer_qwen2.MF_HEAD_ORACLE_COUNT,
     layer_qwen2.mf_head_output_slot(), false, false, g.n_embd)
   run_step_graph(
-    device, backend, context_bytes, head_spec, g, head_members, head_nodes, oracle, window,
+    device, backend, resident_buffer, context_bytes, head_spec, g, head_members, head_nodes, oracle,
+    head_view,
     slot_view, residual_view, index_view, index_view, mask_view, out_ids_view, plane_view,
     plane_view, node_view, logits_view, plane_view, scan, starts, lengths, false, false,
     tokens.count, stride, breach, state, head_result, o)
@@ -2081,6 +2579,67 @@ fn prefill_head(
   o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read
   o.reference_pread_count = o.reference_pread_count + source_counters.pread_count
   o.reference_bytes_read = o.reference_bytes_read + source_counters.bytes_read
+}
+
+// ---------------------------------------------------------------------------------------------
+// R6-RESIDENT-WEIGHTS section 3.2 — the one-time fill
+//
+// Every fixed weight member the run touches, read **once**, in graph order, straight into its own
+// interior offset in the arena, through the same `CHUNK_BYTES` rounds `read_into_window` already
+// uses. It runs before the backend opens and before the wrap exists, so a failure here is an
+// ordinary pack failure with an ordinary pack code and nothing has to be released.
+//
+// The full `token_embd.weight` table is read first and at interior offset zero. It is the one
+// member no graph declares, because the graphs declare **gathered rows**; section 3.3 records why
+// holding the whole table is what makes "zero pack bytes per decode step" exactly true rather than
+// approximately true.
+//
+// Section 2.4 measured Darwin's `pread(2)` refusing `nbyte >= 2 GiB`, and Request 38 records that
+// `align_rt_io_file_pread` always asks for the buffer's whole capacity, so a single whole-arena
+// read is not merely undesirable here but impossible. The chunked fill is not a workaround for a
+// hypothetical surface: it is what the streamed path already does.
+// ---------------------------------------------------------------------------------------------
+
+fn fill_resident(
+  borrow pak: file,
+  borrow g: layer_qwen2.Geometry,
+  borrow table: layer_qwen2.MemberTable,
+  borrow plan: model_forward.Plan,
+  borrow ends: model_forward.Ends,
+  borrow tokens: model_forward.TokenColumns,
+  borrow head_members: model_forward.GraphMembers,
+  borrow window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  borrow mut o: model_forward.Outcome,
+) {
+  mut transient: buffer := buffer(model_forward.CHUNK_BYTES)
+  mut counters := alignpack_read.new_counters()
+  started := time.instant()
+  take_pack(o, model_forward.read_into_window(
+      pak, transient, window, layout.table_at, ends.embed_pack_offset, ends.embed_nbytes,
+      "R4_PACK_UNREADABLE", "token_embd", counters))
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer || o.code.len() > 0 { break }
+    members := model_forward.build_layer_members(table, plan, layer)
+    layer_base := layout.base[1 + layer]
+    layer_view := window[layer_base..layer_base + layout.span[1 + layer]]
+    take_pack(
+      o, model_forward.fill_members(pak, members, tokens, layer_view, transient, counters))
+    layer = layer + 1
+  }
+  if o.code.len() == 0 {
+    head_base := layout.base[1 + g.n_layer]
+    head_view := window[head_base..head_base + layout.span[1 + g.n_layer]]
+    take_pack(
+      o, model_forward.fill_members(pak, head_members, tokens, head_view, transient, counters))
+  }
+  o.resident_fill_ns = time.instant() - started
+  o.resident_fill_pread_count = counters.pread_count
+  o.resident_fill_bytes = counters.bytes_read
+  o.pread_ns = o.pread_ns + o.resident_fill_ns
+  o.reader_pread_count = o.reader_pread_count + counters.pread_count
+  o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2103,6 +2662,8 @@ fn schedule_decode(
   borrow embed_members: model_forward.GraphMembers,
   borrow head_members: model_forward.GraphMembers,
   borrow window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   device: raw,
   context_bytes: i64,
   width: i64,
@@ -2112,7 +2673,12 @@ fn schedule_decode(
   reference_path: str,
   transcript_path: str,
   logits_path: str,
+  kv_save_path: str,
+  kv_load_path: str,
+  borrow pack_digest: slice<u8>,
+  borrow geometry_digest: slice<u8>,
   steps: i64,
+  origin: i64,
   borrow mut schedule: model_forward.ScheduleColumns,
   borrow mut graphs: model_forward.GraphColumns,
   borrow mut top: model_forward.TopColumns,
@@ -2246,13 +2812,45 @@ fn schedule_decode(
       o.backend_name = ggml_ffi.backend_name(backend)
     }
   }
-  o.graph_count = g.n_layer + 2
-  if o.code.len() == 0 {
+  // Section 3.2's hoist. The arena is filled once and wrapped once, at **run** scope, before the
+  // first graph exists; every graph below places into this one wrap and frees none of it. The pair
+  // of counters is separate from `ggml_buffers_*` on purpose (section 4.3): the per-graph balance
+  // check keeps its exact meaning and this wrap's own balance is asserted at the scope that owns
+  // it, after `backend_close` and before this frame's arena leaves scope.
+  mut resident_buffer := ggml_ffi.null_handle()
+  if o.code.len() == 0 && resident {
+    fill_resident(pak, g, table, plan, ends, tokens, head_members, window, layout, o)
+  }
+  if o.code.len() == 0 && resident {
+    wrap_started := time.instant()
+    resident_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
+    o.wrap_ns = o.wrap_ns + (time.instant() - wrap_started)
+    o.wrap_count = o.wrap_count + 1
+    if ggml_ffi.handle_absent(resident_buffer) {
+      fail(o, "R5_GGML_INIT", "resident_buffer")
+    } else {
+      o.resident_wraps_created = o.resident_wraps_created + 1
+    }
+  }
+  loading := kv_load_path.len() > 0
+  // R6-KV-PERSIST section 1.1. A load run **skips the prefill entirely**: it builds no prefill
+  // graph, so it publishes no prefill graph count. `graph` and `schedule` therefore differ between
+  // the two paths legitimately, which is why oracle Q excludes them and compares the results
+  // instead.
+  o.graph_count = if loading { 0 } else { g.n_layer + 2 }
+  if o.code.len() == 0 && loading {
+    load_plane(
+      kv_load_path, g, tokens, plane_view, logits_view, pack_digest, geometry_digest, width, state,
+      o)
+  } else if o.code.len() == 0 {
     schedule = prefill_pass(
-      pak, device, backend, context_bytes, g, table, plan, tokens, embed_members, head_members,
-      window, slot_view, index_view, mask_wide_view, out_ids_view, residual_view, logits_view,
+      pak, device, backend, resident_buffer, context_bytes, g, table, plan, tokens, embed_members,
+      head_members,
+      window, layout, resident, slot_view, index_view, mask_wide_view, out_ids_view, residual_view,
+      logits_view,
       node_view, plane_view, oracle, embed_nodes, prefill_nodes, head_nodes, scan, ranges.start,
       ranges.length, width, stride, reference_path, breach, state, activation, o)
+    if o.code.len() == 0 { o.plane_source = PLANE_SOURCE_PREFILL }
   }
   if o.code.len() == 0 {
     digest := model_forward.digest_region(logits_view)
@@ -2268,21 +2866,61 @@ fn schedule_decode(
     decoded.token_id = digest.argmax
     decoded_token = digest.argmax
   }
+  // W1 to W4 of section 2.6, immediately after step 10 and before step 11'. The container holds the
+  // **prefill** plane at `T` columns, not the post-loop plane at `T + N`: what a shared prefix is,
+  // is a prefill.
+  if o.code.len() == 0 && kv_save_path.len() > 0 {
+    // `pack_total` is read out of the outcome **before** the call: at this pin a borrowed argument
+    // that reads a field of the same record the call also borrows mutably aliases its owner.
+    pack_total := o.total_bytes
+    save_plane(
+      kv_save_path, g, tokens, plane_view, logits_view, pack_digest, geometry_digest, width,
+      decoded_token, pack_total, o)
+  }
   if o.code.len() == 0 && o.logits_present {
     compare_prefill_logits(logits_path, logits_view, g.n_vocab, top, o)
   }
   if o.code.len() == 0 {
     token_id := decoded_token
     stepped = decode_loop(
-      pak, device, backend, context_bytes, g, ends, table, plan, tokens, head_members, window,
+      pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, tokens,
+      head_members, window, layout, resident,
       slot_view, decode_ids_view, decode_pos_view, mask_decode_view, decode_out_ids_view,
       decode_residual_view, decode_logits_view, node_view, plane_view, oracle, embed_nodes,
-      head_nodes, transcript_path, token_id, n_past, steps, width, stride, breach, activation,
-      state, decoded, o)
+      head_nodes, transcript_path, token_id, n_past, steps, width, stride, origin, breach,
+      activation, state, decoded, o)
+  }
+  // Section 4.3's ordering, on **every** exit path from here: the wrap is freed before the backend
+  // and long before `execute`'s arena leaves scope. There is no path between the arena's
+  // construction and this teardown that returns early, which is what makes one converged teardown
+  // sufficient (section 5.1's early-exit cell).
+  if !ggml_ffi.handle_absent(resident_buffer) {
+    ggml_ffi.buffer_free(resident_buffer)
+    o.resident_wraps_freed = o.resident_wraps_freed + 1
   }
   if !ggml_ffi.handle_absent(backend) {
     ggml_ffi.backend_close(backend)
     o.backends_freed = o.backends_freed + 1
+  }
+  // Oracle B at run scope. The hoist R5C section 5.4 refused is admitted here only because the
+  // invariant it weakens is re-established at the scope the hoist moved it to: **every resident
+  // wrap this run created was freed, and it created at most one.**
+  //
+  // Section 11.1 correction 12: the invariant is *balance*, not *presence*. A resident run that
+  // fails before the wrap exists — the fill raising `R4_PACK_UNREADABLE`, or `buffer_from_host`
+  // itself refusing (`ds-force-resident-wrap`) — created nothing and freed nothing, and asserting
+  // `created == 1` there fabricated a leak on every one of those paths: `graph_balance_failures`
+  // rose and `released_before_owner_scope_end` went false on a run whose teardown was in fact
+  // perfect. `created != freed` still catches the wrap that is never freed (section 5.10's third
+  // mutant) and `created > 1` still catches a wrap created twice, which is the other half of "one
+  // lifetime for the whole run". A **successful** resident run keeps the original "exactly one"
+  // reading, which is risk 9's guard against a run that silently streamed: it is stated as the
+  // third clause rather than as the whole condition.
+  if resident
+    && (o.resident_wraps_created != o.resident_wraps_freed
+      || o.resident_wraps_created > 1
+      || (o.code.len() == 0 && o.resident_wraps_created != 1)) {
+    o.graph_balance_failures = o.graph_balance_failures + 1
   }
   o.slot_capacity = ggml_ffi.slots_capacity(slot_view)
   o.slot_magic_ok = ggml_ffi.slots_ok(slot_view)
@@ -2297,6 +2935,7 @@ fn schedule_decode(
     && o.contexts_created == o.contexts_freed
     && o.backends_created == o.backends_freed
     && o.gallocrs_created == o.gallocrs_freed
+    && o.resident_wraps_created == o.resident_wraps_freed
     && o.graph_balance_failures == 0
   o.verdict = if o.code.len() > 0 {
     model_forward.VERDICT_UNAVAILABLE
@@ -2305,7 +2944,10 @@ fn schedule_decode(
   } else {
     model_forward.VERDICT_COPIED
   }
-  if o.reference_present && o.code.len() == 0 {
+  // R6-KV-PERSIST section 2.6. The byte comparison against the source GGUF lives in the prefill
+  // pass, so a **load** run never performs it — and a document that reported `IDENTICAL` after
+  // comparing nothing would claim a pass this arm did not run. The prefill path is unchanged.
+  if o.reference_present && o.code.len() == 0 && !loading {
     o.reference_verdict = model_forward.REFERENCE_IDENTICAL
   }
   // `elements_compared > 0` is asserted per step inside the loop's own verdict and again here over
@@ -2375,6 +3017,9 @@ pub fn execute(
   width_text: str,
   logits_path: str,
   steps_text: str,
+  kv_save_path: str,
+  kv_load_path: str,
+  resident_text: str,
   borrow mut tokens: model_forward.TokenColumns,
   borrow mut schedule: model_forward.ScheduleColumns,
   borrow mut graphs: model_forward.GraphColumns,
@@ -2396,12 +3041,70 @@ pub fn execute(
   // publishes; the refusals stay exactly where the validation order puts them.
   probed := model_forward.parse_index(steps_text)
   if probed > 0 { o.decode_steps_requested = probed }
+  // R6-KV-PERSIST section 2.8: the `kv` object is present in **every** document, including one
+  // refused before the container exists, so the direction a run was asked for is never implicit in
+  // the output.
+  o.kv_save_requested = kv_save_path.len() > 0
+  o.kv_load_requested = kv_load_path.len() > 0
+  kv_requested := o.kv_save_requested || o.kv_load_requested
+  // Step 2b. Not a copy, not save-then-load, not load-then-resave: a run that both restores a plane
+  // and persists it is two capabilities sharing one invocation, and the second would persist a
+  // plane it did not compute. It precedes every path-content check, so a run naming two paths is
+  // refused before either is opened.
+  if o.kv_save_requested && o.kv_load_requested {
+    fail(o, kv_plane.CODE_ARGS, "kv[save+load]")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // R6-RESIDENT-WEIGHTS section 3.1. `-` is streaming and is what an absent operand means; the
+  // empty string is **not** absence and is refused with everything else that is not `weights`. The
+  // check precedes every path-content check, so a run naming an unknown residency mode is refused
+  // before a file is opened, and `weights.mode` is published in that document too.
+  resident := resident_text == "weights"
+  o.resident_mode = resident
+  if !resident && resident_text != "-" {
+    fail(o, CODE_RESIDENT, resident_detail(resident_text))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
 
-  g := stage_inputs(tokens_text, width_text, steps_text, geometry_path, tokens, o)
+  g := stage_inputs(tokens_text, width_text, steps_text, geometry_path, kv_requested, tokens, o)
   if o.code.len() > 0 {
     o.elapsed_ns = time.instant() - started
     return o
   }
+  // Step 6b. `fs.create_rw` is `O_RDWR|O_CREAT|O_TRUNC` and `fs.create_exclusive` returns a
+  // sequential `writer` with no `pwrite`, so there is **no exclusive positional constructor at this
+  // pin** (Request 30, of which this is the second client). The check-then-create race between here
+  // and W1 is named rather than hidden: hiding it behind a silent overwrite would be worse. A
+  // destination that is a symlink is followed in both directions, exactly as alignpack's
+  // `dest-symlink` case pins.
+  if o.kv_save_requested && fs.exists(kv_save_path) {
+    sanitized := model_forward.sanitize_summary_line(kv_save_path)
+    sanitized_view: str := sanitized
+    fail(o, kv_plane.CODE_EXISTS, sanitized_view)
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // Section 2.4's second identity input. The geometry's digest is over the **exact bytes**
+  // `fs.read_file` returned, which is why the file is read again here rather than reconstructed
+  // from the parsed record: a digest of a re-serialization would bind the container to this
+  // repository's formatter and not to the document the caller supplied. It is one bounded read of a
+  // file `stage_inputs` has already accepted.
+  mut geometry_image: string := "".clone()
+  if kv_requested {
+    geometry_image = match fs.read_file(geometry_path) {
+      Ok(value) => value,
+      Err(failure) => {
+        fail(o, CODE_GEOMETRY_UNREADABLE, model_forward.error_name(failure))
+        o.elapsed_ns = time.instant() - started
+        return o
+      },
+    }
+  }
+  geometry_image_view: str := geometry_image
+  geometry_raw := crypto.sha256(geometry_image_view)
+  geometry_digest := geometry_raw[0..geometry_raw.len()]
   width := o.reconciliation_width
   steps := o.decode_steps_requested
   table := layer_qwen2.mf_layer_member_table(g)
@@ -2444,6 +3147,48 @@ pub fn execute(
     o.elapsed_ns = time.instant() - started
     return o
   }
+  // Step 7's addition. Model identity is the pack's own source-identity digest, read once, in one
+  // bounded 32-byte `pread` at a header-declared offset. Recomputing a GGUF digest is not merely
+  // expensive but **impossible at this pin**: `crypto.sha256` is one-shot over exactly one byte
+  // view, so a 4.68 GB digest needs a 4.68 GB byte view (Request 29). What this does not claim is
+  // stated in section 2.4: it certifies the pack's metadata region, not its payload, which is
+  // `--pack-verify`'s question.
+  mut pack_identity: buffer := buffer(kv_plane.DIGEST_BYTES)
+  mut pack_counters := alignpack_read.new_counters()
+  if kv_requested {
+    if staged.source_record_offset < 0 {
+      fail(o, "R4_PACK_HEADER", "source_record_offset")
+      o.elapsed_ns = time.instant() - started
+      return o
+    }
+    take_pack(o, alignpack_read.read_exact(
+        pak, pack_identity, pack_counters, "R4_PACK_UNREADABLE",
+        staged.source_record_offset + 48, kv_plane.DIGEST_BYTES))
+    o.reader_pread_count = o.reader_pread_count + pack_counters.pread_count
+    o.reader_bytes_read = o.reader_bytes_read + pack_counters.bytes_read
+    if o.code.len() > 0 {
+      o.elapsed_ns = time.instant() - started
+      return o
+    }
+  } else {
+    model_forward.fill_zero(pack_identity, kv_plane.DIGEST_BYTES)
+  }
+  pack_digest := pack_identity.bytes()
+  if pack_digest.len() != kv_plane.DIGEST_BYTES {
+    fail(o, "R4_WINDOW_UNAVAILABLE", "kv_identity")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // Section 2.4. A pack whose source-identity digest is thirty-two zero bytes carries **no** model
+  // identity, and an all-zero digest compares equal to the all-zero digest a container written
+  // against such a pack would hold — so `R6_KV_IDENTITY("pack")` would pass over nothing. The
+  // degenerate value is refused on both directions instead: a container is never written with an
+  // identity that cannot distinguish one model from another, and one is never accepted on it.
+  if kv_requested && kv_plane.all_zero(pack_digest) {
+    fail(o, kv_plane.CODE_IDENTITY, "pack_absent")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
   window_bytes := staged.window_bytes
   residual_bytes := g.n_embd * tokens.count * 4
   logits_bytes := g.n_vocab * 4
@@ -2471,18 +3216,37 @@ pub fn execute(
     o.elapsed_ns = time.instant() - started
     return o
   }
-  mut weights: buffer := buffer(window_bytes + model_forward.MAX_TENSOR_ALIGNMENT)
-  model_forward.fill_zero(weights, 1)
-  pad := model_forward.MAX_TENSOR_ALIGNMENT
-    - model_forward.base_mod(weights, model_forward.MAX_TENSOR_ALIGNMENT)
-  model_forward.prime_window(weights, pad - 1 + window_bytes)
-  weights_view := weights.bytes()
-  if weights_view.len() != pad + window_bytes {
-    fail(o, "R4_WINDOW_UNAVAILABLE", "weights")
+  // R6-RESIDENT-WEIGHTS section 3.2. Streaming reserves the peak graph and refills it per graph;
+  // residency reserves the **sum** and fills it once. Both are one `buffer`, one 32-byte-aligned
+  // interior slice, and one length check on the observable consequence of a degraded reservation,
+  // which is the only failure Request 35 leaves visible.
+  layout := if resident {
+    model_forward.plan_resident(staged.plan, staged.ends, staged.block_align)
+  } else {
+    model_forward.stream_layout(window_bytes, g.n_layer)
+  }
+  region_bytes := if resident { layout.bytes } else { window_bytes }
+  o.resident_bytes = if resident { layout.bytes } else { 0 }
+  // The budget, checked **before any allocation**, against the existing window ceiling and the
+  // existing idiom. On the reference model 4,677,184,512 leaves 46 % headroom.
+  if resident && (region_bytes <= 0 || region_bytes > model_forward.MAX_WINDOW_BYTES) {
+    fail(o, CODE_RESIDENT_BUDGET, model_forward.labelled("bytes", region_bytes))
     o.elapsed_ns = time.instant() - started
     return o
   }
-  window_view := weights_view[pad..pad + window_bytes]
+  mut weights: buffer := buffer(region_bytes + model_forward.MAX_TENSOR_ALIGNMENT)
+  model_forward.fill_zero(weights, 1)
+  pad := model_forward.MAX_TENSOR_ALIGNMENT
+    - model_forward.base_mod(weights, model_forward.MAX_TENSOR_ALIGNMENT)
+  model_forward.prime_window(weights, pad - 1 + region_bytes)
+  weights_view := weights.bytes()
+  if weights_view.len() != pad + region_bytes {
+    fail(
+      o, if resident { CODE_RESIDENT_UNAVAILABLE } else { "R4_WINDOW_UNAVAILABLE" }, "weights")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  window_view := weights_view[pad..pad + region_bytes]
   embed_members := model_forward.build_embed_members(g, staged.ends, tokens.count)
   head_members := model_forward.build_head_members(g, staged.ends)
   if !ggml_ffi.available() {
@@ -2536,9 +3300,11 @@ pub fn execute(
     return o
   }
   schedule_decode(
-    pak, g, table, staged.plan, staged.ends, tokens, embed_members, head_members, window_view, device,
+    pak, g, table, staged.plan, staged.ends, tokens, embed_members, head_members, window_view,
+    layout, resident, device,
     context_bytes, width, residual_bytes, logits_bytes, readback_bytes, reference_path,
-    transcript_path, logits_path, steps, schedule, graphs, top, stepped, o)
+    transcript_path, logits_path, kv_save_path, kv_load_path, pack_digest, geometry_digest, steps,
+    started, schedule, graphs, top, stepped, o)
   o.elapsed_ns = time.instant() - started
   return o
 }
@@ -2554,7 +3320,11 @@ pub fn execute(
 
 pub fn render_plane(borrow p: model_forward.Outcome) -> string {
   d := builder()
-  d.write("{\"bytes\":")
+  // R6-KV-PERSIST section 2.8. Where the plane came from, in every document: `"PREFILL"` when this
+  // process computed it, `"LOADED"` when a container supplied it, `"-"` when it does not exist.
+  d.write("{\"source\":")
+  d.write(model_forward.json_string(plane_source_label(p.plane_source)))
+  d.write(",\"bytes\":")
   d.write_int(p.plane_bytes)
   d.write(",\"stride\":")
   d.write_int(p.plane_stride)
@@ -2734,6 +3504,127 @@ pub fn render_oracle_decode(borrow o: model_forward.Outcome) -> string {
   return d.to_string()
 }
 
+// R6-KV-PERSIST section 2.8's `kv` object, in declaration order. It is present in **every**
+// document with **one shape at every arity**, so a reader never has to ask which operands were
+// supplied before it knows which fields exist.
+//
+// **It publishes no path.** R6-STEP-N risk 5 names the temp-path golden class and schema 2 was
+// verified free of it; schema 3 keeps that property. `kv.destination` publishes a verdict word,
+// never a name.
+pub fn render_kv(borrow o: model_forward.Outcome) -> string {
+  d := builder()
+  d.write("{\"save_requested\":")
+  d.write_int(if o.kv_save_requested { 1 } else { 0 })
+  d.write(",\"load_requested\":")
+  d.write_int(if o.kv_load_requested { 1 } else { 0 })
+  d.write(",\"verdict\":")
+  d.write(model_forward.json_string(kv_plane.verdict_label(o.kv_verdict)))
+  d.write(",\"destination\":")
+  d.write(model_forward.json_string(kv_plane.destination_label(o.kv_destination)))
+  d.write(",\"format_version\":")
+  d.write_int(o.kv_format_version)
+  d.write(",\"plane_layout_version\":")
+  d.write_int(o.kv_plane_layout_version)
+  d.write(",\"total_bytes\":")
+  d.write_int(o.kv_total_bytes)
+  d.write(",\"header_bytes\":")
+  d.write_int(o.kv_header_bytes)
+  d.write(",\"plane_offset\":")
+  d.write_int(o.kv_plane_offset)
+  d.write(",\"plane_bytes\":")
+  d.write_int(o.kv_plane_bytes)
+  d.write(",\"logits_bytes\":")
+  d.write_int(o.kv_logits_bytes)
+  d.write(",\"columns_persisted\":")
+  d.write_int(o.kv_columns_persisted)
+  d.write(",\"token_count\":")
+  d.write_int(o.kv_token_count)
+  d.write(",\"n_vocab\":")
+  d.write_int(o.kv_n_vocab)
+  d.write(",\"prefill_argmax\":")
+  d.write_int(o.kv_prefill_argmax)
+  d.write(",\"pack_total_bytes\":")
+  d.write_int(o.kv_pack_total_bytes)
+  d.write(",\"source_header_region_sha256\":")
+  d.write(model_forward.json_string(hex_or_dash(o.kv_source_sha256)))
+  d.write(",\"geometry_sha256\":")
+  d.write(model_forward.json_string(hex_or_dash(o.kv_geometry_sha256)))
+  d.write(",\"tokens_sha256\":")
+  d.write(model_forward.json_string(hex_or_dash(o.kv_tokens_sha256)))
+  d.write(",\"logits_sha256\":")
+  d.write(model_forward.json_string(hex_or_dash(o.kv_logits_sha256)))
+  d.write(",\"plane_sha256\":")
+  d.write(model_forward.json_string(hex_or_dash(o.kv_plane_sha256)))
+  d.write(",\"write_ns\":")
+  d.write_int(o.kv_write_ns)
+  d.write(",\"read_ns\":")
+  d.write_int(o.kv_read_ns)
+  d.write("}")
+  return d.to_string()
+}
+
+fn hex_or_dash(borrow value: string) -> str {
+  view: str := value
+  if view.len() == 0 { return "-" }
+  return view
+}
+
+// `src/model_forward.align`'s `timings` block plus this capability's own diagnostic. It is written
+// here rather than there for the reason section 5.3 predicts in bytes: `--model-forward`,
+// `--model-forward-gpu`, `--layer-forward`, and `--moe-layer-forward` share that renderer, and
+// adding a field to it would move four goldens this capability promises are byte-unchanged.
+// R6-RESIDENT-WEIGHTS section 3.5. The `weights` object, present in **every** document including
+// error documents, so the mode a run took is never implicit. `step_pack_bytes` is the capability's
+// primary metric: it is a counter and not a clock, it is identical across runs, and it is exactly
+// zero in resident mode.
+pub fn render_weights(borrow o: model_forward.Outcome) -> string {
+  d := builder()
+  d.write("{\"mode\":")
+  d.write(model_forward.json_string(if o.resident_mode { "resident" } else { "stream" }))
+  d.write(",\"resident_bytes\":")
+  d.write_int(o.resident_bytes)
+  d.write(",\"fill_ns\":")
+  d.write_int(o.resident_fill_ns)
+  d.write(",\"fill_pread_count\":")
+  d.write_int(o.resident_fill_pread_count)
+  d.write(",\"fill_bytes\":")
+  d.write_int(o.resident_fill_bytes)
+  d.write(",\"step_pack_bytes\":")
+  d.write_int(o.step_pack_bytes)
+  d.write(",\"wrap_count\":")
+  d.write_int(o.wrap_count)
+  d.write(",\"resident_wraps_created\":")
+  d.write_int(o.resident_wraps_created)
+  d.write(",\"resident_wraps_freed\":")
+  d.write_int(o.resident_wraps_freed)
+  d.write("}")
+  return d.to_string()
+}
+
+pub fn render_timings_step(borrow o: model_forward.Outcome) -> string {
+  d := builder()
+  d.write("{\"pread_ns\":")
+  d.write_int(o.pread_ns)
+  d.write(",\"build_ns\":")
+  d.write_int(o.build_ns)
+  d.write(",\"reserve_ns\":")
+  d.write_int(o.reserve_ns)
+  d.write(",\"compute_ns\":")
+  d.write_int(o.compute_ns)
+  d.write(",\"reconciliation_compute_ns\":")
+  d.write_int(o.reconciliation_compute_ns)
+  d.write(",\"reference_compute_ns\":")
+  d.write_int(o.reference_compute_ns)
+  d.write(",\"oracle_ns\":")
+  d.write_int(o.oracle_ns)
+  d.write(",\"first_token_ns\":")
+  d.write_int(o.first_token_ns)
+  d.write(",\"elapsed_ns\":")
+  d.write_int(o.elapsed_ns)
+  d.write("}")
+  return d.to_string()
+}
+
 fn render_prologue(
   borrow o: model_forward.Outcome,
   pack_path: str,
@@ -2827,7 +3718,11 @@ pub fn render(
   oracle_view: str := oracle
   logits := model_forward.render_logits_oracle(o)
   logits_view: str := logits
-  timings := model_forward.render_timings(o)
+  kv := render_kv(o)
+  kv_view: str := kv
+  weights := render_weights(o)
+  weights_view: str := weights
+  timings := render_timings_step(o)
   timings_view: str := timings
   lifetime := model_forward.render_lifetime_abi(o)
   lifetime_view: str := lifetime
@@ -2854,6 +3749,10 @@ pub fn render(
   d.write(oracle_view)
   d.write(",\"oracle_logits\":")
   d.write(logits_view)
+  d.write(",\"kv\":")
+  d.write(kv_view)
+  d.write(",\"weights\":")
+  d.write(weights_view)
   d.write(",\"timings\":")
   d.write(timings_view)
   d.write(",\"lifetime\":")
@@ -2908,6 +3807,16 @@ fn print_summary(
   print(o.plane_bytes)
   print("plane layers:")
   print(o.plane_layers)
+  print("plane source:")
+  print(plane_source_label(o.plane_source))
+  print("kv verdict:")
+  print(kv_plane.verdict_label(o.kv_verdict))
+  print("kv destination:")
+  print(kv_plane.destination_label(o.kv_destination))
+  print("kv container bytes:")
+  print(o.kv_total_bytes)
+  print("first token ns:")
+  print(o.first_token_ns)
   print("plane roundtrip:")
   print(roundtrip_label(o.plane_roundtrip_verdict))
   print("plane bytes compared:")
@@ -2946,9 +3855,31 @@ fn print_summary(
   }
 }
 
-// R6-STEP-N section 2.2: exactly five, six, seven, nine, ten, or **eleven** operands. **Eight is
-// still `R6_ARITY`**, inherited verbatim from `--model-forward`'s rule and for R6's own reason:
+// R6-STEP-N section 2.2, R6-KV-PERSIST section 2.2, and R6-RESIDENT-WEIGHTS section 3.1: exactly
+// five, six, seven, nine, ten, eleven, twelve, thirteen, **or fourteen** operands. **Eight is still
+// `R6_ARITY`**, inherited verbatim from `--model-forward`'s rule and for R6's own reason:
 // `KV_WIDTH` travels with the transcript, so a transcript without a width refuses itself.
+//
+// `RESIDENT` is `args[13]`, the fourteenth operand. R6-RESIDENT-WEIGHTS section 3.1 designed it at
+// `args[11]` against a head where `STEPS` was last; `R6-KV-PERSIST` took `args[11]` and `args[12]`
+// for `KV_SAVE` and `KV_LOAD` before this capability was implemented, and section 9.4 fixed the
+// merge order that makes that so. Taking the next free position rather than displacing either is
+// the same rule `STEPS` followed: every earlier position is spoken for and moving one would change
+// the meaning of an existing invocation silently. Section 11 of that document records the change.
+//
+// `RESIDENT` is `-` (stream the weights, the shipped behaviour, and what an absent operand means)
+// or `weights` (hold the whole weight set resident for the process's lifetime). Its hazard — a
+// caller who wants residency and forgets the operand silently gets streaming — is closed by
+// publishing `weights.mode` in **every** document, including error documents. It takes no path
+// check because it is not a path.
+//
+// `KV_SAVE` (`args[11]`) and `KV_LOAD` (`args[12]`) each accept `-` for "absent", the convention
+// `TRANSCRIPT` has used since R5B and `LOGITS` since R6-STEP-N, and **absence is the pre-existing
+// behaviour character for character**: `args.len() == 12` with `KV_SAVE` of `-` is exactly
+// `args.len() == 11`. This capability adds no default. `KV_SAVE` precedes `KV_LOAD` because saving
+// is the direction an ordinary run adds, so twelve operands is the common extension and thirteen is
+// the specialised one. Supplying both is `R6_KV_ARGS`, raised in `execute` because it is a refusal
+// that owes the caller a document.
 //
 // `KV_WIDTH` has no default at any arity. Below nine operands it is simply not supplied, and step 6
 // refuses the run with `R6_KV_WIDTH` and detail `kv_width[-1]` — which is what "fail-closed, no
@@ -2966,7 +3897,7 @@ fn print_summary(
 // including error documents, so the count is never implicit in the output.
 pub fn run(args: array<str>) -> Result<(), Error> {
   count := args.len()
-  if count < 5 || count == 8 || count > 11 {
+  if count < 5 || count == 8 || count > 14 {
     return Err(Error.Invalid)
   }
   if !layer_forward.valid_path(args[2]) || !layer_forward.valid_path(args[3]) {
@@ -2984,11 +3915,20 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   if count >= 10 && args[9] != "-" && !layer_forward.valid_path(args[9]) {
     return Err(Error.Invalid)
   }
+  if count >= 12 && args[11] != "-" && !layer_forward.valid_path(args[11]) {
+    return Err(Error.Invalid)
+  }
+  if count >= 13 && args[12] != "-" && !layer_forward.valid_path(args[12]) {
+    return Err(Error.Invalid)
+  }
   reference_path := if count >= 7 { args[6] } else { "" }
   transcript_path := if count >= 9 && args[7] != "-" { args[7] } else { "" }
   width_text := if count >= 9 { args[8] } else { "" }
   logits_path := if count >= 10 && args[9] != "-" { args[9] } else { "" }
-  steps_text := if count == 11 { args[10] } else { "1" }
+  steps_text := if count >= 11 { args[10] } else { "1" }
+  kv_save_path := if count >= 12 && args[11] != "-" { args[11] } else { "" }
+  kv_load_path := if count >= 13 && args[12] != "-" { args[12] } else { "" }
+  resident_text := if count >= 14 { args[13] } else { "-" }
   mut tokens := model_forward.empty_tokens()
   mut schedule := model_forward.empty_schedule()
   mut graphs := model_forward.empty_graphs()
@@ -2996,7 +3936,7 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   mut stepped := model_forward.empty_steps()
   outcome := execute(
     args[2], args[3], args[4], reference_path, transcript_path, width_text, logits_path, steps_text,
-    tokens, schedule, graphs, top, stepped)
+    kv_save_path, kv_load_path, resident_text, tokens, schedule, graphs, top, stepped)
   document := render(
     outcome, tokens, schedule, graphs, top, stepped, args[2], args[3], reference_path,
     transcript_path, logits_path)

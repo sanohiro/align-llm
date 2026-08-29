@@ -226,7 +226,309 @@ Track B `agent/r6-resident-weights` branch, so 53 is the next free number.
 
 **Intentional uncommitted files.** None.
 
-## Active: R6-STEP-N (2026-08-29)
+## Active: R6-RESIDENT-WEIGHTS (2026-08-29)
+
+Branch `agent/r6-resident-weights`. Implemented on `agent/r6-kv-persist` head `9699848`, then
+**merged** with that branch's review repair `1971c61` and its own `main` merge `bdb34eb` — which
+carries `main` `3df063b` (R6-STEP-N, PR #145) and R5E-MOE-MODEL-PREFILL — by `git merge`, **never a
+rebase**, so every stacked branch's recorded commits stay reachable. The four things that merge
+re-checks all held: roadmap item **30** (29 is KV-PERSIST), document schema **4** (KV-PERSIST took
+3), Align Request **50** (1–49 taken), and `scripts/decode-step-golden.jsonl` regenerated from the
+merged head. Both R6 branches have now landed: `origin/main` is at `a6e545b` (R6-KV-PERSIST, PR #146, carrying
+its final review minors `5c53ea1`), taken here by `git merge origin/main` — a clean merge, two files,
+no conflict — and all four re-checks held again: roadmap item **30**, schema **4**, the next free
+Align request number (now **52**, because this capability's review filed **51**), and the golden.
+
+**Capability.** The whole weight set held **resident for one process's lifetime**, so that after one
+fill every decode step reads exactly zero pack bytes. Dense Qwen2.5-Coder-7B Q4_K_M, **CPU only**.
+`docs/specs/r6-resident-weights.md` is the authoritative ledger; sections 1 to 4 are the
+pre-implementation design, 5.8 to 5.10 the result, and 11.1 the corrections implementation found.
+Three of the design gate's four triggers fire: a changed CLI arm, a changed exchanged format
+(schema 4, a `weights` object), and — the load-bearing one — a changed **ownership/allocation
+boundary**, because the weight `buffer` and its `ggml_backend_buffer` wrap move from per-graph to
+run scope. `docs/specs/r5c-metal-prefill.md` section 5.4 refused that hoist once and said it belongs
+to "the capability that also re-establishes the invariant it weakens"; section 4.3 is that
+re-establishment, in a separate counter pair at run scope.
+
+**Complete.** Cell RW-P1's probe (a 4.68 GB `buffer_from_host` wrap **accepted**, two context
+generations placing into one wrap, interior offsets above `INT_MAX` exact, `RW-P1: PASS`);
+`model_forward.ResidentLayout` + `plan_resident`/`stream_layout`/`stage_embed_row` and eight
+`Outcome` fields; the `RESIDENT` operand at `args[13]` with arity 14; `R6_RESIDENT`,
+`R6_RESIDENT_BUDGET`, `R6_RESIDENT_UNAVAILABLE`; `fill_resident` (one chunked pass, whole
+`token_embd.weight` first); the run-scope wrap with its own counter pair and its teardown before
+`backend_close`; document schema 4 with the `weights` object in **every** document; eight new smoke
+cases with oracle R at one and three steps, plus `ds-force-resident-wrap` from the review repair and
+`ds-resident-stage-full` from the final review; `scripts/run-decode-step`'s 12 GiB physical-memory
+preflight, `vm_stat` compressor recording, both scaling legs at three runs each, oracle R on the
+real model, and the arena's size recomputed independently from `pack.json`; roadmap item 30,
+`docs/align-development.md`, **Align Request 50** (`std.os.physical_memory`), Request 35 raised to
+**high** with the 4.68 GB abort as its evidence, and Request 38's measured Darwin `pread` boundary.
+
+**The `Makefile` is byte-untouched.** No target, no `.PHONY` word, no build-list entry, so aggregate
+membership and check topology are unchanged by construction and `scripts/check-gate-topology`'s
+byte-literal EXPECTED does not move. `src/ggml_ffi.align`, `scripts/ggml_shim.c`,
+`src/ggml_spike.align`, and `src/layer_qwen2.align` are **byte-unchanged**: no new shim symbol and
+no new Align surface were needed, because the zero-copy placement path has been the primary weight
+path since R4.5. `scripts/ggml_shim_stub.c` is **not** unchanged — one function in the test double,
+recorded as section 5.9 deviation 1.
+
+**Result** (run 4, the **interleaved** re-measurement at the repair head, which is the measurement
+of record). On the reference host (Apple M1, 16 GiB), `def add(a, b):`, `KV_WIDTH` 256, baseline
+re-taken back to back in the same session, three runs per point, legs alternating:
+
+| `N` | streamed elapsed | resident elapsed | `weights.step_pack_bytes` |
+| --- | --- | --- | --- |
+| 1 | 5.355 s | 6.800 s | 4,370,560,992 -> **0** |
+| 4 | 7.594 s | 7.721 s | 17,482,243,968 -> **0** |
+| 16 | 17.112 s | **10.049 s** | 69,928,975,872 -> **0** |
+
+**412,763 ppm of the `N = 16` fixed task against a 150,000 ppm floor: MET**, 2.75x the floor and
+70 % of the 586,000 ppm ceiling recorded before implementation. That is a **shortfall with a named
+cause** — the one-time fill the ceiling assumed away — and not a ceiling-estimation miss:
+`docs/specs/c8-speed-first.md` section 1 reserves that label for a result *far* below its ceiling and
+its own worked precedent is 41 % of one. The runner now prints the percentage on every run and
+applies the label only below one half. **The qualification has now been run four times — 412,763 /
+449,779 / 507,887 / 511,125 ppm — and the byte metric was identical in all four.** Run 4 is the
+interleaved one: the first three took all three streamed repeats and then all three resident ones,
+which confounded the leg with the clock, and the review found it. Interleaving moved the streamed
+leg from 18.016 s to 17.112 s and the resident leg from 8.808 s to 10.049 s, landing **37,016 ppm
+below the lowest blocked run and 98,362 below the highest** — comparable to their own 61,346 ppm
+spread, so with one interleaved run the magnitude is **not separated from noise**. What is
+established is that the confound is removed; the direction section 3.4 argued from thermal drift was
+not confirmed. The conservative reading is the worst of the four, 412,763 ppm. Arena 4,677,533,696 B,
+fill 4,669 `pread`s of 4,677,120,000 B in 1.6–2.6 s, paid once whatever `N` is. Peak footprint
+504 MB -> 4.74 GB. **Residency is slower at `N = 1`, a coin toss at `N = 4`** where the four runs
+disagree about the sign, and decisive from 16 up; the crossover is stated in section 5.8.1 with the
+disagreement shown rather than averaged away, and it is the practical reason the operand is opt-in.
+The streamed leg's total pack reads reproduce
+R6-STEP-N section 5.4's recorded 8,741,169,024 / 21,852,852,000 / 74,299,583,904 **exactly at all
+three points**, so the baseline this claim is made against is that document's, byte for byte.
+Oracle R PASS on the real model at `N = 16` with the transcript, logits blob, and reference GGUF all
+supplied.
+
+**Goldens.** `scripts/decode-step-golden.jsonl` moves — every row to schema 4 plus a `weights`
+object, and 9 new rows, 107 becoming **116** (115 at the implementation head; the review repair adds
+`ds-force-resident-wrap`). A programmatic diff of the old and new files confirms the **only** fields
+that changed in a pre-existing row are `.schema_version` and `.weights`, which is exactly what
+section 4.5 predicted, and the repair's own regeneration is **one added row, no removal, and no
+changed row**. The final review's `ds-resident-stage-full` is a **117th documented case with no
+golden row**: hosted CI showed that a 32-token prefill's activations differ in the last bit between
+macOS/arm64 and Linux/x86_64, so a committed row for it would pin the regenerating machine. Section
+5.9 deviation 9 records it; the case is asserted by oracle R against its streamed twin, which is a
+within-host comparison. The other **six** goldens — `scripts/layer-forward-golden.jsonl`,
+`scripts/model-forward-golden.jsonl`, `scripts/gpu-forward-golden.jsonl`,
+`scripts/moe-layer-forward-golden.jsonl`, `scripts/moe-model-forward-golden.jsonl`, and
+`scripts/ggml-spike-golden.jsonl` — are byte-unchanged, verified by regenerating all six and
+observing no diff.
+
+**`arena` is a reserved word in Align at this pin.** `fn f(borrow arena: slice<u8>)` fails to parse
+with `error: expected ':'` at the parameter name and cascades into a wall of unrelated top-level
+errors; `arena := 3` reports at the `:=`, one token past the cause. Every identifier is
+`resident_*`, `pool`, or `layout`. The reserved word is the language's prerogative and is not
+requested; the **diagnostic** is **Align Request 51**, filed by the review repair with three minimal
+repros at the pin.
+
+**Blockers.** None. Request 35 makes a graceful out-of-memory refusal impossible and Request 50
+makes a host-memory check impossible inside the arm; both are compensated by `RESIDENT` being
+opt-in and by the runner's 12 GiB preflight, and both are recorded rather than worked around.
+
+**Constraints.** CPU only; `--model-forward-gpu` keeps its per-graph wrap because R5C section 2.6
+measured that an unfreed Metal buffer aborts at `exit`. `--model-forward` and `--moe-layer-forward`
+are byte-unchanged and deferred, because they pay the streaming cost once rather than `N` times. The
+measuring host is a 16 GiB Apple M1 that compresses memory under pressure, so every timed run
+records `vm_stat`'s compressor counters.
+
+**Review.** One comprehensive review of `c73d4b8` was taken as two independent adversarial passes —
+one on implementation and measurement, one on specification, measurement, and governance — and
+returned four major and thirteen minor findings. Every one is dispositioned; the consolidated repair
+is one commit on top of the `origin/main` merge. A **delta review of the repair head `6facd56`**
+returned approve-with-minors: six wording and count corrections plus one new hosted case, applied in
+the final commit and changing no emitted byte of a real-model run. The load-bearing finding was the run-scope balance
+assertion (`docs/specs/r6-resident-weights.md` section 11.1 correction 12): it read
+`created != 1 || freed != 1`, so a resident run that failed **before** the wrap existed reported
+`graph_balance_failures: 1` and `released_before_owner_scope_end: false` on a teardown that was in
+fact perfect. It now asserts balance, with "exactly one" kept for successful runs, and
+`ds-force-resident-wrap` — the early-exit case the first implementation retired as unnecessary — is
+its regression.
+
+**Verification checkpoint (final-minors head).** `gmake build`, `gmake format-check`,
+`git diff --check`, `gmake ggml-spike-smoke`, and
+`gmake layer-forward-smoke` (all six blocks; **117** documented decode-step cases, 116 of them with
+a golden row, reaching 41 codes)
+all pass at the final head; `gmake check` (31 units), `gmake fmt`, and `gmake gate-topology-check`
+passed at the repair head `6facd56`, whose Align sources and `Makefile` the final commit does not
+touch. `gmake decode-step-qualification` **exits 0** on the real model at `N = 16` in 827 s of the
+1800 s cap at `6facd56`, with the scaling row interleaved for the first time; oracle R PASS, arena
+reproduced independently from `pack.json`, floor MET at 412,763 ppm. It is **not** re-run for the
+final minors: they touch documentation, one hosted case, and one source comment, and change no
+emitted byte of a real-model run. Instruments unchanged:
+`ALIGN_LLM_LLAMA_DEBUG=/opt/homebrew/bin/llama-debug` (Homebrew build 10566, commit `bb4caa754`) and
+the R2c-patched `llama-eval-callback` from the `r2c-v2` cache.
+
+**Six mutants injected, five killed under `gmake layer-forward-smoke`.** The arena refilled per decode step;
+a layer filled at the wrong arena base; the run-scope wrap never freed; the wrap created **and**
+freed twice (which is what the repaired condition's `created > 1` clause carries); and the
+pre-repair balance condition restored, which `ds-force-resident-wrap` kills by name. A sixth —
+`stage_embed_row`'s bound restored to the whole arena — is **not** killed by anything in the corpus,
+and that is recorded in section 5.10 rather than papered over: the repair is defence in depth
+against a future caller, not a fix for a reachable defect. That mutant loosens the bound; its
+**tightening** direction is now covered by `ds-resident-stage-full`, the final review's case, which
+runs a resident prefill of exactly `MAX_PREFILL_TOKENS` distinct ids — the highest slot either call
+site can produce — against its streamed twin under oracle R.
+
+**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake
+layer-forward-smoke` at the exact publication head. (2) Publish the English pull request with the
+review envelope, every finding's disposition, and the exact commands and results. (3) Merge once the
+required checks pass.
+
+**Process correction this capability owes the next one.** Sections 1 to 4 of
+`docs/specs/r6-resident-weights.md` were written before implementation, but the file's first commit
+is the implementation commit, so the repository holds **no evidence** of that ordering and a reviewer
+is right to say so. **The next Track B performance capability commits its sections 1 to 4 — ledger,
+baseline, cost ceiling, and floor — before the first line of implementation**, so the ordering is a
+fact about the repository rather than a claim in a document.
+
+**Intentional uncommitted files.** None. The RW-P1 probe (`src/r6w_probe.align` and its binary) is a
+throwaway that lives outside the work tree and is not committed; section 5.8 records its whole
+output.
+
+## Merged checkpoint: R6-KV-PERSIST (PR #146, 2026-08-29)
+
+Branch `agent/r6-kv-persist`, stacked on `agent/r6-step-n`, which is merged into it at `6ca1eef`
+(the STEP-N review repair) by `git merge` — **never a rebase**, so both stacked branches' recorded
+commits stay reachable. **Three commits and nothing uncommitted:** `9699848` is the capability,
+`1971c61` is the consolidated repair of the first comprehensive review's findings, and the head is
+the merge of `origin/main` at `3df063b` — R6-STEP-N, PR #145, which itself carries
+R6-DECODE-KV-STEP1 (PR #144) and R5E — again taken as `git merge origin/main` and never a rebase.
+Both stacked prerequisites have now landed, so the reconciliation they were waiting on is **done**:
+roadmap numbering is unchanged (27 / 28 / **29**), `docs/align-requests.md` now runs 1–49 on this
+branch so the next free number is **50** and this capability still claims none, and `Makefile` and
+`.gitattributes` moved on `main` rather than here.
+
+**Capability.** The R6 KV plane persisted to disk and reloaded in a **fresh process**, dense
+Qwen2.5-Coder-7B Q4_K_M, CPU. `docs/specs/r6-kv-persist.md` is the authoritative ledger. **All
+four** of the design gate's triggers fire — a changed public CLI arm, a **new persisted format**
+plus a document schema bump, a **process ownership boundary**, and a coordinated invariant across
+three or more modules: the plane's layout stops being private to `src/decode_step.align` and becomes
+a published contract with an independent second reader.
+
+**Complete.** `src/kv_plane.align` (new module: the `akvp` v1 constants, the 192-byte header, the
+192-byte identity record, non-wrapping region arithmetic, five `crypto.sha256` digests, and the
+writer; no `unsafe`, no `extern`); `--decode-step` arity 12 and 13 with `KV_SAVE`/`KV_LOAD` and the
+`-` convention; `R6_KV_ARGS` at step 2b, `R6_KV_TOO_LARGE` at 6a, `R6_KV_EXISTS` at 6b, the pack
+identity read and its degenerate-digest refusal at step 7/7b, the save path W1–W4 after step 10, and
+the load path L1–L14 replacing steps 9–10; the chunked refill through `model_forward.window_put`;
+document schema 3 with `plane.source`, the `kv` object, and `timings.first_token_ns`;
+`scripts/kv_plane_reader.py` (a second implementation written from the specification, driven as a
+subprocess, 13 reject kinds); `scripts/layer_forward_fixture.py`'s `kv_container` (a **third**
+implementation) plus 39 mutants, an honest short-prompt container, a zero-identity pack, and a
+non-degenerate pack source-identity record; the fifth smoke block's 55 new cases;
+`scripts/run-decode-step`'s save → separate-process load → compare leg with the determinism, `du`,
+and TTFT-proxy legs; roadmap item 29, `docs/align-development.md`, and client lines under Align
+Requests 21, 29, 30, 31, 38, 39, and 49 including **one correction to Request 31's own forward
+text**.
+
+**The review repair added four rules to the format, and they are contract additions rather than bug
+fixes** (spec section 11.4): the **canonical region layout** is now enforced by the arm as well as
+the reader (`R6_KV_REGION("layout")`); **inter-region padding must be zero** in the arm too
+(`R6_KV_RESERVED("padding")`, and no digest covers the gaps); `MAX_KV_PLANE_BYTES` and
+`MAX_KV_LOGITS_BYTES` are re-checked **on load** ahead of the length comparison (`R6_KV_TOO_LARGE`);
+and a **thirty-two-zero-byte pack identity** is refused rather than compared
+(`R6_KV_IDENTITY("pack_absent")`). Spec section 5.2.1 is the rule-by-rule arm-to-reader parity
+table: three asymmetries survive and all three are stated — `ZEROTAIL` by design, `pack_absent`
+because its subject is the pack, and two places where the two implementations refuse the same file
+and only the name differs.
+
+**The `Makefile` is byte-untouched** — no target, no `.PHONY` word, no build-list entry;
+`src/kv_plane.align` enters through `src/decode_step.align`'s import graph — so aggregate
+membership and check topology are unchanged by construction. `src/ggml_ffi.align`,
+`scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`, `scripts/build-ggml-shim`, and
+`src/ggml_spike.align` are **byte-unchanged**: the refill's only crossing is
+`align_ggml_window_copy`, which shipped with R5B, and every new refusal is reachable from a
+malformed file rather than from a forced compute failure, so this capability needs **no new forced
+shim build**.
+
+**Goldens.** `scripts/decode-step-golden.jsonl` moves — every row to schema 3, plus 55 new rows, 52
+becoming 107. `scripts/layer-forward-golden.jsonl`, `scripts/model-forward-golden.jsonl`,
+`scripts/gpu-forward-golden.jsonl`, `scripts/moe-layer-forward-golden.jsonl`, and
+`scripts/ggml-spike-golden.jsonl` are **byte-unchanged**, verified by regenerating all five and
+observing no diff — which is the check that the new `Outcome` fields and the fixture's new pack
+source record moved no other arm's document.
+
+**Oracle Q's exclusion list is sixteen groups, eight more than the design drafted, and the reason is
+recorded.** The design named `kv`, `plane.source`, `plane.readback_ns`, `plane.upload_ns`, `graph`,
+`schedule`, `timings`, and `lifetime`. An empirical diff of a save-run document against a load-run
+document found eight more keys that differ: `pack.reader_pread_count`, `pack.reader_bytes_read`,
+`head.node_count`, `head.pread_ns`, `head.compute_ns`, `window.reuse_count`,
+`window.member_placements`, and the `reference` block. Seven are counts of work the load path did
+not do; the eighth is a **verdict** — `reference.verdict`, whose byte comparison against the source
+GGUF lives in the prefill pass, so a load run performs none of it and now publishes `"-"` rather
+than claiming `IDENTICAL` over zero comparisons. That is a public field's behaviour changing, not
+only a test exclusion, and the qualification asserts it positively on the save run. What stays
+**inside** the comparison is unchanged and is the point: `decode` in full, every `steps[]` object,
+`plane.roundtrip_*`, `output`, `oracle_logits`, `oracle_decode`, `model`, `selection`, and `abi`.
+
+**Six mutants were injected and all six die under `gmake layer-forward-smoke`**: a wrong pack
+identity accepted, the plane digest skipped, the plane read offset off by four, the logits region
+not persisted, a truncated file accepted, and the independent reader accepting a flipped reserved
+byte. The last is the one that matters most — it fails in the reader, on a file the arm refuses
+correctly.
+
+**Verification checkpoint** (repair head). `gmake build`, `gmake check` (31 units), `gmake fmt`,
+`gmake format-check`, `git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
+`gmake layer-forward-smoke` (all five blocks; **107** documented decode-step cases reaching 40
+codes; the akvp block's 51 refusal rows over 13 reject kinds) pass.
+
+`gmake decode-step-qualification` **exits 0** on the real model at `N = 16`, 10 min 41 s (641 s) of
+the 1800 s cap. It ran **twice** — once at the implementation head and once at the repair head,
+which adds four refusals to the load path — and every correctness value reproduced exactly: the same
+64 ids, the same four container digests, the same byte counts and verdicts, only the timings moving.
+Instruments: `ALIGN_LLM_LLAMA_DEBUG=/opt/homebrew/bin/llama-debug`, the **pinned Homebrew build**
+`version: 0.2.0 (build 10566, commit bb4caa754)`, and the R2c-patched `llama-eval-callback` from the
+`r2c-v2` cache.
+
+**Every rule this capability owns passes on all four prompts**: oracle Q `IDENTICAL`, gate G `PASS`
+on the load path, oracle B `IDENTICAL` over 26,607,616 B (`T = 6`) and 21,102,592 B (`T = 3`) on the
+load path, oracle C′ byte-identical at `k ∈ {1, 8, 16}` on the load path, containers of exactly
+29,970,432 B that `du` confirms are dense, and three writes per prompt — one under a perturbed
+environment — producing one digest. **`oracle_logits.verdict` is `IDENTICAL` and `byte_identical` on
+all four prompts on both paths**, so gate G1 holds unconditionally.
+
+The only `FAIL` in the run is oracle A′ on prompt 1 at step 1, `2391/1e-4` on `ffn_inp-27` — the
+exact value R6-STEP-N recorded, admitted under R6's rule because oracle C′ at `k = 1` is
+byte-identical, so the divergence is llama.cpp's decode-versus-prefill kernel selection and not this
+arm's arithmetic. Nothing about it is this capability's. `docs/specs/r6-kv-persist.md` section 5.6
+records every number; the earlier "this host has no `llama-debug`" narrative and its section 5.6.1
+are **deleted**, because they were wrong: the `r2c-v2` cache holds only `llama-eval-callback`, and
+that is not evidence about `llama-debug`.
+
+`gmake baseline-check` is `N/A` — no `Makefile` line and no build input moved — and
+must be re-checked at the publication head, because R5E moved `Makefile` and the baseline artifacts.
+
+**Merged.** PR #146, `origin/main` at `a6e545b`, carrying the final review minors `5c53ea1`. The
+comprehensive review's finding that the repair's four added refusals were contract additions rather
+than bug fixes is recorded in `docs/specs/r6-kv-persist.md` section 11.4. Nothing here is open.
+
+**Reproducing the qualification on this host.** Both instruments exist and neither is built here.
+`ALIGN_LLM_LLAMA_DEBUG` **must** be the pinned Homebrew `llama-debug`, `version: 0.2.0 (build 10566,
+commit bb4caa754)` at `/opt/homebrew/bin/llama-debug` — never a local source build, because
+`oracle_logits` is a byte comparison and a source build has been measured to disagree with the
+pinned build. `ALIGN_LLM_LLAMA_EVAL_CALLBACK` is the R2c-patched instrument under
+`~/.cache/align-llm/llama.cpp/r2c-v2/<revision>-<digest>/build/bin/llama-eval-callback`; **that
+cache holds `llama-eval-callback` and nothing else**, so its lack of a `llama-debug` says nothing
+about the host. `docs/align-development.md`'s `--decode-step` section states both as rules.
+
+**Blockers.** None. R6-STEP-N's publication is a sequencing dependency, not a blocker.
+
+**Constraints.** **No new Align request is proposed** and number **50** stays free — re-check after
+`git merge origin/main`, because this branch's register still lacks 47 and 48. Requests 21, 29, 30,
+31, 38, 39, and 49 each gain a cited client and **none changes status**. **No durability claim and
+no TTFT claim**: `timings.first_token_ns` and the runner's invocation wall clock are labelled
+diagnostics and no acceptance decision is taken from either. The R6 roadmap gate stays **unmet**.
+
+## Merged checkpoint: R6-STEP-N (2026-08-29)
+
+Merged as `3df063b` (PR #145). The record below is the branch's own.
 
 Branch `agent/r6-step-n`, in publication. **Three commits and nothing uncommitted:** `a9c6161` is
 the capability, `6ca1eef` is the consolidated repair of the two disjoint comprehensive reviews'
@@ -365,7 +667,9 @@ on ids, not text, and the one place text would help — the external `llama-debu
 stays hand-measured exactly as R6 left it. Requests 41 and 49 each gain a cited client and no
 workaround is built for either. No hypothetical surface is consumed anywhere.
 
-## Previously active: R6-DECODE-KV-STEP1 (2026-08-29)
+## Merged checkpoint: R6-DECODE-KV-STEP1 (2026-08-29)
+
+Merged as `d9a91e4` (PR #144). The record below is the branch's own.
 
 Branch `agent/r6-decode-kv-step1`, started from `main` at `c21b9e4` and **merged** twice rather than
 rebased, so its recorded commits stay reachable: with `main` `76246f3` (R3-DECODE-RESIDENCY, PR #142)

@@ -532,9 +532,77 @@ The current forward delivery order is:
     invalidation, and weights re-read once per step, does not answer it; the gate stays unmet and
     the next capability toward it is resident weights.
 
-> Items 29 (`R6-KV-PERSIST`) and 30 (`R6-RESIDENT-WEIGHTS`) are added on the Track B branches and
-> are not yet on this branch's base, `main` `3df063b`. Item 31 below is numbered on the assumption
-> that both land first; the number is corrected at reconciliation if that changes.
+29. **R6-KV-PERSIST — the KV plane persisted to disk and reloaded in a fresh process.** Design and
+    results in [`r6-kv-persist.md`](r6-kv-persist.md). Items 27 and 28 build a correct KV plane and
+    throw it away when the process exits, so every invocation on the same prompt recomputes the
+    prefill. This capability ships the first of the five mechanisms the R6 gate lists — **session
+    KV** — and nothing else: `--decode-step` gains `KV_SAVE` and `KV_LOAD` operands, and a new
+    `akvp` v1 container holds the prefill plane, the prompt's token ids, the prefill's last-position
+    logit vector, and an identity record binding all three to the exact pack, geometry, width, and
+    plane layout that produced them. **Every mismatch is a refusal, never a silent re-prefill**:
+    nineteen `R6_KV_*` codes plus item 27's own `R6_KV_WIDTH`, in a stated validation order,
+    cheapest first, so a wrong file costs 192 bytes and one `fstat` rather than 29 MB. Acceptance is
+    that the two paths are the same run — a separate process loading a saved plane decodes the same
+    `N` ids and publishes a byte-identical document outside a named exclusion list, with item 28's
+    gate G, oracle B, and oracle C′ carried forward and asserted on both processes, and with the
+    writer's determinism proved by triple-write digest equality — including under a perturbed
+    environment — rather than by a checked-in hex golden. The container's model identity is the
+    **pack's** header-region digest and not the GGUF's, because `REFERENCE` is optional and a load
+    run may not have the model at all. Owner `gmake layer-forward-smoke`, whose fifth block gains a
+    save/load round trip, a 51-case refusal matrix over 13 independent reject kinds, and
+    `scripts/kv_plane_reader.py` — a complete second implementation of the format, written from the
+    specification and driven as a subprocess — plus a **third** implementation in
+    `scripts/layer_forward_fixture.py`, whose container the arm loads and decodes. Focused `gmake
+    decode-step-qualification`. **No TTFT claim.** The run reports `timings.first_token_ns` and the
+    invocation wall clock for prefill-then-decode against load-then-decode as a labelled
+    diagnostic. **What it leaves open:** the R6 gate asks that TTFT improve on repeated coding tasks
+    *sharing a prefix*. There is no prefix-sharing corpus, no key, no lookup, and no invalidation;
+    loading removes one prefill pass and keeps every per-step weight sweep, which item 28 measured
+    at 4.37 GB per step. The gate stays unmet and the next capability toward it is prefix-keyed
+    lookup on top of resident weights.
+
+30. **R6-RESIDENT-WEIGHTS — the weight set held resident across decode steps.** Design and results
+    in [`r6-resident-weights.md`](r6-resident-weights.md). Item 28 measured the term that dominates
+    a decode loop: **one 4.37 GB pass over the pack per decode step**, 83 % of a sixteen-step run's
+    elapsed time, re-reading weights the previous step already read. This capability removes that
+    term. `--decode-step` gains a fourteenth operand, `RESIDENT` (`-` or `weights`); in resident
+    mode the whole weight set — every layer, the head, and the **full** `token_embd.weight` table —
+    is held in one Align-owned arena of 4,677,533,696 B on the reference model, filled once in 4,669
+    one-mebibyte `pread`s, wrapped once as one `ggml_backend_buffer`, and read by every graph
+    through `ggml_backend_tensor_alloc` at arena offsets. **A decode step then reads zero pack bytes
+    and copies 2,016 host bytes.** No new shim symbol and no new Align surface: the zero-copy
+    placement path has been the primary weight path since item 14 (R4.5). The primary metric is
+    `weights.step_pack_bytes`, a counter and not a clock: **69,928,975,872 → 0** at `N = 16`.
+    Measured on the reference host in one session, three runs per point with the two legs
+    **interleaved**, baseline re-taken back to back: elapsed 17.112 s → 10.049 s, **412,763 ppm** of
+    the fixed task against a 150,000 ppm floor this capability's own document defines, because no
+    document owned Track B decode performance before it — **MET** at 2.75× the floor, and 70 % of
+    the 586,000 ppm ceiling recorded in advance, which the runner reports as a shortfall with its
+    cause (the one-time fill) rather than as a ceiling-estimation miss:
+    `docs/specs/c8-speed-first.md` section 1 reserves that label for a result **far** below its
+    ceiling, and its own worked precedent is 41 % of one. The whole qualification was taken four
+    times, at 412,763 / 449,779 / 507,887 / 511,125 ppm; the first is the interleaved run and the
+    conservative reading, and it landed 37,016 ppm below the lowest blocked run and 98,362 below the
+    highest — a range comparable to their own 61,346 ppm spread, so with one interleaved run the
+    magnitude is not separated from noise. What the re-measurement establishes is that the
+    review-found order confound is removed, and that the direction argued from thermal drift was not
+    confirmed. The byte metric was identical in every run and
+    the clock is the secondary metric for exactly that reason. Residency is **slower** at
+    `N = 1`, a coin toss at `N = 4` where the runs disagree about the sign, and decisive from 16 up
+    — stated rather than hidden, and the practical reason the operand is opt-in. Correctness is free: the resident and streamed
+    documents are byte-identical outside the `weights` object, the two pack counters, and the
+    per-graph ggml buffer pair the run-scope hoist moves, so every decoded id, gate G, oracle A′,
+    oracle B, and the logits oracle are re-run on the resident leg rather than inferred. The
+    hoisted wrap is the ownership boundary item 17 refused once; the invariant it weakens is
+    re-established at run scope in its own counter pair rather than loosened. CPU only; the Metal
+    arm keeps the per-graph wrap item 17's abort requires. **Opt-in, because a host that cannot hold
+    the arena aborts rather than refuses** (Request 35), so `scripts/run-decode-step` preflights
+    physical memory and prints one `N/A` line below 12 GiB. Peak footprint rises from 504 MB to
+    4.74 GB, which is the point of the capability and is published as `weights.resident_bytes`.
+    Owner `gmake layer-forward-smoke`, whose fifth block gains nine cases including oracle R at one
+    and three steps and a forced build in which a resident run fails with its arena live; focused `gmake decode-step-qualification`. **The R6 gate is still unmet:** this
+    removes the per-step weight sweep item 29 left in place, and prefix-keyed lookup on top of it is
+    the next capability toward the TTFT gate.
 
 31. **C4-REPAIR-MEASURED — one bounded model repair attempt in the provider-backed measurement
     path.** The first Track A capability since the C6-MEASURED wave, and the one that closes C4's
@@ -1490,7 +1558,9 @@ policyの測定にはmulti-prefill sessionかdecodeが必要である。
 **未達。** item 27（R6-DECODE-KV-STEP1）は`n_past = T`の1 decode stepとAlign所有のKV planeを
 正しさの観点で実装したものであり、session KV・prefix KV・DRAM/NVMe tier・invalidationのいずれも
 持たず、TTFTの主張もしない。このgateを満たすには少なくともstep 2とdecode loop、そのうえで
-prefix再利用とresidency policyが必要である。
+prefix再利用とresidency policyが必要である。item 29（R6-KV-PERSIST）はKV planeをディスクに
+永続化し別プロセスで再読み込みする——5項目のうちsession KVのみ——が、prefix共有・DRAM/NVMe tier・
+invalidationは持たず、TTFTの主張もしない。
 
 **順序についての実測由来の結論（2026-08-28、R3-DECODE-RESIDENCY、roadmap item 25）。**
 R6はexpert residencyのruntime実装より**先**に着手してよい。実際の運用に最も近いmixed arm

@@ -43,6 +43,10 @@ pub MAX_TENSOR_ALIGNMENT := 64
 // cannot ask the process for a terabyte.
 pub MAX_WINDOW_BYTES := 8589934592
 
+// The bound the non-wrapping helpers below `plan_resident` check against, the same value and the
+// same spelling `src/kv_plane.align:60` uses.
+I64_MAX := 9223372036854775807
+
 // Section 3.7's logits thresholds, fixed by section 2.6's and 2.7's measurements **before** the
 // qualification existed. At the reconciliation width the contract is byte-identity and this bound
 // is not consulted; at the runtime width the bound is 1.8x the measured worst case of 2,738
@@ -402,9 +406,10 @@ pub fn empty_top() -> TopColumns = TopColumns { index: empty_array(), bits: empt
 
 // R6-STEP-N (`docs/specs/r6-step-n.md` section 4.4). One row per **completed** decode step, in the
 // shape `steps[]` is rendered from. It is a column set and not a set of `Outcome` fields for that
-// section's reason: `Outcome` is 1,384 bytes at this head — R6 section 10.6 recorded 1,328 and the
-// seven loop scalars below add 56 — and it is passed by value at some twenty-five call sites, so
-// per-step scalars would make it grow with an operand.
+// section's reason: `Outcome` is 1,608 bytes at this head — R6 section 10.6 recorded 1,328, the
+// seven loop scalars below add 56, and R6-KV-PERSIST's `kv` object and `plane.source` add 224 — and
+// it is passed by value at some twenty-five call sites, so per-step scalars would make it grow with
+// an operand.
 //
 // **`sha256` and `worst_node` are concatenated strings, not `array<str>`.** Indexing an array of a
 // Move element type is Align Request 22 and stays unconsumed here, so the digests are one string of
@@ -691,6 +696,53 @@ pub Outcome {
   decode_oracle_steps_compared: i64,
   decode_oracle_worst_step: i64,
   decode_oracle_graph_last: i64,
+  // R6-KV-PERSIST section 2.8's `kv` object and `plane.source`, at document schema 3. As with every
+  // field above, `--model-forward`, `--model-forward-gpu`, and `--layer-forward` fill none of them
+  // and **emit** none of them: their renderers do not name one, so those arms' goldens are
+  // byte-unchanged by this capability as a mechanical fact rather than as a claim.
+  // `src/decode_step.align` owns their meaning and is their only writer.
+  kv_save_requested: bool,
+  kv_load_requested: bool,
+  kv_verdict: i64,
+  kv_destination: i64,
+  kv_format_version: i64,
+  kv_plane_layout_version: i64,
+  kv_total_bytes: i64,
+  kv_header_bytes: i64,
+  kv_plane_offset: i64,
+  kv_plane_bytes: i64,
+  kv_logits_bytes: i64,
+  kv_columns_persisted: i64,
+  kv_token_count: i64,
+  kv_n_vocab: i64,
+  kv_prefill_argmax: i64,
+  kv_pack_total_bytes: i64,
+  kv_source_sha256: string,
+  kv_geometry_sha256: string,
+  kv_tokens_sha256: string,
+  kv_logits_sha256: string,
+  kv_plane_sha256: string,
+  kv_write_ns: i64,
+  kv_read_ns: i64,
+  plane_source: i64,
+  // Section 1.4's labelled diagnostic: `execute`'s first `time.instant()` to the instant step 1's
+  // argmax is available. It is **reported and never claimed**; `normalize` zeroes it.
+  first_token_ns: i64,
+
+  // R6-RESIDENT-WEIGHTS section 3.5's `weights` object. `resident_mode` is published in **every**
+  // document, including error documents, so the mode a run took is never implicit in the output.
+  // `step_pack_bytes` is the capability's primary metric and is deliberately not normalized.
+  resident_mode: bool,
+  resident_bytes: i64,
+  resident_fill_ns: i64,
+  resident_fill_pread_count: i64,
+  resident_fill_bytes: i64,
+  step_pack_bytes: i64,
+  // Section 4.3's separate counter pair. The run-scope wrap is counted here rather than in
+  // `ggml_buffers_created`/`ggml_buffers_freed`, so the per-graph balance check keeps its exact
+  // meaning instead of being loosened by a hoist.
+  resident_wraps_created: i64,
+  resident_wraps_freed: i64,
 
   tensor_alignment: i64,
   table_drift: i64,
@@ -867,6 +919,39 @@ pub fn empty_outcome() -> Outcome = Outcome {
   decode_oracle_steps_compared: 0,
   decode_oracle_worst_step: -1,
   decode_oracle_graph_last: 0,
+  kv_save_requested: false,
+  kv_load_requested: false,
+  kv_verdict: 0,
+  kv_destination: 0,
+  kv_format_version: 0,
+  kv_plane_layout_version: 0,
+  kv_total_bytes: 0,
+  kv_header_bytes: 0,
+  kv_plane_offset: 0,
+  kv_plane_bytes: 0,
+  kv_logits_bytes: 0,
+  kv_columns_persisted: -1,
+  kv_token_count: -1,
+  kv_n_vocab: -1,
+  kv_prefill_argmax: -1,
+  kv_pack_total_bytes: 0,
+  kv_source_sha256: "".clone(),
+  kv_geometry_sha256: "".clone(),
+  kv_tokens_sha256: "".clone(),
+  kv_logits_sha256: "".clone(),
+  kv_plane_sha256: "".clone(),
+  kv_write_ns: 0,
+  kv_read_ns: 0,
+  plane_source: 0,
+  first_token_ns: 0,
+  resident_mode: false,
+  resident_bytes: 0,
+  resident_fill_ns: 0,
+  resident_fill_pread_count: 0,
+  resident_fill_bytes: 0,
+  step_pack_bytes: 0,
+  resident_wraps_created: 0,
+  resident_wraps_freed: 0,
   tensor_alignment: 0,
   table_drift: -1,
   slot_magic_ok: false,
@@ -3103,6 +3188,166 @@ pub fn stage_window(
   return peak
 }
 
+// ---------------------------------------------------------------------------------------------
+// R6-RESIDENT-WEIGHTS — the resident arena's layout (section 3.2)
+//
+// `stage_window` above takes a **maximum** over the graphs, because the streamed window holds one
+// graph at a time. Residency takes the **sum**, because every graph's weights are live at once, and
+// records each graph's own base offset so that a graph reads its members through an ordinary
+// interior slice at exactly the offsets `plan_layer_members` already computed. That is the whole
+// difference: `graph_weights` and `graph_identity` are byte-unchanged and keep working against a
+// sub-slice whose own base moves.
+//
+// The layout is `[token_embd.weight][embed stage][layer 0 .. layer n_layer-1][head]`. Every region
+// starts at a `MAX_TENSOR_ALIGNMENT` boundary, so a graph's base is aligned whenever the arena's
+// interior is, which is what `graph_alignment` and `align_ggml_tensor_place` both require.
+//
+// The full `token_embd.weight` table is resident, not just the rows a graph gathers: section 3.3
+// records why. The gather's source offset depends on the token, so leaving the table out would
+// leave a token-dependent `pread` in every decode step and make "zero pack bytes per step" false.
+// ---------------------------------------------------------------------------------------------
+
+pub ResidentLayout {
+  // The interior size, and the number `R6_RESIDENT_BUDGET` is checked against.
+  bytes: i64,
+  // The full embedding table, always at interior offset zero.
+  table_at: i64,
+  table_bytes: i64,
+  // The gathered-row staging region, which is `base[0]`.
+  stage_bytes: i64,
+  // One entry per graph, in schedule order: `0` is the embedding graph, `1 + layer` is a layer, and
+  // `1 + n_layer` is the head. In streaming mode every base is `0` and every span is the whole
+  // window, so both modes travel through one code path.
+  base: array<i64>,
+  span: array<i64>,
+}
+
+pub fn empty_resident_layout() -> ResidentLayout = ResidentLayout {
+  bytes: 0,
+  table_at: 0,
+  table_bytes: 0,
+  stage_bytes: 0,
+  base: empty_array(),
+  span: empty_array(),
+}
+
+// The streamed window, expressed in the same shape: one region, reused by every graph.
+pub fn stream_layout(window_bytes: i64, n_layer: i64) -> ResidentLayout {
+  mut base: array_builder<i64> := array_builder()
+  mut span: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= n_layer + 2 { break }
+    base.push(0)
+    span.push(window_bytes)
+    at = at + 1
+  }
+  return ResidentLayout {
+    bytes: window_bytes,
+    table_at: 0,
+    table_bytes: 0,
+    stage_bytes: 0,
+    base: base.build(),
+    span: span.build(),
+  }
+}
+
+// Section 11.1 correction 14. `i64` arithmetic wraps silently, and every other module that computes
+// a size from a container's own numbers (`src/kv_plane.align:130`, `src/alignpack_read.align:197`,
+// `src/alignpack.align:316`) checks the product before it exists rather than the result after. The
+// layout below is computed from `nbytes` fields the pack supplies, so it uses the same idiom: a
+// term that cannot be represented becomes `-1`, `-1` poisons every later term, and `execute`'s
+// `region_bytes <= 0` guard refuses the run with `R6_RESIDENT_BUDGET` **before any allocation**.
+fn mul_checked(left: i64, right: i64) -> i64 {
+  if left < 0 || right < 0 { return -1 }
+  if right == 0 { return 0 }
+  if left > I64_MAX / right { return -1 }
+  return left * right
+}
+
+fn add_checked(left: i64, right: i64) -> i64 {
+  if left < 0 || right < 0 { return -1 }
+  if left > I64_MAX - right { return -1 }
+  return left + right
+}
+
+fn align_up_checked(value: i64, alignment: i64) -> i64 {
+  if value < 0 { return -1 }
+  if alignment <= 1 { return value }
+  remainder := value % alignment
+  if remainder == 0 { return value }
+  return add_checked(value, alignment - remainder)
+}
+
+pub fn plan_resident(borrow p: Plan, borrow e: Ends, block_align: i64) -> ResidentLayout {
+  mut base: array_builder<i64> := array_builder()
+  mut span: array_builder<i64> := array_builder()
+  step := if block_align > MAX_TENSOR_ALIGNMENT { block_align } else { MAX_TENSOR_ALIGNMENT }
+  table_bytes := align_up_checked(e.embed_nbytes, step)
+  // `MAX_PREFILL_TOKENS` rows and not `tokens`: the stage is the same size on every run of one
+  // model, so the arena's size is a function of the pack alone and two runs at different prompt
+  // lengths reserve the same bytes.
+  stage_bytes := align_up_checked(
+    mul_checked(e.row_bytes, layer_qwen2.MAX_PREFILL_TOKENS), step)
+  mut at := table_bytes
+  base.push(at)
+  span.push(stage_bytes)
+  at = add_checked(at, stage_bytes)
+  mut layer := 0
+  loop {
+    if layer >= p.n_layer { break }
+    extent := align_up_checked(p.layer_window_bytes[layer], step)
+    base.push(at)
+    span.push(extent)
+    at = add_checked(at, extent)
+    layer = layer + 1
+  }
+  head := align_up_checked(e.head_window_bytes, step)
+  base.push(at)
+  span.push(head)
+  at = add_checked(at, head)
+  return ResidentLayout {
+    bytes: at,
+    table_at: 0,
+    table_bytes: table_bytes,
+    stage_bytes: stage_bytes,
+    base: base.build(),
+    span: span.build(),
+  }
+}
+
+// Section 3.3. One embedding row, copied out of the resident table into the arena's staging region.
+// Source and destination are both inside the arena, are disjoint by construction, and no pack byte
+// is read: this is the whole of what a resident decode step does to reach its token's row.
+pub fn stage_embed_row(
+  borrow window: slice<u8>,
+  table_at: i64,
+  stage_at: i64,
+  stage_bytes: i64,
+  row_bytes: i64,
+  n_vocab: i64,
+  token: i64,
+  slot: i64,
+) -> Result<(), alignpack_read.Fault> {
+  if token < 0 || token >= n_vocab || slot < 0 || row_bytes <= 0 || stage_bytes <= 0 {
+    return Err(pack_fault("R5_SHAPE", labelled("token_embd", token)))
+  }
+  from := table_at + token * row_bytes
+  // Section 11.1 correction 13. The destination is bounded by the **stage's own span**, not by the
+  // whole arena: `stage_at + slot * row_bytes` is inside the arena for every slot up to the head,
+  // so bounding against `window.len()` would have let a slot past `MAX_PREFILL_TOKENS` write over a
+  // layer's resident weights instead of being refused. `into + row_bytes > stage_bytes` is the
+  // check the region actually owns, and `window_put` below keeps the arena-wide one underneath it.
+  into := slot * row_bytes
+  if from < 0 || from + row_bytes > window.len()
+    || into < 0 || into > stage_bytes - row_bytes
+    || stage_at < 0 || stage_at > window.len() - stage_bytes {
+    return Err(pack_fault("R5_SHAPE", labelled("token_embd", token)))
+  }
+  source := window[from..from + row_bytes]
+  return window_put(window, stage_at + into, source, row_bytes, "token_embd")
+}
+
 // Step 22, and section 5.6's second risk: a Q6_K `output.weight` discovered unsupported after four
 // gigabytes of I/O is a failure this design refuses to be able to have. Every member of every block
 // the run will read is type-checked **before the first read**.
@@ -3289,6 +3534,11 @@ pub PlanOutcome {
   output_ggml_type: i64,
   norm_nbytes: i64,
   out_nbytes: i64,
+  // R6-KV-PERSIST section 2.4. The offset of the pack's own source-identity record, carried so that
+  // `src/decode_step.align` can read the model identity the `akvp` container binds to — one bounded
+  // 32-byte `pread` at a header-declared offset — without opening the container a second time. No
+  // renderer names it and no document publishes it, so every R5A/R5B/R5C golden is unmoved.
+  source_record_offset: i64,
 }
 
 pub fn empty_plan_outcome() -> PlanOutcome = PlanOutcome {
@@ -3316,6 +3566,7 @@ pub fn empty_plan_outcome() -> PlanOutcome = PlanOutcome {
   output_ggml_type: -1,
   norm_nbytes: 0,
   out_nbytes: 0,
+  source_record_offset: -1,
 }
 
 fn plan_failure(borrow f: alignpack_read.Fault) -> PlanOutcome {
@@ -3417,6 +3668,7 @@ pub fn stage_plan_owned(
     output_ggml_type: ends.out_type,
     norm_nbytes: ends.norm_nbytes,
     out_nbytes: ends.out_nbytes,
+    source_record_offset: index.source_record_offset,
   }
 }
 

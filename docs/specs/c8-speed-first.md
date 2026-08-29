@@ -8,6 +8,14 @@ and shipped Align prerequisite satisfied both section 12 re-entry conditions. Th
 is `docs/specs/c8-optional-targeted-stage.md`.
 This document owns performance claims and acceptance measurements for C8 optimizations.
 
+**It does not own Track B decode performance, and something else now does.** Section 1's first
+sentence excludes model tokens per second, and the 2,000 ppm floor below is calibrated on a ~46 ms
+coder fixed task that has no relationship to a multi-second decode loop. `R6-RESIDENT-WEIGHTS`
+(`docs/specs/r6-resident-weights.md` section 3.4) took that ownership for Track B decode time and
+defines its own baseline, its own 150,000 ppm floor, and the ceiling-miss threshold it reads out of
+this document's section 1. A Track B performance capability records its ceiling against that
+document, not this one; the ppm-floor **rule** below is shared, the **numbers** are not.
+
 ## 1. Metric and scope
 
 C8 optimizes time to a passing patch, not model tokens per second or an isolated helper call. Each

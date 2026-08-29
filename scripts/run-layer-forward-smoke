@@ -48,6 +48,10 @@ cleanup() {
   if [ "${shim_built}" = 1 ]; then
     ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null 2>&1 || true
   fi
+  # R6-KV-PERSIST section 6 risk 2. `ds-kv-save-unwritable` needs a `0555` directory, and a
+  # directory with no write bit cannot have its entries removed — so the mode is restored before
+  # `rm -rf` rather than after a leaked tree is discovered. It is a no-op on every other run.
+  chmod -R u+rwX "${work_dir}" >/dev/null 2>&1 || true
   rm -rf "${work_dir}"
   exit "${status}"
 }
@@ -3453,6 +3457,7 @@ PY
 DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
 LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
 python3 - "${root_dir}" "${work_dir}" <<'PY'
+import hashlib
 import json
 import os
 import subprocess
@@ -3484,6 +3489,183 @@ SHORT_TRANSCRIPT = path("model-decode-transcript-short-for-steps.txt")
 LOGITS = path("model-logits.bin")
 WIDTH = "8"
 STEPS = "3"
+
+# R6-RESIDENT-WEIGHTS section 5.2's staging-boundary case. `MAX_PREFILL_TOKENS` is 32 and this
+# geometry's `n_vocab` is 32, so `0..31` is both the longest prompt the arm admits and a prompt
+# whose every id is in vocabulary — and it stages 32 **distinct** embedding rows rather than one row
+# thirty-two times, so the highest slot carries bytes that belong only to it. The width is `T + N`
+# exactly, the minimum `--decode-step` accepts.
+STAGE_FULL = "ds-resident-stage-full"
+STAGE_FULL_TOKENS = ",".join(str(identifier) for identifier in range(32))
+STAGE_FULL_WIDTH = "33"
+STAGE_FULL_STEPS = "1"
+
+# R6-KV-PERSIST section 5.1. Every container this block writes lands under the runner's own
+# `mktemp -d` tree: the checkout is read-only under the fresh worker and nothing is written inside
+# it. Section 6 risk 2's whole member list is closed here — physical paths, a refusal before any
+# reclaim trap, `-L` as well as `-e`, and the `chmod -R u+rwX` the shell trap above performs.
+READER = os.path.join(root_dir, "scripts", "kv_plane_reader.py")
+KV_SAVE = path("kv-saved.akvp")
+KV_DETERMINISM_A = path("kv-determinism-a.akvp")
+KV_DETERMINISM_B = path("kv-determinism-b.akvp")
+KV_DETERMINISM_C = path("kv-determinism-c.akvp")
+KV_OCCUPIED = path("kv-occupied.akvp")
+KV_OCCUPIED_LINK = path("kv-occupied-link.akvp")
+KV_READONLY_DIR = path("kv-readonly")
+KV_UNWRITABLE = os.path.join(KV_READONLY_DIR, "kv.akvp")
+KV_ABSENT = path("kv-absent.akvp")
+KV_GOOD = path("model-kv-good.akvp")
+KV_FOREIGN = path("model-kv-foreign-geometry.akvp")
+KV_HUGE = geom("geometry-kv-too-large")
+KV_ZERO_IDENTITY_PACK = path("model-pack-zero-identity.alignpack")
+KV_IDENTITY_ABSENT_DEST = path("kv-identity-absent.akvp")
+
+
+def kv(mutation):
+    return path("model-kv-%s.akvp" % mutation)
+
+
+def ds(save="-", load="-", width=WIDTH, geometry=GEOM, steps=STEPS, transcript=None, pack=None,
+       resident=None, tokens=None):
+    """One thirteen-operand invocation, or a fourteen-operand one when `resident` is given. Every kv
+    case is thirteen operands so that the two directions differ in nothing but which position holds
+    the path; every R6-RESIDENT-WEIGHTS case is the *same* thirteen plus one operand, so the
+    streamed and resident legs differ in nothing but that operand. `pack` is R6-KV-PERSIST's own
+    axis: a container whose identity record the arm must refuse. `tokens` is the staging boundary's
+    axis and nothing else uses it: every other case runs this block's three-token prompt."""
+    operands = [ARM, PACK if pack is None else pack, geometry,
+                TOKENS if tokens is None else tokens, "-", SOURCE,
+                TRANSCRIPT if transcript is None else transcript, width, "-", steps, save, load]
+    if resident is not None:
+        operands.append(resident)
+    return operands
+
+
+# Section 5.2's refusal matrix, as data: the case name, the operands, the arm's exact code and
+# exact `error_detail`, and the coarse kind `scripts/kv_plane_reader.py` must independently reach on
+# the same file. `None` in the reader column is a case with no container to read.
+KV_REFUSALS = [
+    ("ds-kv-both", ds(KV_SAVE, KV_GOOD), "R6_KV_ARGS", "kv[save+load]", None, None),
+    # Precedence: 2b precedes every path-content check, so a run naming two paths is refused before
+    # either is opened — including when the load path names nothing at all.
+    ("ds-kv-both-and-missing", ds(KV_SAVE, KV_ABSENT), "R6_KV_ARGS", "kv[save+load]", None, None),
+    ("ds-kv-save-exists", ds(KV_OCCUPIED), "R6_KV_EXISTS", "<path>", None, None),
+    ("ds-kv-save-exists-symlink", ds(KV_OCCUPIED_LINK), "R6_KV_EXISTS", "<path>", None, None),
+    ("ds-kv-save-unwritable", ds(KV_UNWRITABLE), "R6_KV_UNWRITABLE", "Denied", None, None),
+    ("ds-kv-too-large", ds(KV_SAVE, geometry=KV_HUGE, width="4096"),
+     "R6_KV_TOO_LARGE", "plane[537001984]", None, None),
+    # Precedence: an unpersistable configuration reports why it can never be persisted, not that its
+    # destination happens to be taken.
+    ("ds-kv-too-large-and-exists", ds(KV_OCCUPIED, geometry=KV_HUGE, width="4096"),
+     "R6_KV_TOO_LARGE", "plane[537001984]", None, None),
+    # Section 2.4. The pack's source-identity digest is thirty-two zero bytes, so it cannot
+    # distinguish one model from another and `R6_KV_IDENTITY("pack")` would later compare equal to
+    # it. Step 7 refuses the degenerate value on **both** directions; this is the save direction, so
+    # the assertion below that no container was written is the one that matters.
+    ("ds-kv-pack-identity-absent",
+     ds(KV_IDENTITY_ABSENT_DEST, pack=KV_ZERO_IDENTITY_PACK),
+     "R6_KV_IDENTITY", "pack_absent", None, None),
+    ("ds-kv-load-missing", ds("-", KV_ABSENT), "R6_KV_UNREADABLE", "NotFound", None, None),
+    ("ds-kv-truncated-header", ds("-", kv("truncated-header")),
+     "R6_KV_TRUNCATED", "header", kv("truncated-header"), "TRUNCATED"),
+    # Precedence: L2 precedes L3, so a hundred-byte file with a wrong magic is short before it is
+    # foreign.
+    ("ds-kv-magic-and-truncated", ds("-", kv("magic-and-truncated")),
+     "R6_KV_TRUNCATED", "header", kv("magic-and-truncated"), "TRUNCATED"),
+    ("ds-kv-magic", ds("-", kv("magic")), "R6_KV_MAGIC", "\\xbe\\x4b\\x56\\x50",
+     kv("magic"), "MAGIC"),
+    ("ds-kv-version", ds("-", kv("version")), "R6_KV_VERSION", "2", kv("version"), "VERSION"),
+    ("ds-kv-header-bytes", ds("-", kv("header-bytes")), "R6_KV_HEADER", "header_bytes",
+     kv("header-bytes"), "HEADER"),
+    ("ds-kv-identity-record-bytes", ds("-", kv("identity-record-bytes")), "R6_KV_HEADER",
+     "identity_record_bytes", kv("identity-record-bytes"), "HEADER"),
+    ("ds-kv-element-type", ds("-", kv("element-type")), "R6_KV_HEADER", "element_type",
+     kv("element-type"), "HEADER"),
+    ("ds-kv-layout-version", ds("-", kv("layout-version")), "R6_KV_HEADER", "plane_layout_version",
+     kv("layout-version"), "HEADER"),
+    ("ds-kv-plane-align", ds("-", kv("plane-align")), "R6_KV_HEADER", "plane_align",
+     kv("plane-align"), "HEADER"),
+    ("ds-kv-endian-probe", ds("-", kv("endian-probe")), "R6_KV_HEADER", "endian_probe",
+     kv("endian-probe"), "HEADER"),
+    ("ds-kv-doc-schema", ds("-", kv("doc-schema")), "R6_KV_HEADER", "document_schema_version",
+     kv("doc-schema"), "HEADER"),
+    ("ds-kv-high-bit", ds("-", kv("high-bit")), "R6_KV_HEADER", "plane_offset",
+     kv("high-bit"), "HEADER"),
+    ("ds-kv-flags", ds("-", kv("flags")), "R6_KV_RESERVED", "flags", kv("flags"), "RESERVED"),
+    ("ds-kv-reserved", ds("-", kv("reserved")), "R6_KV_RESERVED", "reserved",
+     kv("reserved"), "RESERVED"),
+    ("ds-kv-reserved-u32", ds("-", kv("reserved-u32")), "R6_KV_RESERVED", "reserved_u32",
+     kv("reserved-u32"), "RESERVED"),
+    ("ds-kv-identity-reserved", ds("-", kv("identity-reserved")), "R6_KV_RESERVED",
+     "identity_reserved", kv("identity-reserved"), "RESERVED"),
+    ("ds-kv-truncated-total", ds("-", kv("truncated-total")), "R6_KV_TRUNCATED", "4544!=4608",
+     kv("truncated-total"), "TRUNCATED"),
+    ("ds-kv-region-overlap", ds("-", kv("region-overlap")), "R6_KV_REGION", "identity",
+     kv("region-overlap"), "REGION"),
+    ("ds-kv-region-outside", ds("-", kv("region-outside")), "R6_KV_TRUNCATED", "plane",
+     kv("region-outside"), "REGION"),
+    ("ds-kv-region-misaligned", ds("-", kv("region-misaligned")), "R6_KV_REGION", "plane",
+     kv("region-misaligned"), "REGION"),
+    # Section 2.3.1's canonical layout, promoted to a rule both implementations enforce: the plane
+    # pushed one whole `plane_align` forward still satisfies containment, alignment, disjointness,
+    # and "the plane is last", and there is exactly one layout an `akvp` v1 container may have.
+    ("ds-kv-region-noncanonical", ds("-", kv("region-noncanonical")), "R6_KV_REGION", "layout",
+     kv("region-noncanonical"), "REGION"),
+    # Section 2.3's region-order property 4. **No digest covers the gaps**, so all five still
+    # recompute correctly on this file and the padding rule is the only thing that refuses it.
+    ("ds-kv-padding-nonzero", ds("-", kv("padding-nonzero")), "R6_KV_RESERVED", "padding",
+     kv("padding-nonzero"), "RESERVED"),
+    # The other side of `ds-kv-truncated-total`: a file **longer** than its own `total_bytes`.
+    ("ds-kv-longer-total", ds("-", kv("longer-total")), "R6_KV_TRUNCATED", "4672!=4608",
+     kv("longer-total"), "TRUNCATED"),
+    # Section 2.5's two remaining bounds on the **load** direction, where every one of the three
+    # numbers comes out of a file this process did not write. The reader reaches its own coarse
+    # `HEADER`, which is the kind it gives every declared-magnitude defect.
+    ("ds-kv-plane-too-large", ds("-", kv("plane-too-large")), "R6_KV_TOO_LARGE",
+     "plane[536870913]", kv("plane-too-large"), "HEADER"),
+    ("ds-kv-logits-too-large", ds("-", kv("logits-too-large")), "R6_KV_TOO_LARGE",
+     "logits[16777220]", kv("logits-too-large"), "HEADER"),
+    ("ds-kv-plane-not-last", ds("-", kv("plane-not-last")), "R6_KV_REGION", "plane",
+     kv("plane-not-last"), "REGION"),
+    ("ds-kv-geometry-layers", ds("-", kv("geometry-layers")), "R6_KV_GEOMETRY", "n_layer",
+     kv("geometry-layers"), "GEOMETRY"),
+    ("ds-kv-geometry-head-dim", ds("-", kv("geometry-head-dim")), "R6_KV_GEOMETRY", "head_dim",
+     kv("geometry-head-dim"), "GEOMETRY"),
+    ("ds-kv-geometry-plane-bytes", ds("-", kv("geometry-plane-bytes")), "R6_KV_GEOMETRY",
+     "plane_bytes", kv("geometry-plane-bytes"), "GEOMETRY"),
+    ("ds-kv-identity-pack", ds("-", kv("identity-pack")), "R6_KV_IDENTITY", "pack",
+     kv("identity-pack"), "IDENTITY"),
+    ("ds-kv-identity-pack-size", ds("-", kv("identity-pack-size")), "R6_KV_IDENTITY",
+     "pack_total_bytes", kv("identity-pack-size"), "IDENTITY"),
+    ("ds-kv-identity-geometry", ds("-", kv("identity-geometry")), "R6_KV_IDENTITY", "geometry",
+     kv("identity-geometry"), "IDENTITY"),
+    # The same refusal from a container written against a **different geometry document** rather
+    # than from a flipped byte: the flip proves the field is read, this proves it means what it
+    # says.
+    ("ds-kv-identity-foreign-geometry", ds("-", KV_FOREIGN), "R6_KV_IDENTITY", "geometry",
+     KV_FOREIGN, "IDENTITY"),
+    # L11 reuses R6's existing `R6_KV_WIDTH`: the condition is "the plane is not the width this run
+    # needs", and R6 already owns that sentence. The file is the good one; the **operand** differs.
+    ("ds-kv-width-mismatch", ds("-", KV_GOOD, width="16"), "R6_KV_WIDTH", "kv_width[8]!=[16]",
+     None, None),
+    ("ds-kv-tokens-count", ds("-", kv("tokens-count")), "R6_KV_TOKENS", "count[2]",
+     kv("tokens-count"), "TOKENS"),
+    ("ds-kv-tokens-id", ds("-", kv("tokens-id")), "R6_KV_TOKENS", "2", kv("tokens-id"), "TOKENS"),
+    ("ds-kv-digest-tokens", ds("-", kv("digest-tokens")), "R6_KV_DIGEST", "tokens",
+     kv("digest-tokens"), "DIGEST"),
+    ("ds-kv-npast", ds("-", kv("npast")), "R6_KV_NPAST", "columns[2]!=[3]", kv("npast"), "NPAST"),
+    ("ds-kv-argmax", ds("-", kv("argmax")), "R6_KV_HEADER", "prefill_argmax",
+     kv("argmax"), "ARGMAX"),
+    ("ds-kv-digest-logits", ds("-", kv("digest-logits")), "R6_KV_DIGEST", "logits",
+     kv("digest-logits"), "DIGEST"),
+    ("ds-kv-digest-plane", ds("-", kv("digest-plane")), "R6_KV_DIGEST", "plane",
+     kv("digest-plane"), "DIGEST"),
+    # The one row where the two implementations refuse for **different reasons** — the arm through
+    # the plane digest, the reader through its own zero-tail invariant — which is what proves the
+    # reader is not a transcription of the arm.
+    ("ds-kv-zero-tail", ds("-", kv("zero-tail")), "R6_KV_DIGEST", "plane",
+     kv("zero-tail"), "ZEROTAIL"),
+]
 # The generator's own greedy ids: one per line, `K` lines, the ids its own reference loop
 # **consumed**. The arm derives step 1's token from its own prefill logits and every later step's
 # from its own previous step (R6 section 2.1, R6-STEP-N section 3.2), and never takes any of them as
@@ -3512,8 +3694,18 @@ if len(set(EXPECTED_TOKENS)) != len(EXPECTED_TOKENS):
 NO_DOCUMENT = [
     ("ds-arity-3", [ARM, PACK, GEOM]),
     ("ds-arity-8", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT]),
-    ("ds-arity-12",
-     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "extra"]),
+    # R6-KV-PERSIST section 5.3 and R6-RESIDENT-WEIGHTS section 5.1: the over-arity case moves up
+    # one position each time the grammar grows, `ds-arity-12` -> `ds-arity-14` -> `ds-arity-15`. It
+    # is `NO_DOCUMENT` and carries no golden row, so the move costs zero golden bytes. Fourteen
+    # operands is now **legal** and is `ds-resident-*` below: an unknown fourteenth operand owes the
+    # caller a document naming it, and only a fifteenth is arity.
+    ("ds-arity-15",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "-", "-", "-",
+      "extra"]),
+    ("ds-path-kv-save-empty",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "", "-"]),
+    ("ds-path-kv-load-empty",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "-", ""]),
     ("ds-path-pack-empty", [ARM, "", GEOM, TOKENS]),
     ("ds-path-geometry-empty", [ARM, PACK, "", TOKENS]),
     ("ds-path-long", [ARM, "/" + ("a" * 5000), GEOM, TOKENS]),
@@ -3585,6 +3777,18 @@ STUB_CASES = [
      "R5_MEMBER_MISSING"),
     ("ds-shape", [ARM, path("model-pack-shape.alignpack"), GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
      "R5_SHAPE"),
+    # R6-RESIDENT-WEIGHTS section 3.1. The operand's grammar is `-` or `weights` and nothing else,
+    # and the refusal precedes every path-content check — these three run against a pack the arm
+    # never opens. The empty string is **not** absence: absence is the thirteen-operand form.
+    ("ds-resident-unknown", ds(resident="extra"), "R6_RESIDENT"),
+    ("ds-resident-empty", ds(resident=""), "R6_RESIDENT"),
+    ("ds-resident-case", ds(resident="WEIGHTS"), "R6_RESIDENT"),
+    # Precedence: the residency mode is decided before the container is opened, so an unknown mode
+    # over a pack that does not exist still names the mode.
+    ("ds-resident-unknown-and-missing",
+     [ARM, path("absent.alignpack"), GEOM, TOKENS, "-", SOURCE, "-", WIDTH, "-", STEPS, "-", "-",
+      "extra"],
+     "R6_RESIDENT"),
 ]
 
 ENGINE_CASES = [
@@ -3631,6 +3835,50 @@ ENGINE_CASES = [
     ("ds-logits-missing",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH, path("absent.bin")],
      "R5_LOGITS_UNREADABLE"),
+    # R6-KV-PERSIST section 5.1. Both `-` is legal and is exactly the eleven-operand form: this
+    # capability adds no default and absence is the pre-existing behaviour character for character.
+    ("ds-kv-args-dash-dash", ds(), ""),
+    # The save direction, then — in a **separate process** — the load direction over the file the
+    # save wrote. The order in this list is the order `record` runs them, which is what makes
+    # `ds-kv-load-ok` a load of something rather than of nothing.
+    ("ds-kv-save-ok", ds(save=KV_SAVE), ""),
+    ("ds-kv-load-ok", ds(load=KV_SAVE), ""),
+    # The same load over a container written by `scripts/layer_forward_fixture.py` — a third
+    # implementation of the format that has read neither the arm nor the reader. This is what makes
+    # `akvp` a shared contract rather than the arm's habit.
+    ("ds-kv-load-fixture", ds(load=KV_GOOD), ""),
+    # R6-RESIDENT-WEIGHTS section 3.1's "absence is `-`", asserted rather than described:
+    # `ds-resident-dash` is `ds-kv-args-dash-dash` plus one operand whose value is the default, and
+    # the assertion below is that the two documents are identical.
+    ("ds-resident-dash", ds(resident="-"), ""),
+    # Oracle R's two pairs. Each resident case is the streamed case directly above it plus one
+    # operand, so the two invocations differ in exactly `RESIDENT` and the comparison below is a
+    # comparison of the capability and of nothing else. One step and three steps, because the
+    # capability's whole point is what happens between steps.
+    ("ds-resident-stream-1", ds(steps="1"), ""),
+    ("ds-resident-weights-1", ds(steps="1", resident="weights"), ""),
+    ("ds-resident-weights-steps", ds(resident="weights"), ""),
+] + [(name, operands, code) for name, operands, code, _, _, _ in KV_REFUSALS]
+
+# Section 5.2 and section 11.1 correction 13's bound, approached from the side no refusal reaches.
+# `slot` is bounded by `tokens.count` at both `stage_embed_row` call sites, so a prompt of exactly
+# `MAX_PREFILL_TOKENS` ids stages slot 31 — the highest index any caller can produce — and the
+# corpus stops containing only three-token prompts. On this fixture the stage's 32 x 16 B of rows
+# are padded up to `block_align` 4,096, so slot 31 is not the region's last byte; what the case pins
+# is the **token count**, and a destination bound one row too tight would turn this legal run into
+# `R5_SHAPE`.
+#
+# **It carries no golden row, and the reason is a measured one.** The golden is committed and
+# compared byte for byte on macOS/arm64 and on Linux/x86_64, and a 32-token prefill's `l_out` and
+# logits digests differ between them in the last bit (`.schedule[0].l_out_bit_sum` 538248184962
+# against 538248184963 on the first CI run of this case) — long accumulations and 32 rows of `exp`
+# reach a host difference the three-token corpus never does. Pinning a host-specific digest would
+# make the golden a statement about the machine that regenerated it. The case is asserted instead by
+# oracle R against its streamed twin, which is a **within-host** comparison and therefore correct on
+# every platform, plus `record()`'s document-identity assertions and the structural block below.
+BOUNDARY_CASES = [
+    (STAGE_FULL, ds(tokens=STAGE_FULL_TOKENS, transcript="-", width=STAGE_FULL_WIDTH,
+                    steps=STAGE_FULL_STEPS, resident="weights"), ""),
 ]
 
 FORCED_CASES = [
@@ -3672,6 +3920,17 @@ FORCED_CASES = [
     # compared and not only the past ones.
     ("ds-force-writeback-offset", "engine+writeback-offset",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH], "R6_PLANE_MISMATCH"),
+    # R6-RESIDENT-WEIGHTS section 5.1's early-exit cell, restored by section 11.1 correction 12.
+    # The design named this case and the first implementation retired it as "unnecessary", on the
+    # reasoning that no early `return` exists between the arena's construction and the converged
+    # teardown. That reasoning was right about control flow and wrong about the **invariant**: a
+    # resident run can still *fail* in that window — the fill can raise `R4_PACK_UNREADABLE`, or the
+    # wrap itself can be refused — and the run-scope balance check has to stay silent when it does.
+    # `buffer_from_host` refusing is the one way an input can reach that window, and the run it
+    # produces has a filled, live arena, no wrap, and one teardown ahead of it.
+    ("ds-force-resident-wrap", "engine+resident-wrap",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH, "-", STEPS, "-", "-", "weights"],
+     "R5_GGML_INIT"),
 ]
 
 
@@ -3739,9 +3998,87 @@ def normalize(text):
         row["compute_ns"] = 0
     document["plane"]["readback_ns"] = 0
     document["plane"]["upload_ns"] = 0
+    # R6-KV-PERSIST section 2.9: two single intervals and one labelled diagnostic, all wall clock.
+    document["kv"]["write_ns"] = 0
+    document["kv"]["read_ns"] = 0
+    # R6-RESIDENT-WEIGHTS section 3.5. `fill_ns` is the only clock the `weights` object holds and it
+    # is zeroed here. `fill_pread_count`, `fill_bytes`, `resident_bytes`, and `step_pack_bytes` are
+    # deliberately **not** normalized: they are deterministic and they are the claim.
+    document["weights"]["fill_ns"] = 0
     for key, placeholder in PLACEHOLDER.items():
         if document[key]:
             document[key] = placeholder
+    # Section 6 risk 2's temp-path class. The `kv` object publishes no path by contract, but
+    # `R6_KV_EXISTS` and `R6_KV_CLEANUP_FAILED` name the destination in `error_detail` — which is a
+    # `mktemp -d` path and would make the golden a function of this run's temporary directory. It is
+    # replaced by a placeholder here, exactly as the five top-level path fields are, and the case
+    # table below asserts the placeholder so the substitution cannot hide a wrong detail.
+    if document["error_detail"].startswith(work_dir):
+        document["error_detail"] = "<path>"
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+# R6-KV-PERSIST section 3, oracle Q. `normalize` plus the keys that are **counts of work the load
+# path legitimately did not do**, and nothing else. What remains inside the comparison is the point:
+# `decode` in full including `token_ids`, every object of `steps[]` including each step's `sha256`,
+# `argmax`, `n_past`, `plane_column_written`, and complete `oracle` sub-object;
+# `plane.columns_written`, `roundtrip_verdict`, `roundtrip_bytes_compared`, and every
+# `first_mismatch_*`; `output` and `oracle_logits`; `oracle_decode` in full; and `model`,
+# `selection`, `window`'s sizes, `head`'s digests, and `abi`.
+# `weights` joins the excluded blocks for the same reason `pack.reader_*` and `window.reuse_count`
+# are already excluded: a load run skips the prefill, so it wraps fewer windows and reads fewer pack
+# bytes. Its own contents are asserted for every case in `record` and, for the resident legs, by
+# oracle R below.
+PERSIST_EXCLUDED_BLOCKS = ("kv", "graph", "schedule", "timings", "lifetime", "reference",
+                           "weights")
+PERSIST_EXCLUDED_FIELDS = (
+    # The prefill's own graph, absent by design on a load run.
+    ("plane", "source"), ("plane", "readback_ns"), ("plane", "upload_ns"),
+    ("head", "node_count"), ("head", "pread_ns"), ("head", "compute_ns"),
+    # Pack reads and window fills the prefill performed and the load did not.
+    ("pack", "reader_pread_count"), ("pack", "reader_bytes_read"),
+    ("window", "reuse_count"), ("window", "member_placements"),
+)
+
+
+# R6-RESIDENT-WEIGHTS section 4.1, oracle R. `normalize` plus the four things residency is
+# **supposed** to change and nothing else, enumerated here rather than pattern-matched so that the
+# exclusion cannot quietly grow:
+#
+#   * the `weights` object, which is the capability's own report;
+#   * `pack.reader_pread_count` / `pack.reader_bytes_read`, which are the claim;
+#   * `lifetime.ggml_buffers_created` / `lifetime.ggml_buffers_freed`, because the weight wrap is
+#     hoisted to run scope and counted in its own pair (section 4.3). The design document's
+#     section 4.1 enumerated only the first two; the lifetime pair is a deviation recorded in
+#     section 5 of that document, and it is *narrow* — the per-graph pair still balances, and
+#     `weights.resident_wraps_created`/`_freed` are asserted to be exactly one each.
+#
+# What stays inside the comparison is the point: every decoded token id, every per-step oracle
+# result and digest, the plane in full including oracle B's byte count, the head's logits and
+# digest, `window.pointer_identity_failures` and `member_placements`, `window.reuse_count`,
+# `graph` in full, `verdict`, and `error_code`/`error_detail`.
+RESIDENT_EXCLUDED_BLOCKS = ("weights",)
+RESIDENT_EXCLUDED_FIELDS = (
+    ("pack", "reader_pread_count"), ("pack", "reader_bytes_read"),
+    ("lifetime", "ggml_buffers_created"), ("lifetime", "ggml_buffers_freed"),
+)
+
+
+def normalize_resident(text):
+    document = json.loads(text)
+    for block in RESIDENT_EXCLUDED_BLOCKS:
+        document.pop(block, None)
+    for block, field in RESIDENT_EXCLUDED_FIELDS:
+        document[block].pop(field, None)
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+def normalize_persist(text):
+    document = json.loads(normalize(text))
+    for block in PERSIST_EXCLUDED_BLOCKS:
+        document.pop(block, None)
+    for block, field in PERSIST_EXCLUDED_FIELDS:
+        document[block].pop(field, None)
     return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -3756,8 +4093,19 @@ def build_shim(force):
     subprocess.run([builder], check=True, capture_output=True, env=environment)
 
 
-def run(operands):
-    return subprocess.run([binary] + operands, capture_output=True, cwd=work_dir)
+def run(operands, environment=None):
+    return subprocess.run([binary] + operands, capture_output=True, cwd=work_dir, env=environment)
+
+
+def read_container(container, kind=None, tokens=TOKENS):
+    """`scripts/kv_plane_reader.py`, always as a **subprocess and never imported**
+    (`scripts/run-alignpack-smoke`'s rule): a shared interpreter state would let the two
+    implementations agree by accident."""
+    command = ["python3", READER, "--plane", container, "--pack", PACK, "--geometry", GEOM,
+               "--tokens", tokens, "--quiet"]
+    if kind is not None:
+        command += ["--expect-reject", kind]
+    return subprocess.run(command, capture_output=True, cwd=work_dir)
 
 
 failures = []
@@ -3786,9 +4134,23 @@ def record(name, operands, expected):
     if (result.returncode == 0) != (expected_exit == 0):
         failures.append("%s: status %r but exit %d"
                         % (name, document["status"], result.returncode))
-    if document["kind"] != "R6_DECODE_STEP" or document["schema_version"] != 2:
+    if document["kind"] != "R6_DECODE_STEP" or document["schema_version"] != 4:
         failures.append("%s: wrong document identity %r/%r"
                         % (name, document["kind"], document["schema_version"]))
+    # R6-RESIDENT-WEIGHTS section 3.5: the `weights` object is present in **every** document,
+    # including one refused before a file is opened, so the mode a run took is never implicit. The
+    # hazard it closes is a caller who wanted residency, forgot the operand, and read a document
+    # that did not say so.
+    weights = document.get("weights")
+    if not isinstance(weights, dict) or weights.get("mode") not in ("stream", "resident"):
+        failures.append("%s: the document published no weights mode: %r" % (name, weights))
+    elif weights["mode"] == "stream" and (weights["resident_bytes"] != 0
+                                          or weights["fill_ns"] != 0
+                                          or weights["fill_pread_count"] != 0
+                                          or weights["fill_bytes"] != 0
+                                          or weights["resident_wraps_created"] != 0
+                                          or weights["resident_wraps_freed"] != 0):
+        failures.append("%s: a streamed document published resident figures: %r" % (name, weights))
     if not document["abi"]["fp_contract_off"]:
         failures.append("%s: the shim was not built with -ffp-contract=off" % name)
     # R6-STEP-N section 2.8, on **every** document including the error ones: the loop-level
@@ -3819,6 +4181,16 @@ for name, operands in NO_DOCUMENT:
         failures.append("%s: expected a non-zero exit, got 0" % name)
     if result.stdout != b"":
         failures.append("%s: expected no document, got %d bytes" % (name, len(result.stdout)))
+
+# R6-KV-PERSIST section 5.2's three destination cases need a filesystem state rather than a file
+# with a defect in it. All three live under `work_dir`; the `0555` directory is restored to writable
+# by the shell trap before `rm -rf`, so it cannot survive this runner.
+with open(KV_OCCUPIED, "wb") as handle:
+    handle.write(b"not a container")
+OCCUPIED_BEFORE = open(KV_OCCUPIED, "rb").read()
+os.symlink(KV_OCCUPIED, KV_OCCUPIED_LINK)
+os.makedirs(KV_READONLY_DIR, exist_ok=True)
+os.chmod(KV_READONLY_DIR, 0o555)
 
 # The R5B arm is untouched: its own flag still selects it and it still emits its own document.
 r5b = run(["--model-forward", PACK, GEOM, TOKENS])
@@ -3920,6 +4292,14 @@ for name, operands, expected in ENGINE_CASES:
     if decode["slot_high_water"] != 66 or graph["slot_capacity"] != 128:
         failures.append("%s: slots %d/%d, not 66/128"
                         % (name, decode["slot_high_water"], graph["slot_capacity"]))
+    # R6-KV-PERSIST section 1.1. A load run **skips the prefill entirely**, so it builds no prefill
+    # graph and publishes none: the two prefill-shaped assertions below are the decode loop's
+    # neighbours and do not apply to it. Everything above — the plane, oracle B, the id chain, the
+    # per-step shape — does apply and is asserted on both paths unchanged.
+    if plane["source"] == "LOADED":
+        if graph["node_count_total"] != 0 or graph["graph_count"] != 0:
+            failures.append("%s: a load run published a prefill graph: %r" % (name, graph))
+        continue
     # The prefill runs at the declared width, so it issues R5B's reconciliation graph: 1 + 34 + 36
     # + 3. The decode graph issues two more rows per layer — one `CONCAT` on K and one on V — at
     # `t = 1`: 1 + 36 + 38 + 3.
@@ -4026,6 +4406,331 @@ repeats = {normalize(run([ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDT
 if len(repeats) != 1:
     failures.append("three consecutive runs produced %d distinct documents" % len(repeats))
 
+# ---------------------------------------------------------------------------------------------
+# R6-RESIDENT-WEIGHTS section 4: oracle R, oracle P's new reach, and oracle B at run scope
+#
+# The design document's section 5.6 predicted that the hosted lane could not compare the two legs
+# numerically, because it runs without ggml. That prediction is wrong in this repository's favour
+# and the correction is recorded rather than quietly enjoyed: the hosted lane runs the **engine**
+# shim, a deterministic ggml-free kernel set, and it computes real numbers from whatever address
+# the weights were placed at. Oracle R is therefore a hosted oracle here and not only a capable-host
+# one, and the resident leg is compared field by field against the streamed leg it differs from in
+# exactly one operand.
+# ---------------------------------------------------------------------------------------------
+
+# Absence is `-`, in bytes: fourteen operands whose last is the default produce the same document as
+# thirteen. This capability adds no default and changes no shipped invocation.
+if produced["ds-kv-args-dash-dash"] != produced["ds-resident-dash"]:
+    failures.append("ds-resident-dash: a `-` fourteenth operand changed the document: %s"
+                    % describe_difference(produced["ds-kv-args-dash-dash"],
+                                          produced["ds-resident-dash"]))
+
+# Oracle R. One step and three steps.
+for streamed_case, resident_case in (("ds-resident-stream-1", "ds-resident-weights-1"),
+                                     ("ds-kv-args-dash-dash", "ds-resident-weights-steps")):
+    left = normalize_resident(produced[streamed_case])
+    right = normalize_resident(produced[resident_case])
+    if left != right:
+        failures.append("oracle R (%s vs %s): %s"
+                        % (streamed_case, resident_case, describe_difference(left, right)))
+
+# The staging boundary, pinned from the legal side. A resident prefill of exactly
+# `MAX_PREFILL_TOKENS` ids stages slot 31, the highest index `stage_embed_row` can be asked for, and
+# the twin below makes the case an assertion about the **bytes** that slot carries rather than only
+# about the run not being refused: the streamed leg reads all 32 rows out of the pack, the resident
+# leg copies them out of the arena's table, and oracle R says the two produce the same document.
+# The case runs here, under the engine shim the block above built, and not in `ENGINE_CASES`: it
+# carries no golden row (see `BOUNDARY_CASES`), and every assertion in that loop is arithmetic on
+# the three-token prompt and the width of 8 this block otherwise uses throughout.
+for name, operands, expected in BOUNDARY_CASES:
+    record(name, operands, expected)
+
+if STAGE_FULL not in produced:
+    failures.append("%s: the staging-boundary case produced no document" % STAGE_FULL)
+else:
+    stage_full = json.loads(produced[STAGE_FULL])
+    if stage_full["error_code"] != "" or stage_full["status"] != "ok":
+        failures.append("%s: a %d-token resident prefill was refused: %r %r"
+                        % (STAGE_FULL, len(STAGE_FULL_TOKENS.split(",")),
+                           stage_full["error_code"], stage_full["error_detail"]))
+    else:
+        if stage_full["weights"]["mode"] != "resident" \
+                or stage_full["weights"]["step_pack_bytes"] != 0:
+            failures.append("%s: %r" % (STAGE_FULL, stage_full["weights"]))
+        # The prompt reached the graph at its full length: `n_past` before the first decode step is
+        # the prompt's own token count, and the plane holds `T + N` columns after it.
+        if stage_full["decode"]["n_past_first"] != 32 \
+                or stage_full["plane"]["columns_written"] != 32 + int(STAGE_FULL_STEPS):
+            failures.append("%s: n_past_first %d and %d columns, not 32 and %d"
+                            % (STAGE_FULL, stage_full["decode"]["n_past_first"],
+                               stage_full["plane"]["columns_written"],
+                               32 + int(STAGE_FULL_STEPS)))
+        if stage_full["plane"]["roundtrip_verdict"] != "IDENTICAL":
+            failures.append("%s: oracle B is %r at the staging boundary"
+                            % (STAGE_FULL, stage_full["plane"]["roundtrip_verdict"]))
+    stage_full_streamed = normalize_resident(normalize(
+        run(ds(tokens=STAGE_FULL_TOKENS, transcript="-", width=STAGE_FULL_WIDTH,
+               steps=STAGE_FULL_STEPS)).stdout.decode("utf-8")))
+    if stage_full_streamed != normalize_resident(produced[STAGE_FULL]):
+        failures.append("oracle R at the staging boundary (%s): %s"
+                        % (STAGE_FULL,
+                           describe_difference(stage_full_streamed,
+                                               normalize_resident(produced[STAGE_FULL]))))
+
+# Section 3.2's layout arithmetic on this fixture, spelled out so the golden's own
+# `weights.resident_bytes` is a number with a derivation rather than a number that was observed.
+# The synthetic container's `block_align` is 4,096 and every region starts on that boundary:
+#
+#   token_embd, whole table   n_vocab 32 x n_embd 4 x 4 B = 512 B   -> 4,096 rounded up
+#   the staging region        MAX_PREFILL_TOKENS 32 x 16 B  = 512 B -> 4,096 rounded up
+#   2 layers + the head       the rest
+#
+# The exact total for this fixture is 114,688 B, which the golden carries; the assertions below are
+# the structural properties that hold for **any** pack, so a fixture change moves the golden and not
+# the reasoning.
+RESIDENT_BLOCK_ALIGN = 4096
+RESIDENT_TABLE_BYTES = RESIDENT_BLOCK_ALIGN
+RESIDENT_STAGE_BYTES = RESIDENT_BLOCK_ALIGN
+
+for case in ("ds-resident-weights-1", "ds-resident-weights-steps"):
+    document = json.loads(produced[case])
+    weights = document["weights"]
+    window = document["window"]
+    lifetime = document["lifetime"]
+    if weights["mode"] != "resident":
+        failures.append("%s: mode %r, not resident" % (case, weights["mode"]))
+    # The claim, and the primary metric of section 3.4: a resident decode step reads **zero** pack
+    # bytes. It is a counter and not a clock.
+    if weights["step_pack_bytes"] != 0:
+        failures.append("%s: a resident run read %d pack bytes in its decode steps"
+                        % (case, weights["step_pack_bytes"]))
+    # Section 4.3, oracle B at run scope: exactly one wrap created and exactly one freed, in a pair
+    # that is separate from the per-graph pair so the per-graph check keeps its meaning.
+    if weights["wrap_count"] != 1 or weights["resident_wraps_created"] != 1 \
+            or weights["resident_wraps_freed"] != 1:
+        failures.append("%s: the run-scope wrap did not balance: %r" % (case, weights))
+    if lifetime["graph_balance_failures"] != 0 \
+            or not lifetime["released_before_owner_scope_end"]:
+        failures.append("%s: the resident teardown did not balance: %r" % (case, lifetime))
+    if lifetime["ggml_buffers_created"] != lifetime["ggml_buffers_freed"]:
+        failures.append("%s: the per-graph buffer pair stopped balancing under the hoist: %r"
+                        % (case, lifetime))
+    # The fill happened once and read the whole arena.
+    if weights["fill_bytes"] <= 0 or weights["fill_pread_count"] <= 0:
+        failures.append("%s: the arena reported no fill: %r" % (case, weights))
+    if weights["resident_bytes"] <= window["bytes"]:
+        failures.append("%s: the arena (%d) is not larger than the streamed peak (%d) — a sum "
+                        "cannot be below a maximum"
+                        % (case, weights["resident_bytes"], window["bytes"]))
+    if weights["resident_bytes"] % RESIDENT_BLOCK_ALIGN != 0:
+        failures.append("%s: the arena is %d bytes, which is not a multiple of the container's "
+                        "own block alignment (%d)"
+                        % (case, weights["resident_bytes"], RESIDENT_BLOCK_ALIGN))
+    # A sum over every graph cannot be below the maximum over the same graphs plus the two regions
+    # streaming never holds at all.
+    if weights["resident_bytes"] < window["bytes"] + RESIDENT_TABLE_BYTES + RESIDENT_STAGE_BYTES:
+        failures.append("%s: the arena (%d) is below the streamed peak (%d) plus the table and the "
+                        "stage" % (case, weights["resident_bytes"], window["bytes"]))
+    if weights["resident_bytes"] <= RESIDENT_TABLE_BYTES + RESIDENT_STAGE_BYTES:
+        failures.append("%s: the arena (%d) does not even hold the table and the stage"
+                        % (case, weights["resident_bytes"]))
+    # Oracle P's new reach (section 4.2). In resident mode every placement is against the arena, so
+    # a run that silently fell back to a copy could not report zero here.
+    if window["pointer_identity_failures"] != 0 or window["member_placements"] <= 0:
+        failures.append("%s: %d of %d placements missed their arena offset"
+                        % (case, window["pointer_identity_failures"], window["member_placements"]))
+    if document["verdict"] != "EXTERNAL":
+        failures.append("%s: verdict %r, not EXTERNAL" % (case, document["verdict"]))
+
+# The streamed leg's own figures, so that the zero above is a difference and not a constant.
+for case in ("ds-resident-stream-1", "ds-kv-args-dash-dash"):
+    weights = json.loads(produced[case])["weights"]
+    if weights["mode"] != "stream" or weights["resident_bytes"] != 0 \
+            or weights["resident_wraps_created"] != 0:
+        failures.append("%s: a streamed run reported residency: %r" % (case, weights))
+    if weights["step_pack_bytes"] <= 0:
+        failures.append("%s: a streamed run read no pack bytes in its decode steps: %r"
+                        % (case, weights))
+
+# The refusals name the operand they refused, bounded, and publish `weights.mode` while doing it.
+for case, detail in (("ds-resident-unknown", "resident[extra]"),
+                     ("ds-resident-empty", "resident[]"),
+                     ("ds-resident-case", "resident[WEIGHTS]"),
+                     ("ds-resident-unknown-and-missing", "resident[extra]")):
+    document = json.loads(produced[case])
+    if document["error_detail"] != detail:
+        failures.append("%s: error_detail %r, not %r" % (case, document["error_detail"], detail))
+    if document["weights"]["mode"] != "stream":
+        failures.append("%s: a refused run claimed residency: %r" % (case, document["weights"]))
+
+# ---------------------------------------------------------------------------------------------
+# R6-KV-PERSIST section 3: oracle P, oracle Q, the refusal matrix, and the writer's determinism
+#
+# Everything here runs against the **engine** shim, before the forced-failure loop rebuilds it.
+# ---------------------------------------------------------------------------------------------
+
+# Rule 2. The save run writes, and what it wrote is exactly section 2.3.5's synthetic row.
+saved = json.loads(produced["ds-kv-save-ok"])
+if saved["kv"]["verdict"] != "SAVED" or saved["kv"]["destination"] != "WRITTEN" \
+        or saved["plane"]["source"] != "PREFILL":
+    failures.append("ds-kv-save-ok: %r / %r" % (saved["kv"], saved["plane"]["source"]))
+if (saved["kv"]["total_bytes"], saved["kv"]["plane_offset"], saved["kv"]["plane_bytes"],
+        saved["kv"]["logits_bytes"], saved["kv"]["header_bytes"]) != (4608, 4096, 512, 128, 192):
+    failures.append("ds-kv-save-ok: the container's layout is %r, not section 2.3.5's synthetic row"
+                    % saved["kv"])
+if saved["kv"]["columns_persisted"] != saved["selection"]["token_count"] \
+        or saved["kv"]["token_count"] != saved["selection"]["token_count"] \
+        or saved["kv"]["plane_bytes"] != saved["plane"]["bytes"] \
+        or saved["kv"]["prefill_argmax"] != saved["output"]["argmax"]:
+    failures.append("ds-kv-save-ok: the header disagrees with the run it describes: %r"
+                    % saved["kv"])
+if not os.path.exists(KV_SAVE):
+    failures.append("ds-kv-save-ok: no container at the destination")
+else:
+    stat = os.stat(KV_SAVE)
+    if stat.st_size != saved["kv"]["total_bytes"]:
+        failures.append("ds-kv-save-ok: the file is %d bytes and the header says %d"
+                        % (stat.st_size, saved["kv"]["total_bytes"]))
+    # Section 2.3's region-order property 4: padding is **written**, not left as a hole, so the
+    # allocated size cannot be short of the logical size. A sparse container would report fewer
+    # blocks than bytes and would make the qualification's disk-headroom figure false.
+    if stat.st_blocks * 512 < stat.st_size:
+        failures.append("ds-kv-save-ok: the container is sparse: %d blocks for %d bytes"
+                        % (stat.st_blocks, stat.st_size))
+    reader = read_container(KV_SAVE)
+    if reader.returncode != 0:
+        failures.append("ds-kv-save-ok: the independent reader refused the container: %s"
+                        % reader.stderr.decode("utf-8", "replace").strip())
+
+# Oracle P, legs 1 and 3, and rule 3. A **separate process** loaded the file, and the digests the
+# load run republishes are the ones the save run wrote.
+loaded = json.loads(produced["ds-kv-load-ok"])
+if loaded["kv"]["verdict"] != "LOADED" or loaded["plane"]["source"] != "LOADED" \
+        or loaded["kv"]["destination"] != "-":
+    failures.append("ds-kv-load-ok: %r / %r" % (loaded["kv"], loaded["plane"]["source"]))
+for field in ("plane_sha256", "logits_sha256", "tokens_sha256", "geometry_sha256",
+              "source_header_region_sha256", "total_bytes", "plane_offset", "plane_bytes",
+              "columns_persisted", "prefill_argmax", "pack_total_bytes"):
+    if saved["kv"][field] != loaded["kv"][field]:
+        failures.append("ds-kv-load-ok: kv.%s is %r on the save run and %r on the load run"
+                        % (field, saved["kv"][field], loaded["kv"][field]))
+# Oracle P, leg 2: the plane the loaded run's **graphs consumed** matches the loaded plane, through
+# a different node than the digest — and over the same 960 B `ds-steps-3` reports.
+expected_roundtrip = sum(2 * 2 * (3 + k) * 1 * 4 * 4 for k in range(1, 4))
+if loaded["plane"]["roundtrip_verdict"] != "IDENTICAL" \
+        or loaded["plane"]["roundtrip_bytes_compared"] != expected_roundtrip \
+        or loaded["plane"]["columns_written"] != 3 + 3:
+    failures.append("ds-kv-load-ok: oracle B is %r over %d bytes with %d columns"
+                    % (loaded["plane"]["roundtrip_verdict"],
+                       loaded["plane"]["roundtrip_bytes_compared"],
+                       loaded["plane"]["columns_written"]))
+# Rule 5. Gate G survives the round trip: `output` is republished byte-identically from the
+# persisted vector, so `oracle_logits` is available on the load path and the id chain's root is the
+# container's own `prefill_argmax`.
+if loaded["output"]["sha256"] != saved["output"]["sha256"] \
+        or loaded["output"]["argmax"] != loaded["kv"]["prefill_argmax"] \
+        or loaded["decode"]["token_ids"][0] != loaded["kv"]["prefill_argmax"]:
+    failures.append("ds-kv-load-ok: the persisted vector did not republish `output`: %r / %r"
+                    % (loaded["output"]["argmax"], loaded["kv"]["prefill_argmax"]))
+if loaded["decode"]["token_ids"] != EXPECTED_TOKENS[:3]:
+    failures.append("ds-kv-load-ok: decoded %r, not the reference loop's %r"
+                    % (loaded["decode"]["token_ids"], EXPECTED_TOKENS[:3]))
+
+# The fixture-written container: a third implementation of the format, loaded and decoded.
+from_fixture = json.loads(produced["ds-kv-load-fixture"])
+if from_fixture["plane"]["source"] != "LOADED" \
+        or from_fixture["decode"]["token_ids"] != EXPECTED_TOKENS[:3] \
+        or from_fixture["plane"]["roundtrip_verdict"] != "IDENTICAL":
+    failures.append("ds-kv-load-fixture: %r / %r"
+                    % (from_fixture["decode"]["token_ids"], from_fixture["plane"]))
+if read_container(KV_GOOD).returncode != 0:
+    failures.append("ds-kv-load-fixture: the reader refused the fixture's own container")
+
+# Oracle Q. The two runs are the same run.
+if normalize_persist(produced["ds-kv-save-ok"]) != normalize_persist(produced["ds-kv-load-ok"]):
+    failures.append("ds-kv-roundtrip: %s"
+                    % describe_difference(normalize_persist(produced["ds-kv-save-ok"]),
+                                          normalize_persist(produced["ds-kv-load-ok"])))
+# Section 6 risk 7's guard against a vacuous oracle: the comparison must still hold the things that
+# would change if one loaded lane were wrong.
+witness = json.loads(normalize_persist(produced["ds-kv-load-ok"]))
+if "decode" not in witness or "steps" not in witness or not witness["steps"] \
+        or "sha256" not in witness["steps"][0] or "output" not in witness \
+        or "oracle_logits" not in witness or "roundtrip_bytes_compared" not in witness["plane"]:
+    failures.append("ds-kv-roundtrip: the exclusion list emptied the comparison: %r"
+                    % sorted(witness))
+
+# Section 5.2. Every refusal names its own code **and** its own detail, the independent reader
+# reaches its own coarse kind on the same file, no container is left behind, and the pre-existing
+# file at an occupied destination is byte-unchanged.
+# W1 to W4 run **after** step 10, so a refusal on the save path has already computed and verified a
+# prefill plane and says so. Every other row in the matrix is refused before the plane exists.
+KV_AFTER_PREFILL = {"ds-kv-save-unwritable"}
+
+for name, _, code, detail, container, kind in KV_REFUSALS:
+    document = json.loads(produced[name])
+    if document["error_code"] != code or document["error_detail"] != detail:
+        failures.append("%s: %r/%r, not %r/%r"
+                        % (name, document["error_code"], document["error_detail"], code, detail))
+    after_prefill = name in KV_AFTER_PREFILL
+    expected_source = "PREFILL" if after_prefill else "-"
+    expected_columns = 3 if after_prefill else 0
+    if document["plane"]["source"] != expected_source or document["kv"]["verdict"] != "-" \
+            or document["kv"]["destination"] != "-":
+        failures.append("%s: a refused run published a plane source %r and %r"
+                        % (name, document["plane"]["source"], document["kv"]))
+    # Whatever the plane's provenance, **no step ran**: no row, no id, and never `IDENTICAL`.
+    if document["decode"]["steps_completed"] != 0 or document["steps"] \
+            or document["decode"]["token_ids"] \
+            or document["plane"]["columns_written"] != expected_columns \
+            or document["plane"]["roundtrip_verdict"] == "IDENTICAL":
+        failures.append("%s: a refused run published loop state: %r / %r"
+                        % (name, document["decode"], document["plane"]))
+    if os.path.exists(KV_UNWRITABLE):
+        failures.append("%s: a refused run left a container in the read-only directory" % name)
+    if open(KV_OCCUPIED, "rb").read() != OCCUPIED_BEFORE:
+        failures.append("%s: the pre-existing destination file was modified" % name)
+    if container is not None:
+        outcome = read_container(container, kind)
+        if outcome.returncode != 0:
+            failures.append("%s: the independent reader did not reject %s as %s: %s"
+                            % (name, os.path.basename(container), kind,
+                               outcome.stderr.decode("utf-8", "replace").strip()))
+
+# The reader's own early exit: a `--plane` that names nothing exits 1 having read nothing further.
+missing_reader = read_container(KV_ABSENT)
+if missing_reader.returncode != 1 or not missing_reader.stderr:
+    failures.append("ds-kv-reader-missing: exit %d with %d bytes of diagnostic"
+                    % (missing_reader.returncode, len(missing_reader.stderr)))
+
+# Rule 7, determinism of the **writer**, by double write rather than by a checked-in hex golden
+# (section 3, and `docs/specs/r4-alignpack-layer-major.md` section 7.2's decision inherited with its
+# reasons). Two saves of identical inputs to two destinations, then the same save again under a
+# perturbed environment.
+run(ds(save=KV_DETERMINISM_A))
+run(ds(save=KV_DETERMINISM_B))
+perturbed = dict(os.environ)
+perturbed.update({"TZ": "Pacific/Kiritimati", "LANG": "de_DE.UTF-8", "LC_ALL": "de_DE.UTF-8",
+                  "SOURCE_DATE_EPOCH": "1", "PWD": "/"})
+run(ds(save=KV_DETERMINISM_C), environment=perturbed)
+digests = {}
+for label, container in (("a", KV_DETERMINISM_A), ("b", KV_DETERMINISM_B),
+                         ("c", KV_DETERMINISM_C), ("first", KV_SAVE)):
+    if not os.path.exists(container):
+        failures.append("ds-kv-determinism: %s was not written" % label)
+        continue
+    with open(container, "rb") as handle:
+        digests[label] = hashlib.sha256(handle.read()).hexdigest()
+if len(set(digests.values())) != 1:
+    failures.append("ds-kv-determinism: four writes produced %d distinct containers: %r"
+                    % (len(set(digests.values())), digests))
+
+# Three consecutive load runs of one container are byte-identical after `normalize`.
+load_repeats = {normalize(run(ds(load=KV_GOOD)).stdout.decode("utf-8")) for _ in range(3)}
+if len(load_repeats) != 1:
+    failures.append("ds-kv-load-determinism: three load runs produced %d distinct documents"
+                    % len(load_repeats))
+
 for name, force, operands, expected in FORCED_CASES:
     build_shim(force)
     record(name, operands, expected)
@@ -4063,6 +4768,44 @@ if shifted["plane"]["first_mismatch_column"] != 3 \
     failures.append("ds-force-writeback-offset: oracle B did not name the new column: %r %r"
                     % (shifted["plane"], shifted["error_detail"]))
 
+# R6-RESIDENT-WEIGHTS section 11.1 correction 12's regression, and the one case in this corpus
+# where a **resident** run fails. Everything asserted here was wrong before the correction: the
+# run-scope balance check read `created != 1 || freed != 1`, so a run that created no wrap because
+# it never got one reported a balance failure and `released_before_owner_scope_end: false` — a
+# fabricated leak on a run whose teardown was perfect. The pack code is not reachable here for the
+# reason section 5.9 deviation 4 records about `R6_RESIDENT_BUDGET` — a container whose members
+# validate cannot make a later `pread` short — so the wrap's own refusal stands for the whole
+# window, which is the same window and the same invariant.
+unwrapped = json.loads(produced["ds-force-resident-wrap"])
+if unwrapped["error_detail"] != "resident_buffer":
+    failures.append("ds-force-resident-wrap: error_detail %r, not the refused wrap"
+                    % unwrapped["error_detail"])
+if unwrapped["weights"]["mode"] != "resident":
+    failures.append("ds-force-resident-wrap: a resident run that failed published mode %r"
+                    % unwrapped["weights"]["mode"])
+# The fill ran to completion before the wrap was asked for, so the arena was live and full when the
+# run failed. Without this the case would prove nothing about the window it is here to cover.
+if unwrapped["weights"]["fill_bytes"] <= 0 or unwrapped["weights"]["fill_pread_count"] <= 0 \
+        or unwrapped["weights"]["resident_bytes"] <= 0:
+    failures.append("ds-force-resident-wrap: the arena was not filled before the wrap was refused:"
+                    " %r" % unwrapped["weights"])
+if unwrapped["weights"]["resident_wraps_created"] != 0 \
+        or unwrapped["weights"]["resident_wraps_freed"] != 0:
+    failures.append("ds-force-resident-wrap: a refused wrap was counted: %r"
+                    % unwrapped["weights"])
+# The finding itself: nothing was created, so nothing leaked, and the document must say so.
+if unwrapped["lifetime"]["graph_balance_failures"] != 0 \
+        or not unwrapped["lifetime"]["released_before_owner_scope_end"]:
+    failures.append("ds-force-resident-wrap: a failure before the wrap fabricated a leak: %r"
+                    % unwrapped["lifetime"])
+for created, freed in (("ggml_buffers_created", "ggml_buffers_freed"),
+                       ("contexts_created", "contexts_freed"),
+                       ("backends_created", "backends_freed"),
+                       ("gallocrs_created", "gallocrs_freed")):
+    if unwrapped["lifetime"][created] != unwrapped["lifetime"][freed]:
+        failures.append("ds-force-resident-wrap: %s != %s: %r"
+                        % (created, freed, unwrapped["lifetime"]))
+
 staged = json.loads(produced["ds-force-plane-stage-offset"])["plane"]
 if staged["roundtrip_verdict"] != "MISMATCH" or staged["first_mismatch_layer"] != 0 \
         or staged["first_mismatch_tensor"] != "k" or staged["first_mismatch_column"] != 0:
@@ -4088,6 +4831,15 @@ REQUIRED_CODES = {
     "R5_LAYER_COVERAGE", "R5_MEMBER_MISSING", "R5_SHAPE", "R5_GGML_UNAVAILABLE",
     "R5_TYPE_UNSUPPORTED", "R5_ALIGNMENT", "R5_GGML_INIT", "R5_SLOT", "R5_ALLOC", "R5_COMPUTE",
     "R5_SOURCE_DIVERGED", "R5_LOGITS_SHAPE", "R5_LOGITS_UNREADABLE", "R6_STEPS",
+    # R6-KV-PERSIST section 2.6's whole vocabulary except `R6_KV_WRITE_FAILED`, which section 4.1
+    # marks **deferred as a case**: reaching it needs a filesystem that accepts a create and refuses
+    # a write, which alignpack reaches only through an opt-in `hdiutil` volume, and the correct move
+    # is to reuse that mechanism rather than build a second one. `R6_KV_CLEANUP_FAILED` and
+    # `R6_KV_SIZE_MISMATCH` sit behind it on the same path and are deferred with it.
+    "R6_KV_ARGS", "R6_KV_TOO_LARGE", "R6_KV_EXISTS", "R6_KV_UNREADABLE", "R6_KV_UNWRITABLE",
+    "R6_KV_TRUNCATED", "R6_KV_MAGIC", "R6_KV_VERSION", "R6_KV_HEADER", "R6_KV_RESERVED",
+    "R6_KV_REGION", "R6_KV_GEOMETRY", "R6_KV_IDENTITY", "R6_KV_TOKENS", "R6_KV_NPAST",
+    "R6_KV_DIGEST",
 }
 missing_codes = REQUIRED_CODES - codes
 if missing_codes:
@@ -4102,7 +4854,9 @@ if update:
         for name in ORDER:
             handle.write(json.dumps({"case": name, "document": produced[name]},
                                     separators=(",", ":"), ensure_ascii=False) + "\n")
-    print("decode step smoke: golden rewritten with %d cases" % len(produced))
+    # `ORDER` and not `produced`: `BOUNDARY_CASES` runs and is asserted but carries no golden row,
+    # so the two counts differ on purpose and the message must report the rows written.
+    print("decode step smoke: golden rewritten with %d cases" % len(ORDER))
 else:
     with open(golden_path, "r", encoding="utf-8") as handle:
         golden = [json.loads(line) for line in handle if line.strip()]
@@ -4121,9 +4875,18 @@ if failures:
         sys.stderr.write("decode step smoke: FAIL %s\n" % line)
     raise SystemExit(1)
 
-print("decode step smoke: %d no-document cases (R6_ARITY, R6_PATH), %d documented cases, "
-      "%d codes reached, oracle A' PASS against transcript graphs 2..4 at three step offsets, "
-      "oracle B IDENTICAL over the whole plane including every written-back column, three steps "
-      "decoding the reference loop's own ids, and arm-r5b-unchanged PASS"
-      % (len(NO_DOCUMENT), len(ORDER), len(codes - {""})))
+print("decode step smoke: %d no-document cases (R6_ARITY, R6_PATH), %d documented cases (%d with a "
+      "golden row), %d codes reached, oracle A' PASS against transcript graphs 2..4 at three step "
+      "offsets, oracle B IDENTICAL over the whole plane including every written-back column, three "
+      "steps decoding the reference loop's own ids, a resident prefill at the staging boundary, and "
+      "arm-r5b-unchanged PASS"
+      % (len(NO_DOCUMENT), len(ORDER) + len(BOUNDARY_CASES), len(ORDER), len(codes - {""})))
+print("decode step smoke: akvp v1 -- %d refusal cases each asserting the arm's code and detail and "
+      "the independent reader's own kind over %d reject kinds, a %d-byte container written and "
+      "reloaded in a separate process, a fixture-written container loaded and decoded to the same "
+      "ids, oracle Q byte-identical outside %d excluded groups, and four writes producing one "
+      "digest"
+      % (len(KV_REFUSALS), len({kind for _, _, _, _, _, kind in KV_REFUSALS if kind}),
+         saved["kv"]["total_bytes"],
+         len(PERSIST_EXCLUDED_BLOCKS) + len(PERSIST_EXCLUDED_FIELDS)))
 PY

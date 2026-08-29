@@ -6475,6 +6475,15 @@ from the ABI enumeration at the pinned commit `4b515f8d37de2e9a9ba06170c5842fd12
 same read-only-media failure this request already names for R0's inspection and R2A's transcript
 scan, now on a third distinct input.
 
+**R6-KV-PERSIST is this request's strongest client to date** (`docs/specs/r6-kv-persist.md`
+section 7). Every client above reads a file this repository did not produce; the `akvp` container is
+one it **does** produce, so the natural place to put it — a shared read-only cache, a root-owned
+model directory, a container image layer — is exactly the place this arm cannot then read it from.
+`src/decode_step.align`'s load path calls `fs.open_rw(KV_LOAD)` on a file it never writes, and
+`src/kv_plane.align`'s `read_header` needs `f.len()` on the same handle because there is still no
+`fs.size`. **No status change**: a container in a developer's scratch directory is writable by its
+owner, and the capability ships without a workaround.
+
 **R3-RESIDENCY-SIM is a second, narrower client of the same `fs.size`/stat absence — but not a new
 client of the `fs.open_ro` gap this request asks for.** `src/residency_sim.align:377-378` and
 `:518-519` enforce the Model IR and trace document byte caps (`R3_IR_TOO_LARGE`,
@@ -7580,6 +7589,18 @@ whole payload in one byte view — which is exactly the multi-gigabyte residency
 avoid. R4 settled for the bounded header-region digest of section 2.4.6 (5,953,536 bytes on the
 reference model, about 2.6 ms at the measured 2.26 GB/s) and reserved the payload digest field.
 
+**R6-KV-PERSIST is the second client, and the bound it forces is recorded rather than hidden**
+(`docs/specs/r6-kv-persist.md` sections 2.4 and 2.5). Two consequences follow from the one-shot
+digest. First, `MAX_KV_PLANE_BYTES := 536870912` exists: a plane this capability cannot digest is a
+plane it **refuses to persist**, because a persisted artifact whose identity cannot be computed is
+not an identity and the one thing the digest exists to catch — a torn write — would go undetected.
+alignpack's own `MAX_HEADER_REGION_BYTES` of 128 MiB could not simply be inherited, because a plane
+at `MAX_ATTENTION_WIDTH` on the reference model is 448 MiB. Second, the container's model identity
+is the **pack's** header-region digest rather than the GGUF's, because a 4.68 GB digest would need a
+4.68 GB byte view; the limitation that follows — a pack whose weight bytes were corrupted after
+packing has the same header-region digest — is stated in that document's section 2.4 rather than
+papered over. **No status change.**
+
 ### Requested capability
 
 An Align-consistent Move-handle streaming digest, following the existing owned-handle/`Drop` idiom
@@ -7647,6 +7668,14 @@ section 2.8 step 5) is a check-then-create race: `fs.exists(path)` then `fs.crea
 window in which another process could create the path, which is then truncated by `fs.create_rw`.
 The artifact at risk is multiple gigabytes.
 
+**R6-KV-PERSIST is the second client** (`docs/specs/r6-kv-persist.md` section 2.6). Its
+`R6_KV_EXISTS` guard is the same check-then-create shape for the same reason, verified again at this
+pin: `fs.create_rw` is `O_RDWR|O_CREAT|O_TRUNC` and `fs.create_exclusive` returns a sequential
+`writer` with no `pwrite`, so a container that must be written at declared offsets has no exclusive
+positional constructor to use. The race is documented rather than defended — hiding it behind a
+silent overwrite would be worse — and **no workaround is built**. A destination that is a symlink is
+followed in both directions, exactly as alignpack's `dest-symlink` case pins. **No status change.**
+
 ### Requested capability
 
 Mirroring the shipped `fs.create_rw` / `fs.create_exclusive` pair:
@@ -7684,8 +7713,9 @@ Blocked gate or slice: none. R4-ALIGNPACK-LAYER-MAJOR makes no durability claim 
 Independent work that may continue: all work.
 Resume condition: an Align release ships a sync operation with a stated per-platform guarantee.
 Align commit or pull request: none
-align-llm verification: none required for R4; the first consumer would be roadmap R6's persistent
-  KV cache, where losing the artifact loses the only copy.
+align-llm verification: R6-KV-PERSIST's `--decode-step KV_SAVE` would call `f.sync()` before
+  reporting `kv.destination: "WRITTEN"`, and `gmake layer-forward-smoke` would pass unchanged in
+  outcome.
 ```
 
 ### Motivation and current sibling evidence
@@ -7705,8 +7735,17 @@ Verified in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c
 gigabyte alignpack — survives a power loss. For R4 this is genuinely harmless: a pack is a
 deterministic derivative of a file (the source GGUF) that still exists, so a torn pack costs a rerun
 of `--pack`, and `--pack-verify` detects a torn or truncated pack rather than trusting it. It is
-recorded because the next client may be a persistent KV cache (roadmap R6), where the artifact is not
-a derivative of anything else and losing it loses the only copy.
+recorded because the next client is a persistent KV cache (roadmap item 29,
+`docs/specs/r6-kv-persist.md`).
+
+**That client has now been designed and shipped, and it corrects this paragraph's own prediction.**
+The earlier text said the R6 artifact "is not a derivative of anything else and losing it loses the
+only copy". It **is** a deterministic derivative — of the pack, the geometry document, the token
+ids, and `KV_WIDTH` — so a torn `akvp` container costs exactly one re-prefill, and
+`R6_KV_TRUNCATED` or `R6_KV_DIGEST("plane")` detects it rather than loading it
+(`docs/specs/r6-kv-persist.md` section 6, risk 6). This request therefore **stays `low` and
+non-blocking**; the first client that would raise it is one whose artifact is not reproducible from
+inputs that still exist. Correcting the register upward would have been easy and wrong.
 
 ### Requested capability
 
@@ -8063,7 +8102,7 @@ Extending the existing `Result`/`Option` payload surface, consistent with the pa
 
 ```text
 Status: PROPOSED
-Priority: medium
+Priority: high
 Blocking: no
 Blocked gate or slice: none. `R4_WINDOW_UNAVAILABLE` (R0) and R4.5's window/allocation-failure code
   are retained as fail-closed guards that are not input-reachable (section 6, correction C8), and
@@ -8118,6 +8157,19 @@ in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c5842fd12d
   input controls; the code is retained purely as a fail-closed guard for a file that shrinks
   underneath the reader, and `spike-dimension-bound` was substituted as the input-reachable
   bounded-work guard the design actually needed.
+
+**New evidence, and why the priority is now high — R6-RESIDENT-WEIGHTS is this request's second and
+sharpest client.** At R4.5's 447 MB window the degrade-to-zero was an unreachable guard on a host
+that would have held the window anyway. `docs/specs/r6-resident-weights.md` reserves one
+**4,677,533,696-byte** arena, measured on the reference host at a 4,736,313,856-byte peak memory
+footprint, and there the same gap is the difference between a document and a process abort: a host
+that cannot hold the arena does not get `R6_RESIDENT_UNAVAILABLE`, it dies inside `Vec` growth with
+no code, no document, and no Align line running after it. That capability states the consequence as
+a contract row (its section 3.6) rather than hiding it, keeps `RESIDENT=weights` **opt-in** for
+exactly this reason, and adds a physical-memory preflight to `scripts/run-decode-step` — which is
+why `Blocking: no` still stands. The observable-consequence guard it does ship
+(`weights.bytes().len() != pad + resident_bytes` → `R6_RESIDENT_UNAVAILABLE`) is the same shape as
+`R4_WINDOW_UNAVAILABLE` and is equally unreachable from any input.
 
 **Consequence for the client.** Three independent capabilities (R0, R4, R4.5) each converged on the
 same workaround: define `*_WINDOW_UNAVAILABLE`/`R4_5_ALIGNMENT`-adjacent codes as fail-closed guards
@@ -8399,6 +8451,40 @@ target offset via `window_put`/`align_ggml_window_copy` (`src/model_forward.alig
 because `pread`'s always-full-capacity read would otherwise over-read every member's tail if the
 transient were larger than the smallest member.
 
+**R6-KV-PERSIST is `align_ggml_window_copy`'s second consumer, and adds no new shim symbol**
+(`docs/specs/r6-kv-persist.md` section 2.7). Its load path must fill a caller-owned
+`mut plane: buffer` from a file region, which is the same shape for the same two reasons — the
+buffer is append-only, and `f.pread` overwrites from index 0 and always requests the whole capacity
+— so the plane is read in `CHUNK_BYTES` rounds through one transient and copied in at an offset
+through `model_forward.window_put`. The format's own region order is what makes the tail read safe:
+the plane is the container's **last** region and `f.len() == total_bytes` is validated before the
+first plane byte is read, so the final short read is short by exactly the remaining bytes rather
+than an over-read. **No status change.**
+
+**R6-RESIDENT-WEIGHTS measures the platform boundary this request describes, and is its third
+consumer.** `docs/specs/r6-resident-weights.md` section 2.4 ran the probe at the pinned compiler
+against the real 4,683,073,536-byte GGUF and found the limit is not a soft cost but a hard refusal:
+
+```text
+$ ./r6w_probe MODEL.gguf 2147483647 0        # INT_MAX
+mode: single
+requested: 2147483647   count: 2147483647   len: 2147483647   ns: 482214208
+
+$ ./r6w_probe MODEL.gguf 2147483648 0        # INT_MAX + 1
+mode: single
+pread: ERROR
+```
+
+The boundary is **exactly `INT_MAX`**: Darwin's `pread(2)` refuses `nbyte >= 2 GiB` with `EINVAL`,
+and because `align_rt_io_file_pread` always asks for `b.cap`, **a `buffer` at or above 2 GiB cannot
+be filled by one `pread` at this pin on this platform at all**. That is not a preference for chunked
+reads; it is the only shape available. The resident arena is filled in 4,669 `CHUNK_BYTES` rounds
+through the same `read_into_window` the streamed path uses, at a measured 2.58 s for
+4,677,120,000 B. A bounded-length `pread` would let each weight member be read straight to its own
+arena offset and would delete the transient and the `window_copy` from the fill entirely.
+**No status change**; this is continuing evidence, and the chunked fill is not written against a
+hypothetical surface.
+
 ### Requested capability
 
 ```text
@@ -8468,6 +8554,12 @@ all: `fill_members`/`read_into_window` (`src/model_forward.align:2005-2060`) tak
 to avoid the measured 6.8-8.5x resident-set inflation the rebind-per-call shape produces at this
 member count. `read_exact` itself is unchanged and remains R0/R4's shared reader for every caller
 that reads fewer times per run.
+
+**R6-KV-PERSIST is a cited client** (`docs/specs/r6-kv-persist.md` section 2.7). Its plane refill
+uses one `buffer(model_forward.CHUNK_BYTES)` transient that `f.pread` refills in place and that is
+**never rebound**, for exactly the reason measured above; the two small metadata regions still go
+through `alignpack_read.read_exact`, which rebinds, because they are read once each at 192 and at
+most 128 bytes. **No status change.**
 
 ### Requested capability
 
@@ -9560,60 +9652,6 @@ Copy the scalar to a local before the call and pass the local.
 
 ---
 
-## Request 52 — `match` on an owned record's `Option` field silently moves the payload out, and a later encode drops it
-
-```text
-Status: PROPOSED
-Priority: high
-Blocking: no
-Blocked gate or slice: none. C4-REPAIR-MEASURED ships by reading every `Option` member of an owned
-  record through a `borrow` binding, never through a `match` on the owned value.
-Independent work that may continue: all of C4-REPAIR-MEASURED.
-Resume condition: an Align release either rejects a `match` that partially moves a payload out of an
-  owned record still live at the match site, or preserves the field so a subsequent
-  `json.encode` of that record re-emits it. Either answer closes this; silence does not.
-Align commit or pull request: none
-align-llm verification: read `PromptTaskRow.attempts`, `repair_loop_count`, and
-  `generation_to_passing_patch_ns` through a direct `match` on the owned row in
-  `src/prompt_score.align`, re-encode the row with `json.encode`, and require the encoded bytes to
-  equal the decoded input's for the frozen `eval/prompt/gate/prompt-evaluation-improved.json` chain.
-```
-
-### Motivation and current sibling evidence
-
-C4-REPAIR-MEASURED moves `PROMPT_TASK_ROW` to `schema_version: 2` by adding `Option` members to the
-existing record rather than declaring a parallel `PromptTaskRowV2`. That choice depends on one
-property: a decoded document must re-encode byte-identically, because
-`src/prompt_evaluate.align` decodes the Python evaluator's output and **re-encodes** it to produce
-the persisted artifact, and `make prompt-gate-check` verifies the frozen C6 evidence against those
-exact bytes.
-
-While implementing the version-2 verifier, reading an `Option` field with
-
-```text
-match owned.field { Some(value) => ..., None => ... }
-```
-
-on an **owned** record partially moved the payload out of the record with no diagnostic at all. The
-record stayed live and usable; a later `json.encode` of it simply omitted that field. Nothing was
-reported at compile time and nothing failed at run time — the artifact was just missing a member,
-and its `content_sha256` then disagreed with the producer's.
-
-Reading the same field through a `borrow` binding is safe and is what the shipped code does
-throughout. The two spellings look interchangeable at the call site and are not.
-
-This is a "nothing hidden" violation rather than a missing feature: the language's own ownership
-rules make the move legitimate, but a partial move out of a still-live record that silently changes
-what that record serializes to is exactly the class of failure a compiler should refuse. The blast
-radius is any Align program that decodes a document, inspects an `Option` member by `match` on the
-owned value, and re-encodes — which is the ordinary shape of every artifact rewriter in this
-repository.
-
-Either resolution is acceptable and both are better than the current silence: reject the partial
-move while the record is still live, or keep the payload in place for a `match` that only inspects.
-
----
-
 ## Request 49 — A cross-module call with a `borrow mut` argument refuses every shorter-lived operand
 
 ```text
@@ -9678,6 +9716,15 @@ frame. Measured count: **161 of the 178 errors** in the first cross-module draft
 `src/decode_step.align` were this one diagnostic, and every one of them disappeared by moving the
 callee into the calling module unchanged.
 
+**R6-KV-PERSIST is the first client for which this gap shapes a module boundary rather than forcing
+a copy** (`docs/specs/r6-kv-persist.md` section 2.7). `src/kv_plane.align` owns the `akvp` format —
+its constants, header, identity record, region arithmetic, digests, and writer — and every one of
+those is expressible with borrowed views and by-value returns, so they cross the boundary freely.
+The plane **refill** does not: it must write into `src/decode_step.align`'s own `mut plane: buffer`
+alongside that frame's other locals, which is precisely the refused shape. The byte movement
+therefore stays with the buffer's owner, the format's authority stays in one module, and no
+compatibility layer is built around the gap. **No status change.**
+
 **2. A foreign call unions its `borrow mut` arguments.** `model_forward.stage_plan` reports through
 four of them:
 
@@ -9729,6 +9776,257 @@ No new syntax. Two checker changes:
   removal a refactor rather than a behaviour change.
 - `alignc check` and `alignc build` agree on every one of the shapes above (Request 42's own
   criterion, restated here because that is how both were discovered).
+
+---
+
+## Request 50 — `std.os`: how much physical and available memory the host has
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. `R6-RESIDENT-WEIGHTS`'s `RESIDENT=weights` operand is opt-in and
+  `scripts/run-decode-step` performs the check in shell before the arm is invoked
+  (`docs/specs/r6-resident-weights.md` section 3.6, consequence 2).
+Independent work that may continue: all of R6-RESIDENT-WEIGHTS, and any later capability that
+  reserves a large buffer behind an opt-in operand with a runner-side preflight.
+Resume condition: an Align release exposes the host's physical and available memory to a program.
+Align commit or pull request: none
+align-llm verification: `src/decode_step.align` refuses `RESIDENT=weights` with a
+  document-carrying refusal code when the host cannot hold the arena — **no such code exists
+  today**; the name `R6_RESIDENT_HOST` is this request's proposal for it and is not a shipped
+  surface. The shell preflight in `scripts/run-decode-step` and its `N/A` line are deleted;
+  `gmake layer-forward-smoke` and `gmake decode-step-qualification` pass with a new
+  forced-low-limit smoke case reaching the new code.
+```
+
+### Motivation and current sibling evidence
+
+An Align program cannot ask the host how much memory it has. `R6-RESIDENT-WEIGHTS` reserves one
+4,677,533,696-byte `buffer` for the resident weight arena, and the honest consequence on a host that
+cannot hold it is **a process abort, not a refusal**: `buffer(cap)` degrades to `cap = 0` without
+telling the caller and `append` grows through Rust's infallible, abort-on-OOM path (Request 35).
+The arm therefore cannot decide whether to accept `RESIDENT=weights`; only something outside the
+program can.
+
+Searched in the sibling checkout at the pinned commit
+`3a34febe912db5096c58c74fede36ff53f223e04`:
+
+- `crates/align_stdlib/` exposes no memory inquiry. `std.os` has no `physical_memory`,
+  `available_memory`, `total_memory`, or `page_size`; `std.process` runs children and captures
+  output; `std.fs` answers questions about files, and `fs.free_space`-style disk inquiry is the
+  nearest neighbour and is about a filesystem, not about RAM.
+- `docs/language-spec.md`'s standard-library surface lists no host-resource module.
+- The workaround an application would otherwise reach for — spawning `sysctl -n hw.memsize` or
+  reading `/proc/meminfo` through `std.process`/`std.fs` — is exactly the "second, untested input
+  path" `docs/review-checklist.md` warns about, and it makes a memory-safety decision depend on a
+  child process's text output. No such workaround is built.
+
+### Proposed surface
+
+```align
+module std.os
+
+// Total physical memory installed on the host, in bytes.
+pub fn physical_memory() -> Result<i64, Error>
+
+// Memory the host reports as currently available to a new allocation, in bytes. It is a hint by
+// nature — it changes between the call and the allocation — and the contract should say so, in the
+// same way `fs` free-space answers are hints.
+pub fn available_memory() -> Result<i64, Error>
+```
+
+Both return `Err` rather than a sentinel on a platform or configuration that cannot answer, so a
+caller that must fail closed can, and `i64` rather than `u64` for the reason every other size in the
+language is `i64`.
+
+### Acceptance criteria
+
+1. `physical_memory()` returns the host's installed memory on Linux (`/proc/meminfo` `MemTotal`) and
+   on macOS (`hw.memsize`), and `Err` on a platform that cannot answer, with a test on each
+   supported target.
+2. `available_memory()` returns a value no greater than `physical_memory()` on the same host.
+3. Neither call allocates a large buffer, spawns a process, or reads a path the caller supplies.
+4. A cgroup-constrained Linux container reports the **container's** limit rather than the host's, or
+   the contract states plainly that it does not and why.
+
+### What this capability does instead, today
+
+`scripts/run-decode-step` reads `sysctl -n hw.memsize` / `/proc/meminfo` in shell and prints one
+explicit `N/A` line naming physical memory below 12 GiB, exiting 0. That is a correct home for the
+check — the runner already refuses to start below a disk-space floor in the same shape — and it is
+recorded here rather than treated as sufficient, because the refusal a *caller of the arm* deserves
+is a document with a code, and the arm cannot produce one.
+
+## Request 51 — A reserved word used as an identifier should say so
+
+```text
+Status: PROPOSED
+Priority: low
+Blocking: no
+Blocked gate or slice: none. Every identifier in `R6-RESIDENT-WEIGHTS` is `resident_*`, `pool`, or
+  `layout`; the reserved word is the language's prerogative and the code that avoids it is normal
+  code, not a workaround.
+Independent work that may continue: all of it. This request is about a diagnostic, not a semantic.
+Resume condition: an Align release reports a reserved word used in an identifier position by name.
+Align commit or pull request: none
+align-llm verification: compile the three repros below with the shipped compiler and observe one
+  error that names the reserved word and its position, and no cascading top-level errors on later
+  lines; no align-llm source changes and no regression of its own, because the subject is the
+  compiler's output rather than this repository's behaviour.
+```
+
+### Motivation and current sibling evidence
+
+`arena` is a reserved word — `crates/align_lexer/src/lib.rs:675` maps it to `TokKind::Arena`, and
+`docs/language-spec.md:314` lists it in the memory section's reserved list, where `arena name {}`
+binds a scope-local `region` capability (`docs/language-spec.md:429`). That is the language's
+prerogative and is not what this request is about. What it is about is that using one in an
+identifier position produces a diagnostic that names neither the word nor, in the binding case, the
+right line — and then cascades into unrelated top-level errors that bury the one real cause.
+
+Reproduced at the pinned compiler `3a34febe912db5096c58c74fede36ff53f223e04`; the reserved-word list
+is read from the sibling checkout at `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`. `grep -rn
+'reserved word\|is a keyword\|reserved keyword' crates/align_parser/src crates/align_lexer/src`
+returns nothing: the compiler has no such diagnostic to emit.
+
+**Repro 1 — a parameter.** The first error is at the right column and says the wrong thing; the two
+that follow are consequences and one of them names a line with nothing wrong on it.
+
+```align
+fn total(borrow arena: slice<u8>) -> i64 {
+  return arena.len()
+}
+
+fn main() {
+  data: buffer := buffer(8)
+  print(total(data.bytes()))
+}
+```
+
+```text
+repro.align:1:17: error: expected ':'
+repro.align:1:17: error: expected identifier
+repro.align:3:1: error: expected `fn`, a type declaration, or a constant (`NAME := …`) at top level
+repro.align:7:9: error: undefined function: 'total'
+```
+
+**Repro 2 — a local binding, and the worse case.** The error is reported at the `:=`, one token
+**past** the cause, because `arena name {}` is what the parser was expecting; the two cascading
+errors then name lines 3 and 4, neither of which contains a defect.
+
+```align
+fn main() {
+  arena := 3
+  print(arena)
+}
+```
+
+```text
+repro.align:2:9: error: expected '{'
+repro.align:2:9: error: expected expression
+repro.align:3:3: error: expected `fn`, a type declaration, or a constant (`NAME := …`) at top level
+repro.align:4:1: error: expected `fn`, a type declaration, or a constant (`NAME := …`) at top level
+```
+
+**Repro 3 — the class, not the word.** `unsafe` behaves identically, so this is a property of
+reserved words in identifier positions rather than of `arena`:
+
+```align
+fn total(borrow unsafe: i64) -> i64 { return unsafe }
+```
+
+```text
+repro.align:1:17: error: expected ':'
+repro.align:1:17: error: expected identifier
+repro.align:5:19: error: undefined function: 'total'
+```
+
+By contrast `region`, which is a type name rather than a reserved word, is accepted as a parameter
+name at the same pin — so the boundary is exactly the lexer's keyword set.
+
+### Proposed surface
+
+No language surface changes. When the lexer produces a keyword token where the parser requires an
+identifier, the diagnostic should name the word and say it is reserved, and the parser should
+recover at that token so the rest of the file still type-checks. For example:
+
+```text
+repro.align:1:17: error: `arena` is a reserved word and cannot be used as an identifier
+  note: it introduces a scope-local region (`arena name { … }`); see the memory section of the
+        language specification
+```
+
+### Acceptance criteria
+
+1. All three repros above produce **one** error each, naming the reserved word and its own position.
+2. No cascading top-level error is emitted for a file whose only defect is a reserved-word
+   identifier: the parser recovers at that token.
+3. The binding form (repro 2) reports at the identifier, not at the following token.
+4. A test per repro shape — parameter, local binding, and one more identifier position — in the
+   compiler's own diagnostic suite.
+
+### What this capability does instead, today
+
+Nothing, and nothing is needed. `docs/specs/r6-resident-weights.md` section 5.8 records that every
+identifier in that capability is `resident_*`, `pool`, or `layout`, and that "arena" survives only
+in prose. The request is filed because the diagnostic cost a bounded but real amount of time to
+diagnose — the visible errors were on lines that had nothing wrong with them — and the next
+implementer to reach for the most natural word for a large contiguous allocation will pay it again.
+
+---
+
+## Request 52 — `match` on an owned record's `Option` field silently moves the payload out, and a later encode drops it
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none. C4-REPAIR-MEASURED ships by reading every `Option` member of an owned
+  record through a `borrow` binding, never through a `match` on the owned value.
+Independent work that may continue: all of C4-REPAIR-MEASURED.
+Resume condition: an Align release either rejects a `match` that partially moves a payload out of an
+  owned record still live at the match site, or preserves the field so a subsequent
+  `json.encode` of that record re-emits it. Either answer closes this; silence does not.
+Align commit or pull request: none
+align-llm verification: read `PromptTaskRow.attempts`, `repair_loop_count`, and
+  `generation_to_passing_patch_ns` through a direct `match` on the owned row in
+  `src/prompt_score.align`, re-encode the row with `json.encode`, and require the encoded bytes to
+  equal the decoded input's for the frozen `eval/prompt/gate/prompt-evaluation-improved.json` chain.
+```
+
+### Motivation and current sibling evidence
+
+C4-REPAIR-MEASURED moves `PROMPT_TASK_ROW` to `schema_version: 2` by adding `Option` members to the
+existing record rather than declaring a parallel `PromptTaskRowV2`. That choice depends on one
+property: a decoded document must re-encode byte-identically, because
+`src/prompt_evaluate.align` decodes the Python evaluator's output and **re-encodes** it to produce
+the persisted artifact, and `make prompt-gate-check` verifies the frozen C6 evidence against those
+exact bytes.
+
+While implementing the version-2 verifier, reading an `Option` field with
+
+```text
+match owned.field { Some(value) => ..., None => ... }
+```
+
+on an **owned** record partially moved the payload out of the record with no diagnostic at all. The
+record stayed live and usable; a later `json.encode` of it simply omitted that field. Nothing was
+reported at compile time and nothing failed at run time — the artifact was just missing a member,
+and its `content_sha256` then disagreed with the producer's.
+
+Reading the same field through a `borrow` binding is safe and is what the shipped code does
+throughout. The two spellings look interchangeable at the call site and are not.
+
+This is a "nothing hidden" violation rather than a missing feature: the language's own ownership
+rules make the move legitimate, but a partial move out of a still-live record that silently changes
+what that record serializes to is exactly the class of failure a compiler should refuse. The blast
+radius is any Align program that decodes a document, inspects an `Option` member by `match` on the
+owned value, and re-encodes — which is the ordinary shape of every artifact rewriter in this
+repository.
+
+Either resolution is acceptable and both are better than the current silence: reject the partial
+move while the record is still live, or keep the payload in place for a `match` that only inspects.
 
 ---
 
