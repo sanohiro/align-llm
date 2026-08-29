@@ -48,8 +48,10 @@ adds one explicitly marked `Shipped:` note. Sections 12 to 14 record the results
 and the ledger-to-diff mapping. All four design-gate triggers fire.
 
 **State.** Implemented, measured, reviewed, and repaired. Implementation and measurement are
-committed through `a94ab24`; the consolidated review repair is the commit carrying this block. The
-tree is buildable and every hosted owner passes.
+committed through `a94ab24`; the consolidated review repair is `588bcbf`. A third merge takes
+`origin/main` `c1ad71e` (the session-stop handoff, PR #154) without rebasing; its only conflict was
+this active block, resolved by retaining the completed repair state and queuing the other unfinished
+branch below. The tree is buildable and every hosted owner passes.
 
 **Performance contract, committed with the design.** Owner `docs/specs/r6-resident-weights.md`
 section 3.4. Baseline 3.63 s (`timings.elapsed_ns`, prompt 1, `N = 16`, `KV_WIDTH` 256, reference
@@ -113,15 +115,30 @@ and `a94ab24` make the supersession explicit. A final host-native review of the 
 found one P3 documentation mismatch: three unchanged golden row counts still described the older
 merge base. They are refreshed to 63, 29, and 99. No finding remains unresolved.
 
-**Next actions, in order.** (1) Commit the consolidated review repair and merge the latest `main`.
-(2) Run `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (3) Publish
+**Next actions, in order.** (1) Run
+`python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (2) Publish
 the English pull request with section 12.4 as the measurement of record, the `BELOW FLOOR` result,
-the item 32 instrument-skew refusal, both review envelopes, and all dispositions. (4) Merge after
+the item 32 instrument-skew refusal, both review envelopes, and all dispositions. (3) Merge after
 required checks pass.
 
 **Intentional uncommitted files.** None.
 
-## Active: R6-PREFIX-KEY (2026-08-29)
+## Queued after this capability
+
+- `agent/c4-repair-template` (roadmap item **39**, C4-REPAIR-TEMPLATE) is implemented and
+  owner-verified. Its gate result is section 1.6 (b): the version-3 template introduced the
+  attempt-1 regression that it then recovered, so the prompt is not the binding constraint and the
+  C4 gate remains open. Resume its in-progress merge of `origin/main`, then review, repair,
+  fresh-image preflight, pull request, and merge.
+- Roadmap item **38**, R6-PREFIX-TTFT, follows item 39. Its charter is
+  `docs/specs/r6-prefix-key-corpus.md` section 11.
+
+**Host facts worth keeping:** serialize the 16 GiB host across Track A gates, DinD fresh-image
+preflight, real-model qualification, and timing benchmarks. Run DinD as uid 501; bwrap inside Docker
+needs `--security-opt systempaths=unconfined`. Do not pin >= 2-token decode-step or >= 4-token
+prefill activations in a hosted golden because arm64 and x86_64 can differ in the last bit.
+
+## Merged checkpoint: R6-PREFIX-KEY (PR #153, `main` `661dd3d`, 2026-08-30)
 
 Branch `agent/r6-prefix-key-corpus`, cut from `agent/mf-single-token-logits` `40eb965` — that
 branch's merge of `origin/main` `45ff38e` (PR #148). It was **stacked on roadmap item 36**, which
@@ -142,7 +159,7 @@ Roadmap item **37**. The design gate fires on all four `CLAUDE.md` triggers. The
 the contract, section 11 is item 38's charter, **section 12 records every implementation deviation**,
 and section 13 records the results.
 
-**Implemented, hosted-verified, not yet published.** `--decode-step` gains a sixteenth operand,
+**Implemented, verified, published as PR #153.** `--decode-step` gains a sixteenth operand,
 `STORE`, a caller-created directory that is mutually exclusive with `KV_SAVE` and `KV_LOAD`. The arm
 derives a 32-byte key — SHA-256 over a 152-byte preimage of three digests plus `pack_total_bytes`,
 `kv_width`, `token_count`, `plane_layout_version`, `element_type`, `format_version`, `key_version` —
@@ -229,7 +246,7 @@ gains a third client (the store's check-then-create window, which at this pin le
 and Request 31 gains the correction a store owes it and **stays low and non-blocking** with its
 reason.
 
-## Active: C4-REPAIR-EDITSET (2026-08-29)
+## Merged checkpoint: C4-REPAIR-EDITSET (PR #152, `main` `8d095a4`, 2026-08-30)
 
 Branch `agent/c4-repair-editset`, originally stacked on `agent/c4-repair-measured` at `c07775c`,
 now merged with `origin/main` at `4940005` (PR #150, which merged that parent capability).
