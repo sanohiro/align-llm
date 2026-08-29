@@ -55,23 +55,28 @@ host, item 32 section 12.3). Primary metric `weights.step_dense_pack_bytes`: 4,0
 Cost ceiling **276,000 ppm**, floor **150,000 ppm** adopted unchanged, predicted 2.63 s, margin
 1.84x.
 
-**Measured (section 12.3).** The byte claim holds exactly at all twelve points and oracle D is
-`MATCH` on all four prompts; region 311,066,624 B reproduced independently from the pack document;
-`wrap_count` 306 -> 1. **The elapsed leg is `BELOW FLOOR` and no elapsed claim is made.** The session
-reproduced the streamed baseline at **6.74 s** rather than 3.63 s — the host was shared with three
-other agents throughout and never reached the 6 GB free the coordination rule asks for — and the
-fixed task removes 1,519 ppm at worst-of-3, 125,150 at the median, 123,796 at best-of-3, with the
-other three prompts between 122,518 and 137,701 ppm. `INDETERMINATE` does not apply: the streamed
-leg's own spread is 22,085 ppm, well inside the ceiling. **A re-run on a quiet reference host is the
-one thing that would settle clause 12**, and it is the only open item.
+**Measured twice, and the measurement of record is the quiet-host run (section 12.4).** It was taken
+with no `llama-server`, no container and a completely clear process table at **8.47 GB free**, and it
+**reproduced the committed baseline**: streamed `[3.458, 3.551, 3.928]` s against 3.63 s, a median
+21,693 ppm away, where the first run had drifted 857,000 ppm. Byte clauses hold exactly at all twelve
+points, oracle D is `MATCH` on all four prompts, the region is 311,066,624 B reproduced independently
+from the pack document, and `wrap_count` is 306 -> 1 — **identical in every field to the contended
+run**, which is what a counter is supposed to be.
 
-**The quiet-host re-run was attempted and could not be taken (section 12.5).** Polled every three
-minutes for four hours under a stricter gate than the design asks for — no `*-dind-*`/`c4-*`
-container, an empty `pgrep -f 'llama-server|ggml-spike|run-decode-step|run-moe-decode-step'`, and
->= 8 GB free — with nothing killed. Over **80 samples** the container half held in 80 of 80, the
-process half in **0 of 80** (one Qwen `llama-server`, another agent's Track A server, was present at
-every sample and had been up 6 h 21 m), and the memory half in **0 of 80** (2.05–5.82 GB, mean
-5.03 GB). The contended run stands as evidence with its drift stated; the verdict is unchanged.
+**The elapsed leg is `BELOW FLOOR` at 138,402 ppm against a 150,000 ppm floor** — 92 % of the floor,
+50 % of the ceiling. Median 86,825 ppm, best-of-3 84,187 ppm, so no reading clears it. The other
+three prompts at `N = 16` give 138,128, **156,687** and 147,670 ppm: one prompt does clear the floor
+and it is not the fixed task, which section 3.7 chose before any number existed and which is not
+changed now. `INDETERMINATE` does not apply (streamed spread 129,116 ppm inside the 276,000 ppm
+ceiling) and neither does the `miss` label (the result is above half the ceiling). **No elapsed claim
+is made; section 4.6 clause 12 puts the capability on clauses 1 to 11**, which hold exactly. Clause
+12 is `NOT_MET` and that is the settled answer, not an open item.
+
+**The first run (section 12.5) is kept as evidence** with its drift stated. Getting the quiet host
+took two attempts: one 4-hour poll at an 8 GB floor that never fired (80 samples; a Qwen
+`llama-server` present in 80 of 80 and memory 2.05-5.82 GB), and a second at a 6 GB floor — the floor
+the session's other benchmarks used — that fired on its 42nd sample at 8.47 GB, so the relaxation was
+not load-bearing.
 
 **`gmake moe-decode-step-qualification` refuses on this host**, at its own instrument cross-check
 and before the arm runs, with the same two `result_output` sums `docs/specs/r6-olmoe-decode.md`

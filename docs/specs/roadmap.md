@@ -802,12 +802,20 @@ The current forward delivery order is:
     in **both** legs, `weights.resident_bytes` is **311,066,624** (equal to an independent walk of
     the pack document's 147 dense member records), `weights.wrap_count` is **306 -> 1**, and
     **oracle D is `MATCH` on all four prompts**. The elapsed leg is **`BELOW FLOOR`** and is recorded
-    as such: the session reproduced the streamed baseline at **6.74 s**, not the committed 3.63 s —
-    the reference host was under sustained multi-agent load — and the fixed task's worst-of-3 removes
-    1,519 ppm, with the median and best-of-3 readings at 125,150 and 123,796 ppm and the other three
-    prompts between 122,518 and 137,701 ppm. No reading clears the 150,000 ppm floor on that host
-    state, so **no elapsed claim is made**; per section 4.6 clause 12, stated in advance, clauses 1
-    to 11 carry the capability. `gmake moe-decode-step-qualification` itself refuses on this host at
+    as such. It was measured twice. The **measurement of record** is the quiet-host run (section
+    12.4), taken with no `llama-server`, no container and a completely clear process table at
+    8.47 GB free, which **reproduced the committed baseline** — streamed `[3.458, 3.551, 3.928]` s
+    against 3.63 s, a median 21,693 ppm away — and removed **138,402 ppm** at the fixed task
+    worst-of-3, **92 % of the 150,000 ppm floor and 50 % of the 276,000 ppm ceiling**. The median and
+    best-of-3 readings are 86,825 and 84,187 ppm, so no reading clears the floor; the other three
+    prompts at `N = 16` give 138,128, **156,687** and 147,670 ppm, so one prompt does clear it and it
+    is not the fixed task, which section 3.7 chose before any number existed. `INDETERMINATE` does
+    not apply (streamed spread 129,116 ppm) and the `miss` label does not either (the result is above
+    half the ceiling, so the ceiling estimate was sound and the seam is simply thin, as section 3.7's
+    1.84× margin predicted). **No elapsed claim is made**; per section 4.6 clause 12, stated in
+    advance, clauses 1 to 11 carry the capability. A first run on a contended host (section 12.5) is
+    kept as evidence with its 857,000 ppm baseline drift stated: its byte results are identical to
+    the quiet run's in **every** field, which is what a counter is supposed to do. `gmake moe-decode-step-qualification` itself refuses on this host at
     its **instrument cross-check**, reproducing item 32's deviation 4 to the digit, which is item
     32's condition and not this capability's.
     **There is no crossover:** unlike item 30, whose 4.68 GB fill loses at `N = 1`, this fill costs

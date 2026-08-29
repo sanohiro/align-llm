@@ -1308,7 +1308,7 @@ M1 is the load-bearing one: it is the mutant every *correctness* oracle passes. 
 had been the arithmetic `residency.dense_bytes_read` rather than the reader's own counter, nothing in
 this repository would have caught it.
 
-### 12.3 The measurement
+### 12.3 The measurement, first run — a contended host
 
 **Section 2's arithmetic, reproduced from the pack document alone.** Before any timed run, the
 reference model was packed once and its 3,219 member records walked by section 2.2's rule,
@@ -1451,39 +1451,92 @@ real, consistent across prompts, and below the floor the owning performance docu
 the quiet reference host is what would settle it, and section 7 risk 9 already recorded that every
 number here is from one machine in one thermal environment.
 
-### 12.5 The quiet-host re-run, attempted and not obtained
+### 12.4 The quiet-host run — the measurement of record
 
-The run above was taken on a contended host, and a contended host is not the measurement of record.
-A re-run was therefore attempted under a stricter gate than section 3.7 asks for, polled every three
-minutes for four hours, with nothing ever killed:
+Section 12.3 was taken on a contended host and a contended host is not a measurement of record. The
+run was therefore re-taken under a gate stricter than section 3.7 asks for — no `llama-server`, no
+`*-dind-*` or `c4-*` container, no `ggml-spike`/`run-decode-step`/`run-moe-decode-step`, and at
+least 6 GB free — polled every three minutes, with **nothing ever killed**. The gate opened at
+**20:06:07 UTC at 8.47 GB free with a completely clear process table**, on the 42nd sample. Same
+driver, same operands, same interleaving (`repeat` outside, `mode` inside), three repeats,
+`N ∈ {1, 4, 16}`, four prompts, one session.
 
-* `docker ps` showing no `*-dind-*` and no `c4-*` container;
-* `pgrep -f 'llama-server|ggml-spike|run-decode-step|run-moe-decode-step'` empty;
-* at least **8 GB** free.
+**The baseline reproduced.** The committed baseline is 3.63 s; this session's streamed leg at the
+fixed task ran `[3.458, 3.551, 3.928]` s — a **median of 3.551 s, 21,693 ppm from the committed
+figure**, and a worst-of-3 of 3.928 s at 82,208 ppm. Against section 12.3's 6.74 s and 857,000 ppm
+this is the reference host behaving like itself, so the elapsed leg below is comparable to the
+denominator section 3.7's ceiling was derived on.
 
-**The gate never opened.** Over **80 samples from 13:36:44 to 17:39:33 UTC**:
+**Every byte clause is identical to section 12.3, to the byte**, which is what a counter is supposed
+to do across two host states four hours apart: `step_dense_pack_bytes` 253,078,656 × `N` streamed
+and **0** in `dense` mode at all twelve points; `step_expert_pack_bytes` 487,587,840 × `N` in **both**
+legs at all twelve; region **311,066,624 B** matching the independent walk of the pack document's 147
+dense member records; fill **311,027,712 B** in **418** `pread`s; `wrap_count` **306 → 1**;
+`resident_wraps_created`/`_freed` **1 / 1**; **oracle D `MATCH` on all four prompts**; three
+consecutive `dense` runs byte-identical after `normalize` on all four. The one-time fill cost
+**32.8–33.6 ms** here against 122–125 ms on the loaded host, which is the page cache and not the
+capability.
 
-| Condition | Result |
-| --- | --- |
-| No blocking container | met in **80 of 80** samples |
-| No blocking process | met in **0 of 80** samples — one `llama-server` (Qwen2.5-Coder-7B, another agent's Track A server, up 6 h 21 m at the last sample) was present at **every** sample |
-| ≥ 8 GB free | met in **0 of 80** samples — free memory ranged 2.05–5.82 GB, mean **5.03 GB**, and never approached 8 GB |
+**The elapsed leg.** Section 4.6's rules applied exactly as written.
 
-So the contended run of section 12.3 stands as the only elapsed measurement this capability has, and
-it is kept as evidence **with its drift stated** rather than promoted to a claim. Nothing was
-re-read, no statistic was re-picked, and the verdict is unchanged: **`BELOW FLOOR`, no elapsed claim,
-clauses 1 to 11 carry the capability.**
+| Reading | streamed | `dense` | removed | ppm of the fixed task |
+| --- | --- | --- | --- | --- |
+| **worst-of-3 (the pre-committed reading)** | 3.928 s | 3.385 s | 0.544 s | **138,402** |
+| median | 3.551 s | 3.243 s | 0.308 s | 86,825 |
+| best-of-3 | 3.458 s | 3.167 s | 0.291 s | 84,187 |
 
-**What is still owed, and it is one command.** When a genuinely quiet reference host is available,
-re-run the interleaved benchmark — three repeats, `N ∈ {1, 4, 16}`, four prompts, `repeat` outside
-and `mode` inside — and apply section 4.6's rules exactly as written. If the reproduced streamed
-baseline lands near the committed 3.63 s, the fixed task's ppm becomes comparable to the 276,000 ppm
-ceiling and clause 12 can be decided on its merits; the three readings this run produced
-(1,519 / 125,150 / 123,796 ppm) and the other three prompts (122,518–137,701 ppm) are what a reader
-should expect it to move from. **The byte claim needs no re-run**: it is a counter, it was identical
-across all three repeats at all twelve points, and no host state can move it.
+Streamed `[3.458, 3.551, 3.928]` s; `dense` `[3.167, 3.243, 3.385]` s.
 
-### 12.4 Verification, exact commands and results
+`INDETERMINATE` **does not apply**: the streamed leg's own spread is **129,116 ppm**, inside the
+276,000 ppm ceiling. The verdict is therefore **`BELOW FLOOR` at 138,402 ppm against a 150,000 ppm
+floor** — **92 % of the floor and 50 % of the recorded ceiling**. Section 3.7's `miss` label does
+**not** apply: 138,402 is above half the ceiling, so the ceiling estimate was sound and it is the
+seam that is thin, exactly as section 3.7 predicted when it recorded the margin as 1.84× rather than
+the dense arm's 3.9×.
+
+Per section 4.6 clause 12, stated in advance: **clauses 1 to 11 carry the capability and no elapsed
+claim is made.**
+
+Three things are reported rather than argued away.
+
+1. **The verdict is the same under every reading, and the pre-committed one is the *most* generous
+   here.** Worst-of-3 gives 138,402 ppm because the streamed leg's slowest run (3.928 s) is its own
+   outlier; the median gives 86,825 and best-of-3 gives 84,187. All three are below 150,000. There is
+   no statistic under which this run clears the floor, which forecloses the obvious objection in the
+   opposite direction from section 12.3's.
+2. **One prompt does clear the floor and it is not the fixed task.** At `N = 16` the four prompts
+   give 138,402 (prompt 1, the fixed task), 138,128 (prompt 2), **156,687** (prompt 3) and 147,670
+   (prompt 4) — mean 145,222. Prompt 3 is above 150,000 ppm. The fixed task is prompt 1 by section
+   3.7's own choice, made before any number existed and because it is the least flattering
+   denominator, and it is **not** changed now that a different prompt would clear. That the four
+   cluster within 19,000 ppm of one another is the strongest evidence in this document that the
+   effect is real and simply short of the bar.
+3. **`N = 1` and `N = 4` behave as section 3.7 declared.** At `N = 4` all four prompts win
+   (49,733–103,569 ppm); at `N = 1` two win and two lose (−82,346 to +223,489 ppm), which is the
+   fill's 33 ms competing with one step's saving. Both remain diagnostics and neither is claimed.
+
+**What the two runs establish together.** The byte claim is established twice, on two very different
+host states, identically — it is a counter and no host state can move it. The elapsed effect is
+real, consistent across four prompts, and **below the floor the owning performance document sets**:
+138,402 ppm where 150,000 is required. `NOT_MET` on clause 12, honestly, with clauses 1 to 11
+carrying the capability.
+
+### 12.5 The contended run, kept as evidence
+
+Section 12.3 is retained in full rather than replaced. Its byte results are identical to section
+12.4's in every field, which is itself the useful finding; its elapsed leg was taken against a
+reproduced baseline of 6.74 s (857,000 ppm from the committed 3.63 s) on a host shared with three
+other agents, and is **not** the measurement of record. The two together are the evidence that the
+byte claim is host-independent and the elapsed leg is not.
+
+The quiet-host gate that finally opened had been attempted once before and timed out: 80 samples
+between 13:36 and 17:39 UTC in which the container half held in 80 of 80, the process half in 0 of 80
+(a Qwen `llama-server`, another agent's Track A server, present at every sample), and an 8 GB memory
+half in 0 of 80 (2.05–5.82 GB, mean 5.03). The successful attempt used a 6 GB floor — the same floor
+the session's other benchmarks used, and 8.47 GB was free when it fired, so the relaxation was not
+load-bearing.
+
+### 12.6 Verification, exact commands and results
 
 All on the reference host (Apple M1, 8 cores, 16 GiB, macOS 26.5.2, `darwin/arm64`), pin
 `3a34febe912db5096c58c74fede36ff53f223e04`, through the repository wrapper.
@@ -1499,7 +1552,7 @@ All on the reference host (Apple M1, 8 cores, 16 GiB, macOS 26.5.2, `darwin/arm6
 | `gmake layer-forward-smoke` | PASS — section 12.2, all seven blocks |
 | the four ledger mutants | all four **died**; section 12.2's table |
 | `git diff --check` | clean |
-| `gmake moe-decode-step-qualification` | **refused at its own instrument cross-check**, before the arm ran, reproducing item 32's deviation 4 to the digit. Section 12.3 records the diagnosis and the standalone driver that took the measurement it blocks |
+| `gmake moe-decode-step-qualification` | **refused at its own instrument cross-check**, before the arm ran, reproducing item 32's deviation 4 to the digit. Section 12.3 records the diagnosis and the standalone driver that took the measurement it blocks; sections 12.4 and 12.5 record the two runs that driver produced |
 
 **What was not run, and why.** `make ci` is not selected: this capability changes no aggregate
 membership, no check topology, and no integration behaviour, and its ledger names no aggregate.
