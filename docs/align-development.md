@@ -2391,6 +2391,118 @@ graph already contains. `scripts/ggml_shim_stub.c` gains two forced-failure buil
 shared region — `engine+compute-step2` and `engine+writeback-offset` — which are never defined in an
 ordinary build.
 
+## The `--moe-decode-step` arm (R6-OLMOE-DECODE)
+
+`docs/specs/r6-olmoe-decode.md` is the authoritative ledger. It ships as a **seventh arm of the
+existing `ggml-spike` executable**, `--moe-decode-step`, beside R4.5's positional arm,
+`--layer-forward`, `--model-forward`/`--model-forward-gpu`, `--moe-layer-forward`,
+`--moe-model-forward`, and `--decode-step`. It reuses `src/layer_olmoe.align` — R5D's and R5E's
+topology module, extended with a decode condition and a decode phase-A table — rather than adding a
+second OLMoE description, and it reuses R6's KV plane layout unchanged.
+
+```sh
+gmake ggml-spike                       # unchanged; also builds the --moe-decode-step arm
+gmake layer-forward-smoke              # extended with a seventh block; unchanged aggregate membership
+gmake moe-decode-step-qualification    # the opt-in real-ggml, real-model, two-instrument qualification
+```
+
+`--moe-decode-step` is selected by its exact first operand and takes five, six, seven, nine, ten, or
+eleven operands. **Eight is `R6M_ARITY`**, for `--decode-step`'s own reason — a transcript without a
+width refuses itself — and twelve and above are `R6M_ARITY`, with positions 11, 12, and 13 reserved
+for `KV_SAVE`, `KV_LOAD`, and `RESIDENT` at the same indices the dense arm uses.
+
+```sh
+./ggml-spike --moe-decode-step PACK GEOM.json TOKENS
+./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json
+./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf
+./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH
+./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin
+./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf -              KV_WIDTH LOGITS.bin STEPS
+```
+
+**The operand shape is `--decode-step`'s, position for position**, so the two decode runners build
+their argument vectors the same way and a command line cannot be silently reordered between them.
+`KV_WIDTH` is fail-closed with no default in both. `STEPS` is `1 .. MAX_DECODE_STEPS` (64) with
+`T + N <= KV_WIDTH`; absent means 1, and `decode.steps_requested` is published in every document so
+the count is never implicit. `-` is legal in the document, transcript, and logits positions only;
+`PACK`, `GEOMETRY`, and `REFERENCE` refuse it lexically.
+
+**Weights are streamed and there is no `RESIDENT` operand**, because R6-RESIDENT-WEIGHTS makes a
+decode step read zero pack bytes and this arm exists to measure the bytes a decode step reads.
+
+**What it publishes that no other arm does:** per step, `routed.layers[]` — the eight expert ids
+claimed in each of the sixteen layers — with the cumulative union and the marginal new bytes, and
+`residency.expert_bytes` beside `residency.expert_pread_bytes` so the arithmetic claim and the
+reader's own accounting are two numbers rather than one. On this model a step claims exactly
+`487,587,840` expert bytes, 125,000 ppm, on every step of every prompt.
+
+**Three residency fields are easy to confuse and are therefore published separately.**
+`decode_keys_distinct` is the number of distinct `(layer, expert)` keys the `N` steps demanded,
+accumulated into a set seeded **empty** — it says nothing about the prefill, and it is the `distinct`
+in `step_reuse_per_mille = (demands - distinct) / demands`. The prefill relationship is two other
+numbers: `decode_keys_in_prefill_union / decode_keys_demanded` counts **demands with repetition** and
+`decode_distinct_keys_in_prefill_union / decode_keys_distinct` counts **distinct keys**. Section 2.5
+of the ledger separates all of them, including from R2D's adjacent-pair 447, and section 13 deviation
+13 records what went wrong when one of them shipped under another's name. Every `steps[]` row also
+publishes `top_k`, the step's top ten with the raw `u32` of each logit, in
+`--moe-model-forward`'s own shape, because oracle C′'s fallback compares the two.
+
+**Env vars, read by `scripts/run-moe-decode-step`:** `ALIGN_LLM_GGML_INCLUDE`, `ALIGN_LLM_GGML_LIB`,
+`ALIGN_LLM_GGUF_MODEL` (an **olmoe** GGUF), `ALIGN_LLM_LLAMA_EVAL_CALLBACK` (**R2C-patched** — full
+router axes are required, and an unpatched instrument prints six of eight slots),
+`ALIGN_LLM_LLAMA_DEBUG`, `ALIGN_LLM_MOE_DECODE_STEP_TMPDIR`, `ALIGN_LLM_DECODE_STEPS`,
+`ALIGN_LLM_MOE_DECODE_STEP_PROMPTS`. `numpy` is required for gate G's fingerprint measurement and its
+absence is an N/A rather than a pass.
+
+**`src/layer_olmoe.align`'s `MAX_PREFILL_TOKENS` moves 6 → 32**, matching `src/layer_qwen2.align`,
+because the self-reference oracle runs `--moe-model-forward` at `T + k` tokens. That widens
+`--moe-layer-forward` and `--moe-model-forward` too, and the guard that keeps the cap's original
+reason is **new**: those two arms did not ship `R5_ORACLE_TRUNCATED`, because with the cap at 6 the
+condition was unreachable. Both now refuse a prefill above six tokens **with** a transcript, exactly
+as `--layer-forward` and `--model-forward` do, so the range 7..32 is open for arithmetic and closed
+for comparison. `moe-tokens-33` / `mm-tokens-33` and
+`moe-tokens-seven-with-transcript` / `mm-tokens-seven-with-transcript` are the cases that pin both
+halves.
+
+`--decode-step` still refuses an OLMoE geometry with `R6_ARCH_UNSUPPORTED` detail `n_expert`, and
+that refusal now has an answer: use `--moe-decode-step`.
+
+**The qualification needs one ggml build on both sides, and this is the first capability for which
+that is true.** `scripts/llama-eval-callback-toolchain` materializes the R2C instrument with
+`GGML_ACCELERATE=ON` and `GGML_BLAS=ON`; Homebrew's `llama.cpp` at the **same commit** ships a ggml
+with neither, and the two disagree well beyond any oracle tolerance — the same prompt gives
+`result_output` sums of −113,284.835938 and −111,030.031250. Every earlier consumer of that
+instrument parsed **text**; this is the first to compare it **numerically** against an Align-computed
+graph. Point `ALIGN_LLM_GGML_INCLUDE` and `ALIGN_LLM_GGML_LIB` at the ggml the instrument was built
+from, and use a `llama-debug` built from the same source with the same flags. In that one world gate
+G1 is `IDENTICAL`, oracle R is `MATCH` at 8,192 of 8,192, and oracle T is `PASS` with
+`max_abs_diff` **0**. The runner's instrument cross-check — the transcript's `result_output` sum
+against `llama-debug`'s logits, taken **before** the arm runs — is what refuses a mixed pair, and it
+reports it as an instrument skew rather than as a failing oracle.
+The runner also compares the arm's `libggml-base` against `llama-debug`'s by **resolved object
+identity** before anything else runs — a hard refusal, because gate G1 is a byte comparison — and
+**reports without enforcing** what `llama-eval-callback` links, since the pinned R2C instrument links
+its ggml statically and cannot be resolved. Where no loader listing can be read the check says on one
+line that it failed open. `docs/specs/r6-olmoe-decode.md` section 15 records what this owes the
+toolchain.
+
+**The slot map, derived rather than inherited.** The decode phase-A table is thirty-seven rows — the
+prefill's thirty-five plus one `CONCAT` on K and one on V — so it occupies slots 21 to 57 and the
+**decode** phase-B base moves to 58 while R5E's stays at 56. The plane's two past tensors take the
+top two slots of the store, `MAX_NODE_SLOTS - 2` and `- 1`, because a fixed pair just above R5E's
+measured high water of 80 would collide with phase B at `n_expert_used >= 13`. The consequence is one
+value of a public precondition: this arm admits `n_expert_used <= 30` where R5E's prefill admits 32,
+refused as `R5_GEOMETRY` detail `n_expert_used` before a graph is built.
+
+**No new ggml op, FFI symbol, or shim body.** `src/ggml_ffi.align` and `scripts/ggml_shim.c` are
+byte-unchanged; `ggml_ffi.op_concat` already shipped for the dense decode arm and
+`layer_olmoe.OP_CONCAT` is a table vocabulary entry. `scripts/ggml_shim_stub.c` gains three
+forced-failure builds outside the shared region — `engine+decode-position-moe`,
+`engine+mask-offset-moe`, and `engine+writeback-offset-moe` — which are the routed counterparts of
+three R6 builds whose dense form is keyed on a `layer_qwen2` slot number that is an ordinary weight
+slot in a routed graph. They are separate builds rather than second indices, so every dense build
+stays behaviourally byte-unchanged and the sixth block's golden cannot move.
+
 ## The aarch64 platform-profile gates
 
 C7 evidence is target-bound, so each required non-x86 environment has its own reviewed profile.

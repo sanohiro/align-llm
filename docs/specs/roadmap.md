@@ -604,9 +604,67 @@ The current forward delivery order is:
     removes the per-step weight sweep item 29 left in place, and prefix-keyed lookup on top of it is
     the next capability toward the TTFT gate.
 
-<!-- Items 31 (C4-REPAIR) and 32 (OLMoE decode) are reserved: both were on branches when item
-     33 was written, so the numbers are claimed and the entries land with those branches. The
-     gap below is deliberate and must not be re-used. -->
+<!-- Item 31 (C4-REPAIR) is reserved: it was on a branch when items 32 and 33 were written, so
+     the number is claimed and the entry lands with that branch. The gap is deliberate and must
+     not be re-used. Item 32 landed with R6-OLMOE-DECODE, which is the entry below. -->
+
+32. **R6-OLMOE-DECODE — `N` greedy decode steps on a routed model, and the per-step expert demand
+    they make.** Design and results in [`r6-olmoe-decode.md`](r6-olmoe-decode.md). Item 26 computes
+    one OLMoE prefill and measures that 33.36 % of the model's expert bytes are touched by it; item
+    30 makes a dense decode loop read zero weight bytes per step. Neither can say what a *routed*
+    decode step demands, and [`r3-residency-sim.md`](r3-residency-sim.md) section 8 — whose
+    four-word finding is **the intervention is decode** — could only simulate it over llama.cpp's
+    trace. This capability ships a **seventh arm**, `--moe-decode-step`, with `--decode-step`'s
+    operand shape position for position and its own document kind `R6_MOE_DECODE_STEP` at schema 1:
+    `N` greedy steps on OLMoE-1B-7B-0125-Instruct Q4_K_M over an Align-owned KV plane, each step
+    resolving that step's top-8 claims in **all sixteen** layers and computing only those experts,
+    weights **streamed**. Weights are streamed **because residency would destroy the measurement** —
+    item 30 makes `step_pack_bytes` zero by construction — so the two are mutually exclusive in one
+    invocation and demand measurement comes first. The design's probe record settles three things
+    before implementation, from two full-axis transcripts the item-22 instrument had already
+    produced: a decode graph does **not** narrow, so all sixteen layers route and the routing oracle
+    compares 8 of 8 slots on 16 of 16 layers where item 26 compared 546 of 728; the per-step demand
+    is therefore exactly `3,900,702,720 / 8 = 487,587,840` bytes, **125,000 ppm**, prompt- and
+    step-independent, and the same number `r3-residency-sim.md` section 8.1 publishes as the decode
+    arms' one-token working set; and the open quantity is the **union**, which over four steps on
+    one prompt grows 128 → 274 keys of 1,024 while **79.9 %** of those 274 *distinct* decode keys
+    were already read by the prefill. The plane is OLMoE's geometry in item 27's unchanged layout,
+    67,108,864 B at width 256 — **2.29×** the dense arm's on a model with a fifth of the parameters,
+    because sixteen KV heads beat twenty-eight layers. What it needed that did not exist: an
+    `OP_CONCAT` and a `WHEN_DECODE` condition in `src/layer_olmoe.align`, and a **thirty-seven-row**
+    decode phase-A table — `WHEN_WIDE` cannot be reused, because `ggml_pad` writes its source at
+    index 0 and a decode step's new column belongs at `n_past`. `MAX_PREFILL_TOKENS` moves
+    **6 → 32** so the self-reference oracle can run at `T + k` tokens, and the guard that keeps the
+    cap's original reason is **new**: `--moe-layer-forward` and `--moe-model-forward` did not ship
+    `R5_ORACLE_TRUNCATED` because at a cap of 6 the condition was unreachable, and both now refuse a
+    prefill above six tokens *with* a transcript exactly as the dense arms do. **No new ggml op, FFI
+    symbol, or shim body**, and `src/decode_step.align` is byte-unchanged; the dense arm's
+    `R6_ARCH_UNSUPPORTED` refusal keeps its meaning and gains a documented answer. Acceptance is
+    stated once in `r6-olmoe-decode.md` section 4.6: **gate G**, the `N` ids equal llama.cpp's over
+    a vocabulary whose fingerprint collision classes are measured before the gate is claimed;
+    **oracle R**, routing identity `MATCH` at every step over 128`N` of 128`N` ids; **oracle B**, the
+    plane round trip `IDENTICAL` at every step including the column that step wrote; **oracle C′** at
+    `k ∈ {1, ⌈N/2⌉, N}`; and **oracle T**, structurally complete at every step and numerically
+    admitted at step 1 only. **Measured**, four prompts x sixteen steps in 3 min 18 s: gate G over
+    64 ids, oracle R **`MATCH` at 8,192 of 8,192**, oracle B `IDENTICAL`, oracle T `PASS` with
+    `max_abs_diff` **0**, `expert_bytes` and `expert_pread_bytes` **both exactly 487,587,840 on all
+    64 steps** — a read amplification of **zero**, so the arm read exactly what it claimed. The
+    union over sixteen steps reaches 585, 698, 614 and 607 keys of 1,024, and the mean marginal cost
+    is 57.9, 92.3, 95.4 and 83.1 MB against the 487.6 MB a streamed step reads: **a 5.1x to 8.4x
+    gap**, which corrects the 9.2x a four-step probe suggested and is the honest size of the case for
+    a decode-side residency policy. "Four fifths of every decode demand is already in the prefill's
+    union" is likewise a short-window artifact: over sixteen steps it is 52.0 % to 75.2 %. Oracle C′
+    demoted to **characterization** by its own measurement — `mul_mat_id` is not stack-shape
+    invariant, 1 of 12 checkpoints byte-identical and 12 of 12 argmax-equal — exactly as the design
+    wrote both branches in advance. Owner `gmake layer-forward-smoke`, whose **seventh** block gains a
+    routed decode loop over the synthetic two-layer MoE model and runs the whole seven-block runner in
+    80 s; focused `gmake moe-decode-step-qualification`. **No TTFT or throughput claim and no cost ceiling** — the
+    claim is a byte demand and the byte counters are exact, published twice, arithmetically and from
+    the pack reader's own `pread` accounting, with a bounded relation between them. **What it leaves
+    open:** the R6 gate still asks that TTFT improve on repeated coding tasks *sharing a prefix*. A
+    routed decode loop that streams its weights and shares no prefix does not answer it; the gate
+    stays unmet, and the next capability toward it is resident dense weights with streamed experts,
+    whose input is this capability's per-step demand stream.
 33. **R6-PREFIX-SUFFIX-PREFILL — a saved prefix plane continued with a different suffix.** Design
     and results in [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md). Item 29 made a
     prefill plane outlive its process; it could only be reloaded for the prompt it was saved for,
