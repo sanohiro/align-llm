@@ -1299,6 +1299,28 @@ positional constructor, which is **Align Request 30**, and R6-PREFIX-KEY is file
 client with this shape as the evidence. Section 4.1 already records `R6_KV_EXISTS` as not reachable
 from a single-process case; this deviation says why it is not reachable from a concurrent one either.
 
+**Three further corrections this deviation owns, because they are the same statement in three
+places.**
+
+1. **Section 1.4's non-goal is corrected with section 2.8's row.** "Two processes missing the same
+   key concurrently is a refusal for the loser, not a merge" (`:150`) states the same outcome
+   section 2.8 states, and it is wrong for the same reason: the loser is neither refused nor merged,
+   it **overwrites**. The non-goal itself stands unchanged — concurrent writers are out of scope and
+   nothing here makes them supported — and only its description of what happens moves.
+2. **`fs.create_exclusive` is named three times and is never used.** Sections 2.6 (`:391`), 2.8
+   (`:442`), and 6 risk 9 (`:767`) attribute the create's behaviour to it. The writer opens with
+   **`fs.create_rw`** (`kv_plane.align` W1), which is `O_RDWR|O_CREAT|O_TRUNC` — the misattribution
+   is the whole mechanism of this deviation, and `decode_step.align:3481` already carries the
+   correct comparison beside step 6b. Every statement those three places make about the *failure
+   detail* is still true: `fs.create_rw`'s failure at this pin also cannot separate "no such
+   directory", "that is a file", and "not writable", so `store[create]` remains one code for three
+   causes and Request 53 remains its client evidence.
+3. **Risk 9's disposition is therefore half right.** The TOCTOU window between `fs.exists` and the
+   create is real and is *not* closed by a refusal; it is closed by the content addressing, which
+   makes the racing writes identical. The declared single-process scope (section 2.8) and Request 30
+   are what the disposition should have named, and the reader that races an `O_TRUNC` inside that
+   scope is out of scope by the same declaration.
+
 ### D7 — the real-model store leg runs at the suffix leg's split and at its residency
 
 Section 5.4 specifies prompt 1 at `j = 3` on "both the streamed and the resident legs". The shipped
@@ -1308,8 +1330,13 @@ leg runs on the **first split of every persistence-leg prompt** (four by default
 both legs on one prompt. Two reasons: four prompts at one residency costs the same two invocations
 per prompt section 4.9 budgeted and covers four distinct key preimages instead of one, which is what
 a **key** wants exercised; and both residency legs are covered hosted, where `ds-store-resident-miss`
-/ `-hit` carry oracle K and oracle R at no model cost. The measured addition is recorded in section
-13 against risk 7's 120 s threshold.
+/ `-hit` carry oracle K and oracle R at no model cost.
+
+**The measured addition is *not* recorded yet, and this sentence is a forward reference rather than
+a result.** It belongs in section 13.6 against risk 7's 120 s threshold; 13.6 records that the
+qualification has not run, so no measurement of this leg exists and no claim about its cost is made
+here. The run is a precondition of publication (section 3.5), so the reference cannot outlive the
+pull request: it is discharged by 13.6's own table or the capability does not ship.
 
 ### D8 — the qualification's store leg is the TTFT "fourth leg", and it is one run per prompt
 
@@ -1397,6 +1424,187 @@ same width **and** that the independent reader accepts it. On the defect the two
 `kv.prefill_argmax` is 24 (the suffix pass's) instead of 27 (the prefill's); the real-model leg's
 own reader `--check-name` and container comparison would have caught it too.
 
+**And section 3.1 overstates oracle K, which this defect proves rather than argues.** 3.1's "why
+this is the right rule" names, among what oracle K catches, "**a container written with the wrong
+columns**". D14 *is* a container written with the wrong columns, and oracle K passed on it. The
+reason is structural and is worth stating exactly, because it bounds what the acceptance rule can
+mean: oracle K compares a **hit** against the **miss that filled it**, and the hit is served by the
+same arm that wrote the container. A plane that is wrong but **self-consistent** — one the writer's
+own header describes and the reader's own digest covers — reproduces itself on the way back and the
+two documents agree. Oracle K is a *round-trip* property, and a round trip cannot see an error the
+writer and the reader share.
+
+**What owns that class instead**, and it is already shipped rather than proposed: the two
+**container-identity** assertions. `ds-store-vs-kv-save` and `ds-store-suffix-vs-kv-save` compare
+the keyed container by SHA-256 against the container `KV_SAVE` writes for the same prefix — a
+comparand produced by a *different* operand path, so it does not share the defect — and
+`scripts/kv_plane_reader.py` refuses the plane from the specification, in another language, without
+the arm's assumptions. Those two caught D14; oracle K did not. Section 3.1's exclusion list is
+unchanged and its other four claims stand; only the "wrong columns" clause is corrected, and the
+correction is that **oracle K's strength is byte-equality between two runs, and the container's
+correctness is asserted against an independent comparand and an independent reader.** Section 13.4's
+fifth mutant is the standing regression for exactly this, and it dies on the container assertions.
+
+### D15 — the field that moves 5 → 6 is the document's `schema_version`
+
+Sections 2.7 (`:398`), 5.3 (`:707`), and 6 risk 8 (`:766`) all name the moving field
+`document_schema_version`. **That is a different field.** The document's own is `schema_version`
+(`decode_step.align` renders `{"schema_version":6,…}`); `document_schema_version` is a **container
+header field at offset 136, frozen at 3**, and `r6-prefix-suffix-prefill.md` section 2.9 settled its
+contract: it records the `R6_DECODE_STEP` schema the *format was defined against*, not the schema
+the writer currently emits, and it deliberately does **not** move when the document schema does —
+the document has been 4 and 5 with the constant unmoved, and moving it would refuse every existing
+container for no safety gain.
+
+The three statements are therefore right about the change and wrong about the name. This capability
+leaves the header field at 3 and `kv_plane`'s header plan is absent from the diff. The name matters
+here more than in the documents that inherited it, because **both** fields are live in one design:
+the container's is validated on load and is not in the key (D17), and the document's is not in the
+container at all. `docs/specs/roadmap.md` item 37 and section 13.3 are not frozen and are corrected
+in place; these three are recorded here.
+
+### D16 — W5 maps a second code, `store[cleanup]`, and the moved call site gains its own row
+
+Section 2.6's W5 row maps one writer code under a store. **`R6_KV_CLEANUP_FAILED` needed the same
+mapping and did not have it.** It is the one writer code whose detail is the **destination itself**:
+`kv_plane.align`'s W4 reports `bounded_detail(destination)` so that a `KV_SAVE` caller learns which
+partial file it must remove by hand. Under a store that destination is the arm's own derived name,
+and section 2.7's "no path is published" governs a refusal detail exactly as it governs a document
+field — the leak would have made `error_detail` a function of the caller's `STORE` directory, which
+is precisely what mutant 4 exists to kill in the document. Every other writer code is already safe:
+`R6_KV_WRITE_FAILED` reports `error_name@offset`, `R6_KV_SIZE_MISMATCH` reports a pair of counts,
+and `R6_KV_UNWRITABLE` is W5's existing `store[create]`.
+
+**Applied:** one more guarded branch beside `store[create]`, reporting the operand as
+`store[cleanup]`. The caller loses nothing — `store.key` is published, so the file it may need to
+remove is `STORE + "/" + key + ".akvp"`.
+
+**It is unreachable by fixture at this pin, and that is inherited rather than new.** Reaching it
+needs a filesystem that accepts a create, refuses a write, and then refuses the removal;
+`scripts/run-layer-forward-smoke` already records `R6_KV_WRITE_FAILED` as deferred as a case for the
+first half of that (alignpack reaches it only through an opt-in `hdiutil` volume) and defers
+`R6_KV_CLEANUP_FAILED` and `R6_KV_SIZE_MISMATCH` behind it. The forced-stub and unwritable-directory
+mechanisms cannot produce it: a directory that refuses the `unlink` refuses the `create` first. The
+mapping is therefore asserted by inspection, exactly as `R6_KV_EXISTS`'s unreachability is (section
+4.1, D6), and it ships because the alternative is a known path leak behind an unlikely failure.
+
+**What *was* reachable and had no row is now one.** A keyed miss **with a suffix** saves at D14's
+moved call site, so its create failure is reported from a site no prior capability could reach —
+`SUFFIX` was illegal beside `KV_SAVE`, and section 5.2's `ds-store-unwritable` and
+`ds-store-file-not-dir` both run without one. `ds-store-suffix-unwritable` closes it: same code, same
+detail, and the assertions that make it a statement about *ordering* rather than a duplicate — the
+document publishes `suffix.requested: 1` with `completed: 0` and `graph_count: 0`, so the arm refused
+**before** the pass rather than running it and failing afterwards, and the key it published is the
+**prefix**'s `f8881c20…`, the same one `ds-store-suffix-miss` writes. It is the sixteenth store case
+and the tenth store refusal, and it is the reason section 13's counts moved by one.
+
+### D17 — `document_schema_version` is not in the preimage, and its coupling is now written down
+
+Section 2.3's decision 1 states the rule the preimage follows: a field the load path would **refuse**
+on belongs in the key, so that a caller whose inputs moved gets a clean miss instead of an identity
+refusal against a container that is simply for something else. **`document_schema_version` is such a
+field and is not in the preimage.** `kv_plane.align:41` freezes it at 3 and the load path refuses a
+container whose header disagrees (`R6_KV_HEADER("document_schema_version")`), so two containers
+differing only in it would share one key and the loser would be refused rather than missed.
+
+**It cannot happen at this pin, and the reason is a coupling rather than an accident**, so the
+coupling is now stated in the code at `KEY_VERSION` and here: the constant is frozen at 3, this
+writer is its only producer, and **a change to `DOCUMENT_SCHEMA_VERSION` must bump `FORMAT_VERSION`
+— which *is* in the preimage at offset 120 — or `KEY_VERSION`, in the same commit.** That is a real
+constraint on a future capability and it is cheap to honour, because `r6-kv-persist.md` already
+requires a `format_version` bump for any header change and `r6-prefix-suffix-prefill.md` section 2.9
+already requires this field not to move for a document bump.
+
+**The preimage is not changed, and that is the decision.** Spending four of the twenty-four reserved
+bytes on the field would move **every existing key** — the hosted `ab1a4ebf…`, the qualification's,
+and any container a caller has already stored — to buy a distinction that the coupling already makes
+impossible. Key stability wins; the coupling is the compensating control and this deviation is its
+record.
+
+### D18 — three preimage slots are constants in the arm, and 2.7 needs two of them out of band
+
+Section 2.3's table sources `plane_layout_version`, `element_type`, and `format_version` from the
+container's own parameters. In the arm they are the module's **constants**
+(`kv_plane.align:890-893` at this head, `:864-867` before D19's guard: `PLANE_LAYOUT_VERSION`,
+`ELEMENT_TYPE_F32`, `FORMAT_VERSION`, and `KEY_VERSION` beside them), not values read from a file
+— which is correct for a *miss*, where no container exists yet, and is a real narrowing on a
+*hit*, where the arm keys on what it believes rather than on what the file says.
+
+**The compensating check is shipped and is worth naming, because it is what makes the narrowing
+safe:** `scripts/kv_plane_reader.py` binds all three from the **container's decoded header**
+(`:307-309`, out of `decode_header`'s `format_version`, `element_type`, and `plane_layout_version`)
+and derives the key from those, then asserts the file it was handed is named for it. So the
+constants are checked against real header bytes in another language, by the leg of oracle D that
+does not share the arm's assumptions — and mutant 1 (a preimage field dropped in the reader) is the
+standing regression for that leg. A container whose header disagreed with the arm's constants would
+also be refused by L1–L14 before it could be served, so the store cannot serve one; what the reader
+adds is that it cannot be *named* for one either.
+
+**Section 2.7's "the key is recomputable from the document alone" is therefore too strong, and the
+correction is small.** The document publishes the three digests, `pack_total_bytes`, `token_count`,
+`plane_layout_version`, `format_version`, and `KV_WIDTH`. It publishes neither `element_type` nor
+`key_version` — the `kv` block has no field for either. Both are supplied **out of band** by the
+recomputing implementation as the contract's constants, `0` and `1`, which is exactly what
+`scripts/run-layer-forward-smoke`'s and `scripts/run-decode-step`'s preimage implementations do.
+The accurate statement is: **the key is recomputable from the document plus section 2.3's two
+constant slots**, and a `key_version` bump is by construction not recomputable from an old document
+— which is the point of having the field. Oracle D is unaffected: it asserts agreement between three
+implementations of one table, and the two constants are part of that table.
+
+### D19 — `derive_key` bounds its two narrowed scalars from above as well as below
+
+Section 2.8 and D2 record `derive_key`'s fail-closed empty string. The shipped function checked
+`kv_width` and `token_count` for negativity only, while the preimage narrows both to **four bytes**
+(`as u32`, offsets 104 and 108). A value at or above 2^32 would have been silently truncated, so two
+runs whose widths differ by exactly 2^32 would have addressed one container — the one failure mode a
+content-addressed store must not have.
+
+**Applied:** `if kv_width > U32_MAX || token_count > U32_MAX { return "".clone() }` in
+`src/kv_plane.align`'s `derive_key`, beside the existing negativity guard, with `U32_MAX` a private
+constant beside `I64_MAX`. `pack_total_bytes` needs none: it occupies eight bytes and is already
+non-negative.
+
+D2's claim that no input reaches the empty string still holds and is now a property of the guards
+rather than of the callers: L0 runs after step 6a, so `kv_width` is bounded by `MAX_ATTENTION_WIDTH`
+and `token_count` by `MAX_PREFILL_TOKENS` before the key is derived. The guard is what keeps that a
+proof rather than a habit, and widening the slots remains a `key_version` change.
+
+### D20 — the shipped row count, and what section 13.2's two counts include
+
+Three counting statements need correcting together, because they are one confusion.
+
+1. **Section 5.3 predicts "about 24 new rows"; sixteen shipped as golden rows** — the six
+   `STORE_CASES` and the ten `STORE_REFUSALS` — alongside `ds-store-teardown` and the five
+   key-determinism cases, which carry no golden row at all. The prediction counted section 5.1's
+   and 5.2's named rows as documents; five
+   of them became assertions instead (D9) and several 5.2 names are one document asserted from two
+   sides. Sixteen is the number `scripts/decode-step-golden.jsonl` grew by (141 → 157), and section
+   13's counts are the shipped ones.
+2. **D9's `BOUNDARY_CASES` analogy is inexact in the direction that matters.** `BOUNDARY_CASES` run
+   and are asserted without a golden row, which is the precedent D9 claims — but they **are** counted
+   in the smoke's "documented cases" total (`len(ORDER) + len(BOUNDARY_CASES)`). The five
+   key-determinism cases are in neither list: they are run, asserted, and counted in **neither** the
+   documented total nor the golden total. So section 13.2's `159 documented (157 with a golden row)`
+   understates what the block runs by exactly those five, and the "16 store cases" line counts only
+   `STORE_CASES + STORE_REFUSALS`. Both numbers are correct for what they name; this entry is what
+   they name.
+3. **Section 5.1's `ds-store-key-document` did not ship under that name.** The document-derived key
+   is asserted inside the `ds-store-miss` and `ds-store-hit` rows — `key_from_document(document) ==
+   document["store"]["key"]`, oracle D's second leg — and the label `ds-store-key` names the
+   *distinctness* check over the five preimages. Nothing is missing; one row's worth of assertions
+   lives under two existing names.
+
+### D21 — the Align request register runs 1–51 at this base, and 53 is still the number claimed
+
+Section 8 records "the register runs 1–52 (52 is item 31's `Option` partial move) and the next free
+number is **53**". At this branch's base `docs/align-requests.md` runs **1–51**: 52 is *expected*
+from the parallel item-31 branch and is not present, which is why the section reserves it and takes
+53 rather than 52. The reservation and the number this capability claims are both unchanged and
+correct; only the description of the base is. Section 8's standing instruction is unaffected and
+still binds: **both numbers must be re-checked when this branch merges `origin/main`** — by
+`git merge`, never a rebase — and if the register has moved, Request 53 and every cross-reference
+move with it.
+
 ---
 
 ## 13. Result
@@ -1412,23 +1620,27 @@ byte-unchanged and the qualification proves it by digest rather than by diff.
 | Operand | `STORE` at `args[15]`; arity set `{5,6,7,9,10,11,12,13,14,15,16}`; `-` is absent |
 | Key | `crypto.sha256` over section 2.3's 152-byte preimage, in `kv_plane.derive_key` (D2) |
 | Store | `<STORE>/<64 lowercase hex>.akvp` in a directory the caller creates |
-| Refusals | **no new code**: `R6_KV_ARGS store[with_save]` / `store[with_load]`, `R6_KV_UNWRITABLE store[create]`, and every L1–L14 code unchanged on a broken container at a key path |
+| Refusals | **no new code**: `R6_KV_ARGS store[with_save]` / `store[with_load]`, `R6_KV_UNWRITABLE store[create]`, `R6_KV_CLEANUP_FAILED store[cleanup]` (D16), and every L1–L14 code unchanged on a broken container at a key path |
 | Document | schema **6**, a six-field `store` object in every document, **no path** |
 | Modules | `kv_plane` (+2 functions, 4 constants), `decode_step` (operand, 2d, L0, `render_store`), `model_forward` (+5 `Outcome` fields, D1). `model_forward`'s graph, `layer_qwen2`, `layer_olmoe`, `ggml_spike`, `ggml_ffi`, and both shims are **byte-unchanged**; `MAX_PREFILL_TOKENS` is still 32 |
 | Makefile | **untouched.** No target, no aggregate membership, and no check topology moves |
 
 ### 13.2 The hosted owner — `gmake layer-forward-smoke`
 
-`PASS`. The decode-step block reports **13 no-document cases, 158 documented cases (156 with a
+`PASS`. The decode-step block reports **13 no-document cases, 159 documented cases (157 with a
 golden row), 42 codes reached**, and the store block reports:
 
 ```text
-decode step smoke: prefix key -- 15 store cases, oracle K byte-identical on 3 hit/miss pairs
+decode step smoke: prefix key -- 16 store cases, oracle K byte-identical on 3 hit/miss pairs
 outside 20 excluded groups, oracle D agreeing three ways over one 152-byte preimage, oracle S
 byte-identical on both the hit and the miss leg against the single-shot run, 5 keys distinct on one
-changed field each, a keyed container byte-identical to KV_SAVE's, 9 refusals each naming its own
+changed field each, a keyed container byte-identical to KV_SAVE's, 10 refusals each naming its own
 detail, and three hit-but-broken containers refused rather than re-prefilled
 ```
+
+**What those two counts include is D20**, because they do not include the same things: the five
+key-determinism cases run and are asserted in **neither** total, and "16 store cases" is
+`STORE_CASES` plus `STORE_REFUSALS` and nothing else.
 
 - **Oracle K** holds on three pairs — plain, `+SUFFIX`, and `RESIDENT=weights` — with the witness
   assertion proving the exclusion list did not empty the comparison.
@@ -1456,7 +1668,11 @@ detail, and three hit-but-broken containers refused rather than re-prefilled
   is asserted exactly, hosted and on the real model.
 - **Oracle R** holds between `ds-store-hit` and `ds-store-resident-hit`.
 - **The refusal matrix is complete**: every row of section 2.6 has a case that reaches it, each
-  asserting code, detail, and what `store` publishes while refusing.
+  asserting code, detail, and what `store` publishes while refusing — including
+  **`ds-store-suffix-unwritable`** (D16), which reaches W5 from the call site D14 moved and asserts
+  by `suffix.requested: 1` with `completed: 0` and `graph_count: 0` that the arm refused **before**
+  the suffix pass, under the **prefix**'s key. W5's second mapping, `store[cleanup]`, is asserted by
+  inspection: D16 records why no fixture on this pin can reach it.
 - **`scripts/run-decode-step`'s own preimage implementation — oracle D's third leg on the real model
   — was cross-checked against the hosted golden documents before the model ran**: it derives
   `ab1a4ebf…` for `ds-store-miss` and `ds-store-resident-hit` and `f8881c20…` for
@@ -1464,8 +1680,9 @@ detail, and three hit-but-broken containers refused rather than re-prefilled
 
 ### 13.3 Golden movement, verified mechanically
 
-`scripts/decode-step-golden.jsonl` goes **141 → 156** rows. A script compared every pre-existing row
-against its predecessor field by field: **all 141 differ only in `document_schema_version` 5 → 6 plus
+`scripts/decode-step-golden.jsonl` goes **141 → 157** rows. A script compared every pre-existing row
+against its predecessor field by field: **all 141 differ only in the document's own `schema_version`
+5 → 6** — the container header's separate `document_schema_version` stays 3, which is D15 — **plus
 the added default `store` object**, no row is removed, and the surviving order is unchanged. The five
 other decode-step-family goldens — `layer-forward`, `model-forward`, `gpu-forward`,
 `moe-layer-forward`, `moe-model-forward` — and `moe-decode-step-golden.jsonl` are **byte-unchanged**
@@ -1492,15 +1709,26 @@ afraid of, and both are caught by the hit-but-broken rows rather than only by a 
 which is why those rows exist. The fifth is D14's own defect, which the implementation shipped first
 and these assertions caught.
 
+**Two were re-injected at the repair head and both died again**, because the repair touched the two
+things they test — the writer's refusal details and the preimage. Re-injecting D14's defect
+(`store_prefix_save := false`) fails `ds-store-suffix-vs-kv-save` on both digests and on the reader's
+`ZEROTAIL`, as before, and now fails a **third** way: `ds-store-suffix-unwritable` reports
+`suffix.completed: 1` with `graph_count: 4`, catching the ordering directly rather than through the
+container it produced (D16). A `KEY_VERSION := 2` mutant — the arm's preimage moved and the other two
+implementations left alone — dies on oracle D's document-derived leg in both directions
+(`fdccf8a7…` published against `ab1a4ebf…` recomputed) and takes the three hit-but-broken rows with
+it: at a key the broken containers are not stored under, all three become misses that write, which is
+mutant 2's signature and the reason those rows exist.
+
 ### 13.5 Verification commands and results
 
 ```text
 gmake build                    ok
 gmake check                    ok: checked 31 unit(s) per-unit (214-254 s over two runs)
-gmake layer-forward-smoke      PASS - 13 no-document, 158 documented (156 golden) cases, 42 codes,
+gmake layer-forward-smoke      PASS - 13 no-document, 159 documented (157 golden) cases, 42 codes,
                                oracle K on 3 pairs, oracle D three ways, oracle S on both store
                                legs, oracle R on the resident pair, 5 distinct keys, the refusal
-                               matrix complete, and every prior block unchanged (65-70 s)
+                               matrix complete, and every prior block unchanged (62-70 s)
 gmake ggml-spike-smoke         PASS - 7 no-document, 43 documented cases, olmoe claim surface
 gmake alignpack-smoke          PASS - 27 positive fixtures, 128 negative sources, 20,306
                                assertions; run as a neighbour check because this capability edits
@@ -1595,12 +1823,13 @@ that runs it. Cells the ledger marked `N/A` keep that disposition and are not re
 | 2.6 step 2d, both details | `execute` | `ds-store-with-save`, `ds-store-with-load` |
 | 2.6 2d precedes the numeric parse | 2d sits above `stage_inputs` | `ds-store-with-save-bad-steps` |
 | 2.6 L0 follows step 6/6a | L0 sits after `stage_inputs` and the pack identity read | `ds-store-narrow-width` (`key: "-"`, `outcome: "absent"`) |
-| 2.6 W5 `R6_KV_UNWRITABLE store[create]`, one code for three causes | `save_plane`'s `store_mode` branch | `ds-store-unwritable`, `ds-store-file-not-dir` |
+| 2.6 W5 `R6_KV_UNWRITABLE store[create]`, one code for three causes | `save_plane`'s `store_mode` branch | `ds-store-unwritable`, `ds-store-file-not-dir`, `ds-store-suffix-unwritable` (the moved call site, D16) |
+| 2.6 W5's second mapping, `R6_KV_CLEANUP_FAILED` → `store[cleanup]` (D16) | the branch beside it | inspection — unreachable by fixture at this pin, with `R6_KV_WRITE_FAILED` (D16) |
 | 2.6 W5 is reached only after the prefill | the writer runs at its existing position | both rows publish `plane.source: "PREFILL"` |
 | 2.7 schema 6 and the six-field `store` object | `SCHEMA_VERSION`, `render_store`, `render` | `STORE_FIELDS` set assertion on every document |
 | 2.7 `key` is `"-"` before L0; `saved` only on a complete write | `render_store` + `schedule_decode`'s `store_saved` | `record()`'s four store invariants; the refusal matrix |
 | 2.7 **no path published** | `render_store` writes no path field | mutant 4 |
-| 2.7 the key is recomputable from the document | the same digests `render_kv` already published | oracle D's document-derived leg |
+| 2.7 the key is recomputable from the document **plus section 2.3's two constant slots** (D18) | the same digests `render_kv` already published; `element_type` and `key_version` supplied as the contract's `0` and `1` | oracle D's document-derived leg |
 | 2.8 `derive_key` is pure; one 152-byte buffer | `kv_plane.derive_key` (D2) | it compiles at this pin beside Request 49's refusal |
 | 2.8 no new I/O and no new large digest | the three digests are the run's own | no new `pread` in the diff |
 | 2.8 single writer | declared; the window is D6 and Request 30's third client | recorded, not simulated (4.10) |
@@ -1615,7 +1844,7 @@ that runs it. Cells the ledger marked `N/A` keep that disposition and are not re
 | 4.1 malformed input (2d, 2c) | `execute` | `ds-store-with-save`, `ds-store-with-load`, `ds-suffix-no-load`, `ds-store-suffix-*` |
 | 4.1 success — hit / miss | `execute`'s L0 + unchanged paths | `ds-store-hit*`, `ds-store-miss*` |
 | 4.1 failure — L1–L14 at a key path | no code change; the refusal stands | the three hit-but-broken rows |
-| 4.1 failure — create | `save_plane`'s `store_mode` | `ds-store-unwritable`, `ds-store-file-not-dir` |
+| 4.1 failure — create | `save_plane`'s `store_mode` | `ds-store-unwritable`, `ds-store-file-not-dir`, `ds-store-suffix-unwritable` |
 | 4.1 failure — `R6_KV_EXISTS` between `fs.exists` and the create | **not reachable single-process** (4.1's own disposition) and not reachable concurrently either (D6) | inspection + `ds-kv-save-exists` |
 | 4.1 early exit | every refusal above L0 publishes `store.requested` | `ds-store-narrow-width`, `ds-store-with-save-bad-steps` |
 | 4.1 cleanup | `store_path_owned` and the preimage buffer at scope end | oracle B's balance invariant, unchanged |

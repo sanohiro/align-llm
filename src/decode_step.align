@@ -1376,6 +1376,18 @@ fn save_plane(
       fail(o, write_code, "store[create]")
       return
     }
+    // W5, second half (section 12, D16). `R6_KV_CLEANUP_FAILED` is the **only** writer code whose
+    // detail is the destination itself (`kv_plane.align`'s W4 reports `bounded_detail(destination)`
+    // so a `KV_SAVE` caller learns which file it must remove by hand). Under a store that
+    // destination is the arm's own derived name, and section 2.7's "no path is published" governs a
+    // refusal detail exactly as it governs a document field: a golden would otherwise become a
+    // function of the caller's `STORE` directory. The operand replaces it, as `store[create]`
+    // replaces the mapped error name above; the key is already published in `store.key`, so a
+    // caller that wants the file it must remove forms `STORE + "/" + key + ".akvp"`.
+    if store_mode && write_code == kv_plane.CODE_CLEANUP_FAILED {
+      fail(o, write_code, "store[cleanup]")
+      return
+    }
     fail(o, write_code, write_detail)
     return
   }

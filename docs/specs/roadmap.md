@@ -773,7 +773,9 @@ The current forward delivery order is:
     what pins *when* a miss saves. Schema **6** adds a `store` object
     published in every document including error documents; **no path is published**, so the key — a
     digest, not a clock or a machine path — is golden-stable, and the whole 141-row decode-step
-    golden moves only in `document_schema_version` plus that object, verified mechanically. One byte
+    golden moves only in the document's own `schema_version` plus that object, verified mechanically
+    — the container header's separate `document_schema_version` field stays **3**, as
+    `r6-prefix-suffix-prefill.md` section 2.9 requires. One byte
     layout has three implementations (the arm, `scripts/kv_plane_reader.py` checking that a container
     is at its own name, and the smoke recomputing it from the document's own published digests) and
     oracle D asserts all three agree, with five determinism rows changing one preimage field each.

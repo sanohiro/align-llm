@@ -60,6 +60,16 @@ pub MAX_KV_CONTAINER_BYTES := 1073741824
 // over one 152-byte preimage, and `key_version` is the field that retires a whole store atomically
 // if this table ever moves. It is deliberately **not** `format_version`: the container format may
 // not move when the key does.
+//
+// **`DOCUMENT_SCHEMA_VERSION` is validated on load and is *not* in the preimage, and that is safe
+// only through the coupling this comment states** (section 12, D17). Two containers differing only
+// in that header field would share one key, and the loser would be **refused** as
+// `R6_KV_HEADER("document_schema_version")` rather than missed — the load-time refusal section
+// 2.3's decision 1 exists to convert into a miss. It cannot happen at this pin because the constant
+// is frozen at 3 and this writer is the only producer. **The rule, therefore: a change to
+// `DOCUMENT_SCHEMA_VERSION` must bump `FORMAT_VERSION` — which *is* in the preimage at offset 120 —
+// or `KEY_VERSION`, in the same commit.** Spending four of the twenty-four reserved preimage bytes
+// on it instead would move every existing key, so the coupling is the deliberate choice.
 pub KEY_VERSION := 1
 pub KEY_PREIMAGE_BYTES := 152
 pub KEY_HEX_BYTES := 64
@@ -67,6 +77,8 @@ pub STORE_EXTENSION := ".akvp"
 
 MAX_DETAIL_BYTES := 256
 I64_MAX := 9223372036854775807
+// The largest value section 2.3's four-byte preimage slots can carry without narrowing.
+U32_MAX := 4294967295
 
 HEX_DIGITS := "0123456789abcdef"
 
@@ -855,6 +867,14 @@ pub fn derive_key(
     return "".clone()
   }
   if kv_width < 0 || token_count < 0 || pack_total_bytes < 0 { return "".clone() }
+  // The upper bound is as load-bearing as the lower one. `kv_width` and `token_count` occupy
+  // **four-byte** preimage slots (section 2.3, offsets 104 and 108), so a value above `U32_MAX`
+  // would be silently narrowed and two runs whose widths differ by exactly 2^32 would address one
+  // container. Widening the slots is a `key_version` change, so this is fail-closed instead: the
+  // empty string, which every caller refuses on. No geometry this arm accepts can reach it —
+  // `kv_width` is bounded by `MAX_ATTENTION_WIDTH` and `token_count` by `MAX_PREFILL_TOKENS` long
+  // before L0 — and it is the guard that keeps that a property of the caller rather than of luck.
+  if kv_width > U32_MAX || token_count > U32_MAX { return "".clone() }
   if token_stream.len() != mul_checked(token_count, 4) { return "".clone() }
   // The third digest is computed here rather than taken as a parameter so that one function owns
   // the whole preimage: a caller cannot hand it a digest of something else.

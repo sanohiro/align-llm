@@ -33,21 +33,32 @@ plan, and every bound are unchanged and the container is asserted byte-identical
 `src/decode_step.align` (the operand, step 2d, L0, `render_store`, schema 6),
 `src/model_forward.align` (**five `Outcome` fields only** — section 12 deviation D1),
 `scripts/kv_plane_reader.py` (a second preimage implementation and the `KEY` verdict),
-`scripts/run-layer-forward-smoke` (a third preimage implementation, 15 golden rows, oracle K/D),
+`scripts/run-layer-forward-smoke` (a third preimage implementation, 16 golden rows, oracle K/D),
 `scripts/run-decode-step` (the real-model store leg and a third analysis block),
-`scripts/decode-step-golden.jsonl` (141 → 156 rows), plus `docs/specs/roadmap.md` (items 37 and 38),
+`scripts/decode-step-golden.jsonl` (141 → 157 rows), plus `docs/specs/roadmap.md` (items 37 and 38),
 `docs/align-development.md`, `docs/align-requests.md` (Request 53), and the ledger. **The Makefile
 is untouched**: no target, no aggregate membership, and no check topology moves.
 
 **Verification, all green at this head** (`gmake`, `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib`):
-`gmake build`, `gmake check` (31 units), `gmake layer-forward-smoke` (158 documented cases, 156
-golden rows, 42 codes), `gmake ggml-spike-smoke`, `gmake gate-topology-check`, `gmake fmt` leaves no
+`gmake build`, `gmake check` (31 units), `gmake layer-forward-smoke` (159 documented cases, 157
+golden rows, 42 codes), `gmake ggml-spike-smoke`, `gmake alignpack-smoke`,
+`gmake gate-topology-check`, `gmake fmt` leaves no
 diff, `gmake format-check`, `git diff --check`. The golden movement was verified **mechanically**:
-all 141 pre-existing rows differ only in `document_schema_version` 5 → 6 plus a default `store`
-object, in the same order, with no row removed. **Five ledger mutants were run at the final head and
-all five died**: a preimage field dropped in one of the three implementations, a hit treated as a
+all 141 pre-existing rows differ only in the document's own `schema_version` 5 → 6 plus a default
+`store` object, in the same order, with no row removed — the container header's separate
+`document_schema_version` stays 3 (section 12, D15). **Five ledger mutants were run at the final head
+and all five died**: a preimage field dropped in one of the three implementations, a hit treated as a
 miss, a key that ignores the token stream, the container's path published in the document, and a
 miss that saves after the suffix pass.
+
+**One comprehensive review is complete and its findings are repaired** (section 12, D15–D21 plus
+addenda to D6, D7, and D14). Two code repairs: W5 maps `R6_KV_CLEANUP_FAILED` to `store[cleanup]`
+so no writer code can leak the derived path into `error_detail` (D16), and `derive_key` bounds
+`kv_width` and `token_count` from **above** as well as below, because both narrow to `u32` in the
+preimage (D19). One new golden row, `ds-store-suffix-unwritable`, gives D14's moved call site its
+own failure regression. The preimage is **unchanged** and every key in this document still holds:
+D17 records the `document_schema_version` coupling that keeps it safe rather than spending reserved
+bytes on it. D14 and a `KEY_VERSION` mutant were re-injected at the repair head and both died.
 
 **One real defect was found and fixed during implementation, and it is deviation D14.** The
 `KV_SAVE` writer's call site is *after* the suffix pass, which was correct for every prior run
@@ -65,7 +76,13 @@ the host never freed**. Memory was polled 18:30-20:01 (91 minutes) against the 6
 floor and measured 3.2-4.97 GB throughout, with concurrent Docker-in-Docker preflights from other
 work holding the box; nothing was killed and nothing was run below the floor. The leg and its
 analysis block are implemented and dry-run against the hosted golden documents; this is the last
-piece of the acceptance rule and must run before the pull request. (2) `python3 scripts/pre-pr
+piece of the acceptance rule and must run before the pull request. **The dry run does not verify
+gate G1**, and that is the one assertion it cannot: the hosted rows carry no `LOGITS` blob, so
+`oracle_logits.present` is false and the G1 assertion fires as the dry run's single expected
+failure. Everything else — oracle K, oracle S on both legs, oracle D's document-derived key,
+oracle B, the store-object invariants, and the keyed-hit-versus-explicit-`KV_LOAD` comparison —
+passed on real documents. G1 on both legs is therefore **unverified until the model runs**, and it
+is the assertion the run exists to add. (2) `python3 scripts/pre-pr
 --owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (3) One comprehensive review.
 (4) Merge **after** item 36.
 

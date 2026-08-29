@@ -4268,6 +4268,15 @@ STORE_REFUSALS = [
     # records as a deliberate cost rather than an oversight.
     ("ds-store-unwritable", ds(store=STORE_ABSENT_DIR), "R6_KV_UNWRITABLE", "store[create]"),
     ("ds-store-file-not-dir", ds(store=STORE_FILE), "R6_KV_UNWRITABLE", "store[create]"),
+    # W5 at the **other** call site, which is the one this capability moved. A keyed miss with a
+    # suffix saves before the suffix pass (section 12, D14), so its create failure is reported from
+    # a site no prior capability could reach — `SUFFIX` was illegal beside `KV_SAVE`. The row pins
+    # that the same code and the same detail come out of it and that the run is **refused there**:
+    # the suffix pass does not run, no step runs, and the arm does not continue with a prefix it
+    # could not persist. Without it the moved site's failure branch has no regression at all.
+    ("ds-store-suffix-unwritable",
+     ds(tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_ONE, store=STORE_ABSENT_DIR),
+     "R6_KV_UNWRITABLE", "store[create]"),
     # **A miss is only a missing file.** A file that exists at the key path is loaded through L1–L14
     # and every failure there is that check's refusal — never a silent re-prefill. Three of them,
     # built by placing a container at a key path it does not describe.
@@ -4481,6 +4490,11 @@ def normalize(text):
     # `mktemp -d` path and would make the golden a function of this run's temporary directory. It is
     # replaced by a placeholder here, exactly as the five top-level path fields are, and the case
     # table below asserts the placeholder so the substitution cannot hide a wrong detail.
+    #
+    # **This substitution covers `KV_SAVE`/`KV_LOAD` runs only.** A store run's own cleanup failure
+    # reports the operand — `R6_KV_UNWRITABLE store[create]`'s sibling `store[cleanup]`, section 12
+    # D16 — because a derived name is the arm's own and section 2.7 publishes no path anywhere. That
+    # detail needs no normalization, which is the point of mapping it in the arm rather than here.
     if document["error_detail"].startswith(work_dir):
         document["error_detail"] = "<path>"
     return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
@@ -5847,6 +5861,10 @@ STORE_REFUSAL_STATE = {
     "ds-store-narrow-width": ("-", "absent", "-"),
     "ds-store-unwritable": (STORE_EXPECTED_KEY, "miss", "PREFILL"),
     "ds-store-file-not-dir": (STORE_EXPECTED_KEY, "miss", "PREFILL"),
+    # The suffix row keys the **prefix** — `3,17` and not `3,17,5` — which is the whole content of
+    # "a store is keyed on what is shared": the suffix is not in the preimage and its absence here
+    # is asserted rather than assumed.
+    "ds-store-suffix-unwritable": (STORE_SUFFIX_KEY, "miss", "PREFILL"),
     "ds-store-hit-corrupt-plane": (STORE_EXPECTED_KEY, "hit", "-"),
     "ds-store-hit-wrong-tokens": (STORE_EXPECTED_KEY, "hit", "-"),
     "ds-store-hit-wrong-pack": (STORE_EXPECTED_KEY, "hit", "-"),
@@ -5869,6 +5887,20 @@ for name, _, code, detail in STORE_REFUSALS:
             or refused["plane"]["roundtrip_verdict"] == "IDENTICAL":
         failures.append("%s: a refused store run published loop state: %r / %r"
                         % (name, refused["decode"], refused["plane"]))
+# The moved call site's own assertion, and the reason `ds-store-suffix-unwritable` is a row rather
+# than a second copy of `ds-store-unwritable`: the suffix was **requested and not completed**, so the
+# arm refused at the save that now precedes the pass (section 12, D14) instead of running the pass
+# and reporting the failure afterwards. The key it published is the **prefix**'s, `3,17` — the same
+# `f8881c20…` `ds-store-suffix-miss` writes — which is what a store keyed on the shared prefix means.
+suffix_unwritable = json.loads(produced["ds-store-suffix-unwritable"])
+if suffix_unwritable["suffix"]["requested"] != 1 or suffix_unwritable["suffix"]["completed"] != 0 \
+        or suffix_unwritable["suffix"]["graph_count"] != 0:
+    failures.append("ds-store-suffix-unwritable: the suffix pass ran before the store refusal: %r"
+                    % suffix_unwritable["suffix"])
+if suffix_unwritable["store"]["key"] != STORE_SUFFIX_KEY:
+    failures.append("ds-store-suffix-unwritable: keyed %r, not the prefix's %r"
+                    % (suffix_unwritable["store"]["key"], STORE_SUFFIX_KEY))
+
 # The three broken containers are **still there and still broken**: a hit that failed did not
 # replace, delete, or re-prefill over the file it refused.
 for directory in (STORE_CORRUPT_DIR, STORE_WRONG_TOKENS_DIR, STORE_WRONG_PACK_DIR):

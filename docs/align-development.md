@@ -2058,8 +2058,12 @@ and `R6_PATH` are prose names in the source's comments rather than codes anythin
 creates one, never lists one, and writes nothing into it but `<64-hex>.akvp`. Given it, the arm
 derives the container's name from the pack's source-identity digest, the geometry file's bytes,
 `TOKENS`, and `KV_WIDTH` (plus the format's own version scalars), loads that file if it is there and
-writes it if it is not, and publishes the key it used in `store.key` on **every** run including a
-refused one. `-` is absent and means exactly what fifteen operands mean. It is **mutually exclusive
+writes it if it is not, and publishes the key it used in `store.key` on **every** run that reached
+the derivation, a refused one included. A run refused **before** the derivation — a conflicting
+operand, an unparsable or too-narrow `KV_WIDTH` — publishes `key: "-"` and `outcome: "absent"`,
+which is itself information: it says the refusal preceded the key. `store.requested` is published
+either way, so a store run is never implicit. `-` is absent and means exactly what fifteen operands
+mean. It is **mutually exclusive
 with `KV_SAVE` and `KV_LOAD`** — `R6_KV_ARGS` with detail `store[with_save]` or `store[with_load]` —
 because it is a third plane provenance and must not compete with the two explicit ones; `SUFFIX` is
 legal beside it and is the point. **A miss is only a missing file**: a container that exists at the
@@ -2067,8 +2071,10 @@ key path and fails any identity check is that check's refusal, never a silent re
 whose create fails — the directory does not exist, the path is a regular file, or it is not writable
 — is `R6_KV_UNWRITABLE` with detail `store[create]`, one code for three causes `std.fs` cannot
 separate at this pin (Align Request 53), reported **after** the prefill because a pre-flight check
-would need a type predicate the standard library does not ship. No path is published anywhere in the
-document; a caller that wants the file forms `STORE + "/" + store.key + ".akvp"`.
+would need a type predicate the standard library does not ship. A partial container the writer could
+not remove is `R6_KV_CLEANUP_FAILED` with detail `store[cleanup]` — the operand, for the same reason.
+No path is published anywhere in the document **or in any refusal detail**; a caller that wants the
+file forms `STORE + "/" + store.key + ".akvp"`.
 
 `TOKENS` is the **prefill**; no decoded token is ever an operand. The arm computes step 1's as its
 own prefill's `argmax` and every later step's as its own previous step's, because an operand would
