@@ -1580,6 +1580,16 @@ its best — the first transition.** That is still a real difference and it is s
 the three quantities separately, but it is a weaker claim than the one this section made, and it is
 weaker because the number it rested on was the wrong number.
 
+**The *direction* of that comparison is structural, and only its magnitude is informative.** A union
+over sixteen steps pools a strictly larger window than an adjacent pair does, so a ratio above 1 is
+what the two window sizes guarantee before any routing behaviour is measured; a union quantity below
+the adjacent-pair one would be evidence of an arithmetic error, not of a routing property. What
+carries information is the size of the excess — **1.55× to 1.67×**, not the 3× or 4× a strongly
+pooled working set would give — and what that size says is that a decode step keeps demanding keys
+the immediately preceding step did not, so widening the window from two steps to sixteen buys much
+less than the window's growth. Section 2.5's requirement to name the three quantities separately is
+what makes the comparison legible at all; the comparison itself is a magnitude, not a sign.
+
 ### 12.4 Cell C-P1 and oracle C′ — the branch the measurement selected
 
 Section 4.4 wrote both branches in advance and refused to guess. The measurement, over twelve
@@ -1914,6 +1924,23 @@ prediction.
     would have left thirteen copies behind. The list in `docs/align-requests.md` is now regenerated
     from the source rather than written by hand.
 
+19. **Risk 8 came due in the fresh worker's aggregate, not on the developer host.** Section 6.4
+    reasoned about `layer-forward-smoke`'s own wall clock and section 12.6 measured it at 80 s, which
+    is comfortable. What no one costed is that the same runner is a `capable-checks` member, and
+    that `capable-checks` is the child `scripts/fresh-align-compiler` runs under a single
+    `AGGREGATE_TIMEOUT`. On GitHub's **`aarch64`** runner the whole `worker-aggregate` phase measured
+    **1,867 s** and **1,892 s** on `main` (PR #143, PR #144), both passing; this branch measured
+    **1,992 s** and **2,000 s** on two consecutive runs and failed both times with the canonical
+    `fresh compiler: ERROR CHILD aggregate`, which carries no detail. The **`x86_64`** runner
+    measured 1,778 s and passed, and this host's own installed-profile run passed at 1,875 s. A
+    deterministic failure at a repeated duration, on the slower architecture only, with the same
+    content that passes elsewhere, is the **cap** rather than the suite. `AGGREGATE_TIMEOUT` is
+    therefore **1,800 s → 3,600 s**, with the measurement in the constant's own comment. It bounds a
+    hung child; `enforce_aggregate_quota` is what bounds what the child may consume and is
+    unchanged, so the sandbox is not widened. The lesson generalises past this capability: a fixed
+    wall clock over a serial suite that every capability adds to is a bound that will be crossed
+    again, and it should be crossed by a measurement rather than by a rerun.
+
 **Six smaller repairs from the same review, recorded here rather than as rows of their own:**
 `layer_olmoe.mm_write_mask_offset` fails **closed** on a negative offset — it wrote the fully masked
 image instead of returning with the buffer's zero bits in place, which is `0.0f` everywhere and
@@ -1953,7 +1980,7 @@ Every applicable cell of sections 3 and 5, mapped to where it is implemented and
 | 3.7 the decode condition and table | `OP_CONCAT`, `WHEN_DECODE`, `mm_row_issued_at`, `mm_decode_a_node_table`, the slot map | `graph.table_rows_a_decode` **37** published and asserted; `md-force-mask-offset`, `md-force-decode-position` |
 | 3.8 `MAX_PREFILL_TOKENS` 6 → 32 | `src/layer_olmoe.align`; every consumer audited | `moe-tokens-33`, `mm-tokens-33`, both `*-seven-with-transcript`, both `*-seven-no-transcript` |
 | 3.9 streamed, no `RESIDENT` | no operand; `weights` object absent | per-step `total_bytes` **740,666,496** measured |
-| 3.10 the document | `render*` in `src/moe_decode_step.align` | `scripts/moe-decode-step-golden.jsonl`, 57 rows, one shape at `N = 1` and `N = 3` |
+| 3.10 the document | `render*` in `src/moe_decode_step.align` | `scripts/moe-decode-step-golden.jsonl`, 59 rows, one shape at `N = 1` and `N = 3` |
 | 3.11 metrics | `StepResidency`, `union_grow` **twice** — once prefill-seeded for the union curve and once empty-seeded for `decode_keys_distinct` — `R6M_CLAIM_ACCOUNTING`, `R6M_ROUTED_SHAPE` | section 12.3; amplification **0 ppm** on 64 steps. `step_reuse_per_mille`'s oracle is derived **independently** in `layer_forward_fixture.py` and the seventh block asserts that the corpus separates it from the prefill-relative quantity (deviation 13) |
 | 3.11 both prefill-union fractions | `keys_in_prefill` (demands) and the distinct sweep in `decode_loop` | seventh block bounds each by its own denominator; section 12.3 finding 2 reports both (deviation 14) |
 | 3.12 ownership and lifetime | one frame owns the plane and both windows | `lifetime.*_created == *_freed` and `graph_balance_failures == 0` on **every** case |
@@ -1967,13 +1994,13 @@ Every applicable cell of sections 3 and 5, mapped to where it is implemented and
 | 5.1 failure | every seam code, detail prefixed `step[<k>]` | `md-force-compute-step2` → `R5_COMPUTE step[2]` |
 | 5.1 malformed / precedence | `R6M_STEPS` before `R6M_KV_WIDTH` | `md-steps-zero-and-narrow` |
 | 5.1 early exit | rollback of the partial step's counts | `md-force-compute-step2` asserts all five; `md-transcript-short-for-steps` asserts them at step 3 |
-| 5.1 cleanup | one frame, `buffer`s only | `lifetime` assertions on all 57 cases |
+| 5.1 cleanup | one frame, `buffer`s only | `lifetime` assertions on all 59 cases |
 | 5.2 write-back rows derived | `MM_K_ROW`/`MM_V_ROW` read out of the table | `md-force-writeback-offset` → `R6M_PLANE_MISMATCH`; `md-force-plane-stage-offset` |
 | 5.2 ordering invariant | upload → compute → write-back → verify | oracle B cumulative and inclusive of the new column, at every step |
 | 5.3 the decode topology as data | `src/layer_olmoe.align` | `table_rows_a_decode` 37 asserted; `md-geometry-expert-used-31`/`-30` |
 | 5.3 prefill tables byte-unchanged | no prefill row moved | both MoE goldens: **zero pre-existing rows changed in value** |
 | 5.4 re-used by import | `decide`, `parse_tokens`, `stage_carry_at`, `stage_plan_owned`, the comparators' grammar | `moe-model-forward-golden.jsonl` unchanged except the three predicted rows |
-| 5.4 duplicated for Request 49 | **36** functions, regenerated from the source and listed in `docs/align-requests.md`; the design predicted 23 and a duplicated `refill` that does not exist (deviation 16) | section 9 and Request 49's client block |
+| 5.4 duplicated for Request 49 | **36** functions, regenerated from the source and listed in `docs/align-requests.md`; the design predicted 23 and a duplicated `refill` that does not exist (deviation 18) | section 9 and Request 49's client block |
 | 5.5 no new FFI symbol or shim body | `src/ggml_ffi.align`, `scripts/ggml_shim.c` byte-unchanged | the smoke's source scan. `scripts/build-ggml-shim` gains one `-Wl,-rpath` on the real shim's link line — a **link-line** change, not a shim-body change — so that `ALIGN_LLM_GGML_LIB` can be a build directory (section 13's closing paragraph, the sixth smaller repair) |
 | 5.6 fixture, smoke, runner, goldens | `write_moe_decode_corpus`, the seventh block, `scripts/run-moe-decode-step` | section 12.6 |
 | 5.7 G-P1, C-P1 | sections 12.2 and 12.4 | both taken, both branches written in advance |
@@ -1987,7 +2014,7 @@ Every applicable cell of sections 3 and 5, mapped to where it is implemented and
 the plane are two distinct `buffer`s with two distinct ggml wraps and no operand can make a claim
 read address the plane, so the case would have had to be forced by a shim build that writes to a
 slot the arm never hands it. `window.pointer_identity_failures == 0` over every placement of every
-case is what covers the property instead, and it is asserted on all 57 rows.
+case is what covers the property instead, and it is asserted on all 59 rows.
 
 ## 15. What this owes the toolchain
 

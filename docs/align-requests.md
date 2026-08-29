@@ -6592,7 +6592,15 @@ column pair, and the verdict as the `i64` code every other verdict on the wire a
 **non-blocking** and adds no consumer of a hypothetical surface; it does record that the
 stream-plus-column shape is now reached by capabilities that have nothing to do with GGUF, so the
 migration named below gains a third producer surface. R6-STEP-N also deliberately gates on **token ids** rather
-than on decoded text precisely so this request stays non-blocking through the decode loop. The
+than on decoded text precisely so this request stays non-blocking through the decode loop.
+R6-PREFIX-SUFFIX-PREFILL (`docs/specs/r6-prefix-suffix-prefill.md` section 3.5) is the first client
+that makes the tokenizer's absence *cheaper* rather than merely tolerable, and it is recorded
+because the direction is unusual: a **suffix is not decoded**. It is an operand, obtained by
+splitting an id list the instrument printed, so continuing a saved prefix with a different suffix
+needs no detokenization at any point — not in the arm, not in the qualification runner, and not in
+gate G, whose `llama-debug --save-logits` blob for the whole prompt is reused unchanged because
+`TOKENS ++ SUFFIX` is that prompt's id list by construction. It adds **no client** and consumes no
+hypothetical surface. The
 first consumer that would make it blocking is a
 tokenizer/vocabulary-inspection capability, which needs `tokenizer.ggml.tokens` and
 `tokenizer.ggml.merges` as addressable data; per `CLAUDE.md`, this request reclassifies as blocking
@@ -9823,6 +9831,18 @@ alongside that frame's other locals, which is precisely the refused shape. The b
 therefore stays with the buffer's owner, the format's authority stays in one module, and no
 compatibility layer is built around the gap. **No status change.**
 
+**R6-PREFIX-SUFFIX-PREFILL is a continuing client, and a *negative* one worth recording**
+(`docs/specs/r6-prefix-suffix-prefill.md` section 8). It adds a second writer into the same plane —
+a multi-column write-back at `n_past = T_prefix` before any decode step runs — and the gap **shaped
+nothing**, because the write goes through `capture_plane`, which is already in `src/decode_step.align`
+with the buffer, and the pass's eleven scalars travel in `model_forward.Outcome` fields as
+`weights`' nine do. It did shape one small thing and the shape is recorded rather than worked
+around: `stage_inputs` could not gain a third `borrow mut` out-parameter for the suffix ids beside
+the caller's `tokens` and `o`, so the arm re-parses the operand in `execute` with the same total
+`parse_tokens` it already calls twice — which is a re-parse of at most 32 decimal ids, not a
+compatibility layer. **No status change, no workaround built, and no hypothetical surface
+consumed.**
+
 **2. A foreign call unions its `borrow mut` arguments.** `model_forward.stage_plan` reports through
 four of them:
 
@@ -9879,7 +9899,7 @@ No new syntax. Two checker changes:
 
 R6-MOE-RESIDENT-DENSE (`docs/specs/r6-moe-resident-dense.md` sections 3.5 and 5.3) adds a client of
 a **new shape**, and it is the sharpest-shaped one this request has. `moe_model_forward` now carries
-`plan_resident_dense`, a roughly forty-line twin of `model_forward.plan_resident` whose body differs
+`plan_resident_dense`, a twin of `model_forward.plan_resident` whose body differs
 from the original in exactly two tokens — `layer_olmoe.MAX_PREFILL_TOKENS` for `layer_qwen2`'s, and
 the receiving record's module — together with its own `mul_checked`, `add_checked`, and
 `align_up_checked`, which are character-for-character copies of `model_forward`'s private helpers.
@@ -9893,6 +9913,13 @@ Every other piece of the mechanism is genuinely shared and is reused byte-unchan
 duplicated **producer** against a shared record and three shared helpers — and
 `docs/specs/r6-moe-resident-dense.md` section 7 risk 7 records the drift hazard two producers of one
 index convention create.
+
+<!-- The next free request number is **53**. R6-PREFIX-SUFFIX-PREFILL proposes none: every gap it
+     met is already recorded above (49 as a continuing client, and 22, 41, 35, 31, 21, 30, 29, 38,
+     39, 33 inherited unchanged through paths it does not touch). R6-MOE-RESIDENT-DENSE proposes
+     none either: it adds clients to 33, 35, 36, 38, 47, 48, 49 and 51, and records 50 as
+     explicitly **not** a client. 52 is claimed by a parallel branch; both numbers must be
+     re-checked when a branch merges `origin/main`. -->
 
 ## Request 50 — `std.os`: how much physical and available memory the host has
 
