@@ -2585,6 +2585,26 @@ fn verifier_repair_template_pairing_valid(
   return path_present == offers_repair
 }
 
+// C4-REPAIR-TEMPLATE. The declared edit policy, validated here as well as in the evaluator, so the
+// persisted record is checked by a producer-independent recomputation rather than trusted.
+fn verifier_edit_policy_record_valid(borrow policy: prompt_artifacts.EditPolicy) -> bool {
+  return policy.schema_version == 1 &&
+  policy.artifact_kind == "EDIT_POLICY" &&
+  // Not a knob: the pinned adapters enforce exactly these values and nothing else.
+  policy.maximum_file_blocks == 32 &&
+  policy.maximum_edit_bytes == 262_144 &&
+  policy.refuse_unchanged_files &&
+  verifier_valid_digest(policy.content_sha256)
+}
+
+fn verifier_edit_policy_valid(borrow task: prompt_artifacts.PromptEvaluationTask) -> bool {
+  expects := verifier_task_expects_measurement_version_three(task)
+  return match task.edit_policy {
+    None => !expects,
+    Some(policy) => expects && verifier_edit_policy_record_valid(policy),
+  }
+}
+
 fn verifier_task_valid(
   borrow task: prompt_artifacts.PromptEvaluationTask,
   require_template: bool,
@@ -2614,6 +2634,11 @@ fn verifier_task_valid(
   limits.maximum_repair_loops >= 0 && limits.maximum_repair_loops <= 64 &&
   // The sealed repair template is declared exactly when the task offers a repair attempt.
   verifier_repair_template_pairing_valid(task, require_template) &&
+  // Ladder rows 8-11, recomputed independently of the evaluator: the declared edit policy is
+  // present exactly for a template-adapter corpus, and its two bounds must **equal** the values
+  // the pinned adapters enforce. A policy that differed would put a number in a model's prompt
+  // that no code enforces.
+  verifier_edit_policy_valid(task) &&
   match limits.maximum_benchmark_regression_ppm {
     None => true,
     Some(value) => value >= 0 && value <= 1_000_000,

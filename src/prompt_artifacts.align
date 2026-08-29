@@ -580,6 +580,12 @@ pub PromptEvaluationTask {
   // `maximum_repair_loops >= 1` must declare the pair; the scorer enforces that pairing.
   repair_template_path: Option<string>,
   repair_template_sha256: Option<string>,
+  // C4-REPAIR-TEMPLATE's declared edit policy, `Some` exactly for a task whose `argv` names
+  // `scripts/prompt-template-adapter.py` and absent otherwise, on the same optional-member
+  // mechanism the repair-template pair above uses. The producer emits it, so the record must
+  // declare it: a member the evaluator writes and this record omits does not merely go
+  // unvalidated, it makes the whole document fail to decode and the run unpublishable.
+  edit_policy: Option<EditPolicy>,
   content_sha256: string,
 }
 

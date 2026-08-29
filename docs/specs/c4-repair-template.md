@@ -1804,3 +1804,28 @@ the freeze's `--check`; §7.7 is the §11.4 run.
     Both mutants now die. This is the same class `c4-repair-editset.md`'s review found five times —
     a clause with no falsifying case — and it is worth stating that the merge is what exposed it:
     reading that branch's repair is what prompted the check.
+16. **The gate's first run failed to publish, and the cause was a missing Align record member —
+    the exact incident class section 3.5's fifteen-place parity table exists to prevent.**
+    `PROMPT_EVALUATION_TASK` gains an optional `edit_policy` member (section 3.4). The Python
+    evaluator emitted it and `scripts/prompt-gate-validator.py` validated it, but
+    `src/prompt_artifacts.align`'s `PromptEvaluationTask` never declared it — only the new
+    `EditPolicy` record type was added. The consequence is worse than an unvalidated field: a
+    member the producer writes and the record omits makes the **whole document fail to decode**, so
+    `prompt_artifact_io.decode_prompt_evaluation_result_source` refused the result,
+    `publish_evaluator_output` never ran, and the run ended `EVALUATION_FAILED` with no
+    `result.json` at all. The 22 provider calls had already succeeded.
+    **Why every owner test missed it.** `scripts/prompt_gate_fixture.py` set its tasks' `argv` to
+    the template adapter but never attached an `edit_policy` record, so no Align decode in any
+    smoke ever saw a task carrying the member. The parity table's `PROMPT_EVALUATION_TASK` row was
+    walked as "gains the optional member" and satisfied by the Python half alone.
+    **The repair is three parts, not one.** The record declares the member; `verifier_task_valid`
+    validates it independently through `verifier_edit_policy_valid` (present exactly for a
+    template-adapter corpus, bounds equal to the enforced constants, `refuse_unchanged_files`
+    true); and the gate fixture now emits it, so every consumer decodes a task that actually
+    carries it. Align defects **39** and **40** cover a differing bound and an absent policy, and a
+    mutant deleting the new validation is killed by them.
+    **The rule worth keeping.** A field-list parity table is satisfied only when *every* named
+    place is exercised by a test that would fail if the place were wrong. Three of this
+    capability's four defects — the freeze's field order, ladder row 13 twice, and this one — were
+    invisible to owner tests that asserted the rule instead of driving the artifact through the
+    consumer that enforces it.

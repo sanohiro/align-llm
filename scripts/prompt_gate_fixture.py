@@ -379,6 +379,20 @@ def upgrade_to_v2(result: dict[str, Any], evidence: dict[str, Any]) -> None:
         # version-2 measurement from every attempt of this fixture.
         task["argv"] = [task["cmd"], TEMPLATE_ADAPTER_RELATIVE]
         task["measurement_adapter_runtime"] = TEMPLATE_ADAPTER_RUNTIME
+        # The declared edit policy, in its declared position immediately before `content_sha256`.
+        # Emitting it here is what makes every consumer decode a task that actually carries it:
+        # without it the Align `PromptEvaluationTask` record could omit the member entirely and
+        # every owner test still passed, while a real run failed to decode and could not publish.
+        tail = task.pop("content_sha256")
+        task["edit_policy"] = bind({
+            "schema_version": 1,
+            "artifact_kind": "EDIT_POLICY",
+            "maximum_file_blocks": 32,
+            "maximum_edit_bytes": 262_144,
+            "refuse_unchanged_files": True,
+            "content_sha256": "",
+        })
+        task["content_sha256"] = tail
         bind(task)
     template_sha256 = synthetic_digest("repair-template")
     expected_inputs: list[dict[str, Any]] = []

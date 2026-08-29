@@ -227,6 +227,10 @@ fn task() -> prompt_artifacts.PromptEvaluationTask {
 // parameterized literal rather than as a field replacement: the pinned compiler supports owned
 // field replacement only for `string` and `Option<string>` leaves.
 fn task_named(adapter: i64) -> prompt_artifacts.PromptEvaluationTask {
+  return task_named_for(adapter, 0)
+}
+
+fn task_named_for(adapter: i64, policy_defect: i64) -> prompt_artifacts.PromptEvaluationTask {
   return prompt_artifacts.PromptEvaluationTask {
     schema_version: 1,
     artifact_kind: "PROMPT_EVALUATION_TASK".clone(),
@@ -271,6 +275,7 @@ fn task_named(adapter: i64) -> prompt_artifacts.PromptEvaluationTask {
     },
     repair_template_path: Some("repair-template.json".clone()),
     repair_template_sha256: Some(digest_a()),
+    edit_policy: if adapter == 2 { edit_policy_for(policy_defect) } else { None },
     content_sha256: digest_a(),
   }
 }
@@ -1786,11 +1791,32 @@ fn task_template_adapter() -> prompt_artifacts.PromptEvaluationTask {
   return task_named(2)
 }
 
+fn task_template_adapter_for(defect: i64) -> prompt_artifacts.PromptEvaluationTask {
+  return task_named_for(2, defect)
+}
+
 // Defect 32 is deliberately a **repair-adapter** corpus: a version-2 measurement carrying a
 // version-3 member. On a template-adapter corpus the version rule would reject it as well, and a
 // case with two possible causes proves neither.
 fn uses_template_adapter(defect: i64) -> bool {
-  return defect >= 31 && defect <= 38 && defect != 32
+  return defect >= 31 && defect <= 40 && defect != 32
+}
+
+// The declared edit policy is `Some` exactly for a template-adapter task and its bounds must equal
+// the constants the pinned adapters enforce. Defect 39 declares a bound that differs; defect 40
+// declares no policy at all. Without a task that actually carries the record, the Align
+// `PromptEvaluationTask` could omit the member and every owner test would still pass while a real
+// run failed to decode — which is what happened.
+fn edit_policy_for(defect: i64) -> Option<prompt_artifacts.EditPolicy> {
+  if defect == 40 { return None }
+  return Some(prompt_artifacts.EditPolicy {
+      schema_version: 1,
+      artifact_kind: "EDIT_POLICY".clone(),
+      maximum_file_blocks: if defect == 39 { 16 } else { 32 },
+      maximum_edit_bytes: 262_144,
+      refuse_unchanged_files: true,
+      content_sha256: digest_a(),
+    })
 }
 
 // Defect 33 is a template-adapter corpus emitting a version-2 measurement, so it is the one case
@@ -2514,7 +2540,7 @@ fn tasks_array_v2(defect: i64) -> array<prompt_artifacts.PromptEvaluationTask> {
   } else if defect == 13 {
     values.push(task_without_repair())
   } else if uses_template_adapter(defect) {
-    values.push(task_template_adapter())
+    values.push(task_template_adapter_for(defect))
   } else if uses_repair_adapter(defect) {
     values.push(task_repair_adapter())
   } else {
@@ -3219,6 +3245,18 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   if verdict_code(prompt_score.verify_result(template_refused, template_refused_evidence)?) != 2 {
     return Err(Error.Invalid)
   }
+
+  // Ladder row 10, recomputed by the Align verifier: a declared bound that differs from the
+  // constant the pinned adapters enforce. The prompt renders its bounds from this record, so a
+  // value nothing enforces would be shown to the model as if it were binding.
+  v3_policy_bound := complete_result_v2(39)
+  v3_policy_bound_evidence := evidence_v2(39)
+  expect_invalid(v3_policy_bound, v3_policy_bound_evidence)?
+
+  // Ladder row 8: a template-adapter task declaring no edit policy at all.
+  v3_policy_absent := complete_result_v2(40)
+  v3_policy_absent_evidence := evidence_v2(40)
+  expect_invalid(v3_policy_absent, v3_policy_absent_evidence)?
 
   // A version-2 document may not be paired with version-1 evidence.
   version_split := complete_result_v2(0)
