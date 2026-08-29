@@ -8102,7 +8102,7 @@ Extending the existing `Result`/`Option` payload surface, consistent with the pa
 
 ```text
 Status: PROPOSED
-Priority: medium
+Priority: high
 Blocking: no
 Blocked gate or slice: none. `R4_WINDOW_UNAVAILABLE` (R0) and R4.5's window/allocation-failure code
   are retained as fail-closed guards that are not input-reachable (section 6, correction C8), and
@@ -8157,6 +8157,19 @@ in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c5842fd12d
   input controls; the code is retained purely as a fail-closed guard for a file that shrinks
   underneath the reader, and `spike-dimension-bound` was substituted as the input-reachable
   bounded-work guard the design actually needed.
+
+**New evidence, and why the priority is now high — R6-RESIDENT-WEIGHTS is this request's second and
+sharpest client.** At R4.5's 447 MB window the degrade-to-zero was an unreachable guard on a host
+that would have held the window anyway. `docs/specs/r6-resident-weights.md` reserves one
+**4,677,533,696-byte** arena, measured on the reference host at a 4,736,313,856-byte peak memory
+footprint, and there the same gap is the difference between a document and a process abort: a host
+that cannot hold the arena does not get `R6_RESIDENT_UNAVAILABLE`, it dies inside `Vec` growth with
+no code, no document, and no Align line running after it. That capability states the consequence as
+a contract row (its section 3.6) rather than hiding it, keeps `RESIDENT=weights` **opt-in** for
+exactly this reason, and adds a physical-memory preflight to `scripts/run-decode-step` — which is
+why `Blocking: no` still stands. The observable-consequence guard it does ship
+(`weights.bytes().len() != pad + resident_bytes` → `R6_RESIDENT_UNAVAILABLE`) is the same shape as
+`R4_WINDOW_UNAVAILABLE` and is equally unreachable from any input.
 
 **Consequence for the client.** Three independent capabilities (R0, R4, R4.5) each converged on the
 same workaround: define `*_WINDOW_UNAVAILABLE`/`R4_5_ALIGNMENT`-adjacent codes as fail-closed guards
@@ -8447,6 +8460,30 @@ through `model_forward.window_put`. The format's own region order is what makes 
 the plane is the container's **last** region and `f.len() == total_bytes` is validated before the
 first plane byte is read, so the final short read is short by exactly the remaining bytes rather
 than an over-read. **No status change.**
+
+**R6-RESIDENT-WEIGHTS measures the platform boundary this request describes, and is its third
+consumer.** `docs/specs/r6-resident-weights.md` section 2.4 ran the probe at the pinned compiler
+against the real 4,683,073,536-byte GGUF and found the limit is not a soft cost but a hard refusal:
+
+```text
+$ ./r6w_probe MODEL.gguf 2147483647 0        # INT_MAX
+mode: single
+requested: 2147483647   count: 2147483647   len: 2147483647   ns: 482214208
+
+$ ./r6w_probe MODEL.gguf 2147483648 0        # INT_MAX + 1
+mode: single
+pread: ERROR
+```
+
+The boundary is **exactly `INT_MAX`**: Darwin's `pread(2)` refuses `nbyte >= 2 GiB` with `EINVAL`,
+and because `align_rt_io_file_pread` always asks for `b.cap`, **a `buffer` at or above 2 GiB cannot
+be filled by one `pread` at this pin on this platform at all**. That is not a preference for chunked
+reads; it is the only shape available. The resident arena is filled in 4,669 `CHUNK_BYTES` rounds
+through the same `read_into_window` the streamed path uses, at a measured 2.58 s for
+4,677,120,000 B. A bounded-length `pread` would let each weight member be read straight to its own
+arena offset and would delete the transient and the `window_copy` from the fill entirely.
+**No status change**; this is continuing evidence, and the chunked fill is not written against a
+hypothetical surface.
 
 ### Requested capability
 
@@ -9741,6 +9778,201 @@ No new syntax. Two checker changes:
   criterion, restated here because that is how both were discovered).
 
 ---
+
+## Request 50 — `std.os`: how much physical and available memory the host has
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none. `R6-RESIDENT-WEIGHTS`'s `RESIDENT=weights` operand is opt-in and
+  `scripts/run-decode-step` performs the check in shell before the arm is invoked
+  (`docs/specs/r6-resident-weights.md` section 3.6, consequence 2).
+Independent work that may continue: all of R6-RESIDENT-WEIGHTS, and any later capability that
+  reserves a large buffer behind an opt-in operand with a runner-side preflight.
+Resume condition: an Align release exposes the host's physical and available memory to a program.
+Align commit or pull request: none
+align-llm verification: `src/decode_step.align` refuses `RESIDENT=weights` with a
+  document-carrying refusal code when the host cannot hold the arena — **no such code exists
+  today**; the name `R6_RESIDENT_HOST` is this request's proposal for it and is not a shipped
+  surface. The shell preflight in `scripts/run-decode-step` and its `N/A` line are deleted;
+  `gmake layer-forward-smoke` and `gmake decode-step-qualification` pass with a new
+  forced-low-limit smoke case reaching the new code.
+```
+
+### Motivation and current sibling evidence
+
+An Align program cannot ask the host how much memory it has. `R6-RESIDENT-WEIGHTS` reserves one
+4,677,533,696-byte `buffer` for the resident weight arena, and the honest consequence on a host that
+cannot hold it is **a process abort, not a refusal**: `buffer(cap)` degrades to `cap = 0` without
+telling the caller and `append` grows through Rust's infallible, abort-on-OOM path (Request 35).
+The arm therefore cannot decide whether to accept `RESIDENT=weights`; only something outside the
+program can.
+
+Searched in the sibling checkout at the pinned commit
+`3a34febe912db5096c58c74fede36ff53f223e04`:
+
+- `crates/align_stdlib/` exposes no memory inquiry. `std.os` has no `physical_memory`,
+  `available_memory`, `total_memory`, or `page_size`; `std.process` runs children and captures
+  output; `std.fs` answers questions about files, and `fs.free_space`-style disk inquiry is the
+  nearest neighbour and is about a filesystem, not about RAM.
+- `docs/language-spec.md`'s standard-library surface lists no host-resource module.
+- The workaround an application would otherwise reach for — spawning `sysctl -n hw.memsize` or
+  reading `/proc/meminfo` through `std.process`/`std.fs` — is exactly the "second, untested input
+  path" `docs/review-checklist.md` warns about, and it makes a memory-safety decision depend on a
+  child process's text output. No such workaround is built.
+
+### Proposed surface
+
+```align
+module std.os
+
+// Total physical memory installed on the host, in bytes.
+pub fn physical_memory() -> Result<i64, Error>
+
+// Memory the host reports as currently available to a new allocation, in bytes. It is a hint by
+// nature — it changes between the call and the allocation — and the contract should say so, in the
+// same way `fs` free-space answers are hints.
+pub fn available_memory() -> Result<i64, Error>
+```
+
+Both return `Err` rather than a sentinel on a platform or configuration that cannot answer, so a
+caller that must fail closed can, and `i64` rather than `u64` for the reason every other size in the
+language is `i64`.
+
+### Acceptance criteria
+
+1. `physical_memory()` returns the host's installed memory on Linux (`/proc/meminfo` `MemTotal`) and
+   on macOS (`hw.memsize`), and `Err` on a platform that cannot answer, with a test on each
+   supported target.
+2. `available_memory()` returns a value no greater than `physical_memory()` on the same host.
+3. Neither call allocates a large buffer, spawns a process, or reads a path the caller supplies.
+4. A cgroup-constrained Linux container reports the **container's** limit rather than the host's, or
+   the contract states plainly that it does not and why.
+
+### What this capability does instead, today
+
+`scripts/run-decode-step` reads `sysctl -n hw.memsize` / `/proc/meminfo` in shell and prints one
+explicit `N/A` line naming physical memory below 12 GiB, exiting 0. That is a correct home for the
+check — the runner already refuses to start below a disk-space floor in the same shape — and it is
+recorded here rather than treated as sufficient, because the refusal a *caller of the arm* deserves
+is a document with a code, and the arm cannot produce one.
+
+## Request 51 — A reserved word used as an identifier should say so
+
+```text
+Status: PROPOSED
+Priority: low
+Blocking: no
+Blocked gate or slice: none. Every identifier in `R6-RESIDENT-WEIGHTS` is `resident_*`, `pool`, or
+  `layout`; the reserved word is the language's prerogative and the code that avoids it is normal
+  code, not a workaround.
+Independent work that may continue: all of it. This request is about a diagnostic, not a semantic.
+Resume condition: an Align release reports a reserved word used in an identifier position by name.
+Align commit or pull request: none
+align-llm verification: compile the three repros below with the shipped compiler and observe one
+  error that names the reserved word and its position, and no cascading top-level errors on later
+  lines; no align-llm source changes and no regression of its own, because the subject is the
+  compiler's output rather than this repository's behaviour.
+```
+
+### Motivation and current sibling evidence
+
+`arena` is a reserved word — `crates/align_lexer/src/lib.rs:675` maps it to `TokKind::Arena`, and
+`docs/language-spec.md:314` lists it in the memory section's reserved list, where `arena name {}`
+binds a scope-local `region` capability (`docs/language-spec.md:429`). That is the language's
+prerogative and is not what this request is about. What it is about is that using one in an
+identifier position produces a diagnostic that names neither the word nor, in the binding case, the
+right line — and then cascades into unrelated top-level errors that bury the one real cause.
+
+Reproduced at the pinned compiler `3a34febe912db5096c58c74fede36ff53f223e04`; the reserved-word list
+is read from the sibling checkout at `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`. `grep -rn
+'reserved word\|is a keyword\|reserved keyword' crates/align_parser/src crates/align_lexer/src`
+returns nothing: the compiler has no such diagnostic to emit.
+
+**Repro 1 — a parameter.** The first error is at the right column and says the wrong thing; the two
+that follow are consequences and one of them names a line with nothing wrong on it.
+
+```align
+fn total(borrow arena: slice<u8>) -> i64 {
+  return arena.len()
+}
+
+fn main() {
+  data: buffer := buffer(8)
+  print(total(data.bytes()))
+}
+```
+
+```text
+repro.align:1:17: error: expected ':'
+repro.align:1:17: error: expected identifier
+repro.align:3:1: error: expected `fn`, a type declaration, or a constant (`NAME := …`) at top level
+repro.align:7:9: error: undefined function: 'total'
+```
+
+**Repro 2 — a local binding, and the worse case.** The error is reported at the `:=`, one token
+**past** the cause, because `arena name {}` is what the parser was expecting; the two cascading
+errors then name lines 3 and 4, neither of which contains a defect.
+
+```align
+fn main() {
+  arena := 3
+  print(arena)
+}
+```
+
+```text
+repro.align:2:9: error: expected '{'
+repro.align:2:9: error: expected expression
+repro.align:3:3: error: expected `fn`, a type declaration, or a constant (`NAME := …`) at top level
+repro.align:4:1: error: expected `fn`, a type declaration, or a constant (`NAME := …`) at top level
+```
+
+**Repro 3 — the class, not the word.** `unsafe` behaves identically, so this is a property of
+reserved words in identifier positions rather than of `arena`:
+
+```align
+fn total(borrow unsafe: i64) -> i64 { return unsafe }
+```
+
+```text
+repro.align:1:17: error: expected ':'
+repro.align:1:17: error: expected identifier
+repro.align:5:19: error: undefined function: 'total'
+```
+
+By contrast `region`, which is a type name rather than a reserved word, is accepted as a parameter
+name at the same pin — so the boundary is exactly the lexer's keyword set.
+
+### Proposed surface
+
+No language surface changes. When the lexer produces a keyword token where the parser requires an
+identifier, the diagnostic should name the word and say it is reserved, and the parser should
+recover at that token so the rest of the file still type-checks. For example:
+
+```text
+repro.align:1:17: error: `arena` is a reserved word and cannot be used as an identifier
+  note: it introduces a scope-local region (`arena name { … }`); see the memory section of the
+        language specification
+```
+
+### Acceptance criteria
+
+1. All three repros above produce **one** error each, naming the reserved word and its own position.
+2. No cascading top-level error is emitted for a file whose only defect is a reserved-word
+   identifier: the parser recovers at that token.
+3. The binding form (repro 2) reports at the identifier, not at the following token.
+4. A test per repro shape — parameter, local binding, and one more identifier position — in the
+   compiler's own diagnostic suite.
+
+### What this capability does instead, today
+
+Nothing, and nothing is needed. `docs/specs/r6-resident-weights.md` section 5.8 records that every
+identifier in that capability is `resident_*`, `pool`, or `layout`, and that "arena" survives only
+in prose. The request is filed because the diagnostic cost a bounded but real amount of time to
+diagnose — the visible errors were on lines that had nothing wrong with them — and the next
+implementer to reach for the most natural word for a large contiguous allocation will pay it again.
 
 ## Not requested (respecting Align's design)
 
