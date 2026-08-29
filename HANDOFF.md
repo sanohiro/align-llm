@@ -3,43 +3,140 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: none (2026-08-30)
+## Active: R6-MOE-RESIDENT-DENSE (2026-08-29)
 
-The session stopped on the user's instruction after publishing roadmap items 31, 34, 36, and 37.
-No capability is active on `main`. Two branches carry unfinished work and are pushed; both stopped
-mid-flight with their own `HANDOFF.md` block describing exact state and next actions:
+Branch `agent/r6-moe-resident-dense`, implemented on `agent/r6-olmoe-decode` head `bf7c87d` and then
+**merged** with `origin/main` `45ff38e` (R6-OLMOE-DECODE, PR #148, which itself carried
+R6-PREFIX-SUFFIX-PREFILL, PR #149) by `git merge` — **never a rebase**. One conflict, in
+`docs/align-requests.md`, where both sides appended after Request 49: resolved by keeping this
+capability's client paragraph **and** `main`'s next-free-number comment, with the comment extended
+to record that this capability proposes none either.
 
-- `agent/r6-moe-resident-dense` (roadmap item **35**, R6-MOE-RESIDENT-DENSE). Ledger committed
-  before implementation (`f8796ea`). Implemented; byte claims exact (dense pack bytes per step
-  253,078,656 x N -> 0, expert bytes unchanged, oracle D MATCH); the elapsed claim measured
-  **BELOW FLOOR** on the quiet host (138,402 ppm worst-of-3 against the 150,000 ppm floor; clauses
-  1-11 carry the capability, no elapsed claim). Two disjoint reviews done; the repair (a
-  `bounded_detail` UTF-8 truncation panic on two public arms, `wrap_count` semantics, documentation
-  currency) was in progress when the session stopped. Remaining: finish the repair per
-  `scratchpad` findings recorded in that branch's HANDOFF, one final delta review, hosted
-  `scripts/pre-pr --owner-test layer-forward-smoke`, pull request, merge.
-- `agent/c4-repair-template` (roadmap item **39**, C4-REPAIR-TEMPLATE). Implemented and
-  owner-verified; gate run recorded at `55de53c`: the predicate `repair_recovery_paired_count >= 1`
-  is satisfied, **but the counted recovery is recovery from an attempt-1 regression that the
-  version-3 template itself introduced** (`duration/CANDIDATE` passed first-shot in items 31 and 34
-  and now fails attempt 1, then recovers to the same 758-byte patch); `edit_refusal_count` stayed
-  at 10 (`UNCHANGED_FILES` x10; `PATH_NOT_EDITABLE` 2 -> 0). The honest reading is section 1.6 (b)
-  of `docs/specs/c4-repair-template.md`: the prompt is not the binding constraint; the C4 gate is
-  **not** closed by this run and the spec must say so before publication. Remaining: merge of
-  `origin/main` was in progress (owner re-run); then two disjoint reviews, repair, baseline-chain
-  re-record plus the fresh-image preflight (the branch changes `Makefile`), pull request, merge.
+The four things that merge re-checks all held:
 
-**Next roadmap item after those two:** item **38**, R6-PREFIX-TTFT (charter in
-`docs/specs/r6-prefix-key-corpus.md` section 11: lift `MAX_PREFILL_TOKENS` 32 -> 2048, pinned
-pre-tokenized corpus, pre-committed MET / NOT_MET / INDETERMINATE rule). Track A's next step after
-item 39 is decided by its reading: with (b), the remaining axes are the model and the decoding
-strategy, not the prompt or the adapter.
+- **roadmap item 35.** After the second merge `main` carries 30, 31, 32, 33 and **36** (36 is
+  MF-SINGLE-TOKEN-LOGITS, PR #151); 34 is still claimed by `C4-REPAIR-EDITSET` and is not on `main`,
+  so **35 is still this capability's**. The item was re-ordered to sit between 33 and 36 after the
+  merge placed it below 36.
+- **`R6_MOE_DECODE_STEP` schema 2**, unchanged by the merge.
+- **next free Align request number 53.** `docs/align-requests.md` still ends at Request **52** after
+  the second merge; this capability takes none and adds clients to 33, 35, 36, 38, 47, 48, 49 and
+  **51**, and records **50** as explicitly not a client.
+- **which goldens regenerate:** the implementation moved `scripts/moe-decode-step-golden.jsonl`
+  59 -> 69 rows. Review repair adds one UTF-8 refusal row, making **70**. Main's later capabilities
+  moved `scripts/decode-step-golden.jsonl` 116 -> 155; the same root-cause repair adds two refusal
+  rows and corrects one forced-wrap counter, making **157**. `src/model_forward.align` stays
+  byte-unchanged. `main` also moved `AGGREGATE_TIMEOUT` from 1,800 s to 3,600 s in the `Makefile`;
+  nothing in this capability reads it.
 
-**Host facts worth keeping** (from this wave): the 16 GiB host runs one of {Track A gate with
-`llama-server`, DinD fresh-image preflight, real-model qualification, timing benchmark} at a time —
-serialize explicitly; run the DinD preflight as uid 501 (root breaks `ds-kv-save-unwritable`);
-bwrap inside Docker needs `--security-opt systempaths=unconfined`; never pin >= 2-token decode-step
-or >= 4-token prefill activations in a hosted golden (arm64 vs x86_64 last-bit drift).
+**A second `git merge origin/main` took `334f524`** — PR #150 (C4-REPAIR-MEASURED: Track A only,
+plus the `Makefile`'s `.PHONY`/`AGGREGATE_TIMEOUT` and the baseline chain) and PR #151
+(MF-SINGLE-TOKEN-LOGITS). One conflict, in `HANDOFF.md`, where both sides opened a new `## Active`
+block: resolved by keeping this capability's and relabelling MF-SINGLE-TOKEN-LOGITS' as the merged
+checkpoint it became. **PR #151 adds `gathered: bool` to both `GraphMembers` records**; the merge
+carried `gathered: false` into `moe_decode_step.decode_embed_members` from `main`'s side, which is
+correct — that member bakes the token into its own `source`/`pack` offsets and reads one row
+directly rather than gathering `pieces` — and this capability adds no other `GraphMembers` builder.
+`scripts/moe-model-forward-golden.jsonl` gained a row from `main`'s side (98 -> 99) and
+`src/moe_model_forward.align` changed there; neither is this branch's.
+
+**Capability.** The dense member set of a routed model held resident across an `N`-step decode loop,
+experts still streamed. CPU only, OLMoE-1B-7B-0125-Instruct Q4_K_M. Authoritative ledger
+`docs/specs/r6-moe-resident-dense.md`: sections 1 to 6 are the pre-implementation design, committed
+in `f8796ea` **before** the first line of implementation and not rewritten since; correction 18
+adds one explicitly marked `Shipped:` note. Sections 12 to 14 record the results, every deviation,
+and the ledger-to-diff mapping. All four design-gate triggers fire.
+
+**State.** Implemented, measured, reviewed, and repaired. Implementation and measurement are
+committed through `a94ab24`; the consolidated review repair is `588bcbf`. A third merge takes
+`origin/main` `c1ad71e` (the session-stop handoff, PR #154) without rebasing; its only conflict was
+this active block, resolved by retaining the completed repair state and queuing the other unfinished
+branch below. The tree is buildable and every hosted owner passes.
+
+**Performance contract, committed with the design.** Owner `docs/specs/r6-resident-weights.md`
+section 3.4. Baseline 3.63 s (`timings.elapsed_ns`, prompt 1, `N = 16`, `KV_WIDTH` 256, reference
+host, item 32 section 12.3). Primary metric `weights.step_dense_pack_bytes`: 4,049,258,496 -> **0**.
+Cost ceiling **276,000 ppm**, floor **150,000 ppm** adopted unchanged, predicted 2.63 s, margin
+1.84x.
+
+**Measured twice, and the measurement of record is the quiet-host run (section 12.4).** It was taken
+with no `llama-server`, no container and a completely clear process table at **8.47 GB free**, and it
+**reproduced the committed baseline**: streamed `[3.458, 3.551, 3.928]` s against 3.63 s, a median
+21,693 ppm away, where the first run had drifted 857,000 ppm. Byte clauses hold exactly at all twelve
+points, oracle D is `MATCH` on all four prompts, the region is 311,066,624 B reproduced independently
+from the pack document, and `wrap_count` is 306 -> 1 — **identical in every field to the contended
+run**, which is what a counter is supposed to be.
+
+**The elapsed leg is `BELOW FLOOR` at 138,402 ppm against a 150,000 ppm floor** — 92 % of the floor,
+50 % of the ceiling. Median 86,825 ppm, best-of-3 84,187 ppm, so no reading clears it. The other
+three prompts at `N = 16` give 138,128, **156,687** and 147,670 ppm: one prompt does clear the floor
+and it is not the fixed task, which section 3.7 chose before any number existed and which is not
+changed now. `INDETERMINATE` does not apply (streamed spread 129,116 ppm inside the 276,000 ppm
+ceiling) and neither does the `miss` label (the result is above half the ceiling). **No elapsed claim
+is made; section 4.6 clause 12 puts the capability on clauses 1 to 11**, which hold exactly. Clause
+12 is **`BELOW FLOOR`** and that is the settled answer, not an open item.
+
+**The first run (section 12.5) is kept as evidence** with its drift stated. Getting the quiet host
+took two attempts: one 4-hour poll at an 8 GB floor that never fired (80 samples; a Qwen
+`llama-server` present in 80 of 80 and memory 2.05-5.82 GB), and a second at a 6 GB floor — the floor
+the session's other benchmarks used — that fired on its 42nd sample at 8.47 GB, so the relaxation was
+not load-bearing.
+
+**`gmake moe-decode-step-qualification` refuses on this host**, at its own instrument cross-check
+and before the arm runs, with the same two `result_output` sums `docs/specs/r6-olmoe-decode.md`
+deviation 4 records (-113284.835938 against -111030.03125). The R2C `llama-eval-callback` is a
+static `GGML_BLAS`/`GGML_ACCELERATE` build; the ggml the arm and `llama-debug` share is not; and the
+`llama-debug` built from the pinned source that item 32's qualification of record used is not on
+this host. **Section 15 of that document owns the fix and nothing here works around it** — no check
+was relaxed and no switch was added. The measurement was taken by a standalone driver running the
+**same** shipped invocations (section 12.3), which is sound because an instrument skew is identical
+on both sides of oracle D and cancels, and the primary metric reads neither instrument.
+
+**Blockers.** None. Nine Align gaps are met and all nine are already recorded (Requests 33, 35, 36,
+38, 47, 48, 49, 50, 51); none blocks. Request 49 gains a new *shape* of client, Request 51 gains its
+first reproduction by a reader who did not know the answer (`arena` is a reserved word, and cell
+MRD-P1's probe hit repro 1 exactly), and Request 50 gains **no** client — recorded so the register is
+not inflated.
+
+**Constraints.** CPU only. Experts stay streamed **by design**: whole-model residency would make
+`residency.expert_bytes` unreachable and `RESIDENT=weights` is refused by name on this arm. No TTFT
+or throughput claim; the R6 gate stays unmet.
+
+**Review.** Two independent reviewers covered disjoint risks at clean head `a94ab24`, ledger
+`f8796ea`, merge base `334f524`: reviewer A covered implementation and returned request changes
+with one major and three minor findings; reviewer B covered specification, evidence, and governance
+and returned approve with repairs with four major and seven minor findings. All findings were
+validated. The UTF-8 abort, wrap-counter semantics, stale handoff/request/count/cross-reference and
+oracle-D prose, verdict vocabulary, spread denominator, worst-pairing description, and portability
+precedent are repaired. The requested second fill-failure case is not added because no validated
+pack can reach that failure; the forced wrap failure owns the same live-region teardown window.
+Commit `de83ceb`'s misleading subject is accepted as historical metadata and not rewritten; its body
+and `a94ab24` make the supersession explicit. A final host-native review of the consolidated delta
+found one P3 documentation mismatch: three unchanged golden row counts still described the older
+merge base. They are refreshed to 63, 29, and 99. No finding remains unresolved.
+
+**Next actions, in order.** (1) Run
+`python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (2) Publish
+the English pull request with section 12.4 as the measurement of record, the `BELOW FLOOR` result,
+the item 32 instrument-skew refusal, both review envelopes, and all dispositions. (3) Merge after
+required checks pass.
+
+**Intentional uncommitted files.** None.
+
+## Queued after this capability
+
+- `agent/c4-repair-template` (roadmap item **39**, C4-REPAIR-TEMPLATE) is implemented and
+  owner-verified. Its gate result is section 1.6 (b): the version-3 template introduced the
+  attempt-1 regression that it then recovered, so the prompt is not the binding constraint and the
+  C4 gate remains open. Resume its in-progress merge of `origin/main`, then review, repair,
+  fresh-image preflight, pull request, and merge.
+- Roadmap item **38**, R6-PREFIX-TTFT, follows item 39. Its charter is
+  `docs/specs/r6-prefix-key-corpus.md` section 11.
+
+**Host facts worth keeping:** serialize the 16 GiB host across Track A gates, DinD fresh-image
+preflight, real-model qualification, and timing benchmarks. Run DinD as uid 501; bwrap inside Docker
+needs `--security-opt systempaths=unconfined`. Do not pin >= 2-token decode-step or >= 4-token
+prefill activations in a hosted golden because arm64 and x86_64 can differ in the last bit.
 
 ## Merged checkpoint: R6-PREFIX-KEY (PR #153, `main` `661dd3d`, 2026-08-30)
 

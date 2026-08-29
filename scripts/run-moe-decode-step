@@ -14,6 +14,7 @@ set -euo pipefail
 #   ALIGN_LLM_MOE_DECODE_STEP_TMPDIR      where the pack is written; defaults to TMPDIR
 #   ALIGN_LLM_DECODE_STEPS                `N`; defaults to 16 and is the documented cost fallback
 #   ALIGN_LLM_MOE_DECODE_STEP_PROMPTS     how many of the four prompts to run; defaults to 4
+#   ALIGN_LLM_MOE_RESIDENT_DENSE          `0` skips the `dense` leg and prints one explicit N/A line
 #
 # When any of the **first five** is unset, when the model or either instrument is absent, when the
 # model is not an olmoe container, when `numpy` is not importable, or when the free space is under
@@ -79,6 +80,21 @@ case "${steps}" in
 esac
 [ "${steps}" -ge 1 ] || { echo "moe decode step qualification: FAIL STEPS < 1" >&2; exit 1; }
 prompt_limit="${ALIGN_LLM_MOE_DECODE_STEP_PROMPTS:-4}"
+
+# R6-MOE-RESIDENT-DENSE section 5.6's skip switch, on the pattern `ALIGN_LLM_RESIDENT_WEIGHTS=0`
+# established. It removes the second leg entirely and prints one explicit `N/A` line; it never
+# silently degrades a claim.
+#
+# **No physical-memory preflight ships and none is needed** (section 3.9). `scripts/run-decode-step`
+# refuses its resident leg below 12 GiB because a failed 4.68 GB reservation aborts the process
+# inside the runtime's `Vec` growth; here the region is 311 MB on a run that already reserves 347 MB
+# of windows plus plane, so a preflight would be a gate that cannot fire.
+RESIDENT_LEG=1
+resident_na=""
+if [ "${ALIGN_LLM_MOE_RESIDENT_DENSE:-1}" = "0" ]; then
+  RESIDENT_LEG=0
+  resident_na="ALIGN_LLM_MOE_RESIDENT_DENSE=0"
+fi
 
 model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
 scratch_root="${ALIGN_LLM_MOE_DECODE_STEP_TMPDIR:-${TMPDIR:-/tmp}}"
@@ -212,6 +228,49 @@ echo "moe decode step qualification: llama-eval-callback links libggml-base" \
   "'${callback_ggml:-statically, or not resolvable}' -- reported, never enforced (deviation 4)"
 
 KV_WIDTH=256
+
+# ---------------------------------------------------------------------------------------------
+# R6-MOE-RESIDENT-DENSE section 5.6's two ported helpers. `scripts/run-moe-decode-step` has neither
+# today; both are `scripts/run-decode-step`'s, unchanged.
+# ---------------------------------------------------------------------------------------------
+
+# `vm_stat` on Darwin, `/proc/vmstat` on Linux: the compressor counters section 3.7 measurement risk
+# 3 requires to be recorded before and after every timed run. At a 574 MB peak this arm is far below
+# the pressure the dense arm measured, but the risk is not zero and it is not assumed away — and
+# **nothing is discarded or retaken** on the strength of it, because a mitigation that silently drops
+# the runs it dislikes is a filter on the measurement.
+compressor_state() {
+  if [ -r /proc/vmstat ]; then
+    awk '/^(pswpin|pswpout|nr_zswpout)/ { printf "%s=%s ", $1, $2 }' /proc/vmstat
+  elif command -v vm_stat >/dev/null 2>&1; then
+    vm_stat | awk -F: '/Pages stored in compressor|Pages occupied by compressor|Swapouts/ {
+      gsub(/^ +| +$|\./, "", $2); gsub(/ /, "_", $1); printf "%s=%s ", $1, $2 }'
+  else
+    printf 'unavailable'
+  fi
+  printf '\n'
+}
+
+# Process start to exit around one whole invocation. It is a **diagnostic** beside
+# `timings.elapsed_ns`, which is the arm's own interval and is what the claim of section 3.7 is made
+# on; no rate, speedup, or per-token figure is derived from either.
+time_invocation() {
+  destination="$1"
+  shift
+  python3 -c '
+import subprocess
+import sys
+import time
+
+destination = sys.argv[1]
+started = time.monotonic_ns()
+result = subprocess.run(sys.argv[2:], capture_output=True)
+elapsed = time.monotonic_ns() - started
+with open(destination, "a", encoding="utf-8") as handle:
+    handle.write("%d\n" % elapsed)
+sys.exit(result.returncode)
+' "${destination}" "$@"
+}
 
 # Four prompts, each at most six tokens. The first is R5E's own; the other three were chosen here and
 # their ids were **measured once and recorded**, which is what the design asked for — an expected id
@@ -358,6 +417,33 @@ print("error_code", d["error_code"], "detail", d["error_detail"])' \
       | sed "s/^/moe decode step qualification: prompt ${index} run ${repeat} /" || true
   done
 
+  # R6-MOE-RESIDENT-DENSE. The `dense` leg: the **same** invocation plus the two reserved `-` KV
+  # placeholders and `RESIDENT=dense`, so the two legs differ in exactly one operand and oracle D
+  # below compares documents that differ in nothing else. Three runs, because the acceptance rule's
+  # determinism clause applies to this leg too.
+  if [ "${RESIDENT_LEG}" = 1 ]; then
+    for repeat in 1 2 3; do
+      echo "moe decode step qualification: prompt ${index} dense run ${repeat}/3 -- N=${steps}," \
+        "KV_WIDTH=${KV_WIDTH}, RESIDENT=dense"
+      /usr/bin/time -p "${root_dir}/ggml-spike" --moe-decode-step \
+        "${work_dir}/model.alignpack" "${work_dir}/geometry.json" "${tokens}" \
+        "${work_dir}/${tag}-dense${repeat}.json" "${ALIGN_LLM_GGUF_MODEL}" \
+        "${work_dir}/${tag}-transcript.txt" "${KV_WIDTH}" "${logits_bin}" "${steps}" \
+        "-" "-" "dense" \
+        > "${work_dir}/${tag}-dense${repeat}.out" \
+        2> "${work_dir}/${tag}-dense${repeat}.time" || {
+          status=$?
+          cat "${work_dir}/${tag}-dense${repeat}.time" >&2 || true
+          python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));
+print("error_code", d["error_code"], "detail", d["error_detail"])' \
+            "${work_dir}/${tag}-dense${repeat}.json" >&2 || true
+          exit "${status}"
+        }
+      grep -E '^real' "${work_dir}/${tag}-dense${repeat}.time" \
+        | sed "s/^/moe decode step qualification: prompt ${index} dense run ${repeat} /" || true
+    done
+  fi
+
   # Oracle C′ (section 4.4), at `k in {1, ceil(N/2), N}`: a whole `--moe-model-forward` prefill at
   # `TOKENS,d_1..d_k` and the same `KV_WIDTH`, whose logits digest must reproduce `steps[k].sha256`.
   # It is a **five-operand** invocation with no reference and no transcript: the source comparison
@@ -382,13 +468,15 @@ PY
   done
 
   python3 - "${work_dir}" "${tag}" "${index}" "${steps}" "${tokens}" "${KV_WIDTH}" \
-      "${checkpoints}" "${rows_json}" <<'PY'
+      "${checkpoints}" "${rows_json}" "${RESIDENT_LEG}" "${work_dir}/pack.json" <<'PY'
 import json
 import os
 import struct
 import sys
 
 work_dir, tag, index, steps, tokens, width, checkpoints, rows_json = sys.argv[1:9]
+resident_leg = sys.argv[9] == "1"
+pack_document_path = sys.argv[10]
 steps = int(steps)
 width = int(width)
 prompt_index = int(index)
@@ -430,7 +518,7 @@ def want(label, got, expected):
 want("status", d["status"], "ok")
 want("verdict", d["verdict"], "EXTERNAL")
 want("kind", d["kind"], "R6_MOE_DECODE_STEP")
-want("schema_version", d["schema_version"], 1)
+want("schema_version", d["schema_version"], 2)
 
 model = d["model"]
 want("model.arch", model["arch"], "olmoe")
@@ -537,6 +625,225 @@ for row in d["steps"]:
         failures.append("step %d read %d bytes, above the %d the chunk granularity allows"
                         % (row["index"], residency["expert_pread_bytes"], ceiling))
 
+# --- R6-MOE-RESIDENT-DENSE: the region, oracle D, the primary metric, the expert invariant ------
+#
+# Everything in this section is computed from the **pack document's own member table** and from the
+# two legs' documents. Nothing reads the arm's `weights.resident_bytes` to decide what to expect,
+# which is section 7 risk 4's fixture co-derivation class stated as a rule.
+resident_rows = {}
+if resident_leg:
+    with open(pack_document_path, "r", encoding="utf-8") as handle:
+        pack_document = json.load(handle)
+
+    block_align = pack_document["format"]["block_align"]
+    MAX_TENSOR_ALIGNMENT = 64
+    MAX_PREFILL_TOKENS = 32
+    step_align = max(block_align, MAX_TENSOR_ALIGNMENT)
+
+    def align_up(value, alignment):
+        remainder = value % alignment
+        return value if remainder == 0 else value + (alignment - remainder)
+
+    # An independent walk of the 147 dense member records: every member of every block whose `kind`
+    # is not `ExpertBlock`, laid out by section 2.2's rule --
+    # `[token_embd table][embed stage][layer 0 .. n-1][head]`, `align_up`-ing each region to
+    # `max(block_align, MAX_TENSOR_ALIGNMENT)`.
+    dense_blocks = [b for b in pack_document["blocks"] if b["kind"] != "ExpertBlock"]
+    dense_members = [m for b in dense_blocks for m in b["members"]]
+    dense_member_bytes = sum(m["nbytes"] for m in dense_members)
+    embed_member = next(m for m in dense_members if m["role"] == "token_embd")
+    row_bytes = embed_member["nbytes"] // embed_member["dims"][1]
+    table_bytes = align_up(embed_member["nbytes"], step_align)
+    stage_bytes = align_up(row_bytes * MAX_PREFILL_TOKENS, step_align)
+    n_layer = d["model"]["n_layer"]
+    layer_bytes = []
+    for layer in range(n_layer):
+        window = 0
+        for block in dense_blocks:
+            if block["layer"] != layer:
+                continue
+            for member in block["members"]:
+                window += align_up(member["nbytes"], block_align)
+        layer_bytes.append(align_up(window, step_align))
+    head_block = next(b for b in dense_blocks
+                      if b["layer"] < 0 and not any(m["role"] == "token_embd"
+                                                    for m in b["members"]))
+    head_window = sum(align_up(m["nbytes"], block_align) for m in head_block["members"])
+    head_bytes = align_up(head_window, step_align)
+    expected_region = table_bytes + stage_bytes + sum(layer_bytes) + head_bytes
+    expected_fill = dense_member_bytes
+
+    dense_documents = [load("%s-dense%d.json" % (tag, r)) for r in (1, 2, 3)]
+    dense_shapes = {normalize(json.loads(json.dumps(one))) for one in dense_documents}
+    if len(dense_shapes) != 1:
+        failures.append("the three dense runs are not identical after normalize")
+    dense = dense_documents[0]
+    if dense["status"] != "ok" or dense["error_code"] != "":
+        failures.append("the dense leg failed with %r / %r"
+                        % (dense["error_code"], dense["error_detail"]))
+
+    weights = dense["weights"]
+    streamed_weights = d["weights"]
+
+    # Clause 10, the primary metric. A counter, not a clock, identical across runs.
+    if weights["mode"] != "dense" or streamed_weights["mode"] != "stream":
+        failures.append("the two legs report modes %r and %r"
+                        % (streamed_weights["mode"], weights["mode"]))
+    if weights["step_dense_pack_bytes"] != 0:
+        failures.append("MRD primary: the dense leg read %d dense pack bytes in its decode steps"
+                        % weights["step_dense_pack_bytes"])
+    if streamed_weights["step_dense_pack_bytes"] <= 0:
+        failures.append("MRD primary: the streamed leg read %d dense pack bytes, so the comparison "
+                        "is vacuous" % streamed_weights["step_dense_pack_bytes"])
+    # The streamed leg's own figure is arithmetic on the published per-step demand, so it is checked
+    # against `steps[].residency.dense_bytes` rather than against a remembered constant.
+    expected_streamed_dense = sum(row["residency"]["dense_bytes"] for row in d["steps"])
+    if streamed_weights["step_dense_pack_bytes"] != expected_streamed_dense:
+        failures.append("MRD primary: the streamed leg read %d dense pack bytes against a published "
+                        "demand of %d" % (streamed_weights["step_dense_pack_bytes"],
+                                          expected_streamed_dense))
+
+    # Section 4.4, the co-primary invariant: the measurement this arm exists to publish must not
+    # move. Every row, both legs, byte for byte.
+    if weights["step_expert_pack_bytes"] != streamed_weights["step_expert_pack_bytes"]:
+        failures.append("MRD invariant: step_expert_pack_bytes %d in the dense leg against %d "
+                        "streamed" % (weights["step_expert_pack_bytes"],
+                                      streamed_weights["step_expert_pack_bytes"]))
+    if weights["step_pack_bytes"] != weights["step_expert_pack_bytes"]:
+        failures.append("MRD: step_pack_bytes %d is not the expert term alone in dense mode"
+                        % weights["step_pack_bytes"])
+    for leg_name, leg in (("stream", d), ("dense", dense)):
+        for row in leg["steps"]:
+            residency = row["residency"]
+            if residency["expert_bytes"] != 487587840 \
+                    or residency["expert_pread_bytes"] != 487587840 \
+                    or residency["expert_read_amplification_ppm"] != 0 \
+                    or residency["expert_bytes_ppm"] != 125000 \
+                    or residency["claim_planes_read"] != 384 \
+                    or row["routed"]["keys_demanded"] != 128:
+                failures.append("MRD invariant: %s leg step %d moved the expert measurement: %r"
+                                % (leg_name, row["index"], residency))
+            if residency["dense_bytes"] != 253078656 or residency["total_bytes"] != 740666496:
+                failures.append("MRD invariant: %s leg step %d changed an arithmetic field: "
+                                "dense_bytes %d, total_bytes %d"
+                                % (leg_name, row["index"], residency["dense_bytes"],
+                                   residency["total_bytes"]))
+
+    # Section 2.2, reproduced independently and asserted against the published figure.
+    if weights["resident_bytes"] != expected_region:
+        failures.append("MRD region: the arm published %d B and an independent walk of the pack "
+                        "document's %d dense member records computes %d B"
+                        % (weights["resident_bytes"], len(dense_members), expected_region))
+    if weights["fill_bytes"] != expected_fill:
+        failures.append("MRD fill: the arm read %d B and the dense member sum is %d B"
+                        % (weights["fill_bytes"], expected_fill))
+    if weights["fill_pread_count"] <= 0:
+        failures.append("MRD fill: the region reported no pread")
+    # Section 3.4's wrap table: one run-scope wrap for the whole run against one per weight-region
+    # graph streamed.
+    if weights["wrap_count"] != 1 or weights["resident_wraps_created"] != 1 \
+            or weights["resident_wraps_freed"] != 1:
+        failures.append("MRD wrap: the run-scope wrap did not balance: %r" % (weights,))
+    if streamed_weights["wrap_count"] <= 1:
+        failures.append("MRD wrap: the streamed leg wrapped its dense window %d times, so the "
+                        "hoist proves nothing" % streamed_weights["wrap_count"])
+    # Clause 7, oracle P, on the dense leg: every dense placement is against the region.
+    if dense["window"]["pointer_identity_failures"] != 0 \
+            or dense["window"]["member_placements"] <= 0 \
+            or dense["window"]["claim_placements"] <= 0:
+        failures.append("MRD oracle P: %d failures over %d member and %d claim placements"
+                        % (dense["window"]["pointer_identity_failures"],
+                           dense["window"]["member_placements"],
+                           dense["window"]["claim_placements"]))
+    # Clause 8, oracle B at run scope, on both legs.
+    for leg_name, leg in (("stream", d), ("dense", dense)):
+        lifetime = leg["lifetime"]
+        if lifetime["graph_balance_failures"] != 0 \
+                or not lifetime["released_before_owner_scope_end"]:
+            failures.append("MRD oracle B: the %s leg's teardown did not balance: %r"
+                            % (leg_name, lifetime))
+
+    # --- Oracle D (section 4.1). The two legs' whole normalized documents, byte-identical outside
+    # the `weights` object and exactly ten enumerated field names. Everything else is compared,
+    # including the entire `residency` object -- which is the point, because
+    # `residency.expert_bytes_read` is the number section 4.4 exists to protect and it is **inside**
+    # the compared set, not the excluded one.
+    RESIDENT_EXCLUDED_BLOCKS = ("weights",)
+    RESIDENT_EXCLUDED_FIELDS = (
+        ("pack", "reader_pread_count"), ("pack", "reader_bytes_read"),
+        ("lifetime", "ggml_buffers_created"), ("lifetime", "ggml_buffers_freed"),
+        ("window", "dense_bytes"), ("window", "dense_peak_block_index"),
+        ("window", "dense_peak_block_kind"), ("window", "dense_peak_block_layer"),
+        ("window", "dense_peak_block_bytes"), ("window", "reuse_count"),
+    )
+
+    def normalize_resident(document):
+        document = json.loads(normalize(json.loads(json.dumps(document))))
+        for block in RESIDENT_EXCLUDED_BLOCKS:
+            document.pop(block, None)
+        for block, field in RESIDENT_EXCLUDED_FIELDS:
+            document[block].pop(field, None)
+        return json.dumps(document, separators=(",", ":"), sort_keys=True)
+
+    left = normalize_resident(d)
+    right = normalize_resident(dense)
+    if left != right:
+        # The whole documents are 8 KB each; print the first divergence rather than both.
+        left_doc = json.loads(left)
+        right_doc = json.loads(right)
+        notes = []
+
+        def walk(a, b, at):
+            if len(notes) >= 6:
+                return
+            if type(a) is not type(b):
+                notes.append("%s: %r != %r" % (at or ".", a, b))
+            elif isinstance(a, dict):
+                for key in sorted(set(a) | set(b)):
+                    if key not in a:
+                        notes.append("%s.%s: absent != %r" % (at, key, b[key]))
+                    elif key not in b:
+                        notes.append("%s.%s: %r != absent" % (at, key, a[key]))
+                    else:
+                        walk(a[key], b[key], "%s.%s" % (at, key))
+            elif isinstance(a, list):
+                if len(a) != len(b):
+                    notes.append("%s: %d entries != %d" % (at, len(a), len(b)))
+                else:
+                    for i in range(len(a)):
+                        walk(a[i], b[i], "%s[%d]" % (at, i))
+            elif a != b:
+                notes.append("%s: %r != %r" % (at or ".", a, b))
+
+        walk(left_doc, right_doc, "")
+        failures.append("MRD oracle D: the two legs diverge at " + "; ".join(notes))
+
+    resident_rows = {
+        "resident_bytes": weights["resident_bytes"],
+        "expected_region": expected_region,
+        "dense_member_count": len(dense_members),
+        "dense_member_bytes": dense_member_bytes,
+        "table_bytes": table_bytes,
+        "stage_bytes": stage_bytes,
+        "layer_bytes": layer_bytes,
+        "head_bytes": head_bytes,
+        "fill_bytes": weights["fill_bytes"],
+        "fill_pread_count": weights["fill_pread_count"],
+        "fill_ns": dense_documents[0]["weights"]["fill_ns"],
+        "stream_step_dense_pack_bytes": streamed_weights["step_dense_pack_bytes"],
+        "dense_step_dense_pack_bytes": weights["step_dense_pack_bytes"],
+        "stream_step_expert_pack_bytes": streamed_weights["step_expert_pack_bytes"],
+        "dense_step_expert_pack_bytes": weights["step_expert_pack_bytes"],
+        "stream_wrap_count": streamed_weights["wrap_count"],
+        "dense_wrap_count": weights["wrap_count"],
+        "oracle_d": "MATCH" if left == right else "DIVERGED",
+        "dense_elapsed_ns": dense["timings"]["elapsed_ns"],
+        "dense_claim_pread_ns": dense["timings"]["claim_pread_ns"],
+        "stream_claim_pread_ns": d["timings"]["claim_pread_ns"],
+        "dense_decode_expert_pread_bytes": dense["residency"]["decode_expert_pread_bytes"],
+        "stream_decode_expert_pread_bytes": d["residency"]["decode_expert_pread_bytes"],
+    }
+
 # --- Oracle C', on the branch the measurement selects ------------------------------------------
 self_rows = []
 for k in [int(x) for x in checkpoints.split()]:
@@ -633,6 +940,7 @@ row = {
     "slot_high_water": d["graph"]["slot_high_water"],
     "graph_count": d["decode"]["graph_count"],
     "fingerprint_collisions": len(non_degenerate),
+    "resident": resident_rows,
 }
 with open(rows_json, "a", encoding="utf-8") as handle:
     handle.write(json.dumps(row, separators=(",", ":")) + "\n")
@@ -651,13 +959,114 @@ print("moe decode step qualification: prompt %s PASS -- %d ids gated, routing %d
 PY
 done
 
-python3 - "${rows_json}" "${work_dir}/fingerprints.json" "${steps}" <<'PY'
+# ---------------------------------------------------------------------------------------------
+# R6-MOE-RESIDENT-DENSE section 3.7 -- the measurement
+#
+# **The baseline is re-taken here, in this session, on this host**, and the two legs are
+# **interleaved**: `repeat` outside and `mode` inside. Taking one leg's repeats and then the other
+# confounds the leg with the clock and puts the whole of any monotone drift on one side of the
+# subtraction; that is `r6-resident-weights.md` section 3.4 measurement risk 4 and the blocked order
+# is not offered as an option here. The conservative reading is the **worst** of the repeats, not the
+# median, and section 6's verdict rule is applied to it.
+#
+# Every run is the same invocation the qualification of record used, plus the `dense` leg's one extra
+# operand, so the reproduced baseline is comparable with the 3.63 s section 3.7 records.
+# ---------------------------------------------------------------------------------------------
+bench_rows="${work_dir}/bench.jsonl"
+: > "${bench_rows}"
+if [ "${RESIDENT_LEG}" = 1 ]; then
+  echo ""
+  echo "moe decode step qualification: MRD measurement -- interleaved (repeat outside, mode" \
+    "inside), 3 repeats, N in {1,4,16}, one session"
+  echo "moe decode step qualification: MRD compressor before: $(compressor_state)"
+  for repeat in 1 2 3; do
+    echo "moe decode step qualification: MRD compressor before repeat ${repeat}:" \
+      "$(compressor_state)"
+    for mode in stream dense; do
+      bench_index=0
+      for entry in "${PROMPTS[@]}"; do
+        bench_index=$(( bench_index + 1 ))
+        bench_tag="p${bench_index}"
+        bench_tokens="${entry##*|}"
+        bench_logits=$(ls "${work_dir}/${bench_tag}-lg"/*.bin 2>/dev/null \
+          | grep -v -- '-tokens\.bin$' | head -1 || true)
+        for bench_n in 1 4 16; do
+          bench_json="${work_dir}/bench-${bench_tag}-${mode}-${bench_n}-${repeat}.json"
+          bench_wall="${work_dir}/bench-wall.txt"
+          : > "${bench_wall}"
+          if [ "${mode}" = "dense" ]; then
+            time_invocation "${bench_wall}" "${root_dir}/ggml-spike" --moe-decode-step \
+              "${work_dir}/model.alignpack" "${work_dir}/geometry.json" "${bench_tokens}" \
+              "${bench_json}" "${ALIGN_LLM_GGUF_MODEL}" \
+              "${work_dir}/${bench_tag}-transcript.txt" "${KV_WIDTH}" "${bench_logits}" \
+              "${bench_n}" "-" "-" "dense" || {
+                echo "moe decode step qualification: FAIL the dense benchmark leg failed at" \
+                  "prompt ${bench_index} N=${bench_n} repeat ${repeat}" >&2
+                exit 1
+              }
+          else
+            time_invocation "${bench_wall}" "${root_dir}/ggml-spike" --moe-decode-step \
+              "${work_dir}/model.alignpack" "${work_dir}/geometry.json" "${bench_tokens}" \
+              "${bench_json}" "${ALIGN_LLM_GGUF_MODEL}" \
+              "${work_dir}/${bench_tag}-transcript.txt" "${KV_WIDTH}" "${bench_logits}" \
+              "${bench_n}" || {
+                echo "moe decode step qualification: FAIL the streamed benchmark leg failed at" \
+                  "prompt ${bench_index} N=${bench_n} repeat ${repeat}" >&2
+                exit 1
+              }
+          fi
+          python3 - "${bench_json}" "${bench_wall}" "${repeat}" "${mode}" "${bench_index}" \
+            "${bench_n}" "${bench_rows}" <<'BENCH'
+import json
+import sys
+
+document_path, wall_path, repeat, mode, prompt, steps, rows_path = sys.argv[1:8]
+with open(document_path, "r", encoding="utf-8") as handle:
+    document = json.load(handle)
+with open(wall_path, "r", encoding="utf-8") as handle:
+    wall = int(handle.read().strip().split("\n")[0])
+weights = document["weights"]
+row = {
+    "repeat": int(repeat), "mode": mode, "prompt": int(prompt), "steps": int(steps),
+    "status": document["status"], "error_code": document["error_code"],
+    "elapsed_ns": document["timings"]["elapsed_ns"],
+    "first_token_ns": document["timings"]["first_token_ns"],
+    "pread_ns": document["timings"]["pread_ns"],
+    "claim_pread_ns": document["timings"]["claim_pread_ns"],
+    "wall_ns": wall,
+    "weights_mode": weights["mode"],
+    "step_dense_pack_bytes": weights["step_dense_pack_bytes"],
+    "step_expert_pack_bytes": weights["step_expert_pack_bytes"],
+    "fill_bytes": weights["fill_bytes"],
+    "fill_ns": weights["fill_ns"],
+    "resident_bytes": weights["resident_bytes"],
+    "steps_completed": document["decode"]["steps_completed"],
+}
+with open(rows_path, "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+BENCH
+        done
+      done
+    done
+    echo "moe decode step qualification: MRD compressor after  repeat ${repeat}:" \
+      "$(compressor_state)"
+  done
+  echo "moe decode step qualification: MRD compressor after:  $(compressor_state)"
+else
+  echo "moe decode step qualification: N/A the dense leg was skipped (${resident_na}); the byte"\
+    "claim, oracle D, and the floor verdict are not established by this run"
+fi
+
+python3 - "${rows_json}" "${work_dir}/fingerprints.json" "${steps}" "${bench_rows}" \
+    "${RESIDENT_LEG}" <<'PY'
 import json
 import sys
 
 rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
 fingerprints = json.load(open(sys.argv[2]))
 steps = int(sys.argv[3])
+bench_path = sys.argv[4]
+resident_leg = sys.argv[5] == "1"
 print("")
 print("moe decode step qualification: cell G-P1 -- %d rows of %s, %d distinct fingerprints, "
       "%d collision class(es) covering %d ids, %d of them not all-zero (%r)"
@@ -700,4 +1109,156 @@ print("moe decode step qualification: %d prompt(s) x %d steps PASS -- gate G, or
       "ids, oracle B, oracle T, and the claim accounting"
       % (len(rows), steps, sum(r["routing_matched"] for r in rows),
          sum(r["routing_total"] for r in rows)))
+
+# ---------------------------------------------------------------------------------------------
+# R6-MOE-RESIDENT-DENSE sections 3.7 and 6 -- the result, printed on every run
+# ---------------------------------------------------------------------------------------------
+if not resident_leg:
+    print("")
+    print("moe decode step qualification: MRD N/A the dense leg did not run, so no byte claim, no "
+          "oracle D and no floor verdict are established by this run")
+    raise SystemExit(0)
+
+# Section 3.7, committed before implementation and restated here rather than recomputed.
+CEILING_PPM = 276000
+FLOOR_PPM = 150000
+COMMITTED_BASELINE_NS = 3630000000
+MISS_PPM = CEILING_PPM // 2
+FIXED_PROMPT = 1
+FIXED_STEPS = 16
+
+bench = [json.loads(line) for line in open(bench_path) if line.strip()]
+failures = []
+for row in bench:
+    if row["status"] != "ok":
+        failures.append("benchmark run %r failed with %r" % (row, row["error_code"]))
+    if row["steps_completed"] != row["steps"]:
+        failures.append("benchmark run prompt %d %s N=%d completed %d steps"
+                        % (row["prompt"], row["mode"], row["steps"], row["steps_completed"]))
+
+print("")
+print("moe decode step qualification: MRD region %d B, reproduced from the pack document by an "
+      "independent walk of its %d dense member records (%d B of members, %d B table, %d B stage, "
+      "%d B head); fill %d B in %d preads"
+      % (rows[0]["resident"]["resident_bytes"], rows[0]["resident"]["dense_member_count"],
+         rows[0]["resident"]["dense_member_bytes"], rows[0]["resident"]["table_bytes"],
+         rows[0]["resident"]["stage_bytes"], rows[0]["resident"]["head_bytes"],
+         rows[0]["resident"]["fill_bytes"], rows[0]["resident"]["fill_pread_count"]))
+for row in rows:
+    print("moe decode step qualification: MRD oracle D prompt %d %s"
+          % (row["prompt"], row["resident"]["oracle_d"]))
+    if row["resident"]["oracle_d"] != "MATCH":
+        failures.append("oracle D diverged on prompt %d" % row["prompt"])
+
+# --- The primary metric, at twelve points -----------------------------------------------------
+print("")
+print("| prompt | N | streamed step_dense_pack_bytes | dense | streamed step_expert_pack_bytes | "
+      "dense |")
+print("| --- | --- | --- | --- | --- | --- |")
+metric_failures = 0
+for prompt in sorted({row["prompt"] for row in bench}):
+    for n in (1, 4, 16):
+        point = [row for row in bench if row["prompt"] == prompt and row["steps"] == n]
+        stream_dense = {row["step_dense_pack_bytes"] for row in point if row["mode"] == "stream"}
+        dense_dense = {row["step_dense_pack_bytes"] for row in point if row["mode"] == "dense"}
+        stream_expert = {row["step_expert_pack_bytes"] for row in point if row["mode"] == "stream"}
+        dense_expert = {row["step_expert_pack_bytes"] for row in point if row["mode"] == "dense"}
+        # A counter, not a clock: identical across the three repeats or the claim is not a counter.
+        for label, values in (("streamed dense", stream_dense), ("dense dense", dense_dense),
+                              ("streamed expert", stream_expert), ("dense expert", dense_expert)):
+            if len(values) != 1:
+                failures.append("prompt %d N=%d: the %s byte counter is not identical across the "
+                                "three repeats: %r" % (prompt, n, label, sorted(values)))
+        if dense_dense != {0}:
+            metric_failures += 1
+            failures.append("prompt %d N=%d: the dense leg read %r dense pack bytes"
+                            % (prompt, n, sorted(dense_dense)))
+        if stream_expert != dense_expert:
+            failures.append("prompt %d N=%d: the expert measurement moved: %r streamed against %r "
+                            "dense" % (prompt, n, sorted(stream_expert), sorted(dense_expert)))
+        print("| %d | %d | %d | %d | %d | %d |"
+              % (prompt, n, max(stream_dense), max(dense_dense), max(stream_expert),
+                 max(dense_expert)))
+
+fixed = [row for row in bench
+         if row["prompt"] == FIXED_PROMPT and row["steps"] == FIXED_STEPS]
+stream_ns = sorted(row["elapsed_ns"] for row in fixed if row["mode"] == "stream")
+dense_ns = sorted(row["elapsed_ns"] for row in fixed if row["mode"] == "dense")
+if not stream_ns or not dense_ns:
+    # A fixed task with no timed runs is a runner defect, not a result. Say so and stop rather than
+    # raising a `max() arg is an empty sequence` from inside a verdict line.
+    sys.stderr.write("moe decode step qualification: FAIL the fixed task (prompt %d, N=%d) produced "
+                     "%d streamed and %d dense timed runs\n"
+                     % (FIXED_PROMPT, FIXED_STEPS, len(stream_ns), len(dense_ns)))
+    raise SystemExit(1)
+print("")
+print("moe decode step qualification: MRD primary  streamed step_dense_pack_bytes %d, dense %d "
+      "-- %s"
+      % (max(row["step_dense_pack_bytes"] for row in fixed if row["mode"] == "stream"),
+         max(row["step_dense_pack_bytes"] for row in fixed if row["mode"] == "dense"),
+         "FAIL" if metric_failures else "PASS"))
+expert_total = {row["step_expert_pack_bytes"] for row in fixed}
+print("moe decode step qualification: MRD invariant  step_expert_pack_bytes %r on both legs at "
+      "N=%d, and every step reports expert_bytes 487587840 with 0 ppm amplification -- %s"
+      % (sorted(expert_total), FIXED_STEPS, "PASS" if len(expert_total) == 1 else "FAIL"))
+
+stream_worst = max(stream_ns)
+dense_worst = max(dense_ns)
+stream_mean = sum(stream_ns) / float(len(stream_ns))
+# Measurement risk 2, pre-committed: the streamed leg's own spread, taken against its mean
+# exactly as item 32 section 12.5's figures are quoted, decides whether the elapsed leg is
+# reportable at all. It is **printed either way** and never discarded.
+spread_ppm = int(round((max(stream_ns) - min(stream_ns)) * 1000000.0 / stream_mean))
+removed_ns = stream_worst - dense_worst
+result_ppm = int(round(removed_ns * 1000000.0 / stream_worst))
+baseline_drift_ppm = int(round(abs(stream_worst - COMMITTED_BASELINE_NS) * 1000000.0
+                               / COMMITTED_BASELINE_NS))
+if spread_ppm > CEILING_PPM:
+    verdict = "INDETERMINATE"
+elif result_ppm >= FLOOR_PPM:
+    verdict = "MET"
+else:
+    verdict = "BELOW FLOOR"
+print("moe decode step qualification: MRD baseline  the committed baseline is %d ns (3.63 s, "
+      "item 32 section 12.3) and this session reproduced %d ns worst-of-3 (runs %r); drift "
+      "%d ppm"
+      % (COMMITTED_BASELINE_NS, stream_worst, stream_ns, baseline_drift_ppm))
+print("moe decode step qualification: MRD floor  baseline (streamed, this session, worst of 3) "
+      "%d ns, dense (worst of 3) %d ns, runs %r; removed %d ns = %d ppm of the fixed task "
+      "against a %d ppm floor: %s"
+      % (stream_worst, dense_worst, dense_ns, removed_ns, result_ppm, FLOOR_PPM, verdict))
+print("moe decode step qualification: MRD spread  the streamed leg's own spread at the fixed "
+      "task is %d ppm against the %d ppm ceiling; the pre-committed INDETERMINATE rule %s"
+      % (spread_ppm, CEILING_PPM,
+         "APPLIES" if spread_ppm > CEILING_PPM else "does not apply"))
+print("moe decode step qualification: MRD ceiling  the recorded cost ceiling was %d ppm and the "
+      "measured result is %d ppm = %d %% of it%s"
+      % (CEILING_PPM, result_ppm, int(round(result_ppm * 100.0 / CEILING_PPM)),
+         "; below one half of the ceiling, which section 3.7 labels a ceiling-estimation MISS"
+         if result_ppm < MISS_PPM else ""))
+for prompt in sorted({row["prompt"] for row in bench}):
+    for n in (1, 4, 16):
+        point = [row for row in bench if row["prompt"] == prompt and row["steps"] == n]
+        s_ns = [row["elapsed_ns"] for row in point if row["mode"] == "stream"]
+        d_ns = [row["elapsed_ns"] for row in point if row["mode"] == "dense"]
+        if not s_ns or not d_ns:
+            continue
+        point_ppm = int(round((max(s_ns) - max(d_ns)) * 1000000.0 / max(s_ns)))
+        print("moe decode step qualification: MRD elapsed  prompt %d N=%2d  streamed worst "
+              "%d ns, dense worst %d ns, %d ppm%s"
+              % (prompt, n, max(s_ns), max(d_ns), point_ppm,
+                 "  <-- the fixed task, the only point an elapsed claim is made at"
+                 if prompt == FIXED_PROMPT and n == FIXED_STEPS
+                 else "  (diagnostic, no elapsed claim)"))
+print("moe decode step qualification: MRD expert path  claim_pread_ns %d streamed against %d "
+      "dense on prompt 1's owner run, and decode_expert_pread_bytes %d against %d -- the bytes "
+      "must be identical and the time is reported, not absorbed"
+      % (rows[0]["claim_pread_ns"], rows[0]["resident"]["dense_claim_pread_ns"],
+         rows[0]["resident"]["stream_decode_expert_pread_bytes"],
+         rows[0]["resident"]["dense_decode_expert_pread_bytes"]))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("moe decode step qualification: FAIL %s\n" % line)
+    raise SystemExit(1)
 PY

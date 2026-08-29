@@ -2522,7 +2522,7 @@ graph already contains. `scripts/ggml_shim_stub.c` gains two forced-failure buil
 shared region — `engine+compute-step2` and `engine+writeback-offset` — which are never defined in an
 ordinary build.
 
-## The `--moe-decode-step` arm (R6-OLMOE-DECODE)
+## The `--moe-decode-step` arm (R6-OLMOE-DECODE, R6-MOE-RESIDENT-DENSE)
 
 `docs/specs/r6-olmoe-decode.md` is the authoritative ledger. It ships as a **seventh arm of the
 existing `ggml-spike` executable**, `--moe-decode-step`, beside R4.5's positional arm,
@@ -2537,10 +2537,17 @@ gmake layer-forward-smoke              # extended with a seventh block; unchange
 gmake moe-decode-step-qualification    # the opt-in real-ggml, real-model, two-instrument qualification
 ```
 
-`--moe-decode-step` is selected by its exact first operand and takes five, six, seven, nine, ten, or
-eleven operands. **Eight is `R6M_ARITY`**, for `--decode-step`'s own reason — a transcript without a
-width refuses itself — and twelve and above are `R6M_ARITY`, with positions 11, 12, and 13 reserved
-for `KV_SAVE`, `KV_LOAD`, and `RESIDENT` at the same indices the dense arm uses.
+`--moe-decode-step` is selected by its exact first operand and takes five, six, seven, nine, ten,
+eleven, or **fourteen** operands. **Eight is `R6M_ARITY`**, for `--decode-step`'s own reason — a
+transcript without a width refuses itself — and **twelve, thirteen, and fifteen and above are
+`R6M_ARITY`**. Positions 11, 12, and 13 are `KV_SAVE`, `KV_LOAD`, and `RESIDENT` at the same indices
+the dense arm uses; **KV persistence is not implemented on this arm**, so the two KV positions must
+both be `-` and anything else is `R6M_KV_UNSUPPORTED` with detail `kv[save]` or `kv[load]`.
+
+(`R6M_ARITY` names how an arity refusal reads, not a constant in the source: the guard is lexical and
+presents as a non-zero exit with **no document at all**, which is what the smoke classes
+`NO_DOCUMENT`. `docs/specs/r6-moe-resident-dense.md` section 11 item 12 records the discrepancy
+between that prose and the source rather than inventing a constant to match it.)
 
 ```sh
 ./ggml-spike --moe-decode-step PACK GEOM.json TOKENS
@@ -2549,6 +2556,7 @@ for `KV_SAVE`, `KV_LOAD`, and `RESIDENT` at the same indices the dense arm uses.
 ./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH
 ./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin
 ./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf -              KV_WIDTH LOGITS.bin STEPS
+./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS - - dense
 ```
 
 **The operand shape is `--decode-step`'s, position for position**, so the two decode runners build
@@ -2558,8 +2566,31 @@ their argument vectors the same way and a command line cannot be silently reorde
 the count is never implicit. `-` is legal in the document, transcript, and logits positions only;
 `PACK`, `GEOMETRY`, and `REFERENCE` refuse it lexically.
 
-**Weights are streamed and there is no `RESIDENT` operand**, because R6-RESIDENT-WEIGHTS makes a
-decode step read zero pack bytes and this arm exists to measure the bytes a decode step reads.
+**`RESIDENT` is the fourteenth operand:** `-` (stream the weights, the shipped behaviour, and what an
+absent operand means) or **`dense`** (hold the pack's 147 dense members resident for the process's
+lifetime — the embedding table, the sixteen layers' attention, norm and router weights, and the
+output head — while the 3.9 GB of expert planes keep streaming through the claim window).
+**`weights` is refused by name** with `R6M_RESIDENT`: whole-model residency would make
+`residency.expert_bytes` unreachable, and this arm exists to publish it. Any other value, including
+the empty string, is `R6M_RESIDENT` with detail `resident[<text>]`.
+
+In `dense` mode the arm allocates one region — **311,066,624 B** on the reference model — fills it
+once with 311,027,712 B in one pass before the first graph, wraps it **once** for the whole run
+across all **578** graphs — replacing **306** per-graph dense-window wraps with one — and places
+every dense tensor of every graph into a sub-slice of it. The claim window keeps its own buffer and
+its own per-graph wrap. Peak footprint of the weight windows plus the plane goes from 347,451,392 B
+to 573,997,056 B, a factor of 1.65, so **no physical-memory preflight is needed and none ships**;
+`ALIGN_LLM_MOE_RESIDENT_DENSE=0` skips the resident leg of the qualification and prints one explicit
+`N/A` line.
+
+`R6_MOE_DECODE_STEP` is at **schema 2**, which is where the `weights` object arrives — present in
+every document including error documents, so the mode a run took is never implicit.
+`weights.step_dense_pack_bytes` goes from 4,049,258,496 to **0** at `N = 16` while
+`steps[].residency.expert_bytes` stays **487,587,840 on every step**, and `weights.step_pack_bytes`
+keeps `docs/specs/r6-resident-weights.md` section 3.5's exact meaning — pack bytes read by decode
+steps only — so the same field name means the same thing on both decode arms.
+`docs/specs/r6-moe-resident-dense.md` section 3.7 is the performance contract and
+`docs/specs/r6-resident-weights.md` section 3.4 remains the owner of Track B decode performance.
 
 **What it publishes that no other arm does:** per step, `routed.layers[]` — the eight expert ids
 claimed in each of the sixteen layers — with the cumulative union and the marginal new bytes, and
@@ -2582,7 +2613,7 @@ publishes `top_k`, the step's top ten with the raw `u32` of each logit, in
 `ALIGN_LLM_GGUF_MODEL` (an **olmoe** GGUF), `ALIGN_LLM_LLAMA_EVAL_CALLBACK` (**R2C-patched** — full
 router axes are required, and an unpatched instrument prints six of eight slots),
 `ALIGN_LLM_LLAMA_DEBUG`, `ALIGN_LLM_MOE_DECODE_STEP_TMPDIR`, `ALIGN_LLM_DECODE_STEPS`,
-`ALIGN_LLM_MOE_DECODE_STEP_PROMPTS`. `numpy` is required for gate G's fingerprint measurement and its
+`ALIGN_LLM_MOE_DECODE_STEP_PROMPTS`, `ALIGN_LLM_MOE_RESIDENT_DENSE`. `numpy` is required for gate G's fingerprint measurement and its
 absence is an N/A rather than a pass.
 
 **`src/layer_olmoe.align`'s `MAX_PREFILL_TOKENS` moves 6 → 32**, matching `src/layer_qwen2.align`,
