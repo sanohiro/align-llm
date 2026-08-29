@@ -7684,6 +7684,16 @@ positional constructor to use. The race is documented rather than defended — h
 silent overwrite would be worse — and **no workaround is built**. A destination that is a symlink is
 followed in both directions, exactly as alignpack's `dest-symlink` case pins. **No status change.**
 
+**R6-PREFIX-KEY is the third client** (`docs/specs/r6-prefix-key-corpus.md` sections 2.8 and 6 risk
+9). A content-addressed store makes the same window structural rather than incidental: the arm tests
+`fs.exists(<STORE>/<key>.akvp)` at step L0 and, on a miss, creates that exact path after the prefill.
+Two processes missing the same key concurrently therefore both prefill, and the loser's
+`fs.create_rw` **overwrites** rather than refuses — benignly, because the key is a function of the
+content and both writers write the same bytes at the same offsets, but not with the refusal a store
+should give. The store is declared single-process for exactly this reason, the window is recorded
+rather than hidden, and **no workaround is built**. An exclusive positional constructor would let the
+loser be refused with `R6_KV_EXISTS` instead. **No status change.**
+
 ### Requested capability
 
 Mirroring the shipped `fs.create_rw` / `fs.create_exclusive` pair:
@@ -7754,6 +7764,18 @@ ids, and `KV_WIDTH` — so a torn `akvp` container costs exactly one re-prefill,
 (`docs/specs/r6-kv-persist.md` section 6, risk 6). This request therefore **stays `low` and
 non-blocking**; the first client that would raise it is one whose artifact is not reproducible from
 inputs that still exist. Correcting the register upward would have been easy and wrong.
+
+**R6-PREFIX-KEY (roadmap item 37) is the first client that owes this request a correction, and the
+correction is: it still stays `low` and non-blocking.** A content-addressed store changes one thing
+about a torn container — it is **found again by key on every later run**, rather than being a file
+whose name a caller had to type. That is a real difference and it is recorded here rather than left
+for a later reader to raise on the store's account. It does not move the priority, for two reasons
+that survive the change: the container is still detected rather than loaded — `R6_KV_TRUNCATED` or
+`R6_KV_DIGEST("plane")`, and **never** a silent re-prefill (`docs/specs/r6-prefix-key-corpus.md`
+section 2.5) — and the repair is still one re-prefill after the caller deletes the file, because the
+store is a caller-owned directory. What would raise this request is an eviction or
+garbage-collection capability that rewrites the store in place, which is deferred and is Request 53's
+resume condition.
 
 ### Requested capability
 
@@ -9863,12 +9885,27 @@ No new syntax. Two checker changes:
 - `alignc check` and `alignc build` agree on every one of the shapes above (Request 42's own
   criterion, restated here because that is how both were discovered).
 
+### A negative client worth recording — R6-PREFIX-KEY (roadmap item 37)
+
+This request forced R6-KV-PERSIST to split the container's format from the plane's **refill**: the
+format owner is `src/kv_plane.align` and the byte movement into `src/decode_step.align`'s own
+`mut plane: buffer` stayed with the buffer's owner, because a cross-module call taking
+`borrow mut buffer` beside the caller's other locals is the shape this request refuses.
+
+R6-PREFIX-KEY put the store's **key derivation** in `src/kv_plane.align` — the opposite side of that
+same boundary — and it compiles at the same pin, because `kv_plane.derive_key` is **pure**: it takes
+three `borrow slice<u8>` views and three integers, takes no `borrow mut`, and returns a `string` by
+value. The asymmetry is recorded so a later reader does not read the two placements as inconsistent:
+what this request refuses is a mutable borrow across the module boundary, not the boundary.
+**No status change and no new repro.**
+
 ---
 
-<!-- The next free request number is **53**. R6-PREFIX-SUFFIX-PREFILL proposes none: every gap it
-     met is already recorded above (49 as a continuing client, and 22, 41, 35, 31, 21, 30, 29, 38,
-     39, 33 inherited unchanged through paths it does not touch). 52 is expected to be claimed by a
-     parallel branch; both numbers must be re-checked when this branch merges `origin/main`. -->
+<!-- The next free request number is **54**. Request 53 is R6-PREFIX-KEY's (roadmap item 37). 52 is
+     expected to be claimed by a parallel branch — item 31's `Option` partial move — and is
+     deliberately left unclaimed here rather than filled in, because two branches numbering the same
+     request is worse than a gap. Both numbers must be re-checked when this branch merges
+     `origin/main`, by `git merge` and never a rebase. -->
 
 ## Request 50 — `std.os`: how much physical and available memory the host has
 
@@ -10064,6 +10101,94 @@ identifier in that capability is `resident_*`, `pool`, or `layout`, and that "ar
 in prose. The request is filed because the diagnostic cost a bounded but real amount of time to
 diagnose — the visible errors were on lines that had nothing wrong with them — and the next
 implementer to reach for the most natural word for a large contiguous allocation will pay it again.
+
+## Request 53 — `std.fs`: directory creation, directory listing, and a file-type predicate
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none today. It becomes blocking for the deferred store-eviction /
+  garbage-collection capability (`docs/specs/r6-prefix-key-corpus.md` section 7), which cannot
+  enumerate what it must evict.
+Independent work that may continue: all of R6-PREFIX-KEY (roadmap item 37) and all of
+  R6-PREFIX-TTFT (roadmap item 38).
+Resume condition: schedule an eviction, garbage-collection, or size-budget capability over the R6
+  prefix store; or an Align release ships any of the three surfaces below.
+Align commit or pull request: none
+align-llm verification: `src/decode_step.align`'s `R6_KV_UNWRITABLE store[create]` gains a detail
+  that names its cause — `store[absent]`, `store[not_a_directory]`, or `store[denied]` — decided by
+  `fs.is_dir` **before** the prefill rather than by a failed create after it; the three
+  `ds-store-unwritable`, `ds-store-file-not-dir`, and a new `ds-store-denied` rows in
+  `scripts/run-layer-forward-smoke` assert the three distinct details and that the first two now
+  refuse before a plane exists (`plane.source: "-"`); and `gmake layer-forward-smoke` passes with
+  the decode-step golden moving only in those rows.
+```
+
+### Motivation and current sibling evidence
+
+R6-PREFIX-KEY (roadmap item 37) ships a **content-addressed store**: a caller-supplied directory that
+the arm addresses by a derived name, `<STORE>/<64-hex>.akvp`. It never creates the directory, never
+lists it, and never asks what kind of thing a path is — because at this pin it cannot.
+
+`std.fs` as consumed by this repository is `create_exclusive`, `create_rw`, `exists`, `open_rw`,
+`read_file`, `remove`, `rename`, and `write_file`. There is **no `create_dir`, no `read_dir`, and no
+predicate that distinguishes a regular file from a directory from a missing path**. `fs.exists` is
+true for a directory and for a file alike, so it cannot answer "is this operand the kind of thing the
+operand is documented to be".
+
+**Three concrete consequences in the shipped capability, none of them hypothetical:**
+
+1. **The arm cannot create its own store**, so the store is documented as a directory the caller
+   creates (`docs/specs/r6-prefix-key-corpus.md` section 2.4). This is also defensible on its own —
+   an arm that mints namespaces from a path operand is one typo from populating `/tmp/tyop/` — so
+   the request is filed for the other two.
+2. **`R6_KV_UNWRITABLE store[create]` cannot name its cause.** "No such directory", "that path is a
+   regular file", and "that directory is not writable" are **one** refusal with **one** detail,
+   because `fs.create_rw`'s mapped failure at this pin does not separate them. The detail names the
+   *operand* rather than guessing the *cause*, which is the honest form of the limitation and not a
+   substitute for it. Two shipped rows — `ds-store-unwritable` and `ds-store-file-not-dir` — assert
+   that the two causes are **not** distinguished, so the day they are is a visible golden move.
+3. **The failure is reported after a full prefill.** The create is at step W1, which follows the
+   prefill; a pre-flight check would need either a type predicate or a probe write in the caller's
+   directory on **every** run including hits, and `r6-kv-persist.md` section 2.5's rule — a caller
+   who asks for an unpersistable configuration should learn it in milliseconds — cannot be honoured
+   without one. This is the request's strongest client evidence and section 6 risk 5 of the design
+   owns the consequence.
+
+A fourth consequence is scheduled rather than current: **eviction, garbage collection, and a size
+budget are all deferred** (section 7 of the design) and every one of them must enumerate the store.
+That is what makes this request blocking for that capability and non-blocking for this one.
+
+### Requested capability
+
+```text
+fs.create_dir(path: str) -> Result<(), Error>        // one level; fails if the path exists
+fs.read_dir(path: str) -> Result<array<string>, Error>
+fs.is_dir(path: str) -> Result<bool, Error>
+```
+
+Deliberately minimal: one level rather than a recursive `mkdir -p`, entry **names** rather than a
+stat-bearing record, and a single boolean predicate rather than a mode word. Each is the smallest
+surface that answers one of the three consequences above, and none of them is a capability this
+repository would build a compatibility layer around in the meantime — the shipped arm requires the
+caller's directory and says so.
+
+### Acceptance criteria
+
+1. `fs.is_dir` distinguishes the three causes in consequence 2: it returns `Ok(false)` for a regular
+   file, `Ok(true)` for a directory, and `Err(NotFound)` for an absent path, so
+   `R6_KV_UNWRITABLE store[create]` can carry a cause **before** the prefill.
+2. `fs.create_dir` fails deterministically when the path exists, whatever kind of entry it is, and
+   never follows a final symlink to create somewhere else.
+3. `fs.read_dir` enumerates a directory of at least 10,000 entries without unbounded allocation, in a
+   documented order (or with the order documented as unspecified, which is fine as long as it is
+   stated), and excludes `.` and `..`.
+4. All three respect the retained-root discipline Request 18 describes.
+5. **`fs.read_dir` returning `array<string>` intersects Request 22** — indexing arrays of Move
+   element types is refused by `check_index` at this pin — so a consumer that reads the returned
+   array needs 22 as well. That intersection is part of this request rather than a surprise for its
+   implementer: either 22 lands first, or `read_dir` ships a shape that can be consumed without it.
 
 ## Not requested (respecting Align's design)
 

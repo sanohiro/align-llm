@@ -56,6 +56,15 @@ pub MAX_KV_PLANE_BYTES := 536870912
 pub MAX_KV_LOGITS_BYTES := 16777216
 pub MAX_KV_CONTAINER_BYTES := 1073741824
 
+// R6-PREFIX-KEY (`docs/specs/r6-prefix-key-corpus.md` section 2.3). The store's key: one SHA-256
+// over one 152-byte preimage, and `key_version` is the field that retires a whole store atomically
+// if this table ever moves. It is deliberately **not** `format_version`: the container format may
+// not move when the key does.
+pub KEY_VERSION := 1
+pub KEY_PREIMAGE_BYTES := 152
+pub KEY_HEX_BYTES := 64
+pub STORE_EXTENSION := ".akvp"
+
 MAX_DETAIL_BYTES := 256
 I64_MAX := 9223372036854775807
 
@@ -802,6 +811,89 @@ pub fn token_at(borrow stream: slice<u8>, index: i64) -> i64 {
   at := mul_checked(index, 4)
   if at < 0 || stream.len() < at + 4 { return -1 }
   return stream.u32_le(at) as i64
+}
+
+// ---------------------------------------------------------------------------------------------
+// R6-PREFIX-KEY: the content-addressed store's key (its sections 2.3 and 2.8)
+//
+// **Why the key lives in this module.** It owns container identity — the six fields, the digests,
+// the layout — and the key is the seventh statement of that identity. Putting it beside the `STORE`
+// operand in `src/decode_step.align` would split one identity across two modules and let the two
+// drift. Request 49 does not bind here and that asymmetry is deliberate: `derive_key` is **pure**,
+// takes no `borrow mut`, opens nothing, and allocates one 152-byte preimage that it frees at its own
+// scope end — so the boundary the refill was forced across (section 2.7 above) has no counterpart.
+//
+// The preimage is exactly 152 bytes, little-endian, one layout and no other:
+//
+//   0    32  source_header_region_sha256   the pack's own source-identity record
+//   32   32  geometry_sha256               `sha256` of the exact `GEOMETRY` bytes
+//   64   32  token_stream_sha256           `sha256` of `token_count` little-endian `u32` ids
+//   96    8  pack_total_bytes
+//   104   4  kv_width
+//   108   4  token_count
+//   112   4  plane_layout_version
+//   116   4  element_type
+//   120   4  format_version
+//   124   4  key_version
+//   128  24  reserved, all zero
+//
+// **`crypto.sha256` and never `hash64`**, section 2.3.3's rule verbatim: the pinned runtime
+// documents `core.hash`'s wyhash as "NOT cryptographic ... not a stable on-disk/wire format", and a
+// file **name** is an on-disk format.
+//
+// The empty string is the one failure channel, and it is fail-closed: a caller that receives it
+// refuses the run rather than addressing a file under a partial name.
+pub fn derive_key(
+  borrow source_digest: slice<u8>,
+  borrow geometry_digest: slice<u8>,
+  borrow token_stream: slice<u8>,
+  kv_width: i64,
+  token_count: i64,
+  pack_total_bytes: i64,
+) -> string {
+  if source_digest.len() != DIGEST_BYTES || geometry_digest.len() != DIGEST_BYTES {
+    return "".clone()
+  }
+  if kv_width < 0 || token_count < 0 || pack_total_bytes < 0 { return "".clone() }
+  if token_stream.len() != mul_checked(token_count, 4) { return "".clone() }
+  // The third digest is computed here rather than taken as a parameter so that one function owns
+  // the whole preimage: a caller cannot hand it a digest of something else.
+  tokens_raw := crypto.sha256(token_stream)
+  if tokens_raw.len() != DIGEST_BYTES { return "".clone() }
+  mut preimage: buffer := buffer(KEY_PREIMAGE_BYTES)
+  preimage.append(source_digest[0..DIGEST_BYTES])
+  preimage.append(geometry_digest[0..DIGEST_BYTES])
+  preimage.append(tokens_raw[0..DIGEST_BYTES])
+  preimage.put_u64_le(pack_total_bytes as u64)
+  preimage.put_u32_le(kv_width as u32)
+  preimage.put_u32_le(token_count as u32)
+  preimage.put_u32_le(PLANE_LAYOUT_VERSION as u32)
+  preimage.put_u32_le(ELEMENT_TYPE_F32 as u32)
+  preimage.put_u32_le(FORMAT_VERSION as u32)
+  preimage.put_u32_le(KEY_VERSION as u32)
+  mut zero := 128
+  loop {
+    if zero >= KEY_PREIMAGE_BYTES { break }
+    preimage.put_u8(0)
+    zero = zero + 1
+  }
+  view := preimage.bytes()
+  if view.len() != KEY_PREIMAGE_BYTES { return "".clone() }
+  raw := crypto.sha256(view)
+  return encoding.hex_encode(raw[0..raw.len()])
+}
+
+// Section 2.4's naming rule: `<STORE>/<64 lowercase hex>.akvp`, and nothing else is ever written
+// into the caller's directory. The case is fixed by the contract because a name differing in case
+// is a different file on a case-sensitive filesystem and the same file on a case-insensitive one;
+// `encoding.hex_encode` emits lowercase and `scripts/kv_plane_reader.py` asserts it.
+pub fn store_path(directory: str, key: str) -> string {
+  b := builder()
+  b.write(directory)
+  b.write("/")
+  b.write(key)
+  b.write(STORE_EXTENSION)
+  return b.to_string()
 }
 
 // ---------------------------------------------------------------------------------------------
