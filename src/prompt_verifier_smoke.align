@@ -2032,8 +2032,10 @@ fn edit_set_blocks_for(defect: i64, carried: bool) -> array<prompt_artifacts.Edi
     mut index := 0
     loop {
       if index >= 33 { break }
-      // Distinct and strictly ascending, so the block bound is the only rule broken: repeating one
-      // path would be rejected by the uniqueness rule before the count was ever compared.
+      // Distinct and strictly ascending, so the block bound is the only rule this document breaks.
+      // The count is compared first, before any block or pair rule, so a repeated path would not
+      // change this case's verdict; keeping the paths ascending keeps the case falsifying for the
+      // bound alone, because removing the bound leaves a block set with nothing else wrong.
       path := generated_path(index + 1)
       path_view: str := path
       values.push(edit_set_block(

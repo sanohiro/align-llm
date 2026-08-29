@@ -478,10 +478,11 @@ trace records would be referenced by nothing. Naming is not sufficient and is no
 digest must resolve to **exactly one** persisted record of that row's task, the before and after
 results must be the same observation, both must be closed over the resolved request, and the input
 snapshot must be that task's and carry the snapshot's own artifact digests — the same checks the
-row's attestation is held to (`verifier_attempt_trace_cross_valid`,
-`src/prompt_score.align`). The `input_snapshots` upper bound therefore moves from one per row to
-one per **invocation**; at version 1 that is the same bound, because a version-1 row runs exactly
-once.
+row's attestation is held to. Both consumers enforce it: `verifier_attempt_trace_cross_valid`
+(`src/prompt_score.align`) and `validate_attempt_traces`
+(`scripts/prompt-gate-validator.py`). The `input_snapshots` upper bound therefore moves from one
+per row to one per **invocation**; at version 1 that is the same bound, because a version-1 row
+runs exactly once.
 
 **A `SKIPPED` attempt carries only identity, not a run.** `rendered_prompt_sha256`,
 `adapter_request_sha256`, the four trace digests, `generation_request`, `seed_attestation`,
@@ -506,6 +507,20 @@ estimated before the run — far inside `RESULT_LIMIT` (268,435,456), with the e
 carry the container's version**; a version-2 result containing a version-1 row, or the reverse, is
 invalid. This keeps the two frozen version-1 documents (`prompt-evaluation-improved.json` and its
 evidence sidecar) uniformly version 1 and decodable forever.
+
+**A terminal adapter error still publishes its own row.** `ERROR`/`ADAPTER_RESULT` is raised by the
+caller, *after* the failing row, its expected-input identity, and its `COMPLETE` attestation are
+appended — the version-1 order, which the attempt loop must not move inside the per-attempt path.
+The published shape is therefore `snapshot_attestations` between `rows.len()` and `rows.len() + 1`
+and no unreferenced trace record, with two admitted terminations: `rows.len() + 1` attestations,
+where the extra one is the failed attestation of an invocation that never reached a row and is
+never `CLEANUP_FAILED`; or `rows.len()` attestations, where the last row carries
+`measurement.status: ERROR` under `ADAPTER_RESULT`, or `CLEANUP_FAILED` follows an otherwise
+non-error prefix. An unsafe workspace preflight is the one `ERROR` that publishes nothing at all:
+no row, no attestation, and no trace record. `verifier_rows_and_attestations_valid`
+(`src/prompt_score.align`) is the owner; deviation 21(b) records the defect that made the ordering
+explicit, and `scripts/run-prompt-evaluate-smoke` asserts the `ADAPTER_RESULT` shape — one row,
+`measurement.status: ERROR`, one `COMPLETE` attestation.
 
 `PROMPT_EXPECTED_INPUT_DIGEST` moves to `schema_version: 2`, gaining `attempt_index` and becoming
 one record **per attempt** rather than per row. §4.5's binding rule — "no duplicate, missing, or
@@ -759,8 +774,8 @@ First applicable row wins. Rows 1–9 run before any provider call or any worksp
 | 19 | The section 3.6 sums are exact, within bounds, and `None`/`Some` agrees with the §5.2 state machine | `INVALID_INPUT` / `TIMING` |
 | 20 | One `PROMPT_EXPECTED_INPUT_DIGEST` per attempt: no duplicate, missing, or extra identity | `INVALID_INPUT` / `EVIDENCE_BINDING` |
 | 21 | Every attempt that ran carries all four trace digests, and a `SKIPPED` attempt carries none of them | `INVALID_INPUT` / `SCHEMA` |
-| 22 | Each of the four resolves to **exactly one** persisted record of that row's task; before and after are the same observation; both are closed over the resolved request; the input snapshot is that task's and carries the snapshot's own artifact digests | `INVALID_INPUT` / `SCHEMA` |
-| 23 | `input_snapshots` is bounded by the run's **invocation** count, not its row count | `INVALID_INPUT` / `SCHEMA` |
+| 22 | Each of the four resolves to **exactly one** persisted record of that row's task; before and after are the same observation; both are closed over the resolved request; the input snapshot is that task's and carries the snapshot's own artifact digests (enforced by both `src/prompt_score.align` and `scripts/prompt-gate-validator.py`) | `INVALID_INPUT` / `SCHEMA` |
+| 23 | `input_snapshots` is bounded by the run's **invocation** count, not its row count (both implementations) | `INVALID_INPUT` / `SCHEMA` |
 
 Rows 12, 13, and 14 are terminal-but-not-error: the row closes with a recorded `SKIPPED` repair
 attempt carrying its reason. A skipped repair is a measured outcome; it never becomes a silent
@@ -782,7 +797,7 @@ single-attempt row.
 | Surface | Exact contract |
 | --- | --- |
 | `EVALUATOR_SOURCE_SHA256` | `src/prompt_evaluate.align:8` is updated to the new `scripts/prompt-evaluate.py` digest in the same commit that changes the file. A stale pin is a hard `INVALID_INPUT` at launch, so the two never drift. |
-| Size window | `src/prompt_evaluate.align:163-166` admits `EVALUATOR_ARG_CHUNK_BYTES * 2 < len <= EVALUATOR_ARG_CHUNK_BYTES * 3`, i.e. 131,073…196,608 bytes. The file is 185,093 bytes, so the whole addition has **11,515 bytes** of headroom. |
+| Size window | Designed as `src/prompt_evaluate.align:163-166` admitting `EVALUATOR_ARG_CHUNK_BYTES * 2 < len <= EVALUATOR_ARG_CHUNK_BYTES * 3`, i.e. 131,073…196,608 bytes, against a 185,093-byte file with **11,515 bytes** of headroom. The addition exceeded it, so the escape below was taken: the shipped window is `src/prompt_evaluate.align:171-172`, `* 3 < len <= * 4` (196,609…262,144 bytes). Deviation 5. |
 | If the budget is exceeded | `EVALUATOR_ARG_CHUNK_BYTES * 3` becomes `* 4` (262,144 bytes) in `src/prompt_evaluate.align`, and the chunked-argument launch path is exercised at the new chunk count by an owner test. This is a public change to the evaluator launch contract, recorded here **before** implementation rather than discovered at the end. |
 | What is not acceptable | Splitting the evaluator into a second file to dodge the window. The pin exists so that exactly one reviewed byte sequence runs; a helper module beside it would be an unpinned second producer. |
 
@@ -792,12 +807,12 @@ single-attempt row.
 | --- | --- |
 | Exact commands and operands | Section 3.1 (no new flag, no new environment variable); section 5.1 (owners); section 5.2 (the gate command) |
 | Inputs and defaults | Section 3.4 (corpus assets and their exact values); `maximum_repair_loops` default stays 0, so `canonical-v1` behaviour is unchanged |
-| Results, statuses, errors, precedence | Section 3.2 (`attempt.status`, `skip_reason`); section 3.8 (20-row first-applicable ladder) |
+| Results, statuses, errors, precedence | Section 3.2 (`attempt.status`, `skip_reason`, the terminal-`ERROR` published shape); section 3.8 (23-row first-applicable ladder) |
 | Ownership, lifetime, allocation, cleanup | Section 3.9 |
 | Text and wire boundary | Canonical UTF-8 JSON, declaration order, integer-only comparisons. Repair-prompt truncation is UTF-8-safe at a character boundary and never splits a code point (section 4.3) |
 | Persisted/cache identity | `artifact_kind` + `schema_version` nominal; `content_sha256` over the canonical preimage with only the record's own digest field blanked (the existing non-circular pattern). No cache is introduced |
 | Schema version | `PROMPT_TASK_ROW` 1→2, `PROMPT_EVALUATION_RESULT` 1→2, `PROMPT_EXPECTED_INPUT_DIGEST` 1→2. New records `TASK_ATTEMPT_RECORD`, `REPAIR_PROMPT_SOURCE`, `REPAIR_PROMPT_TEMPLATE`, `PROVIDER_SERVICE_PROBE` at 1. `TASK_MEASUREMENT`, `PROMPT_EVALUATION_TASK`, `TASK_ADAPTER_REQUEST`, `PROMPT_SCOPE`, `GENERATION_POLICY`, `EVALUATION_PROVIDER_CONTROL`, `PROMPT_ACCEPTANCE_POLICY`, `ENVIRONMENT_POLICY`, `ENVIRONMENT_IDENTITY` unchanged |
-| Validation order | Section 3.8, rows 1–20 |
+| Validation order | Section 3.8, rows 1–23 |
 | Prerequisites | Section 5.5 |
 | CLI, build, and environment inputs | Section 3.1: no new flag, no new environment variable. The evaluator reads exactly one environment value today (the provider credential) and continues to. Build inputs change only through section 3.10's pin and window. |
 | Source pin and size window | Section 3.10 |
@@ -1494,7 +1509,7 @@ plan's guess and the table below names the real one.
 | `attempt-skip-inputs` | `scripts/run-prompt-evaluate-smoke:1208` |
 | `attempt-skip-cleanup` | `scripts/run-prompt-evaluate-smoke:1227` — the same rule as `attempt-cleanup-suppresses-repair`; the plan named one rule twice |
 | `ladder-01` … `ladder-03`, `ladder-07`, `ladder-09` | Unchanged C6 ladder rows; no new rule, no new case |
-| `ladder-04` | `scripts/run-prompt-gate-validator-smoke:989` (`v2-repair-bound`) and `:1302` (every `prompt-v1r` task declares exactly one loop) |
+| `ladder-04` | `scripts/run-prompt-gate-validator-smoke:989` (`v2-repair-bound`) and `:1412` (every `prompt-v1r` task declares exactly one loop) |
 | `ladder-05`, `ladder-06` | `scripts/run-prompt-render-parity-smoke:140` (`repair_template_cases`), including `:194` for a non-UTF-8 template |
 | `ladder-08` | `scripts/run-prompt-evaluate-smoke:1459`, `:1479` |
 | `attempt-cleanup-order` | `scripts/run-prompt-evaluate-smoke:1360` |
@@ -1516,18 +1531,18 @@ plan's guess and the table below names the real one.
 | `score-version-dispatch`, `score-v1-no-v2-fields` | `src/prompt_verifier_smoke.align:2234` (defect 5); `verifier_row_v2_members_absent`, `src/prompt_score.align:3196` |
 | `score-label-map` | `src/prompt_score.align:2948`-`2960` (`verifier_attempt_kind_valid`, `verifier_attempt_status_valid`, `verifier_skip_reason_valid`); the declared skip-reason set is asserted at `scripts/run-prompt-evaluate-smoke:1205` |
 | `score-v2-decode` | `src/prompt_verifier_smoke.align:2209`, plus the round-trip regression at `:2184` |
-| `score-v1-unchanged` | `src/prompt_verifier_smoke.align:2188`-`2192` (version-1 round trip and seal) |
-| `score-frozen-rescore` | `scripts/run-prompt-gate-validator-smoke:1178` (`frozen_version_one_chain`) |
-| `score-repair-loops-candidate`, `score-repair-loops-parent` | `scripts/run-prompt-gate-validator-smoke:1163` (`v2-parent-repair-loops`); the candidate direction is C6's existing check, reused unchanged |
-| `score-repair-regression` | `scripts/run-prompt-gate-validator-smoke:1172` (`v2-aggregate-recompute`) |
+| `score-v1-unchanged` | `src/prompt_verifier_smoke.align:2246`-`2251` (version-1 round trip and seal) |
+| `score-frozen-rescore` | `scripts/run-prompt-gate-validator-smoke:1288` (`frozen_version_one_chain`) |
+| `score-repair-loops-candidate`, `score-repair-loops-parent` | `scripts/run-prompt-gate-validator-smoke:1273` (`v2-parent-repair-loops`); the candidate direction is C6's existing check, reused unchanged |
+| `score-repair-regression` | `scripts/run-prompt-gate-validator-smoke:1282` (`v2-aggregate-recompute`) |
 | `score-attempt-*` (malformed input) | `src/prompt_verifier_smoke.align:2214` (defect 1, sparse index), `:2219` (2, two `INITIAL`), `:2224` (3, measurement not final), `:2229` (4, overlong), `:2239` (6, count skew), `:2245` (8, untraced attempt), `:2252` (9, overlong with a skipped tail), `:2258` (10, two repairs that ran), `:2265` (11, unreferenced trace record), `:2272` (12, unresolved trace digest); document level `scripts/run-prompt-gate-validator-smoke:902`-`1151` |
 | `score-ladder-order` | `src/prompt_score.align:5954` — `verify_result` is one statement per predicate, in the ladder's order; the split is recorded there |
 | `score-attempt-lifetime` | `src/prompt_score.align:3144` bounds the attempt list before it is walked; the round-trip regression at `src/prompt_verifier_smoke.align:2184` is the owned-record lifetime assertion |
-| `score-aggregate-recompute`, `score-recovery-paired` | `scripts/run-prompt-gate-validator-smoke:1172`; Align side `src/prompt_score.align:5386` recomputes every repair aggregate from the attempts and `src/prompt_verifier_smoke.align`'s defects 7, 9, and 10 each move the recomputed values |
-| `corpus-v1r-manifest`, `corpus-v1r-shared-digests`, `corpus-v1r-digest-drift`, `corpus-v1r-repair-bound` | `scripts/run-prompt-gate-validator-smoke:1237` (`frozen_corpus_rows`), which asserts the 24 shared members, their identical digests, the exact added set, every member's bytes against its frozen digest, and `maximum_repair_loops: 1` with the pinned template on all three tasks |
+| `score-aggregate-recompute`, `score-recovery-paired` | `scripts/run-prompt-gate-validator-smoke:1282`; Align side `src/prompt_score.align:5386` recomputes every repair aggregate from the attempts and `src/prompt_verifier_smoke.align`'s defects 7, 9, and 10 each move the recomputed values |
+| `corpus-v1r-manifest`, `corpus-v1r-shared-digests`, `corpus-v1r-digest-drift`, `corpus-v1r-repair-bound` | `scripts/run-prompt-gate-validator-smoke:1347` (`frozen_corpus_rows`), which asserts the 24 shared members, their identical digests, the exact added set, every member's bytes against its frozen digest, and `maximum_repair_loops: 1` with the pinned template on all three tasks |
 | `corpus-v1r-scope` | The section 5.2 qualification (Q). The scope resolved, every digest recomputed, and the baseline activation bound in the measured run; section 10.3 records it |
 | `provider-probe-shape`, `provider-probe-mismatch` x4, `provider-probe-malformed` | `scripts/run-prompt-evaluate-smoke:1430`, `:1459`, `:1479` |
-| Non-mutation (6.4) | `scripts/run-prompt-gate-validator-smoke:1237`; `git diff 3df063b..HEAD` over `scripts/prompt-measurement-adapter.py`, `scripts/prompt-fixed-adapter.py`, `scripts/prompt-snapshot-helper.py`, `eval/runners/run-coding-task.py`, `eval/tasks/prompt-v1/`, `eval/prompt/canonical-v1/`, and `eval/prompt/gate/` is empty. `make prompt-gate-check` was **not** run; section 10.3 records that and its substitute |
+| Non-mutation (6.4) | `scripts/run-prompt-gate-validator-smoke:1347`; `git diff 3df063b..HEAD` over `scripts/prompt-measurement-adapter.py`, `scripts/prompt-fixed-adapter.py`, `scripts/prompt-snapshot-helper.py`, `eval/runners/run-coding-task.py`, `eval/tasks/prompt-v1/`, `eval/prompt/canonical-v1/`, and `eval/prompt/gate/` is empty. `make prompt-gate-check` was **not** run; section 10.3 records that and its substitute |
 | Section 6.6 both-directions coverage | Deviation 15: the assertion has three owners, not one, and is not faked in the two smoke files |
 | `make prompt-evaluate-smoke` itself | **Run, and it caught three defects.** It does not run on the implementing macOS host: the evaluator's retained-executable launch reads `/proc/self/fd`, and the validation runner needs `bwrap`. The recipe is a `linux/arm64` container from `c4-repair-measure:latest` with deviation 17's four privilege values, the checkout bind-mounted **at its own absolute path** (a linked worktree's `.git` names a common directory that must be mounted read-only at its own path, and the worktree's `gitdir` file must resolve), and `ALIGNC` pointed at the pinned Linux compiler. Under that recipe the merge base `3df063b` passes and the capability head did not; deviation 21 records the three defects and their fixes |
 
@@ -1543,7 +1558,7 @@ plan's guess and the table below names the real one.
 | Adapter and runner byte-identical | 3.1, 6.4 | `git diff` over `scripts/prompt-measurement-adapter.py`, `scripts/prompt-fixed-adapter.py`, `scripts/prompt-snapshot-helper.py`, `eval/runners/run-coding-task.py`, `eval/tasks/prompt-v1/`, `eval/prompt/canonical-v1/`, `eval/prompt/gate/` is empty; the 24 shared file-set members carry identical digests in both manifests |
 | `PROMPT_TASK_ROW` v2 | 3.2 | `scripts/prompt-evaluate.py:4353` row assembly; the single `PromptTaskRow` with `Option` version-2 members in `src/prompt_artifacts.align` (deviation 10) |
 | `TaskAttemptRecord`, `RepairPromptSource` | 3.2 | `ATTEMPT_RECORD_FIELDS`, `REPAIR_PROMPT_SOURCE_FIELDS` in `scripts/prompt-gate-validator.py`; `skipped_attempt_record`, `repair_prompt_source_record` in `scripts/prompt-evaluate.py`; `TaskAttemptRecord` in `src/prompt_artifacts.align`. The four declarations of the attempt record's field order — Align record, validator tuple, evaluator literal, fixture literal — are asserted equal against the published document |
-| Attempt-owned trace records | 3.2, 3.8 rows 21-23 | `verifier_attempt_trace_cross_valid` and the three resolvers in `src/prompt_score.align:4870`; `ATTEMPT_TRACE_POOLS` and the presence rule in `scripts/prompt-gate-validator.py` |
+| Attempt-owned trace records | 3.2, 3.8 rows 21-23 | `verifier_attempt_trace_cross_valid` and the three resolvers in `src/prompt_score.align:4883`; `ATTEMPT_TRACE_POOLS`, the presence rule, `validate_attempt_traces`, `snapshot_request_closure`, and `count_ran_invocations` in `scripts/prompt-gate-validator.py`, with the six rejections at `scripts/run-prompt-gate-validator-smoke:1105` |
 | One producer per field | 3.3 | `row_repair_loop_count`, `row_generation_ns`, `row_repair_attempted`, `row_repair_recovered` select by version, never by presence |
 | New corpus assets | 3.4 | `eval/prompt/canonical-v1r/`, `eval/tasks/prompt-v1r/`, minted reproducibly by `scripts/freeze-canonical-v1r` |
 | Provider topology and evidence | 3.5 | `scripts/probe-provider-service`, `scripts/run-c4-repair-gate`, the container-local `socat` forwarder |
@@ -1714,7 +1729,15 @@ document made.
     record it. Review then found that naming was all the verifier checked, so the digests are now
     resolved: each must name exactly one persisted record of that row's task, and the resolved
     records are held to the same closure, before/after equality, and artifact-equality rules the
-    row's attestation is held to.
+    row's attestation is held to. Final review found the same gap on the other side —
+    `scripts/prompt-gate-validator.py` still tested pool membership only — so
+    `validate_attempt_traces` now performs the same resolution and cross-validation, and the row
+    23 bound is checked beside the other `input_snapshots` cardinality rules. Closing it forced a
+    fixture correction worth recording: `scripts/prompt_gate_fixture.py` had every attempt and
+    every attestation naming one placeholder request/result/input triple whose documents were not
+    closed over one another, so a check the gate now performs could not have been exercised. The
+    fixture models a real observation instead — the request asks for exactly the paths the result
+    observed, in order, and the sealed input carries the result's own digests.
 20. **`included_sections` and `dropped_sections` are not a partition, and section 4.3 now says
     so.** A section whose source is empty appears in neither list: `included` is what the prompt
     carries and `dropped` is what the budget ladder removed, and an empty section was never a
@@ -1906,9 +1929,12 @@ from a sample that mixes three tasks and two prompt lengths. The first run's rat
 same corpus and the same seeds, which is itself the measurement: the spread is not stable enough to
 support a claim.
 
-**Published through the Align path.** `make c4-repair-gate` completed with `PUBLISHED`; the
-artifacts in `eval/prompt/c4-repair-gate/` are the Align publisher's own canonical encoding, with
-every `Option::None` omitted rather than written as `null`. Digests:
+**Published through the Align path.** `make c4-repair-gate` completed with `PUBLISHED`. The two
+evaluation artifacts — `c4-repair-evaluation.json` and its evidence sidecar — are the Align
+publisher's own canonical encoding, with every `Option::None` omitted rather than written as
+`null`; neither file contains the token `null`. `c4-repair-gate-record.json` is **not** one of
+them: it is the run record `scripts/run-c4-repair-gate` writes itself, in Python, and it carries 48
+`null` values for the fields its own schema leaves unset. Digests:
 `c4-repair-evaluation.json` `8793b1ff1c27e52dfc7d6ba1177f7b44683a70590e265d5278d5a9698fcc0c06`;
 `c4-repair-evaluation-evidence.json`
 `a70a967e441a21cc5c93a088edb077195da3b75abd790b172e97f398cf7c9999`;
@@ -1929,9 +1955,9 @@ run instead, and what each part covers:
 
 | Claim `prompt-gate-check` would carry | Substitute evidence |
 | --- | --- |
-| The frozen version-1 chain still validates and rescores byte-identically | `scripts/run-prompt-gate-validator-smoke:1178` drives `validate_acceptance_policy` and `rescore` directly against the merged C6 evidence and asserts `IMPROVED` with byte-identical aggregates |
-| `canonical-v1`, `eval/prompt/gate/`, `eval/tasks/prompt-v1/`, `run-coding-task.py`, and `prompt-measurement-adapter.py` were not moved | `scripts/run-prompt-gate-validator-smoke:1237` asserts the 24 shared file-set members carry identical digests in both manifests and that every `canonical-v1r` member's bytes still hash to its frozen digest; `git diff 3df063b..HEAD` over those paths is empty |
-| The Align scorer still accepts the frozen version-1 documents | `src/prompt_verifier_smoke.align:2188`-`2192` round-trips and re-seals a version-1 document; `make prompt-verifier-smoke` is green |
+| The frozen version-1 chain still validates and rescores byte-identically | `scripts/run-prompt-gate-validator-smoke:1288` drives `validate_acceptance_policy` and `rescore` directly against the merged C6 evidence and asserts `IMPROVED` with byte-identical aggregates |
+| `canonical-v1`, `eval/prompt/gate/`, `eval/tasks/prompt-v1/`, `run-coding-task.py`, and `prompt-measurement-adapter.py` were not moved | `scripts/run-prompt-gate-validator-smoke:1347` asserts the 24 shared file-set members carry identical digests in both manifests and that every `canonical-v1r` member's bytes still hash to its frozen digest; `git diff 3df063b..HEAD` over those paths is empty |
+| The Align scorer still accepts the frozen version-1 documents | `src/prompt_verifier_smoke.align:2246`-`2251` round-trips and re-seals a version-1 document; `make prompt-verifier-smoke` is green |
 
 That is not the same thing as running the gate, and it is not claimed to be. `make prompt-gate-check`
 remains the full proof and belongs in hosted CI, where the floor exists.
@@ -1953,15 +1979,31 @@ the same bound at version 1 because a version-1 row runs exactly once.
 The first implementation checked only that the four digests were well-formed and present. An
 attempt could therefore have named a digest belonging to no record, or to another task's record,
 and the "no unreferenced trace record" guarantee would have been satisfied by the naming alone.
-`verifier_attempt_trace_cross_valid` (`src/prompt_score.align:4870`) now resolves each digest to
+`verifier_attempt_trace_cross_valid` (`src/prompt_score.align:4883`) now resolves each digest to
 **exactly one** persisted record of that row's task and applies the attestation path's own checks
 to the resolved records: before and after are the same observation, both are closed over the
 resolved request, and the input snapshot is that task's and carries the snapshot's artifact
 digests. The rule was validated against this published document before it shipped — all 22 attempts
 resolve and cross-validate — so the checked-in evidence is admitted by the tighter verifier, not
-grandfathered past it. `scripts/prompt-gate-validator.py` carries the matching shape and pool rules,
-and its fixture emits the four digests, which it previously did not: without that, every version-2
-attempt case in the validator smoke was vacuous.
+grandfathered past it.
+
+**And the gate validator was one step behind it, which final review caught.**
+`scripts/prompt-gate-validator.py` had gained the shape and presence rules and its fixture emits
+the four digests — without which every version-2 attempt case in the validator smoke was vacuous —
+but it still stopped at pool membership. `validate_attempt_traces` closes that: the same
+exactly-one per-task resolution, the same before/after equality, the same closure over the resolved
+request (`snapshot_request_closure`, the port of `verifier_snapshot_artifact_closure` including the
+`FILE` expectation's canonical mode/path/digest preimage and a `TREE` expectation's descendants),
+and the same artifact-digest equality, with row 23's invocation bound checked beside the other
+`input_snapshots` cardinality rules. The port was validated against this published document before
+it shipped: all 22 attempts resolve and cross-validate under the Python implementation too.
+`scripts/run-prompt-gate-validator-smoke:1105` adds six rejections — a cross-task referent,
+an ambiguous referent with two persisted records, before/after drift, an observation not closed
+over its request, a sealed input that is not what was observed, and more sealed inputs than the run
+made invocations. Six single-point mutants of the new code — dropping the per-task filter,
+weakening `!= 1` to `< 1`, and disabling each of the drift, closure, artifact-equality, and
+invocation-bound checks — were injected and all six die. The fixture had to become a real
+observation for any of it to mean anything; deviation 19 records that.
 
 `src/prompt_verifier_smoke.align` defects 8, 11, and 12 are the regressions — an attempt attesting
 no trace record, a persisted record nothing references, and a well-formed digest that resolves to

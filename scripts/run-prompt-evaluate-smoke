@@ -1150,6 +1150,26 @@ FROZEN_TASK = {
     "argv": ["/usr/bin/python3", "scripts/prompt-measurement-adapter.py"],
     "measurement_adapter_runtime": "PYTHON:" + "e" * 64,
 }
+# The frozen adapter's summary bound and its cut marker, written out rather than read from the
+# module under test: a smoke that took either from the evaluator could not falsify a mutant that
+# moved it.
+SUMMARY_LIMIT_FOR_SMOKE = 4_096
+SUMMARY_MARKER_FOR_SMOKE = "\n[output truncated]"
+
+
+def cut_summary(text: str) -> str:
+    """A summary cut exactly the way the frozen `bounded_text` cuts one.
+
+    The producer bounds a summary that exceeded the limit to `limit - len(marker)` bytes and then
+    appends the marker, so a genuine cut summary carries the marker **and** the bound's length.
+    """
+    encoded = text.encode("utf-8")
+    require(
+        len(encoded) > SUMMARY_LIMIT_FOR_SMOKE,
+        "cut_summary: the text given to it was never over the bound, so it is not a cut",
+    )
+    marker = SUMMARY_MARKER_FOR_SMOKE.encode("utf-8")
+    return (encoded[: SUMMARY_LIMIT_FOR_SMOKE - len(marker)] + marker).decode("utf-8")
 
 
 def editset_block(module, path: str, body: str | None, declared: str | None = None) -> dict:
@@ -1289,14 +1309,28 @@ def verify_editset_attempt_boundary() -> None:
     # `SUMMARY_LIMIT`, so the applied-edit list is exactly the part a cut removes; holding a cut
     # summary to the full path list would refuse a legitimate measurement rather than a malformed
     # one. The marker lands inside the tail the row parses, so the row fires without the exemption.
+    #
+    # The summary here is a **real** cut: it is built the way `bounded_text` builds one, so it
+    # carries the marker and the bound's length together. The bound is written out rather than read
+    # from the module under test, so a mutant that moves it cannot pass this row vacuously.
     truncated = editset_measurement(module, [dict(item) for item in blocks])
-    truncated["diagnostic_summary"] = (
+    truncated["diagnostic_summary"] = cut_summary(
         "provider-backed candidate patch failed validation; applied edits: "
-        f"{EDITSET_PATH}\n[output truncated]"
+        f"{EDITSET_PATH}" + " " * SUMMARY_LIMIT_FOR_SMOKE
     )
     require(
         module.valid_measurement_version_two(truncated, EDITSET_TASK, allowed),
         "editset-row17-truncated: a cut diagnostic summary was refused by the cross-check",
+    )
+    # The other half of the exemption: the marker's text alone does not buy it. A short summary
+    # that names the wrong applied-edit list and ends in the marker is a producer claiming a cut it
+    # never took, and the row must still fire.
+    rejected(
+        "row17-forged-truncation",
+        lambda v: v.update({
+            "diagnostic_summary": "failed validation; applied edits: tests/test_duration.py"
+            "\n[output truncated]",
+        }),
     )
 
     # Ladder row 10 in the other direction: a version-1 document carrying a version-2 member.

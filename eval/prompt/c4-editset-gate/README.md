@@ -13,9 +13,14 @@ C4-REPAIR-MEASURED's unchanged, so the two capabilities' runs are directly compa
 
 Three runs of this corpus exist and **every correctness value here is identical in all three** —
 verdict, rows, statuses, failure kinds, patch sizes, aggregates, assembled prompt sizes, all four
-patch digests, and every `edit_set` block digest. Only the clocks moved: 839.492 s, 940.931 s, and
-823.67 s. The third run exists because review repair moved the repair adapter's bytes, which every
-row names by digest; spec section 11.3 deviation 15 records it.
+patch digests, and every `edit_set` block digest. The clocks moved: 839.492 s, 940.931 s, and
+823.67 s. So did per-run **environment identity**, which is not a correctness value and not a gate
+input: each run gets a fresh sandbox directory, every `unittest` traceback frame in
+`diagnostic_stderr` quotes it, and the `STDERR` section of a repair prompt carries that text, so
+`rendered_prompt_sha256` on the `REPAIR` attempt differs on six rows between the last two runs,
+along with the snapshot and request digests that bind those bytes. Spec section 11.4 names them.
+The third run exists because review repair moved the repair adapter's bytes, which every row names
+by digest; spec section 11.3 deviation 15 records it.
 
 `repair_editset_attempt_count: 6` — exactly the addressable arm stated before the run. The six
 repair prompts that could carry `EDITSET` all carried it; no section was ever dropped, and the

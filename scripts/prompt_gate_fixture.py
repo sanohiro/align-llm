@@ -79,6 +79,50 @@ def bind_activation(value: dict[str, Any]) -> dict[str, Any]:
     return bind(value)
 
 
+def declared_task_digest(path: str, task: Mapping[str, Any]) -> dict[str, Any]:
+    """The observed artifact entry for a task's own declared manifest file."""
+    return {
+        "path": path,
+        "mode": "100644",
+        "byte_count": 1,
+        "sha256": task["content_sha256"],
+    }
+
+
+def file_expectation_digest(entry: Mapping[str, Any]) -> str:
+    """The canonical mode/path/digest preimage a `FILE` static expectation is taken over."""
+    preimage = f"{entry['mode']} {entry['path']}\0F {entry['sha256']}\n".encode("utf-8")
+    return hashlib.sha256(preimage).hexdigest()
+
+
+def bind_snapshot_request(request: dict[str, Any], observation: Mapping[str, Any]) -> None:
+    """Close a snapshot request over the observation it produced.
+
+    The request keeps the kind it declared for each path it already named; every other observed
+    path becomes an additional file, in observed order. That is what a real evaluator emits, and
+    the gate's closure check (section 3.8 row 22) requires exactly it.
+    """
+    kinds = {item["path"]: item["kind"] for item in request["static_expectations"]}
+    expectations: list[dict[str, Any]] = []
+    additional: list[str] = []
+    for entry in observation["artifact_digests"]:
+        kind = kinds.get(entry["path"])
+        if kind is None:
+            additional.append(entry["path"])
+            continue
+        expectations.append(
+            {
+                "path": entry["path"],
+                "kind": kind,
+                "expected_sha256": (
+                    file_expectation_digest(entry) if kind == "FILE" else entry["sha256"]
+                ),
+            }
+        )
+    request["static_expectations"] = expectations
+    request["additional_files"] = additional
+
+
 def bind_declared_inputs(result: dict[str, Any]) -> None:
     """Bind the corpus, task, snapshot, and preflight documents the gate now cross-checks.
 
@@ -98,15 +142,21 @@ def bind_declared_inputs(result: dict[str, Any]) -> None:
         snapshot["task_manifest_sha256"] = task["content_sha256"]
         declared = task_files[min(ordinal, len(task_files) - 1)]
         if all(entry["path"] != declared for entry in snapshot["artifact_digests"]):
-            snapshot["artifact_digests"].append(
-                {
-                    "path": declared,
-                    "mode": "100644",
-                    "byte_count": 1,
-                    "sha256": task["content_sha256"],
-                }
-            )
+            snapshot["artifact_digests"].append(declared_task_digest(declared, task))
         bind(snapshot)
+    # A real run's snapshot request, snapshot result, and input snapshot are one observation: the
+    # request asks for exactly the paths the result observed, in order, and the input snapshot
+    # carries the result's own digests. The gate now resolves and cross-validates those links for
+    # every attempt (section 3.8 row 22), so the fixture has to model them rather than share one
+    # unrelated placeholder triple; otherwise a rejection family passes for the wrong reason.
+    for ordinal, result_record in enumerate(result["snapshot_results"]):
+        task = result["tasks"][min(ordinal, len(result["tasks"]) - 1)]
+        declared = task_files[min(ordinal, len(task_files) - 1)]
+        if all(entry["path"] != declared for entry in result_record["artifact_digests"]):
+            result_record["artifact_digests"].append(declared_task_digest(declared, task))
+    for ordinal, request in enumerate(result["snapshot_requests"]):
+        observation = result["snapshot_results"][min(ordinal, len(result["snapshot_results"]) - 1)]
+        bind_snapshot_request(request, observation)
     for stream in ("snapshot_requests", "snapshot_results"):
         for item in result[stream]:
             bind(item)
@@ -217,6 +267,28 @@ MAXIMUM_FILE_BLOCKS_FOR_SMOKE = 32
 def applied_edits_text() -> str:
     """The `applied edits: ` tail ladder row 17 cross-checks against the block path list."""
     return ", ".join(path for path, _ in EDITSET_EDITS)
+
+
+# The frozen producer's summary bound and its cut marker. Both are named here rather than imported
+# from the validator, for the same reason the block bound above is: a smoke that read them from the
+# module under test could not falsify a mutant that moved them.
+SUMMARY_LIMIT_FOR_SMOKE = 4_096
+SUMMARY_MARKER_FOR_SMOKE = "\n[output truncated]"
+
+
+def cut_summary(text: str) -> str:
+    """A summary cut exactly the way the frozen `bounded_text` cuts one.
+
+    `bounded_text` bounds a summary that exceeded the limit to `limit - len(marker)` bytes and then
+    appends the marker, so a genuine cut summary carries the marker **and** the bound's length.
+    Row 17's exemption reads both, so a fixture that carried only the marker would assert a shape
+    the producer never emits.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= SUMMARY_LIMIT_FOR_SMOKE:
+        raise ValueError("cut_summary was given text that never exceeded the bound")
+    marker = SUMMARY_MARKER_FOR_SMOKE.encode("utf-8")
+    return (encoded[: SUMMARY_LIMIT_FOR_SMOKE - len(marker)] + marker).decode("utf-8")
 
 
 def attempt_measurement(

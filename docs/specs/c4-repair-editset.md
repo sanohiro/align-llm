@@ -481,6 +481,15 @@ The last one is the cheapest cross-check in the design and the most valuable: `d
 is produced by the frozen `measurement()` sequencing from `applied_edits`, and `edit_set` is
 produced from the same `edits` list, so a divergence means the near-copy of §3.2 diverged.
 
+It is exempt on a **genuinely cut** summary, and the exemption takes two conditions together: the
+summary ends with the frozen `bounded_text` marker **and** is at least `SUMMARY_LIMIT` (4,096)
+bytes. `bounded_text` cuts only a summary that exceeded the bound, and it cuts to
+`SUMMARY_LIMIT - len(marker)` bytes before appending the marker, so a real cut is never shorter
+than the bound. Both conditions are required because the marker is trailing text a producer can
+write: on the suffix alone, any applied-edit list at all would escape the row. Without any
+exemption, a legitimate measurement whose summary exceeded the bound would be refused as malformed,
+because the applied-edit list is exactly the part a cut removes.
+
 **Digests are over redacted bytes.** `body_sha256` and `patch_sha256` digest the bytes *after*
 `redact_credential` has run, not before. A persisted digest of unredacted bytes is a credential
 oracle: anyone holding a candidate credential could confirm it by recomputing the digest. The cost
@@ -682,7 +691,7 @@ unchanged are not restated. Rows 1–9 run before any provider call or workspace
 | 14 | `edit_set_total_bytes` is `Some` iff `edit_set` is `Some`, and equals the sum of `body_bytes` | `INVALID_INPUT` / `EDIT_SET` |
 | 15 | Every `EditSetBlock` decodes; `path` is non-empty, is a member of the task definition's `allowed_edits`, and paths are unique and sorted ascending; `body_bytes >= 0`; `body_sha256` is a valid digest; `body_sha256` equals the digest of `body_text` when `body_text` is `Some` | `INVALID_INPUT` / `EDIT_SET` |
 | 16 | The block count is at most `MAXIMUM_FILE_BLOCKS` (32) and each `body_bytes` at most `MAXIMUM_EDIT_BYTES` | `INVALID_INPUT` / `EDIT_SET` |
-| 17 | When `edit_set` is `Some`, its paths equal the path list `diagnostic_summary` names after `applied edits: ` | `INVALID_INPUT` / `EDIT_SET` |
+| 17 | When `edit_set` is `Some`, its paths equal the path list `diagnostic_summary` names after `applied edits: `, unless the summary is a genuine cut — the truncation marker **and** at least `SUMMARY_LIMIT` bytes, both (§3.3) | `INVALID_INPUT` / `EDIT_SET` |
 | 18 | Repair eligibility, unchanged: cleanup and containment passed, and at least one of `SUMMARY`/`STDOUT`/`STDERR` is non-empty. **`EDITSET` alone does not make a repair eligible** — a run with no diagnostics at all is still `SKIPPED` | attempt 2 `SKIPPED` / `REPAIR_INPUT_UNAVAILABLE` |
 | 19 | The assembled repair prompt is valid UTF-8 and `<= max_prompt_bytes` after the §4.4 ladder | attempt 2 `SKIPPED` / `REPAIR_PROMPT_BUDGET` |
 | 20 | The repair prompt is byte-equal to `assemble(template, attempt 1's persisted fields)`, with `EDITSET` re-derived from the persisted `edit_set` | `ERROR` / `REPAIR_RENDER` |
@@ -978,7 +987,7 @@ the spread is server state, prompt-cache reuse, and host contention — not the 
 | `scripts/run-prompt-evaluate-smoke` | `EDITSET` through the loop against the deterministic `scripts/prompt-fixed-adapter.py` and a v2-emitting stub: an attempt-1 measurement with `edit_set` `Some` (section rendered), with `edit_set` `None` (section omitted), with an omitted block (placeholder line), the version-2 ladder rows 9–21 one case each, the version-selected `TASK_MEASUREMENT_FIELDS`, and `repair_editset_attempt_count` |
 | `scripts/run-prompt-render-parity-smoke` | The §4.5 re-derivation as a byte golden with `EDITSET` present, with it absent, and with each block omitted; **each of the four drop-ladder steps as its own golden, including the new final `EDITSET` drop**; the budget-exhaustion `SKIPPED` case; a redaction case proving no credential, endpoint, or constructed path survives assembly; and a nested-fence case proving a body containing a fenced block round-trips |
 | `scripts/run-prompt-score-smoke` | Version-2 measurement decode; **version-1 measurement decode unchanged**; the present-at-2 / absent-at-1 rule in both directions; the §3.3 invariants; `verifier_measurement_equal` over all 27 fields; the new aggregates |
-| `scripts/run-prompt-gate-validator-smoke` | Version-2 evidence carrying version-2 measurements over a **two-block** edit set; the new aggregates recomputed by `rescore`; the attempt-level probe-identity check of ladder row 12; edit-set path order, path uniqueness, and the row-14 sum as rejection rows; the version-1 absence rule driven directly, one row per member, because ladder row 11 makes it unreachable through this fixture's corpus; the accepted truncated-summary row; **and the inherited regression asserting that the frozen version-1 chain *and* the frozen C4 version-2 chain both still validate and rescore byte-identically** |
+| `scripts/run-prompt-gate-validator-smoke` | Version-2 evidence carrying version-2 measurements over a **two-block** edit set; the new aggregates recomputed by `rescore`; the attempt-level probe-identity check of ladder row 12; edit-set path order, path uniqueness, and the row-14 sum as rejection rows; the version-1 absence rule driven directly, one row per member, because ladder row 11 makes it unreachable through this fixture's corpus; the accepted genuinely-cut-summary row and the rejected forged-cut row beside it; **and the inherited regression asserting that the frozen version-1 chain *and* the frozen C4 version-2 chain both still validate and rescore byte-identically** |
 | `scripts/run-prompt-measurement-adapter-smoke` | **Unchanged and must stay green.** Its passing is part of the proof that the frozen adapter still behaves as reviewed while being imported elsewhere |
 | `make gate-topology-check` | Must pass with its byte-literal `EXPECTED` unmoved. `c4-editset-gate` joins no aggregate, exactly as `c4-repair-gate` does not. If `EXPECTED` moves, that is a check-topology change and it selects `make ci` per `CLAUDE.md` |
 | `make check`, `make fmt`, `make format-check`, `make build` | The Align side: `src/prompt_artifacts.align`, `src/prompt_score.align`, `src/prompt_model.align`, `src/prompt_evaluate.align` (the §3.11 pin) |
@@ -1164,7 +1173,7 @@ Each cell names its implementation and its regression. Cases are
 | Failure | `FAIL`/`PATCH` and `POLICY_VIOLATION`/`POLICY` carry both `None` | a response with no fenced block; a response naming a path outside `allowed_edits` |
 | Failure | `ERROR` before the parse carries both `None` | a generation-child failure |
 | Malformed input | a body exceeding `MAXIMUM_EDIT_BYTES`; more than `MAXIMUM_FILE_BLOCKS` blocks | both rejected by the frozen `validated_edit_set`, verbatim, with the frozen error mapping |
-| Malformed input | `EDIT_SET_LIMIT` exceeded | the over-budget block **and every block after it** are persisted with `body_text: None`, `body_bytes` and `body_sha256` intact; total is the pre-omission sum. Two portable rows, with the oversized file sorting first and sorting last, separate the prefix cut from a greedy best fit |
+| Malformed input | `EDIT_SET_LIMIT` exceeded | the over-budget block **and every block after it** are persisted with `body_text: None`, `body_bytes` and `body_sha256` intact; total is the pre-omission sum. One **portable** row over `edit_set_blocks` — three bodies of 10,000 / 10,000 / 5,000 bytes against a 16,384-byte budget, which a greedy best fit would carry as first-and-third — separates the prefix cut from a best fit on every host; two further rows, with the oversized file sorting first and sorting last, drive the same rule through a launched adapter and are **Linux-gated** with the rest of `launch_rows` |
 | Early exit | the declared-patch path never parses a response | `edit_set` `None`, `patch_sha256` `Some` over the declared patch bytes |
 | Cleanup | the patch digest is taken before `ProducedInput` construction | no read after close; the frozen `finally` still closes every retained input |
 | Redaction | bodies and digests are post-redaction | a credential-bearing stub run leaves no credential in `edit_set` and changes both digests |
@@ -1475,7 +1484,7 @@ covered; it is listed as a deviation in §11.2.
 | §3.3 presence rules, both directions | `valid_measurement_version_two`; `verifier_measurement_version_one_shape` / `…_two_shape`; `validate_measurement_version` | mutants M11, M12, M14; verifier defects 15, 17, and — added in review repair, one per version-1 absence clause — 21, 22, 23; the validator's four direct row-10 rows |
 | §3.3 `patch_sha256` iff `patch_size_bytes > 0` | all three owners | evaluate-smoke `editset-row13-*`; verifier defect via `patch_valid` |
 | §3.3 `edit_set_total_bytes` = sum | all three owners | mutant M10 dies; `editset-row14-total-disagrees`; validator `v2-editset-total` (added in review repair) |
-| §3.3 summary cross-check, exempt on a **cut** summary | evaluator and gate validator (row 17) | mutant M2 dies; `editset-row17-truncated` and validator `v2-editset-summary-truncated` accept the cut case (both added in review repair) |
+| §3.3 summary cross-check, exempt on a **genuine cut** — marker and length together | evaluator and gate validator (row 17) | mutant M2 dies; `editset-row17-truncated` and validator `v2-editset-summary-truncated` accept the real cut; `editset-row17-forged-truncation` and validator `v2-editset-summary-forged` reject a short summary carrying only the marker (the acceptance rows added in review repair, the rejection rows in the final-review repair) |
 | §3.5 `PROMPT_TASK_ROW` unchanged | no row field added | `TASK_ROW_V2_FIELDS` unmoved |
 | §3.5 measurement version = f(adapter) | `expected_template_kinds` / `verifier_task_expects_measurement_version_two` / validator row 11 | mutants M9 and M14 die; verifier defect 16 |
 | §3.5 `verifier_measurement_equal` gains the four members | `src/prompt_score.align` | mutant M6 dies; verifier defect 19 |
@@ -1694,7 +1703,8 @@ Each is a place where implementation departed from, or had to decide something l
     reached — but the artifact's runtime-identity fields name the adapter by digest, so the run was
     repeated from the repaired head rather than re-labelled. The re-run confirmed it: **every**
     correctness value is identical to the previous run's, including all four patch digests and
-    every `edit_set` block digest, and only the clock moved. §11.4 records all three runs.
+    every `edit_set` block digest. What moved besides the clock is per-run *environment identity*,
+    not correctness: §11.4 names it exactly. §11.4 records all three runs.
 
 16. **The unfalsifiable-clause finding was audited as a class, and it was larger than the two
     instances review named.** Review found the edit-set path rule and three version-1 absence
@@ -1705,9 +1715,31 @@ Each is a place where implementation departed from, or had to decide something l
     the declared length). The cause is one thing, not nine: both fixtures built **only well-formed
     blocks**, so no rule about a malformed block could ever fire. Verifier defects 26-30 and four
     validator rejection rows close it. Two needed a fixture idiom this file did not have — 33
-    distinct ascending paths, and a body one byte past 16,384 — and `builder()` with `.write()` and
-    `.to_string()` supplies both, so neither is deferred. The Align cap case is the one place this
-    document's fixtures construct a 16 KB string, and it is built rather than written out.
+    generated paths, and a body one byte past 16,384 — and `builder()` with `.write()` and
+    `.to_string()` supplies both, so neither is deferred. The 33 paths are kept distinct and
+    ascending so that the count is the only rule that case breaks: the count is compared **first**,
+    before any block or pair rule, so a repeated path would not change its verdict, and keeping
+    them distinct is what makes the case falsify the bound alone. The Align cap case is the one
+    place this document's fixtures construct a 16 KB string, and it is built rather than written
+    out.
+
+17. **The final review's four minors, and the one of them that changed behaviour.** A fresh
+    delta review of the repaired head approved it with four minors, and one was a real weakness in
+    the row-17 exemption: it fired on the truncation marker **alone**, which is trailing text a
+    producer writes, so a short summary ending in that text could name any applied-edit list at all
+    and escape the cross-check. Both owners now require the marker **and** at least `SUMMARY_LIMIT`
+    (4,096) bytes — the length a genuine `bounded_text` cut always has, because it cuts to
+    `SUMMARY_LIMIT - len(marker)` bytes and then appends the marker — and each owner gained a
+    rejection row for a forged cut beside its existing acceptance row, whose fixture summary is now
+    built the way the producer builds one rather than by pasting the marker onto a short string.
+    **This could not move any recorded gate value**: no `diagnostic_summary` in the checked-in
+    evidence is cut at all — the longest is 94 bytes of a 4,096-byte bound and none carries the
+    marker — so the exemption is never reached by this corpus and the gate was not re-run. The
+    other three minors were wording: this section's "only the clock moved" (deviation 15 and §11.4
+    now name the per-run environment identity that moves with the sandbox path), §7.2's
+    "two portable rows" for the prefix cut (one row is portable; the two launched rows are
+    Linux-gated), and the claim above that a repeated path would be rejected before the block count
+    (the count is compared first).
 
 ### 11.4 The gate run and its result
 
@@ -1726,8 +1758,21 @@ repair moved the repair adapter's bytes (§11.3 deviation 15), which every row n
 statuses and failure kinds, the same `patch_size_bytes`, the same six-attempt denominator, the same
 aggregates, the same 8,348-16,904 assembled bytes, the same **four** patch digests, and — new in the
 third comparison, because only the last two runs persist it under the same schema — the same
-`edit_set` **block digests**, path for path. Only the clocks moved: 839.492 s, against 940.931 s
-and 823.67 s. That is the reproducibility evidence, and it is why §6.3 refuses a speed claim.
+`edit_set` **block digests**, path for path. The clocks moved: 839.492 s, against 940.931 s and
+823.67 s. That is the reproducibility evidence, and it is why §6.3 refuses a speed claim.
+
+**What else moved between runs is per-run environment identity, and it is worth naming exactly
+rather than calling it a clock.** Every run gets a fresh sandbox directory under `/tmp`, and every
+`unittest` traceback frame in `diagnostic_stderr` quotes that path, as does the `Ran N tests in
+0.00Xs` line the harness prints. `diagnostic_stderr` is what the `STDERR` section of a repair
+prompt carries, so the repair prompt's own bytes differ run to run: comparing the second and third
+runs, `rendered_prompt_sha256` on the `REPAIR` attempt moved on **six** rows — the two
+`duration-half-away-from-zero` PARENT rows and all four `record-codec-round-trip` rows — and the
+per-run snapshot, request, and measurement digests that bind those bytes moved with them. **No
+correctness value moved with any of them**, and none of these is a gate input: the verdict, the
+statuses, the failure kinds, the patch sizes, the four patch digests, the `edit_set` block digests,
+and every aggregate are identical across the runs. A sandbox path is not evidence about a model;
+the digests above are the sandbox path's shadow, not a second measurement.
 
 The prefix-cut repair could not have changed any of it, and the artifact says so rather than the
 argument: the largest realized `edit_set_total_bytes` in the run is **1,160 bytes** against an

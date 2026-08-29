@@ -416,6 +416,10 @@ EDIT_SET_LIMIT = 16_384
 # The marker the frozen `bounded_text` appends at the end of a diagnostic it had to cut. Ladder
 # row 17 reads the tail of `diagnostic_summary`, which is exactly the part a cut removes.
 SUMMARY_TRUNCATION_TEXT = "\n[output truncated]"
+# The bound `bounded_text` cuts a summary to. A genuine cut summary is at least this long — the
+# frozen producer writes `raw[:limit - len(marker)] + marker` — so the length corroborates the
+# marker and a short summary cannot claim the exemption by ending in the marker's text.
+SUMMARY_LIMIT = 4_096
 ATTEMPT_KINDS = ("INITIAL", "REPAIR")
 ATTEMPT_STATUSES = ("PASS", "FAIL", "POLICY_VIOLATION", "ERROR", "SKIPPED")
 SKIP_REASONS = ("NONE", "REPAIR_PROMPT_BUDGET", "REPAIR_NOT_ELIGIBLE", "REPAIR_INPUT_UNAVAILABLE")
@@ -1715,9 +1719,17 @@ def validate_measurement_version(
     # appended at the end, so the applied-edit list is precisely what the cut removes, and holding
     # a cut summary to the full path list would refuse a legitimate measurement whose summary
     # exceeded `SUMMARY_LIMIT`.
+    #
+    # The exemption needs the marker **and** the length. `bounded_text` only cuts a summary that
+    # exceeded `SUMMARY_LIMIT`, and it cuts to `SUMMARY_LIMIT - len(marker)` bytes before appending
+    # the marker, so a genuine cut summary is never shorter than the bound. Taking the marker text
+    # alone would let a producer name any applied-edit list at all and end the string with it.
     marker = "applied edits: "
     summary = measurement["diagnostic_summary"]
-    if summary.endswith(SUMMARY_TRUNCATION_TEXT):
+    if (
+        summary.endswith(SUMMARY_TRUNCATION_TEXT)
+        and len(summary.encode("utf-8")) >= SUMMARY_LIMIT
+    ):
         return
     if marker in summary:
         named = [item for item in summary.rsplit(marker, 1)[1].split(", ") if item]
@@ -1826,12 +1838,108 @@ def validate_repair_prompt_source(value: Any, policy: Mapping[str, Any], label: 
     )
 
 
+def path_is_tree_descendant(path: str, root: str) -> bool:
+    """`src/prompt_score.align:3530`: a path strictly beneath `root`, separator included."""
+    return len(path) > len(root) + 1 and path.startswith(root) and path[len(root)] == "/"
+
+
+def file_expectation_digest(entry: Mapping[str, Any]) -> str:
+    """The canonical mode/path/digest preimage a `FILE` expectation is taken over.
+
+    Mirrors `verifier_file_expectation_matches` (`src/prompt_score.align:3513`), so a FILE
+    expectation binds the observed mode as well as the observed content.
+    """
+    preimage = f"{entry['mode']} {entry['path']}\0F {entry['sha256']}\n".encode("utf-8")
+    return hashlib.sha256(preimage).hexdigest()
+
+
+def snapshot_request_closure(
+    request: Mapping[str, Any], snapshot: Mapping[str, Any]
+) -> bool:
+    """Every observed artifact is one the request asked for, in the order it asked.
+
+    The port of `verifier_snapshot_artifact_closure` (`src/prompt_score.align:3543`): each static
+    expectation matches the next observed digest, a `TREE` expectation additionally consumes its
+    own descendants, the additional files follow in declaration order, and nothing is left over.
+    """
+    digests = snapshot["artifact_digests"]
+    if not isinstance(digests, list):
+        return False
+    index = 0
+    for expectation in request["static_expectations"]:
+        if index >= len(digests) or digests[index]["path"] != expectation["path"]:
+            return False
+        if expectation["kind"] == "FILE":
+            if file_expectation_digest(digests[index]) != expectation["expected_sha256"]:
+                return False
+            index += 1
+        else:
+            if digests[index]["sha256"] != expectation["expected_sha256"]:
+                return False
+            root = expectation["path"]
+            index += 1
+            while index < len(digests) and path_is_tree_descendant(digests[index]["path"], root):
+                index += 1
+    for additional in request["additional_files"]:
+        if index >= len(digests) or digests[index]["path"] != additional:
+            return False
+        index += 1
+    return index == len(digests)
+
+
+def validate_attempt_traces(
+    attempt: Mapping[str, Any],
+    task: Mapping[str, Any],
+    pools: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]],
+    label: str,
+) -> None:
+    """Section 3.8 row 22: resolve an attempt's four trace digests and cross-validate them.
+
+    `snapshot_attestations` carries one record per row and so cannot reach a repair invocation's
+    trace records; the attempt record is what binds them. Membership in the persisted pool is not
+    enough — the port of `verifier_attempt_trace_cross_valid` (`src/prompt_score.align:4877`)
+    resolves each digest to **exactly one** record of this row's task, requires the before and
+    after observations to be the same observation, requires both to be closed over the resolved
+    request, and requires the input snapshot to be this task's and to carry what was observed.
+    """
+    resolved: dict[str, Mapping[str, Any]] = {}
+    for name, pool in ATTEMPT_TRACE_POOLS:
+        digest = require_digest(attempt[name], f"{label} {name}")
+        candidates = pools[pool].get(digest)
+        if not candidates:
+            raise GateError(f"{label} {name} names no persisted record")
+        owned = [item for item in candidates if item["task_id"] == task["task_id"]]
+        if len(owned) != 1:
+            raise GateError(f"{label} {name} does not resolve to exactly one record of its task")
+        resolved[name] = owned[0]
+    request = resolved["snapshot_request_sha256"]
+    before = resolved["before_snapshot_result_sha256"]
+    after = resolved["after_snapshot_result_sha256"]
+    input_snapshot = resolved["input_snapshot_sha256"]
+    before_probe = before.get("environment_probe")
+    after_probe = after.get("environment_probe")
+    if before_probe is None or after_probe is None:
+        raise GateError(f"{label} observed no environment probe")
+    if (
+        before_probe["content_sha256"] != after_probe["content_sha256"]
+        or before["artifact_digests"] != after["artifact_digests"]
+    ):
+        raise GateError(f"{label} before and after observations record drift")
+    for name, observation in (("before", before), ("after", after)):
+        if not snapshot_request_closure(request, observation):
+            raise GateError(f"{label} {name} observation is not closed over its snapshot request")
+    if input_snapshot["task_manifest_sha256"] != task["content_sha256"]:
+        raise GateError(f"{label} input snapshot names another task manifest")
+    if input_snapshot["artifact_digests"] != before["artifact_digests"]:
+        raise GateError(f"{label} input snapshot does not carry the observed artifact digests")
+
+
 def validate_attempt_record(
     value: Any,
     row: Mapping[str, Any],
     task: Mapping[str, Any],
     policy: Mapping[str, Any],
-    pools: Mapping[str, set[str]],
+    pools: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]],
     ordinal: int,
     label: str,
 ) -> dict[str, Any]:
@@ -1872,13 +1980,7 @@ def validate_attempt_record(
             state = "carries" if present else "omits"
             raise GateError(f"{label} {state} {name} against its status")
     if not skipped:
-        # Section 10.3: `snapshot_attestations` no longer reaches a repair invocation's trace
-        # records, so the attempt record is what keeps them bound. Every digest it names must be a
-        # record this same document persists.
-        for name, pool in ATTEMPT_TRACE_POOLS:
-            digest = require_digest(attempt[name], f"{label} {name}")
-            if digest not in pools[pool]:
-                raise GateError(f"{label} {name} names no persisted record")
+        validate_attempt_traces(attempt, task, pools, label)
     if skipped:
         if attempt["adapter_elapsed_ns"] != 0:
             raise GateError(f"{label} skipped attempt records adapter time")
@@ -1931,7 +2033,7 @@ def validate_attempts(
     row: Mapping[str, Any],
     task: Mapping[str, Any],
     policy: Mapping[str, Any],
-    pools: Mapping[str, set[str]],
+    pools: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]],
     label: str,
 ) -> None:
     """Section 3.8 rows 16 to 19: attempt order, the repair bound, binding, and timing."""
@@ -2494,17 +2596,48 @@ def validate_corpus_coverage(result: Mapping[str, Any], scope: Mapping[str, Any]
         covered.add(task["task_id"])
     if {item["task_id"] for item in snapshots} != covered:
         raise GateError("the input snapshots cover a task the corpus does not declare")
+    # Section 3.8 row 23: one input snapshot per *contained invocation*, not per row. At version 1
+    # a row runs exactly once and this is the row count it has always been; at version 2 a row may
+    # run a repair attempt, which seals its own prompt and so produces its own input snapshot. A
+    # `SKIPPED` repair made no invocation and buys no snapshot. Mirrors
+    # `verifier_rows_and_attestations_valid` (`src/prompt_score.align:5024`-`5025`).
+    if len(snapshots) > count_ran_invocations(result):
+        raise GateError("the input snapshots outnumber the run's contained invocations")
+
+
+def count_ran_invocations(result: Mapping[str, Any]) -> int:
+    """Contained invocations across the document: one per row, plus each repair that ran."""
+    rows = result.get("rows")
+    if not isinstance(rows, list):
+        raise GateError("gate evaluation has no rows")
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            raise GateError("evaluation row is not an object")
+        attempts = row.get("attempts")
+        if attempts is None:
+            total += 1
+            continue
+        if not isinstance(attempts, list) or not attempts:
+            raise GateError("an evaluation row carries no attempts")
+        for attempt in attempts:
+            if not isinstance(attempt, dict):
+                raise GateError("an evaluation attempt is not an object")
+            if attempt.get("status") != "SKIPPED":
+                total += 1
+    return total
 
 
 def validate_snapshot_closure(
     result: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
-) -> dict[str, set[str]]:
+) -> dict[str, dict[str, list[Mapping[str, Any]]]]:
     """Require complete, matching before/after snapshot observation for every scored row.
 
-    Returns the persisted-digest pool per trace stream, so an attempt record's own four trace
-    digests are checked against exactly the documents this validator already admitted.
+    Returns the persisted-record pool per trace stream, keyed by each record's own digest, so an
+    attempt record's four trace digests resolve to exactly the documents this validator already
+    admitted rather than merely being tested for membership.
     """
-    pools: dict[str, set[str]] = {}
+    pools: dict[str, dict[str, list[Mapping[str, Any]]]] = {}
     for name, fields, kind, label in (
         ("snapshot_requests", None, "SNAPSHOT_REQUEST", "snapshot request"),
         ("snapshot_results", SNAPSHOT_RESULT_FIELDS, "SNAPSHOT_RESULT", "snapshot result"),
@@ -2519,7 +2652,7 @@ def validate_snapshot_closure(
         stream = result.get(name)
         if not isinstance(stream, list) or not stream:
             raise GateError(f"gate evaluation carries no {label} stream")
-        digests: set[str] = set()
+        digests: dict[str, list[Mapping[str, Any]]] = {}
         for item in stream:
             if not isinstance(item, dict):
                 raise GateError(f"a {label} is not an object")
@@ -2527,7 +2660,7 @@ def validate_snapshot_closure(
                 exact_record(item, fields, label)
             if item.get("schema_version") != 1 or item.get("artifact_kind") != kind:
                 raise GateError(f"a {label} header is invalid")
-            digests.add(require_own_digest(item, label))
+            digests.setdefault(require_own_digest(item, label), []).append(item)
         pools[name] = digests
 
     for item in result["snapshot_results"]:
