@@ -759,7 +759,7 @@ The current forward delivery order is:
     embedding row by id only where `pieces > 1`, so **any prompt of exactly one token computed the
     logits of token 0**, silently and with `status: ok`. Section 11.2 of
     [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md) filed it and item 36 measured its
-    blast radius, correcting three of that record's claims: **four** arms and not five
+    blast radius, correcting three of that record's claims: four arms, but **not the four named**
     (`--layer-forward` and `--moe-layer-forward` gather unconditionally and were never affected,
     while `--model-forward-gpu` is), **nine** construction sites and not eighteen (ten once item 32
     landed), and the resident
@@ -786,10 +786,12 @@ The current forward delivery order is:
     row 0, so a one-token non-zero resident run **with** a reference reported `R5_SOURCE_DIVERGED`
     over a correct result. The fix is a `gathered: bool` on both `GraphMembers` records and the
     predicate `m.gathered && at == 0`, which is true exactly where `pieces > 1` was, so `T >= 2` is
-    byte-identical and the whole existing six-corpus golden is unchanged byte for byte. The
-    regression is therefore **six new rows** rather than a changed one — a one-token control at
+    byte-identical and **the gather fix changes no existing golden row in any of the six corpora**.
+    Its regression is therefore **six new rows** rather than a changed one — a one-token control at
     id 0 and a one-token non-zero id on each affected arm, plus the streamed/resident equality pair
-    whose `R5_SOURCE_DIVERGED` false alarm disappears — and the real-model half is
+    whose `R5_SOURCE_DIVERGED` false alarm disappears. *(The item 33 lift this branch also carries
+    does change one row and add two, so the branch as a whole adds eight golden rows and changes
+    one; the changed row is `ds-suffix-prefix-one`, refusal to pass.)* The real-model half is
     `--model-forward` at one non-zero token byte-identical to `llama-debug --save-logits` on the
     same one-token prompt, with the tokenization checked rather than assumed. Owner
     `gmake layer-forward-smoke`; focused `gmake model-forward-qualification` and

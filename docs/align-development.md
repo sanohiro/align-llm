@@ -2581,12 +2581,22 @@ The resident weight path was not immune: `stage_embed_row` staged the correct ro
 `compare_source` still expected row 0, so a one-token non-zero resident run **with** a reference
 reported `R5_SOURCE_DIVERGED` over a correct result. Both predicates therefore move together.
 
-`gathered` is true exactly where `pieces > 1` was, so every `T >= 2` document is byte-identical and
-the six checked-in golden corpora are unchanged byte for byte. The regression is six **new** rows in
-`gmake layer-forward-smoke`: `mf-tokens-one` with its `mf-tokens-one-zero` control, `gf-tokens-one`,
+`gathered` is true exactly where `pieces > 1` was, so every `T >= 2` document is byte-identical: the
+gather fix changes **no** existing golden row and adds six to `gmake layer-forward-smoke` —
+`mf-tokens-one` with its `mf-tokens-one-zero` control, `gf-tokens-one`,
 `mm-tokens-one`, and the `ds-tokens-one` / `ds-tokens-one-resident` pair oracle R compares. They run
 outside each block's `ENGINE_CASES` loop, whose assertions are arithmetic on that block's
-three-token prompt.
+three-token prompt. **One golden row does change**, and it is the lift below rather than the gather:
+`ds-suffix-prefix-one` goes from a refusal to a passing row, and two rows join it, so the change as
+a whole adds eight golden rows and changes one.
+
+It also **widens `--decode-step`'s accepted surface**: R6-PREFIX-SUFFIX-PREFILL's `T_prefix >= 2`
+bound existed only because of this defect, so it is lifted in the same change — the
+`R6_SUFFIX prefix[<n>]` refusal is deleted from step 3c, `ds-suffix-prefix-one` becomes a passing
+oracle-S row joined by `ds-suffix-save-prefix-one` and `ds-suffix-single-shot-2`, and
+`scripts/run-decode-step`'s split guard widens from `2 <= j` to `1 <= j` — which adds no real-model
+run, because the two guards differ only on a prompt of two ids or fewer and that leg's prompts
+tokenize to 6, 3, 3 and 3.
 
 Both real-model qualifications gained a one-token leg on the same opt-in inputs they already use:
 
@@ -2594,12 +2604,6 @@ Both real-model qualifications gained a one-token leg on the same opt-in inputs 
 gmake model-forward-qualification       # Qwen2, --model-forward
 gmake moe-model-forward-qualification   # OLMoE, --moe-model-forward
 ```
-
-It also **widens `--decode-step`'s accepted surface**: R6-PREFIX-SUFFIX-PREFILL's `T_prefix >= 2`
-bound existed only because of this defect, so it is lifted in the same change — the
-`R6_SUFFIX prefix[<n>]` refusal is deleted from step 3c, `ds-suffix-prefix-one` becomes a passing
-oracle-S row joined by `ds-suffix-save-prefix-one` and `ds-suffix-single-shot-2`, and
-`scripts/run-decode-step`'s split guard widens from `2 <= j` to `1 <= j`.
 
 Each captures `llama-debug -p def --save-logits`, reads the companion `<stem>-tokens.bin`, and
 requires **exactly one id, and that id != 0** before running the arm; anything else prints one `N/A`

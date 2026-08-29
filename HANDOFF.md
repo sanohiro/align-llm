@@ -6,15 +6,17 @@ file records durable project state.
 ## Active: MF-SINGLE-TOKEN-LOGITS (2026-08-29)
 
 Branch `agent/mf-single-token-logits`, cut from `origin/main` `553563e` (PR #147,
-R6-RESIDENT-WEIGHTS) and brought up to `origin/main` `a9561a9` (PR #149, R6-PREFIX-SUFFIX-PREFILL)
-by `git merge`, **never a rebase**. Three conflicts, all resolved by keeping both sides:
-`HANDOFF.md` (item 33's block demoted to a merged checkpoint), `docs/specs/roadmap.md` (item 33 then
-item 36), and `scripts/decode-step-golden.jsonl` (taken from `main` and regenerated).
-Roadmap item **36**: 31, 32, 34 and 35 are reserved by capabilities on branches or in draft, and
-this one merged out of order. A **bug fix**, filed by `R6-PREFIX-SUFFIX-PREFILL` 11.2;
-`docs/specs/mf-single-token-logits.md` is the authoritative record and carries the result in its
-section 5. No design gate (no CLI operand, exchanged or persisted format, or ownership boundary
-moves), no Align gap, no new Align request.
+R6-RESIDENT-WEIGHTS) and brought up to `origin/main` by **three** `git merge`s, **never a rebase**:
+`a9561a9` (PR #149, R6-PREFIX-SUFFIX-PREFILL), then `45ff38e` (PR #148, R6-OLMOE-DECODE), then
+`4940005` (PR #150, C4-REPAIR-MEASURED). Every conflict was an `Active`-block or roadmap-entry
+collision resolved by keeping both sides — `HANDOFF.md`, `docs/specs/roadmap.md`,
+`docs/align-development.md`, and `scripts/decode-step-golden.jsonl` (taken from `main` and
+regenerated). Sections 8.4, 8.5 and 8.6 of the plan record them one by one.
+Roadmap item **36**: 31 and 32 have now landed (PRs #150 and #148), 34 and 35 are still reserved by
+capabilities on branches or in draft, and this one merged out of order. A **bug fix**, filed by
+`R6-PREFIX-SUFFIX-PREFILL` 11.2; `docs/specs/mf-single-token-logits.md` is the authoritative record
+and carries the result in its **section 8**. No design gate (no CLI operand, exchanged or persisted
+format, or ownership boundary moves), no Align gap, no new Align request.
 
 **Defect.** `fill_members` and `compare_source` gathered a member's rows by token id only where
 `m.pieces[at] > 1` — the piece count used as a proxy for "this member is the per-token embedding row
@@ -32,8 +34,11 @@ the count and `false` from every other builder across ten construction sites in 
 and the predicate `m.gathered && at == 0` at all four sites. `gathered` is true exactly where
 `pieces > 1` was, so `T >= 2` is byte-identical.
 
-**Evidence.** Six **new** golden rows and **no changed row** — verified mechanically: all six
-corpora are pure appends, `mf-tokens-one-zero` keeps the `62a46efd…` digest the defect produced for
+**Evidence.** The gather fix alone adds six **new** golden rows and changes **none** — verified
+mechanically at the implementation head, where all six corpora are pure appends. *(The lift below,
+carried in the same branch, adds two more rows and changes one, so measured against `origin/main`
+the branch touches nine golden rows: eight added, one changed.)* `mf-tokens-one-zero` keeps the
+`62a46efd…` digest the defect produced for
 every one-token run and `mf-tokens-one` is now `867ebc4e…`, which `gf-tokens-one`, `ds-tokens-one`
 and `ds-tokens-one-resident` also carry. Two mutants were run: reverting the four predicates to
 `pieces > 1` kills exactly the six new rows and nothing else, and restores the
@@ -46,7 +51,8 @@ a passing oracle-S row at `T_prefix = 1` (`0cd795d9…`, byte-identical to the n
 `ds-suffix-single-shot-2` comparand and to `--model-forward` at `3,5`), joined by
 `ds-suffix-save-prefix-one` — a one-token prefill save whose `867ebc4e…` is the same digest
 `mf-tokens-one` carries. `scripts/run-decode-step`'s split guard widens from `2 <= j` to `1 <= j`,
-which adds no real-model run. `r6-prefix-suffix-prefill.md` gains **section 11.5** and its 2.3, 2.7,
+which adds no real-model run because no prompt that leg takes tokenizes to two ids or fewer — a
+corpus property, and the comment there says so. `r6-prefix-suffix-prefill.md` gains **section 11.5** and its 2.3, 2.7,
 3.7, 5.6, 5.7, 9.1, 11.1 correction 8, 11.2 and 12.1 are corrected in place. The decode-step corpus
 is 137 → **141** rows with exactly one changed row, `ds-suffix-prefix-one`, refusal to pass.
 
@@ -59,9 +65,20 @@ byte-identical over 50,304 logits — `be4c699fbb888a3504b007c5d66925f621c8067a7
 argmax 33007. The tokenization guard did not fire on either model. Every pre-existing six-token
 assertion in both qualifications is unmoved. Recorded in section 8.7 of the plan.
 
+**Review, done.** Two fresh independent comprehensive reviews of head `8dadcc2` — one on the
+implementation, one on documents, goldens and governance. One blocking finding: this branch's plan
+document ended with a blank line, so `git diff --check origin/main...HEAD` — the form
+`scripts/pre-pr` runs — exited 2 while section 8.3 called it clean. The consolidated repair strips
+it and applies every accepted minor: the golden claims are qualified wherever the branch's own lift
+changes a row, the `3c ≺ L12` witness becomes `ds-suffix-over-cap` / `-over-cap-and-narrow`
+(`ds-suffix-tokens-mismatch` is itself the L12 refusal), section 5.7's arithmetic becomes eleven
+refusals and five successes, and the `2 <= j` → `1 <= j` widening now records its real invariant —
+no prompt tokenizes to two ids or fewer. Documents and comments only; no `.align` file, runner,
+corpus or `Makefile` word moves, so the real-model legs above still bind.
+
 **Not started / next.** Publication
-(`python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`) and one
-comprehensive review.
+(`python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`), then the
+pull request and merge.
 
 ## Merged checkpoint: C4-REPAIR-MEASURED (PR #150, 2026-08-29)
 

@@ -4089,9 +4089,10 @@ ENGINE_CASES = [
     # `T_prefix = 1`, reopened by MF-SINGLE-TOKEN-LOGITS (roadmap item 36). The container is written
     # by a **one-token prefill** in its own process — the exact run whose plane used to hold token
     # 0's columns whatever `TOKENS` said — and the two-token single-shot comparand is run before the
-    # suffix case so oracle S always compares against a document that already exists. Both stay at
-    # two tokens, so both carry a golden row: the cross-platform digest drift recorded for
-    # `SUFFIX_SINGLE_SHOT_4` starts at four.
+    # suffix case so oracle S always compares against a document that already exists. Neither
+    # exceeds two tokens -- the save is one token and the single shot is two -- so both carry a
+    # golden row: the cross-platform digest drift recorded for `SUFFIX_SINGLE_SHOT_4` starts at
+    # four.
     ("ds-suffix-save-prefix-one",
      ds(save=KV_PREFIX_ONE, tokens=SUFFIX_PREFIX_ONE, steps="1", transcript="-"), ""),
     ("ds-suffix-single-shot-2", ds(tokens=SUFFIX_FULL_TWO, transcript="-"), ""),
