@@ -36,8 +36,8 @@ and the predicate `m.gathered && at == 0` at all four sites. `gathered` is true 
 
 **Evidence.** The gather fix alone adds six **new** golden rows and changes **none** — verified
 mechanically at the implementation head, where all six corpora are pure appends. *(The lift below,
-carried in the same branch, adds two more rows and changes one, so measured against `origin/main`
-the branch touches nine golden rows: eight added, one changed.)* `mf-tokens-one-zero` keeps the
+carried in the same branch, adds one more row and removes `ds-suffix-prefix-one`'s, so measured
+against `origin/main` the branch adds seven golden rows, removes one, and changes none.)* `mf-tokens-one-zero` keeps the
 `62a46efd…` digest the defect produced for
 every one-token run and `mf-tokens-one` is now `867ebc4e…`, which `gf-tokens-one`, `ds-tokens-one`
 and `ds-tokens-one-resident` also carry. Two mutants were run: reverting the four predicates to
@@ -53,8 +53,12 @@ a passing oracle-S row at `T_prefix = 1` (`0cd795d9…`, byte-identical to the n
 `mf-tokens-one` carries. `scripts/run-decode-step`'s split guard widens from `2 <= j` to `1 <= j`,
 which adds no real-model run because no prompt that leg takes tokenizes to two ids or fewer — a
 corpus property, and the comment there says so. `r6-prefix-suffix-prefill.md` gains **section 11.5** and its 2.3, 2.7,
-3.7, 5.6, 5.7, 9.1, 11.1 correction 8, 11.2 and 12.1 are corrected in place. The decode-step corpus
-is 137 → **141** rows with exactly one changed row, `ds-suffix-prefix-one`, refusal to pass.
+3.7, 5.6, 5.7, 9.1, 11.1 corrections 8 and 10, 11.2 and 12.1 are corrected in place. The decode-step
+corpus is 137 → **139** rows: three added and `ds-suffix-prefix-one` removed, because hosted CI
+measured the **two-token decode step** as host-dependent (`.steps[0].bit_sum` 71850835819 on
+macOS/arm64, 71850835587 on Linux/x86_64), so it and `ds-suffix-single-shot-2` are asserted from
+`BOUNDARY_CASES` without golden rows exactly as item 33's four-token comparand is. The one-token
+rows are identical on both hosts and stay pinned. Plan section 8.8.
 
 **Real-model qualification, done.** Both legs pass at this head, streamed, exit 0.
 `gmake model-forward-qualification` on dense Qwen: `llama-debug -p def` tokenizes to exactly one
@@ -73,12 +77,19 @@ it and applies every accepted minor: the golden claims are qualified wherever th
 changes a row, the `3c ≺ L12` witness becomes `ds-suffix-over-cap` / `-over-cap-and-narrow`
 (`ds-suffix-tokens-mismatch` is itself the L12 refusal), section 5.7's arithmetic becomes eleven
 refusals and five successes, and the `2 <= j` → `1 <= j` widening now records its real invariant —
-no prompt tokenizes to two ids or fewer. Documents and comments only; no `.align` file, runner,
-corpus or `Makefile` word moves, so the real-model legs above still bind.
+no prompt tokenizes to two ids or fewer. That repair was documents and comments only, so the
+real-model legs above still bind.
 
-**Not started / next.** Publication
-(`python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`), then the
-pull request and merge.
+**Hosted CI found one more, and it is a fixture property rather than a defect.** PR #151's first run
+failed on `ds-suffix-single-shot-2` and `ds-suffix-prefix-one`: a two-token prefill's **decode step**
+differs across hosts, both rows identically, so oracle S holds on each host and only the pinned file
+cannot. Both move into `BOUNDARY_CASES` with every assertion intact — the same treatment item 33's
+deviation 7 gave its four-token comparand — and the corpus is 139 rows, 143 documented cases. No
+`.align` file, oracle, or refusal moves.
+
+**Not started / next.** The rerun of
+`python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` on the CI
+repair head, then merge once the checks pass.
 
 ## Merged checkpoint: C4-REPAIR-MEASURED (PR #150, 2026-08-29)
 

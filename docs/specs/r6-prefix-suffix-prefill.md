@@ -1058,10 +1058,12 @@ The six unchanged goldens are the check that `layer_qwen2`'s changed literals re
 the new parameter. The 21 added rows were **twelve** refusals, two single-shot/save documents, four
 suffix successes, the tokens-mismatch refusal, and the two forced builds. Twenty of them shipped
 at the implementation head; `ds-suffix-prefix-one` is the review repair's (11.1 correction 8) and
-has since **changed sides** — MF-SINGLE-TOKEN-LOGITS lifted the bound and the case is a passing
-oracle-S row (11.5). The same 21 rows are therefore **eleven** refusals and **five** suffix
-successes today, `SUFFIX_REFUSAL_DETAILS` asserts twelve details rather than thirteen, and the
-corpus gained two further rows beside them.
+has since **left the corpus** — MF-SINGLE-TOKEN-LOGITS lifted the bound, the case is a passing
+oracle-S run at `T_prefix = 1`, and a two-token prefill's decode step is host-dependent, so it is a
+documented case in `BOUNDARY_CASES` without a golden row (11.5). This capability's added rows are
+therefore **twenty** today — eleven refusals, two single-shot/save documents, four suffix successes,
+the tokens-mismatch refusal, and the two forced builds — and `SUFFIX_REFUSAL_DETAILS` asserts twelve
+details rather than thirteen.
 
 **The twenty-second row did not survive hosted CI, and deviation 7 records why.** `ds-suffix-2`'s
 four-token single-shot comparand is host-dependent in the last bit, so it moves into
@@ -1694,8 +1696,8 @@ The refusal 11.1 correction 8 added existed for exactly one reason, and that rea
 the token count and `false` from every other builder, and `fill_members`/`compare_source` read
 `m.gathered && at == 0` instead of `m.pieces[at] > 1`. `gathered` is true exactly where `pieces > 1`
 was, so every `T >= 2` document is byte-identical: **136 of the 137 rows this capability's corpus
-shipped do not move at all**, and the one that does — `ds-suffix-prefix-one` — is changed by the
-lift below rather than by the gather.
+shipped do not move at all**, and the one that does — `ds-suffix-prefix-one` — is removed from the
+corpus by the lift below rather than changed by the gather.
 
 **Three corrections to 11.2.**
 
@@ -1727,10 +1729,10 @@ to take deliberately rather than a refusal to trip over. Nothing replaces the ch
 cap is the only bound on `T_prefix`.
 
 **The evidence, hosted.** `ds-suffix-prefix-one` stops being a refusal and becomes rule 2's own
-`T_prefix = 1` witness, joined by the two rows it needs — `ds-suffix-save-prefix-one`, a one-token
-prefill save in its own process, and `ds-suffix-single-shot-2`, the two-token comparand. Neither
-exceeds two tokens, so both carry a golden row: deviation 7's cross-platform digest drift starts at
-four.
+`T_prefix = 1` witness, joined by the two runs it needs — `ds-suffix-save-prefix-one`, a one-token
+prefill save in its own process, and `ds-suffix-single-shot-2`, the two-token comparand. Only the
+one-token save carries a golden row; the two two-token runs are asserted without one, for the
+measured cross-host reason under **The corpus** below.
 Oracle S holds byte for byte and oracle C″ agrees with `--model-forward` at `3,5`:
 
 ```text
@@ -1751,10 +1753,19 @@ through oracle S **and** oracle C″, kills `ds-suffix-save-prefix-one`'s golden
 rows item 36 added — and nothing else in the six corpora. The refusal this section removes is
 therefore replaced by a test rather than by an assumption.
 
-**The corpus.** 137 rows to **141**: `ds-suffix-save-prefix-one`, `ds-suffix-single-shot-2`,
-`ds-tokens-one`, `ds-tokens-one-resident` added, and `ds-suffix-prefix-one` the one changed row —
-refusal to pass. Section 5.6's matrix asserts twelve details rather than thirteen, and 5.7's
-twenty-one added rows are now eleven refusals and five suffix successes.
+**The corpus, and one more move of deviation 7's boundary.** 137 rows to **139**:
+`ds-suffix-save-prefix-one`, `ds-tokens-one` and `ds-tokens-one-resident` added, and
+`ds-suffix-prefix-one` **removed** — it was a refusal row, and a passing `T_prefix = 1` run cannot
+be pinned in a file compared across two hosts. Item 36's first hosted CI run measured why: the
+decode step after a **two**-token prefill publishes `.steps[0].bit_sum` 71850835819 on macOS/arm64
+against 71850835587 on Linux/x86_64, on both `ds-suffix-single-shot-2` and the suffix run it is the
+comparand for. Deviation 7 found the boundary at four tokens in the *prefill*; it is at two in the
+*decode step*, and the one-token rows (`ds-suffix-save-prefix-one`, `ds-tokens-one`) are identical
+on both hosts and stay pinned. Both two-token runs move into `BOUNDARY_CASES`, where oracle S
+compares them **within one host**, oracle C″ compares the suffix run against `--model-forward` on
+that host, and `record()`'s document-identity assertions still run: 143 documented cases, 139 with a
+golden row. Section 5.6's matrix asserts twelve details rather than thirteen, and 5.7's added rows
+are twenty.
 
 ## 12. Ledger and closure matrix to the final diff
 
@@ -1770,7 +1781,7 @@ implementation head.
 | 2.2 absence is `-` and is the pre-existing behaviour | `run`'s default and `execute`'s `o.suffix_requested = suffix_text != "-"` | all 116 pre-existing golden rows unchanged but for `schema_version` and `suffix` |
 | 2.3 grammar shared with `TOKENS` | `stage_inputs` step 3c calls `layer_forward.parse_tokens` twice, unchanged | `ds-suffix-empty`/`-garbage`/`-trailing` |
 | 2.3 sequence cap `T_prefix + S <= 32`, detail `sequence[<n>]` | `stage_inputs` step 3c | `ds-suffix-over-cap`, `ds-suffix-over-cap-and-narrow` |
-| 2.3 prefix bound `T_prefix >= 2`, detail `prefix[<n>]` (added by the review repair, 11.1 correction 8; **lifted**, 11.5) | ~~`stage_inputs` step 3c~~ — no code remains; 3c decides the grammar and then the sequence cap | `ds-suffix-prefix-one` → a passing oracle-S row at `T_prefix = 1`; `ds-suffix-over-cap` / `-over-cap-and-narrow` keep the 3c ≺ L12 precedence — same mismatched container, refused at 3c with `sequence[33]` and `n_past_base = -1` before it is opened |
+| 2.3 prefix bound `T_prefix >= 2`, detail `prefix[<n>]` (added by the review repair, 11.1 correction 8; **lifted**, 11.5) | ~~`stage_inputs` step 3c~~ — no code remains; 3c decides the grammar and then the sequence cap | `ds-suffix-prefix-one` → a passing oracle-S run at `T_prefix = 1`, asserted from `BOUNDARY_CASES` without a golden row (11.5); `ds-suffix-over-cap` / `-over-cap-and-narrow` keep the 3c ≺ L12 precedence — same mismatched container, refused at 3c with `sequence[33]` and `n_past_base = -1` before it is opened |
 | 2.3 vocabulary re-check at 3′ | `stage_inputs`, same pass as `TOKENS` | `ds-suffix-over-vocab` (detail `token[0]`, section 11 finding 3) |
 | 2.3 plane bound widened, `R6_KV_WIDTH` | `stage_inputs` step 6, `width < parsed.count + suffix_count + steps` | `ds-suffix-narrow-width` |
 | 2.3 `SUFFIX` without `KV_LOAD` is `R6_KV_ARGS`/`suffix[no_load]` | `execute` step 2c | `ds-suffix-no-load`, `-and-save`, `-no-load-bad-steps` |

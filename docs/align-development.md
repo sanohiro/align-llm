@@ -2182,7 +2182,7 @@ embedding of token 0 whatever the operand said, so a container saved for a one-t
 wrong plane and a suffix run over it returned `status: ok` with logits that are not the single-shot
 run's. **MF-SINGLE-TOKEN-LOGITS (roadmap item 36) fixed that gather and this refusal is gone**; see
 the section below and `docs/specs/r6-prefix-suffix-prefill.md` section 11.5. `ds-suffix-prefix-one`
-is now a passing oracle-S row at `T_prefix = 1` rather than a refusal, and `R6_SUFFIX` carries three
+is now a passing oracle-S run at `T_prefix = 1` rather than a refusal, and `R6_SUFFIX` carries three
 details instead of four. Do not reintroduce a bound here: the case is covered by a test.
 
 The document is **schema 5** and carries a `suffix` object — `requested`, `completed`,
@@ -2586,14 +2586,15 @@ gather fix changes **no** existing golden row and adds six to `gmake layer-forwa
 `mf-tokens-one` with its `mf-tokens-one-zero` control, `gf-tokens-one`,
 `mm-tokens-one`, and the `ds-tokens-one` / `ds-tokens-one-resident` pair oracle R compares. They run
 outside each block's `ENGINE_CASES` loop, whose assertions are arithmetic on that block's
-three-token prompt. **One golden row does change**, and it is the lift below rather than the gather:
-`ds-suffix-prefix-one` goes from a refusal to a passing row, and two rows join it, so the change as
-a whole adds eight golden rows and changes one.
+three-token prompt. **One golden row does leave the corpus**, and it is the lift below rather than
+the gather: `ds-suffix-prefix-one` goes from a refusal to a passing run, and a passing two-token run
+is host-dependent in its decode step, so it and its comparand are asserted without golden rows. The
+change as a whole adds seven golden rows, removes one, and changes none.
 
 It also **widens `--decode-step`'s accepted surface**: R6-PREFIX-SUFFIX-PREFILL's `T_prefix >= 2`
 bound existed only because of this defect, so it is lifted in the same change — the
 `R6_SUFFIX prefix[<n>]` refusal is deleted from step 3c, `ds-suffix-prefix-one` becomes a passing
-oracle-S row joined by `ds-suffix-save-prefix-one` and `ds-suffix-single-shot-2`, and
+oracle-S run joined by `ds-suffix-save-prefix-one` and `ds-suffix-single-shot-2`, and
 `scripts/run-decode-step`'s split guard widens from `2 <= j` to `1 <= j` — which adds no real-model
 run, because the two guards differ only on a prompt of two ids or fewer and that leg's prompts
 tokenize to 6, 3, 3 and 3.

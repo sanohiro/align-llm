@@ -752,7 +752,7 @@ The current forward delivery order is:
     allows**: `T_prefix >= 2` was required, raising `R6_SUFFIX` with detail `prefix[<n>]`, because a
     one-token prefill computed the embedding of token 0 whatever the operand said. **Item 36 removed
     that defect and this branch lifted the bound**, so a one-token prefix is accepted and
-    `ds-suffix-prefix-one` is a passing oracle-S row rather than a refusal.
+    `ds-suffix-prefix-one` is a passing oracle-S run rather than a refusal.
 
     **Follow-up, discharged: `MF-SINGLE-TOKEN-LOGITS`, item 36 below.** A pre-existing defect this
     capability found in an arm it does not touch: `fill_members` and `compare_source` gathered an
@@ -790,8 +790,11 @@ The current forward delivery order is:
     Its regression is therefore **six new rows** rather than a changed one — a one-token control at
     id 0 and a one-token non-zero id on each affected arm, plus the streamed/resident equality pair
     whose `R5_SOURCE_DIVERGED` false alarm disappears. *(The item 33 lift this branch also carries
-    does change one row and add two, so the branch as a whole adds eight golden rows and changes
-    one; the changed row is `ds-suffix-prefix-one`, refusal to pass.)* The real-model half is
+    adds one more row and removes `ds-suffix-prefix-one`'s, so the branch as a whole adds seven
+    golden rows, removes one, and changes none. That row leaves because a passing two-token run is
+    host-dependent in its decode step — measured on hosted CI — and is asserted from
+    `BOUNDARY_CASES` without a pinned digest, as item 33's own four-token comparand is.)* The
+    real-model half is
     `--model-forward` at one non-zero token byte-identical to `llama-debug --save-logits` on the
     same one-token prompt, with the tokenization checked rather than assumed. Owner
     `gmake layer-forward-smoke`; focused `gmake model-forward-qualification` and
@@ -799,7 +802,7 @@ The current forward delivery order is:
     persisted format, or ownership boundary moves. **It also widens item 33's accepted surface**:
     that capability's `T_prefix >= 2` bound existed only because of this defect, so this branch
     lifts it — the `R6_SUFFIX prefix[<n>]` refusal is gone, `ds-suffix-prefix-one` becomes a passing
-    oracle-S row at `T_prefix = 1`, and `r6-prefix-suffix-prefill.md` sections 3.7, 5.6 and 11 record
+    oracle-S run at `T_prefix = 1`, and `r6-prefix-suffix-prefill.md` sections 3.7, 5.6 and 11 record
     the lift.
 
 ### Status (2026-08-28)
