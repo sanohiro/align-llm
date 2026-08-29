@@ -1,7 +1,7 @@
 # C4-REPAIR-TEMPLATE: the prompt template and the declared edit policy
 
-Status: **implemented, measured, review-repaired, and owner-verified; final review and publication
-pending.** This document
+Status: **implemented and measured, then re-scoped by final review; terminal re-scope implementation
+and publication pending.** This document
 is the authoritative plan and result record. The proportional
 design gate in `CLAUDE.md` triggered on an exchanged-format change (the repair-prompt content
 contract moves to **version 3**: a sixth section kind and a new sealed template), on a persisted-
@@ -753,7 +753,7 @@ provider call or workspace mutation.
 | 16 | The measurement version equals the version the task's declared adapter runtime requires (§3.5) | `INVALID_INPUT` / `SCHEMA` |
 | 17 | `edit_refusal` is `Some` at version 3 and a member of the ten-code vocabulary | `INVALID_INPUT` / `EDIT_SET` |
 | 18 | The §3.3 invariants tying `edit_refusal` to `status`, `failure_kind`, `patch_size_bytes`, `edit_set`, and `diagnostic_summary` | `INVALID_INPUT` / `EDIT_SET` |
-| 19 | `completion_sha256` is `Some` iff `completion_bytes` is `Some`; when `Some` it is a valid lowercase 64-hex digest; `completion_bytes >= 0` | `INVALID_INPUT` / `EDIT_SET` |
+| 19 | `completion_sha256` is `Some` iff `completion_bytes` is `Some`, and both are `Some` iff `generation_request.provider_request_sha256` is not the all-zero no-response sentinel; when `Some` the digest is valid lowercase 64-hex and `completion_bytes >= 0` | `INVALID_INPUT` / `EDIT_SET` |
 | 20 | `completion_text` is `Some` only for the eight no-set refusal codes, and is at most `COMPLETION_LIMIT` bytes | `INVALID_INPUT` / `EDIT_SET` |
 | 21 | Every version-2 rule of `c4-repair-editset.md` §3.9 rows 13-17, with the widened `edit_set` rule at version 3 | as recorded there |
 | 22 | Repair eligibility, unchanged: cleanup and containment passed, and at least one of `SUMMARY`/`STDOUT`/`STDERR` is non-empty. **Neither `EDITSET` nor `POLICY` makes a repair eligible** | attempt 2 `SKIPPED` / `REPAIR_INPUT_UNAVAILABLE` |
@@ -1291,7 +1291,7 @@ Cases are `scripts/run-prompt-template-adapter-smoke` unless marked **(E)** for
 | Malformed input | an unmapped frozen message | `ERROR`/`ADAPTER`, never a silent `NONE` |
 | Malformed input | a completion whose encoded result would exceed `RESULT_LIMIT` | `completion_text` dropped whole; `completion_bytes` and `completion_sha256` survive; the measurement is not `ERROR` |
 | Early exit | the declared-patch path does not parse the response as edits, but generation still returns one | `edit_set` `None`, `edit_refusal: NONE`, `completion_bytes`/`completion_sha256` `Some`, `completion_text` `None`, `patch_sha256` `Some` |
-| Cleanup | the completion digest is taken before any input is closed | no read after close |
+| Cleanup | retained inputs close first; completion identity is then materialized from the already-owned in-memory response, with no read through a closed input | a post-response task-input failure retains completion identity; no read after close |
 | Redaction | completion bytes and digest are post-redaction | a credential-bearing stub run leaves no credential in `completion_text` and changes the digest |
 
 ### 7.3 `scripts/prompt-evaluate.py` — `POLICY`, the declared policy, and the aggregate
@@ -1362,8 +1362,8 @@ Cases are `scripts/run-prompt-template-adapter-smoke` unless marked **(E)** for
 | Failure | a missing or empty `C4_TEMPLATE_*` value | fails before the run starts |
 | Failure | the provider probe disagrees with the policy revision | fails closed before the first call |
 | Malformed input | the in-band model id is not the declared one | fails closed |
-| Early exit | wall clock exceeds the 60-minute ceiling | the capability stops; the ceiling is not raised after the fact |
-| Early exit | ran provider calls exceed 22 | the qualification fails and publishes no new evidence |
+| Early exit | wall clock reaches the 60-minute ceiling | a monotonic deadline terminates the exact evaluator process group and host container; no evidence is published |
+| Early exit | structurally possible provider calls exceed 22 | rejected before the provider probe or first generation call; no evidence is published |
 | Cleanup | `make gate-topology-check` passes with `EXPECTED` unmoved | an owner check |
 
 ### 7.8 Error-code-to-case map, and the final pass
@@ -1473,7 +1473,7 @@ Drafts only. They are applied in the implementation branch, not here.
     `PROMPT_TASK_ROW` does **not** move. `scripts/prompt-template-adapter.py` loads
     `scripts/prompt-repair-adapter.py` by path, which loads the frozen base adapter by path, so
     containment still has exactly one copy and each hop's divergence is a checked-in golden. New
-    freeze `eval/prompt/canonical-v1t/` + `eval/tasks/prompt-v1t/`, 32 members, 22 of them at
+    freeze `eval/prompt/canonical-v1t/` + `eval/tasks/prompt-v1t/`, 31 members, 22 of them at
     digests identical in all four manifests. **Attempt 1 changes too**, identically for both
     variants, because six of the ten refusals are attempt-1 refusals and time to a passing patch
     is the primary metric; the cost, stated before the run, is that this run measures the version-3
@@ -1602,7 +1602,7 @@ Three rules that generalize beyond this capability:
   byte-comparability of attempt 1 across runs, and the design records that before the run rather
   than discovering it after.
 
-`eval/prompt/canonical-v1t/` + `eval/tasks/prompt-v1t/` is the fourth freeze, 32 members, minted by
+`eval/prompt/canonical-v1t/` + `eval/tasks/prompt-v1t/` is the fourth freeze, 31 members, minted by
 `scripts/freeze-canonical-v1t`. The third corpus, `eval/prompt/canonical-v1e/` +
 `eval/tasks/prompt-v1e/`, minted by `scripts/freeze-canonical-v1e`, is the C4-REPAIR-EDITSET freeze
 and was not previously named in this document. The named qualification is `make c4-template-gate`;
@@ -1694,7 +1694,8 @@ Every cell of §7.1-§7.7 maps to a named case. §7.1 and §7.2 are
 `scripts/run-prompt-template-adapter-smoke` (`hop_rows`, `refusal_rows`, `launch_rows`); §7.3 and
 §7.4 are `verify_template_attempt_boundary`, `verify_constant_parity_boundary`,
 `policy_render_cases`, `template_template_cases`, and `template_prompt_cases`; §7.5 is
-`src/prompt_verifier_smoke.align` defects 26-33 and 39-40 plus `make check`; §7.6 is §11.5's recompute and
+`src/prompt_verifier_smoke.align` defects 26-33 and 39-41 plus `make check`; the corresponding
+Python evaluator and gate-validator cases cover both halves of response-identity presence; §7.6 is §11.5's recompute and
 the freeze's `--check`; §7.7 is the §11.4 run.
 
 ### 11.3 Deviations from the design, recorded rather than silently taken
@@ -1958,3 +1959,47 @@ Linux/aarch64 `gmake baseline-check` passes at the finalized head and ends `base
 The pending measurement was removed after finalization. These three commits must remain ancestors
 of the merge commit; this pull request therefore permits only a merge commit, never squash or
 rebase.
+
+### 11.7 Final-review re-scope: immutable measured v1t, repaired unqualified v1u
+
+The mandatory final comprehensive review read `dc3107e1ca2c9f650c68e1c61e6328111fff9c26`
+against base tip and merge base `451aa6647a48f324476bd5bc873df2bf2e8bb22c`. It returned changes
+requested with two major findings and one minor. The findings are accepted:
+
+1. Review repair changed the template adapter and re-minted `canonical-v1t` in place. The measured
+   evaluation embeds scope `84a5e395…` and adapter runtime `PYTHON:03379e26…`; the repaired tree
+   carried scope `861aa925…` and runtime `PYTHON:d1d16bef…`. A reproducible new scope is not the
+   measured scope merely because it reused the old path and ID.
+2. The 3,600-second and 22-call checks ran only after the child completed. They prevented
+   publication but did not contain cost, so they did not satisfy the pre-committed ceilings.
+3. Validation row 19, the closure mapping, and the cleanup prose did not reflect the already-shipped
+   response-identity repair and its Align defect 41.
+
+Those findings materially change the approach, so this section is a re-scope rather than a second
+repair loop. It fixes these exact public and persisted boundaries before implementation:
+
+- `eval/prompt/canonical-v1t/` and `eval/tasks/prompt-v1t/` are restored byte-for-byte to the
+  measured revision. They remain the only live-path identity named by the three historical gate
+  JSON artifacts. Their freeze command is check-only after measurement and cannot rewrite them.
+- The repaired template adapter is a new unmeasured corpus revision: `canonical-v1u`,
+  `prompt-v1u`, task paths under `eval/tasks/prompt-v1u/`, and distinct template, generation,
+  activation, corpus, scope, and task-prompt IDs. It inherits the same three tasks and provider
+  policy, but no v1t evidence is attributed to it. Its README says `UNQUALIFIED` until a later
+  capability pre-commits a provider-call topology at or below 22.
+- Before the provider-model probe, container construction, workspace mutation, or generation, the
+  gate reads the selected corpus and task manifests, validates their declared repair-loop bounds,
+  and computes `2 samples * 2 variants * sum(1 + maximum_repair_loops per task)`. The current v1u
+  topology is 24 and is rejected against `PROVIDER_CALL_CEILING = 22`. A later topology change is a
+  new contract and measurement, not a flag that bypasses this guard.
+- The host Docker child and the in-container evaluator each run in a new process group against a
+  monotonic deadline. Timeout sends termination to the group, escalates to kill after a bounded
+  grace period, waits for cleanup, and removes the named container. Neither timeout nor topology
+  refusal copies result/evidence/gate-record files to the publication directory.
+- The deterministic owner stubs prove a structurally possible 23rd call prevents the first call, a
+  hung child is terminated and reaped, and all failure exits leave the publication set absent.
+  They also prove image ID and exact qualification command remain required on an admissible stub.
+
+This re-scope changes no historical measurement claim: the old qualification still failed after 24
+calls, its arithmetic predicate remains an observation, and C4 remains open. It converts the
+repaired code from a falsely requalified v1t revision into an explicit unqualified successor and
+makes another accidental over-budget run impossible.

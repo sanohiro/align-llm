@@ -51,10 +51,30 @@ measured on Linux/aarch64 with the pinned managed compiler. Linux `gmake baselin
 only when the isolation smoke tried to create its temporary namespaced replacement ref; the normal
 writable mount passed and the smoke removed its ref.
 
-**Next actions.** (1) Run one final comprehensive review of the material repair delta. (2) Run
-exact-head fresh-image preflight with `prompt-template-adapter-smoke` as owner. (3) Publish an
-English PR with both review envelopes, finding dispositions, correction, and exact verification;
-merge with `--merge`. (4) Refresh `main` and begin roadmap item 38, R6-PREFIX-TTFT.
+**Final review and re-scope.** Host-native Codex (`gpt-5.6-sol`, xhigh) comprehensively reviewed
+`dc3107e1ca2c9f650c68e1c61e6328111fff9c26` against base/merge-base `451aa66` and requested changes:
+two major and one minor. The repair had re-frozen measured `prompt-v1t` in place even though its
+checked-in evidence binds the old scope and adapter digests; the call and wall ceilings were
+post-hoc publication checks rather than cost-containment boundaries; and the response-identity
+repair was missing from three ledger/mapping statements. Because the two major findings change the
+approach, this is a re-scope rather than another repair/review loop.
+
+**Re-scoped boundary, committed before its implementation.** Restore measured `prompt-v1t` at its
+original immutable identity (`scope` `84a5e395…`, adapter runtime `PYTHON:03379e26…`) and mint
+`prompt-v1u` at new paths and IDs for the repaired adapter. The old three JSON evidence artifacts
+bind only `prompt-v1t`; `prompt-v1u` is explicitly unqualified. Before any provider probe or
+generation, the gate derives the structurally possible call count from the selected corpus and
+rejects the current 24-call topology against the fixed 22-call ceiling. Both the in-container
+evaluator and host Docker boundary receive monotonic deadlines and terminate their exact process
+group/container on expiry. Deterministic stubs own topology rejection, deadline cleanup, and
+no-publication behavior.
+
+**Next actions.** (1) Implement and owner-verify that re-scoped boundary. (2) Inspect the complete
+delta without starting another comprehensive-review loop; if the re-scope cannot close the findings
+coherently, stop C4 as blocked rather than patching around it. (3) Run exact-head fresh-image
+preflight with `prompt-template-adapter-smoke` as owner. (4) Publish an English PR with all review
+envelopes, finding dispositions, correction, and exact verification; merge with `--merge`. (5)
+Refresh `main` and begin roadmap item 38, R6-PREFIX-TTFT.
 
 **Blockers.** None technical. Do not rerun the provider qualification: its structurally possible 24
 calls exceed the fixed 22-call contract, and section 11.4 records the required boundary

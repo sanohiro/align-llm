@@ -1,6 +1,8 @@
 # `eval/prompt/c4-template-gate/` — the C4-REPAIR-TEMPLATE gate evidence
 
-Measured, published, and never edited after the fact. `docs/specs/c4-repair-template.md` is the
+The three JSON artifacts were measured, published, and never edited after the fact. This README was
+corrected after review because the immutable gate record itself misreported the call count.
+`docs/specs/c4-repair-template.md` is the
 authoritative plan; section 11.4 carries the analysis.
 
 ## Verdict
