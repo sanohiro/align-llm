@@ -196,7 +196,16 @@ MAX_GENERATED_MAIN_BYTES = 256 * 1024 * 1024
 MAX_ELF_NODES = 4_096
 MAX_ELF_DEPTH = 64
 BUILD_TIMEOUT = 1_800
-AGGREGATE_TIMEOUT = 1_800
+# The aggregate child is `make capable-checks`, a strictly serial suite that grows with the
+# repository, so this bound has to leave room for that growth rather than track it. Measured on
+# GitHub's `aarch64` runner as whole-`worker-aggregate` phase time: 1,867 s and 1,892 s on `main` at
+# PR #143 and PR #144, both passing, against 1,992 s and 2,000 s twice in a row on
+# R6-OLMOE-DECODE's branch, which adds one `layer-forward-smoke` block and fails here; the `x86_64`
+# runner is 1,778 s and passes. Deterministic failure at a repeated duration on the slower
+# architecture alone is this cap, not the suite. It bounds a hung or wedged child; what bounds what
+# the child may *consume* is `enforce_aggregate_quota`, which is unchanged, so doubling the wall
+# clock does not widen the sandbox.
+AGGREGATE_TIMEOUT = 3_600
 VALIDATION_TIMEOUT = 120
 MATERIALIZATION_TIMEOUT = 120
 CLEANUP_TIMEOUT = 30

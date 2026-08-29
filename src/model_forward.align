@@ -744,6 +744,26 @@ pub Outcome {
   resident_wraps_created: i64,
   resident_wraps_freed: i64,
 
+  // R6-PREFIX-SUFFIX-PREFILL section 2.9's `suffix` object: **eleven scalars, not an array**, because
+  // there is exactly one suffix pass. `StepColumns` exists because `steps[]` is `N` rows; a single
+  // pass is `weights`' shape and takes `weights`' trade. Every one is published in **every**
+  // document, including error documents, so the suffix a run was asked for is never implicit.
+  //
+  // `suffix_requested` and `suffix_completed` are the two a reader checks before believing `output`:
+  // on a completed suffix pass `output` describes the suffix pass's own logits and not the
+  // container's vector, which stays published in `kv.*` (that document's section 2.9).
+  suffix_requested: bool,
+  suffix_completed: bool,
+  suffix_token_count: i64,
+  suffix_n_past_base: i64,
+  suffix_sequence_length: i64,
+  suffix_columns_written: i64,
+  suffix_first_column: i64,
+  suffix_graph_count: i64,
+  suffix_node_count: i64,
+  suffix_pack_bytes: i64,
+  suffix_compute_ns: i64,
+
   tensor_alignment: i64,
   table_drift: i64,
   slot_magic_ok: bool,
@@ -952,6 +972,19 @@ pub fn empty_outcome() -> Outcome = Outcome {
   step_pack_bytes: 0,
   resident_wraps_created: 0,
   resident_wraps_freed: 0,
+  suffix_requested: false,
+  suffix_completed: false,
+  suffix_token_count: 0,
+  // `-1` and not `0` on the five that name a place in the sequence: `0` is a legal column and a
+  // legal length, so an absent suffix must be a value no present one can take.
+  suffix_n_past_base: -1,
+  suffix_sequence_length: -1,
+  suffix_columns_written: -1,
+  suffix_first_column: -1,
+  suffix_graph_count: 0,
+  suffix_node_count: 0,
+  suffix_pack_bytes: 0,
+  suffix_compute_ns: 0,
   tensor_alignment: 0,
   table_drift: -1,
   slot_magic_ok: false,

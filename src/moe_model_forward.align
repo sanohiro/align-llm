@@ -35,10 +35,10 @@ import moe_layer_forward
 // observation, and a residency curve published per layer because the whole-model number hides where
 // the win comes from.
 
-MAX_PATH_BYTES := 4096
-MAX_DETAIL_BYTES := 256
-MAX_DIMENSION := 16777216
-MAX_INDEX_DIGITS := 18
+pub MAX_PATH_BYTES := 4096
+pub MAX_DETAIL_BYTES := 256
+pub MAX_DIMENSION := 16777216
+pub MAX_INDEX_DIGITS := 18
 
 SCHEMA_VERSION := 1
 DOCUMENT_KIND := "R5_MOE_MODEL_FORWARD"
@@ -46,87 +46,87 @@ DOCUMENT_KIND := "R5_MOE_MODEL_FORWARD"
 // R4.5 section 3.9's compensation window, unchanged: Align has no aligned allocator
 // (`docs/align-requests.md` Request 33) and every admissible `tensor_alignment` divides 64. R5E
 // pays it **twice**, because there are two windows.
-MAX_TENSOR_ALIGNMENT := 64
+pub MAX_TENSOR_ALIGNMENT := 64
 
 // Section 3.5. `2^33`, refused before a single byte is reserved, so a malformed member record
 // cannot ask the process for a terabyte.
-MAX_WINDOW_BYTES := 8589934592
+pub MAX_WINDOW_BYTES := 8589934592
 
 // Section 3.7's logits bound, R5B's reused rather than re-derived: section 2.8 measured
 // 3,086-3,491 ten-thousandths across four prompts against R5B's 5,000, and section 3.7 pre-commits
 // that a fifth prompt breaching it is a finding to record rather than a number to raise.
-LOGIT_TOLERANCE_TEN_THOUSANDTHS := 5000
-TOP_K := 10
+pub LOGIT_TOLERANCE_TEN_THOUSANDTHS := 5000
+pub TOP_K := 10
 
 // R5A's transcript thresholds, inherited **unchanged and unwidened**: section 2.5 measured `0` over
 // 21,372 elements and 227 nodes of a whole routed model.
-TOLERANCE_TEN_THOUSANDTHS := 1
-SUM_TOLERANCE_MILLIONTHS := 1000
-SUM_TOLERANCE_RELATIVE_PPM := 10
+pub TOLERANCE_TEN_THOUSANDTHS := 1
+pub SUM_TOLERANCE_MILLIONTHS := 1000
+pub SUM_TOLERANCE_RELATIVE_PPM := 10
 
 // `r5c-metal-prefill.md` section 6 correction C19 and `r5b-model-prefill-forward.md` correction
 // C23, re-raised verbatim: `as i64` **saturates**, so an infinity becomes `i64`'s extreme and a NaN
 // becomes `0`, and either one can wrap a subtraction into a magnitude no `>` test can see.
-SCALE_LIMIT_TEN_THOUSANDTHS := 1000000000000000
-SUM_SCALE_LIMIT_MILLIONTHS := 1000000000000000000
-UNREPRESENTABLE := 9223372036854775807
+pub SCALE_LIMIT_TEN_THOUSANDTHS := 1000000000000000
+pub SUM_SCALE_LIMIT_MILLIONTHS := 1000000000000000000
+pub UNREPRESENTABLE := 9223372036854775807
 
-TRUNCATION_PRINTED := 6
+pub TRUNCATION_PRINTED := 6
 
 // The one reused staging buffer for the dense reads and the source comparison, in the shape R5B
 // correction C6 established: `f.pread` requests the buffer's whole capacity, so an oversized
 // transient over-reads the tail of every member.
-CHUNK_BYTES := 1048576
-PRIME_CHUNK_BYTES := 65536
+pub CHUNK_BYTES := 1048576
+pub PRIME_CHUNK_BYTES := 65536
 
-DIGEST_HEX_BYTES := 64
+pub DIGEST_HEX_BYTES := 64
 SUMMARY_HEX := "0123456789abcdef"
 
-VERDICT_UNAVAILABLE := 0
-VERDICT_EXTERNAL := 1
-VERDICT_COPIED := 2
+pub VERDICT_UNAVAILABLE := 0
+pub VERDICT_EXTERNAL := 1
+pub VERDICT_COPIED := 2
 
-REFERENCE_ABSENT := 0
-REFERENCE_IDENTICAL := 1
-REFERENCE_MISMATCH := 2
+pub REFERENCE_ABSENT := 0
+pub REFERENCE_IDENTICAL := 1
+pub REFERENCE_MISMATCH := 2
 
-ORACLE_ABSENT := 0
-ORACLE_PASS := 1
-ORACLE_FAIL := 2
+pub ORACLE_ABSENT := 0
+pub ORACLE_PASS := 1
+pub ORACLE_FAIL := 2
 
-ROUTING_ABSENT := 0
-ROUTING_MATCH := 1
-ROUTING_MISMATCH := 2
+pub ROUTING_ABSENT := 0
+pub ROUTING_MATCH := 1
+pub ROUTING_MISMATCH := 2
 
-LOGITS_ABSENT := 0
-LOGITS_IDENTICAL := 1
-LOGITS_WITHIN := 2
-LOGITS_FAIL := 3
+pub LOGITS_ABSENT := 0
+pub LOGITS_IDENTICAL := 1
+pub LOGITS_WITHIN := 2
+pub LOGITS_FAIL := 3
 
 // The three graph kinds the schedule walks; a layer is two graphs and is its own case.
-GRAPH_EMBED := 0
-GRAPH_HEAD := 1
+pub GRAPH_EMBED := 0
+pub GRAPH_HEAD := 1
 
-TextBox { v: str }
+pub TextBox { v: str }
 
 // ---------------------------------------------------------------------------------------------
 // Text, numbers, and the lexical guards
 // ---------------------------------------------------------------------------------------------
 
-fn int_text(value: i64) -> string {
+pub fn int_text(value: i64) -> string {
   b := builder()
   b.write_int(value)
   return b.to_string()
 }
 
-fn bool_text(value: bool) -> string {
+pub fn bool_text(value: bool) -> string {
   if value { return "true".clone() }
   return "false".clone()
 }
 
 // The one place a `str` becomes a JSON scalar. `json.encode` escapes every byte a document may not
 // carry raw; the slice drops the one-field object wrapper the encoder puts around it.
-fn json_string(value: str) -> string {
+pub fn json_string(value: str) -> string {
   boxed := TextBox { v: value }
   encoded := json.encode(boxed)
   return encoded[5..encoded.len() - 1].clone()
@@ -139,7 +139,7 @@ fn json_string(value: str) -> string {
 // such an operand in its own step 2, with `R5E_PATH` and no document at all. The check is the arm's
 // and not `moe_layer_forward.valid_path`'s, so R5A/R5B/R5C/R5D keep the behaviour their goldens
 // record (section 6, correction C18).
-fn utf8_ok(path: str) -> bool {
+pub fn utf8_ok(path: str) -> bool {
   view := path.bytes()
   mut at := 0
   loop {
@@ -181,16 +181,16 @@ fn utf8_ok(path: str) -> bool {
   return true
 }
 
-fn mm_valid_path(path: str) -> bool {
+pub fn mm_valid_path(path: str) -> bool {
   return moe_layer_forward.valid_path(path) && utf8_ok(path)
 }
 
-fn bounded_detail(value: str) -> string {
+pub fn bounded_detail(value: str) -> string {
   if value.len() <= MAX_DETAIL_BYTES { return value.clone() }
   return value[0..MAX_DETAIL_BYTES].clone()
 }
 
-fn labelled(label: str, value: i64) -> string {
+pub fn labelled(label: str, value: i64) -> string {
   b := builder()
   b.write(label)
   b.write("[")
@@ -199,7 +199,7 @@ fn labelled(label: str, value: i64) -> string {
   return b.to_string()
 }
 
-fn named(label: str, value: str) -> string {
+pub fn named(label: str, value: str) -> string {
   b := builder()
   b.write(label)
   b.write("[")
@@ -210,7 +210,7 @@ fn named(label: str, value: str) -> string {
 
 // `layer[<n>]role[<name>]` and `layer[<n>]node[<id>]`, the two detail shapes section 3.9 names for
 // almost every code the schedule can raise.
-fn layer_named(layer: i64, label: str, value: str) -> string {
+pub fn layer_named(layer: i64, label: str, value: str) -> string {
   b := builder()
   b.write("layer[")
   b.write_int(layer)
@@ -222,7 +222,7 @@ fn layer_named(layer: i64, label: str, value: str) -> string {
   return b.to_string()
 }
 
-fn layer_numbered(layer: i64, label: str, value: i64) -> string {
+pub fn layer_numbered(layer: i64, label: str, value: i64) -> string {
   b := builder()
   b.write("layer[")
   b.write_int(layer)
@@ -234,7 +234,7 @@ fn layer_numbered(layer: i64, label: str, value: i64) -> string {
   return b.to_string()
 }
 
-fn layer_expert_role(layer: i64, expert: i64, role: str) -> string {
+pub fn layer_expert_role(layer: i64, expert: i64, role: str) -> string {
   b := builder()
   b.write("layer[")
   b.write_int(layer)
@@ -246,7 +246,7 @@ fn layer_expert_role(layer: i64, expert: i64, role: str) -> string {
   return b.to_string()
 }
 
-fn graph_node_at(graph: i64, layer: i64, node: str, index: i64) -> string {
+pub fn graph_node_at(graph: i64, layer: i64, node: str, index: i64) -> string {
   b := builder()
   b.write("graph[")
   b.write_int(graph)
@@ -259,7 +259,7 @@ fn graph_node_at(graph: i64, layer: i64, node: str, index: i64) -> string {
   return b.to_string()
 }
 
-fn block_detail(kind: i64, layer: i64, role: str) -> string {
+pub fn block_detail(kind: i64, layer: i64, role: str) -> string {
   b := builder()
   b.write("kind[")
   b.write_int(kind)
@@ -271,7 +271,7 @@ fn block_detail(kind: i64, layer: i64, role: str) -> string {
   return b.to_string()
 }
 
-fn shortfall(layer: i64, node: str, got: i64, expected: i64) -> string {
+pub fn shortfall(layer: i64, node: str, got: i64, expected: i64) -> string {
   b := builder()
   b.write("layer[")
   b.write_int(layer)
@@ -284,7 +284,7 @@ fn shortfall(layer: i64, node: str, got: i64, expected: i64) -> string {
   return b.to_string()
 }
 
-fn sanitize_summary_line(value: str) -> string {
+pub fn sanitize_summary_line(value: str) -> string {
   b := builder()
   view := value.bytes()
   mut start := 0
@@ -309,7 +309,7 @@ fn sanitize_summary_line(value: str) -> string {
 
 // A non-negative decimal integer, no sign, no leading `+`, no whitespace, no leading zero beyond a
 // bare `0`. `-1` means "not a number this grammar produces".
-fn parse_index(value: str) -> i64 {
+pub fn parse_index(value: str) -> i64 {
   if value.len() == 0 || value.len() > MAX_INDEX_DIGITS { return -1 }
   view := value.bytes()
   if view.len() > 1 && view.u8(0) as i64 == 48 { return -1 }
@@ -325,7 +325,7 @@ fn parse_index(value: str) -> i64 {
   return total
 }
 
-fn error_name(e: Error) -> str = match e {
+pub fn error_name(e: Error) -> str = match e {
   NotFound => "NotFound",
   Invalid => "Invalid",
   Denied => "Denied",
@@ -333,60 +333,60 @@ fn error_name(e: Error) -> str = match e {
   Code(_) => "Code",
 }
 
-fn verdict_label(value: i64) -> str {
+pub fn verdict_label(value: i64) -> str {
   if value == VERDICT_EXTERNAL { return "EXTERNAL" }
   if value == VERDICT_COPIED { return "COPIED" }
   return "UNAVAILABLE"
 }
 
-fn reference_label(value: i64) -> str {
+pub fn reference_label(value: i64) -> str {
   if value == REFERENCE_IDENTICAL { return "IDENTICAL" }
   if value == REFERENCE_MISMATCH { return "MISMATCH" }
   return "-"
 }
 
-fn oracle_label(value: i64) -> str {
+pub fn oracle_label(value: i64) -> str {
   if value == ORACLE_PASS { return "PASS" }
   if value == ORACLE_FAIL { return "FAIL" }
   return "-"
 }
 
-fn routing_label(value: i64) -> str {
+pub fn routing_label(value: i64) -> str {
   if value == ROUTING_MATCH { return "MATCH" }
   if value == ROUTING_MISMATCH { return "MISMATCH" }
   return "-"
 }
 
-fn logits_label(value: i64) -> str {
+pub fn logits_label(value: i64) -> str {
   if value == LOGITS_IDENTICAL { return "IDENTICAL" }
   if value == LOGITS_WITHIN { return "WITHIN" }
   if value == LOGITS_FAIL { return "FAIL" }
   return "-"
 }
 
-fn align_up(value: i64, alignment: i64) -> i64 {
+pub fn align_up(value: i64, alignment: i64) -> i64 {
   if alignment <= 1 { return value }
   remainder := value % alignment
   if remainder == 0 { return value }
   return value + (alignment - remainder)
 }
 
-fn larger(a: i64, b: i64) -> i64 {
+pub fn larger(a: i64, b: i64) -> i64 {
   if a > b { return a }
   return b
 }
 
-fn printed_count(extent: i64) -> i64 {
+pub fn printed_count(extent: i64) -> i64 {
   if extent <= TRUNCATION_PRINTED { return extent }
   return TRUNCATION_PRINTED
 }
 
-fn column_at(borrow column: array<i64>, index: i64) -> i64 {
+pub fn column_at(borrow column: array<i64>, index: i64) -> i64 {
   if index < 0 || index >= column.len() { return 0 }
   return column[index]
 }
 
-fn fill_zero(borrow mut b: buffer, n: i64) {
+pub fn fill_zero(borrow mut b: buffer, n: i64) {
   mut index := 0
   loop {
     if index >= n { break }
@@ -398,7 +398,7 @@ fn fill_zero(borrow mut b: buffer, n: i64) {
 // `buffer(cap)` reserves capacity but publishes no length, and `bytes()` is `data[..len]`, so a
 // window has to be **written** to exist. Appending a 64 KiB zero block is one `memcpy` per round
 // and stays inside the reservation, so the base pointer never moves (R5B's `prime_window`).
-fn prime_window(borrow mut window: buffer, bytes: i64) {
+pub fn prime_window(borrow mut window: buffer, bytes: i64) {
   mut chunk: buffer := buffer(PRIME_CHUNK_BYTES)
   fill_zero(chunk, PRIME_CHUNK_BYTES)
   view := chunk.bytes()
@@ -411,17 +411,17 @@ fn prime_window(borrow mut window: buffer, bytes: i64) {
   }
 }
 
-fn base_mod(borrow b: buffer, modulus: i64) -> i64 {
+pub fn base_mod(borrow b: buffer, modulus: i64) -> i64 {
   view := b.bytes()
   return ggml_ffi.align_mod(view, modulus)
 }
 
-fn empty_array() -> array<i64> {
+pub fn empty_array() -> array<i64> {
   mut b: array_builder<i64> := array_builder()
   return b.build()
 }
 
-fn zero_column(n: i64) -> array<i64> {
+pub fn zero_column(n: i64) -> array<i64> {
   mut b: array_builder<i64> := array_builder()
   mut at := 0
   loop {
@@ -635,6 +635,71 @@ pub Outcome {
   released_before_owner_scope_end: bool,
   phase_balance_failures: i64,
 
+  // ------------------------------------------------------------------------------------------
+  // R6-OLMOE-DECODE (`docs/specs/r6-olmoe-decode.md` section 3.10). The `--moe-decode-step` arm's
+  // scalars live here for `src/decode_step.align`'s recorded reason, met again unchanged: a record
+  // of that module's own cannot be returned out of the schedule frame ("cannot return a view that
+  // borrows local storage") and a further `borrow mut` out-parameter is refused at every call that
+  // also hands the callee one of this frame's views. One outcome, one schedule.
+  //
+  // **No `--moe-model-forward` renderer reads any of them**, so R5E's document is byte-unchanged by
+  // construction rather than by inspection, and both MoE goldens are unmoved for this reason.
+  // ------------------------------------------------------------------------------------------
+  plane_source: i64,
+  plane_bytes: i64,
+  plane_stride: i64,
+  plane_layers: i64,
+  plane_columns_written: i64,
+  plane_readback_ns: i64,
+  plane_upload_ns: i64,
+  plane_roundtrip_verdict: i64,
+  plane_roundtrip_bytes: i64,
+  plane_first_mismatch_layer: i64,
+  plane_first_mismatch_tensor: i64,
+  plane_first_mismatch_column: i64,
+  plane_first_mismatch_step: i64,
+
+  decode_n_past: i64,
+  decode_n_past_last: i64,
+  decode_steps_requested: i64,
+  decode_steps_completed: i64,
+  decode_token_id: i64,
+  decode_argmax: i64,
+  decode_sha256: string,
+  decode_bit_sum: i64,
+  decode_element_count: i64,
+  decode_nonfinite_count: i64,
+  decode_compute_ns: i64,
+  decode_node_count: i64,
+  decode_graph_count: i64,
+  decode_slot_high_water: i64,
+  decode_oracle_steps_compared: i64,
+  decode_oracle_worst_step: i64,
+  decode_oracle_graph_last: i64,
+  graph_balance_failures: i64,
+  first_token_ns: i64,
+  table_rows_a_decode: i64,
+
+  // Section 3.11's two-way expert-byte accounting and section 2.4's union curve. `expert_bytes_read`
+  // above is the arithmetic claim over the whole run; these separate the prefill's share from the
+  // decode steps', add the reader's own `pread` accounting for the claim scatters, and carry the
+  // cumulative distinct-key set the capability exists to publish.
+  prefill_expert_bytes: i64,
+  decode_expert_bytes: i64,
+  expert_pread_bytes: i64,
+  decode_expert_pread_bytes: i64,
+  union_keys_final: i64,
+  union_bytes_final: i64,
+  decode_keys_demanded: i64,
+  decode_keys_distinct: i64,
+  decode_keys_in_prefill_union: i64,
+  decode_distinct_keys_in_prefill_union: i64,
+  step_reuse_per_mille: i64,
+  claim_decode_peak_use_bytes: i64,
+  claim_planes_read_per_step: i64,
+  routing_steps_compared: i64,
+  routing_first_step: i64,
+
   tensor_alignment: i64,
   table_drift: i64,
   slot_magic_ok: bool,
@@ -798,6 +863,55 @@ pub fn empty_outcome() -> Outcome = Outcome {
   gallocrs_freed: 0,
   released_before_owner_scope_end: false,
   phase_balance_failures: 0,
+
+  plane_source: 0,
+  plane_bytes: 0,
+  plane_stride: 0,
+  plane_layers: 0,
+  plane_columns_written: 0,
+  plane_readback_ns: 0,
+  plane_upload_ns: 0,
+  plane_roundtrip_verdict: 0,
+  plane_roundtrip_bytes: 0,
+  plane_first_mismatch_layer: -1,
+  plane_first_mismatch_tensor: -1,
+  plane_first_mismatch_column: -1,
+  plane_first_mismatch_step: -1,
+  decode_n_past: 0,
+  decode_n_past_last: 0,
+  decode_steps_requested: 0,
+  decode_steps_completed: 0,
+  decode_token_id: -1,
+  decode_argmax: -1,
+  decode_sha256: "".clone(),
+  decode_bit_sum: 0,
+  decode_element_count: 0,
+  decode_nonfinite_count: 0,
+  decode_compute_ns: 0,
+  decode_node_count: 0,
+  decode_graph_count: 0,
+  decode_slot_high_water: 0,
+  decode_oracle_steps_compared: 0,
+  decode_oracle_worst_step: -1,
+  decode_oracle_graph_last: 0,
+  graph_balance_failures: 0,
+  first_token_ns: 0,
+  table_rows_a_decode: 0,
+  prefill_expert_bytes: 0,
+  decode_expert_bytes: 0,
+  expert_pread_bytes: 0,
+  decode_expert_pread_bytes: 0,
+  union_keys_final: 0,
+  union_bytes_final: 0,
+  decode_keys_demanded: 0,
+  decode_keys_distinct: 0,
+  decode_keys_in_prefill_union: 0,
+  decode_distinct_keys_in_prefill_union: 0,
+  step_reuse_per_mille: 0,
+  claim_decode_peak_use_bytes: 0,
+  claim_planes_read_per_step: 0,
+  routing_steps_compared: 0,
+  routing_first_step: -1,
   tensor_alignment: 0,
   table_drift: -1,
   slot_magic_ok: false,
@@ -823,10 +937,10 @@ fn pack_fault_into(borrow mut o: Outcome, borrow f: alignpack_read.Fault) {
   fail(o, code_view, detail_view)
 }
 
-fn ffi_fault(code: str, detail: string) -> ggml_ffi.Fault =
+pub fn ffi_fault(code: str, detail: string) -> ggml_ffi.Fault =
 ggml_ffi.Fault { code: code.clone(), detail: detail }
 
-fn pack_fault(code: str, detail: string) -> alignpack_read.Fault =
+pub fn pack_fault(code: str, detail: string) -> alignpack_read.Fault =
 alignpack_read.Fault { code: code.clone(), detail: detail }
 
 // One `match` in one place: at this pin a `match` on a `Result` with block arms inside a loop is
@@ -851,7 +965,7 @@ fn take_pack(borrow mut o: Outcome, outcome: Result<(), alignpack_read.Fault>) {
 
 // Every member record of one block, read once. Re-reading the member table per role is O(k^2)
 // preads per block; at 1,058 blocks that is the difference between one pass and thirty.
-MembersOfBlock {
+pub MembersOfBlock {
   count: i64,
   role: array<i64>,
   ggml_type: array<i64>,
@@ -866,7 +980,7 @@ MembersOfBlock {
   slice_count: array<i64>,
 }
 
-fn read_block_members(
+pub fn read_block_members(
   borrow f: file,
   borrow x: alignpack_read.PackIndex,
   borrow b: alignpack_read.PackBlock,
@@ -916,7 +1030,7 @@ fn read_block_members(
     })
 }
 
-fn role_slot(borrow m: MembersOfBlock, role: i64) -> i64 {
+pub fn role_slot(borrow m: MembersOfBlock, role: i64) -> i64 {
   mut at := 0
   loop {
     if at >= m.count { break }
@@ -926,7 +1040,7 @@ fn role_slot(borrow m: MembersOfBlock, role: i64) -> i64 {
   return -1
 }
 
-fn count_blocks(borrow x: alignpack_read.PackIndex, kind: i64, layer: i64) -> i64 {
+pub fn count_blocks(borrow x: alignpack_read.PackIndex, kind: i64, layer: i64) -> i64 {
   mut total := 0
   mut at := 0
   loop {
@@ -937,7 +1051,7 @@ fn count_blocks(borrow x: alignpack_read.PackIndex, kind: i64, layer: i64) -> i6
   return total
 }
 
-fn first_block(borrow x: alignpack_read.PackIndex, kind: i64, layer: i64) -> i64 {
+pub fn first_block(borrow x: alignpack_read.PackIndex, kind: i64, layer: i64) -> i64 {
   mut at := 0
   loop {
     if at >= x.block_count { break }
@@ -948,7 +1062,7 @@ fn first_block(borrow x: alignpack_read.PackIndex, kind: i64, layer: i64) -> i64
 }
 
 // `-1` is "no block", `-2` is "more than one".
-fn find_expert_block(borrow x: alignpack_read.PackIndex, layer: i64, expert: i64) -> i64 {
+pub fn find_expert_block(borrow x: alignpack_read.PackIndex, layer: i64, expert: i64) -> i64 {
   mut at := 0
   mut found := -1
   loop {
@@ -968,7 +1082,7 @@ fn find_expert_block(borrow x: alignpack_read.PackIndex, layer: i64, expert: i64
 // them and the required `role_id` is part of the selection rather than a refinement of it. Exactly
 // one block must carry the role; none is `R5_BLOCK_MISSING` and more than one is
 // `R5_BLOCK_AMBIGUOUS`, each naming the kind, the layer, and the role.
-fn find_block_with_role(
+pub fn find_block_with_role(
   borrow f: file,
   borrow x: alignpack_read.PackIndex,
   kind: i64,
@@ -1448,7 +1562,7 @@ pub fn empty_claim_window() -> ClaimWindow = ClaimWindow {
 // Step 19. `U_max = min(n_expert, n_expert_used * token_count)` — the arithmetic bound, not the
 // observed maximum, so the window is reserved once, checked once, and refilled sixteen times, and
 // `R5E_CLAIM_OVERFLOW` becomes a fail-closed guard no routing decision can reach.
-fn size_claim_window(
+pub fn size_claim_window(
   borrow p: Plan,
   borrow g: layer_olmoe.Geometry,
   tokens: i64,
@@ -1572,7 +1686,7 @@ pub fn graph_member_label(borrow m: GraphMembers, index: i64) -> str {
   return view[m.name_start[index]..m.name_end[index]]
 }
 
-fn build_embed_members(borrow g: layer_olmoe.Geometry, borrow e: Ends, tokens: i64) -> GraphMembers {
+pub fn build_embed_members(borrow g: layer_olmoe.Geometry, borrow e: Ends, tokens: i64) -> GraphMembers {
   names := builder()
   names.write("token_embd")
   mut name_start: array_builder<i64> := array_builder()
@@ -1617,7 +1731,7 @@ fn build_embed_members(borrow g: layer_olmoe.Geometry, borrow e: Ends, tokens: i
   }
 }
 
-fn build_head_members(borrow g: layer_olmoe.Geometry, borrow e: Ends) -> GraphMembers {
+pub fn build_head_members(borrow g: layer_olmoe.Geometry, borrow e: Ends) -> GraphMembers {
   names := builder()
   names.write("output_norm")
   names.write("output")
@@ -1675,7 +1789,7 @@ fn build_head_members(borrow g: layer_olmoe.Geometry, borrow e: Ends) -> GraphMe
   }
 }
 
-fn build_layer_members(
+pub fn build_layer_members(
   borrow table: layer_olmoe.MemberTable, borrow p: Plan, layer: i64) -> GraphMembers {
   names := builder()
   mut name_start: array_builder<i64> := array_builder()
@@ -1734,7 +1848,7 @@ fn build_layer_members(
 // Filling the two windows (section 3.4)
 // ---------------------------------------------------------------------------------------------
 
-fn window_put(
+pub fn window_put(
   borrow window: slice<u8>,
   offset: i64,
   borrow source: slice<u8>,
@@ -1755,7 +1869,7 @@ fn window_put(
 // publishes exactly what the syscall returned and a short read is completed here; a zero-length
 // read at an offset already proved inside the file is an allocation failure or a file that shrank
 // underneath, never a truncation (R5B correction C6).
-fn read_into_window(
+pub fn read_into_window(
   borrow handle: file,
   borrow mut temp: buffer,
   borrow window: slice<u8>,
@@ -1785,7 +1899,7 @@ fn read_into_window(
   return Ok(())
 }
 
-fn fill_members(
+pub fn fill_members(
   borrow pak: file,
   borrow m: GraphMembers,
   borrow tokens: TokenColumns,
@@ -1822,7 +1936,7 @@ fn fill_members(
 // sized to the largest `ExpertBlock` the container holds, and each chunk the syscall returns is
 // intersected with the three claims' spans and scattered into the three role regions — so a short
 // read costs a second round rather than a second buffer.
-fn read_block_scatter(
+pub fn read_block_scatter(
   borrow handle: file,
   borrow mut temp: buffer,
   borrow claim_window: slice<u8>,
@@ -1867,7 +1981,7 @@ fn read_block_scatter(
 // Oracle 1's byte precondition, for one graph's dense members. The reference file is **not** the
 // container and nothing has proved this range is inside it: `source_offset` and `nbytes` are the
 // pack's claims about a file the caller merely named.
-fn compare_source_members(
+pub fn compare_source_members(
   borrow handle: file,
   size: i64,
   borrow m: GraphMembers,
@@ -1902,7 +2016,7 @@ fn compare_source_members(
 
 // One byte range of the source GGUF against one byte range of an Align-owned window, in
 // `CHUNK_BYTES` rounds through the one reused transient.
-fn compare_span(
+pub fn compare_span(
   borrow handle: file,
   size: i64,
   borrow window: slice<u8>,
@@ -1954,7 +2068,7 @@ pub Digest {
   argmax: i64,
 }
 
-fn empty_digest() -> Digest = Digest {
+pub fn empty_digest() -> Digest = Digest {
   sha: "".clone(),
   bit_sum: 0,
   sum_millionths: 0,
@@ -1962,7 +2076,7 @@ fn empty_digest() -> Digest = Digest {
   argmax: -1,
 }
 
-fn digest_region(borrow region: slice<u8>) -> Digest {
+pub fn digest_region(borrow region: slice<u8>) -> Digest {
   count := region.len() / 4
   digest := crypto.sha256(region)
   mut bits_total := 0
@@ -1999,7 +2113,7 @@ fn digest_region(borrow region: slice<u8>) -> Digest {
 
 // One loop, one shim call per issued row, and no control flow that depends on which node this is:
 // `when` selects the rows and `alt_when` selects the operands, both as data.
-fn build_nodes(
+pub fn build_nodes(
   ctx: raw,
   borrow slots: slice<u8>,
   borrow nodes: layer_olmoe.MmNodeTable,
@@ -2081,7 +2195,7 @@ fn build_nodes(
 // `ggml_gallocr` reuses an intermediate's memory and the bytes read back are not the node computed.
 // `kq-L` and `kq_soft_max-L` are deliberately not marked: they are never read back, and marking
 // them would cost activation for a comparison section 3.7 excludes by contract.
-fn mark_outputs(
+pub fn mark_outputs(
   borrow slots: slice<u8>,
   borrow oracle: layer_olmoe.OracleTable,
   base: i64,
@@ -2104,7 +2218,7 @@ fn mark_outputs(
 
 // The weight tensors, created in the weight context and **placed** at their own interior offsets in
 // the reused Align-owned dense window. R4.5's contract, 147 times.
-fn graph_weights(
+pub fn graph_weights(
   ctx: raw,
   handle: raw,
   borrow slots: slice<u8>,
@@ -2138,7 +2252,7 @@ fn graph_weights(
 // this the bit-exact oracle could pass by aliasing: two graphs reading one byte range agree
 // trivially. `slot_data_offset` is `graph_identity`'s own primitive, used here for the opposite
 // conclusion (section 6, correction C20).
-fn outside_window(borrow slots: slice<u8>, index: i64, borrow window: slice<u8>) -> bool {
+pub fn outside_window(borrow slots: slice<u8>, index: i64, borrow window: slice<u8>) -> bool {
   landed := ggml_ffi.slot_data_offset(slots, index, window)
   return landed < 0 || landed >= window.len()
 }
@@ -2150,7 +2264,7 @@ fn outside_window(borrow slots: slice<u8>, index: i64, borrow window: slice<u8>)
 // and is now a *derived* equality rather than the same accumulator written twice. A multi-prefill
 // consumer walking a layer twice is where the two numbers separate, and this is the function that
 // will see it first.
-fn merge_keys(
+pub fn merge_keys(
   borrow seen: array<i64>,
   borrow routing: layer_olmoe.Routing,
   layer: i64,
@@ -2242,7 +2356,7 @@ pub fn empty_ranges() -> OracleRanges = OracleRanges {
   length: empty_array(),
 }
 
-fn oracle_layer_of(n_layer: i64, row: i64) -> i64 {
+pub fn oracle_layer_of(n_layer: i64, row: i64) -> i64 {
   if row <= 0 { return -1 }
   if row >= layer_olmoe.mm_oracle_head_base(n_layer) { return -1 }
   return (row - 1) / layer_olmoe.MM_LAYER_ORACLE_COUNT
@@ -2318,7 +2432,7 @@ fn prepare_transcript(
   o.oracle_ns = time.instant() - started
 }
 
-fn oracle_ten_thousandths(borrow region: slice<u8>, at: i64) -> i64 {
+pub fn oracle_ten_thousandths(borrow region: slice<u8>, at: i64) -> i64 {
   bits := region.u32_le(at * 4) as i64
   if (bits / 8388608) % 256 == 255 { return UNREPRESENTABLE }
   scaled := ((region.f32_le(at * 4) as f64) * 10000.0).round() as i64
@@ -2575,7 +2689,7 @@ fn top_k(borrow region: slice<u8>, borrow mut index: array_builder<i64>,
   }
 }
 
-fn logit_ten_thousandths(borrow region: slice<u8>, at: i64) -> i64 {
+pub fn logit_ten_thousandths(borrow region: slice<u8>, at: i64) -> i64 {
   bits := region.u32_le(at * 4) as i64
   if (bits / 8388608) % 256 == 255 { return UNREPRESENTABLE }
   scaled := ((region.f32_le(at * 4) as f64) * 10000.0).round() as i64
@@ -2773,7 +2887,7 @@ fn compare_reference_rows(
 // `ggml_backend_alloc_ctx_tensors`, and filled from the same Align windows, so **ggml** owns the
 // bytes and the arm owns nothing ggml can see. The inputs are shared rather than rebuilt — the two
 // arms must differ in where the weights live and in nothing else.
-fn reference_weights(
+pub fn reference_weights(
   ctx: raw,
   borrow slots: slice<u8>,
   borrow primary: slice<u8>,
@@ -2815,7 +2929,7 @@ fn reference_weights(
 
 // The reference arm's three compact expert stacks. The claim window's planes are contiguous, so the
 // copy is plane by plane, which is also what makes it a genuinely independent placement.
-fn reference_claims(
+pub fn reference_claims(
   ctx: raw,
   borrow slots: slice<u8>,
   borrow claim_window: slice<u8>,
@@ -2857,7 +2971,7 @@ fn reference_claims(
   return Ok(())
 }
 
-fn mm_claim_slot(role: i64) -> i64 {
+pub fn mm_claim_slot(role: i64) -> i64 {
   if role == 0 { return layer_olmoe.MM_SLOT_GATE }
   if role == 1 { return layer_olmoe.MM_SLOT_UP }
   return layer_olmoe.MM_SLOT_DOWN
@@ -3269,7 +3383,7 @@ pub fn empty_layer_result() -> LayerResult = LayerResult {
 
 // Step 30. For each routed expert in ascending order, one `pread` of the whole `ExpertBlock` and a
 // scatter of its three claims to their own slots in the three role regions.
-fn stage_claims(
+pub fn stage_claims(
   borrow pak: file,
   borrow mut temp: buffer,
   borrow claim_window: slice<u8>,
@@ -3310,7 +3424,7 @@ fn stage_claims(
 // Oracle 1's byte precondition for one layer's read claims, at each claim's own claimed absolute
 // offset. `moe-prereq-discharge.md` section 1.1 establishes that a claim's `source_offset` is
 // already the plane's absolute position, so no `slice_index * plane` arithmetic is repeated here.
-fn compare_claim_source(
+pub fn compare_claim_source(
   borrow handle: file,
   size: i64,
   borrow claim_window: slice<u8>,
@@ -3346,7 +3460,7 @@ fn compare_claim_source(
 // **compacted** ones, and a build that used one for both produces a model whose every gate, up,
 // swiglu and down node agrees with llama.cpp and whose mixing weights are garbage. Their ranges are
 // validated separately, against `n_expert` and against `U_L`.
-fn stage_carry(
+pub fn stage_carry(
   borrow slots: slice<u8>,
   borrow window: slice<u8>,
   borrow topk_image: slice<u8>,
@@ -3355,6 +3469,29 @@ fn stage_carry(
   borrow routing: layer_olmoe.Routing,
   layer: i64,
   t_out: i64,
+) -> Result<(), ggml_ffi.Fault> {
+  return stage_carry_at(
+    slots, window, topk_image, compact_image, g, routing, layer, t_out,
+    layer_olmoe.MM_A_NODE_BASE + 31, layer_olmoe.MM_A_NODE_BASE + 29,
+    layer_olmoe.MM_A_NODE_BASE + 33)
+}
+
+// R6-OLMOE-DECODE section 3.7. The same five carried values, read out of node slots the **caller**
+// names, because the decode table inserts two `CONCAT` rows and every phase-A row after the K path
+// shifts. `stage_carry` above is the prefill's three offsets, so R5E's behaviour is unchanged by
+// construction rather than by inspection.
+pub fn stage_carry_at(
+  borrow slots: slice<u8>,
+  borrow window: slice<u8>,
+  borrow topk_image: slice<u8>,
+  borrow compact_image: slice<u8>,
+  borrow g: layer_olmoe.Geometry,
+  borrow routing: layer_olmoe.Routing,
+  layer: i64,
+  t_out: i64,
+  ffn_norm_node: i64,
+  ffn_inp_node: i64,
+  probs_node: i64,
 ) -> Result<(), ggml_ffi.Fault> {
   activation := g.n_embd * t_out * 4
   probs := g.n_expert * t_out * 4
@@ -3374,25 +3511,22 @@ fn stage_carry(
     }
     check = check + 1
   }
-  if ggml_ffi.slot_nbytes(slots, layer_olmoe.MM_A_NODE_BASE + 31) != activation {
+  if ggml_ffi.slot_nbytes(slots, ffn_norm_node) != activation {
     return Err(ffi_fault("R5E_CARRY", layer_named(layer, "input", "ffn_norm")))
   }
-  if ggml_ffi.slot_nbytes(slots, layer_olmoe.MM_A_NODE_BASE + 29) != activation {
+  if ggml_ffi.slot_nbytes(slots, ffn_inp_node) != activation {
     return Err(ffi_fault("R5E_CARRY", layer_named(layer, "input", "ffn_inp")))
   }
-  if ggml_ffi.slot_nbytes(slots, layer_olmoe.MM_A_NODE_BASE + 33) != probs {
+  if ggml_ffi.slot_nbytes(slots, probs_node) != probs {
     return Err(ffi_fault("R5E_CARRY", layer_named(layer, "input", "ffn_moe_probs")))
   }
-  ggml_ffi.slot_get(
-    slots, layer_olmoe.MM_A_NODE_BASE + 31, window, 0, activation, "ffn_norm")?
+  ggml_ffi.slot_get(slots, ffn_norm_node, window, 0, activation, "ffn_norm")?
   ggml_ffi.slot_set(
     slots, layer_olmoe.MM_SLOT_FFN_NORM, window, 0, activation, "ffn_norm_in")?
-  ggml_ffi.slot_get(
-    slots, layer_olmoe.MM_A_NODE_BASE + 29, window, 0, activation, "ffn_inp")?
+  ggml_ffi.slot_get(slots, ffn_inp_node, window, 0, activation, "ffn_inp")?
   ggml_ffi.slot_set(
     slots, layer_olmoe.MM_SLOT_FFN_INP, window, 0, activation, "ffn_inp_in")?
-  ggml_ffi.slot_get(
-    slots, layer_olmoe.MM_A_NODE_BASE + 33, window, 0, probs, "ffn_moe_probs")?
+  ggml_ffi.slot_get(slots, probs_node, window, 0, probs, "ffn_moe_probs")?
   ggml_ffi.slot_set(
     slots, layer_olmoe.MM_SLOT_PROBS, window, 0, probs, "ffn_moe_probs_in")?
   ggml_ffi.slot_set(slots, layer_olmoe.MM_SLOT_TOPK, topk_image, 0, ids, "topk_ids")?
@@ -3402,7 +3536,7 @@ fn stage_carry(
 
 // Every input tensor of both phases, created once in one context. Their shapes are all geometry, so
 // none of them waits on the routing decision; only the **values** of the five carried ones do.
-fn layer_inputs(
+pub fn layer_inputs(
   ctx: raw,
   borrow slots: slice<u8>,
   borrow g: layer_olmoe.Geometry,
@@ -3434,7 +3568,7 @@ fn layer_inputs(
 // The three compact expert stacks, created in the weight context and **placed** at their own region
 // bases in the reused Align-owned claim window. `ne2` is `U`: the one data-dependent shape parameter
 // in either table, and it enters here and nowhere else.
-fn claim_tensors(
+pub fn claim_tensors(
   ctx: raw,
   handle: raw,
   borrow slots: slice<u8>,
@@ -3903,7 +4037,7 @@ fn run_layer(
 // `sha256` over this layer's routed `ExpertBlock` indices, in ascending routed order and as
 // little-endian `u32`. It is the one per-layer field that names *which blocks* the run read without
 // repeating `routed[]` in a second form.
-fn claim_block_digest(borrow p: Plan, borrow routing: layer_olmoe.Routing, layer: i64) -> string {
+pub fn claim_block_digest(borrow p: Plan, borrow routing: layer_olmoe.Routing, layer: i64) -> string {
   mut image: buffer := buffer(routing.count * 4 + 4)
   mut at := 0
   loop {
@@ -3916,7 +4050,7 @@ fn claim_block_digest(borrow p: Plan, borrow routing: layer_olmoe.Routing, layer
   return encoding.hex_encode(digest[0..digest.len()])
 }
 
-fn render_id_matrix(borrow column: array<i64>, used: i64) -> string {
+pub fn render_id_matrix(borrow column: array<i64>, used: i64) -> string {
   d := builder()
   d.write("[")
   mut token := 0
@@ -4032,7 +4166,7 @@ fn render_schedule_row(
   return d.to_string()
 }
 
-fn spec_for(
+pub fn spec_for(
   layer: i64, t_in: i64, t_out: i64, width: i64, last: bool, wide: bool, reference: bool,
 ) -> LayerSpec = LayerSpec {
   layer: layer,
@@ -4398,7 +4532,7 @@ fn schedule_model(
   schedule = ScheduleRows { count: schedule_rows, text: rows.to_string() }
 }
 
-fn compare_source_file(
+pub fn compare_source_file(
   reference_path: str,
   borrow m: GraphMembers,
   borrow tokens: TokenColumns,
@@ -4422,7 +4556,7 @@ fn compare_source_file(
   return compare_source_members(handle, size, m, tokens, window, layer, temp, c)
 }
 
-fn compare_claim_source_file(
+pub fn compare_claim_source_file(
   reference_path: str,
   borrow claim_window: slice<u8>,
   borrow p: Plan,
@@ -4531,6 +4665,23 @@ fn stage_geometry(
   if !parsed.ok {
     detail_view: str := parsed.detail
     fail(o, "R5_TOKENS", detail_view)
+    return g
+  }
+  // R6-OLMOE-DECODE section 3.8 lifts `layer_olmoe.MAX_PREFILL_TOKENS` from 6 to 32, for the
+  // **decode** arm, whose router axes are `{n_expert_used, 1}` and are therefore printed in full at
+  // any `T`. This arm's tensors are not: `llama-eval-callback` prints a tensor's rows in full only
+  // while `ne1 <= TRUNCATION_PRINTED`, and above it prints three leading and three trailing rows,
+  // so above six tokens a transcript comparison would silently check six of the rows it names and
+  // report `PASS` on a tensor it never saw.
+  //
+  // **This guard is new, and its absence was a real gap the lift would have opened.** The R6
+  // capability's own design predicted that `--moe-model-forward` already shipped
+  // `R5_ORACLE_TRUNCATED`, as `--layer-forward` and `--model-forward` do; it did not, because with
+  // the cap at 6 the condition was unreachable and the refusal had never been needed. The lift makes
+  // it reachable, so the refusal is added here rather than inherited, and the range 7..32 is open
+  // for arithmetic and closed for comparison exactly as the design says.
+  if o.transcript_present && parsed.count > TRUNCATION_PRINTED {
+    fail(o, "R5_ORACLE_TRUNCATED", labelled("tokens", parsed.count))
     return g
   }
   mut ids: array_builder<i64> := array_builder()
@@ -4659,6 +4810,230 @@ fn stage_plan(
   o.reader_pread_count = c.pread_count
   o.reader_bytes_read = c.bytes_read
   return size_dense_window(plan, ends, index.block_align, tokens, o)
+}
+
+// ---------------------------------------------------------------------------------------------
+// R6-OLMOE-DECODE — the whole container stage as one owned value
+//
+// `docs/specs/r6-olmoe-decode.md` section 5.4, and `src/model_forward.align`'s `stage_plan_owned`
+// for exactly the same reason, met a second time on the routed side: `stage_plan` above reports
+// through four mutable borrows, and at this pin the region checker unions every `borrow mut`
+// argument of a **foreign** call, so after `stage_plan(.., plan, ends, win, o, counters)` a later
+// write to `o` invalidates `plan` and every read of it is refused (`docs/align-requests.md`
+// Request 49, refusal 2). A function taking only shared borrows and returning one owned record has
+// nothing to union.
+//
+// `--moe-model-forward` keeps calling `stage_plan`, so its behaviour, its codes, and its golden are
+// untouched; this is the same sequence with the same codes in the shape a second arm can consume.
+// The `Ends` and `ClaimWindow` scalars a caller needs are **flattened** beside the nested records
+// because at this pin field access is only supported one level deep off a local binding.
+// ---------------------------------------------------------------------------------------------
+
+pub MoePlanOutcome {
+  code: string,
+  detail: string,
+  plan: Plan,
+  ends: Ends,
+  win: ClaimWindow,
+  dense_window_bytes: i64,
+  claim_window_bytes: i64,
+  claim_u_max: i64,
+  format_version: i64,
+  block_align: i64,
+  member_align: i64,
+  block_count: i64,
+  member_count: i64,
+  total_bytes: i64,
+  payload_offset: i64,
+  reader_pread_count: i64,
+  reader_bytes_read: i64,
+  peak_block_index: i64,
+  peak_block_kind: i64,
+  peak_block_layer: i64,
+  peak_block_bytes: i64,
+  embed_block_index: i64,
+  output_block_index: i64,
+  output_tied: bool,
+  output_ggml_type: i64,
+  norm_nbytes: i64,
+  out_nbytes: i64,
+  expert_block_count: i64,
+  expert_bytes_in_model: i64,
+  planes_in_model: i64,
+  max_block_bytes: i64,
+}
+
+pub fn empty_moe_plan_outcome() -> MoePlanOutcome = MoePlanOutcome {
+  code: "".clone(),
+  detail: "".clone(),
+  plan: empty_plan(),
+  ends: empty_ends(),
+  win: empty_claim_window(),
+  dense_window_bytes: -1,
+  claim_window_bytes: 0,
+  claim_u_max: 0,
+  format_version: 0,
+  block_align: 0,
+  member_align: 0,
+  block_count: 0,
+  member_count: 0,
+  total_bytes: 0,
+  payload_offset: 0,
+  reader_pread_count: 0,
+  reader_bytes_read: 0,
+  peak_block_index: -1,
+  peak_block_kind: -1,
+  peak_block_layer: -1,
+  peak_block_bytes: 0,
+  embed_block_index: -1,
+  output_block_index: -1,
+  output_tied: false,
+  output_ggml_type: -1,
+  norm_nbytes: 0,
+  out_nbytes: 0,
+  expert_block_count: 0,
+  expert_bytes_in_model: 0,
+  planes_in_model: 0,
+  max_block_bytes: 0,
+}
+
+fn moe_plan_failure(borrow f: alignpack_read.Fault) -> MoePlanOutcome {
+  mut r := empty_moe_plan_outcome()
+  code_view: str := f.code
+  detail_view: str := f.detail
+  r.code = code_view.clone()
+  r.detail = bounded_detail(detail_view)
+  return r
+}
+
+fn moe_plan_refusal(code: str, detail: string) -> MoePlanOutcome {
+  mut r := empty_moe_plan_outcome()
+  detail_view: str := detail
+  r.code = code.clone()
+  r.detail = bounded_detail(detail_view)
+  return r
+}
+
+// `size_dense_window`'s sweep, reported as a value rather than written into an `Outcome`. Section
+// 2.1's reason is unchanged: the maximum is the head.
+fn sweep_dense_window(borrow p: Plan, borrow e: Ends, block_align: i64, tokens: i64) -> i64 {
+  mut peak := align_up(e.row_bytes * tokens, block_align)
+  mut layer := 0
+  loop {
+    if layer >= p.n_layer { break }
+    if p.layer_window_bytes[layer] > peak { peak = p.layer_window_bytes[layer] }
+    layer = layer + 1
+  }
+  if e.head_window_bytes > peak { peak = e.head_window_bytes }
+  return peak
+}
+
+fn sweep_dense_peak_layer(borrow p: Plan, borrow e: Ends, block_align: i64, tokens: i64) -> i64 {
+  peak := sweep_dense_window(p, e, block_align, tokens)
+  mut layer := 0
+  loop {
+    if layer >= p.n_layer { break }
+    if p.layer_window_bytes[layer] == peak && e.head_window_bytes != peak { return layer }
+    layer = layer + 1
+  }
+  return -1
+}
+
+pub fn stage_plan_owned(
+  borrow pak: file,
+  borrow g: layer_olmoe.Geometry,
+  borrow table: layer_olmoe.MemberTable,
+  tokens: i64,
+) -> MoePlanOutcome {
+  mut counters := alignpack_read.new_counters()
+  index := match alignpack_read.open_pack(pak, counters) {
+    Ok(value) => value,
+    Err(f) => { return moe_plan_failure(f) },
+  }
+  mut ends := empty_ends()
+  match stage_ends(pak, index, g, ends, counters) {
+    Ok(_) => {},
+    Err(f) => { return moe_plan_failure(f) },
+  }
+  match validate_layer_coverage(index, g.n_layer) {
+    Ok(_) => {},
+    Err(f) => { return moe_plan_failure(f) },
+  }
+  match validate_expert_coverage(index, g.n_layer, g.n_expert) {
+    Ok(_) => {},
+    Err(f) => { return moe_plan_failure(f) },
+  }
+  plan := match build_plan(pak, index, g, table, counters) {
+    Ok(value) => value,
+    Err(f) => { return moe_plan_failure(f) },
+  }
+  mut in_model := 0
+  mut planes := 0
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer { break }
+    mut role := 0
+    loop {
+      if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+      in_model = in_model
+        + g.n_expert * plan.plane_bytes[layer * layer_olmoe.CLAIM_ROLE_COUNT + role]
+      planes = planes + g.n_expert
+      role = role + 1
+    }
+    layer = layer + 1
+  }
+  win := size_claim_window(plan, g, tokens, index.block_align)
+  if win.total <= 0 || win.total > layer_olmoe.MAX_CLAIM_WINDOW_BYTES {
+    return moe_plan_refusal("R5D_CLAIM_BUDGET", labelled("bytes", win.total))
+  }
+  peak := sweep_dense_window(plan, ends, index.block_align, tokens)
+  peak_layer := sweep_dense_peak_layer(plan, ends, index.block_align, tokens)
+  if peak <= 0 || peak > MAX_WINDOW_BYTES {
+    return moe_plan_refusal("R5_WINDOW_BUDGET", labelled("window", peak))
+  }
+  return MoePlanOutcome {
+    code: "".clone(),
+    detail: "".clone(),
+    plan: plan,
+    ends: ends,
+    win: win,
+    dense_window_bytes: peak,
+    claim_window_bytes: win.total,
+    claim_u_max: win.u_max,
+    format_version: index.format_version,
+    block_align: index.block_align,
+    member_align: index.member_align,
+    block_count: index.block_count,
+    member_count: index.member_count,
+    total_bytes: index.total_bytes,
+    payload_offset: index.payload_offset,
+    reader_pread_count: counters.pread_count,
+    reader_bytes_read: counters.bytes_read,
+    peak_block_index: if peak_layer >= 0 {
+      plan.attention_index[peak_layer]
+    } else if ends.head_window_bytes == peak {
+      ends.output_block_index
+    } else {
+      ends.embed_block_index
+    },
+    peak_block_kind: if peak_layer >= 0 {
+      layer_olmoe.KIND_ATTENTION
+    } else {
+      layer_olmoe.KIND_WEIGHT
+    },
+    peak_block_layer: peak_layer,
+    peak_block_bytes: peak,
+    embed_block_index: ends.embed_block_index,
+    output_block_index: ends.output_block_index,
+    output_tied: ends.tied,
+    output_ggml_type: ends.out_type,
+    norm_nbytes: ends.norm_nbytes,
+    out_nbytes: ends.out_nbytes,
+    expert_block_count: g.n_layer * g.n_expert,
+    expert_bytes_in_model: in_model,
+    planes_in_model: planes,
+    max_block_bytes: plan.max_block_bytes,
+  }
 }
 
 // Steps 20 to 40. Every ggml object below the backend is created and freed inside `run_layer` or
