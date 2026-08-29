@@ -192,7 +192,9 @@ esac
 # R6-PREFIX-SUFFIX-PREFILL section 5.4. Two split points per prompt, at `j = 2` and the midpoint,
 # deduplicated, so a `T <= 6` prompt gives one or two distinct splits. `j = 2` is the smallest prefix
 # that is not degenerate; the midpoint is the only other point that moves `T_prefix > 1` and `S > 1`
-# together. **A split at `j = |L| - 1` is deliberately not taken**: it is `S = 1`, which the hosted
+# together. `T_prefix = 1` is legal since MF-SINGLE-TOKEN-LOGITS (section 11.5) and is covered
+# hosted by `ds-suffix-prefix-one`; no real-model run is spent on it for the same reason `S = 1`
+# gets none. **A split at `j = |L| - 1` is deliberately not taken**: it is `S = 1`, which the hosted
 # `ds-suffix-1` already covers, and it would spend a real-model run on the cheapest case.
 #
 # The leg rides on the persistence leg's prompts, because it needs a container; the ordered
@@ -491,10 +493,20 @@ ids = sys.argv[1].split(',')
 want = int(sys.argv[2])
 points = []
 for j in (2, -(-len(ids) // 2)):
-    # `2 <= j`, not `1 <= j`. Section 5.4's smallest split is **two**, and at len(ids) == 2 the
-    # midpoint is 1 -- a one-token prefix, which the arm now refuses outright (section 2.3's
-    # `prefix[<n>]`) because a one-token prefill computes the wrong embedding row (section 11.2).
-    if 2 <= j < len(ids) and j not in points:
+    # The guard is 1 <= j. It was 2 <= j while the arm refused a one-token prefix outright;
+    # MF-SINGLE-TOKEN-LOGITS (roadmap item 36) fixed the embedding gather section 11.2 filed and
+    # section 11.5 records the lift, so T_prefix = 1 is an ordinary split and this stops encoding
+    # a refusal that no longer exists.
+    #
+    # It widens the guard without adding a run, and that invariant is the corpus's rather than the
+    # code's -- section 11.1 correction 10, discharged in 11.5. The two bounds differ only where
+    # the midpoint is 1, which needs a prompt of two ids or fewer; PROMPTS tokenizes to 6, 3, 3
+    # and 3 ids on the reference model (section 5.9), so both points are already >= 2 on every
+    # prompt this leg runs. A prompt of exactly two ids added to PROMPTS would spend a
+    # T_prefix = 1 real-model run -- legal now, and a decision to take deliberately.
+    # (No backticks in this block: it is inside a double-quoted python3 -c string, where the shell
+    # would read them as command substitution.)
+    if 1 <= j < len(ids) and j not in points:
         points.append(j)
 print(' '.join(str(j) for j in points[:want]))
 " "${tokens}" "${SUFFIX_SPLITS}")

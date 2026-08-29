@@ -3,7 +3,95 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: C4-REPAIR-MEASURED (2026-08-29)
+## Active: MF-SINGLE-TOKEN-LOGITS (2026-08-29)
+
+Branch `agent/mf-single-token-logits`, cut from `origin/main` `553563e` (PR #147,
+R6-RESIDENT-WEIGHTS) and brought up to `origin/main` by **three** `git merge`s, **never a rebase**:
+`a9561a9` (PR #149, R6-PREFIX-SUFFIX-PREFILL), then `45ff38e` (PR #148, R6-OLMOE-DECODE), then
+`4940005` (PR #150, C4-REPAIR-MEASURED). Every conflict was an `Active`-block or roadmap-entry
+collision resolved by keeping both sides — `HANDOFF.md`, `docs/specs/roadmap.md`,
+`docs/align-development.md`, and `scripts/decode-step-golden.jsonl` (taken from `main` and
+regenerated). Sections 8.4, 8.5 and 8.6 of the plan record them one by one.
+Roadmap item **36**: 31 and 32 have now landed (PRs #150 and #148), 34 and 35 are still reserved by
+capabilities on branches or in draft, and this one merged out of order. A **bug fix**, filed by
+`R6-PREFIX-SUFFIX-PREFILL` 11.2; `docs/specs/mf-single-token-logits.md` is the authoritative record
+and carries the result in its **section 8**. No design gate (no CLI operand, exchanged or persisted
+format, or ownership boundary moves), no Align gap, no new Align request.
+
+**Defect.** `fill_members` and `compare_source` gathered a member's rows by token id only where
+`m.pieces[at] > 1` — the piece count used as a proxy for "this member is the per-token embedding row
+set". `build_embed_members` sets `pieces = tokens`, so a **one-token prefill** took the whole-member
+branch and read row 0 of the embedding table instead of the prompt's row: wrong logits with
+`status: ok` on four public arms — `--model-forward`, `--model-forward-gpu`, `--moe-model-forward`,
+and `--decode-step`'s prefill. `--layer-forward` and `--moe-layer-forward` gather unconditionally
+and were never affected. The resident path was **not** immune, correcting 11.2 of the filing
+document: `stage_embed_row` staged the right row while `compare_source` still expected row 0, so a
+one-token non-zero resident run with a reference reported `R5_SOURCE_DIVERGED` over a correct
+result.
+
+**Fix.** `gathered: bool` on both `GraphMembers` records, `true` from `build_embed_members` whatever
+the count and `false` from every other builder across ten construction sites in four modules,
+and the predicate `m.gathered && at == 0` at all four sites. `gathered` is true exactly where
+`pieces > 1` was, so `T >= 2` is byte-identical.
+
+**Evidence.** The gather fix alone adds six **new** golden rows and changes **none** — verified
+mechanically at the implementation head, where all six corpora are pure appends. *(The lift below,
+carried in the same branch, adds one more row and removes `ds-suffix-prefix-one`'s, so measured
+against `origin/main` the branch adds seven golden rows, removes one, and changes none.)* `mf-tokens-one-zero` keeps the
+`62a46efd…` digest the defect produced for
+every one-token run and `mf-tokens-one` is now `867ebc4e…`, which `gf-tokens-one`, `ds-tokens-one`
+and `ds-tokens-one-resident` also carry. Two mutants were run: reverting the four predicates to
+`pieces > 1` kills exactly the six new rows and nothing else, and restores the
+`R5_SOURCE_DIVERGED` false alarm on `ds-tokens-one-resident`; setting `gathered: false` at
+`model_forward.build_embed_members` kills the three-token corpus as well.
+
+**The lift, done in this branch.** Item 33's `T_prefix >= 2` bound existed only because of this
+defect. Step 3c's term and its `R6_SUFFIX prefix[<n>]` detail are deleted; `ds-suffix-prefix-one` is
+a passing oracle-S row at `T_prefix = 1` (`0cd795d9…`, byte-identical to the new
+`ds-suffix-single-shot-2` comparand and to `--model-forward` at `3,5`), joined by
+`ds-suffix-save-prefix-one` — a one-token prefill save whose `867ebc4e…` is the same digest
+`mf-tokens-one` carries. `scripts/run-decode-step`'s split guard widens from `2 <= j` to `1 <= j`,
+which adds no real-model run because no prompt that leg takes tokenizes to two ids or fewer — a
+corpus property, and the comment there says so. `r6-prefix-suffix-prefill.md` gains **section 11.5** and its 2.3, 2.7,
+3.7, 5.6, 5.7, 9.1, 11.1 corrections 8 and 10, 11.2 and 12.1 are corrected in place. The decode-step
+corpus is 137 → **139** rows: three added and `ds-suffix-prefix-one` removed, because hosted CI
+measured the **two-token decode step** as host-dependent (`.steps[0].bit_sum` 71850835819 on
+macOS/arm64, 71850835587 on Linux/x86_64), so it and `ds-suffix-single-shot-2` are asserted from
+`BOUNDARY_CASES` without golden rows exactly as item 33's four-token comparand is. The one-token
+rows are identical on both hosts and stay pinned. Plan section 8.8.
+
+**Real-model qualification, done.** Both legs pass at this head, streamed, exit 0.
+`gmake model-forward-qualification` on dense Qwen: `llama-debug -p def` tokenizes to exactly one
+non-zero id, **750**, and `--model-forward` at that id is **byte-identical** to
+`llama-debug --save-logits` over all 152,064 logits — `d639adb97337394649a1a94ccc70767cf989b75c14b80e1de31cfdde4745fb96`,
+argmax 914. `gmake moe-model-forward-qualification` on OLMoE: one non-zero id, **1545**,
+byte-identical over 50,304 logits — `be4c699fbb888a3504b007c5d66925f621c8067a7f88191e0af42974c3c4ecc7`,
+argmax 33007. The tokenization guard did not fire on either model. Every pre-existing six-token
+assertion in both qualifications is unmoved. Recorded in section 8.7 of the plan.
+
+**Review, done.** Two fresh independent comprehensive reviews of head `8dadcc2` — one on the
+implementation, one on documents, goldens and governance. One blocking finding: this branch's plan
+document ended with a blank line, so `git diff --check origin/main...HEAD` — the form
+`scripts/pre-pr` runs — exited 2 while section 8.3 called it clean. The consolidated repair strips
+it and applies every accepted minor: the golden claims are qualified wherever the branch's own lift
+changes a row, the `3c ≺ L12` witness becomes `ds-suffix-over-cap` / `-over-cap-and-narrow`
+(`ds-suffix-tokens-mismatch` is itself the L12 refusal), section 5.7's arithmetic becomes eleven
+refusals and five successes, and the `2 <= j` → `1 <= j` widening now records its real invariant —
+no prompt tokenizes to two ids or fewer. That repair was documents and comments only, so the
+real-model legs above still bind.
+
+**Hosted CI found one more, and it is a fixture property rather than a defect.** PR #151's first run
+failed on `ds-suffix-single-shot-2` and `ds-suffix-prefix-one`: a two-token prefill's **decode step**
+differs across hosts, both rows identically, so oracle S holds on each host and only the pinned file
+cannot. Both move into `BOUNDARY_CASES` with every assertion intact — the same treatment item 33's
+deviation 7 gave its four-token comparand — and the corpus is 139 rows, 143 documented cases. No
+`.align` file, oracle, or refusal moves.
+
+**Not started / next.** The rerun of
+`python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` on the CI
+repair head, then merge once the checks pass.
+
+## Merged checkpoint: C4-REPAIR-MEASURED (PR #150, 2026-08-29)
 
 Branch `agent/c4-repair-measured`, in publication. Nothing uncommitted. The branch is the
 capability, three merges of `origin/main` (`553563e`, `a9561a9`, and `45ff38e`, all taken as
@@ -218,7 +306,7 @@ unreachable from `main`.
 
 **Intentional uncommitted files.** None.
 
-## Active: R6-OLMOE-DECODE (2026-08-29)
+## Merged checkpoint: R6-OLMOE-DECODE (PR #148, 2026-08-29)
 
 Branch `agent/r6-olmoe-decode`, implemented on `agent/r6-resident-weights` head `6facd56` and then
 **merged** with `origin/main` `553563e` (R6-RESIDENT-WEIGHTS, PR #147, carrying `cec1758`) by
