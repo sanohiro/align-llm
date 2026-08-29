@@ -1420,6 +1420,116 @@ def repair_attempt_rows(root: Path) -> None:
         contains="omits snapshot_request_sha256 against its status",
     )
 
+    def repair_attempt(evaluation) -> dict[str, Any]:
+        """The one attempt every rejection below re-points: row 0's repair, which ran."""
+        return evaluation["rows"][0]["attempts"][1]
+
+    def rebind_attempt(evaluation) -> None:
+        fixture.bind(repair_attempt(evaluation))
+        fixture.bind(evaluation["rows"][0])
+
+    def append_snapshot_result(evaluation, **fields) -> str:
+        """Persist a second, well-formed snapshot result and return its digest."""
+        record = copy.deepcopy(evaluation["snapshot_results"][0])
+        record.update(fields)
+        fixture.bind(record)
+        evaluation["snapshot_results"].append(record)
+        return record["content_sha256"]
+
+    def attempt_trace_cross_task(evaluation, evidence) -> None:
+        # Section 3.8 row 22: pool membership is not binding. A digest that resolves to a
+        # persisted record of *another* task names a record this row never observed, and the
+        # attempt would otherwise carry a referent nobody resolves.
+        digest = append_snapshot_result(evaluation, task_id="other-task")
+        repair_attempt(evaluation)["after_snapshot_result_sha256"] = digest
+        rebind_attempt(evaluation)
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-trace-cross-task", attempt_trace_cross_task),
+        "an attempt trace digest that resolves to another task's record",
+        contains="after_snapshot_result_sha256 does not resolve to exactly one record of its task",
+    )
+
+    def attempt_trace_ambiguous(evaluation, evidence) -> None:
+        # Resolution is to *exactly* one record. A second persisted copy of the same observation
+        # makes the referent ambiguous, and "at least one" would silently accept it.
+        evaluation["snapshot_results"].append(
+            copy.deepcopy(evaluation["snapshot_results"][0])
+        )
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-trace-ambiguous", attempt_trace_ambiguous),
+        "an attempt trace digest with two persisted records to resolve to",
+        contains=(
+            "before_snapshot_result_sha256 does not resolve to exactly one record of its task"
+        ),
+    )
+
+    def attempt_trace_drift(evaluation, evidence) -> None:
+        # The before and after observations of one invocation must be the same observation.
+        drifted = copy.deepcopy(evaluation["snapshot_results"][0]["artifact_digests"])
+        drifted[0]["sha256"] = "c" * 64
+        digest = append_snapshot_result(evaluation, artifact_digests=drifted)
+        repair_attempt(evaluation)["after_snapshot_result_sha256"] = digest
+        rebind_attempt(evaluation)
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-trace-drift", attempt_trace_drift),
+        "an attempt whose before and after observations disagree",
+        contains="before and after observations record drift",
+    )
+
+    def attempt_trace_unclosed(evaluation, evidence) -> None:
+        # An observation must be closed over the request that asked for it: the request the
+        # attempt names asks for one more path than the invocation actually observed.
+        request = copy.deepcopy(evaluation["snapshot_requests"][0])
+        request["additional_files"] = request["additional_files"] + ["unobserved"]
+        fixture.bind(request)
+        evaluation["snapshot_requests"].append(request)
+        repair_attempt(evaluation)["snapshot_request_sha256"] = request["content_sha256"]
+        rebind_attempt(evaluation)
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-trace-unclosed", attempt_trace_unclosed),
+        "an observation that is not closed over its snapshot request",
+        contains="before observation is not closed over its snapshot request",
+    )
+
+    def attempt_input_snapshot_digests(evaluation, evidence) -> None:
+        # The sealed input the attempt names must carry what the invocation observed, so a repair
+        # cannot attest a prompt sealed over a different tree than the one it was measured on.
+        record = copy.deepcopy(evaluation["input_snapshots"][0])
+        record["artifact_digests"] = record["artifact_digests"] + [
+            {"path": "unobserved", "mode": "100644", "byte_count": 1, "sha256": "d" * 64}
+        ]
+        fixture.bind(record)
+        evaluation["input_snapshots"].append(record)
+        repair_attempt(evaluation)["input_snapshot_sha256"] = record["content_sha256"]
+        rebind_attempt(evaluation)
+
+    rejected(
+        v2_evaluation_case(
+            root, "v2-attempt-input-digests", attempt_input_snapshot_digests
+        ),
+        "an input snapshot that is not what the invocation observed",
+        contains="input snapshot does not carry the observed artifact digests",
+    )
+
+    def input_snapshots_exceed_invocations(evaluation, evidence) -> None:
+        # Section 3.8 row 23: the ceiling is the run's invocation count. Four rows each running an
+        # initial and a repair attempt buy eight sealed inputs, and a ninth is unaccounted for.
+        original = copy.deepcopy(evaluation["input_snapshots"][0])
+        while len(evaluation["input_snapshots"]) <= 8:
+            evaluation["input_snapshots"].append(copy.deepcopy(original))
+
+    rejected(
+        v2_evaluation_case(
+            root, "v2-input-snapshots-exceed-invocations", input_snapshots_exceed_invocations
+        ),
+        "more sealed inputs than the run made invocations",
+        contains="input snapshots outnumber the run's contained invocations",
+    )
+
     def dropped_status_section(evaluation, evidence) -> None:
         row = evaluation["rows"][0]
         source = row["attempts"][1]["repair_prompt_source"]
