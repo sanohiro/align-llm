@@ -1,0 +1,300 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "C4_REPAIR_GATE_RECORD",
+  "gate_id": "c4-repair-measured-gate-v1",
+  "verdict": "NOT_MET",
+  "align_llm_commit": "3df063b42aad88cbc8566d51c85bc2493e67b2ba",
+  "align_llm_clean": false,
+  "align_revision": "3a34febe912db5096c58c74fede36ff53f223e04",
+  "image": "c4-repair-measure:latest",
+  "docker_version": "28.5.1",
+  "forwarder": "socat TCP-LISTEN:18080,fork,reuseaddr,bind=127.0.0.1 TCP:host.docker.internal:18080",
+  "container_privileges": [
+    "--cap-add=SYS_ADMIN",
+    "--security-opt",
+    "seccomp=unconfined",
+    "--security-opt",
+    "apparmor=unconfined",
+    "--security-opt",
+    "systempaths=unconfined"
+  ],
+  "provider_service_probe": {
+    "schema_version": 1,
+    "artifact_kind": "PROVIDER_SERVICE_PROBE",
+    "provider_service_revision": "llama.cpp/10566+bb4caa754;host:darwin-arm64;server-sha256:b6ff7e912a9690ffec38878cad25b9ec1424a5537bd72010effe2fc9bfe64f74;model-sha256:509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c",
+    "server_version_string": "version: 0.2.0 (build 10566, commit bb4caa754)",
+    "server_binary_sha256": "b6ff7e912a9690ffec38878cad25b9ec1424a5537bd72010effe2fc9bfe64f74",
+    "model_sha256": "509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c",
+    "content_sha256": "683be4720ce7dcf678d73f908b313cfb73fb1765d7458bc684dee6be6ad9dfc3"
+  },
+  "in_band_model_id": "qwen2.5-coder-7b-instruct-q4_k_m",
+  "wall_clock_seconds": 881.673,
+  "cost_ceiling_seconds": 3600,
+  "evaluation_status": "SERIOUS_REGRESSION",
+  "gate_eligible": false,
+  "corpus_aggregate": {
+    "task_count": 3,
+    "sample_count": 2,
+    "parent_pass_count": 0,
+    "candidate_pass_count": 2,
+    "parent_repair_loop_count": 6,
+    "candidate_repair_loop_count": 4,
+    "paired_pass_count": 0,
+    "completion_gain_count": 2,
+    "repair_loop_regression_count": 0,
+    "repair_attempt_count": 10,
+    "repair_recovery_count": 0,
+    "repair_recovery_paired_count": 0
+  },
+  "rows": [
+    {
+      "task_id": "duration-half-away-from-zero",
+      "sample_index": 1,
+      "variant": "PARENT",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        17036483592,
+        18905999091
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "67e9e6694c730e8a0fc2b78a087cfea712aa0c25c6cc41843ec8afc2c76988c2",
+      "dropped_sections": []
+    },
+    {
+      "task_id": "duration-half-away-from-zero",
+      "sample_index": 1,
+      "variant": "CANDIDATE",
+      "attempt_1_status": "PASS",
+      "attempt_2_status": null,
+      "attempt_2_skip_reason": null,
+      "repair_loop_count": 0,
+      "generation_to_passing_patch_ns": 14669708007,
+      "time_to_passing_patch_ns": 14689708007,
+      "adapter_elapsed_ns": [
+        14669708007
+      ],
+      "adapter_overhead_ns": [
+        65744250
+      ],
+      "repair_prompt_sha256": null,
+      "dropped_sections": null
+    },
+    {
+      "task_id": "duration-half-away-from-zero",
+      "sample_index": 2,
+      "variant": "CANDIDATE",
+      "attempt_1_status": "PASS",
+      "attempt_2_status": null,
+      "attempt_2_skip_reason": null,
+      "repair_loop_count": 0,
+      "generation_to_passing_patch_ns": 8631078671,
+      "time_to_passing_patch_ns": 8651078671,
+      "adapter_elapsed_ns": [
+        8631078671
+      ],
+      "adapter_overhead_ns": [
+        74108625
+      ],
+      "repair_prompt_sha256": null,
+      "dropped_sections": null
+    },
+    {
+      "task_id": "duration-half-away-from-zero",
+      "sample_index": 2,
+      "variant": "PARENT",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        8126119379,
+        20313179634
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "1aa2d156a94c6ce0eef4bb0fdad58dc2c3377bc05c835ac807d9f266a114c244",
+      "dropped_sections": []
+    },
+    {
+      "task_id": "layer-precedence-frozen-module",
+      "sample_index": 1,
+      "variant": "PARENT",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        17628012800,
+        10276108130
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "94c7ba3b3d859218e9a866cff43c6aaaf58e2d0299b218a53c14a6e71721fc7d",
+      "dropped_sections": []
+    },
+    {
+      "task_id": "layer-precedence-frozen-module",
+      "sample_index": 1,
+      "variant": "CANDIDATE",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "POLICY_VIOLATION",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        15108346757,
+        28481691846
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "8525a50652fdfe1b02f986406a07b1fc65271119f783821e4431eea3658d1ecc",
+      "dropped_sections": []
+    },
+    {
+      "task_id": "layer-precedence-frozen-module",
+      "sample_index": 2,
+      "variant": "CANDIDATE",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "POLICY_VIOLATION",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        9600809754,
+        36902809101
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "8525a50652fdfe1b02f986406a07b1fc65271119f783821e4431eea3658d1ecc",
+      "dropped_sections": []
+    },
+    {
+      "task_id": "layer-precedence-frozen-module",
+      "sample_index": 2,
+      "variant": "PARENT",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        12940626381,
+        17241871717
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "94c7ba3b3d859218e9a866cff43c6aaaf58e2d0299b218a53c14a6e71721fc7d",
+      "dropped_sections": []
+    },
+    {
+      "task_id": "record-codec-round-trip",
+      "sample_index": 1,
+      "variant": "PARENT",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        54051899567,
+        73822651658
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "42102883967e8eaaec1096f69a8e7b7ad83b3005b41bdf4f26d61a03ad7b7719",
+      "dropped_sections": []
+    },
+    {
+      "task_id": "record-codec-round-trip",
+      "sample_index": 1,
+      "variant": "CANDIDATE",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        33564474098,
+        42407038812
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "9c577be2ae06ed5a79953a04475676f67c2396071bbff0c2d76a068bd1c6f856",
+      "dropped_sections": []
+    },
+    {
+      "task_id": "record-codec-round-trip",
+      "sample_index": 2,
+      "variant": "CANDIDATE",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        16641182132,
+        41537106894
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "024682515ec5b19edd3d81570a5a6b1374d067edf74498b48a12881524f28802",
+      "dropped_sections": []
+    },
+    {
+      "task_id": "record-codec-round-trip",
+      "sample_index": 2,
+      "variant": "PARENT",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        36668414183,
+        69717017782
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "0dcc74664baa378494e8cbc736fa141f6f2ca0f0030cabf2dba402c841f48647",
+      "dropped_sections": []
+    }
+  ],
+  "content_sha256": "924663d8a554f7f7cf32194da8cf562b0b2eb0d09898b6dcfbb32f7e66f4be76"
+}

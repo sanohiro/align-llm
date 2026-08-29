@@ -682,6 +682,13 @@ fn reason_count_pair(
   parent := rows[parent_row_index]
   candidate := rows[candidate_row_index]
   mut count := 0
+  // Variant-symmetric from version 2 on. While repair was unreachable the cap was checked on the
+  // candidate arm only, so a parent row exceeding its task's declared cap was checked nowhere.
+  // Every version-1 row carries `repair_loop_count: 0` against a limit of `0`, so this is vacuous
+  // on the frozen chain and no version-1 verdict changes.
+  if parent.repair_loop_count > limit.maximum_repair_loops {
+    count = count + 1
+  }
   if is_pass(parent.status) && !is_pass(candidate.status) {
     count = count + 1
   }
@@ -855,6 +862,28 @@ fn emit_pair_reasons(
   parent := rows[parent_row_index]
   candidate := rows[candidate_row_index]
   mut next := index
+  // The candidate record keeps its exact existing shape (`parent_value` NONE); the parent arm
+  // gets a distinguishable one (`candidate_value` NONE) so the two are never confused.
+  if parent.repair_loop_count > limit.maximum_repair_loops {
+    next = emit_reason(
+      next,
+      task,
+      sample,
+      ScoreReasonCode.RepairLoops,
+      ScoreValue.Number(parent.repair_loop_count),
+      ScoreValue.None,
+      ScoreValue.Number(limit.maximum_repair_loops),
+      reason_task_ordinal,
+      reason_sample_index,
+      reason_code,
+      reason_parent_value_kind,
+      reason_parent_value_number,
+      reason_candidate_value_kind,
+      reason_candidate_value_number,
+      reason_limit_kind,
+      reason_limit_number,
+    )
+  }
   if is_pass(parent.status) && !is_pass(candidate.status) {
     next = emit_reason(
       next,
@@ -1872,7 +1901,8 @@ fn verifier_pair_identity_valid(
   borrow result: prompt_artifacts.PromptEvaluationResult,
   borrow evidence: prompt_artifacts.PromptEvaluationEvidence,
 ) -> bool {
-  if evidence.schema_version != 1 ||
+  if evidence.schema_version != result.schema_version ||
+  evidence.schema_version < 1 || evidence.schema_version > 2 ||
   evidence.artifact_kind != "PROMPT_EVALUATION_EVIDENCE" ||
   !verifier_valid_ascii_identifier(evidence.evaluation_id, 128) ||
   !verifier_valid_digest(evidence.evaluation_result_sha256) ||
@@ -1972,9 +2002,26 @@ fn verifier_compact_result_valid(
   return trace_valid && verifier_scope_trust_valid(result, evidence)
 }
 
+// Every row carries the container's version. A version-2 document holding a version-1 row, or the
+// reverse, is rejected here — before any field of a row is decoded into the scoring kernel.
+fn verifier_rows_share_container_version(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  mut index := 0
+  loop {
+    if index >= result.rows.len() { break }
+    if verifier_row_schema_version(result.rows[index]) != result.schema_version { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_row_schema_version(borrow row: prompt_artifacts.PromptTaskRow) -> i64 {
+  return row.schema_version
+}
+
 fn verifier_base_result_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
-  if result.schema_version != 1 ||
+  if result.schema_version < 1 || result.schema_version > 2 ||
   result.artifact_kind != "PROMPT_EVALUATION_RESULT" ||
+  !verifier_rows_share_container_version(result) ||
   !verifier_valid_digest(result.content_sha256) {
     return false
   }
@@ -2519,7 +2566,29 @@ fn verifier_workspace_preflight_pair_valid(borrow result: prompt_artifacts.Promp
   }
 }
 
-fn verifier_task_valid(borrow task: prompt_artifacts.PromptEvaluationTask) -> bool {
+// The pair is always well-formed when present, and is *required* only in a version-2 document.
+// A version-1 corpus predates the repair attempt entirely: it can declare a nonzero
+// `maximum_repair_loops` that nothing could ever have consumed, and retroactively demanding a
+// template it never had would reject already-frozen evidence.
+fn verifier_repair_template_pairing_valid(
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  require_template: bool,
+) -> bool {
+  path_present := match task.repair_template_path { None => false, Some(_) => true }
+  digest_present := match task.repair_template_sha256 {
+    None => false,
+    Some(value) => verifier_valid_digest(value),
+  }
+  if path_present != digest_present { return false }
+  if !require_template { return true }
+  offers_repair := task.regression_limits.maximum_repair_loops >= 1
+  return path_present == offers_repair
+}
+
+fn verifier_task_valid(
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  require_template: bool,
+) -> bool {
   limits := task.regression_limits
   return task.schema_version == 1 &&
   task.artifact_kind == "PROMPT_EVALUATION_TASK" &&
@@ -2543,6 +2612,8 @@ fn verifier_task_valid(borrow task: prompt_artifacts.PromptEvaluationTask) -> bo
   limits.maximum_patch_size_bytes >= 0 && limits.maximum_patch_size_bytes <= 67_108_864 &&
   limits.maximum_public_api_change_count >= 0 && limits.maximum_public_api_change_count <= 1_048_576 &&
   limits.maximum_repair_loops >= 0 && limits.maximum_repair_loops <= 64 &&
+  // The sealed repair template is declared exactly when the task offers a repair attempt.
+  verifier_repair_template_pairing_valid(task, require_template) &&
   match limits.maximum_benchmark_regression_ppm {
     None => true,
     Some(value) => value >= 0 && value <= 1_000_000,
@@ -2798,13 +2869,388 @@ fn verifier_measurement_valid(
   verifier_valid_digest(measurement.content_sha256)
 }
 
+// --- C4-REPAIR-MEASURED: version-2 attempt records ---------------------------------------------
+// Every access to an array element goes straight into a `borrow` parameter. The pinned compiler
+// rejects binding a Move-typed element to a local and rejects reading a Move-typed field out of an
+// element expression, so an element is never named, only passed.
+
+fn verifier_repair_section_ordinal(borrow value: string) -> i64 {
+  if value == "STATUS" { return 0 }
+  if value == "SUMMARY" { return 1 }
+  if value == "STDOUT" { return 2 }
+  if value == "STDERR" { return 3 }
+  return -1
+}
+
+// A section list is a subset of the four kinds in their one fixed order, with no repeats.
+fn verifier_repair_section_list_valid(borrow values: array<string>) -> bool {
+  if values.len() > 4 { return false }
+  mut previous := -1
+  mut index := 0
+  loop {
+    if index >= values.len() { break }
+    ordinal := verifier_repair_section_ordinal(values[index])
+    if ordinal < 0 || ordinal <= previous { return false }
+    previous = ordinal
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_repair_sections_disjoint(
+  borrow included: array<string>,
+  borrow dropped: array<string>,
+) -> bool {
+  mut outer := 0
+  loop {
+    if outer >= included.len() { break }
+    left := verifier_repair_section_ordinal(included[outer])
+    mut inner := 0
+    loop {
+      if inner >= dropped.len() { break }
+      right := verifier_repair_section_ordinal(dropped[inner])
+      if left == right { return false }
+      inner = inner + 1
+    }
+    outer = outer + 1
+  }
+  return true
+}
+
+// `STATUS` is never dropped: it is at most 128 bytes and the single most load-bearing fact.
+fn verifier_repair_sections_exclude_status(borrow dropped: array<string>) -> bool {
+  mut index := 0
+  loop {
+    if index >= dropped.len() { break }
+    if verifier_repair_section_ordinal(dropped[index]) == 0 { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_repair_prompt_source_valid(
+  borrow source: prompt_artifacts.RepairPromptSource,
+  max_prompt_bytes: i64,
+) -> bool {
+  return source.schema_version == 1 &&
+  source.artifact_kind == "REPAIR_PROMPT_SOURCE" &&
+  verifier_valid_digest(source.template_sha256) &&
+  source.source_attempt_index == 1 &&
+  verifier_valid_digest(source.source_measurement_sha256) &&
+  verifier_repair_section_list_valid(source.included_sections) &&
+  verifier_repair_section_list_valid(source.dropped_sections) &&
+  verifier_repair_sections_disjoint(source.included_sections, source.dropped_sections) &&
+  verifier_repair_sections_exclude_status(source.dropped_sections) &&
+  source.assembled_bytes > 0 && source.assembled_bytes <= max_prompt_bytes &&
+  verifier_valid_digest(source.content_sha256)
+}
+
+fn verifier_attempt_kind_valid(borrow value: string) -> bool {
+  return value == "INITIAL" || value == "REPAIR"
+}
+
+fn verifier_attempt_status_valid(borrow value: string) -> bool {
+  return value == "PASS" || value == "FAIL" || value == "POLICY_VIOLATION" ||
+  value == "ERROR" || value == "SKIPPED"
+}
+
+fn verifier_skip_reason_valid(borrow value: string) -> bool {
+  return value == "NONE" || value == "REPAIR_PROMPT_BUDGET" ||
+  value == "REPAIR_NOT_ELIGIBLE" || value == "REPAIR_INPUT_UNAVAILABLE"
+}
+
+fn verifier_optional_digest_absent(borrow value: Option<string>) -> bool {
+  return match value { None => true, Some(_) => false }
+}
+
+fn verifier_optional_i64_absent(value: Option<i64>) -> bool {
+  return match value { None => true, Some(_) => false }
+}
+
+// Field-wise equality of two persisted measurements. An owned encode cannot be taken from a
+// borrowed record, so ladder row 18's "byte-equal" is discharged field by field, including every
+// nested record's own content digest.
+fn verifier_measurement_equal(
+  borrow left: prompt_artifacts.TaskMeasurement,
+  borrow right: prompt_artifacts.TaskMeasurement,
+) -> bool {
+  return left.schema_version == right.schema_version &&
+  left.artifact_kind == right.artifact_kind &&
+  left.status == right.status &&
+  left.failure_kind == right.failure_kind &&
+  left.build_status == right.build_status &&
+  left.test_status == right.test_status &&
+  left.repair_loop_count == right.repair_loop_count &&
+  left.unrelated_diff_count == right.unrelated_diff_count &&
+  left.patch_size_bytes == right.patch_size_bytes &&
+  left.public_api_change_count == right.public_api_change_count &&
+  left.policy_violation_count == right.policy_violation_count &&
+  left.cleanup_passed == right.cleanup_passed &&
+  left.containment_passed == right.containment_passed &&
+  verifier_optional_i64_equal(left.benchmark_regression_ppm, right.benchmark_regression_ppm) &&
+  verifier_optional_i64_equal(left.generation_to_passing_patch_ns, right.generation_to_passing_patch_ns) &&
+  left.rendered_prompt_sha256 == right.rendered_prompt_sha256 &&
+  left.generation_request.content_sha256 == right.generation_request.content_sha256 &&
+  left.environment_probe.content_sha256 == right.environment_probe.content_sha256 &&
+  left.seed_attestation.content_sha256 == right.seed_attestation.content_sha256 &&
+  left.diagnostic_summary == right.diagnostic_summary &&
+  left.diagnostic_stdout == right.diagnostic_stdout &&
+  left.diagnostic_stderr == right.diagnostic_stderr &&
+  left.content_sha256 == right.content_sha256
+}
+
+fn verifier_valid_optional_digest_present(borrow value: Option<string>) -> bool {
+  return match value { None => false, Some(digest_value) => verifier_valid_digest(digest_value) }
+}
+
+fn verifier_skipped_attempt_valid(borrow attempt: prompt_artifacts.TaskAttemptRecord) -> bool {
+  return attempt.adapter_elapsed_ns == 0 &&
+  verifier_optional_digest_absent(attempt.rendered_prompt_sha256) &&
+  verifier_optional_digest_absent(attempt.adapter_request_sha256) &&
+  // A skipped repair made no contained invocation, so it attests no trace record.
+  verifier_optional_digest_absent(attempt.snapshot_request_sha256) &&
+  verifier_optional_digest_absent(attempt.before_snapshot_result_sha256) &&
+  verifier_optional_digest_absent(attempt.after_snapshot_result_sha256) &&
+  verifier_optional_digest_absent(attempt.input_snapshot_sha256) &&
+  verifier_optional_digest_absent(attempt.measurement_sha256) &&
+  verifier_optional_i64_absent(attempt.adapter_overhead_ns) &&
+  match attempt.generation_request { None => true, Some(_) => false } &&
+  match attempt.seed_attestation { None => true, Some(_) => false } &&
+  match attempt.measurement { None => true, Some(_) => false }
+}
+
+fn verifier_ran_attempt_valid(
+  borrow attempt: prompt_artifacts.TaskAttemptRecord,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+) -> bool {
+  return match attempt.measurement {
+    None => false,
+    Some(measurement) => verifier_measurement_valid(measurement, task) &&
+    // Each adapter invocation is single-attempt by construction, so a non-zero count here means
+    // the adapter reported a loop it cannot have run.
+    measurement.repair_loop_count == 0 &&
+    measurement.status == attempt.status &&
+    match attempt.measurement_sha256 {
+      None => false,
+      Some(digest_value) => digest_value == measurement.content_sha256,
+    } &&
+    match attempt.rendered_prompt_sha256 {
+      None => false,
+      Some(rendered) => rendered == measurement.rendered_prompt_sha256,
+    } &&
+    match attempt.generation_request {
+      None => false,
+      Some(request) => request.content_sha256 == measurement.generation_request.content_sha256,
+    } &&
+    match attempt.seed_attestation {
+      None => false,
+      Some(attestation) => attestation.content_sha256 == measurement.seed_attestation.content_sha256,
+    } &&
+    match attempt.adapter_request_sha256 { None => false, Some(_) => true } &&
+    // An attempt that ran attests the four trace records its invocation produced.
+    verifier_valid_optional_digest_present(attempt.snapshot_request_sha256) &&
+    verifier_valid_optional_digest_present(attempt.before_snapshot_result_sha256) &&
+    verifier_valid_optional_digest_present(attempt.after_snapshot_result_sha256) &&
+    verifier_valid_optional_digest_present(attempt.input_snapshot_sha256) &&
+    // Present exactly on a passing attempt, and never clamped: it is the evaluator-observed span
+    // minus the adapter's own reported window.
+    match attempt.adapter_overhead_ns {
+      None => measurement.status != "PASS",
+      Some(overhead) => measurement.status == "PASS" && overhead >= 0 &&
+      match measurement.generation_to_passing_patch_ns {
+        None => false,
+        Some(window) => overhead == attempt.adapter_elapsed_ns - window,
+      },
+    },
+  }
+}
+
+fn verifier_attempt_valid(
+  borrow attempt: prompt_artifacts.TaskAttemptRecord,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  expected_index: i64,
+  paired_seed: i64,
+  max_prompt_bytes: i64,
+) -> bool {
+  structural := attempt.schema_version == 1 &&
+  attempt.artifact_kind == "TASK_ATTEMPT_RECORD" &&
+  attempt.attempt_index == expected_index &&
+  verifier_attempt_kind_valid(attempt.attempt_kind) &&
+  verifier_attempt_status_valid(attempt.status) &&
+  verifier_skip_reason_valid(attempt.skip_reason) &&
+  // A skip reason is recorded exactly when the attempt was skipped.
+  (attempt.skip_reason == "NONE") != (attempt.status == "SKIPPED") &&
+  // Attempt one is the initial attempt; every later attempt is a repair.
+  (expected_index == 1) == (attempt.attempt_kind == "INITIAL") &&
+  attempt.paired_seed == paired_seed &&
+  attempt.repair_preparation_ns >= 0 &&
+  attempt.repair_preparation_ns <= 7_200_000_000_000 &&
+  attempt.adapter_elapsed_ns >= 0 &&
+  attempt.adapter_elapsed_ns <= 7_200_000_000_000 &&
+  (expected_index != 1 || attempt.repair_preparation_ns == 0) &&
+  verifier_valid_digest(attempt.content_sha256)
+  if !structural { return false }
+  source_valid := match attempt.repair_prompt_source {
+    None => true,
+    // Only a repair attempt carries a repair-prompt source.
+    Some(source) => attempt.attempt_kind == "REPAIR" &&
+    verifier_repair_prompt_source_valid(source, max_prompt_bytes),
+  }
+  if !source_valid { return false }
+  if attempt.status == "SKIPPED" { return verifier_skipped_attempt_valid(attempt) }
+  return verifier_ran_attempt_valid(attempt, task)
+}
+
+fn verifier_attempt_is_kind(borrow attempt: prompt_artifacts.TaskAttemptRecord, expected: str) -> bool {
+  return attempt.attempt_kind == expected
+}
+
+fn verifier_attempt_is_status(borrow attempt: prompt_artifacts.TaskAttemptRecord, expected: str) -> bool {
+  return attempt.status == expected
+}
+
+fn verifier_attempt_elapsed_ns(borrow attempt: prompt_artifacts.TaskAttemptRecord) -> i64 {
+  return attempt.adapter_elapsed_ns
+}
+
+fn verifier_attempt_preparation_ns(borrow attempt: prompt_artifacts.TaskAttemptRecord) -> i64 {
+  return attempt.repair_preparation_ns
+}
+
+fn verifier_attempt_measurement_equals(
+  borrow attempt: prompt_artifacts.TaskAttemptRecord,
+  borrow expected: prompt_artifacts.TaskMeasurement,
+) -> bool {
+  return match attempt.measurement {
+    None => false,
+    Some(measurement) => verifier_measurement_equal(measurement, expected),
+  }
+}
+
+RowRepairFacts {
+  repair_loop_count: i64,
+  generation_to_passing_patch_ns: Option<i64>,
+}
+
+fn verifier_attempts_walk(
+  borrow attempts: array<prompt_artifacts.TaskAttemptRecord>,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  borrow row_measurement: prompt_artifacts.TaskMeasurement,
+  paired_seed: i64,
+  max_prompt_bytes: i64,
+) -> Result<RowRepairFacts, Error> {
+  // Bounded before the list is walked: one initial attempt plus the task's own declared cap.
+  if attempts.len() < 1 { return Err(Error.Invalid) }
+  if attempts.len() > 1 + task.regression_limits.maximum_repair_loops { return Err(Error.Invalid) }
+  mut initial_count := 0
+  mut repair_count := 0
+  mut total := 0
+  mut passed := false
+  mut generation_ns: Option<i64> := None
+  mut last_ran := -1
+  mut index := 0
+  loop {
+    if index >= attempts.len() { break }
+    if !verifier_attempt_valid(attempts[index], task, index + 1, paired_seed, max_prompt_bytes) {
+      return Err(Error.Invalid)
+    }
+    if verifier_attempt_is_kind(attempts[index], "INITIAL") {
+      initial_count = initial_count + 1
+    }
+    if !verifier_attempt_is_status(attempts[index], "SKIPPED") {
+      if verifier_attempt_is_kind(attempts[index], "REPAIR") {
+        repair_count = repair_count + 1
+      }
+      last_ran = index
+      if !passed {
+        total = total.checked_add(verifier_attempt_elapsed_ns(attempts[index])) else {
+          return Err(Error.Invalid)
+        }
+        total = total.checked_add(verifier_attempt_preparation_ns(attempts[index])) else {
+          return Err(Error.Invalid)
+        }
+        if verifier_attempt_is_status(attempts[index], "PASS") {
+          if total <= 0 || total > 7_200_000_000_000 { return Err(Error.Invalid) }
+          passed = true
+          generation_ns = Some(total)
+        }
+      }
+    }
+    index = index + 1
+  }
+  if initial_count != 1 || repair_count > 1 || last_ran < 0 { return Err(Error.Invalid) }
+  // Ladder row 18: the row-level view is the final attempt that actually ran, so every existing
+  // consumer of `row.measurement.*` keeps reading the same document it always did.
+  if !verifier_attempt_measurement_equals(attempts[last_ran], row_measurement) {
+    return Err(Error.Invalid)
+  }
+  return Ok(RowRepairFacts {
+      repair_loop_count: repair_count,
+      generation_to_passing_patch_ns: generation_ns,
+    })
+}
+
+// A version-1 row has no row-level repair count, no row-level generation total, and no attempt
+// list, and is never given a compatibility default for one. The scorer selects by version; this
+// rejection is what keeps presence from ever standing in for a version.
+fn verifier_row_v2_members_absent(borrow row: prompt_artifacts.PromptTaskRow) -> bool {
+  return verifier_optional_i64_absent(row.repair_loop_count) &&
+  verifier_optional_i64_absent(row.generation_to_passing_patch_ns) &&
+  match row.attempts { None => true, Some(_) => false }
+}
+
+fn verifier_row_attempts_facts(
+  borrow row: prompt_artifacts.PromptTaskRow,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  max_prompt_bytes: i64,
+) -> Result<RowRepairFacts, Error> {
+  return match row.attempts {
+    None => Err(Error.Invalid),
+    Some(attempts) => verifier_attempts_walk(
+      attempts,
+      task,
+      row.measurement,
+      row.evaluation_input.paired_seed,
+      max_prompt_bytes,
+    ),
+  }
+}
+
+fn verifier_row_repair_facts(
+  borrow row: prompt_artifacts.PromptTaskRow,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  max_prompt_bytes: i64,
+) -> Result<RowRepairFacts, Error> {
+  if row.schema_version == 1 {
+    if !verifier_row_v2_members_absent(row) { return Err(Error.Invalid) }
+    return Ok(RowRepairFacts {
+        repair_loop_count: row.measurement.repair_loop_count,
+        generation_to_passing_patch_ns: row.measurement.generation_to_passing_patch_ns,
+      })
+  }
+  facts := verifier_row_attempts_facts(row, task, max_prompt_bytes)?
+  declared_loops := match row.repair_loop_count {
+    None => -1,
+    Some(value) => value,
+  }
+  if declared_loops != facts.repair_loop_count ||
+  declared_loops > task.regression_limits.maximum_repair_loops {
+    return Err(Error.Invalid)
+  }
+  if !verifier_optional_i64_equal(row.generation_to_passing_patch_ns, facts.generation_to_passing_patch_ns) {
+    return Err(Error.Invalid)
+  }
+  return Ok(facts)
+}
+
 fn verifier_score_row(
   borrow row: prompt_artifacts.PromptTaskRow,
   borrow task: prompt_artifacts.PromptEvaluationTask,
   evaluation_id: str,
   task_ordinal: i64,
+  max_prompt_bytes: i64,
 ) -> Result<ScoreRow, Error> {
-  if row.schema_version != 1 ||
+  if row.schema_version < 1 || row.schema_version > 2 ||
   row.artifact_kind != "PROMPT_TASK_ROW" ||
   row.evaluation_id != evaluation_id ||
   row.task_id != task.task_id ||
@@ -2819,7 +3265,10 @@ fn verifier_score_row(
     return Err(Error.Invalid)
   }
 
-  total_time_valid := match row.measurement.generation_to_passing_patch_ns {
+  // Version-selected sourcing. At version 1 the authority is the measurement; at version 2 it is
+  // the row, recomputed from the attempt list and never trusted as persisted.
+  facts := verifier_row_repair_facts(row, task, max_prompt_bytes)?
+  total_time_valid := match facts.generation_to_passing_patch_ns {
     None => match row.time_to_passing_patch_ns { None => true, Some(_) => false },
     Some(generation_time) => match row.time_to_passing_patch_ns {
       None => false,
@@ -2846,7 +3295,7 @@ fn verifier_score_row(
       failure_kind: failure,
       build_status: build,
       test_status: test,
-      repair_loop_count: row.measurement.repair_loop_count,
+      repair_loop_count: facts.repair_loop_count,
       unrelated_diff_count: row.measurement.unrelated_diff_count,
       patch_size_bytes: row.measurement.patch_size_bytes,
       public_api_change_count: row.measurement.public_api_change_count,
@@ -2855,7 +3304,7 @@ fn verifier_score_row(
       containment_passed: row.measurement.containment_passed,
       adapter_error: row.measurement.failure_kind == "ADAPTER",
       prompt_preparation_ns: row.prompt_preparation_ns,
-      generation_to_passing_patch_ns: row.measurement.generation_to_passing_patch_ns,
+      generation_to_passing_patch_ns: facts.generation_to_passing_patch_ns,
       time_to_passing_patch_ns: row.time_to_passing_patch_ns,
       benchmark_regression_ppm: row.measurement.benchmark_regression_ppm,
     })
@@ -2867,6 +3316,7 @@ fn verifier_expected_input_matches(
 ) -> bool {
   return expected.schema_version == 1 &&
   expected.artifact_kind == "PROMPT_EXPECTED_INPUT_DIGEST" &&
+  verifier_optional_i64_absent(expected.attempt_index) &&
   expected.task_id == row.task_id &&
   expected.sample_index == row.sample_index &&
   expected.variant == row.variant &&
@@ -2963,7 +3413,7 @@ fn verifier_tasks_valid(borrow result: prompt_artifacts.PromptEvaluationResult) 
   mut index := 0
   loop {
     if index >= result.tasks.len() { break }
-    if !verifier_task_valid(result.tasks[index]) {
+    if !verifier_task_valid(result.tasks[index], result.schema_version >= 2) {
       return false
     }
     if !verifier_task_context_valid(result.tasks[index], result) { return false }
@@ -4089,6 +4539,69 @@ fn verifier_attestation_references_input(
   }
 }
 
+// A row may now run more than one contained invocation, and each one produces its own snapshot
+// request, before/after results, and input snapshot. `snapshot_attestations` still carries exactly
+// one record per row, so a repair attempt's trace records are attested by the attempt record
+// instead. Every trace record therefore remains bound to the invocation that produced it: the
+// universal "no unreferenced trace record" guarantee is preserved, not weakened.
+fn verifier_attempt_references(
+  borrow attempt: prompt_artifacts.TaskAttemptRecord,
+  digest: str,
+  kind: i64,
+) -> bool {
+  if kind == 0 {
+    return match attempt.snapshot_request_sha256 { None => false, Some(value) => value == digest }
+  }
+  if kind == 1 {
+    before := match attempt.before_snapshot_result_sha256 { None => false, Some(value) => value == digest }
+    if before { return true }
+    return match attempt.after_snapshot_result_sha256 { None => false, Some(value) => value == digest }
+  }
+  return match attempt.input_snapshot_sha256 { None => false, Some(value) => value == digest }
+}
+
+fn verifier_attempt_list_references(
+  borrow attempts: array<prompt_artifacts.TaskAttemptRecord>,
+  digest: str,
+  kind: i64,
+) -> bool {
+  mut index := 0
+  loop {
+    if index >= attempts.len() { break }
+    if verifier_attempt_references(attempts[index], digest, kind) { return true }
+    index = index + 1
+  }
+  return false
+}
+
+// The row is taken as a `borrow` parameter rather than matched in place: reading a `Move`-type
+// field out of an array element is not expressible at the pinned compiler (the Request 22 class),
+// and a borrowed binding is the idiom the rest of this verifier already uses for the same reason.
+fn verifier_row_references_trace(
+  borrow row: prompt_artifacts.PromptTaskRow,
+  digest: str,
+  kind: i64,
+) -> bool {
+  return match row.attempts {
+    None => false,
+    Some(attempts) => verifier_attempt_list_references(attempts, digest, kind),
+  }
+}
+
+fn verifier_rows_reference_trace(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  digest: str,
+  kind: i64,
+) -> bool {
+  mut index := 0
+  loop {
+    if index >= result.rows.len() { break }
+    if verifier_row_references_trace(result.rows[index], digest, kind) { return true }
+    index = index + 1
+  }
+  return false
+}
+
 fn verifier_request_record_referenced(
   borrow request: prompt_artifacts.SnapshotRequest,
   borrow result: prompt_artifacts.PromptEvaluationResult,
@@ -4101,7 +4614,7 @@ fn verifier_request_record_referenced(
     }
     index = index + 1
   }
-  return false
+  return verifier_rows_reference_trace(result, request.content_sha256, 0)
 }
 
 fn verifier_result_record_referenced(
@@ -4116,7 +4629,7 @@ fn verifier_result_record_referenced(
     }
     index = index + 1
   }
-  return false
+  return verifier_rows_reference_trace(result, snapshot.content_sha256, 1)
 }
 
 fn verifier_input_record_referenced(
@@ -4131,7 +4644,7 @@ fn verifier_input_record_referenced(
     }
     index = index + 1
   }
-  return false
+  return verifier_rows_reference_trace(result, snapshot.content_sha256, 2)
 }
 
 fn verifier_all_trace_records_referenced(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
@@ -4317,15 +4830,35 @@ fn verifier_row_measurement_is_error(borrow row: prompt_artifacts.PromptTaskRow)
   return row.measurement.status == "ERROR"
 }
 
+// Total contained invocations across the document: at version 1 one per row, at version 2 the
+// number of attempts that actually ran. A skipped repair made no invocation and counts for none.
+fn verifier_ran_attempt_total(borrow result: prompt_artifacts.PromptEvaluationResult) -> i64 {
+  mut total := 0
+  mut index := 0
+  loop {
+    if index >= result.rows.len() { break }
+    row_attempts := verifier_row_ran_attempt_count(result.rows[index])
+    if row_attempts == 0 { total = total + 1 } else { total = total + row_attempts }
+    index = index + 1
+  }
+  return total
+}
+
 fn verifier_rows_and_attestations_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
   is_complete_result := verifier_complete_status(result.status)
   if is_complete_result {
     task_samples := result.tasks.len().checked_mul(result.sample_count) else { return false }
     expected := task_samples.checked_mul(2) else { return false }
+    // One attestation per row, still, because the schedule check binds them positionally. The
+    // *invocation* count is what grew: a row may now run up to `1 + maximum_repair_loops` contained
+    // invocations, each sealing its own prompt and so producing its own input snapshot. At version
+    // 1 every row runs exactly once, so `invocations` equals `expected` and this bound is the
+    // one it has always been.
+    invocations := verifier_ran_attempt_total(result)
     if result.rows.len() != expected ||
     result.snapshot_attestations.len() != expected ||
     result.input_snapshots.len() < result.tasks.len() ||
-    result.input_snapshots.len() > expected ||
+    result.input_snapshots.len() > invocations ||
     !verifier_preflight_is_safe(result) {
       return false
     }
@@ -4378,28 +4911,168 @@ fn verifier_rows_and_attestations_valid(borrow result: prompt_artifacts.PromptEv
   return true
 }
 
+// Version 1 binds one expected-input identity per row. Version 2 binds one per attempt that
+// actually ran, in row order then attempt order, so a skipped repair contributes no identity and
+// no duplicate, missing, or extra identity is admitted.
+fn verifier_row_ran_attempt_count(borrow row: prompt_artifacts.PromptTaskRow) -> i64 {
+  return match row.attempts {
+    None => 0,
+    Some(attempts) => verifier_ran_attempt_count(attempts),
+  }
+}
+
+fn verifier_ran_attempt_count(borrow attempts: array<prompt_artifacts.TaskAttemptRecord>) -> i64 {
+  mut count := 0
+  mut index := 0
+  loop {
+    if index >= attempts.len() { break }
+    if !verifier_attempt_is_status(attempts[index], "SKIPPED") { count = count + 1 }
+    index = index + 1
+  }
+  return count
+}
+
+fn verifier_expected_attempt_matches_row(
+  borrow expected: prompt_artifacts.PromptExpectedInputDigest,
+  borrow row: prompt_artifacts.PromptTaskRow,
+  ordinal: i64,
+) -> bool {
+  return match row.attempts {
+    None => false,
+    Some(attempts) => verifier_expected_attempt_matches_list(expected, row, attempts, ordinal),
+  }
+}
+
+fn verifier_expected_attempt_matches_list(
+  borrow expected: prompt_artifacts.PromptExpectedInputDigest,
+  borrow row: prompt_artifacts.PromptTaskRow,
+  borrow attempts: array<prompt_artifacts.TaskAttemptRecord>,
+  ordinal: i64,
+) -> bool {
+  mut seen := 0
+  mut index := 0
+  loop {
+    if index >= attempts.len() { break }
+    if !verifier_attempt_is_status(attempts[index], "SKIPPED") {
+      if seen == ordinal {
+        return verifier_expected_input_matches_attempt(expected, row, attempts[index])
+      }
+      seen = seen + 1
+    }
+    index = index + 1
+  }
+  return false
+}
+
+fn verifier_expected_input_matches_attempt(
+  borrow expected: prompt_artifacts.PromptExpectedInputDigest,
+  borrow row: prompt_artifacts.PromptTaskRow,
+  borrow attempt: prompt_artifacts.TaskAttemptRecord,
+) -> bool {
+  identity := expected.schema_version == 2 &&
+  expected.artifact_kind == "PROMPT_EXPECTED_INPUT_DIGEST" &&
+  expected.task_id == row.task_id &&
+  expected.sample_index == row.sample_index &&
+  expected.variant == row.variant &&
+  match expected.attempt_index {
+    None => false,
+    Some(value) => value == attempt.attempt_index,
+  } &&
+  verifier_valid_digest(expected.rendered_prompt_sha256) &&
+  verifier_valid_digest(expected.context_sources_sha256) &&
+  verifier_valid_digest(expected.generation_request_sha256) &&
+  verifier_valid_digest(expected.adapter_request_sha256) &&
+  verifier_valid_digest(expected.provider_request_sha256) &&
+  verifier_valid_digest(expected.content_sha256) &&
+  expected.context_sources_sha256 == row.evaluation_input.context_sources_sha256
+  if !identity { return false }
+  return match attempt.rendered_prompt_sha256 {
+    None => false,
+    Some(rendered) => expected.rendered_prompt_sha256 == rendered,
+  } && match attempt.adapter_request_sha256 {
+    None => false,
+    Some(request) => expected.adapter_request_sha256 == request,
+  } && match attempt.generation_request {
+    None => false,
+    Some(generation) => expected.generation_request_sha256 == generation.content_sha256 &&
+    expected.provider_request_sha256 == generation.provider_request_sha256,
+  }
+}
+
 fn verifier_expected_inputs_valid(
   borrow result: prompt_artifacts.PromptEvaluationResult,
   borrow evidence: prompt_artifacts.PromptEvaluationEvidence,
 ) -> bool {
-  if evidence.expected_inputs.len() != result.rows.len() { return false }
-  mut index := 0
-  loop {
-    if index >= result.rows.len() { break }
-    if !verifier_expected_input_matches(evidence.expected_inputs[index], result.rows[index]) {
-      return false
-    }
-    mut prior := 0
+  if result.schema_version == 1 {
+    if evidence.expected_inputs.len() != result.rows.len() { return false }
+    mut index := 0
     loop {
-      if prior >= index { break }
-      if verifier_expected_input_same_identity(evidence.expected_inputs[prior], evidence.expected_inputs[index]) {
+      if index >= result.rows.len() { break }
+      if !verifier_expected_input_matches(evidence.expected_inputs[index], result.rows[index]) {
         return false
       }
-      prior = prior + 1
+      mut prior := 0
+      loop {
+        if prior >= index { break }
+        if verifier_expected_input_same_identity(evidence.expected_inputs[prior], evidence.expected_inputs[index]) {
+          return false
+        }
+        prior = prior + 1
+      }
+      index = index + 1
     }
-    index = index + 1
+    return true
+  }
+  mut expected_total := 0
+  mut row_index := 0
+  loop {
+    if row_index >= result.rows.len() { break }
+    expected_total = expected_total + verifier_row_ran_attempt_count(result.rows[row_index])
+    row_index = row_index + 1
+  }
+  if evidence.expected_inputs.len() != expected_total { return false }
+  mut cursor := 0
+  mut row_cursor := 0
+  loop {
+    if row_cursor >= result.rows.len() { break }
+    ran := verifier_row_ran_attempt_count(result.rows[row_cursor])
+    mut ordinal := 0
+    loop {
+      if ordinal >= ran { break }
+      if !verifier_expected_attempt_matches_row(
+        evidence.expected_inputs[cursor],
+        result.rows[row_cursor],
+        ordinal,
+      ) {
+        return false
+      }
+      mut prior := 0
+      loop {
+        if prior >= cursor { break }
+        if verifier_expected_attempt_same_identity(
+          evidence.expected_inputs[prior],
+          evidence.expected_inputs[cursor],
+        ) {
+          return false
+        }
+        prior = prior + 1
+      }
+      cursor = cursor + 1
+      ordinal = ordinal + 1
+    }
+    row_cursor = row_cursor + 1
   }
   return true
+}
+
+fn verifier_expected_attempt_same_identity(
+  borrow left: prompt_artifacts.PromptExpectedInputDigest,
+  borrow right: prompt_artifacts.PromptExpectedInputDigest,
+) -> bool {
+  return left.task_id == right.task_id &&
+  left.sample_index == right.sample_index &&
+  left.variant == right.variant &&
+  verifier_optional_i64_equal(left.attempt_index, right.attempt_index)
 }
 
 fn verifier_expected_input_same_identity(
@@ -4433,6 +5106,10 @@ fn verifier_build_rows(
   return Ok(values.build())
 }
 
+fn verifier_result_max_prompt_bytes(borrow result: prompt_artifacts.PromptEvaluationResult) -> i64 {
+  return match result.generation_policy { None => 0, Some(policy) => policy.max_prompt_bytes }
+}
+
 fn verifier_score_row_for_result(
   borrow row: prompt_artifacts.PromptTaskRow,
   borrow task: prompt_artifacts.PromptEvaluationTask,
@@ -4441,7 +5118,13 @@ fn verifier_score_row_for_result(
 ) -> Result<ScoreRow, Error> {
   return match result.evaluation_id {
     None => Err(Error.Invalid),
-    Some(evaluation_id) => verifier_score_row(row, task, evaluation_id, task_ordinal),
+    Some(evaluation_id) => verifier_score_row(
+      row,
+      task,
+      evaluation_id,
+      task_ordinal,
+      verifier_result_max_prompt_bytes(result),
+    ),
   }
 }
 
@@ -4507,15 +5190,132 @@ fn verifier_bool_array(count: i64) -> array<bool> {
 
 fn verifier_reason_capacity(task_count: i64, sample_count: i64) -> Result<i64, Error> {
   pairs := task_count.checked_mul(sample_count) else { return Err(Error.Invalid) }
-  pair_reasons := pairs.checked_mul(9) else { return Err(Error.Invalid) }
+  // Ten per-pair reasons since C4-REPAIR-MEASURED made the `REPAIR_LOOPS` cap variant-symmetric.
+  // The ceiling is the worst case at the declared bounds: 64 tasks * 16 samples * 10, plus one
+  // per-task `TIME` reason, plus the two corpus-level reasons.
+  pair_reasons := pairs.checked_mul(10) else { return Err(Error.Invalid) }
   with_tasks := pair_reasons.checked_add(task_count) else { return Err(Error.Invalid) }
   capacity := with_tasks.checked_add(2) else { return Err(Error.Invalid) }
-  if capacity < 0 || capacity > 9_282 { return Err(Error.Invalid) }
+  if capacity < 0 || capacity > 10_306 { return Err(Error.Invalid) }
   return Ok(capacity)
+}
+
+// --- C4 repair aggregates, recomputed and never trusted from the persisted document ----------
+
+fn verifier_row_repair_attempted(borrow row: prompt_artifacts.PromptTaskRow) -> bool {
+  return match row.repair_loop_count { None => false, Some(value) => value >= 1 }
+}
+
+// The section 1.4 gate predicate on one row.
+fn verifier_row_repair_recovered(borrow row: prompt_artifacts.PromptTaskRow) -> bool {
+  return match row.attempts {
+    None => false,
+    Some(attempts) => attempts.len() == 2 &&
+    verifier_attempt_is_kind(attempts[0], "INITIAL") &&
+    verifier_attempt_is_status(attempts[0], "FAIL") &&
+    verifier_attempt_is_kind(attempts[1], "REPAIR") &&
+    verifier_attempt_is_status(attempts[1], "PASS"),
+  }
+}
+
+RepairAggregate {
+  attempted: i64,
+  recovered: i64,
+  paired: bool,
+}
+
+fn verifier_variant_repair_aggregate(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  task: i64,
+  parent: bool,
+) -> RepairAggregate {
+  sample_count := result.sample_count
+  mut attempted := 0
+  mut recovered := 0
+  mut every := true
+  mut sample := 1
+  loop {
+    if sample > sample_count { break }
+    base := pair_start(task, sample, sample_count)
+    index := if parent { parent_index(base, sample) } else { candidate_index(base, sample) }
+    if verifier_row_repair_attempted(result.rows[index]) { attempted = attempted + 1 }
+    if verifier_row_repair_recovered(result.rows[index]) {
+      recovered = recovered + 1
+    } else {
+      every = false
+    }
+    sample = sample + 1
+  }
+  return RepairAggregate {
+    attempted: attempted,
+    recovered: recovered,
+    // A (task, variant) pair counts only when every paired sample recovered, so one lucky sample
+    // is not a reproducible recovery.
+    paired: every && sample_count > 0,
+  }
+}
+
+fn verifier_optional_i64_is(value: Option<i64>, expected: i64) -> bool {
+  return match value { None => false, Some(actual) => actual == expected }
+}
+
+fn verifier_optional_bool_is(value: Option<bool>, expected: bool) -> bool {
+  return match value { None => false, Some(actual) => actual == expected }
+}
+
+fn verifier_task_repair_aggregate_matches(
+  borrow persisted: prompt_artifacts.TaskAggregate,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  ordinal: i64,
+) -> bool {
+  if result.schema_version == 1 {
+    // A version-1 document carries no repair aggregates and is never given defaults for them.
+    return verifier_optional_i64_absent(persisted.parent_repair_attempt_count) &&
+    verifier_optional_i64_absent(persisted.candidate_repair_attempt_count) &&
+    verifier_optional_i64_absent(persisted.parent_repair_recovery_count) &&
+    verifier_optional_i64_absent(persisted.candidate_repair_recovery_count) &&
+    match persisted.repair_recovery_paired { None => true, Some(_) => false }
+  }
+  parent := verifier_variant_repair_aggregate(result, ordinal, true)
+  candidate := verifier_variant_repair_aggregate(result, ordinal, false)
+  return verifier_optional_i64_is(persisted.parent_repair_attempt_count, parent.attempted) &&
+  verifier_optional_i64_is(persisted.candidate_repair_attempt_count, candidate.attempted) &&
+  verifier_optional_i64_is(persisted.parent_repair_recovery_count, parent.recovered) &&
+  verifier_optional_i64_is(persisted.candidate_repair_recovery_count, candidate.recovered) &&
+  verifier_optional_bool_is(persisted.repair_recovery_paired, parent.paired || candidate.paired)
+}
+
+fn verifier_corpus_repair_aggregate_matches(
+  borrow persisted: prompt_artifacts.CorpusAggregate,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if result.schema_version == 1 {
+    return verifier_optional_i64_absent(persisted.repair_attempt_count) &&
+    verifier_optional_i64_absent(persisted.repair_recovery_count) &&
+    verifier_optional_i64_absent(persisted.repair_recovery_paired_count)
+  }
+  mut attempted := 0
+  mut recovered := 0
+  mut paired := 0
+  mut task := 0
+  loop {
+    if task >= result.tasks.len() { break }
+    parent := verifier_variant_repair_aggregate(result, task, true)
+    candidate := verifier_variant_repair_aggregate(result, task, false)
+    attempted = attempted + parent.attempted + candidate.attempted
+    recovered = recovered + parent.recovered + candidate.recovered
+    if parent.paired { paired = paired + 1 }
+    if candidate.paired { paired = paired + 1 }
+    task = task + 1
+  }
+  return verifier_optional_i64_is(persisted.repair_attempt_count, attempted) &&
+  verifier_optional_i64_is(persisted.repair_recovery_count, recovered) &&
+  verifier_optional_i64_is(persisted.repair_recovery_paired_count, paired)
 }
 
 fn verifier_task_aggregate_matches(
   borrow persisted: prompt_artifacts.TaskAggregate,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
   ordinal: i64,
   task_id: str,
   task_ordinal: slice<i64>,
@@ -4535,6 +5335,7 @@ fn verifier_task_aggregate_matches(
 ) -> bool {
   return persisted.task_id == task_id &&
   task_ordinal[ordinal] == ordinal &&
+  verifier_task_repair_aggregate_matches(persisted, result, ordinal) &&
   persisted.parent_pass_count == parent_pass[ordinal] &&
   persisted.candidate_pass_count == candidate_pass[ordinal] &&
   persisted.parent_repair_loop_count == parent_repairs[ordinal] &&
@@ -4748,6 +5549,7 @@ fn verifier_aggregate_valid(
     if index >= task_count { break }
     if !verifier_task_aggregate_matches(
       result.task_aggregates[index],
+      result,
       index,
       result.tasks[index].task_id,
       task_ordinal,
@@ -4794,7 +5596,8 @@ fn verifier_aggregate_valid(
 
   corpus_valid := match result.corpus_aggregate {
     None => false,
-    Some(corpus) => verifier_corpus_aggregate_matches(corpus, scored.corpus),
+    Some(corpus) => verifier_corpus_aggregate_matches(corpus, scored.corpus) &&
+    verifier_corpus_repair_aggregate_matches(corpus, result),
   }
   if !corpus_valid { return Err(Error.Invalid) }
   return Ok(scored.corpus)
@@ -4988,18 +5791,16 @@ pub fn verify_result(
   borrow result: prompt_artifacts.PromptEvaluationResult,
   borrow evidence: prompt_artifacts.PromptEvaluationEvidence,
 ) -> Result<PromptScoreStatus, Error> {
-  if !verifier_base_result_valid(result) || !verifier_pair_identity_valid(result, evidence) {
-    return Err(Error.Invalid)
-  }
+  if !verifier_base_result_valid(result) { return Err(Error.Invalid) }
+  if !verifier_pair_identity_valid(result, evidence) { return Err(Error.Invalid) }
   if result.error_code == "RESULT_TOO_LARGE" {
     if !verifier_compact_result_valid(result, evidence) {
       return Err(Error.Invalid)
     }
     return Ok(PromptScoreStatus.NoncompleteError)
   }
-  if !verifier_common_identity_valid(result) || !verifier_scope_trust_valid(result, evidence) {
-    return Err(Error.Invalid)
-  }
+  if !verifier_common_identity_valid(result) { return Err(Error.Invalid) }
+  if !verifier_scope_trust_valid(result, evidence) { return Err(Error.Invalid) }
   if result.status == "INVALID_INPUT" {
     if !verifier_invalid_result_shape(result) ||
     !verifier_invalid_embedded_state_valid(result) ||
@@ -5008,25 +5809,21 @@ pub fn verify_result(
     }
     return Ok(PromptScoreStatus.NoncompleteError)
   }
-  if !verifier_complete_inputs_present(result) ||
-  !verifier_tasks_valid(result) ||
-  !verifier_policy_fits_result(result) ||
-  !verifier_workspace_trace_valid(result) ||
-  !verifier_trace_arrays_valid(result) ||
-  !verifier_rows_and_attestations_valid(result) ||
-  !verifier_expected_inputs_valid(result, evidence) {
-    return Err(Error.Invalid)
-  }
+  if !verifier_complete_inputs_present(result) { return Err(Error.Invalid) }
+  if !verifier_tasks_valid(result) { return Err(Error.Invalid) }
+  if !verifier_policy_fits_result(result) { return Err(Error.Invalid) }
+  if !verifier_workspace_trace_valid(result) { return Err(Error.Invalid) }
+  if !verifier_trace_arrays_valid(result) { return Err(Error.Invalid) }
+  if !verifier_rows_and_attestations_valid(result) { return Err(Error.Invalid) }
+  if !verifier_expected_inputs_valid(result, evidence) { return Err(Error.Invalid) }
   if result.status == "ERROR" {
     if !verifier_error_result_shape(result) { return Err(Error.Invalid) }
     return arena out {
       verifier_noncomplete_prefix(out, result)
     }
   }
-  if !verifier_complete_status(result.status) ||
-  !verifier_complete_environment_valid(result) {
-    return Err(Error.Invalid)
-  }
+  if !verifier_complete_status(result.status) { return Err(Error.Invalid) }
+  if !verifier_complete_environment_valid(result) { return Err(Error.Invalid) }
   return arena out {
     verifier_complete_score(out, result, evidence)
   }

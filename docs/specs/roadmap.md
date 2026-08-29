@@ -532,6 +532,41 @@ The current forward delivery order is:
     invalidation, and weights re-read once per step, does not answer it; the gate stays unmet and
     the next capability toward it is resident weights.
 
+> Items 29 (`R6-KV-PERSIST`) and 30 (`R6-RESIDENT-WEIGHTS`) are added on the Track B branches and
+> are not yet on this branch's base, `main` `3df063b`. Item 31 below is numbered on the assumption
+> that both land first; the number is corrected at reconciliation if that changes.
+
+31. **C4-REPAIR-MEASURED — one bounded model repair attempt in the provider-backed measurement
+    path.** The first Track A capability since the C6-MEASURED wave, and the one that closes C4's
+    roadmap gate with a model instead of a scripted patch. Design and results in
+    [`c4-repair-measured.md`](c4-repair-measured.md), which owns the contract ledger, closure
+    matrix, repair-prompt contract, cost ceiling, gate statement, and the implementation record.
+    The design gate triggered on the `PROMPT_TASK_ROW` schema-2 per-attempt identity, a new frozen
+    corpus scope, and a coordinated invariant across `scripts/prompt-evaluate.py`,
+    `src/prompt_score.align`, and the corpus assets. After a first-attempt validation `FAIL`, the
+    evaluator renders a repair prompt from the run's **own** redacted validation diagnostics, calls
+    `prompt generate` a second time, and validates again; `generation_to_passing_patch_ns` then
+    includes the repair, as C6 section 5.2 has always contracted and never exercised. The repair
+    prompt carries the failing attempt's status labels, diagnostic summary, stdout, and stderr but
+    **not its edit set**: the model's output lives only inside the adapter and is dropped when it
+    returns, so a diagnostics-driven second attempt is what an evaluator-owned loop can deliver
+    without breaking the freeze. That narrowing, and the two ways to lift it, are recorded in the
+    plan. **The adapter and the validation runner are byte-identical**: both are frozen `FILE_SET`
+    members of `canonical-v1`, so the loop is evaluator-owned and the corpus is a new freeze,
+    `eval/prompt/canonical-v1r/` over the same three tasks with `maximum_repair_loops: 1` so the
+    manifest itself is the cap. The 24 shared file-set members carry identical digests in both
+    manifests, and `make prompt-gate-check` staying green is the machine-checkable proof that C6's
+    merged evidence was not disturbed. The gate: on 3 tasks x 2 variants x 2 paired samples at
+    temperature 0 and `PAIRED_FIXED`, at least one (task, variant) pair fails at attempt 1 and
+    passes at attempt 2 in **both** samples. Ten of the twelve frozen C6 rows fail at attempt 1, so
+    the arm is substantial. **A measured negative is a published result, not a hidden one.** No
+    speed claim is made: the two C6 timings for one identical prompt at temperature 0 differ by
+    3.5x (81.12 s and 23.40 s), so `n=2` supports no baseline, and the version-2 totals are a
+    superset of the version-1 ones anyway. Recorded run-cost ceiling 60 minutes, expected 15-40, at
+    most 22 provider calls. Named focused qualification `make c4-repair-gate`; it joins no
+    aggregate. Multi-repair, corpus expansion, failure-memory feedback, and converging the Align
+    `verification_loop`/`repair` modules with this loop are deferred with resume conditions.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
@@ -736,6 +771,14 @@ repair
 ### Gate
 
 少なくとも一部の固定タスクで、初回失敗から自動修正してtest passまで到達すること。
+
+### First measured consumer: C4-REPAIR-MEASURED
+
+C4's gate was met in mechanism by `make verify-loop-smoke`, whose repair patch is a checked-in
+deterministic input rather than a model. `docs/specs/c4-repair-measured.md` is the authoritative
+plan for meeting it with a real provider on the C6 measurement path. It is provider-independent —
+no provider module changes — and it does not modify `src/repair.align` or
+`src/verification_loop.align`; converging the two loops is a named deferral in that document.
 
 ---
 

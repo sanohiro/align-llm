@@ -3,6 +3,229 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
+## Active: C4-REPAIR-MEASURED (2026-08-29)
+
+Branch `agent/c4-repair-measured`, based on `main` `3df063b`. Track A re-entry after the Track B
+R-wave; Track B's `agent/r6-step-n` section below stays active on its own branch.
+
+**Capability.** One bounded model repair attempt in the provider-backed measurement path.
+`docs/specs/c4-repair-measured.md` is the authoritative ledger and now carries an implementation
+record in its section 10 — the ledger-to-diff mapping, nine recorded deviations, and the measured
+gate result. After a first-attempt validation `FAIL`, `scripts/prompt-evaluate.py` renders a repair
+prompt from that attempt's **own** redacted validation status labels, diagnostic summary, stdout,
+and stderr, calls `prompt generate` a second time against a fresh pinned checkout, validates again,
+and records per-attempt identity and timing in `PROMPT_TASK_ROW` at `schema_version: 2`.
+
+**The constraint that shaped it.** `scripts/prompt-measurement-adapter.py`,
+`eval/runners/run-coding-task.py`, `scripts/prompt-fixed-adapter.py`,
+`scripts/prompt-snapshot-helper.py`, and the three `eval/tasks/prompt-v1/*.json` manifests are
+digest-verified members of `eval/prompt/canonical-v1/corpus-file-set.manifest`, which
+`make prompt-gate-check` verifies against the **current head's bytes**. Editing any of them breaks
+the merged C6-MEASURED gate. So the loop is evaluator-owned, those files are byte-identical, and the
+corpus is a new freeze at `eval/prompt/canonical-v1r/` + `eval/tasks/prompt-v1r/` with
+`maximum_repair_loops: 1`. The 24 file-set members the two corpora share carry **identical digests**
+in both manifests; that identity plus a green `make prompt-gate-check` is the non-mutation evidence.
+
+**Two constraints found during design and confirmed in implementation.** (1) The failing **edit set
+cannot be in the repair prompt** — the model's output lives only inside the frozen adapter and is
+dropped when it returns — so this is a diagnostics-driven second attempt. Spec section 2.6 records
+the narrowing, 5.4 the deferral, 5.7 the two ways to lift it. (2) `src/prompt_evaluate.align` pins
+`scripts/prompt-evaluate.py` byte-exactly **and** bounds its length. The three-chunk window
+(131,073…196,608 bytes) was too small: the evaluator is now 212,879 bytes, so the window is widened
+to four chunks (196,609…262,144) and `EVALUATOR_BOOTSTRAP` pops four arguments. Spec section 3.10
+named this escape before implementation; it is a deliberate public change to the launch contract.
+
+**Complete.** The evaluator attempt loop and repair-prompt assembly, with whole-section drop
+precedence `STDOUT -> STDERR -> SUMMARY` and `STATUS` never dropped; `PROMPT_TASK_ROW` /
+`PROMPT_EVALUATION_RESULT` / `PROMPT_EVALUATION_EVIDENCE` / `PROMPT_EXPECTED_INPUT_DIGEST` at
+version 2 with `PromptTaskRowV2` and version-dispatched decode; evaluator-observed
+`generation_to_passing_patch_ns` including the repair, with `adapter_overhead_ns` published on
+every passing attempt so the version-1-to-version-2 gap is measured rather than argued; the new
+corpus freeze and `scripts/freeze-canonical-v1r`; `scripts/probe-provider-service`;
+`scripts/run-c4-repair-gate` and the `make c4-repair-gate` target, which joins no aggregate
+(`make gate-topology-check` passes with its byte-literal `EXPECTED` unmoved).
+
+**Schema shape, decided against the plan and recorded.** Spec section 3.3 called for a parallel
+`PromptTaskRowV2` record. Implementation took a third route the plan did not consider: the existing
+records gained the version-2 members as `Option`, verified against the pinned compiler
+(`Option<array<T>>` decodes a missing key to `None`; `encode` omits a `None`, so frozen version-1
+documents round-trip byte-identically). The invariant the plan protects is enforced *more* strictly
+than the twin would have — the scorer reads `schema_version` first, then requires every version-2
+member present at 2 and **absent** at 1, so presence can never stand in for a version in either
+direction. The twin would have duplicated ~60 verifier functions across 89
+`PromptEvaluationResult` references including containment and snapshot-trace logic, which is the
+duplication section 5.7 refuses for the adapter. `src/prompt_artifact_io.align` needed no change.
+Recorded as deviation 10 in spec section 10.2; section 3.3's prose should be corrected.
+
+**Verification so far (macOS host).** `gmake build`, `gmake check` (31 units), `gmake fmt`,
+`gmake format-check`, `gmake gate-topology-check`, and `prompt-score-smoke`,
+`prompt-score-prefix-smoke`, `prompt-verifier-smoke`, `prompt-model-smoke`, `prompt-state-smoke`,
+`prompt-gate-validator-smoke` all PASS. The gate validator's nine families also pass inside
+`c4-repair-measure:latest` on linux/arm64. `EVALUATOR_SOURCE_SHA256` is re-pinned to
+`52cda4be999f21359ac7a94183fdbf80c8d4a9a9a6beab4246c07fb5d246cf72` (213,687 bytes).
+`git diff --check` clean. Nothing committed.
+
+**`make prompt-gate-check` is not runnable on this host, for three reasons, none of them this
+change.** The frozen gate locator pins `generation_child_sha256 6650e448…`, a `./main` built at the
+C6 head `762b1d0f` — reproducing it needs a checkout at that commit built with the C6-era compiler
+(which does exist: the Linux `alignc` in `scratchpad/toolchain/` embeds the C6 pin `2f33ac5c`). The
+bundle also needs a clean align-llm checkout at a tested head, which does not exist while this
+branch is uncommitted. The Align half **is** available despite appearances — not at the sibling
+`~/Projects/align` (at `4b515f8d…`, missing the pinned object) but at
+`~/.cache/align-llm/align/dev-v1/3a34febe912db5096c58c74fede36ff53f223e04`, a clean checkout at
+exactly the pin. What was run instead, and is now a permanent regression rather than a one-off:
+`validate_evaluation_pair` and `rescore` driven directly against the frozen `eval/prompt/gate/`
+chain, proving version 1 still validates and rescores byte-identically; plus an Align-side probe
+proving the frozen result and sidecar decode, re-encode, and verify to `ImprovedEligible`, matching
+C6's recorded `IMPROVED` / `gate_eligible: true`. Independently: all 27 `canonical-v1` file-set
+members still hash to their manifest entries at this head, and `scripts/prompt-source-verifier.py`
+still matches the locator's pin.
+
+**Align capability request filed.** **Request 52** — `match` on an **owned** record's `Option` field
+partially moves the payload out with no diagnostic, and a later `json.encode` of that still-live
+record silently omits the field. Because `src/prompt_evaluate.align` decodes the evaluator's output
+and re-encodes it to produce the persisted artifact, that is a silent-wrong-artifact hazard, not a
+compile error. Every `Option` member this capability adds is read through a `borrow` binding, which
+is safe. The array-indexing refusal also hit is the already-filed Request 22.
+
+**Provider topology, decided and exercised.** Validation stays in `bwrap` inside a Linux aarch64
+Docker container (Docker 28.5.1). The evaluation image is `c4-repair-measure:latest`, built from
+the C6 measurement image by adding exactly `bubblewrap` and `socat`; `/usr/bin/python3`
+(`a7d56a8a764f…`) and `/usr/bin/git` (`aa654069…`) keep the digests the C6 gate locator pins.
+Generation reaches the host `llama-server` through a container-local `socat` forwarder on
+`127.0.0.1:18080`, so `evaluation-provider-control.json` stays byte-identical and no
+machine-specific hostname reaches a persisted artifact. The available server is **not** C6's:
+Homebrew llama.cpp 0.2.0, build 10566, commit `bb4caa754`, sha256 `b6ff7e91…`, Darwin arm64,
+against C6's `b10610+a14dba686…` / `e3905073…`. The **model file did not move**: its sha256 is
+`509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c`, exactly C6's `model-sha256`.
+`canonical-v1r/generation-policy.json` records the observed revision, and a fail-closed host probe
+plus an in-band model-id check enforce it.
+
+**No speed claim.** The two frozen C6 timings for one identical prompt at temperature 0 are
+81,123,017,079 ns and 23,395,804,636 ns — a 3.5x spread at `n=2`. Version-2 totals are a superset
+of version-1's and are not comparable to them. Recorded run-cost ceiling is 60 minutes wall clock,
+expected 15-40, at most 22 provider calls.
+
+**Host coordination.** The gate run needs the host `llama-server` and the 4.7 GB model. Track B
+runs a real-model CPU benchmark in a sibling worktree; do not start `llama-server` while
+`pgrep -f 'ggml-spike --decode-step'` or `pgrep -f run-decode-step` returns anything, and never
+kill another agent's process.
+
+**Known caveat for the measured run.** `scripts/prompt-source-verifier.py` verifies source
+reachability only against a **clean** checkout at the expected commit. While this branch is
+uncommitted, align-llm reachability will not be `VERIFIED` and the C6 `gate_eligible` will be
+false. The C4 gate consumes `corpus_aggregate.repair_recovery_paired_count` **only** (spec sections
+1.4 and 3.7), so the verdict stands either way — but the checked-in gate evidence should be
+regenerated at the final reviewed head before publication so the trust record is `VERIFIED`.
+
+**Gate-run prerequisites discovered while wiring the topology, all recorded here because each
+one is a real step the next session must take.**
+
+1. **A linked worktree's `.git` is a file naming a common directory outside the bind mount**, so a
+   bare `-v <checkout>:/work/align-llm` makes every `git rev-parse` inside the container fail.
+   `scripts/run-c4-repair-gate` resolves `git rev-parse --git-common-dir` and mounts it read-only
+   at its own absolute path when it lies outside the checkout; a read-only mount is enough for
+   both `rev-parse` and `status --porcelain`.
+2. **There is no Linux build of the pinned compiler on this host.** `scripts/align-toolchain`
+   materialized only `aarch64-apple-darwin`; the Linux `alignc` in `scratchpad/toolchain/` embeds
+   `2f33ac5c33a898a7894af58322852632ce6ffe42`, the **C6-era** pin, not `3a34febe…`. The derived
+   `./main` for the gate run must be built by a Linux `alignc` at the exact `.align-revision`, so
+   one must be cargo-built first — `align-llm-align:latest` carries rustc 1.96.0 and cargo, and the
+   Align source at the pin is already checked out clean at
+   `~/.cache/align-llm/align/dev-v1/3a34febe912db5096c58c74fede36ff53f223e04`. That build is
+   CPU-heavy and must not run while Track B's real-model benchmark is measuring on this host.
+3. **The evaluation image is `c4-repair-measure:latest`**, built from the C6 measurement image by
+   adding `bubblewrap` and `socat`, which that image lacks. The container-local forwarder is
+   verified working: `127.0.0.1:18080` inside the container reaches the host.
+
+**GATE RESULT: `NOT_MET` — a measured negative, delivered as one.** The full run completed: 12 rows,
+3 tasks x 2 variants x 2 paired samples, temperature 0, `PAIRED_FIXED`, **22 provider generation
+calls** (exactly the section 5.2 estimate of 12 + 10), about 10 minutes wall clock against a
+60-minute ceiling. `repair_recovery_paired_count: 0` and `repair_recovery_count: 0` — across ten
+repair attempts **not one row recovered**. The per-row table, aggregates, timings, and analysis are
+in spec section 10.3. Evidence is checked in at `eval/prompt/c4-repair-gate/`.
+
+The mechanism is proved even though the model is refuted: all ten repair prompts assembled from the
+run's own persisted diagnostics, re-derived byte-exactly, and stayed far inside the prompt budget
+(8,123-16,129 bytes against 65,536), so no section was ever dropped. `adapter_overhead_ns` on the
+two passing attempts was 113.7 ms and 115.2 ms — the section 3.6 timing redefinition costs about
+0.4% of a passing row, now measured rather than argued. `adapter_elapsed_ns` spanned 11.40 s to
+81.19 s (median 27.47 s), reproducing section 2.1's 3.5x spread, so **no speed claim is made**.
+
+**The finding that matters for section 5.7.** Both `record-codec-round-trip` CANDIDATE rows produced
+`patch_size_bytes: 1008` on *both* attempts — given its own failing diagnostics the model re-emitted
+the identical patch. Both `layer-precedence-frozen-module` CANDIDATE repairs returned
+`POLICY_VIOLATION` with an empty patch, and both PARENT repairs there failed at `PATCH`, also empty.
+Section 5.7 named exactly this case as its tie-breaker: attempt 2 repeating attempt 1's mistake is
+direct evidence that **the missing edit set is the binding constraint**, which promotes option B (a
+second corpus-member adapter carrying the failing edits into the repair prompt) from speculative to
+the obvious next capability.
+
+**One defect remains open.** `./main prompt evaluate` ran the identical 22 calls but its Align-side
+`prompt_score.verify_result` **rejected the version-2 document at publish time** (`./main` exits 2,
+`EVALUATION_FAILED`; the Python evaluator exits 0 with empty stderr, so the producer is fine). The
+checked-in evidence is therefore the reviewed evaluator's own canonical output, captured via
+`scripts/run-c4-repair-gate --diagnose`, and has not been through the Align encoder — so it writes
+an `Option::None` as `null` where the publisher would omit it. The measured outcome is unaffected.
+Closing that rejection and re-publishing through `./main` is the first next action; `verify_result`
+returns a bare `Err(Error.Invalid)`, so it needs a bisect against the checked-in document.
+
+**Superseded below** — kept as the record of what was unresolved before the run completed.
+
+**Gate run: attempted, reached the provider, not yet obtained.** `llama-server` ran, the probe
+passed, the container forwarder worked, and **real generations were produced** (server log: 1,211
+tokens, ~18 s for the first). The run aborts with `ERROR` / `ADAPTER_RESULT`, detail `contained
+validation runner failed; applied edits: src/duration.py` — the `bwrap` containment that
+`eval/runners/run-coding-task.py` wraps every fixture command in does not come up inside the Docker
+container. Five real defects were found and fixed getting this far, all in my own runner:
+
+1. The in-band model check ran on the host but dialed `host.docker.internal`, a container-side name.
+2. `/usr/bin/python3` is a **symlink** on the image and the evaluator retains every declared
+   executable through `O_NOFOLLOW`, so the request must name the physical `python3.12` — which is
+   why the frozen environment policy declares both names and the C6 gate README says "physical".
+3. `build_request_inputs` wiped the run directory containing the just-built `./main`.
+4. A linked worktree's `.git` is invisible in the container without mounting the resolved common dir.
+5. The first Linux toolchain build copied the macOS `target/` in, so `libalign_runtime.a` was a
+   **macOS** archive and the link failed on `align_rt_builder_init_stack`. Build with
+   `cargo build --locked --release -p align_runtime -p align_driver` into a tree with no `target/`.
+   The genuine Linux runtime is 29,271,106 bytes; the compiler is at
+   `scratchpad/gate-run/linux-toolchain/`. `scratchpad/toolchain/alignc` is the **stale C6-era**
+   compiler (embeds `2f33ac5c`) and fails codegen on `verification_loop` — do not use it.
+
+Adding `--cap-add=SYS_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined`
+moved the run forward (one generation to several) but did not resolve the containment failure. The
+runner creates a user namespace itself and passes the descriptor to `bwrap --userns`, with
+`--cap-drop ALL --cap-add CAP_SYS_ADMIN --cap-add CAP_SETFCAP`. The next step is to read the
+runner's actual error, which needs a namespace probe inside the container:
+`scripts/run-c4-repair-gate --diagnose-sandbox` exists for exactly that and reports
+`unshare(CLONE_NEWUSER)`, a direct `bwrap --unshare-user` attempt, and
+`/proc/sys/user/max_user_namespaces`. **That command, and any container invocation carrying
+privilege flags, is blocked by the session permission classifier**, so it needs an explicit
+allowance or a human run. `--diagnose` (permitted, and used) runs the reviewed evaluator directly
+and preserves its stdout/stderr — that is how the defects above were found, since `./main` reports
+only `EVALUATION_FAILED` and discards the child's diagnostics.
+
+The gate is therefore **not yet measured**, and nothing about the verdict is prejudged.
+
+
+**Next actions, in order.**
+0. Wait for Track B's benchmark to finish (`pgrep -f 'ggml-spike --decode-step'`, `pgrep -f
+   run-decode-step`), then cargo-build the pinned Linux `alignc`, start `llama-server`, and run
+   `make c4-repair-gate`. Record the per-row attempt outcomes in spec section 10.
+1. Regenerate the gate evidence at the final reviewed head so source reachability verifies.
+2. One comprehensive review of the stable candidate; the diff carries a persisted-format change, a
+   new frozen corpus, and a provider-backed measurement, so `docs/review-checklist.md`'s public
+   contract ledger, cross-cutting closure matrix, evaluation and repository integrity, and Align
+   correctness sections all trigger.
+3. `python3 scripts/pre-pr --owner-test ...` and publish.
+
+**Blockers.** None.
+
+**Align capability requests.** One new: **Request 52**, described above. 50 and 51 are taken on the
+Track B `agent/r6-resident-weights` branch, so 53 is the next free number.
+
+**Intentional uncommitted files.** None.
+
 ## Active: R6-STEP-N (2026-08-29)
 
 Branch `agent/r6-step-n`, in publication. **Three commits and nothing uncommitted:** `a9c6161` is

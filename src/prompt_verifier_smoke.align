@@ -1,7 +1,10 @@
 module prompt_verifier_smoke
 
+import prompt_artifact_io
 import prompt_artifacts
 import prompt_score
+import std.crypto
+import std.encoding
 
 fn digest_a() -> string = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".clone()
 fn digest_b() -> string = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".clone()
@@ -249,9 +252,11 @@ fn task() -> prompt_artifacts.PromptEvaluationTask {
       maximum_unrelated_diff_count: 10,
       maximum_patch_size_bytes: 1_000,
       maximum_public_api_change_count: 10,
-      maximum_repair_loops: 10,
+      maximum_repair_loops: 1,
       maximum_benchmark_regression_ppm: None,
     },
+    repair_template_path: Some("repair-template.json".clone()),
+    repair_template_sha256: Some(digest_a()),
     content_sha256: digest_a(),
   }
 }
@@ -549,7 +554,10 @@ fn row(
     variant_id: if stale_variant { "stale".clone() } else if parent { "parent".clone() } else { "candidate".clone() },
     variant_sha256: if parent { digest_b() } else { digest_c() },
     prompt_preparation_ns: 10,
+    repair_loop_count: None,
+    generation_to_passing_patch_ns: None,
     time_to_passing_patch_ns: if passing { Some(100) } else { None },
+    attempts: None,
     evaluation_input: evaluation_input(sample, seed),
     measurement: measurement(passing, provider_kind, seed),
     content_sha256: digest_a(),
@@ -611,6 +619,11 @@ fn task_aggregate(mode: i64, tamper: bool) -> prompt_artifacts.TaskAggregate {
     candidate_paired_median_time_ns: Some(100),
     time_improvement_ppm: Some(0),
     time_regression_ppm: Some(0),
+    parent_repair_attempt_count: None,
+    candidate_repair_attempt_count: None,
+    parent_repair_recovery_count: None,
+    candidate_repair_recovery_count: None,
+    repair_recovery_paired: None,
   }
 }
 
@@ -630,6 +643,9 @@ fn corpus_aggregate(mode: i64, tamper: bool) -> prompt_artifacts.CorpusAggregate
     time_improvement_ppm: Some(0),
     time_regression_ppm: Some(0),
     repair_loop_regression_count: 0,
+    repair_attempt_count: None,
+    repair_recovery_count: None,
+    repair_recovery_paired_count: None,
   }
 }
 
@@ -675,6 +691,7 @@ fn expected_input(sample: i64, parent: bool, tamper: bool) -> prompt_artifacts.P
     task_id: "task".clone(),
     sample_index: sample,
     variant: if parent { "PARENT".clone() } else { "CANDIDATE".clone() },
+    attempt_index: None,
     rendered_prompt_sha256: if tamper { digest_b() } else { digest_a() },
     context_sources_sha256: digest_a(),
     generation_request_sha256: digest_a(),
@@ -1012,9 +1029,9 @@ fn complete_result(
   }
 }
 
-fn noncomplete_evidence(verified: bool) -> prompt_artifacts.PromptEvaluationEvidence {
+fn noncomplete_evidence_versioned(verified: bool, version: i64) -> prompt_artifacts.PromptEvaluationEvidence {
   return prompt_artifacts.PromptEvaluationEvidence {
-    schema_version: 1,
+    schema_version: version,
     artifact_kind: "PROMPT_EVALUATION_EVIDENCE".clone(),
     evaluation_id: "evaluation".clone(),
     evaluation_result_sha256: digest_a(),
@@ -1024,9 +1041,13 @@ fn noncomplete_evidence(verified: bool) -> prompt_artifacts.PromptEvaluationEvid
   }
 }
 
-fn invalid_result() -> prompt_artifacts.PromptEvaluationResult {
+fn noncomplete_evidence(verified: bool) -> prompt_artifacts.PromptEvaluationEvidence {
+  return noncomplete_evidence_versioned(verified, 1)
+}
+
+fn invalid_result_versioned(version: i64) -> prompt_artifacts.PromptEvaluationResult {
   return prompt_artifacts.PromptEvaluationResult {
-    schema_version: 1,
+    schema_version: version,
     artifact_kind: "PROMPT_EVALUATION_RESULT".clone(),
     evaluation_id: Some("evaluation".clone()),
     status: "INVALID_INPUT".clone(),
@@ -1140,9 +1161,13 @@ fn error_result(state: i64) -> prompt_artifacts.PromptEvaluationResult {
   }
 }
 
-fn compact_result(oversized: bool) -> prompt_artifacts.PromptEvaluationResult {
+fn invalid_result() -> prompt_artifacts.PromptEvaluationResult {
+  return invalid_result_versioned(1)
+}
+
+fn compact_result_versioned(oversized: bool, version: i64) -> prompt_artifacts.PromptEvaluationResult {
   return prompt_artifacts.PromptEvaluationResult {
-    schema_version: 1,
+    schema_version: version,
     artifact_kind: "PROMPT_EVALUATION_RESULT".clone(),
     evaluation_id: Some("evaluation".clone()),
     status: "ERROR".clone(),
@@ -1181,6 +1206,10 @@ fn compact_result(oversized: bool) -> prompt_artifacts.PromptEvaluationResult {
     serious_regression_reasons: empty_reasons(),
     content_sha256: digest_a(),
   }
+}
+
+fn compact_result(oversized: bool) -> prompt_artifacts.PromptEvaluationResult {
+  return compact_result_versioned(oversized, 1)
 }
 
 fn terminal_measurement() -> prompt_artifacts.TaskMeasurement {
@@ -1224,7 +1253,10 @@ fn retained_row(terminal: bool) -> prompt_artifacts.PromptTaskRow {
     variant_id: "parent".clone(),
     variant_sha256: digest_b(),
     prompt_preparation_ns: 10,
+    repair_loop_count: None,
+    generation_to_passing_patch_ns: None,
     time_to_passing_patch_ns: None,
+    attempts: None,
     evaluation_input: evaluation_input(1, 7),
     measurement: terminal_measurement(),
     content_sha256: digest_a(),
@@ -1433,6 +1465,439 @@ fn expect_noncomplete(
   return Ok(())
 }
 
+// --- C4-REPAIR-MEASURED: version-2 attempt rows -----------------------------------------------
+// Every version-2 row here recovers: attempt one fails validation, the evaluator renders a repair
+// prompt from that attempt's own diagnostics, and attempt two passes. Defect codes drive the
+// rejection cases; defect 0 is the clean document.
+
+fn attempt_measurement(passing: bool, window: i64, seed: i64) -> prompt_artifacts.TaskMeasurement {
+  return prompt_artifacts.TaskMeasurement {
+    schema_version: 1,
+    artifact_kind: "TASK_MEASUREMENT".clone(),
+    status: if passing { "PASS".clone() } else { "FAIL".clone() },
+    failure_kind: if passing { "NONE".clone() } else { "TEST".clone() },
+    build_status: if passing { "PASS".clone() } else { "PASS".clone() },
+    test_status: if passing { "PASS".clone() } else { "FAIL".clone() },
+    repair_loop_count: 0,
+    unrelated_diff_count: 0,
+    patch_size_bytes: 10,
+    public_api_change_count: 0,
+    policy_violation_count: 0,
+    cleanup_passed: true,
+    containment_passed: true,
+    benchmark_regression_ppm: None,
+    generation_to_passing_patch_ns: if passing { Some(window) } else { None },
+    rendered_prompt_sha256: digest_a(),
+    generation_request: generation_request(seed),
+    environment_probe: probe("MEASUREMENT_ADAPTER", "runtime"),
+    seed_attestation: seed_attestation("LOCAL_OPENAI", seed),
+    diagnostic_summary: "provider-backed candidate patch failed validation".clone(),
+    diagnostic_stdout: "post-repair validation exit code: 1".clone(),
+    diagnostic_stderr: "AssertionError".clone(),
+    content_sha256: if passing { digest_b() } else { digest_c() },
+  }
+}
+
+fn drifted_measurement(seed: i64) -> prompt_artifacts.TaskMeasurement {
+  mut value := attempt_measurement(true, 30, seed)
+  value.diagnostic_summary = "a summary the final attempt never reported".clone()
+  return value
+}
+
+fn repair_source() -> prompt_artifacts.RepairPromptSource {
+  mut included: array_builder<string> := array_builder()
+  included.push("STATUS".clone())
+  included.push("SUMMARY".clone())
+  included.push("STDOUT".clone())
+  mut dropped: array_builder<string> := array_builder()
+  dropped.push("STDERR".clone())
+  return prompt_artifacts.RepairPromptSource {
+    schema_version: 1,
+    artifact_kind: "REPAIR_PROMPT_SOURCE".clone(),
+    template_sha256: digest_a(),
+    source_attempt_index: 1,
+    source_measurement_sha256: digest_c(),
+    included_sections: included.build(),
+    dropped_sections: dropped.build(),
+    assembled_bytes: 4_096,
+    content_sha256: digest_a(),
+  }
+}
+
+fn initial_attempt(index: i64, seed: i64) -> prompt_artifacts.TaskAttemptRecord {
+  return prompt_artifacts.TaskAttemptRecord {
+    schema_version: 1,
+    artifact_kind: "TASK_ATTEMPT_RECORD".clone(),
+    attempt_index: index,
+    attempt_kind: "INITIAL".clone(),
+    status: "FAIL".clone(),
+    skip_reason: "NONE".clone(),
+    rendered_prompt_sha256: Some(digest_a()),
+    repair_prompt_source: None,
+    adapter_request_sha256: Some(digest_a()),
+    snapshot_request_sha256: Some(digest_a()),
+    before_snapshot_result_sha256: Some(digest_b()),
+    after_snapshot_result_sha256: Some(digest_b()),
+    input_snapshot_sha256: Some(digest_c()),
+    generation_request: Some(generation_request(seed)),
+    seed_attestation: Some(seed_attestation("LOCAL_OPENAI", seed)),
+    paired_seed: seed,
+    measurement: Some(attempt_measurement(false, 0, seed)),
+    repair_preparation_ns: 0,
+    adapter_elapsed_ns: 40,
+    adapter_overhead_ns: None,
+    measurement_sha256: Some(digest_c()),
+    content_sha256: digest_a(),
+  }
+}
+
+fn repair_attempt(index: i64, seed: i64) -> prompt_artifacts.TaskAttemptRecord {
+  return prompt_artifacts.TaskAttemptRecord {
+    schema_version: 1,
+    artifact_kind: "TASK_ATTEMPT_RECORD".clone(),
+    attempt_index: index,
+    attempt_kind: "REPAIR".clone(),
+    status: "PASS".clone(),
+    skip_reason: "NONE".clone(),
+    rendered_prompt_sha256: Some(digest_a()),
+    repair_prompt_source: Some(repair_source()),
+    adapter_request_sha256: Some(digest_a()),
+    snapshot_request_sha256: Some(digest_a()),
+    before_snapshot_result_sha256: Some(digest_b()),
+    after_snapshot_result_sha256: Some(digest_b()),
+    input_snapshot_sha256: Some(digest_c()),
+    generation_request: Some(generation_request(seed)),
+    seed_attestation: Some(seed_attestation("LOCAL_OPENAI", seed)),
+    paired_seed: seed,
+    measurement: Some(attempt_measurement(true, 30, seed)),
+    repair_preparation_ns: 10,
+    adapter_elapsed_ns: 40,
+    adapter_overhead_ns: Some(10),
+    measurement_sha256: Some(digest_b()),
+    content_sha256: digest_a(),
+  }
+}
+
+fn passing_initial_attempt(seed: i64) -> prompt_artifacts.TaskAttemptRecord {
+  return prompt_artifacts.TaskAttemptRecord {
+    schema_version: 1,
+    artifact_kind: "TASK_ATTEMPT_RECORD".clone(),
+    attempt_index: 1,
+    attempt_kind: "INITIAL".clone(),
+    status: "PASS".clone(),
+    skip_reason: "NONE".clone(),
+    rendered_prompt_sha256: Some(digest_a()),
+    repair_prompt_source: None,
+    adapter_request_sha256: Some(digest_a()),
+    snapshot_request_sha256: Some(digest_a()),
+    before_snapshot_result_sha256: Some(digest_b()),
+    after_snapshot_result_sha256: Some(digest_b()),
+    input_snapshot_sha256: Some(digest_c()),
+    generation_request: Some(generation_request(seed)),
+    seed_attestation: Some(seed_attestation("LOCAL_OPENAI", seed)),
+    paired_seed: seed,
+    measurement: Some(attempt_measurement(true, 30, seed)),
+    repair_preparation_ns: 0,
+    adapter_elapsed_ns: 90,
+    adapter_overhead_ns: Some(60),
+    measurement_sha256: Some(digest_b()),
+    content_sha256: digest_a(),
+  }
+}
+
+// Defect 8: an attempt that ran but attests none of the trace records its invocation produced.
+// Once a row can run twice, `snapshot_attestations` no longer reaches a repair attempt's records,
+// so the attempt record is what keeps them bound; an unbound record must be rejected.
+fn untraced_initial_attempt(index: i64, seed: i64) -> prompt_artifacts.TaskAttemptRecord {
+  mut attempt := initial_attempt(index, seed)
+  attempt.snapshot_request_sha256 = None
+  return attempt
+}
+
+fn attempts_for(defect: i64, seed: i64) -> array<prompt_artifacts.TaskAttemptRecord> {
+  mut values: array_builder<prompt_artifacts.TaskAttemptRecord> := array_builder()
+  if defect == 2 {
+    // Two initial attempts: no attempt list may claim more than one.
+    values.push(initial_attempt(1, seed))
+    values.push(initial_attempt(2, seed))
+    return values.build()
+  }
+  if defect == 4 {
+    // Longer than `1 + maximum_repair_loops`: the task declares a cap of one repair.
+    values.push(initial_attempt(1, seed))
+    values.push(repair_attempt(2, seed))
+    values.push(repair_attempt(3, seed))
+    return values.build()
+  }
+  if defect == 8 {
+    values.push(untraced_initial_attempt(1, seed))
+    values.push(repair_attempt(2, seed))
+    return values.build()
+  }
+  if defect == 7 {
+    // The ordinary no-repair shape: one initial attempt that passes.
+    values.push(passing_initial_attempt(seed))
+    return values.build()
+  }
+  values.push(initial_attempt(1, seed))
+  // Defect 1 breaks the dense ascending attempt index.
+  values.push(repair_attempt(if defect == 1 { 3 } else { 2 }, seed))
+  return values.build()
+}
+
+fn row_v2(sample: i64, parent: bool, defect: i64) -> prompt_artifacts.PromptTaskRow {
+  seed := 6 + sample
+  return prompt_artifacts.PromptTaskRow {
+    schema_version: if defect == 5 { 1 } else { 2 },
+    artifact_kind: "PROMPT_TASK_ROW".clone(),
+    evaluation_id: "evaluation".clone(),
+    task_id: "task".clone(),
+    sample_index: sample,
+    variant: if parent { "PARENT".clone() } else { "CANDIDATE".clone() },
+    variant_id: if parent { "parent".clone() } else { "candidate".clone() },
+    variant_sha256: if parent { digest_b() } else { digest_c() },
+    prompt_preparation_ns: 10,
+    // Defect 6 makes the row's own count disagree with its attempt list.
+    repair_loop_count: Some(if defect == 6 || defect == 7 { 0 } else { 1 }),
+    generation_to_passing_patch_ns: Some(90),
+    time_to_passing_patch_ns: Some(100),
+    attempts: Some(attempts_for(defect, seed)),
+    evaluation_input: evaluation_input(sample, seed),
+    // Defect 3 makes the row-level view disagree with the final attempt's measurement in a field
+    // no aggregate reads, so ladder row 18 is the only check that can reject it.
+    measurement: if defect == 3 {
+      drifted_measurement(seed)
+    } else {
+      attempt_measurement(true, 30, seed)
+    },
+    content_sha256: digest_a(),
+  }
+}
+
+fn rows_v2(defect: i64) -> array<prompt_artifacts.PromptTaskRow> {
+  mut values: array_builder<prompt_artifacts.PromptTaskRow> := array_builder()
+  values.push(row_v2(1, true, defect))
+  values.push(row_v2(1, false, defect))
+  values.push(row_v2(2, false, defect))
+  values.push(row_v2(2, true, defect))
+  return values.build()
+}
+
+fn task_aggregate_v2(defect: i64) -> prompt_artifacts.TaskAggregate {
+  repairs := if defect == 6 || defect == 7 { 0 } else { 2 }
+  return prompt_artifacts.TaskAggregate {
+    task_id: "task".clone(),
+    parent_pass_count: 2,
+    candidate_pass_count: 2,
+    parent_repair_loop_count: repairs,
+    candidate_repair_loop_count: repairs,
+    paired_pass_count: 2,
+    parent_paired_median_time_ns: Some(100),
+    candidate_paired_median_time_ns: Some(100),
+    time_improvement_ppm: Some(0),
+    time_regression_ppm: Some(0),
+    parent_repair_attempt_count: Some(if defect == 7 { 0 } else { 2 }),
+    candidate_repair_attempt_count: Some(if defect == 7 { 0 } else { 2 }),
+    parent_repair_recovery_count: Some(if defect == 7 { 0 } else { 2 }),
+    candidate_repair_recovery_count: Some(if defect == 7 { 0 } else { 2 }),
+    repair_recovery_paired: Some(defect != 7),
+  }
+}
+
+fn task_aggregates_v2(defect: i64) -> array<prompt_artifacts.TaskAggregate> {
+  mut values: array_builder<prompt_artifacts.TaskAggregate> := array_builder()
+  values.push(task_aggregate_v2(defect))
+  return values.build()
+}
+
+fn corpus_aggregate_v2(defect: i64) -> prompt_artifacts.CorpusAggregate {
+  repairs := if defect == 6 || defect == 7 { 0 } else { 2 }
+  return prompt_artifacts.CorpusAggregate {
+    task_count: 1,
+    sample_count: 2,
+    parent_pass_count: 2,
+    candidate_pass_count: 2,
+    parent_repair_loop_count: repairs,
+    candidate_repair_loop_count: repairs,
+    paired_pass_count: 2,
+    parent_paired_median_time_ns: Some(100),
+    candidate_paired_median_time_ns: Some(100),
+    completion_gain_count: 0,
+    time_improvement_ppm: Some(0),
+    time_regression_ppm: Some(0),
+    repair_loop_regression_count: 0,
+    repair_attempt_count: Some(if defect == 7 { 0 } else { 4 }),
+    repair_recovery_count: Some(if defect == 7 { 0 } else { 4 }),
+    repair_recovery_paired_count: Some(if defect == 7 { 0 } else { 2 }),
+  }
+}
+
+fn expected_input_v2(sample: i64, parent: bool, attempt: i64) -> prompt_artifacts.PromptExpectedInputDigest {
+  return prompt_artifacts.PromptExpectedInputDigest {
+    schema_version: 2,
+    artifact_kind: "PROMPT_EXPECTED_INPUT_DIGEST".clone(),
+    task_id: "task".clone(),
+    sample_index: sample,
+    variant: if parent { "PARENT".clone() } else { "CANDIDATE".clone() },
+    attempt_index: Some(attempt),
+    rendered_prompt_sha256: digest_a(),
+    context_sources_sha256: digest_a(),
+    generation_request_sha256: digest_a(),
+    adapter_request_sha256: digest_a(),
+    provider_request_sha256: digest_a(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn expected_inputs_v2(defect: i64) -> array<prompt_artifacts.PromptExpectedInputDigest> {
+  // The identities follow the defect's actual attempt shape, so the per-attempt binding stays
+  // satisfied and each defect is rejected by its own invariant rather than by a count mismatch.
+  second := if defect == 1 { 3 } else { 2 }
+  mut values: array_builder<prompt_artifacts.PromptExpectedInputDigest> := array_builder()
+  mut index := 0
+  loop {
+    if index >= 4 { break }
+    sample := if index < 2 { 1 } else { 2 }
+    parent := index == 0 || index == 3
+    values.push(expected_input_v2(sample, parent, 1))
+    if defect != 7 {
+      values.push(expected_input_v2(sample, parent, second))
+    }
+    if defect == 4 {
+      values.push(expected_input_v2(sample, parent, 3))
+    }
+    index = index + 1
+  }
+  return values.build()
+}
+
+fn evidence_v2(defect: i64) -> prompt_artifacts.PromptEvaluationEvidence {
+  return prompt_artifacts.PromptEvaluationEvidence {
+    schema_version: 2,
+    artifact_kind: "PROMPT_EVALUATION_EVIDENCE".clone(),
+    evaluation_id: "evaluation".clone(),
+    evaluation_result_sha256: digest_a(),
+    trust: trust(true),
+    expected_inputs: expected_inputs_v2(defect),
+    content_sha256: digest_a(),
+  }
+}
+
+fn complete_result_v2(defect: i64) -> prompt_artifacts.PromptEvaluationResult {
+  return prompt_artifacts.PromptEvaluationResult {
+    schema_version: 2,
+    artifact_kind: "PROMPT_EVALUATION_RESULT".clone(),
+    evaluation_id: Some("evaluation".clone()),
+    status: "NO_IMPROVEMENT".clone(),
+    error_code: "NONE".clone(),
+    error: "".clone(),
+    experiment: Some(reference("PROMPT_EXPERIMENT_RESULT", "experiment", digest_a())),
+    experiment_artifact: Some(experiment("LOCAL_OPENAI")),
+    parent_activation: Some(reference("PROMPT_ACTIVATION_RESULT", "decision", digest_a())),
+    parent_activation_artifact: Some(activation_result("LOCAL_OPENAI")),
+    scope: Some(scope("LOCAL_OPENAI")),
+    parent_variant: Some(variant(true)),
+    candidate_variant: Some(variant(false)),
+    corpus_source: Some(reference("PROMPT_EVALUATION_CORPUS", "corpus", digest_a())),
+    corpus: Some(corpus()),
+    tasks: tasks_array(),
+    acceptance_policy_source: Some(reference("PROMPT_ACCEPTANCE_POLICY", "policy", digest_a())),
+    acceptance_policy: Some(acceptance_policy()),
+    generation_policy_source: Some(reference("GENERATION_POLICY", "generation", digest_a())),
+    generation_policy: Some(generation_policy("LOCAL_OPENAI")),
+    provider_control_source: Some(reference("EVALUATION_PROVIDER_CONTROL", "provider", digest_a())),
+    provider_control: Some(provider_control("LOCAL_OPENAI")),
+    workspace_preflight_source: Some(reference("WORKSPACE_PREFLIGHT_RESULT", "evaluation", digest_a())),
+    workspace_preflight_request: Some(workspace_request()),
+    workspace_preflight: Some(workspace_result()),
+    environment: Some(environment()),
+    snapshot_requests: snapshot_requests_array(),
+    snapshot_results: snapshot_results_array(),
+    input_snapshots: input_snapshots_array(),
+    snapshot_attestations: attestations(false),
+    trace_failure: None,
+    sample_count: 2,
+    gate_eligible: false,
+    rows: rows_v2(defect),
+    task_aggregates: task_aggregates_v2(defect),
+    corpus_aggregate: Some(corpus_aggregate_v2(defect)),
+    serious_regression_reasons: empty_reasons(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn sealed_v2(defect: i64) -> Result<prompt_artifacts.PromptEvaluationResult, Error> {
+  seal := sealed_digest(complete_result_v2(defect))?
+  mut value := complete_result_v2(defect)
+  value.content_sha256 = seal
+  return Ok(value)
+}
+
+fn sealed_v1() -> Result<prompt_artifacts.PromptEvaluationResult, Error> {
+  seal := sealed_digest(complete_result(1, "LOCAL_OPENAI", "NO_IMPROVEMENT", false, false, false, false, false, false, false))?
+  mut value := complete_result(1, "LOCAL_OPENAI", "NO_IMPROVEMENT", false, false, false, false, false, false, false)
+  value.content_sha256 = seal
+  return Ok(value)
+}
+
+fn expect_ok_v2(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  borrow evidence_value: prompt_artifacts.PromptEvaluationEvidence,
+) -> Result<(), Error> {
+  verdict := prompt_score.verify_result(result, evidence_value)?
+  if verdict_code(verdict) != 2 || result.rows.len() != 4 ||
+  evidence_value.expected_inputs.len() != 8 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+// --- Round-trip regression -------------------------------------------------------------------
+// The whole `Option`-instead-of-a-version-2-twin decision rests on one invariant: a document
+// decodes and re-encodes byte-identically, so the persisted `content_sha256` still verifies.
+// Request 52 (a `match` on an OWNED value silently moves a Move payload out, after which `encode`
+// omits the field, with no compile error and no fault) makes that invariant easy to break in a
+// way no other smoke observes. This exercises it directly, at both versions.
+
+fn round_trip_equal(first: prompt_artifacts.PromptEvaluationResult, second: prompt_artifacts.PromptEvaluationResult) -> Result<(), Error> {
+  encoded_once := prompt_artifacts.encode_prompt_evaluation_result_bounded(first, 268435456)?
+  once_view: str := encoded_once
+  decoded := prompt_artifacts.decode_prompt_evaluation_result(once_view)?
+  encoded_twice := prompt_artifacts.encode_prompt_evaluation_result_bounded(decoded, 268435456)?
+  twice_view: str := encoded_twice
+  if once_view != twice_view { return Err(Error.Invalid) }
+  // The second document is an independent build of the same value; encoding it must agree too,
+  // so a move that corrupted the first build cannot hide behind a shared buffer.
+  encoded_again := prompt_artifacts.encode_prompt_evaluation_result_bounded(second, 268435456)?
+  again_view: str := encoded_again
+  if once_view != again_view { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn smoke_digest(value: str) -> string {
+  computed := crypto.sha256(value)
+  return encoding.hex_encode(computed[0..computed.len()]).clone()
+}
+
+// Seal a document the way the producer does: blank the digest, encode canonically, hash, and
+// write the hash back. The result must then satisfy the publish path's own admission check.
+fn sealed_digest(value: prompt_artifacts.PromptEvaluationResult) -> Result<string, Error> {
+  mut normalized := value
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_prompt_evaluation_result_bounded(normalized, 268435456)?
+  canonical_view: str := canonical
+  return Ok(smoke_digest(canonical_view))
+}
+
+fn source_admits(value: prompt_artifacts.PromptEvaluationResult) -> Result<i64, Error> {
+  encoded := prompt_artifacts.encode_prompt_evaluation_result_bounded(value, 268435456)?
+  view: str := encoded
+  // The publish path's own admission check: decode, re-encode with the digest blanked, and
+  // require the recomputed digest to equal the declared one.
+  admitted := prompt_artifact_io.decode_prompt_evaluation_result_source(view)?
+  return Ok(admitted.rows.len())
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
   if args.len() != 1 { return Err(Error.Invalid) }
 
@@ -1568,6 +2033,99 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   compact_tamper_evidence := noncomplete_evidence(false)
   expect_invalid(compact_tamper, compact_tamper_evidence)?
 
-  print("prompt verifier smoke: complete, incomplete, compact, and tamper cases PASS")
+  // --- The two no-row publish paths, at version 2 ---
+  // The evaluator emits version 2 for `INVALID_INPUT` and `RESULT_TOO_LARGE` too. These currently
+  // pass at version 1 only because their `rows` are empty, which proves nothing about version 2,
+  // so both are exercised at the version the producer actually writes, round trip included.
+  invalid_v2 := invalid_result_versioned(2)
+  invalid_v2_evidence := noncomplete_evidence_versioned(false, 2)
+  expect_noncomplete(invalid_v2, invalid_v2_evidence)?
+  round_trip_equal(invalid_result_versioned(2), invalid_result_versioned(2))?
+
+  compact_v2 := compact_result_versioned(false, 2)
+  compact_v2_evidence := noncomplete_evidence_versioned(false, 2)
+  expect_noncomplete(compact_v2, compact_v2_evidence)?
+  round_trip_equal(compact_result_versioned(false, 2), compact_result_versioned(false, 2))?
+
+  // A version-1 result may not be paired with version-2 evidence, in either direction.
+  split_low := invalid_result_versioned(1)
+  split_high_evidence := noncomplete_evidence_versioned(false, 2)
+  expect_invalid(split_low, split_high_evidence)?
+
+  // --- Round-trip: the invariant the `Option` row design rests on ---
+  // A version-2 document with two-attempt rows must encode, decode, and re-encode byte-identically,
+  // and its recomputed `content_sha256` must equal the declared one, or the publish path silently
+  // drops a field (Request 52) and every persisted document becomes unverifiable.
+  round_trip_equal(complete_result_v2(0), complete_result_v2(0))?
+  sealed_repair := sealed_v2(0)?
+  if source_admits(sealed_repair)? != 4 { return Err(Error.Invalid) }
+
+  round_trip_equal(
+    complete_result(1, "LOCAL_OPENAI", "NO_IMPROVEMENT", false, false, false, false, false, false, false),
+    complete_result(1, "LOCAL_OPENAI", "NO_IMPROVEMENT", false, false, false, false, false, false, false),
+  )?
+  sealed_legacy := sealed_v1()?
+  if source_admits(sealed_legacy)? != 4 { return Err(Error.Invalid) }
+
+  // The no-repair shape a task with `maximum_repair_loops: 0` produces, and the shape most rows
+  // of the fixed-adapter path take: a version-2 row with a single passing initial attempt.
+  no_repair := complete_result_v2(7)
+  no_repair_evidence := evidence_v2(7)
+  if verdict_code(prompt_score.verify_result(no_repair, no_repair_evidence)?) != 2 {
+    return Err(Error.Invalid)
+  }
+  round_trip_equal(complete_result_v2(7), complete_result_v2(7))?
+  sealed_no_repair := sealed_v2(7)?
+  if source_admits(sealed_no_repair)? != 4 { return Err(Error.Invalid) }
+
+  // --- C4-REPAIR-MEASURED version-2 cases ---
+  // A clean version-2 document: four rows that each fail at attempt one and pass at attempt two,
+  // with every repair aggregate recomputed from the attempts rather than read from the document.
+  repair_result := complete_result_v2(0)
+  repair_evidence := evidence_v2(0)
+  expect_ok_v2(repair_result, repair_evidence)?
+
+  // Attempt indices must be dense and ascending from one.
+  sparse_attempts := complete_result_v2(1)
+  sparse_attempts_evidence := evidence_v2(1)
+  expect_invalid(sparse_attempts, sparse_attempts_evidence)?
+
+  // Exactly one initial attempt.
+  two_initial := complete_result_v2(2)
+  two_initial_evidence := evidence_v2(2)
+  expect_invalid(two_initial, two_initial_evidence)?
+
+  // `row.measurement` is byte-equal to the final attempt that ran.
+  measurement_drift := complete_result_v2(3)
+  measurement_drift_evidence := evidence_v2(3)
+  expect_invalid(measurement_drift, measurement_drift_evidence)?
+
+  // The attempt list is bounded by `1 + maximum_repair_loops` before it is walked.
+  overlong_attempts := complete_result_v2(4)
+  overlong_attempts_evidence := evidence_v2(4)
+  expect_invalid(overlong_attempts, overlong_attempts_evidence)?
+
+  // A version-1 row inside a version-2 container is rejected before any field decode.
+  mixed_version := complete_result_v2(5)
+  mixed_version_evidence := evidence_v2(5)
+  expect_invalid(mixed_version, mixed_version_evidence)?
+
+  // The row's own repair count must equal the count of non-skipped repair attempts.
+  count_drift := complete_result_v2(6)
+  count_drift_evidence := evidence_v2(6)
+  expect_invalid(count_drift, count_drift_evidence)?
+
+  // An attempt that ran must attest the trace records its own invocation produced, so that no
+  // snapshot request, result, or input snapshot is left unreferenced once a row runs twice.
+  untraced := complete_result_v2(8)
+  untraced_evidence := evidence_v2(8)
+  expect_invalid(untraced, untraced_evidence)?
+
+  // A version-2 document may not be paired with version-1 evidence.
+  version_split := complete_result_v2(0)
+  version_split_evidence := evidence(true)
+  expect_invalid(version_split, version_split_evidence)?
+
+  print("prompt verifier smoke: complete, incomplete, compact, tamper, and repair-attempt cases PASS")
   return Ok(())
 }

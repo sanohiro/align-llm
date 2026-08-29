@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 REQUEST_LIMIT = 65_536
@@ -162,7 +162,13 @@ PROMPT_TASK_FIELDS = (
     "task_prompt_path", "context_sources_path", "generation_policy_path", "provider_control_path",
     "environment_policy_path", "validation_runner_path", "validation_runner_sha256",
     "task_definition_path", "task_definition_sha256", "validation_argv", "patch_path",
-    "patch_sha256", "artifacts", "regression_limits", "content_sha256",
+    "patch_sha256", "artifacts", "regression_limits",
+    # The repair-template pair is `Option::None` for every schema-1 corpus written before
+    # `docs/specs/c4-repair-measured.md`, and the canonical encoding omits a `None`, so the three
+    # frozen `eval/tasks/prompt-v1/*.json` manifests keep their exact bytes and their exact
+    # `content_sha256`. A task that declares `maximum_repair_loops >= 1` must declare the pair.
+    "repair_template_path", "repair_template_sha256",
+    "content_sha256",
 )
 ACCEPTANCE_POLICY_FIELDS = (
     "schema_version", "artifact_kind", "policy_id", "minimum_task_count",
@@ -192,6 +198,52 @@ CONTEXT_SOURCES_FIELDS = (
     "schema_version", "artifact_kind", "task_id", "patch_evaluation", "failure_memory_jsonl",
     "diagnostic_stdout", "diagnostic_stderr", "content_sha256",
 )
+# --- C4-REPAIR-MEASURED: the bounded second attempt ---------------------------------------------
+# `docs/specs/c4-repair-measured.md` owns this contract. The evaluator, not the byte-frozen
+# measurement adapter, owns the attempt loop, because the repair prompt is a function of attempt
+# one's realized output and the evaluator is the sole owner of rendering, sealing, and
+# expected-input identity (spec sections 2.4 and 3.1).
+REPAIR_TEMPLATE_FIELDS = (
+    "schema_version", "artifact_kind", "template_id", "preamble_text", "section_headers",
+    "closing_text", "content_sha256",
+)
+REPAIR_SECTION_KINDS = ("STATUS", "SUMMARY", "STDOUT", "STDERR")
+# Fixed drop precedence (spec section 4.3). `STATUS` is never dropped: it is at most
+# REPAIR_STATUS_LIMIT bytes and it is the single most load-bearing fact in the prompt. Dropping is
+# whole-section, never a byte cut, so this capability never splits a UTF-8 code point.
+REPAIR_DROP_ORDER = ("STDOUT", "STDERR", "SUMMARY")
+REPAIR_STATUS_LIMIT = 128
+REPAIR_TEMPLATE_TEXT_LIMIT = 16_384
+REPAIR_SECTION_HEADER_LIMIT = 256
+# One repair attempt, so at most two attempts per row. The corpus manifest carries the real cap in
+# `regression_limits.maximum_repair_loops`; this is the structural ceiling this capability admits.
+MAXIMUM_REPAIR_ATTEMPTS = 1
+ATTEMPT_RECORD_FIELDS = (
+    "schema_version", "artifact_kind", "attempt_index", "attempt_kind", "status", "skip_reason",
+    "rendered_prompt_sha256", "repair_prompt_source", "adapter_request_sha256",
+    # Each attempt is its own contained invocation with its own sealed prompt, so it produces its
+    # own snapshot request, its own before/after snapshot results, and its own input snapshot.
+    # The row-level `snapshot_attestations` array stays exactly one record per row — the schedule
+    # check binds it positionally to rows — so these four digests are what keep every trace record
+    # bound to the invocation that produced it once a row can run twice.
+    "snapshot_request_sha256", "before_snapshot_result_sha256", "after_snapshot_result_sha256",
+    "input_snapshot_sha256",
+    "generation_request", "seed_attestation", "paired_seed", "measurement",
+    "repair_preparation_ns", "adapter_elapsed_ns", "adapter_overhead_ns", "measurement_sha256",
+    "content_sha256",
+)
+REPAIR_PROMPT_SOURCE_FIELDS = (
+    "schema_version", "artifact_kind", "template_sha256", "source_attempt_index",
+    "source_measurement_sha256", "included_sections", "dropped_sections", "assembled_bytes",
+    "content_sha256",
+)
+PROVIDER_SERVICE_PROBE_FIELDS = (
+    "schema_version", "artifact_kind", "provider_service_revision", "server_version_string",
+    "server_binary_sha256", "model_sha256", "content_sha256",
+)
+SKIP_REASONS = (
+    "NONE", "REPAIR_PROMPT_BUDGET", "REPAIR_NOT_ELIGIBLE", "REPAIR_INPUT_UNAVAILABLE",
+)
 INPUT_ARTIFACT_FIELDS = {
     "PROMPT_EXPERIMENT_RESULT": PROMPT_EXPERIMENT_FIELDS,
     "PROMPT_ACTIVATION_RESULT": PROMPT_ACTIVATION_RESULT_FIELDS,
@@ -212,6 +264,9 @@ INPUT_ARTIFACT_FIELDS = {
 # input boundary must accept both the canonical omitted form and an explicit `null`.
 INPUT_ARTIFACT_OPTIONAL = {
     "PROMPT_EXPERIMENT_RESULT": frozenset({"proposal_status_code"}),
+    # A schema-1 task manifest written before C4-REPAIR-MEASURED omits the repair-template pair
+    # entirely, which is the canonical encoding of `Option::None` and leaves its digest unchanged.
+    "PROMPT_EVALUATION_TASK": frozenset({"repair_template_path", "repair_template_sha256"}),
 }
 
 
@@ -239,6 +294,27 @@ class ChildBoundaryError(EvaluationError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+class AbortEvaluation(Exception):
+    """Carry a fully assembled terminal result out of one attempt without unwinding by hand.
+
+    An attempt is now one of up to two invocations inside a row, so the abort paths that used to
+    `return finish(...)` directly from the row body must cross a function boundary. The result is
+    built at the raise site, exactly as before, so the rows, attestations, and checkpoint it
+    captures are the ones observed at that instant.
+    """
+
+    def __init__(
+        self,
+        result: dict[str, Any],
+        checkpoint: tuple[int, int, int, int, int, int] | None = None,
+        cleanup_diagnosed: bool = False,
+    ) -> None:
+        super().__init__(result.get("error", ""))
+        self.result = result
+        self.checkpoint = checkpoint
+        self.cleanup_diagnosed = cleanup_diagnosed
 
 
 class AdapterFailure(EvaluationError):
@@ -782,6 +858,20 @@ def validate_input_artifact_shape(kind: str, value: Mapping[str, Any]) -> None:
             and (limits.get("maximum_benchmark_regression_ppm") is None or bounded_integer(
                 limits.get("maximum_benchmark_regression_ppm"), 0, 1_000_000,
             ))
+            # Ladder row 4: this capability admits exactly zero or one repair loop. A larger value
+            # would be headroom no code path reaches and no test exercises, so it is rejected here
+            # rather than silently permitted up to the structural ceiling of 64.
+            and limits.get("maximum_repair_loops") <= MAXIMUM_REPAIR_ATTEMPTS
+            # The pair is present exactly when the task offers a repair attempt.
+            and (value.get("repair_template_path") is None) == (value.get("repair_template_sha256") is None)
+            and (limits.get("maximum_repair_loops") >= 1) == (value.get("repair_template_path") is not None)
+            and (
+                value.get("repair_template_path") is None
+                or (
+                    bounded_text(value.get("repair_template_path"), 4096)
+                    and valid_hex(value.get("repair_template_sha256"))
+                )
+            )
         )
     elif kind == "GENERATION_POLICY":
         valid = (
@@ -1416,6 +1506,222 @@ def render(variant: Mapping[str, Any], task_prompt: Mapping[str, Any], context: 
     return text, sha256
 
 
+def valid_repair_template(value: Any) -> bool:
+    """Ladder row 5: the sealed repair template decodes, is UTF-8, and is non-empty."""
+    headers = value.get("section_headers") if isinstance(value, dict) else None
+    return (
+        exact_record(value, REPAIR_TEMPLATE_FIELDS, "REPAIR_PROMPT_TEMPLATE")
+        and record_digest_valid(value)
+        and valid_ascii_identifier(value.get("template_id"))
+        and bounded_text(value.get("preamble_text"), REPAIR_TEMPLATE_TEXT_LIMIT)
+        and bounded_text(value.get("closing_text"), REPAIR_TEMPLATE_TEXT_LIMIT)
+        and isinstance(headers, dict)
+        and tuple(headers) == REPAIR_SECTION_KINDS
+        and all(bounded_text(headers[kind], REPAIR_SECTION_HEADER_LIMIT) for kind in REPAIR_SECTION_KINDS)
+    )
+
+
+def repair_status_text(measurement: Mapping[str, Any]) -> str:
+    """Section 1 of the repair prompt: four status labels, one per line, at most 128 bytes."""
+    return (
+        f"status: {measurement['status']}\n"
+        f"failure_kind: {measurement['failure_kind']}\n"
+        f"build_status: {measurement['build_status']}\n"
+        f"test_status: {measurement['test_status']}"
+    )
+
+
+def repair_section_sources(measurement: Mapping[str, Any]) -> dict[str, str]:
+    """Every source is a field of the failing attempt's persisted `TASK_MEASUREMENT`.
+
+    Nothing is re-captured, re-read, re-redacted, or re-truncated: the adapter already applied
+    `redact_credential` and then bounded each stream, in that order, before these bytes were
+    persisted. Consuming its output verbatim is what makes section 4.4's re-derivation close.
+    """
+    return {
+        "STATUS": repair_status_text(measurement),
+        "SUMMARY": measurement["diagnostic_summary"],
+        "STDOUT": measurement["diagnostic_stdout"],
+        "STDERR": measurement["diagnostic_stderr"],
+    }
+
+
+def repair_prompt_text(
+    template: Mapping[str, Any], base_text: str, sources: Mapping[str, str], included: Sequence[str],
+) -> str:
+    """The repair prompt is a strict textual extension of the attempt it repairs.
+
+    The variant's base prompt, repo prompt, task prompt, learned append, and canned context
+    sections are the attempt-1 text byte-for-byte; the repair sections are appended, never
+    substituted, so the two attempts' inputs are directly diffable in the evidence.
+    """
+    headers = template["section_headers"]
+    parts = [base_text, "\n\n", template["preamble_text"]]
+    for kind in REPAIR_SECTION_KINDS:
+        if kind in included:
+            parts.extend(("\n\n", headers[kind], "\n", sources[kind]))
+    parts.extend(("\n\n", template["closing_text"]))
+    return "".join(parts)
+
+
+def ordered_sections(kinds: Iterable[str]) -> list[str]:
+    selected = set(kinds)
+    return [kind for kind in REPAIR_SECTION_KINDS if kind in selected]
+
+
+def assemble_repair_prompt(
+    template: Mapping[str, Any], base_text: str, sources: Mapping[str, str], maximum_bytes: int,
+) -> tuple[str | None, list[str], list[str], int]:
+    """Assemble the repair prompt, dropping whole sections in the fixed precedence of section 4.3.
+
+    Returns `(text, included, dropped, assembled_bytes)`, with `text` `None` when even the
+    preamble, headers, attempt-1 text, and `STATUS` exceed the generation policy's prompt budget.
+    A drop is always whole-section: a half-truncated stream would end mid-traceback and invite the
+    model to repair a failure it can only half see.
+    """
+    included = [kind for kind in REPAIR_SECTION_KINDS if sources[kind]]
+    dropped: list[str] = []
+    while True:
+        text = repair_prompt_text(template, base_text, sources, included)
+        assembled = len(text.encode("utf-8"))
+        if assembled <= maximum_bytes:
+            return text, included, ordered_sections(dropped), assembled
+        droppable = [kind for kind in REPAIR_DROP_ORDER if kind in included]
+        if not droppable:
+            return None, included, ordered_sections(dropped), assembled
+        included = [kind for kind in included if kind != droppable[0]]
+        dropped.append(droppable[0])
+
+
+def repair_eligibility(measurement: Mapping[str, Any]) -> str:
+    """Ladder row 13: are attempt one's own diagnostics usable as a repair input at all?"""
+    if not measurement.get("cleanup_passed") or not measurement.get("containment_passed"):
+        return "REPAIR_INPUT_UNAVAILABLE"
+    sources = repair_section_sources(measurement)
+    if not any(sources[kind] for kind in ("SUMMARY", "STDOUT", "STDERR")):
+        return "REPAIR_INPUT_UNAVAILABLE"
+    return "NONE"
+
+
+def skipped_attempt_record(
+    attempt_index: int, reason: str, repair_source: dict[str, Any] | None,
+    preparation_ns: int, paired_seed: int,
+) -> dict[str, Any]:
+    """A skipped repair is a measured outcome; it never becomes a silent single-attempt row.
+
+    The record carries identity and the work that reached the skip decision, and nothing else: no
+    rendered prompt, no adapter request, no generation request, no measurement. It is never
+    counted in `row.repair_loop_count` and never contributes to any timing sum.
+    """
+    return bind({
+        "schema_version": 1,
+        "artifact_kind": "TASK_ATTEMPT_RECORD",
+        "attempt_index": attempt_index,
+        "attempt_kind": "REPAIR",
+        "status": "SKIPPED",
+        "skip_reason": reason,
+        "rendered_prompt_sha256": None,
+        "repair_prompt_source": repair_source,
+        "adapter_request_sha256": None,
+        "snapshot_request_sha256": None,
+        "before_snapshot_result_sha256": None,
+        "after_snapshot_result_sha256": None,
+        "input_snapshot_sha256": None,
+        "generation_request": None,
+        "seed_attestation": None,
+        "paired_seed": paired_seed,
+        "measurement": None,
+        "repair_preparation_ns": preparation_ns,
+        "adapter_elapsed_ns": 0,
+        "adapter_overhead_ns": None,
+        "measurement_sha256": None,
+        "content_sha256": "",
+    })
+
+
+def repair_prompt_source_record(
+    template: Mapping[str, Any], measurement: Mapping[str, Any], included: Sequence[str],
+    dropped: Sequence[str], assembled: int,
+) -> dict[str, Any]:
+    return bind({
+        "schema_version": 1,
+        "artifact_kind": "REPAIR_PROMPT_SOURCE",
+        "template_sha256": template["content_sha256"],
+        "source_attempt_index": 1,
+        "source_measurement_sha256": measurement["content_sha256"],
+        "included_sections": list(included),
+        "dropped_sections": list(dropped),
+        "assembled_bytes": assembled,
+        "content_sha256": "",
+    })
+
+
+def build_repair_attempt(
+    run_attempt: Any, first: Mapping[str, Any], template: Mapping[str, Any] | None,
+    generation: Mapping[str, Any], paired_seed: int,
+) -> dict[str, Any]:
+    """Render the repair prompt from attempt one's own persisted diagnostics and run attempt two.
+
+    `repair_preparation_ns` is the monotonic span from immediately after the previous attempt's
+    adapter exits to immediately before this attempt's adapter is spawned, so the assembly work
+    that reached a skip decision is measured exactly like the assembly work that reached a call.
+    """
+    started_ns = time.monotonic_ns()
+    measurement = first["measurement"]
+
+    def skipped(reason: str, source: dict[str, Any] | None) -> dict[str, Any]:
+        return {
+            "skipped": True,
+            "record": skipped_attempt_record(
+                2, reason, source, time.monotonic_ns() - started_ns, paired_seed,
+            ),
+        }
+
+    if template is None:
+        return skipped("REPAIR_NOT_ELIGIBLE", None)
+    reason = repair_eligibility(measurement)
+    if reason != "NONE":
+        return skipped(reason, None)
+    sources = repair_section_sources(measurement)
+    text, included, dropped, assembled = assemble_repair_prompt(
+        template, first["rendered_text"], sources, generation["max_prompt_bytes"],
+    )
+    source = repair_prompt_source_record(template, measurement, included, dropped, assembled)
+    if text is None:
+        # Ladder row 14: no provider call is made, and the dropped sections are recorded so the
+        # budget decision is legible in the evidence rather than inferred from an absence.
+        return skipped("REPAIR_PROMPT_BUDGET", source)
+    # Ladder row 15: the producer runs section 4.4's re-derivation against its own output. This
+    # buys auditability, not independence-from-the-run: the repair prompt's content is a function
+    # of the model's attempt-one output, so no verifier can derive it from the frozen assets alone.
+    rederived = repair_prompt_text(
+        template, first["rendered_text"], repair_section_sources(measurement),
+        source["included_sections"],
+    )
+    if rederived != text:
+        raise EvaluationError("the repair prompt is not re-derivable from its persisted source")
+    return run_attempt(2, text, digest(text), source, time.monotonic_ns() - started_ns)
+
+
+def attempt_total_ns(records: Sequence[Mapping[str, Any]]) -> int | None:
+    """Section 3.6: the evaluator-observed total through the first passing attempt.
+
+    Every addition is exact `i64` and is bounds-checked against the existing two-hour ceiling
+    before it is persisted. Nothing saturates and nothing is clamped: a silently clamped
+    nanosecond count is the prior incident class this rule exists to prevent.
+    """
+    total = 0
+    for record in records:
+        if record["status"] == "SKIPPED":
+            continue
+        total += record["adapter_elapsed_ns"] + record["repair_preparation_ns"]
+        if record["status"] == "PASS":
+            if total <= 0 or total > 7_200_000_000_000:
+                raise EvaluationError("attempt timing total is outside its persisted bound")
+            return total
+    return None
+
+
 def write_exclusive(
     path: Path, raw: bytes, maximum: int, owned_paths: set[Path] | None = None,
 ) -> None:
@@ -2007,7 +2313,10 @@ def prepare_pair(
         compact_oversized_result(result, expected_inputs)
         bind(result)
     evidence = bind({
-        "schema_version": 1,
+        # The evidence container moves in lockstep with the result: it carries
+        # `PROMPT_EXPECTED_INPUT_DIGEST` records that are now one per attempt, so a document's
+        # members and its container share one version exactly as the result's rows do.
+        "schema_version": 2,
         "artifact_kind": "PROMPT_EVALUATION_EVIDENCE",
         "evaluation_id": result["evaluation_id"],
         "evaluation_result_sha256": result["content_sha256"],
@@ -2062,7 +2371,7 @@ def compact_oversized_result(result: dict[str, Any], expected_inputs: list[dict[
         "content_sha256": "",
     })
     compact = {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact_kind": "PROMPT_EVALUATION_RESULT",
         "evaluation_id": result["evaluation_id"],
         "status": "ERROR",
@@ -2131,7 +2440,7 @@ def invalid_result_only(
         else None
     )
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact_kind": "PROMPT_EVALUATION_RESULT",
         "evaluation_id": safe_evaluation_id,
         "status": "INVALID_INPUT",
@@ -2198,7 +2507,9 @@ def evaluation_result_record(
     generation = context["generation"]
     control = context["control"]
     return {
-        "schema_version": 1,
+        # A document's rows all carry the container's version. The two frozen version-1
+        # documents stay uniformly version 1 and decodable forever; nothing is ever migrated.
+        "schema_version": 2,
         "artifact_kind": "PROMPT_EVALUATION_RESULT",
         "evaluation_id": request["evaluation_id"],
         "status": status,
@@ -2821,6 +3132,39 @@ def reason(
     }
 
 
+def row_repair_loop_count(row: Mapping[str, Any]) -> int:
+    """One producer per field, selected by version and never by presence.
+
+    A version-1 row has no row-level `repair_loop_count` and must not be given a compatibility
+    default for one: its authority is, and stays, `row.measurement.repair_loop_count`.
+    """
+    if row["schema_version"] >= 2:
+        return row["repair_loop_count"]
+    return row["measurement"]["repair_loop_count"]
+
+
+def row_generation_ns(row: Mapping[str, Any]) -> int | None:
+    if row["schema_version"] >= 2:
+        return row.get("generation_to_passing_patch_ns")
+    return row["measurement"]["generation_to_passing_patch_ns"]
+
+
+def row_repair_attempted(row: Mapping[str, Any]) -> bool:
+    return row["schema_version"] >= 2 and row["repair_loop_count"] >= 1
+
+
+def row_repair_recovered(row: Mapping[str, Any]) -> bool:
+    """The section 1.4 gate predicate, evaluated on one row."""
+    if row["schema_version"] < 2:
+        return False
+    attempts = row["attempts"]
+    return (
+        len(attempts) == 2
+        and attempts[0]["attempt_kind"] == "INITIAL" and attempts[0]["status"] == "FAIL"
+        and attempts[1]["attempt_kind"] == "REPAIR" and attempts[1]["status"] == "PASS"
+    )
+
+
 def status_value(measurement: Mapping[str, Any]) -> str:
     status = measurement["status"]
     if status == "POLICY_VIOLATION":
@@ -2839,6 +3183,9 @@ def complete_score(
     corpus_candidate_times: list[int] = []
     corpus_parent_repairs = 0
     corpus_candidate_repairs = 0
+    corpus_repair_attempts = 0
+    corpus_repair_recoveries = 0
+    corpus_repair_recovery_paired = 0
     parent_passes = 0
     candidate_passes = 0
     paired_passes = 0
@@ -2854,8 +3201,16 @@ def complete_score(
         candidate_rows = [pairs[sample]["CANDIDATE"] for sample in range(1, sample_count + 1)]
         task_parent_passes = sum(row["measurement"]["status"] == "PASS" for row in parent_rows)
         task_candidate_passes = sum(row["measurement"]["status"] == "PASS" for row in candidate_rows)
-        task_parent_repairs = sum(row["measurement"]["repair_loop_count"] for row in parent_rows)
-        task_candidate_repairs = sum(row["measurement"]["repair_loop_count"] for row in candidate_rows)
+        task_parent_repairs = sum(row_repair_loop_count(row) for row in parent_rows)
+        task_candidate_repairs = sum(row_repair_loop_count(row) for row in candidate_rows)
+        parent_attempted = sum(row_repair_attempted(row) for row in parent_rows)
+        candidate_attempted = sum(row_repair_attempted(row) for row in candidate_rows)
+        parent_recovered = sum(row_repair_recovered(row) for row in parent_rows)
+        candidate_recovered = sum(row_repair_recovered(row) for row in candidate_rows)
+        # A (task, variant) pair counts only when *every* paired sample recovered, so a single
+        # lucky sample is not a reproducible recovery.
+        parent_paired_recovery = bool(parent_rows) and all(row_repair_recovered(row) for row in parent_rows)
+        candidate_paired_recovery = bool(candidate_rows) and all(row_repair_recovered(row) for row in candidate_rows)
         task_parent_times: list[int] = []
         task_candidate_times: list[int] = []
         task_paired = 0
@@ -2877,7 +3232,15 @@ def complete_score(
             "parent_paired_median_time_ns": parent_median,
             "candidate_paired_median_time_ns": candidate_median,
             "time_improvement_ppm": improvement, "time_regression_ppm": regression,
+            "parent_repair_attempt_count": parent_attempted,
+            "candidate_repair_attempt_count": candidate_attempted,
+            "parent_repair_recovery_count": parent_recovered,
+            "candidate_repair_recovery_count": candidate_recovered,
+            "repair_recovery_paired": parent_paired_recovery or candidate_paired_recovery,
         })
+        corpus_repair_attempts += parent_attempted + candidate_attempted
+        corpus_repair_recoveries += parent_recovered + candidate_recovered
+        corpus_repair_recovery_paired += int(parent_paired_recovery) + int(candidate_paired_recovery)
         parent_passes += task_parent_passes
         candidate_passes += task_candidate_passes
         corpus_parent_repairs += task_parent_repairs
@@ -2899,6 +3262,12 @@ def complete_score(
         "completion_gain_count": candidate_passes - parent_passes,
         "time_improvement_ppm": improvement, "time_regression_ppm": regression,
         "repair_loop_regression_count": repair_regression,
+        # The C4 gate quantity and its two denominators. The gate consumes
+        # `repair_recovery_paired_count` only; `status` and `gate_eligible` stay the C6 acceptance
+        # verdict and are recorded alongside as secondary evidence, never as the C4 claim.
+        "repair_attempt_count": corpus_repair_attempts,
+        "repair_recovery_count": corpus_repair_recoveries,
+        "repair_recovery_paired_count": corpus_repair_recovery_paired,
     }
     reasons: list[dict[str, Any]] = []
     if repair_regression > policy["maximum_repair_loop_regression_count"]:
@@ -2921,9 +3290,23 @@ def complete_score(
                 str(aggregate["candidate_paired_median_time_ns"]), str(policy["maximum_time_regression_ppm"]),
             ))
         for sample in range(1, sample_count + 1):
-            parent = indexed[ordinal][sample]["PARENT"]["measurement"]
-            candidate = indexed[ordinal][sample]["CANDIDATE"]["measurement"]
+            parent_row = indexed[ordinal][sample]["PARENT"]
+            candidate_row = indexed[ordinal][sample]["CANDIDATE"]
+            parent = parent_row["measurement"]
+            candidate = candidate_row["measurement"]
             candidate_value = status_value(candidate)
+            # Variant-symmetric from version 2 on. The check was candidate-only while repair was
+            # unreachable, so a PARENT row exceeding its task's declared cap was checked nowhere.
+            # With repair enabled on both arms that hole becomes reachable. Every version-1 row in
+            # existence carries `repair_loop_count: 0` against a limit of `0`, so extending the
+            # check is vacuous on the frozen chain and no version-1 verdict changes. The candidate
+            # record keeps its exact existing shape; the parent arm gets a distinguishable one.
+            parent_loops = row_repair_loop_count(parent_row)
+            if parent_loops > limit["maximum_repair_loops"]:
+                reasons.append(reason(
+                    task["task_id"], sample, "REPAIR_LOOPS", str(parent_loops), "NONE",
+                    str(limit["maximum_repair_loops"]),
+                ))
             if parent["status"] == "PASS" and candidate["status"] != "PASS":
                 reasons.append(reason(task["task_id"], sample, "PASS_TO_FAIL", "PASS", candidate_value, "NONE"))
             if parent["build_status"] == "PASS" and candidate["build_status"] != "PASS":
@@ -2936,12 +3319,17 @@ def complete_score(
                 ("unrelated_diff_count", "maximum_unrelated_diff_count", "UNRELATED_DIFF"),
                 ("public_api_change_count", "maximum_public_api_change_count", "PUBLIC_API"),
                 ("patch_size_bytes", "maximum_patch_size_bytes", "PATCH_SIZE"),
-                ("repair_loop_count", "maximum_repair_loops", "REPAIR_LOOPS"),
             ):
                 if candidate[field] > limit[maximum]:
                     reasons.append(reason(
                         task["task_id"], sample, code, "NONE", str(candidate[field]), str(limit[maximum]),
                     ))
+            candidate_loops = row_repair_loop_count(candidate_row)
+            if candidate_loops > limit["maximum_repair_loops"]:
+                reasons.append(reason(
+                    task["task_id"], sample, "REPAIR_LOOPS", "NONE", str(candidate_loops),
+                    str(limit["maximum_repair_loops"]),
+                ))
             benchmark_limit = limit["maximum_benchmark_regression_ppm"]
             benchmark = candidate["benchmark_regression_ppm"]
             if candidate["status"] == "PASS" and benchmark_limit is not None and benchmark > benchmark_limit:
@@ -3054,6 +3442,41 @@ def validated_generation_child(request: Mapping[str, Any]) -> Path:
     return child
 
 
+def validated_repair_template(
+    task: Mapping[str, Any], generation: Mapping[str, Any], project: Path,
+) -> dict[str, Any] | None:
+    """Ladder rows 5 and 6, run before any provider call or workspace mutation.
+
+    A task that offers no repair attempt carries no template and returns `None`; a task that does
+    must name a corpus member whose bytes hash to the manifest's `repair_template_sha256`.
+    """
+    declared = task.get("repair_template_path")
+    if declared is None:
+        return None
+    artifact_paths = {
+        expectation.get("path") for expectation in task.get("artifacts", [])
+        if isinstance(expectation, dict) and expectation.get("kind") == "FILE"
+    }
+    if declared not in artifact_paths:
+        raise EvaluationError("the repair template is not a corpus member")
+    resolved = relative_path(project, declared)
+    raw = read_bounded(resolved, ARTIFACT_LIMIT)
+    if hashlib.sha256(raw).hexdigest() != task["repair_template_sha256"]:
+        raise EvaluationError("the repair template digest disagrees")
+    template = load_bound(resolved, "REPAIR_PROMPT_TEMPLATE")
+    if not valid_repair_template(template):
+        raise EvaluationError("the repair template schema is invalid")
+    # Ladder row 6: the prompt budget must at least admit the template's own fixed text, so a
+    # budget that can never carry a repair prompt is rejected before the run rather than
+    # discovered as a `REPAIR_PROMPT_BUDGET` skip on every row.
+    headers = template["section_headers"]
+    fixed = len(template["preamble_text"].encode("utf-8")) + len(template["closing_text"].encode("utf-8"))
+    fixed += sum(len(headers[kind].encode("utf-8")) + 3 for kind in REPAIR_SECTION_KINDS)
+    if fixed + REPAIR_STATUS_LIMIT > generation["max_prompt_bytes"]:
+        raise EvaluationError("the generation policy prompt budget cannot carry the repair template")
+    return template
+
+
 def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> dict[str, Any]:
     if request["sample_count"] < 2 or request["sample_count"] > 16:
         raise EvaluationError("sample count is invalid")
@@ -3088,6 +3511,7 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
     validate_source_boundary(request, source_policy, project)
     task_inputs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     task_snapshot_files: list[list[str]] = []
+    task_repair_templates: list[dict[str, Any] | None] = []
     task_ids: set[str] = set()
     for task in tasks:
         if (
@@ -3148,6 +3572,7 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         if context["task_id"] != task["task_id"]:
             raise EvaluationError("task context identity disagrees")
         task_inputs.append((task_prompt, context))
+        task_repair_templates.append(validated_repair_template(task, generation, project))
         task_snapshot_files.append(automatic_snapshot_files(
             request, task_files[len(task_snapshot_files)], task, project,
         ))
@@ -3181,6 +3606,7 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         "credential_env_name": credential_env_name, "credential_value": credential_value,
         "generation_child": generation_child,
         "task_inputs": task_inputs, "task_snapshot_files": task_snapshot_files,
+        "task_repair_templates": task_repair_templates,
         "scope": scope, "candidate": candidate,
         "parent_variant": parent_variant, "task_files": task_files,
     }
@@ -3435,6 +3861,10 @@ def evaluate(
     for task_ordinal, task in enumerate(tasks):
         task_prompt, context = task_inputs[task_ordinal]
         automatic_files = inputs["task_snapshot_files"][task_ordinal]
+        repair_template = inputs["task_repair_templates"][task_ordinal]
+        # The corpus manifest is the cap. A task declaring `0` behaves exactly as it did before
+        # C4-REPAIR-MEASURED, which is how `eval/prompt/canonical-v1/` keeps working unchanged.
+        repair_limit = min(task["regression_limits"]["maximum_repair_loops"], MAXIMUM_REPAIR_ATTEMPTS)
         baseline_artifact_digests: list[dict[str, Any]] | None = None
         baseline_environment_probe: dict[str, Any] | None = None
         with tempfile.TemporaryDirectory(prefix="prompt-snapshot-request-") as request_directory:
@@ -3447,397 +3877,485 @@ def evaluate(
                         len(attestations), len(rows), len(expected_inputs),
                     )
                     variant = parent_variant if variant_name == "PARENT" else candidate
-                    prefix = f"t{task_ordinal + 1}-s{sample}-{variant_name.lower()}"
-                    variant_path = temporary_json(workspace, f"{prefix}-variant.json", variant, owned_paths)
-                    rendered_text, rendered_text_sha = render(variant, task_prompt, context)
-                    rendered = bind({
-                        "schema_version": 1, "artifact_kind": "RENDERED_PROMPT", "task_id": task["task_id"],
-                        "variant_id": variant["variant_id"], "variant_sha256": variant["content_sha256"],
-                        "task_prompt_sha256": task_prompt["content_sha256"],
-                        "context_sources_sha256": context["content_sha256"], "text": rendered_text,
-                        "content_sha256": "",
-                    })
-                    if rendered_text_sha != digest(rendered["text"]):
-                        raise EvaluationError("rendered prompt digest changed")
-                    rendered_path = temporary_json(workspace, f"{prefix}-rendered.json", rendered, owned_paths)
-                    measurement_path = workspace / f"{prefix}-measurement.json"
-                    adapter_request = bind({
-                        "schema_version": 1, "artifact_kind": "TASK_ADAPTER_REQUEST",
-                        "evaluation_id": request["evaluation_id"], "task_id": task["task_id"], "sample_index": sample,
-                        "variant": variant_name, "variant_path": str(variant_path), "variant_sha256": variant["content_sha256"],
-                        "rendered_prompt_path": str(rendered_path), "rendered_prompt_sha256": rendered["content_sha256"],
-                        "generation_policy_path": str(relative_path(project, task["generation_policy_path"])),
-                        "generation_policy_sha256": generation["content_sha256"],
-                        "provider_control_path": str(relative_path(project, task["provider_control_path"])),
-                        "provider_control_sha256": control["content_sha256"], "workspace_path": str(workspace),
-                        "result_path": str(measurement_path), "paired_seed": generation["seed_base"] + sample - 1,
-                        "credential_env_name": credential_env_name,
-                        "environment_policy_sha256": environment_policy["content_sha256"],
-                        "validation_runner_path": str(relative_path(project, task["validation_runner_path"])),
-                        "validation_runner_sha256": task["validation_runner_sha256"],
-                        "task_definition_path": str(relative_path(project, task["task_definition_path"])),
-                        "task_definition_sha256": task["task_definition_sha256"],
-                        "validation_argv": list(task["validation_argv"]),
-                        "patch_path": (
-                            None if task["patch_path"] is None
-                            else str(relative_path(project, task["patch_path"]))
-                        ),
-                        "patch_sha256": task["patch_sha256"],
-                        "generation_child_path": str(generation_child),
-                        "generation_child_sha256": request["generation_child_sha256"],
-                        # The task's own deadline bounds the adapter's contained validation runner.
-                        # The generation child keeps the provider-control deadline, so the two
-                        # sequential inner children stay strictly inside the outer sum below.
-                        "task_deadline_ns": task["timeout_ns"],
-                        "content_sha256": "",
-                    })
-                    adapter_request_path = temporary_json(
-                        workspace, f"{prefix}-request.json", adapter_request, owned_paths
-                    )
-                    snapshot_request = bind({
-                        "schema_version": 1,
-                        "artifact_kind": "SNAPSHOT_REQUEST",
-                        "task_id": task["task_id"],
-                        "project_root": str(project),
-                        "repo_path": task["repo_path"],
-                        "repo_revision": task["repo_revision"],
-                        "require_clean_repo": task["require_clean_repo"],
-                        "static_expectations": task["artifacts"],
-                        "additional_files": automatic_files + [
-                            str(variant_path.relative_to(project)),
-                            str(rendered_path.relative_to(project)),
-                            str(adapter_request_path.relative_to(project)),
-                        ],
-                        "workspace_path": str(workspace),
-                        "allowed_workspace_entries": invocation_workspace_entries(
-                            variant_path, rendered_path, adapter_request_path, measurement_path,
-                        ),
-                        "content_sha256": "",
-                    })
-                    snapshot_request_path = Path(request_directory) / "request.json"
-                    snapshot_request_path.unlink(missing_ok=True)
-                    temporary_json(Path(request_directory), "request.json", snapshot_request)
-                    snapshot_result_path = Path(request_directory) / f"t{task_ordinal + 1}-snapshot-result.json"
-                    before = invoke_snapshot(
-                        task, snapshot_request_path, snapshot_result_path, project,
-                        environment_values, preflight["environment_probe"],
-                        owned_paths,
-                    )
-                    if not any(item["content_sha256"] == snapshot_request["content_sha256"] for item in snapshot_requests):
-                        snapshot_requests.append(snapshot_request)
-                    if not any(item["content_sha256"] == before["content_sha256"] for item in snapshot_results):
-                        snapshot_results.append(before)
-                    if before["status"] != "MATCH":
-                        failure_code = (
-                            "SNAPSHOT_MISMATCH" if before["status"] == "MISMATCH"
-                            else "CLEANUP_FAILED" if before.get("error_code") == "CLEANUP"
-                            else "SNAPSHOT_ERROR"
-                        )
-                        failure_detail = before["error"]
+                    paired_seed = generation["seed_base"] + sample - 1
+
+                    def attest(
+                        status: str, error_code: str, detail: str, before_sha: str | None,
+                        after_sha: str | None, before_input_sha: str | None,
+                        after_input_sha: str | None, request_sha: str,
+                    ) -> None:
                         attestations.append(bind({
                             "schema_version": 1,
                             "artifact_kind": "RUN_SNAPSHOT_ATTESTATION",
                             "task_id": task["task_id"],
                             "sample_index": sample,
                             "variant": variant_name,
-                            "status": "PRECHECK_FAILED",
-                            "error_code": failure_code,
-                            "error": failure_detail,
-                            "snapshot_request_sha256": snapshot_request["content_sha256"],
-                            "before_snapshot_result_sha256": before["content_sha256"],
-                            "after_snapshot_result_sha256": None,
-                            "before_input_snapshot_sha256": None,
-                            "after_input_snapshot_sha256": None,
+                            "status": status,
+                            "error_code": error_code,
+                            "error": detail,
+                            "snapshot_request_sha256": request_sha,
+                            "before_snapshot_result_sha256": before_sha,
+                            "after_snapshot_result_sha256": after_sha,
+                            "before_input_snapshot_sha256": before_input_sha,
+                            "after_input_snapshot_sha256": after_input_sha,
                             "content_sha256": "",
                         }))
-                        return finish(
-                            evaluation_result("ERROR", failure_code, failure_detail), checkpoint,
-                            cleanup_diagnosed=failure_code == "CLEANUP_FAILED",
-                        )
-                    input_snapshot = bind({
-                        "schema_version": 1,
-                        "artifact_kind": "TASK_INPUT_SNAPSHOT",
-                        "task_id": task["task_id"],
-                        "task_manifest_sha256": task["content_sha256"],
-                        "artifact_digests": before["artifact_digests"],
-                        "environment_sha256": environment["environment_id"],
-                        "content_sha256": "",
-                    })
-                    if not any(item["content_sha256"] == input_snapshot["content_sha256"] for item in input_snapshots):
-                        input_snapshots.append(input_snapshot)
-                    persistent_paths = set(expected_snapshot_paths({
-                        "static_expectations": task["artifacts"],
-                        "additional_files": automatic_files,
-                    }, project))
-                    current_static_digests = [
-                        item for item in before["artifact_digests"] if item["path"] in persistent_paths
-                    ]
-                    if baseline_artifact_digests is None:
-                        baseline_artifact_digests = current_static_digests
-                        baseline_environment_probe = before["environment_probe"]
-                    else:
-                        drift_code = "NONE"
-                        drift_detail = ""
-                        drift_code = classify_task_drift(
-                            before["environment_probe"], current_static_digests,
-                            baseline_environment_probe, baseline_artifact_digests,
-                        )
-                        if drift_code == "ENVIRONMENT_DRIFT":
-                            drift_detail = "task environment drifted between adapter invocations"
-                        elif drift_code == "INPUT_DRIFT":
-                            drift_detail = "task input drifted between adapter invocations"
-                        if drift_code != "NONE":
-                            attestations.append(bind({
-                                "schema_version": 1,
-                                "artifact_kind": "RUN_SNAPSHOT_ATTESTATION",
-                                "task_id": task["task_id"],
-                                "sample_index": sample,
-                                "variant": variant_name,
-                                "status": "PRECHECK_DRIFT",
-                                "error_code": drift_code,
-                                "error": drift_detail,
-                                "snapshot_request_sha256": snapshot_request["content_sha256"],
-                                "before_snapshot_result_sha256": before["content_sha256"],
-                                "after_snapshot_result_sha256": None,
-                                "before_input_snapshot_sha256": input_snapshot["content_sha256"],
-                                "after_input_snapshot_sha256": None,
-                                "content_sha256": "",
-                            }))
-                            return finish(
-                                evaluation_result("ERROR", drift_code, drift_detail), checkpoint,
-                            )
-                    if not retire_owned_path(snapshot_result_path, owned_paths):
-                        return finish(
-                            evaluation_result(
-                                "ERROR", "CLEANUP_FAILED", "snapshot result cleanup failed",
+
+                    def run_attempt(
+                        attempt_index: int, rendered_text: str, rendered_text_sha: str,
+                        repair_source: dict[str, Any] | None, preparation_ns: int,
+                    ) -> dict[str, Any]:
+                        """One ordinary adapter invocation against a fresh pinned checkout.
+
+                        Attempt two is not a resumption of attempt one: `eval/runners/run-coding-task.py`
+                        builds its own pinned checkout and asserts the fixture fails before the patch,
+                        so an independent validation of a different patch is all a second invocation
+                        is. That is what makes an evaluator-owned loop possible with the adapter and
+                        the runner byte-identical.
+                        """
+                        nonlocal baseline_artifact_digests, baseline_environment_probe
+                        # Fixed-width attempt suffix on a fixed-depth run directory. Nothing
+                        # unbounded is concatenated into a run-local name; the prior incident class
+                        # is `ENAMETOOLONG`.
+                        prefix = f"t{task_ordinal + 1}-s{sample}-{variant_name.lower()}-a{attempt_index}"
+                        variant_path = temporary_json(workspace, f"{prefix}-variant.json", variant, owned_paths)
+                        rendered = bind({
+                            "schema_version": 1, "artifact_kind": "RENDERED_PROMPT", "task_id": task["task_id"],
+                            "variant_id": variant["variant_id"], "variant_sha256": variant["content_sha256"],
+                            "task_prompt_sha256": task_prompt["content_sha256"],
+                            "context_sources_sha256": context["content_sha256"], "text": rendered_text,
+                            "content_sha256": "",
+                        })
+                        if rendered_text_sha != digest(rendered["text"]):
+                            raise EvaluationError("rendered prompt digest changed")
+                        rendered_path = temporary_json(workspace, f"{prefix}-rendered.json", rendered, owned_paths)
+                        measurement_path = workspace / f"{prefix}-measurement.json"
+                        adapter_request = bind({
+                            "schema_version": 1, "artifact_kind": "TASK_ADAPTER_REQUEST",
+                            "evaluation_id": request["evaluation_id"], "task_id": task["task_id"], "sample_index": sample,
+                            "variant": variant_name, "variant_path": str(variant_path), "variant_sha256": variant["content_sha256"],
+                            "rendered_prompt_path": str(rendered_path), "rendered_prompt_sha256": rendered["content_sha256"],
+                            "generation_policy_path": str(relative_path(project, task["generation_policy_path"])),
+                            "generation_policy_sha256": generation["content_sha256"],
+                            "provider_control_path": str(relative_path(project, task["provider_control_path"])),
+                            "provider_control_sha256": control["content_sha256"], "workspace_path": str(workspace),
+                            "result_path": str(measurement_path), "paired_seed": paired_seed,
+                            "credential_env_name": credential_env_name,
+                            "environment_policy_sha256": environment_policy["content_sha256"],
+                            "validation_runner_path": str(relative_path(project, task["validation_runner_path"])),
+                            "validation_runner_sha256": task["validation_runner_sha256"],
+                            "task_definition_path": str(relative_path(project, task["task_definition_path"])),
+                            "task_definition_sha256": task["task_definition_sha256"],
+                            "validation_argv": list(task["validation_argv"]),
+                            "patch_path": (
+                                None if task["patch_path"] is None
+                                else str(relative_path(project, task["patch_path"]))
                             ),
-                            checkpoint,
-                            cleanup_diagnosed=True,
-                        )
-                    if (
-                        variant_name == "PARENT"
-                        and len(rendered["text"].encode("utf-8")) > generation["max_prompt_bytes"]
-                    ):
-                        failure_detail = "parent rendered prompt exceeds max_prompt_bytes"
-                        attestations.append(bind({
-                            "schema_version": 1,
-                            "artifact_kind": "RUN_SNAPSHOT_ATTESTATION",
-                            "task_id": task["task_id"],
-                            "sample_index": sample,
-                            "variant": variant_name,
-                            "status": "ADAPTER_FAILED",
-                            "error_code": "ADAPTER_RESULT",
-                            "error": failure_detail,
-                            "snapshot_request_sha256": snapshot_request["content_sha256"],
-                            "before_snapshot_result_sha256": before["content_sha256"],
-                            "after_snapshot_result_sha256": None,
-                            "before_input_snapshot_sha256": input_snapshot["content_sha256"],
-                            "after_input_snapshot_sha256": None,
+                            "patch_sha256": task["patch_sha256"],
+                            "generation_child_path": str(generation_child),
+                            "generation_child_sha256": request["generation_child_sha256"],
+                            # The task's own deadline bounds the adapter's contained validation runner.
+                            # The generation child keeps the provider-control deadline, so the two
+                            # sequential inner children stay strictly inside the outer sum below.
+                            "task_deadline_ns": task["timeout_ns"],
                             "content_sha256": "",
-                        }))
-                        return finish(
-                            evaluation_result("ERROR", "ADAPTER_RESULT", failure_detail), checkpoint,
+                        })
+                        adapter_request_path = temporary_json(
+                            workspace, f"{prefix}-request.json", adapter_request, owned_paths
                         )
-                    try:
-                        measurement = invoke_adapter(
-                            task, adapter_request, adapter_request_path, variant_path, rendered_path, measurement_path,
-                            project,
-                            adapter_environment,
-                            control["timeout_ns"],
-                            sample,
-                            generation["seed_base"] + sample - 1,
-                            len(rendered["text"].encode("utf-8")) > generation["max_prompt_bytes"],
+                        snapshot_request = bind({
+                            "schema_version": 1,
+                            "artifact_kind": "SNAPSHOT_REQUEST",
+                            "task_id": task["task_id"],
+                            "project_root": str(project),
+                            "repo_path": task["repo_path"],
+                            "repo_revision": task["repo_revision"],
+                            "require_clean_repo": task["require_clean_repo"],
+                            "static_expectations": task["artifacts"],
+                            "additional_files": automatic_files + [
+                                str(variant_path.relative_to(project)),
+                                str(rendered_path.relative_to(project)),
+                                str(adapter_request_path.relative_to(project)),
+                            ],
+                            "workspace_path": str(workspace),
+                            "allowed_workspace_entries": invocation_workspace_entries(
+                                variant_path, rendered_path, adapter_request_path, measurement_path,
+                            ),
+                            "content_sha256": "",
+                        })
+                        snapshot_request_path = Path(request_directory) / "request.json"
+                        snapshot_request_path.unlink(missing_ok=True)
+                        temporary_json(Path(request_directory), "request.json", snapshot_request)
+                        snapshot_result_path = Path(request_directory) / f"t{task_ordinal + 1}-snapshot-result.json"
+                        before = invoke_snapshot(
+                            task, snapshot_request_path, snapshot_result_path, project,
+                            environment_values, preflight["environment_probe"],
                             owned_paths,
                         )
-                    except AdapterFailure as failure:
-                        attestations.append(bind({
-                            "schema_version": 1,
-                            "artifact_kind": "RUN_SNAPSHOT_ATTESTATION",
-                            "task_id": task["task_id"],
-                            "sample_index": sample,
-                            "variant": variant_name,
-                            "status": "ADAPTER_FAILED",
-                            "error_code": failure.code,
-                            "error": failure.detail,
-                            "snapshot_request_sha256": snapshot_request["content_sha256"],
-                            "before_snapshot_result_sha256": before["content_sha256"],
-                            "after_snapshot_result_sha256": None,
-                            "before_input_snapshot_sha256": input_snapshot["content_sha256"],
-                            "after_input_snapshot_sha256": None,
-                            "content_sha256": "",
-                        }))
-                        return finish(
-                            evaluation_result("ERROR", failure.code, failure.detail),
-                            checkpoint,
-                            cleanup_diagnosed=failure.code == "CLEANUP_FAILED",
-                        )
-                    if measurement.get("rendered_prompt_sha256") != rendered["content_sha256"]:
-                        failure_detail = "measurement adapter result identity disagrees"
-                        attestations.append(bind({
-                            "schema_version": 1,
-                            "artifact_kind": "RUN_SNAPSHOT_ATTESTATION",
-                            "task_id": task["task_id"],
-                            "sample_index": sample,
-                            "variant": variant_name,
-                            "status": "ADAPTER_FAILED",
-                            "error_code": "ADAPTER_RESULT",
-                            "error": failure_detail,
-                            "snapshot_request_sha256": snapshot_request["content_sha256"],
-                            "before_snapshot_result_sha256": before["content_sha256"],
-                            "after_snapshot_result_sha256": None,
-                            "before_input_snapshot_sha256": input_snapshot["content_sha256"],
-                            "after_input_snapshot_sha256": None,
-                            "content_sha256": "",
-                        }))
-                        return finish(
-                            evaluation_result("ERROR", "ADAPTER_RESULT", failure_detail), checkpoint,
-                        )
-                    after = invoke_snapshot(
-                        task, snapshot_request_path, snapshot_result_path, project,
-                        environment_values, preflight["environment_probe"],
-                        owned_paths,
-                    )
-                    if not any(item["content_sha256"] == after["content_sha256"] for item in snapshot_results):
-                        snapshot_results.append(after)
-                    if after["status"] != "MATCH":
-                        failure_code = (
-                            "SNAPSHOT_MISMATCH" if after["status"] == "MISMATCH"
-                            else "CLEANUP_FAILED" if after.get("error_code") == "CLEANUP"
-                            else "SNAPSHOT_ERROR"
-                        )
-                        failure_detail = after["error"]
-                        attestations.append(bind({
-                            "schema_version": 1,
-                            "artifact_kind": "RUN_SNAPSHOT_ATTESTATION",
-                            "task_id": task["task_id"],
-                            "sample_index": sample,
-                            "variant": variant_name,
-                            "status": "POSTCHECK_FAILED",
-                            "error_code": failure_code,
-                            "error": failure_detail,
-                            "snapshot_request_sha256": snapshot_request["content_sha256"],
-                            "before_snapshot_result_sha256": before["content_sha256"],
-                            "after_snapshot_result_sha256": after["content_sha256"],
-                            "before_input_snapshot_sha256": input_snapshot["content_sha256"],
-                            "after_input_snapshot_sha256": None,
-                            "content_sha256": "",
-                        }))
-                        return finish(
-                            evaluation_result("ERROR", failure_code, failure_detail), checkpoint,
-                            cleanup_diagnosed=failure_code == "CLEANUP_FAILED",
-                        )
-                    after_static_digests = [
-                        item for item in after["artifact_digests"] if item["path"] in persistent_paths
-                    ]
-                    post_drift_code = "NONE"
-                    post_drift_detail = ""
-                    post_drift_code = classify_task_drift(
-                        after["environment_probe"], after_static_digests,
-                        baseline_environment_probe, baseline_artifact_digests,
-                    )
-                    if post_drift_code == "ENVIRONMENT_DRIFT":
-                        post_drift_detail = "task environment drifted after adapter invocation"
-                    elif post_drift_code == "INPUT_DRIFT":
-                        post_drift_detail = "task input drifted from its first admitted invocation"
-                    elif before["artifact_digests"] != after["artifact_digests"]:
-                        post_drift_code = "INPUT_DRIFT"
-                        post_drift_detail = "task input drifted after adapter invocation"
-                    if post_drift_code != "NONE":
-                        after_input_snapshot = bind({
+                        if not any(item["content_sha256"] == snapshot_request["content_sha256"] for item in snapshot_requests):
+                            snapshot_requests.append(snapshot_request)
+                        if not any(item["content_sha256"] == before["content_sha256"] for item in snapshot_results):
+                            snapshot_results.append(before)
+                        if before["status"] != "MATCH":
+                            failure_code = (
+                                "SNAPSHOT_MISMATCH" if before["status"] == "MISMATCH"
+                                else "CLEANUP_FAILED" if before.get("error_code") == "CLEANUP"
+                                else "SNAPSHOT_ERROR"
+                            )
+                            failure_detail = before["error"]
+                            attest(
+                                "PRECHECK_FAILED", failure_code, failure_detail,
+                                before["content_sha256"], None, None, None,
+                                snapshot_request["content_sha256"],
+                            )
+                            raise AbortEvaluation(
+                                evaluation_result("ERROR", failure_code, failure_detail), checkpoint,
+                                cleanup_diagnosed=failure_code == "CLEANUP_FAILED",
+                            )
+                        input_snapshot = bind({
                             "schema_version": 1,
                             "artifact_kind": "TASK_INPUT_SNAPSHOT",
                             "task_id": task["task_id"],
                             "task_manifest_sha256": task["content_sha256"],
-                            "artifact_digests": after["artifact_digests"],
+                            "artifact_digests": before["artifact_digests"],
                             "environment_sha256": environment["environment_id"],
                             "content_sha256": "",
                         })
-                        if not any(item["content_sha256"] == after_input_snapshot["content_sha256"] for item in input_snapshots):
-                            input_snapshots.append(after_input_snapshot)
-                        attestations.append(bind({
+                        if not any(item["content_sha256"] == input_snapshot["content_sha256"] for item in input_snapshots):
+                            input_snapshots.append(input_snapshot)
+                        persistent_paths = set(expected_snapshot_paths({
+                            "static_expectations": task["artifacts"],
+                            "additional_files": automatic_files,
+                        }, project))
+                        current_static_digests = [
+                            item for item in before["artifact_digests"] if item["path"] in persistent_paths
+                        ]
+                        if baseline_artifact_digests is None:
+                            baseline_artifact_digests = current_static_digests
+                            baseline_environment_probe = before["environment_probe"]
+                        else:
+                            drift_code = classify_task_drift(
+                                before["environment_probe"], current_static_digests,
+                                baseline_environment_probe, baseline_artifact_digests,
+                            )
+                            drift_detail = ""
+                            if drift_code == "ENVIRONMENT_DRIFT":
+                                drift_detail = "task environment drifted between adapter invocations"
+                            elif drift_code == "INPUT_DRIFT":
+                                drift_detail = "task input drifted between adapter invocations"
+                            if drift_code != "NONE":
+                                attest(
+                                    "PRECHECK_DRIFT", drift_code, drift_detail,
+                                    before["content_sha256"], None, input_snapshot["content_sha256"], None,
+                                    snapshot_request["content_sha256"],
+                                )
+                                raise AbortEvaluation(
+                                    evaluation_result("ERROR", drift_code, drift_detail), checkpoint,
+                                )
+                        if not retire_owned_path(snapshot_result_path, owned_paths):
+                            raise AbortEvaluation(
+                                evaluation_result(
+                                    "ERROR", "CLEANUP_FAILED", "snapshot result cleanup failed",
+                                ),
+                                checkpoint,
+                                cleanup_diagnosed=True,
+                            )
+                        prompt_oversized = len(rendered["text"].encode("utf-8")) > generation["max_prompt_bytes"]
+                        if variant_name == "PARENT" and prompt_oversized:
+                            failure_detail = "parent rendered prompt exceeds max_prompt_bytes"
+                            attest(
+                                "ADAPTER_FAILED", "ADAPTER_RESULT", failure_detail,
+                                before["content_sha256"], None, input_snapshot["content_sha256"], None,
+                                snapshot_request["content_sha256"],
+                            )
+                            raise AbortEvaluation(
+                                evaluation_result("ERROR", "ADAPTER_RESULT", failure_detail), checkpoint,
+                            )
+                        started_ns = time.monotonic_ns()
+                        try:
+                            measurement = invoke_adapter(
+                                task, adapter_request, adapter_request_path, variant_path, rendered_path, measurement_path,
+                                project,
+                                adapter_environment,
+                                control["timeout_ns"],
+                                sample,
+                                paired_seed,
+                                prompt_oversized,
+                                owned_paths,
+                            )
+                        except AdapterFailure as failure:
+                            attest(
+                                "ADAPTER_FAILED", failure.code, failure.detail,
+                                before["content_sha256"], None, input_snapshot["content_sha256"], None,
+                                snapshot_request["content_sha256"],
+                            )
+                            raise AbortEvaluation(
+                                evaluation_result("ERROR", failure.code, failure.detail),
+                                checkpoint,
+                                cleanup_diagnosed=failure.code == "CLEANUP_FAILED",
+                            ) from None
+                        # Evaluator-observed, monotonic, and closed immediately after the adapter
+                        # child exits and its result is read. Section 3.6: a failing attempt's own
+                        # `generation_to_passing_patch_ns` is `None` by the C6 state machine, so the
+                        # repair total cannot be assembled from adapter-reported values at all.
+                        adapter_elapsed_ns = time.monotonic_ns() - started_ns
+                        # Ladder row 10: each adapter invocation is single-attempt by construction,
+                        # so an adapter that reports a repair loop of its own would double-count
+                        # against the evaluator-owned `row.repair_loop_count`.
+                        #
+                        # Narrowed, and recorded as a deviation from spec section 3.3, which
+                        # assumed every adapter emits the literal `0`. The provider-backed
+                        # `scripts/prompt-measurement-adapter.py` does; the deterministic
+                        # `scripts/prompt-fixed-adapter.py` emits `1` on its expected-failure path
+                        # and is a byte-frozen `canonical-v1` corpus member that cannot be edited
+                        # without breaking `make prompt-gate-check`. The check therefore binds
+                        # exactly where double-counting is possible — a task that offers a repair
+                        # attempt. Where no repair is offered the adapter's value is carried
+                        # verbatim in `attempt.measurement` and is simply not the authority.
+                        if repair_limit >= 1 and measurement["repair_loop_count"] != 0:
+                            failure_detail = "measurement adapter reported a repair loop it cannot run"
+                            attest(
+                                "ADAPTER_FAILED", "ADAPTER_RESULT", failure_detail,
+                                before["content_sha256"], None, input_snapshot["content_sha256"], None,
+                                snapshot_request["content_sha256"],
+                            )
+                            raise AbortEvaluation(
+                                evaluation_result("ERROR", "ADAPTER_RESULT", failure_detail), checkpoint,
+                            )
+                        # Ladder row 11: the evaluator re-derives the rendered prompt identity
+                        # independently and requires equality before wrapping the adapter's document.
+                        if measurement.get("rendered_prompt_sha256") != rendered["content_sha256"]:
+                            failure_detail = "measurement adapter result identity disagrees"
+                            attest(
+                                "ADAPTER_FAILED", "ADAPTER_RESULT", failure_detail,
+                                before["content_sha256"], None, input_snapshot["content_sha256"], None,
+                                snapshot_request["content_sha256"],
+                            )
+                            raise AbortEvaluation(
+                                evaluation_result("ERROR", "ADAPTER_RESULT", failure_detail), checkpoint,
+                            )
+                        after = invoke_snapshot(
+                            task, snapshot_request_path, snapshot_result_path, project,
+                            environment_values, preflight["environment_probe"],
+                            owned_paths,
+                        )
+                        if not any(item["content_sha256"] == after["content_sha256"] for item in snapshot_results):
+                            snapshot_results.append(after)
+                        if after["status"] != "MATCH":
+                            failure_code = (
+                                "SNAPSHOT_MISMATCH" if after["status"] == "MISMATCH"
+                                else "CLEANUP_FAILED" if after.get("error_code") == "CLEANUP"
+                                else "SNAPSHOT_ERROR"
+                            )
+                            failure_detail = after["error"]
+                            attest(
+                                "POSTCHECK_FAILED", failure_code, failure_detail,
+                                before["content_sha256"], after["content_sha256"],
+                                input_snapshot["content_sha256"], None,
+                                snapshot_request["content_sha256"],
+                            )
+                            raise AbortEvaluation(
+                                evaluation_result("ERROR", failure_code, failure_detail), checkpoint,
+                                cleanup_diagnosed=failure_code == "CLEANUP_FAILED",
+                            )
+                        after_static_digests = [
+                            item for item in after["artifact_digests"] if item["path"] in persistent_paths
+                        ]
+                        post_drift_code = classify_task_drift(
+                            after["environment_probe"], after_static_digests,
+                            baseline_environment_probe, baseline_artifact_digests,
+                        )
+                        post_drift_detail = ""
+                        if post_drift_code == "ENVIRONMENT_DRIFT":
+                            post_drift_detail = "task environment drifted after adapter invocation"
+                        elif post_drift_code == "INPUT_DRIFT":
+                            post_drift_detail = "task input drifted from its first admitted invocation"
+                        elif before["artifact_digests"] != after["artifact_digests"]:
+                            post_drift_code = "INPUT_DRIFT"
+                            post_drift_detail = "task input drifted after adapter invocation"
+                        if post_drift_code != "NONE":
+                            after_input_snapshot = bind({
+                                "schema_version": 1,
+                                "artifact_kind": "TASK_INPUT_SNAPSHOT",
+                                "task_id": task["task_id"],
+                                "task_manifest_sha256": task["content_sha256"],
+                                "artifact_digests": after["artifact_digests"],
+                                "environment_sha256": environment["environment_id"],
+                                "content_sha256": "",
+                            })
+                            if not any(item["content_sha256"] == after_input_snapshot["content_sha256"] for item in input_snapshots):
+                                input_snapshots.append(after_input_snapshot)
+                            attest(
+                                "POSTCHECK_DRIFT", post_drift_code, post_drift_detail,
+                                before["content_sha256"], after["content_sha256"],
+                                input_snapshot["content_sha256"], after_input_snapshot["content_sha256"],
+                                snapshot_request["content_sha256"],
+                            )
+                            raise AbortEvaluation(
+                                evaluation_result("ERROR", post_drift_code, post_drift_detail), checkpoint,
+                            )
+                        # Attempt one's workspace, adapter child, and sealed inputs are released
+                        # before attempt two is prepared, on both the pass and the fail path. A run
+                        # that cannot prove it cleaned up cannot prove the next attempt was contained.
+                        cleanup_passed = True
+                        for path in (snapshot_result_path, adapter_request_path, rendered_path, variant_path):
+                            if not retire_owned_path(path, owned_paths):
+                                cleanup_passed = False
+                        if not cleanup_passed:
+                            raise AbortEvaluation(
+                                evaluation_result(
+                                    "ERROR", "CLEANUP_FAILED", "evaluator-owned workspace cleanup failed",
+                                ),
+                                checkpoint,
+                                cleanup_diagnosed=True,
+                            )
+                        if measurement.get("status") == "ERROR":
+                            failure_detail = measurement.get("diagnostic_summary") or "measurement adapter returned an error"
+                            failure_code = "CLEANUP_FAILED" if not measurement.get("cleanup_passed", True) else "ADAPTER_RESULT"
+                            raise AbortEvaluation(
+                                evaluation_result("ERROR", failure_code, failure_detail[:4096]), checkpoint,
+                                cleanup_diagnosed=failure_code == "CLEANUP_FAILED",
+                            )
+                        if not any(item["content_sha256"] == input_snapshot["content_sha256"] for item in input_snapshots):
+                            input_snapshots.append(input_snapshot)
+                        overhead_ns: int | None = None
+                        if measurement["status"] == "PASS":
+                            overhead_ns = adapter_elapsed_ns - measurement["generation_to_passing_patch_ns"]
+                            if overhead_ns < 0:
+                                raise AbortEvaluation(
+                                    evaluation_result(
+                                        "ERROR", "TIMING",
+                                        "adapter-reported generation exceeds the evaluator-observed span",
+                                    ),
+                                    checkpoint,
+                                )
+                        record = bind({
                             "schema_version": 1,
-                            "artifact_kind": "RUN_SNAPSHOT_ATTESTATION",
-                            "task_id": task["task_id"],
-                            "sample_index": sample,
-                            "variant": variant_name,
-                            "status": "POSTCHECK_DRIFT",
-                            "error_code": post_drift_code,
-                            "error": post_drift_detail,
+                            "artifact_kind": "TASK_ATTEMPT_RECORD",
+                            "attempt_index": attempt_index,
+                            "attempt_kind": "INITIAL" if attempt_index == 1 else "REPAIR",
+                            "status": measurement["status"],
+                            "skip_reason": "NONE",
+                            "rendered_prompt_sha256": rendered["content_sha256"],
+                            "repair_prompt_source": repair_source,
+                            "adapter_request_sha256": adapter_request["content_sha256"],
                             "snapshot_request_sha256": snapshot_request["content_sha256"],
                             "before_snapshot_result_sha256": before["content_sha256"],
                             "after_snapshot_result_sha256": after["content_sha256"],
-                            "before_input_snapshot_sha256": input_snapshot["content_sha256"],
-                            "after_input_snapshot_sha256": after_input_snapshot["content_sha256"],
+                            "input_snapshot_sha256": input_snapshot["content_sha256"],
+                            "generation_request": measurement["generation_request"],
+                            "seed_attestation": measurement["seed_attestation"],
+                            "paired_seed": paired_seed,
+                            "measurement": measurement,
+                            "repair_preparation_ns": preparation_ns,
+                            "adapter_elapsed_ns": adapter_elapsed_ns,
+                            "adapter_overhead_ns": overhead_ns,
+                            "measurement_sha256": measurement["content_sha256"],
+                            "content_sha256": "",
+                        })
+                        expected_inputs.append(bind({
+                            "schema_version": 2, "artifact_kind": "PROMPT_EXPECTED_INPUT_DIGEST",
+                            "task_id": task["task_id"], "sample_index": sample, "variant": variant_name,
+                            "attempt_index": attempt_index,
+                            "rendered_prompt_sha256": rendered["content_sha256"],
+                            "context_sources_sha256": context["content_sha256"],
+                            "generation_request_sha256": measurement["generation_request"]["content_sha256"],
+                            "adapter_request_sha256": adapter_request["content_sha256"],
+                            "provider_request_sha256": measurement["generation_request"]["provider_request_sha256"],
                             "content_sha256": "",
                         }))
-                        return finish(
-                            evaluation_result("ERROR", post_drift_code, post_drift_detail), checkpoint,
-                        )
+                        return {
+                            "record": record,
+                            "measurement": measurement,
+                            "rendered_text": rendered_text,
+                            "adapter_request": adapter_request,
+                            "snapshot_request_sha256": snapshot_request["content_sha256"],
+                            "before_sha256": before["content_sha256"],
+                            "after_sha256": after["content_sha256"],
+                            "input_snapshot_sha256": input_snapshot["content_sha256"],
+                        }
+
+                    try:
+                        rendered_text, rendered_text_sha = render(variant, task_prompt, context)
+                        attempts = [run_attempt(1, rendered_text, rendered_text_sha, None, 0)]
+                        # Ladder row 12: a row whose first attempt did not fail, or whose task
+                        # offers no repair loop, closes with exactly one attempt.
+                        if repair_limit >= 1 and attempts[0]["measurement"]["status"] == "FAIL":
+                            try:
+                                attempts.append(build_repair_attempt(
+                                    run_attempt, attempts[0], repair_template, generation, paired_seed,
+                                ))
+                            except EvaluationError as failure:
+                                # Ladder row 15. A prompt the producer cannot re-derive from its
+                                # own persisted output is an un-auditable artifact of a
+                                # nondeterministic run, so the row errors here rather than
+                                # persisting a repair attempt no verifier could ever recompute.
+                                raise AbortEvaluation(
+                                    evaluation_result(
+                                        "ERROR", "REPAIR_RENDER", str(failure)[:4096],
+                                    ),
+                                    checkpoint,
+                                ) from None
+                    except AbortEvaluation as abort:
+                        return finish(abort.result, abort.checkpoint, abort.cleanup_diagnosed)
+                    # `row.measurement` is the final attempt that actually ran, so every existing
+                    # consumer of `row.measurement.*` keeps working with no re-derivation.
+                    final = [item for item in attempts if not item.get("skipped")][-1]
+                    attest(
+                        "COMPLETE", "NONE", "", final["before_sha256"], final["after_sha256"],
+                        final["input_snapshot_sha256"], final["input_snapshot_sha256"],
+                        final["snapshot_request_sha256"],
+                    )
                     evaluation_input = bind({
                         "schema_version": 1, "artifact_kind": "EVALUATION_INPUT_IDENTITY", "task_id": task["task_id"],
-                        "task_input_snapshot_sha256": input_snapshot["content_sha256"],
+                        "task_input_snapshot_sha256": final["input_snapshot_sha256"],
                         "parent_variant_sha256": parent_variant["content_sha256"],
                         "candidate_variant_sha256": candidate["content_sha256"],
                         "task_prompt_sha256": task_prompt["content_sha256"],
                         "context_sources_sha256": context["content_sha256"],
                         "generation_policy_sha256": generation["content_sha256"],
-                        "generation_request_sha256": measurement["generation_request"]["content_sha256"],
-                        "adapter_request_sha256": adapter_request["content_sha256"],
+                        "generation_request_sha256": final["measurement"]["generation_request"]["content_sha256"],
+                        "adapter_request_sha256": final["adapter_request"]["content_sha256"],
                         "environment_policy_sha256": environment_policy["content_sha256"],
                         "environment_sha256": environment["environment_id"], "sample_index": sample,
-                        "paired_seed": generation["seed_base"] + sample - 1, "content_sha256": "",
+                        "paired_seed": paired_seed, "content_sha256": "",
                     })
+                    records = [item["record"] for item in attempts]
+                    try:
+                        generation_ns = attempt_total_ns(records)
+                    except EvaluationError as failure:
+                        return finish(
+                            evaluation_result("ERROR", "TIMING", str(failure)[:4096]), checkpoint,
+                        )
+                    # Unchanged, and deliberately so: `prompt_preparation_ns` is a hard-coded
+                    # constant here today rather than a measured span, which deviates from
+                    # `docs/specs/c6-prompt-context-optimizer.md` section 5.2. Measuring it is a
+                    # separate concern with its own owner; fixing it inside this diff would
+                    # silently change every version-2 row total for an unrelated reason.
                     preparation_ns = 20_000_000
-                    generation_ns = measurement["generation_to_passing_patch_ns"]
+                    if generation_ns is not None and preparation_ns + generation_ns > 7_200_000_000_000:
+                        return finish(
+                            evaluation_result(
+                                "ERROR", "TIMING", "row timing total is outside its persisted bound",
+                            ),
+                            checkpoint,
+                        )
                     row = bind({
-                        "schema_version": 1, "artifact_kind": "PROMPT_TASK_ROW", "evaluation_id": request["evaluation_id"],
+                        "schema_version": 2, "artifact_kind": "PROMPT_TASK_ROW", "evaluation_id": request["evaluation_id"],
                         "task_id": task["task_id"], "sample_index": sample, "variant": variant_name,
                         "variant_id": variant["variant_id"], "variant_sha256": variant["content_sha256"],
                         "prompt_preparation_ns": preparation_ns,
+                        "repair_loop_count": sum(
+                            item["attempt_kind"] == "REPAIR" and item["status"] != "SKIPPED"
+                            for item in records
+                        ),
+                        "generation_to_passing_patch_ns": generation_ns,
                         "time_to_passing_patch_ns": None if generation_ns is None else preparation_ns + generation_ns,
-                        "evaluation_input": evaluation_input, "measurement": measurement, "content_sha256": "",
+                        "attempts": records,
+                        "evaluation_input": evaluation_input,
+                        "measurement": final["measurement"], "content_sha256": "",
                     })
                     rows.append(row)
-                    expected_inputs.append(bind({
-                        "schema_version": 1, "artifact_kind": "PROMPT_EXPECTED_INPUT_DIGEST", "task_id": task["task_id"],
-                        "sample_index": sample, "variant": variant_name,
-                        "rendered_prompt_sha256": rendered["content_sha256"],
-                        "context_sources_sha256": context["content_sha256"],
-                        "generation_request_sha256": measurement["generation_request"]["content_sha256"],
-                        "adapter_request_sha256": adapter_request["content_sha256"],
-                        "provider_request_sha256": measurement["generation_request"]["provider_request_sha256"],
-                        "content_sha256": "",
-                    }))
-                    attestations.append(bind({
-                        "schema_version": 1, "artifact_kind": "RUN_SNAPSHOT_ATTESTATION", "task_id": task["task_id"],
-                        "sample_index": sample, "variant": variant_name, "status": "COMPLETE", "error_code": "NONE",
-                        "error": "", "snapshot_request_sha256": snapshot_request["content_sha256"],
-                        "before_snapshot_result_sha256": before["content_sha256"],
-                        "after_snapshot_result_sha256": after["content_sha256"],
-                        "before_input_snapshot_sha256": input_snapshot["content_sha256"],
-                        "after_input_snapshot_sha256": input_snapshot["content_sha256"], "content_sha256": "",
-                    }))
-                    cleanup_passed = True
-                    for path in (snapshot_result_path, adapter_request_path, rendered_path, variant_path):
-                        if not retire_owned_path(path, owned_paths):
-                            cleanup_passed = False
-                    if not cleanup_passed:
-                        return finish(
-                            evaluation_result(
-                                "ERROR", "CLEANUP_FAILED", "evaluator-owned workspace cleanup failed",
-                            ),
-                            checkpoint,
-                            cleanup_diagnosed=True,
-                        )
-                    if measurement.get("status") == "ERROR":
-                        failure_detail = measurement.get("diagnostic_summary") or "measurement adapter returned an error"
-                        failure_code = "CLEANUP_FAILED" if not measurement.get("cleanup_passed", True) else "ADAPTER_RESULT"
-                        return finish(
-                            evaluation_result("ERROR", failure_code, failure_detail[:4096]), checkpoint,
-                            cleanup_diagnosed=failure_code == "CLEANUP_FAILED",
-                        )
-                    if not any(item["content_sha256"] == input_snapshot["content_sha256"] for item in input_snapshots):
-                        input_snapshots.append(input_snapshot)
 
     status, gate, task_aggregates, corpus_aggregate, reasons = complete_score(
         tasks, rows, request["sample_count"], acceptance, trust, environment, control,
