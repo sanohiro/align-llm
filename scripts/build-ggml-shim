@@ -228,6 +228,23 @@ else
     engine+writeback-offset)
                        include_flags+=("${engine}" "-DALIGN_GGML_FORCE_WRITEBACK_OFFSET=1")
                        flavour="stub+engine+force-writeback-offset" ;;
+    # R6-OLMOE-DECODE (`docs/specs/r6-olmoe-decode.md` section 5.6). The routed counterparts of the
+    # three builds above whose dense form is keyed on a **slot number**: the routed arm's position,
+    # mask and post-RoPE K live at `layer_olmoe`'s slots, which are ordinary weight slots in a dense
+    # graph. They are separate builds rather than second indices on the dense ones, so every dense
+    # build stays behaviourally byte-unchanged and the sixth block's goldens cannot move for a
+    # capability that changes no dense behaviour. `plane-stage-offset` and `compute-step2` need no
+    # counterpart: both key on the past-K slot, which is `layer_qwen2`'s 64 on one arm and
+    # `layer_olmoe`'s 126 on the other and is written by no other graph on either.
+    engine+decode-position-moe)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_DECODE_POSITION_MOE=1")
+                       flavour="stub+engine+force-decode-position-moe" ;;
+    engine+mask-offset-moe)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_MASK_OFFSET_MOE=1")
+                       flavour="stub+engine+force-mask-offset-moe" ;;
+    engine+writeback-offset-moe)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_WRITEBACK_OFFSET_MOE=1")
+                       flavour="stub+engine+force-writeback-offset-moe" ;;
     # R6-RESIDENT-WEIGHTS section 5.1's early-exit cell. `buffer_from_host` refuses, which is the
     # only input-reachable way to reach a resident run whose arena is filled and live and whose wrap
     # does not exist — the exact shape of the run-scope balance invariant's failure path.

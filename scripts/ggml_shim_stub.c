@@ -1677,7 +1677,7 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
      * shapes and computes a plausible answer, and the bytes it consumed no longer equal the bytes the
      * prefill wrote, which is `R6_PLANE_MISMATCH layer[0]tensor[k]col[0]`. Never defined in an
      * ordinary build. */
-    if (status == ALIGN_GGML_OK && index == 64 && n >= 8) {
+    if (status == ALIGN_GGML_OK && (index == 64 || index == 126) && n >= 8) {
         memmove(t->data + off, t->data + off + 4, (size_t) (n - 4));
     }
 #endif
@@ -1694,6 +1694,39 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
         t->data[3] = 0u;
     }
 #endif
+#ifdef ALIGN_GGML_FORCE_DECODE_POSITION_MOE
+    /* R6-OLMOE-DECODE's routed counterpart of `ALIGN_GGML_FORCE_DECODE_POSITION`. The routed arm's
+     * `inp_pos` is `layer_olmoe.MM_SLOT_POS` (10), which is an ordinary **weight** slot in a dense
+     * graph, so this is a separate build rather than a second index on the dense one: the dense
+     * builds stay behaviourally byte-unchanged. `ne[0] == 1` with `n == 4` is the decode graph's
+     * one-element position vector and nothing else. Never defined in an ordinary build. */
+    if (status == ALIGN_GGML_OK && index == 10 && t->ne[0] == 1 && n == 4 && off == 0) {
+        t->data[0] = 0u;
+        t->data[1] = 0u;
+        t->data[2] = 0u;
+        t->data[3] = 0u;
+    }
+#endif
+#ifdef ALIGN_GGML_FORCE_MASK_OFFSET_MOE
+    /* R6-OLMOE-DECODE's routed counterpart of `ALIGN_GGML_FORCE_MASK_OFFSET`. The routed arm's
+     * `kq_mask` is `layer_olmoe.MM_SLOT_MASK` (11), a weight slot in a dense graph, so this too is
+     * a separate build. The row is additionally required to end in `-inf`, which every masked row
+     * at a width above `n_past + 1` does and no weight does. Never defined in an ordinary build. */
+    if (status == ALIGN_GGML_OK && index == 11 && t->ne[1] == 1 && off == 0 && n >= 8
+        && ((float *) (void *) t->data)[n / 4 - 1] == -INFINITY) {
+        int64_t lane = 0;
+        int64_t last = -1;
+        float *row = (float *) (void *) t->data;
+        for (lane = 0; lane < n / 4; lane++) {
+            if (row[lane] == 0.0f) {
+                last = lane;
+            }
+        }
+        if (last >= 0) {
+            row[last] = -INFINITY;
+        }
+    }
+#endif
 #ifdef ALIGN_GGML_FORCE_COMPUTE_STEP2
     /* R6-STEP-N section 4.1's `failure` cell: a step that fails at a chosen **step** index, which is
      * the axis this capability adds. Slot 64 is `MF_SLOT_KPAST` and only a decode layer graph ever
@@ -1702,7 +1735,9 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
      * first `n` seen is step 1's and any larger `n` is step 2 or beyond. Keying on the growth rather
      * than on a token count keeps the build independent of the fixture's `T`. Never defined in an
      * ordinary build. */
-    if (status == ALIGN_GGML_OK && index == 64) {
+    /* R6-OLMOE-DECODE: the routed arm's past-K slot is `layer_olmoe.MM_SLOT_KPAST` (126). The
+     * growth rule is identical on both arms and only one of the two slots exists in any one run. */
+    if (status == ALIGN_GGML_OK && (index == 64 || index == 126)) {
         if (align_force_first_past_bytes < 0) {
             align_force_first_past_bytes = n;
         } else if (n > align_force_first_past_bytes) {
@@ -1740,6 +1775,20 @@ int32_t align_ggml_slot_get(void *slots, int64_t index, void *bytes, int64_t off
     if (t == NULL) {
         return ALIGN_GGML_SLOT;
     }
+#ifdef ALIGN_GGML_FORCE_WRITEBACK_OFFSET_MOE
+    /* R6-OLMOE-DECODE's routed counterpart of `ALIGN_GGML_FORCE_WRITEBACK_OFFSET`. The routed arm
+     * reads its write-back out of `layer_olmoe.MM_A_NODE_BASE + MM_K_ROW` (32), which is the K
+     * concatenation's own slot in a dense graph, so this is a separate build and the dense one is
+     * behaviourally byte-unchanged. A routed **prefill** reads slot 32 with `ne[2] == T`, so
+     * `ne[2] == 1` selects the decode step's own readback. Never defined in an ordinary build. */
+    if (index == 32 && t->ne[2] == 1) {
+        int32_t status = align_ggml_tensor_get((void *) t, bytes, off, n);
+        if (status == ALIGN_GGML_OK && bytes != NULL && n >= 8) {
+            memmove(bytes, (unsigned char *) bytes + 4, (size_t) (n - 4));
+        }
+        return status;
+    }
+#endif
 #ifdef ALIGN_GGML_FORCE_WRITEBACK_OFFSET
     /* R6-STEP-N section 4.2's `failure -- round trip` cell, and the shipped regression that proves
      * oracle B compares the **new** column and not only the past ones. Slot 28 is

@@ -7887,6 +7887,12 @@ align-llm verification: allocate the block and output buffers with the new align
   `alignpack_read.read_append`), and pass `make ggml-spike-qualification`.
 ```
 
+R6-OLMOE-DECODE adds `src/moe_decode_step.align` and `gmake moe-decode-step-qualification` as
+clients. It is the first arm that pays the 64-byte over-reservation **three** times in one
+invocation — the dense window, the claim window, and the KV plane — where R5E pays it twice, so the
+compensation's cost is now proportional to the number of Align-owned regions an arm holds rather than
+to the number of arms. **No status change**, `Blocking: no`.
+
 ### Motivation and current sibling evidence
 
 R4.5-EXTERNAL-BUFFER-SPIKE hands ggml's CPU backend a pointer into an Align-owned `buffer` so it can
@@ -8221,6 +8227,12 @@ align-llm verification: collapse `src/layer_forward.align`'s eight column record
   `OracleStates`) into the one `Outcome` section 3.7 designed, with each stage replacing the fields
   it produces in place; pass `make layer-forward-smoke`.
 ```
+
+R6-OLMOE-DECODE adds `src/moe_decode_step.align` and `gmake moe-decode-step-qualification` as
+clients. Its `steps[]` rows carry a `n_layer x n_expert_used` integer matrix **per step** — the
+demand stream this capability exists to publish — and R5A correction C9's shape forces that to be
+rendered as it is produced into one string rather than carried as a column set, exactly as R5E's
+`schedule[]` is. **No status change**, `Blocking: no`.
 
 ### Motivation and current sibling evidence
 
@@ -9522,6 +9534,11 @@ align-llm verification: rewrite `src/moe_model_forward.align`'s window-region an
   `make layer-forward-smoke`.
 ```
 
+R6-OLMOE-DECODE adds `src/moe_decode_step.align` and `gmake moe-decode-step-qualification` as
+clients: the new module inherits R5E's mitigation throughout — every window region, every claim
+region, and every `str` view bound to a named local on the preceding line. **No status change**,
+`Blocking: no`.
+
 ### Motivation and current sibling evidence
 
 Every `borrow` argument must name a stable local or a field. Three ordinary expression forms are
@@ -9589,6 +9606,10 @@ align-llm verification: pass `plan.n_layer`-style scalars directly beside their 
   `borrow mut` in `src/moe_model_forward.align` instead of copying each to a local first, and pass
   `make layer-forward-smoke`.
 ```
+
+R6-OLMOE-DECODE adds `src/moe_decode_step.align` and `gmake moe-decode-step-qualification` as
+clients, with the same mitigation: `alignment := o.tensor_alignment` and the block alignment copied
+to locals before every call that also takes `borrow mut o`. **No status change**, `Blocking: no`.
 
 ### Motivation and current sibling evidence
 
@@ -9673,10 +9694,34 @@ Resume condition: an Align release admits a call into another module that takes 
 Align commit or pull request: none
 align-llm verification: delete `src/decode_step.align`'s local `fail`, `fault_into`,
   `pack_fault_into`, `take`, `take_pack`, `account`, `check_types`, `top_k`, and
-  `compare_prefill_logits`, call `src/model_forward.align`'s identical functions instead, replace
-  `model_forward.stage_plan_owned` with the pre-existing `model_forward.stage_plan`, and pass
-  `gmake layer-forward-smoke` with `scripts/decode-step-golden.jsonl` byte-unchanged.
+  `compare_prefill_logits`, **and `src/moe_decode_step.align`'s local `fail`, `fault_into`,
+  `pack_fault_into`, `take`, `take_pack`, `account`, `check_balance`, `check_types`, `top_k`,
+  `compare_prefill_logits`, `stage_claims`, `read_block_scatter`, `claim_tensors`,
+  `graph_identity`, `graph_alignment`, `free_gallocr`, `free_context`, `free_buffer`,
+  `teardown_layer`, `oracle_ten_thousandths`, `compare_transcript_rows`,
+  `compare_transcript_elements`, and `compare_transcript_sum`**, call the identical functions in
+  `src/model_forward.align` and `src/moe_model_forward.align` instead, replace both
+  `stage_plan_owned`s with the pre-existing `stage_plan`s, and pass `gmake layer-forward-smoke` with
+  **all seven** goldens byte-unchanged.
 ```
+
+**R6-OLMOE-DECODE is this request's largest client to date.** `src/moe_decode_step.align` carries a
+**third** copy of the failure sink and, beyond it, twenty-three functions in total that exist only
+because they take `borrow mut Outcome`, `borrow mut buffer`, or `borrow mut Counters` as a
+**parameter** rather than as a local. The measured shape is unchanged and was met twice more here:
+
+* `moe_model_forward.read_block_scatter(pak, temp, claim_window, …, starts, sizes, dests, …)` where
+  `temp` is the caller's own `borrow mut buffer` **parameter** and `starts`/`sizes`/`dests` are that
+  frame's locals is refused with "cannot retain a shorter-lived view through this mutable borrow" —
+  and `alignc check` **accepts** it while `alignc build` refuses it, which is Request 42's divergence
+  met once more and is how this instance was found;
+* `moe_model_forward.stage_plan(pak, g, table, tokens, plan, ends, win, o, counters)` unions its four
+  mutable borrows, so `src/moe_decode_step.align` consumes a new `stage_plan_owned` beside it exactly
+  as `src/decode_step.align` does.
+
+The cost is measurable rather than rhetorical: of `src/moe_decode_step.align`'s 4,400 lines, roughly
+600 are functions that would be one-line calls if either refusal were lifted. **No status change**,
+`Blocking: no`, and no compatibility layer is built.
 
 ### Motivation and current sibling evidence
 

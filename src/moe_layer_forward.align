@@ -84,6 +84,10 @@ TRUNCATION_PRINTED := 6
 TRUNCATION_HALF := 3
 
 CB_PREFIX := "common_debug_cb_eval: "
+
+// Section 4.1. The one node every graph of this instrument opens with, and therefore the graph
+// boundary a multi-graph scan counts.
+GRAPH_BOUNDARY_NODE := "embd"
 CB_PREFIX_BYTES := 22
 HEADER_NAME_SEP := " = ("
 HEADER_TAIL := "}) = {"
@@ -304,6 +308,39 @@ fn axis_index(ordinal: i64, extent: i64) -> i64 {
   if extent <= TRUNCATION_PRINTED { return ordinal }
   if ordinal < TRUNCATION_HALF { return ordinal }
   return extent - TRUNCATION_PRINTED + ordinal
+}
+
+// R6-OLMOE-DECODE. `axis_index` above maps a printed **ordinal** to a tensor **index** on the
+// assumption that any axis longer than `TRUNCATION_PRINTED` was printed as three leading and three
+// trailing values with an ellipsis between them. That is what an unpatched `llama-eval-callback`
+// does and it is what R5D and R5E ever saw.
+//
+// The **R2C-patched** instrument this capability's oracles require prints `ffn_moe_topk-L` in full —
+// eight of eight slots, no ellipsis — and on such a row the ordinal *is* the index. Mapping it
+// through `axis_index` sends ordinal 3 to index 5 and produces a routing comparison that disagrees
+// on five slots of every eight while every block **sum** still agrees, which is exactly the shape a
+// reader would misread as a routing defect. Measured: 96 of 256 ids matched with 32 of 32 sums
+// matched, before this function existed.
+//
+// The row therefore says which it is, and nothing else has to: a row that carries an ellipsis is
+// truncated and keeps R5A's mapping; a row that does not is complete and maps ordinals directly.
+// When the axis is at or below `TRUNCATION_PRINTED` the two agree by construction, so every R5D and
+// R5E corpus is unaffected and both MoE goldens stay byte-unchanged.
+fn row_truncated(inner: str) -> bool {
+  mut cursor := 0
+  loop {
+    if cursor > inner.len() { break }
+    rest := inner[cursor..inner.len()]
+    cut := match rest.find(ELEMENT_SEP) {
+      Some(value) => value,
+      None => -1,
+    }
+    piece := if cut < 0 { rest } else { rest[0..cut] }
+    if piece.trim() == "..." { return true }
+    if cut < 0 { break }
+    cursor = cursor + cut + 2
+  }
+  return false
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -690,6 +727,27 @@ fn indent_of(text: str) -> i64 {
 // rather than as a comment: matching four same-named `norm-0` nodes by ordinal is exactly the
 // silent-miscompare hazard section 2.2 fact 5 records.
 pub fn scan_transcript(path: str, borrow oracle: layer_olmoe.OracleTable) -> TranscriptScan {
+  return scan_transcript_after(path, oracle, 0)
+}
+
+// R6-OLMOE-DECODE (`docs/specs/r6-olmoe-decode.md` section 4.1), and
+// `layer_forward.scan_transcript_after`'s reason unchanged on the routed side: the same scan over a
+// transcript that holds **more than one graph**.
+//
+// `llama-eval-callback -n N` emits `N + 1` of them and every node name repeats across all of them.
+// The matcher takes the **first** occurrence of each name, which is the only correct rule for a
+// one-graph transcript and exactly the wrong one for a decode oracle: it would compare decode step
+// `k` against the prefill graph's numbers and could still report `PASS` on the rows that agree.
+//
+// A graph boundary is the `embd` header, which every graph this instrument prints begins with, so
+// counting that one header counts graphs without depending on a marker the instrument does not
+// print. Everything before `skip_graphs` boundaries is parsed for grammar and counted and never
+// captured, so `transcript_lines` and `transcript_callback_lines` still describe the whole file.
+//
+// `scan_transcript` is `skip_graphs = 0`, so R5D's and R5E's captured element sets are unchanged by
+// construction.
+pub fn scan_transcript_after(
+  path: str, borrow oracle: layer_olmoe.OracleTable, skip_graphs: i64) -> TranscriptScan {
   handle := match fs.open_rw(path) {
     Ok(value) => value,
     Err(failure) => { return empty_scan("R5_TRANSCRIPT", error_name(failure).clone()) },
@@ -744,6 +802,9 @@ pub fn scan_transcript(path: str, borrow oracle: layer_olmoe.OracleTable) -> Tra
   mut capture := -1
   mut capture_integer := false
   mut in_block := false
+  // Section 4.1: how many `embd` headers have been seen, so the matcher below can be told which
+  // graph of a multi-graph transcript it is standing in.
+  mut graph_index := 0
   mut o3 := 0
   mut o2 := 0
   mut o1 := 0
@@ -798,7 +859,8 @@ pub fn scan_transcript(path: str, borrow oracle: layer_olmoe.OracleTable) -> Tra
       name := text[header.name_start..header.name_end]
       operation := text[header.op_start..header.op_end]
       source := text[header.src_start..header.src_end]
-      mut candidate := 0
+      if name == GRAPH_BOUNDARY_NODE { graph_index = graph_index + 1 }
+      mut candidate := if graph_index > skip_graphs { 0 } else { oracle.count }
       loop {
         if candidate >= oracle.count { break }
         mut hit := false
@@ -874,6 +936,7 @@ pub fn scan_transcript(path: str, borrow oracle: layer_olmoe.OracleTable) -> Tra
           break
         }
         inner := body[1..body.len() - 2]
+        truncated := row_truncated(inner)
         mut o0 := 0
         mut cursor := 0
         mut failed := false
@@ -901,7 +964,7 @@ pub fn scan_transcript(path: str, borrow oracle: layer_olmoe.OracleTable) -> Tra
               nonintegral = true
               break
             }
-            i0 := axis_index(o0, block_ne0)
+            i0 := if truncated { axis_index(o0, block_ne0) } else { o0 }
             i1 := axis_index(o1, block_ne1)
             i2 := axis_index(o2, block_ne2)
             i3 := axis_index(o3, block_ne3)
@@ -1689,6 +1752,23 @@ fn stage_geometry(
   if !parsed.ok {
     detail_view: str := parsed.detail
     fail(o, "R5_TOKENS", detail_view)
+    return g
+  }
+  // R6-OLMOE-DECODE section 3.8 lifts `layer_olmoe.MAX_PREFILL_TOKENS` from 6 to 32, for the
+  // **decode** arm, whose router axes are `{n_expert_used, 1}` and are therefore printed in full at
+  // any `T`. This arm's tensors are not: `llama-eval-callback` prints a tensor's rows in full only
+  // while `ne1 <= TRUNCATION_PRINTED`, and above it prints three leading and three trailing rows,
+  // so above six tokens a transcript comparison would silently check six of the rows it names and
+  // report `PASS` on a tensor it never saw.
+  //
+  // **This guard is new, and its absence was a real gap the lift would have opened.** The R6
+  // capability's own design predicted that `--moe-model-forward` already shipped
+  // `R5_ORACLE_TRUNCATED`, as `--layer-forward` and `--model-forward` do; it did not, because with
+  // the cap at 6 the condition was unreachable and the refusal had never been needed. The lift makes
+  // it reachable, so the refusal is added here rather than inherited, and the range 7..32 is open
+  // for arithmetic and closed for comparison exactly as the design says.
+  if o.transcript_present && parsed.count > TRUNCATION_PRINTED {
+    fail(o, "R5_ORACLE_TRUNCATED", labelled("tokens", parsed.count))
     return g
   }
   mut ids: array_builder<i64> := array_builder()

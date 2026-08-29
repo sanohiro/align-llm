@@ -3,7 +3,97 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R6-RESIDENT-WEIGHTS (2026-08-29)
+## Active: R6-OLMOE-DECODE (2026-08-29)
+
+Branch `agent/r6-olmoe-decode`, implemented on `agent/r6-resident-weights` head `6facd56` and then
+**merged** with `origin/main` `553563e` (R6-RESIDENT-WEIGHTS, PR #147, carrying `cec1758`) by
+`git merge` — **never a rebase** — a clean fast-forward touching five files, none of them this
+capability's. The four things that merge re-checks all held: roadmap item **32** (30 is
+RESIDENT-WEIGHTS, 31 is claimed by `agent/c4-repair-measured` on its own branch), the new document
+kind `R6_MOE_DECODE_STEP` at schema **1** (which collides with nothing, because it is a new kind),
+the next free Align request number (**53**; 52 is taken by the C4 branch, and this capability takes
+none), and which goldens regenerate.
+
+**Capability.** `N` greedy decode steps on OLMoE-1B-7B-0125-Instruct Q4_K_M over an Align-owned KV
+plane, each step resolving its own top-8 expert claims per layer and computing only those experts,
+weights **streamed**. CPU only. Authoritative ledger `docs/specs/r6-olmoe-decode.md`; sections 1 to 5
+are the pre-implementation design and 6 onward record what was built and every deviation. Three of
+the four design-gate triggers fire, including — for the first time in this wave — the
+coordinated-invariant one.
+
+**Complete.** Cell **G-P1** (50,304 rows of Q4_K, 50,057 distinct fingerprints, two collision
+classes covering 249 ids of which **two** are not all-zero: `{45382, 50278}`); `src/layer_olmoe.align`
+with `OP_CONCAT`, `WHEN_DECODE`, `mm_row_issued_at`, a **thirty-seven-row** `mm_decode_a_node_table`,
+`mm_decode_b_node_table` at its own base 58, `MM_SLOT_KPAST`/`VPAST` at the top of the slot map,
+`MM_K_ROW`/`MM_V_ROW`/`MM_DECODE_K_CONCAT_ROW`/`MM_DECODE_V_CONCAT_ROW` derived by reading the
+tables, `mm_write_mask_offset`, `mm_oracle_table_at`, `MAX_DECODE_STEPS := 64`, and
+`MAX_PREFILL_TOKENS 6 -> 32`; `src/moe_decode_step.align` (~4,400 lines) with the arm, the plane, the
+loop, the two-way claim accounting, and the `R6_MOE_DECODE_STEP` schema-1 document;
+`src/moe_model_forward.align` widened to `pub` where the new module imports it, plus
+`stage_carry_at`, `stage_plan_owned`, and the decode arm's `Outcome` fields; `scan_transcript_after`
+on the routed side; one `import` and one `if` in `src/ggml_spike.align`; the fixture's routed decode
+corpus; the **seventh** block of `scripts/run-layer-forward-smoke` and
+`scripts/moe-decode-step-golden.jsonl`; `scripts/run-moe-decode-step` and one `Makefile` target.
+
+**The `R5_ORACLE_TRUNCATED` guard is new, and its absence was a real gap.** The design predicted that
+`--moe-layer-forward` and `--moe-model-forward` already shipped it, as the dense arms do. They did
+not: at a cap of six tokens the condition was unreachable. The lift to 32 makes it reachable, so both
+arms now refuse a prefill above six tokens **with** a transcript, and `moe-tokens-33` /
+`mm-tokens-33` plus `*-tokens-seven-with-transcript` pin both halves.
+
+**Golden movement, measured against the merged head.** Five goldens byte-unchanged
+(`layer-forward`, `model-forward`, `gpu-forward`, `decode-step`, `ggml-spike`); one new
+(`moe-decode-step-golden.jsonl`, 57 cases); and `moe-layer-forward-golden.jsonl` and
+`moe-model-forward-golden.jsonl` each **-1 renamed, +3 added, and zero pre-existing rows changed in
+value** — `moe-tokens-seven` becomes `moe-tokens-33` and gains
+`moe-tokens-seven-with-transcript` and `moe-tokens-seven-no-transcript`, and the same three on the
+`mm-` side. The routed pack itself is byte-identical, because
+`MOE_MODEL_DECODE_RESEEDED_ROWS` is empty: the routed decode chain is already non-degenerate.
+
+**Result** (the qualification of record, `gmake moe-decode-step-qualification`, four prompts x
+`N = 16` x three runs, Apple M1, `KV_WIDTH` 256, weights streamed, CPU only, exit 0 in **3 min 18
+s**). Gate G over 64 ids, oracle R **`MATCH` at 8,192 of 8,192** — the first full-axis routing
+identity in the repository — oracle B `IDENTICAL`, oracle T `PASS` with `max_abs_diff` **0**, and the
+claim accounting exact on all 64 steps:
+
+| prompt | oracle R | step bytes (arith) | step bytes (`pread`) | ampl | union keys | mean marginal | in prefill union | reuse ppm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `def add(a, b` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 585 | 57.9 MB | 1540/2048 | 881 |
+| `The capital of` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 698 | 92.3 MB | 1064/2048 | 811 |
+| `import os` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 614 | 95.4 MB | 1154/2048 | 804 |
+| `return x +` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 607 | 83.1 MB | 1182/2048 | 829 |
+
+**The two accountings agree to the byte and the read amplification is zero**, which is the strongest
+form the primary claim could take: the arm read exactly what it claimed and not one byte more.
+**The streamed-to-marginal gap is 5.1x to 8.4x at sixteen steps, not the 9.2x a four-step probe
+suggested**, and "four fifths of every decode demand is already in the prefill" is a short-window
+artifact: over sixteen steps it is 52.0 % to 75.2 %. Cell **C-P1** selected oracle C′'s second
+branch — `mul_mat_id` is **not** stack-shape invariant, 1 of 12 checkpoints byte-identical and 12 of
+12 argmax-equal — so C′ is characterization and the acceptance rule keeps its other four oracles.
+
+**Verification.** `gmake build`, `gmake check`, `gmake layer-forward-smoke` (all seven blocks, 57 s,
+every golden as predicted), `gmake ggml-spike-smoke`, `gmake gate-topology-check`, `gmake fmt`
+(no change), `gmake format-check`, `git diff --check`, and the real-model qualification above.
+
+**The qualification needs one ggml build on both sides, and that is a toolchain debt this capability
+records rather than pays** (section 15 of the ledger). `scripts/llama-eval-callback-toolchain` builds
+the R2C instrument with `GGML_ACCELERATE=ON`/`GGML_BLAS=ON`; Homebrew's ggml at the **same commit**
+has neither, and the same prompt gives `result_output` sums of -113,284.84 and -111,030.03. Every
+earlier consumer of that instrument parsed text; this is the first to compare it numerically. The
+runner's instrument cross-check caught it before the arm ran and reported it as an instrument skew,
+which is what that check exists for.
+
+**Constraints.** CPU only; streamed weights, **by design and not by cost** — residency would make the
+primary metric zero. No TTFT, throughput, or performance claim, and no cost ceiling: this capability
+makes a measurement claim and `docs/specs/r6-resident-weights.md` section 3.4 remains the owner of
+Track B decode performance.
+
+**Blockers.** None. Five Align gaps are met and all five are already recorded with named clients
+(Requests 33, 36, 47, 48, 49); none blocks, and Request 49 gains its largest client.
+
+**Intentional uncommitted files.** None.
+
+## Merged checkpoint: R6-RESIDENT-WEIGHTS (PR #147, 2026-08-29)
 
 Branch `agent/r6-resident-weights`. Implemented on `agent/r6-kv-persist` head `9699848`, then
 **merged** with that branch's review repair `1971c61` and its own `main` merge `bdb34eb` — which

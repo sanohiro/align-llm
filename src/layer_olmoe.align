@@ -61,10 +61,18 @@ pub SLOT_COMPACT := 51
 pub B_NODE_BASE := 52
 pub CLAIM_ROLE_COUNT := 3
 
-// Section 3.3's prefill cap, and R5A section 3.3's reason for it: `llama-eval-callback` prints
-// every row of an axis only while its extent is `<= 6`, and an oracle that compares fewer elements
-// as the input grows while still reporting `PASS` is worse than one that refuses.
-pub MAX_PREFILL_TOKENS := 6
+// Section 3.3's prefill cap, raised from 6 to 32 by `docs/specs/r6-olmoe-decode.md` section 3.8 so
+// that oracle C′ can run `--moe-model-forward` at `TOKENS,d_1..d_k` — `T + k` tokens, 22 of them at
+// the qualification's `T <= 6` and `N = 16`. It is now the value `layer_qwen2.MAX_PREFILL_TOKENS`
+// already holds, so two architectures no longer carry two caps for one reason.
+//
+// **The cap's original reason survives and is not weakened.** R5A section 3.3's reason is the
+// *oracle's*, not the arithmetic's: `llama-eval-callback` prints every row of an axis only while
+// its extent is `<= 6`, and an oracle that compares fewer elements as the input grows while still
+// reporting `PASS` is worse than one that refuses. That refusal is `R5_ORACLE_TRUNCATED`, raised
+// against `TRUNCATION_PRINTED` (6) whenever a transcript is present, and it is byte-unchanged: the
+// range 7..32 is open for arithmetic and closed for comparison, at 32 exactly as it was at 6.
+pub MAX_PREFILL_TOKENS := 32
 
 // Section 3.4's ceiling on the routed union's three windows, checked at step 26 **after** the
 // routing decision, because `U` does not exist before it.
@@ -1437,10 +1445,30 @@ pub OP_PAD := 15
 // instrument happens to use; `KV_WIDTH` is a mandatory operand.
 pub MAX_ATTENTION_WIDTH := 4096
 
-// The three conditions of the `node_when` column.
+// The three conditions of the `node_when` column, and R6-OLMOE-DECODE's fourth.
 pub WHEN_ALWAYS := 0
 pub WHEN_LAST := 1
 pub WHEN_WIDE := 2
+
+// `docs/specs/r6-olmoe-decode.md` section 3.7. A `WHEN_DECODE` row is a K or V `CONCAT` against the
+// uploaded plane; the row that consumes it redirects its `a` operand through `alt_when`. The
+// numbering matches `layer_qwen2.WHEN_DECODE` because the two predicates answer the same question.
+//
+// **`WHEN_WIDE` cannot be reused for the concatenation**, which is the trap section 3.7 names
+// before implementation rather than after it: `ggml_pad` writes its source at the **start** of each
+// padded axis and zeroes the rest, so at `T = 1` a `WHEN_WIDE` widening puts the step's one new
+// column at index 0 with zeros above it, where the plane's columns must occupy `[0, n_past)` and
+// the new column `n_past`. A decode topology is a new condition and two `CONCAT` rows.
+pub WHEN_DECODE := 4
+
+// R5B's concatenation, the one op R5E's four tables never needed. `ggml_ffi.op_concat` already
+// ships for the dense decode arm, so this is a table vocabulary entry and not a new FFI symbol.
+pub OP_CONCAT := 16
+
+// Section 3.2's step ceiling, R6-STEP-N section 2.3's reason unchanged: a loop whose bound is an
+// operand needs a bound the document can publish, and 64 is large enough that no qualification has
+// wanted more and small enough that every accumulator's saturation argument is trivial.
+pub MAX_DECODE_STEPS := 64
 
 // The head's two members, from `src/alignpack.align`'s frozen `role_id` list.
 pub ROLE_OUTPUT_NORM := 13
@@ -1473,6 +1501,49 @@ pub MM_A_NODE_COUNT := 35
 pub MM_B_NODE_BASE := 56
 pub MM_EMBED_NODE_COUNT := 1
 pub MM_HEAD_NODE_COUNT := 3
+
+// ---------------------------------------------------------------------------------------------
+// R6-OLMOE-DECODE's slot map, which extends R5E's rather than moving one number of it
+// ---------------------------------------------------------------------------------------------
+//
+// `docs/specs/r6-olmoe-decode.md` section 3.7 derived the slot budget rather than inheriting it,
+// and implementation moved one row of that derivation. The design predicted a 37-row decode phase A
+// at `MM_A_NODE_BASE` with phase B left at 56; 21 + 37 is 58, so those two ranges **overlap at
+// slots 56 and 57**, which is exactly the "disjoint ranges" property the store's own header says
+// lets phase A's nodes stay readable while phase B is built. The decode phase-B base therefore
+// moves to 58 — for the decode tables only. R5E's `MM_B_NODE_BASE` is byte-unchanged and no prefill
+// slot number moves, so the two MoE goldens cannot move for this reason.
+//
+// The consequence is one value of a public precondition, recorded rather than discovered: the
+// decode arm's ceiling is `MM_DECODE_B_NODE_BASE + b_node_count(u) <= MM_SLOT_KPAST`, which admits
+// `n_expert_used <= 30` where section 3.7 predicted 31 and R5E's prefill admits 32. It is checked
+// in the arm's `stage_geometry`, naming the field, and `layer_olmoe.parse_geometry` stays
+// byte-unchanged.
+//
+// The uploaded plane's two past tensors take the **top two slots** rather than a fixed pair just
+// above R5E's measured high water of 80, because `MM_B_NODE_BASE + b_node_count(u)` passes 80 at
+// `n_expert_used >= 13` and a fixed pair there would collide with phase B on a legal geometry.
+pub MM_SLOT_KPAST := 126
+pub MM_SLOT_VPAST := 127
+pub MM_DECODE_A_NODE_COUNT := 37
+pub MM_DECODE_B_NODE_BASE := 58
+
+// The two phase-A rows the plane is written **from**, at both `T` and `T = 1`: the post-QK-norm,
+// post-RoPE `Kcur` and the reshaped `Vcur`. They are the same two rows in the prefill table and in
+// the decode table because both tables share `mm_a_row_head` unchanged, which is why this
+// architecture needs one pair where `src/decode_step.align` derived four qwen2 indices.
+//
+// Reading the plane from these rows and **not** from the two `CONCAT` outputs is deliberate: the V
+// concatenation's new column is strided, so a write-back sourced from it would copy the wrong bytes
+// with the right shape.
+pub MM_K_ROW := 11
+pub MM_V_ROW := 13
+
+// The two decode-table rows oracle B reads **back**: the tensors the attention actually consumed.
+// Comparing the plane against these rather than against the rows it was written from is what makes
+// the round trip an oracle instead of an echo.
+pub MM_DECODE_K_CONCAT_ROW := 17
+pub MM_DECODE_V_CONCAT_ROW := 23
 
 // Seventeen oracle rows per layer: the fourteen section 3.7 element-compares, plus `kq-L` and
 // `kq_soft_max-L` — matched, shape-checked against `KV_WIDTH`, never compared — plus
@@ -1699,9 +1770,20 @@ fn mm_row(op: i64, a: i64, b: i64) -> MmRow = MmRow {
 
 // `true` when a row is issued for a graph with these two conditions. One loop in
 // `src/moe_model_forward.align` walks the table and skips a row whose condition does not hold.
+// R6-OLMOE-DECODE keeps this signature and defines it as the `decode = false` case of the
+// four-condition form below, so R5E's issued row set is unchanged by construction.
 pub fn mm_row_issued(condition: i64, last: bool, wide: bool) -> bool {
+  return mm_row_issued_at(condition, last, wide, false)
+}
+
+// `docs/specs/r6-olmoe-decode.md` section 3.7. The same predicate with the decode condition, walked
+// by `src/moe_decode_step.align`. In a decode walk `wide` means `width > n_past + 1`, not
+// `width > tokens`, because the concatenated operand is `n_past + 1` columns long before it is
+// padded.
+pub fn mm_row_issued_at(condition: i64, last: bool, wide: bool, decode: bool) -> bool {
   if condition == WHEN_ALWAYS { return true }
   if condition == WHEN_LAST { return last }
+  if condition == WHEN_DECODE { return decode }
   return wide
 }
 
@@ -1905,8 +1987,8 @@ fn mm_a_row_tail(borrow g: Geometry, row: i64) -> MmRow {
 // **input** to this graph and not a node in it, which is what lets a constant table serve a
 // data-dependent `U` — and the only differences are the slot numbers and the token count, which is
 // `T_out(L)` and therefore `1` at the last layer.
-fn mm_b_row(borrow g: Geometry, tokens: i64, index: i64) -> MmRow {
-  m := MM_B_NODE_BASE
+fn mm_b_row(borrow g: Geometry, base: i64, tokens: i64, index: i64) -> MmRow {
+  m := base
   used := g.n_expert_used
   if index == 0 {
     mut r := mm_row(OP_RESHAPE_3D, MM_SLOT_PROBS, -1)
@@ -1975,16 +2057,184 @@ fn mm_head_row(borrow g: Geometry, index: i64) -> MmRow {
   return mm_row(OP_MUL_MAT, 1, m + 1)
 }
 
+// ---------------------------------------------------------------------------------------------
+// R6-OLMOE-DECODE — the decode phase-A table
+//
+// `docs/specs/r6-olmoe-decode.md` section 3.7. Thirty-seven rows: the prefill layer's thirty-five
+// at `tokens = 1`, plus one `CONCAT` on K and one on V.
+//
+// The two concats are the whole topology change. A prefill layer widens K and V from `T` columns to
+// `KV_WIDTH` with zeros; a decode layer joins the plane's `n_past` real columns to the step's one
+// new column and pads the remainder, so the new column lands at index `n_past` — exactly where the
+// offset mask unmasks it.
+//
+// K and V concatenate on **different** axes and the table says so per row. After row 16's `CONT_3D`
+// K is `{head_dim, columns, n_head_kv}`, so its column axis is **1**; after row 22's `CONT_3D` V is
+// `{columns, head_dim, n_head_kv}`, so its column axis is **0**. One shared constant here would be
+// a silent transpose that every downstream shape check accepts.
+//
+// Rows 0 to 13 are `mm_a_row_head` at `tokens = 1`, byte for byte: the norm, the two QK-normed
+// projections, `Vcur`, the three reshapes and the two RoPEs are `T`-independent, which is what lets
+// one pair of write-back rows (`MM_K_ROW`, `MM_V_ROW`) serve the prefill and every step.
+// ---------------------------------------------------------------------------------------------
+
+// Rows 14 to 27: the attention, with the two concatenations and the two pads. Row 16's `CONT_3D` is
+// `WHEN_ALWAYS` here where the prefill makes it `WHEN_WIDE`, because a concatenation needs a
+// contiguous operand whether or not the plane is wider than `n_past + 1`.
+fn mm_decode_a_row_attention(borrow g: Geometry, n_past: i64, width: i64, row: i64) -> MmRow {
+  m := MM_A_NODE_BASE
+  if row == 14 {
+    mut r := mm_row(OP_PERMUTE, m + 11, -1)
+    r.p1 = 2
+    r.p2 = 1
+    r.p3 = 3
+    return r
+  }
+  if row == 15 {
+    mut r := mm_row(OP_PERMUTE, m + 6, -1)
+    r.p1 = 2
+    r.p2 = 1
+    r.p3 = 3
+    return r
+  }
+  if row == 16 {
+    mut r := mm_row(OP_CONT_3D, m + 14, -1)
+    r.p0 = g.head_dim
+    r.p1 = 1
+    r.p2 = g.n_head_kv
+    return r
+  }
+  if row == 17 {
+    mut r := mm_row(OP_CONCAT, MM_SLOT_KPAST, m + 16)
+    r.p0 = 1
+    r.when = WHEN_DECODE
+    return r
+  }
+  if row == 18 {
+    mut r := mm_row(OP_PAD, m + 16, -1)
+    r.p1 = width - (n_past + 1)
+    r.alt_when = WHEN_DECODE
+    r.alt_a = m + 17
+    return r
+  }
+  if row == 19 { return mm_row(OP_MUL_MAT, m + 18, m + 15) }
+  if row == 20 {
+    mut r := mm_row(OP_SOFT_MAX, m + 19, MM_SLOT_MASK)
+    r.p0 = g.attn_scale_bits
+    r.p1 = MAX_BIAS_BITS
+    return r
+  }
+  if row == 21 {
+    mut r := mm_row(OP_PERMUTE, m + 13, -1)
+    r.p0 = 1
+    r.p1 = 2
+    r.p2 = 0
+    r.p3 = 3
+    return r
+  }
+  if row == 22 {
+    mut r := mm_row(OP_CONT_3D, m + 21, -1)
+    r.p0 = 1
+    r.p1 = g.head_dim
+    r.p2 = g.n_head_kv
+    return r
+  }
+  if row == 23 {
+    mut r := mm_row(OP_CONCAT, MM_SLOT_VPAST, m + 22)
+    r.p0 = 0
+    r.when = WHEN_DECODE
+    return r
+  }
+  if row == 24 {
+    mut r := mm_row(OP_PAD, m + 22, -1)
+    r.p0 = width - (n_past + 1)
+    r.alt_when = WHEN_DECODE
+    r.alt_a = m + 23
+    return r
+  }
+  if row == 25 { return mm_row(OP_MUL_MAT, m + 24, m + 20) }
+  if row == 26 {
+    mut r := mm_row(OP_PERMUTE, m + 25, -1)
+    r.p1 = 2
+    r.p2 = 1
+    r.p3 = 3
+    return r
+  }
+  mut r := mm_row(OP_CONT_3D, m + 26, -1)
+  r.p0 = g.n_embd
+  r.p1 = 1
+  r.p2 = 1
+  return r
+}
+
+// Rows 28 to 36: the prefill's rows 26 to 34, shifted by the two concatenations. The two `WHEN_LAST`
+// narrowing rows are **kept** at `t = 1`, where `get_rows(x, [0])` is the identity: they cost two
+// redundant nodes and keep one shape rule for both passes, which is `src/layer_qwen2.align`'s own
+// decision for the same rows and the same reason. Section 2.2 measured that a decode graph does not
+// narrow, so they compute nothing; they are not load-bearing and they are not free to be wrong.
+fn mm_decode_a_row_tail(borrow g: Geometry, row: i64) -> MmRow {
+  m := MM_A_NODE_BASE
+  if row == 28 { return mm_row(OP_MUL_MAT, 6, m + 27) }
+  if row == 29 {
+    mut r := mm_row(OP_GET_ROWS, m + 28, MM_SLOT_OUT_IDS)
+    r.when = WHEN_LAST
+    return r
+  }
+  if row == 30 {
+    mut r := mm_row(OP_GET_ROWS, MM_SLOT_CUR, MM_SLOT_OUT_IDS)
+    r.when = WHEN_LAST
+    return r
+  }
+  if row == 31 {
+    mut r := mm_row(OP_ADD, m + 28, MM_SLOT_CUR)
+    r.alt_when = WHEN_LAST
+    r.alt_a = m + 29
+    r.alt_b = m + 30
+    return r
+  }
+  if row == 32 {
+    mut r := mm_row(OP_RMS_NORM, m + 31, -1)
+    r.p0 = g.rms_eps_bits
+    return r
+  }
+  if row == 33 { return mm_row(OP_MUL, m + 32, 7) }
+  if row == 34 { return mm_row(OP_MUL_MAT, 8, m + 33) }
+  if row == 35 {
+    // A plain 64-way softmax, unit scale, **no mask** and no renormalization — R5D's router,
+    // unchanged, because nothing in the routing arithmetic is `T`-conditional.
+    mut r := mm_row(OP_SOFT_MAX, m + 34, -1)
+    r.p0 = UNIT_SCALE_BITS
+    r.p1 = MAX_BIAS_BITS
+    return r
+  }
+  mut r := mm_row(OP_ARGSORT, m + 35, -1)
+  r.p0 = 1
+  return r
+}
+
 MM_TABLE_EMBED := 0
 MM_TABLE_A := 1
 MM_TABLE_B := 2
 MM_TABLE_HEAD := 3
+MM_TABLE_DECODE_A := 4
 
 fn mm_table_row(
-  borrow g: Geometry, kind: i64, tokens: i64, width: i64, index: i64) -> MmRow {
+  borrow g: Geometry,
+  kind: i64,
+  tokens: i64,
+  width: i64,
+  n_past: i64,
+  base: i64,
+  index: i64,
+) -> MmRow {
   if kind == MM_TABLE_EMBED { return mm_row(OP_GET_ROWS, 0, MM_SLOT_TOKENS) }
-  if kind == MM_TABLE_B { return mm_b_row(g, tokens, index) }
+  if kind == MM_TABLE_B { return mm_b_row(g, base, tokens, index) }
   if kind == MM_TABLE_HEAD { return mm_head_row(g, index) }
+  if kind == MM_TABLE_DECODE_A {
+    if index <= 13 { return mm_a_row_head(g, 1, index) }
+    if index <= 27 { return mm_decode_a_row_attention(g, n_past, width, index) }
+    return mm_decode_a_row_tail(g, index)
+  }
   if index <= 13 { return mm_a_row_head(g, tokens, index) }
   if index <= 25 { return mm_a_row_attention(g, tokens, width, index) }
   return mm_a_row_tail(g, index)
@@ -1999,6 +2249,7 @@ fn mm_table(
   base: i64,
   tokens: i64,
   width: i64,
+  n_past: i64,
 ) -> MmNodeTable {
   mut op: array_builder<i64> := array_builder()
   mut a: array_builder<i64> := array_builder()
@@ -2017,7 +2268,7 @@ fn mm_table(
   mut index := 0
   loop {
     if index >= count { break }
-    r := mm_table_row(g, kind, tokens, width, index)
+    r := mm_table_row(g, kind, tokens, width, n_past, base, index)
     op.push(r.op)
     a.push(r.a)
     b.push(r.b)
@@ -2055,27 +2306,46 @@ fn mm_table(
 }
 
 pub fn mm_a_node_table(borrow g: Geometry, tokens: i64, width: i64) -> MmNodeTable {
-  return mm_table(g, MM_TABLE_A, MM_A_NODE_COUNT, MM_A_NODE_BASE, tokens, width)
+  return mm_table(g, MM_TABLE_A, MM_A_NODE_COUNT, MM_A_NODE_BASE, tokens, width, 0)
 }
 
 pub fn mm_b_node_table(borrow g: Geometry, tokens: i64) -> MmNodeTable {
-  return mm_table(g, MM_TABLE_B, b_node_count(g.n_expert_used), MM_B_NODE_BASE, tokens, 0)
+  return mm_table(g, MM_TABLE_B, b_node_count(g.n_expert_used), MM_B_NODE_BASE, tokens, 0, 0)
+}
+
+// R6-OLMOE-DECODE's two tables. Phase A is the thirty-seven-row decode topology at `n_past`; phase B
+// is R5D's routed FFN, byte-identical in its rows and moved to `MM_DECODE_B_NODE_BASE` so the two
+// decode ranges stay disjoint. Phase B never saw `T` except through three `p` parameters and it
+// already runs at `t_out = 1` today, at layer 15 of every prefill.
+pub fn mm_decode_a_node_table(borrow g: Geometry, n_past: i64, width: i64) -> MmNodeTable {
+  return mm_table(
+    g, MM_TABLE_DECODE_A, MM_DECODE_A_NODE_COUNT, MM_A_NODE_BASE, 1, width, n_past)
+}
+
+pub fn mm_decode_b_node_table(borrow g: Geometry) -> MmNodeTable {
+  return mm_table(
+    g, MM_TABLE_B, b_node_count(g.n_expert_used), MM_DECODE_B_NODE_BASE, 1, 0, 0)
 }
 
 pub fn mm_embed_node_table(borrow g: Geometry) -> MmNodeTable {
-  return mm_table(g, MM_TABLE_EMBED, MM_EMBED_NODE_COUNT, MM_A_NODE_BASE, 0, 0)
+  return mm_table(g, MM_TABLE_EMBED, MM_EMBED_NODE_COUNT, MM_A_NODE_BASE, 0, 0, 0)
 }
 
 // `RMS_NORM`, `MUL(output_norm)`, `MUL_MAT(output)` — the three nodes the transcript names `norm`,
 // `result_norm`, and `result_output`, **without a layer suffix** (section 2.2 consequence 3).
 pub fn mm_head_node_table(borrow g: Geometry) -> MmNodeTable {
-  return mm_table(g, MM_TABLE_HEAD, MM_HEAD_NODE_COUNT, MM_A_NODE_BASE, 0, 0)
+  return mm_table(g, MM_TABLE_HEAD, MM_HEAD_NODE_COUNT, MM_A_NODE_BASE, 0, 0, 0)
 }
 
 pub fn mm_a_output_slot() -> i64 = MM_A_NODE_BASE + MM_A_NODE_COUNT - 1
 
 pub fn mm_b_output_slot(n_expert_used: i64) -> i64 =
 MM_B_NODE_BASE + b_node_count(n_expert_used) - 1
+
+pub fn mm_decode_a_output_slot() -> i64 = MM_A_NODE_BASE + MM_DECODE_A_NODE_COUNT - 1
+
+pub fn mm_decode_b_output_slot(n_expert_used: i64) -> i64 =
+MM_DECODE_B_NODE_BASE + b_node_count(n_expert_used) - 1
 
 pub fn mm_embed_output_slot() -> i64 = MM_A_NODE_BASE
 
@@ -2084,13 +2354,27 @@ pub fn mm_head_output_slot() -> i64 = MM_A_NODE_BASE + MM_HEAD_NODE_COUNT - 1
 // The causal mask at a declared width. Columns at or beyond `height` are `-inf` for every row,
 // which is what makes the reconciliation pass's padded lanes contribute nothing.
 pub fn mm_write_mask(borrow mut window: buffer, width: i64, height: i64) {
+  mm_write_mask_offset(window, width, height, 0)
+}
+
+// R6-OLMOE-DECODE section 3.7, and `layer_qwen2.mf_write_mask_offset`'s reason unchanged: the same
+// image with the row index **shifted**, so row `r` masks `col <= r + row_offset`.
+//
+// `mm_write_mask` is correct only when row `r` means position `r`, which is true of every prefill
+// graph and false of every decode graph: a decode row is position `n_past` while its `row` is 0.
+// Writing the prefill's rule at a decode step masks every past column and produces a confidently
+// wrong answer that every shape check passes. `mm_write_mask` is defined as the `row_offset = 0`
+// case, so R5E's bytes are unchanged by construction rather than by inspection.
+pub fn mm_write_mask_offset(
+  borrow mut window: buffer, width: i64, height: i64, row_offset: i64) {
+  if row_offset < 0 { return }
   mut row := 0
   loop {
     if row >= height { break }
     mut col := 0
     loop {
       if col >= width { break }
-      bits := if col <= row { MASK_ZERO_BITS } else { MASK_NEG_INFINITY_BITS }
+      bits := if col <= row + row_offset { MASK_ZERO_BITS } else { MASK_NEG_INFINITY_BITS }
       window.put_u32_le(bits as u32)
       col = col + 1
     }
@@ -2163,17 +2447,21 @@ fn mm_oracle_op_of(n_expert_used: i64, row: i64) -> str {
 
 // The node slot each layer row observes, in the shared store. Phase A's and phase B's ranges are
 // disjoint, which is what lets the routing decision read a phase-A node back while phase B is built.
-fn mm_oracle_slot_of(n_expert_used: i64, row: i64) -> i64 {
+// R6-OLMOE-DECODE. The decode table inserts two `CONCAT` rows at 17 and 23, so every phase-A row
+// after the K path shifts — `kq` by one and `kq_soft_max` by one, then the whole tail by two — and
+// phase B sits at `MM_DECODE_B_NODE_BASE`. The prefill answer is the `decode = false` case, so R5E's
+// oracle slots are unchanged by construction.
+fn mm_oracle_slot_at(n_expert_used: i64, row: i64, decode: bool) -> i64 {
   a := MM_A_NODE_BASE
-  b := MM_B_NODE_BASE
+  b := if decode { MM_DECODE_B_NODE_BASE } else { MM_B_NODE_BASE }
   if row == 0 { return a + 1 }
-  if row == 1 { return a + 18 }
-  if row == 2 { return a + 19 }
-  if row == 3 { return a + 29 }
-  if row == 4 { return a + 31 }
-  if row == 5 { return a + 32 }
-  if row == 6 { return a + 33 }
-  if row == 7 { return a + 34 }
+  if row == 1 { return if decode { a + 19 } else { a + 18 } }
+  if row == 2 { return if decode { a + 20 } else { a + 19 } }
+  if row == 3 { return if decode { a + 31 } else { a + 29 } }
+  if row == 4 { return if decode { a + 33 } else { a + 31 } }
+  if row == 5 { return if decode { a + 34 } else { a + 32 } }
+  if row == 6 { return if decode { a + 35 } else { a + 33 } }
+  if row == 7 { return if decode { a + 36 } else { a + 34 } }
   // `ffn_moe_topk` is a phase-B **input**, not a node: Align slices the top-k out of
   // `ffn_moe_argsort-L` and writes it, which is exactly the tensor the transcript's view holds.
   if row == 8 { return MM_SLOT_TOPK }
@@ -2199,6 +2487,13 @@ fn mm_oracle_class_of(row: i64) -> i64 {
 }
 
 pub fn mm_oracle_table(borrow g: Geometry, n_layer: i64) -> OracleTable {
+  return mm_oracle_table_at(g, n_layer, false)
+}
+
+// R6-OLMOE-DECODE. The same seventeen rows per layer against the decode slot map. The row grammar —
+// names, ops, classes, the `ffn_moe_topk` routing row — is identical, because a decode graph
+// computes the same nodes with the same names; only the slots the arm reads them back from move.
+pub fn mm_oracle_table_at(borrow g: Geometry, n_layer: i64, decode: bool) -> OracleTable {
   body := builder()
   mut ids: array_builder<i64> := array_builder()
   mut id_ends: array_builder<i64> := array_builder()
@@ -2245,7 +2540,7 @@ pub fn mm_oracle_table(borrow g: Geometry, n_layer: i64) -> OracleTable {
       op_text = mm_oracle_op_of(used, row).clone()
       class = mm_oracle_class_of(row)
       is_integer = if row == 7 || row == 8 { 1 } else { 0 }
-      slot_of = mm_oracle_slot_of(used, row)
+      slot_of = mm_oracle_slot_at(used, row, decode)
       phase_b = if row >= 8 { 1 } else { 0 }
       n.write(stem)
       n.write("-")
