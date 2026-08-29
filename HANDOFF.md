@@ -50,9 +50,16 @@ which adds no real-model run. `r6-prefix-suffix-prefill.md` gains **section 11.5
 3.7, 5.6, 5.7, 9.1, 11.1 correction 8, 11.2 and 12.1 are corrected in place. The decode-step corpus
 is 137 → **141** rows with exactly one changed row, `ds-suffix-prefix-one`, refusal to pass.
 
-**Not started / next.** The two real-model legs (`gmake model-forward-qualification` and
-`gmake moe-model-forward-qualification`), which are waiting on host memory — another agent's DinD
-holds the box below 6 GB free. Then publication
+**Real-model qualification, done.** Both legs pass at this head, streamed, exit 0.
+`gmake model-forward-qualification` on dense Qwen: `llama-debug -p def` tokenizes to exactly one
+non-zero id, **750**, and `--model-forward` at that id is **byte-identical** to
+`llama-debug --save-logits` over all 152,064 logits — `d639adb97337394649a1a94ccc70767cf989b75c14b80e1de31cfdde4745fb96`,
+argmax 914. `gmake moe-model-forward-qualification` on OLMoE: one non-zero id, **1545**,
+byte-identical over 50,304 logits — `be4c699fbb888a3504b007c5d66925f621c8067a7f88191e0af42974c3c4ecc7`,
+argmax 33007. The tokenization guard did not fire on either model. Every pre-existing six-token
+assertion in both qualifications is unmoved. Recorded in section 8.7 of the plan.
+
+**Not started / next.** Publication
 (`python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`) and one
 comprehensive review.
 

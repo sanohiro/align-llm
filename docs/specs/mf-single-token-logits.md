@@ -241,3 +241,39 @@ also demotes the second and leaves exactly one `Active` block.
 
 Every command of 8.3 was re-run at this head and no golden needed regenerating.
 
+### 8.7 Real-model result — section 5's acceptance, on both models
+
+Both legs ran at head `a779979` on the reference host, streamed (no resident arena), against
+Homebrew `llama-debug`/`llama-eval-callback` and the two checked-in GGUFs. **Both pass, and the
+answer section 5 asked for is byte identity.**
+
+| | dense Qwen2.5-Coder-7B Q4_K_M | OLMoE-1B-7B-0125-Instruct Q4_K_M |
+| --- | --- | --- |
+| Command | `gmake model-forward-qualification` | `gmake moe-model-forward-qualification` |
+| Arm | `--model-forward` | `--moe-model-forward` |
+| Prompt | `def` | `def` |
+| Ids observed | `[750]` | `[1545]` |
+| Exactly one, non-zero? | yes | yes |
+| Logits | 152,064 | 50,304 |
+| `oracle_logits.byte_identical` | **true** | **true** |
+| `output.sha256` | `d639adb97337394649a1a94ccc70767cf989b75c14b80e1de31cfdde4745fb96` | `be4c699fbb888a3504b007c5d66925f621c8067a7f88191e0af42974c3c4ecc7` |
+| `output.argmax` | 914 | 33007 |
+| Oracle 1 over the one-token window | `IDENTICAL` | `IDENTICAL` |
+| Exit | 0 | 0 |
+
+**The tokenization guard did not fire, and that is a result rather than a formality.** Section 5
+requires the leg to read `llama-debug`'s own `<stem>-tokens.bin` and print `N/A` with the ids it
+observed unless there is exactly one and it is non-zero — because a prepended BOS makes a one-token
+prompt two ids and a BOS of id 0 would mask the defect. Both tokenizers produced one non-zero id, so
+both legs ran the arm. The dense leg's six-token list `[750, 912, 2877, 11, 293, 1648]` is the
+independent confirmation that Qwen2 prepends nothing.
+
+**Nothing else in either qualification moved.** Dense: logits `IDENTICAL` at the reconciliation
+width (`d2e48620ae3e31e2066a6172aa32c19c974d996d232ab91b118335e3d245bf74`, argmax 671), transcript
+`PASS` 479/479 nodes at max |d| 0 ten-thousandths, self-reference `IDENTICAL` 479/479 over 30 graphs,
+both forced builds reaching their codes. Routed: logits `IDENTICAL`
+(`a56195da2c913d8dd7fa608917a381200c4b59d1c534fae2d4bbb828f80d2383`), routing identity `MATCH`
+546/546 printed ids over 728 slots and 16/16 block sums, transcript `PASS` 227/227 nodes at max |d|
+0, self-reference `IDENTICAL` 227/227 over 34 graphs, 33.36 % of expert bytes read at six tokens.
+The fix is invisible at `T >= 2` on the real models exactly as it is on the fixtures.
+
