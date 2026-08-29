@@ -401,6 +401,10 @@ EDIT_SET_LIMIT = 16_384
 # The marker the frozen `bounded_text` appends at the end of a diagnostic it had to cut. Ladder
 # row 17 reads the tail of `diagnostic_summary`, which is exactly the part a cut removes.
 SUMMARY_TRUNCATION_TEXT = "\n[output truncated]"
+# The bound `bounded_text` cuts a summary to. A genuine cut summary is at least this long — the
+# frozen producer writes `raw[:limit - len(marker)] + marker` — so the length corroborates the
+# marker and a short summary cannot claim the exemption by ending in the marker's text.
+SUMMARY_LIMIT = 4_096
 ATTEMPT_KINDS = ("INITIAL", "REPAIR")
 ATTEMPT_STATUSES = ("PASS", "FAIL", "POLICY_VIOLATION", "ERROR", "SKIPPED")
 SKIP_REASONS = ("NONE", "REPAIR_PROMPT_BUDGET", "REPAIR_NOT_ELIGIBLE", "REPAIR_INPUT_UNAVAILABLE")
@@ -1679,9 +1683,17 @@ def validate_measurement_version(
     # appended at the end, so the applied-edit list is precisely what the cut removes, and holding
     # a cut summary to the full path list would refuse a legitimate measurement whose summary
     # exceeded `SUMMARY_LIMIT`.
+    #
+    # The exemption needs the marker **and** the length. `bounded_text` only cuts a summary that
+    # exceeded `SUMMARY_LIMIT`, and it cuts to `SUMMARY_LIMIT - len(marker)` bytes before appending
+    # the marker, so a genuine cut summary is never shorter than the bound. Taking the marker text
+    # alone would let a producer name any applied-edit list at all and end the string with it.
     marker = "applied edits: "
     summary = measurement["diagnostic_summary"]
-    if summary.endswith(SUMMARY_TRUNCATION_TEXT):
+    if (
+        summary.endswith(SUMMARY_TRUNCATION_TEXT)
+        and len(summary.encode("utf-8")) >= SUMMARY_LIMIT
+    ):
         return
     if marker in summary:
         named = [item for item in summary.rsplit(marker, 1)[1].split(", ") if item]

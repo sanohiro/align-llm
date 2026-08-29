@@ -25,9 +25,14 @@ bytes, the same **four** patch digests, and the same `edit_set` block digests, p
 first ran from the uncommitted tree (`align_llm_clean: false`, and of the three reachability fields
 only `align_llm_reachability: UNVERIFIED` — the one an uncommitted head makes unanswerable); the
 second from `de56c60`; the third is this one, needed because review repair moved the repair
-adapter's bytes and every row names that adapter by digest. Only the clocks moved: 839.492 s against
+adapter's bytes and every row names that adapter by digest. The clocks moved: 839.492 s against
 940.931 s and 823.67 s, and 8.33-52.69 s / median 21.73 s against 8.93-52.57 s / median 22.25 s and
-8.58-51.54 s / median 19.09 s. The repair provably could not have reached any row: the largest
+8.58-51.54 s / median 19.09 s. So did per-run environment identity, which is neither a correctness
+value nor a gate input: the sandbox directory is fresh each run and every `unittest` traceback frame
+in `diagnostic_stderr` quotes it, so the `STDERR` section moves the repair prompt's own bytes —
+`rendered_prompt_sha256` differs on six `REPAIR` attempts between the last two runs, with the
+snapshot and request digests that bind them (spec section 11.4 names them). The repair provably
+could not have reached any row: the largest
 realized `edit_set_total_bytes` is **1,160 bytes** against a 16,384-byte limit. Digests:
 `c4-editset-evaluation.json` `1b3ebbb6…`, evidence `549879df…`, record `6053086f…`.
 

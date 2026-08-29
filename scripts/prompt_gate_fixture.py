@@ -212,6 +212,28 @@ def applied_edits_text() -> str:
     return ", ".join(path for path, _ in EDITSET_EDITS)
 
 
+# The frozen producer's summary bound and its cut marker. Both are named here rather than imported
+# from the validator, for the same reason the block bound above is: a smoke that read them from the
+# module under test could not falsify a mutant that moved them.
+SUMMARY_LIMIT_FOR_SMOKE = 4_096
+SUMMARY_MARKER_FOR_SMOKE = "\n[output truncated]"
+
+
+def cut_summary(text: str) -> str:
+    """A summary cut exactly the way the frozen `bounded_text` cuts one.
+
+    `bounded_text` bounds a summary that exceeded the limit to `limit - len(marker)` bytes and then
+    appends the marker, so a genuine cut summary carries the marker **and** the bound's length.
+    Row 17's exemption reads both, so a fixture that carried only the marker would assert a shape
+    the producer never emits.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= SUMMARY_LIMIT_FOR_SMOKE:
+        raise ValueError("cut_summary was given text that never exceeded the bound")
+    marker = SUMMARY_MARKER_FOR_SMOKE.encode("utf-8")
+    return (encoded[: SUMMARY_LIMIT_FOR_SMOKE - len(marker)] + marker).decode("utf-8")
+
+
 def attempt_measurement(
     template: Mapping[str, Any], *, passing: bool, rendered: str, generation_ns: int | None,
     carries_edit_set: bool = True,

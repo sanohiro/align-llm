@@ -1278,14 +1278,17 @@ def repair_attempt_rows(root: Path) -> None:
         """Ladder row 17 is exempt on a **cut** summary, and this is the acceptance case for that
         exemption rather than a rejection: `bounded_text` appends its marker at the end, so the
         applied-edit list is exactly what a cut removes. Without the exemption a legitimate
-        measurement with a long summary would be refused as malformed."""
+        measurement with a long summary would be refused as malformed.
+
+        The summary is cut the way the producer cuts one — over the bound, then bounded and marked
+        — so it carries the marker and the length together, which is what the exemption reads."""
 
         def truncate(measurement) -> None:
-            measurement["diagnostic_summary"] = (
+            measurement["diagnostic_summary"] = fixture.cut_summary(
                 measurement["diagnostic_summary"].rsplit("applied edits: ", 1)[0]
                 + "applied edits: "
                 + fixture.EDITSET_PATH
-                + "\n[output truncated]"
+                + " " * fixture.SUMMARY_LIMIT_FOR_SMOKE
             )
 
         for_each_editset_measurement(evaluation, truncate)
@@ -1296,6 +1299,26 @@ def repair_attempt_rows(root: Path) -> None:
         observed == accepted_code(),
         "a truncated diagnostic summary was refused by the applied-edit cross-check: "
         f"expected exit {accepted_code()}, observed {observed}: {output.strip()}",
+    )
+
+    def editset_summary_forged_truncation(evaluation, evidence) -> None:
+        """The other half of the exemption. The marker's text alone must not buy it: this summary
+        names an applied-edit list the edit set does not have and ends in the marker while sitting
+        far under the bound, which is a cut the producer never took."""
+
+        def forge(measurement) -> None:
+            measurement["diagnostic_summary"] = (
+                measurement["diagnostic_summary"].rsplit("applied edits: ", 1)[0]
+                + "applied edits: tests/test_duration.py"
+                + fixture.SUMMARY_MARKER_FOR_SMOKE
+            )
+
+        for_each_editset_measurement(evaluation, forge)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-summary-forged", editset_summary_forged_truncation),
+        "a short summary claiming a cut it never took",
+        contains="diagnostic summary names another applied-edit list",
     )
 
     def measurement_not_final(evaluation, evidence) -> None:

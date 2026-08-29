@@ -39,6 +39,9 @@ DIAGNOSTIC_TRUNCATION_MARKER = b"\n[output truncated]"
 # Ladder row 17 reads the tail of `diagnostic_summary`, and this marker sits at the end of a
 # summary the frozen `bounded_text` had to cut, so the applied-edit list is what the cut removes.
 SUMMARY_TRUNCATION_TEXT = DIAGNOSTIC_TRUNCATION_MARKER.decode("utf-8")
+# The bound the frozen `bounded_text` cuts a summary to. A genuine cut summary is at least this
+# long, so the length corroborates the marker rather than trusting the trailing text alone.
+SUMMARY_LIMIT = 4_096
 MEMORY_EVENT_TEXT_FIELDS = (
     "root", "task_id", "attempted_patch", "final_status", "failure_stage", "failed_test",
     "failure_status", "root_cause", "repair_result", "successful_strategy",
@@ -2428,9 +2431,17 @@ def valid_measurement_version_two(
     # softening: `bounded_text` appends its marker at the end of a summary that exceeded
     # `SUMMARY_LIMIT`, so the applied-edit list is exactly the part it cuts. Without this, a
     # legitimate measurement with a long summary and many edits would be refused as malformed.
+    #
+    # The exclusion needs the marker **and** the length: `bounded_text` cuts to
+    # `SUMMARY_LIMIT - len(marker)` bytes before appending the marker, so a genuine cut summary is
+    # never shorter than the bound, while a short summary ending in the marker's text is a producer
+    # naming any applied-edit list it likes and escaping the row with a suffix.
     marker = "applied edits: "
     summary = value["diagnostic_summary"]
-    if summary.endswith(SUMMARY_TRUNCATION_TEXT):
+    if (
+        summary.endswith(SUMMARY_TRUNCATION_TEXT)
+        and len(summary.encode("utf-8")) >= SUMMARY_LIMIT
+    ):
         return True
     if marker in summary:
         named = [item for item in summary.rsplit(marker, 1)[1].split(", ") if item]
