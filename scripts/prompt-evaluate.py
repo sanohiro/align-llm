@@ -2490,11 +2490,21 @@ def task_editable_paths(task: Mapping[str, Any], project: Path) -> list[str]:
     except (UnicodeError, json.JSONDecodeError):
         raise EvaluationError("the task definition is not canonical JSON") from None
     allowed = value.get("allowed_edits") if isinstance(value, dict) else None
+    source_dir = value.get("source_dir") if isinstance(value, dict) else None
     if (
-        not isinstance(allowed, list) or not allowed
+        not isinstance(allowed, list) or not allowed or len(allowed) > MAXIMUM_FILE_BLOCKS
         or not all(isinstance(item, str) and item for item in allowed)
+        or not isinstance(source_dir, str) or not source_dir
     ):
         raise EvaluationError("the task definition declares no usable editable set")
+    try:
+        source_root = relative_path(project, source_dir)
+    except EvaluationError:
+        raise EvaluationError("the task definition source directory escapes the project") from None
+    if not source_root.is_dir():
+        raise EvaluationError("the task definition source directory is unavailable")
+    if source_dir != task["repo_path"]:
+        raise EvaluationError("the task definition source directory disagrees with the task repository")
     return list(allowed)
 
 
@@ -2659,6 +2669,9 @@ def valid_measurement_version_three(value: Mapping[str, Any]) -> bool:
         return False
     count = value.get("completion_bytes")
     if (count is None) != (value.get("completion_sha256") is None):
+        return False
+    response_received = value["generation_request"]["provider_request_sha256"] != "0" * 64
+    if (count is not None) != response_received:
         return False
     if count is not None and (
         not bounded_integer(count, 0, ARTIFACT_LIMIT) or not valid_hex(value["completion_sha256"])

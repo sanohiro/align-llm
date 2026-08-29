@@ -164,8 +164,11 @@ runs are directly comparable.
 gate MET  <=>  repair_recovery_paired_count >= 1
 ```
 
-**Measured result, added after the run:** the predicate is `MET`, but the underlying corpus
-capability is unchanged and the C4 gate is **not closed**. The only counted recovery repairs an
+**Measured result, added after the run and corrected after review:** the persisted rows contain a
+formal predicate value of 1, but the run made 24 provider calls against the pre-committed maximum
+of 22. It therefore does **not** qualify for a `MET` gate verdict; the named qualification stopped
+at a cost-contract breach. Independently, the underlying corpus capability is unchanged and the C4
+gate is **not closed**. The only observed recovery repairs an
 attempt-1 regression introduced by this capability and returns to the same patch that passed
 first-shot in both prior runs. Section 11.4 owns the evidence and applies section 1.6 reading (b).
 
@@ -666,7 +669,7 @@ modified, moved, or deleted, with the single prose exception of §9.4.
 | `eval/prompt/canonical-v1t/repair-template.json` | `REPAIR_PROMPT_TEMPLATE`, `schema_version: 1`, `template_id: prompt-v1t-repair-v1`, **six** section headers. §4.2. |
 | `eval/prompt/canonical-v1t/generation-policy.json` | `canonical-v1e`'s policy with `generation_policy_id: prompt-v1t-generation-v1` and the `provider_service_revision` **re-derived at freeze time, never inherited**. `provider_control_sha256`, `max_prompt_bytes: 65536`, `max_tokens: 4096`, `temperature_micros: 0`, `seed_mode: PAIRED_FIXED`, `seed_base: 20260824` unchanged. |
 | `eval/prompt/canonical-v1t/corpus.json` | `corpus_id: prompt-v1t`, naming the three `prompt-v1t` manifests |
-| `eval/prompt/canonical-v1t/corpus-file-set.manifest` | **32 entries**: 23 members carried from `canonical-v1e` at **identical digests** (12 fixture files, the runner, the three task definitions, the three context-sources files, and four scripts), the 3 new task prompts, the 3 new task manifests, the new repair template, the new generation policy, and `scripts/prompt-template-adapter.py`. Of the 23, **22 carry identical digests in all four manifests**; `scripts/prompt-repair-adapter.py` is shared with `canonical-v1e` only. |
+| `eval/prompt/canonical-v1t/corpus-file-set.manifest` | **31 entries**: 22 members carried from `canonical-v1e` at **identical digests** (11 fixture files, the runner, the three task definitions, the three context-sources files, and four scripts), the 3 new task prompts, the 3 new task manifests, the new repair template, the new generation policy, and `scripts/prompt-template-adapter.py`. Of the 22, **21 carry identical digests in all four manifests**; `scripts/prompt-repair-adapter.py` is shared with `canonical-v1e` only. |
 | `eval/prompt/canonical-v1t/scope.json` | `corpus_id: prompt-v1t`, the new `corpus_revision`, the new `generation_policy_sha256`; `acceptance_policy_sha256`, `base_prompt_sha256`, `repo_prompt_sha256` **identical to `canonical-v1e`'s** and therefore to `canonical-v1`'s |
 | `eval/prompt/canonical-v1t/prompt-activation-baseline-v1t.json` | the baseline activation over the new scope; the effective variant is byte-identical to `baseline-v1e`'s |
 | `eval/prompt/canonical-v1t/README.md` | what is frozen, what is reused by digest, and the rule that it is never edited after measurement |
@@ -1286,7 +1289,7 @@ Cases are `scripts/run-prompt-template-adapter-smoke` unless marked **(E)** for
 | Failure | `ERROR` before the parse carries `edit_refusal: NONE` and every completion member as the response allows | a generation-child failure |
 | Malformed input | an unmapped frozen message | `ERROR`/`ADAPTER`, never a silent `NONE` |
 | Malformed input | a completion whose encoded result would exceed `RESULT_LIMIT` | `completion_text` dropped whole; `completion_bytes` and `completion_sha256` survive; the measurement is not `ERROR` |
-| Early exit | the declared-patch path never parses a response | `edit_set` `None`, `edit_refusal: NONE`, `completion_*` `None`, `patch_sha256` `Some` |
+| Early exit | the declared-patch path does not parse the response as edits, but generation still returns one | `edit_set` `None`, `edit_refusal: NONE`, `completion_bytes`/`completion_sha256` `Some`, `completion_text` `None`, `patch_sha256` `Some` |
 | Cleanup | the completion digest is taken before any input is closed | no read after close |
 | Redaction | completion bytes and digest are post-redaction | a credential-bearing stub run leaves no credential in `completion_text` and changes the digest |
 
@@ -1341,8 +1344,8 @@ Cases are `scripts/run-prompt-template-adapter-smoke` unless marked **(E)** for
 
 | Cell | Implementation | Regression |
 | --- | --- | --- |
-| Construction | `scripts/freeze-canonical-v1t` mints all 32 members reproducibly | re-running it is a no-op on a clean tree; `--check` reproduces every frozen file |
-| Success | the 23 carried members carry identical digests to `canonical-v1e`; 22 of them to all four manifests | an explicit digest-equality assertion over the four manifests |
+| Construction | `scripts/freeze-canonical-v1t` mints all 31 members reproducibly | re-running it is a no-op on a clean tree; `--check` derives in memory, detects drift, and writes nothing |
+| Success | the 22 carried members carry identical digests to `canonical-v1e`; 21 of them to all four manifests | an explicit digest-equality assertion over the four manifests |
 | Failure | `REPAIR_ADAPTER_SHA256` or `repair.BASE_ADAPTER_SHA256` disagreeing with any manifest | ladder rows 3 and 4 |
 | Failure | a `prompt-v1t` task naming fewer than three adapters in `artifacts` | ladder row 5 |
 | Malformed input | a `prompt-v1t` task prompt whose digest disagrees with its artifact entry | ladder row 13 |
@@ -1359,6 +1362,7 @@ Cases are `scripts/run-prompt-template-adapter-smoke` unless marked **(E)** for
 | Failure | the provider probe disagrees with the policy revision | fails closed before the first call |
 | Malformed input | the in-band model id is not the declared one | fails closed |
 | Early exit | wall clock exceeds the 60-minute ceiling | the capability stops; the ceiling is not raised after the fact |
+| Early exit | ran provider calls exceed 22 | the qualification fails and publishes no new evidence |
 | Cleanup | `make gate-topology-check` passes with `EXPECTED` unmoved | an owner check |
 
 ### 7.8 Error-code-to-case map, and the final pass
@@ -1840,19 +1844,31 @@ the freeze's `--check`; §7.7 is the §11.4 run.
     invisible to owner tests that asserted the rule instead of driving the artifact through the
     consumer that enforces it.
 
-### 11.4 Gate result: predicate `MET`, capability unchanged
+17. **Review found that the completed run breached its provider-call ceiling and that the record
+    hid the breach.** The evaluation has 12 initial and 12 repair attempts, hence **24** ran provider
+    calls against section 6.2's fixed maximum of **22**. `scripts/run-c4-template-gate` nevertheless
+    wrote `addressable_ran_attempts: 22` from a literal. The three JSON artifacts remain immutable;
+    the correction is recorded here and in their README. The driver now derives the count from rows,
+    refuses publication above 22, makes the 60-minute ceiling fail closed, requires the exact make
+    invocation, records the inspected immutable image ID, and refuses to call two absent completion
+    identities agreement. The historical record's mutable image tag, absent command/image ID, and
+    incorrect addressable count are known limitations, not retroactively repaired fields.
+
+### 11.4 Gate result: qualification ceiling breached; observed predicate value 1
 
 The measurement of record is the single completed run from clean committed head
 `7ba2027d1403de92936de0eba146f649a35cb59d`, with `align_llm_clean: true`. It published 12 rows
-after **24 provider calls** (12 initial and 12 repair) in **700.452 s**, inside the pre-committed
-3,600 s ceiling. The evaluation is `IMPROVED` and gate-eligible under the unchanged C6 scoring
-contract. Those are properties of the persisted result; they are not promoted into a broader
-capability claim below.
+after **24 provider calls** (12 initial and 12 repair) in **700.452 s**. Although that is inside the
+3,600 s wall-clock ceiling, it exceeds section 6.2's independently pre-committed maximum of 22
+calls. The named qualification therefore **failed its cost contract and has no `MET` verdict**. The
+evaluation is `IMPROVED` and gate-eligible under the unchanged C6 scoring contract; those are
+properties of the persisted result, not acceptance of this qualification.
 
-**The formal predicate is met.** `repair_recovery_count` is 2 and
+**The persisted formal predicate value is 1.** `repair_recovery_count` is 2 and
 `repair_recovery_paired_count` is **1**, so the exact predicate in section 1.5 evaluates to `MET`.
-Both samples of `duration-half-away-from-zero` CANDIDATE fail attempt 1 with a 724-byte patch and
-pass attempt 2 with a 758-byte patch.
+Because the run is outside its call ceiling, that arithmetic observation is not promoted to the
+gate verdict. Both samples of `duration-half-away-from-zero` CANDIDATE fail attempt 1 with a
+724-byte patch and pass attempt 2 with a 758-byte patch.
 
 **That is not a C4 gate closure.** The same pair passed at attempt 1 in both C4 and C4E, with the
 same 758-byte patch. Version 3 changed attempt 1, turned that previously passing answer into the
@@ -1860,7 +1876,8 @@ same 758-byte patch. Version 3 changed attempt 1, turned that previously passing
 before the run in section 4.3 item 4 therefore landed exactly: the predicate counts recovery from a
 regression this capability introduced. `candidate_pass_count` is 2 here and was 2 at C4E;
 `completion_gain_count` is 2 in both; no task passes here that did not pass before. The honest
-headline is **predicate met, capability unchanged**.
+headline is **qualification failed; observed recovery repairs an introduced regression; capability
+unchanged**.
 
 | Task | Variant | Both samples, attempt 1 -> attempt 2 | Interpretation |
 | --- | --- | --- | --- |

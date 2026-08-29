@@ -70,6 +70,7 @@ DEFAULT_IMAGE = "c4-repair-measure:latest"
 # Recorded before implementation, in the plan, and not raised after the fact. A run that exceeds
 # it stops and the capability boundary is reconsidered.
 COST_CEILING_SECONDS = 60 * 60
+PROVIDER_CALL_CEILING = 22
 EVALUATION_ID = "c4e-measure"
 # What the evaluation container needs so `bwrap` can build its namespaces. Named here rather than
 # inlined so the run record can publish the exact grant it was given.
@@ -463,6 +464,16 @@ def refusal_breakdown(result: dict[str, Any]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def ran_attempt_count(result: dict[str, Any]) -> int:
+    """Count paid provider attempts from the persisted rows, never from a planned literal."""
+    return sum(
+        1
+        for row in result.get("rows", [])
+        for attempt in row.get("attempts", [])
+        if attempt.get("status") != "SKIPPED"
+    )
+
+
 def paired_completion_agreement(result: dict[str, Any]) -> list[dict[str, Any]]:
     """Whether the two paired samples of a (task, variant) pair produced the same completions.
 
@@ -484,7 +495,11 @@ def paired_completion_agreement(result: dict[str, Any]) -> list[dict[str, Any]]:
         report.append({
             "task_id": task_id,
             "variant": variant,
-            "samples_agree": len(ordered) > 1 and all(item == ordered[0] for item in ordered),
+            "samples_agree": (
+                len(ordered) > 1
+                and all(digest is not None for item in ordered for digest in item)
+                and all(item == ordered[0] for item in ordered)
+            ),
         })
     return report
 
@@ -566,17 +581,16 @@ def in_container(values: argparse.Namespace) -> int:
     if completed.returncode != 0:
         raise GateError(f"prompt evaluate failed with status {completed.returncode}")
     if elapsed > COST_CEILING_SECONDS:
-        # Recorded before implementation. The run's result still stands; the ceiling breach is a
-        # signal to reconsider the capability boundary, not to raise the ceiling after the fact.
-        sys.stderr.write(
-            f"run-c4-template-gate: WARNING wall clock {elapsed:.0f}s exceeds the "
-            f"{COST_CEILING_SECONDS}s recorded cost ceiling\n"
+        raise GateError(
+            f"wall clock {elapsed:.0f}s exceeds the {COST_CEILING_SECONDS}s recorded cost ceiling"
         )
     _ = request
     return 0
 
 
 def on_host(values: argparse.Namespace) -> int:
+    if not values.qualification_command:
+        raise GateError("the exact qualification command is required")
     scope_path = HOST_ROOT / values.scope
     policy = load(scope_path.parent / "generation-policy.json")
     control = load(HOST_ROOT / "eval/prompt/canonical-v1/evaluation-provider-control.json")
@@ -664,15 +678,30 @@ def on_host(values: argparse.Namespace) -> int:
         "-e", "PYTHONDONTWRITEBYTECODE=1",
         values.image, "sh", "-lc", forwarder + driver,
     ]
+    image_identity = run(["docker", "image", "inspect", values.image, "--format", "{{.Id}}"])
+    image_id = image_identity.stdout.decode("ascii", "strict").strip()
+    if image_identity.returncode != 0 or not image_id.startswith("sha256:"):
+        raise GateError("the evaluation image has no immutable local identity")
+
     started = time.monotonic()
     completed = subprocess.run(command, check=False)
     elapsed = time.monotonic() - started
     if completed.returncode != 0:
         raise GateError(f"the containerized gate run failed with status {completed.returncode}")
+    if elapsed > COST_CEILING_SECONDS:
+        raise GateError(
+            f"host wall clock {elapsed:.0f}s exceeds the {COST_CEILING_SECONDS}s recorded cost ceiling"
+        )
 
     run_directory = HOST_ROOT / run_relative
     result = load(run_directory / "result.json")
     evidence = load(run_directory / "evidence.json")
+    ran_attempts = ran_attempt_count(result)
+    if ran_attempts > PROVIDER_CALL_CEILING:
+        raise GateError(
+            f"the run made {ran_attempts} provider calls, exceeding the precommitted "
+            f"ceiling of {PROVIDER_CALL_CEILING}; evidence is not published"
+        )
     verdict, corpus = gate_verdict(result)
     record = {
         "schema_version": 1,
@@ -683,6 +712,7 @@ def on_host(values: argparse.Namespace) -> int:
         "align_llm_clean": git_clean(HOST_ROOT),
         "align_revision": (HOST_ROOT / ".align-revision").read_text().strip(),
         "image": values.image,
+        "image_id": image_id,
         "docker_version": run(["docker", "version", "--format", "{{.Server.Version}}"])
         .stdout.decode("ascii").strip(),
         "forwarder": (
@@ -694,14 +724,13 @@ def on_host(values: argparse.Namespace) -> int:
         "in_band_model_id": model,
         "wall_clock_seconds": round(elapsed, 3),
         "cost_ceiling_seconds": COST_CEILING_SECONDS,
+        "provider_call_ceiling": PROVIDER_CALL_CEILING,
+        "qualification_command": values.qualification_command,
         "evaluation_status": result["status"],
         "gate_eligible": result["gate_eligible"],
         "corpus_aggregate": corpus,
-        # Stated before the run and recorded with it (section 1.5). The statement reaches every
-        # ran attempt, so the arm is all 22; the mode it is built for is the ten refused attempts
-        # of section 1.2, across three live (task, variant) pairs.
-        "addressable_ran_attempts": 22,
-        "addressable_refused_attempts": 10,
+        "addressable_ran_attempts": ran_attempts,
+        "addressable_refused_attempts": corpus.get("edit_refusal_count"),
         "edit_refusal_count_baseline": 10,
         "edit_refusal_count_target": "edit_refusal_count < 10",
         "edit_refusal_breakdown": refusal_breakdown(result),
@@ -752,6 +781,7 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--out", required=True)
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument("--endpoint-host", default="host.docker.internal")
+    parser.add_argument("--qualification-command")
     parser.add_argument("--in-container", action="store_true")
     parser.add_argument("--run-relative", default="run/c4-template-gate")
     parser.add_argument(

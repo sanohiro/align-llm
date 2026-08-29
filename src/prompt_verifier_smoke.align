@@ -1799,7 +1799,7 @@ fn task_template_adapter_for(defect: i64) -> prompt_artifacts.PromptEvaluationTa
 // version-3 member. On a template-adapter corpus the version rule would reject it as well, and a
 // case with two possible causes proves neither.
 fn uses_template_adapter(defect: i64) -> bool {
-  return defect >= 31 && defect <= 40 && defect != 32
+  return defect >= 31 && defect <= 41 && defect != 32
 }
 
 // The declared edit policy is `Some` exactly for a template-adapter task and its bounds must equal
@@ -2237,8 +2237,10 @@ fn measurement_v3(
     } else {
       Some("NONE".clone())
     },
-    completion_bytes: Some(completion_byte_count()),
-    completion_sha256: Some(completion_digest_value()),
+    // Defect 41 drops both members after a response. Pairwise presence still agrees, but the
+    // generation-request identity proves a provider response was received.
+    completion_bytes: if defect == 41 { None } else { Some(completion_byte_count()) },
+    completion_sha256: if defect == 41 { None } else { Some(completion_digest_value()) },
     // Defect 36 persists the excerpt on a code whose edit set already carries the model's bodies.
     completion_text: if defect == 36 { Some(completion_text_value()) } else { None },
     content_sha256: if passing { digest_b() } else { digest_c() },
@@ -3259,6 +3261,12 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   v3_policy_absent := complete_result_v2(40)
   v3_policy_absent_evidence := evidence_v2(40)
   expect_invalid(v3_policy_absent, v3_policy_absent_evidence)?
+
+  // A non-sentinel provider request digest means the response was received, so both completion
+  // identity members may not disappear together.
+  v3_response_without_identity := complete_result_v2(41)
+  v3_response_without_identity_evidence := evidence_v2(41)
+  expect_invalid(v3_response_without_identity, v3_response_without_identity_evidence)?
 
   // A version-2 document may not be paired with version-1 evidence.
   version_split := complete_result_v2(0)

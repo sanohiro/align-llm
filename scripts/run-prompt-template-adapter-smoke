@@ -27,6 +27,8 @@ import difflib
 import hashlib
 import json
 import os
+import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -285,6 +287,27 @@ def hop_rows(template: ModuleType) -> ModuleType:
     path = template.repair_adapter_path()
     require(path == REPAIR_ADAPTER.resolve(), "the repair adapter path is not the corpus member")
 
+    original_repair_adapter = template.repair_adapter
+    fake = ModuleType("failing_repair_adapter")
+    fake_raw = b"verified repair bytes"
+    fake.BaseAdapterError = type("BaseAdapterError", (ValueError,), {})
+    fake.runtime_identity = lambda: "PYTHON:" + hashlib.sha256(fake_raw).hexdigest()
+
+    def fail_base_adapter():
+        raise fake.BaseAdapterError("the base adapter is unavailable")
+
+    fake.base_adapter = fail_base_adapter
+    template.repair_adapter = lambda: (fake, fake_raw)
+    try:
+        try:
+            template.loaded_modules()
+        except template.TemplateAdapterError as failure:
+            require("base adapter is unavailable" in str(failure), "base-adapter error was obscured")
+        else:
+            raise RuntimeError("a base-adapter load failure escaped the template error boundary")
+    finally:
+        template.repair_adapter = original_repair_adapter
+
     raw = template.verified_repair_adapter(path)
     require(
         hashlib.sha256(raw).hexdigest() == template.REPAIR_ADAPTER_SHA256,
@@ -400,6 +423,96 @@ def hop_rows(template: ModuleType) -> ModuleType:
         "the probe does not carry this adapter's own identity",
     )
     return frozen
+
+
+def freeze_check_row() -> None:
+    """`--check` detects drift in a disposable copy and leaves the drifted bytes untouched."""
+    with tempfile.TemporaryDirectory(prefix="prompt-template-freeze-") as scratch_name:
+        copied = Path(scratch_name) / "align-llm"
+        shutil.copytree(ROOT, copied, ignore=shutil.ignore_patterns(".git", "run", "build"))
+        target = copied / "eval/prompt/canonical-v1t/repair-template.json"
+        drifted = target.read_bytes() + b"\n"
+        target.write_bytes(drifted)
+        policy = json.loads(
+            (copied / "eval/prompt/canonical-v1t/generation-policy.json").read_text("utf-8")
+        )
+        completed = subprocess.run(
+            [
+                sys.executable, str(copied / "scripts/freeze-canonical-v1t"),
+                "--provider-service-revision", policy["provider_service_revision"], "--check",
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, cwd=copied,
+        )
+        require(completed.returncode == 1, "freeze --check silently accepted generated-file drift")
+        require(target.read_bytes() == drifted, "freeze --check repaired drift instead of observing it")
+
+
+def gate_derivation_rows() -> None:
+    gate = runpy.run_path(str(ROOT / "scripts/run-c4-template-gate"), run_name="c4_template_gate_test")
+    result = {
+        "rows": [
+            {
+                "task_id": "task", "variant": "PARENT", "sample_index": sample,
+                "attempts": [
+                    {"status": "FAIL", "measurement": {"completion_sha256": None}},
+                    {"status": "SKIPPED", "measurement": None},
+                ],
+            }
+            for sample in (1, 2)
+        ]
+    }
+    require(gate["ran_attempt_count"](result) == 2, "ran attempt count was not derived from rows")
+    report = gate["paired_completion_agreement"](result)
+    require(not report[0]["samples_agree"], "two missing completion identities were called agreement")
+
+
+def cleanup_precedence_row(template: ModuleType, frozen: ModuleType) -> None:
+    request = {"paired_seed": 100, "environment_policy_sha256": "3" * 64}
+    rendered = {"content_sha256": "4" * 64, "text": "prompt"}
+    policy = {"content_sha256": "5" * 64, "max_tokens": 1, "temperature_micros": 0}
+    control = {"content_sha256": "6" * 64, "provider_kind": "LOCAL_OPENAI", "model": "model"}
+    response = {
+        "provider_kind": "LOCAL_OPENAI", "provider_model": "model",
+        "provider_request_sha256": "7" * 64, "seed_result": "APPLIED", "applied_seed": 100,
+    }
+    generation, attestation = frozen.provider_identities(request, rendered, policy, control, response)
+    result = template.assemble(
+        frozen, "PYTHON:" + "8" * 64, request, rendered, "PATCH", False, True,
+        b"", b"", 0, None, generation, attestation,
+        "the response reproduced the pinned files unchanged", None, [], 0, None,
+        "UNCHANGED_FILES", b"completion",
+    )
+    require(result["failure_kind"] == "CLEANUP", "cleanup did not retain terminal precedence")
+    require(result["edit_refusal"] == "NONE", "cleanup retained a contradictory patch refusal")
+
+
+def result_limit_row(template: ModuleType, frozen: ModuleType) -> None:
+    """A completion excerpt that alone tips the encoded result over its limit is dropped whole."""
+    request = {"paired_seed": 100, "environment_policy_sha256": "3" * 64}
+    rendered = {"content_sha256": "4" * 64, "text": "prompt"}
+    policy = {"content_sha256": "5" * 64, "max_tokens": 1, "temperature_micros": 0}
+    control = {"content_sha256": "6" * 64, "provider_kind": "LOCAL_OPENAI", "model": "model"}
+    response = {
+        "provider_kind": "LOCAL_OPENAI", "provider_model": "model",
+        "provider_request_sha256": "7" * 64, "seed_result": "APPLIED", "applied_seed": 100,
+    }
+    generation, attestation = frozen.provider_identities(request, rendered, policy, control, response)
+    dense = b"\x01" * template.COMPLETION_LIMIT
+    result = template.assemble(
+        frozen, "PYTHON:" + "8" * 64, request, rendered, "PATCH", True, True,
+        b"\x01" * 12_000, b"", 0, None, generation, attestation,
+        "the response declares no file block", None, None, None, None,
+        "NO_FILE_BLOCK", dense,
+    )
+    require(result["completion_text"] is None, "result-limit: completion was not dropped whole")
+    require(
+        result["completion_bytes"] == len(dense) and result["completion_sha256"] is not None,
+        "result-limit: completion identity did not survive the drop",
+    )
+    require(
+        len(frozen.canonical_bytes(result)) <= frozen.RESULT_LIMIT,
+        "result-limit: dropping the completion did not restore the result bound",
+    )
 
 
 # --- The launch fixture ---------------------------------------------------------------------------
@@ -713,30 +826,6 @@ def launch_rows(template: ModuleType) -> None:
                 f"{code}: completion_sha256 does not digest the completion",
             )
 
-        # Malformed input: a completion whose encoded result would exceed `RESULT_LIMIT`. The text
-        # is dropped whole and the identity members survive, so the measurement is never `ERROR`.
-        dense = "\x01" * (template.COMPLETION_LIMIT - 1) + "\n"
-        heavy = Fixture(scratch, "result-limit")
-        heavy.write_child(content=dense)
-        heavy.request(generation_child_sha256=raw_digest(heavy.child_path))
-        completed, result = heavy.invoke()
-        require(completed.returncode == 0, f"result-limit: adapter exited {completed.returncode}")
-        assert_version_three_shape("result-limit", result, template)
-        require(
-            result["edit_refusal"] == "NO_FILE_BLOCK",
-            f"result-limit: got {result['edit_refusal']!r}",
-        )
-        require(
-            result["completion_text"] is None,
-            "result-limit: an over-large completion was not dropped whole",
-        )
-        require(
-            result["completion_bytes"] == len(dense.encode("utf-8"))
-            and result["completion_sha256"] is not None,
-            "result-limit: the identity members did not survive the drop",
-        )
-        require(result["status"] == "FAIL", "result-limit: the capture turned a measurement into an error")
-
         # Failure: `ERROR` before the parse. No response exists, so no completion identity does.
         broken = Fixture(scratch, "generation-error")
         broken.write_child(exit_code=3)
@@ -747,6 +836,22 @@ def launch_rows(template: ModuleType) -> None:
         require(result["status"] == "ERROR", f"generation-error: got {result['status']}")
         require(result["edit_refusal"] == "NONE", "generation-error: a refusal was recorded")
         require(result["completion_bytes"] is None, "generation-error: a completion was persisted")
+
+        # The provider response exists before task parsing. A later adapter error must not erase its
+        # identity merely because the terminal status is `ERROR`.
+        post_response = Fixture(scratch, "post-response-error")
+        broken_task = task_definition("task")
+        broken_task["source_dir"] = "missing/source"
+        post_response.task_path.write_bytes(canonical(broken_task))
+        post_response.request(task_definition_sha256=raw_digest(post_response.task_path))
+        completed, result = post_response.invoke()
+        require(completed.returncode == 0, f"post-response-error: adapter exited {completed.returncode}")
+        assert_version_three_shape("post-response-error", result, template)
+        require(result["status"] == "ERROR", "post-response-error: failure did not survive")
+        require(
+            result["completion_sha256"] is not None,
+            "post-response-error: a received response lost its completion identity",
+        )
 
         # Early exit: the declared-patch path parses no response, so `edit_refusal` is `NONE` and
         # `edit_set` is `None`, but a response *was* received and its identity is recorded.
@@ -801,6 +906,29 @@ def launch_rows(template: ModuleType) -> None:
             "redaction: completion_sha256 digests the unredacted bytes and is a credential oracle",
         )
 
+        overlap = Fixture(scratch, "redaction-overlap")
+        overlap.write_child(content="token REDACTED\n")
+        overlap.control = store(overlap.control_path, {
+            **{key: value for key, value in overlap.control.items() if key != "content_sha256"},
+            "api_key_env": "C4_TEMPLATE_SMOKE_TOKEN", "content_sha256": "",
+        })
+        overlap.policy = store(overlap.policy_path, {
+            **{key: value for key, value in overlap.policy.items() if key != "content_sha256"},
+            "provider_control_sha256": overlap.control["content_sha256"], "content_sha256": "",
+        })
+        overlap.request(
+            credential_env_name="C4_TEMPLATE_SMOKE_TOKEN",
+            provider_control_sha256=overlap.control["content_sha256"],
+            generation_policy_sha256=overlap.policy["content_sha256"],
+            generation_child_sha256=raw_digest(overlap.child_path),
+        )
+        completed, result = overlap.invoke({"C4_TEMPLATE_SMOKE_TOKEN": "REDACTED"})
+        require(completed.returncode == 0, f"redaction-overlap: adapter exited {completed.returncode}")
+        require(
+            result["completion_text"] == "token [REDACTED]\n",
+            f"redaction-overlap: completion was redacted more than once: {result['completion_text']!r}",
+        )
+
 
 def main(arguments: list[str] | None = None) -> int:
     values = sys.argv[1:] if arguments is None else list(arguments)
@@ -810,6 +938,10 @@ def main(arguments: list[str] | None = None) -> int:
         return 0
     template = load_template_adapter()
     frozen = hop_rows(template)
+    freeze_check_row()
+    gate_derivation_rows()
+    cleanup_precedence_row(template, frozen)
+    result_limit_row(template, frozen)
     with tempfile.TemporaryDirectory(prefix="prompt-template-refusal-") as scratch_name:
         refusal_rows(template, frozen, Path(scratch_name))
     if LINUX:

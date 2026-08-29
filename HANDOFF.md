@@ -3,69 +3,53 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: C4-REPAIR-TEMPLATE (2026-08-30)
+## Active: C4-REPAIR-TEMPLATE review repair (2026-08-30)
 
 Branch `agent/c4-repair-template`, merged with `agent/c4-repair-editset` (`6ccbb88`) and
-`origin/main` (`451aa66`, through PR #155), always by merge and never rebase. The latest merge's
-only conflict was this active block; it keeps the capability state here and the newly merged R6
-checkpoint below. Implemented, owner-verified, **gate run complete**. Not reviewed, not pushed for
-merge.
+`origin/main` (`451aa66`, PR #155) by merge, never rebase. Stable reviewed head was `6b73560`, with
+base tip and merge base both `451aa66`. The consolidated review repair is owner-verified and awaits
+its source commit, baseline chain, final review, and publication.
 
-**Capability.** The prompt template and the declared edit policy — the successor
-`c4-repair-editset.md` section 6.4 named. `docs/specs/c4-repair-template.md` is the authoritative
-ledger; section 11 is the implementation record and section 11.4 now carries the gate analysis.
+**Qualification correction.** The immutable evaluation has 12 initial plus 12 repair attempts:
+**24 provider calls**, not the pre-committed maximum of 22. The wall time was 700.452 s inside the
+separate 3,600 s ceiling, and the persisted arithmetic is `repair_recovery_paired_count: 1`, but the
+named qualification failed its call-cost contract and has no `MET` verdict. The gate record's
+`addressable_ran_attempts: 22` is a hard-coded producer error. The three JSON artifacts remain
+unchanged; `docs/specs/c4-repair-template.md` section 11.4 and the evidence README own the
+correction. Independently, the only observed recovery repairs an attempt-1 regression introduced by
+version 3, candidate pass/gain counts do not improve, and C4 remains open. The secondary remains 10
+against `< 10`; `PATH_NOT_EDITABLE` moves 2 -> 0 but becomes `UNCHANGED_FILES`.
 
-**GATE: `MET` by the predicate, and that is NOT a C4 gate closure.** From clean committed head
-`7ba2027`, `align_llm_clean: true`, 24 provider calls, 700.452 s against a 60-minute ceiling.
-`repair_recovery_paired_count: 1`. Evidence in `eval/prompt/c4-template-gate/`.
+**Comprehensive reviews.** Two explicitly disjoint independent adversarial reviews covered head
+`6b73560`: (A) adapter/import-chain/version-3 producer found five issues; (B)
+evaluator/scorer/validator, Align verifier, freeze, gate evidence, documentation, Makefile, and
+baseline topology found six. Both verdicts were changes requested. All eleven were accepted and
+repaired as root-cause classes: response identity survives post-generation errors and is tied to the
+existing nonzero provider-request digest in all three validators; cleanup clears lower-priority
+refusal classification; completion redaction is single-pass; base-adapter errors normalize; task
+definition edit/source limits are preflighted; freeze `--check` is read-only; call and wall ceilings
+fail publication closed; ran counts and agreement derive from rows; future records include image ID
+and exact command; the immutable historical breach is corrected in prose; and the authoritative
+ledger's member/declared-patch cells are synchronized.
 
-**Why the verdict must not be read as success.** The pair that satisfies the predicate,
-`duration-half-away-from-zero` CANDIDATE, **passed at attempt 1 in both prior runs** at 758 B.
-Under version 3 it fails attempt 1 at 724 B and recovers to the same 758-byte patch at attempt 2.
-`candidate_pass_count` is 2 here and was 2 at C4E; `completion_gain_count` is 2 in both. **No task
-passes here that did not pass before.** The counted recovery is recovery from a regression this
-capability's own attempt-1 change introduced — section 4.3 item 4 recorded that confound before the
-run. Section 11.4 now says this plainly; a bare `MET` would misreport
-the result.
+**Repair verification.** All 13 macOS owners pass together: `gmake build check format-check
+gate-topology-check prompt-verifier-smoke prompt-score-smoke prompt-gate-validator-smoke
+prompt-render-parity-smoke prompt-template-adapter-smoke prompt-repair-adapter-smoke
+prompt-measurement-adapter-smoke prompt-model-smoke prompt-state-smoke`. Linux/aarch64
+`run-prompt-evaluate-smoke` and the full `run-prompt-template-adapter-smoke` pass in
+`c4-repair-measure:latest`. `freeze-canonical-v1t --check` and `git diff --check` pass. Evaluator is
+252,862 B, leaving 9,282 B in the four-chunk launch window; its Align source pin is `dc1c7eec…`.
 
-**The pre-committed secondary was not met.** `edit_refusal_count: 10` against a target of `< 10`
-and a C4E baseline of 10. Breakdown `{"UNCHANGED_FILES": 10}`. **Section 1.6 reading (b) applies:**
-eight of the ten are `layer-precedence-frozen-module`, where the model reproduces the pinned file on
-all four rows and both attempts after being told three times in one prompt not to, and
-`completion_sha256` shows all four re-sent a byte-identical answer. Neither the adapter (C4E) nor
-the prompt (C4T) is the binding constraint there; the remaining axes are the model and the decoding
-strategy, and both break greedy paired determinism.
+**Next actions.** (1) Commit this stable source checkpoint. (2) Re-record the three-commit coding
+baseline chain on Linux because `Makefile` changed. (3) Run one final comprehensive review of the
+material repair delta. (4) Run exact-head fresh-image preflight with
+`prompt-template-adapter-smoke` as owner. (5) Publish an English PR with both review envelopes,
+finding dispositions, correction, and exact verification; merge with `--merge`. (6) Refresh `main`
+and begin roadmap item 38, R6-PREFIX-TTFT.
 
-**What did change.** `PATH_NOT_EDITABLE` **2 -> 0**: the `POLICY` section's per-task allowlist
-removed the out-of-allowlist mode, and those rows now fail as `UNCHANGED_FILES`, which is why the
-total is unchanged. `POLICY` was carried on all 12 repair attempts and the drop ladder never fired.
-The refusal is now a named, counted, diagnosable outcome. No speed claim; attempt 1 changed, so its
-clocks are not comparable to C4 or C4E.
-
-**Four defects found during implementation, all in section 11.3 (deviations 10, 11, 15, 16).** Three
-were invisible to owner tests that restated a rule instead of driving the artifact through the
-consumer that enforces it. The worst, deviation 16, cost a whole gate run: `PROMPT_EVALUATION_TASK`
-gains an optional `edit_policy` member, the producer emitted it, and
-`src/prompt_artifacts.align`'s record never declared it — so the document failed to **decode**, the
-run ended `EVALUATION_FAILED` after all 22 provider calls had succeeded, and no owner test caught it
-because the gate fixture never attached the record.
-
-**Verification.** 13/13 macOS owner targets PASS on the merged tree, `git diff --check` clean,
-`freeze canonical-v1t --check` PASS, Linux `prompt-evaluate-smoke` PASS. Evaluator 252,067 B,
-**10,077 B** of four-chunk launch-window headroom. Adapter pin `fa73f9dc…` unmoved.
-
-**Next actions, in order.**
-1. Rerun the owner set on the merged candidate.
-2. **Two disjoint comprehensive reviews** (the diff is large and spans three surfaces): one for the
-   adapter/import-chain/version-3 producer, one for the evaluator, Align verifier, corpus freeze,
-   and gate evidence. Explicitly disjoint risks, per `CLAUDE.md`'s very-large-change allowance.
-3. **Repair pass** over accepted findings, auditing each root-cause class across the whole diff.
-4. **Baseline re-record and the fresh-image preflight** — `Makefile` changed (new
-   `c4-template-gate` and `prompt-template-adapter-smoke` targets), so the installed profile and
-   `make gate-topology-check`'s byte-literal `EXPECTED` are in scope.
-5. **Publish the pull request** with the review envelope, exact commands, and the honest verdict.
-
-**Blockers.** None technical. The `llama-server` this branch reused was stopped after the gate run.
+**Blockers.** None technical. Do not rerun the provider qualification: its structurally possible 24
+calls exceed the fixed 22-call contract, and section 11.4 records the required boundary
+reconsideration.
 
 ## Merged checkpoint: R6-MOE-RESIDENT-DENSE (PR #155, `main` `451aa66`, 2026-08-30)
 

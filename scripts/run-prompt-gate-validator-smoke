@@ -1748,6 +1748,18 @@ def version_three_rows(root: Path) -> None:
         contains="completion identity members disagree on presence",
     )
 
+    def response_without_identity(evaluation, evidence) -> None:
+        attempt = passing_attempt(evaluation)
+        attempt["measurement"]["completion_bytes"] = None
+        attempt["measurement"]["completion_sha256"] = None
+        rebound_measurement(attempt)
+
+    rejected(
+        v2_evaluation_case(root, "v3-response-without-identity", response_without_identity),
+        "a received provider response carrying no completion identity",
+        contains="completion identity disagrees with provider response presence",
+    )
+
     # Absence below version 3 is required, never defaulted, and the cheapest place to prove it is
     # against the **real** frozen version-2 chain rather than a rebuilt approximation: that is the
     # document a version-3-shaped decoder would delete. Driven in process, because the mutation is

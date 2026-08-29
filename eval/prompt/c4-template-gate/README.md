@@ -5,18 +5,26 @@ authoritative plan; section 11.4 carries the analysis.
 
 ## Verdict
 
-**`MET`.** `repair_recovery_paired_count: 1` against the predicate
+**Qualification failed: the provider-call ceiling was breached.** The rows contain
+`repair_recovery_paired_count: 1` against the predicate
 `repair_recovery_paired_count >= 1`, which `c4-repair-measured.md` section 1.4 fixed and
 `c4-repair-editset.md` section 1.5 restated unchanged, so all three runs compare directly.
 12 rows, 24 provider calls (12 initial + 12 repair), 700.452 s against a recorded 60-minute
-ceiling, from the clean committed head `7ba2027` with `align_llm_clean: true`.
+ceiling, from the clean committed head `7ba2027` with `align_llm_clean: true`. Section 6.2 also
+pre-committed a maximum of 22 provider calls. The run exceeded that independent ceiling, so its
+formal predicate value is observational evidence and **not a `MET` qualification verdict**.
+
+The immutable gate record incorrectly says `addressable_ran_attempts: 22`; the driver wrote a
+literal rather than deriving the 24 ran attempts. It also records a mutable image tag without the
+required immutable image ID or exact make command. The JSON artifacts are preserved as produced;
+the authoritative correction is this README and `docs/specs/c4-repair-template.md` section 11.4.
 
 **The pre-committed secondary was not met.** `edit_refusal_count: 10` against a target of `< 10`
 and a C4E baseline of 10 of 22. The count did not move.
 
 ## Read the two numbers together, because they disagree
 
-The gate is met by one (task, variant) pair: `duration-half-away-from-zero` CANDIDATE recovers in
+The predicate is satisfied by one (task, variant) pair: `duration-half-away-from-zero` CANDIDATE recovers in
 both paired samples, attempt 1 `FAIL` at 724 B and attempt 2 `PASS` at 758 B.
 
 **That pair passed at attempt 1 in both prior runs**, first-shot, at 758 B. Under version 3 it

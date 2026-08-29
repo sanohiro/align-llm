@@ -1208,6 +1208,14 @@ def verify_editset_attempt_boundary() -> None:
     allowed = frozenset({EDITSET_PATH, "tests/test_duration.py"})
     blocks = [editset_block(module, EDITSET_PATH, EDITSET_BODY)]
 
+    missing_identity = template_measurement(module, blocks)
+    missing_identity["completion_bytes"] = None
+    missing_identity["completion_sha256"] = None
+    require(
+        not module.valid_measurement_version_three(missing_identity),
+        "template-measurement: a provider response with no completion identity was admitted",
+    )
+
     # Ladder row 8: the corpus's adapter selects the kind set its template must declare, exactly.
     require(
         module.valid_repair_template(template, module.expected_template_kinds(EDITSET_TASK)),
@@ -1570,6 +1578,44 @@ def verify_constant_parity_boundary() -> None:
         and frozen["refuse_unchanged_files"] is True,
         f"constant-parity: the frozen prompt-v1t edit policy disagrees: {frozen!r}",
     )
+
+
+def verify_task_definition_preflight() -> None:
+    """The evaluator mirrors the adapter's editable-set/source contract before generation."""
+    module = repair_evaluator_module("prompt_evaluate_task_definition")
+    with tempfile.TemporaryDirectory(prefix="prompt-task-definition-") as scratch_name:
+        project = Path(scratch_name)
+        source = project / "fixture/repository"
+        source.mkdir(parents=True)
+        definition_path = project / "task.json"
+
+        def rejected(label: str, definition: dict, repo_path: str = "fixture/repository") -> None:
+            raw = canonical(definition)
+            definition_path.write_bytes(raw)
+            task = {
+                "task_definition_path": "task.json",
+                "task_definition_sha256": hashlib.sha256(raw).hexdigest(),
+                "repo_path": repo_path,
+            }
+            try:
+                module.task_editable_paths(task, project)
+            except module.EvaluationError:
+                return
+            raise RuntimeError(f"task-definition-{label}: invalid input reached generation")
+
+        rejected(
+            "too-many-edits",
+            {"source_dir": "fixture/repository", "allowed_edits": [f"src/{i}.py" for i in range(33)]},
+        )
+        rejected(
+            "source-mismatch",
+            {"source_dir": "fixture/repository", "allowed_edits": ["src/file.py"]},
+            repo_path="another/repository",
+        )
+        rejected(
+            "source-escape",
+            {"source_dir": "../outside", "allowed_edits": ["src/file.py"]},
+        )
 
 
 def verify_template_attempt_boundary() -> None:
@@ -2686,6 +2732,7 @@ def main() -> int:
     verify_repair_attempt_boundary()
     verify_editset_attempt_boundary()
     verify_constant_parity_boundary()
+    verify_task_definition_preflight()
     verify_template_attempt_boundary()
     verify_provider_probe_boundary()
     with tempfile.TemporaryDirectory(prefix="prompt-evaluate-") as directory:
@@ -2957,7 +3004,8 @@ def main() -> int:
                 and not evidence_path.exists()
                 and not source_child_marker.exists()
                 and not any(os.scandir(workspace)),
-                f"source declaration {name} crossed the child boundary: {result_value!r}",
+                f"source declaration {name} crossed the child boundary: result={result_value!r}, "
+                f"exit={completed.returncode}, stderr={completed.stderr.decode('utf-8', 'replace')[-4096:]!r}",
             )
             invalid_result_path.unlink()
 

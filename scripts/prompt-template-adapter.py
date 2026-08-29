@@ -265,7 +265,13 @@ def loaded_modules() -> tuple[ModuleType, ModuleType, str, str]:
     """
     repair, repair_raw = repair_adapter()
     repair_identity = repair_runtime_identity(repair_raw, repair)
-    frozen, frozen_raw = repair.base_adapter()
+    try:
+        frozen, frozen_raw = repair.base_adapter()
+    except repair.BaseAdapterError as failure:
+        # `loaded_modules()` runs before `main()` has the imported classes needed by its normal
+        # guard. Translate the first hop's public failure into this adapter's own load error so the
+        # module guard returns the stable invalid-input status instead of leaking a traceback.
+        raise TemplateAdapterError(str(failure)) from None
     base_identity = "PYTHON:" + hashlib.sha256(frozen_raw).hexdigest()
     if base_identity != frozen.runtime_identity():
         raise TemplateAdapterError("the base adapter changed between its two identity derivations")
@@ -517,7 +523,10 @@ def measurement(
         summary = str(failure)
         stderr = frozen.bounded_diagnostic(str(failure), credential_value)
     except (frozen.AdapterError, OSError, TypeError, ValueError, KeyError) as failure:
-        outcome, response, generation_ns = "ERROR", None, None
+        # The failure may be after `run_generation_child()` returned (task parsing, edit synthesis,
+        # or descriptor construction). Keep that response: completion identity is a fact about the
+        # paid provider call, independent of the later adapter outcome.
+        outcome, generation_ns = "ERROR", None
         edit_set, edit_set_total_bytes, patch_sha256 = None, None, None
         summary = str(failure)
         stderr = frozen.bounded_diagnostic(str(failure), credential_value)
@@ -565,6 +574,11 @@ def assemble(
     edit_refusal: str,
     completion: bytes | None,
 ) -> dict[str, Any]:
+    # Cleanup and containment outrank the parser outcome below. A lower-priority refusal code would
+    # classify the terminal measurement as PATCH/POLICY while the record correctly classifies it as
+    # CLEANUP/CONTAINMENT, producing a document every consumer must reject.
+    if not cleanup_passed or not containment_passed:
+        edit_refusal = "NONE"
     passed = outcome == "PASS"
     expected_failure = outcome == "TEST_FAIL"
     policy_violation = outcome == "POLICY"
@@ -637,7 +651,9 @@ def assemble(
     # the mode explicable.
     carried = (
         None if completion is None or edit_refusal in ("NONE", "UNCHANGED_FILES")
-        else frozen.bounded_text(completion, COMPLETION_LIMIT, credential_value)
+        # `completion` is already the full redacted byte sequence. Redacting it again is not
+        # idempotent when the credential overlaps the replacement token (for example `REDACTED`).
+        else frozen.bounded_text(completion, COMPLETION_LIMIT, None)
     )
     if carried is not None:
         # Encode-then-check, whole-field. A control-character-dense completion can expand under JSON

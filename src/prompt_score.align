@@ -3086,11 +3086,13 @@ fn verifier_measurement_version_three_shape(
   }
   // The completion's identity is present exactly when a provider response was received, and the
   // digest is over the full redacted bytes rather than any excerpt.
+  response_received := measurement.generation_request.provider_request_sha256 !=
+  "0000000000000000000000000000000000000000000000000000000000000000"
   identity_valid := match measurement.completion_bytes {
     None => verifier_optional_digest_absent(measurement.completion_sha256),
     Some(count) => count >= 0 && count <= 2_097_152 &&
     verifier_valid_optional_digest_present(measurement.completion_sha256),
-  }
+  } && response_received == match measurement.completion_bytes { None => false, Some(_) => true }
   // The excerpt is persisted only where nothing else can explain the failure: the eight refusal
   // codes for which `validated_edit_set` never returned.
   text_valid := match measurement.completion_text {

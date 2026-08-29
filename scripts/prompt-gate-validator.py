@@ -1772,6 +1772,9 @@ def validate_measurement_version_three(measurement: Mapping[str, Any], label: st
     digest_value = measurement.get("completion_sha256")
     if (count is None) != (digest_value is None):
         raise GateError(f"{label} completion identity members disagree on presence")
+    response_received = measurement["generation_request"]["provider_request_sha256"] != "0" * 64
+    if (count is not None) != response_received:
+        raise GateError(f"{label} completion identity disagrees with provider response presence")
     if count is not None:
         require_integer(count, f"{label} completion bytes", minimum=0, maximum=2_097_152)
         require_digest(digest_value, f"{label} completion digest")

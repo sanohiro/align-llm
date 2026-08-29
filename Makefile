@@ -679,7 +679,8 @@ c4-template-gate:
 	python3 ./scripts/run-c4-template-gate \
 	  --scope "$(C4_TEMPLATE_SCOPE)" \
 	  --provider-probe "$(C4_TEMPLATE_PROVIDER_PROBE)" \
-	  --out "$(C4_TEMPLATE_OUT)"
+	  --out "$(C4_TEMPLATE_OUT)" \
+	  --qualification-command "$(MAKE) c4-template-gate C4_TEMPLATE_SCOPE=$(C4_TEMPLATE_SCOPE) C4_TEMPLATE_PROVIDER_PROBE=$(C4_TEMPLATE_PROVIDER_PROBE) C4_TEMPLATE_OUT=$(C4_TEMPLATE_OUT)"
 
 ci:
 	@exit 1

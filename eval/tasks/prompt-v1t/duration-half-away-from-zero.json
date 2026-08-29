@@ -16,7 +16,7 @@
     "/usr/bin/python3",
     "scripts/prompt-snapshot-helper.py"
   ],
-  "measurement_adapter_runtime": "PYTHON:03379e260e5472146a8bab1ec0487f5fa3137bf6ec5c883dbbf2c8d1984add4c",
+  "measurement_adapter_runtime": "PYTHON:d1d16bef7a02d2dba7d772ca269b9a6a748d1b9fc14a92d5f3a64b731447ed6a",
   "snapshot_helper_runtime": "PYTHON:9621307752feed0e18ec185f7c860412365299b1b7a034db118b95ec7b449aa6",
   "cwd": ".",
   "timeout_ns": 30000000000,
@@ -80,7 +80,7 @@
     {
       "path": "scripts/prompt-template-adapter.py",
       "kind": "FILE",
-      "expected_sha256": "40e648b1d7bb965cbc5c4bb7bdfb7bf8f54fac895831ef8c8df6d7d71f8c23f4"
+      "expected_sha256": "ffbe46575973bf49bb7ad2e7cf5312dec9aeee325f6f60d02fd9cf125dc1a661"
     },
     {
       "path": "eval/prompt/canonical-v1t/repair-template.json",
@@ -110,5 +110,5 @@
     "refuse_unchanged_files": true,
     "content_sha256": "08a3114d0faadb811273a4aedae01ae4d983c69e302b11fdfd6b9be271452236"
   },
-  "content_sha256": "6ac2bb23f2680a73a462c6b09667a74e80320832cf60b4cc9f05178daf2d3554"
+  "content_sha256": "15cce4b839de0517691ca16d41285f4c7b7ab0becfff86c522d52325c7aab39a"
 }

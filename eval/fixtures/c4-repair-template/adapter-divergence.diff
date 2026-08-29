@@ -65,6 +65,15 @@
      except frozen.GenerationFailure as failure:
          outcome, response, generation_ns = "ERROR", None, None
          edit_set, edit_set_total_bytes, patch_sha256 = None, None, None
+@@ -111,7 +123,7 @@
+         summary = str(failure)
+         stderr = frozen.bounded_diagnostic(str(failure), credential_value)
+     except (frozen.AdapterError, OSError, TypeError, ValueError, KeyError) as failure:
+-        outcome, response, generation_ns = "ERROR", None, None
++        outcome, generation_ns = "ERROR", None
+         edit_set, edit_set_total_bytes, patch_sha256 = None, None, None
+         summary = str(failure)
+         stderr = frozen.bounded_diagnostic(str(failure), credential_value)
 @@ -121,9 +133,12 @@
                  item.close()
              except OSError:
@@ -82,16 +91,19 @@
 
 --- scripts/prompt-repair-adapter.py:assemble
 +++ scripts/prompt-template-adapter.py:assemble
-@@ -17,6 +17,8 @@
+@@ -17,7 +17,11 @@
      edit_set: Sequence[Mapping[str, Any]] | None,
      edit_set_total_bytes: int | None,
      patch_sha256: str | None,
 +    edit_refusal: str,
 +    completion: bytes | None,
  ) -> dict[str, Any]:
++    if not cleanup_passed or not containment_passed:
++        edit_refusal = "NONE"
      passed = outcome == "PASS"
      expected_failure = outcome == "TEST_FAIL"
-@@ -69,7 +71,22 @@
+     policy_violation = outcome == "POLICY"
+@@ -69,7 +73,22 @@
          "edit_set_total_bytes": edit_set_total_bytes,
          "patch_sha256": patch_sha256,
          "base_adapter_runtime_identity": base_identity,
@@ -105,7 +117,7 @@
      }
 +    carried = (
 +        None if completion is None or edit_refusal in ("NONE", "UNCHANGED_FILES")
-+        else frozen.bounded_text(completion, COMPLETION_LIMIT, credential_value)
++        else frozen.bounded_text(completion, COMPLETION_LIMIT, None)
 +    )
 +    if carried is not None:
 +        value["completion_text"] = carried

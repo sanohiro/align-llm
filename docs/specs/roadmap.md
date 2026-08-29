@@ -1059,8 +1059,12 @@ The current forward delivery order is:
     Named focused qualification `make c4-template-gate`; it joins no aggregate, and neither does
     `make prompt-template-adapter-smoke`.
 
-    **The predicate is `MET`, and the capability is unchanged; this does not close C4.** The clean
-    committed-head run made 24 calls in 700.452 s. `repair_recovery_paired_count` is 1, but its only
+    **The named qualification failed its call ceiling; the observed predicate value is 1 and the
+    capability is unchanged.** The clean committed-head run made 24 calls in 700.452 s, exceeding
+    the pre-committed maximum of 22 calls even though it stayed inside the separate 60-minute wall
+    ceiling. Its immutable gate record incorrectly hard-codes `addressable_ran_attempts: 22`; the
+    correction is recorded in the owning spec and evidence README. `repair_recovery_paired_count`
+    is 1, but its only
     pair is `duration-half-away-from-zero` CANDIDATE: a pair that passed first-shot at 758 bytes in
     both prior runs now fails attempt 1 at 724 bytes and recovers to the same 758-byte patch at
     attempt 2. Version 3 introduced the failure it then repaired. `candidate_pass_count` stays 2,
