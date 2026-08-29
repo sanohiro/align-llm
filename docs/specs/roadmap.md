@@ -751,7 +751,20 @@ The current forward delivery order is:
     process correction item 30 said it owed its successor — predicted 2.63 s, measured with the two
     legs **interleaved**, three repeats, **worst-of-N**, and a pre-committed `INDETERMINATE` rule for
     the case where this arm's 3.63 s baseline is noisier than the ceiling is wide.
-    MRD-RESULT-PLACEHOLDER
+    **What it measured.** The byte claim holds exactly and is host-independent: at all twelve
+    points — four prompts x `N` in {1, 4, 16} — `weights.step_dense_pack_bytes` is **0** in `dense`
+    mode against `253,078,656 x N` streamed, `weights.step_expert_pack_bytes` is `487,587,840 x N`
+    in **both** legs, `weights.resident_bytes` is **311,066,624** (equal to an independent walk of
+    the pack document's 147 dense member records), `weights.wrap_count` is **306 -> 1**, and
+    **oracle D is `MATCH` on all four prompts**. The elapsed leg is **`BELOW FLOOR`** and is recorded
+    as such: the session reproduced the streamed baseline at **6.74 s**, not the committed 3.63 s —
+    the reference host was under sustained multi-agent load — and the fixed task's worst-of-3 removes
+    1,519 ppm, with the median and best-of-3 readings at 125,150 and 123,796 ppm and the other three
+    prompts between 122,518 and 137,701 ppm. No reading clears the 150,000 ppm floor on that host
+    state, so **no elapsed claim is made**; per section 4.6 clause 12, stated in advance, clauses 1
+    to 11 carry the capability. `gmake moe-decode-step-qualification` itself refuses on this host at
+    its **instrument cross-check**, reproducing item 32's deviation 4 to the digit, which is item
+    32's condition and not this capability's.
     **There is no crossover:** unlike item 30, whose 4.68 GB fill loses at `N = 1`, this fill costs
     only the 57,943,296 B of embedding table the prefill did not already read, so `N = 1` and
     `N = 4` are small wins — below the floor, published as diagnostics, and not claimed. Peak

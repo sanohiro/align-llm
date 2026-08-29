@@ -5,21 +5,27 @@ file records durable project state.
 
 ## Active: R6-MOE-RESIDENT-DENSE (2026-08-29)
 
-Branch `agent/r6-moe-resident-dense`, stacked on `agent/r6-olmoe-decode` head `bf7c87d`, which is
-publishing as item 32. This branch takes `git merge origin/main` — **never a rebase** — when that
-lands, and re-checks the same four things: the roadmap item number (**35**; 31 is claimed by
-`agent/c4-repair-measured`, 32 by the parent branch, **33 is now taken on `main` by
-R6-PREFIX-SUFFIX-PREFILL, PR #149, `a9561a9`**, and 34 by `C4-REPAIR-EDITSET`), the
-`R6_MOE_DECODE_STEP` schema number (**2**), the next free Align request number (**53**; this
-capability takes none and adds clients to 33, 35, 36, 38, 47, 48, 49 and **51**, and records **50**
-as explicitly not a client), and which goldens regenerate
-(`scripts/moe-decode-step-golden.jsonl` only, 59 -> 69 rows).
+Branch `agent/r6-moe-resident-dense`, implemented on `agent/r6-olmoe-decode` head `bf7c87d` and then
+**merged** with `origin/main` `45ff38e` (R6-OLMOE-DECODE, PR #148, which itself carried
+R6-PREFIX-SUFFIX-PREFILL, PR #149) by `git merge` — **never a rebase**. One conflict, in
+`docs/align-requests.md`, where both sides appended after Request 49: resolved by keeping this
+capability's client paragraph **and** `main`'s next-free-number comment, with the comment extended
+to record that this capability proposes none either.
 
-**PR #149 touches `src/decode_step.align`, `src/model_forward.align`, and
-`scripts/decode-step-golden.jsonl`** — all three of which this capability promises are byte-unchanged
-*by its own diff*. The promise is about this branch's changes, not about the merged tree, and the
-merge is expected to move those three files from `main`'s side. Re-run
-`gmake layer-forward-smoke` after the merge; nothing in this capability reads them.
+The four things that merge re-checks all held:
+
+- **roadmap item 35.** `main` now carries 30, 32 and 33 (33 is R6-PREFIX-SUFFIX-PREFILL); 31 and 34
+  are claimed by `agent/c4-repair-measured` and `C4-REPAIR-EDITSET` and are not on `main` yet, so 35
+  is still this capability's and the item was inserted after 32 without conflict.
+- **`R6_MOE_DECODE_STEP` schema 2**, unchanged by the merge.
+- **next free Align request number 53.** `docs/align-requests.md` carries exactly 52 requests after
+  the merge; this capability takes none and adds clients to 33, 35, 36, 38, 47, 48, 49 and **51**,
+  and records **50** as explicitly not a client.
+- **which goldens regenerate:** `scripts/moe-decode-step-golden.jsonl` only, 59 -> 69 rows.
+  `scripts/decode-step-golden.jsonl` grew 116 -> 137 rows **from `main`'s side** — PR #149 owns that
+  — and this branch's own diff still does not touch it, `src/decode_step.align`, or
+  `src/model_forward.align`. `main` also moved `AGGREGATE_TIMEOUT` from 1,800 s to 3,600 s in the
+  `Makefile`; nothing in this capability reads it.
 
 **Capability.** The dense member set of a routed model held resident across an `N`-step decode loop,
 experts still streamed. CPU only, OLMoE-1B-7B-0125-Instruct Q4_K_M. Authoritative ledger
@@ -31,7 +37,31 @@ fire.
 **State.** Implemented and verified. Not committed at the time of writing; the tree is buildable and
 every hosted owner passes.
 
-MRD-HANDOFF-RESULT-PLACEHOLDER
+**Performance contract, committed with the design.** Owner `docs/specs/r6-resident-weights.md`
+section 3.4. Baseline 3.63 s (`timings.elapsed_ns`, prompt 1, `N = 16`, `KV_WIDTH` 256, reference
+host, item 32 section 12.3). Primary metric `weights.step_dense_pack_bytes`: 4,049,258,496 -> **0**.
+Cost ceiling **276,000 ppm**, floor **150,000 ppm** adopted unchanged, predicted 2.63 s, margin
+1.84x.
+
+**Measured (section 12.3).** The byte claim holds exactly at all twelve points and oracle D is
+`MATCH` on all four prompts; region 311,066,624 B reproduced independently from the pack document;
+`wrap_count` 306 -> 1. **The elapsed leg is `BELOW FLOOR` and no elapsed claim is made.** The session
+reproduced the streamed baseline at **6.74 s** rather than 3.63 s — the host was shared with three
+other agents throughout and never reached the 6 GB free the coordination rule asks for — and the
+fixed task removes 1,519 ppm at worst-of-3, 125,150 at the median, 123,796 at best-of-3, with the
+other three prompts between 122,518 and 137,701 ppm. `INDETERMINATE` does not apply: the streamed
+leg's own spread is 22,085 ppm, well inside the ceiling. **A re-run on a quiet reference host is the
+one thing that would settle clause 12**, and it is the only open item.
+
+**`gmake moe-decode-step-qualification` refuses on this host**, at its own instrument cross-check
+and before the arm runs, with the same two `result_output` sums `docs/specs/r6-olmoe-decode.md`
+deviation 4 records (-113284.835938 against -111030.03125). The R2C `llama-eval-callback` is a
+static `GGML_BLAS`/`GGML_ACCELERATE` build; the ggml the arm and `llama-debug` share is not; and the
+`llama-debug` built from the pinned source that item 32's qualification of record used is not on
+this host. **Section 15 of that document owns the fix and nothing here works around it** — no check
+was relaxed and no switch was added. The measurement was taken by a standalone driver running the
+**same** shipped invocations (section 12.3), which is sound because an instrument skew is identical
+on both sides of oracle D and cancels, and the primary metric reads neither instrument.
 
 **Blockers.** None. Nine Align gaps are met and all nine are already recorded (Requests 33, 35, 36,
 38, 47, 48, 49, 50, 51); none blocks. Request 49 gains a new *shape* of client, Request 51 gains its
@@ -43,9 +73,12 @@ not inflated.
 `residency.expert_bytes` unreachable and `RESIDENT=weights` is refused by name on this arm. No TTFT
 or throughput claim; the R6 gate stays unmet.
 
-**Next actions, in order.** (1) `git merge origin/main` when the OLMoE branch lands, re-checking the
-four things above; (2) `python3 scripts/pre-pr --owner-test layer-forward-smoke -- make
-layer-forward-smoke`; (3) publish, with the qualification's own output as the measurement evidence.
+**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test layer-forward-smoke -- make
+layer-forward-smoke`; (2) publish, with section 12.3 as the measurement evidence and its two
+caveats stated in the pull request rather than buried — the elapsed leg is `BELOW FLOOR` on a
+loaded host, and `gmake moe-decode-step-qualification` refuses at item 32's instrument skew;
+(3) re-run the measurement on a quiet reference host when one is available, which is the one thing
+that would settle acceptance clause 12.
 
 **Intentional uncommitted files.** None.
 
