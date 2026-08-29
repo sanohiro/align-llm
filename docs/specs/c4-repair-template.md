@@ -1,6 +1,7 @@
 # C4-REPAIR-TEMPLATE: the prompt template and the declared edit policy
 
-Status: **implemented, owner-verified, and measured; review and publication pending.** This document
+Status: **implemented, measured, review-repaired, and owner-verified; final review and publication
+pending.** This document
 is the authoritative plan and result record. The proportional
 design gate in `CLAUDE.md` triggered on an exchanged-format change (the repair-prompt content
 contract moves to **version 3**: a sixth section kind and a new sealed template), on a persisted-
@@ -1929,3 +1930,31 @@ At merged-tree head `0b44c85`, all 13 macOS owner targets pass: `gmake build`, `
 `git diff --check` passes, and `scripts/freeze-canonical-v1t --check` reproduces the frozen scope.
 The Linux recipe for `prompt-evaluate-smoke` also passes. The evaluator is 252,067 bytes, leaving
 10,077 bytes in the four-chunk launch window; the adapter pin remains `fa73f9dc…`.
+
+### 11.6 Review repair and canonical baseline
+
+Two explicitly disjoint comprehensive reviews read stable merged-tree head `6b73560`, against base
+tip and merge base `451aa66`. The adapter/import-chain/version-3-producer review found five issues;
+the evaluator/scorer/validator, Align verifier, freeze, gate-evidence, documentation, Makefile, and
+baseline-topology review found six. All eleven findings were accepted and repaired together in
+`a36b15bfce75eebf2b961906220dcfc7842ba7d6`; the durable finding classes and dispositions are in
+`HANDOFF.md`.
+
+At the repair source commit all thirteen macOS owner targets named in section 11.5 pass together.
+Linux/aarch64 `run-prompt-evaluate-smoke` and the full `run-prompt-template-adapter-smoke` pass;
+`freeze-canonical-v1t --check` and `git diff --check` pass. The repaired evaluator is 252,862 bytes,
+leaving 9,282 bytes in the four-chunk launch window, and its Align source pin is `dc1c7eec…`.
+
+Because the repair changes `Makefile`, the canonical coding baseline was measured again from that
+clean source and fixed as the required three-commit chain:
+
+```text
+SOURCE_COMMIT       a36b15bfce75eebf2b961906220dcfc7842ba7d6
+ORACLE_COMMIT       37c09a36b1c79781ec76caa51a2f54c011827f9d
+FINALIZATION_COMMIT c1a52b568902fcb246d39ccd96cb916ea04dcc79
+```
+
+Linux/aarch64 `gmake baseline-check` passes at the finalized head and ends `baseline chain: PASS`.
+The pending measurement was removed after finalization. These three commits must remain ancestors
+of the merge commit; this pull request therefore permits only a merge commit, never squash or
+rebase.

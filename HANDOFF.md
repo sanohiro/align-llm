@@ -7,8 +7,9 @@ file records durable project state.
 
 Branch `agent/c4-repair-template`, merged with `agent/c4-repair-editset` (`6ccbb88`) and
 `origin/main` (`451aa66`, PR #155) by merge, never rebase. Stable reviewed head was `6b73560`, with
-base tip and merge base both `451aa66`. The consolidated review repair is owner-verified and awaits
-its source commit, baseline chain, final review, and publication.
+base tip and merge base both `451aa66`. The consolidated review repair is committed as
+`a36b15bfce75eebf2b961906220dcfc7842ba7d6`, owner-verified, and awaits its final review and
+publication.
 
 **Qualification correction.** The immutable evaluation has 12 initial plus 12 repair attempts:
 **24 provider calls**, not the pre-committed maximum of 22. The wall time was 700.452 s inside the
@@ -40,12 +41,20 @@ prompt-measurement-adapter-smoke prompt-model-smoke prompt-state-smoke`. Linux/a
 `c4-repair-measure:latest`. `freeze-canonical-v1t --check` and `git diff --check` pass. Evaluator is
 252,862 B, leaving 9,282 B in the four-chunk launch window; its Align source pin is `dc1c7eec…`.
 
-**Next actions.** (1) Commit this stable source checkpoint. (2) Re-record the three-commit coding
-baseline chain on Linux because `Makefile` changed. (3) Run one final comprehensive review of the
-material repair delta. (4) Run exact-head fresh-image preflight with
-`prompt-template-adapter-smoke` as owner. (5) Publish an English PR with both review envelopes,
-finding dispositions, correction, and exact verification; merge with `--merge`. (6) Refresh `main`
-and begin roadmap item 38, R6-PREFIX-TTFT.
+**Coding-baseline chain, re-recorded.** `Makefile` is one of the canonical baseline's recorded
+inputs. The replacement chain is
+`a36b15bfce75eebf2b961906220dcfc7842ba7d6` ->
+`37c09a36b1c79781ec76caa51a2f54c011827f9d` ->
+`c1a52b568902fcb246d39ccd96cb916ea04dcc79` (clean source -> immutable oracle -> finalization),
+measured on Linux/aarch64 with the pinned managed compiler. Linux `gmake baseline-check` ends
+`baseline chain: PASS`. The first attempt mounted the Git common directory read-only and failed
+only when the isolation smoke tried to create its temporary namespaced replacement ref; the normal
+writable mount passed and the smoke removed its ref.
+
+**Next actions.** (1) Run one final comprehensive review of the material repair delta. (2) Run
+exact-head fresh-image preflight with `prompt-template-adapter-smoke` as owner. (3) Publish an
+English PR with both review envelopes, finding dispositions, correction, and exact verification;
+merge with `--merge`. (4) Refresh `main` and begin roadmap item 38, R6-PREFIX-TTFT.
 
 **Blockers.** None technical. Do not rerun the provider qualification: its structurally possible 24
 calls exceed the fixed 22-call contract, and section 11.4 records the required boundary
