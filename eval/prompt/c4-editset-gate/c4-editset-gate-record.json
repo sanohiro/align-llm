@@ -1,0 +1,480 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "C4_EDITSET_GATE_RECORD",
+  "gate_id": "c4-repair-editset-gate-v1",
+  "verdict": "NOT_MET",
+  "align_llm_commit": "c07775cffa0e24b1de82dfdc0b59102532a913df",
+  "align_llm_clean": false,
+  "align_revision": "3a34febe912db5096c58c74fede36ff53f223e04",
+  "image": "c4-repair-measure:latest",
+  "docker_version": "28.5.1",
+  "forwarder": "socat TCP-LISTEN:18080,fork,reuseaddr,bind=127.0.0.1 TCP:host.docker.internal:18080",
+  "container_privileges": [
+    "--cap-add=SYS_ADMIN",
+    "--security-opt",
+    "seccomp=unconfined",
+    "--security-opt",
+    "apparmor=unconfined",
+    "--security-opt",
+    "systempaths=unconfined"
+  ],
+  "provider_service_probe": {
+    "schema_version": 1,
+    "artifact_kind": "PROVIDER_SERVICE_PROBE",
+    "provider_service_revision": "llama.cpp/10566+bb4caa754;host:darwin-arm64;server-sha256:b6ff7e912a9690ffec38878cad25b9ec1424a5537bd72010effe2fc9bfe64f74;model-sha256:509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c",
+    "server_version_string": "version: 0.2.0 (build 10566, commit bb4caa754)",
+    "server_binary_sha256": "b6ff7e912a9690ffec38878cad25b9ec1424a5537bd72010effe2fc9bfe64f74",
+    "model_sha256": "509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c",
+    "content_sha256": "683be4720ce7dcf678d73f908b313cfb73fb1765d7458bc684dee6be6ad9dfc3"
+  },
+  "in_band_model_id": "qwen2.5-coder-7b-instruct-q4_k_m",
+  "wall_clock_seconds": 823.67,
+  "cost_ceiling_seconds": 3600,
+  "evaluation_status": "SERIOUS_REGRESSION",
+  "gate_eligible": false,
+  "corpus_aggregate": {
+    "task_count": 3,
+    "sample_count": 2,
+    "parent_pass_count": 0,
+    "candidate_pass_count": 2,
+    "parent_repair_loop_count": 6,
+    "candidate_repair_loop_count": 4,
+    "paired_pass_count": 0,
+    "completion_gain_count": 2,
+    "repair_loop_regression_count": 0,
+    "repair_attempt_count": 10,
+    "repair_recovery_count": 0,
+    "repair_recovery_paired_count": 0,
+    "repair_editset_attempt_count": 6
+  },
+  "addressable_repair_attempts": 6,
+  "rows": [
+    {
+      "task_id": "duration-half-away-from-zero",
+      "sample_index": 1,
+      "variant": "PARENT",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        17841141425,
+        20318876968
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "a394674636051debe545155384b33696fb65945c7b22757729fc3624cecfed1f",
+      "included_sections": [
+        "STATUS",
+        "EDITSET",
+        "SUMMARY",
+        "STDOUT",
+        "STDERR"
+      ],
+      "dropped_sections": [],
+      "editset_included": true,
+      "attempt_1_patch_size_bytes": 716,
+      "attempt_2_patch_size_bytes": 0,
+      "attempt_1_patch_sha256": "14658325883f54a1d71ea81d24c1a442149307fd9fa3b90556502a6b963d047d",
+      "attempt_2_patch_sha256": null,
+      "same_patch_resent": null,
+      "attempt_1_edit_set_paths": [
+        "src/duration.py"
+      ],
+      "attempt_1_edit_set_total_bytes": 293
+    },
+    {
+      "task_id": "duration-half-away-from-zero",
+      "sample_index": 1,
+      "variant": "CANDIDATE",
+      "attempt_1_status": "PASS",
+      "attempt_2_status": null,
+      "attempt_2_skip_reason": null,
+      "repair_loop_count": 0,
+      "generation_to_passing_patch_ns": 15486057966,
+      "time_to_passing_patch_ns": 15506057966,
+      "adapter_elapsed_ns": [
+        15486057966
+      ],
+      "adapter_overhead_ns": [
+        106805417
+      ],
+      "repair_prompt_sha256": null,
+      "included_sections": null,
+      "dropped_sections": null,
+      "editset_included": null,
+      "attempt_1_patch_size_bytes": 758,
+      "attempt_2_patch_size_bytes": null,
+      "attempt_1_patch_sha256": "c4069ff9f4aa2fbb292fe33c8a05c5dd553476e12e367eb9a27167a14b3f1834",
+      "attempt_2_patch_sha256": null,
+      "same_patch_resent": null,
+      "attempt_1_edit_set_paths": [
+        "src/duration.py"
+      ],
+      "attempt_1_edit_set_total_bytes": 335
+    },
+    {
+      "task_id": "duration-half-away-from-zero",
+      "sample_index": 2,
+      "variant": "CANDIDATE",
+      "attempt_1_status": "PASS",
+      "attempt_2_status": null,
+      "attempt_2_skip_reason": null,
+      "repair_loop_count": 0,
+      "generation_to_passing_patch_ns": 9207609212,
+      "time_to_passing_patch_ns": 9227609212,
+      "adapter_elapsed_ns": [
+        9207609212
+      ],
+      "adapter_overhead_ns": [
+        111170166
+      ],
+      "repair_prompt_sha256": null,
+      "included_sections": null,
+      "dropped_sections": null,
+      "editset_included": null,
+      "attempt_1_patch_size_bytes": 758,
+      "attempt_2_patch_size_bytes": null,
+      "attempt_1_patch_sha256": "c4069ff9f4aa2fbb292fe33c8a05c5dd553476e12e367eb9a27167a14b3f1834",
+      "attempt_2_patch_sha256": null,
+      "same_patch_resent": null,
+      "attempt_1_edit_set_paths": [
+        "src/duration.py"
+      ],
+      "attempt_1_edit_set_total_bytes": 335
+    },
+    {
+      "task_id": "duration-half-away-from-zero",
+      "sample_index": 2,
+      "variant": "PARENT",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        8583107546,
+        21529937926
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "3ee009f3e86a0d8e70baaffa963d1da217347936fe8a04b5d5c44f558cd33bb2",
+      "included_sections": [
+        "STATUS",
+        "EDITSET",
+        "SUMMARY",
+        "STDOUT",
+        "STDERR"
+      ],
+      "dropped_sections": [],
+      "editset_included": true,
+      "attempt_1_patch_size_bytes": 716,
+      "attempt_2_patch_size_bytes": 0,
+      "attempt_1_patch_sha256": "14658325883f54a1d71ea81d24c1a442149307fd9fa3b90556502a6b963d047d",
+      "attempt_2_patch_sha256": null,
+      "same_patch_resent": null,
+      "attempt_1_edit_set_paths": [
+        "src/duration.py"
+      ],
+      "attempt_1_edit_set_total_bytes": 293
+    },
+    {
+      "task_id": "layer-precedence-frozen-module",
+      "sample_index": 1,
+      "variant": "PARENT",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        17862851008,
+        10808840088
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "e7d0943e4a44a21dc18c71939bfb63552008e8f74d53ca1a16b9dfbd3f811e8f",
+      "included_sections": [
+        "STATUS",
+        "SUMMARY",
+        "STDERR"
+      ],
+      "dropped_sections": [],
+      "editset_included": false,
+      "attempt_1_patch_size_bytes": 0,
+      "attempt_2_patch_size_bytes": 0,
+      "attempt_1_patch_sha256": null,
+      "attempt_2_patch_sha256": null,
+      "same_patch_resent": null,
+      "attempt_1_edit_set_paths": null,
+      "attempt_1_edit_set_total_bytes": null
+    },
+    {
+      "task_id": "layer-precedence-frozen-module",
+      "sample_index": 1,
+      "variant": "CANDIDATE",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "POLICY_VIOLATION",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        15146719882,
+        29336576555
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "246597a243ef94d52455e857cd7654ff44fe2c4d8df669f2f7a746295a839203",
+      "included_sections": [
+        "STATUS",
+        "SUMMARY",
+        "STDERR"
+      ],
+      "dropped_sections": [],
+      "editset_included": false,
+      "attempt_1_patch_size_bytes": 0,
+      "attempt_2_patch_size_bytes": 0,
+      "attempt_1_patch_sha256": null,
+      "attempt_2_patch_sha256": null,
+      "same_patch_resent": null,
+      "attempt_1_edit_set_paths": null,
+      "attempt_1_edit_set_total_bytes": null
+    },
+    {
+      "task_id": "layer-precedence-frozen-module",
+      "sample_index": 2,
+      "variant": "CANDIDATE",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "POLICY_VIOLATION",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        9399139670,
+        34058790140
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "246597a243ef94d52455e857cd7654ff44fe2c4d8df669f2f7a746295a839203",
+      "included_sections": [
+        "STATUS",
+        "SUMMARY",
+        "STDERR"
+      ],
+      "dropped_sections": [],
+      "editset_included": false,
+      "attempt_1_patch_size_bytes": 0,
+      "attempt_2_patch_size_bytes": 0,
+      "attempt_1_patch_sha256": null,
+      "attempt_2_patch_sha256": null,
+      "same_patch_resent": null,
+      "attempt_1_edit_set_paths": null,
+      "attempt_1_edit_set_total_bytes": null
+    },
+    {
+      "task_id": "layer-precedence-frozen-module",
+      "sample_index": 2,
+      "variant": "PARENT",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        10295636880,
+        14461812964
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "e7d0943e4a44a21dc18c71939bfb63552008e8f74d53ca1a16b9dfbd3f811e8f",
+      "included_sections": [
+        "STATUS",
+        "SUMMARY",
+        "STDERR"
+      ],
+      "dropped_sections": [],
+      "editset_included": false,
+      "attempt_1_patch_size_bytes": 0,
+      "attempt_2_patch_size_bytes": 0,
+      "attempt_1_patch_sha256": null,
+      "attempt_2_patch_sha256": null,
+      "same_patch_resent": null,
+      "attempt_1_edit_set_paths": null,
+      "attempt_1_edit_set_total_bytes": null
+    },
+    {
+      "task_id": "record-codec-round-trip",
+      "sample_index": 1,
+      "variant": "PARENT",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        42307835895,
+        47062710687
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "bead330315d4c4b4141aadc157ad4fd3960909766cf73cc724067e1253dac5a2",
+      "included_sections": [
+        "STATUS",
+        "EDITSET",
+        "SUMMARY",
+        "STDOUT",
+        "STDERR"
+      ],
+      "dropped_sections": [],
+      "editset_included": true,
+      "attempt_1_patch_size_bytes": 1008,
+      "attempt_2_patch_size_bytes": 1008,
+      "attempt_1_patch_sha256": "8cd2aa30d3da3d9c5bfbd4446bf19647e574aba02676033798a6d3a93c456d0f",
+      "attempt_2_patch_sha256": "8cd2aa30d3da3d9c5bfbd4446bf19647e574aba02676033798a6d3a93c456d0f",
+      "same_patch_resent": true,
+      "attempt_1_edit_set_paths": [
+        "src/decode.py",
+        "src/encode.py"
+      ],
+      "attempt_1_edit_set_total_bytes": 1160
+    },
+    {
+      "task_id": "record-codec-round-trip",
+      "sample_index": 1,
+      "variant": "CANDIDATE",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        28834288680,
+        40741736060
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "c8ff6219f3be1dd175aef34b2d7714bb030e4ec94ae0b3d620e8ca869625e4cb",
+      "included_sections": [
+        "STATUS",
+        "EDITSET",
+        "SUMMARY",
+        "STDOUT",
+        "STDERR"
+      ],
+      "dropped_sections": [],
+      "editset_included": true,
+      "attempt_1_patch_size_bytes": 1008,
+      "attempt_2_patch_size_bytes": 1008,
+      "attempt_1_patch_sha256": "cd9ae21852d503410711c5f0496f2af893df63fdeb60a99d9c48c22aee840b8e",
+      "attempt_2_patch_sha256": "cd9ae21852d503410711c5f0496f2af893df63fdeb60a99d9c48c22aee840b8e",
+      "same_patch_resent": true,
+      "attempt_1_edit_set_paths": [
+        "src/encode.py"
+      ],
+      "attempt_1_edit_set_total_bytes": 457
+    },
+    {
+      "task_id": "record-codec-round-trip",
+      "sample_index": 2,
+      "variant": "CANDIDATE",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        14702404632,
+        42015689019
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "035bb847dc3286327e7222e5fe43b763631534e6b22fd381f040e2ce83edc2b6",
+      "included_sections": [
+        "STATUS",
+        "EDITSET",
+        "SUMMARY",
+        "STDOUT",
+        "STDERR"
+      ],
+      "dropped_sections": [],
+      "editset_included": true,
+      "attempt_1_patch_size_bytes": 1008,
+      "attempt_2_patch_size_bytes": 1008,
+      "attempt_1_patch_sha256": "cd9ae21852d503410711c5f0496f2af893df63fdeb60a99d9c48c22aee840b8e",
+      "attempt_2_patch_sha256": "cd9ae21852d503410711c5f0496f2af893df63fdeb60a99d9c48c22aee840b8e",
+      "same_patch_resent": true,
+      "attempt_1_edit_set_paths": [
+        "src/encode.py"
+      ],
+      "attempt_1_edit_set_total_bytes": 457
+    },
+    {
+      "task_id": "record-codec-round-trip",
+      "sample_index": 2,
+      "variant": "PARENT",
+      "attempt_1_status": "FAIL",
+      "attempt_2_status": "FAIL",
+      "attempt_2_skip_reason": "NONE",
+      "repair_loop_count": 1,
+      "generation_to_passing_patch_ns": null,
+      "time_to_passing_patch_ns": null,
+      "adapter_elapsed_ns": [
+        34013005890,
+        51540359689
+      ],
+      "adapter_overhead_ns": [
+        null,
+        null
+      ],
+      "repair_prompt_sha256": "a556d3f269c5f88ccb651141acc750cbc7f07e8e654024931ae0211b041cfa53",
+      "included_sections": [
+        "STATUS",
+        "EDITSET",
+        "SUMMARY",
+        "STDOUT",
+        "STDERR"
+      ],
+      "dropped_sections": [],
+      "editset_included": true,
+      "attempt_1_patch_size_bytes": 1008,
+      "attempt_2_patch_size_bytes": 1008,
+      "attempt_1_patch_sha256": "8cd2aa30d3da3d9c5bfbd4446bf19647e574aba02676033798a6d3a93c456d0f",
+      "attempt_2_patch_sha256": "8cd2aa30d3da3d9c5bfbd4446bf19647e574aba02676033798a6d3a93c456d0f",
+      "same_patch_resent": true,
+      "attempt_1_edit_set_paths": [
+        "src/decode.py",
+        "src/encode.py"
+      ],
+      "attempt_1_edit_set_total_bytes": 1160
+    }
+  ],
+  "content_sha256": "88f08e58dbbfe5bef2d67d106516c7d4c18262c5c9699494185cd73343fa53b6"
+}

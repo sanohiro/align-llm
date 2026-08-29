@@ -383,7 +383,21 @@ REPAIR_PROMPT_SOURCE_FIELDS = (
     "assembled_bytes",
     "content_sha256",
 )
-REPAIR_SECTION_KINDS = ("STATUS", "SUMMARY", "STDOUT", "STDERR")
+# C4-REPAIR-EDITSET adds `EDITSET` immediately after `STATUS` and drops it **last**. A
+# `canonical-v1r` prompt names only the four earlier kinds, and its relative order does not move,
+# so both corpora's section lists validate against this one ordering.
+REPAIR_SECTION_KINDS = ("STATUS", "EDITSET", "SUMMARY", "STDOUT", "STDERR")
+REPAIR_ADAPTER_RELATIVE = "scripts/prompt-repair-adapter.py"
+EDIT_SET_BLOCK_FIELDS = (
+    "schema_version", "artifact_kind", "path", "body_bytes", "body_sha256", "body_text",
+    "content_sha256",
+)
+TASK_MEASUREMENT_V2_MEMBERS = (
+    "edit_set", "edit_set_total_bytes", "patch_sha256", "base_adapter_runtime_identity",
+)
+MAXIMUM_FILE_BLOCKS = 32
+MAXIMUM_EDIT_BYTES = 262_144
+EDIT_SET_LIMIT = 16_384
 ATTEMPT_KINDS = ("INITIAL", "REPAIR")
 ATTEMPT_STATUSES = ("PASS", "FAIL", "POLICY_VIOLATION", "ERROR", "SKIPPED")
 SKIP_REASONS = ("NONE", "REPAIR_PROMPT_BUDGET", "REPAIR_NOT_ELIGIBLE", "REPAIR_INPUT_UNAVAILABLE")
@@ -410,6 +424,13 @@ AGGREGATE_OPTIONAL = frozenset(
         "candidate_paired_median_time_ns",
         "time_improvement_ppm",
         "time_regression_ppm",
+        # C4-REPAIR-EDITSET's denominator is present only for a corpus whose adapter can render
+        # the section, so a `canonical-v1r` version-2 document — `eval/prompt/c4-repair-gate/` —
+        # legitimately omits it. `rescore` recomputes the same presence, so an omission here is
+        # never a silent default: the two shapes must agree exactly.
+        "parent_repair_editset_attempt_count",
+        "candidate_repair_editset_attempt_count",
+        "repair_editset_attempt_count",
     }
 )
 CORPUS_AGGREGATE_FIELDS = (
@@ -435,6 +456,9 @@ TASK_AGGREGATE_V2_FIELDS = TASK_AGGREGATE_FIELDS + (
     "parent_repair_recovery_count",
     "candidate_repair_recovery_count",
     "repair_recovery_paired",
+    # C4-REPAIR-EDITSET's denominator, per variant.
+    "parent_repair_editset_attempt_count",
+    "candidate_repair_editset_attempt_count",
 )
 CORPUS_AGGREGATE_V2_FIELDS = CORPUS_AGGREGATE_FIELDS + (
     # The C4 gate quantity and its two denominators. The gate consumes
@@ -442,6 +466,8 @@ CORPUS_AGGREGATE_V2_FIELDS = CORPUS_AGGREGATE_FIELDS + (
     "repair_attempt_count",
     "repair_recovery_count",
     "repair_recovery_paired_count",
+    # Repair attempts whose prompt actually carried `EDITSET`. A denominator, never a gate input.
+    "repair_editset_attempt_count",
 )
 ACCEPTANCE_POLICY_FIELDS = (
     "schema_version",
@@ -1547,6 +1573,128 @@ def status_value(measurement: Mapping[str, Any]) -> str:
     return measurement["status"]
 
 
+# --- C4-REPAIR-EDITSET: the version-2 measurement -----------------------------------------------
+#
+# Owner split (spec section 7.8). This validator and `scripts/prompt-evaluate.py` own the rules
+# that need a file outside the result document — the `allowed_edits` membership of ladder row 15 —
+# and share the rest with the Align verifier, which recomputes them independently. Nothing here is
+# trusted from the persisted document.
+
+
+def validate_edit_set_block(value: Any, label: str) -> dict[str, Any]:
+    """Ladder row 15, less its `allowed_edits` membership. An omitted block keeps its identity.
+
+    Membership in the task definition's editable set is deliberately NOT checked here.
+    `validate_evaluation_pair` is a pure function of the two documents it is handed — that is what
+    lets the frozen-chain regression call it directly against checked-in evidence with no source
+    tree — and the editable set lives in a file outside them. `scripts/prompt-evaluate.py` owns
+    that one rule, against the manifest-declared digest-pinned task definition, at the moment the
+    adapter result is admitted; the block can never be persisted without passing it there.
+    """
+    block = exact_record(value, EDIT_SET_BLOCK_FIELDS, label)
+    if block["schema_version"] != 1 or block["artifact_kind"] != "EDIT_SET_BLOCK":
+        raise GateError(f"{label} header is invalid")
+    if not isinstance(block["path"], str) or not block["path"]:
+        raise GateError(f"{label} names no path")
+    require_integer(block["body_bytes"], f"{label} body bytes", minimum=0, maximum=MAXIMUM_EDIT_BYTES)
+    require_digest(block["body_sha256"], f"{label} body digest")
+    body = block["body_text"]
+    if body is not None:
+        if not isinstance(body, str):
+            raise GateError(f"{label} body text is not a string")
+        raw = body.encode("utf-8")
+        if len(raw) > EDIT_SET_LIMIT:
+            raise GateError(f"{label} carried a body beyond the producer's own budget")
+        if hashlib.sha256(raw).hexdigest() != block["body_sha256"]:
+            raise GateError(f"{label} body digest does not digest its body text")
+        if len(raw) != block["body_bytes"]:
+            raise GateError(f"{label} body length disagrees with its declared byte count")
+    return block
+
+
+def validate_measurement_version(
+    measurement: Mapping[str, Any], task: Mapping[str, Any], label: str,
+) -> None:
+    """Ladder rows 10 to 17 on one persisted measurement, at whichever version it declares."""
+    version = measurement.get("schema_version")
+    if version not in (1, 2):
+        raise GateError(f"{label} declares an unknown measurement version")
+    # Ladder row 11: the version is a checked function of the corpus, not a producer's choice.
+    declared = list(task.get("argv") or [])
+    expects_two = len(declared) == 2 and declared[1] == REPAIR_ADAPTER_RELATIVE
+    if (version == 2) != expects_two:
+        raise GateError(f"{label} version disagrees with the adapter its corpus names")
+    present = [name for name in TASK_MEASUREMENT_V2_MEMBERS if name in measurement]
+    if version == 1:
+        # Ladder row 10: absence at version 1 is required, never defaulted.
+        if present:
+            raise GateError(f"{label} carries {present[0]} at version 1")
+        return
+    # Ladder row 10 at version 2, read on the **persisted** wire form rather than on the adapter's
+    # result file. The two serializations differ and the distinction is load bearing: the adapter
+    # writes every key, `null` included, and `scripts/prompt-evaluate.py` holds it to the exact
+    # 27-key tuple at that boundary; the canonical encoder that produces this document **omits an
+    # `Option::None`**, so an absent key here means `None` and is the correct encoding of one. Only
+    # `base_adapter_runtime_identity` is unconditionally `Some` at version 2, so only it must be
+    # present; the other three are governed by rows 13 and 14, which read absence as `None`.
+    # Requiring all four keys here rejected every real version-2 document whose attempt produced no
+    # edit set — caught by running this validator against the published gate evidence, which is the
+    # one thing the fixture could not tell us because the fixture writes its `None`s explicitly.
+    identity = measurement.get("base_adapter_runtime_identity")
+    if not isinstance(identity, str) or not identity.startswith("PYTHON:"):
+        raise GateError(f"{label} carries no base adapter runtime identity at version 2")
+    require_digest(identity[7:], f"{label} base adapter runtime identity")
+    # Ladder row 13.
+    patch = measurement.get("patch_sha256")
+    if (patch is not None) != (measurement["patch_size_bytes"] > 0):
+        raise GateError(f"{label} patch digest presence disagrees with its patch size")
+    if patch is not None:
+        require_digest(patch, f"{label} patch digest")
+    blocks = measurement.get("edit_set")
+    total = measurement.get("edit_set_total_bytes")
+    # Ladder row 14.
+    if (blocks is None) != (total is None):
+        raise GateError(f"{label} edit set and its total disagree on presence")
+    if blocks is None:
+        return
+    if not isinstance(blocks, list) or not blocks or len(blocks) > MAXIMUM_FILE_BLOCKS:
+        raise GateError(f"{label} edit set is empty or exceeds its block bound")
+    records = [
+        validate_edit_set_block(item, f"{label} edit set block {ordinal}")
+        for ordinal, item in enumerate(blocks, start=1)
+    ]
+    paths = [item["path"] for item in records]
+    if paths != sorted(paths) or len(set(paths)) != len(paths):
+        raise GateError(f"{label} edit set paths are not unique and sorted ascending")
+    if total != sum(item["body_bytes"] for item in records):
+        raise GateError(f"{label} edit set total is not the sum of its block byte counts")
+    # Ladder row 17: the cheapest cross-check in the design. `diagnostic_summary` is produced by
+    # the frozen sequencing from `applied_edits` and `edit_set` from the same `edits` list, so a
+    # divergence means the section 3.2 near-copy diverged.
+    marker = "applied edits: "
+    summary = measurement["diagnostic_summary"]
+    if marker in summary:
+        named = [item for item in summary.rsplit(marker, 1)[1].split(", ") if item]
+        if named != paths:
+            raise GateError(f"{label} diagnostic summary names another applied-edit list")
+
+
+def validate_measurement_probe(
+    measurement: Mapping[str, Any], task: Mapping[str, Any], label: str,
+) -> None:
+    """Ladder row 12: the section 2.3 gap, closed at attempt level.
+
+    The row-level check binds only the final attempt once a row can run twice, so without this an
+    intermediate attempt could carry any probe at all. `producer` names a role and is the same
+    literal for both adapters; `runtime_identity` names a file and must not be.
+    """
+    probe = measurement["environment_probe"]
+    if probe["producer"] != "MEASUREMENT_ADAPTER":
+        raise GateError(f"{label} measurement probe names another producer")
+    if probe["runtime_identity"] != task["measurement_adapter_runtime"]:
+        raise GateError(f"{label} measurement probe names another runtime identity")
+
+
 def validate_repair_prompt_source(value: Any, policy: Mapping[str, Any], label: str) -> None:
     """Section 3.2 and section 4.3: the repair prompt's recorded provenance and section ladder."""
     source = exact_record(value, REPAIR_PROMPT_SOURCE_FIELDS, label)
@@ -1581,6 +1729,7 @@ def validate_repair_prompt_source(value: Any, policy: Mapping[str, Any], label: 
 def validate_attempt_record(
     value: Any,
     row: Mapping[str, Any],
+    task: Mapping[str, Any],
     policy: Mapping[str, Any],
     pools: Mapping[str, set[str]],
     ordinal: int,
@@ -1656,6 +1805,10 @@ def validate_attempt_record(
             raise GateError(f"{label} generation request is not its measurement's")
         if attempt["seed_attestation"] != measurement["seed_attestation"]:
             raise GateError(f"{label} seed attestation is not its measurement's")
+        # Ladder rows 10 to 17 and row 12, on every attempt that ran rather than only on the row's
+        # final one. Once a row can run twice, the row-level check binds only the last attempt.
+        validate_measurement_version(measurement, task, f"{label} measurement")
+        validate_measurement_probe(measurement, task, label)
         # `adapter_overhead_ns` is present exactly on a `PASS` attempt, where the adapter reports
         # its own generation window and the difference against the evaluator-observed span is
         # publishable rather than arguable.
@@ -1690,7 +1843,9 @@ def validate_attempts(
     if len(attempts) > 1 + maximum_repair_loops:
         raise GateError(f"{label} carries more attempts than its task admits")
     records = [
-        validate_attempt_record(item, row, policy, pools, ordinal, f"{label} attempt {ordinal}")
+        validate_attempt_record(
+            item, row, task, policy, pools, ordinal, f"{label} attempt {ordinal}",
+        )
         for ordinal, item in enumerate(attempts, start=1)
     ]
     kinds = [item["attempt_kind"] for item in records]
@@ -1761,6 +1916,25 @@ def row_repair_loop_count(row: Mapping[str, Any]) -> int:
     return row["measurement"]["repair_loop_count"]
 
 
+def row_repair_editset_attempts(row: Mapping[str, Any]) -> int:
+    """C4-REPAIR-EDITSET's denominator, recomputed and never trusted from the persisted document.
+
+    A repair attempt contributes when it ran and its own `repair_prompt_source.included_sections`
+    names `EDITSET`, so a row that dropped the section under the budget ladder is excluded from
+    every edit-set claim by a persisted number rather than by an argument.
+    """
+    if row["schema_version"] < 2:
+        return 0
+    total = 0
+    for attempt in row["attempts"]:
+        if attempt["attempt_kind"] != "REPAIR" or attempt["status"] == "SKIPPED":
+            continue
+        source = attempt.get("repair_prompt_source") or {}
+        if "EDITSET" in (source.get("included_sections") or []):
+            total += 1
+    return total
+
+
 def row_repair_attempted(row: Mapping[str, Any]) -> bool:
     return row["schema_version"] >= 2 and row["repair_loop_count"] >= 1
 
@@ -1801,6 +1975,10 @@ def rescore(
     corpus_repair_attempts = 0
     corpus_repair_recoveries = 0
     corpus_repair_recovery_paired = 0
+    corpus_repair_editset = 0
+    editset_corpus = any(
+        list(task.get("argv") or [])[1:] == [REPAIR_ADAPTER_RELATIVE] for task in tasks
+    )
     parent_passes = 0
     candidate_passes = 0
     paired_passes = 0
@@ -1830,6 +2008,8 @@ def rescore(
         task_candidate_passes = sum(row["measurement"]["status"] == "PASS" for row in candidate_rows)
         task_parent_repairs = sum(row_repair_loop_count(row) for row in parent_rows)
         task_candidate_repairs = sum(row_repair_loop_count(row) for row in candidate_rows)
+        parent_editset = sum(row_repair_editset_attempts(row) for row in parent_rows)
+        candidate_editset = sum(row_repair_editset_attempts(row) for row in candidate_rows)
         parent_attempted = sum(row_repair_attempted(row) for row in parent_rows)
         candidate_attempted = sum(row_repair_attempted(row) for row in candidate_rows)
         parent_recovered = sum(row_repair_recovered(row) for row in parent_rows)
@@ -1878,6 +2058,12 @@ def rescore(
                 "candidate_repair_recovery_count": candidate_recovered,
                 "repair_recovery_paired": parent_paired_recovery or candidate_paired_recovery,
             })
+            if editset_corpus:
+                aggregate.update({
+                    "parent_repair_editset_attempt_count": parent_editset,
+                    "candidate_repair_editset_attempt_count": candidate_editset,
+                })
+            corpus_repair_editset += parent_editset + candidate_editset
             corpus_repair_attempts += parent_attempted + candidate_attempted
             corpus_repair_recoveries += parent_recovered + candidate_recovered
             corpus_repair_recovery_paired += int(parent_paired_recovery) + int(
@@ -1917,6 +2103,11 @@ def rescore(
             "repair_recovery_count": corpus_repair_recoveries,
             "repair_recovery_paired_count": corpus_repair_recovery_paired,
         })
+        if editset_corpus:
+            # Present only for a corpus whose adapter can render the section; see the evaluator's
+            # note. Requiring it at version 2 unconditionally would reject the merged
+            # `eval/prompt/c4-repair-gate/` evidence, which predates this capability.
+            corpus["repair_editset_attempt_count"] = corpus_repair_editset
 
     def reason(task_id: str, sample: int, code: str, parent: str, candidate: str, limit: str):
         return {
@@ -2438,10 +2629,15 @@ def validate_evaluation_pair(
             raise GateError("evaluation row variant digest does not match its named variant")
         if row["measurement"]["seed_attestation"]["result"] != "APPLIED":
             raise GateError("gate evaluation row does not carry an APPLIED seed attestation")
+        row_task = tasks_by_id.get(row["task_id"])
+        if row_task is None:
+            raise GateError(f"evaluation row {index} names a task the corpus does not declare")
+        validate_measurement_version(
+            row["measurement"], row_task, f"evaluation row {index} measurement",
+        )
+        validate_measurement_probe(row["measurement"], row_task, f"evaluation row {index}")
         if version >= 2:
-            task = tasks_by_id.get(row["task_id"])
-            if task is None:
-                raise GateError(f"evaluation row {index} names a task the corpus does not declare")
+            task = row_task
             validate_attempts(
                 row, task, generation_policy, trace_pools, f"evaluation row {index}"
             )
@@ -2539,11 +2735,19 @@ def validate_evaluation_pair(
     )
     for persisted, computed in zip(persisted_aggregates, aggregates):
         exact_record(persisted, task_aggregate_fields, "task aggregate", AGGREGATE_OPTIONAL)
-        if completed_record(persisted, task_aggregate_fields) != computed:
+        # Both sides are completed, because an `Option::None` is canonically omitted on the
+        # persisted side and the recompute omits the same member for the same reason. Comparing a
+        # completed persisted record against a raw computed one would read an omission as a
+        # disagreement and reject a document that is exactly right.
+        if completed_record(persisted, task_aggregate_fields) != completed_record(
+            computed, task_aggregate_fields
+        ):
             raise GateError("persisted task aggregate disagrees with the recomputed value")
     persisted_corpus = result.get("corpus_aggregate")
     exact_record(persisted_corpus, corpus_aggregate_fields, "corpus aggregate", AGGREGATE_OPTIONAL)
-    if completed_record(persisted_corpus, corpus_aggregate_fields) != corpus:
+    if completed_record(persisted_corpus, corpus_aggregate_fields) != completed_record(
+        corpus, corpus_aggregate_fields
+    ):
         raise GateError("persisted corpus aggregate disagrees with the recomputed value")
 
     if len(result["tasks"]) < policy["minimum_task_count"]:

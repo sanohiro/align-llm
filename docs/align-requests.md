@@ -6596,7 +6596,21 @@ than on decoded text precisely so this request stays non-blocking through the de
 first consumer that would make it blocking is a
 tokenizer/vocabulary-inspection capability, which needs `tokenizer.ggml.tokens` and
 `tokenizer.ggml.merges` as addressable data; per `CLAUDE.md`, this request reclassifies as blocking
-the moment that capability becomes the active consumer
+the moment that capability becomes the active consumer.
+
+C4-REPAIR-EDITSET (`docs/specs/c4-repair-editset.md` section 6.7) is the
+**first client that does not avoid the shape**: `TaskMeasurement.edit_set` is
+`Option<array<EditSetBlock>>` and `EditSetBlock` carries `string` fields, so the version-2 verifier
+must walk an array of Move-typed elements. It is expressible at the pinned compiler with the idiom
+`verifier_attempt_list_references` already uses — every element goes straight into a `borrow`
+parameter and is never named, and no field is read out of an element expression — so this request
+stays non-blocking, and `src/prompt_score.align`'s `verifier_edit_set_valid`,
+`verifier_edit_set_pair_ascending`, and `verifier_edit_set_lists_equal` are three more instances of
+it. What the implementation did hit, and what is recorded here rather than filed as a new request
+because it is the same known limitation with a documented workaround, is that owned field
+replacement supports only `string` and `Option<string>` leaves: `src/prompt_verifier_smoke.align`
+had to build `PromptEvaluationTask` and `TaskMeasurement` as parameterized literals instead of
+mutating an `array<string>` or an `EnvironmentProbe` field of a copy.
 Independent work that may continue: all of R0, R1-QWEN-MODEL-IR, R1B-GPTOSS-MOE-IR,
 R2A-EXPERT-TRACE-CAPTURE, R1C-OLMOE-MOE-IR, and R6-STEP-N, all of which avoid indexing an
 `array<string>` or an array of a Move-field record
@@ -9983,8 +9997,15 @@ Status: PROPOSED
 Priority: high
 Blocking: no
 Blocked gate or slice: none. C4-REPAIR-MEASURED ships by reading every `Option` member of an owned
-  record through a `borrow` binding, never through a `match` on the owned value.
-Independent work that may continue: all of C4-REPAIR-MEASURED.
+  record through a `borrow` binding, never through a `match` on the owned value. C4-REPAIR-EDITSET
+  (`docs/specs/c4-repair-editset.md`) is the second client and reaches the same shape again: it adds
+  four `Option` members to `TaskMeasurement`, one of them `Option<array<EditSetBlock>>`, and one
+  `Option<i64>` to each aggregate. Every one of them is read through a `borrow` binding, and the
+  round-trip regression that would catch a silent drop — `make prompt-gate-validator-smoke`'s
+  frozen-chain rescore over BOTH `eval/prompt/gate/` and `eval/prompt/c4-repair-gate/` — is green.
+  The hazard remains latent rather than closed: the two spellings still look interchangeable at the
+  call site.
+Independent work that may continue: all of C4-REPAIR-MEASURED and all of C4-REPAIR-EDITSET.
 Resume condition: an Align release either rejects a `match` that partially moves a payload out of an
   owned record still live at the match site, or preserves the field so a subsequent
   `json.encode` of that record re-emits it. Either answer closes this; silence does not.
@@ -9993,6 +10014,9 @@ align-llm verification: read `PromptTaskRow.attempts`, `repair_loop_count`, and
   `generation_to_passing_patch_ns` through a direct `match` on the owned row in
   `src/prompt_score.align`, re-encode the row with `json.encode`, and require the encoded bytes to
   equal the decoded input's for the frozen `eval/prompt/gate/prompt-evaluation-improved.json` chain.
+  Repeat with `TaskMeasurement.edit_set` (`Option<array<EditSetBlock>>`) over the C4-REPAIR-EDITSET
+  gate evidence: an `Option<array<T>>` payload is the shape most likely to be moved out silently,
+  and it is now a persisted member of a merged chain.
 ```
 
 ### Motivation and current sibling evidence

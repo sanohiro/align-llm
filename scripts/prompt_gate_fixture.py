@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -167,10 +167,39 @@ def synthetic_digest(label: str) -> str:
     return hashlib.sha256(label.encode("utf-8")).hexdigest()
 
 
+# C4-REPAIR-EDITSET. The version-2 fixture corpus names `scripts/prompt-repair-adapter.py`, so
+# ladder row 11 requires every attempt measurement to be version 2, and the version-2 members are
+# emitted here rather than defaulted anywhere. `EDITSET_BODY` is a plausible whole-file answer; the
+# validator recomputes `body_sha256` over it, so it cannot be a placeholder.
+REPAIR_ADAPTER_RELATIVE = "scripts/prompt-repair-adapter.py"
+REPAIR_ADAPTER_RUNTIME = "PYTHON:" + synthetic_digest("prompt-repair-adapter")[:64]
+BASE_ADAPTER_RUNTIME = "PYTHON:" + synthetic_digest("prompt-measurement-adapter")[:64]
+EDITSET_PATH = "src/duration.py"
+EDITSET_BODY = "def round_to_minutes(seconds):\n    return seconds // 60\n"
+
+
+def edit_set_blocks() -> list[dict[str, Any]]:
+    body = EDITSET_BODY
+    return [
+        bind(
+            {
+                "schema_version": 1,
+                "artifact_kind": "EDIT_SET_BLOCK",
+                "path": EDITSET_PATH,
+                "body_bytes": len(body.encode("utf-8")),
+                "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                "body_text": body,
+                "content_sha256": "",
+            }
+        )
+    ]
+
+
 def attempt_measurement(
-    template: Mapping[str, Any], *, passing: bool, rendered: str, generation_ns: int | None
+    template: Mapping[str, Any], *, passing: bool, rendered: str, generation_ns: int | None,
+    carries_edit_set: bool = True,
 ) -> dict[str, Any]:
-    """One attempt's own `TaskMeasurement`, at the adapter's unchanged version 1."""
+    """One attempt's own `TaskMeasurement`, at the repair adapter's version 2."""
     measurement = copy.deepcopy(dict(template))
     measurement["status"] = "PASS" if passing else "FAIL"
     measurement["failure_kind"] = "NONE" if passing else "TEST"
@@ -187,6 +216,35 @@ def attempt_measurement(
     generation["rendered_prompt_sha256"] = rendered
     generation["user_text_sha256"] = synthetic_digest(f"user:{rendered}")
     bind(generation)
+    # The version-2 members, in their declared position immediately before `content_sha256`. The
+    # summary's applied-edit list is the edit set's path list, which ladder row 17 cross-checks.
+    blocks = edit_set_blocks()
+    measurement["environment_probe"] = copy.deepcopy(measurement["environment_probe"])
+    measurement["environment_probe"]["runtime_identity"] = REPAIR_ADAPTER_RUNTIME
+    bind(measurement["environment_probe"])
+    measurement["diagnostic_summary"] = (
+        "provider-backed candidate patch "
+        + ("passed" if passing else "failed")
+        + f" validation; applied edits: {EDITSET_PATH}"
+    )
+    tail = measurement.pop("content_sha256")
+    measurement["schema_version"] = 2
+    if carries_edit_set:
+        measurement["edit_set"] = blocks
+        measurement["edit_set_total_bytes"] = sum(item["body_bytes"] for item in blocks)
+        measurement["patch_sha256"] = synthetic_digest(f"patch:{rendered}")
+        if measurement["patch_size_bytes"] <= 0:
+            # Ladder row 13 ties the digest to the byte count, so a fixture patch must have bytes.
+            measurement["patch_size_bytes"] = len(EDITSET_BODY.encode("utf-8"))
+    else:
+        # The `FAIL`/`PATCH` mode, encoded the way the wire actually encodes it: an `Option::None`
+        # is **omitted**, not written as `null`. A fixture that wrote the keys explicitly would
+        # hide the one shape every real mode-2 row takes, which is exactly the defect class that
+        # made the validator reject published evidence the first time it saw it.
+        measurement["patch_size_bytes"] = 0
+        measurement["diagnostic_summary"] = "the response declares no file block"
+    measurement["base_adapter_runtime_identity"] = BASE_ADAPTER_RUNTIME
+    measurement["content_sha256"] = tail
     return bind(measurement)
 
 
@@ -236,7 +294,14 @@ def attempt_record(
     return bind(record)
 
 
-def repair_prompt_source(template_sha256: str, source_measurement_sha256: str) -> dict[str, Any]:
+def repair_prompt_source(
+    template_sha256: str, source_measurement_sha256: str, carries_edit_set: bool = True,
+) -> dict[str, Any]:
+    """A row whose attempt one produced no edit set cannot include the section, so its
+    `included_sections` omits `EDITSET` and it drops out of the denominator by construction."""
+    sections = ["STATUS", "EDITSET", "SUMMARY", "STDOUT", "STDERR"]
+    if not carries_edit_set:
+        sections.remove("EDITSET")
     return bind(
         {
             "schema_version": 1,
@@ -244,7 +309,7 @@ def repair_prompt_source(template_sha256: str, source_measurement_sha256: str) -
             "template_sha256": template_sha256,
             "source_attempt_index": 1,
             "source_measurement_sha256": source_measurement_sha256,
-            "included_sections": ["STATUS", "SUMMARY", "STDOUT", "STDERR"],
+            "included_sections": sections,
             "dropped_sections": [],
             "assembled_bytes": 4096,
             "content_sha256": "",
@@ -267,6 +332,11 @@ def upgrade_to_v2(result: dict[str, Any], evidence: dict[str, Any]) -> None:
         # The corpus manifest is the cap: one repair loop, so a second would be a policy violation
         # rather than silently permitted headroom.
         task["regression_limits"]["maximum_repair_loops"] = 1
+        # The corpus names the second adapter, which is what makes ladder row 11 require a
+        # version-2 measurement from every attempt of this fixture.
+        task["argv"] = [task["cmd"], REPAIR_ADAPTER_RELATIVE]
+        task["measurement_adapter_runtime"] = REPAIR_ADAPTER_RUNTIME
+        bind(task)
     template_sha256 = synthetic_digest("repair-template")
     expected_inputs: list[dict[str, Any]] = []
     for ordinal, row in enumerate(result["rows"]):
@@ -278,8 +348,13 @@ def upgrade_to_v2(result: dict[str, Any], evidence: dict[str, Any]) -> None:
         repair_rendered = synthetic_digest(f"rendered:{label}:2")
         initial_request = synthetic_digest(f"adapter:{label}:1")
         repair_request = synthetic_digest(f"adapter:{label}:2")
+        # Exactly one row reproduces the wire's mode-2 shape: no edit set, no patch digest, and
+        # the three `Option` members **omitted** rather than written as `null`. A passing attempt
+        # must still carry its patch, so the row chosen is one whose repair also fails.
+        carries_edit_set = passing or ordinal != 0
         initial_measurement = attempt_measurement(
-            final, passing=False, rendered=initial_rendered, generation_ns=None
+            final, passing=False, rendered=initial_rendered, generation_ns=None,
+            carries_edit_set=carries_edit_set,
         )
         repair_measurement = attempt_measurement(
             final,
@@ -288,6 +363,7 @@ def upgrade_to_v2(result: dict[str, Any], evidence: dict[str, Any]) -> None:
             generation_ns=(
                 ATTEMPT_ELAPSED_REPAIR_NS - ATTEMPT_OVERHEAD_NS if passing else None
             ),
+            carries_edit_set=carries_edit_set,
         )
         records = [
             attempt_record(
@@ -311,7 +387,7 @@ def upgrade_to_v2(result: dict[str, Any], evidence: dict[str, Any]) -> None:
                 elapsed_ns=ATTEMPT_ELAPSED_REPAIR_NS,
                 preparation_ns=ATTEMPT_REPAIR_PREPARATION_NS,
                 repair_prompt_source=repair_prompt_source(
-                    template_sha256, initial_measurement["content_sha256"]
+                    template_sha256, initial_measurement["content_sha256"], carries_edit_set,
                 ),
             ),
         ]
@@ -386,9 +462,21 @@ def upgrade_to_v2(result: dict[str, Any], evidence: dict[str, Any]) -> None:
             and attempts[1]["status"] == "PASS"
         )
 
+    def editset_attempts(rows: Sequence[Mapping[str, Any]]) -> int:
+        total = 0
+        for row in rows:
+            for attempt in row["attempts"]:
+                if attempt["attempt_kind"] != "REPAIR" or attempt["status"] == "SKIPPED":
+                    continue
+                source = attempt.get("repair_prompt_source") or {}
+                if "EDITSET" in (source.get("included_sections") or []):
+                    total += 1
+        return total
+
     corpus_attempts = 0
     corpus_recoveries = 0
     corpus_paired = 0
+    corpus_editset = 0
     for aggregate in result["task_aggregates"]:
         selected = [row for row in result["rows"] if row["task_id"] == aggregate["task_id"]]
         arms = {
@@ -403,11 +491,15 @@ def upgrade_to_v2(result: dict[str, Any], evidence: dict[str, Any]) -> None:
             )
             for variant, rows in arms.items()
         }
+        editset_counts = {variant: editset_attempts(rows) for variant, rows in arms.items()}
         aggregate["parent_repair_attempt_count"] = counts["PARENT"][0]
         aggregate["candidate_repair_attempt_count"] = counts["CANDIDATE"][0]
         aggregate["parent_repair_recovery_count"] = counts["PARENT"][1]
         aggregate["candidate_repair_recovery_count"] = counts["CANDIDATE"][1]
         aggregate["repair_recovery_paired"] = counts["PARENT"][2] or counts["CANDIDATE"][2]
+        aggregate["parent_repair_editset_attempt_count"] = editset_counts["PARENT"]
+        aggregate["candidate_repair_editset_attempt_count"] = editset_counts["CANDIDATE"]
+        corpus_editset += editset_counts["PARENT"] + editset_counts["CANDIDATE"]
         aggregate["parent_repair_loop_count"] = sum(
             row["repair_loop_count"] for row in arms["PARENT"]
         )
@@ -430,6 +522,7 @@ def upgrade_to_v2(result: dict[str, Any], evidence: dict[str, Any]) -> None:
     corpus["repair_attempt_count"] = corpus_attempts
     corpus["repair_recovery_count"] = corpus_recoveries
     corpus["repair_recovery_paired_count"] = corpus_paired
+    corpus["repair_editset_attempt_count"] = corpus_editset
 
 
 def sha256_bytes(path: Path) -> str:

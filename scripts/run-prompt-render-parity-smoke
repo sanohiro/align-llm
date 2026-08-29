@@ -113,6 +113,7 @@ MULTIBYTE_BODY = "éé🙂éé🙂abcdefghij"
 # before the parity sweep so a repair regression is never masked by a renderer disagreement.
 
 REPAIR_TEMPLATE_PATH = SOURCE / "eval/prompt/canonical-v1r/repair-template.json"
+EDITSET_TEMPLATE_PATH = SOURCE / "eval/prompt/canonical-v1e/repair-template.json"
 FROZEN_EVALUATION_PATH = SOURCE / "eval/prompt/gate/prompt-evaluation-improved.json"
 SANDBOX_RESIDUE = re.compile(r"/tmp/align-llm-coding-task-[A-Za-z0-9_]+")
 # A fixed synthetic attempt-1 measurement. Every byte the repair prompt draws from a failing
@@ -137,21 +138,328 @@ def repair_template() -> dict[str, Any]:
     return json.loads(REPAIR_TEMPLATE_PATH.read_text(encoding="utf-8"))
 
 
-def repair_template_cases(module) -> None:
-    """`repair-template-decode`, `repair-sections-order`, and the `repair-template-*` rejections."""
-    template = repair_template()
+def editset_template() -> dict[str, Any]:
+    return json.loads(EDITSET_TEMPLATE_PATH.read_text(encoding="utf-8"))
+
+
+# --- C4-REPAIR-EDITSET: the version-2 repair-prompt contract ------------------------------------
+# `docs/specs/c4-repair-editset.md` section 4 owns this. The measurement below is the section 3.4
+# `FAIL`/`TEST` mode: attempt one produced a validated edit set, the runner applied it, the test
+# failed. Every byte the `EDITSET` section draws comes from `measurement.edit_set`, so these
+# goldens are a total function of it.
+EDITSET_BODY_ONE = (
+    '"""Billable duration helpers."""\n\nimport math\n\n\n'
+    "def round_to_minutes(seconds: int) -> int:\n    return seconds // 60\n"
+)
+# A body that itself contains a fenced block, so the nesting rule has a subject.
+EDITSET_BODY_TWO = (
+    "# usage\n"
+    "#\n"
+    "# ```python\n"
+    "# round_to_minutes(90)\n"
+    "# ```\n"
+    "```\n"
+    "still inside the file\n"
+    "```\n"
+)
+
+
+def editset_block(path: str, body: str | None, declared: str | None = None) -> dict[str, Any]:
+    """One `EDIT_SET_BLOCK`. `declared` carries an omitted block's pre-omission body."""
+    source = declared if declared is not None else (body or "")
+    return {
+        "schema_version": 1,
+        "artifact_kind": "EDIT_SET_BLOCK",
+        "path": path,
+        "body_bytes": len(source.encode("utf-8")),
+        "body_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        "body_text": body,
+        "content_sha256": "0" * 64,
+    }
+
+
+def editset_measurement(blocks: list[dict[str, Any]] | None) -> dict[str, Any]:
+    value = dict(SYNTHETIC_MEASUREMENT)
+    if blocks is None:
+        value.update({
+            "schema_version": 2, "edit_set": None, "edit_set_total_bytes": None,
+            "patch_sha256": None,
+        })
+    else:
+        value.update({
+            "schema_version": 2, "edit_set": blocks,
+            "edit_set_total_bytes": sum(block["body_bytes"] for block in blocks),
+            "patch_sha256": "1" * 64,
+        })
+    value["base_adapter_runtime_identity"] = "PYTHON:" + "2" * 64
+    return value
+
+
+def editset_template_cases(module) -> None:
+    """Ladder row 8: which section kinds a task's sealed template must declare, exactly."""
+    template = editset_template()
     require(
-        module.valid_repair_template(template),
-        "repair-template-decode: the sealed corpus template was rejected",
+        module.valid_repair_template(template, module.REPAIR_SECTION_KINDS),
+        "editset-template-decode: the sealed canonical-v1e template was rejected",
     )
     require(
         tuple(template["section_headers"])
         == module.REPAIR_SECTION_KINDS
-        == ("STATUS", "SUMMARY", "STDOUT", "STDERR"),
+        == ("STATUS", "EDITSET", "SUMMARY", "STDOUT", "STDERR"),
+        "editset-sections-order: the template's section order is not the declared order",
+    )
+    require(
+        module.REPAIR_DROP_ORDER == ("STDOUT", "STDERR", "SUMMARY", "EDITSET")
+        and "STATUS" not in module.REPAIR_DROP_ORDER,
+        "editset-sections-order: the drop precedence changed or STATUS became droppable",
+    )
+    # Ladder row 8 is an equality against the kind set the task's adapter selects, in both
+    # directions: neither template may stand in for the other.
+    require(
+        not module.valid_repair_template(template, module.REPAIR_SECTION_KINDS_V1),
+        "editset-template-kinds: a five-kind template was admitted for a four-kind corpus",
+    )
+    require(
+        not module.valid_repair_template(repair_template(), module.REPAIR_SECTION_KINDS),
+        "editset-template-kinds: a four-kind template was admitted for a five-kind corpus",
+    )
+    require(
+        module.expected_template_kinds({"argv": ["/usr/bin/python3", "scripts/prompt-repair-adapter.py"]})
+        == module.REPAIR_SECTION_KINDS,
+        "editset-template-kinds: the repair adapter does not select the five-kind template",
+    )
+    require(
+        module.expected_template_kinds({"argv": ["/usr/bin/python3", "scripts/prompt-measurement-adapter.py"]})
+        == module.REPAIR_SECTION_KINDS_V1,
+        "editset-template-kinds: the frozen adapter does not select the four-kind template",
+    )
+
+
+def editset_render_cases(module) -> None:
+    """The `EDITSET` section itself: present, absent, omitted, and nested."""
+    # A version-1 measurement carries no edit set, so the section source is empty and the section
+    # is simply not emitted, exactly as an empty `STDOUT` already is.
+    require(
+        module.repair_edit_set_text(SYNTHETIC_MEASUREMENT) == "",
+        "editset-absent: a version-1 measurement produced an EDITSET section",
+    )
+    require(
+        module.repair_edit_set_text(editset_measurement(None)) == "",
+        "editset-absent: a version-2 measurement with no edit set produced an EDITSET section",
+    )
+
+    one = editset_measurement([editset_block("src/duration.py", EDITSET_BODY_ONE)])
+    rendered = module.repair_edit_set_text(one)
+    require(
+        rendered == f"FILE: src/duration.py\n```\n{EDITSET_BODY_ONE}```",
+        f"editset-golden: the rendered block is not the declared whole-file form: {rendered!r}",
+    )
+
+    # Two blocks, in `validated_edit_set`'s own sorted order, separated by one blank line.
+    two = editset_measurement([
+        editset_block("src/duration.py", EDITSET_BODY_ONE),
+        editset_block("tests/test_duration.py", "assert True\n"),
+    ])
+    rendered_two = module.repair_edit_set_text(two)
+    require(
+        rendered_two == (
+            f"FILE: src/duration.py\n```\n{EDITSET_BODY_ONE}```\n\n"
+            "FILE: tests/test_duration.py\n```\nassert True\n```"
+        ),
+        f"editset-golden: two blocks did not render in sorted order: {rendered_two!r}",
+    )
+
+    # An omitted block is one line naming its path and byte count, never a partial file.
+    omitted = editset_measurement([
+        editset_block("src/duration.py", None, declared=EDITSET_BODY_ONE),
+        editset_block("tests/test_duration.py", "assert True\n"),
+    ])
+    rendered_omitted = module.repair_edit_set_text(omitted)
+    declared_bytes = len(EDITSET_BODY_ONE.encode("utf-8"))
+    require(
+        rendered_omitted == (
+            f"FILE: src/duration.py [omitted for prompt budget: {declared_bytes} bytes]\n\n"
+            "FILE: tests/test_duration.py\n```\nassert True\n```"
+        ),
+        f"editset-omitted: an omitted block did not render as one line: {rendered_omitted!r}",
+    )
+    require(
+        EDITSET_BODY_ONE[:40] not in rendered_omitted,
+        "editset-omitted: an omitted block leaked part of its body into the prompt",
+    )
+
+    # A body containing a fenced block nests: the opening run is one longer than the longest
+    # all-backtick line inside it, which is the frozen `fence_run`/`closing_fence` rule read
+    # backwards. Rendering it with a three-backtick fence would terminate the block early.
+    nested = editset_measurement([editset_block("src/duration.py", EDITSET_BODY_TWO)])
+    rendered_nested = module.repair_edit_set_text(nested)
+    require(
+        rendered_nested == f"FILE: src/duration.py\n````\n{EDITSET_BODY_TWO}````",
+        f"editset-nested-fence: the nested body was not fenced longer: {rendered_nested!r}",
+    )
+    require(
+        module.edit_set_fence("no fence here\n") == "```",
+        "editset-nested-fence: a body with no fence did not use the minimum run",
+    )
+
+    # The section never exceeds what the producer persisted.
+    require(
+        len(rendered_two.encode("utf-8"))
+        <= two["edit_set_total_bytes"] + module.EDIT_SET_LIMIT,
+        "editset-bound: the rendered section is not bounded by the producer's own budget",
+    )
+
+
+def editset_prompt_cases(module) -> None:
+    """The assembled version-2 prompt, its four-step ladder, and its re-derivation."""
+    template = editset_template()
+    measurement = editset_measurement([
+        editset_block("src/duration.py", EDITSET_BODY_ONE),
+        editset_block("tests/test_duration.py", "assert True\n"),
+    ])
+    sources = module.repair_section_sources(measurement)
+    text, included, dropped, assembled = module.assemble_repair_prompt(
+        template, SYNTHETIC_BASE, sources, 65_536,
+    )
+    require(
+        included == ["STATUS", "EDITSET", "SUMMARY", "STDOUT", "STDERR"] and dropped == [],
+        f"editset-prompt-golden: unexpected section selection {included!r}/{dropped!r}",
+    )
+    headers = template["section_headers"]
+    expected = "".join((
+        SYNTHETIC_BASE, "\n\n", template["preamble_text"],
+        "\n\n", headers["STATUS"], "\n", sources["STATUS"],
+        "\n\n", headers["EDITSET"], "\n", sources["EDITSET"],
+        "\n\n", headers["SUMMARY"], "\n", sources["SUMMARY"],
+        "\n\n", headers["STDOUT"], "\n", sources["STDOUT"],
+        "\n\n", headers["STDERR"], "\n", sources["STDERR"],
+        "\n\n", template["closing_text"],
+    ))
+    require(
+        text == expected,
+        "editset-prompt-golden: the assembled prompt is not the declared section concatenation",
+    )
+    require(
+        text.startswith(SYNTHETIC_BASE),
+        "editset-prompt-golden: the repair prompt is not a strict textual extension of attempt one",
+    )
+    require(
+        assembled == len(text.encode("utf-8")),
+        "editset-prompt-golden: assembled_bytes disagrees with the assembled text",
+    )
+
+    def ladder(budget: int):
+        return module.assemble_repair_prompt(template, SYNTHETIC_BASE, sources, budget)
+
+    cost = {
+        kind: len(("\n\n" + headers[kind] + "\n" + sources[kind]).encode("utf-8"))
+        for kind in module.REPAIR_SECTION_KINDS
+    }
+    after_stdout = assembled - cost["STDOUT"]
+    after_stderr = after_stdout - cost["STDERR"]
+    after_summary = after_stderr - cost["SUMMARY"]
+    after_editset = after_summary - cost["EDITSET"]
+
+    # Each of the four ladder steps as its own golden. `EDITSET` outlives every section this
+    # capability already knows to be insufficient alone: the C4 run measured zero recoveries from a
+    # diagnostics-only prompt, so dropping `EDITSET` early would silently degrade an over-budget
+    # row into that experiment while its evidence still looked like an edit-set attempt.
+    steps = (
+        (assembled - 1, ["STATUS", "EDITSET", "SUMMARY", "STDERR"], ["STDOUT"], after_stdout),
+        (after_stdout - 1, ["STATUS", "EDITSET", "SUMMARY"], ["STDOUT", "STDERR"], after_stderr),
+        (after_stderr - 1, ["STATUS", "EDITSET"], ["STDOUT", "STDERR", "SUMMARY"], after_summary),
+        (
+            after_summary - 1, ["STATUS"],
+            ["EDITSET", "STDOUT", "STDERR", "SUMMARY"], after_editset,
+        ),
+    )
+    for ordinal, (budget, want_included, want_dropped, want_bytes) in enumerate(steps):
+        candidate, chosen, gone, size = ladder(budget)
+        require(
+            chosen == want_included,
+            f"editset-drop-{ordinal}: included {chosen!r}, wanted {want_included!r}",
+        )
+        require(
+            sorted(gone) == sorted(want_dropped) and size == want_bytes,
+            f"editset-drop-{ordinal}: dropped {gone!r}/{size}, wanted {want_dropped!r}/{want_bytes}",
+        )
+        require(
+            candidate is not None and "STATUS" not in gone,
+            f"editset-drop-{ordinal}: STATUS was dropped, and it never may be",
+        )
+        require(
+            set(chosen).isdisjoint(gone),
+            f"editset-drop-{ordinal}: included and dropped are not disjoint",
+        )
+    # `dropped_sections` is ordered by `REPAIR_SECTION_KINDS`, not by the order the ladder fired.
+    require(
+        ladder(after_summary - 1)[2] == ["EDITSET", "SUMMARY", "STDOUT", "STDERR"],
+        "editset-drop-order: dropped_sections is not in section order",
+    )
+    # `EDITSET` survives `SUMMARY`: a fixture that must drop three sections still carries it.
+    require(
+        "EDITSET" in ladder(after_stderr - 1)[1],
+        "editset-drop-priority: EDITSET was dropped before SUMMARY",
+    )
+
+    # Budget exhaustion: not even STATUS alone fits, so no provider call may be made.
+    exhausted = ladder(after_editset - 1)
+    require(
+        exhausted[0] is None and exhausted[1] == ["STATUS"],
+        f"editset-budget-exhausted: budget exhaustion did not refuse the prompt: {exhausted[1:]!r}",
+    )
+
+    # Section 4.5: assembly is a pure, total function of the persisted fields, at every rung.
+    for budget in (65_536, assembled - 1, after_stdout - 1, after_stderr - 1, after_summary - 1):
+        candidate, chosen, _, _ = ladder(budget)
+        if candidate is None:
+            continue
+        rederived = module.repair_prompt_text(
+            template, SYNTHETIC_BASE, module.repair_section_sources(measurement), chosen,
+        )
+        require(
+            rederived == candidate,
+            f"editset-rederive-self: re-derivation drifted at budget {budget}",
+        )
+
+    # A measurement with an edit set but no diagnostics at all is still not repairable:
+    # `EDITSET` alone does not make a repair eligible (ladder row 18).
+    barren = dict(measurement)
+    barren.update({"diagnostic_summary": "", "diagnostic_stdout": "", "diagnostic_stderr": ""})
+    require(
+        module.repair_eligibility(barren) == "REPAIR_INPUT_UNAVAILABLE",
+        "editset-eligibility: EDITSET alone made a repair eligible",
+    )
+
+    # Redaction: nothing the evaluator or the adapter constructs reaches the assembled prompt.
+    for needle in (
+        "host.docker.internal", "127.0.0.1:18080", "OPENAI_API_KEY", "ALIGN_LLM_",
+        "credential_env_name", str(SOURCE), "prompt-repair-adapter-",
+    ):
+        require(
+            needle not in text,
+            f"editset-redaction: {needle!r} survived assembly into the repair prompt",
+        )
+
+
+def repair_template_cases(module) -> None:
+    """`repair-template-decode`, `repair-sections-order`, and the `repair-template-*` rejections."""
+    template = repair_template()
+    # `canonical-v1r`'s template stays decodable, and that is a decision rather than an accident:
+    # `eval/prompt/c4-repair-gate/` was measured against that corpus's exact scope digest, and
+    # making its sealed template undecodable would leave a merged evidence chain naming a corpus
+    # that can no longer be run. Which kind set a task's template must declare is ladder row 8.
+    kinds = module.REPAIR_SECTION_KINDS_V1
+    require(
+        module.valid_repair_template(template, kinds),
+        "repair-template-decode: the sealed corpus template was rejected",
+    )
+    require(
+        tuple(template["section_headers"]) == kinds == ("STATUS", "SUMMARY", "STDOUT", "STDERR"),
         "repair-sections-order: the template's section order is not the declared order",
     )
     require(
-        module.REPAIR_DROP_ORDER == ("STDOUT", "STDERR", "SUMMARY")
+        module.REPAIR_DROP_ORDER == ("STDOUT", "STDERR", "SUMMARY", "EDITSET")
         and "STATUS" not in module.REPAIR_DROP_ORDER,
         "repair-sections-order: the drop precedence changed or STATUS became droppable",
     )
@@ -160,7 +468,7 @@ def repair_template_cases(module) -> None:
         value = repair_template()
         mutate(value)
         require(
-            not module.valid_repair_template(value),
+            not module.valid_repair_template(value, kinds),
             f"repair-template-{label}: an invalid template was admitted",
         )
 
@@ -262,7 +570,7 @@ def repair_prompt_golden_cases(module) -> None:
 
     header_cost = {
         kind: len(("\n\n" + headers[kind] + "\n").encode("utf-8"))
-        for kind in module.REPAIR_SECTION_KINDS
+        for kind in headers
     }
     after_stdout = assembled - len(sources["STDOUT"].encode("utf-8")) - header_cost["STDOUT"]
     after_stderr = after_stdout - len(sources["STDERR"].encode("utf-8")) - header_cost["STDERR"]
@@ -371,6 +679,9 @@ def repair_contract_cases() -> None:
     repair_template_cases(module)
     repair_prompt_golden_cases(module)
     repair_redaction_cases(module)
+    editset_template_cases(module)
+    editset_render_cases(module)
+    editset_prompt_cases(module)
 
 
 def parity_vectors() -> list[dict[str, Any]]:

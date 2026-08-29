@@ -3,7 +3,139 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: C4-REPAIR-MEASURED (2026-08-29)
+## Active: C4-REPAIR-EDITSET (2026-08-29)
+
+Branch `agent/c4-repair-editset`, stacked on `agent/c4-repair-measured` at `c07775c`. Implemented,
+verified, and **measured**. Nothing is committed yet; the checked-in evidence is from an unclean
+head and must be re-run once from the committed head, exactly as C4-REPAIR-MEASURED did.
+
+**GATE RESULT: `NOT_MET` — a measured negative, and a directional one.** 12 rows, 22 provider calls,
+**823.67 s = 13 min 44 s** against a 60-minute recorded ceiling. `repair_recovery_count: 0` and
+`repair_recovery_paired_count: 0`. **`repair_editset_attempt_count: 6`** — exactly the addressable
+arm stated before the run, so all six eligible repair prompts carried `EDITSET` and the drop ladder
+never fired (8,348-16,904 bytes of 65,536). Evidence at `eval/prompt/c4-editset-gate/`; the per-row
+table and the analysis are in spec section 11.4.
+
+**The question C4 could not answer is answered.** On all four rows where both attempts produced a
+patch, `attempts[1].measurement.patch_sha256` equals `attempts[0]`'s **exactly** — the same bytes,
+not merely the same byte count. And the persisted `edit_set` says more: on the two
+`record-codec-round-trip` CANDIDATE rows the model re-emitted a byte-identical edit set, while on
+the two PARENT rows it dropped the file it had reproduced unchanged and kept the other one
+byte-identical, producing the same patch anyway. On the two `duration-half-away-from-zero` PARENT
+rows, shown its own rejected answer, it emitted **no parsable `FILE:` block at all** — a mode change
+from a wrong patch to no patch. `c4-repair-measured.md` section 5.7's tie-breaker is answered **in
+the negative**: the missing edit set was not the binding constraint, and the next capability is the
+prompt, the template, and the edit policy rather than more adapter work.
+
+**Capability.** Carry the failing attempt's own edit set into the repair prompt.
+`docs/specs/c4-repair-editset.md` is the authoritative ledger and section 11 is the implementation
+record. C4-REPAIR-MEASURED returned `repair_recovery_paired_count: 0` over ten repair attempts; its
+evidence shows that on all **six** attempts where attempt 1 had produced a validated edit set —
+`record-codec-round-trip` x4 and `duration-half-away-from-zero` PARENT x2 — attempt 2 returned a
+patch of exactly the same byte count. That is the tie-breaker section 5.7 of that document named,
+and this capability is its option B.
+
+**The surface decision.** A new `scripts/prompt-repair-adapter.py` **loads the frozen
+`scripts/prompt-measurement-adapter.py` by path** and calls its functions: containment, sealing,
+redaction, process ownership, generation, validation, and edit parsing have exactly one copy. Only
+`measurement()` and `assemble()` are near-copied, and their divergence from the frozen originals is
+asserted against `eval/fixtures/c4-repair-editset/adapter-divergence.diff` — a 209-line normalized
+unified diff that a reviewer reads as one artifact. Three digest pins hold the base file
+byte-identical: a constant in the new adapter, the `canonical-v1e` file-set manifest, and the
+per-invocation artifact snapshot; `scripts/freeze-canonical-v1e` asserts all three agree before it
+mints anything.
+
+**Schema.** `TASK_MEASUREMENT` 1 -> 2, gaining `edit_set`, `edit_set_total_bytes`, `patch_sha256`,
+and `base_adapter_runtime_identity` as `Option` members. **`PROMPT_TASK_ROW` does not move** — the
+row gains no field. The measurement's version is a checked function of the corpus: a task whose
+`argv` names the repair adapter must emit version 2 and any other task must emit version 1.
+
+**Two rules the implementation had to add that the design did not anticipate**, both found by a
+green-to-red owner test rather than by review:
+
+1. **Which section kinds a sealed template must declare is selected by the corpus, not fixed.**
+   Requiring the five-kind tuple unconditionally made `canonical-v1r`'s four-kind template
+   undecodable, which would have left `eval/prompt/c4-repair-gate/` naming a corpus that can no
+   longer be run. `make prompt-render-parity-smoke` caught it.
+2. **`repair_editset_attempt_count` is present iff the corpus names the repair adapter**, not
+   "present at version 2". `eval/prompt/c4-repair-gate/` is a merged version-2 document written
+   before the quantity existed, and requiring it at version 2 rejected it outright. The new frozen
+   version-2 chain regression in `make prompt-gate-validator-smoke` caught it. Both are recorded as
+   deviations in spec section 11.3.
+
+**Found by probe, and it is a real defect risk.** `runtime_identity()` in the frozen adapter is
+`sha256(Path(__file__).read_bytes())`, and `src/prompt_score.align` requires it to equal the task
+manifest's `measurement_adapter_runtime`. A repair adapter reusing the frozen `environment_probe()`
+would persist the **frozen** file's digest while running its own code, and the existing check would
+accept it. The repair adapter therefore defines its own identity and persists the base one
+separately. The same probe found that no producer or runtime-identity check existed on an
+*attempt-level* measurement's probe; ladder row 12 closes it in all three owners.
+
+**Drop-ladder decision.** `STDOUT -> STDERR -> SUMMARY -> EDITSET`, `STATUS` never dropped.
+`EDITSET` last, because dropping it first would silently degrade a row into the diagnostics-only
+experiment that already measured zero recoveries; droppable at all, because it is the only section
+that can blow the budget alone and a skipped attempt is a lost measurement.
+
+**Freeze.** New `eval/prompt/canonical-v1e/` + `eval/tasks/prompt-v1e/`, **30** file-set members =
+24 shared + 3 task manifests + the template + the policy + the repair adapter. The 24 shared members
+carry identical digests in all three manifests, and all 86 member digests across the three corpora
+recompute against the tree.
+
+**Verification at this head.** `gmake build`, `gmake check` (31 units), `gmake fmt`,
+`gmake format-check`, `gmake gate-topology-check` (EXPECTED unmoved), `git diff --check`, and the
+macOS owner set — `prompt-model-smoke`, `prompt-render-parity-smoke`, `prompt-score-smoke`,
+`prompt-score-prefix-smoke`, `prompt-verifier-smoke`, `prompt-state-smoke`,
+`prompt-gate-validator-smoke`, `prompt-measurement-adapter-smoke`, `prompt-repair-adapter-smoke` —
+all PASS. Under the Linux recipe below: `run-prompt-repair-adapter-smoke` (full launch rows),
+`run-prompt-evaluate-smoke`, `run-prompt-measurement-adapter-smoke`, `test-prompt-fixed-adapter`,
+`test-prompt-snapshot-helper`, and `test-prompt-source-verifier` all PASS.
+`scripts/freeze-canonical-v1e --check` and `scripts/freeze-canonical-v1r --check` each reproduce
+their 10 frozen files. `EVALUATOR_SOURCE_SHA256` is re-pinned to
+`d1b8d4d409da89f0c43766419522a609f1d55435c8064ed69b7b67359573cebe` (234,347 bytes), inside the
+four-chunk window with 27,797 bytes of headroom.
+
+**23 mutants, all killed**, across four owners: skip EDITSET, drop EDITSET first, remove the row-17
+summary cross-check, drop the four members from `verifier_measurement_equal`, remove ladder row 12,
+stop recomputing the EDITSET denominator, remove the version-versus-adapter rule, stop summing
+`edit_set_total_bytes`, allow a version-2 member at version 1, allow the base identity to be absent,
+trust the persisted denominator, disable the validator's row 11 / row 12 / row 15 body-digest
+checks, and — in the adapter — drop `patch_sha256`, report the **frozen** file's runtime identity,
+drop the edit set, digest before redaction, remove whole-block bounding, skip the base-digest
+verification, and make the name assertion vacuous. One mutant (the validator's row-11 check) first
+**survived**; the gap was closed by adding four version-2 rejection cases to
+`run-prompt-gate-validator-smoke`, and it now dies.
+
+**The provider service revision was re-derived, not inherited** (spec section 3.7):
+`llama-server --version` reports build 10566 commit `bb4caa754`, the resolved binary hashes to
+`b6ff7e91…`, and the 4,683,073,536-byte model file was re-hashed in full to `509287f7…`. The
+observed string equals `canonical-v1r`'s, which is a measurement rather than a copy — the probe
+fails closed had any component moved.
+
+**Next actions, in order.** (1) Commit. (2) Re-run `make c4-editset-gate` once from the clean
+committed head so the record names a reproducible commit and `align_llm_clean` is true, exactly as
+C4-REPAIR-MEASURED did; replace the three files under `eval/prompt/c4-editset-gate/` and correct
+spec section 11.4's digests and clocks with that run's. Expect every correctness value to
+reproduce and only the clocks to move. (3) Publish, with the review envelope.
+
+**Blockers.** Host capacity only: a DinD preflight and Track B's model work contend for memory, and
+the gate needs `llama-server` with the 4.7 GB model. No Align capability request blocks this; next
+free number **53** stays free. Requests 22 and 52 both bite and both are mitigated by idioms already
+proven at this pin, and both gained client evidence lines.
+
+**Linux recipe** (unchanged from C4-REPAIR-MEASURED, and required before touching the evaluator or
+its verifier — `make prompt-evaluate-smoke` cannot run on macOS):
+
+```text
+docker run --rm --platform linux/arm64 \
+  --cap-add=SYS_ADMIN --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined --security-opt systempaths=unconfined \
+  -v "$PWD:$PWD" -v /Users/hiro/Projects/align-llm/.git:/Users/hiro/Projects/align-llm/.git:ro \
+  -v <scratchpad>/gate-run/linux-toolchain:/tc:ro -w "$PWD" \
+  -e PYTHONDONTWRITEBYTECODE=1 -e ALIGNC=/tc/alignc \
+  c4-repair-measure:latest sh -lc "python3 ./scripts/run-prompt-evaluate-smoke"
+```
+
+## Complete: C4-REPAIR-MEASURED (2026-08-29)
 
 Branch `agent/c4-repair-measured`, in publication. Three commits and nothing uncommitted: the
 capability, the merge of `origin/main` at `553563e` (taken as `git merge`, never a rebase, so every

@@ -649,6 +649,54 @@ The current forward delivery order is:
     feedback, a persisted patch digest, and converging the Align `verification_loop`/`repair`
     modules with this loop are deferred with resume conditions.
 
+> Items 32 and 33 are Track B (`agent/r6-olmoe-decode`, `agent/r6-prefix-suffix-prefill`) and are
+> not yet on this branch's base. Item 34 is numbered on the assumption that 31, 32, and 33 land
+> first; the number is corrected at reconciliation if that changes.
+
+34. **C4-REPAIR-EDITSET — the failing edit set in the repair prompt, through a second
+    corpus-member adapter.** The direct consequence of item 31's measured negative. C4-REPAIR-
+    MEASURED ran ten repair attempts and recovered nothing, and its evidence names the reason:
+    on all six repair attempts where attempt 1 had produced a validated edit set, attempt 2
+    returned a patch of exactly the same byte count. The model was never shown what it wrote.
+    Design in [`c4-repair-editset.md`](c4-repair-editset.md), which owns the contract ledger,
+    the import-by-path contract, the closure matrix, the repair-prompt contract version 2, the
+    cost ceiling, the gate statement, and the implementation record. The design gate triggered on
+    the `TASK_MEASUREMENT` schema-2 exchanged format, a new frozen corpus scope with a **second
+    adapter** as a member, and a coordinated invariant across the new adapter,
+    `scripts/prompt-evaluate.py`, `src/prompt_score.align`, and the corpus assets.
+    `scripts/prompt-repair-adapter.py` **loads the frozen `scripts/prompt-measurement-adapter.py`
+    by path** and calls its functions, so the reviewed containment, sealing, redaction, and
+    process-ownership code has exactly one copy and the second file carries only the sequencing
+    that differs — which is what makes item 31's section 5.7 option B affordable now that its
+    tie-breaker has been answered. Only `measurement()` and `assemble()` are near-copies, and
+    their divergence from the frozen originals is asserted against a checked-in golden. Three
+    digest pins hold the base file byte-identical: a constant in the new adapter, the file-set
+    manifest, and the per-invocation artifact snapshot. `TASK_MEASUREMENT` moves to
+    `schema_version: 2` with the attempt's realized edit set, its total size, a **digest of the
+    complete patch body**, and the base adapter's runtime identity; version 1 stays decodable
+    forever, and `PROMPT_TASK_ROW` does **not** move, because the row gains no field. The repair
+    prompt gains an `EDITSET` section rendered in the response's own whole-file format, bounded
+    whole-block, and dropped **last** — after STDOUT, STDERR, and SUMMARY — so an over-budget row
+    degrades into the diagnostics-only prompt that already measured zero recoveries only as a last
+    resort, and `repair_editset_attempt_count` keeps a dropped row out of every edit-set
+    denominator. New freeze `eval/prompt/canonical-v1e/` + `eval/tasks/prompt-v1e/`, 30 file-set
+    members; the 24 shared with both earlier corpora carry identical digests in all three
+    manifests. **The addressable arm is six of ten repair attempts.** The other four are
+    `layer-precedence-frozen-module`, where the model produced no parsable file block on any of
+    eight attempts, so there is no edit set to show; that mode is a prompt-template and edit-policy
+    capability and is named as the fallback. Found by probe and closed here: a second adapter that
+    reused the frozen `environment_probe()` would persist the **imported** file's digest while
+    running its own code, and the existing check would accept it; the same probe found that no
+    producer or runtime-identity check existed on an *attempt-level* measurement's probe at all.
+    The gate is item 31's predicate unchanged: `repair_recovery_paired_count >= 1`. **A measured
+    negative is a published result**, and here it is directional — it would answer item 31's
+    tie-breaker in the negative and move the next capability from the adapter to the prompt.
+    No speed claim: the item 31 run measured an 8.1x spread over 22 calls at temperature 0, and the
+    repair prompt is a strict textual extension of the attempt-1 prompt, so prompt-cache reuse is
+    an uncontrolled confound. Recorded run-cost ceiling 60 minutes, expected 12-30, at most 22
+    provider calls. Named focused qualification `make c4-editset-gate`; it joins no aggregate, and
+    neither does the new owner test `make prompt-repair-adapter-smoke`.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:

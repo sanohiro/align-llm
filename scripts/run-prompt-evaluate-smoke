@@ -1135,6 +1135,297 @@ def repair_measurement(
     })
 
 
+# --- C4-REPAIR-EDITSET: the version-2 measurement through the loop ------------------------------
+# `docs/specs/c4-repair-editset.md` sections 3.9, 4.3, and 6.1 own these. The measurement below is
+# the repair adapter's own output shape, so every rule asserted here is asserted against the exact
+# document the loop will decode at run time.
+
+EDITSET_BODY = "def round_to_minutes(seconds):\n    return seconds // 60\n"
+EDITSET_PATH = "src/duration.py"
+EDITSET_TASK = {
+    "argv": ["/usr/bin/python3", "scripts/prompt-repair-adapter.py"],
+    "measurement_adapter_runtime": "PYTHON:" + "d" * 64,
+}
+FROZEN_TASK = {
+    "argv": ["/usr/bin/python3", "scripts/prompt-measurement-adapter.py"],
+    "measurement_adapter_runtime": "PYTHON:" + "e" * 64,
+}
+
+
+def editset_block(module, path: str, body: str | None, declared: str | None = None) -> dict:
+    source = declared if declared is not None else (body or "")
+    return bind({
+        "schema_version": 1, "artifact_kind": "EDIT_SET_BLOCK", "path": path,
+        "body_bytes": len(source.encode("utf-8")),
+        "body_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        "body_text": body, "content_sha256": "",
+    })
+
+
+def editset_measurement(module, blocks, **changes):
+    """The repair adapter's version-2 result shape, in its exact declared field order."""
+    value = repair_measurement(module, **changes)
+    tail = value.pop("content_sha256")
+    value["schema_version"] = 2
+    value["edit_set"] = blocks
+    value["edit_set_total_bytes"] = (
+        None if blocks is None else sum(item["body_bytes"] for item in blocks)
+    )
+    value["patch_sha256"] = "f" * 64 if value["patch_size_bytes"] > 0 else None
+    value["base_adapter_runtime_identity"] = "PYTHON:" + "2" * 64
+    value["content_sha256"] = tail
+    return bind(value)
+
+
+def verify_editset_attempt_boundary() -> None:
+    """`EDITSET` through the loop: the section, the ladder rows, and the aggregate denominator."""
+    module = repair_evaluator_module("prompt_evaluate_editset")
+    template = json.loads(
+        (SOURCE / "eval/prompt/canonical-v1e/repair-template.json").read_text(encoding="utf-8")
+    )
+    generation = {"max_prompt_bytes": 65_536}
+    seed = 20_260_824
+    allowed = frozenset({EDITSET_PATH, "tests/test_duration.py"})
+    blocks = [editset_block(module, EDITSET_PATH, EDITSET_BODY)]
+
+    # Ladder row 8: the corpus's adapter selects the kind set its template must declare, exactly.
+    require(
+        module.valid_repair_template(template, module.expected_template_kinds(EDITSET_TASK)),
+        "editset-template: the canonical-v1e template was rejected for its own corpus",
+    )
+    require(
+        not module.valid_repair_template(template, module.expected_template_kinds(FROZEN_TASK)),
+        "editset-template: a five-kind template was admitted for a frozen-adapter corpus",
+    )
+
+    # Ladder row 11: the measurement version is a checked function of the corpus.
+    good = editset_measurement(module, blocks)
+    # The declared field order: version 1 unchanged, in place, byte for byte, with the four
+    # version-2 members appended immediately before `content_sha256`. The helper above builds a
+    # reduced document (it carries only the fields the attempt loop reads), so the tuple identity
+    # is asserted on the evaluator's own declarations and the position on the built document.
+    require(
+        module.TASK_MEASUREMENT_V2_FIELDS
+        == module.TASK_MEASUREMENT_FIELDS[:-1]
+        + module.TASK_MEASUREMENT_V2_MEMBERS
+        + ("content_sha256",),
+        "editset-fields: the version-2 field order is not version 1 plus four appended members",
+    )
+    require(
+        tuple(good)[-5:] == module.TASK_MEASUREMENT_V2_MEMBERS + ("content_sha256",),
+        f"editset-fields: the version-2 members are not in their declared position: {tuple(good)!r}",
+    )
+    require(
+        module.valid_measurement_version_two(good, EDITSET_TASK, allowed),
+        "editset-version: a well-formed version-2 measurement was rejected",
+    )
+    require(
+        not module.valid_measurement_version_two(good, FROZEN_TASK, allowed),
+        "editset-version: a version-2 measurement was admitted for a frozen-adapter corpus",
+    )
+    version_one = repair_measurement(module)
+    require(
+        not set(module.TASK_MEASUREMENT_V2_MEMBERS) & set(version_one),
+        "editset-fields: a version-1 document carries a version-2 member",
+    )
+    require(
+        module.valid_measurement_version_two(version_one, FROZEN_TASK, allowed),
+        "editset-version: a version-1 measurement was rejected for a frozen-adapter corpus",
+    )
+    require(
+        not module.valid_measurement_version_two(version_one, EDITSET_TASK, allowed),
+        "editset-version: a version-1 measurement was admitted for a repair-adapter corpus",
+    )
+
+    def rejected(label: str, mutate) -> None:
+        value = editset_measurement(module, [dict(item) for item in blocks])
+        mutate(value)
+        require(
+            not module.valid_measurement_version_two(value, EDITSET_TASK, allowed),
+            f"editset-{label}: an invalid version-2 measurement was admitted",
+        )
+
+    # One case per ladder row 13 to 17.
+    rejected("row13-digest-without-bytes", lambda v: v.update({"patch_size_bytes": 0}))
+    rejected("row13-bytes-without-digest", lambda v: v.update({"patch_sha256": None}))
+    rejected("row13-malformed-digest", lambda v: v.update({"patch_sha256": "zz"}))
+    rejected("row14-total-absent", lambda v: v.update({"edit_set_total_bytes": None}))
+    rejected(
+        "row14-total-disagrees",
+        lambda v: v.update({"edit_set_total_bytes": v["edit_set_total_bytes"] + 1}),
+    )
+    rejected("row15-path-outside", lambda v: v["edit_set"][0].update({"path": "src/other.py"}))
+    rejected(
+        "row15-body-digest",
+        lambda v: v["edit_set"][0].update({"body_sha256": "0" * 64}),
+    )
+    rejected(
+        "row15-unsorted",
+        lambda v: v.__setitem__("edit_set", [
+            editset_block(module, "tests/test_duration.py", "assert True\n"),
+            editset_block(module, EDITSET_PATH, EDITSET_BODY),
+        ]) or v.__setitem__(
+            "edit_set_total_bytes", sum(item["body_bytes"] for item in v["edit_set"])
+        ) or v.__setitem__(
+            "diagnostic_summary",
+            "provider-backed candidate patch failed validation; applied edits: "
+            f"tests/test_duration.py, {EDITSET_PATH}",
+        ),
+    )
+    rejected(
+        "row16-too-many-blocks",
+        lambda v: v.__setitem__("edit_set", [
+            editset_block(module, f"src/{index}.py", "x\n") for index in range(33)
+        ]),
+    )
+    rejected(
+        "row17-summary-disagrees",
+        lambda v: v.update({
+            "diagnostic_summary": "failed validation; applied edits: tests/test_duration.py",
+        }),
+    )
+    # Ladder row 10 in the other direction: a version-1 document carrying a version-2 member.
+    stray = repair_measurement(module)
+    stray["patch_sha256"] = "f" * 64
+    require(
+        not module.valid_measurement_version_two(stray, FROZEN_TASK, allowed),
+        "editset-row10: a version-1 measurement carrying a version-2 member was admitted",
+    )
+
+    calls: list[dict] = []
+
+    def run_attempt(attempt_index, rendered_text, rendered_text_sha, repair_source, preparation_ns):
+        calls.append({
+            "attempt_index": attempt_index, "rendered_text": rendered_text,
+            "repair_source": repair_source,
+        })
+        return {"record": {"attempt_index": attempt_index}, "measurement": None}
+
+    def attempt_one(measurement):
+        return {
+            "measurement": measurement,
+            "rendered_text": "BASE\n\n--- task prompt ---\nTASK\n",
+        }
+
+    # The section is rendered, and `included_sections` records it.
+    calls.clear()
+    module.build_repair_attempt(run_attempt, attempt_one(good), template, generation, seed)
+    require(len(calls) == 1, "editset-render: the repair attempt was not invoked exactly once")
+    source = calls[0]["repair_source"]
+    require(
+        source["included_sections"] == ["STATUS", "EDITSET", "SUMMARY", "STDOUT", "STDERR"]
+        and source["dropped_sections"] == [],
+        f"editset-render: unexpected section selection {source['included_sections']!r}",
+    )
+    require(
+        f"FILE: {EDITSET_PATH}" in calls[0]["rendered_text"]
+        and EDITSET_BODY in calls[0]["rendered_text"],
+        "editset-render: the repair prompt does not carry the failing attempt's own edits",
+    )
+    require(
+        calls[0]["rendered_text"].startswith("BASE\n\n--- task prompt ---\nTASK\n"),
+        "editset-render: the repair prompt is not a strict extension of attempt one",
+    )
+
+    # Mode 2: no edit set at all, so the section is omitted and nothing else moves.
+    calls.clear()
+    absent = editset_measurement(module, None, summary="a FILE header carries no fenced block")
+    absent["patch_size_bytes"] = 0
+    absent["patch_sha256"] = None
+    absent = bind(absent)
+    module.build_repair_attempt(run_attempt, attempt_one(absent), template, generation, seed)
+    source = calls[0]["repair_source"]
+    require(
+        source["included_sections"] == ["STATUS", "SUMMARY", "STDOUT", "STDERR"]
+        and source["dropped_sections"] == [],
+        f"editset-absent: an empty edit set was reported as a drop: {source!r}",
+    )
+    require(
+        f"FILE: {EDITSET_PATH}" not in calls[0]["rendered_text"],
+        "editset-absent: an empty edit set still rendered a file block",
+    )
+    require(
+        template["section_headers"]["EDITSET"] not in calls[0]["rendered_text"],
+        "editset-absent: an empty edit set still emitted its section header",
+    )
+
+    # An omitted block renders as one placeholder line, never a partial file.
+    calls.clear()
+    omitted = editset_measurement(
+        module, [editset_block(module, EDITSET_PATH, None, declared=EDITSET_BODY)],
+    )
+    module.build_repair_attempt(run_attempt, attempt_one(omitted), template, generation, seed)
+    require(
+        f"FILE: {EDITSET_PATH} [omitted for prompt budget: "
+        f"{len(EDITSET_BODY.encode('utf-8'))} bytes]" in calls[0]["rendered_text"],
+        "editset-omitted: an omitted block did not render as one placeholder line",
+    )
+    require(
+        EDITSET_BODY not in calls[0]["rendered_text"],
+        "editset-omitted: an omitted block leaked its body into the prompt",
+    )
+
+    # Ladder row 18: `EDITSET` alone does not make a repair eligible.
+    barren = editset_measurement(module, blocks, summary="", stdout="", stderr="")
+    require(
+        module.repair_eligibility(barren) == "REPAIR_INPUT_UNAVAILABLE",
+        "editset-eligibility: EDITSET alone made a repair eligible",
+    )
+
+    # `EDITSET` is dropped last, after every section the C4 run already proved insufficient alone.
+    sources = module.repair_section_sources(good)
+    full = module.assemble_repair_prompt(template, "BASE\n", sources, 65_536)
+    tight = module.assemble_repair_prompt(template, "BASE\n", sources, full[3] - 1)
+    require(
+        "EDITSET" in tight[1] and tight[2] == ["STDOUT"],
+        f"editset-drop-order: the first drop was not STDOUT: {tight[1:]!r}",
+    )
+    step = full[3]
+    for expected_drop in ("STDOUT", "STDERR", "SUMMARY", "EDITSET"):
+        candidate = module.assemble_repair_prompt(template, "BASE\n", sources, step - 1)
+        require(
+            expected_drop in candidate[2],
+            f"editset-drop-order: {expected_drop} was not the next section dropped",
+        )
+        step = candidate[3]
+    require(
+        module.REPAIR_DROP_ORDER[-1] == "EDITSET",
+        "editset-drop-order: EDITSET is no longer dropped last",
+    )
+
+    # `repair_editset_attempt_count` over a mixed run: included, dropped, and never present.
+    def row(included, kind="REPAIR", status="FAIL"):
+        return {
+            "schema_version": 2,
+            "attempts": [
+                {"attempt_kind": "INITIAL", "status": "FAIL", "repair_prompt_source": None},
+                {
+                    "attempt_kind": kind, "status": status,
+                    "repair_prompt_source": {"included_sections": included},
+                },
+            ],
+        }
+
+    require(
+        module.row_repair_editset_attempts(row(["STATUS", "EDITSET", "SUMMARY"])) == 1,
+        "editset-denominator: a carried EDITSET was not counted",
+    )
+    require(
+        module.row_repair_editset_attempts(row(["STATUS", "SUMMARY"])) == 0,
+        "editset-denominator: a dropped EDITSET was counted",
+    )
+    require(
+        module.row_repair_editset_attempts(
+            row(["STATUS", "EDITSET"], status="SKIPPED")
+        ) == 0,
+        "editset-denominator: a skipped repair attempt was counted",
+    )
+    require(
+        module.row_repair_editset_attempts({"schema_version": 1, "attempts": []}) == 0,
+        "editset-denominator: a version-1 row contributed to the denominator",
+    )
+
+
 def verify_repair_attempt_boundary() -> None:
     """C4-REPAIR-MEASURED sections 3.2, 3.6, 3.8, and 4.3: the evaluator-owned second attempt.
 
@@ -1905,6 +2196,7 @@ def main() -> int:
     verify_complete_score_boundary()
     verify_provider_admission_boundary()
     verify_repair_attempt_boundary()
+    verify_editset_attempt_boundary()
     verify_provider_probe_boundary()
     with tempfile.TemporaryDirectory(prefix="prompt-evaluate-") as directory:
         root = Path(directory)

@@ -344,6 +344,52 @@ task manifest and every `prompt-v1` manifest is a digest-verified member of `can
 The 24 members the two corpora share carry identical digests, which is the machine-checkable
 statement that the adapter, the runner, and the fixtures did not move.
 
+#### The failing edit set, and the second adapter
+
+C4-REPAIR-MEASURED's repair prompt carries the failing attempt's status labels, diagnostic summary,
+stdout, and stderr, but not its edits: the model's output lives only inside
+`scripts/prompt-measurement-adapter.py` and is dropped when `measurement()` returns. The measured
+consequence is in `eval/prompt/c4-repair-gate/`: on all six repair attempts where attempt 1 had
+produced a validated edit set, attempt 2 returned a patch of exactly the same byte count.
+
+`docs/specs/c4-repair-editset.md` is the authoritative plan for closing that gap.
+`scripts/prompt-repair-adapter.py` loads the frozen adapter **by path**, verifies its bytes against
+a hard-coded digest before executing them, and calls its containment, sealing, redaction,
+generation, validation, and edit-parsing functions unchanged. Only the sequencing that must retain
+the edit set is a near-copy, and its divergence from the frozen original is asserted against a
+checked-in golden — `eval/fixtures/c4-repair-editset/adapter-divergence.diff`, regenerated with
+`scripts/run-prompt-repair-adapter-smoke --update-golden`. The frozen adapter stays byte-identical
+and remains a member of all three corpus file-set manifests at the same digest.
+`TASK_MEASUREMENT` moves to `schema_version: 2` under the same `Option` mechanism the row uses, and
+`PROMPT_TASK_ROW` does not move, because the row gains no field.
+
+Four rules that generalize beyond this capability:
+
+- **A second adapter must produce its own `runtime_identity`.** The frozen `runtime_identity()` is
+  `sha256(Path(__file__).read_bytes())`, and `src/prompt_score.align` requires the row's probe to
+  match the task manifest's `measurement_adapter_runtime`. Reusing the frozen `environment_probe()`
+  from an imported module persists the *imported* file's digest while running your own code, and
+  the check accepts it, because the manifest would have had to declare the same false value.
+  `producer` names a role and stays `MEASUREMENT_ADAPTER`; `runtime_identity` names a file and must
+  not. The same probe found that no producer or runtime-identity check existed on an
+  *attempt-level* measurement at all — the row-level rule binds only the final attempt once a row
+  can run twice — and that is now checked per attempt in the evaluator, the gate validator, and the
+  Align verifier.
+- **A digest of model output is taken after redaction, never before.** A persisted digest of
+  unredacted bytes is a credential oracle: anyone holding a candidate credential could confirm it by
+  recomputing the digest. The cost is that with a credential-bearing provider the digest is a
+  function of redaction as well as of content, which is the correct trade.
+- **A persisted quantity that only some corpora can produce is selected by the corpus, not by the
+  container version.** `repair_editset_attempt_count` is `Some` exactly when the corpus names the
+  repair adapter, because a `canonical-v1r` template declares no `EDITSET` kind and the quantity is
+  undefined for it rather than zero. Requiring it at version 2 unconditionally would have rejected
+  the merged `eval/prompt/c4-repair-gate/` evidence, which is a version-2 document written before
+  the quantity existed. The frozen-chain regression in `make prompt-gate-validator-smoke` is what
+  caught that.
+- **Which section kinds a sealed repair template must declare is also selected by the corpus.**
+  `canonical-v1r`'s four-kind template stays decodable and its corpus stays runnable; a task naming
+  the repair adapter must declare all five. A template is never "upgraded" by inference.
+
 `scripts/prompt-evaluate.py` is pinned byte-exactly by `src/prompt_evaluate.align` **and** bounded
 by a chunked-argument launch window. That window is now four chunks, 196,609…262,144 bytes, and
 `EVALUATOR_BOOTSTRAP` pops four arguments; the attempt loop did not fit the previous three-chunk
