@@ -811,7 +811,7 @@ The current forward delivery order is:
     neither does the new owner test `make prompt-repair-adapter-smoke`.
 
     **The gate is `NOT_MET`, and that is the published result.** The run made all 22 provider calls
-    the ceiling allowed — 12 initial plus 10 repair — in 940.931 s (15 min 41 s) against a recorded
+    the ceiling allowed — 12 initial plus 10 repair — in 839.492 s (13 min 59 s) against a recorded
     60-minute ceiling. `repair_recovery_count` and `repair_recovery_paired_count` are both 0.
     `repair_editset_attempt_count` came out at **exactly 6**, the value fixed before the run, so
     the addressable arm was realized in full: every repair prompt that could carry `EDITSET` did,

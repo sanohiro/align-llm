@@ -1768,11 +1768,12 @@ fn task_repair_adapter() -> prompt_artifacts.PromptEvaluationTask {
 }
 
 // --- C4-REPAIR-TEMPLATE: version-3 measurements -----------------------------------------------
-// Defect 26 is the ACCEPTANCE case: a corpus naming `scripts/prompt-template-adapter.py` whose
-// every ran attempt carries a version-3 measurement with a refusal code, the completion identity,
-// and the widened `edit_set` rule, and whose two new aggregates are recomputed from the attempts.
-// Defects 27-32 are one rejection each, and each is written so that the rule it names is the only
-// rule that can reject it.
+// Defects 31 and 38 are the ACCEPTANCE cases: a corpus naming
+// `scripts/prompt-template-adapter.py` whose every ran attempt carries a version-3 measurement
+// with a refusal code, the completion identity, and the widened `edit_set` rule. Defect 38 is the
+// one whose refusal counter is **non-zero**, so the aggregate's counted arm is compared against a
+// persisted value. Defects 32-37 are one rejection each, and each is written so that the rule it
+// names is the only rule that can reject it.
 
 fn template_adapter_argv() -> array<string> {
   mut values: array_builder<string> := array_builder()
@@ -1785,26 +1786,25 @@ fn task_template_adapter() -> prompt_artifacts.PromptEvaluationTask {
   return task_named(2)
 }
 
-// Defect 27 is deliberately a **repair-adapter** corpus: a version-2 measurement carrying a
+// Defect 32 is deliberately a **repair-adapter** corpus: a version-2 measurement carrying a
 // version-3 member. On a template-adapter corpus the version rule would reject it as well, and a
 // case with two possible causes proves neither.
 fn uses_template_adapter(defect: i64) -> bool {
-  return defect >= 26 && defect <= 33 && defect != 27
+  return defect >= 31 && defect <= 38 && defect != 32
 }
 
-// Defects 30 and 33 both take the reproduced-unchanged shape on their initial attempt. Defect 30
-// then discards the blocks, which the widened rule rejects; defect 33 keeps them, which is the
-// valid shape, so it is the ACCEPTANCE case for a **non-zero** refusal counter. Without it the
-// aggregate's non-zero arm is never compared against a persisted value and a recomputation that
-// always returned zero would pass every row — the pre-committed secondary this capability reports.
-fn unchanged_refusal(defect: i64, passing: bool) -> bool {
-  return (defect == 30 || defect == 33) && !passing
-}
-
-// Defect 28 is a template-adapter corpus emitting a version-2 measurement, so it is the one case
+// Defect 33 is a template-adapter corpus emitting a version-2 measurement, so it is the one case
 // where the adapter is the template adapter and the version is still 2.
 fn measurement_is_version_three(defect: i64) -> bool {
-  return uses_template_adapter(defect) && defect != 28
+  return uses_template_adapter(defect) && defect != 33
+}
+
+// Defects 35 and 38 both take the reproduced-unchanged shape on their initial attempt. Defect 35
+// then discards the blocks, which the widened rule rejects; defect 38 keeps them, which is the
+// valid shape, so it is the acceptance case for a non-zero refusal counter. Sharing one predicate
+// is what keeps the rejection and the acceptance from drifting apart.
+fn unchanged_refusal(defect: i64, passing: bool) -> bool {
+  return (defect == 35 || defect == 38) && !passing
 }
 
 fn completion_text_value() -> string {
@@ -1827,15 +1827,15 @@ fn base_identity_value() -> string {
 // Defects 21-23 carry a version-1 measurement from a frozen-adapter corpus, so they name the
 // frozen adapter exactly as defects 0-13 and 15 do.
 fn uses_repair_adapter(defect: i64) -> bool {
-  return defect == 14 || (defect >= 16 && defect <= 20) || defect == 24 || defect == 25 ||
-  defect == 27 || uses_template_adapter(defect)
+  return defect == 14 || (defect >= 16 && defect <= 20) || (defect >= 24 && defect <= 30) ||
+  defect == 32 || uses_template_adapter(defect)
 }
 
 // Defect 16 is a repair-adapter corpus emitting a version-1 measurement, so it is the one case
 // where the adapter is the repair adapter and the version is still 1.
 fn measurement_is_version_two(defect: i64) -> bool {
-  return defect == 14 || (defect >= 17 && defect <= 20) || defect == 24 || defect == 25 ||
-  defect == 27 || defect == 28
+  return defect == 14 || (defect >= 17 && defect <= 20) || (defect >= 24 && defect <= 30) ||
+  defect == 32 || defect == 33
 }
 
 fn editset_attempts(defect: i64) -> i64 {
@@ -1849,9 +1849,10 @@ fn editset_attempts(defect: i64) -> i64 {
 }
 
 // A ran attempt contributes to the refusal counter when its measurement records a code other than
-// `NONE`. Only defect 30 records one, on the initial attempt of each of the two rows per variant.
+// `NONE`. Defect 38 is the acceptance case that checks the non-zero arm; a recomputation that
+// always returned zero passes every other row in this file.
 fn edit_refusals(defect: i64) -> i64 {
-  if defect == 30 || defect == 33 { return 2 }
+  if defect == 35 || defect == 38 { return 2 }
   return 0
 }
 
@@ -1932,16 +1933,119 @@ fn edit_set_blocks(carried: bool, order: i64) -> array<prompt_artifacts.EditSetB
   return values.build()
 }
 
+// `src/a.py`, `src/aa.py`, `src/aaa.py`, ... — strictly ascending in byte order, because `.` (0x2E)
+// sorts before `a` (0x61), so each name is a prefix-extension that compares greater than the last.
+fn generated_path(count: i64) -> string {
+  b := builder()
+  b.write("src/")
+  mut index := 0
+  loop {
+    if index >= count { break }
+    b.write("a")
+    index = index + 1
+  }
+  b.write(".py")
+  return b.to_string()
+}
+
+// Defect 30's body: one byte past the producer's own `EDIT_SET_LIMIT`. A **carried** body may not
+// exceed it — the producer omits such a block instead — so carrying one is a producer defect. Built
+// rather than written out, because a 16 KB literal in a fixture is unreadable.
+fn oversized_body_text() -> string {
+  b := builder()
+  mut index := 0
+  loop {
+    if index >= 16_385 { break }
+    b.write("x")
+    index = index + 1
+  }
+  return b.to_string()
+}
+
 fn edit_set_order(defect: i64) -> i64 {
   if defect == 24 { return 1 }
   if defect == 25 { return 2 }
   return 0
 }
 
+// Defects 26-29 break one block-shape rule each, and each is the only rule that can reject its
+// document. They exist because every one of these clauses was unfalsifiable while the fixture
+// built only well-formed blocks — the same gap review found in the ascending rule, audited across
+// the whole block validator rather than repaired one clause at a time.
+//
+// 26 digests the wrong bytes; 27 declares a length its body does not have, with the total still
+// summing the declared counts so the row-14 rule stays satisfied; 28 is `Some` and **empty**,
+// which is a different statement from `None` and is a producer defect; 29 exceeds the 32-block
+// bound with 33 individually valid blocks, which the length check rejects before it ever compares
+// a pair, so a repeated block is enough and 33 distinct paths are not needed.
+fn edit_set_blocks_for(defect: i64, carried: bool) -> array<prompt_artifacts.EditSetBlock> {
+  if defect == 26 {
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    values.push(edit_set_block(
+        carried, "src/duration.py", body_text_value(), body_byte_count(), digest_a(),
+      ))
+    return values.build()
+  }
+  if defect == 27 {
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    values.push(edit_set_block(
+        carried,
+        "src/duration.py",
+        body_text_value(),
+        body_byte_count() + 1,
+        body_digest_value(),
+      ))
+    return values.build()
+  }
+  if defect == 28 {
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    return values.build()
+  }
+  if defect == 29 {
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    mut index := 0
+    loop {
+      if index >= 33 { break }
+      // Distinct and strictly ascending, so the block bound is the only rule broken: repeating one
+      // path would be rejected by the uniqueness rule before the count was ever compared.
+      path := generated_path(index + 1)
+      path_view: str := path
+      values.push(edit_set_block(
+          carried, path_view, body_text_value(), body_byte_count(), body_digest_value(),
+        ))
+      index = index + 1
+    }
+    return values.build()
+  }
+  if defect == 30 {
+    body := oversized_body_text()
+    body_view: str := body
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    values.push(edit_set_block(
+        carried, "src/duration.py", body_view, 16_385, body_digest_of(body_view),
+      ))
+    return values.build()
+  }
+  return edit_set_blocks(carried, edit_set_order(defect))
+}
+
+fn edit_set_block_count(defect: i64) -> i64 {
+  if defect == 26 || defect == 27 || defect == 30 { return 1 }
+  if defect == 28 { return 0 }
+  if defect == 29 { return 33 }
+  return 2
+}
+
 // The pre-omission sum the verifier recomputes. Defect 25 carries `src/duration.py` twice, so its
 // sum is that body twice.
 fn edit_set_total(defect: i64) -> i64 {
   if defect == 25 { return body_byte_count() + body_byte_count() }
+  if defect == 26 { return body_byte_count() }
+  // Defect 27's total is the sum of the **declared** counts, so only the length rule is broken.
+  if defect == 27 { return body_byte_count() + 1 }
+  if defect == 28 { return 0 }
+  if defect == 29 { return body_byte_count() * 33 }
+  if defect == 30 { return 16_385 }
   return body_byte_count() + second_body_byte_count()
 }
 
@@ -1971,7 +2075,7 @@ fn measurement_v2(
     diagnostic_summary: "provider-backed candidate patch failed validation".clone(),
     diagnostic_stdout: "post-repair validation exit code: 1".clone(),
     diagnostic_stderr: "AssertionError".clone(),
-    edit_set: Some(edit_set_blocks(true, edit_set_order(defect))),
+    edit_set: Some(edit_set_blocks_for(defect, true)),
     // Defect 20 breaks only the pre-omission sum, which no other rule reads.
     edit_set_total_bytes: Some(if defect == 20 {
         edit_set_total(defect) + 1
@@ -2042,10 +2146,6 @@ fn measurement_v1_with_v2_member(
   }
 }
 
-// Defect 30 is the invariant this capability exists to establish, inverted: a reproduced-unchanged
-// refusal that discarded the blocks its producer built one line before the raise. Defect 31 puts a
-// completion excerpt on a code whose `edit_set` already carries the model's own bodies, and defect
-// 29 leaves the ten-code vocabulary.
 fn measurement_v3(
   passing: bool, window: i64, seed: i64, defect: i64, runtime: str,
 ) -> prompt_artifacts.TaskMeasurement {
@@ -2092,17 +2192,17 @@ fn measurement_v3(
     },
     diagnostic_stdout: "post-repair validation exit code: 1".clone(),
     diagnostic_stderr: "AssertionError".clone(),
-    // Defect 30 discards the blocks its own refusal was computed from, which the widened rule
-    // rejects and which no version-2 rule could have seen.
-    edit_set: if defect == 30 && !passing { None } else { Some(edit_set_blocks(true, 0)) },
-    edit_set_total_bytes: if defect == 30 && !passing {
+    // Defect 35 discards the blocks its own refusal was computed from, which the widened rule
+    // rejects and which no version-2 rule could have seen. Defect 38 keeps them.
+    edit_set: if defect == 35 && !passing { None } else { Some(edit_set_blocks(true, 0)) },
+    edit_set_total_bytes: if defect == 35 && !passing {
       None
     } else {
       Some(body_byte_count() + second_body_byte_count())
     },
     patch_sha256: if unchanged_refusal(defect, passing) { None } else { Some(digest_b()) },
     base_adapter_runtime_identity: Some(base_identity_value()),
-    edit_refusal: if defect == 29 {
+    edit_refusal: if defect == 34 {
       Some("NO_SUCH_REFUSAL".clone())
     } else if unchanged_refusal(defect, passing) {
       Some("UNCHANGED_FILES".clone())
@@ -2111,13 +2211,13 @@ fn measurement_v3(
     },
     completion_bytes: Some(completion_byte_count()),
     completion_sha256: Some(completion_digest_value()),
-    // Defect 31 persists the excerpt on a code whose edit set already carries the model's bodies.
-    completion_text: if defect == 31 { Some(completion_text_value()) } else { None },
+    // Defect 36 persists the excerpt on a code whose edit set already carries the model's bodies.
+    completion_text: if defect == 36 { Some(completion_text_value()) } else { None },
     content_sha256: if passing { digest_b() } else { digest_c() },
   }
 }
 
-// Defect 27: a version-2 measurement carrying a version-3 member. Absence below version 3 is
+// Defect 32: a version-2 measurement carrying a version-3 member. Absence below version 3 is
 // required rather than defaulted, so this is rejected by the version-2 shape rule alone.
 fn measurement_v2_with_v3_member(
   passing: bool, window: i64, seed: i64,
@@ -2127,10 +2227,9 @@ fn measurement_v2_with_v3_member(
   return value
 }
 
-// Defect 32: the row-level view differs from its final attempt's measurement in a version-3 member
+// Defect 37: the row-level view differs from its final attempt's measurement in a version-3 member
 // and in nothing else. Without those four comparisons `verifier_measurement_equal` would still
-// pass while comparing 27 of 31 fields, so this is the single case that keeps ladder row 26 honest
-// at version 3.
+// pass while comparing 27 of 31 fields.
 fn template_drifted_measurement(seed: i64, defect: i64) -> prompt_artifacts.TaskMeasurement {
   mut value := measurement_v3(true, 30, seed, defect, "runtime")
   value.completion_sha256 = Some(digest_c())
@@ -2152,7 +2251,7 @@ fn attempt_measurement_for(passing: bool, window: i64, seed: i64, defect: i64) -
   if measurement_is_version_one_defect(defect) {
     return measurement_v1_with_v2_member(passing, window, seed, defect)
   }
-  if defect == 27 { return measurement_v2_with_v3_member(passing, window, seed) }
+  if defect == 32 { return measurement_v2_with_v3_member(passing, window, seed) }
   if measurement_is_version_three(defect) {
     return measurement_v3(passing, window, seed, defect, "runtime")
   }
@@ -2280,7 +2379,7 @@ fn editset_drifted_measurement(seed: i64, defect: i64) -> prompt_artifacts.TaskM
 }
 
 fn is_editset_defect(defect: i64) -> bool {
-  return (defect >= 14 && defect <= 25) || defect == 27 || uses_template_adapter(defect)
+  return (defect >= 14 && defect <= 30) || defect == 32 || uses_template_adapter(defect)
 }
 
 fn attempts_for(defect: i64, seed: i64) -> array<prompt_artifacts.TaskAttemptRecord> {
@@ -2372,7 +2471,7 @@ fn row_v2(sample: i64, parent: bool, defect: i64) -> prompt_artifacts.PromptTask
       drifted_measurement(seed)
     } else if defect == 13 {
       adapter_repair_measurement(seed)
-    } else if defect == 32 {
+    } else if defect == 37 {
       template_drifted_measurement(seed, defect)
     } else if defect == 19 {
       editset_drifted_measurement(seed, defect)
@@ -2491,7 +2590,7 @@ fn task_aggregate_v2(defect: i64) -> prompt_artifacts.TaskAggregate {
     } else {
       None
     },
-    // Present only for a corpus whose adapter persists `edit_refusal`. Defects 0-25 name an
+    // Present only for a corpus whose adapter persists `edit_refusal`. Defects 0-30 name an
     // earlier adapter, so the quantity is undefined for them rather than zero.
     parent_edit_refusal_count: if uses_template_adapter(defect) {
       Some(edit_refusals(defect))
@@ -3041,60 +3140,82 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   editset_duplicate_path_evidence := evidence_v2(25)
   expect_invalid(editset_duplicate_path, editset_duplicate_path_evidence)?
 
+  // One block-shape rule each: the digest over the body, the declared length, an edit set that is
+  // `Some` and empty, and the 32-block bound. Every one of these was unfalsifiable while the
+  // fixture built only well-formed blocks.
+  editset_body_digest := complete_result_v2(26)
+  editset_body_digest_evidence := evidence_v2(26)
+  expect_invalid(editset_body_digest, editset_body_digest_evidence)?
+
+  editset_body_length := complete_result_v2(27)
+  editset_body_length_evidence := evidence_v2(27)
+  expect_invalid(editset_body_length, editset_body_length_evidence)?
+
+  editset_empty := complete_result_v2(28)
+  editset_empty_evidence := evidence_v2(28)
+  expect_invalid(editset_empty, editset_empty_evidence)?
+
+  editset_block_count := complete_result_v2(29)
+  editset_block_count_evidence := evidence_v2(29)
+  expect_invalid(editset_block_count, editset_block_count_evidence)?
+
+  editset_body_over_budget := complete_result_v2(30)
+  editset_body_over_budget_evidence := evidence_v2(30)
+  expect_invalid(editset_body_over_budget, editset_body_over_budget_evidence)?
+
   // --- C4-REPAIR-TEMPLATE -----------------------------------------------------------------------
 
   // Acceptance: a corpus naming the template adapter, every ran attempt carrying a version-3
   // measurement with a refusal code, the completion identity, and the widened `edit_set` rule,
-  // with `POLICY` among the sections its repair prompt actually carried. Both new aggregates are
-  // recomputed here from the attempts and must equal the persisted values.
-  template_clean := complete_result_v2(26)
-  template_clean_evidence := evidence_v2(26)
+  // with `POLICY` among the sections its repair prompt actually carried.
+  template_clean := complete_result_v2(31)
+  template_clean_evidence := evidence_v2(31)
   if verdict_code(prompt_score.verify_result(template_clean, template_clean_evidence)?) != 2 {
     return Err(Error.Invalid)
   }
 
   // A version-3 member present at version 2. Absence below version 3 is required, never
   // defaulted — the rule that keeps all three merged chains decodable.
-  v3_member_at_v2 := complete_result_v2(27)
-  v3_member_at_v2_evidence := evidence_v2(27)
+  v3_member_at_v2 := complete_result_v2(32)
+  v3_member_at_v2_evidence := evidence_v2(32)
   expect_invalid(v3_member_at_v2, v3_member_at_v2_evidence)?
 
   // Ladder row 16: a corpus naming the template adapter whose measurements are version 2. The
   // measurement version is a checked function of the corpus, three ways.
-  v3_version_disagrees := complete_result_v2(28)
-  v3_version_disagrees_evidence := evidence_v2(28)
+  v3_version_disagrees := complete_result_v2(33)
+  v3_version_disagrees_evidence := evidence_v2(33)
   expect_invalid(v3_version_disagrees, v3_version_disagrees_evidence)?
 
   // Ladder row 17: `edit_refusal` outside the ten-code vocabulary. The producer's mapping is
   // total, so an unrecognized value means the record and the producer disagree.
-  v3_unknown_refusal := complete_result_v2(29)
-  v3_unknown_refusal_evidence := evidence_v2(29)
+  v3_unknown_refusal := complete_result_v2(34)
+  v3_unknown_refusal_evidence := evidence_v2(34)
   expect_invalid(v3_unknown_refusal, v3_unknown_refusal_evidence)?
 
   // The invariant this capability exists to establish: a reproduced-unchanged refusal that
   // discarded the blocks its producer built one line before the raise.
-  v3_unchanged_no_blocks := complete_result_v2(30)
-  v3_unchanged_no_blocks_evidence := evidence_v2(30)
+  v3_unchanged_no_blocks := complete_result_v2(35)
+  v3_unchanged_no_blocks_evidence := evidence_v2(35)
   expect_invalid(v3_unchanged_no_blocks, v3_unchanged_no_blocks_evidence)?
 
   // Ladder row 20: a completion excerpt persisted on a code outside the eight for which no
   // structured substitute exists.
-  v3_text_unrefused := complete_result_v2(31)
-  v3_text_unrefused_evidence := evidence_v2(31)
+  v3_text_unrefused := complete_result_v2(36)
+  v3_text_unrefused_evidence := evidence_v2(36)
   expect_invalid(v3_text_unrefused, v3_text_unrefused_evidence)?
 
   // `verifier_measurement_equal` over all 31 fields: the row differs from its final attempt in a
   // version-3 member and in nothing else.
-  v3_measurement_drift := complete_result_v2(32)
-  v3_measurement_drift_evidence := evidence_v2(32)
+  v3_measurement_drift := complete_result_v2(37)
+  v3_measurement_drift_evidence := evidence_v2(37)
   expect_invalid(v3_measurement_drift, v3_measurement_drift_evidence)?
 
   // Acceptance, and the one case that checks the counted quantity's **non-zero** arm: every row's
   // initial attempt records `UNCHANGED_FILES` and keeps the blocks its refusal was computed from,
   // and its repair passes. `edit_refusal_count` is recomputed from the attempts and must equal the
   // persisted 4. A recomputation that always returned zero passes every other row in this file.
-  template_refused := complete_result_v2(33)
-  template_refused_evidence := evidence_v2(33)
+  template_refused := complete_result_v2(38)
+  template_refused_evidence := evidence_v2(38)
   if verdict_code(prompt_score.verify_result(template_refused, template_refused_evidence)?) != 2 {
     return Err(Error.Invalid)
   }
