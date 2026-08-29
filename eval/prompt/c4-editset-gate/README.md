@@ -7,9 +7,15 @@ evidence it analyses, and it is never edited after the run.
 
 **`NOT_MET`.** `repair_recovery_paired_count: 0` over 10 repair attempts, 12 rows, 3 tasks x 2
 variants x 2 paired samples at `temperature_micros: 0` and `seed_mode: PAIRED_FIXED`, 22 provider
-generation calls, 940.931 s against a recorded 60-minute ceiling — the clock of the run recorded
-here, which is the run from the committed head. The gate predicate is C4-REPAIR-MEASURED's
-unchanged, so the two runs are directly comparable.
+generation calls, 839.492 s against a recorded 60-minute ceiling — the clock of the run recorded
+here, which is the run from the clean committed head `9516e75`. The gate predicate is
+C4-REPAIR-MEASURED's unchanged, so the two capabilities' runs are directly comparable.
+
+Three runs of this corpus exist and **every correctness value here is identical in all three** —
+verdict, rows, statuses, failure kinds, patch sizes, aggregates, assembled prompt sizes, all four
+patch digests, and every `edit_set` block digest. Only the clocks moved: 839.492 s, 940.931 s, and
+823.67 s. The third run exists because review repair moved the repair adapter's bytes, which every
+row names by digest; spec section 11.3 deviation 15 records it.
 
 `repair_editset_attempt_count: 6` — exactly the addressable arm stated before the run. The six
 repair prompts that could carry `EDITSET` all carried it; no section was ever dropped, and the

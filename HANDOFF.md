@@ -10,24 +10,26 @@ verified, **measured**, and **reviewed twice**; the recorded findings are repair
 merged, and nothing is uncommitted.
 
 **GATE RESULT: `NOT_MET` — a measured negative, and a directional one.** 12 rows, 22 provider calls,
-**940.931 s = 15 min 41 s** against a 60-minute recorded ceiling. `repair_recovery_count: 0` and
+**839.492 s = 13 min 59 s** against a 60-minute recorded ceiling. `repair_recovery_count: 0` and
 `repair_recovery_paired_count: 0`. **`repair_editset_attempt_count: 6`** — exactly the addressable
 arm stated before the run, so all six eligible repair prompts carried `EDITSET` and the drop ladder
 never fired (8,348-16,904 bytes of 65,536). Evidence at `eval/prompt/c4-editset-gate/`; the per-row
 table and the analysis are in spec section 11.4.
 
-**The checked-in evidence is the run from the clean committed head `de56c60`**, taken on the same
-terms C4-REPAIR-MEASURED used: `align_llm_clean: true` and all three reachability fields
-`VERIFIED`. A pre-commit run of the same tree reported `align_llm_clean: false` and, of the three
-reachability fields, only `align_llm_reachability: UNVERIFIED` — the one an uncommitted head makes
-unanswerable; `align_reachability` and `corpus_reachability` were `VERIFIED` in both.
-**Every correctness value reproduced
-exactly** between the two runs — same verdict, same rows, same statuses and failure kinds, same
+**The checked-in evidence is the run from the clean committed head `9516e75`** — the repaired head
+— taken on the same terms C4-REPAIR-MEASURED used: `align_llm_clean: true` and all three
+reachability fields `VERIFIED`. **Three runs of this corpus now exist and every correctness value is
+identical in all three**: same verdict, same rows, same statuses and failure kinds, same
 `patch_size_bytes`, same six-attempt denominator, same aggregates, same 8,348-16,904 assembled
-bytes, and **the same two patch digests** `8cd2aa30…` and `cd9ae218…`. Only the clocks moved:
-940.931 s against 823.67 s, and 8.93-52.57 s / median 22.25 s against 8.58-51.54 s / median
-19.09 s, under a concurrent DinD preflight. Digests: `c4-editset-evaluation.json` `1355d8e3…`,
-evidence `cac6f466…`, record `561f74b8…`.
+bytes, the same **four** patch digests, and the same `edit_set` block digests, path for path. The
+first ran from the uncommitted tree (`align_llm_clean: false`, and of the three reachability fields
+only `align_llm_reachability: UNVERIFIED` — the one an uncommitted head makes unanswerable); the
+second from `de56c60`; the third is this one, needed because review repair moved the repair
+adapter's bytes and every row names that adapter by digest. Only the clocks moved: 839.492 s against
+940.931 s and 823.67 s, and 8.33-52.69 s / median 21.73 s against 8.93-52.57 s / median 22.25 s and
+8.58-51.54 s / median 19.09 s. The repair provably could not have reached any row: the largest
+realized `edit_set_total_bytes` is **1,160 bytes** against a 16,384-byte limit. Digests:
+`c4-editset-evaluation.json` `1b3ebbb6…`, evidence `549879df…`, record `6053086f…`.
 
 **The question C4 could not answer is answered.** On all four rows where both attempts produced a
 patch, `attempts[1].measurement.patch_sha256` equals `attempts[0]`'s **exactly** — the same bytes,
@@ -159,8 +161,11 @@ fails closed had any component moved.
 
 **Next actions, in order.** (1) **Re-record the gate-topology baseline and run the fresh-image
 preflight.** `origin/main` moved while this branch was in review — `a9561a9` and `45ff38e` (Track B
-R6) — and both the `Makefile` and the recorded baseline changed there, so the merge commit's
-`gmake baseline-check` must be re-recorded against the merged `Makefile` rather than assumed, and
+R6) — and both the `Makefile` and the recorded baseline changed there. `gmake baseline-check` fails
+at this head, and the diagnosis is exact and expected: the recorded baseline pins an artifact digest
+for **`Makefile`**, and this branch adds `c4-editset-gate` and `prompt-repair-adapter-smoke` to it,
+so that one row is the only mismatch. It must be re-recorded at the final head through the
+pending/finalize flow rather than assumed, and
 `Makefile` is in `FRESH_IMAGE_PATTERNS`, which selects the **installed fresh-image profile** for
 this branch's preflight. Fresh integration evidence at the merged head is required before
 publication; the DinD recipe is in the C8 note below. (2) `python3 scripts/pre-pr --owner-test ...`

@@ -1688,11 +1688,13 @@ Each is a place where implementation departed from, or had to decide something l
     `eval/tasks/prompt-v1e/` were re-frozen — **the same member set**, with the repair adapter's
     digest and every digest downstream of it moving and nothing else. The provider service revision
     was re-derived, not inherited, and came back unmoved. The gate evidence at the previous head
-    could not have been affected in any correctness value — no row came within a factor of three of
-    `EDIT_SET_LIMIT`, at 8,348 to 16,904 assembled bytes, and the ladder never fired, so no block
-    was ever a candidate for omission — but the artifact's runtime-identity fields name the adapter
-    by digest, so the run was repeated from the repaired head rather than re-labelled. §11.4
-    records both runs.
+    could not have been affected in any correctness value — the largest realized
+    `edit_set_total_bytes` in the run is **1,160 bytes** against an `EDIT_SET_LIMIT` of 16,384, so
+    no block was ever within a factor of fourteen of the budget and the rule that changed was never
+    reached — but the artifact's runtime-identity fields name the adapter by digest, so the run was
+    repeated from the repaired head rather than re-labelled. The re-run confirmed it: **every**
+    correctness value is identical to the previous run's, including all four patch digests and
+    every `edit_set` block digest, and only the clock moved. §11.4 records all three runs.
 
 16. **The unfalsifiable-clause finding was audited as a class, and it was larger than the two
     instances review named.** Review found the edit-set path rule and three version-1 absence
@@ -1709,16 +1711,29 @@ Each is a place where implementation departed from, or had to decide something l
 
 ### 11.4 The gate run and its result
 
-**The checked-in evidence is the run from the clean committed head `de56c60`**, taken on the terms
-`c4-repair-measured.md` §10.3 established: a gate record must name a reproducible commit.
-`align_llm_clean: true`, and all three reachability fields — `align_llm_reachability`,
-`align_reachability`, `corpus_reachability` — are `VERIFIED`. An earlier run from the same tree
-before it was committed reported `align_llm_clean: false` and — of the three reachability fields —
-`align_llm_reachability: UNVERIFIED`, the one an uncommitted head makes unanswerable;
-`align_reachability` and `corpus_reachability` were `VERIFIED` in both runs;
-**every correctness value below reproduced exactly between the two**, including both patch digests,
-and only the clocks moved. That comparison is itself the reproducibility evidence, and it is why §6.3
-refuses a speed claim.
+**The checked-in evidence is the run from the clean committed head `9516e75`** — the repaired head,
+after review — taken on the terms `c4-repair-measured.md` §10.3 established: a gate record must name
+a reproducible commit. `align_llm_clean: true`, and all three reachability fields —
+`align_llm_reachability`, `align_reachability`, `corpus_reachability` — are `VERIFIED`.
+
+**Three runs of this corpus now exist, and every correctness value below is identical in all
+three.** The first ran from the uncommitted tree and reported `align_llm_clean: false` with
+`align_llm_reachability: UNVERIFIED` — the one field an uncommitted head makes unanswerable;
+`align_reachability` and `corpus_reachability` were `VERIFIED` in every run. The second ran from the
+clean committed head `de56c60`. The third is this one, from `9516e75`, and it exists because review
+repair moved the repair adapter's bytes (§11.3 deviation 15), which every row names by digest in
+`environment_probe.runtime_identity`. Across all three: the same verdict, the same rows, the same
+statuses and failure kinds, the same `patch_size_bytes`, the same six-attempt denominator, the same
+aggregates, the same 8,348-16,904 assembled bytes, the same **four** patch digests, and — new in the
+third comparison, because only the last two runs persist it under the same schema — the same
+`edit_set` **block digests**, path for path. Only the clocks moved: 839.492 s, against 940.931 s
+and 823.67 s. That is the reproducibility evidence, and it is why §6.3 refuses a speed claim.
+
+The prefix-cut repair could not have changed any of it, and the artifact says so rather than the
+argument: the largest realized `edit_set_total_bytes` in the run is **1,160 bytes** against an
+`EDIT_SET_LIMIT` of 16,384, so no block was ever within a factor of fourteen of the budget and the
+rule that changed was never reached. The re-run exists to make the recorded runtime identity name
+the adapter that produced the record, not because the measurement was in doubt.
 
 ```text
 verdict:                      NOT_MET
@@ -1726,9 +1741,9 @@ repair_recovery_paired_count: 0        (the gate quantity; >= 1 was required)
 repair_recovery_count:        0
 repair_attempt_count:         10
 repair_editset_attempt_count: 6        (the expected value, stated before the run)
-wall clock:                   940.931 s = 15.68 min against a 60-minute recorded ceiling
+wall clock:                   839.492 s = 13.99 min against a 60-minute recorded ceiling
 provider calls:               22       (12 initial + 10 repair, the ceiling's exact estimate)
-adapter_elapsed_ns:           8.93 s - 52.57 s, median 22.25 s, n = 22
+adapter_elapsed_ns:           8.33 s - 52.69 s, median 21.73 s, n = 22
 assembled repair prompts:     8,348 - 16,904 bytes of 65,536; no section was ever dropped
 evaluation status:            SERIOUS_REGRESSION (two POLICY reasons); gate_eligible false
 ```
@@ -1798,14 +1813,16 @@ adapter that reuses the reviewed containment core without editing a byte of it; 
 is re-derivable from persisted evidence; and "attempt 2 re-sent attempt 1's patch" is now a
 **verified fact** rather than an inference, on the first run that could state it.
 
-**No speed claim.** Four runs of this corpus family at identical seeds and `temperature_micros: 0`
-now exist: the C4 pair spanned 7.98-64.67 s and 8.13-73.82 s, and this capability's pair spans
-8.93-52.57 s (committed head, 940.931 s wall clock) and 8.58-51.54 s (the pre-commit run, 823.67 s).
-Four runs, four ranges, one greedy decode, and the 117-second wall-clock gap between this
-capability's own two runs is host contention rather than anything about the model. §6.3 refuses a
-speed claim and this is why.
+**No speed claim.** Five runs of this corpus family at identical seeds and `temperature_micros: 0`
+now exist: the C4 pair spanned 7.98-64.67 s and 8.13-73.82 s, and this capability's three span
+8.33-52.69 s (repaired head, 839.492 s wall clock), 8.93-52.57 s (`de56c60`, 940.931 s), and
+8.58-51.54 s (the pre-commit run, 823.67 s). Five runs, five ranges, one greedy decode, and a
+101-second spread across this capability's own three — which produced **byte-identical** patches and
+edit sets — is host contention rather than anything about the model. A speed claim would have to
+attribute a 12 % wall-clock swing to a change that provably touched nothing the run reached. §6.3
+refuses one and this is why.
 
-**Run record.** align-llm commit `de56c60caab9f5aa169a71a5c9731a5bf259b3da`, `align_llm_clean:
+**Run record.** align-llm commit `9516e75f29b0104e990a21fd005e28d904c7d8ad`, `align_llm_clean:
 true`, `.align-revision` `3a34febe912db5096c58c74fede36ff53f223e04`, image
 `c4-repair-measure:latest` (`33fa9e4446ab`) on Docker 28.5.1, forwarder
 `socat TCP-LISTEN:18080,fork,reuseaddr,bind=127.0.0.1 TCP:host.docker.internal:18080`, container
@@ -1820,9 +1837,9 @@ any component moved.
 Published digests:
 
 ```text
-c4-editset-evaluation.json           1355d8e3d03919c7dff361d6262bab6d1eca84f20b5e981fc19de1cc7a6b021f
-c4-editset-evaluation-evidence.json  cac6f466d6e9a72a5579bc53c5a6ecde6e5921fcf36272ae220651294a4c5b00
-c4-editset-gate-record.json          561f74b8360c50baa0ca5d407d10021c247ce0113752744730d9eac40f922af0
+c4-editset-evaluation.json           1b3ebbb67acca4b398d3cb3db150674cf146d480c1fd00c2f2b914335792b902
+c4-editset-evaluation-evidence.json  549879df37218548171debdee3826ea2c1babf595386776e57815519dbafe7ce
+c4-editset-gate-record.json          6053086fd5c02d59ac025be18269fc26922d41154eb5d155b694a3ca6476ce25
 ```
 
 The chain revalidates at this head: `src/prompt_evaluate_smoke.align` decodes, re-encodes, and
