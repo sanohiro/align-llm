@@ -36,6 +36,12 @@ LEARNED_APPEND_LIMIT = 8_192
 MEMORY_JSONL_LIMIT = 1_048_576
 CONTEXT_TRUNCATION_MARKER = b"\n[context truncated]"
 DIAGNOSTIC_TRUNCATION_MARKER = b"\n[output truncated]"
+# Ladder row 17 reads the tail of `diagnostic_summary`, and this marker sits at the end of a
+# summary the frozen `bounded_text` had to cut, so the applied-edit list is what the cut removes.
+SUMMARY_TRUNCATION_TEXT = DIAGNOSTIC_TRUNCATION_MARKER.decode("utf-8")
+# The bound the frozen `bounded_text` cuts a summary to. A genuine cut summary is at least this
+# long, so the length corroborates the marker rather than trusting the trailing text alone.
+SUMMARY_LIMIT = 4_096
 MEMORY_EVENT_TEXT_FIELDS = (
     "root", "task_id", "attempted_patch", "final_status", "failure_stage", "failed_test",
     "failure_status", "root_cause", "repair_result", "successful_strategy",
@@ -98,6 +104,25 @@ TASK_MEASUREMENT_FIELDS = (
     "environment_probe", "seed_attestation", "diagnostic_summary", "diagnostic_stdout",
     "diagnostic_stderr", "content_sha256",
 )
+# C4-REPAIR-EDITSET. `TASK_MEASUREMENT` version 2 appends four members immediately before
+# `content_sha256`, which is the position the canonical encoder and every existing consumer already
+# tolerate. Version 1 is unchanged and permanently decodable: the two tuples are selected by the
+# document's own `schema_version`, never by which keys happen to be present.
+TASK_MEASUREMENT_V2_MEMBERS = (
+    "edit_set", "edit_set_total_bytes", "patch_sha256", "base_adapter_runtime_identity",
+)
+TASK_MEASUREMENT_V2_FIELDS = (
+    TASK_MEASUREMENT_FIELDS[:-1] + TASK_MEASUREMENT_V2_MEMBERS + ("content_sha256",)
+)
+EDIT_SET_BLOCK_FIELDS = (
+    "schema_version", "artifact_kind", "path", "body_bytes", "body_sha256", "body_text",
+    "content_sha256",
+)
+# The corpus selects the adapter, so the measurement version is a checked function of the corpus
+# rather than a value a producer may choose (spec section 3.5, ladder row 11). The task manifest's
+# `measurement_adapter_runtime` pins this file's digest and the evaluator re-verifies it against the
+# retained helper before the invocation; the path below is the selector that digest pins.
+REPAIR_ADAPTER_RELATIVE = "scripts/prompt-repair-adapter.py"
 GENERATION_REQUEST_FIELDS = (
     "schema_version", "artifact_kind", "rendered_prompt_sha256", "system_text_sha256",
     "user_text_sha256", "generation_policy_sha256", "provider_control_sha256",
@@ -207,11 +232,43 @@ REPAIR_TEMPLATE_FIELDS = (
     "schema_version", "artifact_kind", "template_id", "preamble_text", "section_headers",
     "closing_text", "content_sha256",
 )
-REPAIR_SECTION_KINDS = ("STATUS", "SUMMARY", "STDOUT", "STDERR")
-# Fixed drop precedence (spec section 4.3). `STATUS` is never dropped: it is at most
+# C4-REPAIR-EDITSET adds `EDITSET` immediately after `STATUS`, so the model reads the verdict and
+# then what produced it, before the output describing it. The four earlier kinds keep their relative
+# order, so a version-2 prompt with `EDITSET` absent has the same section sequence as a
+# `canonical-v1r` prompt.
+REPAIR_SECTION_KINDS = ("STATUS", "EDITSET", "SUMMARY", "STDOUT", "STDERR")
+# The kind set a `canonical-v1r` template declares. It stays admissible, and that is a decision:
+# `eval/prompt/c4-repair-gate/` was measured against that corpus's exact scope digest, and making
+# its sealed template undecodable would leave a merged evidence chain naming a corpus that can no
+# longer be run. Which set a task's template must declare is ladder row 8, and it is selected the
+# same way ladder row 11 selects the measurement version: by the adapter the corpus names. A task
+# running the repair adapter must declare all five kinds; any other task must declare exactly the
+# four it always did. A template is never "upgraded" by inference.
+REPAIR_SECTION_KINDS_V1 = ("STATUS", "SUMMARY", "STDOUT", "STDERR")
+# Fixed drop precedence (spec section 4.4). `STATUS` is never dropped: it is at most
 # REPAIR_STATUS_LIMIT bytes and it is the single most load-bearing fact in the prompt. Dropping is
 # whole-section, never a byte cut, so this capability never splits a UTF-8 code point.
-REPAIR_DROP_ORDER = ("STDOUT", "STDERR", "SUMMARY")
+#
+# `EDITSET` is dropped **last**, and that is a decision argued from the C4-REPAIR-MEASURED failure
+# modes rather than from tidiness. That run measured what a repair prompt carrying only the
+# diagnostics achieves on this corpus: zero recoveries in ten attempts, with six of six attempts
+# that had produced a validated edit set re-emitting a patch of exactly the same byte count.
+# Dropping `EDITSET` early would make an over-budget row silently degrade into the experiment that
+# already returned a negative. It is nevertheless droppable rather than joining `STATUS`, because it
+# is the only section that can blow the budget by itself — up to `MAXIMUM_FILE_BLOCKS` blocks
+# against four fixed-size streams — and losing a measurement to
+# `SKIPPED`/`REPAIR_PROMPT_BUDGET` is worse than making one under a degraded prompt, provided the
+# degradation is recorded. `repair_prompt_source.dropped_sections` and
+# `repair_editset_attempt_count` are that record.
+REPAIR_DROP_ORDER = ("STDOUT", "STDERR", "SUMMARY", "EDITSET")
+# Producer-side, whole-block, applied in `scripts/prompt-repair-adapter.py`. Declared here too
+# because the evaluator's rendered section can never exceed what the producer persisted, and a
+# section source that did would be a producer defect this bound makes visible.
+EDIT_SET_LIMIT = 16_384
+# The frozen adapter's own edit-set bounds, restated so a persisted `edit_set` is checked against
+# the same ceilings `validated_edit_set` enforced before the block was ever kept.
+MAXIMUM_FILE_BLOCKS = 32
+MAXIMUM_EDIT_BYTES = 262_144
 REPAIR_STATUS_LIMIT = 128
 REPAIR_TEMPLATE_TEXT_LIMIT = 16_384
 REPAIR_SECTION_HEADER_LIMIT = 256
@@ -1028,9 +1085,17 @@ def load_json(path: Path, maximum: int) -> dict[str, Any]:
     return value
 
 
-def load_bound(path: Path, kind: str, maximum: int = ARTIFACT_LIMIT) -> dict[str, Any]:
+def load_bound(
+    path: Path, kind: str, maximum: int = ARTIFACT_LIMIT, versions: tuple[int, ...] = (1,),
+) -> dict[str, Any]:
+    """Decode one bounded artifact and bind its own digest.
+
+    `versions` exists for exactly one artifact: `TASK_MEASUREMENT` is now decodable at 1 and 2
+    (spec section 3.3). Every other kind keeps the single admitted version it always had, so
+    widening this helper does not widen any other decode.
+    """
     value = load_json(path, maximum)
-    if value.get("schema_version") != 1 or value.get("artifact_kind") != kind or not valid_hex(value.get("content_sha256")):
+    if value.get("schema_version") not in versions or value.get("artifact_kind") != kind or not valid_hex(value.get("content_sha256")):
         raise EvaluationError(f"{kind} header is invalid")
     normalized = dict(value)
     normalized["content_sha256"] = ""
@@ -1506,8 +1571,21 @@ def render(variant: Mapping[str, Any], task_prompt: Mapping[str, Any], context: 
     return text, sha256
 
 
-def valid_repair_template(value: Any) -> bool:
-    """Ladder row 5: the sealed repair template decodes, is UTF-8, and is non-empty."""
+def expected_template_kinds(task: Mapping[str, Any]) -> tuple[str, ...]:
+    """Ladder row 8: which section kinds this task's sealed template must declare, exactly."""
+    declared = list(task.get("argv") or [])
+    if len(declared) == 2 and declared[1] == REPAIR_ADAPTER_RELATIVE:
+        return REPAIR_SECTION_KINDS
+    return REPAIR_SECTION_KINDS_V1
+
+
+def valid_repair_template(value: Any, kinds: tuple[str, ...] = REPAIR_SECTION_KINDS) -> bool:
+    """Ladder row 8: the sealed repair template decodes, is UTF-8, and is non-empty.
+
+    `kinds` is the exact header set this task's corpus must declare. It is an equality, never a
+    subset test: a template carrying a kind the evaluator does not render, or missing one it does,
+    is a corpus defect rather than a tolerable difference.
+    """
     headers = value.get("section_headers") if isinstance(value, dict) else None
     return (
         exact_record(value, REPAIR_TEMPLATE_FIELDS, "REPAIR_PROMPT_TEMPLATE")
@@ -1516,8 +1594,8 @@ def valid_repair_template(value: Any) -> bool:
         and bounded_text(value.get("preamble_text"), REPAIR_TEMPLATE_TEXT_LIMIT)
         and bounded_text(value.get("closing_text"), REPAIR_TEMPLATE_TEXT_LIMIT)
         and isinstance(headers, dict)
-        and tuple(headers) == REPAIR_SECTION_KINDS
-        and all(bounded_text(headers[kind], REPAIR_SECTION_HEADER_LIMIT) for kind in REPAIR_SECTION_KINDS)
+        and tuple(headers) == kinds
+        and all(bounded_text(headers[kind], REPAIR_SECTION_HEADER_LIMIT) for kind in kinds)
     )
 
 
@@ -1531,6 +1609,58 @@ def repair_status_text(measurement: Mapping[str, Any]) -> str:
     )
 
 
+def edit_set_fence(body: str) -> str:
+    """The shortest backtick run that carries `body` as content rather than terminating it.
+
+    This is the frozen `fence_run` / `closing_fence` rule read backwards. That parser terminates a
+    block on a line that is only backticks and at least as long as the opening run, so an opening
+    run one longer than the longest such line inside the body makes every nested fence ordinary
+    content. Nothing else in the body can close the block.
+    """
+    longest = 0
+    for line in body.split("\n"):
+        stripped = line.strip()
+        if stripped and set(stripped) == {"`"}:
+            longest = max(longest, len(stripped))
+    return "`" * max(3, longest + 1)
+
+
+def repair_edit_set_text(measurement: Mapping[str, Any]) -> str:
+    """Section 4.3: attempt one's realized edit set, in the response's own whole-file format.
+
+    Format-consistency is deliberate. The C4 run measured this model failing the whole-file format
+    on one task in eight of eight attempts; a prompt that displayed a unified diff while demanding
+    whole files would push toward exactly that mode. The rejected alternative — rendering the
+    synthesized unified diff — is smaller on the wire and is a *different* format from the one
+    required, and is rejected for that reason.
+
+    The section is rendered from the **persisted** `edit_set`, never from a live value, exactly as
+    `STDOUT` is rendered from `diagnostic_stdout`. If a block was omitted for budget at the
+    producer, the prompt cannot show it either, and the two stay in agreement by construction. An
+    omitted block is one line naming its path and byte count, never a partial file: a half-truncated
+    source file would invite the model to complete a file it can only half see, and the whole-file
+    format makes that a silent data-loss patch.
+
+    A version-1 measurement carries no `edit_set`, so this returns the empty string and the section
+    is simply not emitted — which is how `SUMMARY`, `STDOUT`, and `STDERR` already behave.
+    """
+    blocks = measurement.get("edit_set")
+    if not blocks:
+        return ""
+    parts: list[str] = []
+    for block in blocks:
+        path = block["path"]
+        body = block.get("body_text")
+        if body is None:
+            parts.append(f"FILE: {path} [omitted for prompt budget: {block['body_bytes']} bytes]")
+            continue
+        if body and not body.endswith("\n"):
+            body += "\n"
+        fence = edit_set_fence(body)
+        parts.append(f"FILE: {path}\n{fence}\n{body}{fence}")
+    return "\n\n".join(parts)
+
+
 def repair_section_sources(measurement: Mapping[str, Any]) -> dict[str, str]:
     """Every source is a field of the failing attempt's persisted `TASK_MEASUREMENT`.
 
@@ -1540,6 +1670,7 @@ def repair_section_sources(measurement: Mapping[str, Any]) -> dict[str, str]:
     """
     return {
         "STATUS": repair_status_text(measurement),
+        "EDITSET": repair_edit_set_text(measurement),
         "SUMMARY": measurement["diagnostic_summary"],
         "STDOUT": measurement["diagnostic_stdout"],
         "STDERR": measurement["diagnostic_stderr"],
@@ -1558,7 +1689,7 @@ def repair_prompt_text(
     headers = template["section_headers"]
     parts = [base_text, "\n\n", template["preamble_text"]]
     for kind in REPAIR_SECTION_KINDS:
-        if kind in included:
+        if kind in headers and kind in included:
             parts.extend(("\n\n", headers[kind], "\n", sources[kind]))
     parts.extend(("\n\n", template["closing_text"]))
     return "".join(parts)
@@ -1589,7 +1720,10 @@ def assemble_repair_prompt(
     `docs/specs/c4-repair-measured.md` states the same rule; a consumer that needs "was this
     section available" must read `attempt.measurement` and not infer it from these two lists.
     """
-    included = [kind for kind in REPAIR_SECTION_KINDS if sources[kind]]
+    # Only a kind the sealed template declares can be included: the template is the corpus's
+    # statement of what its repair prompt carries, and a section with no header has no rendering.
+    headers = template["section_headers"]
+    included = [kind for kind in REPAIR_SECTION_KINDS if kind in headers and sources[kind]]
     dropped: list[str] = []
     while True:
         text = repair_prompt_text(template, base_text, sources, included)
@@ -1604,7 +1738,13 @@ def assemble_repair_prompt(
 
 
 def repair_eligibility(measurement: Mapping[str, Any]) -> str:
-    """Ladder row 13: are attempt one's own diagnostics usable as a repair input at all?"""
+    """Ladder row 18: are attempt one's own diagnostics usable as a repair input at all?
+
+    **`EDITSET` alone does not make a repair eligible.** The three diagnostic streams are what tell
+    the model why the answer was rejected; the edit set only tells it what the answer was. A run
+    with an edit set and no diagnostics at all is still `SKIPPED`, which keeps this predicate
+    exactly the one C4-REPAIR-MEASURED fixed and keeps the two runs' eligibility comparable.
+    """
     if not measurement.get("cleanup_passed") or not measurement.get("containment_passed"):
         return "REPAIR_INPUT_UNAVAILABLE"
     sources = repair_section_sources(measurement)
@@ -2027,11 +2167,18 @@ def measurement_state_valid(value: Mapping[str, Any]) -> bool:
 def valid_task_measurement(
     value: Any, task: Mapping[str, Any], rendered_sha256: str,
     adapter_request: Mapping[str, Any], sample: int, seed: int, prompt_oversized: bool = False,
+    allowed_edits: frozenset[str] = frozenset(),
 ) -> bool:
     if (
         not isinstance(value, dict)
-        or tuple(value) != TASK_MEASUREMENT_FIELDS
-        or value.get("schema_version") != 1
+        # Ladder rows 9 and 10. The version is read first and the field tuple is selected from it,
+        # so every version-2 member is present at version 2 and absent at version 1. Presence never
+        # stands in for a version, in either direction.
+        or value.get("schema_version") not in (1, 2)
+        or tuple(value) != (
+            TASK_MEASUREMENT_V2_FIELDS if value.get("schema_version") == 2
+            else TASK_MEASUREMENT_FIELDS
+        )
         or value.get("artifact_kind") != "TASK_MEASUREMENT"
         or value.get("status") not in ("PASS", "FAIL", "POLICY_VIOLATION", "ERROR")
         or value.get("failure_kind") not in (
@@ -2159,11 +2306,148 @@ def valid_task_measurement(
         )
     ):
         return False
+    if not valid_measurement_version_two(value, task, allowed_edits):
+        return False
+    # Ladder row 12: the section 2.3 gap, closed at attempt level. `producer` names a role, so it is
+    # the same literal for both adapters; `runtime_identity` names a file, and binding it here makes
+    # every ran attempt's probe carry the digest of the code that actually ran, not only the row's
+    # final one.
+    probe = value["environment_probe"]
+    if (
+        probe["producer"] != "MEASUREMENT_ADAPTER"
+        or probe["runtime_identity"] != task["measurement_adapter_runtime"]
+    ):
+        return False
     return (
         adapter_request.get("task_id") == task.get("task_id")
         and adapter_request.get("sample_index") == sample
         and adapter_request.get("paired_seed") == seed
     )
+
+
+def valid_edit_set_block(value: Any, allowed: frozenset[str]) -> bool:
+    """Ladder row 15: one `EDIT_SET_BLOCK`, and the whole of what a block promises.
+
+    `body_sha256` digests the **redacted** bytes the producer held, and `body_text` carries those
+    same bytes when the block was inside the prompt budget, so the two must agree exactly when both
+    are present. An omitted block keeps `path`, `body_bytes`, and `body_sha256` and loses only its
+    text, which is what lets a reader see what the budget removed.
+    """
+    return (
+        exact_record(value, EDIT_SET_BLOCK_FIELDS, "EDIT_SET_BLOCK")
+        and record_digest_valid(value)
+        and isinstance(value.get("path"), str)
+        and value["path"] in allowed
+        and isinstance(value.get("body_bytes"), int)
+        and not isinstance(value.get("body_bytes"), bool)
+        and 0 <= value["body_bytes"] <= MAXIMUM_EDIT_BYTES
+        and valid_hex(value.get("body_sha256"))
+        and (
+            value.get("body_text") is None
+            or isinstance(value.get("body_text"), str)
+            and len(value["body_text"].encode("utf-8")) <= EDIT_SET_LIMIT
+            and hashlib.sha256(value["body_text"].encode("utf-8")).hexdigest() == value["body_sha256"]
+        )
+    )
+
+
+def task_allowed_edits(task: Mapping[str, Any], project: Path) -> frozenset[str]:
+    """The task definition's editable set, read from the manifest-declared, digest-pinned file."""
+    resolved = relative_path(project, task["task_definition_path"])
+    raw = read_bounded(resolved, ARTIFACT_LIMIT)
+    if hashlib.sha256(raw).hexdigest() != task["task_definition_sha256"]:
+        raise EvaluationError("the task definition digest disagrees")
+    try:
+        value = json.loads(raw.decode("utf-8", "strict"))
+    except (UnicodeError, json.JSONDecodeError):
+        raise EvaluationError("the task definition is not canonical JSON") from None
+    allowed = value.get("allowed_edits") if isinstance(value, dict) else None
+    if (
+        not isinstance(allowed, list) or not allowed
+        or not all(isinstance(item, str) and item for item in allowed)
+    ):
+        raise EvaluationError("the task definition declares no usable editable set")
+    return frozenset(allowed)
+
+
+def valid_measurement_version_two(
+    value: Mapping[str, Any], task: Mapping[str, Any], allowed_edits: frozenset[str],
+) -> bool:
+    """Ladder rows 11 and 13-17: the version-2 members, and their ties to the version-1 ones.
+
+    Row 11 is the rule that makes the measurement's version a checked function of the corpus rather
+    than a value a producer may choose: a task whose declared adapter is
+    `scripts/prompt-repair-adapter.py` must emit version 2, and any other adapter must emit
+    version 1. The measurement's version is decoupled from `PROMPT_TASK_ROW`'s, which does not move;
+    this rule is what keeps the decoupling deterministic.
+    """
+    declared = list(task.get("argv") or [])
+    expects_two = len(declared) == 2 and declared[1] == REPAIR_ADAPTER_RELATIVE
+    if (value["schema_version"] == 2) != expects_two:
+        return False
+    if value["schema_version"] == 1:
+        # Ladder row 10 at version 1: absence is required, never defaulted. The field-tuple check
+        # in `valid_task_measurement` already rejects a stray key on a document that reached it
+        # through the adapter boundary; stating it here as well makes this function total, so the
+        # rule has an addressable owner rather than an emergent one.
+        return not any(name in value for name in TASK_MEASUREMENT_V2_MEMBERS)
+    identity = value.get("base_adapter_runtime_identity")
+    if (
+        not isinstance(identity, str)
+        or not identity.startswith("PYTHON:")
+        or not valid_hex(identity[7:])
+    ):
+        return False
+    # Row 13. The patch digest is present exactly when a patch reached the validation runner, which
+    # `patch_size_bytes` already records; a digest without bytes, or bytes without a digest, is a
+    # producer defect rather than a permitted shape.
+    if (value.get("patch_sha256") is not None) != (value["patch_size_bytes"] > 0):
+        return False
+    if value.get("patch_sha256") is not None and not valid_hex(value["patch_sha256"]):
+        return False
+    blocks = value.get("edit_set")
+    total = value.get("edit_set_total_bytes")
+    if (blocks is None) != (total is None):
+        return False
+    if blocks is None:
+        return True
+    if not isinstance(blocks, list) or not blocks or len(blocks) > MAXIMUM_FILE_BLOCKS:
+        return False
+    if not all(valid_edit_set_block(block, allowed_edits) for block in blocks):
+        return False
+    paths = [block["path"] for block in blocks]
+    if paths != sorted(paths) or len(set(paths)) != len(paths):
+        return False
+    if (
+        not isinstance(total, int) or isinstance(total, bool)
+        or total != sum(block["body_bytes"] for block in blocks)
+    ):
+        return False
+    # Row 17, the cheapest cross-check in the design and the most valuable. `diagnostic_summary` is
+    # produced by the frozen sequencing from `applied_edits`, and `edit_set` is produced from the
+    # same `edits` list, so a divergence means the section 3.2 near-copy diverged.
+    #
+    # It is skipped on a **truncated** summary, and that exclusion is load bearing rather than a
+    # softening: `bounded_text` appends its marker at the end of a summary that exceeded
+    # `SUMMARY_LIMIT`, so the applied-edit list is exactly the part it cuts. Without this, a
+    # legitimate measurement with a long summary and many edits would be refused as malformed.
+    #
+    # The exclusion needs the marker **and** the length: `bounded_text` cuts to
+    # `SUMMARY_LIMIT - len(marker)` bytes before appending the marker, so a genuine cut summary is
+    # never shorter than the bound, while a short summary ending in the marker's text is a producer
+    # naming any applied-edit list it likes and escaping the row with a suffix.
+    marker = "applied edits: "
+    summary = value["diagnostic_summary"]
+    if (
+        summary.endswith(SUMMARY_TRUNCATION_TEXT)
+        and len(summary.encode("utf-8")) >= SUMMARY_LIMIT
+    ):
+        return True
+    if marker in summary:
+        named = [item for item in summary.rsplit(marker, 1)[1].split(", ") if item]
+        if named != paths:
+            return False
+    return True
 
 
 def classify_task_drift(
@@ -2252,7 +2536,7 @@ def invoke_adapter(
     task: Mapping[str, Any], adapter_request: Mapping[str, Any], request_path: Path,
     variant_path: Path, rendered_path: Path, measurement_path: Path,
     project: Path, environment: Mapping[str, str], provider_timeout_ns: int, sample: int, seed: int,
-    prompt_oversized: bool, owned_paths: set[Path],
+    prompt_oversized: bool, owned_paths: set[Path], allowed_edits: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     descriptor = -1
     try:
@@ -2298,10 +2582,12 @@ def invoke_adapter(
             raise AdapterFailure("CLEANUP_FAILED", "measurement artifact cleanup failed")
         raise AdapterFailure("ADAPTER_RESULT", "measurement adapter process failed")
     try:
-        measurement = load_bound(measurement_path, "TASK_MEASUREMENT", MEASUREMENT_LIMIT)
+        measurement = load_bound(
+            measurement_path, "TASK_MEASUREMENT", MEASUREMENT_LIMIT, versions=(1, 2),
+        )
         if not valid_task_measurement(
             measurement, task, adapter_request["rendered_prompt_sha256"], adapter_request, sample, seed,
-            prompt_oversized=prompt_oversized,
+            prompt_oversized=prompt_oversized, allowed_edits=allowed_edits,
         ):
             raise EvaluationError("measurement adapter result is semantically invalid")
     except (EvaluationError, OSError, TypeError, ValueError, KeyError):
@@ -3163,6 +3449,26 @@ def row_repair_attempted(row: Mapping[str, Any]) -> bool:
     return row["schema_version"] >= 2 and row["repair_loop_count"] >= 1
 
 
+def row_repair_editset_attempts(row: Mapping[str, Any]) -> int:
+    """Section 3.8: repair attempts on this row whose prompt actually carried `EDITSET`.
+
+    A repair attempt contributes when it ran — not `SKIPPED` — and its own
+    `repair_prompt_source.included_sections` names `EDITSET`. It is a **denominator**, never a gate
+    input: a row that dropped `EDITSET` under the budget ladder is excluded from every edit-set
+    claim by a persisted number rather than by an argument.
+    """
+    if row["schema_version"] < 2:
+        return 0
+    total = 0
+    for attempt in row["attempts"]:
+        if attempt["attempt_kind"] != "REPAIR" or attempt["status"] == "SKIPPED":
+            continue
+        source = attempt.get("repair_prompt_source") or {}
+        if "EDITSET" in (source.get("included_sections") or []):
+            total += 1
+    return total
+
+
 def row_repair_recovered(row: Mapping[str, Any]) -> bool:
     """The section 1.4 gate predicate, evaluated on one row."""
     if row["schema_version"] < 2:
@@ -3196,6 +3502,8 @@ def complete_score(
     corpus_repair_attempts = 0
     corpus_repair_recoveries = 0
     corpus_repair_recovery_paired = 0
+    corpus_repair_editset = 0
+    editset_corpus = any(expected_template_kinds(task) == REPAIR_SECTION_KINDS for task in tasks)
     parent_passes = 0
     candidate_passes = 0
     paired_passes = 0
@@ -3217,6 +3525,8 @@ def complete_score(
         candidate_attempted = sum(row_repair_attempted(row) for row in candidate_rows)
         parent_recovered = sum(row_repair_recovered(row) for row in parent_rows)
         candidate_recovered = sum(row_repair_recovered(row) for row in candidate_rows)
+        parent_editset = sum(row_repair_editset_attempts(row) for row in parent_rows)
+        candidate_editset = sum(row_repair_editset_attempts(row) for row in candidate_rows)
         # A (task, variant) pair counts only when *every* paired sample recovered, so a single
         # lucky sample is not a reproducible recovery.
         parent_paired_recovery = bool(parent_rows) and all(row_repair_recovered(row) for row in parent_rows)
@@ -3248,6 +3558,12 @@ def complete_score(
             "candidate_repair_recovery_count": candidate_recovered,
             "repair_recovery_paired": parent_paired_recovery or candidate_paired_recovery,
         })
+        if editset_corpus:
+            aggregates[-1].update({
+                "parent_repair_editset_attempt_count": parent_editset,
+                "candidate_repair_editset_attempt_count": candidate_editset,
+            })
+        corpus_repair_editset += parent_editset + candidate_editset
         corpus_repair_attempts += parent_attempted + candidate_attempted
         corpus_repair_recoveries += parent_recovered + candidate_recovered
         corpus_repair_recovery_paired += int(parent_paired_recovery) + int(candidate_paired_recovery)
@@ -3279,6 +3595,16 @@ def complete_score(
         "repair_recovery_count": corpus_repair_recoveries,
         "repair_recovery_paired_count": corpus_repair_recovery_paired,
     }
+    if editset_corpus:
+        # C4-REPAIR-EDITSET's denominator: repair attempts whose prompt actually carried `EDITSET`.
+        # The gate still consumes `repair_recovery_paired_count` only.
+        #
+        # Present only for a corpus whose adapter can render the section. A `canonical-v1r`
+        # template declares no `EDITSET` kind, so the quantity is undefined for it rather than
+        # zero, and `eval/prompt/c4-repair-gate/` is a merged version-2 document written before
+        # this capability existed. Presence follows the corpus's adapter, exactly as ladder row
+        # 11's measurement version does.
+        corpus["repair_editset_attempt_count"] = corpus_repair_editset
     reasons: list[dict[str, Any]] = []
     if repair_regression > policy["maximum_repair_loop_regression_count"]:
         reasons.append(reason(
@@ -3474,14 +3800,14 @@ def validated_repair_template(
     if hashlib.sha256(raw).hexdigest() != task["repair_template_sha256"]:
         raise EvaluationError("the repair template digest disagrees")
     template = load_bound(resolved, "REPAIR_PROMPT_TEMPLATE")
-    if not valid_repair_template(template):
+    if not valid_repair_template(template, expected_template_kinds(task)):
         raise EvaluationError("the repair template schema is invalid")
     # Ladder row 6: the prompt budget must at least admit the template's own fixed text, so a
     # budget that can never carry a repair prompt is rejected before the run rather than
     # discovered as a `REPAIR_PROMPT_BUDGET` skip on every row.
     headers = template["section_headers"]
     fixed = len(template["preamble_text"].encode("utf-8")) + len(template["closing_text"].encode("utf-8"))
-    fixed += sum(len(headers[kind].encode("utf-8")) + 3 for kind in REPAIR_SECTION_KINDS)
+    fixed += sum(len(headers[kind].encode("utf-8")) + 3 for kind in headers)
     if fixed + REPAIR_STATUS_LIMIT > generation["max_prompt_bytes"]:
         raise EvaluationError("the generation policy prompt budget cannot carry the repair template")
     return template
@@ -4092,6 +4418,11 @@ def evaluate(
                                 paired_seed,
                                 prompt_oversized,
                                 owned_paths,
+                                # Ladder row 15's membership test. The editable set is read from the
+                                # manifest-declared, digest-pinned task definition, so a version-2
+                                # `edit_set` block naming a path outside it is rejected by the same
+                                # authority the adapter itself consulted.
+                                task_allowed_edits(task, project),
                             )
                         except AdapterFailure as failure:
                             attest(

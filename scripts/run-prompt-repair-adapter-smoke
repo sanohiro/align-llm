@@ -1,0 +1,862 @@
+#!/usr/bin/env python3
+"""Owner smoke for `scripts/prompt-repair-adapter.py`: the import contract and the version-2 result.
+
+`docs/specs/c4-repair-editset.md` sections 6.1, 7.1, and 7.2 own this contract. Two groups of rows:
+
+1. **The import-by-path contract**, which is portable. Verify-then-execute over one byte sequence,
+   a mutated base rejected, every consumed name present and of the expected kind, a removed and a
+   retyped name rejected, the base-identity cross-derivation and its mismatch case, `producer` and
+   this adapter's own `runtime_identity`, `main()` not run by module execution, one module per
+   process, and section 3.2's **bounded-divergence golden** over `measurement()` and `assemble()`.
+2. **The version-2 measurement**, which needs Linux. The adapter's sealed-input machinery uses
+   `memfd_create`, `F_ADD_SEALS`, `/proc/self/fd`, and `PR_SET_CHILD_SUBREAPER`, so the launch rows
+   print a documented SKIP off Linux exactly as `prompt-measurement-adapter-smoke` does. A
+   full-fidelity run is a Linux run.
+
+No provider is contacted. The generation child is a synthetic script with exactly the
+`./main prompt generate` boundary, so every mode of section 3.4 is deterministic.
+"""
+
+from __future__ import annotations
+
+import ast
+import difflib
+import hashlib
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+BASE_ADAPTER = ROOT / "scripts" / "prompt-measurement-adapter.py"
+REPAIR_ADAPTER = ROOT / "scripts" / "prompt-repair-adapter.py"
+DIVERGENCE_GOLDEN = ROOT / "eval" / "fixtures" / "c4-repair-editset" / "adapter-divergence.diff"
+LINUX = sys.platform.startswith("linux")
+
+FIXTURE_SOURCE_DIR = "eval/fixtures/prompt-v1-duration-rounding/repository"
+FIXTURE_EDIT_PATH = "src/duration.py"
+SECOND_EDIT_PATH = "tests/test_duration.py"
+EDITED_CONTENT = (
+    '"""Billable duration helpers."""\n'
+    "\n"
+    "import math\n"
+    "\n"
+    "\n"
+    "def round_to_minutes(seconds: int) -> int:\n"
+    '    """Round a whole-second duration to whole minutes."""\n'
+    "    return math.trunc(seconds / 60 + math.copysign(0.5, seconds))\n"
+)
+RESPONSE_TEXT = (
+    "Here is the repair.\n\n"
+    f"FILE: {FIXTURE_EDIT_PATH}\n"
+    "```python\n"
+    f"{EDITED_CONTENT}"
+    "```\n\n"
+    "That makes the tie round away from zero.\n"
+)
+RENDERED_TEXT = "Repair round_to_minutes so an exact half minute rounds away from zero."
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def canonical(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def digest_bytes(value: Any) -> bytes:
+    def omit_none(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {key: omit_none(child) for key, child in item.items() if child is not None}
+        if isinstance(item, list):
+            return [omit_none(child) for child in item]
+        return item
+
+    return canonical(omit_none(value))
+
+
+def bind(value: dict) -> dict:
+    value["content_sha256"] = ""
+    value["content_sha256"] = hashlib.sha256(digest_bytes(value)).hexdigest()
+    return value
+
+
+def store(path: Path, value: dict) -> dict:
+    bind(value)
+    path.write_bytes(canonical(value))
+    return value
+
+
+def raw_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_repair_adapter():
+    """Load the repair adapter as a module so its loader functions can be driven directly.
+
+    This is the harness's own import of the file under test, not the import contract it implements.
+    """
+    spec = importlib.util.spec_from_file_location("prompt_repair_adapter", REPAIR_ADAPTER)
+    require(spec is not None and spec.loader is not None, "repair adapter could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# --- Section 3.2: the bounded-divergence golden --------------------------------------------------
+#
+# The normalizer's exact rules, stated here because section 8 item 8(a) records that a normalizer
+# hiding a real divergence class would be a finding against the design:
+#
+#   1. Only the two named functions' source lines are compared, over the exact span Python's own
+#      parser reports for that `def` — its `lineno` through its `end_lineno`. The span is taken
+#      from the parse rather than by scanning for the next column-0 line: a triple-quoted string
+#      inside either function can hold a line that starts in column 0, and a scanner would end the
+#      span there and silently hide every executable difference after it.
+#   2. Full-line `#` comments are removed. A comment-only change in either file is therefore not a
+#      divergence. Trailing comments on a code line are kept.
+#   3. Blank lines are removed.
+#   4. Trailing whitespace is stripped.
+#
+# Nothing else is normalized: no identifier rewriting, no `frozen.` prefix stripping, no
+# reordering, no whitespace-insensitive comparison. Every executable difference survives into the
+# diff, which is the property that makes the golden worth having.
+
+DIVERGENCE_FUNCTIONS = ("measurement", "assemble")
+
+
+def function_source(text: str, name: str) -> list[str]:
+    """The named module-level function's own source lines, as the parser delimits them.
+
+    `ast` owns the span, so a `def` line, a `)`-continuation, or a column-0 line inside a
+    triple-quoted string cannot move either end of it.
+    """
+    lines = text.split("\n")
+    found = [
+        node for node in ast.parse(text).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+    ]
+    require(len(found) == 1, f"the divergence golden wants exactly one top-level `def {name}(`")
+    node = found[0]
+    require(node.end_lineno is not None, f"the parser reports no end line for `def {name}(`")
+    return lines[node.lineno - 1:node.end_lineno]
+
+
+def normalized_source(text: str, name: str) -> list[str]:
+    output = []
+    for line in function_source(text, name):
+        stripped = line.rstrip()
+        if not stripped.strip():
+            continue
+        if stripped.lstrip().startswith("#"):
+            continue
+        output.append(stripped)
+    return output
+
+
+def divergence_diff() -> str:
+    base_text = BASE_ADAPTER.read_text(encoding="utf-8")
+    repair_text = REPAIR_ADAPTER.read_text(encoding="utf-8")
+    parts = []
+    for name in DIVERGENCE_FUNCTIONS:
+        parts.extend(difflib.unified_diff(
+            normalized_source(base_text, name),
+            normalized_source(repair_text, name),
+            fromfile=f"scripts/prompt-measurement-adapter.py:{name}",
+            tofile=f"scripts/prompt-repair-adapter.py:{name}",
+            lineterm="",
+            n=3,
+        ))
+        parts.append("")
+    return "\n".join(parts)
+
+
+def check_divergence(update: bool) -> None:
+    observed = divergence_diff()
+    if update:
+        DIVERGENCE_GOLDEN.parent.mkdir(parents=True, exist_ok=True)
+        DIVERGENCE_GOLDEN.write_text(observed, encoding="utf-8")
+        sys.stdout.write(f"prompt repair adapter: WROTE {DIVERGENCE_GOLDEN}\n")
+        return
+    require(DIVERGENCE_GOLDEN.exists(), "the bounded-divergence golden is missing")
+    expected = DIVERGENCE_GOLDEN.read_text(encoding="utf-8")
+    if observed != expected:
+        difference = "\n".join(difflib.unified_diff(
+            expected.split("\n"), observed.split("\n"),
+            fromfile="golden", tofile="observed", lineterm="",
+        ))
+        raise RuntimeError(
+            "the near-copy of measurement()/assemble() diverged from the checked-in golden:\n"
+            + difference
+        )
+
+
+# --- The launch fixture --------------------------------------------------------------------------
+
+
+def task_definition(identity: str, allowed: list[str] | None = None) -> dict:
+    return {
+        "schema_version": 1,
+        "id": identity,
+        "source_dir": FIXTURE_SOURCE_DIR,
+        "allowed_edits": allowed if allowed is not None else [FIXTURE_EDIT_PATH],
+        "validation_argv": ["python3", "tests/test_duration.py", "-v"],
+        "validation_timeout_seconds": 10,
+    }
+
+
+class Fixture:
+    """One complete repair-adapter invocation with a synthetic generation child and runner."""
+
+    def __init__(self, root: Path, name: str, allowed: list[str] | None = None) -> None:
+        self.name = name
+        self.root = root / name
+        self.workspace = self.root / "workspace"
+        self.workspace.mkdir(parents=True)
+        self.variant_path = self.root / "variant.json"
+        self.rendered_path = self.root / "rendered.json"
+        self.policy_path = self.root / "generation.json"
+        self.control_path = self.root / "control.json"
+        self.request_path = self.root / "adapter-request.json"
+        self.result_path = self.workspace / "measurement.json"
+        self.child_path = self.root / "generation-child"
+        self.runner_path = self.root / "validation-runner.py"
+        self.task_path = self.root / "task-definition.json"
+        self.allowed = allowed
+
+        self.variant = store(self.variant_path, {
+            "schema_version": 1, "artifact_kind": "PROMPT_VARIANT", "variant_id": "baseline-v1",
+            "base_prompt": {}, "repo_prompt": {}, "learned_prompt_append": "",
+            "context_policy": {}, "candidate_id": "baseline-v1", "content_sha256": "",
+        })
+        self.rendered = store(self.rendered_path, {
+            "schema_version": 1, "artifact_kind": "RENDERED_PROMPT", "task_id": "task",
+            "variant_id": "baseline-v1", "variant_sha256": self.variant["content_sha256"],
+            "task_prompt_sha256": "1" * 64, "context_sources_sha256": "2" * 64,
+            "text": RENDERED_TEXT, "content_sha256": "",
+        })
+        self.control = store(self.control_path, {
+            "schema_version": 1, "artifact_kind": "EVALUATION_PROVIDER_CONTROL",
+            "provider_control_id": "control", "provider_kind": "LOCAL_OPENAI",
+            "endpoint": "http://127.0.0.1:8000/v1/chat/completions", "endpoint_id": "fixture",
+            "model": "fixture-model", "api_key_env": None, "tokenize_endpoint": None,
+            "timeout_ns": 20_000_000_000, "max_response_bytes": 262_144, "content_sha256": "",
+        })
+        self.policy = store(self.policy_path, {
+            "schema_version": 1, "artifact_kind": "GENERATION_POLICY",
+            "generation_policy_id": "policy", "evaluation_provider_kind": "LOCAL_OPENAI",
+            "evaluation_provider_endpoint_id": "fixture",
+            "evaluation_provider_model": "fixture-model",
+            "provider_control_sha256": self.control["content_sha256"],
+            "provider_service_revision": "fixture-v1", "max_prompt_bytes": 65_536,
+            "max_tokens": 512, "temperature_micros": 0, "seed_mode": "PAIRED_FIXED",
+            "seed_base": 100, "content_sha256": "",
+        })
+        self.task_path.write_bytes(canonical(task_definition("task", allowed)))
+        self.write_child()
+        self.write_runner()
+
+    def write_child(self, *, content: str | None = None, exit_code: int = 0) -> None:
+        self.child_path.write_text(
+            "#!/usr/bin/env python3\n"
+            "import hashlib, json, sys\n"
+            "request = json.loads(open(sys.argv[3], encoding='utf-8').read())\n"
+            "response = {\n"
+            "  'schema_version': 1, 'artifact_kind': 'PROMPT_GENERATION_RESPONSE',\n"
+            "  'request_id': request['request_id'], 'status': 'GENERATED', 'error_code': 'NONE',\n"
+            "  'error': '', 'provider_kind': request['provider_kind'],\n"
+            "  'provider_model': request['provider_model'],\n"
+            "  'provider_request_sha256': hashlib.sha256(b'dispatched-bytes').hexdigest(),\n"
+            "  'seed_result': 'APPLIED', 'applied_seed': request['paired_seed'],\n"
+            "  'http_status': 200, 'content': "
+            + repr(content if content is not None else RESPONSE_TEXT) + ",\n"
+            "  'dispatch_start_ns': 1, 'dispatch_end_ns': 2, 'content_sha256': '',\n"
+            "}\n"
+            "response['content_sha256'] = hashlib.sha256(\n"
+            "  json.dumps(response, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()\n"
+            "open(sys.argv[4], 'w', encoding='utf-8').write(\n"
+            "  json.dumps(response, ensure_ascii=False, separators=(',', ':')))\n"
+            f"raise SystemExit({exit_code})\n",
+            encoding="utf-8",
+        )
+        self.child_path.chmod(0o755)
+
+    def write_runner(self, *, exit_code: int = 4) -> None:
+        """A runner that reports a deterministic outcome without inspecting the patch.
+
+        The patch's exact bytes are the frozen `synthesized_patch`'s contract and
+        `prompt-measurement-adapter-smoke` owns them. What this smoke needs is a fixed validation
+        outcome per mode so the version-2 members can be asserted.
+        """
+        self.runner_path.write_text(f"raise SystemExit({exit_code})\n", encoding="utf-8")
+
+    def request(self, **overrides: Any) -> dict:
+        value = {
+            "schema_version": 1, "artifact_kind": "TASK_ADAPTER_REQUEST",
+            "evaluation_id": "evaluation", "task_id": "task", "sample_index": 1,
+            "variant": "CANDIDATE", "variant_path": str(self.variant_path),
+            "variant_sha256": self.variant["content_sha256"],
+            "rendered_prompt_path": str(self.rendered_path),
+            "rendered_prompt_sha256": self.rendered["content_sha256"],
+            "generation_policy_path": str(self.policy_path),
+            "generation_policy_sha256": self.policy["content_sha256"],
+            "provider_control_path": str(self.control_path),
+            "provider_control_sha256": self.control["content_sha256"],
+            "workspace_path": str(self.workspace), "result_path": str(self.result_path),
+            "paired_seed": 100, "credential_env_name": None,
+            "environment_policy_sha256": "3" * 64,
+            "validation_runner_path": str(self.runner_path),
+            "validation_runner_sha256": raw_digest(self.runner_path),
+            "task_definition_path": str(self.task_path),
+            "task_definition_sha256": raw_digest(self.task_path),
+            "validation_argv": ["--retained-inputs", "%TASK%", "%PATCH%"],
+            "patch_path": None, "patch_sha256": None,
+            "generation_child_path": str(self.child_path),
+            "generation_child_sha256": raw_digest(self.child_path),
+            "task_deadline_ns": 30_000_000_000,
+            "content_sha256": "",
+        }
+        value.update(overrides)
+        bind(value)
+        self.request_path.write_bytes(canonical(value))
+        return value
+
+    def invoke(self, environment: dict[str, str] | None = None, timeout: int = 120):
+        child_environment = dict(os.environ)
+        if environment:
+            child_environment.update(environment)
+        completed = subprocess.run(
+            [
+                sys.executable, str(REPAIR_ADAPTER),
+                "--prompt-variant", str(self.variant_path),
+                "--rendered-prompt", str(self.rendered_path),
+                "--sample-index", "1", "--paired-seed", "100",
+                "--adapter-request", str(self.request_path),
+                "--result", str(self.result_path),
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=timeout,
+            env=child_environment,
+        )
+        result = (
+            json.loads(self.result_path.read_text(encoding="utf-8"))
+            if self.result_path.exists() else None
+        )
+        return completed, result
+
+
+V2_FIELDS = (
+    "schema_version", "artifact_kind", "status", "failure_kind", "build_status", "test_status",
+    "repair_loop_count", "unrelated_diff_count", "patch_size_bytes", "public_api_change_count",
+    "policy_violation_count", "cleanup_passed", "containment_passed", "benchmark_regression_ppm",
+    "generation_to_passing_patch_ns", "rendered_prompt_sha256", "generation_request",
+    "environment_probe", "seed_attestation", "diagnostic_summary", "diagnostic_stdout",
+    "diagnostic_stderr", "edit_set", "edit_set_total_bytes", "patch_sha256",
+    "base_adapter_runtime_identity", "content_sha256",
+)
+EDIT_SET_BLOCK_FIELDS = (
+    "schema_version", "artifact_kind", "path", "body_bytes", "body_sha256", "body_text",
+    "content_sha256",
+)
+
+
+def assert_version_two_shape(name: str, result: dict | None, repair) -> None:
+    require(result is not None, f"{name}: no measurement document was written")
+    require(
+        tuple(result) == V2_FIELDS,
+        f"{name}: version-2 field order is {tuple(result)!r}",
+    )
+    require(result["schema_version"] == 2, f"{name}: schema_version is not 2")
+    require(
+        result["base_adapter_runtime_identity"]
+        == "PYTHON:" + repair.BASE_ADAPTER_SHA256,
+        f"{name}: base adapter identity is not the pinned digest",
+    )
+    probe = result["environment_probe"]
+    require(probe["producer"] == "MEASUREMENT_ADAPTER", f"{name}: producer moved")
+    require(
+        probe["runtime_identity"] == "PYTHON:" + raw_digest(REPAIR_ADAPTER),
+        f"{name}: the probe reports another file's runtime identity",
+    )
+    require(
+        probe["runtime_identity"] != result["base_adapter_runtime_identity"],
+        f"{name}: the probe reports the base adapter's identity",
+    )
+    require(
+        (result["patch_sha256"] is not None) == (result["patch_size_bytes"] > 0),
+        f"{name}: patch_sha256 presence disagrees with patch_size_bytes",
+    )
+    require(
+        (result["edit_set"] is None) == (result["edit_set_total_bytes"] is None),
+        f"{name}: edit_set and edit_set_total_bytes disagree on presence",
+    )
+    if result["edit_set"] is not None:
+        paths = [block["path"] for block in result["edit_set"]]
+        require(paths == sorted(set(paths)), f"{name}: edit set paths are not unique and sorted")
+        require(
+            result["edit_set_total_bytes"]
+            == sum(block["body_bytes"] for block in result["edit_set"]),
+            f"{name}: edit_set_total_bytes is not the sum of body_bytes",
+        )
+        for block in result["edit_set"]:
+            require(
+                tuple(block) == EDIT_SET_BLOCK_FIELDS,
+                f"{name}: EDIT_SET_BLOCK field order is {tuple(block)!r}",
+            )
+            if block["body_text"] is not None:
+                require(
+                    hashlib.sha256(block["body_text"].encode("utf-8")).hexdigest()
+                    == block["body_sha256"],
+                    f"{name}: body_sha256 does not digest body_text",
+                )
+        applied = result["diagnostic_summary"].split("applied edits: ")
+        if len(applied) == 2:
+            require(
+                [item for item in applied[1].split(", ") if item] == paths,
+                f"{name}: the diagnostic summary's applied-edit list is not the edit set",
+            )
+    claimed = result["content_sha256"]
+    recomputed = dict(result)
+    recomputed["content_sha256"] = ""
+    require(
+        hashlib.sha256(digest_bytes(recomputed)).hexdigest() == claimed,
+        f"{name}: measurement content digest does not bind the record",
+    )
+
+
+# --- Rows -----------------------------------------------------------------------------------------
+
+
+def portable_rows(repair) -> None:
+    path = repair.base_adapter_path()
+    require(path == BASE_ADAPTER.resolve(), "the base adapter path is not the corpus member")
+
+    raw = repair.verified_base_adapter(path)
+    require(
+        hashlib.sha256(raw).hexdigest() == repair.BASE_ADAPTER_SHA256,
+        "verify-then-execute returned bytes that are not the pinned ones",
+    )
+    require(
+        raw == BASE_ADAPTER.read_bytes(),
+        "the verified bytes are not the base adapter's bytes",
+    )
+
+    with tempfile.TemporaryDirectory(prefix="prompt-repair-adapter-smoke-") as scratch_name:
+        scratch = Path(scratch_name)
+        mutated = scratch / "mutated-base.py"
+        mutated.write_bytes(raw[:-1] + b" ")
+        failed = False
+        try:
+            repair.verified_base_adapter(mutated)
+        except repair.BaseAdapterError:
+            failed = True
+        require(failed, "a one-byte-mutated base adapter was accepted")
+
+        module = repair.execute_base_adapter(path, raw)
+        repair.assert_import_contract(module)
+        require(
+            module.__name__ != "__main__",
+            "the base module was executed under the __main__ name",
+        )
+
+        # Early exit: executing a module body must not run its `main()`.
+        marker = scratch / "main-ran"
+        stub_names = "\n".join(
+            f"{name} = " + (
+                "type('Stub', (ValueError,), {})" if kind == "class"
+                else "1" if kind == "int"
+                else "True" if kind == "bool"
+                else "b''" if kind == "bytes"
+                else "lambda *a, **k: None"
+            )
+            for name, kind in repair.CONSUMED_NAMES
+        )
+        stub_path = scratch / "stub-base.py"
+        stub_path.write_text(
+            stub_names + "\n"
+            "def main(arguments=None):\n"
+            f"    open({str(marker)!r}, 'w').write('ran')\n"
+            "    return 0\n"
+            "if __name__ == '__main__':\n"
+            "    raise SystemExit(main())\n",
+            encoding="utf-8",
+        )
+        stub = repair.execute_base_adapter(stub_path, stub_path.read_bytes())
+        require(not marker.exists(), "executing the base module ran its main()")
+        repair.assert_import_contract(stub)
+
+        # Malformed input: a missing consumed name, and one rebound to a non-callable.
+        delattr(stub, "validated_edit_set")
+        failed = False
+        try:
+            repair.assert_import_contract(stub)
+        except repair.BaseAdapterError:
+            failed = True
+        require(failed, "a base module missing `validated_edit_set` was accepted")
+        stub.validated_edit_set = 3
+        failed = False
+        try:
+            repair.assert_import_contract(stub)
+        except repair.BaseAdapterError:
+            failed = True
+        require(failed, "a base module whose `validated_edit_set` is not callable was accepted")
+
+        # The base-identity cross-derivation, and the file-changed-between-derivations case.
+        identity = repair.base_runtime_identity(raw, module)
+        require(
+            identity == "PYTHON:" + repair.BASE_ADAPTER_SHA256,
+            "the base runtime identity is not the pinned digest",
+        )
+        failed = False
+        try:
+            repair.base_runtime_identity(raw[:-1], module)
+        except repair.BaseAdapterError:
+            failed = True
+        require(failed, "a base identity mismatch between the two derivations was accepted")
+
+    require(
+        repair.runtime_identity() == "PYTHON:" + raw_digest(REPAIR_ADAPTER),
+        "the repair adapter's own runtime identity is not its own digest",
+    )
+    require(
+        repair.runtime_identity() != "PYTHON:" + repair.BASE_ADAPTER_SHA256,
+        "the repair adapter reports the base adapter's runtime identity",
+    )
+    # Section 4.3's producer-side bound, as a pure function of the edit list: the carried set is a
+    # **prefix** of the sorted order, never a greedy best fit. Three blocks of 10,000 / 10,000 /
+    # 5,000 bytes against `EDIT_SET_LIMIT` = 16,384 separate the two rules exactly — a best fit
+    # carries the first and the third and omits the second, so the section the model reads would
+    # skip a file in the middle of its own answer.
+    budget_edits = [
+        ("src/a.py", "a" * 10_000),
+        ("src/b.py", "b" * 10_000),
+        ("src/c.py", "c" * 5_000),
+    ]
+    budget_blocks, budget_total = repair.edit_set_blocks(module, budget_edits, None)
+    require(
+        [block["path"] for block in budget_blocks] == ["src/a.py", "src/b.py", "src/c.py"],
+        "the bounded edit set dropped or reordered a block",
+    )
+    require(
+        [block["body_text"] is not None for block in budget_blocks] == [True, False, False],
+        "the edit-set budget is a greedy best fit rather than a prefix cut",
+    )
+    require(
+        [block["body_bytes"] for block in budget_blocks] == [10_000, 10_000, 5_000],
+        "an omitted block lost its pre-omission byte count",
+    )
+    require(budget_total == 25_000, "the edit-set total is not the pre-omission sum")
+    require(
+        all(
+            block["body_sha256"] == hashlib.sha256(body.encode("utf-8")).hexdigest()
+            for block, (_, body) in zip(budget_blocks, budget_edits)
+        ),
+        "an omitted block lost the digest of the body it stands for",
+    )
+
+    # The divergence normalizer takes its span from the parser, so a column-0 line inside a
+    # triple-quoted string cannot end a function early and hide every difference after it.
+    hazard = (
+        "def measurement():\n"
+        '    text = """\n'
+        "not indented, and not the end of this function\n"
+        '"""\n'
+        "    return text\n"
+        "\n"
+        "\n"
+        "def next_function():\n"
+        "    return 0\n"
+    )
+    require(
+        function_source(hazard, "measurement") == hazard.split("\n")[0:5],
+        "the divergence normalizer ends a function at a column-0 line inside a string",
+    )
+
+    probe = repair.environment_probe(module)
+    require(probe["producer"] == "MEASUREMENT_ADAPTER", "the probe's producer role moved")
+    require(
+        probe["runtime_identity"] == repair.runtime_identity(),
+        "the probe does not carry this adapter's own identity",
+    )
+
+    # Cleanup: one module object per process. `base_adapter()` has not run in this process yet.
+    require(repair._BASE is None, "a base module was loaded before `base_adapter()` was called")
+    loaded, loaded_raw = repair.base_adapter()
+    require(loaded_raw == raw, "`base_adapter()` returned bytes it did not verify")
+    failed = False
+    try:
+        repair.base_adapter()
+    except repair.BaseAdapterError:
+        failed = True
+    require(failed, "a second base-adapter load in one process was accepted")
+
+
+def launch_rows(repair) -> None:
+    with tempfile.TemporaryDirectory(prefix="prompt-repair-adapter-smoke-") as scratch_name:
+        scratch = Path(scratch_name)
+
+        # Mode `FAIL`/`TEST`: a validated edit set and a synthesized patch, both carried.
+        failing = Fixture(scratch, "test-fail")
+        failing.request()
+        completed, result = failing.invoke()
+        require(completed.returncode == 0, f"test-fail: adapter exited {completed.returncode}")
+        assert_version_two_shape("test-fail", result, repair)
+        require(
+            result["status"] == "FAIL" and result["failure_kind"] == "TEST",
+            f"test-fail: got {result['status']}/{result['failure_kind']}",
+        )
+        require(result["edit_set"] is not None, "test-fail: no edit set was carried")
+        require(len(result["edit_set"]) == 1, "test-fail: the edit set is not one block")
+        block = result["edit_set"][0]
+        require(block["path"] == FIXTURE_EDIT_PATH, "test-fail: the block names another path")
+        require(block["body_text"] == EDITED_CONTENT, "test-fail: the block body is not the answer")
+        require(
+            block["body_bytes"] == len(EDITED_CONTENT.encode("utf-8")),
+            "test-fail: body_bytes is not the body's length",
+        )
+        failing_patch_sha256 = result["patch_sha256"]
+
+        # Success: `PASS` carries the same two members.
+        passing = Fixture(scratch, "pass")
+        passing.write_runner(exit_code=0)
+        passing.request(validation_runner_sha256=raw_digest(passing.runner_path))
+        completed, result = passing.invoke()
+        require(completed.returncode == 0, f"pass: adapter exited {completed.returncode}")
+        assert_version_two_shape("pass", result, repair)
+        require(result["status"] == "PASS", f"pass: got {result['status']}")
+        require(result["edit_set"] is not None, "pass: no edit set was carried")
+        require(result["patch_sha256"] is not None, "pass: no patch digest was carried")
+        require(
+            result["patch_sha256"] == failing_patch_sha256,
+            "pass: the same edit set produced a different patch digest",
+        )
+
+        # Two files round-trip with both bodies, sorted.
+        second = Fixture(scratch, "two-files", allowed=[FIXTURE_EDIT_PATH, SECOND_EDIT_PATH])
+        second_body = (ROOT / FIXTURE_SOURCE_DIR / SECOND_EDIT_PATH).read_text(encoding="utf-8")
+        second.write_child(content=(
+            f"FILE: {SECOND_EDIT_PATH}\n```\n{second_body}```\n\n"
+            f"FILE: {FIXTURE_EDIT_PATH}\n```\n{EDITED_CONTENT}```\n"
+        ))
+        second.request(
+            task_definition_sha256=raw_digest(second.task_path),
+            generation_child_sha256=raw_digest(second.child_path),
+        )
+        completed, result = second.invoke()
+        require(completed.returncode == 0, f"two-files: adapter exited {completed.returncode}")
+        assert_version_two_shape("two-files", result, repair)
+        require(
+            [block["path"] for block in result["edit_set"]]
+            == sorted([FIXTURE_EDIT_PATH, SECOND_EDIT_PATH]),
+            "two-files: the edit set is not both paths in sorted order",
+        )
+        require(
+            all(block["body_text"] is not None for block in result["edit_set"]),
+            "two-files: a body was omitted below the budget",
+        )
+
+        # Malformed input: `EDIT_SET_LIMIT` exceeded. The over-budget block keeps its identity and
+        # loses only its text, the total is the pre-omission sum, and the cut is a **prefix**: the
+        # first block over the budget takes every later block with it, even one that would fit on
+        # its own. The pair of cases below is what separates that rule from a greedy best fit —
+        # here the oversized file sorts first, so nothing is carried; in `over-budget-tail` it
+        # sorts last, so the earlier file is carried and only the tail is dropped.
+        oversized_body = EDITED_CONTENT + "# " + "x" * repair.EDIT_SET_LIMIT + "\n"
+        wide = Fixture(scratch, "over-budget", allowed=[FIXTURE_EDIT_PATH, SECOND_EDIT_PATH])
+        wide.write_child(content=(
+            f"FILE: {FIXTURE_EDIT_PATH}\n```\n{oversized_body}```\n\n"
+            f"FILE: {SECOND_EDIT_PATH}\n```\n{second_body}```\n"
+        ))
+        wide.request(
+            task_definition_sha256=raw_digest(wide.task_path),
+            generation_child_sha256=raw_digest(wide.child_path),
+        )
+        completed, result = wide.invoke()
+        require(completed.returncode == 0, f"over-budget: adapter exited {completed.returncode}")
+        assert_version_two_shape("over-budget", result, repair)
+        blocks = {block["path"]: block for block in result["edit_set"]}
+        require(
+            blocks[FIXTURE_EDIT_PATH]["body_text"] is None,
+            "over-budget: the over-budget block was carried",
+        )
+        require(
+            blocks[FIXTURE_EDIT_PATH]["body_bytes"] == len(oversized_body.encode("utf-8")),
+            "over-budget: an omitted block lost its byte count",
+        )
+        require(
+            len(blocks[FIXTURE_EDIT_PATH]["body_sha256"]) == 64,
+            "over-budget: an omitted block lost its digest",
+        )
+        require(
+            blocks[SECOND_EDIT_PATH]["body_text"] is None,
+            "over-budget: a block after the overflow was carried, so the cut is not a prefix",
+        )
+        require(
+            blocks[SECOND_EDIT_PATH]["body_bytes"] == len(second_body.encode("utf-8")),
+            "over-budget: a block after the overflow lost its byte count",
+        )
+        require(
+            result["edit_set_total_bytes"]
+            == sum(block["body_bytes"] for block in result["edit_set"]),
+            "over-budget: the total is not the pre-omission sum",
+        )
+
+        # The same budget with the oversized file sorting **last**: the prefix before the overflow
+        # is carried in full, so this is not "omit everything once anything overflows" either.
+        tail = Fixture(scratch, "over-budget-tail", allowed=[FIXTURE_EDIT_PATH, SECOND_EDIT_PATH])
+        oversized_tail = second_body + "# " + "x" * repair.EDIT_SET_LIMIT + "\n"
+        tail.write_child(content=(
+            f"FILE: {FIXTURE_EDIT_PATH}\n```\n{EDITED_CONTENT}```\n\n"
+            f"FILE: {SECOND_EDIT_PATH}\n```\n{oversized_tail}```\n"
+        ))
+        tail.request(
+            task_definition_sha256=raw_digest(tail.task_path),
+            generation_child_sha256=raw_digest(tail.child_path),
+        )
+        completed, result = tail.invoke()
+        require(completed.returncode == 0, f"over-budget-tail: adapter exited {completed.returncode}")
+        assert_version_two_shape("over-budget-tail", result, repair)
+        blocks = {block["path"]: block for block in result["edit_set"]}
+        require(
+            blocks[FIXTURE_EDIT_PATH]["body_text"] is not None,
+            "over-budget-tail: the prefix before the overflow was dropped",
+        )
+        require(
+            blocks[SECOND_EDIT_PATH]["body_text"] is None,
+            "over-budget-tail: the over-budget block was carried",
+        )
+
+        # Failure: `FAIL`/`PATCH` — a response with no fenced block.
+        formatless = Fixture(scratch, "patch-absent")
+        formatless.write_child(content="I would change src/duration.py to round away from zero.\n")
+        formatless.request(generation_child_sha256=raw_digest(formatless.child_path))
+        completed, result = formatless.invoke()
+        require(completed.returncode == 0, f"patch-absent: adapter exited {completed.returncode}")
+        assert_version_two_shape("patch-absent", result, repair)
+        require(
+            result["status"] == "FAIL" and result["failure_kind"] == "PATCH",
+            f"patch-absent: got {result['status']}/{result['failure_kind']}",
+        )
+        require(result["edit_set"] is None, "patch-absent: an edit set was carried")
+        require(result["edit_set_total_bytes"] is None, "patch-absent: a total was carried")
+        require(result["patch_sha256"] is None, "patch-absent: a patch digest was carried")
+        require(result["patch_size_bytes"] == 0, "patch-absent: a patch size was carried")
+
+        # Failure: `POLICY_VIOLATION`/`POLICY` — a block naming a path outside `allowed_edits`.
+        outside = Fixture(scratch, "policy")
+        outside.write_child(content=f"FILE: {SECOND_EDIT_PATH}\n```\nprint(1)\n```\n")
+        outside.request(generation_child_sha256=raw_digest(outside.child_path))
+        completed, result = outside.invoke()
+        require(completed.returncode == 0, f"policy: adapter exited {completed.returncode}")
+        assert_version_two_shape("policy", result, repair)
+        require(
+            result["status"] == "POLICY_VIOLATION" and result["failure_kind"] == "POLICY",
+            f"policy: got {result['status']}/{result['failure_kind']}",
+        )
+        require(result["edit_set"] is None, "policy: an edit set was carried")
+        require(result["patch_sha256"] is None, "policy: a patch digest was carried")
+
+        # Failure: `ERROR` before the parse — a generation-child failure.
+        broken = Fixture(scratch, "generation-error")
+        broken.write_child(exit_code=3)
+        broken.request(generation_child_sha256=raw_digest(broken.child_path))
+        completed, result = broken.invoke()
+        require(completed.returncode == 0, f"generation-error: adapter exited {completed.returncode}")
+        assert_version_two_shape("generation-error", result, repair)
+        require(result["status"] == "ERROR", f"generation-error: got {result['status']}")
+        require(result["edit_set"] is None, "generation-error: an edit set was carried")
+        require(result["patch_sha256"] is None, "generation-error: a patch digest was carried")
+
+        # Early exit: the declared-patch path parses no response, so there is no edit set — but the
+        # patch that reached the runner still has an identity.
+        declared = Fixture(scratch, "declared-patch")
+        patch_path = declared.root / "declared.patch"
+        patch_path.write_bytes(b"diff --git a/x b/x\n")
+        declared.request(
+            patch_path=str(patch_path), patch_sha256=raw_digest(patch_path),
+        )
+        completed, result = declared.invoke()
+        require(completed.returncode == 0, f"declared-patch: adapter exited {completed.returncode}")
+        assert_version_two_shape("declared-patch", result, repair)
+        require(result["edit_set"] is None, "declared-patch: an edit set was carried")
+        require(
+            result["patch_sha256"] == raw_digest(patch_path),
+            "declared-patch: the patch digest is not the declared patch's",
+        )
+        require(
+            "declared patch" in result["diagnostic_summary"],
+            "declared-patch: the summary does not name the declared patch",
+        )
+
+        # Redaction: the credential never reaches a persisted body, and it changes both digests.
+        credential = "sk-c4-editset-smoke-secret"
+        secret_body = EDITED_CONTENT + f"# token {credential}\n"
+        leaky = Fixture(scratch, "redaction")
+        leaky.write_child(content=f"FILE: {FIXTURE_EDIT_PATH}\n```\n{secret_body}```\n")
+        leaky.control = store(leaky.control_path, {
+            **{key: value for key, value in leaky.control.items() if key != "content_sha256"},
+            "api_key_env": "C4_EDITSET_SMOKE_TOKEN", "content_sha256": "",
+        })
+        leaky.policy = store(leaky.policy_path, {
+            **{key: value for key, value in leaky.policy.items() if key != "content_sha256"},
+            "provider_control_sha256": leaky.control["content_sha256"], "content_sha256": "",
+        })
+        leaky.request(
+            credential_env_name="C4_EDITSET_SMOKE_TOKEN",
+            provider_control_sha256=leaky.control["content_sha256"],
+            generation_policy_sha256=leaky.policy["content_sha256"],
+            generation_child_sha256=raw_digest(leaky.child_path),
+        )
+        completed, result = leaky.invoke({"C4_EDITSET_SMOKE_TOKEN": credential})
+        require(completed.returncode == 0, f"redaction: adapter exited {completed.returncode}")
+        assert_version_two_shape("redaction", result, repair)
+        raw_result = leaky.result_path.read_bytes()
+        require(
+            credential.encode("utf-8") not in raw_result,
+            "redaction: the credential survived into the persisted measurement",
+        )
+        block = result["edit_set"][0]
+        require(
+            "[REDACTED]" in block["body_text"],
+            "redaction: the carried body was not redacted",
+        )
+        require(
+            block["body_sha256"]
+            != hashlib.sha256(secret_body.encode("utf-8")).hexdigest(),
+            "redaction: body_sha256 digests the unredacted bytes and is a credential oracle",
+        )
+
+
+def main(arguments: list[str] | None = None) -> int:
+    values = sys.argv[1:] if arguments is None else list(arguments)
+    update = "--update-golden" in values
+    check_divergence(update)
+    if update:
+        return 0
+    repair = load_repair_adapter()
+    portable_rows(repair)
+    if LINUX:
+        launch_rows(repair)
+        sys.stdout.write("prompt repair adapter: PASS import contract and version-2 measurement\n")
+    else:
+        sys.stdout.write(
+            "prompt repair adapter: PASS import contract and bounded-divergence golden\n"
+            "prompt repair adapter: SKIP: the sealed-input and containment rows need Linux "
+            "(memfd_create, F_ADD_SEALS, /proc/self/fd, PR_SET_CHILD_SUBREAPER); this host is "
+            f"{sys.platform}\n"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (RuntimeError, OSError, ValueError, KeyError) as failure:
+        sys.stderr.write(f"prompt repair adapter: FAIL {failure}\n")
+        raise SystemExit(1)
