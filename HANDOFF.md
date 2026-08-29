@@ -125,25 +125,35 @@ Track B decode performance.
 duplication count is corrected from 23 to **36**, regenerated from the source, with the predicted
 duplicated `refill` removed because it does not exist.
 
+**Final review minors applied.** One final delta review of the repair head `bf7c87d` returned
+**approve with minors** — three stale "57" case counts in section 14 that the deviation-16 repair
+took to 59, one deviation cross-reference (16 -> 18), a clause recording that the union-versus-
+adjacent-pair ratio's *direction* is structural and only its magnitude informative, and one
+108-column roadmap line. All four are applied in `a5c216a`, are **Markdown only**, and touch no
+source, script, fixture, golden or `Makefile`, so the qualification recorded at `bf7c87d` stands.
+Re-verified at `a5c216a`: `gmake build` ok, `gmake format-check` PASS, `gmake layer-forward-smoke`
+PASS (seven blocks, 1 min 28 s, 13 no-document and 59 documented cases in the seventh),
+`git diff --check` clean.
+
+**Coding-baseline chain, re-recorded.** `Makefile` is in this publication diff, so `main`'s chain no
+longer binds this head. The pending record was measured on **Linux** (aarch64, kernel
+6.11.11-linuxkit, Python 3.12.3) through the DinD wrapper at the publication head, and the chain is
+**source `a5c216a` -> oracle `4cab8a7` -> finalization `245f7f5`**. `gmake baseline-check` inside the
+same Linux image ends `baseline chain: PASS`.
+
 **Next actions, in order.**
-1. **Re-record the coding-baseline chain.** `Makefile` is in this publication diff (it adds
-   `moe-decode-step-qualification` to `.PHONY` and one target), and `scripts/check-baseline-chain`
-   compares the working-tree `Makefile` against its baseline source commit byte for byte. The chain
-   is source -> oracle -> finalization, recorded on **Linux (aarch64)** through the DinD wrapper
-   exactly as R5D's, R5E's and R6-STEP-N's were, and `gmake baseline-check` must end
-   `baseline chain: PASS` there. Do this **before** step 2: `scripts/pre-pr` stamps the exact
-   unchanged `HEAD`, and the baseline commits change it.
-2. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` on the
+1. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` on the
    unchanged head. The diff touches `Makefile`, `scripts/build-ggml-shim`, the fixture, the smoke and
    the goldens, so the classifier selects the **executable** row and the **installed fresh-image
-   profile**; do not substitute a Docker skip or an ambient `DOCKER_HOST`.
-3. Open the English pull request with the verification table, the review envelope, the finding
+   profile** (`--plan` reports scope `fresh-image`); do not substitute a Docker skip or an ambient
+   `DOCKER_HOST`.
+2. Open the English pull request with the verification table, the review envelope, the finding
    dispositions and the consolidated repair commit. It must be a **merge** commit: squash or rebase
    would make the baseline commits unreachable from `main`.
-4. `gmake ci` is **not** selected: this repair changes no aggregate membership, no check topology and
+3. `gmake ci` is **not** selected: this repair changes no aggregate membership, no check topology and
    no integration behaviour, and `scripts/check-gate-topology`'s byte-literal EXPECTED does not move
    (`moe-decode-step-qualification` stays in `.PHONY` and in no aggregate).
-5. After merge, refresh `main` and start the next eligible roadmap capability.
+4. After merge, refresh `main` and start the next eligible roadmap capability.
 
 **Reproducing the qualification on this host, exactly.** All three of the arm, `llama-eval-callback`
 and `llama-debug` must be **one ggml build** (deviation 4). The `r2c-v2` cache holds only a
