@@ -18,6 +18,12 @@ set -euo pipefail
 #                                   all four. The documented cost fallback is, in order,
 #                                   `ALIGN_LLM_DECODE_STEPS=8` and then
 #                                   `ALIGN_LLM_KV_PERSIST_PROMPTS=2`
+#   ALIGN_LLM_SUFFIX_SPLITS         how many split points per prompt get R6-PREFIX-SUFFIX-PREFILL's
+#                                   suffix leg; defaults to 2 (`j = 2` and the midpoint,
+#                                   deduplicated). `0` skips the leg and says so. The documented
+#                                   cost fallback is, in order, `ALIGN_LLM_DECODE_STEPS=8`,
+#                                   then `ALIGN_LLM_SUFFIX_SPLITS=1`, then
+#                                   `ALIGN_LLM_KV_PERSIST_PROMPTS=2`, which also halves this leg
 #   ALIGN_LLM_RESIDENT_WEIGHTS      `1` (default) runs R6-RESIDENT-WEIGHTS' resident leg; `0` skips
 #                                   it and says so. The leg needs about 4.7 GB of physical memory
 #                                   for the arena and is refused below 12 GiB with an explicit N/A
@@ -182,6 +188,30 @@ PERSIST_PROMPTS="${ALIGN_LLM_KV_PERSIST_PROMPTS:-4}"
 case "${PERSIST_PROMPTS}" in
   ''|*[!0-9]*) na "ALIGN_LLM_KV_PERSIST_PROMPTS=${PERSIST_PROMPTS} is not a decimal prompt count" ;;
 esac
+
+# R6-PREFIX-SUFFIX-PREFILL section 5.4. Two split points per prompt, at `j = 2` and the midpoint,
+# deduplicated, so a `T <= 6` prompt gives one or two distinct splits. `j = 2` is the smallest prefix
+# that is not degenerate; the midpoint is the only other point that moves `T_prefix > 1` and `S > 1`
+# together. `T_prefix = 1` is legal since MF-SINGLE-TOKEN-LOGITS (section 11.5) and is covered
+# hosted by `ds-suffix-prefix-one`; no real-model run is spent on it for the same reason `S = 1`
+# gets none. **A split at `j = |L| - 1` is deliberately not taken**: it is `S = 1`, which the hosted
+# `ds-suffix-1` already covers, and it would spend a real-model run on the cheapest case.
+#
+# The leg rides on the persistence leg's prompts, because it needs a container; the ordered
+# fallbacks are in the header. Its cost is one `N = 1` save, one `N`-step suffix run, one `N`-step
+# single-shot run, one `--model-forward`, and three TTFT repeats per split.
+SUFFIX_SPLITS="${ALIGN_LLM_SUFFIX_SPLITS:-2}"
+case "${SUFFIX_SPLITS}" in
+  ''|*[!0-9]*) na "ALIGN_LLM_SUFFIX_SPLITS=${SUFFIX_SPLITS} is not a decimal split count" ;;
+esac
+# The suffix leg runs **resident** by default, for section 5.4's cost reason, and its single-shot
+# comparand takes the same operand — so the two documents differ in `KV_LOAD` and `SUFFIX` and in
+# nothing else. On a host too small for the arena both legs stream instead, and the comparison is
+# unaffected because it is a comparison of the two runs with each other.
+SUFFIX_RESIDENT="-"
+if [ "${RESIDENT_LEG}" = 1 ]; then
+  SUFFIX_RESIDENT="weights"
+fi
 
 # The TTFT proxy's outer bound. It measures **process start to exit** around one whole invocation,
 # so it includes `dyld`, the pack open, and the geometry parse on both sides -- which is the point:
@@ -444,6 +474,132 @@ with open(sys.argv[1], 'rb') as handle:
     # The two determinism duplicates have served their purpose; the load path's own container stays
     # until the analysis has read its size.
     rm -f "${kv_second}" "${kv_perturbed}"
+
+    # -----------------------------------------------------------------------------------------
+    # R6-PREFIX-SUFFIX-PREFILL section 5.4. Per split point: save the **prefix**, continue it with
+    # the suffix in a separate process, run the same prompt single-shot, and take oracle C'' from
+    # `--model-forward`.
+    #
+    # **Three things this leg gets for free**, and they are why its cost is bounded: the `LOGITS`
+    # blob is the existing one, because `TOKENS ++ SUFFIX == L` and `llama-debug --save-logits` ran
+    # on the whole prompt text; the `TRANSCRIPT` is the existing one, because the decode loop starts
+    # at `n_past = |L|` on both legs so llama.cpp's `N + 1` graphs map to the steps identically; and
+    # no detokenizer is needed, because the split is on ids the instrument already printed.
+    # -----------------------------------------------------------------------------------------
+    if [ "${SUFFIX_SPLITS}" -gt 0 ]; then
+      splits=$(python3 -c "
+import sys
+ids = sys.argv[1].split(',')
+want = int(sys.argv[2])
+points = []
+for j in (2, -(-len(ids) // 2)):
+    # `1 <= j`. The bound was `2 <= j` while the arm refused a one-token prefix outright; MF-SINGLE-
+    # TOKEN-LOGITS (roadmap item 36) fixed the embedding gather section 11.2 filed and section 11.5
+    # records the lift, so `T_prefix = 1` is an ordinary split. On every prompt this leg actually
+    # runs -- six ids or more -- both points are already >= 2, so this widens the guard without
+    # adding a run; it stops encoding a refusal that no longer exists.
+    if 1 <= j < len(ids) and j not in points:
+        points.append(j)
+print(' '.join(str(j) for j in points[:want]))
+" "${tokens}" "${SUFFIX_SPLITS}")
+      for j in ${splits}; do
+        prefix_ids=$(python3 -c "
+import sys
+print(','.join(sys.argv[1].split(',')[:int(sys.argv[2])]))" "${tokens}" "${j}")
+        suffix_ids=$(python3 -c "
+import sys
+print(','.join(sys.argv[1].split(',')[int(sys.argv[2]):]))" "${tokens}" "${j}")
+        kv_prefix="${case_dir}/prefix${j}.akvp"
+        rm -f "${kv_prefix}"
+        echo "decode step qualification:   prompt ${index} split ${j}:" \
+          "prefix ${prefix_ids} + suffix ${suffix_ids}"
+        # 1. The prefix's container. `STEPS = 1` and no transcript: this run exists to write a
+        #    plane, and its own decode step is the cheapest legal one.
+        "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+          "${work_dir}/geometry.json" "${prefix_ids}" \
+          "${persist_root}/case${index}-split${j}-save.json" "${ALIGN_LLM_GGUF_MODEL}" - \
+          "${KV_WIDTH}" - 1 "${kv_prefix}" - > "${case_dir}/split${j}-save.txt" || {
+            echo "decode step qualification: FAIL prompt ${index} split ${j} prefix save exited" \
+              "non-zero" >&2
+            rm -f "${kv_prefix}"
+            exit 1
+          }
+        # 2. The suffix run, in a **separate process**: load the prefix plane, run one suffix pass
+        #    over `S` columns at `n_past = T_prefix`, then the existing `N`-step loop.
+        "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+          "${work_dir}/geometry.json" "${prefix_ids}" \
+          "${persist_root}/case${index}-split${j}-sfx.json" "${ALIGN_LLM_GGUF_MODEL}" \
+          "${case_dir}/transcript.txt" "${KV_WIDTH}" "${logits_bin}" "${DECODE_STEPS}" - \
+          "${kv_prefix}" "${SUFFIX_RESIDENT}" "${suffix_ids}" \
+          > "${case_dir}/split${j}-sfx.txt" || {
+            echo "decode step qualification: FAIL prompt ${index} split ${j} suffix run exited" \
+              "non-zero" >&2
+            exit 1
+          }
+        # 3. The single-shot run of the whole prompt, differing in `KV_LOAD` and `SUFFIX` only.
+        "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+          "${work_dir}/geometry.json" "${tokens}" \
+          "${persist_root}/case${index}-split${j}-one.json" "${ALIGN_LLM_GGUF_MODEL}" \
+          "${case_dir}/transcript.txt" "${KV_WIDTH}" "${logits_bin}" "${DECODE_STEPS}" - - \
+          "${SUFFIX_RESIDENT}" - > "${case_dir}/split${j}-one.txt" || {
+            echo "decode step qualification: FAIL prompt ${index} split ${j} single-shot run" \
+              "exited non-zero" >&2
+            exit 1
+          }
+        # 4. Oracle C''. `--model-forward` at `TOKENS,SUFFIX` — which is `L` — and the same width,
+        #    built from the **prefill** row table rather than the decode one.
+        "${root_dir}/ggml-spike" --model-forward "${work_dir}/model.alignpack" \
+          "${work_dir}/geometry.json" "${tokens}" \
+          "${persist_root}/case${index}-split${j}-mf.json" "${ALIGN_LLM_GGUF_MODEL}" - \
+          "${KV_WIDTH}" > "${case_dir}/split${j}-mf.txt" || {
+            echo "decode step qualification: FAIL prompt ${index} split ${j} --model-forward" \
+              "exited non-zero" >&2
+            exit 1
+          }
+        # 5. Section 1.4's three TTFT legs at `STEPS = 1`, no transcript and no logits blob, three
+        #    repeats each: (a) a single-shot prefill of the whole prompt, (b) load plus suffix pass,
+        #    and (c) the plain load of R6-KV-PERSIST's own leg, which is measured above. All three
+        #    are **labelled diagnostic** and no rate, speedup, or per-token figure is derived.
+        #
+        #    **All three stream, and that is the whole point of leg (c).** Section 1.4 carries leg
+        #    (c) forward from R6-KV-PERSIST *unchanged* so the three are comparable, and that leg is
+        #    a twelve-operand invocation with no `RESIDENT` position at all. Running (a) and (b)
+        #    resident while (c) streams would put the arena's one-time fill on two sides of a
+        #    three-way comparison and none of the third, which is a difference in the instrument
+        #    rather than in the thing measured. The `-` below is therefore not a fallback: it is what
+        #    makes the trio a trio. The main suffix and single-shot runs above keep
+        #    `${SUFFIX_RESIDENT}`, because they are compared only with each other.
+        for repeat in 1 2 3; do
+          time_invocation "${case_dir}/split${j}-ttft-single-wall.txt" \
+            "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+            "${work_dir}/geometry.json" "${tokens}" \
+            "${persist_root}/case${index}-split${j}-ttft-single.json" \
+            "${ALIGN_LLM_GGUF_MODEL}" - "${KV_WIDTH}" - 1 - - - - \
+            > /dev/null || {
+              echo "decode step qualification: FAIL prompt ${index} split ${j} TTFT single" \
+                "${repeat} exited non-zero" >&2
+              exit 1
+            }
+          cp "${persist_root}/case${index}-split${j}-ttft-single.json" \
+            "${persist_root}/case${index}-split${j}-ttft-single-${repeat}.json"
+          time_invocation "${case_dir}/split${j}-ttft-suffix-wall.txt" \
+            "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+            "${work_dir}/geometry.json" "${prefix_ids}" \
+            "${persist_root}/case${index}-split${j}-ttft-suffix.json" \
+            "${ALIGN_LLM_GGUF_MODEL}" - "${KV_WIDTH}" - 1 - "${kv_prefix}" \
+            - "${suffix_ids}" > /dev/null || {
+              echo "decode step qualification: FAIL prompt ${index} split ${j} TTFT suffix" \
+                "${repeat} exited non-zero" >&2
+              exit 1
+            }
+          cp "${persist_root}/case${index}-split${j}-ttft-suffix.json" \
+            "${persist_root}/case${index}-split${j}-ttft-suffix-${repeat}.json"
+        done
+        printf '%s\n' "${prefix_ids}" > "${case_dir}/split${j}-prefix.txt"
+        printf '%s\n' "${suffix_ids}" > "${case_dir}/split${j}-suffix.txt"
+        rm -f "${kv_prefix}"
+      done
+    fi
   fi
 done
 
@@ -1415,4 +1571,224 @@ print("decode step qualification: %d prompts x akvp v1 PASS -- the container wri
       "per-step weight sweep."
       % (len(persist_rows), steps,
          len(PERSIST_EXCLUDED_BLOCKS) + len(PERSIST_EXCLUDED_FIELDS)))
+PY
+
+# ---------------------------------------------------------------------------------------------
+# R6-PREFIX-SUFFIX-PREFILL section 3.7, the shipped acceptance rule, on the real model
+#
+# It is a second Python block rather than a branch inside the one above, for that block's own
+# reason: the analysis of a leg reads only that leg's documents, and one block that enumerates two
+# document sets has to filter one out of the other. Its exit status is the runner's.
+# ---------------------------------------------------------------------------------------------
+python3 - "${work_dir}" "${persist_root}" "${DECODE_STEPS}" "${SUFFIX_SPLITS}" \
+  "${SUFFIX_RESIDENT}" <<'PY'
+import json
+import os
+import sys
+
+work_dir, persist_root = sys.argv[1], sys.argv[2]
+steps, splits, resident = int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
+
+if splits == 0:
+    print("decode step qualification: N/A the suffix leg: ALIGN_LLM_SUFFIX_SPLITS=0")
+    raise SystemExit(0)
+
+failures = []
+
+
+def load(name):
+    with open(os.path.join(persist_root, name), "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def wall(case_dir, name):
+    path = os.path.join(work_dir, case_dir, name)
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as handle:
+        return [int(line) for line in handle.read().split()]
+
+
+# Section 3.2's normalization, and section 11's four recorded additions to the design's fixed list.
+# Each addition has a compensating assertion below, because a growing exclusion list is how an
+# equality oracle stops being one.
+EXCLUDED_BLOCKS = ("kv", "suffix", "graph", "schedule", "timings", "lifetime", "reference")
+EXCLUDED_FIELDS = (
+    ("plane", "source"), ("plane", "readback_ns"), ("plane", "upload_ns"),
+    ("plane", "roundtrip_bytes_compared"),
+    ("selection", "token_count"), ("selection", "tokens"), ("selection", "narrow_index"),
+    ("selection", "attention_width"),
+    ("head", "node_count"), ("head", "pread_ns"), ("head", "compute_ns"),
+    ("pack", "reader_pread_count"), ("pack", "reader_bytes_read"),
+    ("window", "reuse_count"), ("window", "member_placements"), ("window", "residual_bytes"),
+)
+
+
+def normalize_suffix(document):
+    copy = json.loads(json.dumps(document))
+    for key in copy["timings"]:
+        copy["timings"][key] = 0
+    for row in copy["schedule"]:
+        row["pread_ns"] = 0
+        row["compute_ns"] = 0
+    for row in copy["steps"]:
+        row["compute_ns"] = 0
+    copy["head"]["pread_ns"] = 0
+    copy["head"]["compute_ns"] = 0
+    copy["decode"]["compute_ns"] = 0
+    copy["plane"]["readback_ns"] = 0
+    copy["plane"]["upload_ns"] = 0
+    copy["kv"]["write_ns"] = 0
+    copy["kv"]["read_ns"] = 0
+    copy["weights"]["fill_ns"] = 0
+    copy["suffix"]["compute_ns"] = 0
+    for key in ("pack_path", "geometry_path", "reference_path", "transcript_path", "logits_path"):
+        copy[key] = "<path>"
+    for block in EXCLUDED_BLOCKS:
+        copy.pop(block, None)
+    for block, field in EXCLUDED_FIELDS:
+        copy[block].pop(field, None)
+    return json.dumps(copy, sort_keys=True, separators=(",", ":"))
+
+
+rows = []
+for entry in sorted(os.listdir(persist_root)):
+    if entry.endswith("-sfx.json"):
+        rows.append(entry[: -len("-sfx.json")])
+
+if not rows:
+    print("decode step qualification: N/A the suffix leg produced no documents")
+    raise SystemExit(0)
+
+for stem in rows:
+    case_dir = stem.split("-")[0]
+    split = stem.split("split")[1]
+    suffix_document = load(stem + "-sfx.json")
+    single = load(stem + "-one.json")
+    forward = load(stem + "-mf.json")
+    prefix_ids = [int(v) for v in open(
+        os.path.join(work_dir, case_dir, "split%s-prefix.txt" % split)).read().split(",")]
+    suffix_ids = [int(v) for v in open(
+        os.path.join(work_dir, case_dir, "split%s-suffix.txt" % split)).read().split(",")]
+    model = suffix_document["model"]
+    sequence = len(prefix_ids) + len(suffix_ids)
+    label = "%s split %s" % (case_dir, split)
+
+    # Rule 2, oracle S: the suffix run and the single-shot run are the same run.
+    if normalize_suffix(suffix_document) != normalize_suffix(single):
+        failures.append("oracle S (%s): the two documents differ outside the excluded set" % label)
+    if suffix_document["suffix"]["sequence_length"] != single["selection"]["token_count"]:
+        failures.append("oracle S (%s): sequence_length %d is not the single-shot run's "
+                        "token_count %d" % (label, suffix_document["suffix"]["sequence_length"],
+                                            single["selection"]["token_count"]))
+    if suffix_document["selection"]["tokens"] + suffix_ids != single["selection"]["tokens"]:
+        failures.append("oracle S (%s): the prefix plus the suffix is not the whole prompt" % label)
+    for name, side in ((label, suffix_document), (label + " single-shot", single)):
+        selection = side["selection"]
+        if selection["narrow_index"] != selection["token_count"] - 1 \
+                or selection["attention_width"] != selection["token_count"] \
+                or side["window"]["residual_bytes"] != model["n_embd"] * selection["token_count"] * 4:
+            failures.append("%s: selection and residual_bytes are not the arithmetic of the "
+                            "operand: %r / %d" % (name, selection, side["window"]["residual_bytes"]))
+
+    # Rule 3, oracle C''. `--model-forward` at `TOKENS,SUFFIX` is byte-identical to the suffix
+    # pass's own logits — a different arm, built from the prefill row table.
+    if forward["output"]["sha256"] != suffix_document["output"]["sha256"]:
+        failures.append("oracle C'' (%s): --model-forward is %r, the suffix pass is %r"
+                        % (label, forward["output"]["sha256"],
+                           suffix_document["output"]["sha256"]))
+
+    # Rule 4, oracle B, over `T_prefix + S` columns before the first decode step.
+    extra = 2 * model["n_layer"] * sequence * model["n_head_kv"] * model["head_dim"] * 4
+    if suffix_document["plane"]["roundtrip_verdict"] != "IDENTICAL" \
+            or suffix_document["plane"]["roundtrip_bytes_compared"] \
+            != single["plane"]["roundtrip_bytes_compared"] + extra:
+        failures.append("oracle B (%s): %r over %d bytes, not the single-shot run's %d plus %d"
+                        % (label, suffix_document["plane"]["roundtrip_verdict"],
+                           suffix_document["plane"]["roundtrip_bytes_compared"],
+                           single["plane"]["roundtrip_bytes_compared"], extra))
+
+    # Rule 5, gate G on the suffix run: `oracle_logits` is byte-identical against the whole prompt's
+    # `llama-debug --save-logits` blob, and the ids equal the single-shot run's.
+    oracle_logits = suffix_document["oracle_logits"]
+    if oracle_logits["verdict"] != "IDENTICAL" or not oracle_logits["byte_identical"]:
+        failures.append("gate G1 (%s): %r" % (label, oracle_logits))
+    if suffix_document["decode"]["token_ids"] != single["decode"]["token_ids"]:
+        failures.append("gate G (%s): the suffix run decoded %r, the single-shot run %r"
+                        % (label, suffix_document["decode"]["token_ids"],
+                           single["decode"]["token_ids"]))
+
+    # Rule 6, the suffix pass's accounting, asserted exactly.
+    suffix = suffix_document["suffix"]
+    if suffix["requested"] != 1 or suffix["completed"] != 1 \
+            or suffix["token_count"] != len(suffix_ids) \
+            or suffix["n_past_base"] != len(prefix_ids) \
+            or suffix["first_column"] != len(prefix_ids) \
+            or suffix["columns_written"] != sequence \
+            or suffix["graph_count"] != model["n_layer"] + 2:
+        failures.append("%s: the suffix pass's accounting is %r" % (label, suffix))
+    if suffix["n_past_base"] != suffix_document["kv"]["columns_persisted"] \
+            or suffix["n_past_base"] != suffix_document["kv"]["token_count"] \
+            or suffix["n_past_base"] != suffix_document["selection"]["token_count"]:
+        failures.append("%s: the pass's base disagrees with the container it continued: %r"
+                        % (label, suffix_document["kv"]))
+    if suffix_document["plane"]["columns_written"] != sequence + steps:
+        failures.append("%s: the plane holds %d columns, not T + S + N"
+                        % (label, suffix_document["plane"]["columns_written"]))
+    if resident == "weights" and suffix["pack_bytes"] != 0:
+        failures.append("%s: the resident suffix pass read %d pack bytes"
+                        % (label, suffix["pack_bytes"]))
+    # Section 2.9's hazard: on a completed suffix run `output` is the pass's own logits and not the
+    # container's persisted vector, which is still published in `kv`.
+    if suffix_document["output"]["sha256"] == suffix_document["kv"]["logits_sha256"]:
+        failures.append("%s: `output` is still the container's persisted vector" % label)
+
+    # Section 1.4's labelled diagnostic, reported and never claimed.
+    single_first = [load("%s-ttft-single-%d.json" % (stem, r))["timings"]["first_token_ns"]
+                    for r in (1, 2, 3)]
+    suffix_first = [load("%s-ttft-suffix-%d.json" % (stem, r))["timings"]["first_token_ns"]
+                    for r in (1, 2, 3)]
+    single_wall = wall(case_dir, "split%s-ttft-single-wall.txt" % split)
+    suffix_wall = wall(case_dir, "split%s-ttft-suffix-wall.txt" % split)
+    print("decode step qualification: R6PS %s T_prefix=%d S=%d oracle S IDENTICAL, oracle C'' "
+          "IDENTICAL, oracle B IDENTICAL over %d bytes (+%d for the pass), gate G1 IDENTICAL, "
+          "ids %r" % (label, len(prefix_ids), len(suffix_ids),
+                      suffix_document["plane"]["roundtrip_bytes_compared"], extra,
+                      suffix_document["decode"]["token_ids"][:4]))
+    # Leg (c), R6-KV-PERSIST's own plain load, read from the documents that leg already wrote.
+    # All three legs stream, so the trio differs in what it is measuring and in nothing else.
+    load_first = []
+    for repeat in (1, 2, 3):
+        path = os.path.join(persist_root, "%s-ttft-load-%d.json" % (case_dir, repeat))
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as handle:
+                load_first.append(json.load(handle)["timings"]["first_token_ns"])
+    print("decode step qualification: R6PS %s TTFT proxy DIAGNOSTIC first_token_ns single "
+          "%d..%d, load+suffix %d..%d, plain load %s; invocation wall ns single %d..%d, "
+          "load+suffix %d..%d. Ranges over three runs on one host. All three legs stream. "
+          "**No TTFT claim.** Neither leg skips a weight sweep, because a prefill of any width is "
+          "one sweep; what the second removes is `T_prefix` columns of prefill *compute* **plus "
+          "the pack read and graph construction the prefill pass performs for the whole prompt**, "
+          "and it pays a container read instead -- so a reader who sees the second beat the first "
+          "is seeing that exchange on a prompt of a few tokens, not a cache. The third is not a "
+          "third point on the same line, because it answers a shorter question."
+          % (label, min(single_first), max(single_first), min(suffix_first), max(suffix_first),
+             ("%d..%d" % (min(load_first), max(load_first))) if load_first else "not measured",
+             min(single_wall or [0]), max(single_wall or [0]),
+             min(suffix_wall or [0]), max(suffix_wall or [0])))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("decode step qualification: FAIL %s\n" % line)
+    raise SystemExit(1)
+
+print("decode step qualification: %d prefix/suffix splits PASS -- every suffix run is byte-"
+      "identical to the single-shot run of `TOKENS ++ SUFFIX` outside %d excluded key groups, its "
+      "logits are byte-identical to `--model-forward` at the whole prompt and to "
+      "`llama-debug --save-logits`, the plane round trip is IDENTICAL over T_prefix + S columns "
+      "before the first decode step, and the decoded ids are the single-shot run's. **The R6 "
+      "roadmap gate stays unmet**: this ships the execution half of repo-stable-prefix KV and none "
+      "of its lookup half -- no prefix key, no store, no corpus, no prefix-sharing consumer -- so "
+      "the TTFT figures above are a labelled diagnostic and no claim is made."
+      % (len(rows), len(EXCLUDED_BLOCKS) + len(EXCLUDED_FIELDS)))
 PY

@@ -1,7 +1,8 @@
 # MF-SINGLE-TOKEN-LOGITS
 
 **Designed 2026-08-29; implemented the same day — section 8 is the result.** Branch `agent/mf-single-token-logits` from `origin/main`
-`553563e`, which every line cites. Filed by `R6-PREFIX-SUFFIX-PREFILL` 11.2. **Roadmap item 36**
+`553563e`, which sections 1 to 7 cite; merged up to `origin/main` `a9561a9` (PR #149) before
+publication, which section 8.4 records. Filed by `R6-PREFIX-SUFFIX-PREFILL` 11.2. **Roadmap item 36**
 (`main` carries 30, 31–35 are on branches); re-check at merge.
 
 ## 1. Root cause
@@ -116,6 +117,8 @@ are byte-identical.
 | `ds-tokens-one` (id 3, streamed) | decode-step | `867ebc4ea19d2b1b…` |
 | `ds-tokens-one-resident` (id 3, `RESIDENT=weights`) | decode-step | `867ebc4ea19d2b1b…` |
 
+(Three more decode-step rows arrive with the `main` merge; section 8.4.)
+
 Section 1's two predictions both hold. `mf-tokens-one-zero` carries `62a46efd…` — the digest the
 defect produced for **every** one-token prefill, whatever the id — and the fixed non-zero run is a
 different vector. `ds-tokens-one-resident` **completes**: the `R5_SOURCE_DIVERGED` false alarm
@@ -149,4 +152,51 @@ gmake gate-topology-check    ok
 gmake fmt / format-check     ok   (fmt changed nothing)
 git diff --check             clean
 ```
+
+### 8.4 The `main` merge and the `R6-PREFIX-SUFFIX-PREFILL` lift
+
+`R6-PREFIX-SUFFIX-PREFILL` merged as PR #149 (`origin/main` `a9561a9`) while this capability was
+waiting on host memory for its real-model legs, and section 6's follow-up came due. `git merge
+origin/main`, never a rebase; three conflicts — `HANDOFF.md`, `docs/specs/roadmap.md`, and
+`scripts/decode-step-golden.jsonl` — all resolved by keeping both sides, the golden taken from
+`main` and regenerated. Item 33's own reconciliation was checked: no new `GraphMembers` builder and
+no new copy of the predicate arrived, so the count is still **nine sites and four predicates**.
+
+**The lift.** That capability required `T_prefix >= 2`, raising `R6_SUFFIX` with detail
+`prefix[<n>]` at step 3c, for exactly this defect — its section 11.2 filed it and named this
+capability as the consumer that reopens the surface. The bound is deleted:
+
+* `src/decode_step.align` — step 3c's `lexical.count < 2` refusal is gone; the sequence cap is the
+  only bound on `T_prefix`. The `tokens_in > 1` builder branch stays but stops citing the defect:
+  the two builders now agree byte for byte at one row, so it is a specialization, not a correction.
+* `scripts/run-layer-forward-smoke` — `ds-suffix-prefix-one` moves out of the refusal matrix and
+  into `ENGINE_CASES` as a **passing oracle-S row at `T_prefix = 1`**, joined by
+  `ds-suffix-save-prefix-one` (a one-token prefill save in its own process) and
+  `ds-suffix-single-shot-2` (the two-token comparand). All three are two-token runs, so all three
+  carry golden rows — item 33's cross-platform digest drift starts at four tokens.
+* `scripts/run-decode-step` — the split guard widens from `2 <= j` to `1 <= j`. Every prompt that
+  leg takes is six ids or longer, so this adds no real-model run; it stops encoding a refusal that
+  no longer exists.
+* `docs/specs/r6-prefix-suffix-prefill.md` — new **section 11.5**, plus in-place corrections to
+  2.3, 2.7, 3.7, 5.6, 5.7, 9.1, 11.1 correction 8, 11.2 and 12.1. Section 11.5 also records the
+  three measurements 11.2 got wrong: nine sites not eighteen, `--model-forward-gpu` affected while
+  `--layer-forward` is not, and the resident path **not** immune.
+
+```text
+ds-suffix-save-prefix-one  TOKENS 3            -> ok, output 867ebc4e..., kv SAVED, plane 2 cols
+ds-suffix-single-shot-2    TOKENS 3,5          -> ok, output 0cd795d9..., plane 5 cols
+ds-suffix-prefix-one       TOKENS 3, SUFFIX 5  -> ok, output 0cd795d9..., suffix n_past_base 1
+```
+
+Oracle S and oracle C″ both hold at `T_prefix = 1`, and `867ebc4e…` is the same one-token digest
+`mf-tokens-one` carries on `--model-forward`.
+
+**The corpus after the merge.** `scripts/decode-step-golden.jsonl` 137 → **141** rows, with exactly
+**one changed row** — `ds-suffix-prefix-one`, refusal to pass — and four added. The other five
+corpora are unchanged from section 8.1. Re-running the predicate mutant against the merged head
+kills `ds-suffix-prefix-one` through **both** oracle S and oracle C″, kills
+`ds-suffix-save-prefix-one`'s golden row, kills the six rows of 8.1, and nothing else:
+`ds-suffix-single-shot-2`, a two-token prefill, correctly survives.
+
+Every command of 8.3 was re-run at the merged head and is `ok`.
 

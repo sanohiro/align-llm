@@ -604,12 +604,71 @@ The current forward delivery order is:
     removes the per-step weight sweep item 29 left in place, and prefix-keyed lookup on top of it is
     the next capability toward the TTFT gate.
 
+<!-- Items 31 (C4-REPAIR), 32 (OLMoE decode), 34 and 35 are reserved: each was on a branch or in
+     draft when the item beside it was written, so the numbers are claimed and the entries land
+     with those branches. Both gaps below are deliberate and must not be re-used. -->
+33. **R6-PREFIX-SUFFIX-PREFILL — a saved prefix plane continued with a different suffix.** Design
+    and results in [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md). Item 29 made a
+    prefill plane outlive its process; it could only be reloaded for the prompt it was saved for,
+    because the arm had no graph that computes more than one column at `n_past > 0`. This capability
+    ships that graph. `--decode-step` gains a fifteenth operand, `SUFFIX` (a token id list or `-`),
+    legal only with `KV_LOAD`: the arm loads a container holding `T_prefix` columns for exactly the
+    tokens in `TOKENS`, runs **one suffix pass** — a decode-shaped graph set over the `S` suffix
+    tokens at absolute positions `T_prefix .. T_prefix+S-1`, causally masked over prefix-plus-suffix,
+    writing the suffix's K and V into the plane at columns `T_prefix ..` — and then continues the
+    existing `N`-step loop from `n_past = T_prefix + S`. Nothing is re-saved and the `akvp` format is
+    **byte-unchanged**, which is a consequence of keeping `TOKENS` meaning "the container's tokens":
+    every `R6_KV_*` identity check holds character for character, and `ds-suffix-tokens-mismatch`
+    proves it by having an **unmodified** L12 refuse a container written for the whole list when a
+    run supplies that list as a prefix. No new ggml op, shim symbol, node row, slot, or Align
+    surface: the decode node table becomes parameterised by its token count — **six** literals, one
+    more than the design predicted — and `mf_write_mask_offset` and `capture_plane` are called for
+    the first time with **both** of their existing parameters non-trivial. The oracle is that a
+    suffix run and a single-shot prefill of `TOKENS ++ SUFFIX` are **the same run**: byte-identical
+    documents outside a fixed exclusion list, byte-identical logits against `--model-forward` at the
+    whole prompt, byte-identical logits against `llama-debug --save-logits`, and identical decoded
+    ids, with the plane round trip verified over `T_prefix + S` columns before the first decode step.
+    Measured on the real model at every split, and hosted on three splits of a two-layer synthetic
+    model — where the design's load-bearing risk, that ggml's `MUL_MAT` selection might be
+    column-count-sensitive at `S >= 2` **and** `n_past > 0`, was discharged on the first
+    implementation checkpoint and never reappeared. Document schema **5** with a `suffix` object in
+    every document; `output` and `oracle_logits` describe the suffix pass's own logits on a completed
+    suffix run, with the container's vector still published in `kv`. Exact prefixes only: RoPE
+    positions are absolute, so prefix sharing is inherently **left-anchored**, and prefix truncation
+    is deferred. Owner `gmake layer-forward-smoke`, whose fifth block gains 22 cases and 21 golden
+    rows — three oracle-S splits, twelve refusals, and two forced builds that publish a partial pass,
+    plus a four-token comparand kept out of the cross-platform golden because its `l_out` digest
+    differs between arm64 and x86_64 in the last bit (section 11.3 deviation 7); focused
+    `gmake decode-step-qualification`, which splits each of the four prompts at up to two points and
+    needs **no new `llama-debug` run and no new instrument run**, because the split is on ids the
+    instrument already printed. **The R6 gate is still unmet:** this ships the *execution* half of
+    mechanism 2 (repo stable prefix KV) and none of its *lookup* half — there is still no prefix key,
+    no store, no corpus, and no prefix-sharing consumer — so TTFT is reported as a labelled
+    diagnostic on three legs and no claim is made. One surface shipped **narrower than the mechanism
+    allows**: `T_prefix >= 2` was required, raising `R6_SUFFIX` with detail `prefix[<n>]`, because a
+    one-token prefill computed the embedding of token 0 whatever the operand said. **Item 36 removed
+    that defect and this branch lifted the bound**, so a one-token prefix is accepted and
+    `ds-suffix-prefix-one` is a passing oracle-S row rather than a refusal.
+
+    **Follow-up, discharged: `MF-SINGLE-TOKEN-LOGITS`, item 36 below.** A pre-existing defect this
+    capability found in an arm it does not touch: `fill_members` and `compare_source` gathered an
+    embedding row by id only where `pieces > 1`, so **any prompt of exactly one token computed the
+    logits of token 0**, silently and with `status: ok`. Section 11.2 of
+    [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md) filed it and item 36 measured its
+    blast radius, correcting three of that record's claims: **four** arms and not five
+    (`--layer-forward` and `--moe-layer-forward` gather unconditionally and were never affected,
+    while `--model-forward-gpu` is), **nine** construction sites and not eighteen, and the resident
+    path is **not** immune — `stage_embed_row` staged the right row while `compare_source` still
+    expected row 0, so a one-token non-zero resident run with a reference reported
+    `R5_SOURCE_DIVERGED` over a correct result. It was filed outside item 33 because it would have
+    put an R5B correctness change inside a review scoped to a suffix graph.
+
 36. **MF-SINGLE-TOKEN-LOGITS — the one-token prefill reads the prompt's embedding row.** Design,
     blast radius, and results in
     [`mf-single-token-logits.md`](mf-single-token-logits.md). A bug fix, filed by
-    R6-PREFIX-SUFFIX-PREFILL and numbered 36 because **31 to 35 are reserved by capabilities that
-    are on branches or in draft at the time of writing** and this one merged out of order; the
-    numbering is a name, not a delivery order. `fill_members` and `compare_source` gathered a
+    R6-PREFIX-SUFFIX-PREFILL section 11.2 and numbered 36 because **31, 32, 34 and 35 are reserved
+    by capabilities that were on branches or in draft at the time of writing** and this one merged
+    out of order; the numbering is a name, not a delivery order. `fill_members` and `compare_source` gathered a
     member's rows by token id only where `pieces > 1` — the piece count used as a **proxy** for
     "this member is the per-token embedding row set". `build_embed_members` sets `pieces = tokens`,
     so a one-token prefill took the whole-member branch and read **row 0 of the embedding table**
@@ -629,7 +688,11 @@ The current forward delivery order is:
     same one-token prompt, with the tokenization checked rather than assumed. Owner
     `gmake layer-forward-smoke`; focused `gmake model-forward-qualification` and
     `gmake moe-model-forward-qualification`. No Align gap and no design gate: no CLI operand,
-    persisted format, or ownership boundary moves.
+    persisted format, or ownership boundary moves. **It also widens item 33's accepted surface**:
+    that capability's `T_prefix >= 2` bound existed only because of this defect, so this branch
+    lifts it — the `R6_SUFFIX prefix[<n>]` refusal is gone, `ds-suffix-prefix-one` becomes a passing
+    oracle-S row at `T_prefix = 1`, and `r6-prefix-suffix-prefill.md` sections 3.7, 5.6 and 11 record
+    the lift.
 
 ### Status (2026-08-28)
 

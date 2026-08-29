@@ -3632,13 +3632,40 @@ KV_HUGE = geom("geometry-kv-too-large")
 KV_ZERO_IDENTITY_PACK = path("model-pack-zero-identity.alignpack")
 KV_IDENTITY_ABSENT_DEST = path("kv-identity-absent.akvp")
 
+# R6-PREFIX-SUFFIX-PREFILL section 5.1. One container, written by the arm's own save direction for
+# the **prefix** `3,17`, and continued by three different suffixes. Two of the three single-shot
+# comparands are new documents and the third is `ds-kv-args-dash-dash`, which already exists as a
+# golden row — so "three routes to one state produce one document" is checked rather than stated.
+#
+# `T_prefix = 2` on all three, and **`T_prefix = 1` is a fourth split** since MF-SINGLE-TOKEN-LOGITS
+# (roadmap item 36) fixed the one-token gather this capability originally refused around: the bound
+# it shipped, `R6_SUFFIX prefix[<n>]`, is gone and `ds-suffix-prefix-one` is a passing oracle-S row
+# rather than a refusal. The closure cells `T_prefix = 1` does not carry — `S >= 2` and a suffix
+# column attending to an earlier suffix column — are still carried by `ds-suffix-2` and
+# `ds-suffix-3` at `T_prefix = 2`.
+KV_PREFIX = path("kv-prefix.akvp")
+# MF-SINGLE-TOKEN-LOGITS (roadmap item 36) lifted the `T_prefix >= 2` bound, so the one-token prefix
+# gets its own container and its own two-token single-shot comparand.
+KV_PREFIX_ONE = path("kv-prefix-one.akvp")
+SUFFIX_PREFIX_ONE = "3"
+SUFFIX_FULL_TWO = "3,5"
+SUFFIX_PREFIX_TOKENS = "3,17"
+SUFFIX_ONE = "5"
+SUFFIX_TWO = "5,9"
+SUFFIX_THREE = "5,9,27"
+SUFFIX_FULL_FOUR = "3,17,5,9"
+# Named because it lives in `BOUNDARY_CASES` and is referenced by oracle S from there.
+SUFFIX_SINGLE_SHOT_4 = "ds-suffix-single-shot-4"
+SUFFIX_FULL_FIVE = "3,17,5,9,27"
+SUFFIX_STEPS_THREE = "2"
+
 
 def kv(mutation):
     return path("model-kv-%s.akvp" % mutation)
 
 
 def ds(save="-", load="-", width=WIDTH, geometry=GEOM, steps=STEPS, transcript=None, pack=None,
-       resident=None, tokens=None):
+       resident=None, tokens=None, suffix=None):
     """One thirteen-operand invocation, or a fourteen-operand one when `resident` is given. Every kv
     case is thirteen operands so that the two directions differ in nothing but which position holds
     the path; every R6-RESIDENT-WEIGHTS case is the *same* thirteen plus one operand, so the
@@ -3648,8 +3675,13 @@ def ds(save="-", load="-", width=WIDTH, geometry=GEOM, steps=STEPS, transcript=N
     operands = [ARM, PACK if pack is None else pack, geometry,
                 TOKENS if tokens is None else tokens, "-", SOURCE,
                 TRANSCRIPT if transcript is None else transcript, width, "-", steps, save, load]
-    if resident is not None:
-        operands.append(resident)
+    # R6-PREFIX-SUFFIX-PREFILL section 2.2. `SUFFIX` is `args[14]`, so a case that supplies it also
+    # supplies `RESIDENT`'s position — with the default `-` unless the case names one, which is what
+    # makes the streamed and resident suffix legs differ in exactly that operand.
+    if resident is not None or suffix is not None:
+        operands.append("-" if resident is None else resident)
+    if suffix is not None:
+        operands.append(suffix)
     return operands
 
 
@@ -3777,6 +3809,13 @@ KV_REFUSALS = [
     # reader is not a transcription of the arm.
     ("ds-kv-zero-tail", ds("-", kv("zero-tail")), "R6_KV_DIGEST", "plane",
      kv("zero-tail"), "ZEROTAIL"),
+    # R6-PREFIX-SUFFIX-PREFILL section 5.2, and the case that makes its section 2.1's central claim
+    # testable: a container written for the **whole** list is refused by an **unmodified** L12 when a
+    # run supplies that list as a prefix. `src/kv_plane.align` is byte-unchanged, `TOKENS` still
+    # means "the container's tokens", and the identity checks hold character for character.
+    ("ds-suffix-tokens-mismatch",
+     ds("-", KV_GOOD, tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_ONE),
+     "R6_KV_TOKENS", "count[3]", None, None),
 ]
 # The generator's own greedy ids: one per line, `K` lines, the ids its own reference loop
 # **consumed**. The arm derives step 1's token from its own prefill logits and every later step's
@@ -3806,13 +3845,14 @@ if len(set(EXPECTED_TOKENS)) != len(EXPECTED_TOKENS):
 NO_DOCUMENT = [
     ("ds-arity-3", [ARM, PACK, GEOM]),
     ("ds-arity-8", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT]),
-    # R6-KV-PERSIST section 5.3 and R6-RESIDENT-WEIGHTS section 5.1: the over-arity case moves up
-    # one position each time the grammar grows, `ds-arity-12` -> `ds-arity-14` -> `ds-arity-15`. It
-    # is `NO_DOCUMENT` and carries no golden row, so the move costs zero golden bytes. Fourteen
-    # operands is now **legal** and is `ds-resident-*` below: an unknown fourteenth operand owes the
-    # caller a document naming it, and only a fifteenth is arity.
-    ("ds-arity-15",
-     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "-", "-", "-",
+    # R6-KV-PERSIST section 5.3, R6-RESIDENT-WEIGHTS section 5.1, and R6-PREFIX-SUFFIX-PREFILL
+    # section 5.2: the over-arity case moves up one position each time the grammar grows,
+    # `ds-arity-12` -> `ds-arity-14` -> `ds-arity-15` -> `ds-arity-16`. It is `NO_DOCUMENT` and
+    # carries no golden row, so the move costs zero golden bytes. Fifteen operands is now **legal**
+    # and is `ds-suffix-*` below: an unparseable fifteenth operand owes the caller a document naming
+    # it, and only a sixteenth is arity.
+    ("ds-arity-16",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "-", "-", "-", "-",
       "extra"]),
     ("ds-path-kv-save-empty",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "", "-"]),
@@ -3901,6 +3941,48 @@ STUB_CASES = [
      [ARM, path("absent.alignpack"), GEOM, TOKENS, "-", SOURCE, "-", WIDTH, "-", STEPS, "-", "-",
       "extra"],
      "R6_RESIDENT"),
+    # R6-PREFIX-SUFFIX-PREFILL section 5.2's refusal matrix. Every row below is refused before ggml
+    # is asked for anything, which is why they run here against the default stub: step 2c precedes
+    # every path-content check and every numeric parse, and steps 3c, 3' and 6 precede the container.
+    #
+    # The conditional rule. `SUFFIX` non-`-` requires `KV_LOAD` non-`-`, and `SUFFIX` beside
+    # `KV_SAVE` needs no separate rule because 2b has already made the two directions exclusive.
+    ("ds-suffix-no-load", ds(suffix=SUFFIX_ONE), "R6_KV_ARGS"),
+    ("ds-suffix-and-save", ds(save=KV_ABSENT, suffix=SUFFIX_ONE), "R6_KV_ARGS"),
+    # Precedence: 2c precedes 3b, so a suffix without a load is refused before `STEPS` is parsed.
+    ("ds-suffix-no-load-bad-steps", ds(steps="0", suffix=SUFFIX_ONE), "R6_KV_ARGS"),
+    # The grammar, shared with `TOKENS` through one `parse_tokens` so the two cannot drift apart in
+    # what they accept. `-` is how a caller says "no suffix"; the empty string is a malformed list.
+    ("ds-suffix-empty", ds(load=KV_GOOD, suffix=""), "R6_SUFFIX"),
+    ("ds-suffix-garbage", ds(load=KV_GOOD, suffix="x"), "R6_SUFFIX"),
+    ("ds-suffix-trailing", ds(load=KV_GOOD, suffix="5,"), "R6_SUFFIX"),
+    # The vocabulary re-check, in the same pass `TOKENS` is re-checked in once the geometry is real.
+    ("ds-suffix-over-vocab", ds(load=KV_GOOD, suffix="32"), "R6_SUFFIX"),
+    # The **prefix bound is gone.** `T_prefix >= 2` and its `R6_SUFFIX prefix[<n>]` refusal existed
+    # only because a one-token prefill computed the embedding of token 0 whatever the operand said;
+    # MF-SINGLE-TOKEN-LOGITS (roadmap item 36) fixed that, so `ds-suffix-prefix-one` moved to
+    # `ENGINE_CASES` below as a passing oracle-S row at `T_prefix = 1`. Nothing replaced the check:
+    # the sequence cap below is the only bound on `T_prefix`, which is why it is now the first
+    # `R6_SUFFIX` a too-short-prefix caller can reach.
+    # The **sequence** cap, `T_prefix + S <= MAX_PREFILL_TOKENS`. It is on the sequence and not on
+    # `S` because the cap is the oracle's: oracle C'' runs `--model-forward` at `TOKENS,SUFFIX`, so a
+    # cap on `S` alone would let the arm accept a run whose own acceptance oracle it refuses.
+    ("ds-suffix-over-cap",
+     ds(load=KV_GOOD, tokens=SUFFIX_PREFIX_TOKENS, suffix=",".join(["5"] * 31)), "R6_SUFFIX"),
+    # Precedence: step 3 precedes 3c, because `T_prefix` must be a number before `T_prefix + S` is
+    # one, so both operands invalid names `R6_TOKENS`.
+    ("ds-suffix-and-bad-tokens",
+     ds(load=KV_GOOD, tokens=",".join(["1"] * 33), suffix=SUFFIX_ONE), "R6_TOKENS"),
+    # Precedence: 3c precedes 6, for the same sentence one term later.
+    ("ds-suffix-over-cap-and-narrow",
+     ds(load=KV_GOOD, tokens=SUFFIX_PREFIX_TOKENS, suffix=",".join(["5"] * 31), width="4"),
+     "R6_SUFFIX"),
+    # The plane bound, **widened rather than duplicated**: step 6 reads
+    # `T_prefix + S + N <= KV_WIDTH` and raises the code R6 already owns for "the plane is too
+    # narrow for this run". Two codes for one condition is how two documents come to disagree.
+    ("ds-suffix-narrow-width",
+     ds(load=KV_GOOD, tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_THREE, steps="2", width="6"),
+     "R6_KV_WIDTH"),
 ]
 
 ENGINE_CASES = [
@@ -3970,6 +4052,50 @@ ENGINE_CASES = [
     ("ds-resident-stream-1", ds(steps="1"), ""),
     ("ds-resident-weights-1", ds(steps="1", resident="weights"), ""),
     ("ds-resident-weights-steps", ds(resident="weights"), ""),
+    # R6-PREFIX-SUFFIX-PREFILL section 5.1. The five-token single-shot comparand oracle S needs, run
+    # first so that a suffix run below is always compared against a document that already exists.
+    # The four-token one is `SUFFIX_SINGLE_SHOT_4` in `BOUNDARY_CASES`, for the cross-platform reason
+    # recorded there. Both take `-` in the transcript position: the fixture's decode transcript is
+    # the four-graph transcript of the **three**-token prompt, and there is no instrument run for a
+    # four- or five-token one — which is the same reason `ds-suffix-3`'s real-model leg needs no new
+    # instrument run either, only the other way round (section 5.4).
+    ("ds-suffix-single-shot",
+     ds(tokens=SUFFIX_FULL_FIVE, transcript="-", steps=SUFFIX_STEPS_THREE), ""),
+    # The prefix's container, written by the arm's own save direction in its own process, exactly as
+    # `ds-kv-save-ok` writes the whole prompt's. Nothing about the save direction changes.
+    ("ds-suffix-save-prefix",
+     ds(save=KV_PREFIX, tokens=SUFFIX_PREFIX_TOKENS, steps="1", transcript="-"), ""),
+    # `T_prefix = 1`, reopened by MF-SINGLE-TOKEN-LOGITS (roadmap item 36). The container is written
+    # by a **one-token prefill** in its own process — the exact run whose plane used to hold token
+    # 0's columns whatever `TOKENS` said — and the two-token single-shot comparand is run before the
+    # suffix case so oracle S always compares against a document that already exists. Both stay at
+    # two tokens, so both carry a golden row: the cross-platform digest drift recorded for
+    # `SUFFIX_SINGLE_SHOT_4` starts at four.
+    ("ds-suffix-save-prefix-one",
+     ds(save=KV_PREFIX_ONE, tokens=SUFFIX_PREFIX_ONE, steps="1", transcript="-"), ""),
+    ("ds-suffix-single-shot-2", ds(tokens=SUFFIX_FULL_TWO, transcript="-"), ""),
+    ("ds-suffix-prefix-one",
+     ds(load=KV_PREFIX_ONE, tokens=SUFFIX_PREFIX_ONE, suffix=SUFFIX_ONE, transcript="-"), ""),
+    # `S = 1` — the degenerate suffix, and the only one whose graph shape matches a decode step's.
+    # It must **not** be a decode step: its token is an operand, not an argmax. Its comparand is
+    # `ds-kv-args-dash-dash`, which already exists as a golden row, so oracle S is asserted here
+    # against a document this capability did not create.
+    ("ds-suffix-1",
+     ds(load=KV_PREFIX, tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_ONE), ""),
+    # `S = 2` — the first pass whose second column attends to its own first, which is the cell the
+    # offset mask at `(S, T_prefix)` exists to get right.
+    ("ds-suffix-2",
+     ds(load=KV_PREFIX, tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_TWO, transcript="-"), ""),
+    # `S = 3` at `T_prefix = 2`, the widest case: `T_prefix + S + N = 7 <= 8`.
+    ("ds-suffix-3",
+     ds(load=KV_PREFIX, tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_THREE, transcript="-",
+        steps=SUFFIX_STEPS_THREE), ""),
+    # The `RESIDENT` composition, and oracle R's third pair: `ds-suffix-3` plus one operand whose
+    # value is `weights`, so the comparison below is a comparison of residency and of nothing else.
+    # `suffix.pack_bytes` is exactly 0 on this leg and non-zero on its streamed twin.
+    ("ds-suffix-resident",
+     ds(load=KV_PREFIX, tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_THREE, transcript="-",
+        steps=SUFFIX_STEPS_THREE, resident="weights"), ""),
 ] + [(name, operands, code) for name, operands, code, _, _, _ in KV_REFUSALS]
 
 # Section 5.2 and section 11.1 correction 13's bound, approached from the side no refusal reaches.
@@ -3988,9 +4114,22 @@ ENGINE_CASES = [
 # make the golden a statement about the machine that regenerated it. The case is asserted instead by
 # oracle R against its streamed twin, which is a **within-host** comparison and therefore correct on
 # every platform, plus `record()`'s document-identity assertions and the structural block below.
+#
+# R6-PREFIX-SUFFIX-PREFILL section 5.7 adds the second member for the same measured reason at a much
+# smaller size. `ds-suffix-2`'s single-shot comparand is a **four**-token prefill, and its
+# `.schedule[1].l_out_bit_sum` is 12689786356 on macOS/arm64 against 12689786355 on Linux/x86_64,
+# with `.schedule[1].l_out_sha256` differing with it. Four tokens, not thirty-two: the host boundary
+# this fixture's arithmetic reaches is far lower than the staging case suggested, and section 6
+# risk 4's five-column reasoning is wrong as stated. What the case exists for is unaffected, and for
+# exactly the oracle-R argument above: oracle S compares `ds-suffix-2` against it **within one host**
+# and is therefore correct on every platform, and `record()`'s document-identity assertions still
+# run. Every other new row in this capability — including the five-token single-shot and the three
+# suffix successes — was byte-identical on both hosts in the run that found this, so only the
+# measured case moves.
 BOUNDARY_CASES = [
     (STAGE_FULL, ds(tokens=STAGE_FULL_TOKENS, transcript="-", width=STAGE_FULL_WIDTH,
                     steps=STAGE_FULL_STEPS, resident="weights"), ""),
+    (SUFFIX_SINGLE_SHOT_4, ds(tokens=SUFFIX_FULL_FOUR, transcript="-"), ""),
 ]
 # MF-SINGLE-TOKEN-LOGITS sections 1 and 4. `decode_step`'s prefill is `model_forward`'s, so the
 # one-token gather reaches this arm too -- and this is the arm where the defect was **not** silent:
@@ -4050,6 +4189,21 @@ FORCED_CASES = [
     # wrap itself can be refused — and the run-scope balance check has to stay silent when it does.
     # `buffer_from_host` refusing is the one way an input can reach that window, and the run it
     # produces has a filled, live arena, no wrap, and one teardown ahead of it.
+    # R6-PREFIX-SUFFIX-PREFILL section 4.1's `failure` cell. The build refuses the compute of any
+    # graph with more than one column at `n_past > 0`, which is the suffix pass and nothing else, so
+    # the document it produces is a statement about a partial **pass**: no completion, no counts, no
+    # step, the loaded plane's own column count, and the **container's** `output`.
+    ("ds-force-compute-suffix", "engine+compute-suffix",
+     ds(load=KV_PREFIX, tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_THREE, transcript="-",
+        steps=SUFFIX_STEPS_THREE),
+     "R5_COMPUTE"),
+    # Section 4.2's `failure -- round trip` cell. The pass's written bytes are shifted one lane, and
+    # oracle B reports column `T_prefix` — which is what proves the **first suffix** column is
+    # compared and not only the loaded ones.
+    ("ds-force-suffix-writeback-offset", "engine+suffix-writeback-offset",
+     ds(load=KV_PREFIX, tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_THREE, transcript="-",
+        steps=SUFFIX_STEPS_THREE),
+     "R6_PLANE_MISMATCH"),
     ("ds-force-resident-wrap", "engine+resident-wrap",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH, "-", STEPS, "-", "-", "weights"],
      "R5_GGML_INIT"),
@@ -4127,6 +4281,12 @@ def normalize(text):
     # is zeroed here. `fill_pread_count`, `fill_bytes`, `resident_bytes`, and `step_pack_bytes` are
     # deliberately **not** normalized: they are deterministic and they are the claim.
     document["weights"]["fill_ns"] = 0
+    # R6-PREFIX-SUFFIX-PREFILL section 2.9. `compute_ns` is the only clock the `suffix` object holds.
+    # The other ten fields are deliberately **not** normalized: they are deterministic and they are
+    # the contract — `columns_written` is what a partial pass must not advance, `sequence_length` is
+    # what a reader compares against a single-shot run's `selection.token_count`, and `pack_bytes` is
+    # exactly zero on the resident leg.
+    document["suffix"]["compute_ns"] = 0
     for key, placeholder in PLACEHOLDER.items():
         if document[key]:
             document[key] = placeholder
@@ -4195,6 +4355,50 @@ def normalize_resident(text):
     return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
 
 
+# R6-PREFIX-SUFFIX-PREFILL section 3.2, oracle S. `normalize` plus the keys that are **counts of
+# work the two runs legitimately did differently**, and nothing else. The design fixed a list of
+# seven blocks and eleven fields; four more fields were needed and each one is a recorded finding
+# with a **compensating assertion** rather than a quiet addition (section 11, findings 1 and 2),
+# because a growing exclusion list is how an equality oracle stops being one:
+#
+#   * `selection.tokens`, `selection.narrow_index`, `selection.attention_width` describe the
+#     `TOKENS` operand, which is the prefix on one side and the whole list on the other. Compensated
+#     by the loop below, which asserts the prefix's list **plus the suffix ids** equals the
+#     single-shot's, and that both documents' `narrow_index`/`attention_width` are the arithmetic of
+#     their own `token_count`.
+#   * `plane.roundtrip_bytes_compared` cannot agree: the suffix run verifies the plane once more
+#     than the single-shot run does, before its first decode step. Compensated by the exact
+#     identity `suffix == single + 2 * n_layer * (T + S) * n_head_kv * head_dim * 4`.
+#   * `window.residual_bytes` is `n_embd * TOKENS.count * 4`, the prefill's own reservation.
+#     Compensated by asserting that arithmetic on both sides.
+#
+# What remains inside the comparison is the point: `output` in full — the suffix pass's own logits
+# against the single-shot prefill's, which is oracle C'' inside oracle S; `oracle_logits` in full;
+# `decode` in full including `token_ids`; every object of `steps[]` including each step's `sha256`,
+# `argmax`, `n_past`, `plane_column_written`, and complete `oracle` sub-object;
+# `plane.columns_written`, `roundtrip_verdict`, and every `first_mismatch_*`; `oracle_decode` in
+# full; and `model`, `head`, `abi`, `weights`, `verdict`, and `error_code`/`error_detail`.
+SUFFIX_EXCLUDED_BLOCKS = ("kv", "suffix", "graph", "schedule", "timings", "lifetime", "reference")
+SUFFIX_EXCLUDED_FIELDS = (
+    ("plane", "source"), ("plane", "readback_ns"), ("plane", "upload_ns"),
+    ("plane", "roundtrip_bytes_compared"),
+    ("selection", "token_count"), ("selection", "tokens"), ("selection", "narrow_index"),
+    ("selection", "attention_width"),
+    ("head", "node_count"), ("head", "pread_ns"), ("head", "compute_ns"),
+    ("pack", "reader_pread_count"), ("pack", "reader_bytes_read"),
+    ("window", "reuse_count"), ("window", "member_placements"), ("window", "residual_bytes"),
+)
+
+
+def normalize_suffix(text):
+    document = json.loads(normalize(text))
+    for block in SUFFIX_EXCLUDED_BLOCKS:
+        document.pop(block, None)
+    for block, field in SUFFIX_EXCLUDED_FIELDS:
+        document[block].pop(field, None)
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
 def normalize_persist(text):
     document = json.loads(normalize(text))
     for block in PERSIST_EXCLUDED_BLOCKS:
@@ -4230,6 +4434,12 @@ def read_container(container, kind=None, tokens=TOKENS):
     return subprocess.run(command, capture_output=True, cwd=work_dir)
 
 
+# The eleven fields of section 2.9's `suffix` object. Asserted as a **set** on every document, so a
+# field added or dropped without moving this list is a failure rather than a silently smaller object.
+SUFFIX_FIELDS = ("requested", "completed", "token_count", "n_past_base", "sequence_length",
+                 "columns_written", "first_column", "graph_count", "node_count", "pack_bytes",
+                 "compute_ns")
+
 failures = []
 produced = {}
 codes = set()
@@ -4256,7 +4466,7 @@ def record(name, operands, expected):
     if (result.returncode == 0) != (expected_exit == 0):
         failures.append("%s: status %r but exit %d"
                         % (name, document["status"], result.returncode))
-    if document["kind"] != "R6_DECODE_STEP" or document["schema_version"] != 4:
+    if document["kind"] != "R6_DECODE_STEP" or document["schema_version"] != 5:
         failures.append("%s: wrong document identity %r/%r"
                         % (name, document["kind"], document["schema_version"]))
     # R6-RESIDENT-WEIGHTS section 3.5: the `weights` object is present in **every** document,
@@ -4273,6 +4483,29 @@ def record(name, operands, expected):
                                           or weights["resident_wraps_created"] != 0
                                           or weights["resident_wraps_freed"] != 0):
         failures.append("%s: a streamed document published resident figures: %r" % (name, weights))
+    # R6-PREFIX-SUFFIX-PREFILL section 2.9: the `suffix` object is present in **every** document with
+    # **one shape at every arity**, including one refused before a file is opened, so the suffix a
+    # run was asked for is never implicit. The hazard it closes is a caller who wanted a suffix,
+    # forgot the operand, and read a document that did not say so — and, since schema 5, a reader who
+    # cannot otherwise tell whether `output` describes the container's vector or this run's own pass.
+    #
+    # The last clause is section 6 risk 3's guard against a **vacuous** completion: a pass that
+    # published `completed` without having written its own columns.
+    suffix = document.get("suffix")
+    if not isinstance(suffix, dict) or sorted(suffix) != sorted(SUFFIX_FIELDS):
+        failures.append("%s: the document published no suffix object: %r" % (name, suffix))
+    elif not suffix["requested"] and (suffix["token_count"] != 0 or suffix["completed"] != 0
+                                      or suffix["n_past_base"] != -1
+                                      or suffix["sequence_length"] != -1
+                                      or suffix["columns_written"] != -1
+                                      or suffix["first_column"] != -1
+                                      or suffix["graph_count"] != 0 or suffix["node_count"] != 0
+                                      or suffix["pack_bytes"] != 0):
+        failures.append("%s: a document with no suffix published suffix figures: %r"
+                        % (name, suffix))
+    elif suffix["completed"] and suffix["columns_written"] != suffix["sequence_length"]:
+        failures.append("%s: a completed suffix wrote %d columns, not its own sequence length %d"
+                        % (name, suffix["columns_written"], suffix["sequence_length"]))
     if not document["abi"]["fp_contract_off"]:
         failures.append("%s: the shim was not built with -ffp-contract=off" % name)
     # R6-STEP-N section 2.8, on **every** document including the error ones: the loop-level
@@ -4355,14 +4588,29 @@ for name, operands, expected in ENGINE_CASES:
                         % (name, plane["bytes"], plane["stride"]))
     steps_requested = decode["steps_requested"]
     rows = document["steps"]
-    # R6-STEP-N section 2.4: the plane holds `T + N` columns on a complete run, grown one column per
-    # step **in place** — the buffer was `KV_WIDTH` columns wide from the start.
-    if plane["layers"] != 2 or plane["columns_written"] != 3 + steps_requested:
-        failures.append("%s: the plane holds %d layers and %d columns, not 2 and T + %d"
-                        % (name, plane["layers"], plane["columns_written"], steps_requested))
+    # R6-PREFIX-SUFFIX-PREFILL section 5.1. Every assertion below was written against this block's
+    # three-token prompt and is now derived from **this case's own operands** instead: the decode
+    # loop starts at `T_prefix + S` and the plane grows from there. At `S = 0` every expression is
+    # the three-token one character for character, and the derivation is what lets one loop assert a
+    # prefix-plus-suffix run and a single-shot run with the same code.
+    prompt_ids = [int(value) for value in operands[3].split(",")] if operands[3] else []
+    # The fifteenth **operand** is `args[14]` in the arm's own argv, which is index 13 here: this
+    # list does not carry the program name that argv does, only the arm flag.
+    case_suffix_ids = ([] if len(operands) < 14 or operands[13] == "-"
+                       else [int(value) for value in operands[13].split(",")])
+    sequence_ids = prompt_ids + case_suffix_ids
+    base = len(sequence_ids)
+    # R6-STEP-N section 2.4: the plane holds `T + S + N` columns on a complete run, grown one column
+    # per step **in place** — the buffer was `KV_WIDTH` columns wide from the start.
+    if plane["layers"] != 2 or plane["columns_written"] != base + steps_requested:
+        failures.append("%s: the plane holds %d layers and %d columns, not 2 and %d + %d"
+                        % (name, plane["layers"], plane["columns_written"], base, steps_requested))
     # Oracle B, cumulative and inclusive of each step's own new column: at step `k` it compares
-    # `2 tensors * 2 layers * (T + k) columns * 1 head * 4 lanes * 4 bytes`.
-    expected_bytes = sum(2 * 2 * (3 + k) * 1 * 4 * 4 for k in range(1, steps_requested + 1))
+    # `2 tensors * 2 layers * (T + S + k) columns * 1 head * 4 lanes * 4 bytes`, plus — on a suffix
+    # run — the pass's own verification over all `T_prefix + S` columns before the first step.
+    expected_bytes = sum(2 * 2 * (base + k) * 1 * 4 * 4 for k in range(1, steps_requested + 1))
+    if case_suffix_ids:
+        expected_bytes = expected_bytes + 2 * 2 * base * 1 * 4 * 4
     if plane["roundtrip_verdict"] != "IDENTICAL" \
             or plane["roundtrip_bytes_compared"] != expected_bytes:
         failures.append("%s: oracle B is %r over %d bytes, not %d"
@@ -4379,20 +4627,23 @@ for name, operands, expected in ENGINE_CASES:
     elif decode["token_ids"] != [row["token_id"] for row in rows]:
         failures.append("%s: token_ids %r do not match steps[].token_id %r"
                         % (name, decode["token_ids"], [row["token_id"] for row in rows]))
-    elif decode["token_ids"] != EXPECTED_TOKENS[:steps_requested]:
+    elif sequence_ids == [3, 17, 5] and decode["token_ids"] != EXPECTED_TOKENS[:steps_requested]:
+        # The reference loop's ids are the **sequence** `3,17,5`'s, however the arm reached it: a
+        # single-shot prefill, a container reload, or a prefix plus a suffix. Three routes, one
+        # chain, and the fixture's own file is what says so.
         failures.append("%s: decoded %r, not the reference loop's %r"
                         % (name, decode["token_ids"], EXPECTED_TOKENS[:steps_requested]))
-    if decode["n_past_first"] != 3 or decode["n_past_last"] != 3 + steps_requested - 1:
-        failures.append("%s: n_past runs %d..%d, not 3..%d"
-                        % (name, decode["n_past_first"], decode["n_past_last"],
-                           3 + steps_requested - 1))
+    if decode["n_past_first"] != base or decode["n_past_last"] != base + steps_requested - 1:
+        failures.append("%s: n_past runs %d..%d, not %d..%d"
+                        % (name, decode["n_past_first"], decode["n_past_last"], base,
+                           base + steps_requested - 1))
     if rows and rows[0]["token_id"] != document["output"]["argmax"]:
         failures.append("%s: the chain's root %d is not the prefill's argmax %d"
                         % (name, rows[0]["token_id"], document["output"]["argmax"]))
     for index, row in enumerate(rows):
         # Every step writes exactly one column, at `n_past`, and reads the ones before it.
-        if row["index"] != index + 1 or row["n_past"] != 3 + index \
-                or row["plane_column_written"] != 3 + index:
+        if row["index"] != index + 1 or row["n_past"] != base + index \
+                or row["plane_column_written"] != base + index:
             failures.append("%s: steps[%d] is %r" % (name, index, row))
         if index + 1 < len(rows) and row["argmax"] != rows[index + 1]["token_id"]:
             failures.append("%s: steps[%d] produced %d and steps[%d] consumed %d — the chain broke"
@@ -4585,7 +4836,10 @@ for streamed_case, resident_case in (("ds-resident-stream-1", "ds-resident-weigh
 # leg copies them out of the arena's table, and oracle R says the two produce the same document.
 # The case runs here, under the engine shim the block above built, and not in `ENGINE_CASES`: it
 # carries no golden row (see `BOUNDARY_CASES`), and every assertion in that loop is arithmetic on
-# the three-token prompt and the width of 8 this block otherwise uses throughout.
+# the three-token prompt and the width of 8 this block otherwise uses throughout. The loop also
+# produces `SUFFIX_SINGLE_SHOT_4`, oracle S's four-token comparand, which is out of the golden for
+# the same cross-platform reason and is asserted by the suffix block below; it must be produced
+# before that block runs, which is why it is here and not after it.
 for name, operands, expected in BOUNDARY_CASES:
     record(name, operands, expected)
 
@@ -4875,6 +5129,221 @@ if len(load_repeats) != 1:
     failures.append("ds-kv-load-determinism: three load runs produced %d distinct documents"
                     % len(load_repeats))
 
+# ---------------------------------------------------------------------------------------------
+# R6-PREFIX-SUFFIX-PREFILL section 3: oracle S, oracle C'', oracle B over `T_prefix + S`, and the
+# suffix pass's accounting
+#
+# **Oracle S is the capability's headline oracle: a suffix run and a single-shot prefill of
+# `TOKENS ++ SUFFIX` are the same run.** Not close to it — byte-identical logits, byte-identical
+# decoded ids, and a byte-identical document outside the fixed exclusion list above. A one-lane
+# error anywhere in the suffix pass — a mask row off by one, a position off by one, a write-back at
+# the wrong column, a concat on the wrong axis — changes `output.sha256` and therefore
+# `steps[0].token_id` and every step after it.
+#
+# Oracle C'' is retained **in addition to** oracle S, which contains it, for two reasons: oracle S
+# compares two `--decode-step` runs and would pass if both were wrong in the same way, while C''
+# compares against a **different arm** built from the prefill row table rather than the decode one;
+# and C'' is the oracle that fails informatively when oracle S fails, because it isolates the suffix
+# pass's logits from the loop that follows.
+# ---------------------------------------------------------------------------------------------
+
+SUFFIX_ORACLE = [
+    # case, single-shot comparand, prefix ids, suffix ids, the whole list, N
+    # `T_prefix = 1`: the split MF-SINGLE-TOKEN-LOGITS reopened, and the narrowest one the operand
+    # grammar allows.
+    ("ds-suffix-prefix-one", "ds-suffix-single-shot-2", [3], [5], SUFFIX_FULL_TWO, 3),
+    ("ds-suffix-1", "ds-kv-args-dash-dash", [3, 17], [5], "3,17,5", 3),
+    ("ds-suffix-2", SUFFIX_SINGLE_SHOT_4, [3, 17], [5, 9], SUFFIX_FULL_FOUR, 3),
+    ("ds-suffix-3", "ds-suffix-single-shot", [3, 17], [5, 9, 27], SUFFIX_FULL_FIVE,
+     int(SUFFIX_STEPS_THREE)),
+]
+
+for case, comparand, prefix_ids, suffix_ids, whole, step_count in SUFFIX_ORACLE:
+    if case not in produced or comparand not in produced:
+        failures.append("%s: the suffix case or its comparand produced no document" % case)
+        continue
+    left = normalize_suffix(produced[case])
+    right = normalize_suffix(produced[comparand])
+    if left != right:
+        failures.append("oracle S (%s vs %s): %s"
+                        % (case, comparand, describe_difference(left, right)))
+    document = json.loads(produced[case])
+    single = json.loads(produced[comparand])
+    model = document["model"]
+    prefix_count = len(prefix_ids)
+    sequence = prefix_count + len(suffix_ids)
+    # The compensations for the four fields this runner had to add to the design's exclusion list.
+    # Each one asserts the *relationship* the exclusion removed, so nothing is merely dropped.
+    if document["suffix"]["sequence_length"] != single["selection"]["token_count"]:
+        failures.append("%s: sequence_length %d is not the single-shot run's token_count %d"
+                        % (case, document["suffix"]["sequence_length"],
+                           single["selection"]["token_count"]))
+    if document["selection"]["tokens"] + suffix_ids != single["selection"]["tokens"]:
+        failures.append("%s: %r ++ %r is not the single-shot run's %r"
+                        % (case, document["selection"]["tokens"], suffix_ids,
+                           single["selection"]["tokens"]))
+    for label, side in ((case, document), (comparand, single)):
+        selection = side["selection"]
+        if selection["narrow_index"] != selection["token_count"] - 1 \
+                or selection["attention_width"] != selection["token_count"]:
+            failures.append("%s: selection is not the arithmetic of its own token_count: %r"
+                            % (label, selection))
+        if side["window"]["residual_bytes"] != model["n_embd"] * selection["token_count"] * 4:
+            failures.append("%s: residual_bytes %d is not n_embd x token_count x 4"
+                            % (label, side["window"]["residual_bytes"]))
+    # Oracle B's own term, exactly: the suffix run verifies the plane over all `T_prefix + S`
+    # columns once, before its first decode step, and agrees with the single-shot run everywhere
+    # else. This is the assertion that makes the excluded byte count a difference with a derivation.
+    extra = 2 * model["n_layer"] * sequence * model["n_head_kv"] * model["head_dim"] * 4
+    if document["plane"]["roundtrip_bytes_compared"] \
+            != single["plane"]["roundtrip_bytes_compared"] + extra:
+        failures.append("%s: oracle B compared %d bytes, not the single-shot run's %d plus %d"
+                        % (case, document["plane"]["roundtrip_bytes_compared"],
+                           single["plane"]["roundtrip_bytes_compared"], extra))
+    # Section 3.7 rule 6: the suffix pass's accounting, asserted exactly rather than described.
+    suffix = document["suffix"]
+    if suffix["requested"] != 1 or suffix["completed"] != 1 \
+            or suffix["token_count"] != len(suffix_ids) \
+            or suffix["n_past_base"] != prefix_count \
+            or suffix["first_column"] != prefix_count \
+            or suffix["columns_written"] != sequence \
+            or suffix["graph_count"] != model["n_layer"] + 2 \
+            or suffix["node_count"] <= 0:
+        failures.append("%s: the suffix pass's accounting is %r" % (case, suffix))
+    if suffix["n_past_base"] != document["kv"]["columns_persisted"] \
+            or suffix["n_past_base"] != document["kv"]["token_count"] \
+            or suffix["n_past_base"] != document["selection"]["token_count"]:
+        failures.append("%s: the pass's base %d disagrees with the container it continued: %r"
+                        % (case, suffix["n_past_base"], document["kv"]))
+    if document["plane"]["columns_written"] != sequence + step_count \
+            or document["plane"]["roundtrip_verdict"] != "IDENTICAL" \
+            or document["plane"]["source"] != "LOADED":
+        failures.append("%s: the plane holds %r" % (case, document["plane"]))
+    # Section 2.9's hazard, turned into a test rather than a paragraph: on a **completed** suffix
+    # pass `output` describes the pass's own logits and not the container's vector, which is still
+    # published in `kv`. `ds-kv-load-ok` above asserts the other side of the same distinction.
+    #
+    # The **digest** and not the argmax: two different logit vectors can share an argmax by
+    # coincidence and `ds-suffix-2` is exactly that case, so an argmax comparison would make this
+    # assertion a statement about the fixture. The argmax distinction is asserted once below, on the
+    # cases where the two genuinely differ, so the reader-facing symptom is covered too.
+    if document["output"]["sha256"] == document["kv"]["logits_sha256"]:
+        failures.append("%s: `output` is still the container's persisted vector" % case)
+    # Oracle C''. `--model-forward` at `TOKENS,SUFFIX` and the same width, built from the **prefill**
+    # row table, must produce logits byte-identical to the suffix run's `output.sha256`.
+    forward = run(["--model-forward", PACK, GEOM, whole, "-", SOURCE, "-", WIDTH])
+    forward_document = json.loads(forward.stdout.decode("utf-8"))
+    if forward_document["output"]["sha256"] != document["output"]["sha256"]:
+        failures.append("oracle C'' (%s): --model-forward at %s is %r, the suffix pass is %r"
+                        % (case, whole, forward_document["output"]["sha256"],
+                           document["output"]["sha256"]))
+
+# Section 6 risk 2's guard, and the reason the four additions above are findings rather than edits:
+# **a growing exclusion list is how an equality oracle stops being one.** The witness asserts that
+# the comparison still holds the things that would change if any one lane of the suffix pass were
+# wrong — the pass's own logits, the decoded ids, every step's digest, the plane's verdict and column
+# count, and the external logits oracle. Widening the list to cover any of them fails here rather
+# than passing silently.
+#
+# The guard is on the **fields**, not on the blocks that hold them: an exclusion of
+# `("decode", "token_ids")` leaves `decode` present and would pass a block-level check while
+# removing the one field a wrong suffix lane moves first.
+witness = json.loads(normalize_suffix(produced["ds-suffix-3"]))
+if "decode" not in witness or "steps" not in witness or not witness["steps"] \
+        or "sha256" not in witness["steps"][0] or "n_past" not in witness["steps"][0] \
+        or "plane_column_written" not in witness["steps"][0] \
+        or "token_ids" not in witness["decode"] \
+        or "n_past_first" not in witness["decode"] \
+        or "n_past_last" not in witness["decode"] \
+        or "steps_completed" not in witness["decode"] \
+        or "output" not in witness \
+        or "sha256" not in witness["output"] or "argmax" not in witness["output"] \
+        or "oracle_logits" not in witness \
+        or "verdict" not in witness["oracle_logits"] \
+        or "byte_identical" not in witness["oracle_logits"] \
+        or "oracle_decode" not in witness \
+        or "columns_written" not in witness["plane"] \
+        or "roundtrip_verdict" not in witness["plane"]:
+    failures.append("oracle S: the exclusion list emptied the comparison: %r"
+                    % {block: sorted(value) for block, value in sorted(witness.items())
+                       if isinstance(value, dict)})
+
+# The reader-facing half of the same hazard: on at least one case `output.argmax` differs from the
+# container's `kv.prefill_argmax`, so a reader who learned `output` from R6-KV-PERSIST is told by a
+# **test** and not by a paragraph that a completed suffix run republishes it.
+if not [case for case, _, _, _, _, _ in SUFFIX_ORACLE
+        if json.loads(produced[case])["output"]["argmax"]
+        != json.loads(produced[case])["kv"]["prefill_argmax"]]:
+    failures.append("no suffix case moved output.argmax away from the container's prefill_argmax")
+
+# The suffix ids must not be degenerate: if the last two of `3,17,5,9,27` changed nothing, every
+# assertion above would be satisfied by an arm that ignored them. Two prompts, two answers.
+if json.loads(produced["ds-suffix-single-shot"])["output"]["sha256"] \
+        == json.loads(produced["ds-engine-ok"])["output"]["sha256"]:
+    failures.append("ds-suffix-single-shot: the five-token prompt reproduced the three-token one")
+
+# Section 3.7 rule 8. Three consecutive suffix runs are byte-identical after `normalize`.
+suffix_repeats = {normalize(run(ds(load=KV_PREFIX, tokens=SUFFIX_PREFIX_TOKENS,
+                                   suffix=SUFFIX_THREE, transcript="-",
+                                   steps=SUFFIX_STEPS_THREE)).stdout.decode("utf-8"))
+                  for _ in range(3)}
+if len(suffix_repeats) != 1:
+    failures.append("ds-suffix-determinism: three suffix runs produced %d distinct documents"
+                    % len(suffix_repeats))
+
+# Oracle R's third pair, and the `RESIDENT` composition: `ds-suffix-3` plus one operand. The suffix
+# pass reads **zero** pack bytes when the weights are resident, which is R6-RESIDENT-WEIGHTS'
+# primary metric extended to the one pass this capability adds, and non-zero when they are streamed.
+def normalize_resident_suffix(text):
+    """Oracle R over a suffix leg. `normalize_resident` plus `suffix.pack_bytes`, which is the
+    resident capability's own primary metric extended to the one pass this capability adds — the
+    same reason the `weights` block is already excluded. It is compensated immediately below by the
+    two assertions that give the exclusion its meaning: exactly 0 resident and above 0 streamed."""
+    document = json.loads(normalize_resident(text))
+    document["suffix"].pop("pack_bytes", None)
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+left = normalize_resident_suffix(produced["ds-suffix-3"])
+right = normalize_resident_suffix(produced["ds-suffix-resident"])
+if left != right:
+    failures.append("oracle R (ds-suffix-3 vs ds-suffix-resident): %s"
+                    % describe_difference(left, right))
+if json.loads(produced["ds-suffix-resident"])["suffix"]["pack_bytes"] != 0:
+    failures.append("ds-suffix-resident: the resident suffix pass read %d pack bytes"
+                    % json.loads(produced["ds-suffix-resident"])["suffix"]["pack_bytes"])
+if json.loads(produced["ds-suffix-3"])["suffix"]["pack_bytes"] <= 0:
+    failures.append("ds-suffix-3: the streamed suffix pass read no pack bytes")
+
+# The refusal matrix's details, named exactly. The codes are asserted by `record`; these are the
+# details, which is what makes a refusal a diagnosis a caller can act on. This tuple is the whole
+# suffix refusal matrix of R6-PREFIX-SUFFIX-PREFILL section 5.6 -- every documented case except
+# `ds-arity-16`, which publishes no document at all -- and the summary below counts it rather than
+# `STUB_CASES` membership, so a case added to the matrix without a detail here cannot inflate the
+# printed claim. `ds-suffix-tokens-mismatch` is why membership is the wrong witness: it rides in
+# `KV_REFUSALS` and never appears in `STUB_CASES`.
+SUFFIX_REFUSAL_DETAILS = (("ds-suffix-no-load", "suffix[no_load]"),
+                          ("ds-suffix-and-save", "suffix[no_load]"),
+                          ("ds-suffix-no-load-bad-steps", "suffix[no_load]"),
+                          ("ds-suffix-empty", "suffix[]"),
+                          ("ds-suffix-garbage", "suffix[x]"),
+                          ("ds-suffix-trailing", "suffix[5,]"),
+                          ("ds-suffix-over-vocab", "token[0]"),
+                          ("ds-suffix-over-cap", "sequence[33]"),
+                          ("ds-suffix-over-cap-and-narrow", "sequence[33]"),
+                          ("ds-suffix-and-bad-tokens", "token[32]"),
+                          ("ds-suffix-narrow-width", "kv_width[6]"),
+                          ("ds-suffix-tokens-mismatch", "count[3]"))
+for case, detail in SUFFIX_REFUSAL_DETAILS:
+    refused = json.loads(produced[case])
+    if refused["error_detail"] != detail:
+        failures.append("%s: error_detail %r, not %r" % (case, refused["error_detail"], detail))
+    if refused["suffix"]["requested"] != 1 or refused["suffix"]["completed"] != 0 \
+            or refused["decode"]["steps_completed"] != 0 or refused["steps"] \
+            or refused["plane"]["roundtrip_verdict"] == "IDENTICAL":
+        failures.append("%s: a refused suffix run published loop state: %r / %r"
+                        % (case, refused["suffix"], refused["plane"]))
+
 for name, force, operands, expected in FORCED_CASES:
     build_shim(force)
     record(name, operands, expected)
@@ -4911,6 +5380,55 @@ if shifted["plane"]["first_mismatch_column"] != 3 \
         or shifted["error_detail"] != "step[1]layer[0]tensor[k]col[3]":
     failures.append("ds-force-writeback-offset: oracle B did not name the new column: %r %r"
                     % (shifted["plane"], shifted["error_detail"]))
+
+# R6-PREFIX-SUFFIX-PREFILL section 2.8's per-pass failure contract, asserted in full. Both forced
+# builds fail **inside the suffix pass**, and both must publish the same six things: no completion,
+# the loaded plane's own column count, zero counts, no step, never `IDENTICAL`, and the
+# **container's** `output` — which is the field whose behaviour changed on this operand combination
+# and which a pass that produced no logits cannot replace.
+for case, code, detail in (
+        ("ds-force-compute-suffix", "R5_COMPUTE", "suffix[]layer[0]status[2]"),
+        ("ds-force-suffix-writeback-offset", "R6_PLANE_MISMATCH",
+         "suffix[]layer[0]tensor[k]col[2]")):
+    partial_suffix = json.loads(produced[case])
+    if partial_suffix["status"] != "error" or partial_suffix["error_code"] != code \
+            or partial_suffix["error_detail"] != detail:
+        failures.append("%s: %r / %r, not %r / %r"
+                        % (case, partial_suffix["error_code"], partial_suffix["error_detail"],
+                           code, detail))
+    suffix = partial_suffix["suffix"]
+    if suffix["requested"] != 1 or suffix["completed"] != 0 or suffix["token_count"] != 3 \
+            or suffix["n_past_base"] != 2 or suffix["sequence_length"] != 5 \
+            or suffix["columns_written"] != 2 or suffix["graph_count"] != 0 \
+            or suffix["node_count"] != 0 or suffix["pack_bytes"] != 0:
+        failures.append("%s: a partial pass published a completion: %r" % (case, suffix))
+    if partial_suffix["plane"]["columns_written"] != 2 \
+            or partial_suffix["plane"]["roundtrip_verdict"] == "IDENTICAL":
+        failures.append("%s: a partial pass advanced the plane: %r" % (case, partial_suffix["plane"]))
+    if partial_suffix["decode"]["steps_completed"] != 0 or partial_suffix["steps"] \
+            or partial_suffix["decode"]["token_ids"]:
+        failures.append("%s: a partial pass ran a decode step: %r"
+                        % (case, partial_suffix["decode"]))
+    # Section 2.8: `output` is the **container's** persisted vector on a failed pass, which is what
+    # an ordinary load run publishes. This is the assertion that says the digest is taken before the
+    # pass and replaced only by a completed one.
+    if partial_suffix["output"]["argmax"] != partial_suffix["kv"]["prefill_argmax"]:
+        failures.append("%s: a failed pass replaced `output` with something: %r / %r"
+                        % (case, partial_suffix["output"]["argmax"],
+                           partial_suffix["kv"]["prefill_argmax"]))
+    if not partial_suffix["lifetime"]["released_before_owner_scope_end"] \
+            or partial_suffix["lifetime"]["graph_balance_failures"] != 0:
+        failures.append("%s: the teardown after a partial pass did not balance: %r"
+                        % (case, partial_suffix["lifetime"]))
+
+# Section 4.2: oracle B names column `T_prefix` — the **first suffix** column — which is the
+# evidence that the columns this pass wrote are compared and not only the columns it loaded.
+shifted_suffix = json.loads(produced["ds-force-suffix-writeback-offset"])["plane"]
+if shifted_suffix["first_mismatch_column"] != 2 or shifted_suffix["first_mismatch_tensor"] != "k" \
+        or shifted_suffix["first_mismatch_layer"] != 0 \
+        or shifted_suffix["first_mismatch_step"] != -1:
+    failures.append("ds-force-suffix-writeback-offset: oracle B did not name the first suffix "
+                    "column: %r" % shifted_suffix)
 
 # R6-RESIDENT-WEIGHTS section 11.1 correction 12's regression, and the one case in this corpus
 # where a **resident** run fails. Everything asserted here was wrong before the correction: the
@@ -4984,6 +5502,9 @@ REQUIRED_CODES = {
     "R6_KV_TRUNCATED", "R6_KV_MAGIC", "R6_KV_VERSION", "R6_KV_HEADER", "R6_KV_RESERVED",
     "R6_KV_REGION", "R6_KV_GEOMETRY", "R6_KV_IDENTITY", "R6_KV_TOKENS", "R6_KV_NPAST",
     "R6_KV_DIGEST",
+    # R6-PREFIX-SUFFIX-PREFILL section 2.7's one new code. `R6_KV_ARGS` and `R6_KV_WIDTH` are
+    # already required above and this capability adds a second and a third reason to reach each.
+    "R6_SUFFIX",
 }
 missing_codes = REQUIRED_CODES - codes
 if missing_codes:
@@ -5020,6 +5541,13 @@ if failures:
         sys.stderr.write("decode step smoke: FAIL %s\n" % line)
     raise SystemExit(1)
 
+print("decode step smoke: prefix+suffix -- oracle S byte-identical on %d splits against their "
+      "single-shot runs outside %d excluded groups, oracle C'' byte-identical against "
+      "--model-forward on each, oracle B IDENTICAL over T_prefix + S columns before the first step, "
+      "%d refusals each naming its own detail, two forced builds publishing a partial pass, and the "
+      "RESIDENT leg reading zero pack bytes"
+      % (len(SUFFIX_ORACLE), len(SUFFIX_EXCLUDED_BLOCKS) + len(SUFFIX_EXCLUDED_FIELDS),
+         len(SUFFIX_REFUSAL_DETAILS)))
 print("decode step smoke: %d no-document cases (R6_ARITY, R6_PATH), %d documented cases (%d with a "
       "golden row), %d codes reached, oracle A' PASS against transcript graphs 2..4 at three step "
       "offsets, oracle B IDENTICAL over the whole plane including every written-back column, three "
