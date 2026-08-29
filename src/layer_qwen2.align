@@ -1696,12 +1696,16 @@ pub fn mf_row_issued_at(condition: i64, last: bool, wide: bool, decode: bool) ->
 
 pub MF_DECODE_LAYER_NODE_COUNT := 38
 
-// Rows 0 to 14: the norm, the three projections and their biases, the three reshapes at `ne2 = 1`,
-// the two RoPEs, and the two permutes. Every one is the prefill's row with `tokens = 1`; only
-// `MF_SLOT_POS`'s **contents** differ, and they are `[n_past]` rather than `[0 .. T-1]`.
-fn mf_decode_row_head(borrow g: Geometry, row: i64) -> MfRow {
+// Rows 0 to 14: the norm, the three projections and their biases, the three reshapes at
+// `ne2 = tokens`, the two RoPEs, and the two permutes. Every one is the prefill's row at this
+// pass's own column count; only `MF_SLOT_POS`'s **contents** differ, and they are
+// `[n_past .. n_past + tokens - 1]` rather than `[0 .. T-1]`.
+//
+// R6-PREFIX-SUFFIX-PREFILL section 2.5. `tokens` is 1 for every decode step — the loop passes it and
+// the bytes are unchanged by construction — and `S` for the one suffix pass.
+fn mf_decode_row_head(borrow g: Geometry, tokens: i64, row: i64) -> MfRow {
   n := MF_SLOT_NODE_BASE
-  if row <= 12 { return mf_layer_row_head(g, 1, row) }
+  if row <= 12 { return mf_layer_row_head(g, tokens, row) }
   mut r := mf_row(OP_PERMUTE, if row == 13 { n + 11 } else { n + 12 }, -1, -1)
   r.p1 = 2
   r.p2 = 1
@@ -1710,15 +1714,20 @@ fn mf_decode_row_head(borrow g: Geometry, row: i64) -> MfRow {
 }
 
 // Rows 15 to 23: the K path, the attention weights, and the V path — the nine rows the concats live
-// in. `width - (n_past + 1)` is the pad each concatenated operand needs to reach `KV_WIDTH`; it is
-// the decode value on purpose, so a walk that skipped the concats would pad the wrong operand to the
-// wrong extent and be refused as `R5_SHAPE` rather than compute a plausible number.
-fn mf_decode_row_attention(borrow g: Geometry, n_past: i64, width: i64, row: i64) -> MfRow {
+// in. `width - (n_past + tokens)` is the pad each concatenated operand needs to reach `KV_WIDTH`; it
+// is the decode value on purpose, so a walk that skipped the concats would pad the wrong operand to
+// the wrong extent and be refused as `R5_SHAPE` rather than compute a plausible number.
+//
+// R6-PREFIX-SUFFIX-PREFILL section 2.5. The concat joins the plane's `n_past` columns to this pass's
+// `tokens` new ones, so the pad is what is left of `KV_WIDTH` after both. At `tokens = 1` every
+// expression below is R6's character for character.
+fn mf_decode_row_attention(
+  borrow g: Geometry, n_past: i64, tokens: i64, width: i64, row: i64) -> MfRow {
   n := MF_SLOT_NODE_BASE
   if row == 15 {
     mut r := mf_row(OP_CONT_3D, n + 14, -1, -1)
     r.p0 = g.head_dim
-    r.p1 = 1
+    r.p1 = tokens
     r.p2 = g.n_head_kv
     return r
   }
@@ -1730,7 +1739,7 @@ fn mf_decode_row_attention(borrow g: Geometry, n_past: i64, width: i64, row: i64
   }
   if row == 17 {
     mut r := mf_row(OP_PAD, n + 15, -1, -1)
-    r.p1 = width - (n_past + 1)
+    r.p1 = width - (n_past + tokens)
     r.alt_when = WHEN_DECODE
     r.alt_a = n + 16
     return r
@@ -1752,7 +1761,7 @@ fn mf_decode_row_attention(borrow g: Geometry, n_past: i64, width: i64, row: i64
   }
   if row == 21 {
     mut r := mf_row(OP_CONT_3D, n + 20, -1, -1)
-    r.p0 = 1
+    r.p0 = tokens
     r.p1 = g.head_dim
     r.p2 = g.n_head_kv
     return r
@@ -1764,7 +1773,7 @@ fn mf_decode_row_attention(borrow g: Geometry, n_past: i64, width: i64, row: i64
     return r
   }
   mut r := mf_row(OP_PAD, n + 21, -1, -1)
-  r.p0 = width - (n_past + 1)
+  r.p0 = width - (n_past + tokens)
   r.alt_when = WHEN_DECODE
   r.alt_a = n + 22
   return r
@@ -1775,7 +1784,18 @@ fn mf_decode_row_attention(borrow g: Geometry, n_past: i64, width: i64, row: i64
 // `get_rows(x, [0])` is the identity. They cost two redundant nodes and keep one shape rule for both
 // passes; they have no counterpart in llama.cpp's decode graph, so section 3.3 excludes them from
 // oracle A by name and counts them rather than dropping them quietly.
-fn mf_decode_row_tail(borrow g: Geometry, row: i64) -> MfRow {
+//
+// R6-PREFIX-SUFFIX-PREFILL section 2.5, and its section 11 deviation 1: **row 26 is a sixth
+// token-count literal**, which that document's table did not name. `kqv_out` is `{n_embd, tokens, 1}`
+// on the prefill (`mf_layer_row_tail`'s own last row) and the decode table wrote `1` for it, so the
+// parameter has to reach this function too. At `tokens = 1` the row is R6's unchanged, and at
+// `tokens = S` a hardwired `1` would be an `R5_SHAPE` refusal rather than a wrong number — but the
+// literal is corrected rather than left to the shape check, because the table is the contract.
+//
+// At `tokens = S` the `WHEN_LAST` rows are **not** the identity for the first time: `out_ids` holds
+// `S - 1`, which is the last suffix token's row in this pass's own `S`-row window. That index is
+// relative to the pass and not to the sequence (section 2.5).
+fn mf_decode_row_tail(borrow g: Geometry, tokens: i64, row: i64) -> MfRow {
   n := MF_SLOT_NODE_BASE
   if row == 24 { return mf_row(OP_MUL_MAT, n + 23, n + 19, 9) }
   if row == 25 {
@@ -1788,7 +1808,7 @@ fn mf_decode_row_tail(borrow g: Geometry, row: i64) -> MfRow {
   if row == 26 {
     mut r := mf_row(OP_CONT_3D, n + 25, -1, 10)
     r.p0 = g.n_embd
-    r.p1 = 1
+    r.p1 = tokens
     r.p2 = 1
     return r
   }
@@ -1823,7 +1843,11 @@ fn mf_decode_row_tail(borrow g: Geometry, row: i64) -> MfRow {
   return mf_row(OP_ADD, n + 36, n + 30, 18)
 }
 
-pub fn mf_decode_layer_node_table(borrow g: Geometry, n_past: i64, width: i64) -> NodeTable {
+// R6-PREFIX-SUFFIX-PREFILL section 2.5. `tokens` is the number of columns this graph set computes:
+// `1` for a decode step, `S` for the suffix pass. **The node count is unchanged at 38** — no row is
+// added, removed, or made conditional; six parameters change value.
+pub fn mf_decode_layer_node_table(
+  borrow g: Geometry, n_past: i64, tokens: i64, width: i64) -> NodeTable {
   mut op: array_builder<i64> := array_builder()
   mut a: array_builder<i64> := array_builder()
   mut b: array_builder<i64> := array_builder()
@@ -1841,9 +1865,13 @@ pub fn mf_decode_layer_node_table(borrow g: Geometry, n_past: i64, width: i64) -
   loop {
     if row >= MF_DECODE_LAYER_NODE_COUNT { break }
     r := if row <= 14 {
-      mf_decode_row_head(g, row)
+      mf_decode_row_head(g, tokens, row)
     } else {
-      if row <= 23 { mf_decode_row_attention(g, n_past, width, row) } else { mf_decode_row_tail(g, row) }
+      if row <= 23 {
+        mf_decode_row_attention(g, n_past, tokens, width, row)
+      } else {
+        mf_decode_row_tail(g, tokens, row)
+      }
     }
     op.push(r.op)
     a.push(r.a)
@@ -2156,9 +2184,10 @@ fn mf_oracle_table_for(n_layer: i64, decode: bool) -> OracleTable {
 // The causal mask at a declared width
 // ---------------------------------------------------------------------------------------------
 
-// A `{width, height}` f32 image. Columns at or beyond `height` are `-inf` for every row, which is
-// what makes the reconciliation pass's padded lanes contribute nothing: `ggml_pad` zeroes them and
-// the mask masks them, and only the f32 reduction *length* changes (section 2.7).
+// A `{width, height}` f32 image. Row `r` unmasks columns `0 ..= r`, so at `row_offset = 0` columns
+// at or beyond `height` are `-inf` for every row — which is what makes the reconciliation pass's
+// padded lanes contribute nothing: `ggml_pad` zeroes them and the mask masks them, and only the f32
+// reduction *length* changes (section 2.7).
 pub fn mf_write_mask(borrow mut window: buffer, width: i64, height: i64) {
   mf_write_mask_offset(window, width, height, 0)
 }
@@ -2175,6 +2204,18 @@ pub fn mf_write_mask(borrow mut window: buffer, width: i64, height: i64) {
 // `mf_write_mask` is defined as the `row_offset = 0` case, so the prefill's bytes are unchanged by
 // construction rather than by inspection. A negative offset is refused: it is not a narrower mask,
 // it is a row that attends to nothing, and no caller has one.
+//
+// R6-PREFIX-SUFFIX-PREFILL section 2.5. The suffix pass is the first caller with **both** `height`
+// and `row_offset` non-trivial: at `(S, T_prefix)` row `r` unmasks columns `0 .. T_prefix - 1` (the
+// whole loaded prefix) plus `T_prefix .. T_prefix + r` (itself and the earlier suffix tokens), which
+// is the `S x (T_prefix + S)` causal block embedded in an `S x KV_WIDTH` image. The sentence
+// "columns at or beyond `height` are `-inf`" above is therefore true only at `row_offset = 0`, and
+// the comment says so rather than stating a rule this caller breaks.
+//
+// **There is deliberately no `row_offset + height <= width` guard.** The condition every caller must
+// meet is `n_past + tokens <= KV_WIDTH`, which validation step 6's `T + S + N <= KV_WIDTH` strictly
+// implies, so no input reaches a violation; a guard with no reachable input and no forced build is a
+// check this repository declines to add (that document's section 4.3).
 pub fn mf_write_mask_offset(
   borrow mut window: buffer, width: i64, height: i64, row_offset: i64) {
   if row_offset < 0 { return }

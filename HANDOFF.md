@@ -3,7 +3,125 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R6-RESIDENT-WEIGHTS (2026-08-29)
+## Active: R6-PREFIX-SUFFIX-PREFILL (2026-08-29)
+
+Branch `agent/r6-prefix-suffix-prefill`, cut from `origin/main` `553563e` — the merge of
+R6-RESIDENT-WEIGHTS (PR #147). Nothing is committed yet; the tree is buildable and every hosted
+check passes at the working head. `docs/specs/r6-prefix-suffix-prefill.md` is the authoritative
+ledger: sections 1 to 4 are the design, 5.1 to 5.4 the verification plan, **5.5 to 5.8 the hosted
+result**, 5.9 the real-model result, and **11 what implementation found**.
+
+**Capability.** `R6-KV-PERSIST` made a prefill plane outlive its process, but only for the prompt it
+was saved for — the arm had no graph that computes more than one column at `n_past > 0`. This ships
+that graph. `--decode-step` gains a fifteenth operand, `SUFFIX` (a token id list or `-`), legal only
+with `KV_LOAD`: the arm loads a container holding `T_prefix` columns for exactly the tokens in
+`TOKENS`, runs **one suffix pass** over the `S` suffix tokens at absolute positions
+`T_prefix .. T_prefix+S-1` causally masked over prefix-plus-suffix, writes their K and V into the
+plane at columns `T_prefix ..`, verifies the plane over all `T_prefix + S` columns, and then
+continues the existing `N`-step loop from `n_past = T_prefix + S`. **Nothing is re-saved and the
+`akvp` format is byte-unchanged.** Dense Qwen2.5-Coder-7B Q4_K_M, CPU only. The oracle is that a
+suffix run and a single-shot prefill of `TOKENS ++ SUFFIX` are **the same run**.
+
+**Complete.** `SUFFIX` at `args[14]` with arity 15 and step 2c's conditional rule; `R6_SUFFIX` with
+four details; step 3c and the widened step 6; `mf_decode_layer_node_table(g, n_past, tokens, width)`
+with **six** literals parameterised across three functions; `decode_layer_inputs`/`_values`,
+`capture_plane`, and `verify_plane` at `tokens`; `decode_pass` at `tokens_in` with its own
+`suffix_pass` counter; eleven `Outcome` fields and the `suffix` object at document **schema 5**;
+`output`/`oracle_logits` moved to the pass's own logits on a completed run with the container's
+vector kept in `kv`; 21 new golden rows (three oracle-S splits, ten refusals, three comparands, two
+forced builds, a resident leg, and a tokens-mismatch), two stub shim arms and two builder flavours;
+`scripts/run-decode-step`'s per-split suffix leg with oracle S, oracle C″, oracle B, gate G, the
+accounting, and the three-leg TTFT diagnostic; roadmap item **33**, `docs/align-development.md`,
+Request 49's negative client line and Request 22's cheaper-absence line, and
+`docs/specs/r6-kv-persist.md`'s `document_schema_version` correction.
+
+**`src/kv_plane.align`, `scripts/kv_plane_reader.py`, `src/ggml_ffi.align`, `scripts/ggml_shim.c`,
+`src/ggml_spike.align`, the `Makefile`, and `scripts/layer_forward_fixture.py` are byte-unchanged.**
+No new ggml op, shim symbol, node row, slot, or Align surface, and no aggregate membership or check
+topology change, so `scripts/check-gate-topology`'s byte-literal EXPECTED does not move.
+`scripts/ggml_shim_stub.c` and `scripts/build-ggml-shim` are not unchanged: two arms in the test
+double, recorded as section 11.3 deviation 3.
+
+**Risk 1 was discharged first, as the design asked.** `ds-suffix-3` was run before any refusal case
+was written, and oracle C″ was byte-identical on the **first** implementation checkpoint: the
+column-count sensitivity R6 measured in llama.cpp does not appear between this arm's own two paths
+at `S >= 2` **and** `n_past > 0`. It never reappeared on any later run, hosted or real-model.
+
+**Goldens.** `scripts/decode-step-golden.jsonl` 116 → **137**. A programmatic diff confirms the only
+fields that changed in a pre-existing row are `.schema_version` (4 → 5) and the added `.suffix` — the
+prediction exactly. The other five goldens are **byte-unchanged**.
+
+**Findings, in section 11.** Oracle S's exclusion list needed four more fields and
+`plane.roundtrip_bytes_compared` a fifth, each **compensated by an explicit assertion** rather than
+dropped, with a witness guard so a later widening fails; two refusal details in the design's matrix
+were wrong and the implementation follows `R6_TOKENS`' own shape; the decode table holds six
+token-count literals and not five; the suffix pass's specs must carry `compare = false` or a run
+with a transcript panics; and `output`'s digest is taken twice so that a failed pass publishes the
+container's vector.
+
+**A pre-existing defect this capability found and did not fix (section 11.2).** **A one-token prompt
+computes the logits of token 0.** `model_forward.fill_members` gathers by id only when
+`pieces > 1`, and `build_embed_members` sets `pieces = tokens`, so at `tokens == 1` it reads the
+embedding table's first row. Measured: `--model-forward` at `0`, `3`, and `17` returns one digest.
+Reachable from the shipped CLI, silent, and **not shared by the resident path**. No golden exercises
+`token_count == 1`, so it has been latent since R5B. It is not fixed here because the honest fix is a
+discriminator on `model_forward.GraphMembers` — eighteen construction sites, three modules, four
+arms — needing its own regression and its own review. This capability depends on none of it: the
+hosted matrix has no `T_prefix = 1` case and the real-model leg's smallest split is already `j = 2`.
+
+**Blockers.** None. No Align request is proposed; Request 49 gains a **negative** client (the gap
+shaped nothing, because the plane's only mutator is already in `decode_step`) and Request 22 gains a
+note that a suffix is an operand rather than decoded text.
+
+**Classifier scope.** `src` and executable scripts change, so the classifier selects the executable
+row and **hosted** preflight: `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake
+layer-forward-smoke`. `make ci` is **not** selected — no aggregate membership, check topology, or
+integration behaviour changes and this is not a `.align-revision` change — and `baseline-check` is
+`N/A` on R6-STEP-N's condition (the `Makefile` is byte-unchanged and both new shim arms are inputs
+to the **stub**), to be re-checked at the publication head.
+
+**Four merge re-checks this family always carries.** Roadmap item **33** (31 and 32 are on
+branches), document schema **5**, next free Align request **53** (52 is expected to be claimed by a
+parallel branch), and `scripts/decode-step-golden.jsonl` regenerated from the merged head. Merge
+`origin/main` by `git merge`, **never a rebase**, so every stacked branch's recorded commits stay
+reachable.
+
+**Verification checkpoint (working head, uncommitted).** `gmake build`, `gmake check` (31 units),
+`gmake fmt`, `gmake format-check`, `git diff --check`, `gmake gate-topology-check`,
+`gmake ggml-spike-smoke`, and `gmake layer-forward-smoke` (all six blocks; **138** documented
+decode-step cases, 137 with a golden row, 42 codes) all pass. **`gmake decode-step-qualification`
+exits 0 on the real model at `N = 16`**, with five prefix/suffix splits over the four prompts and
+every one of oracle S, oracle C″, oracle B over `T_prefix + S` columns, and gate G1 **IDENTICAL** —
+`case1` at `(T_prefix, S) = (2, 4)` and `(3, 3)`, the other three prompts at `(2, 1)` because they
+tokenize to three ids. Both `case1` splits decode the same four ids, which is oracle S's claim seen
+from outside: where the split falls does not change the run. It was run **twice** — the first run
+found the TTFT trio's own comparability defect (section 11.3 deviation 6) and the second is at the
+corrected head; the acceptance verdicts are identical in both. Instruments unchanged:
+`ALIGN_LLM_LLAMA_DEBUG=/opt/homebrew/bin/llama-debug` (build 10566, `bb4caa754`) and the R2C-patched
+`llama-eval-callback` from the `r2c-v2` cache. **The host was under memory pressure during both
+runs** (another agent's OLMoE qualification had just finished), so R6-RESIDENT-WEIGHTS' own scaling
+leg reports slower absolute elapsed times than its recorded run; that leg still reports its floor
+MET and it is **not** this capability's claim — every verdict this capability owns is byte identity
+and is unaffected by host load.
+
+**Five mutants injected, five killed under `gmake layer-forward-smoke`.** Suffix positions off by
+one; the mask offset wrong for `S > 1`; the write-back column base wrong **at `S > 1` only**; the
+verify range at R6-STEP-N's exact old bound, which is correct for every step and wrong only at
+`S > 1`; and oracle S's exclusion list widened by `decode`, `steps`, and `output`, which the witness
+guard kills. The two suffix-only mutants die naming the exact case and the exact column
+(`suffix[]layer[0]tensor[k]col[2]` and `col[-1]`).
+
+**Next actions, in order.** (1) Commit the working tree on `agent/r6-prefix-suffix-prefill`.
+(2) `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` at the
+exact publication head. (3) One comprehensive review of the stable candidate. (4) Publish the
+English pull request with the review envelope, every finding's disposition, and the exact commands
+and results. (5) Merge once the required checks pass, then re-check the four items above.
+
+**Intentional uncommitted files.** The whole capability is uncommitted at the time of writing; there
+is no scratch file inside the work tree.
+
+
+## Merged checkpoint: R6-RESIDENT-WEIGHTS (PR #147, 2026-08-29)
 
 Branch `agent/r6-resident-weights`. Implemented on `agent/r6-kv-persist` head `9699848`, then
 **merged** with that branch's review repair `1971c61` and its own `main` merge `bdb34eb` — which
@@ -153,10 +271,7 @@ against a future caller, not a fix for a reachable defect. That mutant loosens t
 runs a resident prefill of exactly `MAX_PREFILL_TOKENS` distinct ids — the highest slot either call
 site can produce — against its streamed twin under oracle R.
 
-**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake
-layer-forward-smoke` at the exact publication head. (2) Publish the English pull request with the
-review envelope, every finding's disposition, and the exact commands and results. (3) Merge once the
-required checks pass.
+**Merged** as PR #147; `origin/main` `553563e` is that merge and is the base of the branch above.
 
 **Process correction this capability owes the next one.** Sections 1 to 4 of
 `docs/specs/r6-resident-weights.md` were written before implementation, but the file's first commit
