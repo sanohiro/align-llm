@@ -6,10 +6,10 @@ file records durable project state.
 ## Active: C4-REPAIR-MEASURED (2026-08-29)
 
 Branch `agent/c4-repair-measured`, in publication. Nothing uncommitted. The branch is the
-capability, two merges of `origin/main` (`553563e` and `a9561a9`, both taken as `git merge`, never
-a rebase, so every recorded commit stays reachable), the consolidated repair of two disjoint
-comprehensive reviews' findings, the committed-head gate re-run record, and the final delta
-review's minors. Track A re-entry after the Track B R-wave; Track B's own sections below stay
+capability, three merges of `origin/main` (`553563e`, `a9561a9`, and `45ff38e`, all taken as
+`git merge`, never a rebase, so every recorded commit stays reachable), the consolidated repair of
+two disjoint comprehensive reviews' findings, the committed-head gate re-run record, the final
+delta review's minors, and two baseline chains of which the later binds. Track A re-entry after the Track B R-wave; Track B's own sections below stay
 active on their own branches.
 
 **Capability.** One bounded model repair attempt in the provider-backed measurement path.
@@ -189,10 +189,12 @@ twenty digests moved (`Makefile`); `.align-revision` is unchanged and the twenty
 identical. The eval artifacts this capability adds — `eval/prompt/c4-repair-gate/` and
 `eval/prompt/canonical-v1r/` — are **not** in the recorded set, which
 `python3 scripts/check-baseline-chain` confirms against the manifest. The identity-bound chain is
-`4652753` -> `5b88b6b` -> `9f9d458` (clean source, immutable oracle projection, finalization), with
+`69d223e` -> `ca17997` -> `c89d147` (clean source, immutable oracle projection, finalization), with
 the pending measurement recorded on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) through
 the DinD wrapper, exactly as the R-wave's were. `gmake baseline-check` passes on Linux at the
-finalized head. The pull request must be a **merge**: squash or rebase would make the three commits
+finalized head. It **supersedes** this branch's first chain (`4652753` -> `5b88b6b` -> `9f9d458`),
+which PR #148 (R6-OLMOE-DECODE) invalidated by changing `Makefile` itself; both chains stay
+reachable in this branch's history and only the later one is named in the finalized baseline. The pull request must be a **merge**: squash or rebase would make the three commits
 unreachable from `main`.
 
 **Next actions, in order.**
