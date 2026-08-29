@@ -2856,6 +2856,23 @@ fn verifier_task_expects_measurement_version_two(
   return verifier_string_equals(task.argv[1], "scripts/prompt-repair-adapter.py")
 }
 
+fn verifier_task_expects_measurement_version_three(
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+) -> bool {
+  if task.argv.len() != 2 { return false }
+  return verifier_string_equals(task.argv[1], "scripts/prompt-template-adapter.py")
+}
+
+// Ladder row 16, three-way. The corpus names the adapter and the adapter fixes the version, so the
+// measurement's version stays a checked function of the corpus rather than a producer's choice.
+fn verifier_task_expected_measurement_version(
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+) -> i64 {
+  if verifier_task_expects_measurement_version_three(task) { return 3 }
+  if verifier_task_expects_measurement_version_two(task) { return 2 }
+  return 1
+}
+
 // The EDITSET denominator exists only for a corpus that can render the section. A `canonical-v1r`
 // template declares no `EDITSET` kind, so `included_sections` can never name it and the quantity is
 // undefined rather than zero — and `eval/prompt/c4-repair-gate/` is a merged version-2 document
@@ -2869,7 +2886,11 @@ fn verifier_result_uses_repair_adapter(
   mut index := 0
   loop {
     if index >= result.tasks.len() { break }
-    if verifier_task_expects_measurement_version_two(result.tasks[index]) { return true }
+    // C4-REPAIR-TEMPLATE: the six-kind template declares `EDITSET` too, so a version-3 corpus
+    // defines the denominator exactly as a version-2 one does. Only a corpus whose template
+    // declares no `EDITSET` kind at all leaves it undefined.
+    if verifier_task_expects_measurement_version_two(result.tasks[index]) ||
+    verifier_task_expects_measurement_version_three(result.tasks[index]) { return true }
     index = index + 1
   }
   return false
@@ -2978,7 +2999,86 @@ fn verifier_measurement_version_one_shape(
   return match measurement.edit_set { None => true, Some(_) => false } &&
   verifier_optional_i64_absent(measurement.edit_set_total_bytes) &&
   verifier_optional_digest_absent(measurement.patch_sha256) &&
-  verifier_optional_digest_absent(measurement.base_adapter_runtime_identity)
+  verifier_optional_digest_absent(measurement.base_adapter_runtime_identity) &&
+  verifier_measurement_version_three_absent(measurement)
+}
+
+// Every version-3 member absent, required at versions 1 and 2 alike. Absence is required, never
+// defaulted, in both directions: this is the half of the rule that keeps presence from standing in
+// for a version, and it is what makes both frozen version-1 and version-2 chains stay valid.
+fn verifier_measurement_version_three_absent(
+  borrow measurement: prompt_artifacts.TaskMeasurement,
+) -> bool {
+  return verifier_optional_digest_absent(measurement.edit_refusal) &&
+  verifier_optional_i64_absent(measurement.completion_bytes) &&
+  verifier_optional_digest_absent(measurement.completion_sha256) &&
+  verifier_optional_digest_absent(measurement.completion_text)
+}
+
+// The ten-code vocabulary of specification section 3.3, split by the class each code belongs to.
+// A code outside it is rejected: the producer's mapping is total, so an unrecognized value means
+// the record and the producer disagree.
+fn verifier_edit_refusal_patch_class(borrow code: string) -> bool {
+  return code == "NO_FILE_BLOCK" || code == "HEADER_WITHOUT_BLOCK" ||
+  code == "UNTERMINATED_BLOCK" || code == "TOO_MANY_BLOCKS" || code == "DUPLICATE_PATH" ||
+  code == "BODY_TOO_LARGE" || code == "UNCHANGED_FILES"
+}
+
+fn verifier_edit_refusal_policy_class(borrow code: string) -> bool {
+  return code == "PATH_NOT_EDITABLE" || code == "PATH_ESCAPES_SOURCE"
+}
+
+// Ladder rows 17-20: the version-3 members and the section 3.3 invariants tying them to the
+// version-1 and version-2 ones. `edit_refusal` is unconditionally `Some` at version 3, so the
+// quantity the aggregate counts is defined for every ran attempt.
+//
+// The `PATCH` class is checked in **both** directions, because a producer that stopped mapping a
+// raise site would otherwise persist a silent `NONE` beside `failure_kind: PATCH` — the exact
+// defect this capability exists to make impossible. The `POLICY` class is one-directional: the
+// frozen prompt-oversized early return also produces `POLICY_VIOLATION`/`POLICY` and never reaches
+// the parser, so it legitimately carries `NONE`.
+fn verifier_measurement_version_three_shape(
+  borrow measurement: prompt_artifacts.TaskMeasurement,
+) -> bool {
+  refusal_valid := match measurement.edit_refusal {
+    None => false,
+    Some(code) => {
+      patch_class := verifier_edit_refusal_patch_class(code)
+      policy_class := verifier_edit_refusal_policy_class(code)
+      set_present := match measurement.edit_set { None => false, Some(_) => true }
+      (code == "NONE" || patch_class || policy_class) &&
+      patch_class == (measurement.failure_kind == "PATCH") &&
+      (!patch_class || measurement.patch_size_bytes == 0) &&
+      (!policy_class ||
+        (measurement.status == "POLICY_VIOLATION" && measurement.failure_kind == "POLICY")) &&
+      // The invariant this capability exists to establish: the reproduced-unchanged refusal keeps
+      // the blocks its producer built one line before the raise, and every other refusal keeps
+      // none. `edit_set` presence and the refusal code are one decision, not two.
+      (code != "UNCHANGED_FILES" ||
+        (set_present && verifier_optional_digest_absent(measurement.patch_sha256))) &&
+      (code == "NONE" || code == "UNCHANGED_FILES" || !set_present)
+    },
+  }
+  // The completion's identity is present exactly when a provider response was received, and the
+  // digest is over the full redacted bytes rather than any excerpt.
+  identity_valid := match measurement.completion_bytes {
+    None => verifier_optional_digest_absent(measurement.completion_sha256),
+    Some(count) => count >= 0 && count <= 2_097_152 &&
+    verifier_valid_optional_digest_present(measurement.completion_sha256),
+  }
+  // The excerpt is persisted only where nothing else can explain the failure: the eight refusal
+  // codes for which `validated_edit_set` never returned.
+  text_valid := match measurement.completion_text {
+    None => true,
+    Some(text) => verifier_valid_bounded_text(text, 32_768) &&
+    match measurement.completion_bytes { None => false, Some(_) => true } &&
+    match measurement.edit_refusal {
+      None => false,
+      Some(code) => code != "NONE" && code != "UNCHANGED_FILES" &&
+      (verifier_edit_refusal_patch_class(code) || verifier_edit_refusal_policy_class(code)),
+    },
+  }
+  return refusal_valid && identity_valid && text_valid
 }
 
 // Ladder rows 10 and 13-16 at version 2.
@@ -3009,6 +3109,17 @@ fn verifier_measurement_version_two_shape(
   return base_valid && patch_valid && set_valid
 }
 
+// Version 3 shares every version-2 member and rule, so the version-2 shape is required unchanged
+// and the version-3 additions are checked on top. The one widening is `edit_set` presence, which
+// version 2 ties to the attempt reaching `execute_validation` and version 3 ties to the refusal
+// code; neither is a key-presence rule, so a merged version-2 chain stays valid byte-for-byte.
+fn verifier_measurement_version_three_full_shape(
+  borrow measurement: prompt_artifacts.TaskMeasurement,
+) -> bool {
+  return verifier_measurement_version_two_shape(measurement) &&
+  verifier_measurement_version_three_shape(measurement)
+}
+
 fn verifier_measurement_valid(
   borrow measurement: prompt_artifacts.TaskMeasurement,
   borrow task: prompt_artifacts.PromptEvaluationTask,
@@ -3033,13 +3144,14 @@ fn verifier_measurement_valid(
   version_shape := if measurement.schema_version == 1 {
     verifier_measurement_version_one_shape(measurement)
   } else if measurement.schema_version == 2 {
-    verifier_measurement_version_two_shape(measurement)
+    verifier_measurement_version_two_shape(measurement) &&
+    verifier_measurement_version_three_absent(measurement)
+  } else if measurement.schema_version == 3 {
+    verifier_measurement_version_three_full_shape(measurement)
   } else {
     false
   }
-  expects_two := verifier_task_expects_measurement_version_two(task)
-  return (measurement.schema_version == 1 || measurement.schema_version == 2) &&
-  (measurement.schema_version == 2) == expects_two &&
+  return measurement.schema_version == verifier_task_expected_measurement_version(task) &&
   version_shape &&
   measurement.artifact_kind == "TASK_MEASUREMENT" &&
   measurement.repair_loop_count >= 0 && measurement.repair_loop_count <= 64 &&
@@ -3069,18 +3181,22 @@ fn verifier_measurement_valid(
 // what produced it, then the output describing it. The four earlier kinds keep their relative
 // order, so a version-2 prompt with `EDITSET` absent has the same section sequence as a
 // `canonical-v1r` prompt and the two runs stay comparable.
+// C4-REPAIR-TEMPLATE inserts `POLICY` between `STATUS` and `EDITSET`: the verdict, then the rules
+// the answer must satisfy, then what the previous answer was, then why it failed. The four- and
+// five-kind lists are subsequences of this one, so all three corpora validate against one ordering.
 fn verifier_repair_section_ordinal(borrow value: string) -> i64 {
   if value == "STATUS" { return 0 }
-  if value == "EDITSET" { return 1 }
-  if value == "SUMMARY" { return 2 }
-  if value == "STDOUT" { return 3 }
-  if value == "STDERR" { return 4 }
+  if value == "POLICY" { return 1 }
+  if value == "EDITSET" { return 2 }
+  if value == "SUMMARY" { return 3 }
+  if value == "STDOUT" { return 4 }
+  if value == "STDERR" { return 5 }
   return -1
 }
 
-// A section list is a subset of the five kinds in their one fixed order, with no repeats.
+// A section list is a subset of the six kinds in their one fixed order, with no repeats.
 fn verifier_repair_section_list_valid(borrow values: array<string>) -> bool {
-  if values.len() > 5 { return false }
+  if values.len() > 6 { return false }
   mut previous := -1
   mut index := 0
   loop {
@@ -3114,11 +3230,15 @@ fn verifier_repair_sections_disjoint(
 }
 
 // `STATUS` is never dropped: it is at most 128 bytes and the single most load-bearing fact.
+// `POLICY` joins it at version 3, and for a different reason: it is bounded at 2,048 bytes, so
+// `STATUS` and `POLICY` together are at most 2,176 and structurally cannot be why a prompt exceeds
+// a 65,536-byte budget. `EDITSET` stays droppable because up to 32 blocks can blow it alone.
 fn verifier_repair_sections_exclude_status(borrow dropped: array<string>) -> bool {
   mut index := 0
   loop {
     if index >= dropped.len() { break }
-    if verifier_repair_section_ordinal(dropped[index]) == 0 { return false }
+    ordinal := verifier_repair_section_ordinal(dropped[index])
+    if ordinal == 0 || ordinal == 1 { return false }
     index = index + 1
   }
   return true
@@ -3202,6 +3322,15 @@ fn verifier_measurement_equal(
   verifier_optional_string_equal(
     left.base_adapter_runtime_identity, right.base_adapter_runtime_identity,
   ) &&
+  // The four version-3 members, here for the identical reason the version-2 four are: omitting
+  // them would fail nothing. Ladder row 26's "`row.measurement` is byte-equal to the final attempt
+  // that ran" would still pass while comparing 27 of 31 fields, and a row whose persisted
+  // measurement differed from its attempt's only in the refusal code or the completion identity
+  // would be admitted. This is again the single highest-value line in the diff.
+  verifier_optional_string_equal(left.edit_refusal, right.edit_refusal) &&
+  verifier_optional_i64_equal(left.completion_bytes, right.completion_bytes) &&
+  verifier_optional_string_equal(left.completion_sha256, right.completion_sha256) &&
+  verifier_optional_string_equal(left.completion_text, right.completion_text) &&
   left.content_sha256 == right.content_sha256
 }
 
@@ -5640,6 +5769,8 @@ RepairAggregate {
   paired: bool,
   // C4-REPAIR-EDITSET: repair attempts on this variant whose prompt actually carried `EDITSET`.
   editset: i64,
+  // C4-REPAIR-TEMPLATE: ran attempts on this variant whose measurement records a refusal.
+  refusals: i64,
 }
 
 fn verifier_section_list_contains(borrow values: array<string>, expected: str) -> bool {
@@ -5661,6 +5792,47 @@ fn verifier_attempt_carried_editset(borrow attempt: prompt_artifacts.TaskAttempt
   return match attempt.repair_prompt_source {
     None => false,
     Some(source) => verifier_section_list_contains(source.included_sections, "EDITSET"),
+  }
+}
+
+// An attempt contributes to the refusal counter when it ran — not `SKIPPED` — and its own
+// measurement records a code other than `NONE`. Only a version-3 measurement carries the member at
+// all, so an earlier corpus contributes nothing and its aggregate records the quantity absent
+// rather than zero: a corpus whose adapter cannot persist `edit_refusal` cannot define the count.
+// Request 52's exact shape, met again and routed around the same way: a `match` on a borrowed
+// match payload's own `Option` field is rejected as a move out of a borrowed projection, so the
+// payload goes straight into a `borrow` parameter and the inner `match` happens there. Every new
+// `Option` member in this capability is read through a `borrow` binding for the same reason.
+fn verifier_measurement_edit_refused(
+  borrow measurement: prompt_artifacts.TaskMeasurement,
+) -> bool {
+  return match measurement.edit_refusal {
+    None => false,
+    Some(code) => code != "NONE",
+  }
+}
+
+fn verifier_attempt_edit_refused(borrow attempt: prompt_artifacts.TaskAttemptRecord) -> bool {
+  if attempt.status == "SKIPPED" { return false }
+  return match attempt.measurement {
+    None => false,
+    Some(measurement) => verifier_measurement_edit_refused(measurement),
+  }
+}
+
+fn verifier_row_edit_refusals(borrow row: prompt_artifacts.PromptTaskRow) -> i64 {
+  return match row.attempts {
+    None => 0,
+    Some(attempts) => {
+      mut total := 0
+      mut index := 0
+      loop {
+        if index >= attempts.len() { break }
+        if verifier_attempt_edit_refused(attempts[index]) { total = total + 1 }
+        index = index + 1
+      }
+      total
+    },
   }
 }
 
@@ -5689,6 +5861,7 @@ fn verifier_variant_repair_aggregate(
   mut attempted := 0
   mut recovered := 0
   mut editset := 0
+  mut refusals := 0
   mut every := true
   mut sample := 1
   loop {
@@ -5702,6 +5875,7 @@ fn verifier_variant_repair_aggregate(
       every = false
     }
     editset = editset + verifier_row_repair_editset_attempts(result.rows[index])
+    refusals = refusals + verifier_row_edit_refusals(result.rows[index])
     sample = sample + 1
   }
   return RepairAggregate {
@@ -5711,7 +5885,24 @@ fn verifier_variant_repair_aggregate(
     // is not a reproducible recovery.
     paired: every && sample_count > 0,
     editset: editset,
+    refusals: refusals,
   }
+}
+
+// The refusal counter exists only for a corpus whose adapter persists `edit_refusal`, on the rule
+// `verifier_result_uses_repair_adapter` already applies one level down: presence follows the
+// corpus's adapter rather than the container's version, so the three merged chains below version 3
+// keep validating with the member absent.
+fn verifier_result_uses_template_adapter(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  mut index := 0
+  loop {
+    if index >= result.tasks.len() { break }
+    if verifier_task_expects_measurement_version_three(result.tasks[index]) { return true }
+    index = index + 1
+  }
+  return false
 }
 
 fn verifier_optional_i64_is(value: Option<i64>, expected: i64) -> bool {
@@ -5735,6 +5926,8 @@ fn verifier_task_repair_aggregate_matches(
     verifier_optional_i64_absent(persisted.candidate_repair_recovery_count) &&
     verifier_optional_i64_absent(persisted.parent_repair_editset_attempt_count) &&
     verifier_optional_i64_absent(persisted.candidate_repair_editset_attempt_count) &&
+    verifier_optional_i64_absent(persisted.parent_edit_refusal_count) &&
+    verifier_optional_i64_absent(persisted.candidate_edit_refusal_count) &&
     match persisted.repair_recovery_paired { None => true, Some(_) => false }
   }
   parent := verifier_variant_repair_aggregate(result, ordinal, true)
@@ -5746,7 +5939,14 @@ fn verifier_task_repair_aggregate_matches(
     verifier_optional_i64_absent(persisted.parent_repair_editset_attempt_count) &&
     verifier_optional_i64_absent(persisted.candidate_repair_editset_attempt_count)
   }
-  return editset_valid &&
+  refusal_valid := if verifier_result_uses_template_adapter(result) {
+    verifier_optional_i64_is(persisted.parent_edit_refusal_count, parent.refusals) &&
+    verifier_optional_i64_is(persisted.candidate_edit_refusal_count, candidate.refusals)
+  } else {
+    verifier_optional_i64_absent(persisted.parent_edit_refusal_count) &&
+    verifier_optional_i64_absent(persisted.candidate_edit_refusal_count)
+  }
+  return editset_valid && refusal_valid &&
   verifier_optional_i64_is(persisted.parent_repair_attempt_count, parent.attempted) &&
   verifier_optional_i64_is(persisted.candidate_repair_attempt_count, candidate.attempted) &&
   verifier_optional_i64_is(persisted.parent_repair_recovery_count, parent.recovered) &&
@@ -5762,12 +5962,14 @@ fn verifier_corpus_repair_aggregate_matches(
     return verifier_optional_i64_absent(persisted.repair_attempt_count) &&
     verifier_optional_i64_absent(persisted.repair_recovery_count) &&
     verifier_optional_i64_absent(persisted.repair_recovery_paired_count) &&
-    verifier_optional_i64_absent(persisted.repair_editset_attempt_count)
+    verifier_optional_i64_absent(persisted.repair_editset_attempt_count) &&
+    verifier_optional_i64_absent(persisted.edit_refusal_count)
   }
   mut attempted := 0
   mut recovered := 0
   mut paired := 0
   mut editset := 0
+  mut refusals := 0
   mut task := 0
   loop {
     if task >= result.tasks.len() { break }
@@ -5776,6 +5978,7 @@ fn verifier_corpus_repair_aggregate_matches(
     attempted = attempted + parent.attempted + candidate.attempted
     recovered = recovered + parent.recovered + candidate.recovered
     editset = editset + parent.editset + candidate.editset
+    refusals = refusals + parent.refusals + candidate.refusals
     if parent.paired { paired = paired + 1 }
     if candidate.paired { paired = paired + 1 }
     task = task + 1
@@ -5787,7 +5990,14 @@ fn verifier_corpus_repair_aggregate_matches(
   } else {
     verifier_optional_i64_absent(persisted.repair_editset_attempt_count)
   }
-  return editset_valid &&
+  // C4-REPAIR-TEMPLATE's pre-committed secondary, recomputed here and never trusted from the
+  // persisted document, exactly as the four quantities beside it are.
+  refusal_valid := if verifier_result_uses_template_adapter(result) {
+    verifier_optional_i64_is(persisted.edit_refusal_count, refusals)
+  } else {
+    verifier_optional_i64_absent(persisted.edit_refusal_count)
+  }
+  return editset_valid && refusal_valid &&
   verifier_optional_i64_is(persisted.repair_attempt_count, attempted) &&
   verifier_optional_i64_is(persisted.repair_recovery_count, recovered) &&
   verifier_optional_i64_is(persisted.repair_recovery_paired_count, paired)

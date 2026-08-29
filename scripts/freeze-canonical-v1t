@@ -1,0 +1,605 @@
+#!/usr/bin/env python3
+"""Mint the frozen `eval/prompt/canonical-v1t/` + `eval/tasks/prompt-v1t/` corpus scope.
+
+`docs/specs/c4-repair-template.md` section 3.6 owns this contract. A fourth freeze is the only
+shape available, for the reason the third one was:
+
+- `eval/prompt/canonical-v1e/` cannot be extended. `eval/prompt/c4-editset-gate/` was measured
+  against that corpus's exact `corpus_revision.source_sha256`, so editing any member — and
+  `scripts/prompt-repair-adapter.py` is now one of them — costs the merged C4-REPAIR-EDITSET
+  evidence exactly as editing `canonical-v1r` costs C4-REPAIR-MEASURED's.
+- There is no in-place option even in principle. A `prompt-v1t` task must name a different `argv`,
+  a different `measurement_adapter_runtime`, and a different `task_prompt_path`, which changes its
+  own `content_sha256`, which changes the file-set manifest, which changes the corpus source
+  digest.
+
+Nothing under `eval/prompt/canonical-v1{,r,e}/`, `eval/prompt/gate/`, `eval/prompt/c4-repair-gate/`,
+`eval/prompt/c4-editset-gate/`, or `eval/tasks/prompt-v1{,r,e}/` is read for anything but its bytes,
+and nothing under them is written. The members this corpus shares with the three earlier ones
+appear in their manifests with the **same digests** — that identity is the machine-checkable
+statement that this capability moved neither adapter, nor the validation runner, nor a fixture, nor
+a task definition.
+
+Re-running this script against an unchanged tree must reproduce every output byte for byte. That is
+the freeze's reproducibility property, and `--check` asserts it without writing.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import stat
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+SOURCE_SCOPE = ROOT / "eval/prompt/canonical-v1e"
+SOURCE_TASKS = ROOT / "eval/tasks/prompt-v1e"
+BASE_TASKS = ROOT / "eval/tasks/prompt-v1"
+TARGET_SCOPE = ROOT / "eval/prompt/canonical-v1t"
+TARGET_TASKS = ROOT / "eval/tasks/prompt-v1t"
+TASK_IDS = (
+    "duration-half-away-from-zero",
+    "layer-precedence-frozen-module",
+    "record-codec-round-trip",
+)
+# Section 4.4: `POLICY` sits immediately after `STATUS` — the verdict, then the rules the answer
+# must satisfy, then what the previous answer was, then why it failed. The four earlier kinds keep
+# their relative order, so a version-3 prompt with `POLICY` and `EDITSET` absent has the same
+# section sequence as a `canonical-v1r` prompt and all three runs stay comparable.
+REPAIR_SECTION_KINDS = ("STATUS", "POLICY", "EDITSET", "SUMMARY", "STDOUT", "STDERR")
+BASE_ADAPTER_RELATIVE = "scripts/prompt-measurement-adapter.py"
+REPAIR_ADAPTER_RELATIVE = "scripts/prompt-repair-adapter.py"
+TEMPLATE_ADAPTER_RELATIVE = "scripts/prompt-template-adapter.py"
+# Section 3.2's pins on the two loaded files, asserted here against every earlier manifest and
+# against each file's own bytes, so a disagreement is caught at freeze time rather than at ladder
+# rows 3 and 4 during a run. Neither constant is retyped: the base adapter's is read out of the
+# repair adapter, which owns it, and the repair adapter's out of the template adapter.
+MAXIMUM_FILE_BLOCKS = 32
+MAXIMUM_EDIT_BYTES = 262_144
+
+
+def canonical_chunks(value: Any):
+    if isinstance(value, dict):
+        yield b"{"
+        first = True
+        for key, child in value.items():
+            if child is None:
+                continue
+            if not first:
+                yield b","
+            first = False
+            yield from canonical_chunks(key)
+            yield b":"
+            yield from canonical_chunks(child)
+        yield b"}"
+        return
+    if isinstance(value, list):
+        yield b"["
+        for ordinal, child in enumerate(value):
+            if ordinal:
+                yield b","
+            yield from canonical_chunks(child)
+        yield b"]"
+        return
+    yield json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def bind(value: dict[str, Any]) -> dict[str, Any]:
+    """Set a record's own digest over its canonical preimage, with only that field blanked."""
+    value["content_sha256"] = ""
+    value["content_sha256"] = hashlib.sha256(b"".join(canonical_chunks(value))).hexdigest()
+    return value
+
+
+def raw_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def file_expectation(relative: str) -> str:
+    """The snapshot-expectation digest, which is not the file's raw digest.
+
+    It covers the mode and the repository-relative path as well as the content, so a file that
+    moves or changes permissions fails its expectation even when its bytes are unchanged.
+    """
+    path = ROOT / relative
+    metadata = path.stat()
+    mode = f"{stat.S_IFMT(metadata.st_mode) | stat.S_IMODE(metadata.st_mode):06o}"
+    raw = f"{mode} {relative}".encode("utf-8") + b"\0F " + raw_digest(path).encode("ascii") + b"\n"
+    return hashlib.sha256(raw).hexdigest()
+
+
+def document(value: Any) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def file_set_manifest(paths: list[str]) -> bytes:
+    """The `ALIGN-LLM-CORPUS-FILE-SET-V1` framing `scripts/prompt-source-verifier.py` parses."""
+    records = []
+    for relative in sorted(paths):
+        path = ROOT / relative
+        metadata = path.stat()
+        mode = stat.S_IFMT(metadata.st_mode) | stat.S_IMODE(metadata.st_mode)
+        raw_path = relative.encode("utf-8")
+        records.append(
+            f"{mode:o} {len(raw_path)} ".encode("utf-8") + raw_path + b"\0F "
+            + raw_digest(path).encode("ascii") + b"\n"
+        )
+    return (
+        b"ALIGN-LLM-CORPUS-FILE-SET-V1\n"
+        + str(len(records)).encode("ascii") + b"\n"
+        + b"".join(records)
+    )
+
+
+def parse_manifest(raw: bytes) -> dict[str, str]:
+    """Read an existing manifest's members as `path -> digest`, so nothing here is typed by hand."""
+    lines = raw.split(b"\n")
+    if lines[0] != b"ALIGN-LLM-CORPUS-FILE-SET-V1":
+        raise ValueError("the source manifest header is invalid")
+    members: dict[str, str] = {}
+    for line in lines[2:]:
+        if not line:
+            continue
+        head, _, tail = line.partition(b"\0")
+        _, _, rest = head.partition(b" ")
+        length, _, path = rest.partition(b" ")
+        if len(path) != int(length):
+            raise ValueError("a source manifest entry length disagrees with its path")
+        members[path.decode("utf-8")] = tail.split(b" ")[1].decode("ascii")
+    return members
+
+
+def declared_constant(relative: str, name: str) -> str:
+    """Read a hard-coded digest constant out of the file that owns it, never retype it here."""
+    for line in (ROOT / relative).read_text(encoding="utf-8").split("\n"):
+        if line.startswith(f'{name} = "'):
+            return line.split('"')[1]
+    raise ValueError(f"{relative} declares no {name}")
+
+
+def assert_loaded_adapters_unmoved() -> tuple[str, str]:
+    """Ladder rows 3 and 4's pins, checked as one set before anything is minted.
+
+    Both loaded files appearing here at their unchanged digests is not bookkeeping: it is the
+    machine-checkable form of this capability's central promise. The base adapter's constant lives
+    in the repair adapter and the repair adapter's lives in the template adapter, so each value has
+    exactly one owner and a second literal cannot drift from it.
+    """
+    base = declared_constant(REPAIR_ADAPTER_RELATIVE, "BASE_ADAPTER_SHA256")
+    repair = declared_constant(TEMPLATE_ADAPTER_RELATIVE, "REPAIR_ADAPTER_SHA256")
+    for relative, expected in (
+        (BASE_ADAPTER_RELATIVE, base), (REPAIR_ADAPTER_RELATIVE, repair),
+    ):
+        observed = raw_digest(ROOT / relative)
+        if observed != expected:
+            raise ValueError(f"{relative} moved: expected {expected}, read {observed}")
+    for scope, relative, expected in (
+        ("canonical-v1", BASE_ADAPTER_RELATIVE, base),
+        ("canonical-v1r", BASE_ADAPTER_RELATIVE, base),
+        ("canonical-v1e", BASE_ADAPTER_RELATIVE, base),
+        ("canonical-v1e", REPAIR_ADAPTER_RELATIVE, repair),
+    ):
+        members = parse_manifest(
+            (ROOT / f"eval/prompt/{scope}/corpus-file-set.manifest").read_bytes()
+        )
+        if members.get(relative) != expected:
+            raise ValueError(f"{scope}'s manifest names another {relative} digest")
+    return base, repair
+
+
+# --- The version-3 sealed template ---------------------------------------------------------------
+#
+# Three changes to `canonical-v1e`'s text, each argued in section 4.2 from the measured evidence
+# and nothing else.
+#
+# (a) The unchanged-file refusal is stated, because it is stated nowhere today. Ten of twenty-two
+#     ran attempts across two gate runs were refused for exactly this and no prompt in the
+#     repository has ever mentioned it. It is the single highest-value sentence in the capability.
+# (b) The format requirement is restated between the preamble and the sections, with a worked
+#     example in the exact grammar `parse_file_blocks` accepts. `closing_text` already lands after
+#     every section, so what was missing was a restatement *before* them.
+# (c) The `POLICY` header names the section as binding rules rather than advice.
+#
+# The paragraph stating that the previous answer was rejected by the repository's own validation is
+# kept **verbatim**, including "Do not return them unchanged", even though section 1.2 shows that
+# sentence backfiring on two rows that returned the pinned file instead of their own answer.
+# Removing it would change two things at once and make the run uninterpretable; change (a) is its
+# missing half.
+REPAIR_PREAMBLE = (
+    "--- previous attempt failed the repository's own validation ---\n"
+    "Your previous answer for this task was applied to a pristine checkout of the repository and\n"
+    "the declared validation command still did not exit zero. The status labels, your own edits,\n"
+    "and the captured validation output from that attempt follow.\n"
+    "\n"
+    "The blocks below are the exact text you emitted last time, in the same format your answer\n"
+    "must use. They were applied and they were rejected by the repository's own validation. Do not\n"
+    "return them unchanged.\n"
+    "\n"
+    "Produce a corrected answer now. Requirements, unchanged from the task above:\n"
+    "- Return whole-file blocks, never a diff. For every file you change, emit one\n"
+    "  `FILE: <repo-relative-path>` line followed by a fenced block holding that file's complete\n"
+    "  new content. Text outside those blocks is ignored.\n"
+    "- Change only the files the task prompt declares editable.\n"
+    "- Your answer must actually change something. A `FILE:` block whose content is identical to\n"
+    "  that file's current content is refused before the tests run, and an answer whose blocks are\n"
+    "  all identical to the current files is not an answer.\n"
+    "- Never change, weaken, delete, or skip a test.\n"
+    "- Make the smallest change that makes the validation command exit zero.\n"
+    "\n"
+    "One block looks exactly like this:\n"
+    "\n"
+    "FILE: path/to/file.py\n"
+    "```\n"
+    "<the entire new content of that file, from its first line to its last>\n"
+    "```\n"
+    "\n"
+    "Read the diagnostics below before you answer. They are the actual output of the actual\n"
+    "validation run, not a description of it."
+)
+REPAIR_CLOSING = (
+    "--- answer format, repeated ---\n"
+    "Emit one `FILE: <repo-relative-path>` line per edited file, each followed by a fenced block\n"
+    "holding that file's complete new content. Emit nothing else."
+)
+REPAIR_HEADERS = {
+    "STATUS": "--- previous attempt: validation status ---",
+    "POLICY": "--- edit policy: what your answer must satisfy ---",
+    "EDITSET": "--- previous attempt: your rejected answer, as you wrote it ---",
+    "SUMMARY": "--- previous attempt: diagnostic summary ---",
+    "STDOUT": "--- previous attempt: validation stdout ---",
+    "STDERR": "--- previous attempt: validation stderr ---",
+}
+
+# --- The version-3 task prompts --------------------------------------------------------------
+#
+# Section 4.3. Attempt 1 changes, identically for both variants, because six of the ten refusals
+# are attempt-1 refusals and time to a passing patch is the primary metric. `render()` takes the
+# task prompt independently of the variant, so the delta reaches PARENT and CANDIDATE alike and the
+# C6 contrast is the same contrast it was in three prior runs.
+TASK_PROMPT_ANCHOR = "- Emit one block per changed file. Text outside the blocks is ignored.\n"
+TASK_PROMPT_ADDITION = (
+    "- The block body must differ from that file's current content, shown above. An\n"
+    "  answer whose blocks reproduce the current files byte-for-byte is refused\n"
+    "  before the tests run.\n"
+    f"- At most {MAXIMUM_FILE_BLOCKS} blocks, and at most {MAXIMUM_EDIT_BYTES} bytes in any one"
+    " block.\n"
+)
+
+
+def build_task_prompt(task_id: str) -> dict[str, Any]:
+    """`prompt-v1`'s task prompt, plus the two rules and the worked example, and nothing else."""
+    source = json.loads(
+        (BASE_TASKS / task_id / "task-prompt.json").read_text(encoding="utf-8")
+    )
+    definition = json.loads((BASE_TASKS / task_id / "task.json").read_text(encoding="utf-8"))
+    text = source["text"]
+    if text.count(TASK_PROMPT_ANCHOR) != 1:
+        raise ValueError(f"{task_id}'s task prompt does not carry exactly one rules anchor")
+    # The example's path is the task's own first editable path and its body is a placeholder, so
+    # the example can be read as a shape and cannot be copied as an answer.
+    editable = definition["allowed_edits"][0]
+    example = (
+        "\nWorked example, for this task:\n"
+        "\n"
+        f"FILE: {editable}\n"
+        "```\n"
+        f"<the entire new content of {editable}, from its first line to its last>\n"
+        "```\n"
+    )
+    replaced = text.replace(
+        TASK_PROMPT_ANCHOR, TASK_PROMPT_ANCHOR + TASK_PROMPT_ADDITION + example, 1,
+    )
+    value = dict(source)
+    value["artifact_id"] = f"{task_id}/task-prompt-v1t"
+    value["text"] = replaced
+    return bind(value)
+
+
+def build_repair_template() -> dict[str, Any]:
+    return bind({
+        "schema_version": 1,
+        "artifact_kind": "REPAIR_PROMPT_TEMPLATE",
+        "template_id": "prompt-v1t-repair-v1",
+        "preamble_text": REPAIR_PREAMBLE,
+        "section_headers": {kind: REPAIR_HEADERS[kind] for kind in REPAIR_SECTION_KINDS},
+        "closing_text": REPAIR_CLOSING,
+        "content_sha256": "",
+    })
+
+
+def build_edit_policy() -> dict[str, Any]:
+    """Section 3.4. Declaring today's constants changes no behaviour; it makes an emergent property
+    a checked contract and gives the `POLICY` renderer one validated source. The evaluator refuses a
+    value differing from its own constants before any provider call, so this is not a knob.
+    """
+    return bind({
+        "schema_version": 1,
+        "artifact_kind": "EDIT_POLICY",
+        "maximum_file_blocks": MAXIMUM_FILE_BLOCKS,
+        "maximum_edit_bytes": MAXIMUM_EDIT_BYTES,
+        "refuse_unchanged_files": True,
+        "content_sha256": "",
+    })
+
+
+def build_generation_policy(provider_service_revision: str) -> dict[str, Any]:
+    source = json.loads((SOURCE_SCOPE / "generation-policy.json").read_text(encoding="utf-8"))
+    value = dict(source)
+    value["generation_policy_id"] = "prompt-v1t-generation-v1"
+    # Section 3.7, restated because it is easy to get wrong: the provider service revision is
+    # re-derived at freeze time and never inherited. Copying the string forward would persist a
+    # false claim about which service answered.
+    value["provider_service_revision"] = provider_service_revision
+    return bind(value)
+
+
+def build_task(
+    task_id: str, template_relative: str, template_digest: str, adapter_runtime: str,
+    prompt_relative: str,
+) -> dict[str, Any]:
+    """`prompt-v1e`'s manifest, differing only in the adapter, the assets, and the edit policy."""
+    source = json.loads((SOURCE_TASKS / f"{task_id}.json").read_text(encoding="utf-8"))
+    value = dict(source)
+    value["argv"] = [source["cmd"], TEMPLATE_ADAPTER_RELATIVE]
+    value["measurement_adapter_runtime"] = adapter_runtime
+    value["task_prompt_path"] = prompt_relative
+    value["generation_policy_path"] = "eval/prompt/canonical-v1t/generation-policy.json"
+    value["repair_template_path"] = template_relative
+    value["repair_template_sha256"] = template_digest
+    # `edit_policy` is declared immediately before `content_sha256`, and the canonical preimage is
+    # the dict's own iteration order, so it is *inserted* there rather than appended: appending it
+    # after `content_sha256` produces a document the evaluator's declared-order shape check rejects
+    # and a digest over the wrong preimage. Both were caught by driving the real validator against
+    # this file rather than by restating its rule in a test.
+    tail = value.pop("content_sha256")
+    value["edit_policy"] = build_edit_policy()
+    value["content_sha256"] = tail
+    # Ladder rows 5 and 13: the task declares **all three** adapters and its own task prompt, so
+    # the snapshot helper verifies every one before and after each invocation. Both earlier
+    # adapters' entries stay exactly where they were.
+    dropped = {
+        "eval/prompt/canonical-v1e/repair-template.json",
+        f"eval/tasks/prompt-v1/{task_id}/task-prompt.json",
+    }
+    artifacts = [dict(item) for item in value["artifacts"] if item["path"] not in dropped]
+    for relative in (TEMPLATE_ADAPTER_RELATIVE, template_relative, prompt_relative):
+        artifacts.append({
+            "path": relative,
+            "kind": "FILE",
+            "expected_sha256": file_expectation(relative),
+        })
+    value["artifacts"] = artifacts
+    return bind(value)
+
+
+def build_corpus(manifest_digest: str) -> dict[str, Any]:
+    revision = bind({
+        "schema_version": 1,
+        "artifact_kind": "CORPUS_REVISION",
+        "source_kind": "FILE_SET",
+        "source_repository_id": "",
+        "source_sha256": manifest_digest,
+        "content_sha256": "",
+    })
+    return bind({
+        "schema_version": 1,
+        "artifact_kind": "PROMPT_EVALUATION_CORPUS",
+        "corpus_id": "prompt-v1t",
+        "corpus_revision": revision,
+        "task_files": [f"eval/tasks/prompt-v1t/{task_id}.json" for task_id in TASK_IDS],
+        "content_sha256": "",
+    })
+
+
+def build_scope(revision: dict[str, Any], generation_policy_digest: str) -> dict[str, Any]:
+    source = json.loads((SOURCE_SCOPE / "scope.json").read_text(encoding="utf-8"))
+    value = dict(source)
+    value["corpus_id"] = "prompt-v1t"
+    value["corpus_revision"] = revision
+    value["generation_policy_sha256"] = generation_policy_digest
+    value["align_revision"] = (ROOT / ".align-revision").read_text().strip()
+    # `acceptance_policy_sha256`, `base_prompt_sha256`, and `repo_prompt_sha256` are identical to
+    # `canonical-v1e`'s and therefore to `canonical-v1`'s. That the base and repo prompts do not
+    # move is load bearing: they are what distinguishes PARENT from CANDIDATE, so leaving them
+    # untouched is what keeps the C6 contrast the same contrast it was in three prior runs.
+    return bind(value)
+
+
+def build_baseline(scope: dict[str, Any]) -> dict[str, Any]:
+    source = json.loads(
+        (SOURCE_SCOPE / "prompt-activation-baseline-v1e.json").read_text(encoding="utf-8")
+    )
+    value = dict(source)
+    value["decision_id"] = "baseline-v1t"
+    activation = dict(value["activation"])
+    activation["activation_id"] = "baseline-v1t/activation"
+    activation["scope"] = scope
+    # The effective variant is byte-identical to `baseline-v1e`'s, `baseline-v1r`'s, and
+    # `baseline-v1`'s, so all four corpora share one parent prompt.
+    value["activation"] = bind(activation)
+    return bind(value)
+
+
+README = """# `eval/prompt/canonical-v1t/` — the C4-REPAIR-TEMPLATE corpus scope
+
+Frozen. `docs/specs/c4-repair-template.md` is the authoritative plan; this directory is the scope
+that plan measures against, and it is never edited after a measurement has run against it.
+
+## Why it exists
+
+Read both prior gate runs' evidence and the largest failure class is not what three design
+documents said it was. Every `failure_kind: PATCH` row carries `diagnostic_summary: "the response
+reproduced the pinned files unchanged"` — `synthesized_patch`'s refusal, raised *after*
+`parse_file_blocks` returned terminated blocks and *after* `validated_edit_set` accepted every
+declared path. No attempt in forty-four provider calls has ever failed to parse. Ten of twenty-two
+ran attempts in each run were refused by the edit policy: eight for reproducing the pinned files
+unchanged and two for naming a path outside the editable set. **The rule the model actually broke
+is stated in no prompt in this repository.**
+
+Stating it changes the task prompt and the repair template, both of which are corpus members, and
+adds a third measurement adapter, which is also one. `canonical-v1e` cannot be extended:
+`eval/prompt/c4-editset-gate/` was measured against its exact scope digest.
+
+## What is new, and it is only this
+
+- `scripts/prompt-template-adapter.py` — the third measurement adapter and the second hop of an
+  import chain. It **loads `scripts/prompt-repair-adapter.py` by path**, over bytes it verified
+  against a hard-coded digest, and reaches the frozen base adapter through *that* module's
+  accessor, so exactly one frozen module object exists per process. It emits `TASK_MEASUREMENT` at
+  `schema_version: 3` with a ten-code `edit_refusal`, the completion's bounded identity, a
+  conditional bounded completion excerpt, and — the point of the capability — the edit set on the
+  reproduced-unchanged refusal, which the repair adapter builds one line before the raise and then
+  discards. It reports **its own** runtime identity.
+- `eval/tasks/prompt-v1t/<task>/task-prompt.json` — `prompt-v1`'s three task prompts plus two
+  rules and a worked example. **Attempt 1 changes**, identically for both variants: six of the ten
+  refusals are attempt-1 refusals, and `render()` takes the task prompt independently of the
+  variant, so the C6 PARENT/CANDIDATE contrast is preserved.
+- `eval/tasks/prompt-v1t/*.json` — `prompt-v1e`'s three manifests with `cmd`/`argv` naming the
+  template adapter, `measurement_adapter_runtime` at its digest, the three paths pointing here, an
+  added `edit_policy` record, and all three adapters plus the new task prompt in `artifacts`.
+- `repair-template.json` — the sealed `REPAIR_PROMPT_TEMPLATE` with a sixth section kind,
+  `POLICY`, rendered per task from the digest-pinned task definition and the declared policy, and
+  **never dropped**. The preamble states the unchanged-file refusal and carries a worked example.
+- `generation-policy.json` — `canonical-v1e`'s policy with a new id and the **observed** provider
+  service revision, re-derived at freeze time and never inherited. `max_prompt_bytes`,
+  `max_tokens`, `temperature_micros: 0`, `seed_mode: PAIRED_FIXED`, and `seed_base` do not move.
+
+## What is reused by digest, and is proved unmoved
+
+The 22 members this corpus carries from `canonical-v1e` appear there at the **same digests**:
+`eval/runners/run-coding-task.py`, all four scripts including both earlier adapters, every
+`eval/fixtures/prompt-v1-*/repository/` file, and every `eval/tasks/prompt-v1/<task>/task.json` and
+`context-sources.json`. Twenty-one of them carry identical digests in all four manifests;
+`scripts/prompt-repair-adapter.py` is shared with `canonical-v1e` only, because it did not exist
+before that freeze. `scripts/freeze-canonical-v1t` asserts both loaded adapters' digests against
+every earlier manifest and against the constants that own them before it mints anything.
+
+The three `eval/tasks/prompt-v1/<task>/task-prompt.json` files are **not** members here: this
+corpus reads its own. They are unmodified and remain members of the three earlier manifests.
+
+`eval/prompt/canonical-v1/base-prompt.json`, `repo-prompt.json`,
+`evaluation-provider-control.json`, `prompt-acceptance-policy.json`, and
+`eval/prompt/gate/environment-policy.json` are reused by path, unmodified. The acceptance policy in
+particular is **not** relaxed: if the run records a repair-loop regression, that is the measured
+result.
+
+## Regenerating
+
+`scripts/freeze-canonical-v1t --provider-service-revision <revision>` writes every file here and
+under `eval/tasks/prompt-v1t/`. `--check` asserts the tree already matches without writing. The
+digest cascade — template-adapter bytes to the task manifests to the file-set manifest to its raw
+digest to the corpus revision to the scope to the baseline activation — is regenerated as a whole.
+Do not repair one digest in isolation.
+"""
+
+
+def build(provider_service_revision: str) -> dict[str, bytes]:
+    assert_loaded_adapters_unmoved()
+    outputs: dict[str, bytes] = {}
+
+    template_relative = "eval/prompt/canonical-v1t/repair-template.json"
+    policy_relative = "eval/prompt/canonical-v1t/generation-policy.json"
+    outputs[template_relative] = document(build_repair_template())
+    outputs[policy_relative] = document(build_generation_policy(provider_service_revision))
+    prompt_relatives = {
+        task_id: f"eval/tasks/prompt-v1t/{task_id}/task-prompt.json" for task_id in TASK_IDS
+    }
+    for task_id in TASK_IDS:
+        outputs[prompt_relatives[task_id]] = document(build_task_prompt(task_id))
+    # The task manifests pin the template, the policy, and their own task prompt by digest, so all
+    # five must exist on disk before the manifests that name them are derived.
+    write(outputs, only=(template_relative, policy_relative, *prompt_relatives.values()))
+
+    template_digest = raw_digest(ROOT / template_relative)
+    adapter_runtime = "PYTHON:" + raw_digest(ROOT / TEMPLATE_ADAPTER_RELATIVE)
+    for task_id in TASK_IDS:
+        relative = f"eval/tasks/prompt-v1t/{task_id}.json"
+        outputs[relative] = document(build_task(
+            task_id, template_relative, template_digest, adapter_runtime,
+            prompt_relatives[task_id],
+        ))
+    write(outputs, only=tuple(f"eval/tasks/prompt-v1t/{task_id}.json" for task_id in TASK_IDS))
+
+    carried = [
+        path for path in parse_manifest(
+            (SOURCE_SCOPE / "corpus-file-set.manifest").read_bytes()
+        )
+        if not path.startswith("eval/tasks/prompt-v1e/")
+        and not path.startswith("eval/prompt/canonical-v1e/")
+        # This corpus reads its own task prompts, so `prompt-v1`'s are not members of it. They are
+        # unmodified and stay members of the three earlier manifests.
+        and not path.endswith("/task-prompt.json")
+    ]
+    members = carried + [
+        TEMPLATE_ADAPTER_RELATIVE, template_relative, policy_relative,
+        *prompt_relatives.values(),
+        *(f"eval/tasks/prompt-v1t/{task_id}.json" for task_id in TASK_IDS),
+    ]
+    if len(carried) != 22 or len(members) != 31:
+        raise ValueError(
+            f"the file set must carry 22 members and declare 31, derived {len(carried)}/{len(members)}"
+        )
+    manifest_relative = "eval/prompt/canonical-v1t/corpus-file-set.manifest"
+    manifest = file_set_manifest(members)
+    outputs[manifest_relative] = manifest
+    write(outputs, only=(manifest_relative,))
+
+    corpus = build_corpus(hashlib.sha256(manifest).hexdigest())
+    scope = build_scope(
+        corpus["corpus_revision"],
+        json.loads(outputs[policy_relative].decode("utf-8"))["content_sha256"],
+    )
+    outputs["eval/prompt/canonical-v1t/corpus.json"] = document(corpus)
+    outputs["eval/prompt/canonical-v1t/scope.json"] = document(scope)
+    outputs["eval/prompt/canonical-v1t/prompt-activation-baseline-v1t.json"] = document(
+        build_baseline(scope)
+    )
+    outputs["eval/prompt/canonical-v1t/README.md"] = README.encode("utf-8")
+    return outputs
+
+
+def write(outputs: dict[str, bytes], only: tuple[str, ...] | None = None) -> None:
+    for relative, raw in outputs.items():
+        if only is not None and relative not in only:
+            continue
+        path = ROOT / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists() or path.read_bytes() != raw:
+            path.write_bytes(raw)
+
+
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--provider-service-revision", required=True)
+    parser.add_argument(
+        "--check", action="store_true",
+        help="assert the frozen tree already matches, and write nothing",
+    )
+    return parser.parse_args(arguments)
+
+
+def main(arguments: list[str] | None = None) -> int:
+    values = parse_arguments(sys.argv[1:] if arguments is None else arguments)
+    if values.check:
+        outputs = build(values.provider_service_revision)
+        drifted = [
+            relative for relative, raw in outputs.items()
+            if not (ROOT / relative).exists() or (ROOT / relative).read_bytes() != raw
+        ]
+        if drifted:
+            for relative in drifted:
+                sys.stderr.write(f"freeze canonical-v1t: DRIFT {relative}\n")
+            return 1
+        sys.stdout.write(f"freeze canonical-v1t: PASS {len(outputs)} frozen files\n")
+        return 0
+    outputs = build(values.provider_service_revision)
+    write(outputs)
+    sys.stdout.write(f"freeze canonical-v1t: WROTE {len(outputs)} files\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

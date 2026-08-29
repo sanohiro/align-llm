@@ -1823,6 +1823,19 @@ attempt 1 included, failed at `PATCH` with `patch_size_bytes: 0` — the model p
 applicable there from the start, and reading the table as if attempt 1 had produced a patch would
 misstate the result.
 
+> **Corrected by `docs/specs/c4-repair-template.md` section 1.2.** "Produced nothing applicable"
+> is right; "produced no parsable `FILE:` block" — the reading this document's prose invited and
+> that three later documents took — is **wrong**. Every `failure_kind: PATCH` row here carries
+> `diagnostic_summary: "the response reproduced the pinned files unchanged"`, which is
+> `synthesized_patch`'s refusal, raised *after* `parse_file_blocks` returned terminated blocks and
+> *after* `validated_edit_set` accepted every declared path. The string
+> `"the response declares no file block"` appears in **zero** rows of this run or of C4E. The model
+> emitted syntactically correct blocks naming allowlisted paths whose bodies were byte-identical to
+> the pinned source. `failure_kind` collapses eight distinct raise sites into one enum value, which
+> is why the distinction was invisible from the field every consumer reads; `TASK_MEASUREMENT`
+> version 3's `edit_refusal` gives each site a code so the mistake cannot be made from the record
+> again.
+
 The two passes are first-shot CANDIDATE passes on `duration-half-away-from-zero`, reproducing C6's
 distribution exactly; they needed no repair and took none. Every one of the other ten rows made its
 repair attempt.
@@ -1873,15 +1886,17 @@ directly verifiable from this evidence, and the claim below is scoped to what is
   `patch_size_bytes: 0` and failed at `PATCH`. The two CANDIDATE repairs came back
   `POLICY_VIOLATION` with `patch_size_bytes: 0`, and the two PARENT repairs failed at `PATCH` with
   an empty patch. **Nothing here is "repeating attempt 1's mistake"** in the record-codec sense:
-  the model produced nothing applicable on either attempt, which is a different failure mode, and
-  more diagnostics are not obviously the missing input for it.
+  the model produced nothing applicable on either attempt — well-formed blocks reproducing the
+  pinned files unchanged, per the correction above — which is a different failure mode, and more
+  diagnostics are not obviously the missing input for it.
 
 So the evidence for section 5.7's tie-breaker is real but **narrower** than the first draft claimed:
 in the one mode where the model does emit an applicable patch, the second attempt's patch has the
 same size and the same observable failure as the first, which is the case where the missing edit
 set is the plausible binding constraint. Option B — a second corpus-member adapter that carries the
 failing edits into the repair prompt — addresses **that** mode. It does not address the
-`layer-precedence-frozen-module` mode, where no patch was produced at all. The deferral in section
+`layer-precedence-frozen-module` mode, where the blocks parsed and were allowlisted but
+reproduced the pinned files unchanged, so no patch was synthesized (see the correction above). The deferral in section
 5.4 should be re-read in that light, and a patch digest should land with it so the next run can
 answer the question directly instead of by inference.
 

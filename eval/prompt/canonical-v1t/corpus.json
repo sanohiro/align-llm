@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "PROMPT_EVALUATION_CORPUS",
+  "corpus_id": "prompt-v1t",
+  "corpus_revision": {
+    "schema_version": 1,
+    "artifact_kind": "CORPUS_REVISION",
+    "source_kind": "FILE_SET",
+    "source_repository_id": "",
+    "source_sha256": "127d4d407d76fc8a39ade4c69e9524c81e5c438ee95b9a10f6dad08a39f02270",
+    "content_sha256": "5c3fa0a7406b1e40abf55775d322bea110c162d4634f6d5802268de380eb5352"
+  },
+  "task_files": [
+    "eval/tasks/prompt-v1t/duration-half-away-from-zero.json",
+    "eval/tasks/prompt-v1t/layer-precedence-frozen-module.json",
+    "eval/tasks/prompt-v1t/record-codec-round-trip.json"
+  ],
+  "content_sha256": "b63c54f01ce0ef9fa6424cb91f3ff3944353dac0c26916b23209a1f7eca774aa"
+}

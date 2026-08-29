@@ -387,7 +387,12 @@ REPAIR_PROMPT_SOURCE_FIELDS = (
 # `canonical-v1r` prompt names only the four earlier kinds, and its relative order does not move,
 # so both corpora's section lists validate against this one ordering.
 REPAIR_SECTION_KINDS = ("STATUS", "EDITSET", "SUMMARY", "STDOUT", "STDERR")
+# C4-REPAIR-TEMPLATE inserts `POLICY` between `STATUS` and `EDITSET`. The four- and five-kind
+# lists are subsequences of this one, so all three corpora's section lists validate against one
+# ordering, exactly as the five-kind list already covered the four-kind one.
+REPAIR_SECTION_KINDS_V3 = ("STATUS", "POLICY", "EDITSET", "SUMMARY", "STDOUT", "STDERR")
 REPAIR_ADAPTER_RELATIVE = "scripts/prompt-repair-adapter.py"
+TEMPLATE_ADAPTER_RELATIVE = "scripts/prompt-template-adapter.py"
 EDIT_SET_BLOCK_FIELDS = (
     "schema_version", "artifact_kind", "path", "body_bytes", "body_sha256", "body_text",
     "content_sha256",
@@ -395,6 +400,16 @@ EDIT_SET_BLOCK_FIELDS = (
 TASK_MEASUREMENT_V2_MEMBERS = (
     "edit_set", "edit_set_total_bytes", "patch_sha256", "base_adapter_runtime_identity",
 )
+TASK_MEASUREMENT_V3_MEMBERS = (
+    "edit_refusal", "completion_bytes", "completion_sha256", "completion_text",
+)
+EDIT_REFUSAL_PATCH_CODES = (
+    "NO_FILE_BLOCK", "HEADER_WITHOUT_BLOCK", "UNTERMINATED_BLOCK", "TOO_MANY_BLOCKS",
+    "DUPLICATE_PATH", "BODY_TOO_LARGE", "UNCHANGED_FILES",
+)
+EDIT_REFUSAL_POLICY_CODES = ("PATH_NOT_EDITABLE", "PATH_ESCAPES_SOURCE")
+EDIT_REFUSAL_CODES = ("NONE",) + EDIT_REFUSAL_PATCH_CODES + EDIT_REFUSAL_POLICY_CODES
+COMPLETION_LIMIT = 32_768
 MAXIMUM_FILE_BLOCKS = 32
 MAXIMUM_EDIT_BYTES = 262_144
 EDIT_SET_LIMIT = 16_384
@@ -431,6 +446,11 @@ AGGREGATE_OPTIONAL = frozenset(
         "parent_repair_editset_attempt_count",
         "candidate_repair_editset_attempt_count",
         "repair_editset_attempt_count",
+        # C4-REPAIR-TEMPLATE's secondary counter is present only for a corpus whose adapter
+        # persists `edit_refusal`, so the three earlier chains legitimately omit it.
+        "parent_edit_refusal_count",
+        "candidate_edit_refusal_count",
+        "edit_refusal_count",
     }
 )
 CORPUS_AGGREGATE_FIELDS = (
@@ -459,6 +479,9 @@ TASK_AGGREGATE_V2_FIELDS = TASK_AGGREGATE_FIELDS + (
     # C4-REPAIR-EDITSET's denominator, per variant.
     "parent_repair_editset_attempt_count",
     "candidate_repair_editset_attempt_count",
+    # C4-REPAIR-TEMPLATE's secondary counter, per variant.
+    "parent_edit_refusal_count",
+    "candidate_edit_refusal_count",
 )
 CORPUS_AGGREGATE_V2_FIELDS = CORPUS_AGGREGATE_FIELDS + (
     # The C4 gate quantity and its two denominators. The gate consumes
@@ -468,6 +491,8 @@ CORPUS_AGGREGATE_V2_FIELDS = CORPUS_AGGREGATE_FIELDS + (
     "repair_recovery_paired_count",
     # Repair attempts whose prompt actually carried `EDITSET`. A denominator, never a gate input.
     "repair_editset_attempt_count",
+    # Ran attempts refused by the edit policy. A pre-committed secondary, never a gate input.
+    "edit_refusal_count",
 )
 ACCEPTANCE_POLICY_FIELDS = (
     "schema_version",
@@ -1617,19 +1642,30 @@ def validate_measurement_version(
 ) -> None:
     """Ladder rows 10 to 17 on one persisted measurement, at whichever version it declares."""
     version = measurement.get("schema_version")
-    if version not in (1, 2):
+    if version not in (1, 2, 3):
         raise GateError(f"{label} declares an unknown measurement version")
-    # Ladder row 11: the version is a checked function of the corpus, not a producer's choice.
+    # Ladder row 16: the version is a checked function of the corpus, not a producer's choice, now
+    # three-way. One reader for the selector, so no rule can disagree about which corpus this is.
     declared = list(task.get("argv") or [])
-    expects_two = len(declared) == 2 and declared[1] == REPAIR_ADAPTER_RELATIVE
-    if (version == 2) != expects_two:
+    adapter = declared[1] if len(declared) == 2 else None
+    expected = (
+        3 if adapter == TEMPLATE_ADAPTER_RELATIVE
+        else 2 if adapter == REPAIR_ADAPTER_RELATIVE else 1
+    )
+    if version != expected:
         raise GateError(f"{label} version disagrees with the adapter its corpus names")
     present = [name for name in TASK_MEASUREMENT_V2_MEMBERS if name in measurement]
+    later = [name for name in TASK_MEASUREMENT_V3_MEMBERS if name in measurement]
+    if version < 3 and later:
+        # Ladder row 15: absence below version 3 is required, never defaulted.
+        raise GateError(f"{label} carries {later[0]} below version 3")
     if version == 1:
         # Ladder row 10: absence at version 1 is required, never defaulted.
         if present:
             raise GateError(f"{label} carries {present[0]} at version 1")
         return
+    if version == 3:
+        validate_measurement_version_three(measurement, label)
     # Ladder row 10 at version 2, read on the **persisted** wire form rather than on the adapter's
     # result file. The two serializations differ and the distinction is load bearing: the adapter
     # writes every key, `null` included, and `scripts/prompt-evaluate.py` holds it to the exact
@@ -1679,6 +1715,55 @@ def validate_measurement_version(
             raise GateError(f"{label} diagnostic summary names another applied-edit list")
 
 
+def validate_measurement_version_three(measurement: Mapping[str, Any], label: str) -> None:
+    """Ladder rows 17 to 20, read on the **persisted wire form** rather than on a key tuple.
+
+    The distinction is load bearing and this is the third capability to meet it: the adapter writes
+    every key, `null` included, and `scripts/prompt-evaluate.py` holds it to the exact 31-key tuple
+    at that boundary; the canonical encoder that produces this document **omits an `Option::None`**,
+    so an absent key here means `None` and is the correct encoding of one. Only `edit_refusal` is
+    unconditionally `Some` at version 3, so only it must be present. `completion_bytes` and
+    `completion_sha256` are present whenever a provider response was received, and `completion_text`
+    is usually absent.
+    """
+    code = measurement.get("edit_refusal")
+    if code not in EDIT_REFUSAL_CODES:
+        raise GateError(f"{label} carries no valid edit refusal code at version 3")
+    if (code in EDIT_REFUSAL_PATCH_CODES) != (measurement["failure_kind"] == "PATCH"):
+        raise GateError(f"{label} refusal class disagrees with its failure kind")
+    if code in EDIT_REFUSAL_PATCH_CODES and measurement["patch_size_bytes"] != 0:
+        raise GateError(f"{label} records a refused patch with a non-zero patch size")
+    if code in EDIT_REFUSAL_POLICY_CODES and (
+        measurement["status"] != "POLICY_VIOLATION" or measurement["failure_kind"] != "POLICY"
+    ):
+        raise GateError(f"{label} records a policy-class refusal that is not a policy violation")
+    # The invariant this capability exists to establish, and the one C4E could not state: the
+    # reproduced-unchanged refusal keeps the blocks its producer built one line before the raise.
+    if code == "UNCHANGED_FILES":
+        if measurement.get("edit_set") is None:
+            raise GateError(f"{label} discarded the blocks its refusal was computed from")
+        if measurement.get("patch_sha256") is not None:
+            raise GateError(f"{label} records a patch digest for an empty synthesized patch")
+    elif code != "NONE" and measurement.get("edit_set") is not None:
+        raise GateError(f"{label} carries an edit set for a refusal that never built one")
+    count = measurement.get("completion_bytes")
+    digest_value = measurement.get("completion_sha256")
+    if (count is None) != (digest_value is None):
+        raise GateError(f"{label} completion identity members disagree on presence")
+    if count is not None:
+        require_integer(count, f"{label} completion bytes", minimum=0, maximum=2_097_152)
+        require_digest(digest_value, f"{label} completion digest")
+    text = measurement.get("completion_text")
+    if text is None:
+        return
+    if code in ("NONE", "UNCHANGED_FILES"):
+        raise GateError(f"{label} persists a completion excerpt where the edit set explains it")
+    if not isinstance(text, str) or len(text.encode("utf-8")) > COMPLETION_LIMIT:
+        raise GateError(f"{label} completion excerpt is not bounded text")
+    if count is None:
+        raise GateError(f"{label} persists a completion excerpt with no completion identity")
+
+
 def validate_measurement_probe(
     measurement: Mapping[str, Any], task: Mapping[str, Any], label: str,
 ) -> None:
@@ -1709,7 +1794,7 @@ def validate_repair_prompt_source(value: Any, policy: Mapping[str, Any], label: 
     for name, sections in (("included", included), ("dropped", dropped)):
         if not isinstance(sections, list):
             raise GateError(f"{label} {name} sections are not a list")
-        ordered = [kind for kind in REPAIR_SECTION_KINDS if kind in sections]
+        ordered = [kind for kind in REPAIR_SECTION_KINDS_V3 if kind in sections]
         if sections != ordered or len(set(sections)) != len(sections):
             raise GateError(f"{label} {name} sections are not the fixed order without repeats")
     if set(included) & set(dropped):
@@ -1718,6 +1803,11 @@ def validate_repair_prompt_source(value: Any, policy: Mapping[str, Any], label: 
     # bounded far below any budget that could force a drop.
     if "STATUS" in dropped:
         raise GateError(f"{label} drops the STATUS section")
+    # `POLICY` joins it, and for a different reason: `STATUS` plus `POLICY` are at most 2,176 bytes
+    # together, so they structurally cannot be why a prompt exceeds its budget. `EDITSET` stays
+    # droppable because up to 32 blocks can blow the budget by themselves.
+    if "POLICY" in dropped:
+        raise GateError(f"{label} drops the POLICY section")
     require_integer(
         source["assembled_bytes"],
         f"{label} assembled bytes",
@@ -1935,6 +2025,25 @@ def row_repair_editset_attempts(row: Mapping[str, Any]) -> int:
     return total
 
 
+def row_edit_refusal_count(row: Mapping[str, Any]) -> int:
+    """C4-REPAIR-TEMPLATE's secondary counter, recomputed and never trusted from the document.
+
+    An attempt contributes when it ran and its `measurement.edit_refusal` is not `NONE`. Only a
+    version-3 measurement defines the quantity, so a row from an earlier corpus contributes nothing
+    and its corpus records the member absent rather than zero.
+    """
+    if row["schema_version"] < 2:
+        return 0
+    total = 0
+    for attempt in row["attempts"]:
+        measurement = attempt.get("measurement")
+        if attempt["status"] == "SKIPPED" or not measurement:
+            continue
+        if measurement.get("edit_refusal") not in (None, "NONE"):
+            total += 1
+    return total
+
+
 def row_repair_attempted(row: Mapping[str, Any]) -> bool:
     return row["schema_version"] >= 2 and row["repair_loop_count"] >= 1
 
@@ -1976,8 +2085,13 @@ def rescore(
     corpus_repair_recoveries = 0
     corpus_repair_recovery_paired = 0
     corpus_repair_editset = 0
+    corpus_edit_refusals = 0
     editset_corpus = any(
-        list(task.get("argv") or [])[1:] == [REPAIR_ADAPTER_RELATIVE] for task in tasks
+        list(task.get("argv") or [])[1:] in ([REPAIR_ADAPTER_RELATIVE], [TEMPLATE_ADAPTER_RELATIVE])
+        for task in tasks
+    )
+    template_corpus = any(
+        list(task.get("argv") or [])[1:] == [TEMPLATE_ADAPTER_RELATIVE] for task in tasks
     )
     parent_passes = 0
     candidate_passes = 0
@@ -2008,6 +2122,8 @@ def rescore(
         task_candidate_passes = sum(row["measurement"]["status"] == "PASS" for row in candidate_rows)
         task_parent_repairs = sum(row_repair_loop_count(row) for row in parent_rows)
         task_candidate_repairs = sum(row_repair_loop_count(row) for row in candidate_rows)
+        parent_refusals = sum(row_edit_refusal_count(row) for row in parent_rows)
+        candidate_refusals = sum(row_edit_refusal_count(row) for row in candidate_rows)
         parent_editset = sum(row_repair_editset_attempts(row) for row in parent_rows)
         candidate_editset = sum(row_repair_editset_attempts(row) for row in candidate_rows)
         parent_attempted = sum(row_repair_attempted(row) for row in parent_rows)
@@ -2063,6 +2179,12 @@ def rescore(
                     "parent_repair_editset_attempt_count": parent_editset,
                     "candidate_repair_editset_attempt_count": candidate_editset,
                 })
+            if template_corpus:
+                aggregate.update({
+                    "parent_edit_refusal_count": parent_refusals,
+                    "candidate_edit_refusal_count": candidate_refusals,
+                })
+            corpus_edit_refusals += parent_refusals + candidate_refusals
             corpus_repair_editset += parent_editset + candidate_editset
             corpus_repair_attempts += parent_attempted + candidate_attempted
             corpus_repair_recoveries += parent_recovered + candidate_recovered
@@ -2108,6 +2230,8 @@ def rescore(
             # note. Requiring it at version 2 unconditionally would reject the merged
             # `eval/prompt/c4-repair-gate/` evidence, which predates this capability.
             corpus["repair_editset_attempt_count"] = corpus_repair_editset
+        if template_corpus:
+            corpus["edit_refusal_count"] = corpus_edit_refusals
 
     def reason(task_id: str, sample: int, code: str, parent: str, candidate: str, limit: str):
         return {

@@ -219,14 +219,16 @@ fn corpus() -> prompt_artifacts.PromptEvaluationCorpus {
 }
 
 fn task() -> prompt_artifacts.PromptEvaluationTask {
-  return task_named(false)
+  return task_named(0)
 }
 
-// The corpus selects the adapter and the adapter selects the measurement version (ladder row 11),
-// so the two task shapes differ in `cmd` and `argv` and in nothing else. Written as one
+// The corpus selects the adapter and the adapter selects the measurement version (ladder row 16),
+// so the three task shapes differ in `cmd` and `argv` and in nothing else. Written as one
 // parameterized literal rather than as a field replacement: the pinned compiler supports owned
-// field replacement only for `string` and `Option<string>` leaves.
-fn task_named(repair: bool) -> prompt_artifacts.PromptEvaluationTask {
+// field replacement only for `string` and `Option<string>` leaves, and `c4-repair-editset.md`
+// section 11.3 deviation 8 records that limitation. `adapter` is 0 for the frozen adapter, 1 for
+// the repair adapter, and 2 for the template adapter.
+fn task_named(adapter: i64) -> prompt_artifacts.PromptEvaluationTask {
   return prompt_artifacts.PromptEvaluationTask {
     schema_version: 1,
     artifact_kind: "PROMPT_EVALUATION_TASK".clone(),
@@ -235,8 +237,14 @@ fn task_named(repair: bool) -> prompt_artifacts.PromptEvaluationTask {
     repo_revision: digest_a(),
     repo_path: "repository".clone(),
     require_clean_repo: true,
-    cmd: if repair { "/usr/bin/python3".clone() } else { "adapter".clone() },
-    argv: if repair { repair_adapter_argv() } else { one_string("adapter") },
+    cmd: if adapter == 0 { "adapter".clone() } else { "/usr/bin/python3".clone() },
+    argv: if adapter == 2 {
+      template_adapter_argv()
+    } else if adapter == 1 {
+      repair_adapter_argv()
+    } else {
+      one_string("adapter")
+    },
     snapshot_cmd: "snapshot".clone(),
     snapshot_argv: one_string("snapshot"),
     measurement_adapter_runtime: "runtime".clone(),
@@ -544,6 +552,10 @@ fn measurement(passing: bool, provider_kind: str, seed: i64) -> prompt_artifacts
     edit_set_total_bytes: None,
     patch_sha256: None,
     base_adapter_runtime_identity: None,
+    edit_refusal: None,
+    completion_bytes: None,
+    completion_sha256: None,
+    completion_text: None,
     content_sha256: digest_a(),
   }
 }
@@ -638,6 +650,8 @@ fn task_aggregate(mode: i64, tamper: bool) -> prompt_artifacts.TaskAggregate {
     repair_recovery_paired: None,
     parent_repair_editset_attempt_count: None,
     candidate_repair_editset_attempt_count: None,
+    parent_edit_refusal_count: None,
+    candidate_edit_refusal_count: None,
   }
 }
 
@@ -661,6 +675,7 @@ fn corpus_aggregate(mode: i64, tamper: bool) -> prompt_artifacts.CorpusAggregate
     repair_recovery_count: None,
     repair_recovery_paired_count: None,
     repair_editset_attempt_count: None,
+    edit_refusal_count: None,
   }
 }
 
@@ -1256,6 +1271,10 @@ fn terminal_measurement() -> prompt_artifacts.TaskMeasurement {
     edit_set_total_bytes: None,
     patch_sha256: None,
     base_adapter_runtime_identity: None,
+    edit_refusal: None,
+    completion_bytes: None,
+    completion_sha256: None,
+    completion_text: None,
     content_sha256: digest_a(),
   }
 }
@@ -1517,6 +1536,10 @@ fn attempt_measurement(passing: bool, window: i64, seed: i64) -> prompt_artifact
     edit_set_total_bytes: None,
     patch_sha256: None,
     base_adapter_runtime_identity: None,
+    edit_refusal: None,
+    completion_bytes: None,
+    completion_sha256: None,
+    completion_text: None,
     content_sha256: if passing { digest_b() } else { digest_c() },
   }
 }
@@ -1743,24 +1766,170 @@ fn repair_adapter_argv() -> array<string> {
 
 // The corpus selects the adapter, and the adapter selects the measurement version (ladder row 11).
 fn task_repair_adapter() -> prompt_artifacts.PromptEvaluationTask {
-  return task_named(true)
+  return task_named(1)
+}
+
+// --- C4-REPAIR-TEMPLATE: version-3 measurements -----------------------------------------------
+// Defect 21 is the ACCEPTANCE case: a corpus naming `scripts/prompt-template-adapter.py` whose
+// every ran attempt carries a version-3 measurement with a refusal code, the completion identity,
+// and the widened `edit_set` rule, and whose two new aggregates are recomputed from the attempts.
+// Defects 22-27 are one rejection each, and each is written so that the rule it names is the only
+// rule that can reject it.
+
+fn template_adapter_argv() -> array<string> {
+  mut values: array_builder<string> := array_builder()
+  values.push("/usr/bin/python3".clone())
+  values.push("scripts/prompt-template-adapter.py".clone())
+  return values.build()
+}
+
+fn task_template_adapter() -> prompt_artifacts.PromptEvaluationTask {
+  return task_named(2)
+}
+
+fn uses_template_adapter(defect: i64) -> bool {
+  // Defect 22 is deliberately a **repair-adapter** corpus: a version-2 measurement carrying a
+  // version-3 member. On a template-adapter corpus the version rule would reject it as well, and
+  // a case with two possible causes proves neither.
+  return defect >= 21 && defect <= 27 && defect != 22
+}
+
+// Defect 23 is a template-adapter corpus emitting a version-2 measurement, so it is the one case
+// where the adapter is the template adapter and the version is still 2.
+fn measurement_is_version_three(defect: i64) -> bool {
+  return uses_template_adapter(defect) && defect != 23
+}
+
+fn base_identity_value() -> string {
+  return "PYTHON:2d3796dbf1159d4a9528a62bbb9af0f36ccc5878b76d83aa65fa0d39cca7b20c".clone()
+}
+
+fn completion_text_value() -> string {
+  return "I would change src/duration.py to divide by sixty.\n".clone()
+}
+
+fn completion_digest_value() -> string {
+  hashed := crypto.sha256("I would change src/duration.py to divide by sixty.\n")
+  return encoding.hex_encode(hashed[0..hashed.len()])
+}
+
+fn completion_byte_count() -> i64 {
+  return "I would change src/duration.py to divide by sixty.\n".bytes().len()
+}
+
+// Defect 25 is the invariant this capability exists to establish, inverted: a reproduced-unchanged
+// refusal that discarded the blocks its producer built one line before the raise. Defect 26 puts a
+// completion excerpt on a code whose `edit_set` already carries the model's own bodies.
+fn measurement_v3(
+  passing: bool, window: i64, seed: i64, defect: i64, runtime: str,
+) -> prompt_artifacts.TaskMeasurement {
+  return prompt_artifacts.TaskMeasurement {
+    schema_version: 3,
+    artifact_kind: "TASK_MEASUREMENT".clone(),
+    status: if passing { "PASS".clone() } else { "FAIL".clone() },
+    failure_kind: if passing {
+      "NONE".clone()
+    } else if defect == 25 {
+      "PATCH".clone()
+    } else {
+      "TEST".clone()
+    },
+    build_status: if defect == 25 && !passing { "NOT_RUN".clone() } else { "PASS".clone() },
+    test_status: if defect == 25 && !passing {
+      "NOT_RUN".clone()
+    } else if passing {
+      "PASS".clone()
+    } else {
+      "FAIL".clone()
+    },
+    repair_loop_count: 0,
+    unrelated_diff_count: 0,
+    patch_size_bytes: if defect == 25 && !passing { 0 } else { 10 },
+    public_api_change_count: 0,
+    policy_violation_count: 0,
+    cleanup_passed: true,
+    containment_passed: true,
+    benchmark_regression_ppm: None,
+    generation_to_passing_patch_ns: if passing { Some(window) } else { None },
+    rendered_prompt_sha256: digest_a(),
+    generation_request: generation_request(seed),
+    environment_probe: probe("MEASUREMENT_ADAPTER", runtime),
+    seed_attestation: seed_attestation("LOCAL_OPENAI", seed),
+    diagnostic_summary: if defect == 25 && !passing {
+      "the response reproduced the pinned files unchanged".clone()
+    } else {
+      "provider-backed candidate patch failed validation".clone()
+    },
+    diagnostic_stdout: "post-repair validation exit code: 1".clone(),
+    diagnostic_stderr: "AssertionError".clone(),
+    // Defect 25 discards the blocks its own refusal was computed from, which the widened rule
+    // rejects and which no version-2 rule could have seen.
+    edit_set: if defect == 25 && !passing { None } else { Some(edit_set_blocks(true)) },
+    edit_set_total_bytes: if defect == 25 && !passing { None } else { Some(body_byte_count()) },
+    patch_sha256: if defect == 25 && !passing { None } else { Some(digest_b()) },
+    base_adapter_runtime_identity: Some(base_identity_value()),
+    // Defect 24 leaves the ten-code vocabulary; defect 25 records the mode this capability exists
+    // to explain. Every other case records `NONE`, which is what an unrefused attempt carries.
+    edit_refusal: if defect == 24 {
+      Some("NO_SUCH_REFUSAL".clone())
+    } else if defect == 25 && !passing {
+      Some("UNCHANGED_FILES".clone())
+    } else {
+      Some("NONE".clone())
+    },
+    completion_bytes: Some(completion_byte_count()),
+    completion_sha256: Some(completion_digest_value()),
+    // Defect 26 persists the excerpt on a code whose edit set already carries the model's bodies.
+    completion_text: if defect == 26 { Some(completion_text_value()) } else { None },
+    content_sha256: if passing { digest_b() } else { digest_c() },
+  }
+}
+
+// Defect 22: a version-2 measurement carrying a version-3 member. Absence below version 3 is
+// required rather than defaulted, so this is rejected by the version-2 shape rule alone.
+fn measurement_v2_with_v3_member(
+  passing: bool, window: i64, seed: i64,
+) -> prompt_artifacts.TaskMeasurement {
+  mut value := measurement_v2(passing, window, seed, 0, "runtime")
+  value.edit_refusal = Some("NONE".clone())
+  return value
+}
+
+// Defect 27: the row-level view differs from its final attempt's measurement in a version-3
+// member and in nothing else. Without those four comparisons `verifier_measurement_equal` would
+// still pass while comparing 27 of 31 fields, so this is the single case that keeps ladder row 26
+// honest at version 3.
+fn template_drifted_measurement(seed: i64, defect: i64) -> prompt_artifacts.TaskMeasurement {
+  mut value := measurement_v3(true, 30, seed, defect, "runtime")
+  value.completion_sha256 = Some(digest_c())
+  return value
 }
 
 fn uses_repair_adapter(defect: i64) -> bool {
-  return defect == 14 || (defect >= 16 && defect <= 20)
+  return defect == 14 || (defect >= 16 && defect <= 20) || defect == 22 ||
+  uses_template_adapter(defect)
 }
 
 // Defect 16 is a repair-adapter corpus emitting a version-1 measurement, so it is the one case
 // where the adapter is the repair adapter and the version is still 1.
 fn measurement_is_version_two(defect: i64) -> bool {
-  return defect == 14 || (defect >= 17 && defect <= 20)
+  return defect == 14 || (defect >= 17 && defect <= 20) || defect == 22
 }
 
 fn editset_attempts(defect: i64) -> i64 {
   // A repair attempt counts only when it ran and its prompt actually carried `EDITSET`. Only the
-  // version-2-measurement defects render it, and defect 20's rows still run their repair attempt.
+  // version-2 and version-3 measurement defects render it, and every one of their rows still runs
+  // its repair attempt.
+  if measurement_is_version_three(defect) || defect == 23 { return 2 }
   if !measurement_is_version_two(defect) { return 0 }
   return 2
+}
+
+// A ran attempt contributes when its measurement records a code other than `NONE`. Only defect 25
+// records one, and it does so on the initial attempt of each of the two rows per variant.
+fn edit_refusals(defect: i64) -> i64 {
+  if defect == 25 { return 2 }
+  return 0
 }
 
 fn body_text_value() -> string {
@@ -1827,6 +1996,10 @@ fn measurement_v2(
     } else {
       Some("PYTHON:2d3796dbf1159d4a9528a62bbb9af0f36ccc5878b76d83aa65fa0d39cca7b20c".clone())
     },
+    edit_refusal: None,
+    completion_bytes: None,
+    completion_sha256: None,
+    completion_text: None,
     content_sha256: if passing { digest_b() } else { digest_c() },
   }
 }
@@ -1848,6 +2021,11 @@ fn measurement_v2_wrong_identity(seed: i64, defect: i64) -> prompt_artifacts.Tas
 
 fn attempt_measurement_for(passing: bool, window: i64, seed: i64, defect: i64) -> prompt_artifacts.TaskMeasurement {
   if defect == 15 { return measurement_v1_with_v2_member(passing, window, seed) }
+  if defect == 22 { return measurement_v2_with_v3_member(passing, window, seed) }
+  if measurement_is_version_three(defect) {
+    return measurement_v3(passing, window, seed, defect, "runtime")
+  }
+  if defect == 23 { return measurement_v2(passing, window, seed, defect, "runtime") }
   if measurement_is_version_two(defect) { return measurement_v2(passing, window, seed, defect, "runtime") }
   return attempt_measurement(passing, window, seed)
 }
@@ -1855,6 +2033,30 @@ fn attempt_measurement_for(passing: bool, window: i64, seed: i64, defect: i64) -
 fn repair_source_v2() -> prompt_artifacts.RepairPromptSource {
   mut included: array_builder<string> := array_builder()
   included.push("STATUS".clone())
+  included.push("EDITSET".clone())
+  included.push("SUMMARY".clone())
+  included.push("STDOUT".clone())
+  mut dropped: array_builder<string> := array_builder()
+  dropped.push("STDERR".clone())
+  return prompt_artifacts.RepairPromptSource {
+    schema_version: 1,
+    artifact_kind: "REPAIR_PROMPT_SOURCE".clone(),
+    template_sha256: digest_a(),
+    source_attempt_index: 1,
+    source_measurement_sha256: digest_c(),
+    included_sections: included.build(),
+    dropped_sections: dropped.build(),
+    assembled_bytes: 4_096,
+    content_sha256: digest_a(),
+  }
+}
+
+// `POLICY` sits between `STATUS` and `EDITSET` and is never dropped, so a version-3 source keeps
+// it at every rung the four-step ladder can reach.
+fn repair_source_v3() -> prompt_artifacts.RepairPromptSource {
+  mut included: array_builder<string> := array_builder()
+  included.push("STATUS".clone())
+  included.push("POLICY".clone())
   included.push("EDITSET".clone())
   included.push("SUMMARY".clone())
   included.push("STDOUT".clone())
@@ -1913,7 +2115,9 @@ fn editset_repair_attempt(seed: i64, defect: i64) -> prompt_artifacts.TaskAttemp
     status: "PASS".clone(),
     skip_reason: "NONE".clone(),
     rendered_prompt_sha256: Some(digest_a()),
-    repair_prompt_source: if measurement_is_version_two(defect) {
+    repair_prompt_source: if measurement_is_version_three(defect) {
+      Some(repair_source_v3())
+    } else if measurement_is_version_two(defect) || defect == 23 {
       Some(repair_source_v2())
     } else {
       Some(repair_source())
@@ -1946,7 +2150,7 @@ fn editset_drifted_measurement(seed: i64, defect: i64) -> prompt_artifacts.TaskM
 }
 
 fn is_editset_defect(defect: i64) -> bool {
-  return defect >= 14 && defect <= 20
+  return (defect >= 14 && defect <= 20) || uses_template_adapter(defect)
 }
 
 fn attempts_for(defect: i64, seed: i64) -> array<prompt_artifacts.TaskAttemptRecord> {
@@ -2040,6 +2244,8 @@ fn row_v2(sample: i64, parent: bool, defect: i64) -> prompt_artifacts.PromptTask
       adapter_repair_measurement(seed)
     } else if defect == 19 {
       editset_drifted_measurement(seed, defect)
+    } else if defect == 27 {
+      template_drifted_measurement(seed, defect)
     } else if is_editset_defect(defect) {
       attempt_measurement_for(true, 30, seed, defect)
     } else {
@@ -2078,6 +2284,8 @@ fn tasks_array_v2(defect: i64) -> array<prompt_artifacts.PromptEvaluationTask> {
     values.push(task_with_repair_cap(2))
   } else if defect == 13 {
     values.push(task_without_repair())
+  } else if uses_template_adapter(defect) {
+    values.push(task_template_adapter())
   } else if uses_repair_adapter(defect) {
     values.push(task_repair_adapter())
   } else {
@@ -2153,6 +2361,18 @@ fn task_aggregate_v2(defect: i64) -> prompt_artifacts.TaskAggregate {
     } else {
       None
     },
+    // Present only for a corpus whose adapter persists `edit_refusal`. Defects 0-20 name an
+    // earlier adapter, so the quantity is undefined for them rather than zero.
+    parent_edit_refusal_count: if uses_template_adapter(defect) {
+      Some(edit_refusals(defect))
+    } else {
+      None
+    },
+    candidate_edit_refusal_count: if uses_template_adapter(defect) {
+      Some(edit_refusals(defect))
+    } else {
+      None
+    },
   }
 }
 
@@ -2183,6 +2403,11 @@ fn corpus_aggregate_v2(defect: i64) -> prompt_artifacts.CorpusAggregate {
     repair_recovery_paired_count: Some(if attempt_recovers(defect) { 2 } else { 0 }),
     repair_editset_attempt_count: if uses_repair_adapter(defect) {
       Some(2 * editset_attempts(defect))
+    } else {
+      None
+    },
+    edit_refusal_count: if uses_template_adapter(defect) {
+      Some(2 * edit_refusals(defect))
     } else {
       None
     },
@@ -2660,6 +2885,54 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   editset_total_drift := complete_result_v2(20)
   editset_total_drift_evidence := evidence_v2(20)
   expect_invalid(editset_total_drift, editset_total_drift_evidence)?
+
+  // --- C4-REPAIR-TEMPLATE -----------------------------------------------------------------------
+
+  // Acceptance: a corpus naming the template adapter, every ran attempt carrying a version-3
+  // measurement with a refusal code, the completion identity, and the widened `edit_set` rule,
+  // with `POLICY` among the sections its repair prompt actually carried. Both new aggregates are
+  // recomputed here from the attempts and must equal the persisted values.
+  template_clean := complete_result_v2(21)
+  template_clean_evidence := evidence_v2(21)
+  if verdict_code(prompt_score.verify_result(template_clean, template_clean_evidence)?) != 2 {
+    return Err(Error.Invalid)
+  }
+
+  // A version-3 member present at version 2. Absence below version 3 is required, never
+  // defaulted — the rule that keeps all three merged chains decodable.
+  v3_member_at_v2 := complete_result_v2(22)
+  v3_member_at_v2_evidence := evidence_v2(22)
+  expect_invalid(v3_member_at_v2, v3_member_at_v2_evidence)?
+
+  // Ladder row 16: a corpus naming the template adapter whose measurements are version 2. The
+  // measurement version is a checked function of the corpus, three ways.
+  v3_version_disagrees := complete_result_v2(23)
+  v3_version_disagrees_evidence := evidence_v2(23)
+  expect_invalid(v3_version_disagrees, v3_version_disagrees_evidence)?
+
+  // Ladder row 17: `edit_refusal` outside the ten-code vocabulary. The producer's mapping is
+  // total, so an unrecognized value means the record and the producer disagree.
+  v3_unknown_refusal := complete_result_v2(24)
+  v3_unknown_refusal_evidence := evidence_v2(24)
+  expect_invalid(v3_unknown_refusal, v3_unknown_refusal_evidence)?
+
+  // The invariant this capability exists to establish: a reproduced-unchanged refusal that
+  // discarded the blocks its producer built one line before the raise.
+  v3_unchanged_no_blocks := complete_result_v2(25)
+  v3_unchanged_no_blocks_evidence := evidence_v2(25)
+  expect_invalid(v3_unchanged_no_blocks, v3_unchanged_no_blocks_evidence)?
+
+  // Ladder row 20: a completion excerpt persisted on a code outside the eight for which no
+  // structured substitute exists.
+  v3_text_unrefused := complete_result_v2(26)
+  v3_text_unrefused_evidence := evidence_v2(26)
+  expect_invalid(v3_text_unrefused, v3_text_unrefused_evidence)?
+
+  // `verifier_measurement_equal` over all 31 fields: the row differs from its final attempt in a
+  // version-3 member and in nothing else.
+  v3_measurement_drift := complete_result_v2(27)
+  v3_measurement_drift_evidence := evidence_v2(27)
+  expect_invalid(v3_measurement_drift, v3_measurement_drift_evidence)?
 
   // A version-2 document may not be paired with version-1 evidence.
   version_split := complete_result_v2(0)

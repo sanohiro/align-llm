@@ -10005,7 +10005,21 @@ Blocked gate or slice: none. C4-REPAIR-MEASURED ships by reading every `Option` 
   frozen-chain rescore over BOTH `eval/prompt/gate/` and `eval/prompt/c4-repair-gate/` — is green.
   The hazard remains latent rather than closed: the two spellings still look interchangeable at the
   call site.
-Independent work that may continue: all of C4-REPAIR-MEASURED and all of C4-REPAIR-EDITSET.
+
+  **C4-REPAIR-TEMPLATE (`docs/specs/c4-repair-template.md`) is the third client, and the first to
+  hit the compiler's diagnostic rather than the silent form.** It adds four more `Option` members to
+  `TaskMeasurement` and one `Option<i64>` to each aggregate. Reading a nested payload's own `Option`
+  field — `match attempt.measurement { Some(measurement) => match measurement.edit_refusal { ... } }`
+  — is rejected at the pinned compiler as `error: cannot move a field out of a borrowed match
+  payload projection`, which is the **good** outcome: on a *borrowed* projection the compiler now
+  says so. The routed-around form is the same one both earlier clients adopted, a helper taking
+  `borrow measurement: prompt_artifacts.TaskMeasurement` with the inner `match` inside it
+  (`src/prompt_score.align`'s `verifier_measurement_edit_refused`). This narrows the report usefully:
+  the diagnostic exists for the borrowed case and the silent move remains specific to a `match` on
+  an **owned** record. That distinction was not in the original report and is worth having before
+  the request is accepted.
+Independent work that may continue: all of C4-REPAIR-MEASURED, C4-REPAIR-EDITSET, and
+  C4-REPAIR-TEMPLATE.
 Resume condition: an Align release either rejects a `match` that partially moves a payload out of an
   owned record still live at the match site, or preserves the field so a subsequent
   `json.encode` of that record re-emits it. Either answer closes this; silence does not.

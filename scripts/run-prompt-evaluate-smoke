@@ -1426,6 +1426,445 @@ def verify_editset_attempt_boundary() -> None:
     )
 
 
+# --- C4-REPAIR-TEMPLATE: the version-3 measurement and the declared policy through the loop -----
+# `docs/specs/c4-repair-template.md` sections 3.4, 3.9, 4.4, and 6.1 own these. The measurement
+# below is the template adapter's own output shape, so every rule asserted here is asserted against
+# the exact document the loop will decode at run time.
+
+TEMPLATE_TASK = {
+    "argv": ["/usr/bin/python3", "scripts/prompt-template-adapter.py"],
+    "measurement_adapter_runtime": "PYTHON:" + "9" * 64,
+}
+TEMPLATE_COMPLETION = "I would change src/duration.py to divide by sixty.\n"
+
+
+def edit_policy(**changes) -> dict:
+    value = {
+        "schema_version": 1, "artifact_kind": "EDIT_POLICY",
+        "maximum_file_blocks": 32, "maximum_edit_bytes": 262_144,
+        "refuse_unchanged_files": True, "content_sha256": "",
+    }
+    value.update(changes)
+    return bind(value)
+
+
+def template_measurement(module, blocks, refusal="NONE", text=None, **changes):
+    """The template adapter's version-3 result shape, in its exact declared field order."""
+    value = editset_measurement(module, blocks, **changes)
+    tail = value.pop("content_sha256")
+    value["schema_version"] = 3
+    if refusal != "NONE":
+        value["failure_kind"] = "PATCH"
+        value["build_status"] = "NOT_RUN"
+        value["test_status"] = "NOT_RUN"
+        value["patch_size_bytes"] = 0
+        value["patch_sha256"] = None
+    value["edit_refusal"] = refusal
+    value["completion_bytes"] = len(TEMPLATE_COMPLETION.encode("utf-8"))
+    value["completion_sha256"] = hashlib.sha256(
+        TEMPLATE_COMPLETION.encode("utf-8")
+    ).hexdigest()
+    value["completion_text"] = text
+    value["content_sha256"] = tail
+    return bind(value)
+
+
+def verify_constant_parity_boundary() -> None:
+    """Section 3.4: five scripts declare the edit-set bounds, and this is the first check that they
+    agree. Three of the five have declared them independently since C4-REPAIR-MEASURED with nothing
+    tying them together; the fourth and fifth are this capability's own.
+    """
+    owners = (
+        "scripts/prompt-measurement-adapter.py",
+        "scripts/prompt-repair-adapter.py",
+        "scripts/prompt-template-adapter.py",
+        "scripts/prompt-evaluate.py",
+        "scripts/prompt-gate-validator.py",
+    )
+    wanted = {"MAXIMUM_FILE_BLOCKS": "32", "MAXIMUM_EDIT_BYTES": "262_144"}
+    for relative in owners:
+        source = (SOURCE / relative).read_text(encoding="utf-8")
+        for name, literal in wanted.items():
+            declarations = [
+                line for line in source.split("\n") if line.startswith(f"{name} = ")
+            ]
+            if not declarations:
+                # The repair adapter consumes both from the frozen module through its pinned
+                # consumed-name table rather than redeclaring them, and the template adapter
+                # reaches them the same way one hop further. A transitive owner is a *checked*
+                # owner: the import contract asserts the name and its kind before any request is
+                # loaded, so there is nothing here that could drift.
+                require(
+                    f'("{name}", "int")' in source,
+                    f"constant-parity: {relative} neither declares nor pins {name}",
+                )
+                continue
+            require(
+                len(declarations) == 1 and declarations[0] == f"{name} = {literal}",
+                f"constant-parity: {relative} declares {declarations!r} for {name}",
+            )
+    # And the two values the declared policy must equal are the evaluator's own.
+    module = repair_evaluator_module("prompt_evaluate_constants")
+    policy = edit_policy()
+    require(
+        policy["maximum_file_blocks"] == module.MAXIMUM_FILE_BLOCKS
+        and policy["maximum_edit_bytes"] == module.MAXIMUM_EDIT_BYTES,
+        "constant-parity: the declared edit policy is not the evaluator's own constants",
+    )
+    # The frozen corpus asset says the same thing, so the run cannot disagree with the test.
+    frozen = json.loads(
+        (SOURCE / "eval/tasks/prompt-v1t/duration-half-away-from-zero.json").read_text("utf-8")
+    )["edit_policy"]
+    require(
+        frozen["maximum_file_blocks"] == module.MAXIMUM_FILE_BLOCKS
+        and frozen["maximum_edit_bytes"] == module.MAXIMUM_EDIT_BYTES
+        and frozen["refuse_unchanged_files"] is True,
+        f"constant-parity: the frozen prompt-v1t edit policy disagrees: {frozen!r}",
+    )
+
+
+def verify_template_attempt_boundary() -> None:
+    """`POLICY` and the version-3 measurement through the loop: rows 8-11, 14-21, and 25."""
+    module = repair_evaluator_module("prompt_evaluate_template")
+    template = json.loads(
+        (SOURCE / "eval/prompt/canonical-v1t/repair-template.json").read_text(encoding="utf-8")
+    )
+    generation = {"max_prompt_bytes": 65_536}
+    seed = 20_260_824
+    allowed = frozenset({EDITSET_PATH, "tests/test_duration.py"})
+    blocks = [editset_block(module, EDITSET_PATH, EDITSET_BODY)]
+
+    # Ladder row 12: the corpus's adapter selects the kind set its template must declare, exactly,
+    # three ways. Neither earlier template may stand in for this one.
+    require(
+        module.valid_repair_template(template, module.expected_template_kinds(TEMPLATE_TASK)),
+        "template-template: the canonical-v1t template was rejected for its own corpus",
+    )
+    for other in (EDITSET_TASK, FROZEN_TASK):
+        require(
+            not module.valid_repair_template(template, module.expected_template_kinds(other)),
+            "template-template: a six-kind template was admitted for an earlier corpus",
+        )
+
+    # Ladder rows 8-11: the declared edit policy, all four arms, before any provider call.
+    def task_manifest(**changes) -> dict:
+        value = {
+            "schema_version": 1, "artifact_kind": "PROMPT_EVALUATION_TASK",
+            "argv": TEMPLATE_TASK["argv"], "cmd": "/usr/bin/python3",
+        }
+        value.update(changes)
+        return value
+
+    require(
+        module.template_adapter_task(task_manifest()),
+        "template-selector: the template adapter is not recognized",
+    )
+    for other in (EDITSET_TASK, FROZEN_TASK):
+        require(
+            not module.template_adapter_task(other),
+            "template-selector: an earlier adapter was recognized as the template adapter",
+        )
+    # Row 9: the record decodes with the exact field tuple and a valid digest.
+    good_policy = edit_policy()
+    require(
+        module.exact_record(good_policy, module.EDIT_POLICY_FIELDS, "EDIT_POLICY")
+        and module.record_digest_valid(good_policy),
+        "template-policy: a well-formed EDIT_POLICY was rejected",
+    )
+    broken = dict(good_policy)
+    del broken["refuse_unchanged_files"]
+    require(
+        not module.exact_record(broken, module.EDIT_POLICY_FIELDS, "EDIT_POLICY"),
+        "template-policy: an EDIT_POLICY missing a member was admitted",
+    )
+    # Rows 8-11 driven through the **real** manifest validator, against the real frozen manifest,
+    # rather than against a hand-rolled restatement of the rule. A restatement passes even when the
+    # rule it describes has been deleted, which is exactly what a mutation run exposes.
+    frozen_task = json.loads(
+        (SOURCE / "eval/tasks/prompt-v1t/duration-half-away-from-zero.json").read_text("utf-8")
+    )
+    module.validate_input_artifact_shape("PROMPT_EVALUATION_TASK", frozen_task)
+
+    def policy_rejected(label: str, mutate) -> None:
+        value = copy.deepcopy(frozen_task)
+        mutate(value)
+        bind(value)
+        try:
+            module.validate_input_artifact_shape("PROMPT_EVALUATION_TASK", value)
+        except module.EvaluationError:
+            return
+        raise RuntimeError(f"template-{label}: an invalid edit policy was admitted")
+
+    # Row 10: a declared bound differing from the constant the pinned adapters enforce.
+    policy_rejected(
+        "row10-blocks",
+        lambda v: bind(v["edit_policy"].update({"maximum_file_blocks": 16}) or v["edit_policy"]),
+    )
+    policy_rejected(
+        "row10-bytes",
+        lambda v: bind(v["edit_policy"].update({"maximum_edit_bytes": 65_536}) or v["edit_policy"]),
+    )
+    # Row 11: the unchanged-file refusal is not a knob.
+    policy_rejected(
+        "row11-refusal",
+        lambda v: bind(
+            v["edit_policy"].update({"refuse_unchanged_files": False}) or v["edit_policy"]
+        ),
+    )
+    # Row 9: the record's own digest must bind it.
+    policy_rejected("row9-digest", lambda v: v["edit_policy"].update({"content_sha256": "0" * 64}))
+    # Row 9: the exact field tuple.
+    policy_rejected("row9-extra", lambda v: bind(
+        v["edit_policy"].update({"extra": 1}) or v["edit_policy"]
+    ))
+    # Row 8, both directions: presence is adapter-selected, never version-selected.
+    policy_rejected("row8-absent", lambda v: v.pop("edit_policy"))
+    policy_rejected(
+        "row8-wrong-adapter",
+        lambda v: v.update({"argv": [v["cmd"], "scripts/prompt-repair-adapter.py"]}),
+    )
+
+    # Ladder row 13, adapter-selected. A task naming the template adapter must declare its own
+    # task prompt in `artifacts`; a task naming any earlier adapter is not held to it, because
+    # declaring the task prompt is a `prompt-v1*` convention and not a repository-wide one.
+    require(
+        frozen_task["task_prompt_path"] in {
+            item["path"] for item in frozen_task["artifacts"] if item["kind"] == "FILE"
+        },
+        "template-row13: the frozen prompt-v1t task does not declare its own task prompt",
+    )
+    require(
+        frozen_task["task_prompt_path"].startswith("eval/tasks/prompt-v1t/"),
+        "template-row13: the prompt-v1t task reads an earlier corpus's task prompt",
+    )
+    legacy = json.loads(
+        (SOURCE / "eval/tasks/prompt-v1e/duration-half-away-from-zero.json").read_text("utf-8")
+    )
+    require(
+        not module.template_adapter_task(legacy),
+        "template-row13: an earlier corpus was selected by the template-adapter predicate",
+    )
+
+    # Ladder rows 14-16: the version is a checked function of the corpus, three ways.
+    good = template_measurement(module, blocks)
+    require(
+        module.TASK_MEASUREMENT_V3_FIELDS
+        == module.TASK_MEASUREMENT_FIELDS[:-1]
+        + module.TASK_MEASUREMENT_V2_MEMBERS
+        + module.TASK_MEASUREMENT_V3_MEMBERS
+        + ("content_sha256",),
+        "template-fields: the version-3 field order is not version 2 plus four appended members",
+    )
+    require(
+        tuple(good)[-5:] == module.TASK_MEASUREMENT_V3_MEMBERS + ("content_sha256",),
+        f"template-fields: the version-3 members are not in position: {tuple(good)!r}",
+    )
+    require(
+        module.MEASUREMENT_FIELDS_BY_VERSION[3] == module.TASK_MEASUREMENT_V3_FIELDS
+        and module.MEASUREMENT_FIELDS_BY_VERSION[2] == module.TASK_MEASUREMENT_V2_FIELDS
+        and module.MEASUREMENT_FIELDS_BY_VERSION[1] == module.TASK_MEASUREMENT_FIELDS,
+        "template-fields: the three-way version-selected field list disagrees",
+    )
+    for task, version in (
+        (TEMPLATE_TASK, 3), (EDITSET_TASK, 2), (FROZEN_TASK, 1),
+    ):
+        require(
+            module.expected_measurement_version(task) == version,
+            f"template-version: {task['argv'][1]} does not select version {version}",
+        )
+    require(
+        module.valid_measurement_version_two(good, TEMPLATE_TASK, allowed),
+        "template-version: a well-formed version-3 measurement was rejected",
+    )
+    for other in (EDITSET_TASK, FROZEN_TASK):
+        require(
+            not module.valid_measurement_version_two(good, other, allowed),
+            "template-version: a version-3 measurement was admitted for an earlier corpus",
+        )
+    # Ladder row 15 in both directions: absence below version 3 is required, never defaulted.
+    version_two = editset_measurement(module, blocks)
+    require(
+        not set(module.TASK_MEASUREMENT_V3_MEMBERS) & set(version_two),
+        "template-fields: a version-2 document carries a version-3 member",
+    )
+    require(
+        module.valid_measurement_version_two(version_two, EDITSET_TASK, allowed),
+        "template-version: a version-2 measurement was rejected for its own corpus",
+    )
+    for member, value in (
+        ("edit_refusal", "NONE"), ("completion_bytes", 1), ("completion_sha256", "0" * 64),
+        ("completion_text", "prose"),
+    ):
+        stray = dict(version_two)
+        stray[member] = value
+        require(
+            not module.valid_measurement_version_two(stray, EDITSET_TASK, allowed),
+            f"template-row15: a version-2 measurement carrying {member} was admitted",
+        )
+
+    # Ladder rows 17-20 and the section 3.3 invariants, one defect each.
+    def rejected(label: str, mutate) -> None:
+        value = template_measurement(module, [dict(item) for item in blocks])
+        mutate(value)
+        require(
+            not module.valid_measurement_version_two(value, TEMPLATE_TASK, allowed),
+            f"template-{label}: an invalid version-3 measurement was admitted",
+        )
+
+    rejected("row17-absent", lambda v: v.update({"edit_refusal": None}))
+    rejected("row17-unknown", lambda v: v.update({"edit_refusal": "NO_SUCH_CODE"}))
+    # Row 18: a `PATCH` class code beside a non-`PATCH` failure kind, in both directions. The
+    # second is the defect this capability exists to make impossible.
+    rejected("row18-class-mismatch", lambda v: v.update({"edit_refusal": "NO_FILE_BLOCK"}))
+    rejected(
+        "row18-silent-none",
+        lambda v: v.update({"failure_kind": "PATCH", "patch_size_bytes": 0, "patch_sha256": None}),
+    )
+    rejected(
+        "row19-digest-without-bytes", lambda v: v.update({"completion_bytes": None}),
+    )
+    rejected(
+        "row19-bytes-without-digest", lambda v: v.update({"completion_sha256": None}),
+    )
+    rejected("row19-malformed-digest", lambda v: v.update({"completion_sha256": "zz"}))
+    rejected("row20-text-unrefused", lambda v: v.update({"completion_text": "prose"}))
+
+    # The refusal modes themselves, each a positive case at its own presence rule.
+    unchanged = template_measurement(
+        module, [dict(item) for item in blocks], refusal="UNCHANGED_FILES",
+        summary="the response reproduced the pinned files unchanged",
+    )
+    require(
+        module.valid_measurement_version_two(unchanged, TEMPLATE_TASK, allowed),
+        "template-unchanged: the widened edit_set rule rejected its own mode",
+    )
+    # The invariant this capability exists to establish, inverted.
+    discarded = dict(unchanged)
+    discarded.update({"edit_set": None, "edit_set_total_bytes": None})
+    require(
+        not module.valid_measurement_version_two(bind(discarded), TEMPLATE_TASK, allowed),
+        "template-unchanged: a reproduced-unchanged refusal that discarded its blocks was admitted",
+    )
+    no_set = template_measurement(
+        module, None, refusal="NO_FILE_BLOCK", text=TEMPLATE_COMPLETION,
+        summary="the response declares no file block",
+    )
+    require(
+        module.valid_measurement_version_two(no_set, TEMPLATE_TASK, allowed),
+        "template-no-set: a no-set refusal carrying its completion excerpt was rejected",
+    )
+    carried = dict(no_set)
+    carried.update({
+        "edit_set": blocks, "edit_set_total_bytes": sum(b["body_bytes"] for b in blocks),
+    })
+    require(
+        not module.valid_measurement_version_two(bind(carried), TEMPLATE_TASK, allowed),
+        "template-no-set: a no-set refusal carrying blocks was admitted",
+    )
+    oversized = dict(no_set)
+    oversized["completion_text"] = "x" * (module.COMPLETION_LIMIT + 1)
+    require(
+        not module.valid_measurement_version_two(bind(oversized), TEMPLATE_TASK, allowed),
+        "template-no-set: a completion excerpt above COMPLETION_LIMIT was admitted",
+    )
+
+    # `POLICY` through the loop: rendered from the two corpus documents, and never dropped.
+    calls: list[dict] = []
+
+    def run_attempt(attempt_index, rendered_text, rendered_text_sha, repair_source, preparation_ns):
+        calls.append({
+            "attempt_index": attempt_index, "rendered_text": rendered_text,
+            "repair_source": repair_source,
+        })
+        return {"record": {"attempt_index": attempt_index}, "measurement": None}
+
+    def attempt_one(measurement):
+        return {
+            "measurement": measurement,
+            "rendered_text": "BASE\n\n--- task prompt ---\nTASK\n",
+        }
+
+    policy_text = module.repair_policy_text([EDITSET_PATH], good_policy)
+    calls.clear()
+    module.build_repair_attempt(
+        run_attempt, attempt_one(good), template, generation, seed, policy_text,
+    )
+    require(len(calls) == 1, "template-render: the repair attempt was not invoked exactly once")
+    source = calls[0]["repair_source"]
+    require(
+        source["included_sections"]
+        == ["STATUS", "POLICY", "EDITSET", "SUMMARY", "STDOUT", "STDERR"]
+        and source["dropped_sections"] == [],
+        f"template-render: unexpected section selection {source['included_sections']!r}",
+    )
+    require(
+        f"  {EDITSET_PATH}" in calls[0]["rendered_text"]
+        and "is refused before the tests run" in calls[0]["rendered_text"]
+        and template["section_headers"]["POLICY"] in calls[0]["rendered_text"],
+        "template-render: the repair prompt does not carry the declared edit policy",
+    )
+    require(
+        calls[0]["rendered_text"].startswith("BASE\n\n--- task prompt ---\nTASK\n"),
+        "template-render: the repair prompt is not a strict extension of attempt one",
+    )
+    # `POLICY` is never dropped, at every rung of the ladder including the one that drops four.
+    sources = module.repair_section_sources(good, policy_text)
+    step = module.assemble_repair_prompt(template, "BASE\n", sources, 65_536)[3]
+    for expected_drop in ("STDOUT", "STDERR", "SUMMARY", "EDITSET"):
+        candidate = module.assemble_repair_prompt(template, "BASE\n", sources, step - 1)
+        require(
+            expected_drop in candidate[2] and "POLICY" in candidate[1],
+            f"template-drop: POLICY did not survive the {expected_drop} drop",
+        )
+        step = candidate[3]
+    require(
+        "POLICY" not in module.REPAIR_DROP_ORDER and "STATUS" not in module.REPAIR_DROP_ORDER,
+        "template-drop: POLICY or STATUS joined the drop order",
+    )
+
+    # Ladder row 22: neither `EDITSET` nor `POLICY` makes a repair eligible. A measurement with
+    # both sections available and all three diagnostic streams empty is still `SKIPPED`.
+    barren = template_measurement(module, blocks, summary="", stdout="", stderr="")
+    require(
+        module.repair_eligibility(barren) == "REPAIR_INPUT_UNAVAILABLE",
+        "template-eligibility: POLICY or EDITSET alone made a repair eligible",
+    )
+
+    # Ladder row 25: `edit_refusal_count` over a mixed run, adapter-selected.
+    def row(codes, status="FAIL"):
+        return {
+            "schema_version": 2,
+            "attempts": [
+                {
+                    "attempt_kind": "INITIAL", "status": status,
+                    "measurement": {"edit_refusal": code} if code is not None else None,
+                }
+                for code in codes
+            ],
+        }
+
+    require(
+        module.row_edit_refusal_count(row(["NO_FILE_BLOCK", "UNCHANGED_FILES"])) == 2,
+        "template-aggregate: refused attempts were not counted",
+    )
+    require(
+        module.row_edit_refusal_count(row(["NONE", "NONE"])) == 0,
+        "template-aggregate: unrefused attempts were counted",
+    )
+    require(
+        module.row_edit_refusal_count(row(["NO_FILE_BLOCK"], status="SKIPPED")) == 0,
+        "template-aggregate: a skipped attempt was counted",
+    )
+    require(
+        module.row_edit_refusal_count(row([None])) == 0,
+        "template-aggregate: an attempt with no measurement was counted",
+    )
+    require(
+        module.row_edit_refusal_count({"schema_version": 1, "attempts": []}) == 0,
+        "template-aggregate: a version-1 row contributed to the counter",
+    )
+
+
 def verify_repair_attempt_boundary() -> None:
     """C4-REPAIR-MEASURED sections 3.2, 3.6, 3.8, and 4.3: the evaluator-owned second attempt.
 
@@ -2197,6 +2636,8 @@ def main() -> int:
     verify_provider_admission_boundary()
     verify_repair_attempt_boundary()
     verify_editset_attempt_boundary()
+    verify_constant_parity_boundary()
+    verify_template_attempt_boundary()
     verify_provider_probe_boundary()
     with tempfile.TemporaryDirectory(prefix="prompt-evaluate-") as directory:
         root = Path(directory)

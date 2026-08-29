@@ -3,6 +3,92 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
+## Active: C4-REPAIR-TEMPLATE (2026-08-29)
+
+Branch `agent/c4-repair-template`, stacked on `agent/c4-repair-editset` at `19b2e0e`. Implemented
+and owner-verified; the gate run is the remaining step.
+
+**Capability.** The prompt template and the declared edit policy — the successor
+`c4-repair-editset.md` section 6.4 named. `docs/specs/c4-repair-template.md` is the authoritative
+ledger.
+
+**A CORRECTION, and it changed the plan.** Both gate runs' `failure_kind: PATCH` rows carry
+`diagnostic_summary: "the response reproduced the pinned files unchanged"` —
+`synthesized_patch`'s refusal, raised *after* the blocks parsed and after every path passed the
+allowlist. The string `"the response declares no file block"` appears in **zero** rows of either
+run. **The model has never failed to emit a parsable `FILE:` block.** Ten of twenty-two ran
+attempts in each run were refused by the edit policy: eight `UNCHANGED_FILES` and two
+`PATH_NOT_EDITABLE` (`src/legacy.py`). Larger than the class C4-REPAIR-EDITSET addressed, and it
+had no name, no code, and no counter. `agent/c4-repair-editset` already corrected four of the five
+sites during its own review repair; this branch corrects the fifth (`c4-repair-measured.md`).
+
+**What version 3 changes, and what it deliberately does not.** The `FILE:` grammar does **not**
+change — it has never failed in 44 calls. The task prompt already carried a worked example and the
+editable-path allowlist and the model violated both anyway; the repair template carried neither.
+**The rule the model actually broke is stated in no prompt in the repository.** Version 3 states it
+in both attempts, adds a `POLICY` section rendering the allowlist and the declared bounds per task,
+and restates the format requirement between the preamble and the sections.
+
+**Attempt 1 changes.** Three new task prompts under `eval/tasks/prompt-v1t/`. `render()` takes the
+task prompt independently of the variant, so the delta applies identically to PARENT and CANDIDATE
+and the C6 contrast is preserved. The stated cost: this run measures the version-3 contract end to
+end, not the repair template alone, and attempt-1 clocks are not comparable to either prior run.
+
+**Schema.** `TASK_MEASUREMENT` 2 -> 3: a ten-code `edit_refusal`, `completion_bytes`,
+`completion_sha256`, and a **conditional** `completion_text` persisted only on the eight refusal
+codes where `validated_edit_set` never returned; plus the widened `edit_set` rule so the
+reproduced-unchanged refusal keeps the blocks the producer built one line before the raise.
+`PROMPT_TASK_ROW` does not move. `PROMPT_EVALUATION_TASK` gains an optional `edit_policy` record.
+
+**Adapter.** A third adapter, `scripts/prompt-template-adapter.py`, loading
+`scripts/prompt-repair-adapter.py` by path — which loads the frozen base adapter by path, so one
+frozen module object and one `prctl` writer per process. Second-hop divergence golden at
+`eval/fixtures/c4-repair-template/adapter-divergence.diff`, 116 lines.
+
+**Evaluator size checkpoint (spec section 3.11), the top ledger risk: PASSED.** Realized delta
+**+15,667 bytes** (234,347 -> 250,014) against a 24,000-byte return-to-ledger threshold and
+**12,130 bytes** of remaining four-chunk window headroom. `EVALUATOR_SOURCE_SHA256` re-pinned in the
+same change.
+
+**Two defects found by driving rules through their real owners, both recorded in spec section
+11.3 items 10 and 11.** The freeze appended `edit_policy` after `content_sha256` (wrong declared
+order, wrong digest preimage), caught by pointing the owner test at `validate_input_artifact_shape`
+instead of restating its rule; and ladder row 13 compared a raw content digest against the
+snapshot **expectation** digest (mode + path + content), which rejected every corpus and was caught
+only by `make prompt-evaluate-smoke` under the Linux recipe. Row 13 took **two** corrections from
+that one owner — the digest comparison was wrong, and then enforcing membership unconditionally was
+also wrong, because declaring the task prompt in `artifacts` is a `prompt-v1*` convention rather
+than a repository-wide one. It is now membership-only **and adapter-selected**, like every other
+rule in this capability.
+
+**MERGE-TIME ACTION, do not skip.** `REPAIR_ADAPTER_SHA256` in `scripts/prompt-template-adapter.py`
+is **provisional**: it is `19b2e0e`'s digest, and `agent/c4-repair-editset`'s review repair changes
+that file (break-on-first-overflow prefix-cut edit-set budget) and re-freezes `canonical-v1e`. At
+the merge commit, re-derive it, re-run `scripts/run-prompt-template-adapter-smoke --update-golden`,
+and re-run `scripts/freeze-canonical-v1t`. Nothing has to remember: the owner smoke digests the
+on-disk file and fails closed the moment the two disagree. The widened `edit_set` rule inherits the
+repaired prefix-cut semantics automatically, because this adapter **calls** `repair.edit_set_blocks`
+rather than copying it.
+
+**Gate.** `repair_recovery_paired_count >= 1`, unchanged. Pre-committed secondary
+`edit_refusal_count < 10` against a C4E baseline derived from the summary strings. Three live
+(task, variant) pairs. **The prompt-size hypothesis is refuted before the run**: largest repair
+prompt 16,904 bytes of 65,536, no section ever dropped, refused rows carry the smallest prompts.
+`NOT_MET` has two pre-fixed readings, in spec section 1.6.
+
+**Next actions, in order.** (1) Run `make c4-template-gate` from a clean committed head once the
+host has no model process and >= 6 GB free (last checked: 3.84 GB, Docker VM resident, so blocked).
+(2) Record the row table, the refusal breakdown, and the verdict. (3) Merge
+`agent/c4-repair-editset` and discharge the merge-time action above. (4) Review.
+
+**Blockers.** Host capacity: Track B's model work contends for memory and the gate needs
+`llama-server` with the 4.7 GB model. No Align capability request blocks this. Request 52 gained a
+**third** client-evidence line and a useful narrowing: on a *borrowed* match payload projection the
+pinned compiler **does** diagnose the partial move (`error: cannot move a field out of a borrowed
+match payload projection`), so the silent form is specific to a `match` on an **owned** record.
+Request 22's array-walk idiom and deviation 8's owned-field-replacement limit both bit again and
+both were routed around with the proven idioms.
+
 ## Active: C4-REPAIR-EDITSET (2026-08-29)
 
 Branch `agent/c4-repair-editset`, stacked on `agent/c4-repair-measured` at `c07775c`. Implemented,

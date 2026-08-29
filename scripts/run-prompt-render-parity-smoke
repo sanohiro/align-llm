@@ -114,6 +114,7 @@ MULTIBYTE_BODY = "éé🙂éé🙂abcdefghij"
 
 REPAIR_TEMPLATE_PATH = SOURCE / "eval/prompt/canonical-v1r/repair-template.json"
 EDITSET_TEMPLATE_PATH = SOURCE / "eval/prompt/canonical-v1e/repair-template.json"
+TEMPLATE_TEMPLATE_PATH = SOURCE / "eval/prompt/canonical-v1t/repair-template.json"
 FROZEN_EVALUATION_PATH = SOURCE / "eval/prompt/gate/prompt-evaluation-improved.json"
 SANDBOX_RESIDUE = re.compile(r"/tmp/align-llm-coding-task-[A-Za-z0-9_]+")
 # A fixed synthetic attempt-1 measurement. Every byte the repair prompt draws from a failing
@@ -193,6 +194,257 @@ def editset_measurement(blocks: list[dict[str, Any]] | None) -> dict[str, Any]:
         })
     value["base_adapter_runtime_identity"] = "PYTHON:" + "2" * 64
     return value
+
+
+def template_template() -> dict[str, Any]:
+    return json.loads(TEMPLATE_TEMPLATE_PATH.read_text(encoding="utf-8"))
+
+
+# --- C4-REPAIR-TEMPLATE: the version-3 repair-prompt contract -----------------------------------
+# `docs/specs/c4-repair-template.md` section 4 owns this. Unlike every earlier section, `POLICY`'s
+# source is two **corpus** documents rather than a field of the failing measurement, so these
+# goldens are a total function of the declared allowlist and the declared policy.
+EDIT_POLICY = {
+    "schema_version": 1,
+    "artifact_kind": "EDIT_POLICY",
+    "maximum_file_blocks": 32,
+    "maximum_edit_bytes": 262_144,
+    "refuse_unchanged_files": True,
+    "content_sha256": "3" * 64,
+}
+
+
+def policy_render_cases(module) -> None:
+    """The normative rendered `POLICY` form of section 4.4, as a byte golden."""
+    rendered = module.repair_policy_text(["src/settings.py"], EDIT_POLICY)
+    expected = (
+        "editable paths, spelled exactly:\n"
+        "  src/settings.py\n"
+        "A FILE: block naming any other path is refused before the tests run.\n"
+        "A FILE: block whose content is identical to that file's current content is refused "
+        "before the\ntests run.\n"
+        "At most 32 FILE: blocks. At most 262144 bytes in any one block."
+    )
+    require(
+        rendered == expected,
+        f"policy-golden: the rendered POLICY section is not the normative form: {rendered!r}",
+    )
+    # Paths render in the task definition's declared order, one per line, two-space indented — not
+    # sorted, because the task definition is the authority on its own ordering.
+    multi = module.repair_policy_text(["src/encode.py", "src/decode.py"], EDIT_POLICY)
+    require(
+        "  src/encode.py\n  src/decode.py\n" in multi,
+        f"policy-multi-path: a multi-path allowlist did not render in declared order: {multi!r}",
+    )
+    # The bounds are rendered from `edit_policy`, never from this module's constants directly, so
+    # the prompt cannot disagree with the record ladder row 10 validated.
+    require(
+        str(module.MAXIMUM_FILE_BLOCKS) in rendered
+        and str(module.MAXIMUM_EDIT_BYTES) in rendered,
+        "policy-bounds: the rendered bounds are not the declared bounds",
+    )
+    require(
+        len(rendered.encode("utf-8")) <= module.REPAIR_POLICY_LIMIT,
+        "policy-bound: the rendered POLICY section exceeds its section bound",
+    )
+    # A corpus with no declared policy renders nothing, so the section is simply not emitted —
+    # which is how `EDITSET` already behaves at version 1.
+    require(
+        module.repair_policy_text(["src/settings.py"], None) == "",
+        "policy-absent: a corpus with no declared policy rendered a POLICY section",
+    )
+    require(
+        module.repair_section_sources(SYNTHETIC_MEASUREMENT)["POLICY"] == "",
+        "policy-absent: the default section source is not empty",
+    )
+
+
+def template_template_cases(module) -> None:
+    """Ladder row 12: the six-kind template, and the earlier sets staying admissible."""
+    template = template_template()
+    require(
+        module.valid_repair_template(template, module.REPAIR_SECTION_KINDS_V3),
+        "template-decode: the sealed canonical-v1t template was rejected",
+    )
+    require(
+        tuple(template["section_headers"])
+        == module.REPAIR_SECTION_KINDS_V3
+        == ("STATUS", "POLICY", "EDITSET", "SUMMARY", "STDOUT", "STDERR"),
+        "template-sections-order: the template's section order is not the declared order",
+    )
+    # Section 4.5: the drop order does not move and `POLICY` never joins it.
+    require(
+        module.REPAIR_DROP_ORDER == ("STDOUT", "STDERR", "SUMMARY", "EDITSET")
+        and "STATUS" not in module.REPAIR_DROP_ORDER
+        and "POLICY" not in module.REPAIR_DROP_ORDER,
+        "template-drop-order: the drop precedence changed or POLICY became droppable",
+    )
+    # The equality is three-way in every direction: no template may stand in for another.
+    for kinds, label in (
+        (module.REPAIR_SECTION_KINDS, "five-kind"), (module.REPAIR_SECTION_KINDS_V1, "four-kind"),
+    ):
+        require(
+            not module.valid_repair_template(template, kinds),
+            f"template-kinds: a six-kind template was admitted for a {label} corpus",
+        )
+    for value, label in ((editset_template(), "five"), (repair_template(), "four")):
+        require(
+            not module.valid_repair_template(value, module.REPAIR_SECTION_KINDS_V3),
+            f"template-kinds: a {label}-kind template was admitted for a six-kind corpus",
+        )
+    selectors = (
+        ("scripts/prompt-template-adapter.py", module.REPAIR_SECTION_KINDS_V3),
+        ("scripts/prompt-repair-adapter.py", module.REPAIR_SECTION_KINDS),
+        ("scripts/prompt-measurement-adapter.py", module.REPAIR_SECTION_KINDS_V1),
+    )
+    for adapter, expected in selectors:
+        require(
+            module.expected_template_kinds({"argv": ["/usr/bin/python3", adapter]}) == expected,
+            f"template-kinds: {adapter} does not select its own template kind set",
+        )
+    # The three sealed corpus templates the four freezes actually ship all decode, each against its
+    # own kind set. A merged chain naming a corpus whose template no longer decodes is unrunnable.
+    require(
+        module.valid_repair_template(repair_template(), module.REPAIR_SECTION_KINDS_V1)
+        and module.valid_repair_template(editset_template(), module.REPAIR_SECTION_KINDS),
+        "template-kinds: an earlier corpus's sealed template stopped decoding",
+    )
+
+
+def template_prompt_cases(module) -> None:
+    """The assembled version-3 prompt, its ladder, and the rule that `POLICY` survives all of it."""
+    template = template_template()
+    policy_text = module.repair_policy_text(["src/duration.py"], EDIT_POLICY)
+    measurement = editset_measurement([
+        editset_block("src/duration.py", EDITSET_BODY_ONE),
+        editset_block("tests/test_duration.py", "assert True\n"),
+    ])
+    sources = module.repair_section_sources(measurement, policy_text)
+    text, included, dropped, assembled = module.assemble_repair_prompt(
+        template, SYNTHETIC_BASE, sources, 65_536,
+    )
+    require(
+        included == ["STATUS", "POLICY", "EDITSET", "SUMMARY", "STDOUT", "STDERR"]
+        and dropped == [],
+        f"template-prompt-golden: unexpected section selection {included!r}/{dropped!r}",
+    )
+    headers = template["section_headers"]
+    expected = "".join((
+        SYNTHETIC_BASE, "\n\n", template["preamble_text"],
+        "\n\n", headers["STATUS"], "\n", sources["STATUS"],
+        "\n\n", headers["POLICY"], "\n", sources["POLICY"],
+        "\n\n", headers["EDITSET"], "\n", sources["EDITSET"],
+        "\n\n", headers["SUMMARY"], "\n", sources["SUMMARY"],
+        "\n\n", headers["STDOUT"], "\n", sources["STDOUT"],
+        "\n\n", headers["STDERR"], "\n", sources["STDERR"],
+        "\n\n", template["closing_text"],
+    ))
+    require(
+        text == expected,
+        "template-prompt-golden: the assembled prompt is not the declared section concatenation",
+    )
+    require(
+        text.startswith(SYNTHETIC_BASE),
+        "template-prompt-golden: the repair prompt is not a strict extension of attempt one",
+    )
+    require(
+        assembled == len(text.encode("utf-8")),
+        "template-prompt-golden: assembled_bytes disagrees with the assembled text",
+    )
+    # The version-3 preamble states the rule ten of twenty-two attempts broke, and no earlier
+    # template does. That sentence is the single highest-value one in the capability, so its
+    # presence is asserted rather than assumed.
+    require(
+        "must actually change something" in template["preamble_text"]
+        and "identical to" in template["preamble_text"],
+        "template-preamble: the unchanged-file refusal is not stated in the preamble",
+    )
+    require(
+        "must actually change something" not in editset_template()["preamble_text"],
+        "template-preamble: the earlier template moved",
+    )
+    # A version-3 prompt with `POLICY` and `EDITSET` absent has the same section sequence as a
+    # `canonical-v1r` prompt, which is what keeps all three runs' prompts comparable.
+    bare = module.repair_section_sources(SYNTHETIC_MEASUREMENT)
+    _, bare_included, _, _ = module.assemble_repair_prompt(
+        template, SYNTHETIC_BASE, bare, 65_536,
+    )
+    require(
+        bare_included == ["STATUS", "SUMMARY", "STDOUT", "STDERR"],
+        f"template-prompt-bare: an empty source was included: {bare_included!r}",
+    )
+
+    def ladder(budget: int):
+        return module.assemble_repair_prompt(template, SYNTHETIC_BASE, sources, budget)
+
+    cost = {
+        kind: len(("\n\n" + headers[kind] + "\n" + sources[kind]).encode("utf-8"))
+        for kind in module.REPAIR_SECTION_KINDS_V3
+    }
+    after_stdout = assembled - cost["STDOUT"]
+    after_stderr = after_stdout - cost["STDERR"]
+    after_summary = after_stderr - cost["SUMMARY"]
+    after_editset = after_summary - cost["EDITSET"]
+    steps = (
+        (assembled - 1, ["STATUS", "POLICY", "EDITSET", "SUMMARY", "STDERR"], ["STDOUT"]),
+        (after_stdout - 1, ["STATUS", "POLICY", "EDITSET", "SUMMARY"], ["STDOUT", "STDERR"]),
+        (after_stderr - 1, ["STATUS", "POLICY", "EDITSET"], ["STDOUT", "STDERR", "SUMMARY"]),
+        (
+            after_summary - 1, ["STATUS", "POLICY"],
+            ["EDITSET", "STDOUT", "STDERR", "SUMMARY"],
+        ),
+    )
+    for ordinal, (budget, want_included, want_dropped) in enumerate(steps):
+        candidate, chosen, gone, _ = ladder(budget)
+        require(
+            chosen == want_included,
+            f"template-drop-{ordinal}: included {chosen!r}, wanted {want_included!r}",
+        )
+        require(
+            sorted(gone) == sorted(want_dropped),
+            f"template-drop-{ordinal}: dropped {gone!r}, wanted {want_dropped!r}",
+        )
+        # The rule this capability adds to the ladder, asserted at **every** rung including the
+        # one that drops four sections: `POLICY` is the section the capability exists to add and
+        # it is bounded far below any budget that could force a drop.
+        require(
+            candidate is not None and "STATUS" not in gone and "POLICY" not in gone,
+            f"template-drop-{ordinal}: STATUS or POLICY was dropped, and neither ever may be",
+        )
+        require(
+            set(chosen).isdisjoint(gone),
+            f"template-drop-{ordinal}: included and dropped are not disjoint",
+        )
+    require(
+        ladder(after_summary - 1)[2] == ["EDITSET", "SUMMARY", "STDOUT", "STDERR"],
+        "template-drop-order: dropped_sections is not in section order",
+    )
+    # Early exit: `STATUS` + `POLICY` alone, still over budget, so no provider call may be made.
+    exhausted = ladder(after_editset - 1)
+    require(
+        exhausted[0] is None and exhausted[1] == ["STATUS", "POLICY"],
+        f"template-budget-exhausted: budget exhaustion did not refuse: {exhausted[1:]!r}",
+    )
+    # Section 4.6: assembly stays a pure, total function of the persisted fields plus the two
+    # corpus documents, at every rung.
+    for budget in (65_536, assembled - 1, after_stdout - 1, after_stderr - 1, after_summary - 1):
+        candidate, chosen, _, _ = ladder(budget)
+        if candidate is None:
+            continue
+        rederived = module.repair_prompt_text(
+            template, SYNTHETIC_BASE,
+            module.repair_section_sources(measurement, policy_text), chosen,
+        )
+        require(
+            rederived == candidate,
+            f"template-rederive-{budget}: the prompt is not re-derivable from its source",
+        )
+    # A credential in a diagnostic never reaches the prompt through the new section either: the
+    # POLICY source is corpus text, so it is redaction-free by construction rather than by a pass.
+    require(
+        "REDACTED" not in policy_text and "sk-" not in policy_text,
+        "template-policy-redaction: the POLICY section drew from something other than the corpus",
+    )
 
 
 def editset_template_cases(module) -> None:
@@ -682,6 +934,9 @@ def repair_contract_cases() -> None:
     editset_template_cases(module)
     editset_render_cases(module)
     editset_prompt_cases(module)
+    policy_render_cases(module)
+    template_template_cases(module)
+    template_prompt_cases(module)
 
 
 def parity_vectors() -> list[dict[str, Any]]:
