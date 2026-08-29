@@ -662,6 +662,54 @@ The current forward delivery order is:
     stays unmet, and the next capability toward it is resident dense weights with streamed experts,
     whose input is this capability's per-step demand stream.
 
+35. **R6-MOE-RESIDENT-DENSE — the dense third of a routed decode step, held resident, with the
+    expert measurement unmoved.** Design and results in
+    [`r6-moe-resident-dense.md`](r6-moe-resident-dense.md). Item 30 made a *dense* model's decode
+    step read zero weight bytes and item 32 measured what a *routed* decode step reads:
+    **740,666,496 B**, of which 487,587,840 is the top-8 routing decision in all sixteen layers and
+    **253,078,656 is dense weight the previous step already read** — the same bytes on every step of
+    every prompt, because the dense half of a routed model does not depend on the routing. This
+    capability removes that third. It takes item 32's **reserved fourteenth operand**, `RESIDENT` at
+    `args[13]` with the value `dense` (arity 14, with `-` required in the two reserved KV positions
+    and `R6M_KV_UNSUPPORTED` otherwise, so a reserved position stays reserved), holds the pack's
+    **147 dense members** — the 57,950,208 B `token_embd.weight` table, sixteen layers of attention,
+    norms and router at `8 x 9,994,240 + 8 x 11,075,584 = 168,558,592`, and the 84,520,960 B head —
+    in **one 311,066,624 B region under one run-scope ggml wrap across all 578 graphs**, replacing
+    306 per-graph dense-window wraps with one, and leaves the 3,900,702,720 B of expert planes
+    streaming through the claim window untouched. **The measurement survives, which is the whole
+    point:** `steps[].residency.expert_bytes` and `expert_pread_bytes` stay **487,587,840 on every
+    step in both legs** with 0 ppm read amplification, and that is an acceptance clause rather than
+    an expectation. `R6_MOE_DECODE_STEP` goes to **schema 2** with a `weights` object item 32 had
+    deliberately left absent; the primary metric is the new **`weights.step_dense_pack_bytes`**,
+    exactly **0** in `dense` mode against **4,049,258,496** streamed at `N = 16`, while
+    `weights.step_pack_bytes` keeps `r6-resident-weights.md`'s exact meaning so one name does not
+    mean two things across two decode arms. **`docs/specs/r6-resident-weights.md` section 3.4
+    remains the owner of Track B decode performance**; this capability records its ceiling against it
+    and adopts its **150,000 ppm floor unchanged**: baseline 3.63 s at `N = 16` on the fixed prompt,
+    **cost ceiling 276,000 ppm** committed in the commit *before* the implementation commit — the
+    process correction item 30 said it owed its successor — predicted 2.63 s, measured with the two
+    legs **interleaved**, three repeats, **worst-of-N**, and a pre-committed `INDETERMINATE` rule for
+    the case where this arm's 3.63 s baseline is noisier than the ceiling is wide.
+    MRD-RESULT-PLACEHOLDER
+    **There is no crossover:** unlike item 30, whose 4.68 GB fill loses at `N = 1`, this fill costs
+    only the 57,943,296 B of embedding table the prefill did not already read, so `N = 1` and
+    `N = 4` are small wins — below the floor, published as diagnostics, and not claimed. Peak
+    footprint grows 347,451,392 -> 573,997,056 B, a factor of 1.65 against item 30's 9.4, **so no
+    physical-memory preflight ships and Align Request 50 gains no client**. `src/decode_step.align`,
+    `src/model_forward.align`, `src/layer_olmoe.align`, `src/ggml_spike.align`, and both shims are
+    **byte-unchanged**; the one new function is `moe_model_forward.plan_resident_dense`, a twin of
+    `model_forward.plan_resident` that Align's missing generics force (Request 49's newest and
+    sharpest-shaped client, and roughly 65 lines rather than 40 because three of the arithmetic
+    helpers it needs are private). Correctness is **free**: oracle D compares the two legs' whole
+    normalized documents outside an enumerated eleven-name exclusion, and gate G, oracle R, oracle B,
+    oracle T and oracle C' are all re-run on the resident leg. Owner `gmake layer-forward-smoke`,
+    whose seventh block gains ten golden rows, a staging-boundary case with no golden row, two
+    no-document arity cases and a forced build in which a `dense` run fails with its region live;
+    focused `gmake moe-decode-step-qualification`. **What it leaves open:** the R6 gate still asks
+    that TTFT improve on repeated coding tasks *sharing a prefix*, and a decode loop that shares no
+    prefix does not answer it; the next capability toward it is partial **expert** residency, whose
+    input is item 32's union curve and this capability's freed footprint.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:

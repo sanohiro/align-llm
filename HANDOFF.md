@@ -3,7 +3,53 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R6-OLMOE-DECODE (2026-08-29)
+## Active: R6-MOE-RESIDENT-DENSE (2026-08-29)
+
+Branch `agent/r6-moe-resident-dense`, stacked on `agent/r6-olmoe-decode` head `bf7c87d`, which is
+publishing as item 32. This branch takes `git merge origin/main` — **never a rebase** — when that
+lands, and re-checks the same four things: the roadmap item number (**35**; 31 is claimed by
+`agent/c4-repair-measured`, 32 by the parent branch, **33 is now taken on `main` by
+R6-PREFIX-SUFFIX-PREFILL, PR #149, `a9561a9`**, and 34 by `C4-REPAIR-EDITSET`), the
+`R6_MOE_DECODE_STEP` schema number (**2**), the next free Align request number (**53**; this
+capability takes none and adds clients to 33, 35, 36, 38, 47, 48, 49 and **51**, and records **50**
+as explicitly not a client), and which goldens regenerate
+(`scripts/moe-decode-step-golden.jsonl` only, 59 -> 69 rows).
+
+**PR #149 touches `src/decode_step.align`, `src/model_forward.align`, and
+`scripts/decode-step-golden.jsonl`** — all three of which this capability promises are byte-unchanged
+*by its own diff*. The promise is about this branch's changes, not about the merged tree, and the
+merge is expected to move those three files from `main`'s side. Re-run
+`gmake layer-forward-smoke` after the merge; nothing in this capability reads them.
+
+**Capability.** The dense member set of a routed model held resident across an `N`-step decode loop,
+experts still streamed. CPU only, OLMoE-1B-7B-0125-Instruct Q4_K_M. Authoritative ledger
+`docs/specs/r6-moe-resident-dense.md`: sections 1 to 6 are the pre-implementation design, committed
+in `f8796ea` **before** the first line of implementation and not edited since; sections 12 to 14
+record the results, every deviation, and the ledger-to-diff mapping. All four design-gate triggers
+fire.
+
+**State.** Implemented and verified. Not committed at the time of writing; the tree is buildable and
+every hosted owner passes.
+
+MRD-HANDOFF-RESULT-PLACEHOLDER
+
+**Blockers.** None. Nine Align gaps are met and all nine are already recorded (Requests 33, 35, 36,
+38, 47, 48, 49, 50, 51); none blocks. Request 49 gains a new *shape* of client, Request 51 gains its
+first reproduction by a reader who did not know the answer (`arena` is a reserved word, and cell
+MRD-P1's probe hit repro 1 exactly), and Request 50 gains **no** client — recorded so the register is
+not inflated.
+
+**Constraints.** CPU only. Experts stay streamed **by design**: whole-model residency would make
+`residency.expert_bytes` unreachable and `RESIDENT=weights` is refused by name on this arm. No TTFT
+or throughput claim; the R6 gate stays unmet.
+
+**Next actions, in order.** (1) `git merge origin/main` when the OLMoE branch lands, re-checking the
+four things above; (2) `python3 scripts/pre-pr --owner-test layer-forward-smoke -- make
+layer-forward-smoke`; (3) publish, with the qualification's own output as the measurement evidence.
+
+**Intentional uncommitted files.** None.
+
+## Publishing: R6-OLMOE-DECODE (this branch's base, 2026-08-29)
 
 Branch `agent/r6-olmoe-decode`, implemented on `agent/r6-resident-weights` head `6facd56` and then
 **merged** with `origin/main` `553563e` (R6-RESIDENT-WEIGHTS, PR #147, carrying `cec1758`) by

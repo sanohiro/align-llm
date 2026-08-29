@@ -949,6 +949,10 @@ removes the second leg entirely.
   than left implicit.
 - **KV persistence on this arm.** Item 32 section 8's two exact couplings stand. Positions 11 and 12
   stay reserved and are refused as `R6M_KV_UNSUPPORTED`.
+- **`R6M_RESIDENT_BUDGET`'s reachability.** > **Shipped:** added here after implementation, per
+  section 13 item 6. The guard is fail-closed and no operand the hosted corpus can write reaches it;
+  reaching it needs a lowered-limits entry point of its own, which is a second executable and a
+  ceiling threaded through `execute`. Deferred on the same terms as the row below.
 - **`R5_WINDOW_UNAVAILABLE`'s forced build on the arena.** Not input-reachable while Request 35
   leaves a degraded reservation unobservable; deferred on the terms `R4_WINDOW_UNAVAILABLE` and
   `R6_PLANE_UNAVAILABLE` already carry.
@@ -1229,3 +1233,300 @@ changed:
     including `residency.expert_bytes_read`, which is precisely the number section 4.4 exists to
     protect. Section 4.1 now excludes ten names and one object, and states what stays inside the
     compared set and why.
+
+## 12. Results
+
+### 12.1 Cell MRD-P1 — two live wraps, answered before the first line of the capability
+
+The probe of section 5.8 was the first implementation step and it **passed**. One long-lived
+`ggml_backend_buffer` over a 311,066,624-byte Align region and one per-graph wrap over a
+195,821,568-byte claim window were live **at the same time**; one context created a tensor placed
+into each, `mul_mat` computed over the pair, the per-graph wrap was freed, and the run-scope wrap was
+then used again by a second graph with a **fresh** context, at the region's far end
+(`pool offset a: 311066560`, `claim offset b: 195821504`). Both graphs returned the correct product
+and the bytes ggml wrote were visible through Align's own view of the region. The wrap itself cost
+19,042 ns.
+
+The design's shape therefore ships as written and section 7 risk 2's fallback — re-wrapping the
+region per graph — is not taken. The probe was thrown away, as R4.5's and `R6-RESIDENT-WEIGHTS`'s
+were; what it cost was one bisection against Align's reserved-word list, which is section 13 item 3.
+
+### 12.2 The hosted owner — `gmake layer-forward-smoke`, seventh block
+
+The seventh block gains **fifteen** no-document cases (two of them this capability's,
+`mdr-arity-13` and `mdr-arity-15`) and **sixty-nine** documented cases, up from fifty-nine. It runs
+against the ggml-free stub engine, so it makes no numerical resident-versus-streamed claim — but the
+whole mechanism is reachable there, and every structural clause of section 4.6 is asserted on it.
+
+| What the block measures on the synthetic corpus (`n_layer` 2, `n_expert_used` 3) | `stream` | `dense` |
+| --- | --- | --- |
+| `weights.mode` | `"stream"` | `"dense"` |
+| `weights.step_dense_pack_bytes`, `N = 1` (`md-engine-ok` / `mdr-resident-dense-1`) | 3,904 | **0** |
+| `weights.step_dense_pack_bytes`, `N = 3` (`md-steps-3` / `mdr-resident-dense-steps`) | 11,712 | **0** |
+| `weights.step_expert_pack_bytes`, `N = 1` | 9,216 | **9,216** |
+| `weights.step_expert_pack_bytes`, `N = 3` | 27,648 | **27,648** |
+| `weights.step_pack_bytes` | 13,120 / 39,360 | 9,216 / 27,648 |
+| `weights.wrap_count` (weight-region wraps) | 8 at `N = 1`, 16 at `N = 3` | **1** at both |
+| `weights.resident_bytes` | 0 | 90,112 |
+| `weights.fill_bytes` / `fill_pread_count` | 0 / 0 | 4,896 / 21 |
+| `weights.resident_wraps_created` / `_freed` | 0 / 0 | **1 / 1** |
+| `window.pointer_identity_failures` | 0 | **0** |
+| `lifetime.graph_balance_failures` | 0 | **0** |
+
+The two streamed wrap counts are section 3.4's arithmetic at the fixture's own scale —
+`(n_layer + 2) x (1 + N)` = `4 x 2` and `4 x 4` — which is the same formula that gives the reference
+model's 306 at `n_layer` 16 and `N` 16. `fill_bytes` 4,896 is strictly below `resident_bytes` 90,112
+because the staging region is never filled from the pack, and the block asserts that inequality
+rather than the constant.
+
+**Oracle D holds on three pairs**: `md-engine-ok` against `mdr-resident-dense-1`, `md-steps-3`
+against `mdr-resident-dense-steps`, and the staging-boundary case against a streamed twin run inline.
+Each `dense` leg differs from its streamed twin in exactly the `RESIDENT` operand. `mdr-arity-14` is
+**byte-identical** to the nine-operand `md-stub-unavailable`, which is "absence is `-`" asserted in
+bytes rather than described.
+
+**The goldens.** `scripts/moe-decode-step-golden.jsonl` goes from 59 to **69** rows. Every one of the
+59 existing rows gained `"schema_version": 2` and a `weights` object and **nothing else** — checked
+field by field against the committed file, not by eye. No other golden or fixture moved:
+`scripts/decode-step-golden.jsonl` (116 rows), `layer-forward-golden.jsonl` (77),
+`model-forward-golden.jsonl` (61), `gpu-forward-golden.jsonl` (28),
+`moe-layer-forward-golden.jsonl` (80), `moe-model-forward-golden.jsonl` (98), and
+`ggml-spike-golden.jsonl` (43) are byte-unchanged, which is section 5.3's and 5.4's cell.
+
+**Four ledger mutants, each of which must kill the owner, and each of which did.** Every arm edits
+one shipped line, rebuilds, and runs `gmake layer-forward-smoke`; the harness restores from a file
+copy between arms (section 13 item 13).
+
+| Mutant | The line | What caught it |
+| --- | --- | --- |
+| **M1** per-step dense refill (`if !resident` -> `if true`) | `decode_pass`'s layer fill | the counter alone: `a dense run read 2816 dense pack bytes in its decode steps`. Every oracle still passed, which is exactly why the metric is a syscall counter |
+| **M2** wrong region base (`layout.base[1 + layer]` -> `layout.base[1]`) | `decode_pass`'s layer view | **oracle D**, on all three pairs, at `steps[].routed.layers[]`, `steps[].sha256`, `residency.union_keys_final` and eight more fields — a resident run computing a different model |
+| **M3** the run-scope wrap never freed | `schedule_decode`'s teardown | `graph_balance_failures` 1 and `released_before_owner_scope_end` false, on both `dense` cases, and oracle D beside them |
+| **M4** the counter condition written unconditionally (`created != 1` without the success guard) | `schedule_decode`'s balance check | `mdr-force-resident-wrap`: `a failure before the wrap existed reported 1 balance failure(s); the run-scope check is asserting presence, not balance` — which is section 7 risk 1's whole point |
+
+M1 is the load-bearing one: it is the mutant every *correctness* oracle passes. If the primary metric
+had been the arithmetic `residency.dense_bytes_read` rather than the reader's own counter, nothing in
+this repository would have caught it.
+
+### 12.3 The measurement
+
+**Section 2's arithmetic, reproduced from the pack document alone.** Before any timed run, the
+reference model was packed once and its 3,219 member records walked by section 2.2's rule,
+independently of the arm and of anything the arm publishes. Every figure section 2 asserts came back
+exact:
+
+| Section 2 says | The pack document's own records say |
+| --- | --- |
+| `block_align` 4,096, 1,058 blocks, 3,219 members | 4,096, 1,058, 3,219 |
+| dense is 34 blocks and 147 members | 34, 147 |
+| `WeightBlock` 2 blocks / 3 members / 142,469,120 B | 2 / 3 / 142,469,120 |
+| `AttentionBlock` 16 / 112 / 160,038,912 B | 16 / 112 / 160,038,912 |
+| `RouterBlock` 16 / 32 / 8,519,680 B | 16 / 32 / 8,519,680 |
+| `ExpertBlock` 1,024 / 3,072 / 3,900,702,720 B | 1,024 / 3,072 / 3,900,702,720 |
+| dense member payload 311,027,712 B | 311,027,712 |
+| `row_bytes` 1,152; table 57,950,208; stage 36,864; head 84,520,960 | 1,152 / 57,950,208 / 36,864 / 84,520,960 |
+| two layer flavours, 9,994,240 and 11,075,584, summing to 168,558,592 | exactly two distinct values, 9,994,240 and 11,075,584, sum 168,558,592 |
+| **region 311,066,624 B** | **311,066,624** |
+
+`scripts/run-moe-decode-step` performs the same walk on every qualification run and asserts it
+against `weights.resident_bytes`, so this is a shipped check and not a one-off; section 7 risk 4 is
+why it reads the container rather than the arm.
+
+MRD-RESULT-BENCH
+
+### 12.4 Verification, exact commands and results
+
+All on the reference host (Apple M1, 8 cores, 16 GiB, macOS 26.5.2, `darwin/arm64`), pin
+`3a34febe912db5096c58c74fede36ff53f223e04`, through the repository wrapper.
+
+| Command | Result |
+| --- | --- |
+| `gmake build` | PASS |
+| `gmake check` | PASS |
+| `gmake fmt` | PASS, no reformatting of the diff |
+| `gmake format-check` | PASS |
+| `gmake gate-topology-check` | PASS |
+| `gmake ggml-spike-smoke` | PASS |
+| `gmake layer-forward-smoke` | PASS — section 12.2, all seven blocks |
+| the four ledger mutants | all four **died**; section 12.2's table |
+| `git diff --check` | clean |
+| `gmake moe-decode-step-qualification` | MRD-RESULT-QUAL |
+
+**What was not run, and why.** `make ci` is not selected: this capability changes no aggregate
+membership, no check topology, and no integration behaviour, and its ledger names no aggregate.
+The installed platform profile is not selected for the same reason. `.align-revision` is unchanged.
+The security, resource, race, fuzz, stress, mutation, and benchmark suites own boundaries this diff
+does not touch. `gmake decode-step-qualification` is **not** re-run by this capability's own
+authority — `src/decode_step.align` and `src/model_forward.align` are byte-unchanged here and its
+116-row golden is byte-unchanged, which is section 5.4's cell; the merge with `main` moves those
+files from the other side and the owner is re-run after it.
+
+## 13. Deviations from sections 1 to 6, and corrections found during implementation
+
+Sections 1 to 6 are the committed pre-implementation design and were not edited. Everything the
+implementation found that differs from them is here.
+
+1. **`moe_model_forward` did not import `model_forward` at all, and section 3.5's reuse list was
+   partly a list of functions that were already duplicated.** That section says
+   `model_forward.stream_layout`, `empty_resident_layout`, `stage_embed_row`, `read_into_window`,
+   `window_put`, `prime_window`, `base_mod`, and `fill_zero` are "reused unchanged". Four of those
+   eight — `read_into_window`, `window_put`, `prime_window`, `base_mod` (and `fill_zero`, and
+   `fill_members`) — have had `moe_model_forward` twins since R5E, for Request 49's reason, and the
+   routed arm calls its own. What ships is therefore: `model_forward.ResidentLayout`,
+   `stream_layout`, `empty_resident_layout`, and `stage_embed_row` genuinely shared and reused
+   byte-unchanged; everything byte-level already duplicated and left alone.
+   **The build-graph consequence is real and section 5.5 did not predict it:** `import model_forward`
+   is added to `src/moe_model_forward.align` and to `src/moe_decode_step.align`. It creates no cycle
+   (`model_forward` imports `layer_forward`, `layer_qwen2`, `alignpack_read`, `ggml_ffi` and no
+   routed module), adds no library to any link line, and `src/ggml_spike.align` already imported both
+   sides — but it is a change to two modules' import graphs and it is recorded as one rather than
+   left to a reader of the diff.
+
+2. **The twin is roughly 65 lines, not 40, because three arithmetic helpers are private.**
+   `model_forward`'s `mul_checked`, `add_checked`, and `align_up_checked` are `fn`, not `pub fn`, so
+   `plan_resident_dense` carries character-for-character copies of all three. Section 3.5's "roughly
+   40 lines" is right about the *walk* and short about the *function*. Making them `pub` would have
+   edited `src/model_forward.align`, which section 5.3 makes a contract; duplicating them is the
+   cheaper of the two and it is Request 49's cost showing up in a second place.
+
+3. **`arena` is a reserved word in Align, and cell MRD-P1 walked straight into it.** The probe
+   declared `fn one_graph(..., borrow arena: slice<u8>, ...)` and the compiler answered
+   `expected ':'` / `expected identifier` at the parameter's column and then **thirty-one** cascading
+   top-level errors on later lines, none of which contained a defect. That is exactly repro 1 of
+   Align **Request 51**, filed by `R6-RESIDENT-WEIGHTS`, reproduced here by a reader who did not know
+   the answer; the request gains a client and no new number is taken. Every identifier this
+   capability ships uses `region`, `window`, or `resident_*`, which is ordinary code and not a
+   workaround. **The word `arena` survives in this document's prose**, where it is a noun and not an
+   identifier; the shipped source calls it the *region*.
+
+4. **Cell MRD-P1 answered YES, and the code kept the shape section 3.4 decided.** Two live wraps are
+   accepted: one long-lived wrap over a 311,066,624-byte region and one per-graph wrap over a
+   195,821,568-byte claim window, created while the first is live, placed into from **one** context,
+   computed, freed — and the long-lived wrap then reused by a second graph with a fresh context, at
+   the region's far end. Both graphs computed the correct `mul_mat` and the bytes ggml wrote were
+   visible through Align's own view of the region. Section 7 risk 2's fallback — re-wrapping the
+   region per graph — is not taken.
+
+5. **`run_moe_layer` and `run_moe_end_graph` needed a second handle each, which section 3.4 states as
+   behaviour and not as a local.** "The graph adopts the run-scope wrap and counts nothing" is
+   implemented as `weight_buffer` (what the graph places into) beside `owned_weight_buffer` (what the
+   graph must free, and which stays `null` in `dense` mode), because `teardown_layer` frees whatever
+   handle it is given. It is the same pair `src/decode_step.align:865` already carries under the name
+   `owned_buffer`.
+
+6. **`R6M_RESIDENT_BUDGET` ships as a fail-closed guard and is not input-reachable, so
+   `mdr-resident-budget` is not among the shipped cases.** Section 5.1 named it "via the
+   lowered-limits entry point idiom". That idiom — `src/alignpack_limits_smoke.align` — is a
+   **second executable** driving the shipped code with lowered bounds, and reaching this guard the
+   same way would mean threading a ceiling parameter through `execute` and adding a second entry
+   module and a second build to `scripts/run-layer-forward-smoke`, whose one build already dominates
+   that smoke's runtime. The guard covers `resident_bytes > MAX_WINDOW_BYTES` (8 GiB) and the `-1`
+   that `plan_resident_dense`'s checked arithmetic poisons an unrepresentable total with; the hosted
+   corpus's whole region is 114,688 B and its member sizes come from the container, so no operand the
+   block can write reaches either. It is deferred on the terms `R4_WINDOW_UNAVAILABLE` and
+   `R6_PLANE_UNAVAILABLE` already carry in this repository, it is listed in the smoke's
+   `UNREACHED_R6M_CODES` with that reason beside it, and section 8 gains it as a named deferral.
+
+7. **The golden went from 59 to 69 rows — section 4.7's predicted count — by a different
+   composition, and the difference is recorded rather than reconciled silently.** Section 4.7
+   predicted ten new rows from a list that included `mdr-resident-budget` (not shipped, item 6) and
+   `mdr-resident-stage-full`, and excluded `mdr-force-resident-wrap`. What ships is:
+   `mdr-arity-14`, `mdr-resident-unknown`, `mdr-resident-empty`, **`mdr-resident-case`** (new — the
+   dense arm pins `ds-resident-case` and this arm had no case-sensitivity case),
+   `mdr-resident-weights-refused`, `mdr-kv-save-unsupported`, `mdr-kv-load-unsupported`,
+   `mdr-resident-dense-1`, `mdr-resident-dense-steps`, and `mdr-force-resident-wrap`.
+   `mdr-force-resident-wrap` **does** carry a row, because this runner puts every forced case in its
+   `ORDER`; `mdr-resident-stage-full` carries **none**, on the class `r6-resident-weights.md`
+   deviation 9 measured — a 32-token prefill's accumulations differ in the last bit between
+   macOS/arm64 and Linux/x86_64, so pinning its digests would make the golden a statement about the
+   machine that regenerated it. It is asserted instead by oracle D against its own streamed twin,
+   which is a within-host comparison. `mdr-arity-13` and `mdr-arity-15` carry no row, as predicted.
+   **No existing row's fields changed value**: every one of the 59 gained `"schema_version": 2` and a
+   `weights` object and nothing else, verified field by field against the committed file.
+
+8. **A non-UTF-8 `RESIDENT` operand is refused lexically, which the ledger did not require.**
+   `resident_detail` copies the operand into the document as a JSON scalar, and a raw non-UTF-8 byte
+   there produces a document no conforming reader can decode — a malformed output from a malformed
+   input. This module already applies exactly that rule to every path operand through
+   `mm_valid_path`, so `run` refuses a non-UTF-8 `args[13]` with `Err(Error.Invalid)`, in the
+   `NO_DOCUMENT` class. It is a **strengthening beyond the ledger** and it changes no accepted or
+   named-refused value: `-`, `dense`, `weights`, and the empty string are all valid UTF-8.
+   `src/decode_step.align` does **not** do this, and correcting the dense arm belongs to whoever owns
+   that file rather than to a routed capability.
+
+9. **`weights.step_pack_bytes` is rendered as the sum of its two terms rather than accumulated.**
+   Section 3.8 calls it "their sum"; the implementation writes
+   `o.step_dense_pack_bytes + o.step_expert_pack_bytes` at render time rather than keeping a third
+   accumulator that could drift from the two it is defined by. The smoke asserts the identity on
+   **every** document, which is what makes that a property rather than a coincidence.
+
+10. **Section 3.4's wrap table is confirmed, at the fixture's own scale.** The hosted corpus has
+    `n_layer` 2, so the predicted per-pass count is `2 layers + 2 ends = 4` weight-region wraps and
+    the run total is `4 × (1 + N)`. The shipped goldens carry `wrap_count` **8** at `N = 1`
+    (`md-engine-ok`) and **16** at `N = 3` (`md-steps-3`) in `stream` mode, and **1** in `dense` mode
+    at both. The reference model's 306 and 1 are the same arithmetic at `n_layer` 16 and `N` 16.
+
+11. **No `wrap_ns` is measured on this arm, and the field that would have carried it was removed
+    rather than left unread.** `src/decode_step.align` times its wraps into `timings.wrap_ns`, and
+    the first implementation here copied that. Section 3.8 enumerates the `weights` object's fields
+    and does not include it, and this arm's `timings` renderer is item 32's; adding an unlisted field
+    to `timings` would be a format change nobody asked for, and keeping a written-but-never-rendered
+    field is worse. Both the field and its three accumulations are gone. The wrap **count** is the
+    quantity the design actually makes a claim about and it is published.
+
+12. **`weights.wrap_count` counts `buffer_from_host` **calls** over the weight region, not
+    successes, and that is `src/decode_step.align`'s semantics adopted verbatim.** Section 3.8's row
+    states the value on the paths a contract covers — 1 in `dense` mode, 306 streamed at `N = 16` —
+    and says nothing about a refused wrap. On `mdr-force-resident-wrap` the golden therefore carries
+    `wrap_count` 1 beside `resident_wraps_created` 0, which is the pair a reader wants: one attempt,
+    no wrap. Diverging from the sibling arm here would have made one field name mean two things
+    across two decode arms, which is exactly what section 3.8 refuses for `step_pack_bytes`.
+
+13. **`git checkout -- src/moe_decode_step.align` discarded roughly four hundred lines of
+    uncommitted implementation**, and it is recorded because the lesson is reusable rather than
+    because it is interesting. The first mutant harness restored the tree between arms with
+    `git checkout`, which restores from the index — and the implementation was not yet committed. The
+    work was re-applied from the edit scripts and re-verified from scratch (`gmake build`,
+    `gmake layer-forward-smoke`, the golden compared field by field against the committed file). The
+    harness now keeps a **file copy** of the pristine source and restores with `cp`, and a mutant
+    harness for uncommitted work should never use a Git command that reads the index.
+
+## 14. Ledger and closure matrix against the diff
+
+Every applicable cell of sections 3 and 5, mapped to where it is implemented and what proves it.
+Cells that moved are marked and point at their section 13 item.
+
+| Ledger row | In the diff | Evidence |
+| --- | --- | --- |
+| 3.1 arity `{5,6,7,9,10,11,14}`; 8, 12, 13, 15+ refused | `moe_decode_step.run`, one line | `mdr-arity-14` (documented), `mdr-arity-13`/`mdr-arity-15`/`md-arity-4`/`md-arity-8`/`md-arity-12` (`NO_DOCUMENT`) |
+| 3.1 `src/ggml_spike.align` byte-unchanged | not in the diff | `git diff --stat` |
+| 3.1 three new document-carrying codes; no `R6M_ARITY` constant | `CODE_RESIDENT`, `CODE_RESIDENT_BUDGET`, `CODE_KV_UNSUPPORTED` | the smoke's `DECLARED_R6M_CODES` set and its reached/declared reconciliation |
+| 3.2 `RESIDENT` at `args[13]`; `-` and `dense` only | `moe_decode_step.run` + `execute` | `mdr-resident-unknown`, `mdr-resident-empty`, `mdr-resident-case` |
+| 3.2 `weights` refused by name | `execute`'s grammar check | `mdr-resident-weights-refused`, detail `resident[weights]` asserted |
+| 3.2 `KV_SAVE`/`KV_LOAD` must be `-`, save before load, both before `RESIDENT` | `execute`, before any path work | `mdr-kv-save-unsupported`, `mdr-kv-load-unsupported` (the load case also names a refusable `RESIDENT`, so precedence is asserted) |
+| 3.2 absence is `-` | `run`'s three defaults | `mdr-arity-14` byte-identical to `md-stub-unavailable` |
+| 3.2 `weights.mode` in every document | `render_weights`, called unconditionally | every golden row; the smoke's per-case assertion |
+| 3.3 one region, over-reserved by 64, interior slice | `execute` | `mdr-resident-dense-1`, `mdr-resident-dense-steps`; the region's `% block_align == 0` assertion |
+| 3.3 budget before any allocation | `execute` | **moved** — section 13 item 6; fail-closed, not input-reachable |
+| 3.3 degraded reservation keeps `R5_WINDOW_UNAVAILABLE` | `execute`'s length check | fail-closed, Request 35, deferred |
+| 3.3 one wrap for the whole run; claim window unchanged | `schedule_decode`; `run_moe_layer` keeps its per-graph claim wrap | `weights.wrap_count == 1` in `dense`, 8/16 in `stream`; `lifetime.ggml_buffers_created == _freed` |
+| 3.4 two wraps, not one | the claim window is untouched by the hoist | cell MRD-P1 (section 13 item 4); `window.claim_placements > 0` on the `dense` leg |
+| 3.5 `plan_resident_dense`, a twin | `moe_model_forward.plan_resident_dense` | **moved** — section 13 items 1 and 2 (65 lines, not 40; three private helpers copied) |
+| 3.5 `model_forward.align` gains nothing | not in the diff | `git diff --stat`; `scripts/decode-step-golden.jsonl` 116 rows unchanged |
+| 3.6 the whole `token_embd` table resident; `stage_embed_row` for the gather | `decode_pass` and `prefill_pass` | `weights.step_dense_pack_bytes == 0`; `mdr-resident-stage-full` at the staging boundary |
+| 3.7 the performance contract | `scripts/run-moe-decode-step`'s benchmark block | section 12 |
+| 3.8 schema 2 and the `weights` object | `SCHEMA_VERSION`, `render_weights`, `render` | all 69 golden rows; the smoke's identity assertion |
+| 3.8 `step_dense_pack_bytes` reads the dense counters and not `claim_counters` | `decode_pass`'s two frame-local `Counters` | `mdr-resident-dense-*`: dense 0, expert unchanged |
+| 3.8 `step_pack_bytes` keeps its cross-arm meaning | `render_weights` | **moved** — section 13 item 9 (rendered as the sum, asserted per document) |
+| 3.8 `normalize` zeroes `fill_ns` and nothing else new | the smoke's `normalize` | the golden's non-zero `fill_pread_count`/`fill_bytes` |
+| 3.9 no physical-memory preflight | `scripts/run-moe-decode-step` gains none | the runner's preflight block is unchanged |
+| 3.10 ownership and teardown order | `schedule_decode`: wrap freed, then backend, then the frame's buffers | `released_before_owner_scope_end`; mutant M3 |
+| 4.1 oracle D | the smoke's `normalize_resident`; the runner's own copy | `md-engine-ok` vs `mdr-resident-dense-1`, `md-steps-3` vs `mdr-resident-dense-steps`, and the staging-boundary pair; mutant M2 |
+| 4.2 oracle P, new reach | `graph_identity`, unchanged | `pointer_identity_failures == 0` with `member_placements > 0` on the `dense` leg |
+| 4.3 the run-scope balance, with the success-conditioned third clause | `schedule_decode` | mutants M3 and M4; `mdr-force-resident-wrap` |
+| 4.4 the expert invariant | nothing changed on the claim path | `step_expert_pack_bytes` identical between the legs; every `steps[].residency` field inside oracle D's compared set |
+| 5.3 `src/decode_step.align` byte-unchanged | not in the diff | `git diff --stat`; `scripts/decode-step-golden.jsonl` unchanged |
+| 5.5 `ggml_ffi`, both shims, `layer_olmoe` byte-unchanged | not in the diff | `git diff --stat`; `gmake ggml-spike-smoke` |
+| 5.6 the runner's two ported helpers, oracle D, the independent recomputation, the interleaved legs, the skip switch | `scripts/run-moe-decode-step` | section 12 |
+| 5.7 the hosted fixture | `scripts/run-layer-forward-smoke` seventh block | `gmake layer-forward-smoke` |
+| 5.8 cell MRD-P1 | a throwaway probe, not committed | section 13 item 4 |

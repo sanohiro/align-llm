@@ -4986,6 +4986,19 @@ def operands(document="-", reference=SOURCE, transcript=TRANSCRIPT, width=WIDTH,
     return [ARM, pack, geometry, tokens, document, reference, transcript, width, logits, steps]
 
 
+# R6-MOE-RESIDENT-DENSE section 3.2. The fourteen-operand form: the ten above plus `KV_SAVE`,
+# `KV_LOAD`, and `RESIDENT` at positions 11, 12 and 13 — the same indices the dense arm uses, so a
+# command line cannot be silently reordered between the two arms. KV persistence is **not
+# implemented on this arm**, so the two reserved positions must both be `-`; every `mdr-*` case
+# below is therefore some `operands(...)` call plus exactly three operands, and a streamed and a
+# `dense` leg differ in nothing but the last one.
+def mdr(resident="-", kv_save="-", kv_load="-", **rest):
+    return operands(**rest) + [kv_save, kv_load, resident]
+
+
+KV_UNSUPPORTED = os.path.join(work_dir, "moe-kv-unsupported.akvp")
+
+
 # Cases whose operands are rejected before any file work: no document at all, non-zero exit.
 NO_DOCUMENT = [
     ("md-arity-4", [ARM, PACK, GEOM]),
@@ -4995,6 +5008,13 @@ NO_DOCUMENT = [
     # Twelve and above are `R6M_ARITY` too, with positions 11, 12 and 13 reserved for `KV_SAVE`,
     # `KV_LOAD` and `RESIDENT` at the same indices the dense arm uses.
     ("md-arity-12", FULL + ["extra"]),
+    # R6-MOE-RESIDENT-DENSE section 3.1. The arity set is {5, 6, 7, 9, 10, 11, 14}: fourteen is now
+    # legal and thirteen and fifteen are not. Thirteen would be an invocation that stopped inside the
+    # two reserved KV placeholders — a caller who meant something this arm cannot do — and fifteen is
+    # one operand past the grammar. Both present as `NO_DOCUMENT`, exactly as four, eight and twelve
+    # do, because there is no `R6M_ARITY` constant in the source: the arity guard is lexical.
+    ("mdr-arity-13", FULL + ["-", "-"]),
+    ("mdr-arity-15", FULL + ["-", "-", "dense", "extra"]),
     ("md-path-pack-empty", [ARM, "", GEOM, TOKENS]),
     ("md-path-geometry-empty", [ARM, PACK, "", TOKENS]),
     ("md-path-doc-empty", [ARM, PACK, GEOM, TOKENS, ""]),
@@ -5056,6 +5076,30 @@ STUB_CASES = [
      "R4_PACK_TRUNCATED"),
     ("md-coverage-gap-expert", operands(pack=path("moe-model-pack-no-expert.alignpack")),
      "R5D_CLAIM_MISSING"),
+    # ---------------------------------------------------------------------------------------------
+    # R6-MOE-RESIDENT-DENSE section 5.1's operand cells. Every one of them is refused **before any
+    # path work**, so all six run under the default stub and reach `R5_GGML_UNAVAILABLE` only when
+    # the grammar admits them.
+    # ---------------------------------------------------------------------------------------------
+    # Arity 14 accepted. Its three extra operands are all the default, so this document must be
+    # byte-identical to the nine-operand `md-stub-unavailable`, and the assertion below says so:
+    # absence **is** `-`, and this capability changes no shipped invocation.
+    ("mdr-arity-14", mdr(), "R5_GGML_UNAVAILABLE"),
+    # The residency grammar is `-` or `dense` and nothing else. The empty string is not absence.
+    ("mdr-resident-unknown", mdr(resident="extra"), "R6M_RESIDENT"),
+    ("mdr-resident-empty", mdr(resident=""), "R6M_RESIDENT"),
+    ("mdr-resident-case", mdr(resident="DENSE"), "R6M_RESIDENT"),
+    # **`weights` is refused by name**, and this is the shipped regression for it. The dense arm
+    # accepts that value; whole-model residency here would make `residency.expert_bytes` unreachable
+    # and this arm exists to publish it, so the value is refused explicitly rather than falling
+    # through a default.
+    ("mdr-resident-weights-refused", mdr(resident="weights"), "R6M_RESIDENT"),
+    # The two reserved positions. `kv[save]` is checked before `kv[load]`, and both are checked
+    # before `RESIDENT` — the load case carries an otherwise-refusable `RESIDENT` so the precedence
+    # is asserted rather than described.
+    ("mdr-kv-save-unsupported", mdr(kv_save=KV_UNSUPPORTED), "R6M_KV_UNSUPPORTED"),
+    ("mdr-kv-load-unsupported", mdr(kv_load=KV_UNSUPPORTED, resident="weights"),
+     "R6M_KV_UNSUPPORTED"),
 ]
 
 ENGINE_CASES = [
@@ -5102,6 +5146,38 @@ ENGINE_CASES = [
     ("md-logits-missing", operands(logits=path("absent.bin")), "R5_LOGITS_UNREADABLE"),
     ("md-logits-nonfinite", operands(logits=path("moe-model-logits-neg-inf.bin")),
      "R5_LOGITS_NONFINITE"),
+    # R6-MOE-RESIDENT-DENSE sections 5.1 and 5.2. Each `dense` leg is an existing streamed case plus
+    # exactly one operand's worth of difference, so oracle D below compares two invocations that
+    # differ in `RESIDENT` and nothing else:
+    #
+    #   md-engine-ok  (T=3, N=1, no transcript, no logits)  <->  mdr-resident-dense-1
+    #   md-steps-3    (T=3, N=3, no transcript, no logits)  <->  mdr-resident-dense-steps
+    ("mdr-resident-dense-1",
+     mdr(resident="dense", steps="1", transcript="-", logits="-"), ""),
+    ("mdr-resident-dense-steps",
+     mdr(resident="dense", transcript="-", logits="-"), ""),
+]
+
+# R6-MOE-RESIDENT-DENSE section 5.3's staging-boundary cell, and the dense arm's
+# `ds-resident-stage-full` case verbatim in shape. `layer_olmoe.MAX_PREFILL_TOKENS` is 32 and this
+# corpus's `n_vocab` is 32, so `0..31` is both the longest prompt this arm admits and a prompt whose
+# every id is in vocabulary — and it stages 32 **distinct** embedding rows rather than one row
+# thirty-two times, so the highest slot carries bytes that belong only to it. The width is `T + N`
+# exactly, the minimum this arm accepts.
+#
+# **It carries no golden row, on the class R6-RESIDENT-WEIGHTS deviation 9 measured.** A 32-token
+# prefill's accumulations differ in the last bit between macOS/arm64 and Linux/x86_64, so pinning its
+# digests would make the golden a statement about the machine that regenerated it. It is asserted
+# instead by oracle D against its own streamed twin, which is a within-host comparison and therefore
+# correct on every platform, plus `record()`'s document-identity assertions and the structural block
+# below.
+STAGE_FULL = "mdr-resident-stage-full"
+STAGE_FULL_TOKENS = ",".join(str(identifier) for identifier in range(32))
+STAGE_FULL_WIDTH = "33"
+STAGE_FULL_STEPS = "1"
+BOUNDARY_CASES = [
+    (STAGE_FULL, mdr(resident="dense", tokens=STAGE_FULL_TOKENS, transcript="-", logits="-",
+                     width=STAGE_FULL_WIDTH, steps=STAGE_FULL_STEPS), ""),
 ]
 
 FORCED_CASES = [
@@ -5134,6 +5210,14 @@ FORCED_CASES = [
     ("md-force-routing-id-repeat", "engine+moe-argsort-repeat", operands(), "R5D_EXPERT_ID"),
     ("md-force-carry-short", "engine+moe-carry-short", operands(), "R5E_CARRY"),
     ("md-force-residual-short", "engine+moe-residual-short", operands(), "R5_RESIDUAL"),
+    # R6-MOE-RESIDENT-DENSE section 5.1's early-exit cell, and section 7 risk 1's named regression.
+    # The invariant the run-scope counter pair asserts is **balance**, not presence: a `dense` run
+    # can fail in the window between a filled, live region and a wrap that does not exist, and the
+    # check has to stay silent when it does. `buffer_from_host` refusing is the one way an input can
+    # reach that window, and `record()`'s `graph_balance_failures == 0` assertion below is what would
+    # catch a `!= 1` condition written on the failure path.
+    ("mdr-force-resident-wrap", "engine+resident-wrap",
+     mdr(resident="dense", transcript="-", logits="-"), "R5_GGML_INIT"),
 ]
 
 PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
@@ -5204,9 +5288,52 @@ def normalize(text):
                 scrub(item)
 
     scrub(document)
+    # R6-MOE-RESIDENT-DENSE section 3.8. `fill_ns` is the only clock the `weights` object holds and
+    # the `_ns` rule above already reached it; it is named here so the exemption list is explicit.
+    # `resident_bytes`, `fill_pread_count`, `fill_bytes`, `step_dense_pack_bytes`,
+    # `step_expert_pack_bytes`, `step_pack_bytes`, `wrap_count` and both wrap counters are
+    # deliberately **not** normalized: they are deterministic and they are the claim.
+    document["weights"]["fill_ns"] = 0
     for key, placeholder in PLACEHOLDER.items():
         if document[key]:
             document[key] = placeholder
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+# R6-MOE-RESIDENT-DENSE section 4.1, **oracle D**. It is named D and not R deliberately: item 32's
+# oracle R is the routing-identity oracle and keeps its name, and this document runs both.
+#
+# `normalize` plus the `weights` object and exactly ten field names, enumerated here rather than
+# pattern-matched so the exclusion cannot quietly grow:
+#
+#   * `weights`, which is the capability's own report;
+#   * `pack.reader_pread_count` / `reader_bytes_read`, which are the claim;
+#   * `lifetime.ggml_buffers_created` / `_freed`, because the dense window's per-graph wrap is
+#     replaced by one run-scope wrap counted in its own pair (section 4.3);
+#   * the six `window.dense_*` and `window.reuse_count` fields, which describe a streamed window this
+#     run does not have.
+#
+# What stays inside the comparison is the point: the **whole** `residency` object — including
+# `expert_bytes_read`, which is precisely the number section 4.4 exists to protect — every
+# `steps[i].token_id`, `routed.layers[]`, `residency.*` and `sha256`, `window.member_placements`,
+# `window.claim_placements`, `window.pointer_identity_failures`, the head's logits, `graph` in full,
+# `verdict`, and `error_code`/`error_detail`.
+RESIDENT_EXCLUDED_BLOCKS = ("weights",)
+RESIDENT_EXCLUDED_FIELDS = (
+    ("pack", "reader_pread_count"), ("pack", "reader_bytes_read"),
+    ("lifetime", "ggml_buffers_created"), ("lifetime", "ggml_buffers_freed"),
+    ("window", "dense_bytes"), ("window", "dense_peak_block_index"),
+    ("window", "dense_peak_block_kind"), ("window", "dense_peak_block_layer"),
+    ("window", "dense_peak_block_bytes"), ("window", "reuse_count"),
+)
+
+
+def normalize_resident(text):
+    document = json.loads(text)
+    for block in RESIDENT_EXCLUDED_BLOCKS:
+        document.pop(block, None)
+    for block, field in RESIDENT_EXCLUDED_FIELDS:
+        document[block].pop(field, None)
     return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -5250,9 +5377,27 @@ def record(name, argv, expected):
     if (result.returncode == 0) != (document["status"] == "ok"):
         failures.append("%s: status %r but exit %d"
                         % (name, document["status"], result.returncode))
-    if document["kind"] != "R6_MOE_DECODE_STEP" or document["schema_version"] != 1:
+    if document["kind"] != "R6_MOE_DECODE_STEP" or document["schema_version"] != 2:
         failures.append("%s: wrong document identity %r/%r"
                         % (name, document["kind"], document["schema_version"]))
+    # R6-MOE-RESIDENT-DENSE section 3.8: the `weights` object is present in **every** document,
+    # including one refused before a file is opened, so the mode a run took is never implicit. The
+    # hazard it closes is a caller who wanted residency, forgot the operand, and read a document that
+    # did not say so.
+    weights = document.get("weights")
+    if not isinstance(weights, dict) or weights.get("mode") not in ("stream", "dense"):
+        failures.append("%s: the document published no weights mode: %r" % (name, weights))
+    elif weights["mode"] == "stream" and (weights["resident_bytes"] != 0
+                                          or weights["fill_ns"] != 0
+                                          or weights["fill_pread_count"] != 0
+                                          or weights["fill_bytes"] != 0
+                                          or weights["resident_wraps_created"] != 0
+                                          or weights["resident_wraps_freed"] != 0):
+        failures.append("%s: a streamed document published resident figures: %r" % (name, weights))
+    if isinstance(weights, dict) \
+            and weights["step_pack_bytes"] != (weights["step_dense_pack_bytes"]
+                                               + weights["step_expert_pack_bytes"]):
+        failures.append("%s: step_pack_bytes is not the sum of its two terms: %r" % (name, weights))
     if not document["abi"]["fp_contract_off"]:
         failures.append("%s: the shim was not built with -ffp-contract=off; the goldens are not "
                         "reproducible across compilers" % name)
@@ -5721,12 +5866,195 @@ for name in ("md-force-decode-position", "md-force-mask-offset"):
         failures.append("%s: %r / %r"
                         % (name, mutant["status"], mutant["oracle_decode"]["verdict"]))
 
+build_shim("engine")
+
+# ---------------------------------------------------------------------------------------------
+# R6-MOE-RESIDENT-DENSE: the residency assertions (sections 4.1 to 4.4, 5.1 and 5.2)
+# ---------------------------------------------------------------------------------------------
+
+# Absence is `-`, in bytes: fourteen operands whose last three are the defaults produce the same
+# document as nine. This capability adds no default and changes no shipped invocation.
+if produced["md-stub-unavailable"] != produced["mdr-arity-14"]:
+    failures.append("mdr-arity-14: three default operands changed the document: %s"
+                    % describe_difference(produced["md-stub-unavailable"],
+                                          produced["mdr-arity-14"]))
+
+# The refusal details, which the golden also carries but which are named here so a regenerated
+# golden cannot silently accept a different one. `kv[save]` precedes `kv[load]`, and both precede
+# `RESIDENT` — `mdr-kv-load-unsupported` also names an otherwise-refusable residency mode.
+for name, detail in (("mdr-resident-unknown", "resident[extra]"),
+                     ("mdr-resident-empty", "resident[]"),
+                     ("mdr-resident-case", "resident[DENSE]"),
+                     ("mdr-resident-weights-refused", "resident[weights]"),
+                     ("mdr-kv-save-unsupported", "kv[save]"),
+                     ("mdr-kv-load-unsupported", "kv[load]")):
+    document = json.loads(produced[name])
+    if document["error_detail"] != detail:
+        failures.append("%s: detail %r, not %r" % (name, document["error_detail"], detail))
+    if document["weights"]["mode"] != "stream":
+        failures.append("%s: a refused document must still publish a mode: %r"
+                        % (name, document["weights"]))
+
+# Oracle D. One step and three steps, each `dense` leg against the streamed case it differs from in
+# exactly the `RESIDENT` operand.
+for streamed_case, resident_case in (("md-engine-ok", "mdr-resident-dense-1"),
+                                     ("md-steps-3", "mdr-resident-dense-steps")):
+    left = normalize_resident(produced[streamed_case])
+    right = normalize_resident(produced[resident_case])
+    if left != right:
+        failures.append("oracle D (%s vs %s): %s"
+                        % (streamed_case, resident_case, describe_difference(left, right)))
+
+# The staging boundary, from the legal side. A `dense` prefill of exactly `MAX_PREFILL_TOKENS` ids
+# stages slot 31 — the highest index `stage_embed_row` can be asked for — and the streamed twin makes
+# the case an assertion about the **bytes** that slot carries rather than only about the run not
+# being refused.
+for name, argv, expected in BOUNDARY_CASES:
+    record(name, argv, expected)
+
+if STAGE_FULL not in produced:
+    failures.append("%s: the staging-boundary case produced no document" % STAGE_FULL)
+else:
+    stage_full = json.loads(produced[STAGE_FULL])
+    if stage_full["error_code"] != "" or stage_full["status"] != "ok":
+        failures.append("%s: a %d-token dense prefill was refused: %r %r"
+                        % (STAGE_FULL, len(STAGE_FULL_TOKENS.split(",")),
+                           stage_full["error_code"], stage_full["error_detail"]))
+    else:
+        if stage_full["weights"]["mode"] != "dense" \
+                or stage_full["weights"]["step_dense_pack_bytes"] != 0:
+            failures.append("%s: %r" % (STAGE_FULL, stage_full["weights"]))
+        if stage_full["decode"]["n_past_first"] != 32 \
+                or stage_full["plane"]["columns_written"] != 32 + int(STAGE_FULL_STEPS):
+            failures.append("%s: n_past_first %d and %d columns, not 32 and %d"
+                            % (STAGE_FULL, stage_full["decode"]["n_past_first"],
+                               stage_full["plane"]["columns_written"],
+                               32 + int(STAGE_FULL_STEPS)))
+        if stage_full["plane"]["roundtrip_verdict"] != "IDENTICAL":
+            failures.append("%s: oracle B is %r at the staging boundary"
+                            % (STAGE_FULL, stage_full["plane"]["roundtrip_verdict"]))
+    stage_full_streamed = normalize_resident(normalize(
+        run(mdr(tokens=STAGE_FULL_TOKENS, transcript="-", logits="-", width=STAGE_FULL_WIDTH,
+                steps=STAGE_FULL_STEPS)).stdout.decode("utf-8")))
+    if stage_full_streamed != normalize_resident(produced[STAGE_FULL]):
+        failures.append("oracle D at the staging boundary (%s): %s"
+                        % (STAGE_FULL,
+                           describe_difference(stage_full_streamed,
+                                               normalize_resident(produced[STAGE_FULL]))))
+
+# Section 2.2's layout arithmetic on this fixture, spelled out so the golden's own
+# `weights.resident_bytes` is a number with a derivation rather than a number that was observed. The
+# synthetic container's `block_align` is 4,096 and every region starts on that boundary:
+#
+#   token_embd, the whole table   n_vocab 32 x n_embd 4 x 4 B = 512 B  -> 4,096 rounded up
+#   the staging region            MAX_PREFILL_TOKENS 32 x 16 B = 512 B -> 4,096 rounded up
+#   2 routed layers + the head    the rest
+#
+# The assertions are the structural properties that hold for **any** pack, so a fixture change moves
+# the golden and not the reasoning. This is deliberately not a remembered constant: section 7 risk 4
+# is the fixture co-derivation class, and a check that asserted a number the implementation also
+# produced would prove nothing.
+RESIDENT_BLOCK_ALIGN = 4096
+RESIDENT_TABLE_BYTES = RESIDENT_BLOCK_ALIGN
+RESIDENT_STAGE_BYTES = RESIDENT_BLOCK_ALIGN
+
+for case in ("mdr-resident-dense-1", "mdr-resident-dense-steps"):
+    document = json.loads(produced[case])
+    weights = document["weights"]
+    window = document["window"]
+    lifetime = document["lifetime"]
+    steps_rows = document["steps"]
+    if weights["mode"] != "dense":
+        failures.append("%s: mode %r, not dense" % (case, weights["mode"]))
+    # The claim, and the primary metric of section 3.8: a `dense` decode step reads **zero dense**
+    # pack bytes. It is a counter and not a clock.
+    if weights["step_dense_pack_bytes"] != 0:
+        failures.append("%s: a dense run read %d dense pack bytes in its decode steps"
+                        % (case, weights["step_dense_pack_bytes"]))
+    # The co-primary invariant of section 4.4, and the whole reason this arm keeps streaming its
+    # experts: the expert measurement must not move. `step_expert_pack_bytes` is the syscall side and
+    # `steps[].residency.expert_pread_bytes` is where it comes from, so the two are reconciled here
+    # rather than assumed to agree.
+    if weights["step_expert_pack_bytes"] <= 0:
+        failures.append("%s: a dense run read no expert bytes; the measurement this arm exists to "
+                        "publish is gone: %r" % (case, weights))
+    if weights["step_expert_pack_bytes"] != sum(row["residency"]["expert_pread_bytes"]
+                                                for row in steps_rows):
+        failures.append("%s: step_expert_pack_bytes %d is not the sum of the published steps' "
+                        "expert_pread_bytes" % (case, weights["step_expert_pack_bytes"]))
+    # And `step_pack_bytes` keeps `r6-resident-weights.md` section 3.5's exact meaning — pack bytes
+    # read by decode steps only — so on this arm it is **not** zero in `dense` mode.
+    if weights["step_pack_bytes"] != weights["step_expert_pack_bytes"]:
+        failures.append("%s: step_pack_bytes %d should be exactly the expert term in dense mode"
+                        % (case, weights["step_pack_bytes"]))
+    # Section 4.3, oracle B at run scope: exactly one wrap created and exactly one freed, in a pair
+    # separate from the per-graph pair so the per-graph check keeps its meaning. `wrap_count` is the
+    # weight-region wraps of the whole run and is 1 where the streamed leg's is one per graph.
+    if weights["wrap_count"] != 1 or weights["resident_wraps_created"] != 1 \
+            or weights["resident_wraps_freed"] != 1:
+        failures.append("%s: the run-scope wrap did not balance: %r" % (case, weights))
+    if json.loads(produced["md-steps-3"])["weights"]["wrap_count"] <= 1:
+        failures.append("the streamed leg wrapped its dense window %d times, so the hoist proves "
+                        "nothing" % json.loads(produced["md-steps-3"])["weights"]["wrap_count"])
+    if lifetime["graph_balance_failures"] != 0 \
+            or not lifetime["released_before_owner_scope_end"]:
+        failures.append("%s: the dense teardown did not balance: %r" % (case, lifetime))
+    if lifetime["ggml_buffers_created"] != lifetime["ggml_buffers_freed"]:
+        failures.append("%s: the per-graph buffer pair stopped balancing under the hoist: %r"
+                        % (case, lifetime))
+    # The fill happened once and read the dense set.
+    if weights["fill_bytes"] <= 0 or weights["fill_pread_count"] <= 0:
+        failures.append("%s: the region reported no fill: %r" % (case, weights))
+    # Section 2.2, structurally: the region is the **sum** the layout walks, and a sum over every
+    # graph cannot be below the maximum over the same graphs plus the two regions streaming never
+    # holds at all.
+    if weights["resident_bytes"] % RESIDENT_BLOCK_ALIGN != 0:
+        failures.append("%s: the region is %d bytes, which is not a multiple of the container's own "
+                        "block alignment (%d)"
+                        % (case, weights["resident_bytes"], RESIDENT_BLOCK_ALIGN))
+    if weights["resident_bytes"] < window["dense_bytes"] + RESIDENT_TABLE_BYTES \
+            + RESIDENT_STAGE_BYTES:
+        failures.append("%s: the region (%d) is below the streamed peak (%d) plus the table and the "
+                        "stage" % (case, weights["resident_bytes"], window["dense_bytes"]))
+    if weights["fill_bytes"] >= weights["resident_bytes"]:
+        failures.append("%s: the fill (%d) is not below the region (%d); the staging region is "
+                        "never filled from the pack"
+                        % (case, weights["fill_bytes"], weights["resident_bytes"]))
+    # Oracle P's new reach (section 4.2). In `dense` mode every dense placement is against the
+    # region, so a run that silently fell back to a per-graph copy could not report zero here.
+    if window["pointer_identity_failures"] != 0 or window["member_placements"] <= 0 \
+            or window["claim_placements"] <= 0:
+        failures.append("%s: %d placement failures over %d member and %d claim placements"
+                        % (case, window["pointer_identity_failures"],
+                           window["member_placements"], window["claim_placements"]))
+    if document["verdict"] != "EXTERNAL":
+        failures.append("%s: verdict %r, not EXTERNAL" % (case, document["verdict"]))
+
+# Section 7 risk 1's regression, read off the forced build: a `dense` run that failed **before** the
+# wrap existed created nothing, freed nothing, and must report a perfect teardown. A `created != 1`
+# condition written unconditionally would fabricate a leak exactly here.
+wrap_refused = json.loads(produced["mdr-force-resident-wrap"])
+if wrap_refused["weights"]["mode"] != "dense" \
+        or wrap_refused["weights"]["resident_wraps_created"] != 0 \
+        or wrap_refused["weights"]["resident_wraps_freed"] != 0:
+    failures.append("mdr-force-resident-wrap: %r" % (wrap_refused["weights"],))
+if wrap_refused["lifetime"]["graph_balance_failures"] != 0:
+    failures.append("mdr-force-resident-wrap: a failure before the wrap existed reported %d "
+                    "balance failure(s); the run-scope check is asserting presence, not balance"
+                    % wrap_refused["lifetime"]["graph_balance_failures"])
+# The region was filled and live when the wrap was refused, which is what makes this the early-exit
+# window rather than an ordinary refusal.
+if wrap_refused["weights"]["fill_bytes"] <= 0:
+    failures.append("mdr-force-resident-wrap: the fill did not run, so this is not the early-exit "
+                    "window the cell is about: %r" % (wrap_refused["weights"],))
+
 build_shim("")
 
 DECLARED_R6M_CODES = {
     "R6M_TOKENS", "R6M_GEOMETRY", "R6M_KV_WIDTH", "R6M_STEPS", "R6M_PLANE_UNAVAILABLE",
     "R6M_PLANE_WRITE", "R6M_PLANE_MISMATCH", "R6M_TRANSCRIPT", "R6M_ORACLE_MISSING",
     "R6M_GEOMETRY_UNREADABLE", "R6M_CLAIM_ACCOUNTING", "R6M_ROUTED_SHAPE",
+    "R6M_RESIDENT", "R6M_RESIDENT_BUDGET", "R6M_KV_UNSUPPORTED",
 }
 # The four this block does not reach, each with its reason. `R6M_PLANE_UNAVAILABLE` and
 # `R6M_PLANE_WRITE` are fail-closed guards on an arithmetic no input can produce — the plane's size
@@ -5736,8 +6064,16 @@ DECLARED_R6M_CODES = {
 # `R6M_ROUTED_SHAPE` is section 3.11's second such relation — `stage_carry_at` refuses a short
 # `topk_image` with `R5E_CARRY` before compute, so no operand reaches the key arithmetic with a
 # `routed[]` that is not exactly `n_layer * n_expert_used` long.
+#
+# `R6M_RESIDENT_BUDGET` joins them, and its reason is different in kind and is recorded rather than
+# glossed. It guards `resident_bytes > model_forward.MAX_WINDOW_BYTES` (8 GiB) and the `-1` that
+# `plan_resident_dense`'s checked arithmetic poisons an unrepresentable total with; this corpus's
+# whole region is 114 KB and its member sizes come from the container, so no operand this block can
+# write reaches either. Reaching it would need a lowered-limits entry point of its own — a second
+# executable and a ceiling threaded through `execute` — which `docs/specs/r6-moe-resident-dense.md`
+# section 11 records as a deviation and defers on the terms `R4_WINDOW_UNAVAILABLE` already carries.
 UNREACHED_R6M_CODES = {"R6M_PLANE_UNAVAILABLE", "R6M_PLANE_WRITE", "R6M_CLAIM_ACCOUNTING",
-                       "R6M_ROUTED_SHAPE"}
+                       "R6M_ROUTED_SHAPE", "R6M_RESIDENT_BUDGET"}
 INHERITED_CODES = {
     "R4_PACK_UNREADABLE", "R4_PACK_TRUNCATED", "R5_GGML_UNAVAILABLE", "R5_GEOMETRY", "R5_SHAPE",
     "R5D_CLAIM_MISSING", "R5_ALIGNMENT", "R5_TYPE_UNSUPPORTED", "R5_SOURCE_DIVERGED",

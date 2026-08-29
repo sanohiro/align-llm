@@ -7988,6 +7988,12 @@ or, equivalently, an `align(N)` prefix admitted on a `buffer` binding.
 
 ---
 
+R6-MOE-RESIDENT-DENSE (`docs/specs/r6-moe-resident-dense.md` section 9) is one more client, and
+the count does **not** grow: in `dense` mode the 311,066,624-byte resident region replaces the dense
+window rather than joining it, so the arm still pays the 64-byte over-reservation exactly three
+times — the region, the claim window, and the KV plane. The compensation is unchanged, and the
+capability is recorded as an ordinary client rather than a sharper one.
+
 ## Request 34 — `Result` ok payloads beyond scalars (`raw`, `buffer`, records)
 
 ```text
@@ -8208,6 +8214,14 @@ b.cap() -> i64                             // the capacity actually reserved, in
 
 ---
 
+R6-MOE-RESIDENT-DENSE is recorded as a deliberately **weak** client, so this request's evidence is
+not inflated by a capability that barely exercises it. `docs/specs/r6-moe-resident-dense.md` section
+3.9 is the arithmetic: at a 311 MB region on a run that already reserves 347 MB of windows plus
+plane, a degraded reservation is an **unreachable guard** rather than the difference between a
+document and a process abort. The observable-consequence check on `weights.bytes().len()` still
+stands in for the missing report and still carries `R4_WINDOW_UNAVAILABLE` on this arm, and no
+second code was introduced for it.
+
 ## Request 36 — In-place replacement of owned array record fields and moving out of nested fields
 
 ```text
@@ -8293,6 +8307,10 @@ Extending the existing owned-field-replacement surface the checker already carri
    passes unchanged in outcome.
 
 ---
+
+R6-MOE-RESIDENT-DENSE is a **mild** client, recorded as such: `model_forward.ResidentLayout`'s
+`base`/`span` arrays are built once by `moe_model_forward.plan_resident_dense` and only read
+thereafter, so the capability cites this request without sharpening it.
 
 ## Request 37 — Compiler check-time scaling for long function bodies and `match` on `Result` inside loops
 
@@ -8521,6 +8539,11 @@ requests fewer than `b.cap()` bytes.
    outcome.
 
 ---
+
+R6-MOE-RESIDENT-DENSE is a **weaker** client than the dense arm's, and the priority is not raised on
+its account. Its one-time fill chunks 311,027,712 B through `read_into_window` at `CHUNK_BYTES`,
+which is roughly 297 `pread`s against the dense arm's 4,669 — the same shape at a fifteenth of the
+volume. It is cited as continuing evidence that the chunking is structural rather than incidental.
 
 ## Request 39 — Release of rebound `buffer` allocations before frame exit
 
@@ -9591,6 +9614,11 @@ Bind the expression to a named local on the preceding line and pass the local. T
 
 ---
 
+R6-MOE-RESIDENT-DENSE is one more client. Every `borrow` operand this capability introduces — the
+resident region's interior slice, each graph's per-layer sub-slice
+(`window[layout.base[1 + layer]..]`), the head view, and the embed stage view — is bound to a named
+local on the line before the call that consumes it, which is R5E's mitigation applied unchanged.
+
 ## Request 48 — Same-call argument aliasing between a `borrow mut` owner and its own scalar field
 
 ```text
@@ -9672,6 +9700,10 @@ nested read-only-borrow form so the two shapes agree and the rule is at least pr
 Copy the scalar to a local before the call and pass the local.
 
 ---
+
+R6-MOE-RESIDENT-DENSE is one more client. `block_align`, `n_layer`, and the layout's scalars are
+copied to locals before every call that also takes `borrow mut o`, on the pattern the arm already
+uses for `pack_total` in `schedule_decode`.
 
 ## Request 49 — A cross-module call with a `borrow mut` argument refuses every shorter-lived operand
 
@@ -9845,6 +9877,23 @@ No new syntax. Two checker changes:
 
 ---
 
+R6-MOE-RESIDENT-DENSE (`docs/specs/r6-moe-resident-dense.md` sections 3.5 and 5.3) adds a client of
+a **new shape**, and it is the sharpest-shaped one this request has. `moe_model_forward` now carries
+`plan_resident_dense`, a roughly forty-line twin of `model_forward.plan_resident` whose body differs
+from the original in exactly two tokens — `layer_olmoe.MAX_PREFILL_TOKENS` for `layer_qwen2`'s, and
+the receiving record's module — together with its own `mul_checked`, `add_checked`, and
+`align_up_checked`, which are character-for-character copies of `model_forward`'s private helpers.
+Nothing about the algorithm is architecture-specific: it walks
+`[table][stage][layer 0 .. n-1][head]` and `align_up`s each region. The duplication exists **only**
+because `model_forward.Plan` and `moe_model_forward.Plan` are different named types and Align has no
+generics at this pin to parameterize one producer over both.
+Every other piece of the mechanism is genuinely shared and is reused byte-unchanged:
+`model_forward.ResidentLayout` itself, `stream_layout`, `empty_resident_layout`, and
+`stage_embed_row`. The request's cost is therefore visible as a ratio rather than as a total — one
+duplicated **producer** against a shared record and three shared helpers — and
+`docs/specs/r6-moe-resident-dense.md` section 7 risk 7 records the drift hazard two producers of one
+index convention create.
+
 ## Request 50 — `std.os`: how much physical and available memory the host has
 
 ```text
@@ -9923,6 +9972,13 @@ explicit `N/A` line naming physical memory below 12 GiB, exiting 0. That is a co
 check — the runner already refuses to start below a disk-space floor in the same shape — and it is
 recorded here rather than treated as sufficient, because the refusal a *caller of the arm* deserves
 is a document with a code, and the arm cannot produce one.
+
+R6-MOE-RESIDENT-DENSE is explicitly **not** a client, recorded here by name so that a later reader
+counting evidence does not count it. `docs/specs/r6-moe-resident-dense.md` section 3.9 gives the
+arithmetic: the capability's peak footprint grows from 347,451,392 B to 573,997,056 B, a factor of
+1.65 against the dense arm's 9.4, so there is no host on which its operand is the difference between
+a document and an abort. **No physical-memory preflight ships**, `scripts/run-moe-decode-step` has
+none to add, and the request gains nothing from this capability.
 
 ## Request 51 — A reserved word used as an identifier should say so
 
@@ -10065,3 +10121,12 @@ or are already implemented:
 - **Working directory via app-side shell.** A `sh -c "cd <dir> && ..."` workaround exists, but it is
   fragile (shell quoting, no native exit/stream semantics); native `cwd` is requested in Request 1
   instead of relying on it.
+R6-MOE-RESIDENT-DENSE reproduced repro 1 unprompted, which is this request's first piece of evidence
+from a reader who did not already know the answer. Cell MRD-P1's throwaway probe declared
+`fn one_graph(..., borrow arena: slice<u8>, borrow claim: slice<u8>, ...)` and the compiler emitted
+`expected ':'` and `expected identifier` at the parameter's own column followed by **thirty-one**
+cascading top-level errors on later lines, none of which contained a defect; the two real causes
+took a bisection against a known-good file to find. Nothing in the diagnostic named `arena`, and the
+implementation's own identifiers avoid the word (`window`, `region`, `resident_*`) as ordinary code
+rather than as a workaround. Priority is not raised: the cost was one bisection, and it is recorded
+because the request predicted exactly this and it happened.
