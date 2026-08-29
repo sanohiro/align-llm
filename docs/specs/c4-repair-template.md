@@ -1101,7 +1101,12 @@ this host (`c4-repair-editset.md` §2.6, inherited unchanged). The `validate_eva
 `rescore` regression over all three is the only thing standing between a version-3-shaped decoder
 and their deletion.
 
-### 6.2 The named qualification and its cost ceiling
+### 6.2 The historical named qualification and its cost ceiling
+
+The command below records the qualification contract used for the sole measured v1t run. **Do not
+rerun it:** v1t is sealed after measurement. Section 11.7 owns the repaired, unqualified v1u
+successor; its current topology is rejected before provider access and has no qualification command
+until a later capability pre-commits an admissible topology.
 
 ```text
 make c4-template-gate \

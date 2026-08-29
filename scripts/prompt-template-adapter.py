@@ -55,14 +55,14 @@ from typing import Any, Mapping, Sequence
 
 
 # The repair adapter, pinned four independent ways (section 3.2): this constant, the
-# `canonical-v1t` file-set manifest, `canonical-v1e`'s manifest at the identical digest, and each
-# `prompt-v1t` task manifest's `artifacts` entry, which the snapshot helper verifies before and
+# `canonical-v1u` file-set manifest, `canonical-v1e`'s manifest at the identical digest, and each
+# `prompt-v1u` task manifest's `artifacts` entry, which the snapshot helper verifies before and
 # after every invocation. All four must agree.
 #
 # Derived from `agent/c4-repair-editset`'s final head, per section 6.5 prerequisite 1 and section
 # 10.3. That branch's review repair moved the edit-set budget to a break-on-first-overflow prefix
 # cut, which moved these bytes and re-froze `canonical-v1e`; this constant, the second-hop
-# divergence golden, and `canonical-v1t` were all re-derived in the merge commit. Nothing has to
+# divergence golden, and `canonical-v1u` were all re-derived in the merge commit. Nothing has to
 # remember: `scripts/run-prompt-template-adapter-smoke` digests the on-disk file and fails closed
 # the moment the two disagree, and ladder rows 3 and 4 bind the same value to the corpus manifests.
 #

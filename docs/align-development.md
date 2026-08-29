@@ -445,8 +445,12 @@ Four rules that generalize beyond this capability:
   record. Version 3's widened `edit_set` rule keeps it, and persists a bounded completion excerpt
   only on the eight refusal codes where no structured substitute exists.
 
-`eval/prompt/canonical-v1t/` + `eval/tasks/prompt-v1t/` is the fourth freeze, 31 members, minted by
-`scripts/freeze-canonical-v1t`. The third corpus, `eval/prompt/canonical-v1e/` +
+`eval/prompt/canonical-v1t/` + `eval/tasks/prompt-v1t/` is the measured fourth freeze, 31 members.
+It is sealed: `scripts/freeze-canonical-v1t --check` verifies its historical bytes and every write
+invocation is refused. Review repair lives instead in `eval/prompt/canonical-v1u/` +
+`eval/tasks/prompt-v1u/`, minted by `scripts/freeze-canonical-v1u`; that successor is explicitly
+unqualified and its 24-call topology is rejected before provider access against the fixed 22-call
+ceiling. The third corpus, `eval/prompt/canonical-v1e/` +
 `eval/tasks/prompt-v1e/`, minted by `scripts/freeze-canonical-v1e`, is the C4-REPAIR-EDITSET freeze
 and was not previously named in this document. The named qualification is `make c4-template-gate`;
 like `make c4-repair-gate` and `make c4-editset-gate` it joins no aggregate, and neither does

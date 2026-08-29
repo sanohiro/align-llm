@@ -56,6 +56,7 @@ import argparse
 import hashlib
 import json
 import os
+import signal
 import shlex
 import shutil
 import subprocess
@@ -71,6 +72,9 @@ DEFAULT_IMAGE = "c4-repair-measure:latest"
 # it stops and the capability boundary is reconsidered.
 COST_CEILING_SECONDS = 60 * 60
 PROVIDER_CALL_CEILING = 22
+PAIRED_SAMPLE_COUNT = 2
+VARIANT_COUNT = 2
+TERMINATION_GRACE_SECONDS = 5
 EVALUATION_ID = "c4e-measure"
 # What the evaluation container needs so `bwrap` can build its namespaces. Named here rather than
 # inlined so the run record can publish the exact grant it was given.
@@ -160,6 +164,153 @@ def run(command: list[str], **keywords: Any) -> subprocess.CompletedProcess[byte
     return subprocess.run(command, capture_output=True, check=False, **keywords)
 
 
+def enable_child_subreaper() -> None:
+    """Make orphaned Linux grandchildren reapable by this gate process."""
+    if not sys.platform.startswith("linux"):
+        return
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+        raise GateError(f"cannot own deadline descendants: {os.strerror(ctypes.get_errno())}")
+
+
+def reap_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Reap terminated members adopted from this process's uniquely owned group."""
+    if not sys.platform.startswith("linux"):
+        return
+    while True:
+        try:
+            pid, status = os.waitpid(-process.pid, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid == 0:
+            return
+        if pid == process.pid:
+            process.returncode = os.waitstatus_to_exitcode(status)
+
+
+def run_with_deadline(
+    command: list[str],
+    timeout_seconds: float,
+    *,
+    label: str,
+    cwd: str | None = None,
+    capture_output: bool = True,
+    timeout_cleanup: Any | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run one owned process group and reap it completely at a monotonic deadline."""
+    enable_child_subreaper()
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE if capture_output else None,
+        stderr=subprocess.PIPE if capture_output else None,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        if timeout_cleanup is not None:
+            try:
+                timeout_cleanup()
+            except (OSError, subprocess.SubprocessError):
+                # Cleanup is defense in depth for a named container. It must not prevent the
+                # process-group kill below from enforcing the deadline.
+                pass
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        grace_deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
+        while time.monotonic() < grace_deadline:
+            reap_process_group(process)
+            try:
+                os.killpg(process.pid, 0)
+            except (ProcessLookupError, PermissionError):
+                break
+            time.sleep(0.01)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        if process.returncode is None:
+            process.wait()
+        reap_process_group(process)
+        raise GateError(f"{label} exceeded the {timeout_seconds:.0f}s monotonic deadline") from None
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def require_qualification_command(value: str | None) -> str:
+    if not value or not value.strip():
+        raise GateError("the exact qualification command is required")
+    return value
+
+
+def immutable_image_id(completed: subprocess.CompletedProcess[bytes]) -> str:
+    image_id = completed.stdout.decode("ascii", "strict").strip()
+    digest = image_id.removeprefix("sha256:")
+    if (
+        completed.returncode != 0
+        or not image_id.startswith("sha256:")
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise GateError("the evaluation image has no immutable local identity")
+    return image_id
+
+
+def planned_provider_calls(tasks: list[dict[str, Any]]) -> int:
+    """The maximum generation calls implied by the selected corpus, before any side effect."""
+    total = 0
+    for task in tasks:
+        limits = task.get("regression_limits") if isinstance(task, dict) else None
+        repairs = limits.get("maximum_repair_loops") if isinstance(limits, dict) else None
+        if not isinstance(repairs, int) or isinstance(repairs, bool) or repairs not in (0, 1):
+            raise GateError("a gate task carries no supported maximum_repair_loops")
+        total += PAIRED_SAMPLE_COUNT * VARIANT_COUNT * (1 + repairs)
+    return total
+
+
+def enforce_provider_call_ceiling(scope_path: Path, project: Path = HOST_ROOT) -> int:
+    """Reject an over-budget topology before provider probing, mutation, or generation."""
+    try:
+        scope_path = scope_path.resolve()
+        scope_path.relative_to(project.resolve())
+    except (OSError, ValueError):
+        raise GateError("the gate scope escapes the project") from None
+    if not scope_path.is_file():
+        raise GateError("the gate scope is unavailable")
+    scope = load(scope_path)
+    corpus_id = scope.get("corpus_id")
+    if not isinstance(corpus_id, str) or not corpus_id:
+        raise GateError("the gate scope has no corpus identity")
+    corpus_path = scope_path.parent / "corpus.json"
+    corpus = load(corpus_path)
+    if corpus.get("corpus_id") != corpus_id:
+        raise GateError("the gate scope and corpus identities disagree")
+    task_files = corpus.get("task_files")
+    if not isinstance(task_files, list) or not task_files:
+        raise GateError("the gate corpus has no tasks")
+    tasks = []
+    for relative in task_files:
+        if not isinstance(relative, str) or not relative:
+            raise GateError("the gate corpus carries an invalid task path")
+        task_path = (project / relative).resolve()
+        try:
+            task_path.relative_to(project.resolve())
+        except ValueError:
+            raise GateError("a gate task path escapes the project") from None
+        tasks.append(load(task_path))
+    possible = planned_provider_calls(tasks)
+    if possible > PROVIDER_CALL_CEILING:
+        raise GateError(
+            f"the selected corpus can make {possible} provider calls, exceeding the precommitted "
+            f"ceiling of {PROVIDER_CALL_CEILING}; rejected before the first call"
+        )
+    return possible
+
+
 def git_head(repository: Path) -> str:
     completed = run(["git", "-C", str(repository), "rev-parse", "--verify", "HEAD"])
     if completed.returncode != 0:
@@ -232,7 +383,8 @@ def build_request_inputs(root: Path, scope_relative: str, run_relative: str) -> 
     scope_path = root / scope_relative
     scope = load(scope_path)
     corpus = load(scope_path.parent / "corpus.json")
-    baseline = load(scope_path.parent / "prompt-activation-baseline-v1t.json")
+    corpus_suffix = scope["corpus_id"].removeprefix("prompt-")
+    baseline = load(scope_path.parent / f"prompt-activation-baseline-{corpus_suffix}.json")
     frozen = load(root / "eval/prompt/gate/prompt-evaluation-improved.json")
 
     run_directory = root / run_relative
@@ -248,7 +400,9 @@ def build_request_inputs(root: Path, scope_relative: str, run_relative: str) -> 
     for stale in ("result.json", "evidence.json"):
         (run_directory / stale).unlink(missing_ok=True)
 
-    baseline_relative = f"{scope_relative.rsplit('/', 1)[0]}/prompt-activation-baseline-v1t.json"
+    baseline_relative = (
+        f"{scope_relative.rsplit('/', 1)[0]}/prompt-activation-baseline-{corpus_suffix}.json"
+    )
     experiment = dict(frozen["experiment_artifact"])
     experiment["experiment_id"] = "c4e-experiment"
     experiment["scope"] = scope
@@ -302,7 +456,7 @@ def build_request_inputs(root: Path, scope_relative: str, run_relative: str) -> 
         "experiment_path": f"{run_relative}/artifacts/experiment.json",
         "parent_activation_path": baseline_relative,
         "corpus_path": f"{scope_relative.rsplit('/', 1)[0]}/corpus.json",
-        "sample_count": 2,
+        "sample_count": PAIRED_SAMPLE_COUNT,
         "acceptance_policy_path": "eval/prompt/canonical-v1/prompt-acceptance-policy.json",
         "workspace_path": str(workspace),
         "workspace_preflight_path": f"{run_relative}/artifacts/preflight.json",
@@ -514,6 +668,10 @@ def in_container(values: argparse.Namespace) -> int:
     scope_relative = values.scope
     run_relative = values.run_relative
 
+    # Repeat the host's structural guard so the internal mode cannot be invoked directly to
+    # bypass the provider-call ceiling.
+    enforce_provider_call_ceiling(root / scope_relative, root)
+
     compiler = os.environ.get("C4_TEMPLATE_ALIGNC", "/tc/alignc")
     run_directory = root / run_relative
     run_directory.mkdir(parents=True, exist_ok=True)
@@ -566,12 +724,14 @@ def in_container(values: argparse.Namespace) -> int:
         sys.stderr.write(completed.stderr.decode("utf-8", "replace")[-16384:])
         sys.stdout.write(f"diagnose: evaluator exit {completed.returncode}\n")
         return 0 if completed.returncode == 0 else 1
-    completed = run(
+    completed = run_with_deadline(
         [
             str(run_directory / "main"), "prompt", "evaluate",
             str(run_directory / "evaluate-request.json"),
             f"{run_relative}/result.json",
         ],
+        COST_CEILING_SECONDS,
+        label="container evaluator",
         cwd=str(root),
     )
     elapsed = time.monotonic() - started
@@ -589,9 +749,9 @@ def in_container(values: argparse.Namespace) -> int:
 
 
 def on_host(values: argparse.Namespace) -> int:
-    if not values.qualification_command:
-        raise GateError("the exact qualification command is required")
+    qualification_command = require_qualification_command(values.qualification_command)
     scope_path = HOST_ROOT / values.scope
+    possible_provider_calls = enforce_provider_call_ceiling(scope_path)
     policy = load(scope_path.parent / "generation-policy.json")
     control = load(HOST_ROOT / "eval/prompt/canonical-v1/evaluation-provider-control.json")
     probe = verify_provider_probe(Path(values.provider_probe), policy)
@@ -645,8 +805,9 @@ def on_host(values: argparse.Namespace) -> int:
         + (" --diagnose" if values.diagnose else "")
         + (" --diagnose-sandbox" if values.diagnose_sandbox else "")
     )
+    container_name = f"align-llm-c4-template-{os.getpid()}-{time.monotonic_ns()}"
     command = [
-        "docker", "run", "--rm", "--platform", "linux/arm64",
+        "docker", "run", "--rm", "--name", container_name, "--platform", "linux/arm64",
         # `bwrap` is the containment boundary the validation runner executes every fixture command
         # inside, and it creates user, mount, and PID namespaces to do so. Docker's default seccomp
         # profile denies those outright, so without this the runner fails as "contained validation
@@ -679,12 +840,28 @@ def on_host(values: argparse.Namespace) -> int:
         values.image, "sh", "-lc", forwarder + driver,
     ]
     image_identity = run(["docker", "image", "inspect", values.image, "--format", "{{.Id}}"])
-    image_id = image_identity.stdout.decode("ascii", "strict").strip()
-    if image_identity.returncode != 0 or not image_id.startswith("sha256:"):
-        raise GateError("the evaluation image has no immutable local identity")
+    image_id = immutable_image_id(image_identity)
+
+    def remove_timed_out_container() -> None:
+        try:
+            subprocess.run(
+                ["docker", "rm", "--force", container_name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            pass
 
     started = time.monotonic()
-    completed = subprocess.run(command, check=False)
+    completed = run_with_deadline(
+        command,
+        COST_CEILING_SECONDS,
+        label="host containerized gate",
+        capture_output=False,
+        timeout_cleanup=remove_timed_out_container,
+    )
     elapsed = time.monotonic() - started
     if completed.returncode != 0:
         raise GateError(f"the containerized gate run failed with status {completed.returncode}")
@@ -725,7 +902,8 @@ def on_host(values: argparse.Namespace) -> int:
         "wall_clock_seconds": round(elapsed, 3),
         "cost_ceiling_seconds": COST_CEILING_SECONDS,
         "provider_call_ceiling": PROVIDER_CALL_CEILING,
-        "qualification_command": values.qualification_command,
+        "possible_provider_calls": possible_provider_calls,
+        "qualification_command": qualification_command,
         "evaluation_status": result["status"],
         "gate_eligible": result["gate_eligible"],
         "corpus_aggregate": corpus,

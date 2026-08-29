@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -426,25 +427,50 @@ def hop_rows(template: ModuleType) -> ModuleType:
 
 
 def freeze_check_row() -> None:
-    """`--check` detects drift in a disposable copy and leaves the drifted bytes untouched."""
+    """The v1u generator is read-only in check mode and measured v1t is sealed forever."""
     with tempfile.TemporaryDirectory(prefix="prompt-template-freeze-") as scratch_name:
         copied = Path(scratch_name) / "align-llm"
         shutil.copytree(ROOT, copied, ignore=shutil.ignore_patterns(".git", "run", "build"))
-        target = copied / "eval/prompt/canonical-v1t/repair-template.json"
+        target = copied / "eval/prompt/canonical-v1u/repair-template.json"
         drifted = target.read_bytes() + b"\n"
         target.write_bytes(drifted)
         policy = json.loads(
-            (copied / "eval/prompt/canonical-v1t/generation-policy.json").read_text("utf-8")
+            (copied / "eval/prompt/canonical-v1u/generation-policy.json").read_text("utf-8")
         )
         completed = subprocess.run(
             [
-                sys.executable, str(copied / "scripts/freeze-canonical-v1t"),
+                sys.executable, str(copied / "scripts/freeze-canonical-v1u"),
                 "--provider-service-revision", policy["provider_service_revision"], "--check",
             ],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, cwd=copied,
         )
         require(completed.returncode == 1, "freeze --check silently accepted generated-file drift")
         require(target.read_bytes() == drifted, "freeze --check repaired drift instead of observing it")
+
+        historical = copied / "eval/prompt/canonical-v1t/scope.json"
+        original = historical.read_bytes()
+        write_attempt = subprocess.run(
+            [
+                sys.executable, str(copied / "scripts/freeze-canonical-v1t"),
+                "--provider-service-revision", "sealed",
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, cwd=copied,
+        )
+        require(write_attempt.returncode == 2, "sealed v1t accepted a write invocation")
+        require(historical.read_bytes() == original, "sealed v1t write invocation changed bytes")
+        historical.write_bytes(original + b"\n")
+        sealed_check = subprocess.run(
+            [
+                sys.executable, str(copied / "scripts/freeze-canonical-v1t"),
+                "--provider-service-revision", "sealed", "--check",
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, cwd=copied,
+        )
+        require(sealed_check.returncode == 1, "sealed v1t check accepted historical drift")
+        require(
+            historical.read_bytes() == original + b"\n",
+            "sealed v1t check repaired historical drift",
+        )
 
 
 def gate_derivation_rows() -> None:
@@ -464,6 +490,106 @@ def gate_derivation_rows() -> None:
     require(gate["ran_attempt_count"](result) == 2, "ran attempt count was not derived from rows")
     report = gate["paired_completion_agreement"](result)
     require(not report[0]["samples_agree"], "two missing completion identities were called agreement")
+
+    corpus = json.loads((ROOT / "eval/prompt/canonical-v1u/corpus.json").read_text("utf-8"))
+    tasks = [json.loads((ROOT / path).read_text("utf-8")) for path in corpus["task_files"]]
+    require(
+        gate["planned_provider_calls"](tasks) == 24,
+        "the repaired scope's maximum provider-call topology was not derived as 24",
+    )
+    admissible = dict(tasks[0])
+    admissible["regression_limits"] = {
+        **tasks[0]["regression_limits"], "maximum_repair_loops": 0,
+    }
+    require(
+        gate["planned_provider_calls"]([admissible]) == 4,
+        "the admissible no-repair stub's provider-call topology was not derived as four",
+    )
+    try:
+        gate["enforce_provider_call_ceiling"](
+            ROOT / "eval/prompt/canonical-v1u/scope.json", ROOT,
+        )
+    except gate["GateError"] as failure:
+        require("24 provider calls" in str(failure), "the structural rejection lost its count")
+    else:
+        raise RuntimeError("the 24-call repaired scope passed the 22-call ceiling")
+
+    require(
+        gate["require_qualification_command"]("make c4-template-gate")
+        == "make c4-template-gate",
+        "the exact qualification command did not survive validation",
+    )
+    try:
+        gate["require_qualification_command"](None)
+    except gate["GateError"]:
+        pass
+    else:
+        raise RuntimeError("a missing qualification command was accepted")
+    immutable = "sha256:" + "0" * 64
+    image = subprocess.CompletedProcess(["docker"], 0, (immutable + "\n").encode("ascii"), b"")
+    require(
+        gate["immutable_image_id"](image) == immutable,
+        "the immutable image identity did not survive validation",
+    )
+    try:
+        gate["immutable_image_id"](subprocess.CompletedProcess(["docker"], 0, b"latest\n", b""))
+    except gate["GateError"]:
+        pass
+    else:
+        raise RuntimeError("a mutable image label was accepted as image identity")
+
+    with tempfile.TemporaryDirectory(prefix="c4-template-gate-preflight-") as scratch_name:
+        scratch = Path(scratch_name)
+        publication = scratch / "published"
+        status = gate["main"]([
+            "--scope", "eval/prompt/canonical-v1u/scope.json",
+            "--provider-probe", str(scratch / "must-not-be-read.json"),
+            "--out", str(publication),
+            "--qualification-command", "deterministic preflight stub",
+        ])
+        require(status == 1, "the over-budget topology reached the provider phase")
+        require(not publication.exists(), "the rejected topology created a publication directory")
+
+        heartbeat = scratch / "heartbeat"
+        child_pid = scratch / "child-pid"
+        cleanup = scratch / "cleanup"
+        child_source = (
+            "import pathlib,sys,time\n"
+            "path=pathlib.Path(sys.argv[1]); counter=0\n"
+            "while True:\n"
+            " path.write_text(str(counter)); counter += 1; time.sleep(0.01)\n"
+        )
+        parent_source = (
+            "import pathlib,subprocess,sys,time\n"
+            "child=subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]])\n"
+            "pathlib.Path(sys.argv[3]).write_text(str(child.pid))\n"
+            "time.sleep(60)\n"
+        )
+        started = time.monotonic()
+        try:
+            gate["run_with_deadline"](
+                [sys.executable, "-c", parent_source, child_source, str(heartbeat), str(child_pid)],
+                0.3,
+                label="deterministic deadline stub",
+                timeout_cleanup=lambda: cleanup.write_text("called", encoding="utf-8"),
+            )
+        except gate["GateError"]:
+            pass
+        else:
+            raise RuntimeError("the monotonic deadline accepted a hung process tree")
+        require(time.monotonic() - started < 2, "the deadline did not stop the process tree promptly")
+        require(cleanup.read_text("utf-8") == "called", "deadline cleanup did not run")
+        require(child_pid.is_file() and heartbeat.is_file(), "the hung child stub never started")
+        stopped_at = heartbeat.read_text("utf-8")
+        time.sleep(0.1)
+        require(heartbeat.read_text("utf-8") == stopped_at, "a timed-out child remained active")
+        if LINUX:
+            try:
+                os.waitpid(int(child_pid.read_text("utf-8")), os.WNOHANG)
+            except ChildProcessError:
+                pass
+            else:
+                raise RuntimeError("the timed-out Linux grandchild remained waitable")
 
 
 def cleanup_precedence_row(template: ModuleType, frozen: ModuleType) -> None:

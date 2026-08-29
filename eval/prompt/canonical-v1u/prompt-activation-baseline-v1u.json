@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
   "artifact_kind": "PROMPT_ACTIVATION_RESULT",
-  "decision_id": "baseline-v1t",
+  "decision_id": "baseline-v1u",
   "status": "BASELINED",
   "error_code": "NONE",
   "error": "",
   "activation": {
     "schema_version": 1,
     "artifact_kind": "PROMPT_ACTIVATION",
-    "activation_id": "baseline-v1t/activation",
+    "activation_id": "baseline-v1u/activation",
     "operation": "BASELINE",
     "scope": {
       "schema_version": 1,
@@ -16,22 +16,22 @@
       "repo_id": "prompt-v1-fixture",
       "repo_profile_revision": "prompt-v1-repo-profile-1",
       "align_revision": "3a34febe912db5096c58c74fede36ff53f223e04",
-      "corpus_id": "prompt-v1t",
+      "corpus_id": "prompt-v1u",
       "corpus_revision": {
         "schema_version": 1,
         "artifact_kind": "CORPUS_REVISION",
         "source_kind": "FILE_SET",
         "source_repository_id": "",
-        "source_sha256": "5e38f2e6019ccb18ec94f17e1f659c8f07bc0101c1a6c97ec957a16cdcc0e1b2",
-        "content_sha256": "43aed43f70aeee14e6c6c625bdc53b338063cbd9aa0fcf7cd342312282f9c141"
+        "source_sha256": "30f96762ba6675b06b3658342311c896789ea7fe1a69debf10775d87d4bded11",
+        "content_sha256": "90975d81706c73afd6ae914d93a655c548ee524d8c10763298612a6f94b742f8"
       },
       "evaluation_provider_kind": "LOCAL_OPENAI",
       "evaluation_provider_model": "qwen2.5-coder-7b-instruct-q4_k_m",
-      "generation_policy_sha256": "8dd9f0018315376799567adba2d90493c4e654c5be84645ec714558144d1180d",
+      "generation_policy_sha256": "bbe68a8c3f225a43b45b9acb05e7e20a0eda1cf02ef895d0db0819bc182f0812",
       "acceptance_policy_sha256": "7b7070aa292b404908c1a6cac66aa8ec93db1e247971ad3832cddda34793ccc3",
       "base_prompt_sha256": "a9c23b5ab11aa3b03514db43d4b994ad2f79dbc0040376231f4931e41ff9da0a",
       "repo_prompt_sha256": "1be40aada3352a4622eed7446820cacd1127b0ffaecc74a3a796aeba5fcd1d21",
-      "content_sha256": "84a5e39536ab756a07f8d73d052a58d9ed01b67a1cf29b571e3282aab5cb6d81"
+      "content_sha256": "e05716152949a22dcbd93ad7af946b5bf3a8919efc30cd00e2729c26b137d20a"
     },
     "parent_activation_id": "",
     "parent_activation_sha256": "",
@@ -71,7 +71,7 @@
     "rollback_target_activation_id": "",
     "rollback_target_activation_sha256": "",
     "decision_reason": "",
-    "content_sha256": "e826e63e6cbe04118a4df37b36e71bed85947427f3de3a8e4cac1598bbcdf802"
+    "content_sha256": "46e135fbae9d7d3896d5b9e404f4a75625ea6e380da1e9b26c1054da60a3b3c8"
   },
-  "content_sha256": "eeb544dffeeb1f2fb1b9b6456a81206e88f8885fc9e8a8515630778280f416f9"
+  "content_sha256": "2a4ff3a25b53a68010a0ef2415976b61446377e988b0a3b483435c20b09707fa"
 }

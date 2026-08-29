@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "REPAIR_PROMPT_TEMPLATE",
+  "template_id": "prompt-v1u-repair-v1",
+  "preamble_text": "--- previous attempt failed the repository's own validation ---\nYour previous answer for this task was applied to a pristine checkout of the repository and\nthe declared validation command still did not exit zero. The status labels, your own edits,\nand the captured validation output from that attempt follow.\n\nThe blocks below are the exact text you emitted last time, in the same format your answer\nmust use. They were applied and they were rejected by the repository's own validation. Do not\nreturn them unchanged.\n\nProduce a corrected answer now. Requirements, unchanged from the task above:\n- Return whole-file blocks, never a diff. For every file you change, emit one\n  `FILE: <repo-relative-path>` line followed by a fenced block holding that file's complete\n  new content. Text outside those blocks is ignored.\n- Change only the files the task prompt declares editable.\n- Your answer must actually change something. A `FILE:` block whose content is identical to\n  that file's current content is refused before the tests run, and an answer whose blocks are\n  all identical to the current files is not an answer.\n- Never change, weaken, delete, or skip a test.\n- Make the smallest change that makes the validation command exit zero.\n\nOne block looks exactly like this:\n\nFILE: path/to/file.py\n```\n<the entire new content of that file, from its first line to its last>\n```\n\nRead the diagnostics below before you answer. They are the actual output of the actual\nvalidation run, not a description of it.",
+  "section_headers": {
+    "STATUS": "--- previous attempt: validation status ---",
+    "POLICY": "--- edit policy: what your answer must satisfy ---",
+    "EDITSET": "--- previous attempt: your rejected answer, as you wrote it ---",
+    "SUMMARY": "--- previous attempt: diagnostic summary ---",
+    "STDOUT": "--- previous attempt: validation stdout ---",
+    "STDERR": "--- previous attempt: validation stderr ---"
+  },
+  "closing_text": "--- answer format, repeated ---\nEmit one `FILE: <repo-relative-path>` line per edited file, each followed by a fenced block\nholding that file's complete new content. Emit nothing else.",
+  "content_sha256": "c6a4c8c99a277af7e0fad4a83265131b9a75698228bdb9feaa6af21b2d9fcddb"
+}

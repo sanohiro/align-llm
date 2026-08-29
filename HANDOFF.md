@@ -8,8 +8,9 @@ file records durable project state.
 Branch `agent/c4-repair-template`, merged with `agent/c4-repair-editset` (`6ccbb88`) and
 `origin/main` (`451aa66`, PR #155) by merge, never rebase. Stable reviewed head was `6b73560`, with
 base tip and merge base both `451aa66`. The consolidated review repair is committed as
-`a36b15bfce75eebf2b961906220dcfc7842ba7d6`, owner-verified, and awaits its final review and
-publication.
+`a36b15bfce75eebf2b961906220dcfc7842ba7d6`. Final-review re-scope was committed before
+implementation as `f9cd0a59e6b734974614af816ee4f835cfa72c67`; its implementation is owner-verified
+and is the active publication candidate.
 
 **Qualification correction.** The immutable evaluation has 12 initial plus 12 repair attempts:
 **24 provider calls**, not the pre-committed maximum of 22. The wall time was 700.452 s inside the
@@ -69,12 +70,28 @@ evaluator and host Docker boundary receive monotonic deadlines and terminate the
 group/container on expiry. Deterministic stubs own topology rejection, deadline cleanup, and
 no-publication behavior.
 
-**Next actions.** (1) Implement and owner-verify that re-scoped boundary. (2) Inspect the complete
-delta without starting another comprehensive-review loop; if the re-scope cannot close the findings
-coherently, stop C4 as blocked rather than patching around it. (3) Run exact-head fresh-image
-preflight with `prompt-template-adapter-smoke` as owner. (4) Publish an English PR with all review
-envelopes, finding dispositions, correction, and exact verification; merge with `--merge`. (5)
-Refresh `main` and begin roadmap item 38, R6-PREFIX-TTFT.
+**Re-scope implementation and verification.** The thirteen measured v1t files are restored
+byte-for-byte to `6b73560`; its replacement freeze command is check-only and refuses writes. The
+repaired fifth freeze is `canonical-v1u` + `prompt-v1u`, 31 members, and is marked `UNQUALIFIED`.
+The gate derives 24 possible calls and rejects before provider probing or output-directory creation;
+both the host Docker child and in-container evaluator have monotonic process-group deadlines, and
+Linux uses `PR_SET_CHILD_SUBREAPER` to reap terminated grandchildren. Deterministic stubs cover the
+24-vs-22 refusal, an admissible four-call topology, missing exact command, malformed image identity,
+no publication, deadline cleanup, child termination, and Linux reaping.
+
+All 13 macOS owners from section 11.5 pass together with the required Homebrew library path. The
+full Linux/aarch64 template-adapter smoke and `run-prompt-evaluate-smoke` pass in immutable image
+`sha256:33fa9e4446ab…` using the pinned-revision Linux compiler. Both v1t sealed verification and
+v1u reproducibility check pass; the three historical gate JSON artifacts are unchanged. Linux
+`make baseline-check` ends `baseline chain: PASS`; `make fmt`, Python syntax compilation, and
+`git diff --check` pass. The provider qualification was not rerun.
+
+**Next actions.** (1) Commit the owner-verified re-scope implementation and record its exact head.
+(2) Inspect the complete re-scope delta without starting another comprehensive-review loop; if it
+does not close the findings coherently, stop C4 as blocked. (3) Run exact-head fresh-image preflight
+with `prompt-template-adapter-smoke` as owner. (4) Publish an English PR with all review envelopes,
+finding dispositions, correction, and exact verification; merge with `--merge`. (5) Refresh `main`
+and begin roadmap item 38, R6-PREFIX-TTFT.
 
 **Blockers.** None technical. Do not rerun the provider qualification: its structurally possible 24
 calls exceed the fixed 22-call contract, and section 11.4 records the required boundary

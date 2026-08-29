@@ -1570,13 +1570,13 @@ def verify_constant_parity_boundary() -> None:
     )
     # The frozen corpus asset says the same thing, so the run cannot disagree with the test.
     frozen = json.loads(
-        (SOURCE / "eval/tasks/prompt-v1t/duration-half-away-from-zero.json").read_text("utf-8")
+        (SOURCE / "eval/tasks/prompt-v1u/duration-half-away-from-zero.json").read_text("utf-8")
     )["edit_policy"]
     require(
         frozen["maximum_file_blocks"] == module.MAXIMUM_FILE_BLOCKS
         and frozen["maximum_edit_bytes"] == module.MAXIMUM_EDIT_BYTES
         and frozen["refuse_unchanged_files"] is True,
-        f"constant-parity: the frozen prompt-v1t edit policy disagrees: {frozen!r}",
+        f"constant-parity: the frozen prompt-v1u edit policy disagrees: {frozen!r}",
     )
 
 
@@ -1622,7 +1622,7 @@ def verify_template_attempt_boundary() -> None:
     """`POLICY` and the version-3 measurement through the loop: rows 8-11, 14-21, and 25."""
     module = repair_evaluator_module("prompt_evaluate_template")
     template = json.loads(
-        (SOURCE / "eval/prompt/canonical-v1t/repair-template.json").read_text(encoding="utf-8")
+        (SOURCE / "eval/prompt/canonical-v1u/repair-template.json").read_text(encoding="utf-8")
     )
     generation = {"max_prompt_bytes": 65_536}
     seed = 20_260_824
@@ -1633,7 +1633,7 @@ def verify_template_attempt_boundary() -> None:
     # three ways. Neither earlier template may stand in for this one.
     require(
         module.valid_repair_template(template, module.expected_template_kinds(TEMPLATE_TASK)),
-        "template-template: the canonical-v1t template was rejected for its own corpus",
+        "template-template: the canonical-v1u template was rejected for its own corpus",
     )
     for other in (EDITSET_TASK, FROZEN_TASK):
         require(
@@ -1676,7 +1676,7 @@ def verify_template_attempt_boundary() -> None:
     # rather than against a hand-rolled restatement of the rule. A restatement passes even when the
     # rule it describes has been deleted, which is exactly what a mutation run exposes.
     frozen_task = json.loads(
-        (SOURCE / "eval/tasks/prompt-v1t/duration-half-away-from-zero.json").read_text("utf-8")
+        (SOURCE / "eval/tasks/prompt-v1u/duration-half-away-from-zero.json").read_text("utf-8")
     )
     module.validate_input_artifact_shape("PROMPT_EVALUATION_TASK", frozen_task)
 
@@ -1726,11 +1726,11 @@ def verify_template_attempt_boundary() -> None:
         frozen_task["task_prompt_path"] in {
             item["path"] for item in frozen_task["artifacts"] if item["kind"] == "FILE"
         },
-        "template-row13: the frozen prompt-v1t task does not declare its own task prompt",
+        "template-row13: the frozen prompt-v1u task does not declare its own task prompt",
     )
     require(
-        frozen_task["task_prompt_path"].startswith("eval/tasks/prompt-v1t/"),
-        "template-row13: the prompt-v1t task reads an earlier corpus's task prompt",
+        frozen_task["task_prompt_path"].startswith("eval/tasks/prompt-v1u/"),
+        "template-row13: the prompt-v1u task reads an earlier corpus's task prompt",
     )
     legacy = json.loads(
         (SOURCE / "eval/tasks/prompt-v1e/duration-half-away-from-zero.json").read_text("utf-8")

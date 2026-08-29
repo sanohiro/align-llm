@@ -114,7 +114,7 @@ MULTIBYTE_BODY = "éé🙂éé🙂abcdefghij"
 
 REPAIR_TEMPLATE_PATH = SOURCE / "eval/prompt/canonical-v1r/repair-template.json"
 EDITSET_TEMPLATE_PATH = SOURCE / "eval/prompt/canonical-v1e/repair-template.json"
-TEMPLATE_TEMPLATE_PATH = SOURCE / "eval/prompt/canonical-v1t/repair-template.json"
+TEMPLATE_TEMPLATE_PATH = SOURCE / "eval/prompt/canonical-v1u/repair-template.json"
 FROZEN_EVALUATION_PATH = SOURCE / "eval/prompt/gate/prompt-evaluation-improved.json"
 SANDBOX_RESIDUE = re.compile(r"/tmp/align-llm-coding-task-[A-Za-z0-9_]+")
 # A fixed synthetic attempt-1 measurement. Every byte the repair prompt draws from a failing
@@ -264,7 +264,7 @@ def template_template_cases(module) -> None:
     template = template_template()
     require(
         module.valid_repair_template(template, module.REPAIR_SECTION_KINDS_V3),
-        "template-decode: the sealed canonical-v1t template was rejected",
+        "template-decode: the sealed canonical-v1u template was rejected",
     )
     require(
         tuple(template["section_headers"])

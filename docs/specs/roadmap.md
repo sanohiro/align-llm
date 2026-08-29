@@ -1042,9 +1042,12 @@ The current forward delivery order is:
     already built and then threw away. Versions 1 and 2 stay decodable forever and
     `PROMPT_TASK_ROW` does **not** move. `scripts/prompt-template-adapter.py` loads
     `scripts/prompt-repair-adapter.py` by path, which loads the frozen base adapter by path, so
-    containment still has exactly one copy and each hop's divergence is a checked-in golden. New
-    freeze `eval/prompt/canonical-v1t/` + `eval/tasks/prompt-v1t/`, 31 members, 22 carried from
-    `canonical-v1e` at identical digests and 21 of those identical in all four manifests.
+    containment still has exactly one copy and each hop's divergence is a checked-in golden.
+    Measured freeze `eval/prompt/canonical-v1t/` + `eval/tasks/prompt-v1t/`, 31 members, 22 carried
+    from `canonical-v1e` at identical digests and 21 of those identical in all four manifests. It
+    is sealed after measurement: its check command is read-only and write invocations fail. Review
+    repair is isolated in the distinct, unqualified `canonical-v1u` + `prompt-v1u` successor; its
+    24-call topology is rejected before provider access against the unchanged 22-call ceiling.
     **Attempt 1 changes too**, identically for both variants, because six of the ten refusals are
     attempt-1 refusals and time to a passing patch is the primary metric; the cost, stated before
     the run, is that this run measures the version-3 contract end to end rather than the repair

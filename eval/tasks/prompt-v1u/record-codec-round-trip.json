@@ -16,13 +16,13 @@
     "/usr/bin/python3",
     "scripts/prompt-snapshot-helper.py"
   ],
-  "measurement_adapter_runtime": "PYTHON:03379e260e5472146a8bab1ec0487f5fa3137bf6ec5c883dbbf2c8d1984add4c",
+  "measurement_adapter_runtime": "PYTHON:d7db8af661ec4e45353b690be58d0dc932d4bf7527fab8ac7354a2ffe90f9dc2",
   "snapshot_helper_runtime": "PYTHON:9621307752feed0e18ec185f7c860412365299b1b7a034db118b95ec7b449aa6",
   "cwd": ".",
   "timeout_ns": 30000000000,
-  "task_prompt_path": "eval/tasks/prompt-v1t/record-codec-round-trip/task-prompt.json",
+  "task_prompt_path": "eval/tasks/prompt-v1u/record-codec-round-trip/task-prompt.json",
   "context_sources_path": "eval/tasks/prompt-v1/record-codec-round-trip/context-sources.json",
-  "generation_policy_path": "eval/prompt/canonical-v1t/generation-policy.json",
+  "generation_policy_path": "eval/prompt/canonical-v1u/generation-policy.json",
   "provider_control_path": "eval/prompt/canonical-v1/evaluation-provider-control.json",
   "environment_policy_path": "eval/prompt/gate/environment-policy.json",
   "validation_runner_path": "eval/runners/run-coding-task.py",
@@ -80,17 +80,17 @@
     {
       "path": "scripts/prompt-template-adapter.py",
       "kind": "FILE",
-      "expected_sha256": "40e648b1d7bb965cbc5c4bb7bdfb7bf8f54fac895831ef8c8df6d7d71f8c23f4"
+      "expected_sha256": "ea88566fafd5f521d36186efbd33417011774bb4bfa6e4214dc72f1040de8de9"
     },
     {
-      "path": "eval/prompt/canonical-v1t/repair-template.json",
+      "path": "eval/prompt/canonical-v1u/repair-template.json",
       "kind": "FILE",
-      "expected_sha256": "d206cb031048aa6c5a542bfe6c89a5765589505bffa2c73dfa4f0da558907851"
+      "expected_sha256": "264ddb6217b39430bd9c8967e22fa6e4655b76e4e25427e234f97abc0a4de08e"
     },
     {
-      "path": "eval/tasks/prompt-v1t/record-codec-round-trip/task-prompt.json",
+      "path": "eval/tasks/prompt-v1u/record-codec-round-trip/task-prompt.json",
       "kind": "FILE",
-      "expected_sha256": "eb8d3810ea8e1344ddd961f7f39866d73d316804aadccd4d580f979c5358f2f0"
+      "expected_sha256": "d0f58bc11e3795bda442725efd67cf00ffb0d5c5e2b458f82db4a79e4695bcfb"
     }
   ],
   "regression_limits": {
@@ -100,8 +100,8 @@
     "maximum_repair_loops": 1,
     "maximum_benchmark_regression_ppm": null
   },
-  "repair_template_path": "eval/prompt/canonical-v1t/repair-template.json",
-  "repair_template_sha256": "bfa87a297fa2b6b3d472076e8f02158b9a0dfdb732ef7a03182f7fea8da14568",
+  "repair_template_path": "eval/prompt/canonical-v1u/repair-template.json",
+  "repair_template_sha256": "60d9d285e5e3e2bb5e6dbfcba56951a9cd49a0231dffc7b30ab6aa5f601882d5",
   "edit_policy": {
     "schema_version": 1,
     "artifact_kind": "EDIT_POLICY",
@@ -110,5 +110,5 @@
     "refuse_unchanged_files": true,
     "content_sha256": "08a3114d0faadb811273a4aedae01ae4d983c69e302b11fdfd6b9be271452236"
   },
-  "content_sha256": "cd2c4913f5b94e69f528180bb7c7c6a6899b3dec0af66ac4842a2f51a7bf4559"
+  "content_sha256": "fcaae65631868d0e6276628bcc0cf435fb764708994785b5f0ba1c225136aa80"
 }

@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "artifact_kind": "PROMPT_EVALUATION_TASK",
-  "task_id": "record-codec-round-trip",
+  "task_id": "duration-half-away-from-zero",
   "repo_id": "prompt-v1-fixture",
-  "repo_revision": "4597a448a14a5cfb48521f9c9a796d9686cd510e",
-  "repo_path": "eval/fixtures/prompt-v1-record-codec/repository",
+  "repo_revision": "b6bae7e3872680fc847f4603484a07cbd18932c0",
+  "repo_path": "eval/fixtures/prompt-v1-duration-rounding/repository",
   "require_clean_repo": false,
   "cmd": "/usr/bin/python3",
   "argv": [
@@ -16,19 +16,19 @@
     "/usr/bin/python3",
     "scripts/prompt-snapshot-helper.py"
   ],
-  "measurement_adapter_runtime": "PYTHON:03379e260e5472146a8bab1ec0487f5fa3137bf6ec5c883dbbf2c8d1984add4c",
+  "measurement_adapter_runtime": "PYTHON:d7db8af661ec4e45353b690be58d0dc932d4bf7527fab8ac7354a2ffe90f9dc2",
   "snapshot_helper_runtime": "PYTHON:9621307752feed0e18ec185f7c860412365299b1b7a034db118b95ec7b449aa6",
   "cwd": ".",
   "timeout_ns": 30000000000,
-  "task_prompt_path": "eval/tasks/prompt-v1t/record-codec-round-trip/task-prompt.json",
-  "context_sources_path": "eval/tasks/prompt-v1/record-codec-round-trip/context-sources.json",
-  "generation_policy_path": "eval/prompt/canonical-v1t/generation-policy.json",
+  "task_prompt_path": "eval/tasks/prompt-v1u/duration-half-away-from-zero/task-prompt.json",
+  "context_sources_path": "eval/tasks/prompt-v1/duration-half-away-from-zero/context-sources.json",
+  "generation_policy_path": "eval/prompt/canonical-v1u/generation-policy.json",
   "provider_control_path": "eval/prompt/canonical-v1/evaluation-provider-control.json",
   "environment_policy_path": "eval/prompt/gate/environment-policy.json",
   "validation_runner_path": "eval/runners/run-coding-task.py",
   "validation_runner_sha256": "6d6c203be044e993f04a2261e3b03c19aca06ae369e25743d8bed174e7879bcd",
-  "task_definition_path": "eval/tasks/prompt-v1/record-codec-round-trip/task.json",
-  "task_definition_sha256": "ec18f5b3dd10c2f67d7c1bdca41de9f0cef596d5d4214f2c0885dac11b657225",
+  "task_definition_path": "eval/tasks/prompt-v1/duration-half-away-from-zero/task.json",
+  "task_definition_sha256": "ec11780c5fbb647093f52cbc50b95a2530dda3438463f192c20be4a961cf9ae1",
   "validation_argv": [
     "--retained-inputs",
     "%TASK%",
@@ -38,19 +38,19 @@
   "patch_sha256": null,
   "artifacts": [
     {
-      "path": "eval/fixtures/prompt-v1-record-codec/repository",
+      "path": "eval/fixtures/prompt-v1-duration-rounding/repository",
       "kind": "TREE",
-      "expected_sha256": "1fc1d46b7887582e8c08bc28f1ad5001f17bf1c0fd9c4b09e314a2e11bed6b08"
+      "expected_sha256": "54cba2d6f9f4bd49033123f309492cf35bac57e71ab7cf3d80a4299b2a9cdbcb"
     },
     {
-      "path": "eval/tasks/prompt-v1/record-codec-round-trip/task.json",
+      "path": "eval/tasks/prompt-v1/duration-half-away-from-zero/task.json",
       "kind": "FILE",
-      "expected_sha256": "6d6ed652824eee5c7726d1774c3d135db3795a3f1dda96bdbc0d10c2ffaed313"
+      "expected_sha256": "ecc10d518df38abf7642ebad02e24262a9b89e7d4f47bc55f4fabca0193b7c68"
     },
     {
-      "path": "eval/tasks/prompt-v1/record-codec-round-trip/context-sources.json",
+      "path": "eval/tasks/prompt-v1/duration-half-away-from-zero/context-sources.json",
       "kind": "FILE",
-      "expected_sha256": "2e32403aa93c37bc6c48e8f295460faf35ece48f0fd8e28c612d3ee426a44f14"
+      "expected_sha256": "dcf51798a65a5689e9e58613bca281ba00caff10c678cd5fbded40f0e79e2684"
     },
     {
       "path": "eval/runners/run-coding-task.py",
@@ -80,17 +80,17 @@
     {
       "path": "scripts/prompt-template-adapter.py",
       "kind": "FILE",
-      "expected_sha256": "40e648b1d7bb965cbc5c4bb7bdfb7bf8f54fac895831ef8c8df6d7d71f8c23f4"
+      "expected_sha256": "ea88566fafd5f521d36186efbd33417011774bb4bfa6e4214dc72f1040de8de9"
     },
     {
-      "path": "eval/prompt/canonical-v1t/repair-template.json",
+      "path": "eval/prompt/canonical-v1u/repair-template.json",
       "kind": "FILE",
-      "expected_sha256": "d206cb031048aa6c5a542bfe6c89a5765589505bffa2c73dfa4f0da558907851"
+      "expected_sha256": "264ddb6217b39430bd9c8967e22fa6e4655b76e4e25427e234f97abc0a4de08e"
     },
     {
-      "path": "eval/tasks/prompt-v1t/record-codec-round-trip/task-prompt.json",
+      "path": "eval/tasks/prompt-v1u/duration-half-away-from-zero/task-prompt.json",
       "kind": "FILE",
-      "expected_sha256": "eb8d3810ea8e1344ddd961f7f39866d73d316804aadccd4d580f979c5358f2f0"
+      "expected_sha256": "6faa4300d221e4b993fb53236adf7d2b37d6386d4e3600cf56c51bf4600268ff"
     }
   ],
   "regression_limits": {
@@ -100,8 +100,8 @@
     "maximum_repair_loops": 1,
     "maximum_benchmark_regression_ppm": null
   },
-  "repair_template_path": "eval/prompt/canonical-v1t/repair-template.json",
-  "repair_template_sha256": "bfa87a297fa2b6b3d472076e8f02158b9a0dfdb732ef7a03182f7fea8da14568",
+  "repair_template_path": "eval/prompt/canonical-v1u/repair-template.json",
+  "repair_template_sha256": "60d9d285e5e3e2bb5e6dbfcba56951a9cd49a0231dffc7b30ab6aa5f601882d5",
   "edit_policy": {
     "schema_version": 1,
     "artifact_kind": "EDIT_POLICY",
@@ -110,5 +110,5 @@
     "refuse_unchanged_files": true,
     "content_sha256": "08a3114d0faadb811273a4aedae01ae4d983c69e302b11fdfd6b9be271452236"
   },
-  "content_sha256": "cd2c4913f5b94e69f528180bb7c7c6a6899b3dec0af66ac4842a2f51a7bf4559"
+  "content_sha256": "838d63ad6c3482337127b3e72662a03b2630a5e78027a5c421577a739f32a549"
 }
