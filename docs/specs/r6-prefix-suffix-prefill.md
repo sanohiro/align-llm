@@ -1015,8 +1015,8 @@ capability adds.
 
 Every row refused with exactly its code and exactly its detail, and every one published
 `suffix.requested = 1`, `suffix.completed = 0`, no step, and no `IDENTICAL`. This table is
-`run-layer-forward-smoke`'s `SUFFIX_REFUSAL_DETAILS` tuple: the runner asserts all thirteen details
-below and the summary line counts *that tuple* rather than `STUB_CASES` membership, so a row added
+`run-layer-forward-smoke`'s `SUFFIX_REFUSAL_DETAILS` tuple: the runner asserts all twelve details
+below (thirteen as shipped, until 11.5 removed `ds-suffix-prefix-one`'s) and the summary line counts *that tuple* rather than `STUB_CASES` membership, so a row added
 here without an assertion cannot inflate the printed claim (`ds-suffix-tokens-mismatch` rides in
 `KV_REFUSALS` and is why membership was the wrong witness):
 
