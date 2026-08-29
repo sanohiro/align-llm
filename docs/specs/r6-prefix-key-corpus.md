@@ -1778,6 +1778,17 @@ three and back to two. No process was killed and nothing was run below the floor
 is 4.68 GB and both instruments load it, so a run at 3.7 GB would have measured the swap rather than
 the store.
 
+**A second window was polled at the repair head and the host still never freed.** From **20:47 to
+00:47, four hours**, against the same 6 GB floor and the same never-kill rule, with every
+prerequisite verified present first (the pinned `r2c-v2` `llama-eval-callback`, `llama-debug`, the
+4.68 GB reference model, `numpy`, and 20 GB of free space). The Docker-in-Docker preflight cleared
+early, but a `llama-server` holding the reference model ran for the whole window — **4 h 23 min** at
+the last sample — beside an aggregate `make` run and other model work, and available memory measured
+**2.2 to 6.15 GB**, reaching the floor only in single samples that a queued job immediately took
+back. Nothing was killed, nothing was run below the floor, and no partial or degraded measurement is
+recorded here in place of the real one. The coordination order this session ran under put this
+qualification last, behind the preflight, two benchmark legs, and two gates.
+
 Nothing about the implementation is waiting on this, and the hosted owner is the capability's own
 narrow owner. **This is the focused qualification, it is the last piece of section 3.5's acceptance
 rule, and it must be run — and its result recorded here — before the pull request.**

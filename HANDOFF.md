@@ -76,9 +76,13 @@ guarded call site before the pass; the regression is `ds-store-suffix-vs-kv-save
 fifth mutant.
 
 **Next actions, in order.** (1) `gmake decode-step-qualification` on the reference host — **not run:
-the host never freed**. Memory was polled 18:30-20:01 (91 minutes) against the 6 GB coordination
-floor and measured 3.2-4.97 GB throughout, with concurrent Docker-in-Docker preflights from other
-work holding the box; nothing was killed and nothing was run below the floor. The leg and its
+the host never freed, across two windows**. Memory was polled 18:30-20:01 (91 minutes) and again
+20:47-00:47 (four hours, at the repair head) against the 6 GB coordination floor: 3.2-4.97 GB in the
+first window with concurrent Docker-in-Docker preflights, and 2.2-6.15 GB in the second with a
+`llama-server` holding the reference model for its whole 4 h 23 min beside an aggregate `make` run.
+Every prerequisite was verified present first — the pinned `r2c-v2` `llama-eval-callback`,
+`llama-debug`, the 4.68 GB model, `numpy`, 20 GB free. Nothing was killed and nothing was run below
+the floor. The leg and its
 analysis block are implemented and dry-run against the hosted golden documents; this is the last
 piece of the acceptance rule and must run before the pull request. **The dry run does not verify
 gate G1**, and that is the one assertion it cannot: the hosted rows carry no `LOGITS` blob, so
