@@ -5,15 +5,16 @@ file records durable project state.
 
 ## Active: C4-REPAIR-MEASURED (2026-08-29)
 
-Branch `agent/c4-repair-measured`, in publication. Three commits and nothing uncommitted: the
-capability, the merge of `origin/main` at `553563e` (taken as `git merge`, never a rebase, so every
-recorded commit stays reachable), and the consolidated repair of two disjoint comprehensive
-reviews' findings. Track A re-entry after the Track B R-wave; Track B's own sections below stay
+Branch `agent/c4-repair-measured`, in publication. Nothing uncommitted. The branch is the
+capability, two merges of `origin/main` (`553563e` and `a9561a9`, both taken as `git merge`, never
+a rebase, so every recorded commit stays reachable), the consolidated repair of two disjoint
+comprehensive reviews' findings, the committed-head gate re-run record, and the final delta
+review's minors. Track A re-entry after the Track B R-wave; Track B's own sections below stay
 active on their own branches.
 
 **Capability.** One bounded model repair attempt in the provider-backed measurement path.
 `docs/specs/c4-repair-measured.md` is the authoritative ledger; its section 10 carries the
-ledger-to-diff mapping, **twenty** recorded deviations, the section 9.2 matrix-to-diff pass, and
+ledger-to-diff mapping, **21** recorded deviations, the section 9.2 matrix-to-diff pass, and
 the measured gate result. After a first-attempt validation `FAIL`, `scripts/prompt-evaluate.py`
 renders a repair prompt from that attempt's **own** redacted validation status labels, diagnostic
 summary, stdout, and stderr, calls `prompt generate` a second time against a fresh pinned checkout,
@@ -97,6 +98,20 @@ pull request. Four changes matter beyond the documents:
    correct figures are above. The section 5.7 inference was also over-scoped and is now bounded by
    what the evidence contains.
 
+**The final delta review's one substantive minor, and what closed it.** The gate re-run head was
+approved with minors; the load-bearing one was that item 2 above stopped at *pool membership*.
+`scripts/prompt-gate-validator.py` now carries `validate_attempt_traces`,
+`snapshot_request_closure`, and `count_ran_invocations`: the same exactly-one per-task resolution,
+before/after equality, request closure (including a `FILE` expectation's canonical
+mode/path/digest preimage and a `TREE` expectation's descendants), artifact-digest equality, and
+section 3.8 row 23 invocation bound the Align verifier applies. The port was validated against the
+published `c4-repair-evaluation.json` before it shipped — all 22 attempts resolve under the Python
+implementation too — and six rejections were added at
+`scripts/run-prompt-gate-validator-smoke:1105`, with six single-point mutants of the new code all
+dying. Closing it forced a fixture correction: `scripts/prompt_gate_fixture.py` had every attempt
+and attestation naming one placeholder request/result/input triple that was not closed over
+itself, so the fixture now models a real observation. Spec deviation 19 and section 10.3 record it.
+
 **Verification at the repair head.** `gmake build`, `gmake check` (31 units),
 `gmake fmt`, `gmake format-check`, `gmake gate-topology-check`, `git diff --check`, and the seven
 owner smokes — `prompt-model-smoke`, `prompt-render-parity-smoke`, `prompt-score-smoke`,
@@ -169,7 +184,19 @@ runs real-model CPU work in sibling worktrees; check `pgrep -f 'ggml-spike|run-d
 and free memory before starting `llama-server`, and never kill another agent's process.
 
 **Next actions, in order.**
-1. `python3 scripts/pre-pr --owner-test ...` at the final head.
+1. At the final head, on a clean worktree:
+   `python3 scripts/pre-pr --owner-test prompt-verifier-smoke -- gmake prompt-model-smoke
+   prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke
+   prompt-state-smoke prompt-gate-validator-smoke`. The branch changes `Makefile`, so the
+   classifier selects the **`fresh-image`** profile — `hosted-checks`, `fresh-focused`, **and the
+   installed `fresh-installed`** — and the installed profile is not substitutable by a Docker skip
+   or an ambient `DOCKER_HOST`. On this macOS host that means running the whole preflight inside
+   the Docker-in-Docker wrapper, with `gmake` on `PATH` and `LIBRARY_PATH` set as the
+   `align-llm macOS host setup` notes require. `Makefile` is also one of the twenty recorded
+   canonical baseline artifacts, so the three-commit baseline chain must be re-recorded on Linux
+   through the same wrapper before the stamp; `python3 scripts/check-baseline-chain` names the
+   tracked set, and the `eval/prompt/c4-repair-gate/` and `canonical-v1r` artifacts this
+   capability adds are **not** in it.
 2. Publish the pull request with the two review envelopes, every finding's disposition, and the
    consolidated repair commit.
 

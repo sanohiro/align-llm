@@ -79,6 +79,50 @@ def bind_activation(value: dict[str, Any]) -> dict[str, Any]:
     return bind(value)
 
 
+def declared_task_digest(path: str, task: Mapping[str, Any]) -> dict[str, Any]:
+    """The observed artifact entry for a task's own declared manifest file."""
+    return {
+        "path": path,
+        "mode": "100644",
+        "byte_count": 1,
+        "sha256": task["content_sha256"],
+    }
+
+
+def file_expectation_digest(entry: Mapping[str, Any]) -> str:
+    """The canonical mode/path/digest preimage a `FILE` static expectation is taken over."""
+    preimage = f"{entry['mode']} {entry['path']}\0F {entry['sha256']}\n".encode("utf-8")
+    return hashlib.sha256(preimage).hexdigest()
+
+
+def bind_snapshot_request(request: dict[str, Any], observation: Mapping[str, Any]) -> None:
+    """Close a snapshot request over the observation it produced.
+
+    The request keeps the kind it declared for each path it already named; every other observed
+    path becomes an additional file, in observed order. That is what a real evaluator emits, and
+    the gate's closure check (section 3.8 row 22) requires exactly it.
+    """
+    kinds = {item["path"]: item["kind"] for item in request["static_expectations"]}
+    expectations: list[dict[str, Any]] = []
+    additional: list[str] = []
+    for entry in observation["artifact_digests"]:
+        kind = kinds.get(entry["path"])
+        if kind is None:
+            additional.append(entry["path"])
+            continue
+        expectations.append(
+            {
+                "path": entry["path"],
+                "kind": kind,
+                "expected_sha256": (
+                    file_expectation_digest(entry) if kind == "FILE" else entry["sha256"]
+                ),
+            }
+        )
+    request["static_expectations"] = expectations
+    request["additional_files"] = additional
+
+
 def bind_declared_inputs(result: dict[str, Any]) -> None:
     """Bind the corpus, task, snapshot, and preflight documents the gate now cross-checks.
 
@@ -98,15 +142,21 @@ def bind_declared_inputs(result: dict[str, Any]) -> None:
         snapshot["task_manifest_sha256"] = task["content_sha256"]
         declared = task_files[min(ordinal, len(task_files) - 1)]
         if all(entry["path"] != declared for entry in snapshot["artifact_digests"]):
-            snapshot["artifact_digests"].append(
-                {
-                    "path": declared,
-                    "mode": "100644",
-                    "byte_count": 1,
-                    "sha256": task["content_sha256"],
-                }
-            )
+            snapshot["artifact_digests"].append(declared_task_digest(declared, task))
         bind(snapshot)
+    # A real run's snapshot request, snapshot result, and input snapshot are one observation: the
+    # request asks for exactly the paths the result observed, in order, and the input snapshot
+    # carries the result's own digests. The gate now resolves and cross-validates those links for
+    # every attempt (section 3.8 row 22), so the fixture has to model them rather than share one
+    # unrelated placeholder triple; otherwise a rejection family passes for the wrong reason.
+    for ordinal, result_record in enumerate(result["snapshot_results"]):
+        task = result["tasks"][min(ordinal, len(result["tasks"]) - 1)]
+        declared = task_files[min(ordinal, len(task_files) - 1)]
+        if all(entry["path"] != declared for entry in result_record["artifact_digests"]):
+            result_record["artifact_digests"].append(declared_task_digest(declared, task))
+    for ordinal, request in enumerate(result["snapshot_requests"]):
+        observation = result["snapshot_results"][min(ordinal, len(result["snapshot_results"]) - 1)]
+        bind_snapshot_request(request, observation)
     for stream in ("snapshot_requests", "snapshot_results"):
         for item in result[stream]:
             bind(item)
