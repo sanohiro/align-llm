@@ -3,7 +3,45 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R6-PREFIX-KEY (2026-08-29)
+## Active: none (2026-08-30)
+
+The session stopped on the user's instruction after publishing roadmap items 31, 34, 36, and 37.
+No capability is active on `main`. Two branches carry unfinished work and are pushed; both stopped
+mid-flight with their own `HANDOFF.md` block describing exact state and next actions:
+
+- `agent/r6-moe-resident-dense` (roadmap item **35**, R6-MOE-RESIDENT-DENSE). Ledger committed
+  before implementation (`f8796ea`). Implemented; byte claims exact (dense pack bytes per step
+  253,078,656 x N -> 0, expert bytes unchanged, oracle D MATCH); the elapsed claim measured
+  **BELOW FLOOR** on the quiet host (138,402 ppm worst-of-3 against the 150,000 ppm floor; clauses
+  1-11 carry the capability, no elapsed claim). Two disjoint reviews done; the repair (a
+  `bounded_detail` UTF-8 truncation panic on two public arms, `wrap_count` semantics, documentation
+  currency) was in progress when the session stopped. Remaining: finish the repair per
+  `scratchpad` findings recorded in that branch's HANDOFF, one final delta review, hosted
+  `scripts/pre-pr --owner-test layer-forward-smoke`, pull request, merge.
+- `agent/c4-repair-template` (roadmap item **39**, C4-REPAIR-TEMPLATE). Implemented and
+  owner-verified; gate run recorded at `55de53c`: the predicate `repair_recovery_paired_count >= 1`
+  is satisfied, **but the counted recovery is recovery from an attempt-1 regression that the
+  version-3 template itself introduced** (`duration/CANDIDATE` passed first-shot in items 31 and 34
+  and now fails attempt 1, then recovers to the same 758-byte patch); `edit_refusal_count` stayed
+  at 10 (`UNCHANGED_FILES` x10; `PATH_NOT_EDITABLE` 2 -> 0). The honest reading is section 1.6 (b)
+  of `docs/specs/c4-repair-template.md`: the prompt is not the binding constraint; the C4 gate is
+  **not** closed by this run and the spec must say so before publication. Remaining: merge of
+  `origin/main` was in progress (owner re-run); then two disjoint reviews, repair, baseline-chain
+  re-record plus the fresh-image preflight (the branch changes `Makefile`), pull request, merge.
+
+**Next roadmap item after those two:** item **38**, R6-PREFIX-TTFT (charter in
+`docs/specs/r6-prefix-key-corpus.md` section 11: lift `MAX_PREFILL_TOKENS` 32 -> 2048, pinned
+pre-tokenized corpus, pre-committed MET / NOT_MET / INDETERMINATE rule). Track A's next step after
+item 39 is decided by its reading: with (b), the remaining axes are the model and the decoding
+strategy, not the prompt or the adapter.
+
+**Host facts worth keeping** (from this wave): the 16 GiB host runs one of {Track A gate with
+`llama-server`, DinD fresh-image preflight, real-model qualification, timing benchmark} at a time —
+serialize explicitly; run the DinD preflight as uid 501 (root breaks `ds-kv-save-unwritable`);
+bwrap inside Docker needs `--security-opt systempaths=unconfined`; never pin >= 2-token decode-step
+or >= 4-token prefill activations in a hosted golden (arm64 vs x86_64 last-bit drift).
+
+## Merged checkpoint: R6-PREFIX-KEY (PR #153, `main` `661dd3d`, 2026-08-30)
 
 Branch `agent/r6-prefix-key-corpus`, cut from `agent/mf-single-token-logits` `40eb965` — that
 branch's merge of `origin/main` `45ff38e` (PR #148). It was **stacked on roadmap item 36**, which
@@ -24,7 +62,7 @@ Roadmap item **37**. The design gate fires on all four `CLAUDE.md` triggers. The
 the contract, section 11 is item 38's charter, **section 12 records every implementation deviation**,
 and section 13 records the results.
 
-**Implemented, hosted-verified, not yet published.** `--decode-step` gains a sixteenth operand,
+**Implemented, verified, published as PR #153.** `--decode-step` gains a sixteenth operand,
 `STORE`, a caller-created directory that is mutually exclusive with `KV_SAVE` and `KV_LOAD`. The arm
 derives a 32-byte key — SHA-256 over a 152-byte preimage of three digests plus `pack_total_bytes`,
 `kv_width`, `token_count`, `plane_layout_version`, `element_type`, `format_version`, `key_version` —
@@ -111,7 +149,7 @@ gains a third client (the store's check-then-create window, which at this pin le
 and Request 31 gains the correction a store owes it and **stays low and non-blocking** with its
 reason.
 
-## Active: C4-REPAIR-EDITSET (2026-08-29)
+## Merged checkpoint: C4-REPAIR-EDITSET (PR #152, `main` `8d095a4`, 2026-08-30)
 
 Branch `agent/c4-repair-editset`, originally stacked on `agent/c4-repair-measured` at `c07775c`,
 now merged with `origin/main` at `4940005` (PR #150, which merged that parent capability).
