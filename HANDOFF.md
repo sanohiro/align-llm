@@ -65,6 +65,14 @@ other three prompts between 122,518 and 137,701 ppm. `INDETERMINATE` does not ap
 leg's own spread is 22,085 ppm, well inside the ceiling. **A re-run on a quiet reference host is the
 one thing that would settle clause 12**, and it is the only open item.
 
+**The quiet-host re-run was attempted and could not be taken (section 12.5).** Polled every three
+minutes for four hours under a stricter gate than the design asks for — no `*-dind-*`/`c4-*`
+container, an empty `pgrep -f 'llama-server|ggml-spike|run-decode-step|run-moe-decode-step'`, and
+>= 8 GB free — with nothing killed. Over **80 samples** the container half held in 80 of 80, the
+process half in **0 of 80** (one Qwen `llama-server`, another agent's Track A server, was present at
+every sample and had been up 6 h 21 m), and the memory half in **0 of 80** (2.05–5.82 GB, mean
+5.03 GB). The contended run stands as evidence with its drift stated; the verdict is unchanged.
+
 **`gmake moe-decode-step-qualification` refuses on this host**, at its own instrument cross-check
 and before the arm runs, with the same two `result_output` sums `docs/specs/r6-olmoe-decode.md`
 deviation 4 records (-113284.835938 against -111030.03125). The R2C `llama-eval-callback` is a

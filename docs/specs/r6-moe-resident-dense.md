@@ -1451,6 +1451,38 @@ real, consistent across prompts, and below the floor the owning performance docu
 the quiet reference host is what would settle it, and section 7 risk 9 already recorded that every
 number here is from one machine in one thermal environment.
 
+### 12.5 The quiet-host re-run, attempted and not obtained
+
+The run above was taken on a contended host, and a contended host is not the measurement of record.
+A re-run was therefore attempted under a stricter gate than section 3.7 asks for, polled every three
+minutes for four hours, with nothing ever killed:
+
+* `docker ps` showing no `*-dind-*` and no `c4-*` container;
+* `pgrep -f 'llama-server|ggml-spike|run-decode-step|run-moe-decode-step'` empty;
+* at least **8 GB** free.
+
+**The gate never opened.** Over **80 samples from 13:36:44 to 17:39:33 UTC**:
+
+| Condition | Result |
+| --- | --- |
+| No blocking container | met in **80 of 80** samples |
+| No blocking process | met in **0 of 80** samples — one `llama-server` (Qwen2.5-Coder-7B, another agent's Track A server, up 6 h 21 m at the last sample) was present at **every** sample |
+| ≥ 8 GB free | met in **0 of 80** samples — free memory ranged 2.05–5.82 GB, mean **5.03 GB**, and never approached 8 GB |
+
+So the contended run of section 12.3 stands as the only elapsed measurement this capability has, and
+it is kept as evidence **with its drift stated** rather than promoted to a claim. Nothing was
+re-read, no statistic was re-picked, and the verdict is unchanged: **`BELOW FLOOR`, no elapsed claim,
+clauses 1 to 11 carry the capability.**
+
+**What is still owed, and it is one command.** When a genuinely quiet reference host is available,
+re-run the interleaved benchmark — three repeats, `N ∈ {1, 4, 16}`, four prompts, `repeat` outside
+and `mode` inside — and apply section 4.6's rules exactly as written. If the reproduced streamed
+baseline lands near the committed 3.63 s, the fixed task's ppm becomes comparable to the 276,000 ppm
+ceiling and clause 12 can be decided on its merits; the three readings this run produced
+(1,519 / 125,150 / 123,796 ppm) and the other three prompts (122,518–137,701 ppm) are what a reader
+should expect it to move from. **The byte claim needs no re-run**: it is a counter, it was identical
+across all three repeats at all twelve points, and no host state can move it.
+
 ### 12.4 Verification, exact commands and results
 
 All on the reference host (Apple M1, 8 cores, 16 GiB, macOS 26.5.2, `darwin/arm64`), pin
