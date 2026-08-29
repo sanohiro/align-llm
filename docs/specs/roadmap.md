@@ -873,6 +873,64 @@ The current forward delivery order is:
     answers the dominant mode produces are exactly the ones no artifact shows. Evidence in
     `eval/prompt/c4-editset-gate/`; the per-row table and the analysis are in design section 11.4.
 
+37. **R6-PREFIX-KEY — a content-addressed store for prefix planes.** Design and results in
+    [`r6-prefix-key-corpus.md`](r6-prefix-key-corpus.md). `--decode-step` gains a sixteenth operand,
+    `STORE`, a directory that is mutually exclusive with `KV_SAVE` and `KV_LOAD`. The arm **derives**
+    the key `r6-kv-persist.md` section 2.8 recorded in advance — `(source_header_region_sha256,
+    geometry_sha256, token_stream_sha256, kv_width, plane_layout_version)`, plus `pack_total_bytes`,
+    `token_count`, `element_type`, `format_version`, and a `key_version` — as a SHA-256 over a
+    152-byte preimage, and addresses `<STORE>/<key-hex>.akvp`. **A hit loads; a miss prefills, saves,
+    and continues**, and the two produce byte-identical documents outside the store's own three
+    moving fields and item 29's own exclusion set — oracle K, the capability's acceptance rule, which
+    holds on the hosted fixture on three pairs (plain, `+SUFFIX`, and resident). **A miss
+    is only a missing file**: a container that exists and fails any identity check is that check's
+    refusal and never a silent re-prefill, which keeps item 29's invalidation rule character for
+    character; three hosted rows place a broken container at a key path and assert exactly that. The
+    `akvp` v1 format is **byte-unchanged** and the hosted owner asserts, by SHA-256, that a `STORE`
+    container is byte-identical to a `KV_SAVE` one — including for a miss that has a suffix, which is
+    what pins *when* a miss saves. Schema **6** adds a `store` object
+    published in every document including error documents; **no path is published**, so the key — a
+    digest, not a clock or a machine path — is golden-stable, and the whole 139-row decode-step
+    golden moves only in the document's own `schema_version` plus that object, verified mechanically
+    — the container header's separate `document_schema_version` field stays **3**, as
+    `r6-prefix-suffix-prefill.md` section 2.9 requires. One byte
+    layout has three implementations (the arm, `scripts/kv_plane_reader.py` checking that a container
+    is at its own name, and the smoke recomputing it from the document's own published digests) and
+    oracle D asserts all three agree, with five determinism rows changing one preimage field each.
+    **No new refusal code is minted**: step 2d adds two `R6_KV_ARGS` details and a miss whose create
+    fails is `R6_KV_UNWRITABLE store[create]` — one code for three causes the pin cannot separate,
+    which is Request 53's client evidence. Owner `gmake layer-forward-smoke`; focused
+    `gmake decode-step-qualification`, two extra invocations per prompt, **run on the reference host
+    and PASS**: four prompts, a keyed miss and a keyed hit each, oracle K / oracle S / gate G1 /
+    oracle B all IDENTICAL on both legs, four distinct keys addressing four 29,970,432 B containers
+    each byte-identical to `KV_SAVE`'s, and the leg costing 48.71 s of a 15 min 38 s
+    target. **No TTFT or throughput
+    claim and no cost ceiling** — `CLAUDE.md`'s performance row is not selected; the runner's TTFT
+    figures stay a labelled diagnostic. Stacked on item 36, whose lift of the `T_prefix >= 2` refusal
+    a store that *writes* containers requires. One new Align request, **53** (`std.fs` directory
+    operations), `PROPOSED` and non-blocking. **What it leaves open:** the R6 gate asks that TTFT
+    improve on repeated coding tasks sharing a prefix. This discharges two of item 33 section 1.4's
+    four reasons — there is now a key and a store — and leaves the corpus and the consumer.
+    `MAX_PREFILL_TOKENS` is still **32**, so the largest legal prefix is 32 tokens and no real prompt
+    reaches it; the shared prefix of `eval/prompt/canonical-v1` measures **370 tokens** against
+    suffixes of 696, 825, and 1,049 (section 1.2). Item 38 lifts the cap, pins the corpus, and takes
+    the gate measurement.
+
+38. **R6-PREFIX-TTFT — the prefill cap lifted, the corpus pinned, and the R6 gate measured.**
+    **Not started.** Its charter is section 11 of
+    [`r6-prefix-key-corpus.md`](r6-prefix-key-corpus.md), written **before** item 37 was implemented
+    so the split is a schedule rather than a hope, and it needs its own design gate and its own
+    ledger before implementation. It lifts `MAX_PREFILL_TOKENS` from 32 to 2048 — a constant read as
+    code by seven `.align` modules and three scripts and **bound into a persisted header field**, so
+    the lift is a one-way compatibility step — pins `eval/kv/prefix-corpus-v1` from the qualification's
+    own instrument, and measures TTFT on the paired single-shot and keyed-hit legs. Its first
+    implementation step is a **baseline probe, not code**: the ceiling is
+    `(T / (T + S)) x (prefill compute / single-shot TTFT)`, whose first factor is already measured at
+    **0.30582 mean and 0.26075 worst**, so the gate is reachable only if this arm's resident prefill
+    runs at or below roughly 200 tokens per second on the reference host — a falsifiable precondition
+    written before any number exists. The floor (150,000 ppm, adopted from `r6-resident-weights.md`
+    section 3.4), the two cache protocols, and the pre-committed MET / NOT_MET / INDETERMINATE rule
+    are all fixed in section 11 in advance.
 
 ### Status (2026-08-28)
 
@@ -1817,7 +1875,11 @@ policyの測定にはmulti-prefill sessionかdecodeが必要である。
 持たず、TTFTの主張もしない。このgateを満たすには少なくともstep 2とdecode loop、そのうえで
 prefix再利用とresidency policyが必要である。item 29（R6-KV-PERSIST）はKV planeをディスクに
 永続化し別プロセスで再読み込みする——5項目のうちsession KVのみ——が、prefix共有・DRAM/NVMe tier・
-invalidationは持たず、TTFTの主張もしない。
+invalidationは持たず、TTFTの主張もしない。item 37（R6-PREFIX-KEY）はprefix planeの
+content-addressed storeを実装し、keyとstoreという欠けていた4つのうち2つを埋めた——しかしcorpusと
+consumerは依然として存在せず、TTFTの主張もしない。`MAX_PREFILL_TOKENS`が32のままであるため実際の
+promptは1つも入らない（`eval/prompt/canonical-v1`の共有prefixは370 token）。cap引き上げ・corpus
+固定・gate測定はitem 38（R6-PREFIX-TTFT）が担う。
 
 **順序についての実測由来の結論（2026-08-28、R3-DECODE-RESIDENCY、roadmap item 25）。**
 R6はexpert residencyのruntime実装より**先**に着手してよい。実際の運用に最も近いmixed arm

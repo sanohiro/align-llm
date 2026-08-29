@@ -764,6 +764,22 @@ pub Outcome {
   suffix_pack_bytes: i64,
   suffix_compute_ns: i64,
 
+  // R6-PREFIX-KEY section 2.7's `store` object. Five scalars, published in **every**
+  // `R6_DECODE_STEP` document including error documents, so a store run is never implicit and "this
+  // run missed" is never silent. They live here for the reason every `kv_*`, `resident_*`, and
+  // `suffix_*` field above does: `src/decode_step.align` renders one outcome record and a second
+  // by-value record would double the plumbing for five numbers. **No other arm renders them**, so
+  // no other arm's document moves (that document's section 4.3 and its deviation D1).
+  //
+  // `store_key` is the derived 64-hex name or `"-"` when the run was refused before the key existed
+  // — which is itself information. **No path is ever published**: the key is machine-independent and
+  // a `mktemp -d` path is not.
+  store_requested: bool,
+  store_outcome: i64,
+  store_saved: bool,
+  store_key: string,
+  store_lookup_ns: i64,
+
   tensor_alignment: i64,
   table_drift: i64,
   slot_magic_ok: bool,
@@ -985,6 +1001,11 @@ pub fn empty_outcome() -> Outcome = Outcome {
   suffix_node_count: 0,
   suffix_pack_bytes: 0,
   suffix_compute_ns: 0,
+  store_requested: false,
+  store_outcome: 0,
+  store_saved: false,
+  store_key: "".clone(),
+  store_lookup_ns: 0,
   tensor_alignment: 0,
   table_drift: -1,
   slot_magic_ok: false,

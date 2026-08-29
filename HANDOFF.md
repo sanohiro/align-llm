@@ -3,6 +3,114 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
+## Active: R6-PREFIX-KEY (2026-08-29)
+
+Branch `agent/r6-prefix-key-corpus`, cut from `agent/mf-single-token-logits` `40eb965` — that
+branch's merge of `origin/main` `45ff38e` (PR #148). It was **stacked on roadmap item 36**, which
+has since merged as **PR #151** (`main` `334f524`, item 36's final head `d538066`) and is now merged
+into this branch by `git merge`, never a rebase. The stack existed because a store that *writes*
+containers requires item 36's fix: item 33's `T_prefix >= 2` refusal existed only because a
+one-token prefill computed the wrong embedding row, and a store would have persisted that wrong
+plane and served it forever. **The merge moved the decode-step golden's base from 141 to 139 rows**:
+item 36's `d538066` moved `ds-suffix-single-shot-2` and `ds-suffix-prefix-one` into
+`BOUNDARY_CASES`, because a two-token decode step differs by one ULP between arm64 and x86_64. The
+store rows sit on top of that base and none of them carries a decode activation. `origin/main`
+`8d095a4` (PR #152, C4-REPAIR-EDITSET) is merged in on top by a second `git merge`, again never a
+rebase; both conflicts were `Active`-block and roadmap-entry collisions resolved by keeping both
+sides, and nothing that capability changed touches this one's arm, scripts, or goldens.
+
+Roadmap item **37**. The design gate fires on all four `CLAUDE.md` triggers. The ledger is
+`docs/specs/r6-prefix-key-corpus.md`, **committed at `8238df6` and not edited**: sections 1–10 are
+the contract, section 11 is item 38's charter, **section 12 records every implementation deviation**,
+and section 13 records the results.
+
+**Implemented, hosted-verified, not yet published.** `--decode-step` gains a sixteenth operand,
+`STORE`, a caller-created directory that is mutually exclusive with `KV_SAVE` and `KV_LOAD`. The arm
+derives a 32-byte key — SHA-256 over a 152-byte preimage of three digests plus `pack_total_bytes`,
+`kv_width`, `token_count`, `plane_layout_version`, `element_type`, `format_version`, `key_version` —
+and addresses `<STORE>/<64-hex>.akvp`. **A hit loads through the unchanged L1–L14 path; a miss
+prefills, saves through the unchanged writer, and continues**, and the two produce byte-identical
+documents outside three store fields and oracle Q's own set (oracle K). **A miss is only a missing
+file**: three hosted rows place a broken container at a key path and assert `R6_KV_DIGEST("plane")`,
+`R6_KV_TOKENS`, and `R6_KV_IDENTITY("pack")` rather than a re-prefill. Schema **6** adds a `store`
+object to every document; **no path is published**. `src/kv_plane.align`'s writer, reader, header
+plan, and every bound are unchanged and the container is asserted byte-identical to a `KV_SAVE` one.
+
+**Files.** `src/kv_plane.align` (+`derive_key`, `store_path`, four constants),
+`src/decode_step.align` (the operand, step 2d, L0, `render_store`, schema 6),
+`src/model_forward.align` (**five `Outcome` fields only** — section 12 deviation D1),
+`scripts/kv_plane_reader.py` (a second preimage implementation and the `KEY` verdict),
+`scripts/run-layer-forward-smoke` (a third preimage implementation, 16 golden rows, oracle K/D),
+`scripts/run-decode-step` (the real-model store leg and a third analysis block),
+`scripts/decode-step-golden.jsonl` (139 → 155 rows), plus `docs/specs/roadmap.md` (items 37 and 38),
+`docs/align-development.md`, `docs/align-requests.md` (Request 53), and the ledger. **The Makefile
+is untouched**: no target, no aggregate membership, and no check topology moves.
+
+**Verification, all green at this head** (`gmake`, `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib`):
+`gmake build`, `gmake check` (31 units), `gmake layer-forward-smoke` (159 documented cases, 155
+golden rows, 42 codes), `gmake ggml-spike-smoke`, `gmake alignpack-smoke`,
+`gmake gate-topology-check`, `gmake decode-step-qualification` (real model, 4 store prompts, PASS),
+`gmake fmt` leaves no
+diff, `gmake format-check`, `git diff --check`. The golden movement was verified **mechanically**:
+all 139 pre-existing rows differ only in the document's own `schema_version` 5 → 6 plus a default
+`store` object, in the same order, with no row removed — the container header's separate
+`document_schema_version` stays 3 (section 12, D15). **Five ledger mutants were run at the final head
+and all five died**: a preimage field dropped in one of the three implementations, a hit treated as a
+miss, a key that ignores the token stream, the container's path published in the document, and a
+miss that saves after the suffix pass.
+
+**One comprehensive review is complete and its findings are repaired** (section 12, D15–D21 plus
+addenda to D6, D7, and D14). Two code repairs: W5 maps `R6_KV_CLEANUP_FAILED` to `store[cleanup]`
+so no writer code can leak the derived path into `error_detail` (D16), and `derive_key` bounds
+`kv_width` and `token_count` from **above** as well as below, because both narrow to `u32` in the
+preimage (D19). One new golden row, `ds-store-suffix-unwritable`, gives D14's moved call site its
+own failure regression. The preimage is **unchanged** and every key in this document still holds:
+D17 records the `document_schema_version` coupling that keeps it safe rather than spending reserved
+bytes on it. D14 and a `KEY_VERSION` mutant were re-injected at the repair head and both died.
+
+**One real defect was found and fixed during implementation, and it is deviation D14.** The
+`KV_SAVE` writer's call site is *after* the suffix pass, which was correct for every prior run
+because `SUFFIX` is illegal beside `KV_SAVE`; a keyed **miss** is the first run that has both, and
+the first implementation inherited the position and persisted a plane carrying `T_prefix + S`
+columns under a header declaring `columns_persisted = T_prefix`, with the suffix pass's
+`prefill_argmax`. It round-trips through the arm, so oracle K passed — it was caught by the two
+container assertions instead: the keyed container was **not** byte-identical to the `KV_SAVE`
+container of the same prefix, and the independent reader refuses it as `ZEROTAIL`. The fix is one
+guarded call site before the pass; the regression is `ds-store-suffix-vs-kv-save`, which is also the
+fifth mutant.
+
+**The real-model qualification is run and `PASS`** (section 13.6). `gmake
+decode-step-qualification` on the reference host, **2026-08-30 04:48:38-05:04:16, 15 min 38 s**, of
+which the store leg is **48.71 s** against risk 7's 120 s threshold (D7). Four prompts, a keyed miss
+and a keyed hit each, resident at 16 GiB physical: **oracle K, oracle S on both legs, gate G1 on
+both legs, and oracle B are all IDENTICAL**, four distinct keys address four 29,970,432 B containers
+each byte-identical to `KV_SAVE`'s and accepted by the independent reader's `--check-name`, and
+`store.lookup_ns` is 6.5-9.7 us. Gate G1 was the one assertion the dry run could not reach and it is
+now closed on all eight legs. Getting the host took **three polling windows** — 18:30-20:01,
+20:47-00:47, and 00:56-04:48 — against the 6 GB coordination floor, held in turn by two
+Docker-in-Docker preflights, a `llama-server` resident on the same model for over eight hours, and
+an aggregate `make` run. **Nothing was killed, nothing ran below the floor, and no degraded
+measurement was recorded.**
+
+**Next actions, in order.** (1) `python3 scripts/pre-pr
+--owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (2) Publish the pull request. One
+comprehensive review is complete and repaired; another is **not** required — the qualification
+recorded a result and changed no design, contract, or code. (3) Merge; item 36's precondition is
+discharged.
+
+**Blockers.** None. Item 36 merged as PR #151 and is merged into this branch, and the host
+qualification is run and green.
+
+**New Align request 53** (`std.fs` `create_dir` / `read_dir` / `is_dir`), `PROPOSED`, `medium`,
+non-blocking; its resume condition is a store eviction/GC capability. **The number is re-checked
+at both merges and holds**: `origin/main` `8d095a4` claims **52** for C4-REPAIR-MEASURED's `Option`
+partial move — the request section 8 predicted and reserved — so the register runs 1-52 and 53 is
+this capability's. Request 30
+gains a third client (the store's check-then-create window, which at this pin lets a concurrent loser
+**overwrite** rather than be refused — deviation D6), Request 49 gains a recorded **negative** client,
+and Request 31 gains the correction a store owes it and **stays low and non-blocking** with its
+reason.
+
 ## Active: C4-REPAIR-EDITSET (2026-08-29)
 
 Branch `agent/c4-repair-editset`, originally stacked on `agent/c4-repair-measured` at `c07775c`,
