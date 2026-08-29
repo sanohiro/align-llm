@@ -1998,10 +1998,11 @@ block. A `Makefile` edit is still an executable-contract boundary, so `scripts/p
 **executable** row and the installed profile rather than the documentation lane. The FFI boundary
 does **not** change: R5E adds no `extern` symbol and neither C shim gains one.
 
-## The `--decode-step` arm (R6-DECODE-KV-STEP1, R6-STEP-N, R6-KV-PERSIST, R6-RESIDENT-WEIGHTS)
+## The `--decode-step` arm (R6-DECODE-KV-STEP1, R6-STEP-N, R6-KV-PERSIST, R6-RESIDENT-WEIGHTS, R6-PREFIX-SUFFIX-PREFILL)
 
-`docs/specs/r6-decode-kv-step1.md`, `docs/specs/r6-step-n.md`, `docs/specs/r6-kv-persist.md`, and
-`docs/specs/r6-resident-weights.md` are the authoritative ledgers. R5B computes a whole prefill and stops: `src/model_forward.align` opens three fresh `ggml_context`s
+`docs/specs/r6-decode-kv-step1.md`, `docs/specs/r6-step-n.md`, `docs/specs/r6-kv-persist.md`,
+`docs/specs/r6-resident-weights.md`, and `docs/specs/r6-prefix-suffix-prefill.md` are the
+authoritative ledgers. R5B computes a whole prefill and stops: `src/model_forward.align` opens three fresh `ggml_context`s
 per graph and frees them at the end of that graph, so every K and V it produces dies with its graph
 and the model can answer "what are the logits for this prompt" and not "what comes next". R6 adds
 the smallest thing that changes that — an **Align-owned KV plane**, host bytes carrying every
@@ -2011,7 +2012,9 @@ place one column per step, gated on the token ids llama.cpp itself produces. R6-
 that plane **outlive the process that built it**: an `akvp` v1 container on disk, and a load path
 that skips the prefill entirely. R6-RESIDENT-WEIGHTS removes the term all three of them left in
 place: the loop re-read the whole 4.37 GB weight set once per decode step, and in resident mode it
-reads it **once for the whole run**.
+reads it **once for the whole run**. R6-PREFIX-SUFFIX-PREFILL makes a saved plane reusable for a
+*different* prompt: a container saved for a stable prefix is loaded and then **continued with a
+suffix**, which needs the one graph shape this arm did not have — `S > 1` columns at `n_past > 0`.
 
 The arm lives in a new module, `src/decode_step.align`, for `r5b-model-prefill-forward.md` section
 5.5's reason (the checker's per-function cost is superlinear in body length and
@@ -2031,8 +2034,10 @@ the writer. The plane **refill** stays in `src/decode_step.align` because a cros
 byte movement stays with the buffer's owner and no compatibility layer is built around the gap.
 
 `--decode-step` is selected by its exact first operand and is five, six, seven, nine, ten, eleven,
-twelve, thirteen, **or fourteen** operands. **Eight is `R6_ARITY`**, inherited verbatim from
-`--model-forward` and for the same reason: `KV_WIDTH` travels with the transcript.
+twelve, thirteen, fourteen, **or fifteen** operands. **Eight is refused**, inherited verbatim from
+`--model-forward` and for the same reason: `KV_WIDTH` travels with the transcript. A wrong arity
+produces **no document and no error code**: the arm exits non-zero with empty stdout, and `R6_ARITY`
+and `R6_PATH` are prose names in the source's comments rather than codes anything emits.
 
 ```sh
 ./ggml-spike --decode-step PACK GEOM.json TOKENS                                      # to stdout
@@ -2045,6 +2050,7 @@ twelve, thirteen, **or fourteen** operands. **Eight is `R6_ARITY`**, inherited v
 ./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS KV.akvp -
 ./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS -       KV.akvp
 ./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS -       -       weights
+./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS -       KV.akvp -       SUFFIX
 ```
 
 `TOKENS` is the **prefill**; no decoded token is ever an operand. The arm computes step 1's as its
@@ -2087,6 +2093,75 @@ the streamed baseline re-taken back to back in that session was **17.112 s** at 
 69,928,975,872 to exactly 0. That is 412,763 ppm of the `N = 16` fixed task, the most conservative
 of the four qualification runs that document reports. Residency is *slower* at `N = 1` and a coin
 toss at `N = 4`; the win is decisive from `N = 16` up, which is why the operand is opt-in.
+
+`SUFFIX` is the fifteenth operand: a comma-separated token id list in **`TOKENS`' own grammar**,
+parsed by the same `parse_tokens` so the two cannot drift apart in what they accept, or `-` for
+absent. It is legal **only with `KV_LOAD`** — the arm's first *conditional* operand — and a suffix
+without a load, or beside a `KV_SAVE`, is `R6_KV_ARGS` with detail `suffix[no_load]`, raised before
+any path is opened and before `STEPS` or `SUFFIX` is parsed. Allowing it without a load was
+considered and rejected: it is a second way to reach `n_past > 0` with no consumer, since a caller
+holding both lists in one process should concatenate them and run one prefill.
+
+Given a container holding `T_prefix` columns for **exactly** the tokens in `TOKENS`, the arm loads
+the plane as it does today and then runs **one suffix pass**: a decode-shaped graph set over the `S`
+suffix tokens at absolute positions `T_prefix .. T_prefix+S-1`, causally masked over
+prefix-plus-suffix, writing the suffix's K and V back into the plane at columns
+`T_prefix .. T_prefix+S-1` and verifying the plane over all `T_prefix + S` columns before the first
+decode step. It then continues the existing `N`-step loop from `n_past = T_prefix + S`. **Nothing is
+re-saved**: the container is read-only, the `akvp` format is byte-unchanged, and appending is
+deferred.
+
+`TOKENS` still means "the container's tokens", which is what keeps `src/kv_plane.align`
+byte-unchanged: every `R6_KV_*` identity check holds character for character, and a container
+written for the whole prompt is refused by an unmodified L12 when a run supplies that prompt as a
+prefix. The cap is on the **sequence**, `T_prefix + S <= MAX_PREFILL_TOKENS` (32), raising
+`R6_SUFFIX` with detail `sequence[<n>]` — on the sequence and not on `S`, because the cap is the
+acceptance oracle's: `--model-forward` runs at `TOKENS,SUFFIX`, so a cap on `S` alone would let the
+arm accept a run whose own oracle it refuses. The refusal names `R6_SUFFIX` rather than `R6_TOKENS`
+because on a suffix run `TOKENS` is pinned by the container and `SUFFIX` is the only operand a
+caller can shorten. An unparseable, empty, or trailing-separator list is `R6_SUFFIX` with detail
+`suffix[<text>]`; an out-of-vocabulary id is `R6_SUFFIX` with `parse_tokens`' own `token[<index>]`,
+the same shape `R6_TOKENS` reports. The plane bound **widens an existing condition** rather than
+adding one: `T_prefix + S + N <= KV_WIDTH` raises the `R6_KV_WIDTH` R6 already owns.
+
+**The prefix must be at least two tokens**, and this is a refusal rather than a wrong answer.
+`T_prefix < 2` with a `SUFFIX` is `R6_SUFFIX` with detail `prefix[<n>]`, decided inside the same
+step and **before** the sequence cap. The reason is a defect this capability found and did not fix
+(`MF-SINGLE-TOKEN-LOGITS`, `docs/specs/r6-prefix-suffix-prefill.md` section 11.2): a prompt of
+exactly one token computes the embedding of token 0 whatever the operand says, because
+`model_forward.fill_members` gathers by id only when `pieces > 1`. A container saved for a one-token
+prefix therefore holds the wrong plane, and a suffix run over it would return `status: ok` and
+logits that are not the single-shot run's. A one-token `KV_LOAD` run **without** a suffix is
+unaffected and still accepted: it is R6-KV-PERSIST's own leg, and this capability neither widens nor
+narrows it. When the defect is fixed the refusal is the thing to remove, which widens the accepted
+surface rather than moving it.
+
+The document is **schema 5** and carries a `suffix` object — `requested`, `completed`,
+`token_count`, `n_past_base`, `sequence_length`, `columns_written`, `first_column`, `graph_count`,
+`node_count`, `pack_bytes`, `compute_ns` — in **every** document including error documents, with one
+shape at every arity and no path and no token list in it. On a **completed** suffix pass `output`
+and `oracle_logits` describe **the suffix pass's own logits** — the logits of `TOKENS ++ SUFFIX` —
+and not the container's persisted vector; the container's claim is not lost, it stays in
+`kv.logits_sha256` and `kv.prefill_argmax`. On a load run without a suffix, and on a suffix run that
+failed, they are the container's vector exactly as before. `plane.source` stays `"LOADED"`: it names
+where the plane came from, and that the arm then extended it is `suffix.requested`'s sentence. A
+failure inside the pass publishes `suffix.completed = 0`, `suffix.columns_written = T_prefix`, zero
+counts, no decode step, and never `IDENTICAL`.
+
+**Exact prefixes only, and the limitation has a reason rather than a schedule.** RoPE positions are
+absolute, so column `j` of a saved plane holds K roped at position `j`: a prefix can be *extended*
+at positions `T_prefix ..` and can never be *re-based*. Prefix sharing is therefore inherently
+**left-anchored**, and any later cache key must be over left-anchored spans. A container saved for
+`a,b,c` cannot serve a run whose prefix is `a,b`, even though its first two columns hold exactly the
+right bytes; that is `columns_persisted != token_count`, which the format defers.
+
+**There is still no prefix key, no store, and no lookup.** A saved plane is found only by a caller
+who names its path, so this ships the *execution* half of the roadmap's repo-stable-prefix mechanism
+and none of its *lookup* half. `gmake decode-step-qualification` reports a labelled **TTFT
+diagnostic** on three legs — single-shot, load-plus-suffix, and plain load — and derives no rate,
+speedup, or per-token figure from any of them: what a suffix run actually saves is `T_prefix`
+columns of prefill *compute* and no I/O at all, because a prefill of any width is one weight sweep
+and a resident run pays it once.
 
 **CPU only.** `--model-forward-gpu` keeps its per-graph wrap and per-graph free, because
 `docs/specs/r5c-metal-prefill.md` section 2.6 measured that an unfreed Metal buffer aborts the
