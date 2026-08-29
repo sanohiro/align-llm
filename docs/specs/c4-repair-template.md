@@ -2008,3 +2008,28 @@ This re-scope changes no historical measurement claim: the old qualification sti
 calls, its arithmetic predicate remains an observation, and C4 remains open. It converts the
 repaired code from a falsely requalified v1t revision into an explicit unqualified successor and
 makes another accidental over-budget run impossible.
+
+### 11.8 Re-scope implementation checkpoint and final-review dispositions
+
+Implementation commit `d738f56cca23209db1bd1b418c427def87ebc72a` closes all three accepted
+final-review findings against the section 11.7 contract:
+
+1. All thirteen v1t files are byte-identical to measured head `6b735602…`; its restored scope is
+   `84a5e395…`, the historical evaluation embeds that exact scope, and the check-only v1t command
+   refuses writes. Repaired v1u is a distinct 31-member successor with scope `e0571615…` and
+   adapter runtime `PYTHON:d7db8af6…`; it is explicitly `UNQUALIFIED` and no historical evidence
+   is attributed to it.
+2. The gate derives the maximum call topology before provider probing or publication-directory
+   creation. Both v1t and v1u derive 24 and are refused against 22. Host Docker and the
+   in-container evaluator run in owned process groups against monotonic deadlines; timeout removes
+   the named container, terminates the group, and on Linux adopts and reaps orphaned descendants.
+3. Ledger row 19, the closure mapping, defect 41, and cleanup precedence were corrected in the
+   pre-implementation re-scope and remain mapped to the repaired implementation and owner rows.
+
+All thirteen macOS owners named in section 11.5 pass together. The full Linux/aarch64
+template-adapter smoke and `run-prompt-evaluate-smoke` pass in immutable image
+`sha256:33fa9e4446ab…` with the pinned-revision Linux compiler. Both freeze checks pass, historical
+gate JSON is unchanged, Linux `make baseline-check` ends `baseline chain: PASS`, and format,
+Python-syntax, and diff checks pass. A bounded ledger-to-diff inspection of `f9cd0a59…` through
+`d738f567…` found no unclosed final-review finding and did not start another comprehensive-review
+loop. The failed provider qualification was not rerun.

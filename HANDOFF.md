@@ -10,7 +10,7 @@ Branch `agent/c4-repair-template`, merged with `agent/c4-repair-editset` (`6ccbb
 base tip and merge base both `451aa66`. The consolidated review repair is committed as
 `a36b15bfce75eebf2b961906220dcfc7842ba7d6`. Final-review re-scope was committed before
 implementation as `f9cd0a59e6b734974614af816ee4f835cfa72c67`; its implementation is owner-verified
-and is the active publication candidate.
+as `d738f56cca23209db1bd1b418c427def87ebc72a` and is the active publication candidate.
 
 **Qualification correction.** The immutable evaluation has 12 initial plus 12 repair attempts:
 **24 provider calls**, not the pre-committed maximum of 22. The wall time was 700.452 s inside the
@@ -86,11 +86,9 @@ v1u reproducibility check pass; the three historical gate JSON artifacts are unc
 `make baseline-check` ends `baseline chain: PASS`; `make fmt`, Python syntax compilation, and
 `git diff --check` pass. The provider qualification was not rerun.
 
-**Next actions.** (1) Commit the owner-verified re-scope implementation and record its exact head.
-(2) Inspect the complete re-scope delta without starting another comprehensive-review loop; if it
-does not close the findings coherently, stop C4 as blocked. (3) Run exact-head fresh-image preflight
-with `prompt-template-adapter-smoke` as owner. (4) Publish an English PR with all review envelopes,
-finding dispositions, correction, and exact verification; merge with `--merge`. (5) Refresh `main`
+**Next actions.** (1) Run exact-head fresh-image preflight with
+`prompt-template-adapter-smoke` as owner. (2) Publish an English PR with all review envelopes,
+finding dispositions, correction, and exact verification; merge with `--merge`. (3) Refresh `main`
 and begin roadmap item 38, R6-PREFIX-TTFT.
 
 **Blockers.** None technical. Do not rerun the provider qualification: its structurally possible 24
