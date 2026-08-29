@@ -574,6 +574,12 @@ pub PromptEvaluationTask {
   patch_sha256: Option<string>,
   artifacts: array<ArtifactExpectation>,
   regression_limits: RegressionLimits,
+  // C4-REPAIR-MEASURED. `Option::None` for every corpus frozen before the repair attempt existed,
+  // and the canonical encoder omits a `None`, so the three `eval/tasks/prompt-v1/*.json` manifests
+  // keep their exact bytes and their exact `content_sha256`. A task declaring
+  // `maximum_repair_loops >= 1` must declare the pair; the scorer enforces that pairing.
+  repair_template_path: Option<string>,
+  repair_template_sha256: Option<string>,
   content_sha256: string,
 }
 
@@ -611,6 +617,59 @@ pub TaskMeasurement {
   content_sha256: string,
 }
 
+// The sealed repair prompt's provenance: which template produced it, which attempt's persisted
+// measurement it consumed, and which sections survived the fixed drop ladder. It exists so a
+// verifier can re-derive the repair prompt from the row alone.
+pub RepairPromptSource {
+  schema_version: i64,
+  artifact_kind: string,
+  template_sha256: string,
+  source_attempt_index: i64,
+  source_measurement_sha256: string,
+  included_sections: array<string>,
+  dropped_sections: array<string>,
+  assembled_bytes: i64,
+  content_sha256: string,
+}
+
+// One ordinary adapter invocation inside a row. A `SKIPPED` attempt carries identity and the
+// preparation work that reached the skip decision, and nothing else: no rendered prompt, no
+// adapter request, no generation request, no measurement.
+pub TaskAttemptRecord {
+  schema_version: i64,
+  artifact_kind: string,
+  attempt_index: i64,
+  attempt_kind: string,
+  status: string,
+  skip_reason: string,
+  rendered_prompt_sha256: Option<string>,
+  repair_prompt_source: Option<RepairPromptSource>,
+  adapter_request_sha256: Option<string>,
+  // Each attempt is its own contained invocation with its own sealed prompt, so it produces its
+  // own snapshot request, before/after results, and input snapshot. `snapshot_attestations` stays
+  // one record per row because its schedule check binds it positionally; these four keep every
+  // trace record bound to the invocation that produced it once a row can run twice.
+  snapshot_request_sha256: Option<string>,
+  before_snapshot_result_sha256: Option<string>,
+  after_snapshot_result_sha256: Option<string>,
+  input_snapshot_sha256: Option<string>,
+  generation_request: Option<GenerationRequestIdentity>,
+  seed_attestation: Option<SeedCapabilityAttestation>,
+  paired_seed: i64,
+  measurement: Option<TaskMeasurement>,
+  repair_preparation_ns: i64,
+  adapter_elapsed_ns: i64,
+  adapter_overhead_ns: Option<i64>,
+  measurement_sha256: Option<string>,
+  content_sha256: string,
+}
+
+// One row, both persisted versions. The version-2 members are `Option` on the wire because the
+// canonical encoder omits a `None`, so a version-1 row decodes and re-encodes byte-identically
+// and the frozen C6 chain keeps validating. Presence is NOT how the version is detected: the
+// scorer selects by `schema_version` and then REQUIRES every version-2 member to be present at
+// version 2 and absent at version 1, rejecting either mismatch. There is no compatibility
+// default and no presence sniffing.
 pub PromptTaskRow {
   schema_version: i64,
   artifact_kind: string,
@@ -621,7 +680,10 @@ pub PromptTaskRow {
   variant_id: string,
   variant_sha256: string,
   prompt_preparation_ns: i64,
+  repair_loop_count: Option<i64>,
+  generation_to_passing_patch_ns: Option<i64>,
   time_to_passing_patch_ns: Option<i64>,
+  attempts: Option<array<TaskAttemptRecord>>,
   evaluation_input: EvaluationInputIdentity,
   measurement: TaskMeasurement,
   content_sha256: string,
@@ -700,6 +762,8 @@ pub PromptExpectedInputDigest {
   task_id: string,
   sample_index: i64,
   variant: string,
+  // Version 2 binds one expected-input identity per non-skipped attempt rather than per row.
+  attempt_index: Option<i64>,
   rendered_prompt_sha256: string,
   context_sources_sha256: string,
   generation_request_sha256: string,
@@ -791,6 +855,11 @@ pub TaskAggregate {
   candidate_paired_median_time_ns: Option<i64>,
   time_improvement_ppm: Option<i64>,
   time_regression_ppm: Option<i64>,
+  parent_repair_attempt_count: Option<i64>,
+  candidate_repair_attempt_count: Option<i64>,
+  parent_repair_recovery_count: Option<i64>,
+  candidate_repair_recovery_count: Option<i64>,
+  repair_recovery_paired: Option<bool>,
 }
 
 pub CorpusAggregate {
@@ -807,6 +876,10 @@ pub CorpusAggregate {
   time_improvement_ppm: Option<i64>,
   time_regression_ppm: Option<i64>,
   repair_loop_regression_count: i64,
+  // The C4 gate quantity and its two denominators.
+  repair_attempt_count: Option<i64>,
+  repair_recovery_count: Option<i64>,
+  repair_recovery_paired_count: Option<i64>,
 }
 
 pub RegressionReason {
@@ -2219,6 +2292,44 @@ pub fn encode_task_measurement(value: TaskMeasurement) -> string {
 }
 
 pub fn encode_task_measurement_bounded(value: TaskMeasurement, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+// A one-field projection decodes any document: `json.decode` requires every DECLARED field
+// exactly once and skips undeclared keys, so this reads the container's version before any field
+// of the real record is touched.
+PromptDocumentVersion {
+  schema_version: i64,
+}
+
+pub fn peek_document_schema_version(value: str) -> Result<i64, Error> {
+  peeked: PromptDocumentVersion := json.decode(value)?
+  return Ok(peeked.schema_version)
+}
+
+pub fn decode_repair_prompt_source(value: str) -> Result<RepairPromptSource, Error> {
+  decoded: RepairPromptSource := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_repair_prompt_source(value: RepairPromptSource) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_repair_prompt_source_bounded(value: RepairPromptSource, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_task_attempt_record(value: str) -> Result<TaskAttemptRecord, Error> {
+  decoded: TaskAttemptRecord := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_task_attempt_record(value: TaskAttemptRecord) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_task_attempt_record_bounded(value: TaskAttemptRecord, max_bytes: i64) -> Result<string, Error> {
   return json.encode_bounded(value, max_bytes)
 }
 

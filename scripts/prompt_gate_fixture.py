@@ -79,6 +79,50 @@ def bind_activation(value: dict[str, Any]) -> dict[str, Any]:
     return bind(value)
 
 
+def declared_task_digest(path: str, task: Mapping[str, Any]) -> dict[str, Any]:
+    """The observed artifact entry for a task's own declared manifest file."""
+    return {
+        "path": path,
+        "mode": "100644",
+        "byte_count": 1,
+        "sha256": task["content_sha256"],
+    }
+
+
+def file_expectation_digest(entry: Mapping[str, Any]) -> str:
+    """The canonical mode/path/digest preimage a `FILE` static expectation is taken over."""
+    preimage = f"{entry['mode']} {entry['path']}\0F {entry['sha256']}\n".encode("utf-8")
+    return hashlib.sha256(preimage).hexdigest()
+
+
+def bind_snapshot_request(request: dict[str, Any], observation: Mapping[str, Any]) -> None:
+    """Close a snapshot request over the observation it produced.
+
+    The request keeps the kind it declared for each path it already named; every other observed
+    path becomes an additional file, in observed order. That is what a real evaluator emits, and
+    the gate's closure check (section 3.8 row 22) requires exactly it.
+    """
+    kinds = {item["path"]: item["kind"] for item in request["static_expectations"]}
+    expectations: list[dict[str, Any]] = []
+    additional: list[str] = []
+    for entry in observation["artifact_digests"]:
+        kind = kinds.get(entry["path"])
+        if kind is None:
+            additional.append(entry["path"])
+            continue
+        expectations.append(
+            {
+                "path": entry["path"],
+                "kind": kind,
+                "expected_sha256": (
+                    file_expectation_digest(entry) if kind == "FILE" else entry["sha256"]
+                ),
+            }
+        )
+    request["static_expectations"] = expectations
+    request["additional_files"] = additional
+
+
 def bind_declared_inputs(result: dict[str, Any]) -> None:
     """Bind the corpus, task, snapshot, and preflight documents the gate now cross-checks.
 
@@ -98,15 +142,21 @@ def bind_declared_inputs(result: dict[str, Any]) -> None:
         snapshot["task_manifest_sha256"] = task["content_sha256"]
         declared = task_files[min(ordinal, len(task_files) - 1)]
         if all(entry["path"] != declared for entry in snapshot["artifact_digests"]):
-            snapshot["artifact_digests"].append(
-                {
-                    "path": declared,
-                    "mode": "100644",
-                    "byte_count": 1,
-                    "sha256": task["content_sha256"],
-                }
-            )
+            snapshot["artifact_digests"].append(declared_task_digest(declared, task))
         bind(snapshot)
+    # A real run's snapshot request, snapshot result, and input snapshot are one observation: the
+    # request asks for exactly the paths the result observed, in order, and the input snapshot
+    # carries the result's own digests. The gate now resolves and cross-validates those links for
+    # every attempt (section 3.8 row 22), so the fixture has to model them rather than share one
+    # unrelated placeholder triple; otherwise a rejection family passes for the wrong reason.
+    for ordinal, result_record in enumerate(result["snapshot_results"]):
+        task = result["tasks"][min(ordinal, len(result["tasks"]) - 1)]
+        declared = task_files[min(ordinal, len(task_files) - 1)]
+        if all(entry["path"] != declared for entry in result_record["artifact_digests"]):
+            result_record["artifact_digests"].append(declared_task_digest(declared, task))
+    for ordinal, request in enumerate(result["snapshot_requests"]):
+        observation = result["snapshot_results"][min(ordinal, len(result["snapshot_results"]) - 1)]
+        bind_snapshot_request(request, observation)
     for stream in ("snapshot_requests", "snapshot_results"):
         for item in result[stream]:
             bind(item)
@@ -120,6 +170,24 @@ def bind_declared_inputs(result: dict[str, Any]) -> None:
         attestation["before_input_snapshot_sha256"] = input_digest
         attestation["after_input_snapshot_sha256"] = input_digest
         bind(attestation)
+    # C4-REPAIR-MEASURED: at version 2 a row may run more than one contained invocation, and one
+    # positional attestation per row can no longer reach the second one's trace records. Every
+    # attempt that ran therefore names them itself, and the fixture binds them to the same
+    # persisted documents the attestation names, so an attempt digest resolves inside this
+    # document's own pools exactly as a real run's does.
+    for row in result["rows"]:
+        attempts = row.get("attempts")
+        if not attempts:
+            continue
+        for attempt in attempts:
+            if attempt["status"] == "SKIPPED":
+                continue
+            attempt["snapshot_request_sha256"] = request_digest
+            attempt["before_snapshot_result_sha256"] = snapshot_digest
+            attempt["after_snapshot_result_sha256"] = snapshot_digest
+            attempt["input_snapshot_sha256"] = input_digest
+            bind(attempt)
+        bind(row)
     bind(result["workspace_preflight_request"])
     bind(result["workspace_preflight"])
     for source_name, artifact_name in (
@@ -130,6 +198,288 @@ def bind_declared_inputs(result: dict[str, Any]) -> None:
         ("workspace_preflight_source", "workspace_preflight"),
     ):
         result[source_name]["content_sha256"] = result[artifact_name]["content_sha256"]
+
+
+# --- C4-REPAIR-MEASURED: the version-2 fixture --------------------------------------------------
+# `docs/specs/c4-repair-measured.md` sections 3.2 and 3.6. The upgrade keeps every row's final
+# measurement status, and therefore every version-1 aggregate, exactly where the template put it;
+# what it adds is the attempt stream underneath, the row-level repair count, and the
+# evaluator-observed totals that reproduce the same `time_to_passing_patch_ns` the row already
+# carried. So a version-2 rejection family differs from its version-1 sibling in the attempt
+# machinery alone.
+ATTEMPT_ELAPSED_INITIAL_NS = 30
+ATTEMPT_ELAPSED_REPAIR_NS = 50
+ATTEMPT_REPAIR_PREPARATION_NS = 10
+ATTEMPT_OVERHEAD_NS = 10
+
+
+def synthetic_digest(label: str) -> str:
+    return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+
+def attempt_measurement(
+    template: Mapping[str, Any], *, passing: bool, rendered: str, generation_ns: int | None
+) -> dict[str, Any]:
+    """One attempt's own `TaskMeasurement`, at the adapter's unchanged version 1."""
+    measurement = copy.deepcopy(dict(template))
+    measurement["status"] = "PASS" if passing else "FAIL"
+    measurement["failure_kind"] = "NONE" if passing else "TEST"
+    measurement["build_status"] = "PASS"
+    measurement["test_status"] = "PASS" if passing else "FAIL"
+    # Every adapter invocation is single-attempt, so its own repair count is zero on every attempt.
+    measurement["repair_loop_count"] = 0
+    measurement["rendered_prompt_sha256"] = rendered
+    if generation_ns is None:
+        measurement.pop("generation_to_passing_patch_ns", None)
+    else:
+        measurement["generation_to_passing_patch_ns"] = generation_ns
+    generation = measurement["generation_request"]
+    generation["rendered_prompt_sha256"] = rendered
+    generation["user_text_sha256"] = synthetic_digest(f"user:{rendered}")
+    bind(generation)
+    return bind(measurement)
+
+
+def attempt_record(
+    *,
+    index: int,
+    kind: str,
+    measurement: Mapping[str, Any],
+    paired_seed: int,
+    rendered: str,
+    adapter_request: str,
+    elapsed_ns: int,
+    preparation_ns: int,
+    repair_prompt_source: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    passing = measurement["status"] == "PASS"
+    record = {
+        "schema_version": 1,
+        "artifact_kind": "TASK_ATTEMPT_RECORD",
+        "attempt_index": index,
+        "attempt_kind": kind,
+        "status": measurement["status"],
+        "skip_reason": "NONE",
+        "rendered_prompt_sha256": rendered,
+        "repair_prompt_source": copy.deepcopy(repair_prompt_source),
+        "adapter_request_sha256": adapter_request,
+        # The four trace digests of this attempt's own contained invocation, in the producer's
+        # declared order. They are filled by `bind_declared_inputs` once the trace streams are
+        # bound, because an attempt must name records this document actually persists — a
+        # synthetic digest here would make the whole rule vacuous.
+        "snapshot_request_sha256": None,
+        "before_snapshot_result_sha256": None,
+        "after_snapshot_result_sha256": None,
+        "input_snapshot_sha256": None,
+        "generation_request": copy.deepcopy(measurement["generation_request"]),
+        "seed_attestation": copy.deepcopy(measurement["seed_attestation"]),
+        "paired_seed": paired_seed,
+        "measurement": copy.deepcopy(dict(measurement)),
+        "repair_preparation_ns": preparation_ns,
+        "adapter_elapsed_ns": elapsed_ns,
+        "adapter_overhead_ns": (
+            elapsed_ns - measurement["generation_to_passing_patch_ns"] if passing else None
+        ),
+        "measurement_sha256": measurement["content_sha256"],
+        "content_sha256": "",
+    }
+    return bind(record)
+
+
+def repair_prompt_source(template_sha256: str, source_measurement_sha256: str) -> dict[str, Any]:
+    return bind(
+        {
+            "schema_version": 1,
+            "artifact_kind": "REPAIR_PROMPT_SOURCE",
+            "template_sha256": template_sha256,
+            "source_attempt_index": 1,
+            "source_measurement_sha256": source_measurement_sha256,
+            "included_sections": ["STATUS", "SUMMARY", "STDOUT", "STDERR"],
+            "dropped_sections": [],
+            "assembled_bytes": 4096,
+            "content_sha256": "",
+        }
+    )
+
+
+def upgrade_to_v2(result: dict[str, Any], evidence: dict[str, Any]) -> None:
+    """Rewrite a built version-1 result and its evidence into the version-2 attempt shape.
+
+    Every row gains one repair attempt, so the corpus repairs balance across the two arms and the
+    reused acceptance policy's `maximum_repair_loop_regression_count: 0` is met without relaxing
+    it. A row whose final measurement passes records `INITIAL FAIL` then `REPAIR PASS`, which is
+    the section 1.4 recovery predicate; the failing row records `INITIAL FAIL` then `REPAIR FAIL`,
+    which is a measured non-recovery.
+    """
+    result["schema_version"] = 2
+    evidence["schema_version"] = 2
+    for task in result["tasks"]:
+        # The corpus manifest is the cap: one repair loop, so a second would be a policy violation
+        # rather than silently permitted headroom.
+        task["regression_limits"]["maximum_repair_loops"] = 1
+    template_sha256 = synthetic_digest("repair-template")
+    expected_inputs: list[dict[str, Any]] = []
+    for ordinal, row in enumerate(result["rows"]):
+        final = row["measurement"]
+        passing = final["status"] == "PASS"
+        paired_seed = row["evaluation_input"]["paired_seed"]
+        label = f"{row['task_id']}:{row['sample_index']}:{row['variant']}"
+        initial_rendered = synthetic_digest(f"rendered:{label}:1")
+        repair_rendered = synthetic_digest(f"rendered:{label}:2")
+        initial_request = synthetic_digest(f"adapter:{label}:1")
+        repair_request = synthetic_digest(f"adapter:{label}:2")
+        initial_measurement = attempt_measurement(
+            final, passing=False, rendered=initial_rendered, generation_ns=None
+        )
+        repair_measurement = attempt_measurement(
+            final,
+            passing=passing,
+            rendered=repair_rendered,
+            generation_ns=(
+                ATTEMPT_ELAPSED_REPAIR_NS - ATTEMPT_OVERHEAD_NS if passing else None
+            ),
+        )
+        records = [
+            attempt_record(
+                index=1,
+                kind="INITIAL",
+                measurement=initial_measurement,
+                paired_seed=paired_seed,
+                rendered=initial_rendered,
+                adapter_request=initial_request,
+                elapsed_ns=ATTEMPT_ELAPSED_INITIAL_NS,
+                preparation_ns=0,
+                repair_prompt_source=None,
+            ),
+            attempt_record(
+                index=2,
+                kind="REPAIR",
+                measurement=repair_measurement,
+                paired_seed=paired_seed,
+                rendered=repair_rendered,
+                adapter_request=repair_request,
+                elapsed_ns=ATTEMPT_ELAPSED_REPAIR_NS,
+                preparation_ns=ATTEMPT_REPAIR_PREPARATION_NS,
+                repair_prompt_source=repair_prompt_source(
+                    template_sha256, initial_measurement["content_sha256"]
+                ),
+            ),
+        ]
+        generation_ns = (
+            ATTEMPT_ELAPSED_INITIAL_NS
+            + ATTEMPT_ELAPSED_REPAIR_NS
+            + ATTEMPT_REPAIR_PREPARATION_NS
+            if passing
+            else None
+        )
+        # `row.measurement` is the final attempt's, byte for byte, so every existing consumer of
+        # `row.measurement.*` keeps working with no re-derivation.
+        row["measurement"] = copy.deepcopy(repair_measurement)
+        row["evaluation_input"]["generation_request_sha256"] = repair_measurement[
+            "generation_request"
+        ]["content_sha256"]
+        row["evaluation_input"]["adapter_request_sha256"] = repair_request
+        bind(row["evaluation_input"])
+        ordered: dict[str, Any] = {}
+        for name, value in list(row.items()):
+            if name == "time_to_passing_patch_ns":
+                continue
+            if name == "evaluation_input":
+                ordered["repair_loop_count"] = 1
+                if generation_ns is not None:
+                    ordered["generation_to_passing_patch_ns"] = generation_ns
+                    ordered["time_to_passing_patch_ns"] = (
+                        row["prompt_preparation_ns"] + generation_ns
+                    )
+                ordered["attempts"] = [copy.deepcopy(item) for item in records]
+            ordered[name] = value
+        row.clear()
+        row.update(ordered)
+        row["schema_version"] = 2
+        bind(row)
+        for record in records:
+            expected_inputs.append(
+                bind(
+                    {
+                        "schema_version": 2,
+                        "artifact_kind": "PROMPT_EXPECTED_INPUT_DIGEST",
+                        "task_id": row["task_id"],
+                        "sample_index": row["sample_index"],
+                        "variant": row["variant"],
+                        "attempt_index": record["attempt_index"],
+                        "rendered_prompt_sha256": record["rendered_prompt_sha256"],
+                        "context_sources_sha256": row["evaluation_input"][
+                            "context_sources_sha256"
+                        ],
+                        "generation_request_sha256": record["generation_request"][
+                            "content_sha256"
+                        ],
+                        "adapter_request_sha256": record["adapter_request_sha256"],
+                        "provider_request_sha256": record["generation_request"][
+                            "provider_request_sha256"
+                        ],
+                        "content_sha256": "",
+                    }
+                )
+            )
+    evidence["expected_inputs"] = expected_inputs
+
+    # The repair columns, computed here rather than borrowed from the validator, so the aggregate
+    # comparison in `validate_evaluation_pair` stays an independent recomputation.
+    def recovered(row: Mapping[str, Any]) -> bool:
+        attempts = row["attempts"]
+        return (
+            len(attempts) == 2
+            and attempts[0]["attempt_kind"] == "INITIAL"
+            and attempts[0]["status"] == "FAIL"
+            and attempts[1]["attempt_kind"] == "REPAIR"
+            and attempts[1]["status"] == "PASS"
+        )
+
+    corpus_attempts = 0
+    corpus_recoveries = 0
+    corpus_paired = 0
+    for aggregate in result["task_aggregates"]:
+        selected = [row for row in result["rows"] if row["task_id"] == aggregate["task_id"]]
+        arms = {
+            variant: [row for row in selected if row["variant"] == variant]
+            for variant in ("PARENT", "CANDIDATE")
+        }
+        counts = {
+            variant: (
+                sum(row["repair_loop_count"] >= 1 for row in rows),
+                sum(recovered(row) for row in rows),
+                bool(rows) and all(recovered(row) for row in rows),
+            )
+            for variant, rows in arms.items()
+        }
+        aggregate["parent_repair_attempt_count"] = counts["PARENT"][0]
+        aggregate["candidate_repair_attempt_count"] = counts["CANDIDATE"][0]
+        aggregate["parent_repair_recovery_count"] = counts["PARENT"][1]
+        aggregate["candidate_repair_recovery_count"] = counts["CANDIDATE"][1]
+        aggregate["repair_recovery_paired"] = counts["PARENT"][2] or counts["CANDIDATE"][2]
+        aggregate["parent_repair_loop_count"] = sum(
+            row["repair_loop_count"] for row in arms["PARENT"]
+        )
+        aggregate["candidate_repair_loop_count"] = sum(
+            row["repair_loop_count"] for row in arms["CANDIDATE"]
+        )
+        corpus_attempts += counts["PARENT"][0] + counts["CANDIDATE"][0]
+        corpus_recoveries += counts["PARENT"][1] + counts["CANDIDATE"][1]
+        corpus_paired += int(counts["PARENT"][2]) + int(counts["CANDIDATE"][2])
+    corpus = result["corpus_aggregate"]
+    corpus["parent_repair_loop_count"] = sum(
+        item["parent_repair_loop_count"] for item in result["task_aggregates"]
+    )
+    corpus["candidate_repair_loop_count"] = sum(
+        item["candidate_repair_loop_count"] for item in result["task_aggregates"]
+    )
+    corpus["repair_loop_regression_count"] = max(
+        0, corpus["candidate_repair_loop_count"] - corpus["parent_repair_loop_count"]
+    )
+    corpus["repair_attempt_count"] = corpus_attempts
+    corpus["repair_recovery_count"] = corpus_recoveries
+    corpus["repair_recovery_paired_count"] = corpus_paired
 
 
 def sha256_bytes(path: Path) -> str:
@@ -178,7 +528,14 @@ def repository(path: Path, name: str, commits: int = 1) -> list[str]:
 class GateBundle:
     """One materialized gate fixture: CI checkout, source bundle, and evidence directory."""
 
-    def __init__(self, root: Path, *, evaluated_is_ancestor: bool = True) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        evaluated_is_ancestor: bool = True,
+        schema_version: int = 1,
+    ) -> None:
+        self.schema_version = schema_version
         self.root = root
         self.checkout = root / "ci-checkout"
         self.bundle_root = root / "source-bundle"
@@ -337,6 +694,10 @@ class GateBundle:
         )
         bind(result["experiment_artifact"])
         result["experiment"]["content_sha256"] = result["experiment_artifact"]["content_sha256"]
+        # C4-REPAIR-MEASURED: the version-2 attempt stream is layered on the fully bound
+        # version-1 documents, so the two fixtures differ in the attempt machinery alone.
+        if self.schema_version >= 2:
+            upgrade_to_v2(result, evidence)
         bind_declared_inputs(result)
         bind(result)
 

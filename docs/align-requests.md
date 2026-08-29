@@ -7684,16 +7684,6 @@ positional constructor to use. The race is documented rather than defended — h
 silent overwrite would be worse — and **no workaround is built**. A destination that is a symlink is
 followed in both directions, exactly as alignpack's `dest-symlink` case pins. **No status change.**
 
-**R6-PREFIX-KEY is the third client** (`docs/specs/r6-prefix-key-corpus.md` sections 2.8 and 6 risk
-9). A content-addressed store makes the same window structural rather than incidental: the arm tests
-`fs.exists(<STORE>/<key>.akvp)` at step L0 and, on a miss, creates that exact path after the prefill.
-Two processes missing the same key concurrently therefore both prefill, and the loser's
-`fs.create_rw` **overwrites** rather than refuses — benignly, because the key is a function of the
-content and both writers write the same bytes at the same offsets, but not with the refusal a store
-should give. The store is declared single-process for exactly this reason, the window is recorded
-rather than hidden, and **no workaround is built**. An exclusive positional constructor would let the
-loser be refused with `R6_KV_EXISTS` instead. **No status change.**
-
 ### Requested capability
 
 Mirroring the shipped `fs.create_rw` / `fs.create_exclusive` pair:
@@ -7764,18 +7754,6 @@ ids, and `KV_WIDTH` — so a torn `akvp` container costs exactly one re-prefill,
 (`docs/specs/r6-kv-persist.md` section 6, risk 6). This request therefore **stays `low` and
 non-blocking**; the first client that would raise it is one whose artifact is not reproducible from
 inputs that still exist. Correcting the register upward would have been easy and wrong.
-
-**R6-PREFIX-KEY (roadmap item 37) is the first client that owes this request a correction, and the
-correction is: it still stays `low` and non-blocking.** A content-addressed store changes one thing
-about a torn container — it is **found again by key on every later run**, rather than being a file
-whose name a caller had to type. That is a real difference and it is recorded here rather than left
-for a later reader to raise on the store's account. It does not move the priority, for two reasons
-that survive the change: the container is still detected rather than loaded — `R6_KV_TRUNCATED` or
-`R6_KV_DIGEST("plane")`, and **never** a silent re-prefill (`docs/specs/r6-prefix-key-corpus.md`
-section 2.5) — and the repair is still one re-prefill after the caller deletes the file, because the
-store is a caller-owned directory. What would raise this request is an eviction or
-garbage-collection capability that rewrites the store in place, which is deferred and is Request 53's
-resume condition.
 
 ### Requested capability
 
@@ -9885,27 +9863,12 @@ No new syntax. Two checker changes:
 - `alignc check` and `alignc build` agree on every one of the shapes above (Request 42's own
   criterion, restated here because that is how both were discovered).
 
-### A negative client worth recording — R6-PREFIX-KEY (roadmap item 37)
-
-This request forced R6-KV-PERSIST to split the container's format from the plane's **refill**: the
-format owner is `src/kv_plane.align` and the byte movement into `src/decode_step.align`'s own
-`mut plane: buffer` stayed with the buffer's owner, because a cross-module call taking
-`borrow mut buffer` beside the caller's other locals is the shape this request refuses.
-
-R6-PREFIX-KEY put the store's **key derivation** in `src/kv_plane.align` — the opposite side of that
-same boundary — and it compiles at the same pin, because `kv_plane.derive_key` is **pure**: it takes
-three `borrow slice<u8>` views and three integers, takes no `borrow mut`, and returns a `string` by
-value. The asymmetry is recorded so a later reader does not read the two placements as inconsistent:
-what this request refuses is a mutable borrow across the module boundary, not the boundary.
-**No status change and no new repro.**
-
 ---
 
-<!-- The next free request number is **54**. Request 53 is R6-PREFIX-KEY's (roadmap item 37). 52 is
-     expected to be claimed by a parallel branch — item 31's `Option` partial move — and is
-     deliberately left unclaimed here rather than filled in, because two branches numbering the same
-     request is worse than a gap. Both numbers must be re-checked when this branch merges
-     `origin/main`, by `git merge` and never a rebase. -->
+<!-- The next free request number is **53**. R6-PREFIX-SUFFIX-PREFILL proposes none: every gap it
+     met is already recorded above (49 as a continuing client, and 22, 41, 35, 31, 21, 30, 29, 38,
+     39, 33 inherited unchanged through paths it does not touch). 52 is expected to be claimed by a
+     parallel branch; both numbers must be re-checked when this branch merges `origin/main`. -->
 
 ## Request 50 — `std.os`: how much physical and available memory the host has
 
@@ -10102,6 +10065,62 @@ in prose. The request is filed because the diagnostic cost a bounded but real am
 diagnose — the visible errors were on lines that had nothing wrong with them — and the next
 implementer to reach for the most natural word for a large contiguous allocation will pay it again.
 
+---
+
+## Request 52 — `match` on an owned record's `Option` field silently moves the payload out, and a later encode drops it
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none. C4-REPAIR-MEASURED ships by reading every `Option` member of an owned
+  record through a `borrow` binding, never through a `match` on the owned value.
+Independent work that may continue: all of C4-REPAIR-MEASURED.
+Resume condition: an Align release either rejects a `match` that partially moves a payload out of an
+  owned record still live at the match site, or preserves the field so a subsequent
+  `json.encode` of that record re-emits it. Either answer closes this; silence does not.
+Align commit or pull request: none
+align-llm verification: read `PromptTaskRow.attempts`, `repair_loop_count`, and
+  `generation_to_passing_patch_ns` through a direct `match` on the owned row in
+  `src/prompt_score.align`, re-encode the row with `json.encode`, and require the encoded bytes to
+  equal the decoded input's for the frozen `eval/prompt/gate/prompt-evaluation-improved.json` chain.
+```
+
+### Motivation and current sibling evidence
+
+C4-REPAIR-MEASURED moves `PROMPT_TASK_ROW` to `schema_version: 2` by adding `Option` members to the
+existing record rather than declaring a parallel `PromptTaskRowV2`. That choice depends on one
+property: a decoded document must re-encode byte-identically, because
+`src/prompt_evaluate.align` decodes the Python evaluator's output and **re-encodes** it to produce
+the persisted artifact, and `make prompt-gate-check` verifies the frozen C6 evidence against those
+exact bytes.
+
+While implementing the version-2 verifier, reading an `Option` field with
+
+```text
+match owned.field { Some(value) => ..., None => ... }
+```
+
+on an **owned** record partially moved the payload out of the record with no diagnostic at all. The
+record stayed live and usable; a later `json.encode` of it simply omitted that field. Nothing was
+reported at compile time and nothing failed at run time — the artifact was just missing a member,
+and its `content_sha256` then disagreed with the producer's.
+
+Reading the same field through a `borrow` binding is safe and is what the shipped code does
+throughout. The two spellings look interchangeable at the call site and are not.
+
+This is a "nothing hidden" violation rather than a missing feature: the language's own ownership
+rules make the move legitimate, but a partial move out of a still-live record that silently changes
+what that record serializes to is exactly the class of failure a compiler should refuse. The blast
+radius is any Align program that decodes a document, inspects an `Option` member by `match` on the
+owned value, and re-encodes — which is the ordinary shape of every artifact rewriter in this
+repository.
+
+Either resolution is acceptable and both are better than the current silence: reject the partial
+move while the record is still live, or keep the payload in place for a `match` that only inspects.
+
+---
+
 ## Request 53 — `std.fs`: directory creation, directory listing, and a file-type predicate
 
 ```text
@@ -10189,6 +10208,8 @@ caller's directory and says so.
    element types is refused by `check_index` at this pin — so a consumer that reads the returned
    array needs 22 as well. That intersection is part of this request rather than a surprise for its
    implementer: either 22 lands first, or `read_dir` ships a shape that can be consumed without it.
+
+---
 
 ## Not requested (respecting Align's design)
 

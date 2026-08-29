@@ -3663,8 +3663,9 @@ KV_IDENTITY_ABSENT_DEST = path("kv-identity-absent.akvp")
 #
 # `T_prefix = 2` on all three, and **`T_prefix = 1` is a fourth split** since MF-SINGLE-TOKEN-LOGITS
 # (roadmap item 36) fixed the one-token gather this capability originally refused around: the bound
-# it shipped, `R6_SUFFIX prefix[<n>]`, is gone and `ds-suffix-prefix-one` is a passing oracle-S row
-# rather than a refusal. The closure cells `T_prefix = 1` does not carry — `S >= 2` and a suffix
+# it shipped, `R6_SUFFIX prefix[<n>]`, is gone and `ds-suffix-prefix-one` is a passing oracle-S run
+# rather than a refusal -- asserted from `BOUNDARY_CASES`, without a golden row, for the measured
+# cross-host reason recorded there. The closure cells `T_prefix = 1` does not carry — `S >= 2` and a suffix
 # column attending to an earlier suffix column — are still carried by `ds-suffix-2` and
 # `ds-suffix-3` at `T_prefix = 2`.
 KV_PREFIX = path("kv-prefix.akvp")
@@ -4078,7 +4079,7 @@ STUB_CASES = [
     # The **prefix bound is gone.** `T_prefix >= 2` and its `R6_SUFFIX prefix[<n>]` refusal existed
     # only because a one-token prefill computed the embedding of token 0 whatever the operand said;
     # MF-SINGLE-TOKEN-LOGITS (roadmap item 36) fixed that, so `ds-suffix-prefix-one` moved to
-    # `ENGINE_CASES` below as a passing oracle-S row at `T_prefix = 1`. Nothing replaced the check:
+    # `BOUNDARY_CASES` below as a passing oracle-S run at `T_prefix = 1`. Nothing replaced the check:
     # the sequence cap below is the only bound on `T_prefix`, which is why it is now the first
     # `R6_SUFFIX` a too-short-prefix caller can reach.
     # The **sequence** cap, `T_prefix + S <= MAX_PREFILL_TOKENS`. It is on the sequence and not on
@@ -4182,17 +4183,13 @@ ENGINE_CASES = [
     # `ds-kv-save-ok` writes the whole prompt's. Nothing about the save direction changes.
     ("ds-suffix-save-prefix",
      ds(save=KV_PREFIX, tokens=SUFFIX_PREFIX_TOKENS, steps="1", transcript="-"), ""),
-    # `T_prefix = 1`, reopened by MF-SINGLE-TOKEN-LOGITS (roadmap item 36). The container is written
-    # by a **one-token prefill** in its own process — the exact run whose plane used to hold token
-    # 0's columns whatever `TOKENS` said — and the two-token single-shot comparand is run before the
-    # suffix case so oracle S always compares against a document that already exists. Both stay at
-    # two tokens, so both carry a golden row: the cross-platform digest drift recorded for
-    # `SUFFIX_SINGLE_SHOT_4` starts at four.
+    # The container for `T_prefix = 1`, reopened by MF-SINGLE-TOKEN-LOGITS (roadmap item 36),
+    # written by a **one-token prefill** in its own process — the exact run whose plane used to hold
+    # token 0's columns whatever `TOKENS` said. A one-token prefill and its decode step are
+    # byte-identical on both hosts, so this row is pinned here; the two-token pair it feeds is not,
+    # and lives in `BOUNDARY_CASES` for the cross-platform reason recorded there.
     ("ds-suffix-save-prefix-one",
      ds(save=KV_PREFIX_ONE, tokens=SUFFIX_PREFIX_ONE, steps="1", transcript="-"), ""),
-    ("ds-suffix-single-shot-2", ds(tokens=SUFFIX_FULL_TWO, transcript="-"), ""),
-    ("ds-suffix-prefix-one",
-     ds(load=KV_PREFIX_ONE, tokens=SUFFIX_PREFIX_ONE, suffix=SUFFIX_ONE, transcript="-"), ""),
     # `S = 1` — the degenerate suffix, and the only one whose graph shape matches a decode step's.
     # It must **not** be a decode step: its token is an operand, not an argmax. Its comparand is
     # `ds-kv-args-dash-dash`, which already exists as a golden row, so oracle S is asserted here
@@ -4317,10 +4314,26 @@ ENGINE_CASES = ENGINE_CASES + [(name, operands, code) for name, operands, code, 
 # run. Every other new row in this capability — including the five-token single-shot and the three
 # suffix successes — was byte-identical on both hosts in the run that found this, so only the
 # measured case moves.
+#
+# MF-SINGLE-TOKEN-LOGITS adds the third and fourth members, and moves the boundary again: the
+# **decode step after a two-token prefill** differs across hosts. `ds-suffix-single-shot-2` and the
+# `T_prefix = 1` suffix run it is the comparand for both publish `.steps[0].bit_sum` 71850835819 on
+# macOS/arm64 against 71850835587 on Linux/x86_64, with `.steps[0].sha256` differing with it, found
+# by this capability's first hosted CI run. Two tokens, not four -- and the drift is in the decode
+# step rather than in the prefill, which is why `ds-suffix-save-prefix-one` and `ds-tokens-one`,
+# whose prefill is **one** token, stay pinned and were byte-identical on both hosts. The pair is
+# asserted exactly as `ds-suffix-2` is: oracle S compares the two **within one host**, oracle C''
+# compares the suffix run against `--model-forward` on the same host, and `record()`'s
+# document-identity assertions run. They are documented cases without golden rows.
 BOUNDARY_CASES = [
     (STAGE_FULL, ds(tokens=STAGE_FULL_TOKENS, transcript="-", width=STAGE_FULL_WIDTH,
                     steps=STAGE_FULL_STEPS, resident="weights"), ""),
     (SUFFIX_SINGLE_SHOT_4, ds(tokens=SUFFIX_FULL_FOUR, transcript="-"), ""),
+    # The comparand first, so oracle S below always finds a document that already exists. Both need
+    # `ds-suffix-save-prefix-one`'s container, which `ENGINE_CASES` above wrote.
+    ("ds-suffix-single-shot-2", ds(tokens=SUFFIX_FULL_TWO, transcript="-"), ""),
+    ("ds-suffix-prefix-one",
+     ds(load=KV_PREFIX_ONE, tokens=SUFFIX_PREFIX_ONE, suffix=SUFFIX_ONE, transcript="-"), ""),
 ]
 # MF-SINGLE-TOKEN-LOGITS sections 1 and 4. `decode_step`'s prefill is `model_forward`'s, so the
 # one-token gather reaches this arm too -- and this is the arm where the defect was **not** silent:

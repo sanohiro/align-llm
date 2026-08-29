@@ -503,11 +503,19 @@ ids = sys.argv[1].split(',')
 want = int(sys.argv[2])
 points = []
 for j in (2, -(-len(ids) // 2)):
-    # `1 <= j`. The bound was `2 <= j` while the arm refused a one-token prefix outright; MF-SINGLE-
-    # TOKEN-LOGITS (roadmap item 36) fixed the embedding gather section 11.2 filed and section 11.5
-    # records the lift, so `T_prefix = 1` is an ordinary split. On every prompt this leg actually
-    # runs -- six ids or more -- both points are already >= 2, so this widens the guard without
-    # adding a run; it stops encoding a refusal that no longer exists.
+    # The guard is 1 <= j. It was 2 <= j while the arm refused a one-token prefix outright;
+    # MF-SINGLE-TOKEN-LOGITS (roadmap item 36) fixed the embedding gather section 11.2 filed and
+    # section 11.5 records the lift, so T_prefix = 1 is an ordinary split and this stops encoding
+    # a refusal that no longer exists.
+    #
+    # It widens the guard without adding a run, and that invariant is the corpus's rather than the
+    # code's -- section 11.1 correction 10, discharged in 11.5. The two bounds differ only where
+    # the midpoint is 1, which needs a prompt of two ids or fewer; PROMPTS tokenizes to 6, 3, 3
+    # and 3 ids on the reference model (section 5.9), so both points are already >= 2 on every
+    # prompt this leg runs. A prompt of exactly two ids added to PROMPTS would spend a
+    # T_prefix = 1 real-model run -- legal now, and a decision to take deliberately.
+    # (No backticks in this block: it is inside a double-quoted python3 -c string, where the shell
+    # would read them as command substitution.)
     if 1 <= j < len(ids) and j not in points:
         points.append(j)
 print(' '.join(str(j) for j in points[:want]))

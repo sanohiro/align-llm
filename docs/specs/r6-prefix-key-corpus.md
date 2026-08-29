@@ -1578,13 +1578,14 @@ Three counting statements need correcting together, because they are one confusi
    key-determinism cases, which carry no golden row at all. The prediction counted section 5.1's
    and 5.2's named rows as documents; five
    of them became assertions instead (D9) and several 5.2 names are one document asserted from two
-   sides. Sixteen is the number `scripts/decode-step-golden.jsonl` grew by (141 → 157), and section
+   sides. Sixteen is the number `scripts/decode-step-golden.jsonl` grew by (139 → 155 at the merged
+   base), and section
    13's counts are the shipped ones.
 2. **D9's `BOUNDARY_CASES` analogy is inexact in the direction that matters.** `BOUNDARY_CASES` run
    and are asserted without a golden row, which is the precedent D9 claims — but they **are** counted
    in the smoke's "documented cases" total (`len(ORDER) + len(BOUNDARY_CASES)`). The five
    key-determinism cases are in neither list: they are run, asserted, and counted in **neither** the
-   documented total nor the golden total. So section 13.2's `159 documented (157 with a golden row)`
+   documented total nor the golden total. So section 13.2's `159 documented (155 with a golden row)`
    understates what the block runs by exactly those five, and the "16 store cases" line counts only
    `STORE_CASES + STORE_REFUSALS`. Both numbers are correct for what they name; this entry is what
    they name.
@@ -1600,10 +1601,33 @@ Section 8 records "the register runs 1–52 (52 is item 31's `Option` partial mo
 number is **53**". At this branch's base `docs/align-requests.md` runs **1–51**: 52 is *expected*
 from the parallel item-31 branch and is not present, which is why the section reserves it and takes
 53 rather than 52. The reservation and the number this capability claims are both unchanged and
-correct; only the description of the base is. Section 8's standing instruction is unaffected and
-still binds: **both numbers must be re-checked when this branch merges `origin/main`** — by
-`git merge`, never a rebase — and if the register has moved, Request 53 and every cross-reference
-move with it.
+correct; only the description of the base is.
+
+**Section 8's standing instruction has now been discharged, and the reservation held.** This branch
+merged `origin/main` `334f524` (roadmap item 36, PR #151) by `git merge`, and that head claims
+**Request 52** for C4-REPAIR-MEASURED's `match`-on-an-owned-`Option` partial move — the request
+section 8 predicted when it reserved the number. So the merged register runs **1-52**, Request 53 is
+this capability's, and no cross-reference moves.
+
+### D22 — item 36's merge moved the golden's base from 141 to 139 rows, and the store rows are unaffected
+
+Section 5.3 predicts a whole-corpus re-baseline of the **141** rows this branch was cut against.
+Roadmap item 36 merged first, as `CLAUDE.md`'s ordering required, and its own final head `d538066`
+moved `ds-suffix-single-shot-2` and `ds-suffix-prefix-one` out of the golden into `BOUNDARY_CASES`:
+a **two-token** decode step's activations differ by one ULP between arm64 and x86_64, which is the
+same measured hazard section 5.3 names and item 33 met at four tokens. So the base this capability
+re-baselines is **139** rows, the corpus gains sixteen, and the shipped file is **155**. Section 13
+records the shipped numbers and the mechanical check was re-run against the merged base: all 139
+pre-existing rows differ only in `schema_version` 5 → 6 plus the default `store` object, in order,
+with none removed.
+
+**No store row is exposed to that hazard, and the reason is that every one of them mirrors a row
+item 36 kept.** `ds-store-miss`/`-hit` are `ds-kv-save-ok`/`ds-kv-load-ok`'s three ids;
+`ds-store-suffix-*` are `ds-suffix-1`'s two-plus-one split; `ds-store-suffix-vs-kv-save`'s comparand
+is `ds-suffix-save-prefix`. All four of those comparands are still golden rows on `main` at
+`334f524`, and the two rows item 36 moved are the two the store never uses. Section 5.3's claim that
+the store's own golden surface — `store.key` and `store.container_bytes` — is platform-independent
+by construction is unaffected: it has no floating-point input at all.
 
 ---
 
@@ -1627,7 +1651,7 @@ byte-unchanged and the qualification proves it by digest rather than by diff.
 
 ### 13.2 The hosted owner — `gmake layer-forward-smoke`
 
-`PASS`. The decode-step block reports **13 no-document cases, 159 documented cases (157 with a
+`PASS`. The decode-step block reports **13 no-document cases, 159 documented cases (155 with a
 golden row), 42 codes reached**, and the store block reports:
 
 ```text
@@ -1680,8 +1704,8 @@ key-determinism cases run and are asserted in **neither** total, and "16 store c
 
 ### 13.3 Golden movement, verified mechanically
 
-`scripts/decode-step-golden.jsonl` goes **141 → 157** rows. A script compared every pre-existing row
-against its predecessor field by field: **all 141 differ only in the document's own `schema_version`
+`scripts/decode-step-golden.jsonl` goes **139 → 155** rows. A script compared every pre-existing row
+against its predecessor field by field: **all 139 differ only in the document's own `schema_version`
 5 → 6** — the container header's separate `document_schema_version` stays 3, which is D15 — **plus
 the added default `store` object**, no row is removed, and the surviving order is unchanged. The five
 other decode-step-family goldens — `layer-forward`, `model-forward`, `gpu-forward`,
@@ -1725,7 +1749,7 @@ mutant 2's signature and the reason those rows exist.
 ```text
 gmake build                    ok
 gmake check                    ok: checked 31 unit(s) per-unit (214-254 s over two runs)
-gmake layer-forward-smoke      PASS - 13 no-document, 159 documented (157 golden) cases, 42 codes,
+gmake layer-forward-smoke      PASS - 13 no-document, 159 documented (155 golden) cases, 42 codes,
                                oracle K on 3 pairs, oracle D three ways, oracle S on both store
                                legs, oracle R on the resident pair, 5 distinct keys, the refusal
                                matrix complete, and every prior block unchanged (62-70 s)
@@ -1810,7 +1834,7 @@ that runs it. Cells the ledger marked `N/A` keep that disposition and are not re
 | 2.2 mutual exclusion with `KV_SAVE` / `KV_LOAD` | `execute` step 2d, both details in operand order | `ds-store-with-save`, `ds-store-with-load`, `ds-store-with-save-bad-steps` |
 | 2.2 `SUFFIX` legal with `STORE` (the recorded reversal) | `execute` step 2c, widened | `ds-store-suffix-miss`, `ds-store-suffix-hit`; `ds-suffix-no-load` still refused |
 | 2.2 `STORE` without `SUFFIX` is legal | the same path with `suffix_count == 0` | `ds-store-miss`, `ds-store-hit` |
-| 2.2 no defaults added; `-` at 16 ≡ 15 | `run`'s `if count >= 16 … else "-"` | the whole 141-row golden re-baseline is default `store` |
+| 2.2 no defaults added; `-` at 16 ≡ 15 | `run`'s `if count >= 16 … else "-"` | the whole 139-row golden re-baseline is default `store` |
 | 2.2 the hazard closed by publishing | `render_store`, called from `render` unconditionally | `record()`'s store-object assertion on **every** case |
 | 2.3 the 152-byte preimage, field for field | `kv_plane.derive_key` (D2 for the signature) | oracle D three ways; the four one-field-changed keys |
 | 2.3 `key_hex`, `path` | `kv_plane.store_path`, `KEY_HEX_BYTES` | `ds-store-key-name`; the store holds exactly `<key>.akvp` |

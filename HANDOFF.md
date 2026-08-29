@@ -6,11 +6,15 @@ file records durable project state.
 ## Active: R6-PREFIX-KEY (2026-08-29)
 
 Branch `agent/r6-prefix-key-corpus`, cut from `agent/mf-single-token-logits` `40eb965` — that
-branch's merge of `origin/main` `45ff38e` (PR #148). **Stacked on roadmap item 36 and must not merge
-before it**: a store that *writes* containers requires item 36's fix, because item 33's
-`T_prefix >= 2` refusal existed only because a one-token prefill computed the wrong embedding row,
-and a store would persist that wrong plane and serve it forever. The block below records item 36's
-own state; when it lands on `main`, merge `main` into this branch by `git merge`, **never a rebase**.
+branch's merge of `origin/main` `45ff38e` (PR #148). It was **stacked on roadmap item 36**, which
+has since merged as **PR #151** (`main` `334f524`, item 36's final head `d538066`) and is now merged
+into this branch by `git merge`, never a rebase. The stack existed because a store that *writes*
+containers requires item 36's fix: item 33's `T_prefix >= 2` refusal existed only because a
+one-token prefill computed the wrong embedding row, and a store would have persisted that wrong
+plane and served it forever. **The merge moved the decode-step golden's base from 141 to 139 rows**:
+item 36's `d538066` moved `ds-suffix-single-shot-2` and `ds-suffix-prefix-one` into
+`BOUNDARY_CASES`, because a two-token decode step differs by one ULP between arm64 and x86_64. The
+store rows sit on top of that base and none of them carries a decode activation.
 
 Roadmap item **37**. The design gate fires on all four `CLAUDE.md` triggers. The ledger is
 `docs/specs/r6-prefix-key-corpus.md`, **committed at `8238df6` and not edited**: sections 1–10 are
@@ -35,16 +39,16 @@ plan, and every bound are unchanged and the container is asserted byte-identical
 `scripts/kv_plane_reader.py` (a second preimage implementation and the `KEY` verdict),
 `scripts/run-layer-forward-smoke` (a third preimage implementation, 16 golden rows, oracle K/D),
 `scripts/run-decode-step` (the real-model store leg and a third analysis block),
-`scripts/decode-step-golden.jsonl` (141 → 157 rows), plus `docs/specs/roadmap.md` (items 37 and 38),
+`scripts/decode-step-golden.jsonl` (139 → 155 rows), plus `docs/specs/roadmap.md` (items 37 and 38),
 `docs/align-development.md`, `docs/align-requests.md` (Request 53), and the ledger. **The Makefile
 is untouched**: no target, no aggregate membership, and no check topology moves.
 
 **Verification, all green at this head** (`gmake`, `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib`):
-`gmake build`, `gmake check` (31 units), `gmake layer-forward-smoke` (159 documented cases, 157
+`gmake build`, `gmake check` (31 units), `gmake layer-forward-smoke` (159 documented cases, 155
 golden rows, 42 codes), `gmake ggml-spike-smoke`, `gmake alignpack-smoke`,
 `gmake gate-topology-check`, `gmake fmt` leaves no
 diff, `gmake format-check`, `git diff --check`. The golden movement was verified **mechanically**:
-all 141 pre-existing rows differ only in the document's own `schema_version` 5 → 6 plus a default
+all 139 pre-existing rows differ only in the document's own `schema_version` 5 → 6 plus a default
 `store` object, in the same order, with no row removed — the container header's separate
 `document_schema_version` stays 3 (section 12, D15). **Five ledger mutants were run at the final head
 and all five died**: a preimage field dropped in one of the three implementations, a hit treated as a
@@ -83,15 +87,18 @@ failure. Everything else — oracle K, oracle S on both legs, oracle D's documen
 oracle B, the store-object invariants, and the keyed-hit-versus-explicit-`KV_LOAD` comparison —
 passed on real documents. G1 on both legs is therefore **unverified until the model runs**, and it
 is the assertion the run exists to add. (2) `python3 scripts/pre-pr
---owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (3) One comprehensive review.
-(4) Merge **after** item 36.
+--owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (3) One comprehensive review is
+complete and repaired; another is required only if the qualification's record changes the design.
+(4) Merge — item 36's precondition is discharged.
 
-**Blockers.** Item 36's own two real-model legs, which block its publication and therefore this
-branch's merge — not its implementation. Host memory for this branch's own qualification.
+**Blockers.** Host memory for this branch's own qualification. Item 36 is no longer a blocker: it
+merged as PR #151 and is merged into this branch.
 
 **New Align request 53** (`std.fs` `create_dir` / `read_dir` / `is_dir`), `PROPOSED`, `medium`,
-non-blocking; its resume condition is a store eviction/GC capability. **52 is deliberately left
-unclaimed** for the parallel item-31 branch, and both numbers must be re-checked at merge. Request 30
+non-blocking; its resume condition is a store eviction/GC capability. **The number is re-checked
+at the merge and holds**: `origin/main` `334f524` claims **52** for C4-REPAIR-MEASURED's `Option`
+partial move — the request section 8 predicted and reserved — so the register runs 1-52 and 53 is
+this capability's. Request 30
 gains a third client (the store's check-then-create window, which at this pin lets a concurrent loser
 **overwrite** rather than be refused — deviation D6), Request 49 gains a recorded **negative** client,
 and Request 31 gains the correction a store owes it and **stays low and non-blocking** with its
@@ -100,15 +107,17 @@ reason.
 ## Stacked base: MF-SINGLE-TOKEN-LOGITS (2026-08-29)
 
 Branch `agent/mf-single-token-logits`, cut from `origin/main` `553563e` (PR #147,
-R6-RESIDENT-WEIGHTS) and brought up to `origin/main` `a9561a9` (PR #149, R6-PREFIX-SUFFIX-PREFILL)
-by `git merge`, **never a rebase**. Three conflicts, all resolved by keeping both sides:
-`HANDOFF.md` (item 33's block demoted to a merged checkpoint), `docs/specs/roadmap.md` (item 33 then
-item 36), and `scripts/decode-step-golden.jsonl` (taken from `main` and regenerated).
-Roadmap item **36**: 31, 32, 34 and 35 are reserved by capabilities on branches or in draft, and
-this one merged out of order. A **bug fix**, filed by `R6-PREFIX-SUFFIX-PREFILL` 11.2;
-`docs/specs/mf-single-token-logits.md` is the authoritative record and carries the result in its
-section 5. No design gate (no CLI operand, exchanged or persisted format, or ownership boundary
-moves), no Align gap, no new Align request.
+R6-RESIDENT-WEIGHTS) and brought up to `origin/main` by **three** `git merge`s, **never a rebase**:
+`a9561a9` (PR #149, R6-PREFIX-SUFFIX-PREFILL), then `45ff38e` (PR #148, R6-OLMOE-DECODE), then
+`4940005` (PR #150, C4-REPAIR-MEASURED). Every conflict was an `Active`-block or roadmap-entry
+collision resolved by keeping both sides — `HANDOFF.md`, `docs/specs/roadmap.md`,
+`docs/align-development.md`, and `scripts/decode-step-golden.jsonl` (taken from `main` and
+regenerated). Sections 8.4, 8.5 and 8.6 of the plan record them one by one.
+Roadmap item **36**: 31 and 32 have now landed (PRs #150 and #148), 34 and 35 are still reserved by
+capabilities on branches or in draft, and this one merged out of order. A **bug fix**, filed by
+`R6-PREFIX-SUFFIX-PREFILL` 11.2; `docs/specs/mf-single-token-logits.md` is the authoritative record
+and carries the result in its **section 8**. No design gate (no CLI operand, exchanged or persisted
+format, or ownership boundary moves), no Align gap, no new Align request.
 
 **Defect.** `fill_members` and `compare_source` gathered a member's rows by token id only where
 `m.pieces[at] > 1` — the piece count used as a proxy for "this member is the per-token embedding row
@@ -126,8 +135,11 @@ the count and `false` from every other builder across ten construction sites in 
 and the predicate `m.gathered && at == 0` at all four sites. `gathered` is true exactly where
 `pieces > 1` was, so `T >= 2` is byte-identical.
 
-**Evidence.** Six **new** golden rows and **no changed row** — verified mechanically: all six
-corpora are pure appends, `mf-tokens-one-zero` keeps the `62a46efd…` digest the defect produced for
+**Evidence.** The gather fix alone adds six **new** golden rows and changes **none** — verified
+mechanically at the implementation head, where all six corpora are pure appends. *(The lift below,
+carried in the same branch, adds one more row and removes `ds-suffix-prefix-one`'s, so measured
+against `origin/main` the branch adds seven golden rows, removes one, and changes none.)* `mf-tokens-one-zero` keeps the
+`62a46efd…` digest the defect produced for
 every one-token run and `mf-tokens-one` is now `867ebc4e…`, which `gf-tokens-one`, `ds-tokens-one`
 and `ds-tokens-one-resident` also carry. Two mutants were run: reverting the four predicates to
 `pieces > 1` kills exactly the six new rows and nothing else, and restores the
@@ -140,15 +152,260 @@ a passing oracle-S row at `T_prefix = 1` (`0cd795d9…`, byte-identical to the n
 `ds-suffix-single-shot-2` comparand and to `--model-forward` at `3,5`), joined by
 `ds-suffix-save-prefix-one` — a one-token prefill save whose `867ebc4e…` is the same digest
 `mf-tokens-one` carries. `scripts/run-decode-step`'s split guard widens from `2 <= j` to `1 <= j`,
-which adds no real-model run. `r6-prefix-suffix-prefill.md` gains **section 11.5** and its 2.3, 2.7,
-3.7, 5.6, 5.7, 9.1, 11.1 correction 8, 11.2 and 12.1 are corrected in place. The decode-step corpus
-is 137 → **141** rows with exactly one changed row, `ds-suffix-prefix-one`, refusal to pass.
+which adds no real-model run because no prompt that leg takes tokenizes to two ids or fewer — a
+corpus property, and the comment there says so. `r6-prefix-suffix-prefill.md` gains **section 11.5** and its 2.3, 2.7,
+3.7, 5.6, 5.7, 9.1, 11.1 corrections 8 and 10, 11.2 and 12.1 are corrected in place. The decode-step
+corpus is 137 → **139** rows: three added and `ds-suffix-prefix-one` removed, because hosted CI
+measured the **two-token decode step** as host-dependent (`.steps[0].bit_sum` 71850835819 on
+macOS/arm64, 71850835587 on Linux/x86_64), so it and `ds-suffix-single-shot-2` are asserted from
+`BOUNDARY_CASES` without golden rows exactly as item 33's four-token comparand is. The one-token
+rows are identical on both hosts and stay pinned. Plan section 8.8.
 
-**Not started / next.** The two real-model legs (`gmake model-forward-qualification` and
-`gmake moe-model-forward-qualification`), which are waiting on host memory — another agent's DinD
-holds the box below 6 GB free. Then publication
-(`python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`) and one
-comprehensive review.
+**Real-model qualification, done.** Both legs pass at this head, streamed, exit 0.
+`gmake model-forward-qualification` on dense Qwen: `llama-debug -p def` tokenizes to exactly one
+non-zero id, **750**, and `--model-forward` at that id is **byte-identical** to
+`llama-debug --save-logits` over all 152,064 logits — `d639adb97337394649a1a94ccc70767cf989b75c14b80e1de31cfdde4745fb96`,
+argmax 914. `gmake moe-model-forward-qualification` on OLMoE: one non-zero id, **1545**,
+byte-identical over 50,304 logits — `be4c699fbb888a3504b007c5d66925f621c8067a7f88191e0af42974c3c4ecc7`,
+argmax 33007. The tokenization guard did not fire on either model. Every pre-existing six-token
+assertion in both qualifications is unmoved. Recorded in section 8.7 of the plan.
+
+**Review, done.** Two fresh independent comprehensive reviews of head `8dadcc2` — one on the
+implementation, one on documents, goldens and governance. One blocking finding: this branch's plan
+document ended with a blank line, so `git diff --check origin/main...HEAD` — the form
+`scripts/pre-pr` runs — exited 2 while section 8.3 called it clean. The consolidated repair strips
+it and applies every accepted minor: the golden claims are qualified wherever the branch's own lift
+changes a row, the `3c ≺ L12` witness becomes `ds-suffix-over-cap` / `-over-cap-and-narrow`
+(`ds-suffix-tokens-mismatch` is itself the L12 refusal), section 5.7's arithmetic becomes eleven
+refusals and five successes, and the `2 <= j` → `1 <= j` widening now records its real invariant —
+no prompt tokenizes to two ids or fewer. That repair was documents and comments only, so the
+real-model legs above still bind.
+
+**Hosted CI found one more, and it is a fixture property rather than a defect.** PR #151's first run
+failed on `ds-suffix-single-shot-2` and `ds-suffix-prefix-one`: a two-token prefill's **decode step**
+differs across hosts, both rows identically, so oracle S holds on each host and only the pinned file
+cannot. Both move into `BOUNDARY_CASES` with every assertion intact — the same treatment item 33's
+deviation 7 gave its four-token comparand — and the corpus is 139 rows, 143 documented cases. No
+`.align` file, oracle, or refusal moves.
+
+**Not started / next.** The rerun of
+`python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` on the CI
+repair head, then merge once the checks pass.
+
+## Merged checkpoint: C4-REPAIR-MEASURED (PR #150, 2026-08-29)
+
+Branch `agent/c4-repair-measured`, in publication. Nothing uncommitted. The branch is the
+capability, three merges of `origin/main` (`553563e`, `a9561a9`, and `45ff38e`, all taken as
+`git merge`, never a rebase, so every recorded commit stays reachable), the consolidated repair of
+two disjoint comprehensive reviews' findings, the committed-head gate re-run record, the final
+delta review's minors, and two baseline chains of which the later binds. Track A re-entry after the Track B R-wave; Track B's own sections below stay
+active on their own branches.
+
+**Capability.** One bounded model repair attempt in the provider-backed measurement path.
+`docs/specs/c4-repair-measured.md` is the authoritative ledger; its section 10 carries the
+ledger-to-diff mapping, **21** recorded deviations, the section 9.2 matrix-to-diff pass, and
+the measured gate result. After a first-attempt validation `FAIL`, `scripts/prompt-evaluate.py`
+renders a repair prompt from that attempt's **own** redacted validation status labels, diagnostic
+summary, stdout, and stderr, calls `prompt generate` a second time against a fresh pinned checkout,
+validates again, and records per-attempt identity and timing in `PROMPT_TASK_ROW` at
+`schema_version: 2`.
+
+**GATE RESULT: `NOT_MET` — a measured negative, delivered as one.** 12 rows, 3 tasks x 2 variants x
+2 paired samples, temperature 0, `PAIRED_FIXED`, **22 provider generation calls** (exactly the
+section 5.2 estimate of 12 + 10), **824.243 s = 13 min 44 s** against a 60-minute recorded ceiling.
+`repair_recovery_count: 0` and `repair_recovery_paired_count: 0` — across ten repair attempts not
+one row recovered. Evidence is checked in at `eval/prompt/c4-repair-gate/`; the per-row table,
+aggregates, timings, and the analysis are in spec section 10.3.
+
+**The checked-in evidence is a second run, from the clean committed head `f0314400`**, taken
+because review asked for a record naming a reproducible commit: `align_llm_clean: true` and all
+three reachability fields `VERIFIED`, against the first run's `UNVERIFIED`. Every correctness value
+reproduced exactly — same rows, same per-attempt statuses and failure kinds, same
+`patch_size_bytes` (716 / 758 / 0 / 1008), same ten repair attempts, same zero recoveries, same
+aggregates, same 8,123-16,129 assembled bytes. Only the clocks moved. Digests:
+`c4-repair-evaluation.json` `8793b1ff…`, evidence `a70a967e…`, record `18bdf25a…`.
+
+The mechanism is proved even though the model is refuted: all ten repair prompts assembled from the
+run's own persisted diagnostics, re-derived byte-exactly, and stayed far inside the prompt budget
+(8,123-16,129 bytes against 65,536), so no section was ever dropped. Recomputed from the 22 attempt
+records: `adapter_elapsed_ns` **7.98 s to 64.67 s**, mean 24.82 s, **median 18.59 s**, max/min
+**8.1x**, sum 545.9 s; `adapter_overhead_ns` on the two passing attempts **91.04 ms and 91.77 ms**,
+0.59 % and 1.00 % of those rows' own spans. The first run gave 8.13-73.82 s, median 18.27 s, 9.1x,
+and 65.74 / 74.11 ms on the same corpus and seeds. **No speed claim is made**, and the two runs are
+why.
+
+`gate_eligible` stays `false`, and not for reachability: it is the **C6 acceptance** gate, which
+requires `IMPROVED` with no serious-regression reason, and this run's status is
+`SERIOUS_REGRESSION` from two `POLICY` reasons. The C4 verdict does not read it.
+
+**What the `NOT_MET` supports, and what it does not.** Only `patch_size_bytes` is persisted — no
+patch digest and no patch body — so "the model re-emitted its patch" is an inference, not a
+verified fact, and section 10.3 states it that way. In the record-codec mode all four rows produced
+1,008 bytes on both attempts with the same observable `TEST` failure; in the layer-precedence mode
+attempt 1 already produced an **empty** patch, so that mode is a different failure and more
+diagnostics are not obviously its missing input. Section 5.7's option B (a second corpus-member
+adapter carrying the failing edits) addresses the first mode only. A persisted patch digest is now
+a named deferral in section 5.4 and should land with it.
+
+**The constraint that shaped it.** `scripts/prompt-measurement-adapter.py`,
+`eval/runners/run-coding-task.py`, `scripts/prompt-fixed-adapter.py`,
+`scripts/prompt-snapshot-helper.py`, and the three `eval/tasks/prompt-v1/*.json` manifests are
+digest-verified members of `eval/prompt/canonical-v1/corpus-file-set.manifest`. Editing any of them
+breaks the merged C6-MEASURED gate. So the loop is evaluator-owned, those files are byte-identical
+(`git diff 3df063b..HEAD` over them is empty), and the corpus is a new freeze at
+`eval/prompt/canonical-v1r/` + `eval/tasks/prompt-v1r/` with `maximum_repair_loops: 1`. The 24
+file-set members the two corpora share carry identical digests in both manifests.
+
+**Schema shape.** One `PromptTaskRow` with `Option` version-2 members — **there is no
+`PromptTaskRowV2`**; spec sections 3.2 and 3.3 state the shipped shape and deviation 10 records how
+the choice was reached. Presence never selects the version: the scorer reads `schema_version`
+first, then requires every version-2 member present at 2 and absent at 1. Each attempt also carries
+the four trace digests of its own contained invocation (`snapshot_request_sha256`,
+`before_snapshot_result_sha256`, `after_snapshot_result_sha256`, `input_snapshot_sha256`), present
+exactly when it ran; the `input_snapshots` bound is per invocation, which is the same bound at
+version 1.
+
+**Repair of the two reviews, and what it changed.** Reviewer A (evaluator/Align/runner) and
+reviewer B (spec/evidence) each returned `request changes`; every finding has a disposition in the
+pull request. Four changes matter beyond the documents:
+
+1. **The verifier now resolves attempt trace digests instead of only checking their shape.**
+   `verifier_attempt_trace_cross_valid` (`src/prompt_score.align`) resolves each of the four to
+   **exactly one** persisted record of that row's task and applies the attestation path's closure,
+   before/after-equality, and artifact-equality checks to the resolved records. This is a
+   contract tightening, not a fix to a broken run: the checked-in evidence was validated against
+   the new rule before it shipped and all 22 attempts resolve.
+2. **`scripts/prompt-gate-validator.py` and its fixture were vacuous on the four digests** — the
+   validator's `ATTEMPT_RECORD_FIELDS` omitted them, so it would have rejected every real
+   version-2 attempt, and the fixture never emitted them, so no smoke case noticed. Both fixed;
+   deleting the four names from the tuple now turns `prompt-gate-validator-smoke` red.
+3. **`make prompt-evaluate-smoke` was red and is now green.** Running it exposed three defects the
+   two reviews missed; spec deviation 21 records them. One of them — the terminal-adapter-error
+   path abandoning its own row — is a published-artifact defect, not a test-only one.
+4. **Section 10.3's statistics were wrong and are recomputed from the artifact.** The old text
+   reported 11.40-81.19 s, "median 27.47 s", 113.7/115.2 ms overhead, and "about 10 minutes"; the
+   correct figures are above. The section 5.7 inference was also over-scoped and is now bounded by
+   what the evidence contains.
+
+**The final delta review's one substantive minor, and what closed it.** The gate re-run head was
+approved with minors; the load-bearing one was that item 2 above stopped at *pool membership*.
+`scripts/prompt-gate-validator.py` now carries `validate_attempt_traces`,
+`snapshot_request_closure`, and `count_ran_invocations`: the same exactly-one per-task resolution,
+before/after equality, request closure (including a `FILE` expectation's canonical
+mode/path/digest preimage and a `TREE` expectation's descendants), artifact-digest equality, and
+section 3.8 row 23 invocation bound the Align verifier applies. The port was validated against the
+published `c4-repair-evaluation.json` before it shipped — all 22 attempts resolve under the Python
+implementation too — and six rejections were added at
+`scripts/run-prompt-gate-validator-smoke:1105`, with six single-point mutants of the new code all
+dying. Closing it forced a fixture correction: `scripts/prompt_gate_fixture.py` had every attempt
+and attestation naming one placeholder request/result/input triple that was not closed over
+itself, so the fixture now models a real observation. Spec deviation 19 and section 10.3 record it.
+
+**Verification at the repair head.** `gmake build`, `gmake check` (31 units),
+`gmake fmt`, `gmake format-check`, `gmake gate-topology-check`, `git diff --check`, and the seven
+owner smokes — `prompt-model-smoke`, `prompt-render-parity-smoke`, `prompt-score-smoke`,
+`prompt-score-prefix-smoke`, `prompt-verifier-smoke`, `prompt-state-smoke`,
+`prompt-gate-validator-smoke` — all PASS, plus `make prompt-evaluate-smoke` under the Linux recipe
+above. `scripts/freeze-canonical-v1r --check` reproduces all 10 frozen files; all 56 file-set member
+digests across both corpora recompute. `EVALUATOR_SOURCE_SHA256` is re-pinned to
+`53bcf1c3a6fd384918dbfce380d0b7f35faa66c8dce5aad239649bfec90cfee4` (217,056 bytes), inside the
+four-chunk window.
+
+Seven mutants were injected into `src/prompt_score.align` at the final head and run under
+`gmake prompt-verifier-smoke`: the attempt-length bound, the repair-count bound, **both together**,
+`verifier_row_references_trace` returning `true`, the attempt-trace resolution, and re-imposing
+`measurement.repair_loop_count == 0` unconditionally all die against the new defect cases 9-13. The
+seventh — weakening `declared_loops > maximum_repair_loops` in `verifier_row_repair_facts` —
+survives and always will, because the walk's own bounds make that comparison unreachable; it is
+commented as redundant defence in depth and deviation 13 records it rather than claiming coverage.
+
+**`make prompt-evaluate-smoke` runs only in a Linux container, and running it found three real
+defects.** It cannot run on macOS: the evaluator's retained-executable launch reads `/proc/self/fd`
+and the validation runner needs `bwrap`. The recipe that works — and that the next session must use
+before touching this evaluator or its verifier — is:
+
+```text
+docker run --rm --platform linux/arm64 \
+  --cap-add=SYS_ADMIN --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined --security-opt systempaths=unconfined \
+  -v "$PWD:$PWD" -v /Users/hiro/Projects/align-llm/.git:/Users/hiro/Projects/align-llm/.git:ro \
+  -v <scratchpad>/gate-run/linux-toolchain:/tc:ro -w "$PWD" \
+  -e PYTHONDONTWRITEBYTECODE=1 -e ALIGNC=/tc/alignc \
+  c4-repair-measure:latest sh -lc "python3 ./scripts/run-prompt-evaluate-smoke"
+```
+
+The checkout must be mounted **at its own absolute path**: a linked worktree's `gitdir` file names
+that path, so mounting it at `/work/align-llm` makes every `git rev-parse` fail. `ALIGNC` avoids a
+40-minute in-container `cargo build` of the pinned compiler. Under this recipe the merge base
+`3df063b` **passes** and the capability head did **not**. Spec deviation 21 records the three
+defects: the Align verifier applied deviation 1's `repair_loop_count` rule unconditionally and so
+refused every version-2 document the deterministic adapter produced from an expected-failure row;
+the terminal-adapter-error path aborted before its own row and attestation were persisted, leaving
+trace records referenced by nothing and refusing publication; and the owner itself read an omitted
+`Option` with `[]` and raised `KeyError` where it meant to assert. All three are fixed and the
+owner passes. **Neither review found any of them, because neither ran the owner.**
+
+**`make prompt-gate-check` is still not runnable here**, needing a source bundle and the Linux
+process-containment floor; spec section 10.3 records the `N/A` with the three substitute checks
+that cover each of its claims. The evaluate smoke's descendant-cleanup boundary now reports SKIP
+off Linux, like the gate validator smoke, instead of failing.
+
+**Provider topology.** Validation stays in `bwrap` inside a Linux aarch64 Docker container (Docker
+28.5.1), image `c4-repair-measure:latest` — the C6 measurement image plus `bubblewrap` and `socat`,
+with `/usr/bin/python3` and `/usr/bin/git` keeping the digests the C6 gate locator pins. Generation
+reaches the host `llama-server` through a container-local `socat` forwarder on `127.0.0.1:18080`,
+so `evaluation-provider-control.json` stays byte-identical and no machine-specific hostname reaches
+a persisted artifact. The server is **not** C6's (Homebrew llama.cpp 0.2.0, build 10566, commit
+`bb4caa754`); the **model file did not move** (`509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c`,
+exactly C6's `model-sha256`). `canonical-v1r/generation-policy.json` records the observed revision,
+and a fail-closed host probe plus an in-band model-id check enforce it. The container needs four
+explicit privilege values for `bwrap`'s namespaces; they are published in every run record's
+`container_privileges` and recorded as deviation 17.
+
+**Align capability request.** **Request 52** (`PROPOSED`) — `match` on an **owned** record's
+`Option` field partially moves the payload out with no diagnostic, and a later `json.encode` of
+that still-live record silently omits the field. Non-blocking: every `Option` member this
+capability adds is read through a `borrow` binding. Requests 50 and 51 are Track B's; 53 is the
+next free number.
+
+**Host coordination.** A gate re-run needs the host `llama-server` and the 4.7 GB model. Track B
+runs real-model CPU work in sibling worktrees; check `pgrep -f 'ggml-spike|run-decode-step|run-moe-decode-step'`
+and free memory before starting `llama-server`, and never kill another agent's process.
+
+**Coding-baseline chain, re-recorded.** This capability changes `Makefile`, one of the twenty
+recorded baseline artifacts, so the chain on `main` does not bind this head. Exactly one of the
+twenty digests moved (`Makefile`); `.align-revision` is unchanged and the twenty paths are
+identical. The eval artifacts this capability adds — `eval/prompt/c4-repair-gate/` and
+`eval/prompt/canonical-v1r/` — are **not** in the recorded set, which
+`python3 scripts/check-baseline-chain` confirms against the manifest. The identity-bound chain is
+`69d223e` -> `ca17997` -> `c89d147` (clean source, immutable oracle projection, finalization), with
+the pending measurement recorded on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) through
+the DinD wrapper, exactly as the R-wave's were. `gmake baseline-check` passes on Linux at the
+finalized head. It **supersedes** this branch's first chain (`4652753` -> `5b88b6b` -> `9f9d458`),
+which PR #148 (R6-OLMOE-DECODE) invalidated by changing `Makefile` itself; both chains stay
+reachable in this branch's history and only the later one is named in the finalized baseline. The pull request must be a **merge**: squash or rebase would make the three commits
+unreachable from `main`.
+
+**Next actions, in order.**
+1. At the final head, on a clean worktree:
+   `python3 scripts/pre-pr --owner-test prompt-verifier-smoke -- gmake prompt-model-smoke
+   prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke
+   prompt-state-smoke prompt-gate-validator-smoke`. The branch changes `Makefile`, so the
+   classifier selects the **`fresh-image`** profile — `hosted-checks`, `fresh-focused`, **and the
+   installed `fresh-installed`** — and the installed profile is not substitutable by a Docker skip
+   or an ambient `DOCKER_HOST`. On this macOS host that means running the whole preflight inside
+   the Docker-in-Docker wrapper, with `gmake` on `PATH` and `LIBRARY_PATH` set as the
+   `align-llm macOS host setup` notes require. `Makefile` is also one of the twenty recorded
+   canonical baseline artifacts, so the three-commit baseline chain must be re-recorded on Linux
+   through the same wrapper before the stamp; `python3 scripts/check-baseline-chain` names the
+   tracked set, and the `eval/prompt/c4-repair-gate/` and `canonical-v1r` artifacts this
+   capability adds are **not** in it.
+2. Publish the pull request with the two review envelopes, every finding's disposition, and the
+   consolidated repair commit.
+
+**Blockers.** None.
+
+**Intentional uncommitted files.** None.
 
 ## Merged checkpoint: R6-OLMOE-DECODE (PR #148, 2026-08-29)
 

@@ -1,9 +1,11 @@
 # MF-SINGLE-TOKEN-LOGITS
 
 **Designed 2026-08-29; implemented the same day — section 8 is the result.** Branch `agent/mf-single-token-logits` from `origin/main`
-`553563e`, which sections 1 to 7 cite; merged up to `origin/main` `a9561a9` (PR #149) before
-publication, which section 8.4 records. Filed by `R6-PREFIX-SUFFIX-PREFILL` 11.2. **Roadmap item 36**
-(`main` carries 30, 31–35 are on branches); re-check at merge.
+`553563e`, which sections 1 to 7 cite; merged up to `origin/main` `a9561a9` (PR #149, section 8.4),
+then `45ff38e` (PR #148, section 8.5), then `4940005` (PR #150, section 8.6) before publication —
+three `git merge`s, never a rebase. Filed by `R6-PREFIX-SUFFIX-PREFILL` 11.2. **Roadmap item 36**
+(when this was written `main` carried items to 30 and 31–35 were on branches or in draft; 31, 32 and
+33 have since landed, 34 and 35 are still reserved); re-check at merge.
 
 ## 1. Root cause
 
@@ -104,7 +106,8 @@ conditions per module.
 
 ### 8.1 Goldens
 
-Six new rows, **no existing row changed**, verified mechanically rather than asserted: each of the
+**At the implementation head, before any merge**: six new rows, **no existing row changed**,
+verified mechanically rather than asserted — each of the
 six corpora is a strict prefix of its successor, so the diff is `+6 / -0` lines over
 `scripts/{model,gpu,moe-model,decode-step}-*golden.jsonl` and `scripts/{layer,moe-layer}-forward-golden.jsonl`
 are byte-identical.
@@ -118,7 +121,9 @@ are byte-identical.
 | `ds-tokens-one` (id 3, streamed) | decode-step | `867ebc4ea19d2b1b…` |
 | `ds-tokens-one-resident` (id 3, `RESIDENT=weights`) | decode-step | `867ebc4ea19d2b1b…` |
 
-(Three more decode-step rows arrive with the `main` merge; section 8.4.)
+(The `main` merge and the lift it carries add one more decode-step row and **remove**
+`ds-suffix-prefix-one`'s, which was a refusal row; sections 8.4 and 8.8. Measured against
+`origin/main` the branch adds **seven** golden rows, removes one, and changes none.)
 
 Section 1's two predictions both hold. `mf-tokens-one-zero` carries `62a46efd…` — the digest the
 defect produced for **every** one-token prefill, whatever the id — and the fixed non-zero run is a
@@ -151,8 +156,20 @@ gmake layer-forward-smoke    ok   (77 + 63 + 29 + 78 + 97 + 119 documented cases
 gmake ggml-spike-smoke       ok
 gmake gate-topology-check    ok
 gmake fmt / format-check     ok   (fmt changed nothing)
-git diff --check             clean
 ```
+
+`git diff --check origin/main...HEAD` — the exact three-dot form `scripts/pre-pr` runs — is the
+tenth command, and it is **clean only from the review-repair commit onward**. At head `8dadcc2` this
+file ended with a blank line, so that command exited 2 while this section claimed it clean; the
+first comprehensive review found it, the repair strips the line, and the claim is now the command's
+own result rather than an assumption. The repair is documents and comments only — no `.align` file,
+runner, corpus, or `Makefile` word moves — so `gmake build`, `gmake layer-forward-smoke` and
+`gmake format-check` were re-run at the repair head and the real-model legs of 8.7 were not: nothing
+a documents-and-comments diff contains can reach them. At the repair head the smoke is `ok` at
+77 + 63 + 29 + 80 + 99 + 143 documented cases (139 with a golden row) plus item 32's 59-case
+`--moe-decode-step` block; the counts above are the implementation head's, before two merges added
+their own rows. Section 8.8 records the one further code change hosted CI required, and the same
+commands were re-run after it.
 
 ### 8.4 The `main` merge and the `R6-PREFIX-SUFFIX-PREFILL` lift
 
@@ -172,13 +189,16 @@ capability as the consumer that reopens the surface. The bound is deleted:
   only bound on `T_prefix`. The `tokens_in > 1` builder branch stays but stops citing the defect:
   the two builders now agree byte for byte at one row, so it is a specialization, not a correction.
 * `scripts/run-layer-forward-smoke` — `ds-suffix-prefix-one` moves out of the refusal matrix and
-  into `ENGINE_CASES` as a **passing oracle-S row at `T_prefix = 1`**, joined by
-  `ds-suffix-save-prefix-one` (a one-token prefill save in its own process) and
-  `ds-suffix-single-shot-2` (the two-token comparand). All three are two-token runs, so all three
-  carry golden rows — item 33's cross-platform digest drift starts at four tokens.
-* `scripts/run-decode-step` — the split guard widens from `2 <= j` to `1 <= j`. Every prompt that
-  leg takes is six ids or longer, so this adds no real-model run; it stops encoding a refusal that
-  no longer exists.
+  becomes a **passing oracle-S run at `T_prefix = 1`**, joined by
+  `ds-suffix-save-prefix-one` (a one-token prefill save in its own process, in `ENGINE_CASES` with a
+  golden row) and `ds-suffix-single-shot-2` (the two-token comparand). The two **two**-token runs
+  carry no golden row: hosted CI measured a cross-host difference in the decode step at two tokens,
+  so they sit in `BOUNDARY_CASES` beside item 33's own four-token comparand. Section 8.8.
+* `scripts/run-decode-step` — the split guard widens from `2 <= j` to `1 <= j`. The two guards
+  differ only where `⌈|L|/2⌉ == 1`, which needs `|L| <= 2`, and **no prompt that leg takes
+  tokenizes to two ids or fewer** (item 33's 5.9 measured 6, 3, 3 and 3), so this adds no real-model
+  run; it stops encoding a refusal that no longer exists. That invariant is the corpus's, not the
+  code's, and `scripts/run-decode-step`'s comment now says so.
 * `docs/specs/r6-prefix-suffix-prefill.md` — new **section 11.5**, plus in-place corrections to
   2.3, 2.7, 3.7, 5.6, 5.7, 9.1, 11.1 correction 8, 11.2 and 12.1. Section 11.5 also records the
   three measurements 11.2 got wrong: nine sites (ten after item 32) not eighteen,
@@ -194,8 +214,10 @@ ds-suffix-prefix-one       TOKENS 3, SUFFIX 5  -> ok, output 0cd795d9..., suffix
 Oracle S and oracle C″ both hold at `T_prefix = 1`, and `867ebc4e…` is the same one-token digest
 `mf-tokens-one` carries on `--model-forward`.
 
-**The corpus after the merge.** `scripts/decode-step-golden.jsonl` 137 → **141** rows, with exactly
-**one changed row** — `ds-suffix-prefix-one`, refusal to pass — and four added. The other five
+**The corpus after the merge.** `scripts/decode-step-golden.jsonl` 137 → **139** rows: three added
+(`ds-tokens-one`, `ds-tokens-one-resident`, `ds-suffix-save-prefix-one`) and `ds-suffix-prefix-one`
+**removed**, because a refusal pins across hosts and its replacement does not (8.8). No row changes
+value. The runner reports **143 documented cases, 139 with a golden row**. The other five
 corpora are unchanged from section 8.1. Re-running the predicate mutant against the merged head
 kills `ds-suffix-prefix-one` through **both** oracle S and oracle C″, kills
 `ds-suffix-save-prefix-one`'s golden row, kills the six rows of 8.1, and nothing else:
@@ -228,3 +250,80 @@ which is already correct, and its own decode graph gathers row 0 of a one-row wi
 construction. All six corpora regenerated unchanged apart from item 32's own rows, and every command
 of 8.3 was re-run at this head.
 
+### 8.6 The third `main` merge — C4-REPAIR-MEASURED
+
+`C4-REPAIR-MEASURED` merged as PR #150 (`origin/main` `4940005`), roadmap item **31**. Track A only:
+no `src/` file this capability touches moves, no `GraphMembers` builder arrives, and the audit is
+unchanged at **ten sites, ten `gathered` literals, four predicates, zero `pieces[at] > 1`**. Two
+conflicts, both `Active`-block collisions: `HANDOFF.md` (item 31's block demoted to a merged
+checkpoint) and `docs/specs/roadmap.md` (the reserve comment reduced to 34 and 35, since 31 and 32
+have now both landed, then item 31, item 32, item 33, item 36). `main` carried two `Active` sections
+at that head — C4's own and R6-OLMOE-DECODE's, which C4's branch had not demoted — so this merge
+also demotes the second and leaves exactly one `Active` block.
+
+Every command of 8.3 was re-run at this head and no golden needed regenerating.
+
+### 8.7 Real-model result — section 5's acceptance, on both models
+
+Both legs ran at head `a779979` on the reference host, streamed (no resident arena), against
+Homebrew `llama-debug`/`llama-eval-callback` and the two checked-in GGUFs. **Both pass, and the
+answer section 5 asked for is byte identity.**
+
+| | dense Qwen2.5-Coder-7B Q4_K_M | OLMoE-1B-7B-0125-Instruct Q4_K_M |
+| --- | --- | --- |
+| Command | `gmake model-forward-qualification` | `gmake moe-model-forward-qualification` |
+| Arm | `--model-forward` | `--moe-model-forward` |
+| Prompt | `def` | `def` |
+| Ids observed | `[750]` | `[1545]` |
+| Exactly one, non-zero? | yes | yes |
+| Logits | 152,064 | 50,304 |
+| `oracle_logits.byte_identical` | **true** | **true** |
+| `output.sha256` | `d639adb97337394649a1a94ccc70767cf989b75c14b80e1de31cfdde4745fb96` | `be4c699fbb888a3504b007c5d66925f621c8067a7f88191e0af42974c3c4ecc7` |
+| `output.argmax` | 914 | 33007 |
+| Oracle 1 over the one-token window | `IDENTICAL` | `IDENTICAL` |
+| Exit | 0 | 0 |
+
+**The tokenization guard did not fire, and that is a result rather than a formality.** Section 5
+requires the leg to read `llama-debug`'s own `<stem>-tokens.bin` and print `N/A` with the ids it
+observed unless there is exactly one and it is non-zero — because a prepended BOS makes a one-token
+prompt two ids and a BOS of id 0 would mask the defect. Both tokenizers produced one non-zero id, so
+both legs ran the arm. The dense leg's six-token list `[750, 912, 2877, 11, 293, 1648]` is the
+independent confirmation that Qwen2 prepends nothing.
+
+**Nothing else in either qualification moved.** Dense: logits `IDENTICAL` at the reconciliation
+width (`d2e48620ae3e31e2066a6172aa32c19c974d996d232ab91b118335e3d245bf74`, argmax 671), transcript
+`PASS` 479/479 nodes at max |d| 0 ten-thousandths, self-reference `IDENTICAL` 479/479 over 30 graphs,
+both forced builds reaching their codes. Routed: logits `IDENTICAL`
+(`a56195da2c913d8dd7fa608917a381200c4b59d1c534fae2d4bbb828f80d2383`), routing identity `MATCH`
+546/546 printed ids over 728 slots and 16/16 block sums, transcript `PASS` 227/227 nodes at max |d|
+0, self-reference `IDENTICAL` 227/227 over 34 graphs, 33.36 % of expert bytes read at six tokens.
+The fix is invisible at `T >= 2` on the real models exactly as it is on the fixtures.
+
+### 8.8 What hosted CI found — the two-token decode step is host-dependent
+
+The first hosted CI run of this branch (`898c064`, PR #151) failed one check on two golden rows, and
+the failure is a real property of the fixture rather than of this fix:
+
+```text
+ds-suffix-single-shot-2  .steps[0].bit_sum 71850835819 != 71850835587
+ds-suffix-prefix-one     .steps[0].bit_sum 71850835819 != 71850835587
+                         .steps[0].sha256  a206116118... != cbd24e660f...
+```
+
+macOS/arm64 against Linux/x86_64, and **both rows differ identically**, which is the point: oracle S
+holds on each host, and what cannot hold is a file of digests compared across two. Item 33's
+deviation 7 already recorded this class at a **four**-token prefill, and section 6 risk 4 of that
+document had put the boundary higher still. It is lower again, and in a different place: the drift
+is in the **decode step** after a two-token prefill, not in the prefill. The one-token rows this
+capability adds — `ds-tokens-one`, `ds-tokens-one-resident`, `ds-suffix-save-prefix-one` — were
+byte-identical on both hosts and stay pinned, which is what makes the boundary a measurement rather
+than a guess.
+
+`ds-suffix-single-shot-2` and `ds-suffix-prefix-one` therefore move from `ENGINE_CASES` into
+`BOUNDARY_CASES`, exactly as `ds-suffix-2`'s comparand did. They remain **documented cases with
+every assertion intact**: oracle S compares the pair within one host, oracle C″ compares the suffix
+run against `--model-forward` on that host, and `record()`'s document-identity assertions run. Only
+the two pinned digest rows are gone: `scripts/decode-step-golden.jsonl` is 137 → **139** and the
+runner prints 143 documented cases, 139 with a golden row.
+
+Nothing else moved. No `.align` file, no oracle, no refusal, and no other corpus.

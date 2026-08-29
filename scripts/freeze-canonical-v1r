@@ -1,0 +1,410 @@
+#!/usr/bin/env python3
+"""Mint the frozen `eval/prompt/canonical-v1r/` + `eval/tasks/prompt-v1r/` corpus scope.
+
+`docs/specs/c4-repair-measured.md` section 3.4 owns this contract. `maximum_repair_loops` lives in
+a task manifest, and every task manifest of `eval/tasks/prompt-v1/` is a digest-verified member of
+`eval/prompt/canonical-v1/corpus-file-set.manifest`, which `make prompt-gate-check` verifies
+against the current head's bytes. Editing one would break the merged C6-MEASURED gate. A new
+corpus is therefore the only way to name a nonzero repair bound, and this script mints it.
+
+Nothing under `eval/prompt/canonical-v1/`, `eval/prompt/gate/`, or `eval/tasks/prompt-v1/` is read
+for anything but its bytes, and nothing under them is written. The shared members appear in both
+file-set manifests with the **same digests** — that identity is the machine-checkable statement
+that this capability did not move the adapter, the runner, or the fixtures.
+
+Re-running this script against an unchanged tree must reproduce every output byte for byte. That
+is the freeze's reproducibility property, and `--check` asserts it without writing.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+SOURCE_SCOPE = ROOT / "eval/prompt/canonical-v1"
+SOURCE_TASKS = ROOT / "eval/tasks/prompt-v1"
+TARGET_SCOPE = ROOT / "eval/prompt/canonical-v1r"
+TARGET_TASKS = ROOT / "eval/tasks/prompt-v1r"
+TASK_IDS = (
+    "duration-half-away-from-zero",
+    "layer-precedence-frozen-module",
+    "record-codec-round-trip",
+)
+REPAIR_SECTION_KINDS = ("STATUS", "SUMMARY", "STDOUT", "STDERR")
+# One repair attempt, so the manifest itself is the cap: a second repair would raise
+# `repair_loop_count` to 2 and be scored as a `REPAIR_LOOPS` policy violation rather than silently
+# permitted. A larger value would leave headroom no code path can reach and no test can exercise.
+MAXIMUM_REPAIR_LOOPS = 1
+
+
+def canonical_chunks(value: Any):
+    if isinstance(value, dict):
+        yield b"{"
+        first = True
+        for key, child in value.items():
+            if child is None:
+                continue
+            if not first:
+                yield b","
+            first = False
+            yield from canonical_chunks(key)
+            yield b":"
+            yield from canonical_chunks(child)
+        yield b"}"
+        return
+    if isinstance(value, list):
+        yield b"["
+        for ordinal, child in enumerate(value):
+            if ordinal:
+                yield b","
+            yield from canonical_chunks(child)
+        yield b"]"
+        return
+    yield json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def bind(value: dict[str, Any]) -> dict[str, Any]:
+    """Set a record's own digest over its canonical preimage, with only that field blanked."""
+    value["content_sha256"] = ""
+    value["content_sha256"] = hashlib.sha256(b"".join(canonical_chunks(value))).hexdigest()
+    return value
+
+
+def raw_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def file_expectation(relative: str) -> str:
+    """The snapshot-expectation digest, which is not the file's raw digest.
+
+    It covers the mode and the repository-relative path as well as the content, so a file that
+    moves or changes permissions fails its expectation even when its bytes are unchanged.
+    """
+    path = ROOT / relative
+    metadata = path.stat()
+    mode = f"{stat.S_IFMT(metadata.st_mode) | stat.S_IMODE(metadata.st_mode):06o}"
+    raw = f"{mode} {relative}".encode("utf-8") + b"\0F " + raw_digest(path).encode("ascii") + b"\n"
+    return hashlib.sha256(raw).hexdigest()
+
+
+def document(value: Any) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def file_set_manifest(paths: list[str]) -> bytes:
+    """The `ALIGN-LLM-CORPUS-FILE-SET-V1` framing `scripts/prompt-source-verifier.py` parses.
+
+    Entries are in strictly increasing path byte order; each carries the full `S_IFMT|S_IMODE`
+    mode, the path's byte length, the path, a NUL, the `F` kind, and the raw content digest.
+    """
+    records = []
+    for relative in sorted(paths):
+        path = ROOT / relative
+        metadata = path.stat()
+        mode = stat.S_IFMT(metadata.st_mode) | stat.S_IMODE(metadata.st_mode)
+        raw_path = relative.encode("utf-8")
+        records.append(
+            f"{mode:o} {len(raw_path)} ".encode("utf-8") + raw_path + b"\0F "
+            + raw_digest(path).encode("ascii") + b"\n"
+        )
+    return (
+        b"ALIGN-LLM-CORPUS-FILE-SET-V1\n"
+        + str(len(records)).encode("ascii") + b"\n"
+        + b"".join(records)
+    )
+
+
+def parse_manifest_paths(raw: bytes) -> list[str]:
+    """Read the member paths out of an existing manifest, so the shared set is derived not typed."""
+    lines = raw.split(b"\n")
+    if lines[0] != b"ALIGN-LLM-CORPUS-FILE-SET-V1":
+        raise ValueError("the source manifest header is invalid")
+    paths = []
+    for line in lines[2:]:
+        if not line:
+            continue
+        head, _, _ = line.partition(b"\0")
+        _, _, rest = head.partition(b" ")
+        length, _, path = rest.partition(b" ")
+        if len(path) != int(length):
+            raise ValueError("a source manifest entry length disagrees with its path")
+        paths.append(path.decode("utf-8"))
+    return paths
+
+
+REPAIR_PREAMBLE = (
+    "--- previous attempt failed the repository's own validation ---\n"
+    "Your previous answer for this task was applied to a pristine checkout of the repository and\n"
+    "the declared validation command still did not exit zero. The status labels and the captured\n"
+    "validation output from that attempt follow.\n"
+    "\n"
+    "Produce a corrected answer now. Requirements, unchanged from the task above:\n"
+    "- Return whole-file blocks, never a diff. For every file you change, emit one\n"
+    "  `FILE: <repo-relative-path>` line followed by a fenced block holding that file's complete\n"
+    "  new content. Text outside those blocks is ignored.\n"
+    "- Change only the files the task prompt declares editable.\n"
+    "- Never change, weaken, delete, or skip a test.\n"
+    "- Make the smallest change that makes the validation command exit zero.\n"
+    "\n"
+    "Read the diagnostics below before you answer. They are the actual output of the actual\n"
+    "validation run, not a description of it."
+)
+REPAIR_CLOSING = (
+    "--- answer format, repeated ---\n"
+    "Emit one `FILE: <repo-relative-path>` line per edited file, each followed by a fenced block\n"
+    "holding that file's complete new content. Emit nothing else."
+)
+REPAIR_HEADERS = {
+    "STATUS": "--- previous attempt: validation status ---",
+    "SUMMARY": "--- previous attempt: diagnostic summary ---",
+    "STDOUT": "--- previous attempt: validation stdout ---",
+    "STDERR": "--- previous attempt: validation stderr ---",
+}
+
+
+def build_repair_template() -> dict[str, Any]:
+    return bind({
+        "schema_version": 1,
+        "artifact_kind": "REPAIR_PROMPT_TEMPLATE",
+        "template_id": "prompt-v1r-repair-v1",
+        "preamble_text": REPAIR_PREAMBLE,
+        "section_headers": {kind: REPAIR_HEADERS[kind] for kind in REPAIR_SECTION_KINDS},
+        "closing_text": REPAIR_CLOSING,
+        "content_sha256": "",
+    })
+
+
+def build_generation_policy(provider_service_revision: str) -> dict[str, Any]:
+    source = json.loads((SOURCE_SCOPE / "generation-policy.json").read_text(encoding="utf-8"))
+    value = dict(source)
+    value["generation_policy_id"] = "prompt-v1r-generation-v1"
+    value["provider_service_revision"] = provider_service_revision
+    # Everything else is reused verbatim: `max_prompt_bytes`, `max_tokens`,
+    # `temperature_micros: 0`, `seed_mode: PAIRED_FIXED`, and `seed_base` do not move, so the two
+    # corpora differ only in the repair bound and in which service is claimed to have answered.
+    return bind(value)
+
+
+def build_task(task_id: str, template_relative: str, template_digest: str) -> dict[str, Any]:
+    source = json.loads((SOURCE_TASKS / f"{task_id}.json").read_text(encoding="utf-8"))
+    value = dict(source)
+    value["generation_policy_path"] = "eval/prompt/canonical-v1r/generation-policy.json"
+    limits = dict(value["regression_limits"])
+    limits["maximum_repair_loops"] = MAXIMUM_REPAIR_LOOPS
+    value["regression_limits"] = limits
+    # The repair template is a declared measurement input, so it joins the snapshot expectations
+    # exactly as the task prompt and the context sources already do. Section 4.2 requires it to be
+    # "digest-verified exactly like a task prompt"; being an artifact is what delivers that, and it
+    # is the one place this corpus's `artifacts` list is not identical to `prompt-v1`'s.
+    artifacts = [dict(item) for item in value["artifacts"]]
+    artifacts.append({
+        "path": template_relative,
+        "kind": "FILE",
+        "expected_sha256": file_expectation(template_relative),
+    })
+    value["artifacts"] = artifacts
+    # Declared in the field order `PROMPT_TASK_FIELDS` fixes: immediately before `content_sha256`.
+    ordered: dict[str, Any] = {}
+    for name, item in value.items():
+        if name == "content_sha256":
+            ordered["repair_template_path"] = template_relative
+            ordered["repair_template_sha256"] = template_digest
+        ordered[name] = item
+    return bind(ordered)
+
+
+def build_corpus(manifest_digest: str) -> dict[str, Any]:
+    revision = bind({
+        "schema_version": 1,
+        "artifact_kind": "CORPUS_REVISION",
+        "source_kind": "FILE_SET",
+        "source_repository_id": "",
+        "source_sha256": manifest_digest,
+        "content_sha256": "",
+    })
+    return bind({
+        "schema_version": 1,
+        "artifact_kind": "PROMPT_EVALUATION_CORPUS",
+        "corpus_id": "prompt-v1r",
+        "corpus_revision": revision,
+        "task_files": [f"eval/tasks/prompt-v1r/{task_id}.json" for task_id in TASK_IDS],
+        "content_sha256": "",
+    })
+
+
+def build_scope(revision: dict[str, Any], generation_policy_digest: str) -> dict[str, Any]:
+    source = json.loads((SOURCE_SCOPE / "scope.json").read_text(encoding="utf-8"))
+    value = dict(source)
+    value["corpus_id"] = "prompt-v1r"
+    value["corpus_revision"] = revision
+    value["generation_policy_sha256"] = generation_policy_digest
+    # `canonical-v1`'s scope names the Align revision C6 measured against. A new scope names the
+    # revision *it* is measured against, and the evaluate request must agree with it: the source
+    # verifier resolves the Align checkout's HEAD and requires it to equal this value.
+    value["align_revision"] = (ROOT / ".align-revision").read_text().strip()
+    # `acceptance_policy_sha256`, `base_prompt_sha256`, and `repo_prompt_sha256` are identical to
+    # `canonical-v1`'s: the acceptance policy is reused byte-identical and is not relaxed, and the
+    # effective variant's prompts do not move.
+    return bind(value)
+
+
+def build_baseline(scope: dict[str, Any]) -> dict[str, Any]:
+    source = json.loads(
+        (SOURCE_SCOPE / "prompt-activation-baseline-v1.json").read_text(encoding="utf-8")
+    )
+    value = dict(source)
+    value["decision_id"] = "baseline-v1r"
+    activation = dict(value["activation"])
+    activation["activation_id"] = "baseline-v1r/activation"
+    activation["scope"] = scope
+    # The effective variant is byte-identical to `baseline-v1`'s, so the two corpora share one
+    # parent prompt and the C4 run measures the same PARENT arm C6 did.
+    value["activation"] = bind(activation)
+    return bind(value)
+
+
+README = """# `eval/prompt/canonical-v1r/` — the C4-REPAIR-MEASURED corpus scope
+
+Frozen. `docs/specs/c4-repair-measured.md` is the authoritative plan; this directory is the scope
+that plan measures against, and it is never edited after a measurement has run against it.
+
+## Why it exists
+
+`maximum_repair_loops` lives in a task manifest, and every `eval/tasks/prompt-v1/*.json` manifest
+is a digest-verified member of `eval/prompt/canonical-v1/corpus-file-set.manifest`. Editing one
+would break `make prompt-gate-check` against the merged C6-MEASURED evidence. So enabling a single
+bounded repair attempt required a new corpus rather than a new field value in the old one.
+
+## What is new, and it is only this
+
+- `eval/tasks/prompt-v1r/*.json` — the same three tasks with `maximum_repair_loops: 1`, a
+  `generation_policy_path` pointing here, and the `repair_template_path` / `repair_template_sha256`
+  pair. Every other field, including the whole fixture and adapter `artifacts` list, is
+  `prompt-v1`'s.
+- `repair-template.json` — the sealed `REPAIR_PROMPT_TEMPLATE`: a preamble, one fixed header per
+  section kind, and a closing format reminder. The repair prompt is assembled from this template
+  plus the failing attempt's own persisted diagnostics, and from nothing else.
+- `generation-policy.json` — `canonical-v1`'s policy with a new id and the **observed** provider
+  service revision. `max_prompt_bytes`, `max_tokens`, `temperature_micros: 0`,
+  `seed_mode: PAIRED_FIXED`, and `seed_base` do not move.
+
+## What is reused by digest, and is proved unmoved
+
+`eval/runners/run-coding-task.py`, `scripts/prompt-measurement-adapter.py`,
+`scripts/prompt-fixed-adapter.py`, `scripts/prompt-snapshot-helper.py`, every
+`eval/fixtures/prompt-v1-*/repository/` file, and every `eval/tasks/prompt-v1/<task>/` artifact
+appear in this corpus's `corpus-file-set.manifest` with the **same digests** they carry in
+`canonical-v1`'s. That identity is the machine-checkable statement that this capability moved
+none of them. `eval/prompt/canonical-v1/base-prompt.json`, `repo-prompt.json`,
+`evaluation-provider-control.json`, `prompt-acceptance-policy.json`, and
+`eval/prompt/gate/environment-policy.json` are reused by path, unmodified. The acceptance policy
+in particular is **not** relaxed: if the run records a repair-loop regression, that is the measured
+result.
+
+## Regenerating
+
+`scripts/freeze-canonical-v1r --provider-service-revision <revision>` writes every file here and
+under `eval/tasks/prompt-v1r/`. `--check` asserts the tree already matches without writing. The
+digest cascade — task manifest bytes to the file-set manifest to its raw digest to the corpus
+revision to the scope to the baseline activation — is regenerated as a whole. Do not repair one
+digest in isolation.
+"""
+
+
+def build(provider_service_revision: str) -> dict[str, bytes]:
+    outputs: dict[str, bytes] = {}
+
+    template_relative = "eval/prompt/canonical-v1r/repair-template.json"
+    policy_relative = "eval/prompt/canonical-v1r/generation-policy.json"
+    outputs[template_relative] = document(build_repair_template())
+    outputs[policy_relative] = document(build_generation_policy(provider_service_revision))
+    # The task manifests pin the template and the policy by digest, so those two files must exist
+    # on disk before the manifests that name them are derived.
+    write(outputs, only=(template_relative, policy_relative))
+
+    template_digest = raw_digest(ROOT / template_relative)
+    for task_id in TASK_IDS:
+        relative = f"eval/tasks/prompt-v1r/{task_id}.json"
+        outputs[relative] = document(build_task(task_id, template_relative, template_digest))
+    write(outputs, only=tuple(f"eval/tasks/prompt-v1r/{task_id}.json" for task_id in TASK_IDS))
+
+    shared = [
+        path for path in parse_manifest_paths(
+            (SOURCE_SCOPE / "corpus-file-set.manifest").read_bytes()
+        )
+        if not path.startswith("eval/tasks/prompt-v1/") or "/" in path[len("eval/tasks/prompt-v1/"):]
+    ]
+    members = shared + [
+        template_relative, policy_relative,
+        *(f"eval/tasks/prompt-v1r/{task_id}.json" for task_id in TASK_IDS),
+    ]
+    manifest_relative = "eval/prompt/canonical-v1r/corpus-file-set.manifest"
+    manifest = file_set_manifest(members)
+    outputs[manifest_relative] = manifest
+    write(outputs, only=(manifest_relative,))
+
+    corpus = build_corpus(hashlib.sha256(manifest).hexdigest())
+    scope = build_scope(
+        corpus["corpus_revision"],
+        json.loads(outputs[policy_relative].decode("utf-8"))["content_sha256"],
+    )
+    outputs["eval/prompt/canonical-v1r/corpus.json"] = document(corpus)
+    outputs["eval/prompt/canonical-v1r/scope.json"] = document(scope)
+    outputs["eval/prompt/canonical-v1r/prompt-activation-baseline-v1r.json"] = document(
+        build_baseline(scope)
+    )
+    outputs["eval/prompt/canonical-v1r/README.md"] = README.encode("utf-8")
+    return outputs
+
+
+def write(outputs: dict[str, bytes], only: tuple[str, ...] | None = None) -> None:
+    for relative, raw in outputs.items():
+        if only is not None and relative not in only:
+            continue
+        path = ROOT / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists() or path.read_bytes() != raw:
+            path.write_bytes(raw)
+
+
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--provider-service-revision", required=True)
+    parser.add_argument(
+        "--check", action="store_true",
+        help="assert the frozen tree already matches, and write nothing",
+    )
+    return parser.parse_args(arguments)
+
+
+def main(arguments: list[str] | None = None) -> int:
+    values = parse_arguments(sys.argv[1:] if arguments is None else arguments)
+    if values.check:
+        # Derive into a scratch view of the real tree: every intermediate is already on disk in a
+        # frozen corpus, so a matching tree reproduces byte for byte and a drifted one does not.
+        outputs = build(values.provider_service_revision)
+        drifted = [
+            relative for relative, raw in outputs.items()
+            if not (ROOT / relative).exists() or (ROOT / relative).read_bytes() != raw
+        ]
+        if drifted:
+            for relative in drifted:
+                sys.stderr.write(f"freeze canonical-v1r: DRIFT {relative}\n")
+            return 1
+        sys.stdout.write(f"freeze canonical-v1r: PASS {len(outputs)} frozen files\n")
+        return 0
+    outputs = build(values.provider_service_revision)
+    write(outputs)
+    sys.stdout.write(f"freeze canonical-v1r: WROTE {len(outputs)} files\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
