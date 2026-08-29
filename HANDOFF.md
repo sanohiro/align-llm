@@ -84,12 +84,15 @@ Oracle R PASS on the real model at `N = 16` with the transcript, logits blob, an
 supplied.
 
 **Goldens.** `scripts/decode-step-golden.jsonl` moves — every row to schema 4 plus a `weights`
-object, and 10 new rows, 107 becoming **117** (115 at the implementation head; the review repair adds
-`ds-force-resident-wrap` and the final review adds `ds-resident-stage-full`). A programmatic diff of
-the old and new files confirms the **only** fields
+object, and 9 new rows, 107 becoming **116** (115 at the implementation head; the review repair adds
+`ds-force-resident-wrap`). A programmatic diff of the old and new files confirms the **only** fields
 that changed in a pre-existing row are `.schema_version` and `.weights`, which is exactly what
-section 4.5 predicted, and each later regeneration is **one added row, no removal, and no
-changed row**. The other **six** goldens — `scripts/layer-forward-golden.jsonl`,
+section 4.5 predicted, and the repair's own regeneration is **one added row, no removal, and no
+changed row**. The final review's `ds-resident-stage-full` is a **117th documented case with no
+golden row**: hosted CI showed that a 32-token prefill's activations differ in the last bit between
+macOS/arm64 and Linux/x86_64, so a committed row for it would pin the regenerating machine. Section
+5.9 deviation 9 records it; the case is asserted by oracle R against its streamed twin, which is a
+within-host comparison. The other **six** goldens — `scripts/layer-forward-golden.jsonl`,
 `scripts/model-forward-golden.jsonl`, `scripts/gpu-forward-golden.jsonl`,
 `scripts/moe-layer-forward-golden.jsonl`, `scripts/moe-model-forward-golden.jsonl`, and
 `scripts/ggml-spike-golden.jsonl` — are byte-unchanged, verified by regenerating all six and
@@ -127,7 +130,8 @@ its regression.
 
 **Verification checkpoint (final-minors head).** `gmake build`, `gmake format-check`,
 `git diff --check`, `gmake ggml-spike-smoke`, and
-`gmake layer-forward-smoke` (all six blocks; **117** documented decode-step cases reaching 41 codes)
+`gmake layer-forward-smoke` (all six blocks; **117** documented decode-step cases, 116 of them with
+a golden row, reaching 41 codes)
 all pass at the final head; `gmake check` (31 units), `gmake fmt`, and `gmake gate-topology-check`
 passed at the repair head `6facd56`, whose Align sources and `Makefile` the final commit does not
 touch. `gmake decode-step-qualification` **exits 0** on the real model at `N = 16` in 827 s of the

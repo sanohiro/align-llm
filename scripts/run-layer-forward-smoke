@@ -3858,18 +3858,28 @@ ENGINE_CASES = [
     ("ds-resident-stream-1", ds(steps="1"), ""),
     ("ds-resident-weights-1", ds(steps="1", resident="weights"), ""),
     ("ds-resident-weights-steps", ds(resident="weights"), ""),
-    # Section 5.2 and section 11.1 correction 13's bound, approached from the side no refusal
-    # reaches. `slot` is
-    # bounded by `tokens.count` at both `stage_embed_row` call sites, so a prompt of exactly
-    # `MAX_PREFILL_TOKENS` ids stages slot 31 — the highest index any caller can produce — and the
-    # corpus stops containing only three-token prompts. On this fixture the stage's 32 x 16 B of
-    # rows are padded up to `block_align` 4,096, so slot 31 is not the region's last byte; what the
-    # case pins is the **token count**, and a destination bound that were one row too tight would
-    # turn this legal run into `R5_SHAPE`. The block after the loop compares it against its streamed
-    # twin, which is run rather than recorded so the boundary costs one golden row and not two.
+] + [(name, operands, code) for name, operands, code, _, _, _ in KV_REFUSALS]
+
+# Section 5.2 and section 11.1 correction 13's bound, approached from the side no refusal reaches.
+# `slot` is bounded by `tokens.count` at both `stage_embed_row` call sites, so a prompt of exactly
+# `MAX_PREFILL_TOKENS` ids stages slot 31 — the highest index any caller can produce — and the
+# corpus stops containing only three-token prompts. On this fixture the stage's 32 x 16 B of rows
+# are padded up to `block_align` 4,096, so slot 31 is not the region's last byte; what the case pins
+# is the **token count**, and a destination bound one row too tight would turn this legal run into
+# `R5_SHAPE`.
+#
+# **It carries no golden row, and the reason is a measured one.** The golden is committed and
+# compared byte for byte on macOS/arm64 and on Linux/x86_64, and a 32-token prefill's `l_out` and
+# logits digests differ between them in the last bit (`.schedule[0].l_out_bit_sum` 538248184962
+# against 538248184963 on the first CI run of this case) — long accumulations and 32 rows of `exp`
+# reach a host difference the three-token corpus never does. Pinning a host-specific digest would
+# make the golden a statement about the machine that regenerated it. The case is asserted instead by
+# oracle R against its streamed twin, which is a **within-host** comparison and therefore correct on
+# every platform, plus `record()`'s document-identity assertions and the structural block below.
+BOUNDARY_CASES = [
     (STAGE_FULL, ds(tokens=STAGE_FULL_TOKENS, transcript="-", width=STAGE_FULL_WIDTH,
                     steps=STAGE_FULL_STEPS, resident="weights"), ""),
-] + [(name, operands, code) for name, operands, code, _, _, _ in KV_REFUSALS]
+]
 
 FORCED_CASES = [
     ("ds-force-init", "engine+init", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, "-", WIDTH],
@@ -4211,12 +4221,6 @@ for name, operands, expected in ENGINE_CASES:
         continue
     if document["status"] != "ok":
         continue
-    # Every assertion below is arithmetic on this block's three-token prompt and its width of 8 —
-    # plane bytes, oracle B's compared bytes, `n_past`, the reference id chain. `ds-resident-stage-
-    # full` is deliberately neither, so it carries its own assertions after the loop instead of
-    # forcing sixty lines of shape-specific arithmetic to become parameterised for one case.
-    if name == STAGE_FULL:
-        continue
     graph = document["graph"]
     decode = document["decode"]
     plane = document["plane"]
@@ -4435,33 +4439,43 @@ for streamed_case, resident_case in (("ds-resident-stream-1", "ds-resident-weigh
 # the twin below makes the case an assertion about the **bytes** that slot carries rather than only
 # about the run not being refused: the streamed leg reads all 32 rows out of the pack, the resident
 # leg copies them out of the arena's table, and oracle R says the two produce the same document.
-stage_full = json.loads(produced[STAGE_FULL])
-if stage_full["error_code"] != "" or stage_full["status"] != "ok":
-    failures.append("%s: a %s-token resident prefill was refused: %r %r"
-                    % (STAGE_FULL, len(STAGE_FULL_TOKENS.split(",")), stage_full["error_code"],
-                       stage_full["error_detail"]))
+# The case runs here, under the engine shim the block above built, and not in `ENGINE_CASES`: it
+# carries no golden row (see `BOUNDARY_CASES`), and every assertion in that loop is arithmetic on
+# the three-token prompt and the width of 8 this block otherwise uses throughout.
+for name, operands, expected in BOUNDARY_CASES:
+    record(name, operands, expected)
+
+if STAGE_FULL not in produced:
+    failures.append("%s: the staging-boundary case produced no document" % STAGE_FULL)
 else:
-    if stage_full["weights"]["mode"] != "resident" \
-            or stage_full["weights"]["step_pack_bytes"] != 0:
-        failures.append("%s: %r" % (STAGE_FULL, stage_full["weights"]))
-    # The prompt reached the graph at its full length: `n_past` before the first decode step is the
-    # prompt's own token count, and the plane holds `T + N` columns after it.
-    if stage_full["decode"]["n_past_first"] != 32 \
-            or stage_full["plane"]["columns_written"] != 32 + int(STAGE_FULL_STEPS):
-        failures.append("%s: n_past_first %d and %d columns, not 32 and %d"
-                        % (STAGE_FULL, stage_full["decode"]["n_past_first"],
-                           stage_full["plane"]["columns_written"], 32 + int(STAGE_FULL_STEPS)))
-    if stage_full["plane"]["roundtrip_verdict"] != "IDENTICAL":
-        failures.append("%s: oracle B is %r at the staging boundary"
-                        % (STAGE_FULL, stage_full["plane"]["roundtrip_verdict"]))
-stage_full_streamed = normalize_resident(normalize(
-    run(ds(tokens=STAGE_FULL_TOKENS, transcript="-", width=STAGE_FULL_WIDTH,
-           steps=STAGE_FULL_STEPS)).stdout.decode("utf-8")))
-if stage_full_streamed != normalize_resident(produced[STAGE_FULL]):
-    failures.append("oracle R at the staging boundary (%s): %s"
-                    % (STAGE_FULL,
-                       describe_difference(stage_full_streamed,
-                                           normalize_resident(produced[STAGE_FULL]))))
+    stage_full = json.loads(produced[STAGE_FULL])
+    if stage_full["error_code"] != "" or stage_full["status"] != "ok":
+        failures.append("%s: a %d-token resident prefill was refused: %r %r"
+                        % (STAGE_FULL, len(STAGE_FULL_TOKENS.split(",")),
+                           stage_full["error_code"], stage_full["error_detail"]))
+    else:
+        if stage_full["weights"]["mode"] != "resident" \
+                or stage_full["weights"]["step_pack_bytes"] != 0:
+            failures.append("%s: %r" % (STAGE_FULL, stage_full["weights"]))
+        # The prompt reached the graph at its full length: `n_past` before the first decode step is
+        # the prompt's own token count, and the plane holds `T + N` columns after it.
+        if stage_full["decode"]["n_past_first"] != 32 \
+                or stage_full["plane"]["columns_written"] != 32 + int(STAGE_FULL_STEPS):
+            failures.append("%s: n_past_first %d and %d columns, not 32 and %d"
+                            % (STAGE_FULL, stage_full["decode"]["n_past_first"],
+                               stage_full["plane"]["columns_written"],
+                               32 + int(STAGE_FULL_STEPS)))
+        if stage_full["plane"]["roundtrip_verdict"] != "IDENTICAL":
+            failures.append("%s: oracle B is %r at the staging boundary"
+                            % (STAGE_FULL, stage_full["plane"]["roundtrip_verdict"]))
+    stage_full_streamed = normalize_resident(normalize(
+        run(ds(tokens=STAGE_FULL_TOKENS, transcript="-", width=STAGE_FULL_WIDTH,
+               steps=STAGE_FULL_STEPS)).stdout.decode("utf-8")))
+    if stage_full_streamed != normalize_resident(produced[STAGE_FULL]):
+        failures.append("oracle R at the staging boundary (%s): %s"
+                        % (STAGE_FULL,
+                           describe_difference(stage_full_streamed,
+                                               normalize_resident(produced[STAGE_FULL]))))
 
 # Section 3.2's layout arithmetic on this fixture, spelled out so the golden's own
 # `weights.resident_bytes` is a number with a derivation rather than a number that was observed.
@@ -4840,7 +4854,9 @@ if update:
         for name in ORDER:
             handle.write(json.dumps({"case": name, "document": produced[name]},
                                     separators=(",", ":"), ensure_ascii=False) + "\n")
-    print("decode step smoke: golden rewritten with %d cases" % len(produced))
+    # `ORDER` and not `produced`: `BOUNDARY_CASES` runs and is asserted but carries no golden row,
+    # so the two counts differ on purpose and the message must report the rows written.
+    print("decode step smoke: golden rewritten with %d cases" % len(ORDER))
 else:
     with open(golden_path, "r", encoding="utf-8") as handle:
         golden = [json.loads(line) for line in handle if line.strip()]
@@ -4859,11 +4875,12 @@ if failures:
         sys.stderr.write("decode step smoke: FAIL %s\n" % line)
     raise SystemExit(1)
 
-print("decode step smoke: %d no-document cases (R6_ARITY, R6_PATH), %d documented cases, "
-      "%d codes reached, oracle A' PASS against transcript graphs 2..4 at three step offsets, "
-      "oracle B IDENTICAL over the whole plane including every written-back column, three steps "
-      "decoding the reference loop's own ids, and arm-r5b-unchanged PASS"
-      % (len(NO_DOCUMENT), len(ORDER), len(codes - {""})))
+print("decode step smoke: %d no-document cases (R6_ARITY, R6_PATH), %d documented cases (%d with a "
+      "golden row), %d codes reached, oracle A' PASS against transcript graphs 2..4 at three step "
+      "offsets, oracle B IDENTICAL over the whole plane including every written-back column, three "
+      "steps decoding the reference loop's own ids, a resident prefill at the staging boundary, and "
+      "arm-r5b-unchanged PASS"
+      % (len(NO_DOCUMENT), len(ORDER) + len(BOUNDARY_CASES), len(ORDER), len(codes - {""})))
 print("decode step smoke: akvp v1 -- %d refusal cases each asserting the arm's code and detail and "
       "the independent reader's own kind over %d reject kinds, a %d-byte container written and "
       "reloaded in a separate process, a fixture-written container loaded and decoded to the same "

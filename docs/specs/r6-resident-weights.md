@@ -597,10 +597,11 @@ still run against the resident document so that the claim is direct rather than 
 
 ### 4.5 The goldens
 
-> **Shipped: schema 4, 117 rows, and the "no other golden moves" prediction held for all six.**
+> **Shipped: schema 4, 116 rows, and the "no other golden moves" prediction held for all six.**
 > Section 5.9 deviation 6 owns the schema number; the row count is 107 -> 115 at the implementation
-> head, 116 after the review repair added one forced case, and 117 after the final review added the
-> staging-boundary case.
+> head and 116 after the review repair added one forced case. The final review's
+> `ds-resident-stage-full` is a **117th documented case with no golden row** — section 5.9
+> deviation 9 records why.
 
 `scripts/decode-step-golden.jsonl` is rewritten at schema 3. No other golden moves: the `weights`
 object is new, and no existing field changes value in streaming mode. Predicted in advance so the
@@ -1085,6 +1086,21 @@ Every one is recorded here rather than left for a reviewer to find.
    `engine+resident-wrap`, the forced build correction 12's regression needs. The region between the
    two `R4.5 SHARED SHIM CONTRACT` markers is still untouched.
 
+9. **`ds-resident-stage-full` is a documented case with no golden row, and CI is why.** The final
+   review asked for a positive case at `tokens.count == MAX_PREFILL_TOKENS`, and the first version of
+   it carried a golden row like every other documented case. Hosted CI refused it: the golden is
+   committed once and compared byte for byte on **macOS/arm64 and on Linux/x86_64**, and a 32-token
+   prefill's activations differ between the two hosts in the last bit —
+   `.schedule[0].l_out_bit_sum` 538,248,184,962 against 538,248,184,963, and both step digests with
+   it. Thirty-two rows of `exp` and a longer accumulation reach a host difference the three-token
+   corpus never does. A golden row for it would have been a statement about the machine that
+   regenerated the file, so the case runs in its own `BOUNDARY_CASES` list instead and is asserted
+   by **oracle R against its streamed twin** — a within-host comparison, correct on every platform —
+   plus `record()`'s document-identity assertions and a structural block. The golden therefore stays
+   at 116 rows while the runner reports 117 documented cases, and the two prints say so. This is a
+   real limit on what a committed golden can pin, and it is recorded rather than worked around by
+   loosening `normalize`.
+
 ### 5.10 The mutants
 
 A regression that cannot fail is not a regression. Each of these was applied to the shipped source,
@@ -1143,7 +1159,7 @@ legs; primary metric exact at all three `N`; floor verdict printed by the runner
 (`failures.append` when below). Evidence: section 5.8.1.
 
 **Section 3.5 — the document.** `render_weights`, `SCHEMA_VERSION := 4`, `fill_ns` normalized in
-both runners. Evidence: the golden's 117 rows; the programmatic old-versus-new diff showing only
+both runners. Evidence: the golden's 116 rows; the programmatic old-versus-new diff showing only
 `.schema_version` and `.weights` moved.
 
 **Section 3.6 — the memory ceiling.** The runner's `RESIDENT_MIN_GIB` preflight and its `N/A` line;
@@ -1337,7 +1353,7 @@ merge time and section 8's row is updated then.
 | `HANDOFF.md` | A new `## Active: R6-RESIDENT-WEIGHTS` block above the R6-KV-PERSIST one, which is left byte-unchanged so the merge from `agent/r6-kv-persist` stays clean |
 | `docs/align-development.md` | The `--decode-step` section's heading gains `, R6-RESIDENT-WEIGHTS`; the arity line becomes "twelve, thirteen, **or fourteen**"; a fourteen-operand invocation joins the synopsis; and a `RESIDENT` block records the operand, the arena, schema 4, the opt-in rule with its abort, the runner's 12 GiB preflight, and the CPU-only boundary |
 | the merge itself | `git merge agent/r6-kv-persist` (`bdb34eb`) resolved three conflicts and nothing else: `ds()` in `scripts/run-layer-forward-smoke` gained **both** sides' keyword arguments (`pack` from KV-PERSIST's identity refusals, `resident` from this capability); `docs/align-development.md`'s `--decode-step` heading took this capability's version below R5E's incoming section; and `scripts/decode-step-golden.jsonl` was **regenerated** rather than merged. `src/decode_step.align` and `src/model_forward.align` auto-merged with no conflict and compile clean |
-| `scripts/decode-step-golden.jsonl` | Regenerated with `ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE=1 gmake layer-forward-smoke`: **107 rows -> 115** at the implementation head, **116** after the review repair added `ds-force-resident-wrap`, and **117** after the final review added `ds-resident-stage-full`; the 8 new `ds-resident-*` rows plus those two, and **no row removed**. A programmatic walk of the old and new documents confirms the only fields that moved in a pre-existing row are `.schema_version` (3 -> 4) and the new `.weights` object — exactly what section 4.5 predicted, now against KV-PERSIST's post-repair corpus rather than its pre-repair one. Each later regeneration moved **one added row and nothing else**: a case-by-case comparison of the 115-row and 116-row files, and again of the 116-row and 117-row files, reports one addition, no removal, and no changed row. The other six goldens are byte-identical to the incoming branch's |
+| `scripts/decode-step-golden.jsonl` | Regenerated with `ALIGN_LLM_LAYER_FORWARD_GOLDEN_UPDATE=1 gmake layer-forward-smoke`: **107 rows -> 115** at the implementation head and **116** after the review repair added `ds-force-resident-wrap`; the 8 new `ds-resident-*` rows plus that one, and **no row removed**. A programmatic walk of the old and new documents confirms the only fields that moved in a pre-existing row are `.schema_version` (3 -> 4) and the new `.weights` object — exactly what section 4.5 predicted, now against KV-PERSIST's post-repair corpus rather than its pre-repair one. The repair's own regeneration moved **one added row and nothing else**: a case-by-case comparison of the 115-row and 116-row files reports one addition, no removal, and no changed row. The final review's `ds-resident-stage-full` adds a 117th documented case and **no row at all** — section 5.9 deviation 9 records the cross-platform reason — so this file is byte-identical between the review-repair head and the final head. The other six goldens are byte-identical to the incoming branch's |
 | `docs/align-requests.md` | **Request 50** — `std.os.physical_memory` / `available_memory` — filed with every mandatory field, `Blocking: no`, and its acceptance criteria; the review added **Request 51** — the reserved-word diagnostic — on the same terms, and corrected Request 50's `align-llm verification` line, which had named `R6_RESIDENT_HOST` as though it were a shipped code rather than this request's proposal for one. Request 35's priority is raised to **high** with this capability recorded as its second and sharpest client and the 4.68 GB abort stated. Request 38 gains section 2.4's measured Darwin `pread` boundary and this capability as its third consumer. Requests 33, 39, and 49 are cited in section 8 as continuing clients; none changes status |
 
 ## 10. Risks
