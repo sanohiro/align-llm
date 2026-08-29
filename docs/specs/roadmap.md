@@ -768,43 +768,6 @@ The current forward delivery order is:
     `R5_SOURCE_DIVERGED` over a correct result. It was filed outside item 33 because it would have
     put an R5B correctness change inside a review scoped to a suffix graph.
 
-36. **MF-SINGLE-TOKEN-LOGITS — the one-token prefill reads the prompt's embedding row.** Design,
-    blast radius, and results in
-    [`mf-single-token-logits.md`](mf-single-token-logits.md). A bug fix, filed by
-    R6-PREFIX-SUFFIX-PREFILL section 11.2 and numbered 36 because **31, 32, 34 and 35 are reserved
-    by capabilities that were on branches or in draft at the time of writing** and this one merged
-    out of order; the numbering is a name, not a delivery order. `fill_members` and `compare_source` gathered a
-    member's rows by token id only where `pieces > 1` — the piece count used as a **proxy** for
-    "this member is the per-token embedding row set". `build_embed_members` sets `pieces = tokens`,
-    so a one-token prefill took the whole-member branch and read **row 0 of the embedding table**
-    instead of the prompt's row: wrong logits with `status: ok`. Four public arms were affected —
-    `--model-forward`, `--model-forward-gpu`, `--moe-model-forward`, and `--decode-step`'s prefill —
-    across ten `GraphMembers` construction sites in four modules — nine when the fix was written
-    and a tenth with item 32's `moe_decode_step`; `--layer-forward` and
-    `--moe-layer-forward` were not, because they gather unconditionally. The resident path was not
-    immune either: `stage_embed_row` staged the right row while `compare_source` still expected
-    row 0, so a one-token non-zero resident run **with** a reference reported `R5_SOURCE_DIVERGED`
-    over a correct result. The fix is a `gathered: bool` on both `GraphMembers` records and the
-    predicate `m.gathered && at == 0`, which is true exactly where `pieces > 1` was, so `T >= 2` is
-    byte-identical and **the gather fix changes no existing golden row in any of the six corpora**.
-    Its regression is therefore **six new rows** rather than a changed one — a one-token control at
-    id 0 and a one-token non-zero id on each affected arm, plus the streamed/resident equality pair
-    whose `R5_SOURCE_DIVERGED` false alarm disappears. *(The item 33 lift this branch also carries
-    adds one more row and removes `ds-suffix-prefix-one`'s, so the branch as a whole adds seven
-    golden rows, removes one, and changes none. That row leaves because a passing two-token run is
-    host-dependent in its decode step — measured on hosted CI — and is asserted from
-    `BOUNDARY_CASES` without a pinned digest, as item 33's own four-token comparand is.)* The
-    real-model half is
-    `--model-forward` at one non-zero token byte-identical to `llama-debug --save-logits` on the
-    same one-token prompt, with the tokenization checked rather than assumed. Owner
-    `gmake layer-forward-smoke`; focused `gmake model-forward-qualification` and
-    `gmake moe-model-forward-qualification`. No Align gap and no design gate: no CLI operand,
-    persisted format, or ownership boundary moves. **It also widens item 33's accepted surface**:
-    that capability's `T_prefix >= 2` bound existed only because of this defect, so this branch
-    lifts it — the `R6_SUFFIX prefix[<n>]` refusal is gone, `ds-suffix-prefix-one` becomes a passing
-    oracle-S run at `T_prefix = 1`, and `r6-prefix-suffix-prefill.md` sections 3.7, 5.6 and 11 record
-    the lift.
-
 35. **R6-MOE-RESIDENT-DENSE — the dense third of a routed decode step, held resident, with the
     expert measurement unmoved.** Design and results in
     [`r6-moe-resident-dense.md`](r6-moe-resident-dense.md). Item 30 made a *dense* model's decode
@@ -865,6 +828,43 @@ The current forward delivery order is:
     that TTFT improve on repeated coding tasks *sharing a prefix*, and a decode loop that shares no
     prefix does not answer it; the next capability toward it is partial **expert** residency, whose
     input is item 32's union curve and this capability's freed footprint.
+
+36. **MF-SINGLE-TOKEN-LOGITS — the one-token prefill reads the prompt's embedding row.** Design,
+    blast radius, and results in
+    [`mf-single-token-logits.md`](mf-single-token-logits.md). A bug fix, filed by
+    R6-PREFIX-SUFFIX-PREFILL section 11.2 and numbered 36 because **31, 32, 34 and 35 are reserved
+    by capabilities that were on branches or in draft at the time of writing** and this one merged
+    out of order; the numbering is a name, not a delivery order. `fill_members` and `compare_source` gathered a
+    member's rows by token id only where `pieces > 1` — the piece count used as a **proxy** for
+    "this member is the per-token embedding row set". `build_embed_members` sets `pieces = tokens`,
+    so a one-token prefill took the whole-member branch and read **row 0 of the embedding table**
+    instead of the prompt's row: wrong logits with `status: ok`. Four public arms were affected —
+    `--model-forward`, `--model-forward-gpu`, `--moe-model-forward`, and `--decode-step`'s prefill —
+    across ten `GraphMembers` construction sites in four modules — nine when the fix was written
+    and a tenth with item 32's `moe_decode_step`; `--layer-forward` and
+    `--moe-layer-forward` were not, because they gather unconditionally. The resident path was not
+    immune either: `stage_embed_row` staged the right row while `compare_source` still expected
+    row 0, so a one-token non-zero resident run **with** a reference reported `R5_SOURCE_DIVERGED`
+    over a correct result. The fix is a `gathered: bool` on both `GraphMembers` records and the
+    predicate `m.gathered && at == 0`, which is true exactly where `pieces > 1` was, so `T >= 2` is
+    byte-identical and **the gather fix changes no existing golden row in any of the six corpora**.
+    Its regression is therefore **six new rows** rather than a changed one — a one-token control at
+    id 0 and a one-token non-zero id on each affected arm, plus the streamed/resident equality pair
+    whose `R5_SOURCE_DIVERGED` false alarm disappears. *(The item 33 lift this branch also carries
+    adds one more row and removes `ds-suffix-prefix-one`'s, so the branch as a whole adds seven
+    golden rows, removes one, and changes none. That row leaves because a passing two-token run is
+    host-dependent in its decode step — measured on hosted CI — and is asserted from
+    `BOUNDARY_CASES` without a pinned digest, as item 33's own four-token comparand is.)* The
+    real-model half is
+    `--model-forward` at one non-zero token byte-identical to `llama-debug --save-logits` on the
+    same one-token prompt, with the tokenization checked rather than assumed. Owner
+    `gmake layer-forward-smoke`; focused `gmake model-forward-qualification` and
+    `gmake moe-model-forward-qualification`. No Align gap and no design gate: no CLI operand,
+    persisted format, or ownership boundary moves. **It also widens item 33's accepted surface**:
+    that capability's `T_prefix >= 2` bound existed only because of this defect, so this branch
+    lifts it — the `R6_SUFFIX prefix[<n>]` refusal is gone, `ds-suffix-prefix-one` becomes a passing
+    oracle-S run at `T_prefix = 1`, and `r6-prefix-suffix-prefill.md` sections 3.7, 5.6 and 11 record
+    the lift.
 
 ### Status (2026-08-28)
 

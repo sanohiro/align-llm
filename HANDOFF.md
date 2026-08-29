@@ -14,18 +14,30 @@ to record that this capability proposes none either.
 
 The four things that merge re-checks all held:
 
-- **roadmap item 35.** `main` now carries 30, 32 and 33 (33 is R6-PREFIX-SUFFIX-PREFILL); 31 and 34
-  are claimed by `agent/c4-repair-measured` and `C4-REPAIR-EDITSET` and are not on `main` yet, so 35
-  is still this capability's and the item was inserted after 32 without conflict.
+- **roadmap item 35.** After the second merge `main` carries 30, 31, 32, 33 and **36** (36 is
+  MF-SINGLE-TOKEN-LOGITS, PR #151); 34 is still claimed by `C4-REPAIR-EDITSET` and is not on `main`,
+  so **35 is still this capability's**. The item was re-ordered to sit between 33 and 36 after the
+  merge placed it below 36.
 - **`R6_MOE_DECODE_STEP` schema 2**, unchanged by the merge.
-- **next free Align request number 53.** `docs/align-requests.md` carries exactly 52 requests after
-  the merge; this capability takes none and adds clients to 33, 35, 36, 38, 47, 48, 49 and **51**,
-  and records **50** as explicitly not a client.
+- **next free Align request number 53.** `docs/align-requests.md` still ends at Request **52** after
+  the second merge; this capability takes none and adds clients to 33, 35, 36, 38, 47, 48, 49 and
+  **51**, and records **50** as explicitly not a client.
 - **which goldens regenerate:** `scripts/moe-decode-step-golden.jsonl` only, 59 -> 69 rows.
   `scripts/decode-step-golden.jsonl` grew 116 -> 137 rows **from `main`'s side** — PR #149 owns that
   — and this branch's own diff still does not touch it, `src/decode_step.align`, or
   `src/model_forward.align`. `main` also moved `AGGREGATE_TIMEOUT` from 1,800 s to 3,600 s in the
   `Makefile`; nothing in this capability reads it.
+
+**A second `git merge origin/main` took `334f524`** — PR #150 (C4-REPAIR-MEASURED: Track A only,
+plus the `Makefile`'s `.PHONY`/`AGGREGATE_TIMEOUT` and the baseline chain) and PR #151
+(MF-SINGLE-TOKEN-LOGITS). One conflict, in `HANDOFF.md`, where both sides opened a new `## Active`
+block: resolved by keeping this capability's and relabelling MF-SINGLE-TOKEN-LOGITS' as the merged
+checkpoint it became. **PR #151 adds `gathered: bool` to both `GraphMembers` records**; the merge
+carried `gathered: false` into `moe_decode_step.decode_embed_members` from `main`'s side, which is
+correct — that member bakes the token into its own `source`/`pack` offsets and reads one row
+directly rather than gathering `pieces` — and this capability adds no other `GraphMembers` builder.
+`scripts/moe-model-forward-golden.jsonl` gained a row from `main`'s side (98 -> 99) and
+`src/moe_model_forward.align` changed there; neither is this branch's.
 
 **Capability.** The dense member set of a routed model held resident across an `N`-step decode loop,
 experts still streamed. CPU only, OLMoE-1B-7B-0125-Instruct Q4_K_M. Authoritative ledger
