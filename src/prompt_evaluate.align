@@ -5,8 +5,14 @@ import prompt_score
 import std.process
 
 EVALUATOR_SOURCE_RELATIVE := "scripts/prompt-evaluate.py"
-EVALUATOR_SOURCE_SHA256 := "5d792743a54c7d95ebc64564e632758c3f196f53ae94c833ddcf0c05368aa43e"
-EVALUATOR_BOOTSTRAP := "import sys;exec(compile(sys.argv.pop(1)+sys.argv.pop(1)+sys.argv.pop(1),'<reviewed-prompt-evaluate>','exec'))"
+EVALUATOR_SOURCE_SHA256 := "53bcf1c3a6fd384918dbfce380d0b7f35faa66c8dce5aad239649bfec90cfee4"
+// C4-REPAIR-MEASURED widened the launch contract from three argument chunks to four. The attempt
+// loop, the repair-prompt assembly, and the version-2 row assembly do not fit the previous
+// 196,608-byte ceiling; `docs/specs/c4-repair-measured.md` section 3.10 records the widening as a
+// deliberate public change to this contract rather than a late patch. Splitting the evaluator into
+// a second file to dodge the window is not acceptable: the pin exists so that exactly one reviewed
+// byte sequence runs, and a helper module beside it would be an unpinned second producer.
+EVALUATOR_BOOTSTRAP := "import sys;exec(compile(sys.argv.pop(1)+sys.argv.pop(1)+sys.argv.pop(1)+sys.argv.pop(1),'<reviewed-prompt-evaluate>','exec'))"
 EVALUATOR_ARG_CHUNK_BYTES := 65536
 
 pub PromptEvaluateStatus { Published, InvalidInput, EvaluationFailed, OutputWrite, CleanupFailed }
@@ -162,8 +168,8 @@ pub fn evaluate_file(request_path: str, result_relative: str) -> PromptEvaluateS
   evaluator_view: str := evaluator_source
   evidence_relative_view: str := request.evaluation_evidence_path
 
-  if evaluator_view.len() <= EVALUATOR_ARG_CHUNK_BYTES * 2 ||
-  evaluator_view.len() > EVALUATOR_ARG_CHUNK_BYTES * 3 {
+  if evaluator_view.len() <= EVALUATOR_ARG_CHUNK_BYTES * 3 ||
+  evaluator_view.len() > EVALUATOR_ARG_CHUNK_BYTES * 4 {
     return PromptEvaluateStatus.InvalidInput
   }
   command := process.command(
@@ -174,7 +180,8 @@ pub fn evaluate_file(request_path: str, result_relative: str) -> PromptEvaluateS
       EVALUATOR_BOOTSTRAP,
       evaluator_view[0..EVALUATOR_ARG_CHUNK_BYTES],
       evaluator_view[EVALUATOR_ARG_CHUNK_BYTES..EVALUATOR_ARG_CHUNK_BYTES * 2],
-      evaluator_view[EVALUATOR_ARG_CHUNK_BYTES * 2..evaluator_view.len()],
+      evaluator_view[EVALUATOR_ARG_CHUNK_BYTES * 2..EVALUATOR_ARG_CHUNK_BYTES * 3],
+      evaluator_view[EVALUATOR_ARG_CHUNK_BYTES * 3..evaluator_view.len()],
       "--request",
       request_path,
       "--final-result-relative",

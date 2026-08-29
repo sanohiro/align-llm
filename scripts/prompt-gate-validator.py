@@ -254,6 +254,141 @@ EXPECTED_INPUT_FIELDS = (
     "provider_request_sha256",
     "content_sha256",
 )
+EXPECTED_INPUT_V2_FIELDS = (
+    "schema_version",
+    "artifact_kind",
+    "task_id",
+    "sample_index",
+    "variant",
+    # One record per non-`SKIPPED` attempt rather than per row, so the identity that must be
+    # unique, complete, and unextended grows an attempt ordinal.
+    "attempt_index",
+    "rendered_prompt_sha256",
+    "context_sources_sha256",
+    "generation_request_sha256",
+    "adapter_request_sha256",
+    "provider_request_sha256",
+    "content_sha256",
+)
+# --- C4-REPAIR-MEASURED: the version-2 row shape ------------------------------------------------
+# `docs/specs/c4-repair-measured.md` sections 3.2 and 3.3 own this contract. One record cannot
+# decode both shapes, so the validator carries one exact field tuple per version and selects by
+# the container's `schema_version` — never by the presence of a field. A version-1 row has no
+# `attempts`, no row-level `repair_loop_count`, and no row-level `generation_to_passing_patch_ns`,
+# and is never given a compatibility default for one.
+TASK_ROW_V1_FIELDS = (
+    "schema_version",
+    "artifact_kind",
+    "evaluation_id",
+    "task_id",
+    "sample_index",
+    "variant",
+    "variant_id",
+    "variant_sha256",
+    "prompt_preparation_ns",
+    "time_to_passing_patch_ns",
+    "evaluation_input",
+    "measurement",
+    "content_sha256",
+)
+TASK_ROW_V1_OPTIONAL = frozenset({"time_to_passing_patch_ns"})
+TASK_ROW_V2_FIELDS = (
+    "schema_version",
+    "artifact_kind",
+    "evaluation_id",
+    "task_id",
+    "sample_index",
+    "variant",
+    "variant_id",
+    "variant_sha256",
+    "prompt_preparation_ns",
+    "repair_loop_count",
+    "generation_to_passing_patch_ns",
+    "time_to_passing_patch_ns",
+    "attempts",
+    "evaluation_input",
+    "measurement",
+    "content_sha256",
+)
+TASK_ROW_V2_OPTIONAL = frozenset(
+    {"generation_to_passing_patch_ns", "time_to_passing_patch_ns"}
+)
+ATTEMPT_RECORD_FIELDS = (
+    "schema_version",
+    "artifact_kind",
+    "attempt_index",
+    "attempt_kind",
+    "status",
+    "skip_reason",
+    "rendered_prompt_sha256",
+    "repair_prompt_source",
+    "adapter_request_sha256",
+    # Each attempt is its own contained invocation, so it produces its own snapshot request,
+    # before/after snapshot results, and input snapshot. `snapshot_attestations` stays one record
+    # per row because its schedule check binds it positionally, so these four are what keep a
+    # repair invocation's trace records bound to the attempt that produced them. Declared in the
+    # producer's order (`scripts/prompt-evaluate.py`, the `TASK_ATTEMPT_RECORD` literal) and in
+    # `src/prompt_artifacts.align`'s `TaskAttemptRecord`: after `adapter_request_sha256` and
+    # before `generation_request`.
+    "snapshot_request_sha256",
+    "before_snapshot_result_sha256",
+    "after_snapshot_result_sha256",
+    "input_snapshot_sha256",
+    "generation_request",
+    "seed_attestation",
+    "paired_seed",
+    "measurement",
+    "repair_preparation_ns",
+    "adapter_elapsed_ns",
+    "adapter_overhead_ns",
+    "measurement_sha256",
+    "content_sha256",
+)
+# A `SKIPPED` attempt carries identity and the work that reached the skip decision, and nothing
+# else; a `PASS` attempt is the only one carrying `adapter_overhead_ns`. Every one of those is a
+# canonically omitted `Option::None`, so all of them are optional at the shape boundary and the
+# per-status presence rule is enforced explicitly in `validate_attempt_record`.
+ATTEMPT_RECORD_OPTIONAL = frozenset(
+    {
+        "rendered_prompt_sha256",
+        "repair_prompt_source",
+        "adapter_request_sha256",
+        "snapshot_request_sha256",
+        "before_snapshot_result_sha256",
+        "after_snapshot_result_sha256",
+        "input_snapshot_sha256",
+        "generation_request",
+        "seed_attestation",
+        "measurement",
+        "adapter_overhead_ns",
+        "measurement_sha256",
+    }
+)
+# The four trace digests an attempt that ran must carry, paired with the persisted stream each one
+# must name. Mirrors the attestation rule below, which binds the row-level documents the same way.
+ATTEMPT_TRACE_POOLS = (
+    ("snapshot_request_sha256", "snapshot_requests"),
+    ("before_snapshot_result_sha256", "snapshot_results"),
+    ("after_snapshot_result_sha256", "snapshot_results"),
+    ("input_snapshot_sha256", "input_snapshots"),
+)
+REPAIR_PROMPT_SOURCE_FIELDS = (
+    "schema_version",
+    "artifact_kind",
+    "template_sha256",
+    "source_attempt_index",
+    "source_measurement_sha256",
+    "included_sections",
+    "dropped_sections",
+    "assembled_bytes",
+    "content_sha256",
+)
+REPAIR_SECTION_KINDS = ("STATUS", "SUMMARY", "STDOUT", "STDERR")
+ATTEMPT_KINDS = ("INITIAL", "REPAIR")
+ATTEMPT_STATUSES = ("PASS", "FAIL", "POLICY_VIOLATION", "ERROR", "SKIPPED")
+SKIP_REASONS = ("NONE", "REPAIR_PROMPT_BUDGET", "REPAIR_NOT_ELIGIBLE", "REPAIR_INPUT_UNAVAILABLE")
+# The existing two-hour ceiling both implementations already enforce. It is not raised.
+TIMING_CEILING_NS = 7_200_000_000_000
 TASK_AGGREGATE_FIELDS = (
     "task_id",
     "parent_pass_count",
@@ -291,6 +426,22 @@ CORPUS_AGGREGATE_FIELDS = (
     "time_improvement_ppm",
     "time_regression_ppm",
     "repair_loop_regression_count",
+)
+# The version-2 aggregates append the repair columns; the version-1 prefix does not move, so a
+# version-1 document keeps its exact recomputed shape.
+TASK_AGGREGATE_V2_FIELDS = TASK_AGGREGATE_FIELDS + (
+    "parent_repair_attempt_count",
+    "candidate_repair_attempt_count",
+    "parent_repair_recovery_count",
+    "candidate_repair_recovery_count",
+    "repair_recovery_paired",
+)
+CORPUS_AGGREGATE_V2_FIELDS = CORPUS_AGGREGATE_FIELDS + (
+    # The C4 gate quantity and its two denominators. The gate consumes
+    # `repair_recovery_paired_count` only.
+    "repair_attempt_count",
+    "repair_recovery_count",
+    "repair_recovery_paired_count",
 )
 ACCEPTANCE_POLICY_FIELDS = (
     "schema_version",
@@ -1396,10 +1547,341 @@ def status_value(measurement: Mapping[str, Any]) -> str:
     return measurement["status"]
 
 
+def validate_repair_prompt_source(value: Any, policy: Mapping[str, Any], label: str) -> None:
+    """Section 3.2 and section 4.3: the repair prompt's recorded provenance and section ladder."""
+    source = exact_record(value, REPAIR_PROMPT_SOURCE_FIELDS, label)
+    if source["schema_version"] != 1 or source["artifact_kind"] != "REPAIR_PROMPT_SOURCE":
+        raise GateError(f"{label} header is invalid")
+    require_digest(source["template_sha256"], f"{label} template digest")
+    require_digest(source["source_measurement_sha256"], f"{label} source measurement digest")
+    if source["source_attempt_index"] != 1:
+        raise GateError(f"{label} does not consume the initial attempt")
+    included = source["included_sections"]
+    dropped = source["dropped_sections"]
+    for name, sections in (("included", included), ("dropped", dropped)):
+        if not isinstance(sections, list):
+            raise GateError(f"{label} {name} sections are not a list")
+        ordered = [kind for kind in REPAIR_SECTION_KINDS if kind in sections]
+        if sections != ordered or len(set(sections)) != len(sections):
+            raise GateError(f"{label} {name} sections are not the fixed order without repeats")
+    if set(included) & set(dropped):
+        raise GateError(f"{label} sections are both included and dropped")
+    # `STATUS` is never dropped: it is the single most load-bearing fact in the prompt and it is
+    # bounded far below any budget that could force a drop.
+    if "STATUS" in dropped:
+        raise GateError(f"{label} drops the STATUS section")
+    require_integer(
+        source["assembled_bytes"],
+        f"{label} assembled bytes",
+        minimum=1,
+        maximum=policy["max_prompt_bytes"],
+    )
+
+
+def path_is_tree_descendant(path: str, root: str) -> bool:
+    """`src/prompt_score.align:3530`: a path strictly beneath `root`, separator included."""
+    return len(path) > len(root) + 1 and path.startswith(root) and path[len(root)] == "/"
+
+
+def file_expectation_digest(entry: Mapping[str, Any]) -> str:
+    """The canonical mode/path/digest preimage a `FILE` expectation is taken over.
+
+    Mirrors `verifier_file_expectation_matches` (`src/prompt_score.align:3513`), so a FILE
+    expectation binds the observed mode as well as the observed content.
+    """
+    preimage = f"{entry['mode']} {entry['path']}\0F {entry['sha256']}\n".encode("utf-8")
+    return hashlib.sha256(preimage).hexdigest()
+
+
+def snapshot_request_closure(
+    request: Mapping[str, Any], snapshot: Mapping[str, Any]
+) -> bool:
+    """Every observed artifact is one the request asked for, in the order it asked.
+
+    The port of `verifier_snapshot_artifact_closure` (`src/prompt_score.align:3543`): each static
+    expectation matches the next observed digest, a `TREE` expectation additionally consumes its
+    own descendants, the additional files follow in declaration order, and nothing is left over.
+    """
+    digests = snapshot["artifact_digests"]
+    if not isinstance(digests, list):
+        return False
+    index = 0
+    for expectation in request["static_expectations"]:
+        if index >= len(digests) or digests[index]["path"] != expectation["path"]:
+            return False
+        if expectation["kind"] == "FILE":
+            if file_expectation_digest(digests[index]) != expectation["expected_sha256"]:
+                return False
+            index += 1
+        else:
+            if digests[index]["sha256"] != expectation["expected_sha256"]:
+                return False
+            root = expectation["path"]
+            index += 1
+            while index < len(digests) and path_is_tree_descendant(digests[index]["path"], root):
+                index += 1
+    for additional in request["additional_files"]:
+        if index >= len(digests) or digests[index]["path"] != additional:
+            return False
+        index += 1
+    return index == len(digests)
+
+
+def validate_attempt_traces(
+    attempt: Mapping[str, Any],
+    task: Mapping[str, Any],
+    pools: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]],
+    label: str,
+) -> None:
+    """Section 3.8 row 22: resolve an attempt's four trace digests and cross-validate them.
+
+    `snapshot_attestations` carries one record per row and so cannot reach a repair invocation's
+    trace records; the attempt record is what binds them. Membership in the persisted pool is not
+    enough — the port of `verifier_attempt_trace_cross_valid` (`src/prompt_score.align:4877`)
+    resolves each digest to **exactly one** record of this row's task, requires the before and
+    after observations to be the same observation, requires both to be closed over the resolved
+    request, and requires the input snapshot to be this task's and to carry what was observed.
+    """
+    resolved: dict[str, Mapping[str, Any]] = {}
+    for name, pool in ATTEMPT_TRACE_POOLS:
+        digest = require_digest(attempt[name], f"{label} {name}")
+        candidates = pools[pool].get(digest)
+        if not candidates:
+            raise GateError(f"{label} {name} names no persisted record")
+        owned = [item for item in candidates if item["task_id"] == task["task_id"]]
+        if len(owned) != 1:
+            raise GateError(f"{label} {name} does not resolve to exactly one record of its task")
+        resolved[name] = owned[0]
+    request = resolved["snapshot_request_sha256"]
+    before = resolved["before_snapshot_result_sha256"]
+    after = resolved["after_snapshot_result_sha256"]
+    input_snapshot = resolved["input_snapshot_sha256"]
+    before_probe = before.get("environment_probe")
+    after_probe = after.get("environment_probe")
+    if before_probe is None or after_probe is None:
+        raise GateError(f"{label} observed no environment probe")
+    if (
+        before_probe["content_sha256"] != after_probe["content_sha256"]
+        or before["artifact_digests"] != after["artifact_digests"]
+    ):
+        raise GateError(f"{label} before and after observations record drift")
+    for name, observation in (("before", before), ("after", after)):
+        if not snapshot_request_closure(request, observation):
+            raise GateError(f"{label} {name} observation is not closed over its snapshot request")
+    if input_snapshot["task_manifest_sha256"] != task["content_sha256"]:
+        raise GateError(f"{label} input snapshot names another task manifest")
+    if input_snapshot["artifact_digests"] != before["artifact_digests"]:
+        raise GateError(f"{label} input snapshot does not carry the observed artifact digests")
+
+
+def validate_attempt_record(
+    value: Any,
+    row: Mapping[str, Any],
+    task: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    pools: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]],
+    ordinal: int,
+    label: str,
+) -> dict[str, Any]:
+    """One attempt: its identity, its per-status presence rule, and its own timing bounds."""
+    attempt = exact_record(value, ATTEMPT_RECORD_FIELDS, label, ATTEMPT_RECORD_OPTIONAL)
+    if attempt["schema_version"] != 1 or attempt["artifact_kind"] != "TASK_ATTEMPT_RECORD":
+        raise GateError(f"{label} header is invalid")
+    if attempt["attempt_index"] != ordinal:
+        raise GateError(f"{label} attempt index is not dense and ascending from one")
+    if attempt["attempt_kind"] not in ATTEMPT_KINDS:
+        raise GateError(f"{label} attempt kind is invalid")
+    if attempt["status"] not in ATTEMPT_STATUSES:
+        raise GateError(f"{label} status is invalid")
+    if attempt["skip_reason"] not in SKIP_REASONS:
+        raise GateError(f"{label} skip reason is invalid")
+    skipped = attempt["status"] == "SKIPPED"
+    if skipped != (attempt["skip_reason"] != "NONE"):
+        raise GateError(f"{label} skip reason does not agree with its status")
+    if attempt["paired_seed"] != row["evaluation_input"]["paired_seed"]:
+        raise GateError(f"{label} paired seed disagrees with its row")
+    require_integer(
+        attempt["repair_preparation_ns"], f"{label} repair preparation", minimum=0,
+        maximum=TIMING_CEILING_NS,
+    )
+    if attempt["attempt_kind"] == "INITIAL" and attempt["repair_preparation_ns"] != 0:
+        raise GateError(f"{label} initial attempt records repair preparation work")
+    # Section 3.2: a `SKIPPED` attempt carries only identity, not a run. The four trace digests
+    # belong to the same rule: a skipped repair made no contained invocation, so it produced no
+    # snapshot request, no snapshot result, and no input snapshot to name.
+    run_bound = (
+        "rendered_prompt_sha256", "adapter_request_sha256", "snapshot_request_sha256",
+        "before_snapshot_result_sha256", "after_snapshot_result_sha256", "input_snapshot_sha256",
+        "generation_request", "seed_attestation", "measurement", "measurement_sha256",
+    )
+    for name in run_bound:
+        present = attempt.get(name) is not None
+        if present == skipped:
+            state = "carries" if present else "omits"
+            raise GateError(f"{label} {state} {name} against its status")
+    if not skipped:
+        validate_attempt_traces(attempt, task, pools, label)
+    if skipped:
+        if attempt["adapter_elapsed_ns"] != 0:
+            raise GateError(f"{label} skipped attempt records adapter time")
+        if attempt.get("adapter_overhead_ns") is not None:
+            raise GateError(f"{label} skipped attempt records adapter overhead")
+        if attempt["attempt_kind"] != "REPAIR":
+            raise GateError(f"{label} skipped attempt is not a repair attempt")
+    else:
+        require_integer(
+            attempt["adapter_elapsed_ns"], f"{label} adapter elapsed", minimum=1,
+            maximum=TIMING_CEILING_NS,
+        )
+        require_digest(attempt["rendered_prompt_sha256"], f"{label} rendered prompt digest")
+        require_digest(attempt["adapter_request_sha256"], f"{label} adapter request digest")
+        require_digest(attempt["measurement_sha256"], f"{label} measurement digest")
+        measurement = attempt["measurement"]
+        if measurement["content_sha256"] != attempt["measurement_sha256"]:
+            raise GateError(f"{label} measurement digest does not match its measurement")
+        if measurement["rendered_prompt_sha256"] != attempt["rendered_prompt_sha256"]:
+            raise GateError(f"{label} measurement names another rendered prompt")
+        if measurement["status"] != attempt["status"]:
+            raise GateError(f"{label} status disagrees with its measurement")
+        if attempt["generation_request"] != measurement["generation_request"]:
+            raise GateError(f"{label} generation request is not its measurement's")
+        if attempt["seed_attestation"] != measurement["seed_attestation"]:
+            raise GateError(f"{label} seed attestation is not its measurement's")
+        # `adapter_overhead_ns` is present exactly on a `PASS` attempt, where the adapter reports
+        # its own generation window and the difference against the evaluator-observed span is
+        # publishable rather than arguable.
+        overhead = attempt.get("adapter_overhead_ns")
+        if (overhead is not None) != (attempt["status"] == "PASS"):
+            raise GateError(f"{label} adapter overhead presence does not agree with its status")
+        if overhead is not None:
+            reported = measurement["generation_to_passing_patch_ns"]
+            if overhead < 0 or attempt["adapter_elapsed_ns"] - reported != overhead:
+                raise GateError(f"{label} adapter overhead is not its measured difference")
+    source = attempt.get("repair_prompt_source")
+    if source is not None:
+        if attempt["attempt_kind"] != "REPAIR":
+            raise GateError(f"{label} initial attempt carries a repair prompt source")
+        validate_repair_prompt_source(source, policy, f"{label} repair prompt source")
+    return attempt
+
+
+def validate_attempts(
+    row: Mapping[str, Any],
+    task: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    pools: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]],
+    label: str,
+) -> None:
+    """Section 3.8 rows 16 to 19: attempt order, the repair bound, binding, and timing."""
+    attempts = row["attempts"]
+    if not isinstance(attempts, list) or not attempts:
+        raise GateError(f"{label} carries no attempts")
+    maximum_repair_loops = task["regression_limits"]["maximum_repair_loops"]
+    # Bounded before anything iterates it: `1 + maximum_repair_loops` is the structural ceiling.
+    if len(attempts) > 1 + maximum_repair_loops:
+        raise GateError(f"{label} carries more attempts than its task admits")
+    records = [
+        validate_attempt_record(
+            item, row, task, policy, pools, ordinal, f"{label} attempt {ordinal}"
+        )
+        for ordinal, item in enumerate(attempts, start=1)
+    ]
+    kinds = [item["attempt_kind"] for item in records]
+    if kinds.count("INITIAL") != 1 or kinds[0] != "INITIAL":
+        raise GateError(f"{label} does not begin with exactly one initial attempt")
+    if kinds.count("REPAIR") > 1:
+        raise GateError(f"{label} carries more than one repair attempt")
+    ran = [item for item in records if item["status"] != "SKIPPED"]
+    if not ran:
+        raise GateError(f"{label} has no attempt that ran")
+    # Each adapter invocation is single-attempt, so an adapter that reported a repair loop of its
+    # own would double-count against the evaluator-owned row total. The check binds exactly where
+    # double-counting is possible — a task that offers a repair attempt. Where none is offered the
+    # adapter's value is carried verbatim and is simply not the authority, which is what keeps the
+    # byte-frozen `scripts/prompt-fixed-adapter.py` usable unchanged.
+    if maximum_repair_loops >= 1:
+        for item in ran:
+            if item["measurement"]["repair_loop_count"] != 0:
+                raise GateError(f"{label} adapter reported a repair loop it cannot run")
+    observed_loops = sum(
+        item["attempt_kind"] == "REPAIR" and item["status"] != "SKIPPED" for item in records
+    )
+    if row["repair_loop_count"] != observed_loops:
+        raise GateError(f"{label} repair loop count does not match its repair attempts")
+    if row["repair_loop_count"] > maximum_repair_loops:
+        raise GateError(f"{label} repair loop count exceeds its task limit")
+    # Ladder row 18: version-1-shaped consumers keep reading `row.measurement` unchanged, so it
+    # must be the final attempt that ran, byte for byte.
+    if canonical_bytes(row["measurement"]) != canonical_bytes(ran[-1]["measurement"]):
+        raise GateError(f"{label} measurement is not its final attempt's measurement")
+    # Section 3.6: the evaluator-observed total through the first passing attempt, by exact
+    # addition against the existing ceiling. Nothing saturates and nothing is clamped.
+    total = 0
+    computed: int | None = None
+    for item in records:
+        if item["status"] == "SKIPPED":
+            continue
+        total += item["adapter_elapsed_ns"] + item["repair_preparation_ns"]
+        if item["status"] == "PASS":
+            computed = total
+            break
+    persisted = row.get("generation_to_passing_patch_ns")
+    if persisted != computed:
+        raise GateError(f"{label} generation total is not the sum of its attempts")
+    if computed is not None and (computed <= 0 or computed > TIMING_CEILING_NS):
+        raise GateError(f"{label} generation total is outside its persisted bound")
+    total_time = row.get("time_to_passing_patch_ns")
+    if computed is None:
+        if total_time is not None:
+            raise GateError(f"{label} records a passing total without a passing attempt")
+    else:
+        expected_total = row["prompt_preparation_ns"] + computed
+        if total_time != expected_total:
+            raise GateError(f"{label} total time is not preparation plus generation")
+        if total_time <= 0 or total_time > TIMING_CEILING_NS:
+            raise GateError(f"{label} total time is outside its persisted bound")
+
+
+def row_repair_loop_count(row: Mapping[str, Any]) -> int:
+    """One producer per field, selected by version and never by presence.
+
+    At version 1 the authority is `row.measurement.repair_loop_count`, exactly as it always was.
+    At version 2 the evaluator owns the count and writes it at the row level, because a repair
+    attempt is a second adapter invocation and no single adapter document can see both.
+    """
+    if row["schema_version"] >= 2:
+        return row["repair_loop_count"]
+    return row["measurement"]["repair_loop_count"]
+
+
+def row_repair_attempted(row: Mapping[str, Any]) -> bool:
+    return row["schema_version"] >= 2 and row["repair_loop_count"] >= 1
+
+
+def row_repair_recovered(row: Mapping[str, Any]) -> bool:
+    """The section 1.4 gate predicate, evaluated on one row."""
+    if row["schema_version"] < 2:
+        return False
+    attempts = row["attempts"]
+    return (
+        len(attempts) == 2
+        and attempts[0]["attempt_kind"] == "INITIAL"
+        and attempts[0]["status"] == "FAIL"
+        and attempts[1]["attempt_kind"] == "REPAIR"
+        and attempts[1]["status"] == "PASS"
+    )
+
+
+def scored_attempts(row: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """The attempts that actually ran. A `SKIPPED` attempt is recorded but never scored."""
+    return [item for item in row["attempts"] if item["status"] != "SKIPPED"]
+
+
 def rescore(
     result: Mapping[str, Any], policy: Mapping[str, Any]
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
     """Recompute the section 8 aggregates, status, and serious-regression stream."""
+    version = result["schema_version"]
     tasks = result["tasks"]
     rows = result["rows"]
     sample_count = result["sample_count"]
@@ -1409,6 +1891,9 @@ def rescore(
     corpus_candidate_times: list[int] = []
     corpus_parent_repairs = 0
     corpus_candidate_repairs = 0
+    corpus_repair_attempts = 0
+    corpus_repair_recoveries = 0
+    corpus_repair_recovery_paired = 0
     parent_passes = 0
     candidate_passes = 0
     paired_passes = 0
@@ -1436,9 +1921,19 @@ def rescore(
         candidate_rows = [pairs[sample]["CANDIDATE"] for sample in range(1, sample_count + 1)]
         task_parent_passes = sum(row["measurement"]["status"] == "PASS" for row in parent_rows)
         task_candidate_passes = sum(row["measurement"]["status"] == "PASS" for row in candidate_rows)
-        task_parent_repairs = sum(row["measurement"]["repair_loop_count"] for row in parent_rows)
-        task_candidate_repairs = sum(
-            row["measurement"]["repair_loop_count"] for row in candidate_rows
+        task_parent_repairs = sum(row_repair_loop_count(row) for row in parent_rows)
+        task_candidate_repairs = sum(row_repair_loop_count(row) for row in candidate_rows)
+        parent_attempted = sum(row_repair_attempted(row) for row in parent_rows)
+        candidate_attempted = sum(row_repair_attempted(row) for row in candidate_rows)
+        parent_recovered = sum(row_repair_recovered(row) for row in parent_rows)
+        candidate_recovered = sum(row_repair_recovered(row) for row in candidate_rows)
+        # A (task, variant) pair counts only when *every* paired sample recovered, so a single
+        # lucky sample is not a reproducible recovery.
+        parent_paired_recovery = bool(parent_rows) and all(
+            row_repair_recovered(row) for row in parent_rows
+        )
+        candidate_paired_recovery = bool(candidate_rows) and all(
+            row_repair_recovered(row) for row in candidate_rows
         )
         task_parent_times: list[int] = []
         task_candidate_times: list[int] = []
@@ -1456,20 +1951,32 @@ def rescore(
         parent_median = score_median(task_parent_times)
         candidate_median = score_median(task_candidate_times)
         improvement, regression = time_metrics(parent_median, candidate_median)
-        aggregates.append(
-            {
-                "task_id": task["task_id"],
-                "parent_pass_count": task_parent_passes,
-                "candidate_pass_count": task_candidate_passes,
-                "parent_repair_loop_count": task_parent_repairs,
-                "candidate_repair_loop_count": task_candidate_repairs,
-                "paired_pass_count": task_paired,
-                "parent_paired_median_time_ns": parent_median,
-                "candidate_paired_median_time_ns": candidate_median,
-                "time_improvement_ppm": improvement,
-                "time_regression_ppm": regression,
-            }
-        )
+        aggregate = {
+            "task_id": task["task_id"],
+            "parent_pass_count": task_parent_passes,
+            "candidate_pass_count": task_candidate_passes,
+            "parent_repair_loop_count": task_parent_repairs,
+            "candidate_repair_loop_count": task_candidate_repairs,
+            "paired_pass_count": task_paired,
+            "parent_paired_median_time_ns": parent_median,
+            "candidate_paired_median_time_ns": candidate_median,
+            "time_improvement_ppm": improvement,
+            "time_regression_ppm": regression,
+        }
+        if version >= 2:
+            aggregate.update({
+                "parent_repair_attempt_count": parent_attempted,
+                "candidate_repair_attempt_count": candidate_attempted,
+                "parent_repair_recovery_count": parent_recovered,
+                "candidate_repair_recovery_count": candidate_recovered,
+                "repair_recovery_paired": parent_paired_recovery or candidate_paired_recovery,
+            })
+            corpus_repair_attempts += parent_attempted + candidate_attempted
+            corpus_repair_recoveries += parent_recovered + candidate_recovered
+            corpus_repair_recovery_paired += int(parent_paired_recovery) + int(
+                candidate_paired_recovery
+            )
+        aggregates.append(aggregate)
         parent_passes += task_parent_passes
         candidate_passes += task_candidate_passes
         corpus_parent_repairs += task_parent_repairs
@@ -1497,6 +2004,12 @@ def rescore(
         "time_regression_ppm": regression,
         "repair_loop_regression_count": repair_regression,
     }
+    if version >= 2:
+        corpus.update({
+            "repair_attempt_count": corpus_repair_attempts,
+            "repair_recovery_count": corpus_repair_recoveries,
+            "repair_recovery_paired_count": corpus_repair_recovery_paired,
+        })
 
     def reason(task_id: str, sample: int, code: str, parent: str, candidate: str, limit: str):
         return {
@@ -1547,9 +2060,30 @@ def rescore(
                 )
             )
         for sample in range(1, sample_count + 1):
-            parent = indexed[ordinal][sample]["PARENT"]["measurement"]
-            candidate = indexed[ordinal][sample]["CANDIDATE"]["measurement"]
+            parent_row = indexed[ordinal][sample]["PARENT"]
+            candidate_row = indexed[ordinal][sample]["CANDIDATE"]
+            parent = parent_row["measurement"]
+            candidate = candidate_row["measurement"]
             candidate_value = status_value(candidate)
+            # Variant-symmetric from version 2 on. The check was candidate-only while repair was
+            # unreachable, so a PARENT row exceeding its task's declared cap was checked nowhere.
+            # With repair enabled on both arms that hole becomes reachable. Every version-1 row in
+            # existence carries `repair_loop_count: 0` against a limit of `0`, so extending the
+            # check is vacuous on the frozen chain and no version-1 verdict changes. The candidate
+            # record keeps its exact existing shape and position; the parent arm gets a
+            # distinguishable one, emitted first.
+            parent_loops = row_repair_loop_count(parent_row)
+            if parent_loops > limit["maximum_repair_loops"]:
+                reasons.append(
+                    reason(
+                        task["task_id"],
+                        sample,
+                        "REPAIR_LOOPS",
+                        str(parent_loops),
+                        "NONE",
+                        str(limit["maximum_repair_loops"]),
+                    )
+                )
             if parent["status"] == "PASS" and candidate["status"] != "PASS":
                 reasons.append(
                     reason(task["task_id"], sample, "PASS_TO_FAIL", "PASS", candidate_value, "NONE")
@@ -1570,7 +2104,6 @@ def rescore(
                 ("unrelated_diff_count", "maximum_unrelated_diff_count", "UNRELATED_DIFF"),
                 ("public_api_change_count", "maximum_public_api_change_count", "PUBLIC_API"),
                 ("patch_size_bytes", "maximum_patch_size_bytes", "PATCH_SIZE"),
-                ("repair_loop_count", "maximum_repair_loops", "REPAIR_LOOPS"),
             ):
                 if candidate[field] > limit[maximum]:
                     reasons.append(
@@ -1583,6 +2116,18 @@ def rescore(
                             str(limit[maximum]),
                         )
                     )
+            candidate_loops = row_repair_loop_count(candidate_row)
+            if candidate_loops > limit["maximum_repair_loops"]:
+                reasons.append(
+                    reason(
+                        task["task_id"],
+                        sample,
+                        "REPAIR_LOOPS",
+                        "NONE",
+                        str(candidate_loops),
+                        str(limit["maximum_repair_loops"]),
+                    )
+                )
             benchmark_limit = limit.get("maximum_benchmark_regression_ppm")
             benchmark = candidate.get("benchmark_regression_ppm")
             if (
@@ -1717,11 +2262,48 @@ def validate_corpus_coverage(result: Mapping[str, Any], scope: Mapping[str, Any]
         covered.add(task["task_id"])
     if {item["task_id"] for item in snapshots} != covered:
         raise GateError("the input snapshots cover a task the corpus does not declare")
+    # Section 3.8 row 23: one input snapshot per *contained invocation*, not per row. At version 1
+    # a row runs exactly once and this is the row count it has always been; at version 2 a row may
+    # run a repair attempt, which seals its own prompt and so produces its own input snapshot. A
+    # `SKIPPED` repair made no invocation and buys no snapshot. Mirrors
+    # `verifier_rows_and_attestations_valid` (`src/prompt_score.align:5024`-`5025`).
+    if len(snapshots) > count_ran_invocations(result):
+        raise GateError("the input snapshots outnumber the run's contained invocations")
 
 
-def validate_snapshot_closure(result: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> None:
-    """Require complete, matching before/after snapshot observation for every scored row."""
-    pools: dict[str, set[str]] = {}
+def count_ran_invocations(result: Mapping[str, Any]) -> int:
+    """Contained invocations across the document: one per row, plus each repair that ran."""
+    rows = result.get("rows")
+    if not isinstance(rows, list):
+        raise GateError("gate evaluation has no rows")
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            raise GateError("evaluation row is not an object")
+        attempts = row.get("attempts")
+        if attempts is None:
+            total += 1
+            continue
+        if not isinstance(attempts, list) or not attempts:
+            raise GateError("an evaluation row carries no attempts")
+        for attempt in attempts:
+            if not isinstance(attempt, dict):
+                raise GateError("an evaluation attempt is not an object")
+            if attempt.get("status") != "SKIPPED":
+                total += 1
+    return total
+
+
+def validate_snapshot_closure(
+    result: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+) -> dict[str, dict[str, list[Mapping[str, Any]]]]:
+    """Require complete, matching before/after snapshot observation for every scored row.
+
+    Returns the persisted-record pool per trace stream, keyed by each record's own digest, so an
+    attempt record's four trace digests resolve to exactly the documents this validator already
+    admitted rather than merely being tested for membership.
+    """
+    pools: dict[str, dict[str, list[Mapping[str, Any]]]] = {}
     for name, fields, kind, label in (
         ("snapshot_requests", None, "SNAPSHOT_REQUEST", "snapshot request"),
         ("snapshot_results", SNAPSHOT_RESULT_FIELDS, "SNAPSHOT_RESULT", "snapshot result"),
@@ -1736,7 +2318,7 @@ def validate_snapshot_closure(result: Mapping[str, Any], rows: Sequence[Mapping[
         stream = result.get(name)
         if not isinstance(stream, list) or not stream:
             raise GateError(f"gate evaluation carries no {label} stream")
-        digests: set[str] = set()
+        digests: dict[str, list[Mapping[str, Any]]] = {}
         for item in stream:
             if not isinstance(item, dict):
                 raise GateError(f"a {label} is not an object")
@@ -1744,7 +2326,7 @@ def validate_snapshot_closure(result: Mapping[str, Any], rows: Sequence[Mapping[
                 exact_record(item, fields, label)
             if item.get("schema_version") != 1 or item.get("artifact_kind") != kind:
                 raise GateError(f"a {label} header is invalid")
-            digests.add(require_own_digest(item, label))
+            digests.setdefault(require_own_digest(item, label), []).append(item)
         pools[name] = digests
 
     for item in result["snapshot_results"]:
@@ -1783,6 +2365,7 @@ def validate_snapshot_closure(result: Mapping[str, Any], rows: Sequence[Mapping[
         ):
             if require_digest(attestation[field], f"attestation {field}") not in pools[pool]:
                 raise GateError(f"a snapshot attestation {field} names no persisted record")
+    return pools
 
 
 def validate_workspace_preflight(result: Mapping[str, Any], evaluation_id: str) -> None:
@@ -1846,7 +2429,10 @@ def validate_evaluation_pair(
 ) -> tuple[str, str, dict[str, Any]]:
     """Re-verify the improved evaluation and its independently produced evidence."""
     exact_record(result, EVALUATION_RESULT_FIELDS, "evaluation result", EVALUATION_RESULT_OPTIONAL)
-    if result["schema_version"] != 1 or result["artifact_kind"] != "PROMPT_EVALUATION_RESULT":
+    # C4-REPAIR-MEASURED section 3.2: the container's version selects the row record, and it is
+    # read before any row field is decoded. Version 1 stays decodable, byte for byte, forever.
+    version = result["schema_version"]
+    if version not in (1, 2) or result["artifact_kind"] != "PROMPT_EVALUATION_RESULT":
         raise GateError("evaluation result header is invalid")
     if result["status"] != "IMPROVED":
         raise GateError("gate evaluation is not IMPROVED")
@@ -1864,7 +2450,12 @@ def validate_evaluation_pair(
         raise GateError("gate evaluation has no tasks")
 
     exact_record(evidence, EVIDENCE_FIELDS, "evaluation evidence")
-    if evidence["schema_version"] != 1 or evidence["artifact_kind"] != "PROMPT_EVALUATION_EVIDENCE":
+    # The evidence container moves in lockstep with the result: it carries the expected-input
+    # records whose shape and cardinality the result's version fixes.
+    if (
+        evidence["schema_version"] != version
+        or evidence["artifact_kind"] != "PROMPT_EVALUATION_EVIDENCE"
+    ):
         raise GateError("evaluation evidence header is invalid")
     if evidence["evaluation_id"] != evaluation_id:
         raise GateError("evidence evaluation id does not match its result")
@@ -1949,10 +2540,21 @@ def validate_evaluation_pair(
     rows = result["rows"]
     if not isinstance(rows, list) or not rows:
         raise GateError("gate evaluation has no rows")
-    validate_snapshot_closure(result, rows)
+    trace_pools = validate_snapshot_closure(result, rows)
+    row_fields = TASK_ROW_V1_FIELDS if version == 1 else TASK_ROW_V2_FIELDS
+    row_optional = TASK_ROW_V1_OPTIONAL if version == 1 else TASK_ROW_V2_OPTIONAL
+    tasks_by_id = {task["task_id"]: task for task in result["tasks"]}
+    generation_policy = result["generation_policy"]
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise GateError("evaluation row is not an object")
+        # A row whose own version disagrees with the container's is rejected before any field
+        # decode. The two shapes are never migrated into one another.
+        if row.get("schema_version") != version:
+            raise GateError("evaluation row version disagrees with its container")
+        exact_record(row, row_fields, f"evaluation row {index}", row_optional)
+        if row["artifact_kind"] != "PROMPT_TASK_ROW":
+            raise GateError(f"evaluation row {index} header is invalid")
         if row.get("evaluation_id") != evaluation_id:
             raise GateError("evaluation row is bound to another evaluation")
         expected_variant = parent_digest if row.get("variant") == "PARENT" else candidate_digest
@@ -1960,36 +2562,91 @@ def validate_evaluation_pair(
             raise GateError("evaluation row variant digest does not match its named variant")
         if row["measurement"]["seed_attestation"]["result"] != "APPLIED":
             raise GateError("gate evaluation row does not carry an APPLIED seed attestation")
+        if version >= 2:
+            task = tasks_by_id.get(row["task_id"])
+            if task is None:
+                raise GateError(f"evaluation row {index} names a task the corpus does not declare")
+            validate_attempts(
+                row, task, generation_policy, trace_pools, f"evaluation row {index}"
+            )
 
     expected_inputs = evidence["expected_inputs"]
-    if not isinstance(expected_inputs, list) or len(expected_inputs) != len(rows):
-        raise GateError("evidence expected inputs do not cover every row exactly once")
-    identities: set[tuple[str, int, str]] = set()
-    for index, (expected, row) in enumerate(zip(expected_inputs, rows)):
-        exact_record(expected, EXPECTED_INPUT_FIELDS, f"evidence expected input {index}")
-        if (
-            expected["schema_version"] != 1
-            or expected["artifact_kind"] != "PROMPT_EXPECTED_INPUT_DIGEST"
-        ):
-            raise GateError(f"evidence expected input {index} header is invalid")
-        identity = (expected["task_id"], expected["sample_index"], expected["variant"])
-        if identity != (row["task_id"], row["sample_index"], row["variant"]):
-            raise GateError(f"evidence expected input {index} is out of row order")
-        if identity in identities:
-            raise GateError("evidence expected inputs repeat one row identity")
-        identities.add(identity)
-        measurement = row["measurement"]
-        evaluation_input = row["evaluation_input"]
-        generation = measurement["generation_request"]
-        for name, actual in (
-            ("rendered_prompt_sha256", measurement["rendered_prompt_sha256"]),
-            ("context_sources_sha256", evaluation_input["context_sources_sha256"]),
-            ("generation_request_sha256", evaluation_input["generation_request_sha256"]),
-            ("adapter_request_sha256", evaluation_input["adapter_request_sha256"]),
-            ("provider_request_sha256", generation["provider_request_sha256"]),
-        ):
-            if expected[name] != actual:
-                raise GateError(f"evidence expected input {index} {name} does not match its row")
+    if not isinstance(expected_inputs, list):
+        raise GateError("evidence expected inputs are not a list")
+    if version == 1:
+        # Unchanged: one digest per row, positionally, in row order.
+        if len(expected_inputs) != len(rows):
+            raise GateError("evidence expected inputs do not cover every row exactly once")
+        identities: set[tuple[str, int, str]] = set()
+        for index, (expected, row) in enumerate(zip(expected_inputs, rows)):
+            exact_record(expected, EXPECTED_INPUT_FIELDS, f"evidence expected input {index}")
+            if (
+                expected["schema_version"] != 1
+                or expected["artifact_kind"] != "PROMPT_EXPECTED_INPUT_DIGEST"
+            ):
+                raise GateError(f"evidence expected input {index} header is invalid")
+            identity = (expected["task_id"], expected["sample_index"], expected["variant"])
+            if identity != (row["task_id"], row["sample_index"], row["variant"]):
+                raise GateError(f"evidence expected input {index} is out of row order")
+            if identity in identities:
+                raise GateError("evidence expected inputs repeat one row identity")
+            identities.add(identity)
+            measurement = row["measurement"]
+            evaluation_input = row["evaluation_input"]
+            generation = measurement["generation_request"]
+            for name, actual in (
+                ("rendered_prompt_sha256", measurement["rendered_prompt_sha256"]),
+                ("context_sources_sha256", evaluation_input["context_sources_sha256"]),
+                ("generation_request_sha256", evaluation_input["generation_request_sha256"]),
+                ("adapter_request_sha256", evaluation_input["adapter_request_sha256"]),
+                ("provider_request_sha256", generation["provider_request_sha256"]),
+            ):
+                if expected[name] != actual:
+                    raise GateError(
+                        f"evidence expected input {index} {name} does not match its row"
+                    )
+    else:
+        # Section 3.2: one record per attempt that ran, keyed on
+        # (task, sample, variant, attempt_index), with no duplicate, missing, or extra identity.
+        # The producer appends inside the attempt loop, so the order is row order then attempt
+        # order and the positional rule still holds.
+        scheduled = [(row, attempt) for row in rows for attempt in scored_attempts(row)]
+        if len(expected_inputs) != len(scheduled):
+            raise GateError("evidence expected inputs do not cover every attempt exactly once")
+        attempt_identities: set[tuple[str, int, str, int]] = set()
+        for index, (expected, (row, attempt)) in enumerate(zip(expected_inputs, scheduled)):
+            exact_record(expected, EXPECTED_INPUT_V2_FIELDS, f"evidence expected input {index}")
+            if (
+                expected["schema_version"] != 2
+                or expected["artifact_kind"] != "PROMPT_EXPECTED_INPUT_DIGEST"
+            ):
+                raise GateError(f"evidence expected input {index} header is invalid")
+            identity = (
+                expected["task_id"],
+                expected["sample_index"],
+                expected["variant"],
+                expected["attempt_index"],
+            )
+            if identity != (
+                row["task_id"], row["sample_index"], row["variant"], attempt["attempt_index"],
+            ):
+                raise GateError(f"evidence expected input {index} is out of attempt order")
+            if identity in attempt_identities:
+                raise GateError("evidence expected inputs repeat one attempt identity")
+            attempt_identities.add(identity)
+            evaluation_input = row["evaluation_input"]
+            generation = attempt["generation_request"]
+            for name, actual in (
+                ("rendered_prompt_sha256", attempt["rendered_prompt_sha256"]),
+                ("context_sources_sha256", evaluation_input["context_sources_sha256"]),
+                ("generation_request_sha256", generation["content_sha256"]),
+                ("adapter_request_sha256", attempt["adapter_request_sha256"]),
+                ("provider_request_sha256", generation["provider_request_sha256"]),
+            ):
+                if expected[name] != actual:
+                    raise GateError(
+                        f"evidence expected input {index} {name} does not match its attempt"
+                    )
 
     policy = validate_acceptance_policy(result.get("acceptance_policy"))
     status, aggregates, corpus, reasons = rescore(result, policy)
@@ -2000,13 +2657,17 @@ def validate_evaluation_pair(
     persisted_aggregates = result["task_aggregates"]
     if not isinstance(persisted_aggregates, list) or len(persisted_aggregates) != len(aggregates):
         raise GateError("persisted task aggregates do not cover every task")
+    task_aggregate_fields = TASK_AGGREGATE_FIELDS if version == 1 else TASK_AGGREGATE_V2_FIELDS
+    corpus_aggregate_fields = (
+        CORPUS_AGGREGATE_FIELDS if version == 1 else CORPUS_AGGREGATE_V2_FIELDS
+    )
     for persisted, computed in zip(persisted_aggregates, aggregates):
-        exact_record(persisted, TASK_AGGREGATE_FIELDS, "task aggregate", AGGREGATE_OPTIONAL)
-        if completed_record(persisted, TASK_AGGREGATE_FIELDS) != computed:
+        exact_record(persisted, task_aggregate_fields, "task aggregate", AGGREGATE_OPTIONAL)
+        if completed_record(persisted, task_aggregate_fields) != computed:
             raise GateError("persisted task aggregate disagrees with the recomputed value")
     persisted_corpus = result.get("corpus_aggregate")
-    exact_record(persisted_corpus, CORPUS_AGGREGATE_FIELDS, "corpus aggregate", AGGREGATE_OPTIONAL)
-    if completed_record(persisted_corpus, CORPUS_AGGREGATE_FIELDS) != corpus:
+    exact_record(persisted_corpus, corpus_aggregate_fields, "corpus aggregate", AGGREGATE_OPTIONAL)
+    if completed_record(persisted_corpus, corpus_aggregate_fields) != corpus:
         raise GateError("persisted corpus aggregate disagrees with the recomputed value")
 
     if len(result["tasks"]) < policy["minimum_task_count"]:
