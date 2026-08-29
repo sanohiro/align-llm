@@ -628,7 +628,7 @@ The current forward delivery order is:
     **both** samples.
 
     **The gate is `NOT_MET`, and that is the published result.** The run made all 22 provider calls
-    the ceiling allowed — 12 initial plus 10 repair — in 881.7 s (14 min 42 s) against a recorded
+    the ceiling allowed — 12 initial plus 10 repair — in 824.2 s (13 min 44 s) against a recorded
     60-minute ceiling. Every one of the ten repair prompts assembled from the run's own persisted
     diagnostics, re-derived byte-exactly against its own output, and fitted the budget at 8,123 to
     16,129 bytes of 65,536, so no section was ever dropped. **None of the ten recovered:**
@@ -641,8 +641,10 @@ The current forward delivery order is:
     mode (`layer-precedence-frozen-module`, all four rows) attempt 1 already produced an empty
     patch, so more diagnostics were not the missing input. That splits the case for carrying the
     failing edit set into the repair prompt: it addresses the first mode and not the second.
-    **No speed claim is made** — the 22 calls span 8.13 s to 73.82 s, a 9.1x ratio, and the
-    version-2 totals are a superset of the version-1 ones anyway. Named focused qualification
+    **No speed claim is made** — the 22 calls span 7.98 s to 64.67 s, an 8.1x ratio, and a first
+    run of the same corpus at the same seeds spanned 8.13 s to 73.82 s at 9.1x while reproducing
+    every correctness value exactly; the version-2 totals are a superset of the version-1 ones
+    anyway. Named focused qualification
     `make c4-repair-gate`; it joins no aggregate. Multi-repair, corpus expansion, failure-memory
     feedback, a persisted patch digest, and converging the Align `verification_loop`/`repair`
     modules with this loop are deferred with resume conditions.

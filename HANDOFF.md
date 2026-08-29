@@ -22,17 +22,31 @@ validates again, and records per-attempt identity and timing in `PROMPT_TASK_ROW
 
 **GATE RESULT: `NOT_MET` — a measured negative, delivered as one.** 12 rows, 3 tasks x 2 variants x
 2 paired samples, temperature 0, `PAIRED_FIXED`, **22 provider generation calls** (exactly the
-section 5.2 estimate of 12 + 10), **881.673 s = 14 min 42 s** against a 60-minute recorded ceiling.
+section 5.2 estimate of 12 + 10), **824.243 s = 13 min 44 s** against a 60-minute recorded ceiling.
 `repair_recovery_count: 0` and `repair_recovery_paired_count: 0` — across ten repair attempts not
 one row recovered. Evidence is checked in at `eval/prompt/c4-repair-gate/`; the per-row table,
 aggregates, timings, and the analysis are in spec section 10.3.
 
+**The checked-in evidence is a second run, from the clean committed head `f0314400`**, taken
+because review asked for a record naming a reproducible commit: `align_llm_clean: true` and all
+three reachability fields `VERIFIED`, against the first run's `UNVERIFIED`. Every correctness value
+reproduced exactly — same rows, same per-attempt statuses and failure kinds, same
+`patch_size_bytes` (716 / 758 / 0 / 1008), same ten repair attempts, same zero recoveries, same
+aggregates, same 8,123-16,129 assembled bytes. Only the clocks moved. Digests:
+`c4-repair-evaluation.json` `8793b1ff…`, evidence `a70a967e…`, record `18bdf25a…`.
+
 The mechanism is proved even though the model is refuted: all ten repair prompts assembled from the
 run's own persisted diagnostics, re-derived byte-exactly, and stayed far inside the prompt budget
 (8,123-16,129 bytes against 65,536), so no section was ever dropped. Recomputed from the 22 attempt
-records: `adapter_elapsed_ns` **8.13 s to 73.82 s**, mean 27.47 s, **median 18.27 s**, max/min
-**9.1x**, sum 604.3 s; `adapter_overhead_ns` on the two passing attempts **65.74 ms and 74.11 ms**,
-0.45 % and 0.86 % of those rows' own spans. **No speed claim is made.**
+records: `adapter_elapsed_ns` **7.98 s to 64.67 s**, mean 24.82 s, **median 18.59 s**, max/min
+**8.1x**, sum 545.9 s; `adapter_overhead_ns` on the two passing attempts **91.04 ms and 91.77 ms**,
+0.59 % and 1.00 % of those rows' own spans. The first run gave 8.13-73.82 s, median 18.27 s, 9.1x,
+and 65.74 / 74.11 ms on the same corpus and seeds. **No speed claim is made**, and the two runs are
+why.
+
+`gate_eligible` stays `false`, and not for reachability: it is the **C6 acceptance** gate, which
+requires `IMPROVED` with no serious-regression reason, and this run's status is
+`SERIOUS_REGRESSION` from two `POLICY` reasons. The C4 verdict does not read it.
 
 **What the `NOT_MET` supports, and what it does not.** Only `patch_size_bytes` is persisted — no
 patch digest and no patch body — so "the model re-emitted its patch" is an inference, not a
@@ -93,12 +107,13 @@ digests across both corpora recompute. `EVALUATOR_SOURCE_SHA256` is re-pinned to
 `53bcf1c3a6fd384918dbfce380d0b7f35faa66c8dce5aad239649bfec90cfee4` (217,056 bytes), inside the
 four-chunk window.
 
-Six mutants were injected into `src/prompt_score.align` and run under `gmake prompt-verifier-smoke`:
-the attempt-length bound, the repair-count bound, **both together**, `verifier_row_references_trace`
-returning `true`, and the attempt-trace resolution all die against the new defect cases 9-12. The
-sixth — weakening `declared_loops > maximum_repair_loops` in `verifier_row_repair_facts` — survives
-and always will, because the walk's own bounds make that comparison unreachable; it is commented as
-redundant defence in depth and deviation 13 records it rather than claiming coverage.
+Seven mutants were injected into `src/prompt_score.align` at the final head and run under
+`gmake prompt-verifier-smoke`: the attempt-length bound, the repair-count bound, **both together**,
+`verifier_row_references_trace` returning `true`, the attempt-trace resolution, and re-imposing
+`measurement.repair_loop_count == 0` unconditionally all die against the new defect cases 9-13. The
+seventh — weakening `declared_loops > maximum_repair_loops` in `verifier_row_repair_facts` —
+survives and always will, because the walk's own bounds make that comparison unreachable; it is
+commented as redundant defence in depth and deviation 13 records it rather than claiming coverage.
 
 **`make prompt-evaluate-smoke` runs only in a Linux container, and running it found three real
 defects.** It cannot run on macOS: the evaluator's retained-executable launch reads `/proc/self/fd`

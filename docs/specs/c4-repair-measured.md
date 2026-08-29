@@ -497,9 +497,9 @@ final attempt's — ladder row 18 asserts it. One measurement is duplicated per 
 which is deliberate: version-1-shaped consumers keep reading `row.measurement` unchanged, and the
 per-attempt copy keeps attempt 1's status, diagnostics, and patch size retrievable after attempt 2
 overwrites the row-level view. At 22 measurements the measured gate run's result document is
-614,438 bytes against the frozen 283,727 — **2.17x**, not the "roughly three times" this section
+614,440 bytes against the frozen 283,727 — **2.17x**, not the "roughly three times" this section
 estimated before the run — far inside `RESULT_LIMIT` (268,435,456), with the evidence sidecar at
-16,756 bytes inside `EVIDENCE_LIMIT` (8,388,608), so `compact_oversized_result`'s
+16,754 bytes inside `EVIDENCE_LIMIT` (8,388,608), so `compact_oversized_result`'s
 `PROMPT_TRACE_OVERFLOW` path is not reached and is not relied upon.
 
 `PROMPT_EVALUATION_RESULT` moves to `schema_version: 2` in lockstep. **A document's rows must all
@@ -1648,10 +1648,12 @@ document made.
     bound rejects), defect 10 (two repairs that both ran against a task cap of two, which only
     `repair_count > 1` rejects), and defect 11 (a persisted trace record that nothing references,
     which only `verifier_all_trace_records_referenced` rejects) — and defect 12 covers the new
-    trace-resolution rule. Six mutants were injected into `src/prompt_score.align` at the repair
-    head and run under `make prompt-verifier-smoke`: the attempt-length bound, the repair-count
-    bound, **both together**, `verifier_row_references_trace` returning `true` for any row, and
-    the attempt-trace resolution all die. The sixth, weakening
+    trace-resolution rule, and defect 13 covers deviation 21(a)'s narrowing. **Seven** mutants were
+    injected into `src/prompt_score.align` at the final head and run under
+    `make prompt-verifier-smoke`: the attempt-length bound, the repair-count bound, **both
+    together**, `verifier_row_references_trace` returning `true` for any row, the attempt-trace
+    resolution, and re-imposing `measurement.repair_loop_count == 0` unconditionally all die. The
+    seventh, weakening
     `declared_loops > task.regression_limits.maximum_repair_loops` in
     `verifier_row_repair_facts`, **survives and always will**: the walk already bounds
     `repair_count` at one and the list at `1 + maximum_repair_loops`, and the preceding clause pins
@@ -1787,8 +1789,19 @@ recomputed from `eval/prompt/c4-repair-gate/c4-repair-evaluation.json` and its g
 
 Run: 12 rows, 3 tasks x 2 variants x 2 paired samples, `temperature_micros: 0`,
 `seed_mode: PAIRED_FIXED`, **22 provider generation calls** — precisely the section 5.2 estimate of
-12 initial plus 10 repair. Wall clock **881.673 s = 14 min 42 s**, inside the 60-minute recorded
+12 initial plus 10 repair. Wall clock **824.243 s = 13 min 44 s**, inside the 60-minute recorded
 ceiling and inside the 15-40 minute expectation.
+
+**The checked-in evidence is a second run, taken from a clean committed head.** The first run was
+made from an uncommitted working tree, so `align_llm_reachability` was `UNVERIFIED` and the
+evidence named no reproducible commit. Review asked for a run whose record names one. This run's
+`align_llm_commit` is `f0314400d3fdb7f4cac6c1c277c6518a66c02561` with `align_llm_clean: true`, and
+all three reachability fields are `VERIFIED`. **Every correctness value reproduced exactly**: the
+same twelve rows with the same per-attempt statuses, failure kinds, and `patch_size_bytes`
+(716 / 758 / 0 / 1008), the same ten repair attempts, the same zero recoveries, the same aggregates,
+and the same 8,123-16,129 assembled prompt bytes with the same per-row section sets. Only the
+clocks moved, which is what makes the timing figures below a single-run observation and not a
+baseline.
 
 | Task | Sample | Variant | Attempt 1 | Attempt 2 | Loops |
 | --- | --- | --- | --- | --- | --- |
@@ -1826,23 +1839,25 @@ budget: **8,123 to 16,129** assembled bytes against 65,536, so **no section was 
 the drop ladder never fired in anger. Four of the ten carried three sections rather than four
 because `diagnostic_stdout` was empty; section 4.3 records why that is not a drop.
 
-**Timing, recomputed from the 22 attempt records.**
+**Timing, recomputed from the 22 attempt records of the checked-in run.**
 
 ```text
-adapter_elapsed_ns over 22 calls:  min 8.13 s   max 73.82 s
-                                   mean 27.47 s  median 18.27 s
-                                   max/min 9.1x
-sum of the 22 calls:               604.3 s
-invocation wall clock:             881.673 s  (14 min 42 s)
-adapter_overhead_ns:               65.74 ms and 74.11 ms, on the two passing attempts
-                                   0.45 % and 0.86 % of those rows' own elapsed spans
+adapter_elapsed_ns over 22 calls:  min 7.98 s   max 64.67 s
+                                   mean 24.82 s  median 18.59 s
+                                   max/min 8.1x
+sum of the 22 calls:               545.9 s
+invocation wall clock:             824.243 s  (13 min 44 s)
+adapter_overhead_ns:               91.04 ms and 91.77 ms, on the two passing attempts
+                                   0.59 % and 1.00 % of those rows' own elapsed spans
 ```
 
-The earlier draft of this section reported "11.40 s to 81.19 s, median 27.47 s" and
-"113.7 ms and 115.2 ms". Those were wrong: the range was taken from the wrong rows, 27.47 s is the
-**mean** and not the median, and the two overhead figures were not the persisted ones. The numbers
-above are the artifact's. The section 3.6 redefinition therefore costs under one per cent of a
-passing row's total, which is now measured rather than argued.
+The first run's figures were 8.13-73.82 s, mean 27.47 s, median 18.27 s, 9.1x, 604.3 s, 881.673 s,
+and 65.74 / 74.11 ms — the same shape, different clocks, which is the point. An earlier draft of
+this section reported "11.40 s to 81.19 s, median 27.47 s" and "113.7 ms and 115.2 ms" for that
+first run; those were wrong at the time: the range came from the wrong rows, 27.47 s was its
+**mean** and not its median, and the two overhead figures were not the persisted ones. Every number
+here is recomputed from the artifact in the tree. The section 3.6 redefinition costs about one per
+cent of a passing row's total, which is now measured rather than argued.
 
 **Why the model did not recover, and what it means for section 5.7.** This is an inference from
 `patch_size_bytes` and the observable failure, and its limits are stated before it is drawn: the
@@ -1870,19 +1885,26 @@ failing edits into the repair prompt — addresses **that** mode. It does not ad
 5.4 should be re-read in that light, and a patch digest should land with it so the next run can
 answer the question directly instead of by inference.
 
-**No speed claim is made**, and none is available: the 8.13 s to 73.82 s spread over 22 calls at
-temperature 0 is a **9.1x** ratio, wider than the 3.5x section 2.1 recorded at `n=2` and drawn from
-a sample that mixes three tasks and two prompt lengths.
+**No speed claim is made**, and none is available: the 7.98 s to 64.67 s spread over 22 calls at
+temperature 0 is an **8.1x** ratio, wider than the 3.5x section 2.1 recorded at `n=2` and drawn
+from a sample that mixes three tasks and two prompt lengths. The first run's ratio was 9.1x on the
+same corpus and the same seeds, which is itself the measurement: the spread is not stable enough to
+support a claim.
 
 **Published through the Align path.** `make c4-repair-gate` completed with `PUBLISHED`; the
 artifacts in `eval/prompt/c4-repair-gate/` are the Align publisher's own canonical encoding, with
 every `Option::None` omitted rather than written as `null`. Digests:
-`c4-repair-evaluation.json` `b69bf3aadc689bc24217ce5d95d985bd21c4de62f840dd6df061c87b468d106b`;
+`c4-repair-evaluation.json` `8793b1ff1c27e52dfc7d6ba1177f7b44683a70590e265d5278d5a9698fcc0c06`;
 `c4-repair-evaluation-evidence.json`
-`67153d54a7cf77051dfd71da82c6e8de31b96d4622c66ed070815a1c50e93b2e`;
-`c4-repair-gate-record.json` `e3b4d334e3c6d975a3f878ca7b01e92832034af4f82d5179730e4b02b3913e96`.
-`gate_eligible` is `false` because the branch was uncommitted at run time, so source reachability
-could not verify; the C4 verdict does not consume it.
+`a70a967e441a21cc5c93a088edb077195da3b75abd790b172e97f398cf7c9999`;
+`c4-repair-gate-record.json` `18bdf25a770ea51980f837764c11f5c2e8a7d6f6a3559b70feb91de6b00a2588`.
+
+`gate_eligible` is `false`, and **not for the reason an earlier draft of this section gave.** It is
+not reachability: all three reachability fields are `VERIFIED` in this run. `gate_eligible` is the
+**C6 acceptance** gate, and `verifier_gate_computed` requires `status == "IMPROVED"` with no
+serious-regression reason; this run's status is `SERIOUS_REGRESSION` from the two `POLICY` reasons
+above. That is the C6 verdict, recorded as the secondary evidence section 3.7 says it is. The C4
+verdict consumes `repair_recovery_paired_count` only and does not read it.
 
 **`make prompt-gate-check` was not run: `N/A`, with its reason and its substitute.** Section 5.1
 calls it "unchanged and must stay green" and section 8.2's superseded draft listed it as next
