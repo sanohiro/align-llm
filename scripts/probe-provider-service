@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Emit a PROVIDER_SERVICE_PROBE and fail closed unless it equals a frozen provider revision.
+
+`docs/specs/c4-repair-measured.md` section 3.5 owns this contract. The generation policy that a
+C4 repair gate run measures against records exactly which llama.cpp build, which server binary,
+and which model file the operator intends to answer the endpoint. This probe observes those three
+facts on the host, before the server is started and before any model is loaded, and refuses to
+emit a matching document when any of them disagrees.
+
+It is check evidence, not a corpus member: its output is recorded with the run and is never
+digest-pinned by a task manifest.
+
+Measurement-risk note, stated rather than resolved. The probe observes the binary the operator
+intends to run; the evaluator's in-band model-id check observes the model the answering server
+reports. Neither observes that the process answering the endpoint inside the evaluation container
+is the process whose binary was hashed. A different server on the same port advertising the same
+model id would satisfy both. The trust rests on the operator's single-server host and on two
+independent checks agreeing, not on an attested channel.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+READ_CHUNK = 1 << 20
+MAXIMUM_MODEL_BYTES = 1 << 40
+VERSION_LINE = re.compile(rb"^version: [0-9.]+ \(build (\d+), commit ([0-9a-f]+)\)$")
+
+
+class ProbeError(ValueError):
+    """The host does not carry the provider service the policy names."""
+
+
+def canonical_chunks(value: Any):
+    if isinstance(value, dict):
+        yield b"{"
+        first = True
+        for key, child in value.items():
+            if child is None:
+                continue
+            if not first:
+                yield b","
+            first = False
+            yield from canonical_chunks(key)
+            yield b":"
+            yield from canonical_chunks(child)
+        yield b"}"
+        return
+    if isinstance(value, list):
+        yield b"["
+        for ordinal, child in enumerate(value):
+            if ordinal:
+                yield b","
+            yield from canonical_chunks(child)
+        yield b"]"
+        return
+    yield json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def bind(value: dict[str, Any]) -> dict[str, Any]:
+    value["content_sha256"] = ""
+    value["content_sha256"] = hashlib.sha256(b"".join(canonical_chunks(value))).hexdigest()
+    return value
+
+
+def file_digest(path: Path, label: str) -> str:
+    """Hash a real regular file without following a symlink at the final component."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ProbeError(f"{label} is not a regular file")
+        if metadata.st_size > MAXIMUM_MODEL_BYTES:
+            raise ProbeError(f"{label} exceeds its bound")
+        hasher = hashlib.sha256()
+        while True:
+            block = os.read(descriptor, READ_CHUNK)
+            if not block:
+                break
+            hasher.update(block)
+    finally:
+        os.close(descriptor)
+    return hasher.hexdigest()
+
+
+def server_version(server: Path) -> tuple[str, str, str]:
+    """`llama-server --version` writes its banner to stderr and exits non-zero on some builds."""
+    completed = subprocess.run(
+        [str(server), "--version"],
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    raw = completed.stderr if completed.stderr.strip() else completed.stdout
+    for line in raw.splitlines():
+        matched = VERSION_LINE.match(line.strip())
+        if matched:
+            return (
+                line.strip().decode("ascii"),
+                matched.group(1).decode("ascii"),
+                matched.group(2).decode("ascii"),
+            )
+    raise ProbeError("the server did not report a parsable version banner")
+
+
+def observed_revision(build: str, commit: str, server_sha256: str, model_sha256: str) -> str:
+    return (
+        f"llama.cpp/{build}+{commit}"
+        f";host:darwin-arm64"
+        f";server-sha256:{server_sha256}"
+        f";model-sha256:{model_sha256}"
+    )
+
+
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--server-path", required=True, type=Path)
+    parser.add_argument("--model-path", required=True, type=Path)
+    parser.add_argument(
+        "--generation-policy",
+        required=True,
+        type=Path,
+        help="the GENERATION_POLICY whose provider_service_revision must match",
+    )
+    parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument(
+        "--model-sha256",
+        default=None,
+        help="a previously computed digest of the model file, to avoid rehashing several GB",
+    )
+    return parser.parse_args(arguments)
+
+
+def probe(values: argparse.Namespace) -> dict[str, Any]:
+    policy = json.loads(values.generation_policy.read_text(encoding="utf-8"))
+    if policy.get("artifact_kind") != "GENERATION_POLICY" or policy.get("schema_version") != 1:
+        raise ProbeError("the generation policy header is invalid")
+    expected = policy.get("provider_service_revision")
+    if not isinstance(expected, str) or not expected:
+        raise ProbeError("the generation policy declares no provider service revision")
+
+    banner, build, commit = server_version(values.server_path)
+    server_sha256 = file_digest(values.server_path.resolve(), "server binary")
+    model_sha256 = values.model_sha256 or file_digest(values.model_path, "model file")
+    if not re.fullmatch(r"[0-9a-f]{64}", model_sha256):
+        raise ProbeError("the supplied model digest is malformed")
+
+    observed = observed_revision(build, commit, server_sha256, model_sha256)
+    if observed != expected:
+        # Fail closed, and say exactly which component moved rather than only that something did.
+        raise ProbeError(
+            "the host provider service is not the recorded one\n"
+            f"  policy:   {expected}\n"
+            f"  observed: {observed}"
+        )
+    return bind({
+        "schema_version": 1,
+        "artifact_kind": "PROVIDER_SERVICE_PROBE",
+        "provider_service_revision": observed,
+        "server_version_string": banner,
+        "server_binary_sha256": server_sha256,
+        "model_sha256": model_sha256,
+        "content_sha256": "",
+    })
+
+
+def main(arguments: list[str] | None = None) -> int:
+    values = parse_arguments(sys.argv[1:] if arguments is None else arguments)
+    try:
+        document = probe(values)
+    except (ProbeError, OSError, ValueError, subprocess.SubprocessError) as failure:
+        sys.stderr.write(f"probe provider service: ERROR {failure}\n")
+        return 1
+    values.out.write_bytes(b"".join(canonical_chunks(document)) + b"\n")
+    sys.stdout.write(f"probe provider service: PASS {document['provider_service_revision']}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

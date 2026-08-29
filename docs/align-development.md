@@ -308,6 +308,57 @@ The repair patch is deliberately an input boundary, not a model implementation. 
 can consume `repair_prompt` and return an equivalent patch without changing verification, timeout,
 or result handling.
 
+### Model-driven repair on the measurement path
+
+`docs/specs/c4-repair-measured.md` specifies the first repair loop driven by a real provider. It
+does not change `src/repair.align` or `src/verification_loop.align`; it runs on the C6 evaluation
+path instead, where `scripts/prompt-evaluate.py` owns an attempt loop around the unchanged
+measurement adapter. After a first-attempt validation `FAIL`, the evaluator renders a repair prompt
+from that attempt's own redacted validation status, summary, stdout, and stderr, calls the
+generation child a second time, and validates again. It is a diagnostics-driven second attempt: the
+failing edit set is not reachable outside the adapter, which is a frozen corpus member.
+`PROMPT_TASK_ROW` moves to `schema_version: 2` with an ordered per-attempt list; version-1 rows keep
+their exact meaning and are never migrated. There is **one** `PromptTaskRow` record, not a
+version-2 twin: its three version-2 members are declared `Option`, the canonical encoder omits an
+`Option::None`, and the frozen version-1 documents therefore round-trip byte-identically. Presence
+is never how the version is chosen — the scorer reads `schema_version` first and then requires
+every version-2 member to be present at version 2 and absent at version 1, rejecting either
+mismatch.
+
+Each attempt is its own contained invocation, so each one carries the four digests of the trace
+records it produced: `snapshot_request_sha256`, `before_snapshot_result_sha256`,
+`after_snapshot_result_sha256`, and `input_snapshot_sha256`, present exactly when the attempt ran.
+`snapshot_attestations` still holds one record per row, so without them a repair invocation's
+records would be referenced by nothing. Naming is not enough and is not what is checked: each
+digest must resolve to exactly one persisted record of that row's task, and the resolved records
+face the same closure and artifact-equality rules the row's attestation faces.
+
+Two repair loops therefore exist, deliberately: the in-process Align loop above, whose provider is a
+`fn (str, str, i64) -> bool` input boundary, and the cross-process evaluator loop, whose provider is
+the real local model. Converging them is a named deferral in that document, not an oversight.
+
+The corpus is a new freeze, `eval/prompt/canonical-v1r/` with `eval/tasks/prompt-v1r/`, minted
+reproducibly by `scripts/freeze-canonical-v1r`. It exists because `maximum_repair_loops` lives in a
+task manifest and every `prompt-v1` manifest is a digest-verified member of `canonical-v1`'s
+`FILE_SET` manifest, which `make prompt-gate-check` verifies against the current head's bytes.
+The 24 members the two corpora share carry identical digests, which is the machine-checkable
+statement that the adapter, the runner, and the fixtures did not move.
+
+`scripts/prompt-evaluate.py` is pinned byte-exactly by `src/prompt_evaluate.align` **and** bounded
+by a chunked-argument launch window. That window is now four chunks, 196,609…262,144 bytes, and
+`EVALUATOR_BOOTSTRAP` pops four arguments; the attempt loop did not fit the previous three-chunk
+ceiling. Changing the evaluator means re-pinning `EVALUATOR_SOURCE_SHA256` in the same commit — a
+stale pin is a hard `INVALID_INPUT` at launch, so the two never drift.
+
+The named qualification is `make c4-repair-gate`. It requires a running host `llama-server`, the
+model file, and a Linux aarch64 container with `bwrap` and `socat`, so it is a focused
+qualification and joins no aggregate. Generation reaches the host server through a container-local
+`socat` forwarder bound to the loopback endpoint the frozen provider control already names, so no
+machine-specific hostname reaches a persisted artifact. `scripts/probe-provider-service` emits a
+`PROVIDER_SERVICE_PROBE` on the host and fails closed unless the build, the server binary digest,
+and the model digest all equal the frozen `provider_service_revision`; the answering server's
+advertised model id is checked in band as the second half of the pair.
+
 ## Persisted-result development
 
 The C7-PERSISTED-RESULT consumer is `src/persisted_result.align`, specified by

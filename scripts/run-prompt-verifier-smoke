@@ -15,7 +15,7 @@ if ! "${compiler}" run "${project_root}/src/prompt_verifier_smoke.align" \
   exit 1
 fi
 
-expected='prompt verifier smoke: complete, incomplete, compact, and tamper cases PASS'
+expected='prompt verifier smoke: complete, incomplete, compact, tamper, and repair-attempt cases PASS'
 actual="$(tr -d '\r' <"${output_file}")"
 if [[ "${actual}" != "${expected}" ]]; then
   printf 'unexpected prompt verifier smoke output: %s\n' "${actual}" >&2

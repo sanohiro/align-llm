@@ -228,3 +228,16 @@ which is already correct, and its own decode graph gathers row 0 of a one-row wi
 construction. All six corpora regenerated unchanged apart from item 32's own rows, and every command
 of 8.3 was re-run at this head.
 
+### 8.6 The third `main` merge — C4-REPAIR-MEASURED
+
+`C4-REPAIR-MEASURED` merged as PR #150 (`origin/main` `4940005`), roadmap item **31**. Track A only:
+no `src/` file this capability touches moves, no `GraphMembers` builder arrives, and the audit is
+unchanged at **ten sites, ten `gathered` literals, four predicates, zero `pieces[at] > 1`**. Two
+conflicts, both `Active`-block collisions: `HANDOFF.md` (item 31's block demoted to a merged
+checkpoint) and `docs/specs/roadmap.md` (the reserve comment reduced to 34 and 35, since 31 and 32
+have now both landed, then item 31, item 32, item 33, item 36). `main` carried two `Active` sections
+at that head — C4's own and R6-OLMOE-DECODE's, which C4's branch had not demoted — so this merge
+also demotes the second and leaves exactly one `Active` block.
+
+Every command of 8.3 was re-run at this head and no golden needed regenerating.
+

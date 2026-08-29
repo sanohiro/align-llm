@@ -15,6 +15,7 @@ import importlib.util
 import itertools
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -103,6 +104,273 @@ DUPLICATE_KEY_LINE = memory_line("task-alpha", "duplicate")[:-1] + ',"task_id":"
 MEMORY_DOCUMENT = "\n".join(ALPHA_LINES)
 PATCH_BODY = "0123456789abcdefghijklmnopqrstuvwxyz"
 MULTIBYTE_BODY = "éé🙂éé🙂abcdefghij"
+
+
+# --- C4-REPAIR-MEASURED: the repair-prompt content contract ------------------------------------
+# `docs/specs/c4-repair-measured.md` section 4 owns this. These vectors have no Align counterpart:
+# `prompt_model.render` is unchanged and the repair sections are appended by the evaluator, which
+# is a Python-only surface. They are goldens over `scripts/prompt-evaluate.py` alone, asserted
+# before the parity sweep so a repair regression is never masked by a renderer disagreement.
+
+REPAIR_TEMPLATE_PATH = SOURCE / "eval/prompt/canonical-v1r/repair-template.json"
+FROZEN_EVALUATION_PATH = SOURCE / "eval/prompt/gate/prompt-evaluation-improved.json"
+SANDBOX_RESIDUE = re.compile(r"/tmp/align-llm-coding-task-[A-Za-z0-9_]+")
+# A fixed synthetic attempt-1 measurement. Every byte the repair prompt draws from a failing
+# attempt comes from one of these four fields, so the golden below is a total function of them.
+SYNTHETIC_MEASUREMENT = {
+    "status": "FAIL",
+    "failure_kind": "TEST",
+    "build_status": "PASS",
+    "test_status": "FAIL",
+    "diagnostic_summary": (
+        "provider-backed candidate patch failed validation; applied edits: src/duration.py"
+    ),
+    "diagnostic_stdout": "fixture revision: b6bae7e3\npost-repair validation exit code: 1\n",
+    "diagnostic_stderr": "AssertionError: 0 != 1\n",
+    "cleanup_passed": True,
+    "containment_passed": True,
+}
+SYNTHETIC_BASE = "BASE\n\n--- task prompt ---\nTASK\n"
+
+
+def repair_template() -> dict[str, Any]:
+    return json.loads(REPAIR_TEMPLATE_PATH.read_text(encoding="utf-8"))
+
+
+def repair_template_cases(module) -> None:
+    """`repair-template-decode`, `repair-sections-order`, and the `repair-template-*` rejections."""
+    template = repair_template()
+    require(
+        module.valid_repair_template(template),
+        "repair-template-decode: the sealed corpus template was rejected",
+    )
+    require(
+        tuple(template["section_headers"])
+        == module.REPAIR_SECTION_KINDS
+        == ("STATUS", "SUMMARY", "STDOUT", "STDERR"),
+        "repair-sections-order: the template's section order is not the declared order",
+    )
+    require(
+        module.REPAIR_DROP_ORDER == ("STDOUT", "STDERR", "SUMMARY")
+        and "STATUS" not in module.REPAIR_DROP_ORDER,
+        "repair-sections-order: the drop precedence changed or STATUS became droppable",
+    )
+
+    def rejected(label: str, mutate) -> None:
+        value = repair_template()
+        mutate(value)
+        require(
+            not module.valid_repair_template(value),
+            f"repair-template-{label}: an invalid template was admitted",
+        )
+
+    rejected("missing-field", lambda value: value.pop("closing_text"))
+    rejected("wrong-kind", lambda value: value.update({"artifact_kind": "TASK_PROMPT"}))
+    rejected("wrong-version", lambda value: value.update({"schema_version": 2}))
+    rejected("digest-mismatch", lambda value: value.update({"content_sha256": "0" * 64}))
+    rejected("empty-preamble", lambda value: value.update({"preamble_text": ""}))
+    rejected(
+        "section-order",
+        lambda value: value.update({
+            "section_headers": {
+                kind: value["section_headers"][kind]
+                for kind in ("SUMMARY", "STATUS", "STDOUT", "STDERR")
+            },
+        }),
+    )
+    rejected("oversized-header", lambda value: value["section_headers"].update({"STATUS": "x" * 300}))
+    rejected("extra-field", lambda value: value.update({"undeclared": "x"}))
+    # A non-UTF-8 template never reaches `valid_repair_template`: it is refused at the bounded read.
+    with tempfile.TemporaryDirectory(prefix="prompt-repair-template-") as directory:
+        broken = Path(directory) / "repair-template.json"
+        broken.write_bytes(
+            b'{"schema_version":1,"artifact_kind":"REPAIR_PROMPT_TEMPLATE","text":"\xff\xfe"}'
+        )
+        rejected_utf8 = False
+        try:
+            module.load_bound(broken, "REPAIR_PROMPT_TEMPLATE")
+        except (module.EvaluationError, UnicodeError, ValueError):
+            rejected_utf8 = True
+        require(rejected_utf8, "repair-template-utf8: a non-UTF-8 template decoded")
+
+
+def repair_prompt_golden_cases(module) -> None:
+    """`repair-prompt-golden`, the drop ladder, budget exhaustion, and the re-derivation."""
+    template = repair_template()
+    sources = module.repair_section_sources(SYNTHETIC_MEASUREMENT)
+    require(
+        sources["STATUS"]
+        == "status: FAIL\nfailure_kind: TEST\nbuild_status: PASS\ntest_status: FAIL",
+        f"repair-input-status: the status section changed shape: {sources['STATUS']!r}",
+    )
+    require(
+        len(sources["STATUS"].encode("utf-8")) <= module.REPAIR_STATUS_LIMIT,
+        "repair-input-status: the status section exceeded its declared 128-byte bound",
+    )
+    text, included, dropped, assembled = module.assemble_repair_prompt(
+        template, SYNTHETIC_BASE, sources, 65_536,
+    )
+    require(
+        included == ["STATUS", "SUMMARY", "STDOUT", "STDERR"] and dropped == [],
+        f"repair-prompt-golden: unexpected section selection {included!r}/{dropped!r}",
+    )
+    require(
+        assembled == len(text.encode("utf-8")),
+        "repair-prompt-golden: assembled_bytes disagrees with the assembled text",
+    )
+    headers = template["section_headers"]
+    expected = "".join((
+        SYNTHETIC_BASE, "\n\n", template["preamble_text"],
+        "\n\n", headers["STATUS"], "\n", sources["STATUS"],
+        "\n\n", headers["SUMMARY"], "\n", sources["SUMMARY"],
+        "\n\n", headers["STDOUT"], "\n", sources["STDOUT"],
+        "\n\n", headers["STDERR"], "\n", sources["STDERR"],
+        "\n\n", template["closing_text"],
+    ))
+    require(
+        text == expected,
+        "repair-prompt-golden: the assembled prompt is not the declared section concatenation",
+    )
+    require(
+        text.startswith(SYNTHETIC_BASE),
+        "repair-prompt-golden: the repair prompt is not a strict textual extension of attempt one",
+    )
+
+    # `repair-input-empty`: a measurement carrying no usable diagnostic is not repairable at all.
+    empty = dict(SYNTHETIC_MEASUREMENT)
+    empty.update({"diagnostic_summary": "", "diagnostic_stdout": "", "diagnostic_stderr": ""})
+    require(
+        module.repair_eligibility(empty) == "REPAIR_INPUT_UNAVAILABLE",
+        "repair-input-empty: an unusable diagnostic set was admitted",
+    )
+    require(
+        module.repair_eligibility(SYNTHETIC_MEASUREMENT) == "NONE",
+        "repair-input-empty: a usable diagnostic set was rejected",
+    )
+    for field in ("cleanup_passed", "containment_passed"):
+        unproven = dict(SYNTHETIC_MEASUREMENT)
+        unproven[field] = False
+        require(
+            module.repair_eligibility(unproven) == "REPAIR_INPUT_UNAVAILABLE",
+            f"repair-input-empty: a run that could not prove {field} was still repaired",
+        )
+
+    # The drop ladder, one golden per step. Each budget is one byte below what the previous
+    # selection needs, so exactly one more section must fall in the fixed precedence.
+    def ladder(budget: int):
+        return module.assemble_repair_prompt(template, SYNTHETIC_BASE, sources, budget)
+
+    header_cost = {
+        kind: len(("\n\n" + headers[kind] + "\n").encode("utf-8"))
+        for kind in module.REPAIR_SECTION_KINDS
+    }
+    after_stdout = assembled - len(sources["STDOUT"].encode("utf-8")) - header_cost["STDOUT"]
+    after_stderr = after_stdout - len(sources["STDERR"].encode("utf-8")) - header_cost["STDERR"]
+    after_summary = after_stderr - len(sources["SUMMARY"].encode("utf-8")) - header_cost["SUMMARY"]
+
+    first_drop = ladder(assembled - 1)
+    require(
+        first_drop[1] == ["STATUS", "SUMMARY", "STDERR"] and first_drop[2] == ["STDOUT"]
+        and first_drop[3] == after_stdout,
+        f"repair-drop-stdout: the first drop was not STDOUT: {first_drop[1:]!r}",
+    )
+    require(
+        sources["STDOUT"] not in first_drop[0] and sources["STDERR"] in first_drop[0],
+        "repair-drop-stdout: the dropped section was cut mid-stream rather than removed whole",
+    )
+    second_drop = ladder(after_stdout - 1)
+    require(
+        second_drop[1] == ["STATUS", "SUMMARY"] and second_drop[2] == ["STDOUT", "STDERR"]
+        and second_drop[3] == after_stderr,
+        f"repair-drop-stderr: the second drop was not STDERR: {second_drop[1:]!r}",
+    )
+    third_drop = ladder(after_stderr - 1)
+    require(
+        third_drop[1] == ["STATUS"] and third_drop[2] == ["SUMMARY", "STDOUT", "STDERR"]
+        and third_drop[3] == after_summary,
+        f"repair-drop-summary: the third drop was not SUMMARY: {third_drop[1:]!r}",
+    )
+    require(
+        third_drop[0] is not None and "STATUS" not in third_drop[2],
+        "repair-drop-summary: STATUS was dropped, and it never may be",
+    )
+
+    # `repair-budget-exhausted`: not even STATUS alone fits, so no provider call may be made.
+    exhausted = ladder(after_summary - 1)
+    require(
+        exhausted[0] is None and exhausted[1] == ["STATUS"]
+        and exhausted[2] == ["SUMMARY", "STDOUT", "STDERR"],
+        f"repair-budget-exhausted: budget exhaustion did not refuse the prompt: {exhausted[1:]!r}",
+    )
+
+    # `repair-rederive-self`: assembly is a pure, total function of the persisted fields, at every
+    # rung of the ladder and not only at the full selection.
+    for budget in (65_536, assembled - 1, after_stdout - 1, after_stderr - 1):
+        candidate, chosen, _, _ = module.assemble_repair_prompt(
+            template, SYNTHETIC_BASE, sources, budget,
+        )
+        if candidate is None:
+            continue
+        rederived = module.repair_prompt_text(
+            template, SYNTHETIC_BASE, module.repair_section_sources(SYNTHETIC_MEASUREMENT), chosen,
+        )
+        require(
+            rederived == candidate,
+            f"repair-rederive-self: re-derivation drifted at budget {budget}",
+        )
+
+
+def repair_redaction_cases(module) -> None:
+    """`repair-redaction` and `repair-inherits-sandbox-path`, on the real frozen diagnostics."""
+    template = repair_template()
+    frozen = json.loads(FROZEN_EVALUATION_PATH.read_text(encoding="utf-8"))
+    measurement = frozen["rows"][0]["measurement"]
+    sources = module.repair_section_sources(measurement)
+    text, included, dropped, _ = module.assemble_repair_prompt(
+        template, SYNTHETIC_BASE, sources, 65_536,
+    )
+    require(text is not None, "repair-redaction: the frozen diagnostics did not assemble")
+    require(
+        included == ["STATUS", "SUMMARY", "STDOUT", "STDERR"] and dropped == [],
+        "repair-redaction: the frozen diagnostics did not fit the real prompt budget",
+    )
+
+    # Nothing the evaluator constructs, and nothing about the host or the provider topology, may
+    # reach a repair prompt. Section 4.5 lists these explicitly.
+    for needle in (
+        "host.docker.internal", "127.0.0.1:18080", "/v1/chat/completions",
+        "OPENAI_API_KEY", "ALIGN_LLM_", "PYTHONNOUSERSITE", "credential_env_name",
+        str(SOURCE), "prompt-snapshot-request-", "-a1-", "-a2-",
+        "qwen2.5-coder", "llama.cpp", "b6ff7e91",
+    ):
+        require(
+            needle not in text,
+            f"repair-redaction: {needle!r} survived assembly into the repair prompt",
+        )
+
+    # The one thing that does reach it, disclosed in section 4.5 and asserted PRESENT so the
+    # disclosure cannot rot into a silent scrub. Scrubbing here would make the prompt underivable
+    # from the row and would put a second, divergent copy of the diagnostics in the evidence. The
+    # residue is a sandbox temp directory name, not a secret: no user path, no home directory, no
+    # credential, and no host identity.
+    residue = SANDBOX_RESIDUE.search(measurement["diagnostic_stderr"])
+    require(
+        residue is not None,
+        "repair-inherits-sandbox-path: the frozen diagnostics no longer carry the disclosed "
+        "mkdtemp residue, so this assertion lost its subject and must be re-derived",
+    )
+    require(
+        residue.group(0) in text,
+        "repair-inherits-sandbox-path: the inherited sandbox path was scrubbed, which would break "
+        "the section 4.4 re-derivation from the persisted row",
+    )
+
+
+def repair_contract_cases() -> None:
+    module = evaluator_module()
+    repair_template_cases(module)
+    repair_prompt_golden_cases(module)
+    repair_redaction_cases(module)
 
 
 def parity_vectors() -> list[dict[str, Any]]:
@@ -363,6 +631,9 @@ def structural_expectations(rows: dict[str, dict[str, str]]) -> None:
 
 
 def main() -> int:
+    # The repair-prompt contract is asserted first: it is a Python-only surface, so a repair
+    # regression must never be masked by an unrelated renderer disagreement below.
+    repair_contract_cases()
     module = evaluator_module()
     vectors = parity_vectors()
     names = [item["case_name"] for item in vectors]
@@ -505,7 +776,8 @@ def main() -> int:
 
     print(
         f"prompt render parity: {len(vectors)} vectors byte-equal across the Align and Python "
-        "renderers: PASS"
+        "renderers, and the repair-prompt template, section order, drop ladder, budget, "
+        "re-derivation, and redaction goldens: PASS"
     )
     return 0
 
