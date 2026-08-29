@@ -714,8 +714,9 @@ implements it and its comment quotes it.
 >    `suffix.n_past_base == kv.columns_persisted == kv.token_count == selection.token_count`,
 >    `suffix.columns_written == T_prefix + S`, `plane.columns_written == T_prefix + S + N`, and
 >    `suffix.pack_bytes == 0` on the resident leg.
-> 7. **Every refusal case in 5.2 yields exactly its named code**, and no refusal leaves a file
->    behind or a plane unfreed.
+> 7. **Every refusal case yields exactly its named code**, and no refusal leaves a file behind or a
+>    plane unfreed. The authoritative matrix is **section 5.6**, the shipped result; section 5.2 is
+>    the prediction it supersedes, and section 11.1 finding 3 records where the two differ.
 > 8. **Determinism.** Three consecutive suffix runs byte-identical after `normalize`.
 >
 > `timings.first_token_ns` and the invocation wall clocks of 1.4's three legs are **reported** and no
@@ -1007,7 +1008,11 @@ capability adds.
 ### 5.6 Hosted result — the refusal matrix
 
 Every row refused with exactly its code and exactly its detail, and every one published
-`suffix.requested = 1`, `suffix.completed = 0`, no step, and no `IDENTICAL`:
+`suffix.requested = 1`, `suffix.completed = 0`, no step, and no `IDENTICAL`. This table is
+`run-layer-forward-smoke`'s `SUFFIX_REFUSAL_DETAILS` tuple: the runner asserts all thirteen details
+below and the summary line counts *that tuple* rather than `STUB_CASES` membership, so a row added
+here without an assertion cannot inflate the printed claim (`ds-suffix-tokens-mismatch` rides in
+`KV_REFUSALS` and is why membership was the wrong witness):
 
 | Case | Code | Detail |
 | --- | --- | --- |
@@ -1486,6 +1491,7 @@ generator are the whole apparatus.
 ```sh
 W=$(mktemp -d)
 ALIGN_LLM_GGML_SHIM_DIR="$W/lib" ALIGN_LLM_GGML_FORCE=engine scripts/build-ggml-shim
+export LIBRARY_PATH="$W/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"   # the link step finds -lggml_shim
 scripts/alignc build src/ggml_spike.align && mv -f ggml_spike "$W/ggml-spike"
 python3 scripts/layer_forward_fixture.py "$W" --model >/dev/null
 export DYLD_LIBRARY_PATH="$W/lib"      # LD_LIBRARY_PATH on Linux

@@ -6,15 +6,26 @@ file records durable project state.
 ## Active: R6-PREFIX-SUFFIX-PREFILL (2026-08-29)
 
 Branch `agent/r6-prefix-suffix-prefill`, cut from `origin/main` `553563e` — the merge of
-R6-RESIDENT-WEIGHTS (PR #147). **The capability is committed** (`6cef75b`) and its review repair on
-top; the tree is clean and every hosted check passes at the head.
+R6-RESIDENT-WEIGHTS (PR #147). **The capability is committed** (`6cef75b`), with its review repair
+and the final delta review's minors on top; the tree is clean and every hosted check passes at the
+head. `origin/main` has not moved since the branch was cut, so **no merge is owed**: the merge base
+is still `553563e` and the branch is three commits ahead of it.
 `docs/specs/r6-prefix-suffix-prefill.md` is the authoritative ledger: sections 1 to 4 are the design,
 5.1 to 5.4 the verification plan, **5.5 to 5.10 the hosted, mutation, real-model and TTFT results**,
 **11 what implementation and the review found**, and 12 the ledger-to-diff mapping.
 
 **Reviewed and repaired.** One comprehensive review of `6cef75b` over two disjoint reviewers — A on
 `src` plus the runner, smoke and shim, B on the document and the reconciliation edits — returned
-8 major and 16 minor findings, no blocker. All are applied. The one that changes behaviour is a
+8 major and 16 minor findings, no blocker; 24 dispositions, all applied, two of them as evidence
+rather than a code change (the `R6_TOKENS` precedence row does establish `3 ≺ 3c`, recorded in 5.6;
+and section 11.2's recorded digest does reproduce once the command is runnable). A **final delta
+review** of the repair — required because the repair added a contract, `T_prefix >= 2` — approved
+with three minors, applied on top: the 11.2 reproduction needed `LIBRARY_PATH` exported before the
+build line (it now runs end to end and reproduces `62a46efd73d18be1...` and the control
+`99781f3e63a67b18...`), acceptance rule 7 points at the shipped matrix in 5.6 rather than 5.2's
+superseded prediction, and the smoke's refusal-detail assertions are one named
+`SUFFIX_REFUSAL_DETAILS` tuple of all **thirteen** documented details that the summary line counts,
+instead of a literal loop counted from `STUB_CASES` membership. The one that changes behaviour is a
 **contract addition**: `SUFFIX` now requires `T_prefix >= 2` and refuses `R6_SUFFIX`/`prefix[<n>]`
 otherwise, because a one-token prefill computes the wrong embedding row (see the defect below) and
 the equality oracle would have failed silently. The rest are the split guard (`2 <= j`), the witness
@@ -99,23 +110,31 @@ row and **hosted** preflight: `python3 scripts/pre-pr --owner-test layer-forward
 layer-forward-smoke`. `make ci` is **not** selected — no aggregate membership, check topology, or
 integration behaviour changes and this is not a `.align-revision` change — and `baseline-check` is
 `N/A` on R6-STEP-N's condition (the `Makefile` is byte-unchanged and both new shim arms are inputs
-to the **stub**), to be re-checked at the publication head.
+to the **stub**). Re-checked at the publication head:
+`python3 scripts/verification_scope.py --base origin/main --head HEAD` returns
+`{"docs_only":false,"fresh_focused":false,"fresh_installed":false,"hosted":true,"scope":"hosted"}`,
+so no fresh-image profile and no Docker are selected and the baseline artifacts are not consulted.
 
 **Four merge re-checks this family always carries.** Roadmap item **33** (31 and 32 are on
 branches), document schema **5**, next free Align request **53** (52 is expected to be claimed by a
-parallel branch), and `scripts/decode-step-golden.jsonl` regenerated from the merged head. Merge
-`origin/main` by `git merge`, **never a rebase**, so every stacked branch's recorded commits stay
-reachable.
+parallel branch), and `scripts/decode-step-golden.jsonl` regenerated from the merged head. All four
+hold at the publication head and `origin/main` is unmoved, so nothing was merged in; if it moves
+before this lands, merge it by `git merge`, **never a rebase**, so every stacked branch's recorded
+commits stay reachable, and re-check all four.
 
-**Verification checkpoint (repaired head).** `gmake build`, `gmake check`, `gmake fmt`,
+**Verification checkpoint (publication head).** `gmake build`, `gmake check`, `gmake fmt`,
 `gmake format-check`, `git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
 `gmake layer-forward-smoke` (all six blocks; **139** documented decode-step cases, 138 with a golden
-row, 42 codes, 12 suffix refusals, 52 `KV_REFUSALS` rows) all pass; the owner is 65.9 s real.
-**`gmake decode-step-qualification` was not re-run for the repair**, and the reason is that no
-repaired line can change its output: the `2 <= j` guard removes a split the four prompts never
+row, 42 codes, **13** suffix refusals each with its detail asserted, 52 `KV_REFUSALS` rows) all
+pass; the owner is 65.9 s real at the repaired head and 49.3 s at the publication head.
+`python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` is stamped at
+the publication head (`hosted-checks` pass, 474 s).
+**`gmake decode-step-qualification` was not re-run for the repair or the minors**, and the reason is
+that no changed line can reach it: the `2 <= j` guard removes a split the four prompts never
 produce (the smallest `|L|` is 3), the `T_prefix >= 2` refusal cannot fire at `j >= 2`, the stub
 latch lives in a forced build the qualification never builds, and the remaining changes are the
-witness guard, comments, and documents. The five recorded splits and every verdict below stand.
+witness guard, the smoke's own assertions (this leg does not run that runner), comments, and
+documents. The five recorded splits and every verdict below stand.
 **`gmake decode-step-qualification`
 exits 0 on the real model at `N = 16`**, with five prefix/suffix splits over the four prompts and
 every one of oracle S, oracle C″, oracle B over `T_prefix + S` columns, and gate G1 **IDENTICAL** —
@@ -142,18 +161,14 @@ dies as `R5_SHAPE suffix[]node[26]`; and oracle S's exclusion list widened three
 two suffix-only arithmetic mutants die naming the exact case and the exact column
 (`suffix[]layer[0]tensor[k]col[2]` and `col[-1]`).
 
-**Next actions, in order.** (1) Decide whether the `T_prefix >= 2` refusal — a contract addition on
-a public arm, made during repair — warrants a final delta review under `CLAUDE.md`'s rule 5; it is a
-narrow repair of a recorded finding, but it narrows an accepted surface. (2) Merge `origin/main`
-into this branch by `git merge`, **never a rebase**, so every stacked branch's recorded commits stay
-reachable, and re-check the four merge items above — section 8 makes roadmap item 33 and next-free
-Align request 53 contingent on it. (3) `python3 scripts/pre-pr --owner-test layer-forward-smoke --
-gmake layer-forward-smoke` at the exact publication head; the stamp belongs to that unchanged
-`HEAD`, so any later commit, amend, or rebase invalidates it. (4) Publish the English pull request
-with the review envelope, every finding's disposition, the consolidated repair commit, and the exact
-commands and results. (5) Merge once the required checks pass, then re-check the four items above at
-the merged head and regenerate `scripts/decode-step-golden.jsonl` from it. (6) Pick up
-`MF-SINGLE-TOKEN-LOGITS` or the next eligible roadmap capability.
+**Next actions, in order.** (1) Publish the English pull request with the review envelope, every
+finding's disposition, the consolidated repair commit, and the exact commands and results. (2) Merge
+once the required checks pass. If `origin/main` moves first, `git merge` it — **never a rebase** —
+re-check the four merge items above, regenerate `scripts/decode-step-golden.jsonl` from the merged
+head, and re-stamp `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake
+layer-forward-smoke`, because the stamp belongs to an exact unchanged `HEAD`. (3) Re-check the four
+items at the merged head. (4) Pick up `MF-SINGLE-TOKEN-LOGITS` or the next eligible roadmap
+capability.
 
 **Intentional uncommitted files.** None. The tree is clean and there is no scratch file inside it.
 

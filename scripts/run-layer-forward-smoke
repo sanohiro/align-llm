@@ -5136,18 +5136,27 @@ if json.loads(produced["ds-suffix-resident"])["suffix"]["pack_bytes"] != 0:
 if json.loads(produced["ds-suffix-3"])["suffix"]["pack_bytes"] <= 0:
     failures.append("ds-suffix-3: the streamed suffix pass read no pack bytes")
 
-# The refusal matrix's four details, named exactly. The codes are asserted by `record`; these are
-# the details, which is what makes a refusal a diagnosis a caller can act on.
-for case, detail in (("ds-suffix-no-load", "suffix[no_load]"),
-                     ("ds-suffix-and-save", "suffix[no_load]"),
-                     ("ds-suffix-no-load-bad-steps", "suffix[no_load]"),
-                     ("ds-suffix-empty", "suffix[]"),
-                     ("ds-suffix-garbage", "suffix[x]"),
-                     ("ds-suffix-trailing", "suffix[5,]"),
-                     ("ds-suffix-over-cap", "sequence[33]"),
-                     ("ds-suffix-over-cap-and-narrow", "sequence[33]"),
-                     ("ds-suffix-narrow-width", "kv_width[6]"),
-                     ("ds-suffix-tokens-mismatch", "count[3]")):
+# The refusal matrix's details, named exactly. The codes are asserted by `record`; these are the
+# details, which is what makes a refusal a diagnosis a caller can act on. This tuple is the whole
+# suffix refusal matrix of R6-PREFIX-SUFFIX-PREFILL section 5.6 -- every documented case except
+# `ds-arity-16`, which publishes no document at all -- and the summary below counts it rather than
+# `STUB_CASES` membership, so a case added to the matrix without a detail here cannot inflate the
+# printed claim. `ds-suffix-tokens-mismatch` is why membership is the wrong witness: it rides in
+# `KV_REFUSALS` and never appears in `STUB_CASES`.
+SUFFIX_REFUSAL_DETAILS = (("ds-suffix-no-load", "suffix[no_load]"),
+                          ("ds-suffix-and-save", "suffix[no_load]"),
+                          ("ds-suffix-no-load-bad-steps", "suffix[no_load]"),
+                          ("ds-suffix-empty", "suffix[]"),
+                          ("ds-suffix-garbage", "suffix[x]"),
+                          ("ds-suffix-trailing", "suffix[5,]"),
+                          ("ds-suffix-prefix-one", "prefix[1]"),
+                          ("ds-suffix-over-vocab", "token[0]"),
+                          ("ds-suffix-over-cap", "sequence[33]"),
+                          ("ds-suffix-over-cap-and-narrow", "sequence[33]"),
+                          ("ds-suffix-and-bad-tokens", "token[32]"),
+                          ("ds-suffix-narrow-width", "kv_width[6]"),
+                          ("ds-suffix-tokens-mismatch", "count[3]"))
+for case, detail in SUFFIX_REFUSAL_DETAILS:
     refused = json.loads(produced[case])
     if refused["error_detail"] != detail:
         failures.append("%s: error_detail %r, not %r" % (case, refused["error_detail"], detail))
@@ -5359,7 +5368,7 @@ print("decode step smoke: prefix+suffix -- oracle S byte-identical on %d splits 
       "%d refusals each naming its own detail, two forced builds publishing a partial pass, and the "
       "RESIDENT leg reading zero pack bytes"
       % (len(SUFFIX_ORACLE), len(SUFFIX_EXCLUDED_BLOCKS) + len(SUFFIX_EXCLUDED_FIELDS),
-         len([case for case, _, _ in STUB_CASES if case.startswith("ds-suffix-")])))
+         len(SUFFIX_REFUSAL_DETAILS)))
 print("decode step smoke: %d no-document cases (R6_ARITY, R6_PATH), %d documented cases (%d with a "
       "golden row), %d codes reached, oracle A' PASS against transcript graphs 2..4 at three step "
       "offsets, oracle B IDENTICAL over the whole plane including every written-back column, three "
