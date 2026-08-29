@@ -76,7 +76,16 @@ if [ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ]; then
   flavour=real
   include_flags=("-I${ALIGN_LLM_GGML_INCLUDE}")
   if [ -n "${ALIGN_LLM_GGML_LIB:-}" ]; then
-    link_flags=("-L${ALIGN_LLM_GGML_LIB}")
+    # `-L` is the **link** path and an `rpath` is the **loader** path, and both are needed when
+    # `ALIGN_LLM_GGML_LIB` is not a system library directory. `docs/specs/r6-olmoe-decode.md`
+    # section 15 recommends pointing it at the ggml the transcript instrument was built from, which
+    # is a build directory whose libraries record `@rpath/...` install names with no `LC_RPATH` of
+    # their own. `DYLD_LIBRARY_PATH` does not stand in for this: macOS strips it from the
+    # environment of any SIP-protected binary, and the qualification launches the arm through
+    # `/usr/bin/time`, so the arm aborted in `dyld` before its first instruction. Recording the
+    # directory in the shim itself is what survives that. A system ggml is unaffected: the rpath is
+    # simply never consulted.
+    link_flags=("-L${ALIGN_LLM_GGML_LIB}" "-Wl,-rpath,${ALIGN_LLM_GGML_LIB}")
   fi
   link_flags+=("-lggml" "-lggml-base")
   # Section 4.6's named mechanism for the three failures no input can produce. Only the real shim

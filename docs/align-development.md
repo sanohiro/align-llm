@@ -2361,6 +2361,17 @@ claimed in each of the sixteen layers — with the cumulative union and the marg
 reader's own accounting are two numbers rather than one. On this model a step claims exactly
 `487,587,840` expert bytes, 125,000 ppm, on every step of every prompt.
 
+**Three residency fields are easy to confuse and are therefore published separately.**
+`decode_keys_distinct` is the number of distinct `(layer, expert)` keys the `N` steps demanded,
+accumulated into a set seeded **empty** — it says nothing about the prefill, and it is the `distinct`
+in `step_reuse_per_mille = (demands - distinct) / demands`. The prefill relationship is two other
+numbers: `decode_keys_in_prefill_union / decode_keys_demanded` counts **demands with repetition** and
+`decode_distinct_keys_in_prefill_union / decode_keys_distinct` counts **distinct keys**. Section 2.5
+of the ledger separates all of them, including from R2D's adjacent-pair 447, and section 13 deviation
+13 records what went wrong when one of them shipped under another's name. Every `steps[]` row also
+publishes `top_k`, the step's top ten with the raw `u32` of each logit, in
+`--moe-model-forward`'s own shape, because oracle C′'s fallback compares the two.
+
 **Env vars, read by `scripts/run-moe-decode-step`:** `ALIGN_LLM_GGML_INCLUDE`, `ALIGN_LLM_GGML_LIB`,
 `ALIGN_LLM_GGUF_MODEL` (an **olmoe** GGUF), `ALIGN_LLM_LLAMA_EVAL_CALLBACK` (**R2C-patched** — full
 router axes are required, and an unpatched instrument prints six of eight slots),
@@ -2393,7 +2404,12 @@ G1 is `IDENTICAL`, oracle R is `MATCH` at 8,192 of 8,192, and oracle T is `PASS`
 `max_abs_diff` **0**. The runner's instrument cross-check — the transcript's `result_output` sum
 against `llama-debug`'s logits, taken **before** the arm runs — is what refuses a mixed pair, and it
 reports it as an instrument skew rather than as a failing oracle.
-`docs/specs/r6-olmoe-decode.md` section 15 records what this owes the toolchain.
+The runner also compares the arm's `libggml-base` against `llama-debug`'s by **resolved object
+identity** before anything else runs — a hard refusal, because gate G1 is a byte comparison — and
+**reports without enforcing** what `llama-eval-callback` links, since the pinned R2C instrument links
+its ggml statically and cannot be resolved. Where no loader listing can be read the check says on one
+line that it failed open. `docs/specs/r6-olmoe-decode.md` section 15 records what this owes the
+toolchain.
 
 **The slot map, derived rather than inherited.** The decode phase-A table is thirty-seven rows — the
 prefill's thirty-five plus one `CONCAT` on K and one on V — so it occupies slots 21 to 57 and the

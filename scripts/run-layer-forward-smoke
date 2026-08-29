@@ -136,12 +136,14 @@ shim_dir=$(ALIGN_LLM_GGML_SHIM_DIR="${work_dir}/lib" "${root_dir}/scripts/build-
 export ALIGN_LLM_GGML_SHIM_DIR="${work_dir}/lib"
 shim_built=1
 # The compiler's warnings are captured rather than streamed **under the fresh worker**, exactly as
-# `Makefile`'s own `check` and `build` targets do. `src/ggml_spike.align` now imports
-# `src/layer_forward.align` and `src/layer_qwen2.align`, so one build of it writes ~22 KB of
-# `huge struct copy` and `lossy conversion` warnings, and the supervisor bounds the whole
-# `capable-checks` child at 65,536 bytes per stream (`scripts/fresh-align-compiler`
-# `MAX_STREAM_BYTES`). Two runners building it is already two thirds of that budget, and an
-# overflow kills the child with no message naming the cause. Developers still see every warning.
+# `Makefile`'s own `check` and `build` targets do. `src/ggml_spike.align` imports every arm, so one
+# build of it writes **179,363 bytes** of `huge struct copy` and `lossy conversion` warnings —
+# measured, not estimated, and 29,460 B of it in 142 lines from `src/moe_decode_step.align` alone.
+# The supervisor bounds the whole `capable-checks` child at 65,536 bytes per stream
+# (`scripts/fresh-align-compiler` `MAX_STREAM_BYTES`), so **one** build already exceeds the budget
+# by 2.7x and an overflow kills the child with no message naming the cause. That is why the capture
+# below is not an optimization: it is the only reason this runner is a member of the aggregate.
+# Developers outside the fresh worker still see every warning.
 (
   cd "${root_dir}"
   export LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
@@ -5070,6 +5072,16 @@ ENGINE_CASES = [
     # The whole acceptance shape: three steps, oracle T and oracle R against transcript graphs 2, 3
     # and 4, oracle B cumulative over the plane, and gate G1 against the prefill's own logits.
     ("md-oracle-full", operands(), ""),
+    # R6-OLMOE-DECODE deviation 3, hosted at both ends of `TRUNCATION_PRINTED`. The same pack at
+    # `n_expert_used` 6 and 8: six is the last router width at which `axis_index` is the identity
+    # and eight is the first at which it is not, so the pair brackets the boundary the scanner's
+    # direct-mapping branch turns on. `write_moe_decode_used_corpus` records the full reasoning.
+    ("md-used-six", operands(geometry=path("moe-model-decode-used-6-geometry.json"),
+                             transcript=path("moe-model-decode-used-6-transcript.txt"),
+                             logits=path("moe-model-decode-used-6-logits.bin")), ""),
+    ("md-used-eight", operands(geometry=path("moe-model-decode-used-8-geometry.json"),
+                               transcript=path("moe-model-decode-used-8-transcript.txt"),
+                               logits=path("moe-model-decode-used-8-logits.bin")), ""),
     ("md-transcript-onegraph",
      operands(transcript=path("moe-model-decode-transcript-onegraph.txt")), "R6M_ORACLE_MISSING"),
     ("md-transcript-short-for-steps",
@@ -5338,11 +5350,15 @@ for name, argv, expected in ENGINE_CASES:
                         % (name, plane["bytes"], plane["stride"], PLANE_BYTES, PLANE_STRIDE))
     # Section 3.7's derived row counts, published rather than assumed: the decode phase-A table is
     # the prefill's thirty-five rows plus the two `CONCAT`s, and phase B is `2u + 8` in both.
+    # `n_expert_used` is read from the document rather than assumed: the two deviation-3 cases run
+    # the same pack at 6 and 8, and every count below that depends on `u` is written as its formula
+    # so those cases assert the same relations at their own width instead of being skipped.
+    used = document["model"]["n_expert_used"]
     if graph["table_rows_a"] != 35 or graph["table_rows_a_decode"] != 37 \
-            or graph["table_rows_b"] != 14:
-        failures.append("%s: tables %d/%d/%d, not 35/37/14"
+            or graph["table_rows_b"] != 2 * used + 8:
+        failures.append("%s: tables %d/%d/%d, not 35/37/%d at n_expert_used %d"
                         % (name, graph["table_rows_a"], graph["table_rows_a_decode"],
-                           graph["table_rows_b"]))
+                           graph["table_rows_b"], 2 * used + 8, used))
     if document["verdict"] != "EXTERNAL":
         failures.append("%s: verdict %r, not EXTERNAL" % (name, document["verdict"]))
     if document["selection"]["narrow_layer"] != -1 \
@@ -5370,12 +5386,12 @@ for name, argv, expected in ENGINE_CASES:
             failures.append("%s: step %d read %d bytes for a %d-byte claim"
                             % (name, row["index"], residency["expert_pread_bytes"],
                                residency["expert_bytes"]))
-        if residency["expert_bytes_ppm"] != 375000:
-            failures.append("%s: step %d claims %d ppm, not the 3 of 8 this geometry routes"
-                            % (name, row["index"], residency["expert_bytes_ppm"]))
-        if residency["claim_planes_read"] != 18:
-            failures.append("%s: step %d read %d claim planes, not 2 layers x 3 experts x 3 roles"
-                            % (name, row["index"], residency["claim_planes_read"]))
+        if residency["expert_bytes_ppm"] != used * 1000000 // 8:
+            failures.append("%s: step %d claims %d ppm, not the %d of 8 this geometry routes"
+                            % (name, row["index"], residency["expert_bytes_ppm"], used))
+        if residency["claim_planes_read"] != 2 * used * 3:
+            failures.append("%s: step %d read %d claim planes, not 2 layers x %d experts x 3 roles"
+                            % (name, row["index"], residency["claim_planes_read"], used))
     if document["decode"]["graph_count"] != (2 * 2 + 2) * completed:
         failures.append("%s: decode.graph_count %d, not %d per step"
                         % (name, document["decode"]["graph_count"], 2 * 2 + 2))
@@ -5499,7 +5515,8 @@ for row, expect in zip(full["steps"], EXPECTED["rows"]):
             failures.append("md-oracle-full: step %d routed ids are not ascending and distinct: %r"
                             % (row["index"], layer_ids))
 residency = full["residency"]
-for field in ("decode_keys_demanded", "decode_keys_in_prefill_union", "decode_expert_bytes",
+for field in ("decode_keys_demanded", "decode_keys_distinct", "decode_keys_in_prefill_union",
+              "decode_distinct_keys_in_prefill_union", "decode_expert_bytes",
               "union_keys_final", "union_bytes_final", "step_reuse_per_mille"):
     if residency[field] != EXPECTED[field]:
         failures.append("md-oracle-full: residency.%s is %r, not the generator's %r"
@@ -5518,10 +5535,116 @@ for row in full["steps"]:
 # relationship is a measurement rather than a tautology.
 if residency["decode_keys_demanded"] <= residency["union_keys_final"] - len(EXPECTED["prefill_keys"]):
     failures.append("md-oracle-full: the decode steps demanded no more keys than they added")
+# Section 3.11's `step_reuse_per_mille` counts the decode steps' **own** distinct keys, and the
+# quantity it is most easily confused with — and shipped as, before this repair — is the number of
+# union keys the prefill did not already hold. This corpus is only a regression on the metric while
+# those two numbers differ, so the difference is asserted rather than assumed.
+prefill_relative = residency["union_keys_final"] - len(EXPECTED["prefill_keys"])
+if residency["decode_keys_distinct"] == prefill_relative:
+    failures.append("md-oracle-full: the corpus cannot separate section 3.11's decode-only distinct "
+                    "count (%d) from the prefill-relative one (%d); the metric is untested here"
+                    % (residency["decode_keys_distinct"], prefill_relative))
+if residency["step_reuse_per_mille"] != (
+        (residency["decode_keys_demanded"] - residency["decode_keys_distinct"]) * 1000
+        // residency["decode_keys_demanded"]):
+    failures.append("md-oracle-full: step_reuse_per_mille is not (demands - distinct) / demands")
+# Section 12.3 finding 2 reports both prefill-union fractions, so both are published and each is
+# bounded by the denominator it belongs to.
+if not 0 <= residency["decode_distinct_keys_in_prefill_union"] <= residency["decode_keys_distinct"]:
+    failures.append("md-oracle-full: the distinct prefill-union count is outside its denominator")
+if not 0 <= residency["decode_keys_in_prefill_union"] <= residency["decode_keys_demanded"]:
+    failures.append("md-oracle-full: the demand prefill-union count is outside its denominator")
+# Section 4.4's oracle C′ fallback needs a per-step top ten, in `--moe-model-forward`'s own shape.
+for row in full["steps"]:
+    top = row["top_k"]
+    if len(top) != 10:
+        failures.append("md-oracle-full: step %d publishes %d top-k entries, not 10"
+                        % (row["index"], len(top)))
+    elif top[0]["index"] != row["argmax"]:
+        failures.append("md-oracle-full: step %d top_k[0] is %r and argmax is %r"
+                        % (row["index"], top[0]["index"], row["argmax"]))
+    elif len(set(entry["index"] for entry in top)) != len(top):
+        failures.append("md-oracle-full: step %d repeats an index in its top ten" % row["index"])
 
 # `md-steps-3` runs the same three steps with **no** transcript and **no** logits blob, which is
 # where the demand stream has to be identical and every oracle absent. The two documents differ in
 # exactly the oracle blocks, which is what makes the measurement independent of the oracles.
+# R6-OLMOE-DECODE deviation 3, hosted at both ends. `md-used-six` is inert by construction — at
+# `TRUNCATION_PRINTED` the two mappings agree — and `md-used-eight` is the first width at which they
+# do not: a build that dropped the `truncated` gate maps printed ordinals 3..7 of the eight-wide
+# `ffn_moe_topk-L` row onto indices 5..9, so at most three ids of every eight can match and two of
+# the indices are past the extent. The same case carries the axis-1 half of the fix: at
+# `n_expert_used = 8` the three `MUL_MAT_ID` nodes and `ffn_moe_weights-L` have a **truncated** axis
+# 1, whose rows map correctly only while the axis-1 marker is raised, so a build that never raised
+# it fails oracle T on nodes the router never touched.
+for used_variant, case_name in ((6, "md-used-six"), (8, "md-used-eight")):
+    variant = require(case_name)
+    with open(path("moe-model-decode-used-%d-routing.json" % used_variant), "r",
+              encoding="utf-8") as handle:
+        variant_expected = json.load(handle)
+    ids_total = variant_expected["ids_total"]
+    variant_routing = variant["routing_oracle"]
+    if variant["decode"]["token_ids"] != variant_expected["token_ids"]:
+        failures.append("%s: decoded %r, not the generator's %r"
+                        % (case_name, variant["decode"]["token_ids"],
+                           variant_expected["token_ids"]))
+    if variant_routing["verdict"] != "MATCH":
+        failures.append("%s: routing %r at step %d layer %d token %d slot %d"
+                        % (case_name, variant_routing["verdict"],
+                           variant_routing["first_difference_step"],
+                           variant_routing["first_difference_layer"],
+                           variant_routing["first_difference_token"],
+                           variant_routing["first_difference_slot"]))
+    if variant_routing["ids_total"] != ids_total \
+            or variant_routing["ids_printed_compared"] != ids_total \
+            or variant_routing["ids_printed_matched"] != ids_total:
+        failures.append("%s: routing coverage %d/%d of %d is not element-wise complete at "
+                        "n_expert_used %d"
+                        % (case_name, variant_routing["ids_printed_matched"],
+                           variant_routing["ids_printed_compared"], variant_routing["ids_total"],
+                           used_variant))
+    if variant["oracle_decode"]["verdict"] != "PASS":
+        failures.append("%s: oracle T %r worst %r max_abs %d"
+                        % (case_name, variant["oracle_decode"]["verdict"],
+                           variant["oracle_decode"]["worst_node"],
+                           variant["oracle_decode"]["max_abs_diff_ten_thousandths"]))
+    if variant["plane"]["roundtrip_verdict"] != "IDENTICAL":
+        failures.append("%s: oracle B %r" % (case_name, variant["plane"]["roundtrip_verdict"]))
+    if [row["routed"]["layers"] for row in variant["steps"]] != variant_expected["layers"]:
+        failures.append("%s: the routed demand stream is not the generator's" % case_name)
+# Non-vacuity, read back from the generated transcript rather than assumed: the eight-wide case only
+# discriminates while the router's slot axis is above `TRUNCATION_PRINTED` **and** the row carries
+# no ellipsis, which is the emulated R2C print limit's whole effect.
+with open(path("moe-model-decode-used-8-transcript.txt"), "r", encoding="utf-8") as handle:
+    used_eight_lines = handle.read().split("\n")
+topk_header = next((i for i, line in enumerate(used_eight_lines)
+                    if line.startswith("common_debug_cb_eval:") and " ffn_moe_topk-0 " in line), -1)
+if topk_header < 0:
+    failures.append("md-used-eight: the transcript prints no ffn_moe_topk-0 block")
+else:
+    def row_values(row):
+        inner = row.strip()
+        return [piece.strip()
+                for piece in inner[inner.index("[") + 1:inner.rindex("]")].split(",")
+                if piece.strip()]
+
+    topk_rows = [line for line in used_eight_lines[topk_header + 1:topk_header + 8]
+                 if line.strip().startswith("[") and line.strip() != "["]
+    if not topk_rows or any(len(row_values(row)) != 8 for row in topk_rows):
+        failures.append("md-used-eight: ffn_moe_topk-0 is not printed eight wide: %r"
+                        % (topk_rows[:1],))
+    if any("..." in row for row in topk_rows):
+        failures.append("md-used-eight: ffn_moe_topk-0 carries an ellipsis, so the direct-mapping "
+                        "branch is not the one under test")
+    weights_header = next((i for i, line in enumerate(used_eight_lines)
+                           if line.startswith("common_debug_cb_eval:")
+                           and " ffn_moe_weights-0 " in line), -1)
+    if weights_header < 0 or not any(
+            used_eight_lines[weights_header + offset].startswith("            ...")
+            for offset in range(1, 12)):
+        failures.append("md-used-eight: ffn_moe_weights-0 does not truncate its axis 1, so the "
+                        "axis-1 marker is not under test")
+
 quiet = require("md-steps-3")
 if quiet["decode"]["token_ids"] != full["decode"]["token_ids"]:
     failures.append("md-steps-3: the ids depend on whether a transcript was supplied")
@@ -5603,14 +5726,18 @@ build_shim("")
 DECLARED_R6M_CODES = {
     "R6M_TOKENS", "R6M_GEOMETRY", "R6M_KV_WIDTH", "R6M_STEPS", "R6M_PLANE_UNAVAILABLE",
     "R6M_PLANE_WRITE", "R6M_PLANE_MISMATCH", "R6M_TRANSCRIPT", "R6M_ORACLE_MISSING",
-    "R6M_GEOMETRY_UNREADABLE", "R6M_CLAIM_ACCOUNTING",
+    "R6M_GEOMETRY_UNREADABLE", "R6M_CLAIM_ACCOUNTING", "R6M_ROUTED_SHAPE",
 }
-# The three this block does not reach, each with its reason. `R6M_PLANE_UNAVAILABLE` and
+# The four this block does not reach, each with its reason. `R6M_PLANE_UNAVAILABLE` and
 # `R6M_PLANE_WRITE` are fail-closed guards on an arithmetic no input can produce — the plane's size
 # is a function of a validated geometry and a validated width, and its span is checked against the
 # node the table names. `R6M_CLAIM_ACCOUNTING` is the relation of section 3.11 and is likewise
 # unreachable from an input: no operand can make the reader read fewer bytes than the claim.
-UNREACHED_R6M_CODES = {"R6M_PLANE_UNAVAILABLE", "R6M_PLANE_WRITE", "R6M_CLAIM_ACCOUNTING"}
+# `R6M_ROUTED_SHAPE` is section 3.11's second such relation — `stage_carry_at` refuses a short
+# `topk_image` with `R5E_CARRY` before compute, so no operand reaches the key arithmetic with a
+# `routed[]` that is not exactly `n_layer * n_expert_used` long.
+UNREACHED_R6M_CODES = {"R6M_PLANE_UNAVAILABLE", "R6M_PLANE_WRITE", "R6M_CLAIM_ACCOUNTING",
+                       "R6M_ROUTED_SHAPE"}
 INHERITED_CODES = {
     "R4_PACK_UNREADABLE", "R4_PACK_TRUNCATED", "R5_GGML_UNAVAILABLE", "R5_GEOMETRY", "R5_SHAPE",
     "R5D_CLAIM_MISSING", "R5_ALIGNMENT", "R5_TYPE_UNSUPPORTED", "R5_SOURCE_DIVERGED",

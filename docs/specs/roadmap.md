@@ -623,8 +623,8 @@ The current forward delivery order is:
     is therefore exactly `3,900,702,720 / 8 = 487,587,840` bytes, **125,000 ppm**, prompt- and
     step-independent, and the same number `r3-residency-sim.md` section 8.1 publishes as the decode
     arms' one-token working set; and the open quantity is the **union**, which over four steps on
-    one prompt grows 128 → 274 keys of 1,024 while **79.9 %** of every decode demand was already
-    read by the prefill. The plane is OLMoE's geometry in item 27's unchanged layout, 67,108,864 B
+    one prompt grows 128 → 274 keys of 1,024 while **79.9 %** of those 274 *distinct* decode keys
+    were already read by the prefill. The plane is OLMoE's geometry in item 27's unchanged layout, 67,108,864 B
     at width 256 — **2.29×** the dense arm's on a model with a fifth of the parameters, because
     sixteen KV heads beat twenty-eight layers. What it needed that did not exist: an `OP_CONCAT` and
     a `WHEN_DECODE` condition in `src/layer_olmoe.align`, and a **thirty-seven-row** decode phase-A
@@ -654,7 +654,7 @@ The current forward delivery order is:
     invariant, 1 of 12 checkpoints byte-identical and 12 of 12 argmax-equal — exactly as the design
     wrote both branches in advance. Owner `gmake layer-forward-smoke`, whose **seventh** block gains a
     routed decode loop over the synthetic two-layer MoE model and runs the whole seven-block runner in
-    57 s; focused `gmake moe-decode-step-qualification`. **No TTFT or throughput claim and no cost ceiling** — the
+    80 s; focused `gmake moe-decode-step-qualification`. **No TTFT or throughput claim and no cost ceiling** — the
     claim is a byte demand and the byte counters are exact, published twice, arithmetically and from
     the pack reader's own `pread` accounting, with a bounded relation between them. **What it leaves
     open:** the R6 gate still asks that TTFT improve on repeated coding tasks *sharing a prefix*. A

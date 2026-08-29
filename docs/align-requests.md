@@ -9706,9 +9706,30 @@ align-llm verification: delete `src/decode_step.align`'s local `fail`, `fault_in
 ```
 
 **R6-OLMOE-DECODE is this request's largest client to date.** `src/moe_decode_step.align` carries a
-**third** copy of the failure sink and, beyond it, twenty-three functions in total that exist only
-because they take `borrow mut Outcome`, `borrow mut buffer`, or `borrow mut Counters` as a
-**parameter** rather than as a local. The measured shape is unchanged and was met twice more here:
+**third** copy of the failure sink and, beyond it, **thirty-six** functions that exist only because
+they take `borrow mut Outcome`, `borrow mut buffer`, or `borrow mut Counters` as a **parameter**
+rather than as a local. The list is **regenerated from the source** rather than written by hand — the
+criterion is "shares a name with a function in `src/moe_model_forward.align`,
+`src/moe_layer_forward.align`, `src/decode_step.align`, `src/layer_olmoe.align` or
+`src/model_forward.align` **and** takes a `borrow mut` parameter" — and it is 36 of the module's 91
+functions:
+
+```text
+  `account`, `capture_plane`, `check_balance`, `check_types`, `claim_tensors`,
+  `compare_prefill_logits`, `compare_routing_layer`, `compare_transcript_elements`,
+  `compare_transcript_rows`, `compare_transcript_sum`, `decode_loop`, `decode_pass`, `execute`,
+  `fail`, `fault_into`, `free_buffer`, `free_context`, `free_gallocr`, `graph_alignment`,
+  `graph_identity`, `pack_fault_into`, `prefill_pass`, `prefix_step`, `publish`,
+  `read_block_scatter`, `reset_step_oracle`, `schedule_decode`, `stage_claims`, `stage_inputs`,
+  `stage_past_k`, `stage_past_v`, `take`, `take_pack`, `teardown_layer`, `top_k`,
+  `verify_plane`
+```
+
+An earlier draft of this block said twenty-three and named a duplicated `refill` that
+`src/moe_decode_step.align` does not contain: KV persistence is out of R6-OLMOE-DECODE's scope, so
+its plane is never refilled from a container. A future collapse that followed the short list
+verbatim would have left thirteen copies behind, which is why the count is now derived and not
+remembered. The measured shape is unchanged and was met twice more here:
 
 * `moe_model_forward.read_block_scatter(pak, temp, claim_window, …, starts, sizes, dests, …)` where
   `temp` is the caller's own `borrow mut buffer` **parameter** and `starts`/`sizes`/`dests` are that

@@ -2367,14 +2367,22 @@ pub fn mm_write_mask(borrow mut window: buffer, width: i64, height: i64) {
 // case, so R5E's bytes are unchanged by construction rather than by inspection.
 pub fn mm_write_mask_offset(
   borrow mut window: buffer, width: i64, height: i64, row_offset: i64) {
-  if row_offset < 0 { return }
+  // A negative offset is unreachable — every caller passes `0` or `n_past >= 1` — but returning
+  // without writing would leave the buffer's zero bits in place, and an all-zero mask is
+  // `0.0f` everywhere, which is **unmasked everywhere**: a confidently wrong answer every shape
+  // check accepts. Fail closed instead and write the fully masked image, which no oracle passes.
+  masked := row_offset < 0
   mut row := 0
   loop {
     if row >= height { break }
     mut col := 0
     loop {
       if col >= width { break }
-      bits := if col <= row + row_offset { MASK_ZERO_BITS } else { MASK_NEG_INFINITY_BITS }
+      bits := if !masked && col <= row + row_offset {
+        MASK_ZERO_BITS
+      } else {
+        MASK_NEG_INFINITY_BITS
+      }
       window.put_u32_le(bits as u32)
       col = col + 1
     }

@@ -29,17 +29,20 @@ set -euo pipefail
 #
 #   1. cell **G-P1**: measures `token_embd.weight`'s printed-fingerprint collision classes once, so
 #      gate G is claimed over a vocabulary whose injectivity was measured in this run;
-#   2. per prompt: captures both instruments with the exact flag set section 4.1 fixes, asserts the
+#   2. compares the arm's `libggml-base` against `llama-debug`'s by resolved object identity, and
+#      reports `llama-eval-callback`'s without enforcing it (deviation 4);
+#   3. per prompt: captures both instruments with the exact flag set section 4.1 fixes, asserts the
 #      tokenizer's ids, asserts the transcript holds exactly `N + 1` graphs, and cross-checks the
 #      two instruments against each other **before** the arm runs, so an instrument skew is reported
 #      as an instrument skew and not as a failing oracle;
-#   3. runs `ggml-spike --moe-decode-step` three times and requires the three documents to be
+#   4. runs `ggml-spike --moe-decode-step` three times and requires the three documents to be
 #      identical after normalization;
-#   4. asserts section 4.6's acceptance rule in full: gate G, oracle R, oracle B, oracle T, and the
-#      claim accounting;
-#   5. runs oracle C′ at `k ∈ {1, ⌈N/2⌉, N}` as whole `--moe-model-forward` prefills at `T + k`
-#      tokens, and reports `IDENTICAL` or the measured bound rather than assuming either;
-#   6. prints the demand-stream table section 5 of the design records.
+#   5. asserts section 4.6's acceptance rule in full: gate G, oracle R, oracle B, oracle T, oracle
+#      C′, and the claim accounting;
+#   6. runs oracle C′ at `k ∈ {1, ⌈N/2⌉, N}` as whole `--moe-model-forward` prefills at `T + k`
+#      tokens and applies section 4.4's pre-committed rule — `IDENTICAL`, or `WITHIN` at 5000
+#      ten-thousandths with argmax and top-ten set equality — rather than assuming either branch;
+#   7. prints the demand-stream table section 5 of the design records.
 #
 # Everything is removed on every exit path including a signal.
 
@@ -128,8 +131,85 @@ shim_built=1
   "${compiler}" build src/ggml_spike.align >/dev/null
   mv -f ggml_spike ggml-spike
 )
-export DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
-export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+# `ALIGN_LLM_GGML_LIB` joins the loader path, not only the link path. Section 15's recommended
+# configuration points it at the **instrument's own** ggml, which is a build directory and is on no
+# default loader path, and the shim records that ggml's install names verbatim — `@rpath/libggml.0.dylib`
+# with no `LC_RPATH`, on this platform. Without this the arm aborts in `dyld` before its first
+# instruction, which is a configuration failure reported as a crash.
+export DYLD_LIBRARY_PATH="${shim_dir}:${ALIGN_LLM_GGML_LIB}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${shim_dir}:${ALIGN_LLM_GGML_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+# The per-prompt cross-check below compares the **two instruments** against each other. It says
+# nothing about whether the arm's ggml is either instrument's, and that is a real gap: the arm links
+# whatever `ALIGN_LLM_GGML_LIB` names and each instrument links whatever it was built against.
+#
+# ggml publishes no build identifier this runner can read, so the strongest cheap statement is
+# **object identity of the shared library both sides load**, resolved through every symlink.
+#
+#   * against `llama-debug` this is a **hard** check. Gate G1 is a byte comparison against that
+#     binary's `--save-logits` blob, so the arm and it must be the same arithmetic, and a
+#     disagreement is a named refusal rather than a failing oracle.
+#   * against `llama-eval-callback` it is **reported and never enforced**. Section 13 deviation 4:
+#     the R2C instrument is a source build with `GGML_BLAS`/`GGML_ACCELERATE` on and it links its
+#     ggml statically, so this check cannot resolve one and would refuse a configuration the design
+#     accepted. Oracle T's tolerance is what covers that pair, and section 15 records the fix.
+#
+# Where the loader listing cannot be read at all the check **fails open** and says so on one line,
+# because an unverifiable property reported as verified is worse than an unverified one that is named.
+ggml_identity() {
+  local binary="$1" resolved="" lister=""
+  resolved=$(command -v "${binary}" 2>/dev/null || printf '%s' "${binary}")
+  if command -v otool >/dev/null 2>&1; then
+    lister="otool -L"
+  elif command -v ldd >/dev/null 2>&1; then
+    lister="ldd"
+  else
+    return 0
+  fi
+  # `pipefail` is on and `grep` exits 1 on no match, which is the **normal** outcome for a
+  # statically linked instrument. The `|| true` keeps "no dynamic libggml" an answer rather than an
+  # abort; an empty result is what the caller reads as unresolved.
+  local found=""
+  found=$(${lister} "${resolved}" 2>/dev/null \
+    | grep -oE '(@[a-z_]+/|/[^ ]*)?libggml-base[^ ]*\.(so|dylib)[^ ]*' | head -1 || true)
+  # A build directory's binaries name their libraries through `@rpath`/`@loader_path`, which is not
+  # a filesystem path. Both resolve to the binary's own directory for a tree laid out the way every
+  # llama.cpp build lays one out, and resolving them is what makes this check answer at all for the
+  # configuration the qualification of record uses.
+  case "${found}" in
+    @rpath/*|@loader_path/*|@executable_path/*)
+      found="$(dirname -- "${resolved}")/${found#*/}" ;;
+  esac
+  printf '%s' "${found}"
+}
+
+real_path() {
+  python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1"
+}
+
+arm_ggml=$(ls "${ALIGN_LLM_GGML_LIB}"/libggml-base.*dylib "${ALIGN_LLM_GGML_LIB}"/libggml-base.*so* \
+  2>/dev/null | head -1 || true)
+debug_ggml=$(ggml_identity "${ALIGN_LLM_LLAMA_DEBUG}")
+if [ -n "${arm_ggml}" ] && [ -n "${debug_ggml}" ] && [ -e "${debug_ggml}" ]; then
+  arm_real=$(real_path "${arm_ggml}")
+  debug_real=$(real_path "${debug_ggml}")
+  if [ "${arm_real}" = "${debug_real}" ]; then
+    echo "moe decode step qualification: the arm and llama-debug load the same libggml-base" \
+      "(${arm_real})"
+  else
+    echo "moe decode step qualification: FAIL the arm links ${arm_real} and llama-debug links" \
+      "${debug_real}; gate G1 is a byte comparison and a ggml skew across it is exactly the class" \
+      "no downstream oracle can see" >&2
+    exit 1
+  fi
+else
+  echo "moe decode step qualification: the arm's ggml could NOT be checked against llama-debug's" \
+    "(arm '${arm_ggml:-unresolved}', llama-debug '${debug_ggml:-unresolved}'); this check FAILS" \
+    "OPEN and gate G1's byte identity is the only thing standing behind that pair"
+fi
+callback_ggml=$(ggml_identity "${ALIGN_LLM_LLAMA_EVAL_CALLBACK}")
+echo "moe decode step qualification: llama-eval-callback links libggml-base" \
+  "'${callback_ggml:-statically, or not resolvable}' -- reported, never enforced (deviation 4)"
 
 KV_WIDTH=256
 
@@ -305,6 +385,7 @@ PY
       "${checkpoints}" "${rows_json}" <<'PY'
 import json
 import os
+import struct
 import sys
 
 work_dir, tag, index, steps, tokens, width, checkpoints, rows_json = sys.argv[1:9]
@@ -467,17 +548,48 @@ for k in [int(x) for x in checkpoints.split()]:
         continue
     identical = reference["output"]["sha256"] == step["sha256"]
     same_argmax = reference["output"]["argmax"] == step["argmax"]
+    # Section 4.4's fallback, as it was pre-committed and not as an argmax check alone: R5E's own
+    # runtime-width rule — `LOGIT_TOLERANCE_TEN_THOUSANDTHS` of 5000, argmax equality, and top-ten
+    # **set** equality — applied unchanged. Neither document publishes a whole logit vector, so the
+    # bound is taken over the union of the two top-ten sets: those are the elements that decide the
+    # token, and every one of them is published with the raw `u32` of its f32, so the comparison is
+    # exact rather than a re-read of a printed decimal. Section 13 deviation 13 records that this is
+    # a narrower denominator than R5E's whole-vocabulary sweep and why C′ is characterization here.
+    reference_top = {entry["index"]: entry["bits"] for entry in reference["output"]["top_k"]}
+    step_top = {entry["index"]: entry["bits"] for entry in step["top_k"]}
+    same_top_set = set(reference_top) == set(step_top)
+    compared_indices = sorted(set(reference_top) | set(step_top))
+    max_abs = 0
+    for vocab_id in compared_indices:
+        pair = []
+        for table in (reference_top, step_top):
+            if vocab_id in table:
+                pair.append(struct.unpack("<f", struct.pack("<I", table[vocab_id] & 0xFFFFFFFF))[0])
+        if len(pair) == 2:
+            max_abs = max(max_abs, abs(round(pair[0] * 10000) - round(pair[1] * 10000)))
+    within = max_abs <= 5000 and same_argmax and same_top_set
+    verdict = "IDENTICAL" if identical else ("WITHIN" if within else "FAIL")
     self_rows.append({"k": k, "identical": identical, "argmax": same_argmax,
+                      "verdict": verdict, "top_k_set_equal": same_top_set,
+                      "max_abs_diff_ten_thousandths": max_abs,
+                      "compared_indices": len(compared_indices),
                       "prefill_sha": reference["output"]["sha256"],
                       "step_sha": step["sha256"],
                       "prefill_argmax": reference["output"]["argmax"],
                       "step_argmax": step["argmax"]})
-    # Section 4.4 writes both branches in advance and this run selects one. What is required either
-    # way is argmax equality: a self-reference that disagreed about the token would mean the decode
-    # loop and the prefill compute different models, which no tolerance excuses.
+    # Section 4.6 clause 4. On the branch cell C-P1 selected, section 4.4 puts the acceptance weight
+    # "entirely on gate G, oracle R, and oracle B", so the verdict and all three of its quantities
+    # are **reported** at every checkpoint and exactly one clause is acceptance: **argmax equality**.
+    # A self-reference that disagreed about the token would mean the decode loop and the prefill
+    # compute different models, which no tolerance excuses. The other two clauses are the bound this
+    # document fixed in advance and they are what the verdict is computed from; section 12.4 records
+    # what they measured, including where `WITHIN` does not hold.
     if not same_argmax:
-        failures.append("oracle C' at k=%d: the prefill's argmax %r is not the step's %r"
-                        % (k, reference["output"]["argmax"], step["argmax"]))
+        failures.append("oracle C' at k=%d: the prefill's argmax %r is not the step's %r "
+                        "(verdict %s, top-ten set equal %r, max_abs %d ten-thousandths over %d "
+                        "compared indices)"
+                        % (k, reference["output"]["argmax"], step["argmax"], verdict,
+                           same_top_set, max_abs, len(compared_indices)))
 
 # --- The demand stream, which is the deliverable -----------------------------------------------
 residency = d["residency"]
@@ -501,7 +613,10 @@ row = {
     "union_keys_final": residency["union_keys_final"],
     "union_bytes_final": residency["union_bytes_final"],
     "decode_keys_demanded": residency["decode_keys_demanded"],
+    "decode_keys_distinct": residency["decode_keys_distinct"],
     "decode_keys_in_prefill_union": residency["decode_keys_in_prefill_union"],
+    "decode_distinct_keys_in_prefill_union":
+        residency["decode_distinct_keys_in_prefill_union"],
     "step_reuse_per_mille": residency["step_reuse_per_mille"],
     "claim_decode_peak_use_bytes": d["window"]["claim_decode_peak_use_bytes"],
     "claim_bytes": d["window"]["claim_bytes"],
@@ -551,17 +666,22 @@ print("moe decode step qualification: cell G-P1 -- %d rows of %s, %d distinct fi
          len(fingerprints["colliding_ids_that_are_not_all_zero"]),
          fingerprints["colliding_ids_that_are_not_all_zero"]))
 print("")
+# Both prefill-union fractions are printed, and neither is printed alone. `decode_keys_in_prefill_union`
+# counts **demands** with repetition and `decode_distinct_keys_in_prefill_union` counts **distinct
+# keys**; section 2.4 reading 2 predicted the second and the arm has always measured the first, so a
+# table that showed one of them under the other's name is what section 12.3 finding 2 compared across.
 print("| prompt | ids | routing | step bytes | pread | ampl ppm | union keys | union bytes | "
-      "marginal MB | in prefill | reuse ppm | elapsed s |")
-print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+      "marginal MB | demands in prefill | distinct in prefill | reuse ppm | elapsed s |")
+print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 for row in rows:
     marginal = sum(row["new_bytes"]) / float(len(row["new_bytes"]))
-    print("| %d | %s | %d/%d | %d | %d | %d | %d | %d | %.1f | %d/%d | %d | %.2f |"
+    print("| %d | %s | %d/%d | %d | %d | %d | %d | %d | %.1f | %d/%d | %d/%d | %d | %.2f |"
           % (row["prompt"], ",".join(str(i) for i in row["token_ids"][:4]) + "...",
              row["routing_matched"], row["routing_total"], row["step_expert_bytes"],
              row["step_expert_pread_bytes"][0], row["amplification_ppm"][0],
              row["union_keys_final"], row["union_bytes_final"], marginal / 1e6,
              row["decode_keys_in_prefill_union"], row["decode_keys_demanded"],
+             row["decode_distinct_keys_in_prefill_union"], row["decode_keys_distinct"],
              row["step_reuse_per_mille"], row["elapsed_ns"] / 1e9))
 print("")
 for row in rows:
@@ -570,10 +690,11 @@ for row in rows:
     print("moe decode step qualification: prompt %d marginal bytes %s"
           % (row["prompt"], " ".join(str(v) for v in row["new_bytes"])))
     for entry in row["self_reference"]:
-        print("moe decode step qualification: prompt %d oracle C' at k=%d %s (argmax %d vs %d)"
-              % (row["prompt"], entry["k"],
-                 "IDENTICAL" if entry["identical"] else "NOT byte-identical",
-                 entry["prefill_argmax"], entry["step_argmax"]))
+        print("moe decode step qualification: prompt %d oracle C' at k=%d %s -- argmax %d vs %d, "
+              "top-ten set equal %r, max_abs %d ten-thousandths over %d indices"
+              % (row["prompt"], entry["k"], entry["verdict"],
+                 entry["prefill_argmax"], entry["step_argmax"], entry["top_k_set_equal"],
+                 entry["max_abs_diff_ten_thousandths"], entry["compared_indices"]))
 print("")
 print("moe decode step qualification: %d prompt(s) x %d steps PASS -- gate G, oracle R at %d of %d "
       "ids, oracle B, oracle T, and the claim accounting"

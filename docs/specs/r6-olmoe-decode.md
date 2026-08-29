@@ -302,7 +302,17 @@ one measurement will draw a conclusion none of them supports. They are separated
 | --- | --- | --- | --- |
 | **447** | `docs/specs/r2a-expert-trace.md` section 9 (R2D-DECODE-LOCALITY-GATE) | For each **adjacent decode position pair** in one `(document, layer)` chain, per router slot: was the later position's expert in the earlier position's top-8? | 9,600 pairs × 8 slots = **76,800 slot trials**, pooled over 40 prompts × 16 steps × 16 layers |
 | **695 / 609 / 484** | section 2.4, reading 3 | The same adjacent-pair quantity, but on **one prompt** and aggregated over the sixteen layers, at steps 1→2, 2→3, 3→4 | 128 keys per step |
-| **465** | section 2.4, reading 4 | **Union**-based reuse over a four-step window: `(512 demands − 274 distinct) / 512` | 512 demands |
+| **465** | section 2.4, reading 4 | **Union**-based reuse over a four-step window: `(512 demands − 274 distinct) / 512`, where `distinct` is the cardinality of the **decode steps' own** key set and the prefill's set is no part of it | 512 demands |
+
+**A fourth quantity exists, is not any of these three, and shipped once under the third's name.**
+`(demands − |decode keys the prefill did not already hold|) / demands` is *prefill-relative* reuse:
+it asks how much of decode demand the cache would serve if the prefill's working set were already
+resident, and on transcript A it is `(512 − 55) / 512 = 892` where the union quantity is 465. The
+first implementation of `residency.step_reuse_per_mille` computed exactly that and published it
+under section 3.11's name, and section 13 deviation 13 records the correction. The distinction is
+the whole reason this section exists: **`distinct` is a decode-side cardinality and says nothing
+about the prefill.** The prefill relationship is published separately, twice, by
+`residency.decode_keys_in_prefill_union` and `residency.decode_distinct_keys_in_prefill_union`.
 
 **The 447 and the 695/609/484 are the same quantity at different scopes, and they agree.** R2D pools
 sixteen steps and forty prompts; this probe reports the first three transitions of one prompt and
@@ -373,10 +383,13 @@ third instance of one rule, not a new rule.
 that takes a `borrow mut` argument beside a shorter-lived operand, and that request's own
 `align-llm verification` block already names the nine functions `src/decode_step.align` duplicates
 for it — `fail`, `fault_into`, `pack_fault_into`, `take`, `take_pack`, `account`, `check_types`,
-`top_k`, `compare_prefill_logits`. **A tenth module means a third copy of that sink**, plus a second
-copy of the plane-owning `refill`, because the refill must stay in the module that owns the
-`mut plane: buffer` (`src/kv_plane.align:14-20` states the split). Section 9 records this as Request
-49's newest and largest client with the exact count, and does not build a workaround around it.
+`top_k`, `compare_prefill_logits`. **A tenth module means a third copy of that sink**, and section 13
+deviation 16 records what the count actually came to: **36** of this module's 91 functions share a
+name with a sibling module's and take a `borrow mut` parameter, which is Request 49's own shape.
+There is **no** duplicated `refill`, and the design's prediction of one was wrong for a good reason —
+KV persistence is out of this capability's scope, so the plane is never refilled from a container and
+`src/kv_plane.align`'s split is not met here at all. Section 9 records this as Request 49's newest
+and largest client with the regenerated list, and does not build a workaround around it.
 
 ### 3.2 The arm and its operands
 
@@ -432,9 +445,13 @@ or are coupled only through the `Geometry` **type**, not its semantics; they are
 `layer_olmoe.Geometry` and their bodies do not move.
 
 **QK-norm does not reach the plane, and the reason is where it sits.** OLMoE applies `attn_q_norm`
-and `attn_k_norm` **after** the reshape to `{head_dim, n_head, T}` and **before** RoPE, so the K a
-layer hands the cache is post-norm and post-RoPE — the same kind of tensor the dense arm caches, at
-the same shape. The plane therefore stores exactly what it stores today and needs no marker for the
+and `attn_k_norm` to the **2-D projection**, before the reshape to `{head_dim, n_head, T}`, and the
+reshape is followed by RoPE: `RMS_NORM` and `MUL` at rows 7 and 8 of `mm_a_node_table`, the
+`RESHAPE_3D` after them, and `ROPE` after that (`src/layer_olmoe.align:1825-1845`). Either way the K
+a layer hands the cache is post-norm and post-RoPE — the same kind of tensor the dense arm caches, at
+the same shape — so the conclusion below is unaffected; the ordering above is the shipped one, and
+section 13 deviation 15 records that this sentence said "after the reshape" before it was checked
+against the table. The plane therefore stores exactly what it stores today and needs no marker for the
 norm. **What must be re-derived, by reading the OLMoE decode table rather than by assuming, is the
 row index of that post-RoPE K and of the reshaped V**, because
 `PREFILL_K_ROW := 12` / `PREFILL_V_ROW := 10` / `DECODE_K_CONCAT_ROW := 16` /
@@ -681,8 +698,10 @@ relation between them, in the shape R5E's own `keys_demanded` / `keys_distinct` 
 | **`steps[i].residency.expert_bytes`** | above | **primary, exact, noise-free** | **487,587,840 B on every step**, `expert_bytes_ppm` 125,000 |
 | **`steps[i].residency.expert_pread_bytes`** | above | **primary** | 487,587,840 plus a bounded chunk remainder |
 | **`residency.union_bytes_final`** and the per-step `new_bytes` curve | distinct `(layer, expert)` keys and their bytes, cumulative over the prefill and all `N` steps | **primary** | 4-step probe: 410,786 ppm and a 9.2× gap between streamed and marginal. `N = 16` unknown |
-| `residency.decode_keys_in_prefill_union` | how much of decode demand the prefill already read | **primary** | 79.9 % / 75.2 % on the two probe prompts |
-| `residency.step_reuse_per_mille` | `(demands − distinct) / demands` over decode steps only, `demands = 128N` | **primary, and it is a new metric** | 465 over four steps. Section 2.5 records why R2A's 447 is not this number |
+| `residency.decode_keys_in_prefill_union` | how much of decode **demand**, counted with repetition, the prefill already read. Denominator `decode_keys_demanded = 128N` | **primary** | see the row below — the prediction is stated over distinct keys and belongs to it |
+| `residency.decode_keys_distinct` | the number of **distinct** `(layer, expert)` keys the `N` decode steps demanded, accumulated from the steps' own `ids` into a set seeded **empty**. It is `distinct` in the row below and it is independent of the prefill | **primary** | 274 over four steps on transcript A |
+| `residency.decode_distinct_keys_in_prefill_union` | how many of those **distinct** decode keys the prefill already held. Denominator `decode_keys_distinct` | **primary** | 79.9 % / 75.2 % on the two probe prompts — 219 of 274 and 152 of 202, which is the form section 2.4 reading 2 predicted |
+| `residency.step_reuse_per_mille` | `(demands − distinct) / demands` over decode steps only, `demands = 128N` and `distinct = decode_keys_distinct` | **primary, and it is a new metric** | 465 over four steps. Section 2.5 records why R2A's 447 is not this number, and why the prefill-relative 892 is not either |
 | `routing_oracle.ids_total` / `ids_printed_compared` | routing identity coverage | **acceptance** | `128N` each, equal — 2,048 of 2,048 at `N = 16` |
 | `decode.token_ids` | the gate | **acceptance** | `N` ids equal to llama.cpp's |
 | `plane.roundtrip_bytes_compared` | oracle B's cumulative byte count | acceptance | `Σ_{k=1..N} 2 · 16 · (T+k) · 16 · 128 · 4` |
@@ -880,8 +899,15 @@ refer to it and do not restate it.
 >    128N` and `steps_compared == N`, `layers_matched == 16N`.
 > 3. **Oracle B.** `plane.roundtrip_verdict == "IDENTICAL"` over a positive byte count, with every
 >    step's own verdict `IDENTICAL`.
-> 4. **Oracle C′.** At `k ∈ {1, ⌈N/2⌉, N}`, on the branch cell C-P1 selected: `IDENTICAL`, or
->    `WITHIN` at 5000 ten-thousandths with argmax and top-10 set equality.
+> 4. **Oracle C′.** At `k ∈ {1, ⌈N/2⌉, N}`, `oracle_self[k].verdict` — `IDENTICAL`, or `WITHIN`
+>    when argmax equality, top-10 **set** equality and a bound of 5000 ten-thousandths all hold, or
+>    `FAIL` — is **reported with all three of its quantities**. On the branch cell C-P1 selected,
+>    section 4.4 moves the acceptance weight "entirely to gate G, oracle R, and oracle B", so exactly
+>    one clause is acceptance: **argmax equality**. The bound is taken over the union of the two
+>    sides' top-10 index sets, from the raw `u32` of each logit that both documents publish; section
+>    13 deviation 15 records why that is a narrower denominator than R5E's whole-vocabulary sweep,
+>    and section 12.4 records what the three clauses measured — including the checkpoints where
+>    `WITHIN` does **not** hold.
 > 5. **Oracle T, structural.** Every assertion in section 4.5's table, at every step.
 > 6. **Oracle T, numeric, at step 1 only.** `PASS`, or `FAIL` under R6's admission rule.
 > 7. **Claim accounting.** For every step, `residency.expert_bytes == 487,587,840`,
@@ -1040,14 +1066,26 @@ ALIGN_LLM_LLAMA_DEBUG                 path to llama-debug
 plus a non-`olmoe` container, `numpy` not importable, or free space under the pack's size plus 2 GiB
 under `ALIGN_LLM_MOE_DECODE_STEP_TMPDIR` (defaulting to `TMPDIR`, and deliberately **not** an `N/A`
 condition — it selects a location). `ALIGN_LLM_DECODE_STEPS` defaults to 16 and is the documented
-cost fallback.
+cost fallback; `ALIGN_LLM_MOE_DECODE_STEP_PROMPTS` defaults to 4 and selects how many of the four
+prompts run, which is the second documented fallback. Neither is ever an `N/A` condition.
 
 Four prompts, at most six tokens each, taken from R5E's and R6's corpora so the tokenizer assertion
 has a recorded expected id list; `KV_WIDTH` 256; three consecutive runs per prompt for determinism.
-The runner asserts, **before** invoking the arm: the tokenizer produced the expected ids, the two
-instruments agree with each other, the transcript holds exactly `N + 1` graphs, and cell G-P1's
-fingerprint measurement is complete and names no colliding class any step reaches. An instrument skew
-is then reported as an instrument skew and not as a failing oracle. A forced-failure loop over
+The runner asserts, **before** invoking the arm: the arm's `libggml-base` and `llama-debug`'s resolve
+to the same file, the tokenizer produced the expected ids, the two instruments agree with each other,
+the transcript holds exactly `N + 1` graphs, and cell G-P1's fingerprint measurement is complete and
+names no colliding class any step reaches. An instrument skew is then reported as an instrument skew
+and not as a failing oracle.
+
+**The ggml identity check is asymmetric on purpose, and one half of it fails open.** Gate G1 is a
+**byte** comparison against `llama-debug --save-logits`, so the arm and that binary must be one
+arithmetic and a disagreement is a named refusal. `llama-eval-callback` is compared under a tolerance
+by oracle T, and the pinned R2C instrument links its ggml statically (deviation 4), so its library
+cannot be resolved at all: the runner **reports** what it found and enforces nothing. Where no loader
+listing can be read the check says on one line that it failed open, because an unverifiable property
+reported as verified is worse than an unverified one that is named. ggml publishes no build
+identifier a runner can read, so resolved object identity is the strongest cheap statement available
+and section 15 records the toolchain change that would make it unnecessary. A forced-failure loop over
 `init` and `compute` against the real shim expects `R5_GGML_INIT` and `R5_COMPUTE`. Everything is
 removed on every exit path including a signal.
 
@@ -1059,8 +1097,8 @@ insertion at the wrong position fails on the list comparison rather than on a va
 | Golden | Predicted |
 | --- | --- |
 | `scripts/moe-decode-step-golden.jsonl` | **new.** Its rows are this capability's own file, created here and consumed by nothing else |
-| `scripts/moe-model-forward-golden.jsonl` | **two rows move and no others.** `mm-tokens-seven` is renamed `mm-tokens-33` with its token list changed (section 3.8), and `mm-tokens-seven-with-transcript` is added to keep `R5_ORACLE_TRUNCATED` covered. The over-cap fixture is **33 repetitions of id 1**, not `1,2,…,33`: the hosted `n_vocab` is 32, so an ascending list would be refused as out-of-vocabulary and the case would stop being about the cap — R6-STEP-N section 2.5's own trap, inherited |
-| `scripts/moe-layer-forward-golden.jsonl` | the same two rows, `moe-tokens-seven` → `moe-tokens-33` plus `moe-tokens-seven-with-transcript` |
+| `scripts/moe-model-forward-golden.jsonl` | **two rows move and no others.** `mm-tokens-seven` is renamed `mm-tokens-33` with its token list changed (section 3.8), and `mm-tokens-seven-with-transcript` is added to keep `R5_ORACLE_TRUNCATED` covered. **Three landed, not two** — section 12.6 — because the open side of the new guard needs a case of its own: `mm-tokens-seven-no-transcript` proves that seven tokens are still *accepted* without a transcript, and a prediction of two rows would have been satisfied by a guard that refused both ways. The over-cap fixture is **33 repetitions of id 1**, not `1,2,…,33`: the hosted `n_vocab` is 32, so an ascending list would be refused as out-of-vocabulary and the case would stop being about the cap — R6-STEP-N section 2.5's own trap, inherited |
+| `scripts/moe-layer-forward-golden.jsonl` | the same rows, `moe-tokens-seven` → `moe-tokens-33` plus `moe-tokens-seven-with-transcript` — and, for the reason above, `moe-tokens-seven-no-transcript`, so **three** land here too |
 | `scripts/decode-step-golden.jsonl` | **byte-unchanged.** The dense arm is not touched and its schema does not move |
 | `layer-forward`, `model-forward`, `gpu-forward`, `ggml-spike` goldens | **byte-unchanged**, verified by regenerating all seven and observing diffs only where predicted |
 
@@ -1082,7 +1120,7 @@ measured its own claim `pread` at 519.9–612.0 ms for 1,301,446,656 B, so rough
 | Instrument captures at `-n 16` | four transcripts. Section 2.1 measured 4.83 MB at `-n 4`; at `-n 16` expect ≈ 14 MB each and ≈ 40 s each — **≈ 160 s**, and ≈ 56 MB of scratch |
 | Cell G-P1 | one dequantization of 50,304 × 2,048 Q4_K rows — **≈ 15 s**, once |
 | Packing the model, geometry, shim build | **≈ 45 s** |
-| **Total** | **≈ 6–8 minutes**, against `run-decode-step`'s 1800 s cap, which this runner adopts |
+| **Total** | **≈ 6–8 minutes**, against the ≈ 1800 s **budget** `scripts/run-decode-step` records for itself. It is a budget and not a cap: neither runner enforces a timeout, and a run that exceeded it would be slow rather than refused. The fallbacks below are what a run over budget takes |
 | Transcript rescan | `N` rescans of a 14 MB transcript per prompt, R6-STEP-N section 6 risk 3's accepted cost, ≈ 224 MB of scanning per prompt |
 | Documented fallbacks, in order | `ALIGN_LLM_DECODE_STEPS=8`, then two prompts |
 | Scratch | the pack (≈ 4.2 GB) plus ≈ 2 GiB |
@@ -1172,7 +1210,7 @@ and the four gaps it meets are already recorded with named clients.
 
 | Gap | Classification | Status |
 | --- | --- | --- |
-| A cross-module call with a `borrow mut` argument refuses every shorter-lived operand | Genuine Align gap, already recorded | **Request 49, `PROPOSED`.** This capability is its **largest client to date**: `src/moe_decode_step.align` must carry a **third** copy of `fail`, `fault_into`, `pack_fault_into`, `take`, `take_pack`, `account`, `check_types`, `top_k`, and the prefill-logits comparison, plus its own plane-owning `refill`, because the refill must stay in the module owning the `mut plane: buffer` (`src/kv_plane.align:14-20`). The request's `align-llm verification` block gains this module and `gmake layer-forward-smoke` with **seven** goldens byte-unchanged. **No status change**, `Blocking: no`, and no compatibility layer is built |
+| A cross-module call with a `borrow mut` argument refuses every shorter-lived operand | Genuine Align gap, already recorded | **Request 49, `PROPOSED`.** This capability is its **largest client to date**: `src/moe_decode_step.align` must carry a **third** copy of `fail`, `fault_into`, `pack_fault_into`, `take`, `take_pack`, `account`, `check_types`, `top_k`, and the prefill-logits comparison — **36** functions in total, regenerated from the source and listed in the request. There is no duplicated `refill`: KV persistence is out of scope, so the plane is never refilled from a container. The request's `align-llm verification` block gains this module and `gmake layer-forward-smoke` with **seven** goldens byte-unchanged. **No status change**, `Blocking: no`, and no compatibility layer is built |
 | A `Borrow` argument may be a temporary value | Genuine Align gap, already recorded | **Request 47, `PROPOSED`.** The new module inherits R5E's mitigation throughout — every window region, every claim region, every `str` view bound to a named local on the preceding line. One more client; the request already names `make layer-forward-smoke` as its verification |
 | Same-call aliasing between a `borrow mut` owner and its own scalar field | Genuine Align gap, already recorded | **Request 48, `PROPOSED`.** Same shape: `alignment := o.tensor_alignment` and `width := o.attention_width` copied to locals before every call that also takes `borrow mut o`. One more client |
 | No aligned heap allocation | Genuine Align gap, already recorded | **Request 33, `PROPOSED`.** This arm pays the 64-byte over-reservation **three** times — the dense window, the claim window, and the plane — where R5E pays it twice. One more client; the compensation is unchanged |
@@ -1206,7 +1244,7 @@ schema number, the next free Align request number, and which goldens regenerate.
 > dense decode loop read zero weight bytes per step. Neither can say what a *routed* decode step
 > demands, and `docs/specs/r3-residency-sim.md` section 8 — whose four-word finding is **the
 > intervention is decode** — could only simulate it over llama.cpp's trace. This capability ships a
-> sixth arm, `--moe-decode-step`, with `--decode-step`'s operand shape and its own document kind
+> seventh arm, `--moe-decode-step`, with `--decode-step`'s operand shape and its own document kind
 > `R6_MOE_DECODE_STEP` at schema 1: `N` greedy steps on OLMoE-1B-7B-0125-Instruct Q4_K_M over an
 > Align-owned KV plane, each step resolving that step's top-8 claims in **all sixteen** layers and
 > computing only those experts, weights **streamed**. Weights are streamed **because residency would
@@ -1294,7 +1332,7 @@ in the shape of the `--moe-model-forward` section at line 1929.
 
 > ## The `--moe-decode-step` arm (R6-OLMOE-DECODE)
 >
-> `docs/specs/r6-olmoe-decode.md` is the authoritative ledger. It ships as a **sixth arm of the
+> `docs/specs/r6-olmoe-decode.md` is the authoritative ledger. It ships as a **seventh arm of the
 > existing `ggml-spike` executable**, `--moe-decode-step`, beside R4.5's positional arm,
 > `--layer-forward`, `--model-forward`/`--model-forward-gpu`, `--moe-layer-forward`,
 > `--moe-model-forward`, and `--decode-step`. It reuses `src/layer_olmoe.align` — R5D's and R5E's
@@ -1467,12 +1505,12 @@ spans, and on this container the three claims tile the block exactly. That is th
 primary claim in its strongest available form: the arm computed only what it claimed, and the
 arithmetic and the syscall accounting agree to the byte.
 
-| prompt | tokens | first four ids | oracle R | step bytes (arith) | step bytes (`pread`) | ampl ppm | union keys | union bytes | mean marginal | decode keys in prefill union | step reuse ppm | elapsed |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 `def add(a, b` | 1545,823,9,66,13,270 | 2262,187,50274,2309 | 2048/2048 | 487,587,840 | 487,587,840 | 0 | 585 | 2,227,617,792 | 57.9 MB | 1540/2048 (75.2 %) | 881 | 6.95 s |
-| 2 `The capital of` | 510,5347,273 | 253,4687,273,11011 | 2048/2048 | 487,587,840 | 487,587,840 | 0 | 698 | 2,658,336,768 | 92.3 MB | 1064/2048 (52.0 %) | 811 | 8.10 s |
-| 3 `import os` | 2948,7684 | 187,2948,11876,187 | 2048/2048 | 487,587,840 | 487,587,840 | 0 | 614 | 2,338,897,920 | 95.4 MB | 1154/2048 (56.3 %) | 804 | 4.33 s |
-| 4 `return x +` | 2309,1269,559 | 340,187,187,4 | 2048/2048 | 487,587,840 | 487,587,840 | 0 | 607 | 2,309,259,264 | 83.1 MB | 1182/2048 (57.7 %) | 829 | 4.65 s |
+| prompt | tokens | first four ids | oracle R | step bytes (arith) | step bytes (`pread`) | ampl ppm | union keys | union bytes | mean marginal | demands in prefill union | distinct keys in prefill union | step reuse ppm | elapsed |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 `def add(a, b` | 1545,823,9,66,13,270 | 2262,187,50274,2309 | 2048/2048 | 487,587,840 | 487,587,840 | 0 | 585 | 2,227,617,792 | 57.9 MB | 1540/2048 (75.2 %) | 273/515 (53.0 %) | 748 | 3.63 s |
+| 2 `The capital of` | 510,5347,273 | 253,4687,273,11011 | 2048/2048 | 487,587,840 | 487,587,840 | 0 | 698 | 2,658,336,768 | 92.3 MB | 1064/2048 (52.0 %) | 240/627 (38.3 %) | 693 | 3.39 s |
+| 3 `import os` | 2948,7684 | 187,2948,11876,187 | 2048/2048 | 487,587,840 | 487,587,840 | 0 | 614 | 2,338,897,920 | 95.4 MB | 1154/2048 (56.3 %) | 173/573 (30.2 %) | 720 | 3.26 s |
+| 4 `return x +` | 2309,1269,559 | 340,187,187,4 | 2048/2048 | 487,587,840 | 487,587,840 | 0 | 607 | 2,309,259,264 | 83.1 MB | 1182/2048 (57.7 %) | 212/561 (37.8 %) | 726 | 3.06 s |
 
 The union curve, in distinct `(layer, expert)` keys of 1,024, starting at the **prefill's** set:
 
@@ -1502,20 +1540,45 @@ prompt 4  141.8 138.2 70.2 46.3 193.5 184.2 147.8 137.1 68.6 58.0 22.9 31.0 22.9
    it is smaller. **The case for a decode-side residency policy survives at 5.1× and is weaker than
    the probe suggested**, which is exactly why the probe was not the deliverable.
 2. **"Roughly four fifths of every decode demand is already in the prefill's union" is a
-   short-window artifact.** Section 2.4 reading 2 measured 79.9 % and 75.2 % over three and four
-   steps. Over sixteen the four prompts give **75.2 %, 52.0 %, 56.3 % and 57.7 %**. The prefill's
-   working set is a large but shrinking fraction of the decode's, and only prompt 1 — the one the
-   probe used — stays near four fifths.
+   short-window artifact — and the two fractions that sentence can mean are far apart.** Section 2.4
+   reading 2 measured 79.9 % and 75.2 % over three and four steps as a fraction of **distinct**
+   decode keys (219 of 274, 152 of 202), and the arm's `decode_keys_in_prefill_union` counts
+   **demands with repetition**. Deviation 14 records that the denominator changed; both are now
+   published and each is compared against the prediction it belongs to.
+   Over sixteen steps the demand-weighted figure is **75.2 %, 52.0 %, 56.3 % and 57.7 %**, and the
+   distinct-key figure the probe actually predicted is **53.0 %, 38.3 %, 30.2 % and 37.8 %** — 273 of
+   515, 240 of 627, 173 of 573 and 212 of 561. **The distinct-key form is the one that collapses.**
+   A probe reading of 79.9 % becomes 53.0 % on the same prompt at sixteen steps, and 30.2 % at worst:
+   the prefill's working set is not a large fraction of the decode's distinct demand at all, and the
+   demand-weighted figure stays higher only because the keys the prefill *does* hold are the ones
+   demanded repeatedly. Both readings matter to a residency policy and they say different things —
+   a cache sized to the prefill's set serves between half and three quarters of decode **demands**,
+   while the decode's *distinct* set is **1.9× to 3.3×** the part of it the prefill already holds
+   (515/273, 627/240, 573/173, 561/212).
 3. **The union curve is not smooth and its shape is the finding.** Prompt 1 adds 20, 5 and 18 keys
-   in steps 1 to 3 and then 35, 43 and 38 in steps 11 to 13; prompt 3 adds 8 in step 5 and 56 in
+   in steps **2 to 4** — the curve's first entry is the union *after* step 1, so a delta between
+   entries `i` and `i+1` is step `i+1`'s — and then 35, 43 and 38 in steps 11 to 13; prompt 3 adds 8 in step 5 and 56 in
    step 7. A residency policy sized against the early steps of a prompt will be resized by the
    middle of it, and this is the first per-prompt curve in the repository that shows it.
 
 `residency.step_reuse_per_mille` — section 3.11's new metric, `(demands − distinct) / demands` over
-decode steps only — is **881, 811, 804 and 829**. Section 2.5 separates this from R2D's 447 and from
-the adjacent-pair figures by name, and the separation is worth having: over sixteen steps the union
-quantity is roughly twice the adjacent-pair one, and a reader who merged them would conclude the
-opposite of what each says.
+decode steps only, with `distinct` the decode steps' **own** key set — is **748, 693, 720 and 726**,
+over 515, 627, 573 and 561 distinct keys of 2,048 demands. Section 2.5 separates this from R2D's 447
+and from the adjacent-pair figures by name, and the separation is worth having, but the size of the
+separation is **not** what this document first published. **The earlier figures — 881, 811, 804 and
+829 — were a different quantity**, `(demands − |decode keys the prefill did not hold|) / demands`,
+which is prefill-relative reuse and not section 3.11's; deviation 13 records the correction and the
+absent check that let it ship.
+
+**The re-derived comparison, stated as what it is.** The union quantity over sixteen steps is
+**1.55× to 1.67×** R2D's pooled adjacent-pair 447 — not "roughly twice", which was an artifact of the
+substituted definition. It is also **at or just above** the *first* adjacent-pair transition section
+2.4 reading 3 measured on one prompt (695), and well above the third (484). So the honest statement
+is the narrower one: **a union window over sixteen steps captures about half again as much reuse as
+an adjacent-pair window captures on average, and about as much as an adjacent-pair window captures at
+its best — the first transition.** That is still a real difference and it is still a reason to name
+the three quantities separately, but it is a weaker claim than the one this section made, and it is
+weaker because the number it rested on was the wrong number.
 
 ### 12.4 Cell C-P1 and oracle C′ — the branch the measurement selected
 
@@ -1526,6 +1589,30 @@ checkpoints (`k ∈ {1, 8, 16}` on four prompts):
 | --- | --- |
 | `--moe-model-forward` at `T + k` reproduces `steps[k].sha256` **byte for byte** | **1** of 12 (prompt 3, `k = 1`) |
 | the two agree on the **argmax** | **12** of 12 |
+| `max_abs_diff` over the compared indices is within the pre-committed 5000 ten-thousandths | **12** of 12 (range **0 to 3,678**) |
+| the two agree on the top ten **as a set** | **7** of 12 |
+| `oracle_self[k].verdict` | 1 `IDENTICAL`, 6 `WITHIN`, 5 `FAIL` |
+
+Per checkpoint, because the pattern is not a function of `k` alone:
+
+| prompt | `k = 1` | `k = ⌈N/2⌉ = 8` | `k = N = 16` |
+| --- | --- | --- | --- |
+| 1 `def add(a, b` | `WITHIN`, max_abs 1,224 | `FAIL`, set ✗, max_abs 984 | `FAIL`, set ✗, max_abs 2,541 |
+| 2 `The capital of` | `WITHIN`, max_abs 1,861 | `FAIL`, set ✗, max_abs 2,389 | `WITHIN`, max_abs 3,678 |
+| 3 `import os` | **`IDENTICAL`**, max_abs 0 | `FAIL`, set ✗, max_abs 943 | `WITHIN`, max_abs 2,594 |
+| 4 `return x +` | `WITHIN`, max_abs 2,063 | `WITHIN`, max_abs 1,636 | `FAIL`, set ✗, max_abs 1,128 |
+
+**Every `FAIL` is a top-ten *set* disagreement and nothing else.** The argmax agrees at all twelve
+and the bound holds at all twelve; in each failing case exactly one member of the two top-tens
+differs, which is why the union of the two sets is 11 indices rather than 10. Section 4.4's
+non-identical branch had already moved the acceptance weight "entirely to gate G, oracle R, and
+oracle B", so the shipped rule reports the verdict and gates on **argmax alone** — deviation 15
+records that a first draft of the repair gated on the whole triple and refused this run, and that
+refusal is what produced this table.
+
+**The bound was pre-committed and it held; the set clause was pre-committed and it did not.** Both
+are recorded, because a bound that passes is evidence only when the clause beside it was allowed to
+fail.
 
 **`mul_mat_id` is not stack-shape invariant, and section 4.4's second branch is the live one.** A
 decode step builds a stack of exactly eight planes and a `compact_ids` tensor over `[0, 8)`; the
@@ -1543,33 +1630,45 @@ different models, which no tolerance excuses. Twelve of twelve agree.
 
 | Item | Estimated | Measured |
 | --- | --- | --- |
-| One `N = 16` arm run | ≈ 8 s | **4.3 – 8.6 s** |
+| One `N = 16` arm run | ≈ 8 s | **2.7 – 3.7 s** warm at the repair head; 4.3 – 8.6 s at the implementation head, cold |
 | Four prompts × three determinism runs | ≈ 100 s | **≈ 81 s** |
 | Oracle C′, 12 whole prefills | ≈ 25 s | **≈ 30 s** |
 | Instrument captures at `-n 16` | ≈ 160 s | **≈ 70 s** |
 | Cell G-P1 | ≈ 15 s | **≈ 1 s** |
 | Packing, geometry, shim build | ≈ 45 s | **≈ 25 s** |
-| **Total** | **≈ 6–8 min** | **3 min 18 s cold, 1 min 23 s warm** |
+| **Total** | **≈ 6–8 min** | **3 min 18 s cold, 1 min 23 s warm** — and at the repair head **1 min 23.4 s** warm, **5 min 41.3 s** with the page cache evicted by a concurrent build on the same host |
 
 The estimate was conservative by roughly a factor of two on a cold page cache and by a factor of
-five on a warm one — the run at the final tree is 1 min 23 s — and the transcript capture was its
-largest error. `window.claim_decode_peak_use_bytes` is **32,636,928 B**, exactly the figure section 3.6
+five on a warm one, and the transcript capture was its largest error. **The spread is the page
+cache and nothing else**: the same tree gives 1 min 23 s and 5 min 41 s depending on whether the
+4.2 GB pack is resident, and every correctness value is identical across all three runs. That is
+why the wall clock is a diagnostic here and no cost ceiling is recorded. `window.claim_decode_peak_use_bytes` is **32,636,928 B**, exactly the figure section 3.6
 derived, and per-step `total_bytes` is **740,666,496 B**, exactly section 3.9's prediction. These
 figures are **diagnostics**: no performance claim is made and no cost ceiling is recorded.
 
+**The repair head's run reproduces every correctness value exactly.** The same 64 ids, the same
+oracle R `MATCH` at 8,192 of 8,192, the same `expert_bytes` and `expert_pread_bytes` on all 64 steps,
+the same four union curves and marginal-byte sequences, the same twelve C′ verdicts — only the
+timings move and the three residency fields the repair added or corrected appear. That is what makes
+the re-recorded numbers in section 12.3 a *correction of the metric* and not a different measurement
+of a different thing.
+
 ### 12.6 The hosted owner
 
-`gmake layer-forward-smoke`, all **seven** blocks, **57 s** total on the reference host. The seventh
-block: 13 no-document cases, **57 documented cases**, 8 of the 11 declared `R6M_*` codes reached plus
-20 inherited codes, gate G against the reference loop's own ids, oracle R `MATCH` element-wise
-complete at 18 of 18 ids over three steps, oracle B `IDENTICAL` over 1,920 cumulative bytes, oracle T
-`PASS` against transcript graphs 2 to 4, and `arm-r5e-unchanged`, `arm-r6-unchanged` and the dense
-arm's OLMoE refusal all `PASS`.
+`gmake layer-forward-smoke`, all **seven** blocks, **80 s** total on the reference host at the repair
+head. The seventh block: 13 no-document cases, **59 documented cases** — the two the deviation-16
+repair adds — 8 of the **12** declared `R6M_*` codes reached plus 20 inherited codes, gate G against
+the reference loop's own ids, oracle R `MATCH` element-wise complete at 18 of 18 ids over three
+steps, oracle B `IDENTICAL` over 1,920 cumulative bytes, oracle T `PASS` against transcript graphs 2
+to 4, and `arm-r5e-unchanged`, `arm-r6-unchanged` and the dense arm's OLMoE refusal all `PASS`.
 
-**Risk 8 is answered with the measurement rather than in advance.** The block's own cost is under 10
-seconds and the whole seven-block runner is 57 s, against the 2 min 32 s the design quoted for six
-blocks on another head. **The dense/routed split R5E pre-committed is not taken**, and the reason is
-the number: the runner got faster, not slower.
+**Risk 8 is answered with the measurement rather than in advance.** The whole seven-block runner is
+**80 s** (1 min 19.9 s) at the repair head against **57 s** at the implementation head — the two new cases and their
+corpus are the difference — and both were measured on this same host, so the comparison is a
+comparison and not two numbers from two machines. The design quoted 2 min 32 s for **six** blocks,
+and that figure was taken on another head and is not comparable to either; it is quoted here only as
+the estimate the two measurements beat. **The dense/routed split R5E pre-committed is not taken**,
+and the reason is the number: seven blocks with the new cases still cost less than the design's six.
 
 ### 12.7 The mutants
 
@@ -1588,6 +1687,23 @@ The last one also demonstrates that `R6M_CLAIM_ACCOUNTING` is reachable from a *
 it is unreachable from an **input**, which is the distinction the block's `UNREACHED_R6M_CODES` set
 records.
 
+**The comprehensive review's nine, re-injected at the repair head.** Each was applied alone by
+file-level backup and restore — never by copying this linked worktree, whose `.git` pointer writes
+through to the *shared* worktree administration directory — scored against
+`gmake layer-forward-smoke`, and reverted. Eight die; the ninth is inert and is **not** a gap:
+
+| Mutant | Result | Diagnosis |
+| --- | --- | --- |
+| top-8 → top-7 in the decode-local `decide` call | **dies** | `R5E_CARRY layer[0]input[length]` — `stage_carry_at` refuses the short `topk_image` before compute |
+| the union not seeded from the prefill | **dies** | `md-oracle-full: step 1 routed.new_keys is 6, not the generator's 2` |
+| the union key drops its layer term | **dies** | `md-oracle-full: step 1 routed.new_keys is 1, not the generator's 2` |
+| `MM_V_ROW` 13 → 12 | **inert, and not a gap** | row 12 is the `MUL_MAT` producing `Vcur` and row 13 a `RESHAPE_3D` **view** over the same buffer: identical bytes, identical `slot_nbytes`. Every golden matched and oracle B stayed `IDENTICAL`, because the plane received the same data. Nothing is left unasserted |
+| `MM_V_ROW` 13 → 11 (post-RoPE K into the V plane) | **dies** | `R6M_PLANE_MISMATCH step[1]layer[0]tensor[v]col[3]` — oracle B names the tensor **and** the column |
+| the claim stack filled in descending slot order | **dies** | `R5_SOURCE_DIVERGED layer[0]expert[1]role[ffn_gate_exps]` |
+| **new:** axis 0 mapped through `axis_index` unconditionally — the pre-deviation-3 behaviour | **dies** | `md-used-eight: routing 'MISMATCH' at step 1 layer 0 token 0 slot 5`. The base corpus at `n_expert_used = 3` does **not** kill it, which is exactly why the case exists |
+| **new:** axis 1 never mapped through `axis_index` | **dies** | `md-used-eight: oracle T 'FAIL' worst 'ffn_moe_up' max_abs 8726` — the marker's raising is pinned, on nodes the router never touched |
+| **new:** `step_reuse_per_mille` restored to the prefill-relative quantity | **dies** | `md-oracle-full: residency.step_reuse_per_mille is 833, not the generator's 333`. This is the mutant the pre-repair corpus could not kill, because its oracle was the mutant |
+
 **One repair the mutants earned.** On the first pass all four died through
 `IndexError: list index out of range` in the block's own analysis, because that analysis indexes
 `steps[0..2]` directly and a mutant makes the case produce no third step. A crash says a mutant was
@@ -1597,8 +1713,11 @@ above is what it prints.
 
 ## 13. Deviations — what implementation found that the design did not predict
 
-Twelve, each with what the design said, what is true, and what was done. Sections 1 to 11 are
-unedited, so every row can be read against its prediction.
+Eighteen, each with what the design said, what is true, and what was done. Rows 1 to 12 are the
+implementation's own; rows 13 to 18 are the comprehensive review's, and each one is a *correction*
+rather than a discovery — the design was right and the first implementation was not. Sections 1 to
+11 are unedited except where a row below says otherwise, so every row can be read against its
+prediction.
 
 1. **`--moe-layer-forward` and `--moe-model-forward` did not ship `R5_ORACLE_TRUNCATED`, and the
    `MAX_PREFILL_TOKENS` lift would have opened a real hole.** Section 3.8 asserted that R5E ships
@@ -1692,8 +1811,11 @@ unedited, so every row can be read against its prediction.
     the register's next free number is **53**. This capability still takes none: every construct it
     needs compiles against the shipped pin, and the five gaps it meets — Requests 33, 36, 47, 48 and
     49 — were all already recorded. Section 10's reconciliation drafts are kept **verbatim** and
-    therefore still say 52; the roadmap item, `HANDOFF.md` and `docs/align-requests.md` as merged say
-    53, and the difference is this row.
+    therefore still say 52. `docs/align-requests.md` **on this branch** ends at Request **51** — it
+    does not yet carry 52, which lives on `agent/c4-repair-measured` — so "53" is a statement about
+    the register *after* that branch merges and not about the file in this diff. The re-check rule
+    stands: confirm the next free number against `main` at the publication head, because a parallel
+    session may have filed another.
 
 12. **The runner asserts gate G1 in the hosted lane differently from the real one.** The hosted
     block's reference logits blob is the generator's pure-Python forward, which agrees with the engine
@@ -1702,6 +1824,119 @@ unedited, so every row can be read against its prediction.
     block therefore asserts the comparison ran over the whole vocabulary, that every element agrees,
     and that the argmax the id chain is rooted at is the reference's; byte identity is asserted on the
     real model, where both sides are llama.cpp's arithmetic, and it holds there.
+
+13. **`residency.step_reuse_per_mille` shipped a prefill-relative quantity under section 3.11's
+    name, and section 12.3 drew a conclusion from it.** Section 3.11 defines `distinct` as the
+    distinct `(layer, expert)` keys the decode steps demanded, and section 2.4 reading 4 states it
+    as `(512 − 274) / 512`, where 274 is the decode-only cumulative set. `decode_loop` computed
+    `|seen_keys \ prefill_keys|` — the union keys the prefill did **not** already hold — and
+    published `(demands − that) / demands`. On section 2.4's own probe the two are 465 and 892. The
+    metric now accumulates a **second key set seeded empty** and grown only from the steps' `ids`,
+    beside the prefill-seeded union that `union_keys_final` and the `new_bytes` curve come from, and
+    publishes its cardinality as `residency.decode_keys_distinct`.
+    **No check caught it, and that is the more important half of this row.**
+    `scripts/layer_forward_fixture.py` reproduced `len(seen - prefill_keys)` verbatim, so the
+    generator, the golden and the smoke's assertion all pinned the implementation to its own
+    restatement: the oracle was co-derived with the subject. The generator now derives the decode
+    key set **independently**, from `step_routings` alone, and the seventh smoke block asserts that
+    the two quantities actually differ in the corpus — a metric whose regression cannot tell the
+    wrong answer from the right one is not a regression. The hosted figure moved **833 → 333** and
+    section 12.3's real-model figures are re-recorded.
+
+14. **`residency.decode_keys_in_prefill_union` changed denominator between the design and the
+    implementation, and section 12.3 compared across the change.** Section 2.4 reading 2 and section
+    3.11 predicted a fraction of **distinct** decode keys — 219 of 274 and 152 of 202 — and
+    `keys_in_prefill` counts **demands with repetition**, 1,540 of 2,048. Both are real quantities
+    and neither substitutes for the other. The arm now publishes **both**:
+    `decode_keys_in_prefill_union / decode_keys_demanded` is the demand-weighted one and
+    `decode_distinct_keys_in_prefill_union / decode_keys_distinct` is the one the prediction was
+    stated over. Section 12.3 finding 2 reports both and compares each against the prediction it
+    belongs to.
+
+15. **Oracle C′'s shipped fallback asserted argmax alone, where section 4.4 pre-committed three
+    clauses.** Section 4.4 recorded, before implementation, that a non-identical C′ becomes
+    characterization "with its `max_abs_diff` in ten-thousandths … R5E's own
+    `LOGIT_TOLERANCE_TEN_THOUSANDTHS` of **5000**, plus argmax equality, plus top-10 set equality",
+    and section 4.6 clause 4 restates it. `scripts/run-moe-decode-step` failed only on argmax. All
+    three clauses are now asserted at all three checkpoints, and the per-step `top_k` array the
+    comparison needs — `--moe-model-forward`'s own shape, from the same `top_k` arithmetic — is
+    published in every `steps[]` row.
+    **One clause is narrower than R5E's and it is named rather than absorbed:** R5E sweeps the whole
+    vocabulary because it holds a reference **blob**; neither document here publishes a logit
+    vector, so the bound is taken over the **union of the two top-10 index sets**, from the raw
+    `u32` of each logit. Those are the elements that decide the token and the comparison over them
+    is exact, but it is not the whole-vocabulary maximum and section 4.6 clause 4 now says so. The
+    alternative — a twelfth operand on the decode arm writing a logits blob per step — is a public
+    CLI change this capability did not pre-commit, and section 15 is where it belongs if a later
+    consumer needs the wider bound.
+    **And asserting the clauses at all changed the rule, which is the point of asserting them.**
+    Top-10 **set** equality does **not** hold on this model: section 12.4 records the checkpoints
+    and their numbers. Section 4.4's own non-identical branch had already moved the acceptance weight
+    "entirely to gate G, oracle R, and oracle B", so C′ is exactly what that branch says it is —
+    characterization — and section 4.6 clause 4 now **reports** the verdict with all three quantities
+    while gating on **argmax alone**. Gating on a clause the design had already demoted would have
+    failed the run for something no oracle here owns, which is the same mistake deviation 4 records
+    about the instrument. The first draft of this repair did gate on it, and the run refused; that
+    refusal is what produced the measurement in section 12.4.
+
+16. **Deviation 3's `axis_index` fix covered one of four axes.** The repair gated axis 0 on the
+    row's own `truncated` flag and left `axis_index(o1..o3)` unconditional. The R2C patch's print
+    limit is `max(ne)` applied to **all four** axes (`common_debug_print_limit`), so a routed prefill
+    at `T = 7` prints `ffn_moe_topk-L` as `{8, 7}` in full and `axis_index(o1, 7)` maps printed
+    ordinals 3..6 onto indices 4..7 — 32 of 56 ids on the wrong token and one index past the extent.
+    It was unreachable only because `R5_ORACLE_TRUNCATED`, added in this same capability, refuses
+    `tokens.count > 6` whenever a transcript is present. `scan_transcript` now records a per-axis
+    "ellipsis seen" marker at the block header and gates all four mappings symmetrically.
+    **The hosted regression is at both ends of the boundary, and one half of it is honestly
+    unreachable.** `md-used-six` and `md-used-eight` run the same pack at `n_expert_used` 6 and 8:
+    six is the last width at which `axis_index` is the identity, eight is the first at which it is
+    not, and the fixture now emulates the R2C print limit so the eight-wide `ffn_moe_topk-L` row
+    arrives with no ellipsis. `md-used-eight` also has a **truncated** axis 1 on
+    `ffn_moe_weights-L` and the three `MUL_MAT_ID` nodes, so it pins the marker as well as the gate.
+    What is **not** hosted is the axis-1 *direct* branch: reaching it needs a routed prefill above
+    six tokens with a transcript, which `R5_ORACLE_TRUNCATED` refuses from every operand. The branch
+    is implemented and correct; the guard is what keeps it unreachable, and
+    `moe-tokens-seven-with-transcript` / `-no-transcript` are what pin the guard.
+
+17. **Section 3.4's QK-norm ordering was inverted.** It stated that OLMoE applies `attn_q_norm` and
+    `attn_k_norm` "after the reshape to `{head_dim, n_head, T}` and before RoPE". The shipped table
+    norms the 2-D projection **first** — `RMS_NORM` and `MUL` at rows 7 and 8, then the
+    `RESHAPE_3D`, then `ROPE` (`src/layer_olmoe.align:1825-1845`). The conclusion the paragraph
+    draws — that the K reaching the plane is post-norm and post-RoPE, so the plane needs no marker —
+    is unaffected; the stated mechanism was wrong and the sentence is corrected.
+
+18. **Request 49's duplication list was short and named a function that does not exist.** Section
+    3.1 and section 9 recorded nine functions plus "a second copy of the plane-owning `refill`", and
+    section 14 recorded 23. There is **no** duplicated `refill` — correctly, because KV persistence
+    is out of scope and this plane is never refilled from a container — and the real count is **36**
+    of the module's 91 functions, by the criterion "shares a name with a sibling module's function
+    **and** takes a `borrow mut` parameter". A future collapse following the recorded list verbatim
+    would have left thirteen copies behind. The list in `docs/align-requests.md` is now regenerated
+    from the source rather than written by hand.
+
+**Six smaller repairs from the same review, recorded here rather than as rows of their own:**
+`layer_olmoe.mm_write_mask_offset` fails **closed** on a negative offset — it wrote the fully masked
+image instead of returning with the buffer's zero bits in place, which is `0.0f` everywhere and
+therefore *unmasked* everywhere, a confidently wrong answer every shape check accepts;
+`R5E_CLAIM_OVERFLOW` breaks its per-role loop after `fail`, as every other loop in the file does; the
+key arithmetic's assumption that a step's `ids` is exactly `n_layer * n_expert_used` long is now a
+fail-closed `R6M_ROUTED_SHAPE` rather than a comment, because the layer term is recovered by
+division and a short `routed[]` would mis-attribute every later key's layer **and** its per-layer
+byte size; `scripts/run-layer-forward-smoke`'s warning-budget comment carries the measured
+**179,363 B** (29,460 B of it from this module) against `MAX_STREAM_BYTES` 65,536, where it said
+"~22 KB" and called two runners "two thirds of that budget"; section 6.4's "1800 s cap" is a
+**budget**, since neither runner enforces a timeout; and the qualification's preflight now compares
+the arm's `libggml-base` against `llama-debug`'s by resolved object identity, hard, while reporting
+`llama-eval-callback`'s without enforcing it and saying on one line when it fails open. That last
+repair found one more thing: `ALIGN_LLM_GGML_LIB` was on the **link** path and not the **loader**
+path, so section 15's own recommended configuration — point it at the instrument's ggml, which lives
+in a build directory on no default loader path — aborted the arm inside `dyld` before its first
+instruction. It is now exported into `DYLD_LIBRARY_PATH` and `LD_LIBRARY_PATH` beside the shim
+**and** recorded as an `-Wl,-rpath` in the real shim itself, because macOS strips `DYLD_*` from any
+SIP-protected binary's environment and this runner launches the arm through `/usr/bin/time`. The
+qualification of record is the first run taken in that one ggml world through an unmodified
+`gmake moe-decode-step-qualification`; every earlier one needed the operator to arrange the loader
+path by hand, which is how deviation 4 stayed a narrative instead of a reproducible command.
 
 ## 14. Ledger and closure matrix against the diff
 
@@ -1719,7 +1954,8 @@ Every applicable cell of sections 3 and 5, mapped to where it is implemented and
 | 3.8 `MAX_PREFILL_TOKENS` 6 → 32 | `src/layer_olmoe.align`; every consumer audited | `moe-tokens-33`, `mm-tokens-33`, both `*-seven-with-transcript`, both `*-seven-no-transcript` |
 | 3.9 streamed, no `RESIDENT` | no operand; `weights` object absent | per-step `total_bytes` **740,666,496** measured |
 | 3.10 the document | `render*` in `src/moe_decode_step.align` | `scripts/moe-decode-step-golden.jsonl`, 57 rows, one shape at `N = 1` and `N = 3` |
-| 3.11 metrics | `StepResidency`, `union_grow`, `R6M_CLAIM_ACCOUNTING` | section 12.3; amplification **0 ppm** on 64 steps |
+| 3.11 metrics | `StepResidency`, `union_grow` **twice** — once prefill-seeded for the union curve and once empty-seeded for `decode_keys_distinct` — `R6M_CLAIM_ACCOUNTING`, `R6M_ROUTED_SHAPE` | section 12.3; amplification **0 ppm** on 64 steps. `step_reuse_per_mille`'s oracle is derived **independently** in `layer_forward_fixture.py` and the seventh block asserts that the corpus separates it from the prefill-relative quantity (deviation 13) |
+| 3.11 both prefill-union fractions | `keys_in_prefill` (demands) and the distinct sweep in `decode_loop` | seventh block bounds each by its own denominator; section 12.3 finding 2 reports both (deviation 14) |
 | 3.12 ownership and lifetime | one frame owns the plane and both windows | `lifetime.*_created == *_freed` and `graph_balance_failures == 0` on **every** case |
 | 3.13 prerequisites | all met; **no new Align request** | section 9's five gaps, all pre-existing |
 
@@ -1737,10 +1973,14 @@ Every applicable cell of sections 3 and 5, mapped to where it is implemented and
 | 5.3 the decode topology as data | `src/layer_olmoe.align` | `table_rows_a_decode` 37 asserted; `md-geometry-expert-used-31`/`-30` |
 | 5.3 prefill tables byte-unchanged | no prefill row moved | both MoE goldens: **zero pre-existing rows changed in value** |
 | 5.4 re-used by import | `decide`, `parse_tokens`, `stage_carry_at`, `stage_plan_owned`, the comparators' grammar | `moe-model-forward-golden.jsonl` unchanged except the three predicted rows |
-| 5.4 duplicated for Request 49 | 23 functions, listed in `docs/align-requests.md` | section 9 and Request 49's client block |
-| 5.5 no new FFI symbol or shim body | `src/ggml_ffi.align`, `scripts/ggml_shim.c` byte-unchanged | the smoke's source scan |
+| 5.4 duplicated for Request 49 | **36** functions, regenerated from the source and listed in `docs/align-requests.md`; the design predicted 23 and a duplicated `refill` that does not exist (deviation 16) | section 9 and Request 49's client block |
+| 5.5 no new FFI symbol or shim body | `src/ggml_ffi.align`, `scripts/ggml_shim.c` byte-unchanged | the smoke's source scan. `scripts/build-ggml-shim` gains one `-Wl,-rpath` on the real shim's link line — a **link-line** change, not a shim-body change — so that `ALIGN_LLM_GGML_LIB` can be a build directory (section 13's closing paragraph, the sixth smaller repair) |
 | 5.6 fixture, smoke, runner, goldens | `write_moe_decode_corpus`, the seventh block, `scripts/run-moe-decode-step` | section 12.6 |
 | 5.7 G-P1, C-P1 | sections 12.2 and 12.4 | both taken, both branches written in advance |
+| 4.4 / 4.6 clause 4 oracle C′'s fallback, all three clauses | `scripts/run-moe-decode-step`'s `self_rows`; per-step `top_k` in `render_step_row` | section 12.4's table; the seventh block asserts every step publishes ten distinct indices whose first is the step's `argmax` (deviation 15) |
+| deviation 3 generalised to every axis | `marked1`/`marked2`/`marked3` in `moe_layer_forward.scan_transcript` | `md-used-eight` (axis 0 direct, axis 1 truncated) and `md-used-six` (inert at the boundary). The axis-1 **direct** branch has **no** hosted regression and deviation 16 says why: `R5_ORACLE_TRUNCATED` refuses it from every operand, and `moe-tokens-seven-with-transcript` / `-no-transcript` pin that guard |
+| the key arithmetic's shape assumption | `R6M_ROUTED_SHAPE` in `decode_loop` | declared and listed **unreached**, with its reason: `stage_carry_at` refuses a short `topk_image` with `R5E_CARRY` before compute |
+| the mask's negative-offset path | `layer_olmoe.mm_write_mask_offset` | fails **closed** (fully masked) rather than leaving an all-zero, therefore all-unmasked, buffer. Unreachable; no regression, and it is defence rather than a fix |
 
 **Not implemented, and each is a deferral rather than a gap:** section 8's list is unchanged, and
 `md-force-claim-into-plane` (section 5.2's aliasing case) is **not** shipped — the claim window and

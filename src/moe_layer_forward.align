@@ -322,10 +322,17 @@ fn axis_index(ordinal: i64, extent: i64) -> i64 {
 // reader would misread as a routing defect. Measured: 96 of 256 ids matched with 32 of 32 sums
 // matched, before this function existed.
 //
-// The row therefore says which it is, and nothing else has to: a row that carries an ellipsis is
-// truncated and keeps R5A's mapping; a row that does not is complete and maps ordinals directly.
-// When the axis is at or below `TRUNCATION_PRINTED` the two agree by construction, so every R5D and
-// R5E corpus is unaffected and both MoE goldens stay byte-unchanged.
+// The transcript therefore says which it is, and nothing else has to: an axis whose truncation was
+// announced keeps R5A's mapping, and an axis printed whole maps ordinals directly. When the axis is
+// at or below `TRUNCATION_PRINTED` the two agree by construction, so every R5D and R5E corpus is
+// unaffected and both MoE goldens stay byte-unchanged.
+//
+// **The announcement is per axis and so is the gate** (section 13 deviation 16). Axis 0's is an
+// inline `...` inside the row, which is what `row_truncated` below reads. Axes 1, 2 and 3 announce
+// theirs with an `..., ` line at indent 12, 8 and 4 respectively, and `scan_transcript_after` raises
+// `marked1`/`marked2`/`marked3` when it reads one. The patch's print limit is `max(ne)` applied to
+// **all four** axes, so a routed prefill above six tokens prints `ffn_moe_topk-L`'s token axis whole
+// too; gating only axis 0 left three quarters of this defect in place.
 fn row_truncated(inner: str) -> bool {
   mut cursor := 0
   loop {
@@ -812,6 +819,9 @@ pub fn scan_transcript_after(
   mut block_ne1 := 0
   mut block_ne2 := 0
   mut block_ne3 := 0
+  mut marked1 := false
+  mut marked2 := false
+  mut marked3 := false
 
   loop {
     line := match next_line(handle, window, c) {
@@ -894,6 +904,15 @@ pub fn scan_transcript_after(
         o3 = 0
         o2 = 0
         o1 = 0
+        // Deviation 3, generalised to every axis. The truncation of axes 1, 2 and 3 is announced by
+        // an `..., ` line at that axis' own indent, exactly as axis 0's is announced by an inline
+        // `...`; these flags start false at each block header and are raised when that line is
+        // read. A row's ordinals below `TRUNCATION_HALF` map to themselves either way, and an
+        // ordinal at or above it only ever follows the ellipsis, so the flag is always set before
+        // the mapping it gates is used.
+        marked1 = false
+        marked2 = false
+        marked3 = false
       }
     }
     if !handled && !in_block { handled = true }
@@ -914,7 +933,12 @@ pub fn scan_transcript_after(
         capture = -1
         capture_integer = false
       }
-      if !handled && body.starts_with("...") { handled = true }
+      if !handled && body.starts_with("...") {
+        handled = true
+        if indent == 12 { marked1 = true }
+        if indent == 8 { marked2 = true }
+        if indent == 4 { marked3 = true }
+      }
       if !handled && body.starts_with("]") {
         handled = true
         if indent == 8 {
@@ -965,9 +989,9 @@ pub fn scan_transcript_after(
               break
             }
             i0 := if truncated { axis_index(o0, block_ne0) } else { o0 }
-            i1 := axis_index(o1, block_ne1)
-            i2 := axis_index(o2, block_ne2)
-            i3 := axis_index(o3, block_ne3)
+            i1 := if marked1 { axis_index(o1, block_ne1) } else { o1 }
+            i2 := if marked2 { axis_index(o2, block_ne2) } else { o2 }
+            i3 := if marked3 { axis_index(o3, block_ne3) } else { o3 }
             element_node.push(capture)
             element_index.push(i0 + block_ne0 * (i1 + block_ne1 * (i2 + block_ne2 * i3)))
             element_value.push(value)

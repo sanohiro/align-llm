@@ -72,6 +72,12 @@ CODE_GEOMETRY_UNREADABLE := "R6M_GEOMETRY_UNREADABLE"
 // `expert_pread_bytes >= expert_bytes` and `expert_pread_bytes <= expert_bytes + planes *
 // block_align`: neither side can hold by construction, so neither is vacuous.
 CODE_CLAIM_ACCOUNTING := "R6M_CLAIM_ACCOUNTING"
+// Section 3.11's second fail-closed relation, on the shape the key arithmetic reads. A step's
+// `ids` is a flat `n_layer * n_expert_used` array whose layer term is recovered by division, and a
+// short `routed[]` on any layer would mis-attribute every later key's layer and its per-layer byte
+// size. Like `R6M_CLAIM_ACCOUNTING` it is unreachable from an input — `stage_carry_at` refuses a
+// short `topk_image` before compute — and it is a guard rather than a validation step.
+CODE_ROUTED_SHAPE := "R6M_ROUTED_SHAPE"
 
 // Section 3.4. The plane is one `buffer`, and this is the ceiling a malformed width would have to
 // clear before a single byte is reserved. At OLMoE's geometry and the maximum legal width it is
@@ -159,6 +165,13 @@ pub Decode {
   bit_sum: i64,
   element_count: i64,
   nonfinite_count: i64,
+  // Section 4.4's oracle C′ on the branch cell C-P1 selected. The step's top ten, rendered as
+  // `--moe-model-forward`'s `output.top_k` array is rendered and from the same `top_k` arithmetic,
+  // so the runner can apply R5E's runtime-width rule — argmax equality, top-ten **set** equality,
+  // and a bound in ten-thousandths — instead of argmax alone. It is a rendered fragment rather than
+  // two `array<i64>` fields because an owned array field cannot be replaced in place at this pin
+  // (`r5a-dense-layer-forward.md` correction C9), and a step overwrites it.
+  top_k: string,
   compute_ns: i64,
   node_count: i64,
   graph_count: i64,
@@ -176,6 +189,7 @@ pub fn empty_decode() -> Decode = Decode {
   bit_sum: 0,
   element_count: 0,
   nonfinite_count: 0,
+  top_k: "[]".clone(),
   compute_ns: 0,
   node_count: 0,
   graph_count: 0,
@@ -444,6 +458,28 @@ fn top_k(borrow region: slice<u8>, borrow mut index: array_builder<i64>,
     bits.push(region.u32_le(best * 4) as i64)
     picked = picked + 1
   }
+}
+
+// The top ten as `--moe-model-forward`'s `render_output` writes it, so oracle C′ compares two
+// arrays of the same shape produced by the same arithmetic. Section 4.4's fallback needs the
+// **bits** and not only the indices: the runner reconstructs each logit from its `u32` and takes
+// the bound in ten-thousandths over the union of the two sets.
+fn render_top_k(borrow index: array<i64>, borrow bits: array<i64>) -> string {
+  d := builder()
+  d.write("[")
+  mut at := 0
+  loop {
+    if at >= index.len() || at >= bits.len() { break }
+    if at > 0 { d.write(",") }
+    d.write("{\"index\":")
+    d.write_int(index[at])
+    d.write(",\"bits\":")
+    d.write_int(bits[at])
+    d.write("}")
+    at = at + 1
+  }
+  d.write("]")
+  return d.to_string()
 }
 
 // Gate G1. The **prefill's** logits against a `llama-debug --save-logits` blob, at the declared
@@ -1782,6 +1818,10 @@ fn run_moe_layer(
       if routing.count * planes[role] > win.u_max * win.max_plane[role] {
         fail(o, "R5E_CLAIM_OVERFLOW", moe_model_forward.layer_numbered(
             spec.layer, "bytes", used_bytes))
+        // Break on the code, as every other loop in this file does. The first code wins either
+        // way, but continuing would keep accumulating `used_bytes` into a detail no longer
+        // describing the role that failed.
+        break
       }
       role = role + 1
     }
@@ -2385,6 +2425,12 @@ fn decode_pass(
   decoded.element_count = g.n_vocab
   decoded.nonfinite_count = digest.nonfinite
   decoded.argmax = digest.argmax
+  mut step_top_index: array_builder<i64> := array_builder()
+  mut step_top_bits: array_builder<i64> := array_builder()
+  top_k(logits_view, step_top_index, step_top_bits)
+  step_top_index_built := step_top_index.build()
+  step_top_bits_built := step_top_bits.build()
+  decoded.top_k = render_top_k(step_top_index_built, step_top_bits_built)
   o.reader_pread_count = o.reader_pread_count + counters.pread_count + claim_counters.pread_count
   o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read + claim_counters.bytes_read
   // Section 3.11's second measurement, and the reason it is a second one: `res.expert_bytes` above
@@ -2744,6 +2790,9 @@ fn render_step_row(
   d.write_int(decoded.element_count)
   d.write(",\"nonfinite_count\":")
   d.write_int(decoded.nonfinite_count)
+  d.write(",\"top_k\":")
+  top_view: str := decoded.top_k
+  d.write(top_view)
   d.write(",\"compute_ns\":")
   d.write_int(step_compute_ns)
   d.write(",\"node_count\":")
@@ -2886,6 +2935,14 @@ fn decode_loop(
     copy_at = copy_at + 1
   }
   mut seen_keys := union_seed.build()
+  // Section 3.11's `step_reuse_per_mille` is defined over the **decode steps alone**: `distinct` is
+  // the number of distinct `(layer, expert)` keys the `N` steps demanded, and the prefill's set is
+  // not part of that quantity. This accumulator is therefore seeded **empty** and grown only from
+  // the steps' own `ids`, beside — and independently of — the prefill-seeded `seen_keys` that
+  // `union_keys_final` and the `new_bytes` curve are taken from. The two answer different questions
+  // and section 2.5 separates them by name; deriving one from the other is what made the shipped
+  // figure a prefill-relative quantity under section 3.11's name.
+  mut decode_keys: array<i64> := moe_model_forward.empty_array()
   mut aggregate_max_abs := 0
   mut aggregate_max_sum := 0
   mut aggregate_elements := 0
@@ -2958,10 +3015,24 @@ fn decode_loop(
       prefix_step(o, step)
       break
     }
+    // Fail-closed before any key arithmetic: `union_grow`, `keys_in_prefill` and
+    // `render_routed_layers` all recover a key's layer as `which / n_expert_used`, which is exact
+    // only while every layer contributed exactly `n_expert_used` ids. A short `routed[]` on any
+    // layer would silently mis-attribute every later key's layer — and therefore its byte size,
+    // since `expert_key_bytes` is per-layer. The invariant is checked here rather than assumed.
+    if ids.len() != g.n_layer * g.n_expert_used {
+      fail(o, CODE_ROUTED_SHAPE, moe_model_forward.labelled("ids", ids.len()))
+      prefix_step(o, step)
+      break
+    }
     mut new_keys := 0
     mut new_bytes := 0
     seen_keys = union_grow(
       seen_keys, ids, plan, g.n_expert, g.n_expert_used, new_keys, new_bytes)
+    mut decode_new_keys := 0
+    mut decode_new_bytes := 0
+    decode_keys = union_grow(
+      decode_keys, ids, plan, g.n_expert, g.n_expert_used, decode_new_keys, decode_new_bytes)
     res.new_keys = new_keys
     res.new_bytes = new_bytes
     res.union_keys_after = seen_keys.len()
@@ -3066,29 +3137,36 @@ fn decode_loop(
   o.keys_distinct = seen_keys.len()
   // Section 3.11's new metric, and section 2.5's separation of it from the two adjacent-pair figures
   // already in the repository: `(demands - distinct) / demands` over the **decode steps only**, with
-  // `demands = n_layer * n_expert_used * N`.
-  mut decode_distinct := 0
+  // `demands = n_layer * n_expert_used * N` and `distinct` the cardinality of the decode steps' own
+  // key set. `decode_keys` was seeded empty and grown from the steps' `ids` alone, so this is a
+  // decode-side quantity that says nothing about the prefill and is not `seen_keys \ prefill_keys`.
+  o.decode_keys_distinct = decode_keys.len()
+  o.step_reuse_per_mille = if o.decode_keys_demanded > 0 {
+    (o.decode_keys_demanded - decode_keys.len()) * 1000 / o.decode_keys_demanded
+  } else {
+    0
+  }
+  // The **distinct**-key form of `decode_keys_in_prefill_union`, published beside the demand-weighted
+  // one rather than instead of it: section 2.4 reading 2 predicted a fraction of distinct decode
+  // keys (219 of 274) and the shipped counter answers the demand-weighted question (1,540 of 2,048).
+  // Both are real and neither substitutes for the other, so section 12.3 reports both and compares
+  // each against the prediction it belongs to.
+  mut distinct_in_prefill := 0
   mut probe := 0
   loop {
-    if probe >= seen_keys.len() { break }
-    mut in_prefill := false
+    if probe >= decode_keys.len() { break }
     mut inner := 0
     loop {
       if inner >= prefill_keys.len() { break }
-      if prefill_keys[inner] == seen_keys[probe] {
-        in_prefill = true
+      if prefill_keys[inner] == decode_keys[probe] {
+        distinct_in_prefill = distinct_in_prefill + 1
         break
       }
       inner = inner + 1
     }
-    if !in_prefill { decode_distinct = decode_distinct + 1 }
     probe = probe + 1
   }
-  o.step_reuse_per_mille = if o.decode_keys_demanded > 0 {
-    (o.decode_keys_demanded - decode_distinct) * 1000 / o.decode_keys_demanded
-  } else {
-    0
-  }
+  o.decode_distinct_keys_in_prefill_union = distinct_in_prefill
   return StepRows {
     count: decoded.steps_completed,
     text: rows.to_string(),
@@ -3821,8 +3899,12 @@ pub fn render_residency(borrow o: moe_model_forward.Outcome) -> string {
   d.write_int(o.keys_distinct)
   d.write(",\"decode_keys_demanded\":")
   d.write_int(o.decode_keys_demanded)
+  d.write(",\"decode_keys_distinct\":")
+  d.write_int(o.decode_keys_distinct)
   d.write(",\"decode_keys_in_prefill_union\":")
   d.write_int(o.decode_keys_in_prefill_union)
+  d.write(",\"decode_distinct_keys_in_prefill_union\":")
+  d.write_int(o.decode_distinct_keys_in_prefill_union)
   d.write(",\"union_keys_final\":")
   d.write_int(o.union_keys_final)
   d.write(",\"union_bytes_final\":")
@@ -4309,6 +4391,8 @@ fn print_summary(
   print(o.union_bytes_final)
   print("decode keys in prefill union:")
   print_pair(o.decode_keys_in_prefill_union, o.decode_keys_demanded)
+  print("decode distinct keys in prefill union:")
+  print_pair(o.decode_distinct_keys_in_prefill_union, o.decode_keys_distinct)
   print("step reuse per mille:")
   print(o.step_reuse_per_mille)
   print("routing:")

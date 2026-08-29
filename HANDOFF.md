@@ -43,7 +43,7 @@ arms now refuse a prefill above six tokens **with** a transcript, and `moe-token
 
 **Golden movement, measured against the merged head.** Five goldens byte-unchanged
 (`layer-forward`, `model-forward`, `gpu-forward`, `decode-step`, `ggml-spike`); one new
-(`moe-decode-step-golden.jsonl`, 57 cases); and `moe-layer-forward-golden.jsonl` and
+(`moe-decode-step-golden.jsonl`, **59** cases after the review repair); and `moe-layer-forward-golden.jsonl` and
 `moe-model-forward-golden.jsonl` each **-1 renamed, +3 added, and zero pre-existing rows changed in
 value** — `moe-tokens-seven` becomes `moe-tokens-33` and gains
 `moe-tokens-seven-with-transcript` and `moe-tokens-seven-no-transcript`, and the same three on the
@@ -51,29 +51,61 @@ value** — `moe-tokens-seven` becomes `moe-tokens-33` and gains
 `MOE_MODEL_DECODE_RESEEDED_ROWS` is empty: the routed decode chain is already non-degenerate.
 
 **Result** (the qualification of record, `gmake moe-decode-step-qualification`, four prompts x
-`N = 16` x three runs, Apple M1, `KV_WIDTH` 256, weights streamed, CPU only, exit 0 in **3 min 18
-s**). Gate G over 64 ids, oracle R **`MATCH` at 8,192 of 8,192** — the first full-axis routing
-identity in the repository — oracle B `IDENTICAL`, oracle T `PASS` with `max_abs_diff` **0**, and the
-claim accounting exact on all 64 steps:
+`N = 16` x three runs, Apple M1, `KV_WIDTH` 256, weights streamed, CPU only, **re-run at the review
+repair head**, exit 0; **1 min 23.4 s** warm and **5 min 41.3 s** with the page cache evicted by a
+concurrent build, against 3 min 18 s cold at the implementation head — the spread is the 4.2 GB
+pack's residency and every correctness value is identical across the runs). Gate G
+over 64 ids, oracle R **`MATCH` at 8,192 of 8,192** — the first full-axis routing identity in the
+repository — oracle B `IDENTICAL`, oracle T `PASS` with `max_abs_diff` **0**, and the claim
+accounting exact on all 64 steps. **Every correctness value reproduced exactly**; the residency
+columns below are the repaired metric:
 
-| prompt | oracle R | step bytes (arith) | step bytes (`pread`) | ampl | union keys | mean marginal | in prefill union | reuse ppm |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `def add(a, b` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 585 | 57.9 MB | 1540/2048 | 881 |
-| `The capital of` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 698 | 92.3 MB | 1064/2048 | 811 |
-| `import os` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 614 | 95.4 MB | 1154/2048 | 804 |
-| `return x +` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 607 | 83.1 MB | 1182/2048 | 829 |
+| prompt | oracle R | step bytes (arith) | step bytes (`pread`) | ampl | union keys | mean marginal | demands in prefill | distinct in prefill | reuse ppm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `def add(a, b` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 585 | 57.9 MB | 1540/2048 (75.2 %) | 273/515 (53.0 %) | **748** |
+| `The capital of` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 698 | 92.3 MB | 1064/2048 (52.0 %) | 240/627 (38.3 %) | **693** |
+| `import os` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 614 | 95.4 MB | 1154/2048 (56.3 %) | 173/573 (30.2 %) | **720** |
+| `return x +` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 607 | 83.1 MB | 1182/2048 (57.7 %) | 212/561 (37.8 %) | **726** |
 
 **The two accountings agree to the byte and the read amplification is zero**, which is the strongest
 form the primary claim could take: the arm read exactly what it claimed and not one byte more.
 **The streamed-to-marginal gap is 5.1x to 8.4x at sixteen steps, not the 9.2x a four-step probe
-suggested**, and "four fifths of every decode demand is already in the prefill" is a short-window
-artifact: over sixteen steps it is 52.0 % to 75.2 %. Cell **C-P1** selected oracle C′'s second
-branch — `mul_mat_id` is **not** stack-shape invariant, 1 of 12 checkpoints byte-identical and 12 of
-12 argmax-equal — so C′ is characterization and the acceptance rule keeps its other four oracles.
+suggested.**
 
-**Verification.** `gmake build`, `gmake check`, `gmake layer-forward-smoke` (all seven blocks, 57 s,
-every golden as predicted), `gmake ggml-spike-smoke`, `gmake gate-topology-check`, `gmake fmt`
-(no change), `gmake format-check`, `git diff --check`, and the real-model qualification above.
+**`step_reuse_per_mille` was the wrong quantity and is re-recorded.** The first implementation
+published `(demands - |decode keys the prefill did not hold|) / demands` — prefill-relative reuse —
+under section 3.11's name, which defines `distinct` as the decode steps' **own** key set. The
+figures were 881/811/804/829; they are **748/693/720/726**. The fixture reproduced the
+implementation's arithmetic verbatim, so the generator, the golden and the smoke assertion all
+agreed with the wrong number: the oracle was co-derived with the subject, and it is now derived
+independently from the routings alone. The hosted figure moved 833 -> 333. Section 12.3's "roughly
+twice the adjacent-pair one" is **re-derived**: 1.55x to 1.67x R2D's pooled 447, about as much as an
+adjacent-pair window captures at its *best* transition, not twice it.
+
+**"Four fifths of every decode demand is already in the prefill" now has both of its fractions.**
+Demand-weighted it is 52.0 % to 75.2 %; over **distinct** decode keys — the form section 2.4 reading
+2 actually predicted at 79.9 % — it is **30.2 % to 53.0 %**, and that is the reading that collapses.
+
+**Cell C-P1** selected oracle C′'s second branch and the fallback is now **implemented**, not
+asserted on argmax alone: at all twelve checkpoints the runner reports the verdict with argmax
+equality, top-ten **set** equality, and `max_abs_diff` in ten-thousandths over the union of the two
+top-tens. Measured: 1 `IDENTICAL`, 6 `WITHIN`, 5 `FAIL`; argmax 12/12; the pre-committed 5000 bound
+holds 12/12 (range 0 to 3,678); top-ten **set** equality holds only **7 of 12**. Section 4.4's
+non-identical branch had already moved the acceptance weight to G, R and B, so the shipped rule
+reports the verdict and gates on argmax alone — a first draft gated on the whole triple and refused
+the run, and that refusal is the measurement.
+
+**Verification, at the repair head.** `gmake build`, `gmake check`, `gmake layer-forward-smoke` (all
+seven blocks, 80 s, 59 documented cases in the seventh, every golden as predicted),
+`gmake ggml-spike-smoke`, `gmake gate-topology-check`, `gmake fmt` (no change), `gmake format-check`,
+`git diff --check`, and the real-model qualification above. **Nine mutants re-injected by file-level
+backup** (never by copying this linked worktree — its `.git` pointer writes through to the shared
+worktree administration directory): eight die, including the three new ones — axis 0 mapped
+unconditionally dies as `md-used-eight: routing MISMATCH`, axis 1 never mapped dies as
+`md-used-eight: oracle T FAIL worst ffn_moe_up max_abs 8726`, and `step_reuse_per_mille` restored to
+the prefill-relative quantity dies as `833, not the generator's 333`. The ninth, `MM_V_ROW` 13 -> 12,
+is **inert and not a gap**: row 12 is the `MUL_MAT` and row 13 a `RESHAPE_3D` view over the same
+buffer, so the plane receives the same bytes.
 
 **The qualification needs one ggml build on both sides, and that is a toolchain debt this capability
 records rather than pays** (section 15 of the ledger). `scripts/llama-eval-callback-toolchain` builds
@@ -89,7 +121,43 @@ makes a measurement claim and `docs/specs/r6-resident-weights.md` section 3.4 re
 Track B decode performance.
 
 **Blockers.** None. Five Align gaps are met and all five are already recorded with named clients
-(Requests 33, 36, 47, 48, 49); none blocks, and Request 49 gains its largest client.
+(Requests 33, 36, 47, 48, 49); none blocks, and Request 49 gains its largest client — whose recorded
+duplication count is corrected from 23 to **36**, regenerated from the source, with the predicted
+duplicated `refill` removed because it does not exist.
+
+**Next actions, in order.**
+1. **Re-record the coding-baseline chain.** `Makefile` is in this publication diff (it adds
+   `moe-decode-step-qualification` to `.PHONY` and one target), and `scripts/check-baseline-chain`
+   compares the working-tree `Makefile` against its baseline source commit byte for byte. The chain
+   is source -> oracle -> finalization, recorded on **Linux (aarch64)** through the DinD wrapper
+   exactly as R5D's, R5E's and R6-STEP-N's were, and `gmake baseline-check` must end
+   `baseline chain: PASS` there. Do this **before** step 2: `scripts/pre-pr` stamps the exact
+   unchanged `HEAD`, and the baseline commits change it.
+2. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` on the
+   unchanged head. The diff touches `Makefile`, `scripts/build-ggml-shim`, the fixture, the smoke and
+   the goldens, so the classifier selects the **executable** row and the **installed fresh-image
+   profile**; do not substitute a Docker skip or an ambient `DOCKER_HOST`.
+3. Open the English pull request with the verification table, the review envelope, the finding
+   dispositions and the consolidated repair commit. It must be a **merge** commit: squash or rebase
+   would make the baseline commits unreachable from `main`.
+4. `gmake ci` is **not** selected: this repair changes no aggregate membership, no check topology and
+   no integration behaviour, and `scripts/check-gate-topology`'s byte-literal EXPECTED does not move
+   (`moe-decode-step-qualification` stays in `.PHONY` and in no aggregate).
+5. After merge, refresh `main` and start the next eligible roadmap capability.
+
+**Reproducing the qualification on this host, exactly.** All three of the arm, `llama-eval-callback`
+and `llama-debug` must be **one ggml build** (deviation 4). The `r2c-v2` cache holds only a
+statically linked `llama-eval-callback`, so configure the pinned source once with
+`BUILD_SHARED_LIBS=ON` and the toolchain's other flags verbatim
+(`CMAKE_BUILD_TYPE=Release`, `GGML_NATIVE=OFF`, `GGML_METAL=OFF`, `GGML_OPENMP=OFF`,
+`GGML_CCACHE=OFF`, `LLAMA_CURL=OFF`, `LLAMA_BUILD_EXAMPLES=ON`, `LLAMA_BUILD_TESTS=OFF`,
+`LLAMA_BUILD_NUMBER=10566`, `LLAMA_BUILD_COMMIT=bb4caa754`) and build the `llama-eval-callback` and
+`llama-debug` targets. Then `ALIGN_LLM_GGML_INCLUDE=<source>/ggml/include`,
+`ALIGN_LLM_GGML_LIB=<build>/bin`, and both instruments from `<build>/bin`. The runner's new preflight
+checks that pairing by resolved object identity and refuses a mismatch. **Two repairs were needed to
+make this a one-command run**: `ALIGN_LLM_GGML_LIB` now joins the loader path, and the real shim
+records it as an `-Wl,-rpath` — macOS strips `DYLD_*` from `/usr/bin/time`, which is how the arm is
+launched, so the environment variable alone aborts it inside `dyld`.
 
 **Intentional uncommitted files.** None.
 
