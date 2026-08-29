@@ -5,9 +5,10 @@ file records durable project state.
 
 ## Active: C4-REPAIR-EDITSET (2026-08-29)
 
-Branch `agent/c4-repair-editset`, stacked on `agent/c4-repair-measured` at `c07775c`. Implemented,
-verified, **measured**, and **reviewed twice**; the recorded findings are repaired, `origin/main` is
-merged, and nothing is uncommitted.
+Branch `agent/c4-repair-editset`, originally stacked on `agent/c4-repair-measured` at `c07775c`,
+now merged with `origin/main` at `4940005` (PR #150, which merged that parent capability).
+Implemented, verified, **measured**, and **reviewed three times** — two disjoint round-one reviewers
+and one final delta review; every recorded finding is repaired and nothing is uncommitted.
 
 **GATE RESULT: `NOT_MET` — a measured negative, and a directional one.** 12 rows, 22 provider calls,
 **839.492 s = 13 min 59 s** against a 60-minute recorded ceiling. `repair_recovery_count: 0` and
@@ -129,6 +130,34 @@ validator's row-14 sum), the row-17 applied-edit cross-check refused a legitimat
 `diagnostic_summary`, and the divergence normalizer ended a function at the first column-0 line,
 which a triple-quoted string can produce.
 
+**Final delta review (2026-08-29).** A fresh review of the repaired head `6ccbb88` returned
+**approve with minors**: four minors, all accepted and repaired in `21c6e30`. One changed behaviour:
+the row-17 truncation exemption fired on the marker's **text alone**, so a short summary ending in
+it could name any applied-edit list and escape the cross-check. Both owners now require the marker
+**and** at least `SUMMARY_LIMIT` (4,096) bytes — the length a genuine `bounded_text` cut always has —
+and each gained a rejection row for a forged cut beside an acceptance row whose summary is now built
+the way the producer builds one. **It cannot move a recorded gate value**: across all 34 persisted
+`diagnostic_summary` values in the evidence the longest is 94 bytes and none carries the marker, so
+the exemption is unreachable by this corpus and the gate was not re-run. The other three were
+wording: "only the clocks moved" (six repair-prompt digests move with the per-run sandbox path, no
+correctness value does), §7.2's "two portable rows" for the prefix cut (one is portable; two are
+Linux-gated), and a fixture comment claiming path uniqueness is checked before the block count (the
+count is compared first). Recorded as spec §11.3 deviation 17.
+
+**`origin/main` merged at `8890b27`** (a `git merge`, never a rebase). Conflicts resolved by keeping
+both sides: the `.PHONY` union, roadmap item 31's merged result beside item 34, both handoff
+sections, and one trailing-comma difference in `validate_attempt_record`'s call. `main`'s new
+`validate_attempt_traces` / `snapshot_request_closure` / `count_ran_invocations` and this branch's
+version-2 rows both survive, and the owner set was re-run at the merged head.
+
+**Verification at the merged head `8890b27`.** `gmake build`, `gmake check` (31 units), `gmake fmt`,
+`gmake format-check`, `gmake gate-topology-check` (EXPECTED unmoved), `git diff --check`, and the
+nine macOS owners all PASS again. Under the Linux recipe below at the same head:
+`run-prompt-evaluate-smoke`, `run-prompt-repair-adapter-smoke` (full launch rows),
+`run-prompt-measurement-adapter-smoke` (74 rows), `test-prompt-fixed-adapter`,
+`test-prompt-snapshot-helper`, and `test-prompt-source-verifier` all PASS. `EVALUATOR_SOURCE_SHA256`
+is re-pinned in `21c6e30`, the same commit as that evaluator edit.
+
 **Verification at the repaired head.** `gmake build`, `gmake check` (31 units), `gmake fmt`,
 `gmake format-check`, `gmake gate-topology-check` (EXPECTED unmoved), `git diff --check`, and the
 macOS owner set — `prompt-model-smoke`, `prompt-render-parity-smoke`, `prompt-score-smoke`,
@@ -164,24 +193,25 @@ about a malformed one could fire (spec section 11.3 deviations 15 and 16).
 observed string equals `canonical-v1r`'s, which is a measurement rather than a copy — the probe
 fails closed had any component moved.
 
-**Next actions, in order.** (1) **Re-record the gate-topology baseline and run the fresh-image
-preflight.** `origin/main` moved while this branch was in review — `a9561a9` and `45ff38e` (Track B
-R6) — and both the `Makefile` and the recorded baseline changed there. `gmake baseline-check` fails
-at this head, and the diagnosis is exact and expected: the recorded baseline pins an artifact digest
-for **`Makefile`**, and this branch adds `c4-editset-gate` and `prompt-repair-adapter-smoke` to it,
-so that one row is the only mismatch. It must be re-recorded at the final head through the
-pending/finalize flow rather than assumed, and
-`Makefile` is in `FRESH_IMAGE_PATTERNS`, which selects the **installed fresh-image profile** for
-this branch's preflight. Fresh integration evidence at the merged head is required before
-publication; the DinD recipe is in the C8 note below. (2) `python3 scripts/pre-pr --owner-test ...`
-at the final head. (3) Publish the English pull request with the exact verification commands, the
-measured result, the two review envelopes, and every finding's disposition. (4) On merge, C4's
-roadmap gate remains unmet by a model, and the fallback capability named in spec section 6.4 — a
-prompt and edit-policy capability for the **unchanged-file reproduction** mode — becomes the next
-Track A item rather than a parallel one, because this gate answered its tie-breaker in the negative.
-Its first sub-problem is this capability's own recorded gap: **`edit_set` is `None` on every
-`PATCH` row** (spec section 11.3 deviation 14), so the answers that mode produces are exactly the
-ones no artifact shows.
+**Next actions, in order.** (1) Publish the English pull request with the exact verification
+commands, the measured result, the three review envelopes, and every finding's disposition, and post
+the review record as a dedicated comment. (2) Merge with `--merge`; a squash or a rebase would make
+the baseline chain commits unreachable from `main`. (3) If `origin/main` moves first, `git merge` it
+— never a rebase — re-run the owner set, **re-record the baseline chain** (the `Makefile` edit makes
+this head's chain its own) and re-stamp the fresh-image preflight, because the stamp belongs to an
+exact unchanged `HEAD`. (4) On merge, C4's roadmap gate remains unmet by a model, and the fallback
+capability named in spec section 6.4 — a prompt and edit-policy capability for the **unchanged-file
+reproduction** mode, C4-REPAIR-TEMPLATE — becomes the next Track A item rather than a parallel one,
+because this gate answered its tie-breaker in the negative. Its first sub-problem is this
+capability's own recorded gap: **`edit_set` is `None` on every `PATCH` row** (spec section 11.3
+deviation 14), so the answers that mode produces are exactly the ones no artifact shows.
+`agent/c4-repair-template` is stacked on this branch's `6ccbb88` and must reconcile with the final
+repair `21c6e30` and the merge `8890b27` — `scripts/prompt-evaluate.py`,
+`scripts/prompt-gate-validator.py`, `scripts/prompt_gate_fixture.py`,
+`scripts/run-prompt-evaluate-smoke`, `scripts/run-prompt-gate-validator-smoke`,
+`src/prompt_evaluate.align` (the evaluator pin), `src/prompt_verifier_smoke.align`,
+`docs/specs/c4-repair-editset.md`, `eval/prompt/c4-editset-gate/README.md`, `HANDOFF.md`,
+`Makefile`, `docs/specs/roadmap.md`, and the three baseline-chain files.
 
 **Blockers.** Host capacity only: a DinD preflight and Track B's model work contend for memory, and
 the gate needs `llama-server` with the 4.7 GB model. No Align capability request blocks this; next
