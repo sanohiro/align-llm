@@ -518,7 +518,11 @@ static int align_force_compute_step2 = 0;
  * exactly one column, because `mf_write_mask` is `mf_write_mask_offset` at `row_offset = 0`. The
  * suffix pass uploads `S` rows at `row_offset = T_prefix >= 1`, so its row 0 unmasks `T_prefix + 1`
  * columns. "More than one open column in row 0 of a multi-row mask" is therefore exactly the suffix
- * pass, on any geometry and any split. Never defined in an ordinary build. */
+ * pass, on any geometry and any split.
+ *
+ * Every mask upload re-decides it, so it is **cleared** by the first decode step's own mask and the
+ * latch names the graph set now being built rather than one that has finished. Never defined in an
+ * ordinary build. */
 static int align_force_suffix_pass = 0;
 #endif
 
@@ -1728,19 +1732,25 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
     || defined(ALIGN_GGML_FORCE_SUFFIX_WRITEBACK_OFFSET)
     /* The latch above, set from the mask the graph is about to consume. It is read below by
      * `align_ggml_graph_compute` and by `align_ggml_slot_get`, both of which run after this call for
-     * the same graph, so the pass is identified before either can act on it. */
-    if (status == ALIGN_GGML_OK && index == 14 && t->ne[1] > 1 && off == 0 && n >= 8) {
+     * the same graph, so the pass is identified before either can act on it.
+     *
+     * It is **re-decided on every mask upload and therefore cleared after the pass**, not only
+     * set: a decode step uploads a one-row mask and a prefill's row 0 unmasks exactly one column,
+     * so either drives the latch back to 0. A set-only latch would leave the forced arms armed for
+     * every decode step that followed a suffix pass, which is not what the two comments below
+     * claim and not what the two forced builds are regressions for. */
+    if (status == ALIGN_GGML_OK && index == 14 && off == 0 && n >= 8) {
         const float *mask_row = (const float *) (const void *) t->data;
         int64_t open_columns = 0;
         int64_t column = 0;
-        for (column = 0; column < t->ne[0]; column++) {
-            if (mask_row[column] == 0.0f) {
-                open_columns++;
+        if (t->ne[1] > 1) {
+            for (column = 0; column < t->ne[0]; column++) {
+                if (mask_row[column] == 0.0f) {
+                    open_columns++;
+                }
             }
         }
-        if (open_columns > 1) {
-            align_force_suffix_pass = 1;
-        }
+        align_force_suffix_pass = (open_columns > 1) ? 1 : 0;
     }
 #endif
 #ifdef ALIGN_GGML_FORCE_MASK_OFFSET

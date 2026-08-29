@@ -2124,6 +2124,18 @@ caller can shorten. An unparseable, empty, or trailing-separator list is `R6_SUF
 the same shape `R6_TOKENS` reports. The plane bound **widens an existing condition** rather than
 adding one: `T_prefix + S + N <= KV_WIDTH` raises the `R6_KV_WIDTH` R6 already owns.
 
+**The prefix must be at least two tokens**, and this is a refusal rather than a wrong answer.
+`T_prefix < 2` with a `SUFFIX` is `R6_SUFFIX` with detail `prefix[<n>]`, decided inside the same
+step and **before** the sequence cap. The reason is a defect this capability found and did not fix
+(`MF-SINGLE-TOKEN-LOGITS`, `docs/specs/r6-prefix-suffix-prefill.md` section 11.2): a prompt of
+exactly one token computes the embedding of token 0 whatever the operand says, because
+`model_forward.fill_members` gathers by id only when `pieces > 1`. A container saved for a one-token
+prefix therefore holds the wrong plane, and a suffix run over it would return `status: ok` and
+logits that are not the single-shot run's. A one-token `KV_LOAD` run **without** a suffix is
+unaffected and still accepted: it is R6-KV-PERSIST's own leg, and this capability neither widens nor
+narrows it. When the defect is fixed the refusal is the thing to remove, which widens the accepted
+surface rather than moving it.
+
 The document is **schema 5** and carries a `suffix` object — `requested`, `completed`,
 `token_count`, `n_past_base`, `sequence_length`, `columns_written`, `first_column`, `graph_count`,
 `node_count`, `pack_bytes`, `compute_ns` — in **every** document including error documents, with one

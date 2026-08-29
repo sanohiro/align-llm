@@ -1785,7 +1785,7 @@ fn mf_decode_row_attention(
 // passes; they have no counterpart in llama.cpp's decode graph, so section 3.3 excludes them from
 // oracle A by name and counts them rather than dropping them quietly.
 //
-// R6-PREFIX-SUFFIX-PREFILL section 2.5, and its section 11 deviation 1: **row 26 is a sixth
+// R6-PREFIX-SUFFIX-PREFILL section 2.5, and its section 11.1 correction 4: **row 26 is a sixth
 // token-count literal**, which that document's table did not name. `kqv_out` is `{n_embd, tokens, 1}`
 // on the prefill (`mf_layer_row_tail`'s own last row) and the decode table wrote `1` for it, so the
 // parameter has to reach this function too. At `tokens = 1` the row is R6's unchanged, and at

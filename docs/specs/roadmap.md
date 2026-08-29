@@ -604,6 +604,9 @@ The current forward delivery order is:
     removes the per-step weight sweep item 29 left in place, and prefix-keyed lookup on top of it is
     the next capability toward the TTFT gate.
 
+<!-- Items 31 (C4-REPAIR) and 32 (OLMoE decode) are reserved: both were on branches when item
+     33 was written, so the numbers are claimed and the entries land with those branches. The
+     gap below is deliberate and must not be re-used. -->
 33. **R6-PREFIX-SUFFIX-PREFILL — a saved prefix plane continued with a different suffix.** Design
     and results in [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md). Item 29 made a
     prefill plane outlive its process; it could only be reloaded for the prompt it was saved for,
@@ -632,14 +635,33 @@ The current forward delivery order is:
     every document; `output` and `oracle_logits` describe the suffix pass's own logits on a completed
     suffix run, with the container's vector still published in `kv`. Exact prefixes only: RoPE
     positions are absolute, so prefix sharing is inherently **left-anchored**, and prefix truncation
-    is deferred. Owner `gmake layer-forward-smoke`, whose fifth block gains 21 golden rows including
-    three oracle-S splits, ten refusals, and two forced builds that publish a partial pass; focused
+    is deferred. Owner `gmake layer-forward-smoke`, whose fifth block gains 22 golden rows including
+    three oracle-S splits, twelve refusals, and two forced builds that publish a partial pass; focused
     `gmake decode-step-qualification`, which splits each of the four prompts at up to two points and
     needs **no new `llama-debug` run and no new instrument run**, because the split is on ids the
     instrument already printed. **The R6 gate is still unmet:** this ships the *execution* half of
     mechanism 2 (repo stable prefix KV) and none of its *lookup* half — there is still no prefix key,
     no store, no corpus, and no prefix-sharing consumer — so TTFT is reported as a labelled
-    diagnostic on three legs and no claim is made.
+    diagnostic on three legs and no claim is made. One surface is **narrower than the mechanism
+    allows**: `T_prefix >= 2` is required, raising `R6_SUFFIX` with detail `prefix[<n>]`, because a
+    one-token prefill computes the embedding of token 0 whatever the operand says — see the
+    follow-up below.
+
+    **Follow-up: `MF-SINGLE-TOKEN-LOGITS` (no item number yet).** A pre-existing defect this
+    capability found in an arm it does not touch: `model_forward.fill_members` gathers an embedding
+    row by id only when `pieces > 1`, so **any prompt of exactly one token computes the logits of
+    token 0**, silently and with `status: ok`, on `--layer-forward`, `--model-forward`,
+    `--moe-model-forward`, and `--decode-step`. The resident path does not share it
+    (`stage_embed_row` gathers by id at every count), and no golden in this repository exercises
+    `token_count == 1`, which is why it has been latent since R5B. The fix is a `gathered`
+    discriminator on `model_forward.GraphMembers` — eighteen construction sites across three modules
+    and four arms — with an `mf-tokens-one` row in `scripts/model-forward-golden.jsonl` and the same
+    question asked of `--moe-model-forward`; owner `gmake layer-forward-smoke`. It is **not** filed
+    inside item 33 because that would put an R5B correctness change inside a review scoped to a
+    suffix graph, and it takes a roadmap number when it is picked up rather than claiming one across
+    the reserved 31/32 gap. Its reproduction, evidence, and full field record are in
+    [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md) section 11.2. Completing it removes
+    item 33's `prefix[<n>]` refusal, which **widens** the accepted surface and needs no other change.
 
 ### Status (2026-08-28)
 

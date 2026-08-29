@@ -491,7 +491,10 @@ ids = sys.argv[1].split(',')
 want = int(sys.argv[2])
 points = []
 for j in (2, -(-len(ids) // 2)):
-    if 1 <= j < len(ids) and j not in points:
+    # `2 <= j`, not `1 <= j`. Section 5.4's smallest split is **two**, and at len(ids) == 2 the
+    # midpoint is 1 -- a one-token prefix, which the arm now refuses outright (section 2.3's
+    # `prefix[<n>]`) because a one-token prefill computes the wrong embedding row (section 11.2).
+    if 2 <= j < len(ids) and j not in points:
         points.append(j)
 print(' '.join(str(j) for j in points[:want]))
 " "${tokens}" "${SUFFIX_SPLITS}")
@@ -1758,11 +1761,13 @@ for stem in rows:
                 load_first.append(json.load(handle)["timings"]["first_token_ns"])
     print("decode step qualification: R6PS %s TTFT proxy DIAGNOSTIC first_token_ns single "
           "%d..%d, load+suffix %d..%d, plain load %s; invocation wall ns single %d..%d, "
-          "load+suffix %d..%d. All three legs stream. **No TTFT claim.** The difference between "
-          "the first two is `T_prefix` columns of prefill *compute* and nothing else -- a suffix "
-          "run skips no weight sweep, because a prefill of any width is one sweep -- so a reader "
-          "who sees the second beat the first is seeing arithmetic, not a cache; and the third is "
-          "not a third point on the same line, because it answers a shorter question."
+          "load+suffix %d..%d. Ranges over three runs on one host. All three legs stream. "
+          "**No TTFT claim.** Neither leg skips a weight sweep, because a prefill of any width is "
+          "one sweep; what the second removes is `T_prefix` columns of prefill *compute* **plus "
+          "the pack read and graph construction the prefill pass performs for the whole prompt**, "
+          "and it pays a container read instead -- so a reader who sees the second beat the first "
+          "is seeing that exchange on a prompt of a few tokens, not a cache. The third is not a "
+          "third point on the same line, because it answers a shorter question."
           % (label, min(single_first), max(single_first), min(suffix_first), max(suffix_first),
              ("%d..%d" % (min(load_first), max(load_first))) if load_first else "not measured",
              min(single_wall or [0]), max(single_wall or [0]),

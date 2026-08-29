@@ -77,9 +77,14 @@ CODE_GEOMETRY_UNREADABLE := "R6_GEOMETRY_UNREADABLE"
 // code for an out-of-memory host: `buffer(cap)` cannot report a failed reservation and `append`
 // cannot fail (Request 35), so that host **aborts** rather than producing a document. Section 3.6
 // states that rather than hiding it, and `scripts/run-decode-step` preflights physical memory.
-// R6-PREFIX-SUFFIX-PREFILL section 2.7. The one new code this capability adds, over four details:
-// `suffix[<text>]` (unparseable), `count[0]` (a non-`-` operand parsing to nothing), `sequence[<n>]`
-// (`T_prefix + S > MAX_PREFILL_TOKENS`), and `token[<i>]` (out of vocabulary). There is deliberately
+// R6-PREFIX-SUFFIX-PREFILL section 2.7. The one new code this capability adds, over the four
+// details it actually emits: `suffix[<text>]` (unparseable, empty, or trailing-separator),
+// `prefix[<n>]` (a suffix onto a prefix of fewer than two tokens — section 11.2's defect makes the
+// container such a run would load hold the wrong plane), `sequence[<n>]`
+// (`T_prefix + S > MAX_PREFILL_TOKENS`), and `token[<index>]` — `parse_tokens`' own **index** of the
+// offending id, which is what `R6_TOKENS` reports and therefore what this code reports too. There
+// is deliberately no `count[0]` detail: `parse_tokens` refuses an empty list outright, so a non-`-`
+// operand can never parse to zero ids and the check would be unreachable. There is deliberately
 // no `R6_SUFFIX_FAILED`: a suffix pass that fails fails for a reason that already has a code, and
 // what the pass adds is a **locator**, the `suffix[]` detail prefix `prefix_suffix` writes.
 //
@@ -352,7 +357,7 @@ fn prefix_step(borrow mut o: model_forward.Outcome, step: i64) {
 // R6-PREFIX-SUFFIX-PREFILL section 2.7's locator. Every detail raised inside the suffix pass is
 // prefixed `suffix[]` — the same shape as `step[<k>]` with **no index**, because there is exactly
 // one suffix pass. `bounded_detail`'s 256-byte cap is unchanged and applied again after the prefix,
-// which costs nine bytes.
+// which costs eight bytes.
 fn prefix_suffix(borrow mut o: model_forward.Outcome) {
   if o.code.len() == 0 { return }
   b := builder()
@@ -1815,6 +1820,25 @@ fn stage_inputs(
       unparsed := suffix_detail(suffix_text)
       unparsed_view: str := unparsed
       fail(o, CODE_SUFFIX, unparsed_view)
+      return g
+    }
+    // R6-PREFIX-SUFFIX-PREFILL section 2.3's fifth refusal, and section 11.1 correction 8.
+    // **A suffix onto a one-token prefix is refused.** The container such a run loads was written
+    // by a one-token prefill, and `model_forward.fill_members` gathers an embedding row by id only
+    // when `pieces > 1` (section 11.2's pre-existing defect, `MF-SINGLE-TOKEN-LOGITS`): the plane
+    // would hold token 0's columns whatever `TOKENS` said, so oracle S's equality — this
+    // capability's own acceptance rule — would silently not hold. Refusing is the honest surface
+    // until that defect is fixed; the resume condition is recorded with the request.
+    //
+    // The code names `R6_SUFFIX` and not `R6_TOKENS` because it is the **suffix** that makes the
+    // run illegal: without the operand a one-token load is R6-KV-PERSIST's own leg, unchanged and
+    // still accepted. It is decided **before** the sequence cap, because a caller who violates both
+    // cannot fix `prefix[1]` by shortening `SUFFIX`, and naming the cap first would send them
+    // around the loop twice.
+    if lexical.count < 2 {
+      narrow := model_forward.labelled("prefix", lexical.count)
+      narrow_view: str := narrow
+      fail(o, CODE_SUFFIX, narrow_view)
       return g
     }
     sequence := lexical.count + lexical_suffix.count

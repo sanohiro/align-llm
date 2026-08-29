@@ -3838,6 +3838,14 @@ STUB_CASES = [
     ("ds-suffix-trailing", ds(load=KV_GOOD, suffix="5,"), "R6_SUFFIX"),
     # The vocabulary re-check, in the same pass `TOKENS` is re-checked in once the geometry is real.
     ("ds-suffix-over-vocab", ds(load=KV_GOOD, suffix="32"), "R6_SUFFIX"),
+    # The **prefix bound**, `T_prefix >= 2`, and the one refusal this capability adds for a defect
+    # it did not cause. A one-token prefill computes the embedding of token 0 whatever the operand
+    # says (section 11.2, `MF-SINGLE-TOKEN-LOGITS`), so a container saved for a one-token prefix
+    # holds the wrong plane and oracle S's equality would silently not hold. The arm refuses rather
+    # than answering wrongly, and it refuses at step 3c -- before the container named here, which is
+    # written for `3,17,5` and would otherwise be refused by L12 -- so the row also shows 3c
+    # preceding the identity checks.
+    ("ds-suffix-prefix-one", ds(load=KV_GOOD, tokens="3", suffix=SUFFIX_ONE), "R6_SUFFIX"),
     # The **sequence** cap, `T_prefix + S <= MAX_PREFILL_TOKENS`. It is on the sequence and not on
     # `S` because the cap is the oracle's: oracle C'' runs `--model-forward` at `TOKENS,SUFFIX`, so a
     # cap on `S` alone would let the arm accept a run whose own acceptance oracle it refuses.
@@ -5057,14 +5065,29 @@ for case, comparand, prefix_ids, suffix_ids, whole, step_count in SUFFIX_ORACLE:
 # wrong — the pass's own logits, the decoded ids, every step's digest, the plane's verdict and column
 # count, and the external logits oracle. Widening the list to cover any of them fails here rather
 # than passing silently.
+#
+# The guard is on the **fields**, not on the blocks that hold them: an exclusion of
+# `("decode", "token_ids")` leaves `decode` present and would pass a block-level check while
+# removing the one field a wrong suffix lane moves first.
 witness = json.loads(normalize_suffix(produced["ds-suffix-3"]))
 if "decode" not in witness or "steps" not in witness or not witness["steps"] \
-        or "sha256" not in witness["steps"][0] or "output" not in witness \
-        or "sha256" not in witness["output"] or "oracle_logits" not in witness \
+        or "sha256" not in witness["steps"][0] or "n_past" not in witness["steps"][0] \
+        or "plane_column_written" not in witness["steps"][0] \
+        or "token_ids" not in witness["decode"] \
+        or "n_past_first" not in witness["decode"] \
+        or "n_past_last" not in witness["decode"] \
+        or "steps_completed" not in witness["decode"] \
+        or "output" not in witness \
+        or "sha256" not in witness["output"] or "argmax" not in witness["output"] \
+        or "oracle_logits" not in witness \
+        or "verdict" not in witness["oracle_logits"] \
+        or "byte_identical" not in witness["oracle_logits"] \
         or "oracle_decode" not in witness \
         or "columns_written" not in witness["plane"] \
         or "roundtrip_verdict" not in witness["plane"]:
-    failures.append("oracle S: the exclusion list emptied the comparison: %r" % sorted(witness))
+    failures.append("oracle S: the exclusion list emptied the comparison: %r"
+                    % {block: sorted(value) for block, value in sorted(witness.items())
+                       if isinstance(value, dict)})
 
 # The reader-facing half of the same hazard: on at least one case `output.argmax` differs from the
 # container's `kv.prefill_argmax`, so a reader who learned `output` from R6-KV-PERSIST is told by a
@@ -5335,7 +5358,8 @@ print("decode step smoke: prefix+suffix -- oracle S byte-identical on %d splits 
       "--model-forward on each, oracle B IDENTICAL over T_prefix + S columns before the first step, "
       "%d refusals each naming its own detail, two forced builds publishing a partial pass, and the "
       "RESIDENT leg reading zero pack bytes"
-      % (len(SUFFIX_ORACLE), len(SUFFIX_EXCLUDED_BLOCKS) + len(SUFFIX_EXCLUDED_FIELDS), 10))
+      % (len(SUFFIX_ORACLE), len(SUFFIX_EXCLUDED_BLOCKS) + len(SUFFIX_EXCLUDED_FIELDS),
+         len([case for case, _, _ in STUB_CASES if case.startswith("ds-suffix-")])))
 print("decode step smoke: %d no-document cases (R6_ARITY, R6_PATH), %d documented cases (%d with a "
       "golden row), %d codes reached, oracle A' PASS against transcript graphs 2..4 at three step "
       "offsets, oracle B IDENTICAL over the whole plane including every written-back column, three "
