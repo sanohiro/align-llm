@@ -3,8 +3,8 @@
   "artifact_kind": "C4_EDITSET_GATE_RECORD",
   "gate_id": "c4-repair-editset-gate-v1",
   "verdict": "NOT_MET",
-  "align_llm_commit": "c07775cffa0e24b1de82dfdc0b59102532a913df",
-  "align_llm_clean": false,
+  "align_llm_commit": "de56c60caab9f5aa169a71a5c9731a5bf259b3da",
+  "align_llm_clean": true,
   "align_revision": "3a34febe912db5096c58c74fede36ff53f223e04",
   "image": "c4-repair-measure:latest",
   "docker_version": "28.5.1",
@@ -28,7 +28,7 @@
     "content_sha256": "683be4720ce7dcf678d73f908b313cfb73fb1765d7458bc684dee6be6ad9dfc3"
   },
   "in_band_model_id": "qwen2.5-coder-7b-instruct-q4_k_m",
-  "wall_clock_seconds": 823.67,
+  "wall_clock_seconds": 940.931,
   "cost_ceiling_seconds": 3600,
   "evaluation_status": "SERIOUS_REGRESSION",
   "gate_eligible": false,
@@ -60,14 +60,14 @@
       "generation_to_passing_patch_ns": null,
       "time_to_passing_patch_ns": null,
       "adapter_elapsed_ns": [
-        17841141425,
-        20318876968
+        20104878592,
+        21600323594
       ],
       "adapter_overhead_ns": [
         null,
         null
       ],
-      "repair_prompt_sha256": "a394674636051debe545155384b33696fb65945c7b22757729fc3624cecfed1f",
+      "repair_prompt_sha256": "3cd790356d57e9f565d4109bb879d587aa5c81baa451207c51f825992e5f3f3d",
       "included_sections": [
         "STATUS",
         "EDITSET",
@@ -95,13 +95,13 @@
       "attempt_2_status": null,
       "attempt_2_skip_reason": null,
       "repair_loop_count": 0,
-      "generation_to_passing_patch_ns": 15486057966,
-      "time_to_passing_patch_ns": 15506057966,
+      "generation_to_passing_patch_ns": 15855247715,
+      "time_to_passing_patch_ns": 15875247715,
       "adapter_elapsed_ns": [
-        15486057966
+        15855247715
       ],
       "adapter_overhead_ns": [
-        106805417
+        172338375
       ],
       "repair_prompt_sha256": null,
       "included_sections": null,
@@ -125,13 +125,13 @@
       "attempt_2_status": null,
       "attempt_2_skip_reason": null,
       "repair_loop_count": 0,
-      "generation_to_passing_patch_ns": 9207609212,
-      "time_to_passing_patch_ns": 9227609212,
+      "generation_to_passing_patch_ns": 10042560922,
+      "time_to_passing_patch_ns": 10062560922,
       "adapter_elapsed_ns": [
-        9207609212
+        10042560922
       ],
       "adapter_overhead_ns": [
-        111170166
+        120310876
       ],
       "repair_prompt_sha256": null,
       "included_sections": null,
@@ -158,14 +158,14 @@
       "generation_to_passing_patch_ns": null,
       "time_to_passing_patch_ns": null,
       "adapter_elapsed_ns": [
-        8583107546,
-        21529937926
+        8934556796,
+        22906686761
       ],
       "adapter_overhead_ns": [
         null,
         null
       ],
-      "repair_prompt_sha256": "3ee009f3e86a0d8e70baaffa963d1da217347936fe8a04b5d5c44f558cd33bb2",
+      "repair_prompt_sha256": "25e96f7f8aef1ec1710100adf549f84b27e5ca71dd064508ecaced8ffb9a3b58",
       "included_sections": [
         "STATUS",
         "EDITSET",
@@ -196,8 +196,8 @@
       "generation_to_passing_patch_ns": null,
       "time_to_passing_patch_ns": null,
       "adapter_elapsed_ns": [
-        17862851008,
-        10808840088
+        21475682593,
+        15136649174
       ],
       "adapter_overhead_ns": [
         null,
@@ -230,8 +230,8 @@
       "generation_to_passing_patch_ns": null,
       "time_to_passing_patch_ns": null,
       "adapter_elapsed_ns": [
-        15146719882,
-        29336576555
+        23262075469,
+        42752741936
       ],
       "adapter_overhead_ns": [
         null,
@@ -264,8 +264,8 @@
       "generation_to_passing_patch_ns": null,
       "time_to_passing_patch_ns": null,
       "adapter_elapsed_ns": [
-        9399139670,
-        34058790140
+        12485393173,
+        42382252769
       ],
       "adapter_overhead_ns": [
         null,
@@ -298,8 +298,8 @@
       "generation_to_passing_patch_ns": null,
       "time_to_passing_patch_ns": null,
       "adapter_elapsed_ns": [
-        10295636880,
-        14461812964
+        12636365172,
+        17417019341
       ],
       "adapter_overhead_ns": [
         null,
@@ -332,14 +332,14 @@
       "generation_to_passing_patch_ns": null,
       "time_to_passing_patch_ns": null,
       "adapter_elapsed_ns": [
-        42307835895,
-        47062710687
+        46695424981,
+        52566114400
       ],
       "adapter_overhead_ns": [
         null,
         null
       ],
-      "repair_prompt_sha256": "bead330315d4c4b4141aadc157ad4fd3960909766cf73cc724067e1253dac5a2",
+      "repair_prompt_sha256": "f738ca1e08d5becf177336d4bf25fa20d06b52f27fea4c616ee9ba41c64f6ad8",
       "included_sections": [
         "STATUS",
         "EDITSET",
@@ -371,14 +371,14 @@
       "generation_to_passing_patch_ns": null,
       "time_to_passing_patch_ns": null,
       "adapter_elapsed_ns": [
-        28834288680,
-        40741736060
+        27051643138,
+        36909652850
       ],
       "adapter_overhead_ns": [
         null,
         null
       ],
-      "repair_prompt_sha256": "c8ff6219f3be1dd175aef34b2d7714bb030e4ec94ae0b3d620e8ca869625e4cb",
+      "repair_prompt_sha256": "cc57857f80e60c765f3ca787be4bfc9859285ae2e6666e4a71f9397438ade4ae",
       "included_sections": [
         "STATUS",
         "EDITSET",
@@ -409,14 +409,14 @@
       "generation_to_passing_patch_ns": null,
       "time_to_passing_patch_ns": null,
       "adapter_elapsed_ns": [
-        14702404632,
-        42015689019
+        14607404048,
+        38571692560
       ],
       "adapter_overhead_ns": [
         null,
         null
       ],
-      "repair_prompt_sha256": "035bb847dc3286327e7222e5fe43b763631534e6b22fd381f040e2ce83edc2b6",
+      "repair_prompt_sha256": "f64883858cba065457f70dd400eddefa13610dbdde03901a5255b69c83fce58d",
       "included_sections": [
         "STATUS",
         "EDITSET",
@@ -447,14 +447,14 @@
       "generation_to_passing_patch_ns": null,
       "time_to_passing_patch_ns": null,
       "adapter_elapsed_ns": [
-        34013005890,
-        51540359689
+        32145651015,
+        47626867479
       ],
       "adapter_overhead_ns": [
         null,
         null
       ],
-      "repair_prompt_sha256": "a556d3f269c5f88ccb651141acc750cbc7f07e8e654024931ae0211b041cfa53",
+      "repair_prompt_sha256": "6d61e5145c336ca2797ddd5897a10adcef692347da8daf9be717e3e00024425e",
       "included_sections": [
         "STATUS",
         "EDITSET",
@@ -476,5 +476,5 @@
       "attempt_1_edit_set_total_bytes": 1160
     }
   ],
-  "content_sha256": "88f08e58dbbfe5bef2d67d106516c7d4c18262c5c9699494185cd73343fa53b6"
+  "content_sha256": "2dce0393742d1c0f0246aa013ae0b511e0fed88abe7a6b3595532c4d9796df12"
 }

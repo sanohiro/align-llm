@@ -19,7 +19,13 @@ assembled prompts ran 8,348 to 16,904 bytes of a 65,536-byte budget.
 On all four rows where both attempts produced a patch, `attempts[1].measurement.patch_sha256`
 equals `attempts[0]`'s **exactly**. C4 could only say "the same byte count"; this says the same
 bytes. On the two `duration-half-away-from-zero` PARENT rows the model, shown its own rejected
-answer, emitted no parsable `FILE:` block at all — a mode change from a wrong patch to no patch.
+answer, returned the pinned files **unchanged** — a well-formed answer that changes nothing, so
+every hunk is empty and no patch is synthesized. That is a mode change from a wrong patch to a
+no-op. All eight `failure_kind: PATCH` rows in this run carry
+`diagnostic_summary: "the response reproduced the pinned files unchanged"`; none is a parse
+failure. Note that `edit_set` is `None` on those rows: the adapter builds the blocks and then
+discards them when the patch turns out empty, which spec section 11.3 deviation 14 records as the
+gap the next capability closes.
 
 `c4-repair-measured.md` section 5.7's tie-breaker is therefore answered in the negative: on this
 model and this corpus the missing edit set was not the binding constraint, and the next capability

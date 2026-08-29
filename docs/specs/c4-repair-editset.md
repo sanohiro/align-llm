@@ -78,13 +78,33 @@ were byte-identical is **not currently checkable from any artifact this reposito
 it checkable is one of the two things this capability persists (§3.3, `patch_sha256`), and it is
 the reason the digest is in the ledger rather than treated as a nicety.
 
-**Mode 2 — no parsable edit set at all. Four rows: `layer-precedence-frozen-module`.** Every
-attempt-1 on this task failed at `PATCH` with `patch_size_bytes: 0`: `parse_file_blocks` found no
-terminated `FILE:` block, so `validated_edit_set` never returned and no patch was ever synthesized.
-Attempt 2 then either repeated `PATCH` (PARENT ×2) or produced a block naming a path outside the
-allowlist (CANDIDATE ×2). **There is no edit set to show on this task**, so the `EDITSET` section
-would be empty for all four rows no matter what this capability does. It is not merely out of
-scope; it is structurally unreachable from here. §1.4 states the fallback capability that owns it.
+**Mode 2 — the response reproduces the pinned files unchanged. Four rows:
+`layer-precedence-frozen-module`.** Every attempt-1 on this task failed at `PATCH` with
+`patch_size_bytes: 0`.
+
+> **Corrected during implementation, from the evidence.** This section originally read "no parsable
+> edit set at all — `parse_file_blocks` found no terminated `FILE:` block, so `validated_edit_set`
+> never returned". **That is wrong**, and the persisted diagnostics say so directly: every
+> `failure_kind: PATCH` row in `eval/prompt/c4-repair-gate/` carries
+> `diagnostic_summary: "the response reproduced the pinned files unchanged"` — six of six — and not
+> one carries `"the response declares no file block"` or `"a fenced file block is not terminated"`.
+> That message is `synthesized_patch`'s refusal (`scripts/prompt-measurement-adapter.py:433`),
+> raised **after** `parse_file_blocks` returned terminated blocks and **after**
+> `validated_edit_set` accepted every declared path. So the model emits well-formed `FILE:` blocks
+> naming allowlisted files, and fills them with the file's **existing** content: every whole-file
+> hunk is empty, the synthesized patch is empty, and the adapter refuses it. §11.4 records the same
+> tally for this capability's own run, where it is eight of eight.
+
+The mode is therefore a **no-op answer**, not a format failure: the model understands the response
+format and does not change anything. Attempt 2 then either repeated `PATCH` (PARENT ×2) or produced
+a block naming `src/legacy.py`, outside the allowlist (CANDIDATE ×2).
+
+**A validated edit set does exist on these rows, and this capability does not persist it.** The
+`PATCH` outcome arrives after `validated_edit_set` returned, so §3.3's two clauses — "`Some` exactly
+when `validated_edit_set` returned" and "`None` on `PATCH`" — are in tension for exactly this path.
+The shipped adapter follows the second, so `edit_set` is `None` on all eight rows. That is a
+contract-conformant choice and a real loss of the most interesting evidence on this corpus; §11.3
+deviation 14 records it as the gap the fallback capability closes.
 
 ### 1.3 In scope
 
@@ -478,6 +498,12 @@ no credential, so on this corpus the two are identical.
 | `POLICY_VIOLATION`/`POLICY` | `None` | `None` | omitted (empty source) | 0 at attempt 1 |
 | `ERROR` | `None` | `None` | repair `SKIPPED` per the existing eligibility rule | 0 |
 
+The `FAIL`/`PATCH` row of this table is the one the run falsified in its *reason*, not its *shape*:
+`edit_set` is indeed `None` there, but not because the response carried no edit set — it is because
+the adapter discards a validated one when the synthesized patch turns out empty (§1.2, §11.3
+deviation 14). The rendered outcome is unchanged; what changes is that "empty source" is a
+consequence of this capability's own choice rather than of the model's answer.
+
 No special case is added for the empty-`EDITSET` rows: a section whose source is empty is simply not
 emitted, which is exactly how `SUMMARY`, `STDOUT`, and `STDERR` already behave
 (`assemble_repair_prompt`, `included = [kind for kind in … if sources[kind]]`).
@@ -793,9 +819,11 @@ FILE: src/duration.py
 ```
 ````
 
-Format-consistency is deliberate. Mode 2 (§1.2) shows this model failing the whole-file format on
-one task in eight of eight attempts; a prompt that displayed a unified diff while demanding whole
-files would push toward exactly that mode. The rejected alternative — rendering the synthesized
+Format-consistency is deliberate. A prompt that displayed a unified diff while demanding whole files
+would ask the model to translate between two formats under a long prompt, which is work the answer
+format does not need. (An earlier draft justified this by mode 2 "failing the whole-file format";
+§1.2 records that mode 2 is a no-op answer rather than a format failure, so the argument stands on
+its own terms and not on that evidence.) The rejected alternative — rendering the synthesized
 unified diff — is smaller on the wire and is a *different* format from the one required, and is
 rejected for that reason. The fence run is chosen longer than any run appearing in the body, using
 the frozen `fence_run` / `closing_fence` rule, so a body containing fenced text nests correctly.
@@ -1029,13 +1057,13 @@ redirects the next capability, and it is published as one.
 
 | Deferred | Reason | Resume condition |
 | --- | --- | --- |
-| **Mode 2: the empty-patch / format failure** | `layer-precedence-frozen-module` produced no parsable `FILE:` block on any of its eight attempts (§1.2), so there is no edit set to show and this capability cannot reach it. The fix is a **prompt-template and edit-policy capability**: a stricter format statement, a worked example in the template, a repeated format reminder positioned after the diagnostics rather than only at the close, and possibly an explicit editable-path list rendered next to the requirement. That is prompt design, not adapter design | Its own capability, whether this gate is `MET` or `NOT_MET`. A `NOT_MET` gate here makes it the next capability rather than a parallel one |
+| **Mode 2: the unchanged-file reproduction** | On `layer-precedence-frozen-module` the model emits well-formed `FILE:` blocks naming allowlisted files and fills them with the files' existing content, so every hunk is empty and `synthesized_patch` refuses (§1.2). It is a **no-op answer**, not a format failure, and the fix is therefore about making the required change legible rather than about the response format: a task statement that names the observable the test asserts, a worked before/after example, and possibly a producer-side check that refuses to call an unchanged reproduction an answer at all. Its first sub-problem is smaller and is this capability's own gap: **persist the edit set on the `PATCH` path** so the no-op answers can be read (§11.3 deviation 14) | Its own capability, whether this gate is `MET` or `NOT_MET`. A `NOT_MET` gate here makes it the next capability rather than a parallel one |
 | Scrubbing the sandbox temp path out of persisted diagnostics | Unchanged from `c4-repair-measured.md` §5.4: it originates in the frozen runner and scrubbing here would break §4.5 | A capability that re-freezes the runner |
 | Measuring `prompt_preparation_ns` instead of the hard-coded `20_000_000` | Unchanged: a separate pre-existing deviation with its own owner | Its own capability |
 | More than one repair attempt | Unchanged. Each extra attempt multiplies run cost and further stretches C6 §9's coverage argument | A `MET` gate at one repair plus a measured recovery rate showing a second attempt would recover a task the first did not |
 | Corpus expansion | Three tasks is the frozen corpus | A later Track A capability; no `C9` label exists today |
 | Failure-memory feedback between attempts | Unchanged: it would make attempt 2 depend on prior runs and destroy single-row re-derivability | A design that persists the selected memory events into the attempt record |
-| Persisting the raw generation response | The edit set is the *validated* subset; the raw response is unbounded, unstructured, and only redacted-and-bounded once it becomes a diagnostic. Persisting it would be a much larger disclosure surface for a much weaker signal | A capability whose question is about response format rather than edit content — plausibly the mode-2 capability above, which would want the *unparsable* text |
+| Persisting the raw generation response | The edit set is the *validated* subset; the raw response is unbounded, unstructured, and only redacted-and-bounded once it becomes a diagnostic. Persisting it would be a much larger disclosure surface for a much weaker signal | A capability whose question is about response content rather than edit validity — plausibly the mode-2 capability above, which would want the text of an answer the adapter refused |
 | Retiring `scripts/prompt-repair-adapter.py` back into the frozen adapter | Two adapters now exist and one imports the other. Merging them means re-freezing `canonical-v1`, which costs three evidence chains | A capability that genuinely re-freezes the canonical corpus, which would also discharge `c6-prompt-context-optimizer.md` §1.2's `/proc` scan and the temp-path scrub |
 | Converging `src/repair.align` / `src/verification_loop.align` with this loop | Unchanged | After this gate resolves either way |
 
@@ -1289,7 +1317,8 @@ Drafts only. They are applied in the implementation branch, not here.
     freeze `eval/prompt/canonical-v1e/` + `eval/tasks/prompt-v1e/`; the 24 members shared with
     both earlier corpora carry identical digests. **The addressable arm is six of ten repair
     attempts.** The other four are `layer-precedence-frozen-module`, where the model produced no
-    parsable file block on any of eight attempts, so there is no edit set to show; that mode is a
+    changed file on any of eight attempts — it reproduces the pinned files unchanged, so every
+    hunk is empty and no patch is synthesized; that mode is a
     prompt-template and edit-policy capability and is named as the fallback. The gate is item 31's
     predicate unchanged: `repair_recovery_paired_count >= 1`. **A measured negative is a published
     result**, and here it is directional — it would answer item 31's tie-breaker in the negative
@@ -1605,6 +1634,20 @@ Each is a place where implementation departed from, or had to decide something l
     `gate_eligible`, and the C4 run is a published measured negative with two `POLICY` reasons. The
     same rules are reached; the entry point is the one that document can legitimately take.
 
+14. **`edit_set` is not persisted on the `PATCH` path, and on this corpus that is where it would
+    matter most.** `scripts/prompt-repair-adapter.py` builds the blocks from `validated_edit_set`'s
+    return and then calls `synthesized_patch`, which raises `EditFormatError` when every hunk is
+    empty; the handler resets `edit_set`, `edit_set_total_bytes`, and `patch_sha256` to `None`. So
+    on all eight unchanged-reproduction rows an edit set existed one statement earlier and is
+    discarded. This **conforms to §3.3**, whose presence table says `None` on `PATCH`, and it is
+    the shipped behaviour — but §3.3's other clause says `Some` exactly when `validated_edit_set`
+    returned, and the two disagree for precisely this path. The design wrote that table believing
+    mode 2 never reached `validated_edit_set` at all (§1.2), which the evidence falsifies. The
+    consequence is concrete: the answers this corpus's dominant failure mode produces are the ones
+    the capability cannot show a reader. Not changed here — the adapter's digest is pinned into
+    `canonical-v1e` by three manifests and a measured run, so changing it means a new freeze and a
+    new gate run — and it is the first thing §6.4's fallback capability should fix.
+
 13. **The gate validator's version-2 presence rule reads the wire form, not key presence.** Written
     as "all four keys present at version 2", it rejected the published gate evidence on its first
     contact with a real `FAIL`/`PATCH` row, because the canonical encoder omits an `Option::None`.
@@ -1621,15 +1664,24 @@ Each is a place where implementation departed from, or had to decide something l
 
 ### 11.4 The gate run and its result
 
+**The checked-in evidence is the run from the clean committed head `de56c60`**, taken on the terms
+`c4-repair-measured.md` §10.3 established: a gate record must name a reproducible commit.
+`align_llm_clean: true`, and all three reachability fields — `align_llm_reachability`,
+`align_reachability`, `corpus_reachability` — are `VERIFIED`. An earlier run from the same tree
+before it was committed reported `align_llm_clean: false` and `UNVERIFIED` reachability;
+**every correctness value below reproduced exactly between the two**, including both patch digests,
+and only the clocks moved. That comparison is itself the reproducibility evidence, and it is why §6.3
+refuses a speed claim.
+
 ```text
 verdict:                      NOT_MET
 repair_recovery_paired_count: 0        (the gate quantity; >= 1 was required)
 repair_recovery_count:        0
 repair_attempt_count:         10
 repair_editset_attempt_count: 6        (the expected value, stated before the run)
-wall clock:                   823.67 s = 13.73 min against a 60-minute recorded ceiling
+wall clock:                   940.931 s = 15.68 min against a 60-minute recorded ceiling
 provider calls:               22       (12 initial + 10 repair, the ceiling's exact estimate)
-adapter_elapsed_ns:           8.58 s - 51.54 s, median 19.09 s, n = 22
+adapter_elapsed_ns:           8.93 s - 52.57 s, median 22.25 s, n = 22
 assembled repair prompts:     8,348 - 16,904 bytes of 65,536; no section was ever dropped
 evaluation status:            SERIOUS_REGRESSION (two POLICY reasons); gate_eligible false
 ```
@@ -1670,11 +1722,18 @@ pinned source. That distinction is invisible in `patch_size_bytes`, invisible in
 visible only because `edit_set` is persisted.
 
 **The `duration-half-away-from-zero` PARENT arm changed mode, and got worse.** In the C4 run those
-two rows re-emitted a 716-byte patch. Shown their own rejected answer, they emitted **no parsable
-`FILE:` block at all**: `FAIL`/`PATCH` with `patch_size_bytes: 0`. So the edit set did change the
-model's behaviour on that arm — from a wrong patch to no patch — which is a stronger and more
-specific finding than "no effect", and it moves those two rows into the same format-failure mode as
-`layer-precedence-frozen-module`.
+two rows re-emitted a 716-byte patch. Shown their own rejected answer, they returned
+`FAIL`/`PATCH` with `patch_size_bytes: 0` and
+`diagnostic_summary: "the response reproduced the pinned files unchanged"` — a well-formed answer
+that **restores the file to its pinned content**. So the edit set did change the model's behaviour
+on that arm: from a wrong patch to a **no-op**. Read against the template, which states the previous
+answer was rejected by the repository's own validation and instructs the model not to return it
+unchanged, the model appears to have taken "your answer was rejected" as "revert it".
+
+That is a stronger and more specific finding than "no effect", and it moves those two rows into the
+same mode as `layer-precedence-frozen-module` — **unchanged-file reproduction**, not a format
+failure. All eight `PATCH` rows in this run carry that identical summary, and none carries a
+parse-failure message. §1.2 records the correction to the design's original characterization.
 
 **What this settles.** `c4-repair-measured.md` §5.7's tie-breaker is answered **in the negative**:
 on this model and this corpus, the missing edit set was **not** the binding constraint. Of six
@@ -1689,20 +1748,37 @@ adapter that reuses the reviewed containment core without editing a byte of it; 
 is re-derivable from persisted evidence; and "attempt 2 re-sent attempt 1's patch" is now a
 **verified fact** rather than an inference, on the first run that could state it.
 
-**No speed claim.** The two runs of the C4 corpus at identical seeds spanned 7.98-64.67 s and
-8.13-73.82 s; this run spans 8.58-51.54 s. Three runs, three ranges, one greedy decode. §6.3 refuses
-a speed claim and this is why.
+**No speed claim.** Four runs of this corpus family at identical seeds and `temperature_micros: 0`
+now exist: the C4 pair spanned 7.98-64.67 s and 8.13-73.82 s, and this capability's pair spans
+8.93-52.57 s (committed head, 940.931 s wall clock) and 8.58-51.54 s (the pre-commit run, 823.67 s).
+Four runs, four ranges, one greedy decode, and the 117-second wall-clock gap between this
+capability's own two runs is host contention rather than anything about the model. §6.3 refuses a
+speed claim and this is why.
 
-**Run record.** align-llm commit `c07775c` with an unclean tree (the capability is uncommitted at
-the time of this run), `.align-revision` `3a34febe912db5096c58c74fede36ff53f223e04`, image
+**Run record.** align-llm commit `de56c60caab9f5aa169a71a5c9731a5bf259b3da`, `align_llm_clean:
+true`, `.align-revision` `3a34febe912db5096c58c74fede36ff53f223e04`, image
 `c4-repair-measure:latest` (`33fa9e4446ab`) on Docker 28.5.1, forwarder
 `socat TCP-LISTEN:18080,fork,reuseaddr,bind=127.0.0.1 TCP:host.docker.internal:18080`, container
 privileges `--cap-add=SYS_ADMIN` plus unconfined `seccomp`, `apparmor`, and `systempaths`, in-band
 model id `qwen2.5-coder-7b-instruct-q4_k_m`. The provider service revision was **re-derived at
-freeze time, not inherited** (§3.7): `llama-server --version` reports build 10566 commit
-`bb4caa754`, the resolved binary hashes to `b6ff7e91…`, and the model file was re-hashed in full to
-`509287f7…`. The observed string equals `canonical-v1r`'s, which is a measurement and not a copy —
-the probe would have failed closed had any component moved.
+freeze time, not inherited** (§3.7), and re-probed again immediately before this run:
+`llama-server --version` reports build 10566 commit `bb4caa754`, the resolved binary hashes to
+`b6ff7e91…`, and the model file was re-hashed in full to `509287f7…`. The observed string equals
+`canonical-v1r`'s, which is a measurement and not a copy — the probe would have failed closed had
+any component moved.
+
+Published digests:
+
+```text
+c4-editset-evaluation.json           1355d8e3d03919c7dff361d6262bab6d1eca84f20b5e981fc19de1cc7a6b021f
+c4-editset-evaluation-evidence.json  cac6f466d6e9a72a5579bc53c5a6ecde6e5921fcf36272ae220651294a4c5b00
+c4-editset-gate-record.json          561f74b8360c50baa0ca5d407d10021c247ce0113752744730d9eac40f922af0
+```
+
+The chain revalidates at this head: `src/prompt_evaluate_smoke.align` decodes, re-encodes, and
+verifies it to `COMPLETE_INELIGIBLE` — structurally valid and correctly not acceptance-eligible —
+and `scripts/prompt-gate-validator.py`'s `rescore` plus the row, attempt, and measurement walks
+accept all 12 rows, recomputing `repair_editset_attempt_count` to the persisted 6.
 
 `gate_eligible` is `false` and not for reachability: it is the **C6 acceptance** verdict, which
 requires `IMPROVED` with no serious-regression reason, and this run's status is

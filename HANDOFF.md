@@ -6,15 +6,24 @@ file records durable project state.
 ## Active: C4-REPAIR-EDITSET (2026-08-29)
 
 Branch `agent/c4-repair-editset`, stacked on `agent/c4-repair-measured` at `c07775c`. Implemented,
-verified, and **measured**. Nothing is committed yet; the checked-in evidence is from an unclean
-head and must be re-run once from the committed head, exactly as C4-REPAIR-MEASURED did.
+verified, and **measured**; two commits and nothing uncommitted. Ready for review.
 
 **GATE RESULT: `NOT_MET` — a measured negative, and a directional one.** 12 rows, 22 provider calls,
-**823.67 s = 13 min 44 s** against a 60-minute recorded ceiling. `repair_recovery_count: 0` and
+**940.931 s = 15 min 41 s** against a 60-minute recorded ceiling. `repair_recovery_count: 0` and
 `repair_recovery_paired_count: 0`. **`repair_editset_attempt_count: 6`** — exactly the addressable
 arm stated before the run, so all six eligible repair prompts carried `EDITSET` and the drop ladder
 never fired (8,348-16,904 bytes of 65,536). Evidence at `eval/prompt/c4-editset-gate/`; the per-row
 table and the analysis are in spec section 11.4.
+
+**The checked-in evidence is the run from the clean committed head `de56c60`**, taken on the same
+terms C4-REPAIR-MEASURED used: `align_llm_clean: true` and all three reachability fields
+`VERIFIED`, against a pre-commit run's `false`/`UNVERIFIED`. **Every correctness value reproduced
+exactly** between the two runs — same verdict, same rows, same statuses and failure kinds, same
+`patch_size_bytes`, same six-attempt denominator, same aggregates, same 8,348-16,904 assembled
+bytes, and **the same two patch digests** `8cd2aa30…` and `cd9ae218…`. Only the clocks moved:
+940.931 s against 823.67 s, and 8.93-52.57 s / median 22.25 s against 8.58-51.54 s / median
+19.09 s, under a concurrent DinD preflight. Digests: `c4-editset-evaluation.json` `1355d8e3…`,
+evidence `cac6f466…`, record `561f74b8…`.
 
 **The question C4 could not answer is answered.** On all four rows where both attempts produced a
 patch, `attempts[1].measurement.patch_sha256` equals `attempts[0]`'s **exactly** — the same bytes,
@@ -22,8 +31,9 @@ not merely the same byte count. And the persisted `edit_set` says more: on the t
 `record-codec-round-trip` CANDIDATE rows the model re-emitted a byte-identical edit set, while on
 the two PARENT rows it dropped the file it had reproduced unchanged and kept the other one
 byte-identical, producing the same patch anyway. On the two `duration-half-away-from-zero` PARENT
-rows, shown its own rejected answer, it emitted **no parsable `FILE:` block at all** — a mode change
-from a wrong patch to no patch. `c4-repair-measured.md` section 5.7's tie-breaker is answered **in
+rows, shown its own rejected answer, it returned the pinned files **unchanged** — a well-formed
+answer that changes nothing, so every hunk is empty and no patch is synthesized. A mode change from
+a wrong patch to a **no-op**. `c4-repair-measured.md` section 5.7's tie-breaker is answered **in
 the negative**: the missing edit set was not the binding constraint, and the next capability is the
 prompt, the template, and the edit policy rather than more adapter work.
 
@@ -49,6 +59,18 @@ mints anything.
 and `base_adapter_runtime_identity` as `Option` members. **`PROMPT_TASK_ROW` does not move** — the
 row gains no field. The measurement's version is a checked function of the corpus: a task whose
 `argv` names the repair adapter must emit version 2 and any other task must emit version 1.
+
+**The design's characterization of the second failure mode was wrong, and the evidence corrected
+it.** `c4-repair-editset.md` §1.2 originally read that `layer-precedence-frozen-module` "produced no
+parsable `FILE:` block", so `validated_edit_set` never returned. Every `failure_kind: PATCH` row in
+**both** gate runs — 6 of 6 in C4's, 8 of 8 in this one — carries
+`diagnostic_summary: "the response reproduced the pinned files unchanged"`, which is
+`synthesized_patch`'s refusal *after* the blocks parsed and every path was allowlisted. The mode is
+a **no-op answer**, not a format failure, and the fallback capability is retargeted accordingly.
+Two consequences are recorded: §1.2 carries the correction, and §11.3 deviation 14 records that
+`edit_set` is `None` on exactly those rows because the adapter builds the blocks and then discards
+them — conformant with §3.3's presence table, and the single most useful thing the next capability
+can fix.
 
 **Two rules the implementation had to add that the design did not anticipate**, both found by a
 green-to-red owner test rather than by review:
@@ -111,11 +133,14 @@ verification, and make the name assertion vacuous. One mutant (the validator's r
 observed string equals `canonical-v1r`'s, which is a measurement rather than a copy — the probe
 fails closed had any component moved.
 
-**Next actions, in order.** (1) Commit. (2) Re-run `make c4-editset-gate` once from the clean
-committed head so the record names a reproducible commit and `align_llm_clean` is true, exactly as
-C4-REPAIR-MEASURED did; replace the three files under `eval/prompt/c4-editset-gate/` and correct
-spec section 11.4's digests and clocks with that run's. Expect every correctness value to
-reproduce and only the clocks to move. (3) Publish, with the review envelope.
+**Next actions, in order.** (1) One comprehensive review of the stable candidate. (2) Publish the
+English pull request with the exact verification commands, the measured result, and the review
+envelope. (3) On merge, C4's roadmap gate remains unmet by a model, and the fallback capability
+named in spec section 6.4 — a prompt and edit-policy capability for the **unchanged-file
+reproduction** mode — becomes the next Track A item rather than a parallel one, because this gate
+answered its tie-breaker in the negative. Its first sub-problem is this capability's own recorded
+gap: **`edit_set` is `None` on every `PATCH` row** (spec section 11.3 deviation 14), so the answers
+that mode produces are exactly the ones no artifact shows.
 
 **Blockers.** Host capacity only: a DinD preflight and Track B's model work contend for memory, and
 the gate needs `llama-server` with the 4.7 GB model. No Align capability request blocks this; next

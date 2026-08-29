@@ -682,9 +682,11 @@ The current forward delivery order is:
     denominator. New freeze `eval/prompt/canonical-v1e/` + `eval/tasks/prompt-v1e/`, 30 file-set
     members; the 24 shared with both earlier corpora carry identical digests in all three
     manifests. **The addressable arm is six of ten repair attempts.** The other four are
-    `layer-precedence-frozen-module`, where the model produced no parsable file block on any of
-    eight attempts, so there is no edit set to show; that mode is a prompt-template and edit-policy
-    capability and is named as the fallback. Found by probe and closed here: a second adapter that
+    `layer-precedence-frozen-module`, where the model emits well-formed blocks naming allowlisted
+    files and fills them with the files' **existing** content, so every hunk is empty and no patch
+    is synthesized — a no-op answer rather than a format failure, and the design's original
+    "no parsable block" reading is corrected against the evidence in section 1.2. That mode is a
+    prompt and edit-policy capability and is named as the fallback. Found by probe and closed here: a second adapter that
     reused the frozen `environment_probe()` would persist the **imported** file's digest while
     running its own code, and the existing check would accept it; the same probe found that no
     producer or runtime-identity check existed on an *attempt-level* measurement's probe at all.
