@@ -624,14 +624,14 @@ The current forward delivery order is:
     step-independent, and the same number `r3-residency-sim.md` section 8.1 publishes as the decode
     arms' one-token working set; and the open quantity is the **union**, which over four steps on
     one prompt grows 128 → 274 keys of 1,024 while **79.9 %** of those 274 *distinct* decode keys
-    were already read by the prefill. The plane is OLMoE's geometry in item 27's unchanged layout, 67,108,864 B
-    at width 256 — **2.29×** the dense arm's on a model with a fifth of the parameters, because
-    sixteen KV heads beat twenty-eight layers. What it needed that did not exist: an `OP_CONCAT` and
-    a `WHEN_DECODE` condition in `src/layer_olmoe.align`, and a **thirty-seven-row** decode phase-A
-    table — `WHEN_WIDE` cannot be reused, because `ggml_pad` writes its source at index 0 and a
-    decode step's new column belongs at `n_past`. `MAX_PREFILL_TOKENS` moves **6 → 32** so the
-    self-reference oracle can run at `T + k` tokens, and the guard that keeps the cap's original
-    reason is **new**: `--moe-layer-forward` and `--moe-model-forward` did not ship
+    were already read by the prefill. The plane is OLMoE's geometry in item 27's unchanged layout,
+    67,108,864 B at width 256 — **2.29×** the dense arm's on a model with a fifth of the parameters,
+    because sixteen KV heads beat twenty-eight layers. What it needed that did not exist: an
+    `OP_CONCAT` and a `WHEN_DECODE` condition in `src/layer_olmoe.align`, and a **thirty-seven-row**
+    decode phase-A table — `WHEN_WIDE` cannot be reused, because `ggml_pad` writes its source at
+    index 0 and a decode step's new column belongs at `n_past`. `MAX_PREFILL_TOKENS` moves
+    **6 → 32** so the self-reference oracle can run at `T + k` tokens, and the guard that keeps the
+    cap's original reason is **new**: `--moe-layer-forward` and `--moe-model-forward` did not ship
     `R5_ORACLE_TRUNCATED` because at a cap of 6 the condition was unreachable, and both now refuse a
     prefill above six tokens *with* a transcript exactly as the dense arms do. **No new ggml op, FFI
     symbol, or shim body**, and `src/decode_step.align` is byte-unchanged; the dense arm's
