@@ -828,10 +828,11 @@ The current forward delivery order is:
     `model_forward.plan_resident` that Align's missing generics force (Request 49's newest and
     sharpest-shaped client, and roughly 65 lines rather than 40 because three of the arithmetic
     helpers it needs are private). Correctness is **free**: oracle D compares the two legs' whole
-    normalized documents outside an enumerated eleven-name exclusion, and gate G, oracle R, oracle B,
-    oracle T and oracle C' are all re-run on the resident leg. Owner `gmake layer-forward-smoke`,
-    whose seventh block gains ten golden rows, a staging-boundary case with no golden row, two
-    no-document arity cases and a forced build in which a `dense` run fails with its region live;
+    normalized documents outside the `weights` object and an enumerated ten-name exclusion, and
+    gate G, oracle R, oracle B, oracle T and oracle C' are all re-run on the resident leg. Owner
+    `gmake layer-forward-smoke`, whose seventh block gains eleven golden rows, a staging-boundary
+    case with no golden row, two no-document arity cases and a forced build in which a `dense` run
+    fails with its region live;
     focused `gmake moe-decode-step-qualification`. **What it leaves open:** the R6 gate still asks
     that TTFT improve on repeated coding tasks *sharing a prefix*, and a decode loop that shares no
     prefix does not answer it; the next capability toward it is partial **expert** residency, whose

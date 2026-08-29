@@ -261,9 +261,26 @@ pub fn empty_decode() -> Decode = Decode {
 // lives here; `docs/align-requests.md` owns the language half of that.
 // ---------------------------------------------------------------------------------------------
 
+// `error_detail` is a diagnostic, not a contract on the operand's completeness, so a longer one is
+// truncated at a UTF-8 scalar boundary and the truncation is not marked. The scan walks back over
+// continuation bytes (`0x80..0xBF`), so the cut can never split a scalar and the slice can never
+// abort. Cutting at a fixed byte index instead aborts the process on an operand whose 256th byte
+// falls inside a multibyte scalar, which turns a refusal into no document at all; it reached this
+// module through `resident_detail` and `suffix_detail`. `docs/specs/r6-moe-resident-dense.md`
+// section 13 item 15 records the repair. This is `src/model_ir.align`'s form, adopted verbatim.
 fn bounded_detail(value: str) -> string {
-  if value.len() <= MAX_DETAIL_BYTES { return value.clone() }
-  return value[0..MAX_DETAIL_BYTES].clone()
+  view := value.bytes()
+  if view.len() <= MAX_DETAIL_BYTES {
+    return value.clone()
+  }
+  mut cut := MAX_DETAIL_BYTES
+  loop {
+    if cut <= 0 { break }
+    byte := view.u8(cut) as i64
+    if byte < 128 || byte >= 192 { break }
+    cut = cut - 1
+  }
+  return value[0..cut].clone()
 }
 
 fn fail(borrow mut o: model_forward.Outcome, code: str, detail: str) {
@@ -956,12 +973,12 @@ fn run_step_graph(
     wrap_started := time.instant()
     weight_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
     o.wrap_ns = o.wrap_ns + (time.instant() - wrap_started)
-    o.wrap_count = o.wrap_count + 1
     if ggml_ffi.handle_absent(weight_buffer) {
       fail(o, "R5_GGML_INIT", "weight_buffer")
     } else {
       owned_buffer = weight_buffer
       o.ggml_buffers_created = o.ggml_buffers_created + 1
+      o.wrap_count = o.wrap_count + 1
     }
   }
   if o.code.len() == 0 {
@@ -3090,11 +3107,11 @@ fn schedule_decode(
     wrap_started := time.instant()
     resident_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
     o.wrap_ns = o.wrap_ns + (time.instant() - wrap_started)
-    o.wrap_count = o.wrap_count + 1
     if ggml_ffi.handle_absent(resident_buffer) {
       fail(o, "R5_GGML_INIT", "resident_buffer")
     } else {
       o.resident_wraps_created = o.resident_wraps_created + 1
+      o.wrap_count = o.wrap_count + 1
     }
   }
   loading := kv_load_path.len() > 0

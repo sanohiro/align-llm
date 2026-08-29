@@ -8563,9 +8563,12 @@ requests fewer than `b.cap()` bytes.
 ---
 
 R6-MOE-RESIDENT-DENSE is a **weaker** client than the dense arm's, and the priority is not raised on
-its account. Its one-time fill chunks 311,027,712 B through `read_into_window` at `CHUNK_BYTES`,
-which is roughly 297 `pread`s against the dense arm's 4,669 — the same shape at a fifteenth of the
-volume. It is cited as continuing evidence that the chunking is structural rather than incidental.
+its account. Its one-time fill chunks 311,027,712 B through `read_into_window` at `CHUNK_BYTES` in a
+**measured 418** `pread`s against the dense arm's 4,669 — the same shape at a fifteenth of the
+volume. (The pre-implementation estimate here was "roughly 297", derived from the byte total alone;
+the fill chunks **per member**, so a 147-member set costs more calls than the volume predicts.
+`docs/specs/r6-moe-resident-dense.md` section 12.4 carries the measurement.) It is cited as
+continuing evidence that the chunking is structural rather than incidental.
 
 ## Request 39 — Release of rebound `buffer` allocations before frame exit
 

@@ -86,7 +86,7 @@ CODE_CLAIM_ACCOUNTING := "R6M_CLAIM_ACCOUNTING"
 CODE_ROUTED_SHAPE := "R6M_ROUTED_SHAPE"
 // R6-MOE-RESIDENT-DENSE sections 3.1 and 3.2. All three are **document-carrying**, unlike the arity
 // refusal, which is `Err(Error.Invalid)` with no document at all (there is no `R6M_ARITY` constant
-// in this source; section 11 item 10 records that discrepancy with the prose rather than propagating
+// in this source; section 11 item 12 records that discrepancy with the prose rather than propagating
 // it). `R6M_RESIDENT_UNAVAILABLE` is deliberately **not** introduced: a degraded reservation on this
 // buffer already carries `R5_WINDOW_UNAVAILABLE` and a second name for one condition on one buffer
 // is what section 3.2 refuses for seam codes.
@@ -268,9 +268,25 @@ pub fn empty_step_residency() -> StepResidency = StepResidency {
 // its largest client.
 // ---------------------------------------------------------------------------------------------
 
+// `error_detail` is a diagnostic, not a contract on the operand's completeness, so a longer one is
+// truncated at a UTF-8 scalar boundary and the truncation is not marked. The scan walks back over
+// continuation bytes (`0x80..0xBF`), so the cut can never split a scalar and the slice can never
+// abort. Cutting at a fixed byte index instead aborts the process on an operand whose 256th byte
+// falls inside a multibyte scalar, which turns a refusal into no document at all; section 13
+// item 15 records that repair. This is `src/model_ir.align`'s form, adopted verbatim.
 fn bounded_detail(value: str) -> string {
-  if value.len() <= MAX_DETAIL_BYTES { return value.clone() }
-  return value[0..MAX_DETAIL_BYTES].clone()
+  view := value.bytes()
+  if view.len() <= MAX_DETAIL_BYTES {
+    return value.clone()
+  }
+  mut cut := MAX_DETAIL_BYTES
+  loop {
+    if cut <= 0 { break }
+    byte := view.u8(cut) as i64
+    if byte < 128 || byte >= 192 { break }
+    cut = cut - 1
+  }
+  return value[0..cut].clone()
 }
 
 // R6-MOE-RESIDENT-DENSE section 3.2. `resident[<text>]`, bounded to 256 bytes by `bounded_detail`,
@@ -1716,12 +1732,12 @@ fn run_moe_layer(
     weight_buffer = resident_buffer
   } else if o.code.len() == 0 {
     weight_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
-    o.wrap_count = o.wrap_count + 1
     if ggml_ffi.handle_absent(weight_buffer) {
       fail(o, "R5_GGML_INIT", "weight_buffer")
     } else {
       owned_weight_buffer = weight_buffer
       o.ggml_buffers_created = o.ggml_buffers_created + 1
+      o.wrap_count = o.wrap_count + 1
     }
   }
   if o.code.len() == 0 {
@@ -2117,12 +2133,12 @@ fn run_moe_end_graph(
     weight_buffer = resident_buffer
   } else if o.code.len() == 0 {
     weight_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
-    o.wrap_count = o.wrap_count + 1
     if ggml_ffi.handle_absent(weight_buffer) {
       fail(o, "R5_GGML_INIT", "weight_buffer")
     } else {
       owned_weight_buffer = weight_buffer
       o.ggml_buffers_created = o.ggml_buffers_created + 1
+      o.wrap_count = o.wrap_count + 1
     }
   }
   if o.code.len() == 0 {
@@ -3667,11 +3683,11 @@ fn schedule_decode(
   }
   if o.code.len() == 0 && resident {
     resident_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
-    o.wrap_count = o.wrap_count + 1
     if ggml_ffi.handle_absent(resident_buffer) {
       fail(o, "R5_GGML_INIT", "resident_buffer")
     } else {
       o.resident_wraps_created = o.resident_wraps_created + 1
+      o.wrap_count = o.wrap_count + 1
     }
   }
   mut prefill_keys: array<i64> := moe_model_forward.empty_array()

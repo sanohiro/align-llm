@@ -17,9 +17,9 @@ to 4 before the first line of implementation**" — and this is that capability.
 section 3.7, the baseline it is taken against, and the shipping floor it must clear are in the
 commit that precedes the `feat` commit.
 
-Sections 1 to 6 will not be edited after implementation. A row implementation moves is marked in
-place with a bolded `Shipped:` note, exactly as `r6-resident-weights.md` does, and the deviations
-get their own section.
+Sections 1 to 6's pre-implementation text is not rewritten after implementation. A row
+implementation or review moves is marked in place with a bolded `Shipped:` note, exactly as
+`r6-resident-weights.md` does, and the deviations get their own section.
 
 ## 1. Decision and boundary
 
@@ -416,6 +416,10 @@ reason `r6-resident-weights.md` section 3.4 measurement risk 4 records: taking o
 then the other confounds the leg with the clock, and the whole of any monotone drift lands on one
 side of the subtraction. The **conservative reading is the worst of the repeats**, not the median,
 and section 6 states the verdict rule.
+
+> **Shipped:** correction 18 records that worst-with-worst is the pre-committed reading and is
+> retained, but the measured pairing is the most generous of the reported readings, not a
+> conservative pairing. Section 12.4 prints all four.
 
 **Primary metric — exact and noise-free.** `weights.step_dense_pack_bytes`, the **dense** pack bytes
 read by the decode steps alone.
@@ -1043,7 +1047,8 @@ never a rebase.
 > `moe_model_forward.plan_resident_dense`, a forty-line twin of `model_forward.plan_resident` that
 > Align's missing generics force (Request 49's newest and sharpest-shaped client). Correctness is
 > **free**: oracle D compares the two legs' whole normalized documents outside an enumerated
-> twelve-name exclusion, and gate G, oracle R, oracle B, oracle T and oracle C′ are all re-run on the
+> `weights` object and an enumerated ten-name exclusion, and gate G, oracle R, oracle B, oracle T and
+> oracle C′ are all re-run on the
 > resident leg. Owner `gmake layer-forward-smoke` seventh block; focused
 > `gmake moe-decode-step-qualification`. **What it leaves open:** the R6 gate still asks that TTFT
 > improve on repeated coding tasks *sharing a prefix*, and a decode loop that shares no prefix does
@@ -1285,12 +1290,16 @@ Each `dense` leg differs from its streamed twin in exactly the `RESIDENT` operan
 **byte-identical** to the nine-operand `md-stub-unavailable`, which is "absence is `-`" asserted in
 bytes rather than described.
 
-**The goldens.** `scripts/moe-decode-step-golden.jsonl` goes from 59 to **69** rows. Every one of the
-59 existing rows gained `"schema_version": 2` and a `weights` object and **nothing else** — checked
-field by field against the committed file, not by eye. No other golden or fixture moved:
-`scripts/decode-step-golden.jsonl` (116 rows), `layer-forward-golden.jsonl` (77),
-`model-forward-golden.jsonl` (61), `gpu-forward-golden.jsonl` (28),
-`moe-layer-forward-golden.jsonl` (80), `moe-model-forward-golden.jsonl` (98), and
+**The goldens.** The implementation moved `scripts/moe-decode-step-golden.jsonl` from 59 to **69**
+rows; review correction 15 adds `mdr-resident-multibyte`, so the final file has **70** rows. Every
+one of the 59 existing rows gained `"schema_version": 2` and a `weights` object and **nothing else**
+— checked field by field against the committed file, not by eye. Before review repair no other
+golden or fixture moved. The merge with `main` supplied the first 155 dense rows; corrections 15
+and 16 add two rows and change only the forced-wrap row's counter, so the final
+`scripts/decode-step-golden.jsonl` has **157** rows. The remaining files stay unchanged:
+`layer-forward-golden.jsonl` (77),
+`model-forward-golden.jsonl` (63), `gpu-forward-golden.jsonl` (29),
+`moe-layer-forward-golden.jsonl` (80), `moe-model-forward-golden.jsonl` (99), and
 `ggml-spike-golden.jsonl` (43) are byte-unchanged, which is section 5.3's and 5.4's cell.
 
 **Four ledger mutants, each of which must kill the owner, and each of which did.** Every arm edits
@@ -1488,7 +1497,13 @@ capability.
 Streamed `[3.458, 3.551, 3.928]` s; `dense` `[3.167, 3.243, 3.385]` s.
 
 `INDETERMINATE` **does not apply**: the streamed leg's own spread is **129,116 ppm**, inside the
-276,000 ppm ceiling. The verdict is therefore **`BELOW FLOOR` at 138,402 ppm against a 150,000 ppm
+276,000 ppm ceiling. Section 3.7 measurement risk 2 says "the streamed leg's own spread" without
+naming a denominator; the runner fixed it at implementation time as
+`(max(stream) - min(stream)) / mean(stream)` (`scripts/run-moe-decode-step:1208-1217`), and every
+spread quoted in this section and in section 12.3 is that quantity. Against the alternative
+denominators the choice is not load-bearing here — over `min` the same interval is roughly
+136,000 ppm and over `max` roughly 120,000 ppm, both far inside the ceiling — but the definition is
+recorded rather than left to a reader of the source. The verdict is therefore **`BELOW FLOOR` at 138,402 ppm against a 150,000 ppm
 floor** — **92 % of the floor and 50 % of the recorded ceiling**. Section 3.7's `miss` label does
 **not** apply: 138,402 is above half the ceiling, so the ceiling estimate was sound and it is the
 seam that is thin, exactly as section 3.7 predicted when it recorded the margin as 1.84× rather than
@@ -1500,10 +1515,20 @@ claim is made.**
 Three things are reported rather than argued away.
 
 1. **The verdict is the same under every reading, and the pre-committed one is the *most* generous
-   here.** Worst-of-3 gives 138,402 ppm because the streamed leg's slowest run (3.928 s) is its own
-   outlier; the median gives 86,825 and best-of-3 gives 84,187. All three are below 150,000. There is
-   no statistic under which this run clears the floor, which forecloses the obvious objection in the
-   opposite direction from section 12.3's.
+   here — so "conservative" is the wrong word for it and section 3.7's is corrected in section 13
+   item 18.** The pre-committed reading pairs **worst with worst**:
+   `(max(stream) - max(dense)) / max(stream)`. That is worst-of-3 on each leg separately, not the
+   worst *pairing*, and here the two are opposite things — the streamed leg's slowest run (3.928 s)
+   is its own outlier, so pairing it with the slowest `dense` run flatters the ratio. Worst-of-3
+   gives 138,402 ppm; the median gives 86,825 and best-of-3 gives 84,187; and the genuinely
+   conservative pairing, best streamed against worst `dense`, gives roughly **21,000 ppm**
+   ((3.458 − 3.385) / 3.458 from the printed three-decimal seconds). All four are below 150,000.
+   **The statistic is not re-picked**: the shape was fixed in section 3.7 before any number existed
+   and re-choosing it after seeing the numbers is exactly what that pre-commitment exists to
+   prevent. It is recorded here because the reading that ships is the *most* favourable of the four
+   and a reader must not take "conservative" at face value. There is no statistic under which this
+   run clears the floor, which forecloses the obvious objection in the opposite direction from
+   section 12.3's.
 2. **One prompt does clear the floor and it is not the fixed task.** At `N = 16` the four prompts
    give 138,402 (prompt 1, the fixed task), 138,128 (prompt 2), **156,687** (prompt 3) and 147,670
    (prompt 4) — mean 145,222. Prompt 3 is above 150,000 ppm. The fixed task is prompt 1 by section
@@ -1518,8 +1543,11 @@ Three things are reported rather than argued away.
 **What the two runs establish together.** The byte claim is established twice, on two very different
 host states, identically — it is a counter and no host state can move it. The elapsed effect is
 real, consistent across four prompts, and **below the floor the owning performance document sets**:
-138,402 ppm where 150,000 is required. `NOT_MET` on clause 12, honestly, with clauses 1 to 11
-carrying the capability.
+138,402 ppm where 150,000 is required. **Clause 12's verdict token is `BELOW FLOOR`**, which is
+the word section 4.6 defines; `NOT_MET` is the C4 gate vocabulary of `docs/specs/c4-repair-measured.md`
+and it is **not** one of this rule's three tokens (`MET`, `BELOW FLOOR`, `INDETERMINATE`). Where a
+reader coming from a gate document needs the mapping it is stated once and only here: a `BELOW FLOOR`
+clause 12 is the elapsed claim not met. Clauses 1 to 11 carry the capability.
 
 ### 12.5 The contended run, kept as evidence
 
@@ -1558,15 +1586,16 @@ All on the reference host (Apple M1, 8 cores, 16 GiB, macOS 26.5.2, `darwin/arm6
 membership, no check topology, and no integration behaviour, and its ledger names no aggregate.
 The installed platform profile is not selected for the same reason. `.align-revision` is unchanged.
 The security, resource, race, fuzz, stress, mutation, and benchmark suites own boundaries this diff
-does not touch. `gmake decode-step-qualification` is **not** re-run by this capability's own
-authority — `src/decode_step.align` and `src/model_forward.align` are byte-unchanged here and its
-116-row golden is byte-unchanged, which is section 5.4's cell; the merge with `main` moves those
-files from the other side and the owner is re-run after it.
+does not touch. `gmake decode-step-qualification` is **not** a separate owner here: review
+corrections 15 and 16 repair `src/decode_step.align`, and the selected `layer-forward-smoke` runs
+that arm's complete **157-row** golden including both new UTF-8 cases and the corrected forced-wrap
+counter. `src/model_forward.align` stays byte-unchanged.
 
 ## 13. Deviations from sections 1 to 6, and corrections found during implementation
 
-Sections 1 to 6 are the committed pre-implementation design and were not edited. Everything the
-implementation found that differs from them is here.
+Sections 1 to 6 are the committed pre-implementation design and their original text is not
+rewritten; correction 18 adds one explicitly marked `Shipped:` note beside the word it corrects.
+Everything implementation and review found that differs from them is here.
 
 1. **`moe_model_forward` did not import `model_forward` at all, and section 3.5's reuse list was
    partly a list of functions that were already duplicated.** That section says
@@ -1629,8 +1658,9 @@ implementation found that differs from them is here.
    `R6_PLANE_UNAVAILABLE` already carry in this repository, it is listed in the smoke's
    `UNREACHED_R6M_CODES` with that reason beside it, and section 8 gains it as a named deferral.
 
-7. **The golden went from 59 to 69 rows — section 4.7's predicted count — by a different
-   composition, and the difference is recorded rather than reconciled silently.** Section 4.7
+7. **The implementation golden went from 59 to 69 rows — section 4.7's predicted count — by a
+   different composition, and the difference is recorded rather than reconciled silently.**
+   Section 4.7
    predicted ten new rows from a list that included `mdr-resident-budget` (not shipped, item 6) and
    `mdr-resident-stage-full`, and excluded `mdr-force-resident-wrap`. What ships is:
    `mdr-arity-14`, `mdr-resident-unknown`, `mdr-resident-empty`, **`mdr-resident-case`** (new — the
@@ -1676,13 +1706,13 @@ implementation found that differs from them is here.
     field is worse. Both the field and its three accumulations are gone. The wrap **count** is the
     quantity the design actually makes a claim about and it is published.
 
-12. **`weights.wrap_count` counts `buffer_from_host` **calls** over the weight region, not
-    successes, and that is `src/decode_step.align`'s semantics adopted verbatim.** Section 3.8's row
-    states the value on the paths a contract covers — 1 in `dense` mode, 306 streamed at `N = 16` —
-    and says nothing about a refused wrap. On `mdr-force-resident-wrap` the golden therefore carries
-    `wrap_count` 1 beside `resident_wraps_created` 0, which is the pair a reader wants: one attempt,
-    no wrap. Diverging from the sibling arm here would have made one field name mean two things
-    across two decode arms, which is exactly what section 3.8 refuses for `step_pack_bytes`.
+12. **The implementation first made `weights.wrap_count` count `buffer_from_host` calls over the
+    weight region rather than successful wraps.** That was the inherited `src/decode_step.align`
+    behaviour, but it contradicted section 3.8's "wraps created" definition: a refused wrap was an
+    attempt, not a wrap. Review correction 16 moves the increment after the absent-handle check in
+    both decode arms. Success values stay 1 in `dense` mode and 306 streamed at `N = 16`; both
+    `mdr-force-resident-wrap` and `ds-force-resident-wrap` now publish `wrap_count` 0 beside
+    `resident_wraps_created` 0.
 
 13. **`gmake moe-decode-step-qualification` cannot complete on this host, for a reason item 32
     already owns.** Its instrument cross-check refuses before the arm runs, with the same two
@@ -1705,6 +1735,47 @@ implementation found that differs from them is here.
     harness now keeps a **file copy** of the pristine source and restores with `cp`, and a mutant
     harness for uncommitted work should never use a Git command that reads the index.
 
+15. **Review found that `bounded_detail` could split a valid UTF-8 scalar and abort both public
+    decode arms instead of returning a document.** A caller-controlled `RESIDENT` value with 245
+    ASCII bytes followed by multibyte scalars put byte 256 inside a scalar; the old fixed-byte slice
+    aborted. The root-cause repair scans backward across continuation bytes before slicing and is
+    applied to both `src/moe_decode_step.align` and the pre-existing copy in
+    `src/decode_step.align`. `mdr-resident-multibyte`, `ds-resident-multibyte`, and
+    `ds-suffix-multibyte` pin the three caller-controlled routes and their exact valid UTF-8 details.
+    This intentionally breaks section 5.4's byte-unchanged prediction: a propagated public defect is
+    repaired where found rather than left in the sibling arm.
+
+16. **Review corrected `weights.wrap_count` from attempted wraps to successful wraps across both
+    decode arms.** Section 13 item 12 records the original implementation and the final semantics.
+    The two forced-wrap rows are the negative controls: the filled region is live, the wrap is
+    refused, and `wrap_count`, `resident_wraps_created`, and `resident_wraps_freed` are all zero.
+    All successful-run measurements and the 306 -> 1 reference-model claim are unchanged.
+
+17. **The specification and live documents had stale post-merge facts.** Review reconciled the
+    dense golden count with the merged capabilities, corrected Request 38's estimated 297 reads to
+    the measured 418, repaired the arity and budget cross-references, and made the roadmap's oracle-D
+    exclusion wording agree with section 4.1. The final delta review also refreshed the unchanged
+    model-forward, GPU-forward, and MoE-model-forward row counts to the merged tree's 63, 29, and
+    99. The pre-implementation 116-row statements in sections 4 and 5 remain historical inputs;
+    this correction and the final mapping below own the shipped 157-row result.
+
+18. **The elapsed-result vocabulary and statistics needed a precise post-measurement correction.**
+    `BELOW FLOOR`, not C4's `NOT_MET`, is this ledger's verdict token. The implementation fixed
+    spread as `(max - min) / mean`, a choice that is not load-bearing at 120,000-136,000 ppm under
+    the alternative denominators. The pre-committed worst-with-worst reading is retained, but the
+    data show that it is the most generous pairing here rather than a conservative one. Section
+    12.4 states all four readings so no elapsed claim can be inferred from the 138,402 ppm result.
+
+19. **Review bounded two remaining evidence risks without changing behaviour.** The hosted MoE
+    goldens already pin the identical `T = 3`, `N in {1, 3}` activation shape in streamed rows, so
+    adding resident twins does not create a new cross-platform boundary; the 32-token row remains
+    deliberately ungoldened. A requested second fill-failure regression was not added because no
+    validated pack can make the later fill short (section 13 item 6); the forced wrap refusal covers
+    the same live-region teardown window without inventing a lowered-limits executable. Commit
+    `de83ceb`'s subject says it records the quiet-host benchmark although its body records a poll
+    that never opened; history is not rewritten because the later `a94ab24` result and section 12.5
+    explicitly supersede it.
+
 ## 14. Ledger and closure matrix against the diff
 
 Every applicable cell of sections 3 and 5, mapped to where it is implemented and what proves it.
@@ -1715,7 +1786,7 @@ Cells that moved are marked and point at their section 13 item.
 | 3.1 arity `{5,6,7,9,10,11,14}`; 8, 12, 13, 15+ refused | `moe_decode_step.run`, one line | `mdr-arity-14` (documented), `mdr-arity-13`/`mdr-arity-15`/`md-arity-4`/`md-arity-8`/`md-arity-12` (`NO_DOCUMENT`) |
 | 3.1 `src/ggml_spike.align` byte-unchanged | not in the diff | `git diff --stat` |
 | 3.1 three new document-carrying codes; no `R6M_ARITY` constant | `CODE_RESIDENT`, `CODE_RESIDENT_BUDGET`, `CODE_KV_UNSUPPORTED` | the smoke's `DECLARED_R6M_CODES` set and its reached/declared reconciliation |
-| 3.2 `RESIDENT` at `args[13]`; `-` and `dense` only | `moe_decode_step.run` + `execute` | `mdr-resident-unknown`, `mdr-resident-empty`, `mdr-resident-case` |
+| 3.2 `RESIDENT` at `args[13]`; `-` and `dense` only | `moe_decode_step.run` + `execute` | `mdr-resident-unknown`, `mdr-resident-empty`, `mdr-resident-case`, `mdr-resident-multibyte` |
 | 3.2 `weights` refused by name | `execute`'s grammar check | `mdr-resident-weights-refused`, detail `resident[weights]` asserted |
 | 3.2 `KV_SAVE`/`KV_LOAD` must be `-`, save before load, both before `RESIDENT` | `execute`, before any path work | `mdr-kv-save-unsupported`, `mdr-kv-load-unsupported` (the load case also names a refusable `RESIDENT`, so precedence is asserted) |
 | 3.2 absence is `-` | `run`'s three defaults | `mdr-arity-14` byte-identical to `md-stub-unavailable` |
@@ -1723,13 +1794,13 @@ Cells that moved are marked and point at their section 13 item.
 | 3.3 one region, over-reserved by 64, interior slice | `execute` | `mdr-resident-dense-1`, `mdr-resident-dense-steps`; the region's `% block_align == 0` assertion |
 | 3.3 budget before any allocation | `execute` | **moved** — section 13 item 6; fail-closed, not input-reachable |
 | 3.3 degraded reservation keeps `R5_WINDOW_UNAVAILABLE` | `execute`'s length check | fail-closed, Request 35, deferred |
-| 3.3 one wrap for the whole run; claim window unchanged | `schedule_decode`; `run_moe_layer` keeps its per-graph claim wrap | `weights.wrap_count == 1` in `dense`, 8/16 in `stream`; `lifetime.ggml_buffers_created == _freed` |
+| 3.3 one wrap for the whole run; claim window unchanged | `schedule_decode`; `run_moe_layer` keeps its per-graph claim wrap | `weights.wrap_count == 1` in `dense`, 8/16 in `stream`, and 0 on a refused wrap; `lifetime.ggml_buffers_created == _freed` |
 | 3.4 two wraps, not one | the claim window is untouched by the hoist | cell MRD-P1 (section 13 item 4); `window.claim_placements > 0` on the `dense` leg |
 | 3.5 `plan_resident_dense`, a twin | `moe_model_forward.plan_resident_dense` | **moved** — section 13 items 1 and 2 (65 lines, not 40; three private helpers copied) |
-| 3.5 `model_forward.align` gains nothing | not in the diff | `git diff --stat`; `scripts/decode-step-golden.jsonl` 116 rows unchanged |
+| 3.5 `model_forward.align` gains nothing | not in the diff | `git diff --stat`; review correction 15 changes `decode_step.align`, not this shared model module |
 | 3.6 the whole `token_embd` table resident; `stage_embed_row` for the gather | `decode_pass` and `prefill_pass` | `weights.step_dense_pack_bytes == 0`; `mdr-resident-stage-full` at the staging boundary |
 | 3.7 the performance contract | `scripts/run-moe-decode-step`'s benchmark block | section 12 |
-| 3.8 schema 2 and the `weights` object | `SCHEMA_VERSION`, `render_weights`, `render` | all 69 golden rows; the smoke's identity assertion |
+| 3.8 schema 2 and the `weights` object | `SCHEMA_VERSION`, `render_weights`, `render` | all 70 golden rows; the smoke's identity assertion |
 | 3.8 `step_dense_pack_bytes` reads the dense counters and not `claim_counters` | `decode_pass`'s two frame-local `Counters` | `mdr-resident-dense-*`: dense 0, expert unchanged |
 | 3.8 `step_pack_bytes` keeps its cross-arm meaning | `render_weights` | **moved** — section 13 item 9 (rendered as the sum, asserted per document) |
 | 3.8 `normalize` zeroes `fill_ns` and nothing else new | the smoke's `normalize` | the golden's non-zero `fill_pread_count`/`fill_bytes` |
@@ -1739,7 +1810,7 @@ Cells that moved are marked and point at their section 13 item.
 | 4.2 oracle P, new reach | `graph_identity`, unchanged | `pointer_identity_failures == 0` with `member_placements > 0` on the `dense` leg |
 | 4.3 the run-scope balance, with the success-conditioned third clause | `schedule_decode` | mutants M3 and M4; `mdr-force-resident-wrap` |
 | 4.4 the expert invariant | nothing changed on the claim path | `step_expert_pack_bytes` identical between the legs; every `steps[].residency` field inside oracle D's compared set |
-| 5.3 `src/decode_step.align` byte-unchanged | not in the diff | `git diff --stat`; `scripts/decode-step-golden.jsonl` unchanged |
+| 5.3 `src/decode_step.align` byte-unchanged | **moved** — review corrections 15 and 16 repair the same root causes in the sibling arm | `scripts/decode-step-golden.jsonl` 157 rows; multibyte resident/suffix refusals and the forced-wrap zero count |
 | 5.5 `ggml_ffi`, both shims, `layer_olmoe` byte-unchanged | not in the diff | `git diff --stat`; `gmake ggml-spike-smoke` |
 | 5.6 the runner's two ported helpers, oracle D, the independent recomputation, the interleaved legs, the skip switch | `scripts/run-moe-decode-step` | section 12 |
 | 5.7 the hosted fixture | `scripts/run-layer-forward-smoke` seventh block | `gmake layer-forward-smoke` |

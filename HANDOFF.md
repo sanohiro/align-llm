@@ -22,11 +22,12 @@ The four things that merge re-checks all held:
 - **next free Align request number 53.** `docs/align-requests.md` still ends at Request **52** after
   the second merge; this capability takes none and adds clients to 33, 35, 36, 38, 47, 48, 49 and
   **51**, and records **50** as explicitly not a client.
-- **which goldens regenerate:** `scripts/moe-decode-step-golden.jsonl` only, 59 -> 69 rows.
-  `scripts/decode-step-golden.jsonl` grew 116 -> 137 rows **from `main`'s side** — PR #149 owns that
-  — and this branch's own diff still does not touch it, `src/decode_step.align`, or
-  `src/model_forward.align`. `main` also moved `AGGREGATE_TIMEOUT` from 1,800 s to 3,600 s in the
-  `Makefile`; nothing in this capability reads it.
+- **which goldens regenerate:** the implementation moved `scripts/moe-decode-step-golden.jsonl`
+  59 -> 69 rows. Review repair adds one UTF-8 refusal row, making **70**. Main's later capabilities
+  moved `scripts/decode-step-golden.jsonl` 116 -> 155; the same root-cause repair adds two refusal
+  rows and corrects one forced-wrap counter, making **157**. `src/model_forward.align` stays
+  byte-unchanged. `main` also moved `AGGREGATE_TIMEOUT` from 1,800 s to 3,600 s in the `Makefile`;
+  nothing in this capability reads it.
 
 **A second `git merge origin/main` took `334f524`** — PR #150 (C4-REPAIR-MEASURED: Track A only,
 plus the `Makefile`'s `.PHONY`/`AGGREGATE_TIMEOUT` and the baseline chain) and PR #151
@@ -42,12 +43,13 @@ directly rather than gathering `pieces` — and this capability adds no other `G
 **Capability.** The dense member set of a routed model held resident across an `N`-step decode loop,
 experts still streamed. CPU only, OLMoE-1B-7B-0125-Instruct Q4_K_M. Authoritative ledger
 `docs/specs/r6-moe-resident-dense.md`: sections 1 to 6 are the pre-implementation design, committed
-in `f8796ea` **before** the first line of implementation and not edited since; sections 12 to 14
-record the results, every deviation, and the ledger-to-diff mapping. All four design-gate triggers
-fire.
+in `f8796ea` **before** the first line of implementation and not rewritten since; correction 18
+adds one explicitly marked `Shipped:` note. Sections 12 to 14 record the results, every deviation,
+and the ledger-to-diff mapping. All four design-gate triggers fire.
 
-**State.** Implemented and verified. Not committed at the time of writing; the tree is buildable and
-every hosted owner passes.
+**State.** Implemented, measured, reviewed, and repaired. Implementation and measurement are
+committed through `a94ab24`; the consolidated review repair is the commit carrying this block. The
+tree is buildable and every hosted owner passes.
 
 **Performance contract, committed with the design.** Owner `docs/specs/r6-resident-weights.md`
 section 3.4. Baseline 3.63 s (`timings.elapsed_ns`, prompt 1, `N = 16`, `KV_WIDTH` 256, reference
@@ -70,7 +72,7 @@ and it is not the fixed task, which section 3.7 chose before any number existed 
 changed now. `INDETERMINATE` does not apply (streamed spread 129,116 ppm inside the 276,000 ppm
 ceiling) and neither does the `miss` label (the result is above half the ceiling). **No elapsed claim
 is made; section 4.6 clause 12 puts the capability on clauses 1 to 11**, which hold exactly. Clause
-12 is `NOT_MET` and that is the settled answer, not an open item.
+12 is **`BELOW FLOOR`** and that is the settled answer, not an open item.
 
 **The first run (section 12.5) is kept as evidence** with its drift stated. Getting the quiet host
 took two attempts: one 4-hour poll at an 8 GB floor that never fired (80 samples; a Qwen
@@ -98,12 +100,24 @@ not inflated.
 `residency.expert_bytes` unreachable and `RESIDENT=weights` is refused by name on this arm. No TTFT
 or throughput claim; the R6 gate stays unmet.
 
-**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test layer-forward-smoke -- make
-layer-forward-smoke`; (2) publish, with section 12.3 as the measurement evidence and its two
-caveats stated in the pull request rather than buried — the elapsed leg is `BELOW FLOOR` on a
-loaded host, and `gmake moe-decode-step-qualification` refuses at item 32's instrument skew;
-(3) re-run the measurement on a quiet reference host when one is available, which is the one thing
-that would settle acceptance clause 12.
+**Review.** Two independent reviewers covered disjoint risks at clean head `a94ab24`, ledger
+`f8796ea`, merge base `334f524`: reviewer A covered implementation and returned request changes
+with one major and three minor findings; reviewer B covered specification, evidence, and governance
+and returned approve with repairs with four major and seven minor findings. All findings were
+validated. The UTF-8 abort, wrap-counter semantics, stale handoff/request/count/cross-reference and
+oracle-D prose, verdict vocabulary, spread denominator, worst-pairing description, and portability
+precedent are repaired. The requested second fill-failure case is not added because no validated
+pack can reach that failure; the forced wrap failure owns the same live-region teardown window.
+Commit `de83ceb`'s misleading subject is accepted as historical metadata and not rewritten; its body
+and `a94ab24` make the supersession explicit. A final host-native review of the consolidated delta
+found one P3 documentation mismatch: three unchanged golden row counts still described the older
+merge base. They are refreshed to 63, 29, and 99. No finding remains unresolved.
+
+**Next actions, in order.** (1) Commit the consolidated review repair and merge the latest `main`.
+(2) Run `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (3) Publish
+the English pull request with section 12.4 as the measurement of record, the `BELOW FLOOR` result,
+the item 32 instrument-skew refusal, both review envelopes, and all dispositions. (4) Merge after
+required checks pass.
 
 **Intentional uncommitted files.** None.
 

@@ -2546,7 +2546,7 @@ both be `-` and anything else is `R6M_KV_UNSUPPORTED` with detail `kv[save]` or 
 
 (`R6M_ARITY` names how an arity refusal reads, not a constant in the source: the guard is lexical and
 presents as a non-zero exit with **no document at all**, which is what the smoke classes
-`NO_DOCUMENT`. `docs/specs/r6-moe-resident-dense.md` section 11 item 10 records the discrepancy
+`NO_DOCUMENT`. `docs/specs/r6-moe-resident-dense.md` section 11 item 12 records the discrepancy
 between that prose and the source rather than inventing a constant to match it.)
 
 ```sh

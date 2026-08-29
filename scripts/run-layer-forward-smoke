@@ -3684,6 +3684,21 @@ SUFFIX_SINGLE_SHOT_4 = "ds-suffix-single-shot-4"
 SUFFIX_FULL_FIVE = "3,17,5,9,27"
 SUFFIX_STEPS_THREE = "2"
 
+# `docs/specs/r6-moe-resident-dense.md` section 13 item 15's payload, and the two exact details it
+# must produce here. `bounded_detail` cut its operand at a fixed **byte** index, so an operand whose
+# byte 256 fell inside a multibyte scalar aborted the process inside the slice and `--decode-step`
+# produced no document where it owes a refusal. 245 ASCII bytes put byte 256 on the third byte of
+# the fourth `\u3042`. The helper now backs off over continuation bytes (`0x80..0xBF`) to a lead
+# byte, and it runs **twice** on each of these paths — once inside `resident_detail`/`suffix_detail`
+# over the operand, once inside `fail` over the wrapped result. The first cut lands at 254 bytes
+# (`"a" * 245` plus three `\u3042`); over `resident[...]` the second lands at 254 and keeps only the
+# nine-byte prefix and the ASCII, while over the shorter `suffix[...]` prefix it lands at 255 and
+# keeps one whole `\u3042` — which is the boundary itself, asserted rather than described. Both
+# strings are written out because *where* the cut lands is the thing under test.
+MULTIBYTE_OPERAND = "a" * 245 + "\u3042" * 20
+MULTIBYTE_RESIDENT_DETAIL = "resident[" + "a" * 245
+MULTIBYTE_SUFFIX_DETAIL = "suffix[" + "a" * 245 + "\u3042"
+
 
 # R6-PREFIX-KEY (`docs/specs/r6-prefix-key-corpus.md` sections 5.1 and 5.2). Every store is a
 # directory **the caller creates**: the arm never creates one, never lists one, and writes nothing
@@ -4053,6 +4068,10 @@ STUB_CASES = [
     ("ds-resident-unknown", ds(resident="extra"), "R6_RESIDENT"),
     ("ds-resident-empty", ds(resident=""), "R6_RESIDENT"),
     ("ds-resident-case", ds(resident="WEIGHTS"), "R6_RESIDENT"),
+    # Section 13 item 15's regression on this arm. The abort was in the shared `bounded_detail`, so
+    # both operands that reach it get a row: this one through `resident_detail`, `ds-suffix-multibyte`
+    # below through `suffix_detail`. Each asserts a *document*, so a re-introduced abort fails here.
+    ("ds-resident-multibyte", ds(resident=MULTIBYTE_OPERAND), "R6_RESIDENT"),
     # Precedence: the residency mode is decided before the container is opened, so an unknown mode
     # over a pack that does not exist still names the mode.
     ("ds-resident-unknown-and-missing",
@@ -4073,6 +4092,8 @@ STUB_CASES = [
     # what they accept. `-` is how a caller says "no suffix"; the empty string is a malformed list.
     ("ds-suffix-empty", ds(load=KV_GOOD, suffix=""), "R6_SUFFIX"),
     ("ds-suffix-garbage", ds(load=KV_GOOD, suffix="x"), "R6_SUFFIX"),
+    # The second `bounded_detail` caller on this arm; section 13 item 15.
+    ("ds-suffix-multibyte", ds(load=KV_GOOD, suffix=MULTIBYTE_OPERAND), "R6_SUFFIX"),
     ("ds-suffix-trailing", ds(load=KV_GOOD, suffix="5,"), "R6_SUFFIX"),
     # The vocabulary re-check, in the same pass `TOKENS` is re-checked in once the geometry is real.
     ("ds-suffix-over-vocab", ds(load=KV_GOOD, suffix="32"), "R6_SUFFIX"),
@@ -5280,7 +5301,8 @@ for case in ("ds-resident-stream-1", "ds-kv-args-dash-dash"):
 for case, detail in (("ds-resident-unknown", "resident[extra]"),
                      ("ds-resident-empty", "resident[]"),
                      ("ds-resident-case", "resident[WEIGHTS]"),
-                     ("ds-resident-unknown-and-missing", "resident[extra]")):
+                     ("ds-resident-unknown-and-missing", "resident[extra]"),
+                     ("ds-resident-multibyte", MULTIBYTE_RESIDENT_DETAIL)):
     document = json.loads(produced[case])
     if document["error_detail"] != detail:
         failures.append("%s: error_detail %r, not %r" % (case, document["error_detail"], detail))
@@ -5653,6 +5675,7 @@ SUFFIX_REFUSAL_DETAILS = (("ds-suffix-no-load", "suffix[no_load]"),
                           ("ds-suffix-no-load-bad-steps", "suffix[no_load]"),
                           ("ds-suffix-empty", "suffix[]"),
                           ("ds-suffix-garbage", "suffix[x]"),
+                          ("ds-suffix-multibyte", MULTIBYTE_SUFFIX_DETAIL),
                           ("ds-suffix-trailing", "suffix[5,]"),
                           ("ds-suffix-over-vocab", "token[0]"),
                           ("ds-suffix-over-cap", "sequence[33]"),
@@ -6110,6 +6133,9 @@ if unwrapped["weights"]["resident_wraps_created"] != 0 \
         or unwrapped["weights"]["resident_wraps_freed"] != 0:
     failures.append("ds-force-resident-wrap: a refused wrap was counted: %r"
                     % unwrapped["weights"])
+if unwrapped["weights"]["wrap_count"] != 0:
+    failures.append("ds-force-resident-wrap: a refused weight-region wrap was counted: %r"
+                    % unwrapped["weights"])
 # The finding itself: nothing was created, so nothing leaked, and the document must say so.
 if unwrapped["lifetime"]["graph_balance_failures"] != 0 \
         or not unwrapped["lifetime"]["released_before_owner_scope_end"]:
@@ -6315,6 +6341,16 @@ def mdr(resident="-", kv_save="-", kv_load="-", **rest):
 
 KV_UNSUPPORTED = os.path.join(work_dir, "moe-kv-unsupported.akvp")
 
+# Section 13 item 15's payload and the exact detail it must produce. `bounded_detail` runs **twice**
+# on this path — once inside `resident_detail` over the operand, once inside `fail` over the wrapped
+# result — and each cut backs off over continuation bytes (`0x80..0xBF`) to a UTF-8 lead byte. The
+# first cut lands at 254 bytes (`"a" * 245` plus three `\u3042`); the second, over the 264-byte
+# `resident[...]`, lands at 254 again and keeps the nine-byte prefix and the 245 ASCII bytes. The
+# expected string is written out rather than recomputed because *where* the cut lands is the thing
+# under test.
+MULTIBYTE_OPERAND = "a" * 245 + "\u3042" * 20
+MULTIBYTE_DETAIL = "resident[" + "a" * 245
+
 
 # Cases whose operands are rejected before any file work: no document at all, non-zero exit.
 NO_DOCUMENT = [
@@ -6406,6 +6442,13 @@ STUB_CASES = [
     ("mdr-resident-unknown", mdr(resident="extra"), "R6M_RESIDENT"),
     ("mdr-resident-empty", mdr(resident=""), "R6M_RESIDENT"),
     ("mdr-resident-case", mdr(resident="DENSE"), "R6M_RESIDENT"),
+    # Section 13 item 15. `bounded_detail` cut the operand at a fixed **byte** index, so an operand
+    # whose byte 256 fell inside a multibyte scalar aborted the process inside the slice: the arm
+    # produced no document at all where it owes an `R6M_RESIDENT` refusal. 245 ASCII bytes put byte
+    # 256 on the third byte of the fourth `\u3042`, which is the reviewer's repro exactly. This row is
+    # the regression, and it asserts a *document*, so a re-introduced abort fails here rather than
+    # somewhere downstream.
+    ("mdr-resident-multibyte", mdr(resident=MULTIBYTE_OPERAND), "R6M_RESIDENT"),
     # **`weights` is refused by name**, and this is the shipped regression for it. The dense arm
     # accepts that value; whole-model residency here would make `residency.expert_bytes` unreachable
     # and this arm exists to publish it, so the value is refused explicitly rather than falling
@@ -7203,6 +7246,7 @@ for name, detail in (("mdr-resident-unknown", "resident[extra]"),
                      ("mdr-resident-empty", "resident[]"),
                      ("mdr-resident-case", "resident[DENSE]"),
                      ("mdr-resident-weights-refused", "resident[weights]"),
+                     ("mdr-resident-multibyte", MULTIBYTE_DETAIL),
                      ("mdr-kv-save-unsupported", "kv[save]"),
                      ("mdr-kv-load-unsupported", "kv[load]")):
     document = json.loads(produced[name])
@@ -7355,6 +7399,9 @@ if wrap_refused["weights"]["mode"] != "dense" \
         or wrap_refused["weights"]["resident_wraps_created"] != 0 \
         or wrap_refused["weights"]["resident_wraps_freed"] != 0:
     failures.append("mdr-force-resident-wrap: %r" % (wrap_refused["weights"],))
+if wrap_refused["weights"]["wrap_count"] != 0:
+    failures.append("mdr-force-resident-wrap: a refused weight-region wrap was counted: %r"
+                    % (wrap_refused["weights"],))
 if wrap_refused["lifetime"]["graph_balance_failures"] != 0:
     failures.append("mdr-force-resident-wrap: a failure before the wrap existed reported %d "
                     "balance failure(s); the run-scope check is asserting presence, not balance"
@@ -7388,7 +7435,8 @@ DECLARED_R6M_CODES = {
 # whole region is 114 KB and its member sizes come from the container, so no operand this block can
 # write reaches either. Reaching it would need a lowered-limits entry point of its own — a second
 # executable and a ceiling threaded through `execute` — which `docs/specs/r6-moe-resident-dense.md`
-# section 11 records as a deviation and defers on the terms `R4_WINDOW_UNAVAILABLE` already carries.
+# section 13 item 6 records as a deviation and section 8 defers, on the terms
+# `R4_WINDOW_UNAVAILABLE` already carries.
 UNREACHED_R6M_CODES = {"R6M_PLANE_UNAVAILABLE", "R6M_PLANE_WRITE", "R6M_CLAIM_ACCOUNTING",
                        "R6M_ROUTED_SHAPE", "R6M_RESIDENT_BUDGET"}
 INHERITED_CODES = {
