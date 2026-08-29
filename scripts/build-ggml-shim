@@ -228,6 +228,15 @@ else
     engine+writeback-offset)
                        include_flags+=("${engine}" "-DALIGN_GGML_FORCE_WRITEBACK_OFFSET=1")
                        flavour="stub+engine+force-writeback-offset" ;;
+    # R6-PREFIX-SUFFIX-PREFILL sections 4.1 and 4.2. Both key on the same latch: a graph computing
+    # more than one column at `n_past > 0`, which is the suffix pass and nothing else. `compute-suffix`
+    # refuses that graph's compute; `suffix-writeback-offset` shifts the bytes the pass writes back.
+    engine+compute-suffix)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_COMPUTE_SUFFIX=1")
+                       flavour="stub+engine+force-compute-suffix" ;;
+    engine+suffix-writeback-offset)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_SUFFIX_WRITEBACK_OFFSET=1")
+                       flavour="stub+engine+force-suffix-writeback-offset" ;;
     # R6-RESIDENT-WEIGHTS section 5.1's early-exit cell. `buffer_from_host` refuses, which is the
     # only input-reachable way to reach a resident run whose arena is filled and live and whose wrap
     # does not exist — the exact shape of the run-scope balance invariant's failure path.

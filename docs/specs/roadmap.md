@@ -649,6 +649,67 @@ The current forward delivery order is:
     feedback, a persisted patch digest, and converging the Align `verification_loop`/`repair`
     modules with this loop are deferred with resume conditions.
 
+<!-- Item 32 (OLMoE decode) is reserved: it was on a branch when item 33 was written, so the
+     number is claimed and the entry lands with that branch. The gap below is deliberate and
+     must not be re-used. -->
+33. **R6-PREFIX-SUFFIX-PREFILL — a saved prefix plane continued with a different suffix.** Design
+    and results in [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md). Item 29 made a
+    prefill plane outlive its process; it could only be reloaded for the prompt it was saved for,
+    because the arm had no graph that computes more than one column at `n_past > 0`. This capability
+    ships that graph. `--decode-step` gains a fifteenth operand, `SUFFIX` (a token id list or `-`),
+    legal only with `KV_LOAD`: the arm loads a container holding `T_prefix` columns for exactly the
+    tokens in `TOKENS`, runs **one suffix pass** — a decode-shaped graph set over the `S` suffix
+    tokens at absolute positions `T_prefix .. T_prefix+S-1`, causally masked over prefix-plus-suffix,
+    writing the suffix's K and V into the plane at columns `T_prefix ..` — and then continues the
+    existing `N`-step loop from `n_past = T_prefix + S`. Nothing is re-saved and the `akvp` format is
+    **byte-unchanged**, which is a consequence of keeping `TOKENS` meaning "the container's tokens":
+    every `R6_KV_*` identity check holds character for character, and `ds-suffix-tokens-mismatch`
+    proves it by having an **unmodified** L12 refuse a container written for the whole list when a
+    run supplies that list as a prefix. No new ggml op, shim symbol, node row, slot, or Align
+    surface: the decode node table becomes parameterised by its token count — **six** literals, one
+    more than the design predicted — and `mf_write_mask_offset` and `capture_plane` are called for
+    the first time with **both** of their existing parameters non-trivial. The oracle is that a
+    suffix run and a single-shot prefill of `TOKENS ++ SUFFIX` are **the same run**: byte-identical
+    documents outside a fixed exclusion list, byte-identical logits against `--model-forward` at the
+    whole prompt, byte-identical logits against `llama-debug --save-logits`, and identical decoded
+    ids, with the plane round trip verified over `T_prefix + S` columns before the first decode step.
+    Measured on the real model at every split, and hosted on three splits of a two-layer synthetic
+    model — where the design's load-bearing risk, that ggml's `MUL_MAT` selection might be
+    column-count-sensitive at `S >= 2` **and** `n_past > 0`, was discharged on the first
+    implementation checkpoint and never reappeared. Document schema **5** with a `suffix` object in
+    every document; `output` and `oracle_logits` describe the suffix pass's own logits on a completed
+    suffix run, with the container's vector still published in `kv`. Exact prefixes only: RoPE
+    positions are absolute, so prefix sharing is inherently **left-anchored**, and prefix truncation
+    is deferred. Owner `gmake layer-forward-smoke`, whose fifth block gains 22 cases and 21 golden
+    rows — three oracle-S splits, twelve refusals, and two forced builds that publish a partial pass,
+    plus a four-token comparand kept out of the cross-platform golden because its `l_out` digest
+    differs between arm64 and x86_64 in the last bit (section 11.3 deviation 7); focused
+    `gmake decode-step-qualification`, which splits each of the four prompts at up to two points and
+    needs **no new `llama-debug` run and no new instrument run**, because the split is on ids the
+    instrument already printed. **The R6 gate is still unmet:** this ships the *execution* half of
+    mechanism 2 (repo stable prefix KV) and none of its *lookup* half — there is still no prefix key,
+    no store, no corpus, and no prefix-sharing consumer — so TTFT is reported as a labelled
+    diagnostic on three legs and no claim is made. One surface is **narrower than the mechanism
+    allows**: `T_prefix >= 2` is required, raising `R6_SUFFIX` with detail `prefix[<n>]`, because a
+    one-token prefill computes the embedding of token 0 whatever the operand says — see the
+    follow-up below.
+
+    **Follow-up: `MF-SINGLE-TOKEN-LOGITS` (no item number yet).** A pre-existing defect this
+    capability found in an arm it does not touch: `model_forward.fill_members` gathers an embedding
+    row by id only when `pieces > 1`, so **any prompt of exactly one token computes the logits of
+    token 0**, silently and with `status: ok`, on `--layer-forward`, `--model-forward`,
+    `--moe-model-forward`, and `--decode-step`. The resident path does not share it
+    (`stage_embed_row` gathers by id at every count), and no golden in this repository exercises
+    `token_count == 1`, which is why it has been latent since R5B. The fix is a `gathered`
+    discriminator on `model_forward.GraphMembers` — eighteen construction sites across three modules
+    and four arms — with an `mf-tokens-one` row in `scripts/model-forward-golden.jsonl` and the same
+    question asked of `--moe-model-forward`; owner `gmake layer-forward-smoke`. It is **not** filed
+    inside item 33 because that would put an R5B correctness change inside a review scoped to a
+    suffix graph, and it takes a roadmap number when it is picked up rather than claiming one across
+    the reserved 31/32 gap. Its reproduction, evidence, and full field record are in
+    [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md) section 11.2. Completing it removes
+    item 33's `prefix[<n>]` refusal, which **widens** the accepted surface and needs no other change.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
