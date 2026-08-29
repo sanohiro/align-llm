@@ -591,6 +591,34 @@ pub RegressionLimits {
   maximum_benchmark_regression_ppm: Option<i64>,
 }
 
+// C4-REPAIR-EDITSET. One file the previous attempt rewrote, as the model wrote it.
+//
+// `body_bytes` is the redacted body's full length before any omission, and `body_sha256` digests
+// those same redacted bytes. Digesting before redaction would make the persisted digest a
+// credential oracle: anyone holding a candidate credential could confirm it by recomputing the
+// digest. `body_text` is `Some` when the block was inside the producer's `EDIT_SET_LIMIT` budget
+// and `None` when it was not; an omitted block keeps its path, length, and digest and loses only
+// its text, so a reader can see exactly what the budget removed. Bounding is whole-block and the
+// carried set is a prefix of the ascending path order: once one block would take the running total
+// past the budget, that block and every block after it lose their text. A half-truncated source
+// file would invite the model to complete a file it can only half see.
+pub EditSetBlock {
+  schema_version: i64,
+  artifact_kind: string,
+  path: string,
+  body_bytes: i64,
+  body_sha256: string,
+  body_text: Option<string>,
+  content_sha256: string,
+}
+
+// Both persisted versions of one measurement. The version-2 members are `Option` on the wire
+// because the canonical encoder omits a `None`, so a version-1 measurement decodes and re-encodes
+// byte-identically and both frozen chains — C6's and C4-REPAIR-MEASURED's — keep validating.
+// Presence is NOT how the version is detected: the scorer reads `schema_version` first, then
+// requires every version-2 member absent at version 1 and, for the one member that is
+// unconditionally present, `Some` at version 2. There is no compatibility default and no presence
+// sniffing.
 pub TaskMeasurement {
   schema_version: i64,
   artifact_kind: string,
@@ -614,6 +642,20 @@ pub TaskMeasurement {
   diagnostic_summary: string,
   diagnostic_stdout: string,
   diagnostic_stderr: string,
+  // The four version-2 members, in their declared position immediately before `content_sha256`.
+  // `edit_set` is `Some` exactly when the attempt's response produced a validated edit set **and**
+  // a non-empty patch was synthesized from it; a response whose every hunk is empty resets all
+  // three of `edit_set`, `edit_set_total_bytes`, and `patch_sha256` to `None`, which is the
+  // measured dominant mode on the C4 corpus (`docs/specs/c4-repair-editset.md` §11.3 deviation 14);
+  // `edit_set_total_bytes` is `Some` exactly with it and is the pre-omission sum of `body_bytes`;
+  // `patch_sha256` is `Some` exactly when a patch reached the validation runner, which makes
+  // "attempt 2 re-sent attempt 1's patch" a checkable fact rather than an inference from a byte
+  // count; `base_adapter_runtime_identity` is always `Some` at version 2 and records which frozen
+  // adapter the second adapter loaded, separately from the probe's own identity.
+  edit_set: Option<array<EditSetBlock>>,
+  edit_set_total_bytes: Option<i64>,
+  patch_sha256: Option<string>,
+  base_adapter_runtime_identity: Option<string>,
   content_sha256: string,
 }
 
@@ -860,6 +902,9 @@ pub TaskAggregate {
   parent_repair_recovery_count: Option<i64>,
   candidate_repair_recovery_count: Option<i64>,
   repair_recovery_paired: Option<bool>,
+  // C4-REPAIR-EDITSET: the denominator of every edit-set claim, per variant.
+  parent_repair_editset_attempt_count: Option<i64>,
+  candidate_repair_editset_attempt_count: Option<i64>,
 }
 
 pub CorpusAggregate {
@@ -880,6 +925,9 @@ pub CorpusAggregate {
   repair_attempt_count: Option<i64>,
   repair_recovery_count: Option<i64>,
   repair_recovery_paired_count: Option<i64>,
+  // C4-REPAIR-EDITSET: repair attempts whose prompt actually carried `EDITSET`. A denominator,
+  // never a gate input; the gate still consumes `repair_recovery_paired_count` only.
+  repair_editset_attempt_count: Option<i64>,
 }
 
 pub RegressionReason {

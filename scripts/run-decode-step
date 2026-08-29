@@ -204,6 +204,16 @@ SUFFIX_SPLITS="${ALIGN_LLM_SUFFIX_SPLITS:-2}"
 case "${SUFFIX_SPLITS}" in
   ''|*[!0-9]*) na "ALIGN_LLM_SUFFIX_SPLITS=${SUFFIX_SPLITS} is not a decimal split count" ;;
 esac
+
+# R6-PREFIX-KEY section 5.4. The store leg rides on the suffix leg's first split, because it needs a
+# prefix, a suffix, and a container to compare against, and all three already exist there. It costs
+# **two `--decode-step` invocations per prompt** — one miss, one hit — and nothing else. Section 6
+# risk 7's recorded fallback is `ALIGN_LLM_STORE_PROMPTS=1`, which moves the whole leg to prompt 1;
+# `0` disables it. The default follows the persistence leg's own prompt count.
+STORE_PROMPTS="${ALIGN_LLM_STORE_PROMPTS:-${PERSIST_PROMPTS}}"
+case "${STORE_PROMPTS}" in
+  ''|*[!0-9]*) na "ALIGN_LLM_STORE_PROMPTS=${STORE_PROMPTS} is not a decimal prompt count" ;;
+esac
 # The suffix leg runs **resident** by default, for section 5.4's cost reason, and its single-shot
 # comparand takes the same operand — so the two documents differ in `KV_LOAD` and `SUFFIX` and in
 # nothing else. On a host too small for the arena both legs stream instead, and the comparison is
@@ -510,6 +520,7 @@ for j in (2, -(-len(ids) // 2)):
         points.append(j)
 print(' '.join(str(j) for j in points[:want]))
 " "${tokens}" "${SUFFIX_SPLITS}")
+      store_done=0
       for j in ${splits}; do
         prefix_ids=$(python3 -c "
 import sys
@@ -603,6 +614,86 @@ print(','.join(sys.argv[1].split(',')[int(sys.argv[2]):]))" "${tokens}" "${j}")
           cp "${persist_root}/case${index}-split${j}-ttft-suffix.json" \
             "${persist_root}/case${index}-split${j}-ttft-suffix-${repeat}.json"
         done
+        # ---------------------------------------------------------------------------------
+        # R6-PREFIX-KEY section 5.4. The store leg: the **same** run twice against a fresh,
+        # empty store directory, differing from the suffix run above in exactly one operand —
+        # `STORE` in place of `KV_LOAD`.
+        #
+        # The first run finds nothing, prefills the prefix, saves the container under the name
+        # the arm derived, runs the suffix pass and the loop. The second finds the file and
+        # loads it. Oracle K asserts the two documents are the same run outside the store's own
+        # three fields; the container is asserted byte-identical to the `KV_SAVE` one written a
+        # few lines above; and `scripts/kv_plane_reader.py --check-name` asserts, from the
+        # container's own bytes, that the file is named for what it contains.
+        #
+        # **Only the first split of each prompt**, and its cost is measured rather than
+        # assumed: two `--decode-step` invocations per prompt. Section 6 risk 7's fallback is
+        # `ALIGN_LLM_STORE_PROMPTS=1`, which moves the whole leg to prompt 1.
+        if [ "${index}" -le "${STORE_PROMPTS}" ] && [ "${store_done}" = 0 ]; then
+          store_done=1
+          # Which split the store leg took, recorded rather than re-derived: the analysis compares
+          # against **that** split's single-shot and `KV_LOAD` documents, and inferring the split
+          # from a sorted listing would be a guess that happens to be right at these prompt lengths.
+          printf '%s\n' "${j}" > "${case_dir}/store-split.txt"
+          store_dir="${case_dir}/store"
+          rm -rf "${store_dir}"
+          mkdir -p "${store_dir}"
+          echo "decode step qualification:   prompt ${index} split ${j}: store miss then hit"
+          for leg in miss hit; do
+            time_invocation "${case_dir}/store-${leg}-wall.txt" \
+              "${root_dir}/ggml-spike" --decode-step "${work_dir}/model.alignpack" \
+              "${work_dir}/geometry.json" "${prefix_ids}" \
+              "${persist_root}/case${index}-store-${leg}.json" "${ALIGN_LLM_GGUF_MODEL}" \
+              "${case_dir}/transcript.txt" "${KV_WIDTH}" "${logits_bin}" "${DECODE_STEPS}" - - \
+              "${SUFFIX_RESIDENT}" "${suffix_ids}" "${store_dir}" \
+              > "${case_dir}/store-${leg}.txt" || {
+                echo "decode step qualification: FAIL prompt ${index} store ${leg} run exited" \
+                  "non-zero" >&2
+                exit 1
+              }
+          done
+          # The store holds exactly one file and its name is the key the document published.
+          store_key=$(python3 -c "
+import json, sys
+with open(sys.argv[1], 'r', encoding='utf-8') as handle:
+    print(json.load(handle)['store']['key'])" \
+            "${persist_root}/case${index}-store-miss.json")
+          store_container="${store_dir}/${store_key}.akvp"
+          if [ "$(ls "${store_dir}" | wc -l | tr -d ' ')" != 1 ] || [ ! -f "${store_container}" ]; then
+            echo "decode step qualification: FAIL prompt ${index} the store does not hold exactly" \
+              "the container the document named" >&2
+            ls -l "${store_dir}" >&2 || true
+            exit 1
+          fi
+          # The independent reader, from the specification, now also checking the **name**: an arm
+          # that writes under one name and a reader that computes another is a store that misses
+          # forever with no error (section 6 risk 1).
+          python3 "${root_dir}/scripts/kv_plane_reader.py" --plane "${store_container}" \
+            --pack "${work_dir}/model.alignpack" --geometry "${work_dir}/geometry.json" \
+            --tokens "${prefix_ids}" --check-name > "${case_dir}/store-reader.txt" || {
+              echo "decode step qualification: FAIL prompt ${index} the independent reader refused" \
+                "the stored container or its name" >&2
+              exit 1
+            }
+          # Section 3.1's third run: the container a miss writes is byte-identical to the one
+          # `KV_SAVE` writes for the same prefix, which is what makes "`akvp` v1 is byte-unchanged"
+          # a verified statement rather than a claim about the diff.
+          python3 -c "
+import hashlib, sys
+digests = []
+for name in sys.argv[1:]:
+    with open(name, 'rb') as handle:
+        digests.append(hashlib.sha256(handle.read()).hexdigest())
+print(digests[0])
+if len(set(digests)) != 1:
+    sys.stderr.write('the store container and the KV_SAVE container differ: %r\n' % digests)
+    raise SystemExit(1)
+" "${store_container}" "${kv_prefix}" > "${case_dir}/store-container-digest.txt" || {
+            echo "decode step qualification: FAIL prompt ${index} the keyed container is not the" \
+              "container KV_SAVE writes" >&2
+            exit 1
+          }
+        fi
         printf '%s\n' "${prefix_ids}" > "${case_dir}/split${j}-prefix.txt"
         printf '%s\n' "${suffix_ids}" > "${case_dir}/split${j}-suffix.txt"
         rm -f "${kv_prefix}"
@@ -1799,4 +1890,276 @@ print("decode step qualification: %d prefix/suffix splits PASS -- every suffix r
       "of its lookup half -- no prefix key, no store, no corpus, no prefix-sharing consumer -- so "
       "the TTFT figures above are a labelled diagnostic and no claim is made."
       % (len(rows), len(EXCLUDED_BLOCKS) + len(EXCLUDED_FIELDS)))
+PY
+
+# ---------------------------------------------------------------------------------------------
+# R6-PREFIX-KEY section 3.5, the shipped acceptance rule, on the real model
+#
+# A **third** Python block, for the second block's own reason: the analysis of a leg reads only that
+# leg's documents. It runs oracle K over the store's own hit/miss pair, oracle S over the keyed hit
+# against the single-shot run the suffix leg already produced, and gate G1 on both legs; the byte
+# equality of the keyed container with the `KV_SAVE` one and the independent reader's name check are
+# asserted in the shell above, where the files are.
+# ---------------------------------------------------------------------------------------------
+python3 - "${work_dir}" "${persist_root}" "${STORE_PROMPTS}" "${SUFFIX_SPLITS}" <<'PY'
+import hashlib
+import json
+import os
+import struct
+import sys
+
+work_dir, persist_root = sys.argv[1], sys.argv[2]
+store_prompts, splits = int(sys.argv[3]), int(sys.argv[4])
+
+# R6-PREFIX-KEY section 3.2, oracle D on the **real model**. This is the third implementation of
+# section 2.3's 152-byte preimage — beside `src/kv_plane.align`'s `derive_key` and
+# `scripts/kv_plane_reader.py`'s — and it takes its inputs from the **document** the arm published,
+# which is what makes "the key is a function of the published digests" a test rather than a claim.
+# The reader's own leg runs in the shell above, with `--check-name`, from the container's bytes.
+KEY_VERSION = 1
+KEY_PREIMAGE_BYTES = 152
+
+
+def key_from_document(document):
+    kv_object = document["kv"]
+    stream = b"".join(struct.pack("<I", int(value))
+                      for value in document["selection"]["tokens"])
+    preimage = b"".join([
+        bytes.fromhex(kv_object["source_header_region_sha256"]),
+        bytes.fromhex(kv_object["geometry_sha256"]),
+        hashlib.sha256(stream).digest(),
+        struct.pack("<Q", kv_object["pack_total_bytes"]),
+        struct.pack("<I", document["selection"]["reconciliation_width"]),
+        struct.pack("<I", len(document["selection"]["tokens"])),
+        struct.pack("<I", kv_object["plane_layout_version"]),
+        struct.pack("<I", 0),
+        struct.pack("<I", kv_object["format_version"]),
+        struct.pack("<I", KEY_VERSION),
+        b"\0" * 24,
+    ])
+    assert len(preimage) == KEY_PREIMAGE_BYTES, len(preimage)
+    return hashlib.sha256(preimage).hexdigest()
+
+if store_prompts == 0 or splits == 0:
+    print("decode step qualification: N/A the store leg: ALIGN_LLM_STORE_PROMPTS=%d, "
+          "ALIGN_LLM_SUFFIX_SPLITS=%d" % (store_prompts, splits))
+    raise SystemExit(0)
+
+failures = []
+
+
+def load(name):
+    with open(os.path.join(persist_root, name), "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def zeroed(document):
+    copy = json.loads(json.dumps(document))
+    for key in copy["timings"]:
+        copy["timings"][key] = 0
+    for row in copy["schedule"]:
+        row["pread_ns"] = 0
+        row["compute_ns"] = 0
+    for row in copy["steps"]:
+        row["compute_ns"] = 0
+    copy["head"]["pread_ns"] = 0
+    copy["head"]["compute_ns"] = 0
+    copy["decode"]["compute_ns"] = 0
+    copy["plane"]["readback_ns"] = 0
+    copy["plane"]["upload_ns"] = 0
+    copy["kv"]["write_ns"] = 0
+    copy["kv"]["read_ns"] = 0
+    copy["weights"]["fill_ns"] = 0
+    copy["suffix"]["compute_ns"] = 0
+    copy["store"]["lookup_ns"] = 0
+    for key in ("pack_path", "geometry_path", "reference_path", "transcript_path", "logits_path"):
+        copy[key] = "<path>"
+    return copy
+
+
+# Oracle K's exclusion list (section 3.1): oracle Q's set — the counts of work a load path
+# legitimately did not do — plus the store's own three moving fields. `store.key` and
+# `store.container_bytes` stay **inside** the comparison, which is what makes the oracle catch a key
+# that varies between runs or a container written with the wrong layout.
+STORE_EXCLUDED_BLOCKS = ("kv", "graph", "schedule", "timings", "lifetime", "reference", "weights")
+STORE_EXCLUDED_FIELDS = (
+    ("plane", "source"), ("plane", "readback_ns"), ("plane", "upload_ns"),
+    ("head", "node_count"), ("head", "pread_ns"), ("head", "compute_ns"),
+    ("pack", "reader_pread_count"), ("pack", "reader_bytes_read"),
+    ("window", "reuse_count"), ("window", "member_placements"),
+    ("store", "outcome"), ("store", "saved"), ("store", "lookup_ns"),
+)
+
+
+def normalize_store(document):
+    copy = zeroed(document)
+    for block in STORE_EXCLUDED_BLOCKS:
+        copy.pop(block, None)
+    for block, field in STORE_EXCLUDED_FIELDS:
+        copy[block].pop(field, None)
+    return json.dumps(copy, sort_keys=True, separators=(",", ":"))
+
+
+# Oracle S's own set, item 33 section 3.2's, plus the `store` block: the keyed run asked for a store
+# and the single-shot run did not, and that is the operand under test rather than a result.
+#
+# One field beyond that set has to go, with a **compensating assertion** rather than a quiet
+# addition: `weights.wrap_count` counts one streamed window wrap per graph, and a **miss** runs one
+# graph set more than a single-shot — its own prefill of `T_prefix`, which is the point of a miss.
+# Item 33's own pairs never met this, because a *load* run builds no prefill graph at all. The exact
+# identity is asserted per case below.
+SUFFIX_EXCLUDED_BLOCKS = ("kv", "suffix", "store", "graph", "schedule", "timings", "lifetime",
+                          "reference")
+SUFFIX_EXCLUDED_FIELDS = (
+    ("weights", "wrap_count"),
+    ("plane", "source"), ("plane", "readback_ns"), ("plane", "upload_ns"),
+    ("plane", "roundtrip_bytes_compared"),
+    ("selection", "token_count"), ("selection", "tokens"), ("selection", "narrow_index"),
+    ("selection", "attention_width"),
+    ("head", "node_count"), ("head", "pread_ns"), ("head", "compute_ns"),
+    ("pack", "reader_pread_count"), ("pack", "reader_bytes_read"),
+    ("window", "reuse_count"), ("window", "member_placements"), ("window", "residual_bytes"),
+)
+
+
+def normalize_suffix(document):
+    copy = zeroed(document)
+    for block in SUFFIX_EXCLUDED_BLOCKS:
+        copy.pop(block, None)
+    for block, field in SUFFIX_EXCLUDED_FIELDS:
+        copy[block].pop(field, None)
+    return json.dumps(copy, sort_keys=True, separators=(",", ":"))
+
+
+def wall(case_dir, name):
+    path = os.path.join(work_dir, case_dir, name)
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as handle:
+        return [int(line) for line in handle.read().split()]
+
+
+rows = []
+for entry in sorted(os.listdir(persist_root)):
+    if entry.endswith("-store-miss.json"):
+        rows.append(entry[: -len("-store-miss.json")])
+
+if not rows:
+    print("decode step qualification: N/A the store leg produced no documents")
+    raise SystemExit(0)
+
+for case in rows:
+    miss = load(case + "-store-miss.json")
+    hit = load(case + "-store-hit.json")
+    label = case
+    for name, document, outcome, saved, verdict, source in (
+            ("miss", miss, "miss", 1, "SAVED", "PREFILL"),
+            ("hit", hit, "hit", 0, "LOADED", "LOADED")):
+        if document["error_code"]:
+            failures.append("%s store %s: %s %s"
+                            % (label, name, document["error_code"], document["error_detail"]))
+            continue
+        store = document["store"]
+        if store["requested"] != 1 or store["outcome"] != outcome or store["saved"] != saved \
+                or len(store["key"]) != 64 \
+                or store["container_bytes"] != document["kv"]["total_bytes"]:
+            failures.append("%s store %s: %r" % (label, name, store))
+        if document["kv"]["verdict"] != verdict or document["plane"]["source"] != source:
+            failures.append("%s store %s: kv.verdict %r with plane.source %r"
+                            % (label, name, document["kv"]["verdict"],
+                               document["plane"]["source"]))
+        # Gate G1 on both legs: the run's own logit vector against `llama-debug --save-logits`.
+        if document["oracle_logits"]["verdict"] != "IDENTICAL":
+            failures.append("%s store %s: gate G1 is %r"
+                            % (label, name, document["oracle_logits"]))
+        # Oracle B: the plane round trip, over `T_prefix + S` columns before the first step and
+        # cumulatively after each one.
+        if document["plane"]["roundtrip_verdict"] != "IDENTICAL":
+            failures.append("%s store %s: oracle B is %r"
+                            % (label, name, document["plane"]["roundtrip_verdict"]))
+    if miss["error_code"] or hit["error_code"]:
+        continue
+    # **Oracle D.** The key the arm published is the key this block derives from the document's own
+    # digests and scalars, on both legs. The third agreement — the reader's, against the file's
+    # name — is asserted in the shell above with `--check-name`.
+    for name, document in (("miss", miss), ("hit", hit)):
+        if key_from_document(document) != document["store"]["key"]:
+            failures.append("oracle D (%s store %s): the document derives %s, the arm published %s"
+                            % (label, name, key_from_document(document),
+                               document["store"]["key"]))
+    # **Oracle K.** The hit and the miss that filled it are the same run.
+    if miss["store"]["key"] != hit["store"]["key"]:
+        failures.append("%s: the two runs derived different keys: %r / %r"
+                        % (label, miss["store"]["key"], hit["store"]["key"]))
+    if normalize_store(miss) != normalize_store(hit):
+        failures.append("oracle K (%s): the two documents differ outside the excluded set" % label)
+    # The guard against a vacuous oracle.
+    witness = json.loads(normalize_store(hit))
+    if "decode" not in witness or not witness.get("steps") \
+            or "sha256" not in witness["steps"][0] or "output" not in witness \
+            or "oracle_logits" not in witness \
+            or witness["store"].get("key") != hit["store"]["key"]:
+        failures.append("oracle K (%s): the exclusion list emptied the comparison" % label)
+    # **Oracle S on both legs.** The keyed run and the single-shot run of `TOKENS ++ SUFFIX` are the
+    # same run — which is what ties the store to arithmetic rather than to itself.
+    split_path = os.path.join(work_dir, case, "store-split.txt")
+    if not os.path.exists(split_path):
+        failures.append("%s: the store leg recorded no split" % label)
+        continue
+    with open(split_path, "r", encoding="utf-8") as handle:
+        split = handle.read().strip()
+    stem = "%s-split%s" % (case, split)
+    if not os.path.exists(os.path.join(persist_root, stem + "-one.json")):
+        failures.append("%s: the store leg has no single-shot comparand at split %s"
+                        % (label, split))
+        continue
+    single = load(stem + "-one.json")
+    for name, document, extra_graph_sets in (("miss", miss, 1), ("hit", hit, 0)):
+        if normalize_suffix(document) != normalize_suffix(single):
+            failures.append("oracle S (%s store %s): the keyed run and the single-shot run differ "
+                            "outside the excluded set" % (label, name))
+        # The compensating assertion for `weights.wrap_count`. On the streamed leg a miss wraps one
+        # extra graph set — `n_layer + 2` graphs, its own prefill; on the resident leg the arena is
+        # wrapped once at run scope and both legs report exactly one.
+        per_set = 0 if document["weights"]["mode"] == "resident" else document["model"]["n_layer"] + 2
+        if document["weights"]["wrap_count"] != single["weights"]["wrap_count"] \
+                + extra_graph_sets * per_set:
+            failures.append("oracle S (%s store %s): %d window wraps against the single-shot run's "
+                            "%d, not %d extra graph set(s)"
+                            % (label, name, document["weights"]["wrap_count"],
+                               single["weights"]["wrap_count"], extra_graph_sets))
+    # The keyed hit against item 29's own explicit `KV_LOAD` run of the same split: the store adds a
+    # provenance and changes nothing else.
+    explicit = load(stem + "-sfx.json")
+    if normalize_suffix(hit) != normalize_suffix(explicit):
+        failures.append("%s: the keyed hit differs from the explicit KV_LOAD run of the same split"
+                        % label)
+    miss_wall = wall(case, "store-miss-wall.txt")
+    hit_wall = wall(case, "store-hit-wall.txt")
+    print("decode step qualification: R6PK %s key %s oracle K IDENTICAL, oracle S IDENTICAL on "
+          "both legs, gate G1 IDENTICAL on both legs, oracle B IDENTICAL over %d bytes, container "
+          "%d B" % (label, hit["store"]["key"][:16], hit["plane"]["roundtrip_bytes_compared"],
+                    hit["store"]["container_bytes"]))
+    print("decode step qualification: R6PK %s timings DIAGNOSTIC first_token_ns miss %d, hit %d; "
+          "invocation wall ns miss %s, hit %s; store lookup_ns %d. One run each on one host, and "
+          "**no TTFT claim is made**: this capability ships the key and the store and records no "
+          "performance figure. `MAX_PREFILL_TOKENS` is 32, so no real prompt's shared prefix fits "
+          "and the measurement is roadmap item 38's."
+          % (label, miss["timings"]["first_token_ns"], hit["timings"]["first_token_ns"],
+             miss_wall[0] if miss_wall else "not measured",
+             hit_wall[0] if hit_wall else "not measured", hit["store"]["lookup_ns"]))
+
+if failures:
+    for line in failures:
+        sys.stderr.write("decode step qualification: FAIL %s\n" % line)
+    raise SystemExit(1)
+
+print("decode step qualification: %d store prompts PASS -- a keyed miss prefills, saves under the "
+      "key the arm derived, and continues; the hit that follows loads it; the two documents are "
+      "byte-identical outside %d excluded key groups (oracle K), both are byte-identical to the "
+      "single-shot run of the whole prompt (oracle S) and to `llama-debug --save-logits` (gate "
+      "G1), and the container is byte-identical to the one `KV_SAVE` writes. **No TTFT claim, and "
+      "the R6 roadmap gate stays unmet**: the corpus and the prefix-sharing consumer are still "
+      "missing and `MAX_PREFILL_TOKENS` is 32."
+      % (len(rows), len(STORE_EXCLUDED_BLOCKS) + len(STORE_EXCLUDED_FIELDS)))
 PY

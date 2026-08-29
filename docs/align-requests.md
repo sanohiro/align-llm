@@ -6604,7 +6604,21 @@ hypothetical surface. The
 first consumer that would make it blocking is a
 tokenizer/vocabulary-inspection capability, which needs `tokenizer.ggml.tokens` and
 `tokenizer.ggml.merges` as addressable data; per `CLAUDE.md`, this request reclassifies as blocking
-the moment that capability becomes the active consumer
+the moment that capability becomes the active consumer.
+
+C4-REPAIR-EDITSET (`docs/specs/c4-repair-editset.md` section 6.7) is the
+**first client that does not avoid the shape**: `TaskMeasurement.edit_set` is
+`Option<array<EditSetBlock>>` and `EditSetBlock` carries `string` fields, so the version-2 verifier
+must walk an array of Move-typed elements. It is expressible at the pinned compiler with the idiom
+`verifier_attempt_list_references` already uses — every element goes straight into a `borrow`
+parameter and is never named, and no field is read out of an element expression — so this request
+stays non-blocking, and `src/prompt_score.align`'s `verifier_edit_set_valid`,
+`verifier_edit_set_pair_ascending`, and `verifier_edit_set_lists_equal` are three more instances of
+it. What the implementation did hit, and what is recorded here rather than filed as a new request
+because it is the same known limitation with a documented workaround, is that owned field
+replacement supports only `string` and `Option<string>` leaves: `src/prompt_verifier_smoke.align`
+had to build `PromptEvaluationTask` and `TaskMeasurement` as parameterized literals instead of
+mutating an `array<string>` or an `EnvironmentProbe` field of a copy.
 Independent work that may continue: all of R0, R1-QWEN-MODEL-IR, R1B-GPTOSS-MOE-IR,
 R2A-EXPERT-TRACE-CAPTURE, R1C-OLMOE-MOE-IR, and R6-STEP-N, all of which avoid indexing an
 `array<string>` or an array of a Move-field record
@@ -10132,8 +10146,15 @@ Status: PROPOSED
 Priority: high
 Blocking: no
 Blocked gate or slice: none. C4-REPAIR-MEASURED ships by reading every `Option` member of an owned
-  record through a `borrow` binding, never through a `match` on the owned value.
-Independent work that may continue: all of C4-REPAIR-MEASURED.
+  record through a `borrow` binding, never through a `match` on the owned value. C4-REPAIR-EDITSET
+  (`docs/specs/c4-repair-editset.md`) is the second client and reaches the same shape again: it adds
+  four `Option` members to `TaskMeasurement`, one of them `Option<array<EditSetBlock>>`, and one
+  `Option<i64>` to each aggregate. Every one of them is read through a `borrow` binding, and the
+  round-trip regression that would catch a silent drop — `make prompt-gate-validator-smoke`'s
+  frozen-chain rescore over BOTH `eval/prompt/gate/` and `eval/prompt/c4-repair-gate/` — is green.
+  The hazard remains latent rather than closed: the two spellings still look interchangeable at the
+  call site.
+Independent work that may continue: all of C4-REPAIR-MEASURED and all of C4-REPAIR-EDITSET.
 Resume condition: an Align release either rejects a `match` that partially moves a payload out of an
   owned record still live at the match site, or preserves the field so a subsequent
   `json.encode` of that record re-emits it. Either answer closes this; silence does not.
@@ -10142,6 +10163,9 @@ align-llm verification: read `PromptTaskRow.attempts`, `repair_loop_count`, and
   `generation_to_passing_patch_ns` through a direct `match` on the owned row in
   `src/prompt_score.align`, re-encode the row with `json.encode`, and require the encoded bytes to
   equal the decoded input's for the frozen `eval/prompt/gate/prompt-evaluation-improved.json` chain.
+  Repeat with `TaskMeasurement.edit_set` (`Option<array<EditSetBlock>>`) over the C4-REPAIR-EDITSET
+  gate evidence: an `Option<array<T>>` payload is the shape most likely to be moved out silently,
+  and it is now a persisted member of a merged chain.
 ```
 
 ### Motivation and current sibling evidence
@@ -10176,6 +10200,96 @@ repository.
 
 Either resolution is acceptable and both are better than the current silence: reject the partial
 move while the record is still live, or keep the payload in place for a `match` that only inspects.
+
+---
+
+## Request 53 — `std.fs`: directory creation, directory listing, and a file-type predicate
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none today. It becomes blocking for the deferred store-eviction /
+  garbage-collection capability (`docs/specs/r6-prefix-key-corpus.md` section 7), which cannot
+  enumerate what it must evict.
+Independent work that may continue: all of R6-PREFIX-KEY (roadmap item 37) and all of
+  R6-PREFIX-TTFT (roadmap item 38).
+Resume condition: schedule an eviction, garbage-collection, or size-budget capability over the R6
+  prefix store; or an Align release ships any of the three surfaces below.
+Align commit or pull request: none
+align-llm verification: `src/decode_step.align`'s `R6_KV_UNWRITABLE store[create]` gains a detail
+  that names its cause — `store[absent]`, `store[not_a_directory]`, or `store[denied]` — decided by
+  `fs.is_dir` **before** the prefill rather than by a failed create after it; the three
+  `ds-store-unwritable`, `ds-store-file-not-dir`, and a new `ds-store-denied` rows in
+  `scripts/run-layer-forward-smoke` assert the three distinct details and that the first two now
+  refuse before a plane exists (`plane.source: "-"`); and `gmake layer-forward-smoke` passes with
+  the decode-step golden moving only in those rows.
+```
+
+### Motivation and current sibling evidence
+
+R6-PREFIX-KEY (roadmap item 37) ships a **content-addressed store**: a caller-supplied directory that
+the arm addresses by a derived name, `<STORE>/<64-hex>.akvp`. It never creates the directory, never
+lists it, and never asks what kind of thing a path is — because at this pin it cannot.
+
+`std.fs` as consumed by this repository is `create_exclusive`, `create_rw`, `exists`, `open_rw`,
+`read_file`, `remove`, `rename`, and `write_file`. There is **no `create_dir`, no `read_dir`, and no
+predicate that distinguishes a regular file from a directory from a missing path**. `fs.exists` is
+true for a directory and for a file alike, so it cannot answer "is this operand the kind of thing the
+operand is documented to be".
+
+**Three concrete consequences in the shipped capability, none of them hypothetical:**
+
+1. **The arm cannot create its own store**, so the store is documented as a directory the caller
+   creates (`docs/specs/r6-prefix-key-corpus.md` section 2.4). This is also defensible on its own —
+   an arm that mints namespaces from a path operand is one typo from populating `/tmp/tyop/` — so
+   the request is filed for the other two.
+2. **`R6_KV_UNWRITABLE store[create]` cannot name its cause.** "No such directory", "that path is a
+   regular file", and "that directory is not writable" are **one** refusal with **one** detail,
+   because `fs.create_rw`'s mapped failure at this pin does not separate them. The detail names the
+   *operand* rather than guessing the *cause*, which is the honest form of the limitation and not a
+   substitute for it. Two shipped rows — `ds-store-unwritable` and `ds-store-file-not-dir` — assert
+   that the two causes are **not** distinguished, so the day they are is a visible golden move.
+3. **The failure is reported after a full prefill.** The create is at step W1, which follows the
+   prefill; a pre-flight check would need either a type predicate or a probe write in the caller's
+   directory on **every** run including hits, and `r6-kv-persist.md` section 2.5's rule — a caller
+   who asks for an unpersistable configuration should learn it in milliseconds — cannot be honoured
+   without one. This is the request's strongest client evidence and section 6 risk 5 of the design
+   owns the consequence.
+
+A fourth consequence is scheduled rather than current: **eviction, garbage collection, and a size
+budget are all deferred** (section 7 of the design) and every one of them must enumerate the store.
+That is what makes this request blocking for that capability and non-blocking for this one.
+
+### Requested capability
+
+```text
+fs.create_dir(path: str) -> Result<(), Error>        // one level; fails if the path exists
+fs.read_dir(path: str) -> Result<array<string>, Error>
+fs.is_dir(path: str) -> Result<bool, Error>
+```
+
+Deliberately minimal: one level rather than a recursive `mkdir -p`, entry **names** rather than a
+stat-bearing record, and a single boolean predicate rather than a mode word. Each is the smallest
+surface that answers one of the three consequences above, and none of them is a capability this
+repository would build a compatibility layer around in the meantime — the shipped arm requires the
+caller's directory and says so.
+
+### Acceptance criteria
+
+1. `fs.is_dir` distinguishes the three causes in consequence 2: it returns `Ok(false)` for a regular
+   file, `Ok(true)` for a directory, and `Err(NotFound)` for an absent path, so
+   `R6_KV_UNWRITABLE store[create]` can carry a cause **before** the prefill.
+2. `fs.create_dir` fails deterministically when the path exists, whatever kind of entry it is, and
+   never follows a final symlink to create somewhere else.
+3. `fs.read_dir` enumerates a directory of at least 10,000 entries without unbounded allocation, in a
+   documented order (or with the order documented as unspecified, which is fine as long as it is
+   stated), and excludes `.` and `..`.
+4. All three respect the retained-root discipline Request 18 describes.
+5. **`fs.read_dir` returning `array<string>` intersects Request 22** — indexing arrays of Move
+   element types is refused by `check_index` at this pin — so a consumer that reads the returned
+   array needs 22 as well. That intersection is part of this request rather than a surprise for its
+   implementer: either 22 lands first, or `read_dir` ships a shape that can be consumed without it.
 
 ---
 

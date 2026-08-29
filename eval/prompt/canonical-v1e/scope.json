@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "PROMPT_SCOPE",
+  "repo_id": "prompt-v1-fixture",
+  "repo_profile_revision": "prompt-v1-repo-profile-1",
+  "align_revision": "3a34febe912db5096c58c74fede36ff53f223e04",
+  "corpus_id": "prompt-v1e",
+  "corpus_revision": {
+    "schema_version": 1,
+    "artifact_kind": "CORPUS_REVISION",
+    "source_kind": "FILE_SET",
+    "source_repository_id": "",
+    "source_sha256": "5bd4d2e750d18d2617b5a1ea53a441fd6c95bc7b3e5abd1029e0d05df0f020ec",
+    "content_sha256": "c3bcf5bb60416f334a21ee5394f3820e7c524c82fdb5c803e91f76585c9a47e9"
+  },
+  "evaluation_provider_kind": "LOCAL_OPENAI",
+  "evaluation_provider_model": "qwen2.5-coder-7b-instruct-q4_k_m",
+  "generation_policy_sha256": "bc0f34728b222e8a8af16baf419264500f472332962301e5fa998c1571f0e6f4",
+  "acceptance_policy_sha256": "7b7070aa292b404908c1a6cac66aa8ec93db1e247971ad3832cddda34793ccc3",
+  "base_prompt_sha256": "a9c23b5ab11aa3b03514db43d4b994ad2f79dbc0040376231f4931e41ff9da0a",
+  "repo_prompt_sha256": "1be40aada3352a4622eed7446820cacd1127b0ffaecc74a3a796aeba5fcd1d21",
+  "content_sha256": "27b2bbc564a2a7c459d9b558535df963c9edfade2c72cd93615444da2bdb9e17"
+}

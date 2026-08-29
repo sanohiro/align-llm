@@ -107,7 +107,350 @@ that would settle acceptance clause 12.
 
 **Intentional uncommitted files.** None.
 
-## Merged checkpoint: MF-SINGLE-TOKEN-LOGITS (PR #151, 2026-08-29)
+## Active: R6-PREFIX-KEY (2026-08-29)
+
+Branch `agent/r6-prefix-key-corpus`, cut from `agent/mf-single-token-logits` `40eb965` — that
+branch's merge of `origin/main` `45ff38e` (PR #148). It was **stacked on roadmap item 36**, which
+has since merged as **PR #151** (`main` `334f524`, item 36's final head `d538066`) and is now merged
+into this branch by `git merge`, never a rebase. The stack existed because a store that *writes*
+containers requires item 36's fix: item 33's `T_prefix >= 2` refusal existed only because a
+one-token prefill computed the wrong embedding row, and a store would have persisted that wrong
+plane and served it forever. **The merge moved the decode-step golden's base from 141 to 139 rows**:
+item 36's `d538066` moved `ds-suffix-single-shot-2` and `ds-suffix-prefix-one` into
+`BOUNDARY_CASES`, because a two-token decode step differs by one ULP between arm64 and x86_64. The
+store rows sit on top of that base and none of them carries a decode activation. `origin/main`
+`8d095a4` (PR #152, C4-REPAIR-EDITSET) is merged in on top by a second `git merge`, again never a
+rebase; both conflicts were `Active`-block and roadmap-entry collisions resolved by keeping both
+sides, and nothing that capability changed touches this one's arm, scripts, or goldens.
+
+Roadmap item **37**. The design gate fires on all four `CLAUDE.md` triggers. The ledger is
+`docs/specs/r6-prefix-key-corpus.md`, **committed at `8238df6` and not edited**: sections 1–10 are
+the contract, section 11 is item 38's charter, **section 12 records every implementation deviation**,
+and section 13 records the results.
+
+**Implemented, hosted-verified, not yet published.** `--decode-step` gains a sixteenth operand,
+`STORE`, a caller-created directory that is mutually exclusive with `KV_SAVE` and `KV_LOAD`. The arm
+derives a 32-byte key — SHA-256 over a 152-byte preimage of three digests plus `pack_total_bytes`,
+`kv_width`, `token_count`, `plane_layout_version`, `element_type`, `format_version`, `key_version` —
+and addresses `<STORE>/<64-hex>.akvp`. **A hit loads through the unchanged L1–L14 path; a miss
+prefills, saves through the unchanged writer, and continues**, and the two produce byte-identical
+documents outside three store fields and oracle Q's own set (oracle K). **A miss is only a missing
+file**: three hosted rows place a broken container at a key path and assert `R6_KV_DIGEST("plane")`,
+`R6_KV_TOKENS`, and `R6_KV_IDENTITY("pack")` rather than a re-prefill. Schema **6** adds a `store`
+object to every document; **no path is published**. `src/kv_plane.align`'s writer, reader, header
+plan, and every bound are unchanged and the container is asserted byte-identical to a `KV_SAVE` one.
+
+**Files.** `src/kv_plane.align` (+`derive_key`, `store_path`, four constants),
+`src/decode_step.align` (the operand, step 2d, L0, `render_store`, schema 6),
+`src/model_forward.align` (**five `Outcome` fields only** — section 12 deviation D1),
+`scripts/kv_plane_reader.py` (a second preimage implementation and the `KEY` verdict),
+`scripts/run-layer-forward-smoke` (a third preimage implementation, 16 golden rows, oracle K/D),
+`scripts/run-decode-step` (the real-model store leg and a third analysis block),
+`scripts/decode-step-golden.jsonl` (139 → 155 rows), plus `docs/specs/roadmap.md` (items 37 and 38),
+`docs/align-development.md`, `docs/align-requests.md` (Request 53), and the ledger. **The Makefile
+is untouched**: no target, no aggregate membership, and no check topology moves.
+
+**Verification, all green at this head** (`gmake`, `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib`):
+`gmake build`, `gmake check` (31 units), `gmake layer-forward-smoke` (159 documented cases, 155
+golden rows, 42 codes), `gmake ggml-spike-smoke`, `gmake alignpack-smoke`,
+`gmake gate-topology-check`, `gmake decode-step-qualification` (real model, 4 store prompts, PASS),
+`gmake fmt` leaves no
+diff, `gmake format-check`, `git diff --check`. The golden movement was verified **mechanically**:
+all 139 pre-existing rows differ only in the document's own `schema_version` 5 → 6 plus a default
+`store` object, in the same order, with no row removed — the container header's separate
+`document_schema_version` stays 3 (section 12, D15). **Five ledger mutants were run at the final head
+and all five died**: a preimage field dropped in one of the three implementations, a hit treated as a
+miss, a key that ignores the token stream, the container's path published in the document, and a
+miss that saves after the suffix pass.
+
+**One comprehensive review is complete and its findings are repaired** (section 12, D15–D21 plus
+addenda to D6, D7, and D14). Two code repairs: W5 maps `R6_KV_CLEANUP_FAILED` to `store[cleanup]`
+so no writer code can leak the derived path into `error_detail` (D16), and `derive_key` bounds
+`kv_width` and `token_count` from **above** as well as below, because both narrow to `u32` in the
+preimage (D19). One new golden row, `ds-store-suffix-unwritable`, gives D14's moved call site its
+own failure regression. The preimage is **unchanged** and every key in this document still holds:
+D17 records the `document_schema_version` coupling that keeps it safe rather than spending reserved
+bytes on it. D14 and a `KEY_VERSION` mutant were re-injected at the repair head and both died.
+
+**One real defect was found and fixed during implementation, and it is deviation D14.** The
+`KV_SAVE` writer's call site is *after* the suffix pass, which was correct for every prior run
+because `SUFFIX` is illegal beside `KV_SAVE`; a keyed **miss** is the first run that has both, and
+the first implementation inherited the position and persisted a plane carrying `T_prefix + S`
+columns under a header declaring `columns_persisted = T_prefix`, with the suffix pass's
+`prefill_argmax`. It round-trips through the arm, so oracle K passed — it was caught by the two
+container assertions instead: the keyed container was **not** byte-identical to the `KV_SAVE`
+container of the same prefix, and the independent reader refuses it as `ZEROTAIL`. The fix is one
+guarded call site before the pass; the regression is `ds-store-suffix-vs-kv-save`, which is also the
+fifth mutant.
+
+**The real-model qualification is run and `PASS`** (section 13.6). `gmake
+decode-step-qualification` on the reference host, **2026-08-30 04:48:38-05:04:16, 15 min 38 s**, of
+which the store leg is **48.71 s** against risk 7's 120 s threshold (D7). Four prompts, a keyed miss
+and a keyed hit each, resident at 16 GiB physical: **oracle K, oracle S on both legs, gate G1 on
+both legs, and oracle B are all IDENTICAL**, four distinct keys address four 29,970,432 B containers
+each byte-identical to `KV_SAVE`'s and accepted by the independent reader's `--check-name`, and
+`store.lookup_ns` is 6.5-9.7 us. Gate G1 was the one assertion the dry run could not reach and it is
+now closed on all eight legs. Getting the host took **three polling windows** — 18:30-20:01,
+20:47-00:47, and 00:56-04:48 — against the 6 GB coordination floor, held in turn by two
+Docker-in-Docker preflights, a `llama-server` resident on the same model for over eight hours, and
+an aggregate `make` run. **Nothing was killed, nothing ran below the floor, and no degraded
+measurement was recorded.**
+
+**Next actions, in order.** (1) `python3 scripts/pre-pr
+--owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (2) Publish the pull request. One
+comprehensive review is complete and repaired; another is **not** required — the qualification
+recorded a result and changed no design, contract, or code. (3) Merge; item 36's precondition is
+discharged.
+
+**Blockers.** None. Item 36 merged as PR #151 and is merged into this branch, and the host
+qualification is run and green.
+
+**New Align request 53** (`std.fs` `create_dir` / `read_dir` / `is_dir`), `PROPOSED`, `medium`,
+non-blocking; its resume condition is a store eviction/GC capability. **The number is re-checked
+at both merges and holds**: `origin/main` `8d095a4` claims **52** for C4-REPAIR-MEASURED's `Option`
+partial move — the request section 8 predicted and reserved — so the register runs 1-52 and 53 is
+this capability's. Request 30
+gains a third client (the store's check-then-create window, which at this pin lets a concurrent loser
+**overwrite** rather than be refused — deviation D6), Request 49 gains a recorded **negative** client,
+and Request 31 gains the correction a store owes it and **stays low and non-blocking** with its
+reason.
+
+## Active: C4-REPAIR-EDITSET (2026-08-29)
+
+Branch `agent/c4-repair-editset`, originally stacked on `agent/c4-repair-measured` at `c07775c`,
+now merged with `origin/main` at `4940005` (PR #150, which merged that parent capability).
+Implemented, verified, **measured**, and **reviewed three times** — two disjoint round-one reviewers
+and one final delta review; every recorded finding is repaired and nothing is uncommitted.
+
+**GATE RESULT: `NOT_MET` — a measured negative, and a directional one.** 12 rows, 22 provider calls,
+**839.492 s = 13 min 59 s** against a 60-minute recorded ceiling. `repair_recovery_count: 0` and
+`repair_recovery_paired_count: 0`. **`repair_editset_attempt_count: 6`** — exactly the addressable
+arm stated before the run, so all six eligible repair prompts carried `EDITSET` and the drop ladder
+never fired (8,348-16,904 bytes of 65,536). Evidence at `eval/prompt/c4-editset-gate/`; the per-row
+table and the analysis are in spec section 11.4.
+
+**The checked-in evidence is the run from the clean committed head `9516e75`** — the repaired head
+— taken on the same terms C4-REPAIR-MEASURED used: `align_llm_clean: true` and all three
+reachability fields `VERIFIED`. **Three runs of this corpus now exist and every correctness value is
+identical in all three**: same verdict, same rows, same statuses and failure kinds, same
+`patch_size_bytes`, same six-attempt denominator, same aggregates, same 8,348-16,904 assembled
+bytes, the same **four** patch digests, and the same `edit_set` block digests, path for path. The
+first ran from the uncommitted tree (`align_llm_clean: false`, and of the three reachability fields
+only `align_llm_reachability: UNVERIFIED` — the one an uncommitted head makes unanswerable); the
+second from `de56c60`; the third is this one, needed because review repair moved the repair
+adapter's bytes and every row names that adapter by digest. The clocks moved: 839.492 s against
+940.931 s and 823.67 s, and 8.33-52.69 s / median 21.73 s against 8.93-52.57 s / median 22.25 s and
+8.58-51.54 s / median 19.09 s. So did per-run environment identity, which is neither a correctness
+value nor a gate input: the sandbox directory is fresh each run and every `unittest` traceback frame
+in `diagnostic_stderr` quotes it, so the `STDERR` section moves the repair prompt's own bytes —
+`rendered_prompt_sha256` differs on six `REPAIR` attempts between the last two runs, with the
+snapshot and request digests that bind them (spec section 11.4 names them). The repair provably
+could not have reached any row: the largest
+realized `edit_set_total_bytes` is **1,160 bytes** against a 16,384-byte limit. Digests:
+`c4-editset-evaluation.json` `1b3ebbb6…`, evidence `549879df…`, record `6053086f…`.
+
+**The question C4 could not answer is answered.** On all four rows where both attempts produced a
+patch, `attempts[1].measurement.patch_sha256` equals `attempts[0]`'s **exactly** — the same bytes,
+not merely the same byte count. And the persisted `edit_set` says more: on the two
+`record-codec-round-trip` CANDIDATE rows the model re-emitted a byte-identical edit set, while on
+the two PARENT rows it dropped the file it had reproduced unchanged and kept the other one
+byte-identical, producing the same patch anyway. On the two `duration-half-away-from-zero` PARENT
+rows, shown its own rejected answer, it returned the pinned files **unchanged** — a well-formed
+answer that changes nothing, so every hunk is empty and no patch is synthesized. A mode change from
+a wrong patch to a **no-op**. `c4-repair-measured.md` section 5.7's tie-breaker is answered **in
+the negative**: the missing edit set was not the binding constraint, and the next capability is the
+prompt, the template, and the edit policy rather than more adapter work.
+
+**Capability.** Carry the failing attempt's own edit set into the repair prompt.
+`docs/specs/c4-repair-editset.md` is the authoritative ledger and section 11 is the implementation
+record. C4-REPAIR-MEASURED returned `repair_recovery_paired_count: 0` over ten repair attempts; its
+evidence shows that on all **six** attempts where attempt 1 had produced a validated edit set —
+`record-codec-round-trip` x4 and `duration-half-away-from-zero` PARENT x2 — attempt 2 returned a
+patch of exactly the same byte count. That is the tie-breaker section 5.7 of that document named,
+and this capability is its option B.
+
+**The surface decision.** A new `scripts/prompt-repair-adapter.py` **loads the frozen
+`scripts/prompt-measurement-adapter.py` by path** and calls its functions: containment, sealing,
+redaction, process ownership, generation, validation, and edit parsing have exactly one copy. Only
+`measurement()` and `assemble()` are near-copied, and their divergence from the frozen originals is
+asserted against `eval/fixtures/c4-repair-editset/adapter-divergence.diff` — a 209-line normalized
+unified diff that a reviewer reads as one artifact. Three digest pins hold the base file
+byte-identical: a constant in the new adapter, the `canonical-v1e` file-set manifest, and the
+per-invocation artifact snapshot; `scripts/freeze-canonical-v1e` asserts all three agree before it
+mints anything.
+
+**Schema.** `TASK_MEASUREMENT` 1 -> 2, gaining `edit_set`, `edit_set_total_bytes`, `patch_sha256`,
+and `base_adapter_runtime_identity` as `Option` members. **`PROMPT_TASK_ROW` does not move** — the
+row gains no field. The measurement's version is a checked function of the corpus: a task whose
+`argv` names the repair adapter must emit version 2 and any other task must emit version 1.
+
+**The design's characterization of the second failure mode was wrong, and the evidence corrected
+it.** `c4-repair-editset.md` §1.2 originally read that `layer-precedence-frozen-module` "produced no
+parsable `FILE:` block", so `validated_edit_set` never returned. Every `failure_kind: PATCH` row in
+**both** gate runs — 6 of 6 in C4's, 8 of 8 in this one — carries
+`diagnostic_summary: "the response reproduced the pinned files unchanged"`, which is
+`synthesized_patch`'s refusal *after* the blocks parsed and every path was allowlisted. The mode is
+a **no-op answer**, not a format failure, and the fallback capability is retargeted accordingly.
+Two consequences are recorded: §1.2 carries the correction, and §11.3 deviation 14 records that
+`edit_set` is `None` on exactly those rows because the adapter builds the blocks and then discards
+them — conformant with §3.3's presence table, and the single most useful thing the next capability
+can fix.
+
+**Two rules the implementation had to add that the design did not anticipate**, both found by a
+green-to-red owner test rather than by review:
+
+1. **Which section kinds a sealed template must declare is selected by the corpus, not fixed.**
+   Requiring the five-kind tuple unconditionally made `canonical-v1r`'s four-kind template
+   undecodable, which would have left `eval/prompt/c4-repair-gate/` naming a corpus that can no
+   longer be run. `make prompt-render-parity-smoke` caught it.
+2. **`repair_editset_attempt_count` is present iff the corpus names the repair adapter**, not
+   "present at version 2". `eval/prompt/c4-repair-gate/` is a merged version-2 document written
+   before the quantity existed, and requiring it at version 2 rejected it outright. The new frozen
+   version-2 chain regression in `make prompt-gate-validator-smoke` caught it. Both are recorded as
+   deviations in spec section 11.3.
+
+**Found by probe, and it is a real defect risk.** `runtime_identity()` in the frozen adapter is
+`sha256(Path(__file__).read_bytes())`, and `src/prompt_score.align` requires it to equal the task
+manifest's `measurement_adapter_runtime`. A repair adapter reusing the frozen `environment_probe()`
+would persist the **frozen** file's digest while running its own code, and the existing check would
+accept it. The repair adapter therefore defines its own identity and persists the base one
+separately. The same probe found that no producer or runtime-identity check existed on an
+*attempt-level* measurement's probe; ladder row 12 closes it in all three owners.
+
+**Drop-ladder decision.** `STDOUT -> STDERR -> SUMMARY -> EDITSET`, `STATUS` never dropped.
+`EDITSET` last, because dropping it first would silently degrade a row into the diagnostics-only
+experiment that already measured zero recoveries; droppable at all, because it is the only section
+that can blow the budget alone and a skipped attempt is a lost measurement.
+
+**Freeze.** New `eval/prompt/canonical-v1e/` + `eval/tasks/prompt-v1e/`, **30** file-set members =
+24 shared + 3 task manifests + the template + the policy + the repair adapter. The 24 shared members
+carry identical digests in all three manifests, and all 86 member digests across the three corpora
+recompute against the tree.
+
+**Review repair (2026-08-29).** Two comprehensive reviews (implementation; spec/evidence/
+governance) returned 7 major and 6 minor findings, all accepted and repaired in one commit. The one
+behaviour change: the producer-side edit-set budget was a **greedy best fit** while §4.3, the
+adapter's docstring, and `src/prompt_artifacts.align` all describe a **prefix cut**; the code moved
+to break-on-first-overflow. That moves `scripts/prompt-repair-adapter.py`'s digest from `e54ab3c1…`
+to `fa73f9dc…`, so `canonical-v1e` + `eval/tasks/prompt-v1e/` were **re-frozen — same member set**,
+with only the adapter digest and the cascade below it moving, and the gate was **re-run from the
+repaired head**. The provider service revision was re-derived and came back unmoved. Recorded as
+spec §11.3 deviation 15. The other findings were falsifiability gaps and wording: five ladder-row
+clauses had no falsifying case (edit-set path uniqueness/ascending in both the Align verifier and
+the gate validator, three of the four version-1 absence clauses in the Align verifier, and the
+validator's row-14 sum), the row-17 applied-edit cross-check refused a legitimately **truncated**
+`diagnostic_summary`, and the divergence normalizer ended a function at the first column-0 line,
+which a triple-quoted string can produce.
+
+**Final delta review (2026-08-29).** A fresh review of the repaired head `6ccbb88` returned
+**approve with minors**: four minors, all accepted and repaired in `21c6e30`. One changed behaviour:
+the row-17 truncation exemption fired on the marker's **text alone**, so a short summary ending in
+it could name any applied-edit list and escape the cross-check. Both owners now require the marker
+**and** at least `SUMMARY_LIMIT` (4,096) bytes — the length a genuine `bounded_text` cut always has —
+and each gained a rejection row for a forged cut beside an acceptance row whose summary is now built
+the way the producer builds one. **It cannot move a recorded gate value**: across all 34 persisted
+`diagnostic_summary` values in the evidence the longest is 94 bytes and none carries the marker, so
+the exemption is unreachable by this corpus and the gate was not re-run. The other three were
+wording: "only the clocks moved" (six repair-prompt digests move with the per-run sandbox path, no
+correctness value does), §7.2's "two portable rows" for the prefix cut (one is portable; two are
+Linux-gated), and a fixture comment claiming path uniqueness is checked before the block count (the
+count is compared first). Recorded as spec §11.3 deviation 17.
+
+**`origin/main` merged at `8890b27`** (a `git merge`, never a rebase). Conflicts resolved by keeping
+both sides: the `.PHONY` union, roadmap item 31's merged result beside item 34, both handoff
+sections, and one trailing-comma difference in `validate_attempt_record`'s call. `main`'s new
+`validate_attempt_traces` / `snapshot_request_closure` / `count_ran_invocations` and this branch's
+version-2 rows both survive, and the owner set was re-run at the merged head.
+
+**Verification at the merged head `8890b27`.** `gmake build`, `gmake check` (31 units), `gmake fmt`,
+`gmake format-check`, `gmake gate-topology-check` (EXPECTED unmoved), `git diff --check`, and the
+nine macOS owners all PASS again. Under the Linux recipe below at the same head:
+`run-prompt-evaluate-smoke`, `run-prompt-repair-adapter-smoke` (full launch rows),
+`run-prompt-measurement-adapter-smoke` (74 rows), `test-prompt-fixed-adapter`,
+`test-prompt-snapshot-helper`, and `test-prompt-source-verifier` all PASS. `EVALUATOR_SOURCE_SHA256`
+is re-pinned in `21c6e30`, the same commit as that evaluator edit.
+
+**Verification at the repaired head.** `gmake build`, `gmake check` (31 units), `gmake fmt`,
+`gmake format-check`, `gmake gate-topology-check` (EXPECTED unmoved), `git diff --check`, and the
+macOS owner set — `prompt-model-smoke`, `prompt-render-parity-smoke`, `prompt-score-smoke`,
+`prompt-score-prefix-smoke`, `prompt-verifier-smoke`, `prompt-state-smoke`,
+`prompt-gate-validator-smoke`, `prompt-measurement-adapter-smoke`, `prompt-repair-adapter-smoke` —
+all PASS. Under the Linux recipe below: `run-prompt-repair-adapter-smoke` (full launch rows),
+`run-prompt-evaluate-smoke`, `run-prompt-measurement-adapter-smoke`, `test-prompt-fixed-adapter`,
+`test-prompt-snapshot-helper`, and `test-prompt-source-verifier` all PASS.
+`scripts/freeze-canonical-v1e --check` and `scripts/freeze-canonical-v1r --check` each reproduce
+their 10 frozen files. `EVALUATOR_SOURCE_SHA256` is re-pinned in the same commit as the evaluator
+edit, inside the four-chunk window.
+
+**Mutants, all killed**, across four owners. The original 23: skip EDITSET, drop EDITSET first,
+remove the row-17 summary cross-check, drop the four members from `verifier_measurement_equal`,
+remove ladder row 12, stop recomputing the EDITSET denominator, remove the version-versus-adapter
+rule, stop summing `edit_set_total_bytes`, allow a version-2 member at version 1, allow the base
+identity to be absent, trust the persisted denominator, disable the validator's row 11 / row 12 /
+row 15 body-digest checks, and — in the adapter — drop `patch_sha256`, report the **frozen** file's
+runtime identity, drop the edit set, digest before redaction, remove whole-block bounding, skip the
+base-digest verification, and make the name assertion vacuous. **23 further mutants were injected
+at the repaired head and all 23 died**: 11 in the Align verifier (four version-1 absence clauses,
+the ascending rule and its strictness, the body digest, the declared length, the carried-body cap,
+and both ends of the block bound), 9 in the gate validator (the same set less the strictness pair,
+plus the row-14 sum and the row-17 truncation exemption), the adapter's greedy best fit, the
+evaluator's truncation exemption, and the divergence normalizer's span. Every one of those 23
+**survived** before the repair. The claim "23/23 killed" did not reproduce and is superseded; the
+cause was one thing, not 23 — both fixtures built only well-formed edit-set blocks, so no rule
+about a malformed one could fire (spec section 11.3 deviations 15 and 16).
+
+**The provider service revision was re-derived, not inherited** (spec section 3.7):
+`llama-server --version` reports build 10566 commit `bb4caa754`, the resolved binary hashes to
+`b6ff7e91…`, and the 4,683,073,536-byte model file was re-hashed in full to `509287f7…`. The
+observed string equals `canonical-v1r`'s, which is a measurement rather than a copy — the probe
+fails closed had any component moved.
+
+**Coding-baseline chain, re-recorded.** `Makefile` is one of the twenty recorded input artifacts and
+this branch adds `c4-editset-gate` and `prompt-repair-adapter-smoke` to it, so `main`'s chain
+(`69d223e` -> `ca17997` -> `c89d147`) no longer binds this head. The pending record was measured on
+**Linux** (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) through the DinD wrapper at the merged
+publication head, and the chain is **source `7828451` -> oracle `0badc51` -> finalization
+`73de1e9`**. `gmake baseline-check` inside the same Linux image ends `baseline chain: PASS`.
+
+**Next actions, in order.** (1) Publish the English pull request with the exact verification
+commands, the measured result, the three review envelopes, and every finding's disposition, and post
+the review record as a dedicated comment. (2) Merge with `--merge`; a squash or a rebase would make
+the baseline chain commits unreachable from `main`. (3) If `origin/main` moves first, `git merge` it
+— never a rebase — re-run the owner set, **re-record the baseline chain** (the `Makefile` edit makes
+this head's chain its own) and re-stamp the fresh-image preflight, because the stamp belongs to an
+exact unchanged `HEAD`. (4) On merge, C4's roadmap gate remains unmet by a model, and the fallback
+capability named in spec section 6.4 — a prompt and edit-policy capability for the **unchanged-file
+reproduction** mode, C4-REPAIR-TEMPLATE — becomes the next Track A item rather than a parallel one,
+because this gate answered its tie-breaker in the negative. Its first sub-problem is this
+capability's own recorded gap: **`edit_set` is `None` on every `PATCH` row** (spec section 11.3
+deviation 14), so the answers that mode produces are exactly the ones no artifact shows.
+`agent/c4-repair-template` is stacked on this branch's `6ccbb88` and must reconcile with the final
+repair `21c6e30` and the merge `8890b27` — `scripts/prompt-evaluate.py`,
+`scripts/prompt-gate-validator.py`, `scripts/prompt_gate_fixture.py`,
+`scripts/run-prompt-evaluate-smoke`, `scripts/run-prompt-gate-validator-smoke`,
+`src/prompt_evaluate.align` (the evaluator pin), `src/prompt_verifier_smoke.align`,
+`docs/specs/c4-repair-editset.md`, `eval/prompt/c4-editset-gate/README.md`, `HANDOFF.md`,
+`Makefile`, `docs/specs/roadmap.md`, and the three baseline-chain files.
+
+**Blockers.** Host capacity only: a DinD preflight and Track B's model work contend for memory, and
+the gate needs `llama-server` with the 4.7 GB model. No Align capability request blocks this; next
+free number **53** stays free. Requests 22 and 52 both bite and both are mitigated by idioms already
+proven at this pin, and both gained client evidence lines.
+
+**Linux recipe** (unchanged from C4-REPAIR-MEASURED, and required before touching the evaluator or
+its verifier — `make prompt-evaluate-smoke` cannot run on macOS):
+
+```text
+docker run --rm --platform linux/arm64 \
+  --cap-add=SYS_ADMIN --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined --security-opt systempaths=unconfined \
+  -v "$PWD:$PWD" -v /Users/hiro/Projects/align-llm/.git:/Users/hiro/Projects/align-llm/.git:ro \
+  -v <scratchpad>/gate-run/linux-toolchain:/tc:ro -w "$PWD" \
+  -e PYTHONDONTWRITEBYTECODE=1 -e ALIGNC=/tc/alignc \
+  c4-repair-measure:latest sh -lc "python3 ./scripts/run-prompt-evaluate-smoke"
+```
+
+## Merged checkpoint: MF-SINGLE-TOKEN-LOGITS (PR #151, 2026-08-30)
 
 Branch `agent/mf-single-token-logits`, cut from `origin/main` `553563e` (PR #147,
 R6-RESIDENT-WEIGHTS) and brought up to `origin/main` by **three** `git merge`s, **never a rebase**:
@@ -197,7 +540,7 @@ repair head, then merge once the checks pass.
 
 ## Merged checkpoint: C4-REPAIR-MEASURED (PR #150, 2026-08-29)
 
-Branch `agent/c4-repair-measured`, in publication. Nothing uncommitted. The branch is the
+Branch `agent/c4-repair-measured`, **merged as PR #150** (`4940005` on `main`). The branch is the
 capability, three merges of `origin/main` (`553563e`, `a9561a9`, and `45ff38e`, all taken as
 `git merge`, never a rebase, so every recorded commit stays reachable), the consolidated repair of
 two disjoint comprehensive reviews' findings, the committed-head gate re-run record, the final

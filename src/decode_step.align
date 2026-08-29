@@ -51,7 +51,12 @@ import model_forward
 // completed suffix pass `output` and `oracle_logits` describe that pass's own logits and the
 // container's vector stays published in `kv`. The **kind is unchanged** for the fourth time: the
 // document describes the same thing, and how the plane reached `n_past` is a field, not a kind.
-SCHEMA_VERSION := 5
+// R6-PREFIX-KEY section 2.7 takes **schema 6** and adds the `store` object. The **kind is unchanged**
+// for the fifth time: the document describes the same thing, and whether the plane's provenance was
+// chosen by the caller's two path operands or by a content-addressed lookup is a field, not a kind.
+// No existing field changes meaning and no path is added — `store.key` is a digest, so it is
+// golden-stable on every host and under every temporary directory.
+SCHEMA_VERSION := 6
 DOCUMENT_KIND := "R6_DECODE_STEP"
 
 // Section 2.8's vocabulary. `R6_*` is what this arm owns; the ggml seam's `R5_*` codes reach the
@@ -123,6 +128,19 @@ pub fn plane_source_label(value: i64) -> str {
   if value == PLANE_SOURCE_PREFILL { return "PREFILL" }
   if value == PLANE_SOURCE_LOADED { return "LOADED" }
   return "-"
+}
+
+// R6-PREFIX-KEY section 2.7's `store.outcome`. `"absent"` is "no store was asked for, **or** the run
+// was refused before the key was derived" — which is itself information, and it is never `"miss"` by
+// default, because a default would claim a lookup this arm did not perform.
+STORE_ABSENT := 0
+STORE_HIT := 1
+STORE_MISS := 2
+
+pub fn store_outcome_label(value: i64) -> str {
+  if value == STORE_HIT { return "hit" }
+  if value == STORE_MISS { return "miss" }
+  return "absent"
 }
 
 // Section 3.3, oracle B. The one place this capability claims byte identity, and it claims it about
@@ -1306,6 +1324,12 @@ fn save_plane(
   width: i64,
   prefill_argmax: i64,
   pack_total_bytes: i64,
+  // R6-PREFIX-KEY section 2.6's step W5. `true` when this save is a **store miss** rather than a
+  // `KV_SAVE`, and it changes exactly one thing: a create that fails reports `store[create]` — the
+  // operand — instead of the mapped error name. The cause is not guessed, because `fs.create_rw`'s
+  // failure at this pin cannot separate "no such directory", "that is a file", and "not writable"
+  // (Request 53), and naming the operand is the discipline `R6_KV_IDENTITY`'s details already follow.
+  store_mode: bool,
   borrow mut o: model_forward.Outcome,
 ) {
   mut ids: buffer := buffer(tokens.count * 4)
@@ -1345,6 +1369,25 @@ fn save_plane(
   if written.failed {
     write_code: str := written.code
     write_detail: str := written.detail
+    // W5. The create is the only failure that reaches W1 with the destination untouched, so the two
+    // are distinguished by the outcome the writer reports rather than by a second probe.
+    if store_mode && write_code == kv_plane.CODE_UNWRITABLE
+      && written.destination == kv_plane.DESTINATION_UNTOUCHED {
+      fail(o, write_code, "store[create]")
+      return
+    }
+    // W5, second half (section 12, D16). `R6_KV_CLEANUP_FAILED` is the **only** writer code whose
+    // detail is the destination itself (`kv_plane.align`'s W4 reports `bounded_detail(destination)`
+    // so a `KV_SAVE` caller learns which file it must remove by hand). Under a store that
+    // destination is the arm's own derived name, and section 2.7's "no path is published" governs a
+    // refusal detail exactly as it governs a document field: a golden would otherwise become a
+    // function of the caller's `STORE` directory. The operand replaces it, as `store[create]`
+    // replaces the mapped error name above; the key is already published in `store.key`, so a
+    // caller that wants the file it must remove forms `STORE + "/" + key + ".akvp"`.
+    if store_mode && write_code == kv_plane.CODE_CLEANUP_FAILED {
+      fail(o, write_code, "store[cleanup]")
+      return
+    }
     fail(o, write_code, write_detail)
     return
   }
@@ -2849,8 +2892,13 @@ fn schedule_decode(
   reference_path: str,
   transcript_path: str,
   logits_path: str,
+  // R6-PREFIX-KEY section 2.5. On a **store** run exactly one of these two carries the key's path
+  // and the other is empty, decided by `fs.exists` at L0 rather than by an operand — so every line
+  // below is the load path or the save path this arm already shipped, unchanged. `store_mode` is
+  // true only on a miss, and it exists for step W5's detail alone.
   kv_save_path: str,
   kv_load_path: str,
+  store_mode: bool,
   borrow pack_digest: slice<u8>,
   borrow geometry_digest: slice<u8>,
   steps: i64,
@@ -3088,6 +3136,26 @@ fn schedule_decode(
     decoded.token_id = digest.argmax
     decoded_token = digest.argmax
   }
+  // R6-PREFIX-KEY section 2.5, and the one ordering this capability had to move rather than inherit.
+  // **A keyed miss saves the prefill plane here — before the suffix pass — because that is what a
+  // shared prefix is.** The `KV_SAVE` writer runs after the suffix pass below, which is correct for
+  // it: `SUFFIX` is illegal beside `KV_SAVE` (step 2b/2c), so no `KV_SAVE` run has a suffix pass to
+  // be after. A store miss is the first run that has both, and persisting after the pass would write
+  // a container whose plane carries `T_prefix + S` columns under a header that declares
+  // `columns_persisted = T_prefix` — a container the independent reader refuses as `ZEROTAIL`, that
+  // is **not** byte-identical to the `KV_SAVE` container of the same prefix, and that keys a prefix
+  // to a plane containing one particular suffix. `logits_view` and `plane_view` here are the
+  // prefill's own, and `decoded_token` is the prefill's argmax, which the block above just computed.
+  store_prefix_save := store_mode && suffix_count > 0
+  if o.code.len() == 0 && store_prefix_save && kv_save_path.len() > 0 {
+    pack_total := o.total_bytes
+    save_plane(
+      kv_save_path, g, tokens, plane_view, logits_view, pack_digest, geometry_digest, width,
+      decoded_token, pack_total, store_mode, o)
+    if o.code.len() == 0 && o.kv_verdict == kv_plane.VERDICT_SAVED {
+      o.store_saved = true
+    }
+  }
   // X1 to X4 of section 2.7. One suffix pass — a decode-shaped graph set over `S` columns at
   // `n_past = T_prefix`, causally masked over prefix-plus-suffix — writing its K and V back into the
   // plane at columns `T_prefix .. T_prefix+S-1` and verifying the plane over all `T_prefix + S`
@@ -3143,13 +3211,18 @@ fn schedule_decode(
   // W1 to W4 of section 2.6, immediately after step 10 and before step 11'. The container holds the
   // **prefill** plane at `T` columns, not the post-loop plane at `T + N`: what a shared prefix is,
   // is a prefill.
-  if o.code.len() == 0 && kv_save_path.len() > 0 {
+  if o.code.len() == 0 && kv_save_path.len() > 0 && !store_prefix_save {
     // `pack_total` is read out of the outcome **before** the call: at this pin a borrowed argument
     // that reads a field of the same record the call also borrows mutably aliases its owner.
     pack_total := o.total_bytes
     save_plane(
       kv_save_path, g, tokens, plane_view, logits_view, pack_digest, geometry_digest, width,
-      decoded_token, pack_total, o)
+      decoded_token, pack_total, store_mode, o)
+    // Section 2.7: `store.saved` is `1` only after a **complete** container write. A miss whose
+    // write failed reports `0` and the run is already refused.
+    if store_mode && o.code.len() == 0 && o.kv_verdict == kv_plane.VERDICT_SAVED {
+      o.store_saved = true
+    }
   }
   if o.code.len() == 0 && o.logits_present {
     compare_prefill_logits(logits_path, logits_view, g.n_vocab, top, o)
@@ -3295,6 +3368,7 @@ pub fn execute(
   kv_load_path: str,
   resident_text: str,
   suffix_text: str,
+  store_text: str,
   borrow mut tokens: model_forward.TokenColumns,
   borrow mut schedule: model_forward.ScheduleColumns,
   borrow mut graphs: model_forward.GraphColumns,
@@ -3321,7 +3395,10 @@ pub fn execute(
   // the output.
   o.kv_save_requested = kv_save_path.len() > 0
   o.kv_load_requested = kv_load_path.len() > 0
-  kv_requested := o.kv_save_requested || o.kv_load_requested
+  // R6-PREFIX-KEY section 2.7: `store.requested` is in **every** document too, so a caller who
+  // expected reuse and mistyped the directory reads a document that says which run they got.
+  o.store_requested = store_text != "-"
+  kv_requested := o.kv_save_requested || o.kv_load_requested || o.store_requested
   // Step 2b. Not a copy, not save-then-load, not load-then-resave: a run that both restores a plane
   // and persists it is two capabilities sharing one invocation, and the second would persist a
   // plane it did not compute. It precedes every path-content check, so a run naming two paths is
@@ -3346,9 +3423,35 @@ pub fn execute(
   // `n_past > 0` with **no consumer** — a caller holding both lists in one process should
   // concatenate them and run one prefill — and it would double the closure matrix to save fixture
   // work.
+  //
+  // **R6-PREFIX-KEY section 2.5 widens this rule and records the reversal rather than performing it
+  // quietly.** `SUFFIX` non-`-` now requires `KV_LOAD` **or `STORE`** non-`-`, because the consumer
+  // the paragraph above says does not exist now does: a keyed **miss** must prefill `TOKENS`, save
+  // that plane, and only then run the suffix — a miss that prefilled `TOKENS ++ SUFFIX` in one pass
+  // would have no `T_prefix`-column plane to persist and the store would never fill. The reversal is
+  // kept narrow: the caller still cannot express "prefill then suffix", because `STORE` decides the
+  // provenance by lookup and not by operand, and `SUFFIX` with neither operand is refused unchanged.
   o.suffix_requested = suffix_text != "-"
-  if o.suffix_requested && !o.kv_load_requested {
+  if o.suffix_requested && !o.kv_load_requested && !o.store_requested {
     fail(o, kv_plane.CODE_ARGS, "suffix[no_load]")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // Step 2d (R6-PREFIX-KEY section 2.6). `STORE` is this arm's first **mutually exclusive** operand:
+  // it is a third plane provenance and it must not compete with the two explicit ones. Like 2b and
+  // 2c it precedes every path-content check, every numeric parse, and L0, so a run whose provenance
+  // operands conflict is refused before a directory is touched and before a key is derived. The
+  // order between the two details is the operands' own: `KV_SAVE` precedes `KV_LOAD`.
+  //
+  // **No new code is minted.** `R6_KV_ARGS` already names "the operand combination selecting the
+  // plane's provenance is invalid" and already carries details that distinguish its cases.
+  if o.store_requested && o.kv_save_requested {
+    fail(o, kv_plane.CODE_ARGS, "store[with_save]")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  if o.store_requested && o.kv_load_requested {
+    fail(o, kv_plane.CODE_ARGS, "store[with_load]")
     o.elapsed_ns = time.instant() - started
     return o
   }
@@ -3503,6 +3606,74 @@ pub fn execute(
     o.elapsed_ns = time.instant() - started
     return o
   }
+  // ---------------------------------------------------------------------------------------------
+  // Step L0 (R6-PREFIX-KEY sections 2.3 and 2.5). Derive the key, address one file, and branch.
+  //
+  // **It follows step 6a and every identity check above, and that ordering carries cases.**
+  // `kv_width` and `token_count` are *in the preimage*, so deriving the key before step 6 validated
+  // them would key on an unvalidated number; and the pack's own source digest is one of the three
+  // digests, so it must be read and refused-if-degenerate first. A run refused anywhere above
+  // publishes `store.requested` with `key: "-"` and `outcome: "absent"`, which says the refusal
+  // preceded key derivation.
+  //
+  // **A miss is only a missing file.** If a file exists at the key path it is loaded through L1–L14
+  // unchanged and **every** failure there is that check's refusal — never a silent re-prefill, which
+  // would make a corrupt artifact indistinguishable from a bug in this arm's own writer.
+  mut store_path_owned: string := "".clone()
+  mut store_hit := false
+  if o.store_requested {
+    mut key_ids: buffer := buffer(tokens.count * 4)
+    mut key_at := 0
+    loop {
+      if key_at >= tokens.count { break }
+      key_ids.put_u32_le(model_forward.column_at(tokens.ids, key_at) as u32)
+      key_at = key_at + 1
+    }
+    key_ids_view := key_ids.bytes()
+    if key_ids_view.len() != tokens.count * 4 {
+      fail(o, "R4_WINDOW_UNAVAILABLE", "store_tokens")
+      o.elapsed_ns = time.instant() - started
+      return o
+    }
+    // The three digests are the ones this run already computed: the key adds no new I/O and no new
+    // digest of a large region, so Request 29 gains no client here.
+    derived := kv_plane.derive_key(
+      pack_digest, geometry_digest, key_ids_view, width, tokens.count, staged.total_bytes)
+    if derived.len() != kv_plane.KEY_HEX_BYTES {
+      fail(o, "R4_WINDOW_UNAVAILABLE", "store_key")
+      o.elapsed_ns = time.instant() - started
+      return o
+    }
+    derived_view: str := derived
+    o.store_key = derived_view.clone()
+    store_path_owned = kv_plane.store_path(store_text, derived_view)
+    store_path_view: str := store_path_owned
+    lookup_started := time.instant()
+    store_hit = fs.exists(store_path_view)
+    o.store_lookup_ns = time.instant() - lookup_started
+    o.store_outcome = if store_hit { STORE_HIT } else { STORE_MISS }
+    // From here the run **is** a load run or a save run of the existing paths, and every line below
+    // is unchanged. `kv.load_requested`/`kv.save_requested` report the direction the lookup chose,
+    // so a keyed hit is byte-comparable with an explicit `KV_LOAD` run and a keyed miss with an
+    // explicit `KV_SAVE` one — which is what oracle K's exclusion list is written around.
+    o.kv_load_requested = store_hit
+    o.kv_save_requested = !store_hit
+  }
+  // Read out of the outcome **before** the call: at this pin a borrowed argument that reads a field
+  // of the same record the call also borrows mutably aliases its owner (the `pack_total` idiom).
+  store_miss := o.store_requested && !store_hit
+  effective_save_path := if store_miss {
+    store_path_view: str := store_path_owned
+    store_path_view
+  } else {
+    kv_save_path
+  }
+  effective_load_path := if o.store_requested && store_hit {
+    store_path_view: str := store_path_owned
+    store_path_view
+  } else {
+    kv_load_path
+  }
   window_bytes := staged.window_bytes
   residual_bytes := g.n_embd * tokens.count * 4
   logits_bytes := g.n_vocab * 4
@@ -3618,7 +3789,8 @@ pub fn execute(
     window_view,
     layout, resident, device,
     context_bytes, width, residual_bytes, logits_bytes, readback_bytes, reference_path,
-    transcript_path, logits_path, kv_save_path, kv_load_path, pack_digest, geometry_digest, steps,
+    transcript_path, logits_path, effective_save_path, effective_load_path,
+    store_miss, pack_digest, geometry_digest, steps,
     started, schedule, graphs, top, stepped, o)
   o.elapsed_ns = time.instant() - started
   return o
@@ -3918,6 +4090,37 @@ pub fn render_suffix(borrow o: model_forward.Outcome) -> string {
   return d.to_string()
 }
 
+// R6-PREFIX-KEY section 2.7's `store` object, in declaration order, present in **every** document
+// including error documents — so "this run missed" is never silent and a caller who mistyped the
+// directory reads a document that says which run they got.
+//
+// **It publishes no path, and that is a decision** (section 2.7): `kv` publishes none today and the
+// goldens depend on it, and a `mktemp -d` name could not be pinned. The **key** is a digest of the
+// pack's identity record, the geometry's bytes, and the ids, so it is golden-stable on the hosted
+// fixture and on the real model alike; a caller that wants the file forms
+// `STORE + "/" + key + ".akvp"` itself.
+//
+// `container_bytes` is `kv.total_bytes` restated so the object is readable alone — read on a hit,
+// written on a miss, `0` otherwise. Only `lookup_ns` is a clock, and section 2.9 records that no
+// claim is derived from it.
+pub fn render_store(borrow o: model_forward.Outcome) -> string {
+  d := builder()
+  d.write("{\"requested\":")
+  d.write_int(if o.store_requested { 1 } else { 0 })
+  d.write(",\"key\":")
+  d.write(model_forward.json_string(hex_or_dash(o.store_key)))
+  d.write(",\"outcome\":")
+  d.write(model_forward.json_string(store_outcome_label(o.store_outcome)))
+  d.write(",\"saved\":")
+  d.write_int(if o.store_saved { 1 } else { 0 })
+  d.write(",\"container_bytes\":")
+  d.write_int(if o.store_requested { o.kv_total_bytes } else { 0 })
+  d.write(",\"lookup_ns\":")
+  d.write_int(o.store_lookup_ns)
+  d.write("}")
+  return d.to_string()
+}
+
 fn hex_or_dash(borrow value: string) -> str {
   view: str := value
   if view.len() == 0 { return "-" }
@@ -4077,6 +4280,8 @@ pub fn render(
   kv_view: str := kv
   suffix := render_suffix(o)
   suffix_view: str := suffix
+  store := render_store(o)
+  store_view: str := store
   weights := render_weights(o)
   weights_view: str := weights
   timings := render_timings_step(o)
@@ -4110,6 +4315,8 @@ pub fn render(
   d.write(kv_view)
   d.write(",\"suffix\":")
   d.write(suffix_view)
+  d.write(",\"store\":")
+  d.write(store_view)
   d.write(",\"weights\":")
   d.write(weights_view)
   d.write(",\"timings\":")
@@ -4174,6 +4381,10 @@ fn print_summary(
   print(kv_plane.destination_label(o.kv_destination))
   print("kv container bytes:")
   print(o.kv_total_bytes)
+  print("store outcome:")
+  print(store_outcome_label(o.store_outcome))
+  print("store key:")
+  print(hex_or_dash(o.store_key))
   print("suffix tokens:")
   print(o.suffix_token_count)
   print("suffix base:")
@@ -4220,9 +4431,10 @@ fn print_summary(
   }
 }
 
-// R6-STEP-N section 2.2, R6-KV-PERSIST section 2.2, R6-RESIDENT-WEIGHTS section 3.1, and
-// R6-PREFIX-SUFFIX-PREFILL section 2.2: exactly five, six, seven, nine, ten, eleven, twelve,
-// thirteen, fourteen, **or fifteen** operands. **Eight is still refused**, inherited verbatim from
+// R6-STEP-N section 2.2, R6-KV-PERSIST section 2.2, R6-RESIDENT-WEIGHTS section 3.1,
+// R6-PREFIX-SUFFIX-PREFILL section 2.2, and R6-PREFIX-KEY section 2.2: exactly five, six, seven,
+// nine, ten, eleven, twelve, thirteen, fourteen, fifteen, **or sixteen** operands. **Eight is still
+// refused**, inherited verbatim from
 // `--model-forward`'s rule and for R6's own reason: `KV_WIDTH` travels with the transcript, so a
 // transcript without a width refuses itself.
 //
@@ -4276,7 +4488,7 @@ fn print_summary(
 // including error documents, so the count is never implicit in the output.
 pub fn run(args: array<str>) -> Result<(), Error> {
   count := args.len()
-  if count < 5 || count == 8 || count > 15 {
+  if count < 5 || count == 8 || count > 16 {
     return Err(Error.Invalid)
   }
   if !layer_forward.valid_path(args[2]) || !layer_forward.valid_path(args[3]) {
@@ -4300,6 +4512,13 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   if count >= 13 && args[12] != "-" && !layer_forward.valid_path(args[12]) {
     return Err(Error.Invalid)
   }
+  // R6-PREFIX-KEY section 2.2. `STORE` is `args[15]`, the sixteenth operand, and takes the **same**
+  // path check `KV_SAVE` and `KV_LOAD` take — it is a path, and the fact that it names a directory
+  // rather than a file is not something `valid_path` can see at this pin (Request 53). A path it
+  // refuses is `Err(Error.Invalid)` with no document, identical to the two operands it sits beside.
+  if count >= 16 && args[15] != "-" && !layer_forward.valid_path(args[15]) {
+    return Err(Error.Invalid)
+  }
   reference_path := if count >= 7 { args[6] } else { "" }
   transcript_path := if count >= 9 && args[7] != "-" { args[7] } else { "" }
   width_text := if count >= 9 { args[8] } else { "" }
@@ -4313,6 +4532,13 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   // behaviour character for character: `args.len() == 15` with `SUFFIX` of `-` is exactly
   // `args.len() == 14`.
   suffix_text := if count >= 15 { args[14] } else { "-" }
+  // `STORE` is `args[15]`, the sixteenth operand, and is last for the reason `STEPS`, `RESIDENT`,
+  // and `SUFFIX` were: every earlier position is spoken for and moving one would change the meaning
+  // of an existing invocation silently. `-` is absent and is the pre-existing behaviour character
+  // for character: `args.len() == 16` with `STORE` of `-` is exactly `args.len() == 15`. It is
+  // **mutually exclusive** with `KV_SAVE` and `KV_LOAD` — the arm's first such rule — and that is
+  // step 2d in `execute`, because it is a refusal that owes the caller a document.
+  store_text := if count >= 16 { args[15] } else { "-" }
   mut tokens := model_forward.empty_tokens()
   mut schedule := model_forward.empty_schedule()
   mut graphs := model_forward.empty_graphs()
@@ -4320,7 +4546,8 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   mut stepped := model_forward.empty_steps()
   outcome := execute(
     args[2], args[3], args[4], reference_path, transcript_path, width_text, logits_path, steps_text,
-    kv_save_path, kv_load_path, resident_text, suffix_text, tokens, schedule, graphs, top, stepped)
+    kv_save_path, kv_load_path, resident_text, suffix_text, store_text, tokens, schedule, graphs,
+    top, stepped)
   document := render(
     outcome, tokens, schedule, graphs, top, stepped, args[2], args[3], reference_path,
     transcript_path, logits_path)

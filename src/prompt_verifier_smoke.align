@@ -219,6 +219,14 @@ fn corpus() -> prompt_artifacts.PromptEvaluationCorpus {
 }
 
 fn task() -> prompt_artifacts.PromptEvaluationTask {
+  return task_named(false)
+}
+
+// The corpus selects the adapter and the adapter selects the measurement version (ladder row 11),
+// so the two task shapes differ in `cmd` and `argv` and in nothing else. Written as one
+// parameterized literal rather than as a field replacement: the pinned compiler supports owned
+// field replacement only for `string` and `Option<string>` leaves.
+fn task_named(repair: bool) -> prompt_artifacts.PromptEvaluationTask {
   return prompt_artifacts.PromptEvaluationTask {
     schema_version: 1,
     artifact_kind: "PROMPT_EVALUATION_TASK".clone(),
@@ -227,8 +235,8 @@ fn task() -> prompt_artifacts.PromptEvaluationTask {
     repo_revision: digest_a(),
     repo_path: "repository".clone(),
     require_clean_repo: true,
-    cmd: "adapter".clone(),
-    argv: one_string("adapter"),
+    cmd: if repair { "/usr/bin/python3".clone() } else { "adapter".clone() },
+    argv: if repair { repair_adapter_argv() } else { one_string("adapter") },
     snapshot_cmd: "snapshot".clone(),
     snapshot_argv: one_string("snapshot"),
     measurement_adapter_runtime: "runtime".clone(),
@@ -532,6 +540,10 @@ fn measurement(passing: bool, provider_kind: str, seed: i64) -> prompt_artifacts
     diagnostic_summary: "".clone(),
     diagnostic_stdout: "".clone(),
     diagnostic_stderr: "".clone(),
+    edit_set: None,
+    edit_set_total_bytes: None,
+    patch_sha256: None,
+    base_adapter_runtime_identity: None,
     content_sha256: digest_a(),
   }
 }
@@ -624,6 +636,8 @@ fn task_aggregate(mode: i64, tamper: bool) -> prompt_artifacts.TaskAggregate {
     parent_repair_recovery_count: None,
     candidate_repair_recovery_count: None,
     repair_recovery_paired: None,
+    parent_repair_editset_attempt_count: None,
+    candidate_repair_editset_attempt_count: None,
   }
 }
 
@@ -646,6 +660,7 @@ fn corpus_aggregate(mode: i64, tamper: bool) -> prompt_artifacts.CorpusAggregate
     repair_attempt_count: None,
     repair_recovery_count: None,
     repair_recovery_paired_count: None,
+    repair_editset_attempt_count: None,
   }
 }
 
@@ -1237,6 +1252,10 @@ fn terminal_measurement() -> prompt_artifacts.TaskMeasurement {
     diagnostic_summary: "adapter error".clone(),
     diagnostic_stdout: "".clone(),
     diagnostic_stderr: "".clone(),
+    edit_set: None,
+    edit_set_total_bytes: None,
+    patch_sha256: None,
+    base_adapter_runtime_identity: None,
     content_sha256: digest_a(),
   }
 }
@@ -1494,6 +1513,10 @@ fn attempt_measurement(passing: bool, window: i64, seed: i64) -> prompt_artifact
     diagnostic_summary: "provider-backed candidate patch failed validation".clone(),
     diagnostic_stdout: "post-repair validation exit code: 1".clone(),
     diagnostic_stderr: "AssertionError".clone(),
+    edit_set: None,
+    edit_set_total_bytes: None,
+    patch_sha256: None,
+    base_adapter_runtime_identity: None,
     content_sha256: if passing { digest_b() } else { digest_c() },
   }
 }
@@ -1704,6 +1727,444 @@ fn adapter_repair_initial_attempt(seed: i64) -> prompt_artifacts.TaskAttemptReco
   }
 }
 
+// --- C4-REPAIR-EDITSET: version-2 measurements ------------------------------------------------
+// Defect 14 is the ACCEPTANCE case: a corpus that names `scripts/prompt-repair-adapter.py` and
+// whose every ran attempt therefore carries a version-2 measurement with a realized edit set, a
+// patch digest, and the base adapter's identity, with `EDITSET` among the sections the repair
+// prompt actually carried. Defects 15-20 are one rejection each, and each is written so that the
+// rule it names is the only rule that can reject it.
+
+fn repair_adapter_argv() -> array<string> {
+  mut values: array_builder<string> := array_builder()
+  values.push("/usr/bin/python3".clone())
+  values.push("scripts/prompt-repair-adapter.py".clone())
+  return values.build()
+}
+
+// The corpus selects the adapter, and the adapter selects the measurement version (ladder row 11).
+fn task_repair_adapter() -> prompt_artifacts.PromptEvaluationTask {
+  return task_named(true)
+}
+
+// Defects 21-23 carry a version-1 measurement from a frozen-adapter corpus, so they name the
+// frozen adapter exactly as defects 0-13 and 15 do.
+fn uses_repair_adapter(defect: i64) -> bool {
+  return defect == 14 || (defect >= 16 && defect <= 20) || (defect >= 24 && defect <= 30)
+}
+
+// Defect 16 is a repair-adapter corpus emitting a version-1 measurement, so it is the one case
+// where the adapter is the repair adapter and the version is still 1.
+fn measurement_is_version_two(defect: i64) -> bool {
+  return defect == 14 || (defect >= 17 && defect <= 20) || (defect >= 24 && defect <= 30)
+}
+
+fn editset_attempts(defect: i64) -> i64 {
+  // A repair attempt counts only when it ran and its prompt actually carried `EDITSET`. Only the
+  // version-2-measurement defects render it, and defect 20's rows still run their repair attempt.
+  if !measurement_is_version_two(defect) { return 0 }
+  return 2
+}
+
+fn body_text_value() -> string {
+  return "def round_to_minutes(seconds):\n    return seconds // 60\n".clone()
+}
+
+fn second_body_text_value() -> string {
+  return "def test_round_to_minutes():\n    assert True\n".clone()
+}
+
+fn body_digest_of(body: str) -> string {
+  hashed := crypto.sha256(body)
+  return encoding.hex_encode(hashed[0..hashed.len()])
+}
+
+fn body_digest_value() -> string {
+  return body_digest_of("def round_to_minutes(seconds):\n    return seconds // 60\n")
+}
+
+fn second_body_digest_value() -> string {
+  return body_digest_of("def test_round_to_minutes():\n    assert True\n")
+}
+
+fn body_byte_count() -> i64 {
+  return "def round_to_minutes(seconds):\n    return seconds // 60\n".bytes().len()
+}
+
+fn second_body_byte_count() -> i64 {
+  return "def test_round_to_minutes():\n    assert True\n".bytes().len()
+}
+
+fn edit_set_block(
+  carried: bool, path: str, body: str, bytes_len: i64, digest: str,
+) -> prompt_artifacts.EditSetBlock {
+  return prompt_artifacts.EditSetBlock {
+    schema_version: 1,
+    artifact_kind: "EDIT_SET_BLOCK".clone(),
+    path: path.clone(),
+    body_bytes: bytes_len,
+    body_sha256: digest.clone(),
+    // An omitted block keeps its path, length, and digest and loses only its text.
+    body_text: if carried { Some(body.clone()) } else { None },
+    content_sha256: digest_a(),
+  }
+}
+
+// Two blocks, not one. A single-block edit set cannot falsify the rule that block paths are
+// unique and strictly ascending, so every mutant of that rule survived while this fixture emitted
+// one block. `order` selects the shape: 0 ascending, 1 descending (defect 24), 2 the same path
+// twice (defect 25).
+fn edit_set_blocks(carried: bool, order: i64) -> array<prompt_artifacts.EditSetBlock> {
+  first := edit_set_block(
+    carried, "src/duration.py", body_text_value(), body_byte_count(), body_digest_value(),
+  )
+  second := edit_set_block(
+    carried,
+    "tests/test_duration.py",
+    second_body_text_value(),
+    second_body_byte_count(),
+    second_body_digest_value(),
+  )
+  mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+  if order == 1 {
+    values.push(second)
+    values.push(first)
+    return values.build()
+  }
+  if order == 2 {
+    values.push(edit_set_block(
+        carried, "src/duration.py", body_text_value(), body_byte_count(), body_digest_value(),
+      ))
+    values.push(first)
+    return values.build()
+  }
+  values.push(first)
+  values.push(second)
+  return values.build()
+}
+
+// `src/a.py`, `src/aa.py`, `src/aaa.py`, ... — strictly ascending in byte order, because `.` (0x2E)
+// sorts before `a` (0x61), so each name is a prefix-extension that compares greater than the last.
+fn generated_path(count: i64) -> string {
+  b := builder()
+  b.write("src/")
+  mut index := 0
+  loop {
+    if index >= count { break }
+    b.write("a")
+    index = index + 1
+  }
+  b.write(".py")
+  return b.to_string()
+}
+
+// Defect 30's body: one byte past the producer's own `EDIT_SET_LIMIT`. A **carried** body may not
+// exceed it — the producer omits such a block instead — so carrying one is a producer defect. Built
+// rather than written out, because a 16 KB literal in a fixture is unreadable.
+fn oversized_body_text() -> string {
+  b := builder()
+  mut index := 0
+  loop {
+    if index >= 16_385 { break }
+    b.write("x")
+    index = index + 1
+  }
+  return b.to_string()
+}
+
+fn edit_set_order(defect: i64) -> i64 {
+  if defect == 24 { return 1 }
+  if defect == 25 { return 2 }
+  return 0
+}
+
+// Defects 26-29 break one block-shape rule each, and each is the only rule that can reject its
+// document. They exist because every one of these clauses was unfalsifiable while the fixture
+// built only well-formed blocks — the same gap review found in the ascending rule, audited across
+// the whole block validator rather than repaired one clause at a time.
+//
+// 26 digests the wrong bytes; 27 declares a length its body does not have, with the total still
+// summing the declared counts so the row-14 rule stays satisfied; 28 is `Some` and **empty**,
+// which is a different statement from `None` and is a producer defect; 29 exceeds the 32-block
+// bound with 33 individually valid blocks, which the length check rejects before it ever compares
+// a pair, so a repeated block is enough and 33 distinct paths are not needed.
+fn edit_set_blocks_for(defect: i64, carried: bool) -> array<prompt_artifacts.EditSetBlock> {
+  if defect == 26 {
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    values.push(edit_set_block(
+        carried, "src/duration.py", body_text_value(), body_byte_count(), digest_a(),
+      ))
+    return values.build()
+  }
+  if defect == 27 {
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    values.push(edit_set_block(
+        carried,
+        "src/duration.py",
+        body_text_value(),
+        body_byte_count() + 1,
+        body_digest_value(),
+      ))
+    return values.build()
+  }
+  if defect == 28 {
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    return values.build()
+  }
+  if defect == 29 {
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    mut index := 0
+    loop {
+      if index >= 33 { break }
+      // Distinct and strictly ascending, so the block bound is the only rule this document breaks.
+      // The count is compared first, before any block or pair rule, so a repeated path would not
+      // change this case's verdict; keeping the paths ascending keeps the case falsifying for the
+      // bound alone, because removing the bound leaves a block set with nothing else wrong.
+      path := generated_path(index + 1)
+      path_view: str := path
+      values.push(edit_set_block(
+          carried, path_view, body_text_value(), body_byte_count(), body_digest_value(),
+        ))
+      index = index + 1
+    }
+    return values.build()
+  }
+  if defect == 30 {
+    body := oversized_body_text()
+    body_view: str := body
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    values.push(edit_set_block(
+        carried, "src/duration.py", body_view, 16_385, body_digest_of(body_view),
+      ))
+    return values.build()
+  }
+  return edit_set_blocks(carried, edit_set_order(defect))
+}
+
+fn edit_set_block_count(defect: i64) -> i64 {
+  if defect == 26 || defect == 27 || defect == 30 { return 1 }
+  if defect == 28 { return 0 }
+  if defect == 29 { return 33 }
+  return 2
+}
+
+// The pre-omission sum the verifier recomputes. Defect 25 carries `src/duration.py` twice, so its
+// sum is that body twice.
+fn edit_set_total(defect: i64) -> i64 {
+  if defect == 25 { return body_byte_count() + body_byte_count() }
+  if defect == 26 { return body_byte_count() }
+  // Defect 27's total is the sum of the **declared** counts, so only the length rule is broken.
+  if defect == 27 { return body_byte_count() + 1 }
+  if defect == 28 { return 0 }
+  if defect == 29 { return body_byte_count() * 33 }
+  if defect == 30 { return 16_385 }
+  return body_byte_count() + second_body_byte_count()
+}
+
+fn measurement_v2(
+  passing: bool, window: i64, seed: i64, defect: i64, runtime: str,
+) -> prompt_artifacts.TaskMeasurement {
+  return prompt_artifacts.TaskMeasurement {
+    schema_version: 2,
+    artifact_kind: "TASK_MEASUREMENT".clone(),
+    status: if passing { "PASS".clone() } else { "FAIL".clone() },
+    failure_kind: if passing { "NONE".clone() } else { "TEST".clone() },
+    build_status: "PASS".clone(),
+    test_status: if passing { "PASS".clone() } else { "FAIL".clone() },
+    repair_loop_count: 0,
+    unrelated_diff_count: 0,
+    patch_size_bytes: 10,
+    public_api_change_count: 0,
+    policy_violation_count: 0,
+    cleanup_passed: true,
+    containment_passed: true,
+    benchmark_regression_ppm: None,
+    generation_to_passing_patch_ns: if passing { Some(window) } else { None },
+    rendered_prompt_sha256: digest_a(),
+    generation_request: generation_request(seed),
+    environment_probe: probe("MEASUREMENT_ADAPTER", runtime),
+    seed_attestation: seed_attestation("LOCAL_OPENAI", seed),
+    diagnostic_summary: "provider-backed candidate patch failed validation".clone(),
+    diagnostic_stdout: "post-repair validation exit code: 1".clone(),
+    diagnostic_stderr: "AssertionError".clone(),
+    edit_set: Some(edit_set_blocks_for(defect, true)),
+    // Defect 20 breaks only the pre-omission sum, which no other rule reads.
+    edit_set_total_bytes: Some(if defect == 20 {
+        edit_set_total(defect) + 1
+      } else {
+        edit_set_total(defect)
+      }),
+    patch_sha256: Some(digest_b()),
+    // Defect 17 omits the one version-2 member that is unconditionally present.
+    base_adapter_runtime_identity: if defect == 17 {
+      None
+    } else {
+      Some("PYTHON:2d3796dbf1159d4a9528a62bbb9af0f36ccc5878b76d83aa65fa0d39cca7b20c".clone())
+    },
+    content_sha256: if passing { digest_b() } else { digest_c() },
+  }
+}
+
+// Defects 15 and 21-23: a version-1 measurement carrying exactly **one** version-2 member.
+// Absence at version 1 is required rather than defaulted, and the four members are separate
+// clauses of that rule, so one member per case is what makes each clause falsifiable. Written as
+// a full literal rather than as a field replacement because the pinned compiler supports owned
+// field replacement only for `string` and `Option<string>` leaves (section 11.3 deviation 8).
+fn measurement_v1_with_v2_member(
+  passing: bool, window: i64, seed: i64, defect: i64,
+) -> prompt_artifacts.TaskMeasurement {
+  return prompt_artifacts.TaskMeasurement {
+    schema_version: 1,
+    artifact_kind: "TASK_MEASUREMENT".clone(),
+    status: if passing { "PASS".clone() } else { "FAIL".clone() },
+    failure_kind: if passing { "NONE".clone() } else { "TEST".clone() },
+    build_status: "PASS".clone(),
+    test_status: if passing { "PASS".clone() } else { "FAIL".clone() },
+    repair_loop_count: 0,
+    unrelated_diff_count: 0,
+    patch_size_bytes: 10,
+    public_api_change_count: 0,
+    policy_violation_count: 0,
+    cleanup_passed: true,
+    containment_passed: true,
+    benchmark_regression_ppm: None,
+    generation_to_passing_patch_ns: if passing { Some(window) } else { None },
+    rendered_prompt_sha256: digest_a(),
+    generation_request: generation_request(seed),
+    environment_probe: probe("MEASUREMENT_ADAPTER", "runtime"),
+    seed_attestation: seed_attestation("LOCAL_OPENAI", seed),
+    diagnostic_summary: "provider-backed candidate patch failed validation".clone(),
+    diagnostic_stdout: "post-repair validation exit code: 1".clone(),
+    diagnostic_stderr: "AssertionError".clone(),
+    // Defect 21 carries the edit set alone, with its total still absent.
+    edit_set: if defect == 21 { Some(edit_set_blocks(true, 0)) } else { None },
+    // Defect 22 carries the total alone.
+    edit_set_total_bytes: if defect == 22 { Some(edit_set_total(defect)) } else { None },
+    patch_sha256: if defect == 15 { Some(digest_b()) } else { None },
+    base_adapter_runtime_identity: if defect == 23 {
+      Some("PYTHON:2d3796dbf1159d4a9528a62bbb9af0f36ccc5878b76d83aa65fa0d39cca7b20c".clone())
+    } else {
+      None
+    },
+    content_sha256: if passing { digest_b() } else { digest_c() },
+  }
+}
+
+fn measurement_is_version_one_defect(defect: i64) -> bool {
+  return defect == 15 || (defect >= 21 && defect <= 23)
+}
+
+// Defect 18: an attempt-level probe naming another runtime. The row-level check binds only the
+// final attempt once a row can run twice, so breaking attempt one is exactly the section 2.3 gap
+// that ladder row 12 closes.
+fn measurement_v2_wrong_identity(seed: i64, defect: i64) -> prompt_artifacts.TaskMeasurement {
+  return measurement_v2(false, 0, seed, defect, "another-runtime")
+}
+
+fn attempt_measurement_for(passing: bool, window: i64, seed: i64, defect: i64) -> prompt_artifacts.TaskMeasurement {
+  if measurement_is_version_one_defect(defect) {
+    return measurement_v1_with_v2_member(passing, window, seed, defect)
+  }
+  if measurement_is_version_two(defect) { return measurement_v2(passing, window, seed, defect, "runtime") }
+  return attempt_measurement(passing, window, seed)
+}
+
+fn repair_source_v2() -> prompt_artifacts.RepairPromptSource {
+  mut included: array_builder<string> := array_builder()
+  included.push("STATUS".clone())
+  included.push("EDITSET".clone())
+  included.push("SUMMARY".clone())
+  included.push("STDOUT".clone())
+  mut dropped: array_builder<string> := array_builder()
+  dropped.push("STDERR".clone())
+  return prompt_artifacts.RepairPromptSource {
+    schema_version: 1,
+    artifact_kind: "REPAIR_PROMPT_SOURCE".clone(),
+    template_sha256: digest_a(),
+    source_attempt_index: 1,
+    source_measurement_sha256: digest_c(),
+    included_sections: included.build(),
+    dropped_sections: dropped.build(),
+    assembled_bytes: 4_096,
+    content_sha256: digest_a(),
+  }
+}
+
+fn editset_initial_attempt(seed: i64, defect: i64) -> prompt_artifacts.TaskAttemptRecord {
+  return prompt_artifacts.TaskAttemptRecord {
+    schema_version: 1,
+    artifact_kind: "TASK_ATTEMPT_RECORD".clone(),
+    attempt_index: 1,
+    attempt_kind: "INITIAL".clone(),
+    status: "FAIL".clone(),
+    skip_reason: "NONE".clone(),
+    rendered_prompt_sha256: Some(digest_a()),
+    repair_prompt_source: None,
+    adapter_request_sha256: Some(digest_a()),
+    snapshot_request_sha256: Some(digest_a()),
+    before_snapshot_result_sha256: Some(digest_a()),
+    after_snapshot_result_sha256: Some(digest_a()),
+    input_snapshot_sha256: Some(digest_a()),
+    generation_request: Some(generation_request(seed)),
+    seed_attestation: Some(seed_attestation("LOCAL_OPENAI", seed)),
+    paired_seed: seed,
+    measurement: if defect == 18 {
+      Some(measurement_v2_wrong_identity(seed, defect))
+    } else {
+      Some(attempt_measurement_for(false, 0, seed, defect))
+    },
+    repair_preparation_ns: 0,
+    adapter_elapsed_ns: 40,
+    adapter_overhead_ns: None,
+    measurement_sha256: Some(digest_c()),
+    content_sha256: digest_a(),
+  }
+}
+
+fn editset_repair_attempt(seed: i64, defect: i64) -> prompt_artifacts.TaskAttemptRecord {
+  return prompt_artifacts.TaskAttemptRecord {
+    schema_version: 1,
+    artifact_kind: "TASK_ATTEMPT_RECORD".clone(),
+    attempt_index: 2,
+    attempt_kind: "REPAIR".clone(),
+    status: "PASS".clone(),
+    skip_reason: "NONE".clone(),
+    rendered_prompt_sha256: Some(digest_a()),
+    repair_prompt_source: if measurement_is_version_two(defect) {
+      Some(repair_source_v2())
+    } else {
+      Some(repair_source())
+    },
+    adapter_request_sha256: Some(digest_a()),
+    snapshot_request_sha256: Some(digest_a()),
+    before_snapshot_result_sha256: Some(digest_a()),
+    after_snapshot_result_sha256: Some(digest_a()),
+    input_snapshot_sha256: Some(digest_a()),
+    generation_request: Some(generation_request(seed)),
+    seed_attestation: Some(seed_attestation("LOCAL_OPENAI", seed)),
+    paired_seed: seed,
+    measurement: Some(attempt_measurement_for(true, 30, seed, defect)),
+    repair_preparation_ns: 10,
+    adapter_elapsed_ns: 40,
+    adapter_overhead_ns: Some(10),
+    measurement_sha256: Some(digest_b()),
+    content_sha256: digest_a(),
+  }
+}
+
+// Defect 19: the row-level view differs from its final attempt's measurement in a version-2
+// member and in nothing else. Without those four comparisons `verifier_measurement_equal` would
+// still pass while comparing 23 of 27 fields, so this is the single case that keeps ladder row 18
+// honest at version 2.
+fn editset_drifted_measurement(seed: i64, defect: i64) -> prompt_artifacts.TaskMeasurement {
+  mut value := measurement_v2(true, 30, seed, defect, "runtime")
+  value.patch_sha256 = Some(digest_c())
+  return value
+}
+
+fn is_editset_defect(defect: i64) -> bool {
+  return defect >= 14 && defect <= 30
+}
+
 fn attempts_for(defect: i64, seed: i64) -> array<prompt_artifacts.TaskAttemptRecord> {
   mut values: array_builder<prompt_artifacts.TaskAttemptRecord> := array_builder()
   if defect == 2 {
@@ -1752,6 +2213,11 @@ fn attempts_for(defect: i64, seed: i64) -> array<prompt_artifacts.TaskAttemptRec
     values.push(unresolved_trace_attempt(2, seed))
     return values.build()
   }
+  if is_editset_defect(defect) {
+    values.push(editset_initial_attempt(seed, defect))
+    values.push(editset_repair_attempt(seed, defect))
+    return values.build()
+  }
   values.push(initial_attempt(1, seed))
   // Defect 1 breaks the dense ascending attempt index.
   values.push(repair_attempt(if defect == 1 { 3 } else { 2 }, seed))
@@ -1788,6 +2254,10 @@ fn row_v2(sample: i64, parent: bool, defect: i64) -> prompt_artifacts.PromptTask
       drifted_measurement(seed)
     } else if defect == 13 {
       adapter_repair_measurement(seed)
+    } else if defect == 19 {
+      editset_drifted_measurement(seed, defect)
+    } else if is_editset_defect(defect) {
+      attempt_measurement_for(true, 30, seed, defect)
     } else {
       attempt_measurement(true, 30, seed)
     },
@@ -1824,6 +2294,8 @@ fn tasks_array_v2(defect: i64) -> array<prompt_artifacts.PromptEvaluationTask> {
     values.push(task_with_repair_cap(2))
   } else if defect == 13 {
     values.push(task_without_repair())
+  } else if uses_repair_adapter(defect) {
+    values.push(task_repair_adapter())
   } else {
     values.push(task())
   }
@@ -1884,6 +2356,19 @@ fn task_aggregate_v2(defect: i64) -> prompt_artifacts.TaskAggregate {
     parent_repair_recovery_count: Some(recoveries),
     candidate_repair_recovery_count: Some(recoveries),
     repair_recovery_paired: Some(attempt_recovers(defect)),
+    // Present only for a corpus whose adapter can render the section. Defects 0-13 name the
+    // frozen adapter, whose template declares no `EDITSET` kind, so the quantity is undefined for
+    // them rather than zero.
+    parent_repair_editset_attempt_count: if uses_repair_adapter(defect) {
+      Some(editset_attempts(defect))
+    } else {
+      None
+    },
+    candidate_repair_editset_attempt_count: if uses_repair_adapter(defect) {
+      Some(editset_attempts(defect))
+    } else {
+      None
+    },
   }
 }
 
@@ -1912,6 +2397,11 @@ fn corpus_aggregate_v2(defect: i64) -> prompt_artifacts.CorpusAggregate {
     repair_attempt_count: Some(if defect == 7 || defect == 13 { 0 } else { 4 }),
     repair_recovery_count: Some(if attempt_recovers(defect) { 4 } else { 0 }),
     repair_recovery_paired_count: Some(if attempt_recovers(defect) { 2 } else { 0 }),
+    repair_editset_attempt_count: if uses_repair_adapter(defect) {
+      Some(2 * editset_attempts(defect))
+    } else {
+      None
+    },
   }
 }
 
@@ -2341,6 +2831,99 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   if verdict_code(prompt_score.verify_result(adapter_repair, adapter_repair_evidence)?) != 2 {
     return Err(Error.Invalid)
   }
+
+  // --- C4-REPAIR-EDITSET ------------------------------------------------------------------------
+
+  // Acceptance: a corpus naming the repair adapter, every ran attempt carrying a version-2
+  // measurement with a realized edit set, and `EDITSET` among the sections its repair prompt
+  // actually carried. `repair_editset_attempt_count` is recomputed here from the attempts and
+  // must equal the persisted 4.
+  editset_clean := complete_result_v2(14)
+  editset_clean_evidence := evidence_v2(14)
+  if verdict_code(prompt_score.verify_result(editset_clean, editset_clean_evidence)?) != 2 {
+    return Err(Error.Invalid)
+  }
+
+  // A version-2 member present at version 1. Absence is required, never defaulted.
+  v2_member_at_v1 := complete_result_v2(15)
+  v2_member_at_v1_evidence := evidence_v2(15)
+  expect_invalid(v2_member_at_v1, v2_member_at_v1_evidence)?
+
+  // Ladder row 11: a corpus naming the repair adapter whose measurements are version 1. The
+  // measurement version is a checked function of the corpus, not a producer's choice.
+  version_disagrees := complete_result_v2(16)
+  version_disagrees_evidence := evidence_v2(16)
+  expect_invalid(version_disagrees, version_disagrees_evidence)?
+
+  // A version-2 member absent at version 2: `base_adapter_runtime_identity` is unconditional.
+  v2_member_missing := complete_result_v2(17)
+  v2_member_missing_evidence := evidence_v2(17)
+  expect_invalid(v2_member_missing, v2_member_missing_evidence)?
+
+  // Ladder row 12: an attempt-level probe naming another runtime. The row-level check binds only
+  // the final attempt, so without the attempt-level rule this document is admitted.
+  attempt_identity := complete_result_v2(18)
+  attempt_identity_evidence := evidence_v2(18)
+  expect_invalid(attempt_identity, attempt_identity_evidence)?
+
+  // `verifier_measurement_equal` over all 27 fields: the row differs from its final attempt in a
+  // version-2 member and in nothing else.
+  v2_measurement_drift := complete_result_v2(19)
+  v2_measurement_drift_evidence := evidence_v2(19)
+  expect_invalid(v2_measurement_drift, v2_measurement_drift_evidence)?
+
+  // Ladder row 14: `edit_set_total_bytes` is the pre-omission sum of `body_bytes`, recomputed.
+  editset_total_drift := complete_result_v2(20)
+  editset_total_drift_evidence := evidence_v2(20)
+  expect_invalid(editset_total_drift, editset_total_drift_evidence)?
+
+  // Ladder row 10 at version 1, one clause at a time. The four version-2 members are four
+  // separate absences, so a case carrying only one of them is what makes each clause falsifiable;
+  // defect 15 above covers `patch_sha256`.
+  v1_with_edit_set := complete_result_v2(21)
+  v1_with_edit_set_evidence := evidence_v2(21)
+  expect_invalid(v1_with_edit_set, v1_with_edit_set_evidence)?
+
+  v1_with_edit_set_total := complete_result_v2(22)
+  v1_with_edit_set_total_evidence := evidence_v2(22)
+  expect_invalid(v1_with_edit_set_total, v1_with_edit_set_total_evidence)?
+
+  v1_with_base_identity := complete_result_v2(23)
+  v1_with_base_identity_evidence := evidence_v2(23)
+  expect_invalid(v1_with_base_identity, v1_with_base_identity_evidence)?
+
+  // Edit-set block paths are unique and strictly ascending. Descending and repeated are two
+  // different violations of one rule, and neither is reachable from a single-block edit set.
+  editset_descending := complete_result_v2(24)
+  editset_descending_evidence := evidence_v2(24)
+  expect_invalid(editset_descending, editset_descending_evidence)?
+
+  editset_duplicate_path := complete_result_v2(25)
+  editset_duplicate_path_evidence := evidence_v2(25)
+  expect_invalid(editset_duplicate_path, editset_duplicate_path_evidence)?
+
+  // One block-shape rule each: the digest over the body, the declared length, an edit set that is
+  // `Some` and empty, and the 32-block bound. Every one of these was unfalsifiable while the
+  // fixture built only well-formed blocks.
+  editset_body_digest := complete_result_v2(26)
+  editset_body_digest_evidence := evidence_v2(26)
+  expect_invalid(editset_body_digest, editset_body_digest_evidence)?
+
+  editset_body_length := complete_result_v2(27)
+  editset_body_length_evidence := evidence_v2(27)
+  expect_invalid(editset_body_length, editset_body_length_evidence)?
+
+  editset_empty := complete_result_v2(28)
+  editset_empty_evidence := evidence_v2(28)
+  expect_invalid(editset_empty, editset_empty_evidence)?
+
+  editset_block_count := complete_result_v2(29)
+  editset_block_count_evidence := evidence_v2(29)
+  expect_invalid(editset_block_count, editset_block_count_evidence)?
+
+  editset_body_over_budget := complete_result_v2(30)
+  editset_body_over_budget_evidence := evidence_v2(30)
+  expect_invalid(editset_body_over_budget, editset_body_over_budget_evidence)?
 
   // A version-2 document may not be paired with version-1 evidence.
   version_split := complete_result_v2(0)

@@ -14,7 +14,7 @@ It is driven as a **subprocess and never imported** (`scripts/run-alignpack-smok
 reason: a shared interpreter state would let the two implementations agree by accident).
 
     kv_plane_reader.py --plane PATH [--pack PACK] [--geometry GEOM.json] [--tokens 3,17,5]
-                       [--expect-reject KIND] [--quiet]
+                       [--check-name] [--expect-reject KIND] [--quiet]
 
 Exit 0 when the container is accepted, or when it is rejected for exactly the expected kind. Exit 1
 otherwise. The reject vocabulary is **coarser than the arm's** on purpose: it is a second opinion
@@ -23,6 +23,8 @@ about a class of defect, not a transcription of `R6_KV_*`.
 
 import argparse
 import hashlib
+import os
+import re
 import struct
 import sys
 
@@ -47,8 +49,19 @@ MAX_ATTENTION_WIDTH = 4096
 
 REJECT_KINDS = [
     "MAGIC", "VERSION", "HEADER", "RESERVED", "REGION", "TRUNCATED", "IDENTITY", "GEOMETRY",
-    "TOKENS", "NPAST", "DIGEST", "ARGMAX", "ZEROTAIL",
+    "TOKENS", "NPAST", "DIGEST", "ARGMAX", "ZEROTAIL", "KEY",
 ]
+
+# R6-PREFIX-KEY (`docs/specs/r6-prefix-key-corpus.md` sections 2.3 and 3.2): the store's key, as a
+# **second implementation of one byte layout**, written from that specification and sharing no line
+# with `src/kv_plane.align`. Its inputs come from the container's **own** header and identity record
+# rather than from the run that produced it, so the agreement it asserts is between the file's name
+# and the file's contents.
+KEY_VERSION = 1
+KEY_PREIMAGE_BYTES = 152
+KEY_HEX_BYTES = 64
+STORE_EXTENSION = ".akvp"
+STORE_NAME = re.compile(r"^[0-9a-f]{%d}\.akvp$" % KEY_HEX_BYTES)
 
 # The pack's own source-identity record: `docs/specs/r4-alignpack-layer-major.md` section 2.4.6.
 PACK_MAGIC = b"ALGP"
@@ -278,6 +291,29 @@ def pack_identity(pack_path):
     return raw[at:at + DIGEST_BYTES], total
 
 
+def derive_key(h, digests, stream):
+    """Section 2.3's 152-byte preimage, little-endian, one layout and no other. The three digests
+    are the container's own `pack` and `geometry` slots and a **recomputed** digest of the token
+    stream -- recomputed rather than read from the `tokens` slot, so a container whose slot disagrees
+    with its own stream cannot be addressed by a name that matches the slot. (`inspect` refuses that
+    container as `DIGEST` anyway; deriving from the bytes keeps the two checks independent.)"""
+    preimage = b"".join([
+        digests["pack"],
+        digests["geometry"],
+        hashlib.sha256(stream).digest(),
+        struct.pack("<Q", h["pack_total_bytes"]),
+        struct.pack("<I", h["kv_width"]),
+        struct.pack("<I", h["token_count"]),
+        struct.pack("<I", h["plane_layout_version"]),
+        struct.pack("<I", h["element_type"]),
+        struct.pack("<I", h["format_version"]),
+        struct.pack("<I", KEY_VERSION),
+        b"\0" * 24,
+    ])
+    assert len(preimage) == KEY_PREIMAGE_BYTES, len(preimage)
+    return hashlib.sha256(preimage).hexdigest()
+
+
 def inspect(args):
     with open(args.plane, "rb") as handle:
         raw = handle.read()
@@ -346,6 +382,19 @@ def inspect(args):
         if any(raw[start:end]):
             reject("RESERVED", "the %s padding is not zero" % name)
 
+    # R6-PREFIX-KEY section 4.5. The **name** is now part of the format's meaning, so this reader
+    # learns it: an arm that writes a container under one name and a reader that computes another is
+    # a store that misses forever with no error, which is the failure mode section 6 risk 1 names.
+    #
+    # The name is checked when the basename is store-shaped -- 64 lowercase hex plus `.akvp` -- or
+    # whenever `--check-name` demands it, and the container is validated either way, because this
+    # reader must stay usable on a `KV_SAVE` artifact the caller named itself.
+    key = derive_key(h, digests, stream)
+    basename = os.path.basename(args.plane)
+    if args.check_name or STORE_NAME.match(basename):
+        if basename != key + STORE_EXTENSION:
+            reject("KEY", "the container is named %s and derives the key %s" % (basename, key))
+    h["key"] = key
     h["ids"] = ids
     h["digests"] = {name: value.hex() for name, value in digests.items()}
     return h
@@ -362,6 +411,8 @@ def report(h):
     print("%-24s %s" % ("tokens", ",".join(str(i) for i in h["ids"])))
     for name in ("pack", "geometry", "tokens", "logits", "plane"):
         print("%-24s %s" % (name + "_sha256", h["digests"][name]))
+    # R6-PREFIX-KEY: the name this container would carry in a content-addressed store.
+    print("%-24s %s" % ("key", h["key"]))
 
 
 def main(argv):
@@ -370,6 +421,9 @@ def main(argv):
     parser.add_argument("--pack")
     parser.add_argument("--geometry")
     parser.add_argument("--tokens")
+    parser.add_argument("--check-name", action="store_true",
+                        help="require the basename to be <key>.akvp (R6-PREFIX-KEY section 4.5); "
+                             "a store-shaped basename is checked even without this flag")
     parser.add_argument("--expect-reject", choices=REJECT_KINDS)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
