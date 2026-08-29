@@ -244,7 +244,7 @@ Four properties of that order are contract, not incident:
 | 124 | 4 | `u32` | `token_count` | `1 <= token_count <= MAX_PREFILL_TOKENS` (32) |
 | 128 | 4 | `u32` | `n_vocab` | `>= 1` |
 | 132 | 4 | `i32` | `prefill_argmax` | `0 <= prefill_argmax < n_vocab` |
-| 136 | 4 | `u32` | `document_schema_version` | `3` — the `R6_DECODE_STEP` schema this writer emits |
+| 136 | 4 | `u32` | `document_schema_version` | `3` — **the `R6_DECODE_STEP` document schema this format was defined against.** Corrected by `docs/specs/r6-prefix-suffix-prefill.md` section 2.9: it is *not* the schema the writer currently emits, which has been 4 since R6-RESIDENT-WEIGHTS and is 5 since R6-PREFIX-SUFFIX-PREFILL. The field moves only when a **region, offset, alignment rule, or reserved value** moves — which is what `format_version` guards — so a document-schema bump does not move it, and moving it would refuse every existing container for no safety gain |
 | 140 | 4 | `u32` | `reserved_u32` | `0` |
 | 144 | 48 | `u8[48]` | `reserved` | all zero |
 
@@ -607,7 +607,7 @@ look like durability evidence and would not be any (section 7).
 | **No path-valued field** | `kv` publishes **no path**. R6-STEP-N risk 5 names the temp-path golden class, and schema 2 was verified free of it; schema 3 keeps that property. `kv.destination` publishes a verdict word, never a name |
 | Persisted identity | **Section 2.4. This row replaces R6's and R6-STEP-N's `N/A — nothing is persisted`.** The container's identity is `magic` + `format_version` + `plane_layout_version`; its binding is the five digests, `pack_total_bytes`, and the nine structural integers |
 | Cache identity | **N/A, and the reason is a decision rather than an absence.** There is no cache (section 1.3): the container is a caller-named artifact, found only by a caller who names its path. Were one added, its key would be `(source_header_region_sha256, geometry_sha256, token_stream_sha256, kv_width, plane_layout_version)`; that tuple is recorded here so a later capability does not invent a different one, and it is **not implemented** |
-| Schema version | **Container `format_version: 1` and document `schema_version: 3`, independently versioned**, with `document_schema_version` in the container binding a file to the document vintage that wrote it — alignpack's rule, for alignpack's reason. Any change to a region, a field, an offset, an alignment rule, or a reserved value requires `format_version: 2` |
+| Schema version | **Container `format_version: 1` and the document schema, independently versioned** — alignpack's rule, for alignpack's reason. `document_schema_version` in the container records **the document schema this format was defined against**, which is 3 and is expected to stay 3; it does *not* bind a file to the document vintage that wrote it, and this row said so until `docs/specs/r6-prefix-suffix-prefill.md` section 2.9 corrected it. The document schema has since been 4 (R6-RESIDENT-WEIGHTS) and 5 (R6-PREFIX-SUFFIX-PREFILL) with the constant unmoved and every container still accepted, which is the intended behaviour rather than an oversight. Any change to a region, a field, an offset, an alignment rule, or a reserved value requires `format_version: 2` |
 | Field presence | Every field is present in every document. No conditional-presence rule, no operand-dependent shape: schema 3 is one shape at 5 operands and at 13 |
 
 The `kv` object, in declaration order:

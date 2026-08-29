@@ -47,7 +47,11 @@ import model_forward
 // merged first and took 3, so this capability takes 4. The **kind is unchanged** in both cases: the
 // document describes the same thing, and where the plane came from and where the weights live are
 // fields rather than kinds.
-SCHEMA_VERSION := 4
+// R6-PREFIX-SUFFIX-PREFILL section 2.9 takes **schema 5** and adds the `suffix` object; on a
+// completed suffix pass `output` and `oracle_logits` describe that pass's own logits and the
+// container's vector stays published in `kv`. The **kind is unchanged** for the fourth time: the
+// document describes the same thing, and how the plane reached `n_past` is a field, not a kind.
+SCHEMA_VERSION := 5
 DOCUMENT_KIND := "R6_DECODE_STEP"
 
 // Section 2.8's vocabulary. `R6_*` is what this arm owns; the ggml seam's `R5_*` codes reach the
@@ -73,6 +77,20 @@ CODE_GEOMETRY_UNREADABLE := "R6_GEOMETRY_UNREADABLE"
 // code for an out-of-memory host: `buffer(cap)` cannot report a failed reservation and `append`
 // cannot fail (Request 35), so that host **aborts** rather than producing a document. Section 3.6
 // states that rather than hiding it, and `scripts/run-decode-step` preflights physical memory.
+// R6-PREFIX-SUFFIX-PREFILL section 2.7. The one new code this capability adds, over the four
+// details it actually emits: `suffix[<text>]` (unparseable, empty, or trailing-separator),
+// `prefix[<n>]` (a suffix onto a prefix of fewer than two tokens — section 11.2's defect makes the
+// container such a run would load hold the wrong plane), `sequence[<n>]`
+// (`T_prefix + S > MAX_PREFILL_TOKENS`), and `token[<index>]` — `parse_tokens`' own **index** of the
+// offending id, which is what `R6_TOKENS` reports and therefore what this code reports too. There
+// is deliberately no `count[0]` detail: `parse_tokens` refuses an empty list outright, so a non-`-`
+// operand can never parse to zero ids and the check would be unreachable. There is deliberately
+// no `R6_SUFFIX_FAILED`: a suffix pass that fails fails for a reason that already has a code, and
+// what the pass adds is a **locator**, the `suffix[]` detail prefix `prefix_suffix` writes.
+//
+// The sequence cap names `R6_SUFFIX` and not `R6_TOKENS` because on a suffix run `TOKENS` is pinned
+// by the container it must match (L12) and `SUFFIX` is the only operand a caller can shorten.
+CODE_SUFFIX := "R6_SUFFIX"
 CODE_RESIDENT := "R6_RESIDENT"
 CODE_RESIDENT_BUDGET := "R6_RESIDENT_BUDGET"
 CODE_RESIDENT_UNAVAILABLE := "R6_RESIDENT_UNAVAILABLE"
@@ -334,6 +352,33 @@ fn prefix_step(borrow mut o: model_forward.Outcome, step: i64) {
   joined := b.to_string()
   joined_view: str := joined
   o.detail = bounded_detail(joined_view)
+}
+
+// R6-PREFIX-SUFFIX-PREFILL section 2.7's locator. Every detail raised inside the suffix pass is
+// prefixed `suffix[]` — the same shape as `step[<k>]` with **no index**, because there is exactly
+// one suffix pass. `bounded_detail`'s 256-byte cap is unchanged and applied again after the prefix,
+// which costs eight bytes.
+fn prefix_suffix(borrow mut o: model_forward.Outcome) {
+  if o.code.len() == 0 { return }
+  b := builder()
+  b.write("suffix[]")
+  detail_view: str := o.detail
+  b.write(detail_view)
+  joined := b.to_string()
+  joined_view: str := joined
+  o.detail = bounded_detail(joined_view)
+}
+
+// `suffix[<text>]`, bounded to 256 bytes, so an operand of any length names itself in the document
+// without the document growing with it. It is `resident_detail`'s shape and `RESIDENT`'s precedent.
+fn suffix_detail(value: str) -> string {
+  d := builder()
+  d.write("suffix[")
+  bounded := bounded_detail(value)
+  bounded_view: str := bounded
+  d.write(bounded_view)
+  d.write("]")
+  return d.to_string()
 }
 
 // R6-RESIDENT-WEIGHTS section 3.1. `resident[<text>]`, bounded to 256 bytes by `bounded_detail`,
@@ -753,12 +798,16 @@ fn decode_layer_inputs(
   borrow g: layer_qwen2.Geometry,
   width: i64,
   n_past: i64,
+  // R6-PREFIX-SUFFIX-PREFILL section 2.6. The number of columns this graph computes: `1` for a
+  // decode step, `S` for the suffix pass. The two **plane** slots below do not mention it — they are
+  // sized by `n_past`, which is what the plane holds — so the slot map is unchanged.
+  tokens: i64,
 ) -> Result<(), ggml_ffi.Fault> {
   ggml_ffi.slot_new_tensor_2d(
-    ctx, slots, layer_qwen2.MF_SLOT_CUR, layer_qwen2.GGML_TYPE_F32, g.n_embd, 1, "cur")?
-  ggml_ffi.slot_new_i32_1d(ctx, slots, layer_qwen2.MF_SLOT_POS, 1, "inp_pos")?
+    ctx, slots, layer_qwen2.MF_SLOT_CUR, layer_qwen2.GGML_TYPE_F32, g.n_embd, tokens, "cur")?
+  ggml_ffi.slot_new_i32_1d(ctx, slots, layer_qwen2.MF_SLOT_POS, tokens, "inp_pos")?
   ggml_ffi.slot_new_tensor_2d(
-    ctx, slots, layer_qwen2.MF_SLOT_MASK, layer_qwen2.GGML_TYPE_F32, width, 1, "kq_mask")?
+    ctx, slots, layer_qwen2.MF_SLOT_MASK, layer_qwen2.GGML_TYPE_F32, width, tokens, "kq_mask")?
   ggml_ffi.slot_new_i32_1d(ctx, slots, layer_qwen2.MF_SLOT_OUT_IDS, 1, "out_ids")?
   ggml_ffi.slot_new_tensor_3d(
     ctx, slots, layer_qwen2.MF_SLOT_KPAST, layer_qwen2.GGML_TYPE_F32,
@@ -774,6 +823,7 @@ fn decode_layer_values(
   borrow g: layer_qwen2.Geometry,
   width: i64,
   n_past: i64,
+  tokens: i64,
   borrow cur: slice<u8>,
   borrow positions: slice<u8>,
   borrow mask: slice<u8>,
@@ -782,9 +832,9 @@ fn decode_layer_values(
   borrow past_v: slice<u8>,
 ) -> Result<(), ggml_ffi.Fault> {
   past := n_past * g.n_head_kv * g.head_dim * 4
-  ggml_ffi.slot_set(slots, layer_qwen2.MF_SLOT_CUR, cur, 0, g.n_embd * 4, "cur")?
-  ggml_ffi.slot_set(slots, layer_qwen2.MF_SLOT_POS, positions, 0, 4, "inp_pos")?
-  ggml_ffi.slot_set(slots, layer_qwen2.MF_SLOT_MASK, mask, 0, width * 4, "kq_mask")?
+  ggml_ffi.slot_set(slots, layer_qwen2.MF_SLOT_CUR, cur, 0, g.n_embd * tokens * 4, "cur")?
+  ggml_ffi.slot_set(slots, layer_qwen2.MF_SLOT_POS, positions, 0, tokens * 4, "inp_pos")?
+  ggml_ffi.slot_set(slots, layer_qwen2.MF_SLOT_MASK, mask, 0, width * tokens * 4, "kq_mask")?
   ggml_ffi.slot_set(slots, layer_qwen2.MF_SLOT_OUT_IDS, out_ids, 0, 4, "out_ids")?
   ggml_ffi.slot_set(slots, layer_qwen2.MF_SLOT_KPAST, past_k, 0, past, "k_past")?
   ggml_ffi.slot_set(slots, layer_qwen2.MF_SLOT_VPAST, past_v, 0, past, "v_past")?
@@ -906,7 +956,7 @@ fn run_step_graph(
   if o.code.len() == 0 { model_forward.graph_identity(slot_view, window, m, o) }
   if o.code.len() == 0 {
     if decode && layer_graph {
-      take(o, decode_layer_inputs(input_ctx, slot_view, g, spec.width, n_past))
+      take(o, decode_layer_inputs(input_ctx, slot_view, g, spec.width, n_past, spec.tokens_in))
     } else {
       take(o, model_forward.graph_inputs(input_ctx, slot_view, spec))
     }
@@ -922,7 +972,8 @@ fn run_step_graph(
   if o.code.len() == 0 {
     if decode && layer_graph {
       take(o, decode_layer_values(
-          slot_view, g, spec.width, n_past, cur, positions, mask, out_ids, past_k, past_v))
+          slot_view, g, spec.width, n_past, spec.tokens_in, cur, positions, mask, out_ids, past_k,
+          past_v))
     } else {
       take(o, model_forward.graph_input_values(
           slot_view, spec, cur, token_ids, positions, mask, out_ids))
@@ -1017,12 +1068,19 @@ fn run_step_graph(
   // comparison bound is `n_past + 1`, so the column the graph produced (rows 12/10) and the column
   // the plane holds are compared through a *different* node (rows 16/22): a write-back one lane off,
   // in the wrong tensor, or at the wrong column dies in its own step.
+  //
+  // R6-PREFIX-SUFFIX-PREFILL section 2.4 keeps the same shape over **three** ranges: the suffix pass
+  // uploaded columns `0 .. T_prefix-1`, and now writes columns `T_prefix .. T_prefix+S-1` and only
+  // those. The uploaded range and the written range are disjoint by construction, adjacent, and
+  // separated by a completed compute; the only generalisation is that the written range has length
+  // `spec.tokens_in` rather than 1. The comparison bound below moves with it, so the columns this
+  // pass produced are compared through a different node in the pass that produced them.
   if o.code.len() == 0 && write_back {
-    capture_plane(slot_view, nodes, plane, g, spec.layer, 1, n_past, stride, state, o)
+    capture_plane(slot_view, nodes, plane, g, spec.layer, spec.tokens_in, n_past, stride, state, o)
   }
   if o.code.len() == 0 && write_back {
     verify_plane(
-      slot_view, nodes, plane, node_window, g, spec.layer, n_past, stride, state, o)
+      slot_view, nodes, plane, node_window, g, spec.layer, n_past, spec.tokens_in, stride, state, o)
   }
   if o.code.len() == 0 && spec.compare && o.transcript_present {
     match model_forward.compare_transcript_graph(
@@ -1114,11 +1172,15 @@ fn verify_plane(
   borrow g: layer_qwen2.Geometry,
   layer: i64,
   n_past: i64,
+  // R6-PREFIX-SUFFIX-PREFILL section 3.4. The columns this pass wrote: `1` for a decode step, `S`
+  // for the suffix pass. At `tokens = 1` the bound below is R6-STEP-N's expression character for
+  // character, which is what keeps every existing step's byte count identical.
+  tokens: i64,
   stride: i64,
   borrow mut state: Plane,
   borrow mut o: model_forward.Outcome,
 ) {
-  columns := n_past + 1
+  columns := n_past + tokens
   span := columns * plane_column_bytes(g)
   k_at := plane_k_offset(stride, layer)
   v_at := plane_v_offset(stride, layer)
@@ -1706,6 +1768,7 @@ fn decode_embed_members(
 
 fn stage_inputs(
   tokens_text: str,
+  suffix_text: str,
   width_text: str,
   steps_text: str,
   geometry_path: str,
@@ -1738,6 +1801,58 @@ fn stage_inputs(
     return g
   }
   o.decode_steps_requested = steps
+  // Step 3c (R6-PREFIX-SUFFIX-PREFILL section 2.7). `SUFFIX` parses in **`TOKENS`'s own grammar**,
+  // through the same `parse_tokens`, so the two operands cannot drift apart in what they accept.
+  // It is decided after `STEPS` and before `KV_WIDTH`, and after step 3 because `T_prefix` must be
+  // a number before `T_prefix + S` is one.
+  //
+  // The cap is on the **sequence** and not on `S`, and the cap is the **oracle's**: oracle C''
+  // runs `--model-forward` at `TOKENS,SUFFIX`, so a cap on `S` alone would let this arm accept a
+  // run whose own acceptance oracle it refuses. The refusal names `R6_SUFFIX` rather than
+  // `R6_TOKENS` because on a suffix run `TOKENS` is pinned by the container it must match and
+  // `SUFFIX` is the only operand a caller can shorten.
+  if o.suffix_requested {
+    lexical_suffix := layer_forward.parse_tokens(suffix_text, 9223372036854775807)
+    if !lexical_suffix.ok {
+      // The **operand**, not `parse_tokens`' index: `suffix[<text>]` names the thing the caller
+      // wrote, bounded to 256 bytes, which is `RESIDENT`'s precedent and is what makes an
+      // unparseable list, an empty one, and a trailing separator one refusal a caller can act on.
+      unparsed := suffix_detail(suffix_text)
+      unparsed_view: str := unparsed
+      fail(o, CODE_SUFFIX, unparsed_view)
+      return g
+    }
+    // R6-PREFIX-SUFFIX-PREFILL section 2.3's fifth refusal, and section 11.1 correction 8.
+    // **A suffix onto a one-token prefix is refused.** The container such a run loads was written
+    // by a one-token prefill, and `model_forward.fill_members` gathers an embedding row by id only
+    // when `pieces > 1` (section 11.2's pre-existing defect, `MF-SINGLE-TOKEN-LOGITS`): the plane
+    // would hold token 0's columns whatever `TOKENS` said, so oracle S's equality — this
+    // capability's own acceptance rule — would silently not hold. Refusing is the honest surface
+    // until that defect is fixed; the resume condition is recorded with the request.
+    //
+    // The code names `R6_SUFFIX` and not `R6_TOKENS` because it is the **suffix** that makes the
+    // run illegal: without the operand a one-token load is R6-KV-PERSIST's own leg, unchanged and
+    // still accepted. It is decided **before** the sequence cap, because a caller who violates both
+    // cannot fix `prefix[1]` by shortening `SUFFIX`, and naming the cap first would send them
+    // around the loop twice.
+    if lexical.count < 2 {
+      narrow := model_forward.labelled("prefix", lexical.count)
+      narrow_view: str := narrow
+      fail(o, CODE_SUFFIX, narrow_view)
+      return g
+    }
+    sequence := lexical.count + lexical_suffix.count
+    if sequence > layer_qwen2.MAX_PREFILL_TOKENS {
+      ranged := model_forward.labelled("sequence", sequence)
+      ranged_view: str := ranged
+      fail(o, CODE_SUFFIX, ranged_view)
+      return g
+    }
+    o.suffix_token_count = lexical_suffix.count
+    o.suffix_n_past_base = lexical.count
+    o.suffix_first_column = lexical.count
+    o.suffix_sequence_length = sequence
+  }
   geometry_text := match fs.read_file(geometry_path) {
     Ok(value) => value,
     Err(failure) => {
@@ -1779,9 +1894,25 @@ fn stage_inputs(
     fail(o, CODE_TOKENS, detail_view)
     return g
   }
-  // Step 6, generalised. At `N = 1` the bound is R6's `T + 1 <= KV_WIDTH`, character for character.
+  // Step 3', now over both lists. `SUFFIX` is re-checked against the **real** `n_vocab` in the same
+  // pass `TOKENS` is, and reports `parse_tokens`' own `token[<index>]` under this capability's code
+  // — the same shape `R6_TOKENS` reports and for the same reason.
+  suffix_count := if o.suffix_requested {
+    checked_suffix := layer_forward.parse_tokens(suffix_text, g.n_vocab)
+    if !checked_suffix.ok {
+      detail_view: str := checked_suffix.detail
+      fail(o, CODE_SUFFIX, detail_view)
+      return g
+    }
+    checked_suffix.count
+  } else {
+    0
+  }
+  // Step 6, generalised twice. At `N = 1` and no suffix the bound is R6's `T + 1 <= KV_WIDTH`,
+  // character for character. This **widens an existing condition** rather than adding one: two
+  // codes for "the plane is too narrow for this run" is how two documents come to disagree about it.
   width := model_forward.parse_index(width_text)
-  if width < parsed.count + steps || width > layer_qwen2.MAX_ATTENTION_WIDTH {
+  if width < parsed.count + suffix_count + steps || width > layer_qwen2.MAX_ATTENTION_WIDTH {
     fail(o, CODE_KV_WIDTH, model_forward.labelled("kv_width", width))
     return g
   }
@@ -1871,6 +2002,15 @@ fn decode_pass(
   borrow lengths: array<i64>,
   token_id: i64,
   n_past: i64,
+  // R6-PREFIX-SUFFIX-PREFILL section 2.6. The columns this pass computes: `1` for a decode step,
+  // `S` for the suffix pass. The **whole** difference between the two is this number, the ids and
+  // positions the caller supplies, and which embedding-member builder the line below picks.
+  tokens_in: i64,
+  // `true` for the one suffix pass, `false` for every decode step. It selects nothing about the
+  // graph — `tokens_in` does that — and exists only so the pass's pack reads land in
+  // `suffix.pack_bytes` instead of `weights.step_pack_bytes`, which R6-RESIDENT-WEIGHTS section 3.4
+  // defines as "the pack bytes the decode **steps** alone read".
+  suffix_pass: bool,
   width: i64,
   stride: i64,
   borrow mut breach: bool,
@@ -1882,10 +2022,35 @@ fn decode_pass(
   mut transient: buffer := buffer(model_forward.CHUNK_BYTES)
   mut counters := alignpack_read.new_counters()
   past_bytes := n_past * g.n_head_kv * g.head_dim * 4
-  embed_members := decode_embed_members(g, ends, token_id)
+  // The seam R6-PREFIX-SUFFIX-PREFILL section 4.4 owns: the suffix pass takes the **prefill's**
+  // embedding-member builder and the **decode's** layer node table. `decode_embed_members` gathers
+  // one row and would produce a shape error at `S > 1`; the prefill's layer table would compute the
+  // right shapes at the wrong positions and produce a plausible wrong number.
+  //
+  // At `tokens_in == 1` the decode builder is kept for **both** callers, and that is not a
+  // shortcut: `model_forward.fill_members` gathers by `tokens.ids[piece]` only when `pieces > 1`,
+  // so the prefill builder at one row reads the table's first row rather than the token's. A suffix
+  // of one token is therefore the decode step's own single-row window, whose graph gathers row 0 —
+  // which is exactly what `[0 .. S-1]` is at `S = 1`.
+  embed_members := if tokens_in > 1 {
+    model_forward.build_embed_members(g, ends, tokens_in)
+  } else {
+    decode_embed_members(g, ends, token_id)
+  }
   embed_base := layout.base[0]
   embed_view := window[embed_base..embed_base + layout.span[0]]
-  if resident {
+  if resident && tokens_in > 1 {
+    // The prefill's own staging loop, at `S` rows: `S` host copies out of the resident table and
+    // **zero pack bytes**, which is why `suffix.pack_bytes` is exactly 0 on the resident leg.
+    mut piece := 0
+    loop {
+      if piece >= tokens_in || o.code.len() > 0 { break }
+      take_pack(o, model_forward.stage_embed_row(
+          window, layout.table_at, embed_base, layout.span[0], embed_members.stride[0], g.n_vocab,
+          tokens.ids[piece], piece))
+      piece = piece + 1
+    }
+  } else if resident {
     // Section 3.3, and the whole claim: one 2,016-byte host copy out of the resident table, and
     // **zero pack bytes** for this step's embedding row.
     // `embed_members.stride[0]` and not `ends.row_bytes`: the two are the same number by
@@ -1900,10 +2065,20 @@ fn decode_pass(
   }
   if o.code.len() > 0 { return }
   o.window_reuse_count = o.window_reuse_count + 1
+  // R6-PREFIX-SUFFIX-PREFILL section 3.6. **The suffix pass compares against no transcript, and
+  // this is a declared absence rather than an omission.** The R2C-patched `llama-eval-callback`
+  // computes one prefill graph for the whole prompt and then `N` decode graphs; it has no way to be
+  // told "prefill these `T_prefix` tokens, stop, then prefill these `S` more", because that needs a
+  // KV cache persisted across two invocations and its CLI has no operand for one. So the pass's
+  // three specs carry `compare = false` and its scan is never consulted — and what replaces oracle
+  // A' is not weaker in the dimension that matters: the pass's logits are compared byte for byte
+  // against `--model-forward`, against the single-shot `--decode-step`, and against
+  // `llama-debug --save-logits`.
+  compare := !suffix_pass
   mut embed_result := model_forward.empty_graph_result()
   spec := model_forward.spec_for(
-    model_forward.GRAPH_EMBED, 0, -1, 1, width, false, false, 0, 1,
-    layer_qwen2.mf_embed_output_slot(), false, true, g.n_embd)
+    model_forward.GRAPH_EMBED, 0, -1, tokens_in, width, false, false, 0, 1,
+    layer_qwen2.mf_embed_output_slot(), false, compare, g.n_embd)
   run_step_graph(
     device, backend, resident_buffer, context_bytes, spec, g, embed_members, embed_nodes, oracle,
     embed_view, slot_view,
@@ -1947,9 +2122,9 @@ fn decode_pass(
     last := layer == g.n_layer - 1
     mut result := model_forward.empty_graph_result()
     layer_spec := model_forward.spec_for(
-      model_forward.GRAPH_LAYER, 1 + layer, layer, 1, width, last, false,
+      model_forward.GRAPH_LAYER, 1 + layer, layer, tokens_in, width, last, false,
       layer_qwen2.mf_oracle_layer_base(layer), layer_qwen2.MF_LAYER_ORACLE_COUNT,
-      layer_qwen2.mf_decode_layer_output_slot(), false, true, g.n_embd)
+      layer_qwen2.mf_decode_layer_output_slot(), false, compare, g.n_embd)
     run_step_graph(
       device, backend, resident_buffer, context_bytes, layer_spec, g, members, decode_nodes,
       oracle, layer_view,
@@ -1983,7 +2158,7 @@ fn decode_pass(
   head_spec := model_forward.spec_for(
     model_forward.GRAPH_HEAD, 1 + g.n_layer, g.n_layer, 1, width, false, false,
     layer_qwen2.mf_oracle_head_base(g.n_layer), layer_qwen2.MF_HEAD_ORACLE_COUNT,
-    layer_qwen2.mf_head_output_slot(), false, true, g.n_embd)
+    layer_qwen2.mf_head_output_slot(), false, compare, g.n_embd)
   run_step_graph(
     device, backend, resident_buffer, context_bytes, head_spec, g, head_members, head_nodes,
     oracle, head_view,
@@ -2013,8 +2188,12 @@ fn decode_pass(
   // R6-RESIDENT-WEIGHTS section 3.4's **primary metric**: the pack bytes the decode steps alone
   // read, accumulated here because this function is the only place a decode step reads the pack.
   // It is a counter and not a clock, it is identical across runs, and in resident mode it is
-  // exactly zero.
-  o.step_pack_bytes = o.step_pack_bytes + counters.bytes_read
+  // exactly zero. The suffix pass keeps its own counter for the same reason (section 2.10).
+  if suffix_pass {
+    o.suffix_pack_bytes = o.suffix_pack_bytes + counters.bytes_read
+  } else {
+    o.step_pack_bytes = o.step_pack_bytes + counters.bytes_read
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2129,7 +2308,9 @@ fn decode_loop(
       prefix_step(o, step)
       break
     }
-    step_nodes := layer_qwen2.mf_decode_layer_node_table(g, n_past, width)
+    // `tokens = 1`: the loop's own calls pass the literal, so every existing decode step's node
+    // table is byte-unchanged by construction (R6-PREFIX-SUFFIX-PREFILL section 2.5).
+    step_nodes := layer_qwen2.mf_decode_layer_node_table(g, n_past, 1, width)
     pos_view := pos_all[(step - 1) * 4..step * 4]
     mask_view := mask_all[(step - 1) * width * 4..step * width * 4]
     before_nodes := decoded.node_count
@@ -2141,7 +2322,7 @@ fn decode_loop(
       head_members, window, layout, resident,
       slot_view, ids_view, pos_view, mask_view, out_ids_view, residual_view, logits_view, node_view,
       plane_view, oracle, embed_nodes, step_nodes, head_nodes, scan, ranges.start, ranges.length,
-      token, n_past, width, stride, breach, activation, state, decoded, o)
+      token, n_past, 1, false, width, stride, breach, activation, state, decoded, o)
     if o.code.len() > 0 {
       // Section 2.8. A failure inside step `k` publishes `steps_completed = k - 1` and `k - 1`
       // complete objects: **a partial step publishes no object**, because a half-filled row is a row
@@ -2659,6 +2840,10 @@ fn schedule_decode(
   borrow plan: model_forward.Plan,
   borrow ends: model_forward.Ends,
   borrow tokens: model_forward.TokenColumns,
+  // R6-PREFIX-SUFFIX-PREFILL section 2.2. The `SUFFIX` operand's ids, already validated against the
+  // real `n_vocab` and against the sequence cap. `count == 0` is "no suffix" and is what every
+  // schema-4-era invocation means.
+  borrow suffix_tokens: model_forward.TokenColumns,
   borrow embed_members: model_forward.GraphMembers,
   borrow head_members: model_forward.GraphMembers,
   borrow window: slice<u8>,
@@ -2691,7 +2876,13 @@ fn schedule_decode(
   // views, and every graph call below hands the callee both.
   mut state := empty_plane()
   mut decoded := empty_decode()
-  n_past := tokens.count
+  // R6-PREFIX-SUFFIX-PREFILL section 2.6. `S` columns at `n_past = T_prefix`, then the existing
+  // loop from `n_past = T_prefix + S`. `suffix_span` is `S` clamped to at least one so that every
+  // per-pass buffer below is a legal reservation on a run with no suffix; nothing reads those
+  // buffers unless `suffix_count > 0`.
+  suffix_count := suffix_tokens.count
+  suffix_span := if suffix_count > 0 { suffix_count } else { 1 }
+  n_past := tokens.count + suffix_count
   stride := plane_stride(g, width)
   plane_bytes := plane_bytes_for(g, width)
   state.bytes = plane_bytes
@@ -2742,10 +2933,37 @@ fn schedule_decode(
   }
   mut decode_out_ids_image: buffer := buffer(4)
   decode_out_ids_image.put_u32_le(0 as u32)
+  // The suffix pass's four inputs, and the id/position split doing its job at `S` entries each
+  // (section 2.6). The **positions** are absolute — `T_prefix + i` — because RoPE positions are
+  // absolute and a suffix continues a prefix rather than restarting it. The **ids** are `0 .. S-1`,
+  // the row indices into this pass's own `S`-row gathered window, and are the prefill's
+  // `index_image` exactly. `out_ids` is `S - 1`: the last suffix token's row in the pass's own
+  // coordinates, which is where a reader most naturally expects an absolute index and where the
+  // correct value is relative.
+  mut suffix_mask: buffer := buffer(width * suffix_span * 4)
+  layer_qwen2.mf_write_mask_offset(suffix_mask, width, suffix_span, tokens.count)
+  mut suffix_pos_image: buffer := buffer(suffix_span * 4)
+  mut suffix_pos_at := 0
+  loop {
+    if suffix_pos_at >= suffix_span { break }
+    suffix_pos_image.put_u32_le((tokens.count + suffix_pos_at) as u32)
+    suffix_pos_at = suffix_pos_at + 1
+  }
+  mut suffix_ids_image: buffer := buffer(suffix_span * 4)
+  mut suffix_ids_at := 0
+  loop {
+    if suffix_ids_at >= suffix_span { break }
+    suffix_ids_image.put_u32_le(suffix_ids_at as u32)
+    suffix_ids_at = suffix_ids_at + 1
+  }
+  mut suffix_out_ids_image: buffer := buffer(4)
+  suffix_out_ids_image.put_u32_le((suffix_span - 1) as u32)
   mut residual: buffer := buffer(residual_bytes)
   model_forward.prime_window(residual, residual_bytes)
-  mut decode_residual: buffer := buffer(g.n_embd * 4)
-  model_forward.prime_window(decode_residual, g.n_embd * 4)
+  // `S` rows and not one: the suffix pass's embedding gather and every layer but the last produce
+  // `{n_embd, S}`, and a decode step's own single row is the `S = 1` case of the same reservation.
+  mut decode_residual: buffer := buffer(g.n_embd * suffix_span * 4)
+  model_forward.prime_window(decode_residual, g.n_embd * suffix_span * 4)
   mut logits: buffer := buffer(logits_bytes)
   model_forward.prime_window(logits, logits_bytes)
   mut decode_logits: buffer := buffer(logits_bytes)
@@ -2766,6 +2984,10 @@ fn schedule_decode(
   decode_ids_view := decode_ids_image.bytes()
   decode_pos_view := decode_pos_image.bytes()
   decode_out_ids_view := decode_out_ids_image.bytes()
+  suffix_mask_view := suffix_mask.bytes()
+  suffix_pos_view := suffix_pos_image.bytes()
+  suffix_ids_view := suffix_ids_image.bytes()
+  suffix_out_ids_view := suffix_out_ids_image.bytes()
   residual_view := residual.bytes()
   decode_residual_view := decode_residual.bytes()
   logits_view := logits.bytes()
@@ -2782,7 +3004,11 @@ fn schedule_decode(
     || index_view.len() != tokens.count * 4 || out_ids_view.len() != 4
     || decode_ids_view.len() != 4 || decode_pos_view.len() != steps * 4
     || decode_out_ids_view.len() != 4
-    || residual_view.len() != residual_bytes || decode_residual_view.len() != g.n_embd * 4
+    || suffix_mask_view.len() != width * suffix_span * 4
+    || suffix_pos_view.len() != suffix_span * 4 || suffix_ids_view.len() != suffix_span * 4
+    || suffix_out_ids_view.len() != 4
+    || residual_view.len() != residual_bytes
+    || decode_residual_view.len() != g.n_embd * suffix_span * 4
     || logits_view.len() != logits_bytes || decode_logits_view.len() != logits_bytes
     || node_view.len() != readback_bytes {
     fail(o, "R4_WINDOW_UNAVAILABLE", "slots")
@@ -2851,6 +3077,63 @@ fn schedule_decode(
       node_view, plane_view, oracle, embed_nodes, prefill_nodes, head_nodes, scan, ranges.start,
       ranges.length, width, stride, reference_path, breach, state, activation, o)
     if o.code.len() == 0 { o.plane_source = PLANE_SOURCE_PREFILL }
+  }
+  // R6-PREFIX-SUFFIX-PREFILL sections 2.8 and 2.9. `output` is digested **before** the suffix pass
+  // so that a pass which fails publishes the **container's** persisted vector, which is what an
+  // ordinary load run publishes and what a pass that produced no logits cannot replace. On a
+  // completed pass the block below runs again over the pass's own logits and replaces it, which is
+  // the field's documented behaviour change on a new operand combination.
+  if o.code.len() == 0 && suffix_count > 0 {
+    digest := model_forward.digest_region(logits_view)
+    o.sha256 = digest.sha.clone()
+    o.bit_sum = digest.bit_sum
+    o.element_count = g.n_vocab
+    o.nonfinite_count = digest.nonfinite
+    o.argmax = digest.argmax
+    mut top_index: array_builder<i64> := array_builder()
+    mut top_bits: array_builder<i64> := array_builder()
+    top_k(logits_view, top_index, top_bits)
+    top = model_forward.TopColumns { index: top_index.build(), bits: top_bits.build() }
+    decoded.token_id = digest.argmax
+    decoded_token = digest.argmax
+  }
+  // X1 to X4 of section 2.7. One suffix pass — a decode-shaped graph set over `S` columns at
+  // `n_past = T_prefix`, causally masked over prefix-plus-suffix — writing its K and V back into the
+  // plane at columns `T_prefix .. T_prefix+S-1` and verifying the plane over all `T_prefix + S`
+  // before any decode step runs. It is **one graph set, not `S` of them**: `2 + n_layer` graphs, the
+  // same count as a prefill or a decode step.
+  //
+  // Its logits land in `logits_view` — the prefill's own buffer — so every consumer below is
+  // unchanged: the digest block, `oracle_logits`, and the decode chain's root all read the run's own
+  // last prefill-shaped result, which on a suffix run is prefix-plus-suffix.
+  mut suffix_decoded := empty_decode()
+  if o.code.len() == 0 && suffix_count > 0 {
+    o.suffix_columns_written = tokens.count
+    suffix_nodes := layer_qwen2.mf_decode_layer_node_table(g, tokens.count, suffix_count, width)
+    decode_pass(
+      pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, suffix_tokens,
+      head_members, window, layout, resident,
+      slot_view, suffix_ids_view, suffix_pos_view, suffix_mask_view, suffix_out_ids_view,
+      decode_residual_view, logits_view, node_view, plane_view, oracle, embed_nodes, suffix_nodes,
+      head_nodes, scan, ranges.start, ranges.length,
+      model_forward.column_at(suffix_tokens.ids, 0), tokens.count, suffix_count, true, width,
+      stride, breach, activation, state, suffix_decoded, o)
+    if o.code.len() > 0 {
+      // Section 2.8: **a partial suffix pass publishes no completion.** `columns_written` stays
+      // `T_prefix`, every count stays 0, no step runs, and the plane is freed — so no reader ever
+      // sees the rows some layer wrote. How far the pass got is named by `error_detail`.
+      prefix_suffix(o)
+    } else {
+      // Section 2.4: the advance is made **after the last layer**, by the caller that knows the
+      // pass completed, never per layer. `capture_plane`'s own `first_column == 0` guard does not
+      // fire at `first_column = T_prefix`, and that is the feature.
+      state.columns_written = tokens.count + suffix_count
+      o.suffix_completed = true
+      o.suffix_columns_written = state.columns_written
+      o.suffix_graph_count = suffix_decoded.graph_count
+      o.suffix_node_count = suffix_decoded.node_count
+      o.suffix_compute_ns = suffix_decoded.compute_ns
+    }
   }
   if o.code.len() == 0 {
     digest := model_forward.digest_region(logits_view)
@@ -3020,6 +3303,7 @@ pub fn execute(
   kv_save_path: str,
   kv_load_path: str,
   resident_text: str,
+  suffix_text: str,
   borrow mut tokens: model_forward.TokenColumns,
   borrow mut schedule: model_forward.ScheduleColumns,
   borrow mut graphs: model_forward.GraphColumns,
@@ -3056,6 +3340,27 @@ pub fn execute(
     o.elapsed_ns = time.instant() - started
     return o
   }
+  // Step 2c (R6-PREFIX-SUFFIX-PREFILL section 2.7). **`SUFFIX` non-`-` requires `KV_LOAD`
+  // non-`-`.** It is the arm's first conditional operand, and the rule precedes every path-content
+  // check and every numeric parse, so a run whose operand combination is invalid is refused before
+  // a file is opened and before `STEPS` or `SUFFIX` is parsed.
+  //
+  // `R6_KV_ARGS` is reused rather than a code minted: it already names "the operand combination
+  // selecting the plane's provenance is invalid" and already carries one detail that distinguishes
+  // its case. `SUFFIX` with `KV_SAVE` needs no separate rule — 2b has already established that
+  // `KV_SAVE` and `KV_LOAD` are mutually exclusive, so a suffix beside a save implies no load and
+  // is caught here with this detail.
+  //
+  // Allowing `SUFFIX` without `KV_LOAD` was considered and rejected: it is a second way to reach
+  // `n_past > 0` with **no consumer** — a caller holding both lists in one process should
+  // concatenate them and run one prefill — and it would double the closure matrix to save fixture
+  // work.
+  o.suffix_requested = suffix_text != "-"
+  if o.suffix_requested && !o.kv_load_requested {
+    fail(o, kv_plane.CODE_ARGS, "suffix[no_load]")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
   // R6-RESIDENT-WEIGHTS section 3.1. `-` is streaming and is what an absent operand means; the
   // empty string is **not** absence and is refused with everything else that is not `weights`. The
   // check precedes every path-content check, so a run naming an unknown residency mode is refused
@@ -3068,11 +3373,29 @@ pub fn execute(
     return o
   }
 
-  g := stage_inputs(tokens_text, width_text, steps_text, geometry_path, kv_requested, tokens, o)
+  g := stage_inputs(
+    tokens_text, suffix_text, width_text, steps_text, geometry_path, kv_requested, tokens, o)
   if o.code.len() > 0 {
     o.elapsed_ns = time.instant() - started
     return o
   }
+  // The suffix ids, re-parsed rather than carried out of `stage_inputs` through a third mutable
+  // out-parameter: at this pin the region checker merges the owners of a call's mutable borrows and
+  // invalidates all of them at the call, and `parse_tokens` is total, cheap, and already called
+  // twice on this arm. Every bound it could fail is decided above, so this parse cannot fail here.
+  mut suffix_ids: array_builder<i64> := array_builder()
+  mut suffix_count := 0
+  if o.suffix_requested {
+    reparsed := layer_forward.parse_tokens(suffix_text, g.n_vocab)
+    mut suffix_at := 0
+    loop {
+      if suffix_at >= reparsed.count { break }
+      suffix_ids.push(reparsed.ids[suffix_at])
+      suffix_at = suffix_at + 1
+    }
+    suffix_count = reparsed.count
+  }
+  suffix_tokens := model_forward.TokenColumns { count: suffix_count, ids: suffix_ids.build() }
   // Step 6b. `fs.create_rw` is `O_RDWR|O_CREAT|O_TRUNC` and `fs.create_exclusive` returns a
   // sequential `writer` with no `pwrite`, so there is **no exclusive positional constructor at this
   // pin** (Request 30, of which this is the second client). The check-then-create race between here
@@ -3300,7 +3623,8 @@ pub fn execute(
     return o
   }
   schedule_decode(
-    pak, g, table, staged.plan, staged.ends, tokens, embed_members, head_members, window_view,
+    pak, g, table, staged.plan, staged.ends, tokens, suffix_tokens, embed_members, head_members,
+    window_view,
     layout, resident, device,
     context_bytes, width, residual_bytes, logits_bytes, readback_bytes, reference_path,
     transcript_path, logits_path, kv_save_path, kv_load_path, pack_digest, geometry_digest, steps,
@@ -3563,6 +3887,46 @@ pub fn render_kv(borrow o: model_forward.Outcome) -> string {
   return d.to_string()
 }
 
+// R6-PREFIX-SUFFIX-PREFILL section 2.9's `suffix` object, in declaration order. It is present in
+// **every** document with **one shape at every arity**, so a reader never has to ask which operands
+// were supplied before it knows which fields exist — and, in particular, never has to ask whether
+// `output` describes the container's vector or this run's own suffix pass.
+//
+// **It publishes no path and no token list.** R6-STEP-N risk 5 names the temp-path golden class;
+// schemas 3 and 4 were verified free of it and schema 5 keeps the property.
+//
+// Only `compute_ns` is normalized away by the smoke. The other ten are deterministic and they are
+// the contract: `columns_written` is what a partial pass must not advance, `sequence_length` is what
+// a reader compares against a single-shot run's `selection.token_count`, and `pack_bytes` is exactly
+// zero on the resident leg.
+pub fn render_suffix(borrow o: model_forward.Outcome) -> string {
+  d := builder()
+  d.write("{\"requested\":")
+  d.write_int(if o.suffix_requested { 1 } else { 0 })
+  d.write(",\"completed\":")
+  d.write_int(if o.suffix_completed { 1 } else { 0 })
+  d.write(",\"token_count\":")
+  d.write_int(o.suffix_token_count)
+  d.write(",\"n_past_base\":")
+  d.write_int(o.suffix_n_past_base)
+  d.write(",\"sequence_length\":")
+  d.write_int(o.suffix_sequence_length)
+  d.write(",\"columns_written\":")
+  d.write_int(o.suffix_columns_written)
+  d.write(",\"first_column\":")
+  d.write_int(o.suffix_first_column)
+  d.write(",\"graph_count\":")
+  d.write_int(o.suffix_graph_count)
+  d.write(",\"node_count\":")
+  d.write_int(o.suffix_node_count)
+  d.write(",\"pack_bytes\":")
+  d.write_int(o.suffix_pack_bytes)
+  d.write(",\"compute_ns\":")
+  d.write_int(o.suffix_compute_ns)
+  d.write("}")
+  return d.to_string()
+}
+
 fn hex_or_dash(borrow value: string) -> str {
   view: str := value
   if view.len() == 0 { return "-" }
@@ -3720,6 +4084,8 @@ pub fn render(
   logits_view: str := logits
   kv := render_kv(o)
   kv_view: str := kv
+  suffix := render_suffix(o)
+  suffix_view: str := suffix
   weights := render_weights(o)
   weights_view: str := weights
   timings := render_timings_step(o)
@@ -3751,6 +4117,8 @@ pub fn render(
   d.write(logits_view)
   d.write(",\"kv\":")
   d.write(kv_view)
+  d.write(",\"suffix\":")
+  d.write(suffix_view)
   d.write(",\"weights\":")
   d.write(weights_view)
   d.write(",\"timings\":")
@@ -3815,6 +4183,12 @@ fn print_summary(
   print(kv_plane.destination_label(o.kv_destination))
   print("kv container bytes:")
   print(o.kv_total_bytes)
+  print("suffix tokens:")
+  print(o.suffix_token_count)
+  print("suffix base:")
+  print(o.suffix_n_past_base)
+  print("suffix columns:")
+  print(o.suffix_columns_written)
   print("first token ns:")
   print(o.first_token_ns)
   print("plane roundtrip:")
@@ -3855,10 +4229,24 @@ fn print_summary(
   }
 }
 
-// R6-STEP-N section 2.2, R6-KV-PERSIST section 2.2, and R6-RESIDENT-WEIGHTS section 3.1: exactly
-// five, six, seven, nine, ten, eleven, twelve, thirteen, **or fourteen** operands. **Eight is still
-// `R6_ARITY`**, inherited verbatim from `--model-forward`'s rule and for R6's own reason:
-// `KV_WIDTH` travels with the transcript, so a transcript without a width refuses itself.
+// R6-STEP-N section 2.2, R6-KV-PERSIST section 2.2, R6-RESIDENT-WEIGHTS section 3.1, and
+// R6-PREFIX-SUFFIX-PREFILL section 2.2: exactly five, six, seven, nine, ten, eleven, twelve,
+// thirteen, fourteen, **or fifteen** operands. **Eight is still refused**, inherited verbatim from
+// `--model-forward`'s rule and for R6's own reason: `KV_WIDTH` travels with the transcript, so a
+// transcript without a width refuses itself.
+//
+// **A wrong arity produces no document and no error code**, and that is stated here because three
+// prior documents in this family present `R6_ARITY` and `R6_PATH` in validation tables as though
+// they were emitted. They are prose names in these comments: `run` returns `Err(Error.Invalid)`,
+// the process exits non-zero, and stdout is empty. The smoke asserts these cases as `NO_DOCUMENT`
+// rows carrying no golden bytes.
+//
+// `SUFFIX` is `args[14]`, the fifteenth operand, and is last for the reason `STEPS` and `RESIDENT`
+// were: every earlier position is spoken for and moving one would change the meaning of an existing
+// invocation silently. It is a comma-separated token id list in `TOKENS`' own grammar, or `-` for
+// absent, and it is legal **only with `KV_LOAD`** (step 2c). Its hazard — a caller who wants a
+// suffix and forgets the operand silently gets a plain load run — is closed by publishing
+// `suffix.requested` in **every** document, including error documents.
 //
 // `RESIDENT` is `args[13]`, the fourteenth operand. R6-RESIDENT-WEIGHTS section 3.1 designed it at
 // `args[11]` against a head where `STEPS` was last; `R6-KV-PERSIST` took `args[11]` and `args[12]`
@@ -3897,7 +4285,7 @@ fn print_summary(
 // including error documents, so the count is never implicit in the output.
 pub fn run(args: array<str>) -> Result<(), Error> {
   count := args.len()
-  if count < 5 || count == 8 || count > 14 {
+  if count < 5 || count == 8 || count > 15 {
     return Err(Error.Invalid)
   }
   if !layer_forward.valid_path(args[2]) || !layer_forward.valid_path(args[3]) {
@@ -3929,6 +4317,11 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   kv_save_path := if count >= 12 && args[11] != "-" { args[11] } else { "" }
   kv_load_path := if count >= 13 && args[12] != "-" { args[12] } else { "" }
   resident_text := if count >= 14 { args[13] } else { "-" }
+  // `SUFFIX` is `args[14]`, the fifteenth operand, and takes **no path check**: it is a token id
+  // list, not a path, which is `RESIDENT`'s precedent. `-` is absent and is the pre-existing
+  // behaviour character for character: `args.len() == 15` with `SUFFIX` of `-` is exactly
+  // `args.len() == 14`.
+  suffix_text := if count >= 15 { args[14] } else { "-" }
   mut tokens := model_forward.empty_tokens()
   mut schedule := model_forward.empty_schedule()
   mut graphs := model_forward.empty_graphs()
@@ -3936,7 +4329,7 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   mut stepped := model_forward.empty_steps()
   outcome := execute(
     args[2], args[3], args[4], reference_path, transcript_path, width_text, logits_path, steps_text,
-    kv_save_path, kv_load_path, resident_text, tokens, schedule, graphs, top, stepped)
+    kv_save_path, kv_load_path, resident_text, suffix_text, tokens, schedule, graphs, top, stepped)
   document := render(
     outcome, tokens, schedule, graphs, top, stepped, args[2], args[3], reference_path,
     transcript_path, logits_path)
