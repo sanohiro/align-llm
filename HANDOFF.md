@@ -141,6 +141,24 @@ longer binds this head. The pending record was measured on **Linux** (aarch64, k
 **source `a5c216a` -> oracle `4cab8a7` -> finalization `245f7f5`**. `gmake baseline-check` inside the
 same Linux image ends `baseline chain: PASS`.
 
+**Publication found one more thing, and it is deviation 19.** The `Installed Ubuntu 24.04
+fresh-image profile (aarch64)` check failed **twice** at PR #148 with the canonical, detail-free
+`fresh compiler: ERROR CHILD aggregate`, at `worker-aggregate` phase durations of **1,992 s** and
+**2,000 s**, where `main` measured 1,867 s (PR #143) and 1,892 s (PR #144) and passed, `x86_64`
+measured 1,778 s and passed, and this host's own installed-profile run passed at 1,875 s. The
+aggregate child is `make capable-checks`, of which `layer-forward-smoke` — and therefore this
+capability's seventh block — is a member, and it runs under one `AGGREGATE_TIMEOUT`. That constant is
+**1,800 s -> 3,600 s** in `scripts/fresh-align-compiler`, with the measurement in its own comment.
+`enforce_aggregate_quota` is unchanged, so what the child may *consume* is bounded exactly as before.
+
+**Two environment findings worth carrying forward.** (1) The local DinD preflight must run
+`scripts/pre-pr` as an **unprivileged uid**: R6-KV-PERSIST's `ds-kv-save-unwritable` builds a `0555`
+directory and asserts `R6_KV_UNWRITABLE`, and root writes into it anyway, failing 26 assertions of
+that block. GitHub's runners are unprivileged, which is why hosted CI never saw it.
+`scratchpad/dind-prepr-r6m-user.sh` starts `dockerd` as root and drops to uid 501 for the preflight
+itself. (2) The fresh worker's aggregate had been sitting at roughly 98 % of its wall-clock cap on
+the slowest supported architecture; one added smoke block crossed it.
+
 **Next actions, in order.**
 1. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` on the
    unchanged head. The diff touches `Makefile`, `scripts/build-ggml-shim`, the fixture, the smoke and

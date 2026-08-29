@@ -1924,6 +1924,23 @@ prediction.
     would have left thirteen copies behind. The list in `docs/align-requests.md` is now regenerated
     from the source rather than written by hand.
 
+19. **Risk 8 came due in the fresh worker's aggregate, not on the developer host.** Section 6.4
+    reasoned about `layer-forward-smoke`'s own wall clock and section 12.6 measured it at 80 s, which
+    is comfortable. What no one costed is that the same runner is a `capable-checks` member, and
+    that `capable-checks` is the child `scripts/fresh-align-compiler` runs under a single
+    `AGGREGATE_TIMEOUT`. On GitHub's **`aarch64`** runner the whole `worker-aggregate` phase measured
+    **1,867 s** and **1,892 s** on `main` (PR #143, PR #144), both passing; this branch measured
+    **1,992 s** and **2,000 s** on two consecutive runs and failed both times with the canonical
+    `fresh compiler: ERROR CHILD aggregate`, which carries no detail. The **`x86_64`** runner
+    measured 1,778 s and passed, and this host's own installed-profile run passed at 1,875 s. A
+    deterministic failure at a repeated duration, on the slower architecture only, with the same
+    content that passes elsewhere, is the **cap** rather than the suite. `AGGREGATE_TIMEOUT` is
+    therefore **1,800 s → 3,600 s**, with the measurement in the constant's own comment. It bounds a
+    hung child; `enforce_aggregate_quota` is what bounds what the child may consume and is
+    unchanged, so the sandbox is not widened. The lesson generalises past this capability: a fixed
+    wall clock over a serial suite that every capability adds to is a bound that will be crossed
+    again, and it should be crossed by a measurement rather than by a rerun.
+
 **Six smaller repairs from the same review, recorded here rather than as rows of their own:**
 `layer_olmoe.mm_write_mask_offset` fails **closed** on a negative offset — it wrote the fully masked
 image instead of returning with the buffer's zero bits in place, which is `0.0f` everywhere and
