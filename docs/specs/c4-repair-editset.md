@@ -1159,12 +1159,12 @@ Each cell names its implementation and its regression. Cases are
 
 | Cell | Implementation | Regression |
 | --- | --- | --- |
-| Construction | `edit_set` built from `validated_edit_set`'s return, sorted, redacted, digested, bounded whole-block | a two-file edit set round-trips with both bodies |
+| Construction | `edit_set` built from `validated_edit_set`'s return, sorted, redacted, digested, bounded whole-block over a prefix of that order | a two-file edit set round-trips with both bodies |
 | Success | `PASS` and `FAIL`/`TEST` carry `edit_set` `Some` and `patch_sha256` `Some` | both, against a stub generation child |
 | Failure | `FAIL`/`PATCH` and `POLICY_VIOLATION`/`POLICY` carry both `None` | a response with no fenced block; a response naming a path outside `allowed_edits` |
 | Failure | `ERROR` before the parse carries both `None` | a generation-child failure |
 | Malformed input | a body exceeding `MAXIMUM_EDIT_BYTES`; more than `MAXIMUM_FILE_BLOCKS` blocks | both rejected by the frozen `validated_edit_set`, verbatim, with the frozen error mapping |
-| Malformed input | `EDIT_SET_LIMIT` exceeded | the over-budget block is persisted with `body_text: None`, `body_bytes` and `body_sha256` intact; total is the pre-omission sum |
+| Malformed input | `EDIT_SET_LIMIT` exceeded | the over-budget block **and every block after it** are persisted with `body_text: None`, `body_bytes` and `body_sha256` intact; total is the pre-omission sum. Two portable rows, with the oversized file sorting first and sorting last, separate the prefix cut from a greedy best fit |
 | Early exit | the declared-patch path never parses a response | `edit_set` `None`, `patch_sha256` `Some` over the declared patch bytes |
 | Cleanup | the patch digest is taken before `ProducedInput` construction | no read after close; the frozen `finally` still closes every retained input |
 | Redaction | bodies and digests are post-redaction | a credential-bearing stub run leaves no credential in `edit_set` and changes both digests |
@@ -1496,6 +1496,7 @@ covered; it is listed as a deviation in §11.2.
 | §3.9 row 12 | evaluator, gate validator, and Align verifier, per **ran attempt** | mutants M7, M16 die; verifier defect 18; validator `v2-attempt-probe-identity` |
 | §3.9 rows 13-17 | `valid_measurement_version_two`, `validate_measurement_version`, `verifier_measurement_version_two_shape` | `editset-row13-*` … `editset-row17-*`; mutants M10, M15 |
 | §3.9 row 15 paths unique and strictly ascending | the same three owners | verifier defects 24 (descending) and 25 (repeated path); validator `v2-editset-path-order` and `v2-editset-path-duplicate`; `editset-row15-unsorted`. All four added in review repair, which found the rule unfalsifiable while every fixture edit set held one block |
+| §3.9 rows 15-16 block shape: `body_sha256` over `body_text`, `body_bytes` = that body's length, a carried body inside `EDIT_SET_LIMIT`, 1 to 32 blocks | `verifier_edit_set_block_valid` / `verifier_edit_set_valid`; `validate_edit_set_block` | verifier defects 26-30 and validator `v2-editset-body-length`, `v2-editset-body-over-budget`, `v2-editset-block-count`, `v2-editset-empty`. Added by auditing review's finding as a class: **every** clause of both block validators was unfalsifiable while the fixtures built only well-formed blocks |
 | §3.9 row 18 | `repair_eligibility` unchanged | `editset-eligibility` |
 | §3.9 rows 19-20 | unchanged from C4-REPAIR-MEASURED | `editset-budget-exhausted`, `editset-rederive-self` |
 | §3.9 row 21 | the recomputed denominator | mutants M8, M13, M17 |
@@ -1692,6 +1693,19 @@ Each is a place where implementation departed from, or had to decide something l
     was ever a candidate for omission — but the artifact's runtime-identity fields name the adapter
     by digest, so the run was repeated from the repaired head rather than re-labelled. §11.4
     records both runs.
+
+16. **The unfalsifiable-clause finding was audited as a class, and it was larger than the two
+    instances review named.** Review found the edit-set path rule and three version-1 absence
+    clauses with no failing case. Mutation-testing every clause of both block validators found five
+    more in `src/prompt_score.align` (`body_sha256` over `body_text`, `body_bytes` as that body's
+    length, the carried-body `EDIT_SET_LIMIT` cap, and both ends of the 1-to-32 block bound) and
+    four more in `scripts/prompt-gate-validator.py` (the same cap, both ends of the block bound, and
+    the declared length). The cause is one thing, not nine: both fixtures built **only well-formed
+    blocks**, so no rule about a malformed block could ever fire. Verifier defects 26-30 and four
+    validator rejection rows close it. Two needed a fixture idiom this file did not have — 33
+    distinct ascending paths, and a body one byte past 16,384 — and `builder()` with `.write()` and
+    `.to_string()` supplies both, so neither is deferred. The Align cap case is the one place this
+    document's fixtures construct a 16 KB string, and it is built rather than written out.
 
 ### 11.4 The gate run and its result
 

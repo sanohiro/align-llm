@@ -1749,13 +1749,13 @@ fn task_repair_adapter() -> prompt_artifacts.PromptEvaluationTask {
 // Defects 21-23 carry a version-1 measurement from a frozen-adapter corpus, so they name the
 // frozen adapter exactly as defects 0-13 and 15 do.
 fn uses_repair_adapter(defect: i64) -> bool {
-  return defect == 14 || (defect >= 16 && defect <= 20) || defect == 24 || defect == 25
+  return defect == 14 || (defect >= 16 && defect <= 20) || (defect >= 24 && defect <= 30)
 }
 
 // Defect 16 is a repair-adapter corpus emitting a version-1 measurement, so it is the one case
 // where the adapter is the repair adapter and the version is still 1.
 fn measurement_is_version_two(defect: i64) -> bool {
-  return defect == 14 || (defect >= 17 && defect <= 20) || defect == 24 || defect == 25
+  return defect == 14 || (defect >= 17 && defect <= 20) || (defect >= 24 && defect <= 30)
 }
 
 fn editset_attempts(defect: i64) -> i64 {
@@ -1842,16 +1842,119 @@ fn edit_set_blocks(carried: bool, order: i64) -> array<prompt_artifacts.EditSetB
   return values.build()
 }
 
+// `src/a.py`, `src/aa.py`, `src/aaa.py`, ... — strictly ascending in byte order, because `.` (0x2E)
+// sorts before `a` (0x61), so each name is a prefix-extension that compares greater than the last.
+fn generated_path(count: i64) -> string {
+  b := builder()
+  b.write("src/")
+  mut index := 0
+  loop {
+    if index >= count { break }
+    b.write("a")
+    index = index + 1
+  }
+  b.write(".py")
+  return b.to_string()
+}
+
+// Defect 30's body: one byte past the producer's own `EDIT_SET_LIMIT`. A **carried** body may not
+// exceed it — the producer omits such a block instead — so carrying one is a producer defect. Built
+// rather than written out, because a 16 KB literal in a fixture is unreadable.
+fn oversized_body_text() -> string {
+  b := builder()
+  mut index := 0
+  loop {
+    if index >= 16_385 { break }
+    b.write("x")
+    index = index + 1
+  }
+  return b.to_string()
+}
+
 fn edit_set_order(defect: i64) -> i64 {
   if defect == 24 { return 1 }
   if defect == 25 { return 2 }
   return 0
 }
 
+// Defects 26-29 break one block-shape rule each, and each is the only rule that can reject its
+// document. They exist because every one of these clauses was unfalsifiable while the fixture
+// built only well-formed blocks — the same gap review found in the ascending rule, audited across
+// the whole block validator rather than repaired one clause at a time.
+//
+// 26 digests the wrong bytes; 27 declares a length its body does not have, with the total still
+// summing the declared counts so the row-14 rule stays satisfied; 28 is `Some` and **empty**,
+// which is a different statement from `None` and is a producer defect; 29 exceeds the 32-block
+// bound with 33 individually valid blocks, which the length check rejects before it ever compares
+// a pair, so a repeated block is enough and 33 distinct paths are not needed.
+fn edit_set_blocks_for(defect: i64, carried: bool) -> array<prompt_artifacts.EditSetBlock> {
+  if defect == 26 {
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    values.push(edit_set_block(
+        carried, "src/duration.py", body_text_value(), body_byte_count(), digest_a(),
+      ))
+    return values.build()
+  }
+  if defect == 27 {
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    values.push(edit_set_block(
+        carried,
+        "src/duration.py",
+        body_text_value(),
+        body_byte_count() + 1,
+        body_digest_value(),
+      ))
+    return values.build()
+  }
+  if defect == 28 {
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    return values.build()
+  }
+  if defect == 29 {
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    mut index := 0
+    loop {
+      if index >= 33 { break }
+      // Distinct and strictly ascending, so the block bound is the only rule broken: repeating one
+      // path would be rejected by the uniqueness rule before the count was ever compared.
+      path := generated_path(index + 1)
+      path_view: str := path
+      values.push(edit_set_block(
+          carried, path_view, body_text_value(), body_byte_count(), body_digest_value(),
+        ))
+      index = index + 1
+    }
+    return values.build()
+  }
+  if defect == 30 {
+    body := oversized_body_text()
+    body_view: str := body
+    mut values: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+    values.push(edit_set_block(
+        carried, "src/duration.py", body_view, 16_385, body_digest_of(body_view),
+      ))
+    return values.build()
+  }
+  return edit_set_blocks(carried, edit_set_order(defect))
+}
+
+fn edit_set_block_count(defect: i64) -> i64 {
+  if defect == 26 || defect == 27 || defect == 30 { return 1 }
+  if defect == 28 { return 0 }
+  if defect == 29 { return 33 }
+  return 2
+}
+
 // The pre-omission sum the verifier recomputes. Defect 25 carries `src/duration.py` twice, so its
 // sum is that body twice.
 fn edit_set_total(defect: i64) -> i64 {
   if defect == 25 { return body_byte_count() + body_byte_count() }
+  if defect == 26 { return body_byte_count() }
+  // Defect 27's total is the sum of the **declared** counts, so only the length rule is broken.
+  if defect == 27 { return body_byte_count() + 1 }
+  if defect == 28 { return 0 }
+  if defect == 29 { return body_byte_count() * 33 }
+  if defect == 30 { return 16_385 }
   return body_byte_count() + second_body_byte_count()
 }
 
@@ -1881,7 +1984,7 @@ fn measurement_v2(
     diagnostic_summary: "provider-backed candidate patch failed validation".clone(),
     diagnostic_stdout: "post-repair validation exit code: 1".clone(),
     diagnostic_stderr: "AssertionError".clone(),
-    edit_set: Some(edit_set_blocks(true, edit_set_order(defect))),
+    edit_set: Some(edit_set_blocks_for(defect, true)),
     // Defect 20 breaks only the pre-omission sum, which no other rule reads.
     edit_set_total_bytes: Some(if defect == 20 {
         edit_set_total(defect) + 1
@@ -2057,7 +2160,7 @@ fn editset_drifted_measurement(seed: i64, defect: i64) -> prompt_artifacts.TaskM
 }
 
 fn is_editset_defect(defect: i64) -> bool {
-  return defect >= 14 && defect <= 25
+  return defect >= 14 && defect <= 30
 }
 
 fn attempts_for(defect: i64, seed: i64) -> array<prompt_artifacts.TaskAttemptRecord> {
@@ -2796,6 +2899,29 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   editset_duplicate_path := complete_result_v2(25)
   editset_duplicate_path_evidence := evidence_v2(25)
   expect_invalid(editset_duplicate_path, editset_duplicate_path_evidence)?
+
+  // One block-shape rule each: the digest over the body, the declared length, an edit set that is
+  // `Some` and empty, and the 32-block bound. Every one of these was unfalsifiable while the
+  // fixture built only well-formed blocks.
+  editset_body_digest := complete_result_v2(26)
+  editset_body_digest_evidence := evidence_v2(26)
+  expect_invalid(editset_body_digest, editset_body_digest_evidence)?
+
+  editset_body_length := complete_result_v2(27)
+  editset_body_length_evidence := evidence_v2(27)
+  expect_invalid(editset_body_length, editset_body_length_evidence)?
+
+  editset_empty := complete_result_v2(28)
+  editset_empty_evidence := evidence_v2(28)
+  expect_invalid(editset_empty, editset_empty_evidence)?
+
+  editset_block_count := complete_result_v2(29)
+  editset_block_count_evidence := evidence_v2(29)
+  expect_invalid(editset_block_count, editset_block_count_evidence)?
+
+  editset_body_over_budget := complete_result_v2(30)
+  editset_body_over_budget_evidence := evidence_v2(30)
+  expect_invalid(editset_body_over_budget, editset_body_over_budget_evidence)?
 
   // A version-2 document may not be paired with version-1 evidence.
   version_split := complete_result_v2(0)

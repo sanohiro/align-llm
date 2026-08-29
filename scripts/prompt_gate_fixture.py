@@ -202,6 +202,11 @@ def edit_set_blocks() -> list[dict[str, Any]]:
     return [edit_set_block(path, body) for path, body in EDITSET_EDITS]
 
 
+# Named here rather than imported from the validator: a smoke that read the bound from the module
+# under test could not falsify a mutant that moved it.
+MAXIMUM_FILE_BLOCKS_FOR_SMOKE = 32
+
+
 def applied_edits_text() -> str:
     """The `applied edits: ` tail ladder row 17 cross-checks against the block path list."""
     return ", ".join(path for path, _ in EDITSET_EDITS)

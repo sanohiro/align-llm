@@ -141,11 +141,15 @@ rule, stop summing `edit_set_total_bytes`, allow a version-2 member at version 1
 identity to be absent, trust the persisted denominator, disable the validator's row 11 / row 12 /
 row 15 body-digest checks, and — in the adapter — drop `patch_sha256`, report the **frozen** file's
 runtime identity, drop the edit set, digest before redaction, remove whole-block bounding, skip the
-base-digest verification, and make the name assertion vacuous. Review then re-injected the mutants
-its findings named and **eleven more died** at the repaired head: greedy best fit in the adapter;
-the validator's path-order, path-uniqueness, row-14 sum, and version-1 absence rules; and the Align
-verifier's four version-1 absence clauses, its ascending rule, and its strictness (`>` weakened to
-`>=`). The claim "23/23 killed" did not reproduce before the repair and is superseded.
+base-digest verification, and make the name assertion vacuous. **23 further mutants were injected
+at the repaired head and all 23 died**: 11 in the Align verifier (four version-1 absence clauses,
+the ascending rule and its strictness, the body digest, the declared length, the carried-body cap,
+and both ends of the block bound), 9 in the gate validator (the same set less the strictness pair,
+plus the row-14 sum and the row-17 truncation exemption), the adapter's greedy best fit, the
+evaluator's truncation exemption, and the divergence normalizer's span. Every one of those 23
+**survived** before the repair. The claim "23/23 killed" did not reproduce and is superseded; the
+cause was one thing, not 23 — both fixtures built only well-formed edit-set blocks, so no rule
+about a malformed one could fire (spec section 11.3 deviations 15 and 16).
 
 **The provider service revision was re-derived, not inherited** (spec section 3.7):
 `llama-server --version` reports build 10566 commit `bb4caa754`, the resolved binary hashes to

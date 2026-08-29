@@ -1156,6 +1156,92 @@ def repair_attempt_rows(root: Path) -> None:
         contains="edit set total is not the sum of its block byte counts",
     )
 
+    def editset_body_length_skew(evaluation, evidence) -> None:
+        """Ladder row 15's length half: `body_bytes` is the redacted body's own length. The digest
+        still digests the text and the total still sums the counts, so only this rule can fire."""
+
+        def stretch(measurement) -> None:
+            block = measurement["edit_set"][0]
+            block["body_bytes"] += 1
+            fixture.bind(block)
+            measurement["edit_set_total_bytes"] = sum(
+                item["body_bytes"] for item in measurement["edit_set"]
+            )
+
+        for_each_editset_measurement(evaluation, stretch)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-body-length", editset_body_length_skew),
+        "an edit-set block whose declared length is not its body's",
+        contains="body length disagrees with its declared byte count",
+    )
+
+    def editset_body_over_budget(evaluation, evidence) -> None:
+        """A **carried** body may not exceed the producer's own `EDIT_SET_LIMIT`: the producer
+        omits such a block rather than carrying it, so carrying one is a producer defect. Length
+        and digest are kept consistent with the oversized text, so only the budget rule fires."""
+        oversized = "x" * (validator.EDIT_SET_LIMIT + 1)
+
+        def inflate(measurement) -> None:
+            block = measurement["edit_set"][0]
+            block["body_text"] = oversized
+            block["body_bytes"] = len(oversized.encode("utf-8"))
+            block["body_sha256"] = hashlib.sha256(oversized.encode("utf-8")).hexdigest()
+            fixture.bind(block)
+            measurement["edit_set_total_bytes"] = sum(
+                item["body_bytes"] for item in measurement["edit_set"]
+            )
+
+        for_each_editset_measurement(evaluation, inflate)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-body-over-budget", editset_body_over_budget),
+        "a carried body beyond the producer's own budget",
+        contains="carried a body beyond the producer's own budget",
+    )
+
+    def editset_block_count_skew(evaluation, evidence) -> None:
+        """Ladder row 16's block bound. The paths ascend and every block is individually valid, so
+        the count is the only thing wrong with the document."""
+
+        def widen(measurement) -> None:
+            blocks = [
+                fixture.edit_set_block(f"src/generated_{ordinal:02d}.py", f"# {ordinal}\n")
+                for ordinal in range(fixture.MAXIMUM_FILE_BLOCKS_FOR_SMOKE + 1)
+            ]
+            measurement["edit_set"] = blocks
+            measurement["edit_set_total_bytes"] = sum(item["body_bytes"] for item in blocks)
+            measurement["diagnostic_summary"] = (
+                measurement["diagnostic_summary"].rsplit("applied edits: ", 1)[0]
+                + "applied edits: "
+                + ", ".join(item["path"] for item in blocks)
+            )
+
+        for_each_editset_measurement(evaluation, widen)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-block-count", editset_block_count_skew),
+        "an edit set beyond its block bound",
+        contains="edit set is empty or exceeds its block bound",
+    )
+
+    def editset_empty_skew(evaluation, evidence) -> None:
+        """An `edit_set` that is `Some` and empty. `None` is how "no edit set" is encoded, so an
+        empty list is a producer defect rather than the same statement in another shape."""
+
+        def empty(measurement) -> None:
+            measurement["edit_set"] = []
+            measurement["edit_set_total_bytes"] = 0
+            measurement["diagnostic_summary"] = "the response declares no file block"
+
+        for_each_editset_measurement(evaluation, empty)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-empty", editset_empty_skew),
+        "an edit set that is present and empty",
+        contains="edit set is empty or exceeds its block bound",
+    )
+
     # Ladder row 10 in the direction no bundle can reach. Row 11 requires a version-1 measurement
     # to come from a corpus naming the frozen adapter, and this fixture's corpus names the repair
     # adapter, so a downgraded bundle is rejected by row 11 before row 10 is consulted. The rule is
