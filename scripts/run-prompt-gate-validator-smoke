@@ -42,6 +42,7 @@ VALIDATOR = ROOT / "scripts" / "prompt-gate-validator.py"
 # The merged C6-MEASURED evidence, read in place: the version-1 regression asserts against the
 # real frozen chain rather than against a rebuilt approximation of it.
 FROZEN_GATE = ROOT / "eval" / "prompt" / "gate"
+FROZEN_C4_GATE = ROOT / "eval" / "prompt" / "c4-repair-gate"
 LINUX = sys.platform.startswith("linux")
 
 
@@ -786,6 +787,7 @@ def binding_rows(root: Path) -> None:
     )
     repair_attempt_rows(root)
     frozen_version_one_chain()
+    frozen_version_two_chain()
     frozen_corpus_rows()
 
 
@@ -991,9 +993,341 @@ def repair_attempt_rows(root: Path) -> None:
         contains="carries more attempts than its task admits",
     )
 
-    def measurement_not_final(evaluation, evidence) -> None:
+    # --- C4-REPAIR-EDITSET ------------------------------------------------------------------------
+
+    def measurement_version_skew(evaluation, evidence) -> None:
+        """Ladder row 11: the corpus names the repair adapter, so version 1 is not admissible."""
+        for row in evaluation["rows"]:
+            for attempt in row["attempts"]:
+                downgrade_measurement(attempt["measurement"])
+                attempt["measurement_sha256"] = attempt["measurement"]["content_sha256"]
+                fixture.bind(attempt)
+            downgrade_measurement(row["measurement"])
+            fixture.bind(row)
+
+    def downgrade_measurement(measurement) -> None:
+        for name in (
+            "edit_set", "edit_set_total_bytes", "patch_sha256", "base_adapter_runtime_identity",
+        ):
+            measurement.pop(name, None)
+        measurement["schema_version"] = 1
+        fixture.bind(measurement)
+
+    rejected(
+        v2_evaluation_case(root, "v2-measurement-version", measurement_version_skew),
+        "a measurement version that disagrees with the adapter its corpus names",
+        contains="version disagrees with the adapter its corpus names",
+    )
+
+    def editset_block_digest_skew(evaluation, evidence) -> None:
+        """Ladder row 15: `body_sha256` digests the redacted bytes `body_text` carries."""
+        # One row deliberately carries no edit set, mirroring the wire's mode-2 shape; drift the
+        # first row that has one.
+        for row in evaluation["rows"]:
+            if "edit_set" not in row["measurement"]:
+                continue
+            for attempt in row["attempts"]:
+                block = attempt["measurement"]["edit_set"][0]
+                block["body_text"] = block["body_text"] + "# drifted\n"
+                fixture.bind(block)
+                fixture.bind(attempt["measurement"])
+                attempt["measurement_sha256"] = attempt["measurement"]["content_sha256"]
+                fixture.bind(attempt)
+            block = row["measurement"]["edit_set"][0]
+            block["body_text"] = block["body_text"] + "# drifted\n"
+            fixture.bind(block)
+            fixture.bind(row["measurement"])
+            fixture.bind(row)
+            break
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-body-digest", editset_block_digest_skew),
+        "an edit-set block whose digest does not digest its body",
+        contains="body digest does not digest its body text",
+    )
+
+    def editset_probe_identity_skew(evaluation, evidence) -> None:
+        """Ladder row 12: an attempt-level probe naming another runtime, with the row's left
+        correct, so only the attempt-level rule can reject it."""
         row = evaluation["rows"][0]
-        row["measurement"]["patch_size_bytes"] = row["measurement"]["patch_size_bytes"] + 1
+        attempt = row["attempts"][0]
+        attempt["measurement"]["environment_probe"]["runtime_identity"] = "PYTHON:" + "9" * 64
+        fixture.bind(attempt["measurement"]["environment_probe"])
+        fixture.bind(attempt["measurement"])
+        attempt["measurement_sha256"] = attempt["measurement"]["content_sha256"]
+        fixture.bind(attempt)
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-probe-identity", editset_probe_identity_skew),
+        "an attempt-level probe naming another runtime identity",
+        contains="measurement probe names another runtime identity",
+    )
+
+    def editset_denominator_skew(evaluation, evidence) -> None:
+        """The EDITSET denominator is recomputed, never trusted from the persisted document."""
+        evaluation["corpus_aggregate"]["repair_editset_attempt_count"] += 1
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-denominator", editset_denominator_skew),
+        "a persisted EDITSET denominator that is not the recomputed one",
+        contains="persisted corpus aggregate disagrees with the recomputed value",
+    )
+
+    def for_each_editset_measurement(evaluation, mutate) -> None:
+        """Apply `mutate` to every persisted measurement that carries an edit set, and rebind.
+
+        Every attempt measurement and every row measurement is edited, because ladder row 18
+        compares a row against its final attempt and would otherwise reject the document for a
+        reason other than the one under test.
+        """
+        for row in evaluation["rows"]:
+            for attempt in row["attempts"]:
+                measurement = attempt["measurement"]
+                if "edit_set" not in measurement:
+                    continue
+                mutate(measurement)
+                fixture.bind(measurement)
+                attempt["measurement_sha256"] = measurement["content_sha256"]
+                fixture.bind(attempt)
+            if "edit_set" in row["measurement"]:
+                mutate(row["measurement"])
+                fixture.bind(row["measurement"])
+            fixture.bind(row)
+
+    def editset_path_order_skew(evaluation, evidence) -> None:
+        """Ladder row 15's ordering half. The `applied edits:` tail is reversed with the blocks, so
+        the row-17 cross-check still agrees and the ordering rule is the only one that can fire."""
+
+        def reverse(measurement) -> None:
+            measurement["edit_set"] = list(reversed(measurement["edit_set"]))
+            paths = [block["path"] for block in measurement["edit_set"]]
+            measurement["diagnostic_summary"] = (
+                measurement["diagnostic_summary"].rsplit("applied edits: ", 1)[0]
+                + "applied edits: "
+                + ", ".join(paths)
+            )
+
+        for_each_editset_measurement(evaluation, reverse)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-path-order", editset_path_order_skew),
+        "an edit set whose paths descend rather than ascend",
+        contains="edit set paths are not unique and sorted ascending",
+    )
+
+    def editset_path_duplicate_skew(evaluation, evidence) -> None:
+        """Ladder row 15's uniqueness half, which sorted order alone does not falsify: two blocks
+        at the same path are sorted and are still a producer defect."""
+
+        def duplicate(measurement) -> None:
+            first = copy.deepcopy(measurement["edit_set"][0])
+            measurement["edit_set"] = [measurement["edit_set"][0], first]
+            measurement["edit_set_total_bytes"] = sum(
+                block["body_bytes"] for block in measurement["edit_set"]
+            )
+            measurement["diagnostic_summary"] = (
+                measurement["diagnostic_summary"].rsplit("applied edits: ", 1)[0]
+                + "applied edits: "
+                + ", ".join(block["path"] for block in measurement["edit_set"])
+            )
+
+        for_each_editset_measurement(evaluation, duplicate)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-path-duplicate", editset_path_duplicate_skew),
+        "an edit set naming the same path twice",
+        contains="edit set paths are not unique and sorted ascending",
+    )
+
+    def editset_total_skew(evaluation, evidence) -> None:
+        """Ladder row 14's sum. `edit_set_total_bytes` is the pre-omission sum of `body_bytes`, and
+        no other rule reads it, so this is the only rule that can reject the document."""
+        for_each_editset_measurement(
+            evaluation,
+            lambda measurement: measurement.update(
+                {"edit_set_total_bytes": measurement["edit_set_total_bytes"] + 1}
+            ),
+        )
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-total", editset_total_skew),
+        "an edit-set total that is not the sum of its block byte counts",
+        contains="edit set total is not the sum of its block byte counts",
+    )
+
+    def editset_body_length_skew(evaluation, evidence) -> None:
+        """Ladder row 15's length half: `body_bytes` is the redacted body's own length. The digest
+        still digests the text and the total still sums the counts, so only this rule can fire."""
+
+        def stretch(measurement) -> None:
+            block = measurement["edit_set"][0]
+            block["body_bytes"] += 1
+            fixture.bind(block)
+            measurement["edit_set_total_bytes"] = sum(
+                item["body_bytes"] for item in measurement["edit_set"]
+            )
+
+        for_each_editset_measurement(evaluation, stretch)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-body-length", editset_body_length_skew),
+        "an edit-set block whose declared length is not its body's",
+        contains="body length disagrees with its declared byte count",
+    )
+
+    def editset_body_over_budget(evaluation, evidence) -> None:
+        """A **carried** body may not exceed the producer's own `EDIT_SET_LIMIT`: the producer
+        omits such a block rather than carrying it, so carrying one is a producer defect. Length
+        and digest are kept consistent with the oversized text, so only the budget rule fires."""
+        oversized = "x" * (validator.EDIT_SET_LIMIT + 1)
+
+        def inflate(measurement) -> None:
+            block = measurement["edit_set"][0]
+            block["body_text"] = oversized
+            block["body_bytes"] = len(oversized.encode("utf-8"))
+            block["body_sha256"] = hashlib.sha256(oversized.encode("utf-8")).hexdigest()
+            fixture.bind(block)
+            measurement["edit_set_total_bytes"] = sum(
+                item["body_bytes"] for item in measurement["edit_set"]
+            )
+
+        for_each_editset_measurement(evaluation, inflate)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-body-over-budget", editset_body_over_budget),
+        "a carried body beyond the producer's own budget",
+        contains="carried a body beyond the producer's own budget",
+    )
+
+    def editset_block_count_skew(evaluation, evidence) -> None:
+        """Ladder row 16's block bound. The paths ascend and every block is individually valid, so
+        the count is the only thing wrong with the document."""
+
+        def widen(measurement) -> None:
+            blocks = [
+                fixture.edit_set_block(f"src/generated_{ordinal:02d}.py", f"# {ordinal}\n")
+                for ordinal in range(fixture.MAXIMUM_FILE_BLOCKS_FOR_SMOKE + 1)
+            ]
+            measurement["edit_set"] = blocks
+            measurement["edit_set_total_bytes"] = sum(item["body_bytes"] for item in blocks)
+            measurement["diagnostic_summary"] = (
+                measurement["diagnostic_summary"].rsplit("applied edits: ", 1)[0]
+                + "applied edits: "
+                + ", ".join(item["path"] for item in blocks)
+            )
+
+        for_each_editset_measurement(evaluation, widen)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-block-count", editset_block_count_skew),
+        "an edit set beyond its block bound",
+        contains="edit set is empty or exceeds its block bound",
+    )
+
+    def editset_empty_skew(evaluation, evidence) -> None:
+        """An `edit_set` that is `Some` and empty. `None` is how "no edit set" is encoded, so an
+        empty list is a producer defect rather than the same statement in another shape."""
+
+        def empty(measurement) -> None:
+            measurement["edit_set"] = []
+            measurement["edit_set_total_bytes"] = 0
+            measurement["diagnostic_summary"] = "the response declares no file block"
+
+        for_each_editset_measurement(evaluation, empty)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-empty", editset_empty_skew),
+        "an edit set that is present and empty",
+        contains="edit set is empty or exceeds its block bound",
+    )
+
+    # Ladder row 10 in the direction no bundle can reach. Row 11 requires a version-1 measurement
+    # to come from a corpus naming the frozen adapter, and this fixture's corpus names the repair
+    # adapter, so a downgraded bundle is rejected by row 11 before row 10 is consulted. The rule is
+    # therefore driven directly, exactly as the sibling owner's `editset-row10` case drives
+    # `scripts/prompt-evaluate.py`. Without this, every mutant of row 10's version-1 half survived.
+    frozen_task = copy.deepcopy(read(accepted, fixture.EVALUATION_NAME)["tasks"][0])
+    frozen_task["argv"] = [frozen_task["cmd"]]
+    frozen_task["measurement_adapter_runtime"] = fixture.BASE_ADAPTER_RUNTIME
+    # The four members are named here rather than read from the validator's own tuple: a mutant
+    # that empties that tuple must fail these rows, not pass them vacuously.
+    strays = (
+        ("edit_set", fixture.edit_set_blocks()),
+        ("edit_set_total_bytes", 64),
+        ("patch_sha256", "f" * 64),
+        ("base_adapter_runtime_identity", fixture.BASE_ADAPTER_RUNTIME),
+    )
+    for member, value in strays:
+        stray = copy.deepcopy(
+            read(accepted, fixture.EVALUATION_NAME)["rows"][0]["attempts"][0]["measurement"]
+        )
+        downgrade_measurement(stray)
+        stray[member] = value
+        failed = ""
+        try:
+            validator.validate_measurement_version(stray, frozen_task, "row10 case")
+        except validator.GateError as error:
+            failed = str(error)
+        require(
+            f"carries {member} at version 1" in failed,
+            f"a version-1 measurement carrying {member} was admitted: {failed!r}",
+        )
+
+    def editset_summary_truncated(evaluation, evidence) -> None:
+        """Ladder row 17 is exempt on a **cut** summary, and this is the acceptance case for that
+        exemption rather than a rejection: `bounded_text` appends its marker at the end, so the
+        applied-edit list is exactly what a cut removes. Without the exemption a legitimate
+        measurement with a long summary would be refused as malformed.
+
+        The summary is cut the way the producer cuts one — over the bound, then bounded and marked
+        — so it carries the marker and the length together, which is what the exemption reads."""
+
+        def truncate(measurement) -> None:
+            measurement["diagnostic_summary"] = fixture.cut_summary(
+                measurement["diagnostic_summary"].rsplit("applied edits: ", 1)[0]
+                + "applied edits: "
+                + fixture.EDITSET_PATH
+                + " " * fixture.SUMMARY_LIMIT_FOR_SMOKE
+            )
+
+        for_each_editset_measurement(evaluation, truncate)
+
+    truncated = v2_evaluation_case(root, "v2-editset-summary-truncated", editset_summary_truncated)
+    observed, output = invoke(truncated)
+    require(
+        observed == accepted_code(),
+        "a truncated diagnostic summary was refused by the applied-edit cross-check: "
+        f"expected exit {accepted_code()}, observed {observed}: {output.strip()}",
+    )
+
+    def editset_summary_forged_truncation(evaluation, evidence) -> None:
+        """The other half of the exemption. The marker's text alone must not buy it: this summary
+        names an applied-edit list the edit set does not have and ends in the marker while sitting
+        far under the bound, which is a cut the producer never took."""
+
+        def forge(measurement) -> None:
+            measurement["diagnostic_summary"] = (
+                measurement["diagnostic_summary"].rsplit("applied edits: ", 1)[0]
+                + "applied edits: tests/test_duration.py"
+                + fixture.SUMMARY_MARKER_FOR_SMOKE
+            )
+
+        for_each_editset_measurement(evaluation, forge)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-summary-forged", editset_summary_forged_truncation),
+        "a short summary claiming a cut it never took",
+        contains="diagnostic summary names another applied-edit list",
+    )
+
+    def measurement_not_final(evaluation, evidence) -> None:
+        # `unrelated_diff_count` is the drifted field precisely because no aggregate and no other
+        # ladder row reads it, so ladder row 18 is the only rule that can reject the document.
+        # `patch_size_bytes` no longer works: at version 2 it is tied to `patch_sha256` by row 13,
+        # which would reject the row first and shadow the rule under test.
+        row = evaluation["rows"][0]
+        row["measurement"]["unrelated_diff_count"] = row["measurement"]["unrelated_diff_count"] + 1
         fixture.bind(row["measurement"])
         fixture.bind(row)
 
@@ -1344,6 +1678,76 @@ def frozen_version_one_chain() -> None:
     )
 
 
+def frozen_version_two_chain() -> None:
+    """The frozen C4-REPAIR-MEASURED version-2 chain still validates and rescores unchanged.
+
+    Two merged evidence chains now depend on version-1 **measurement** decode — C6's and C4's — and
+    `make prompt-gate-check` is unavailable on this host. This is the second half of the substitute
+    C4-REPAIR-MEASURED established: the C4 result is a version-2 document whose rows carry
+    version-1 measurements from the frozen adapter, which is exactly the combination a
+    version-2-shaped measurement decoder could delete.
+
+    `validate_evaluation_pair` is not used here: that function requires `IMPROVED` and
+    `gate_eligible`, and this run is a published measured negative with two `POLICY` reasons. The
+    row, attempt, measurement, and aggregate walks it would reach are driven directly instead, so
+    the coverage is the same and the entry point is the one this document can legitimately take.
+    """
+    result = json.loads((FROZEN_C4_GATE / "c4-repair-evaluation.json").read_text("utf-8"))
+    require(
+        result["schema_version"] == 2,
+        "the frozen C4 chain is no longer version 2",
+    )
+    require(
+        all(row["measurement"]["schema_version"] == 1 for row in result["rows"]),
+        "the frozen C4 chain no longer carries version-1 measurements",
+    )
+    policy = validator.validate_acceptance_policy(result["acceptance_policy"])
+    status, aggregates, corpus, _ = validator.rescore(result, policy)
+    require(
+        status == result["status"],
+        f"the frozen C4 chain no longer rescores to {result['status']}: {status}",
+    )
+    for persisted, computed in zip(result["task_aggregates"], aggregates):
+        require(
+            validator.completed_record(persisted, validator.TASK_AGGREGATE_V2_FIELDS)
+            == validator.completed_record(computed, validator.TASK_AGGREGATE_V2_FIELDS),
+            "a frozen C4 task aggregate no longer rescores byte-identically",
+        )
+    require(
+        validator.completed_record(
+            result["corpus_aggregate"], validator.CORPUS_AGGREGATE_V2_FIELDS
+        )
+        == validator.completed_record(corpus, validator.CORPUS_AGGREGATE_V2_FIELDS),
+        "the frozen C4 corpus aggregate no longer rescores byte-identically",
+    )
+    # The C4 run predates `EDITSET`, so the denominator it recomputes to is zero — and a zero here
+    # is the correct published statement about that run rather than an absence.
+    # The C4 run predates `EDITSET` and its corpus names the frozen adapter, so the denominator is
+    # undefined for it rather than zero, and it is absent on both sides. That is what keeps the
+    # merged C4 evidence valid under a decoder that knows about the section.
+    require(
+        "repair_editset_attempt_count" not in corpus,
+        "a frozen-adapter corpus recomputed an EDITSET denominator",
+    )
+    require(
+        corpus["repair_recovery_paired_count"] == 0 and corpus["repair_attempt_count"] == 10,
+        f"the frozen C4 chain's measured negative moved: {corpus!r}",
+    )
+    # The row, attempt, and measurement walks, driven directly against the merged evidence.
+    pools = validator.validate_snapshot_closure(result, result["rows"])
+    tasks_by_id = {task["task_id"]: task for task in result["tasks"]}
+    generation_policy = result["generation_policy"]
+    for index, row in enumerate(result["rows"]):
+        task = tasks_by_id[row["task_id"]]
+        validator.validate_measurement_version(
+            row["measurement"], task, f"frozen C4 row {index} measurement",
+        )
+        validator.validate_measurement_probe(row["measurement"], task, f"frozen C4 row {index}")
+        validator.validate_attempts(
+            row, task, generation_policy, pools, f"frozen C4 row {index}",
+        )
+
+
 def frozen_corpus_rows() -> None:
     """The non-mutation proof, read straight off the two file-set manifests.
 
@@ -1369,12 +1773,17 @@ def frozen_corpus_rows() -> None:
 
     frozen = members(PROJECT_ROOT / "eval/prompt/canonical-v1/corpus-file-set.manifest")
     repair = members(PROJECT_ROOT / "eval/prompt/canonical-v1r/corpus-file-set.manifest")
-    shared = sorted(set(frozen) & set(repair))
-    require(len(shared) == 24, f"the two corpora share {len(shared)} members, not 24")
+    editset = members(PROJECT_ROOT / "eval/prompt/canonical-v1e/corpus-file-set.manifest")
+    require(
+        (len(frozen), len(repair), len(editset)) == (27, 29, 30),
+        f"the three corpora declare {len(frozen)}/{len(repair)}/{len(editset)} members",
+    )
+    shared = sorted(set(frozen) & set(repair) & set(editset))
+    require(len(shared) == 24, f"the three corpora share {len(shared)} members, not 24")
     for relative in shared:
         require(
-            frozen[relative] == repair[relative],
-            f"a shared corpus member moved between the two freezes: {relative}",
+            frozen[relative] == repair[relative] == editset[relative],
+            f"a shared corpus member moved between the three freezes: {relative}",
         )
     for name in (
         "eval/runners/run-coding-task.py",
@@ -1382,7 +1791,70 @@ def frozen_corpus_rows() -> None:
         "scripts/prompt-fixed-adapter.py",
         "scripts/prompt-snapshot-helper.py",
     ):
-        require(name in shared, f"{name} is not a shared member of both corpora")
+        require(name in shared, f"{name} is not a shared member of all three corpora")
+    # The base adapter's three independent pins agree: the file-set manifests, the repair adapter's
+    # own hard-coded constant, and the file's own bytes. Ladder row 3.
+    base = "scripts/prompt-measurement-adapter.py"
+    base_digest = hashlib.sha256((PROJECT_ROOT / base).read_bytes()).hexdigest()
+    require(
+        frozen[base] == repair[base] == editset[base] == base_digest,
+        "the base adapter's manifest digests disagree with its own bytes",
+    )
+    require(
+        f'BASE_ADAPTER_SHA256 = "{base_digest}"'
+        in (PROJECT_ROOT / "scripts/prompt-repair-adapter.py").read_text("utf-8"),
+        "the repair adapter's BASE_ADAPTER_SHA256 disagrees with the frozen manifests",
+    )
+    editset_added = sorted(set(editset) - set(frozen) - set(repair))
+    require(
+        editset_added
+        == [
+            "eval/prompt/canonical-v1e/generation-policy.json",
+            "eval/prompt/canonical-v1e/repair-template.json",
+            "eval/tasks/prompt-v1e/duration-half-away-from-zero.json",
+            "eval/tasks/prompt-v1e/layer-precedence-frozen-module.json",
+            "eval/tasks/prompt-v1e/record-codec-round-trip.json",
+            "scripts/prompt-repair-adapter.py",
+        ],
+        f"the editset corpus adds an unexpected member set: {editset_added}",
+    )
+    for relative, digest in editset.items():
+        path = PROJECT_ROOT / relative
+        require(path.is_file(), f"an editset corpus member is missing: {relative}")
+        require(
+            hashlib.sha256(path.read_bytes()).hexdigest() == digest,
+            f"an editset corpus member drifted from its manifest digest: {relative}",
+        )
+    # Every `prompt-v1e` task names both adapters and the five-kind template (ladder rows 5 and 8).
+    for relative in editset_added:
+        if not relative.startswith("eval/tasks/prompt-v1e/"):
+            continue
+        task = json.loads((PROJECT_ROOT / relative).read_text("utf-8"))
+        declared = {item["path"] for item in task["artifacts"] if item["kind"] == "FILE"}
+        require(
+            {base, "scripts/prompt-repair-adapter.py"} <= declared,
+            f"an editset task does not declare both adapters: {relative}",
+        )
+        require(
+            task["argv"] == [task["cmd"], "scripts/prompt-repair-adapter.py"],
+            f"an editset task does not name the repair adapter: {relative}",
+        )
+        require(
+            task["measurement_adapter_runtime"]
+            == "PYTHON:" + editset["scripts/prompt-repair-adapter.py"],
+            f"an editset task does not pin the repair adapter's digest: {relative}",
+        )
+        require(
+            task["repair_template_path"] == "eval/prompt/canonical-v1e/repair-template.json",
+            f"an editset task does not pin the five-kind template: {relative}",
+        )
+    template = json.loads(
+        (PROJECT_ROOT / "eval/prompt/canonical-v1e/repair-template.json").read_text("utf-8")
+    )
+    require(
+        tuple(template["section_headers"]) == ("STATUS", "EDITSET", "SUMMARY", "STDOUT", "STDERR"),
+        "the editset template does not declare the five section kinds in order",
+    )
     added = sorted(set(repair) - set(frozen))
     require(
         added

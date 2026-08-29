@@ -1,0 +1,209 @@
+--- scripts/prompt-measurement-adapter.py:measurement
++++ scripts/prompt-repair-adapter.py:measurement
+@@ -1,4 +1,6 @@
+ def measurement(
++    frozen: ModuleType,
++    base_identity: str,
+     request: Mapping[str, Any],
+     rendered: Mapping[str, Any],
+     policy: Mapping[str, Any],
+@@ -9,65 +11,77 @@
+     credential_env_name = request["credential_env_name"]
+     credential_value = os.environ.get(credential_env_name) if credential_env_name else None
+     response: dict[str, Any] | None = None
+-    retained: list[ImmutableInput] = []
++    retained: list[Any] = []
+     outcome = "ERROR"
+     cleanup_passed = True
+     containment_passed = True
+     stdout = b""
+     stderr = b""
+     patch_byte_count = 0
++    patch_sha256: str | None = None
++    edit_set: list[dict[str, Any]] | None = None
++    edit_set_total_bytes: int | None = None
+     generation_ns: int | None = None
+     applied_edits: list[str] = []
+     summary = "provider-backed measurement failed"
+     if len(rendered["text"].encode("utf-8")) > policy["max_prompt_bytes"]:
+-        generation, attestation = provider_identities(request, rendered, policy, control, None)
++        generation, attestation = frozen.provider_identities(request, rendered, policy, control, None)
+         return assemble(
+-            request, rendered, "POLICY", True, True, b"", b"", 0, None, generation, attestation,
+-            "prompt exceeds max_prompt_bytes", credential_value,
++            frozen, base_identity, request, rendered, "POLICY", True, True, b"", b"", 0, None,
++            generation, attestation, "prompt exceeds max_prompt_bytes", credential_value,
++            None, None, None,
+         )
+     try:
+-        if not CHILD_SUBREAPER_ENABLED:
+-            raise AdapterError("child-subreaper containment is unavailable")
+-        policy_environment = child_environment(None, None)
+-        generation_environment = child_environment(credential_env_name, credential_value)
+-        child = ImmutableInput(
++        if not frozen.CHILD_SUBREAPER_ENABLED:
++            raise frozen.AdapterError("child-subreaper containment is unavailable")
++        policy_environment = frozen.child_environment(None, None)
++        generation_environment = frozen.child_environment(credential_env_name, credential_value)
++        child = frozen.ImmutableInput(
+             Path(request["generation_child_path"]), request["generation_child_sha256"],
+-            "generation-child", executable=True, maximum=EXECUTABLE_LIMIT,
++            "generation-child", executable=True, maximum=frozen.EXECUTABLE_LIMIT,
+         )
+         retained.append(child)
+-        runner = ImmutableInput(
++        runner = frozen.ImmutableInput(
+             Path(request["validation_runner_path"]), request["validation_runner_sha256"],
+             "validation-runner",
+         )
+         retained.append(runner)
+-        task_definition = ImmutableInput(
++        task_definition = frozen.ImmutableInput(
+             Path(request["task_definition_path"]), request["task_definition_sha256"],
+             "task-definition",
+         )
+         retained.append(task_definition)
+-        declared_patch: ImmutableInput | None = None
++        declared_patch: Any | None = None
+         if request["patch_path"] is not None:
+-            declared_patch = ImmutableInput(
++            declared_patch = frozen.ImmutableInput(
+                 Path(request["patch_path"]), request["patch_sha256"], "declared-patch",
+             )
+             retained.append(declared_patch)
+-        document = generation_request_document(request, control, policy)
++        document = frozen.generation_request_document(request, control, policy)
+         provider_timeout = max(0.001, control["timeout_ns"] / 1_000_000_000)
+         started = time.monotonic_ns()
+-        response = run_generation_child(
++        response = frozen.run_generation_child(
+             child, document, scratch, provider_timeout, generation_environment, project,
+             credential_value,
+         )
+         if declared_patch is not None:
+             patch = declared_patch
++            patch_sha256 = hashlib.sha256(
++                frozen.redacted_bytes(patch.read_sealed(), credential_value)
++            ).hexdigest()
+         else:
+-            source_root, allowed_edits = task_edit_policy(task_definition, project)
+-            edits = validated_edit_set(response["content"], allowed_edits)
++            source_root, allowed_edits = frozen.task_edit_policy(task_definition, project)
++            edits = frozen.validated_edit_set(response["content"], allowed_edits)
+             applied_edits = [path for path, _ in edits]
+-            patch = ProducedInput(synthesized_patch(edits, source_root), "generated-patch")
++            edit_set, edit_set_total_bytes = edit_set_blocks(frozen, edits, credential_value)
++            raw_patch = frozen.synthesized_patch(edits, source_root)
++            patch_sha256 = hashlib.sha256(
++                frozen.redacted_bytes(raw_patch, credential_value)
++            ).hexdigest()
++            patch = frozen.ProducedInput(raw_patch, "generated-patch")
+             retained.append(patch)
+         patch_byte_count = patch.byte_count
+-        outcome, cleanup_passed, containment_passed, stdout, stderr = execute_validation(
++        outcome, cleanup_passed, containment_passed, stdout, stderr = frozen.execute_validation(
+             request, runner, task_definition, patch, request["task_deadline_ns"],
+             policy_environment, project, credential_value,
+         )
+@@ -79,32 +93,37 @@
+         else:
+             summary = "contained validation runner failed"
+         summary = f"{summary}; applied edits: {', '.join(applied_edits) or 'declared patch'}"
+-    except PolicyViolation as failure:
++    except frozen.PolicyViolation as failure:
+         outcome, generation_ns = "POLICY", None
++        edit_set, edit_set_total_bytes, patch_sha256 = None, None, None
+         summary = str(failure)
+-        stderr = bounded_diagnostic(str(failure), credential_value)
+-    except EditFormatError as failure:
++        stderr = frozen.bounded_diagnostic(str(failure), credential_value)
++    except frozen.EditFormatError as failure:
+         outcome, generation_ns = "PATCH", None
++        edit_set, edit_set_total_bytes, patch_sha256 = None, None, None
+         summary = str(failure)
+-        stderr = bounded_diagnostic(str(failure), credential_value)
+-    except GenerationFailure as failure:
++        stderr = frozen.bounded_diagnostic(str(failure), credential_value)
++    except frozen.GenerationFailure as failure:
+         outcome, response, generation_ns = "ERROR", None, None
++        edit_set, edit_set_total_bytes, patch_sha256 = None, None, None
+         cleanup_passed = failure.cleanup_passed
+         containment_passed = failure.containment_passed
+         summary = str(failure)
+-        stderr = bounded_diagnostic(str(failure), credential_value)
+-    except (AdapterError, OSError, TypeError, ValueError, KeyError) as failure:
++        stderr = frozen.bounded_diagnostic(str(failure), credential_value)
++    except (frozen.AdapterError, OSError, TypeError, ValueError, KeyError) as failure:
+         outcome, response, generation_ns = "ERROR", None, None
++        edit_set, edit_set_total_bytes, patch_sha256 = None, None, None
+         summary = str(failure)
+-        stderr = bounded_diagnostic(str(failure), credential_value)
++        stderr = frozen.bounded_diagnostic(str(failure), credential_value)
+     finally:
+         for item in retained:
+             try:
+                 item.close()
+             except OSError:
+                 cleanup_passed = False
+-    generation, attestation = provider_identities(request, rendered, policy, control, response)
++    generation, attestation = frozen.provider_identities(request, rendered, policy, control, response)
+     return assemble(
+-        request, rendered, outcome, cleanup_passed, containment_passed, stdout, stderr,
+-        patch_byte_count, generation_ns, generation, attestation, summary, credential_value,
++        frozen, base_identity, request, rendered, outcome, cleanup_passed, containment_passed,
++        stdout, stderr, patch_byte_count, generation_ns, generation, attestation, summary,
++        credential_value, edit_set, edit_set_total_bytes, patch_sha256,
+     )
+
+--- scripts/prompt-measurement-adapter.py:assemble
++++ scripts/prompt-repair-adapter.py:assemble
+@@ -1,4 +1,6 @@
+ def assemble(
++    frozen: ModuleType,
++    base_identity: str,
+     request: Mapping[str, Any],
+     rendered: Mapping[str, Any],
+     outcome: str,
+@@ -12,6 +14,9 @@
+     attestation: Mapping[str, Any],
+     summary: str,
+     credential_value: str | None,
++    edit_set: Sequence[Mapping[str, Any]] | None,
++    edit_set_total_bytes: int | None,
++    patch_sha256: str | None,
+ ) -> dict[str, Any]:
+     passed = outcome == "PASS"
+     expected_failure = outcome == "TEST_FAIL"
+@@ -23,7 +28,7 @@
+         else "POLICY_VIOLATION" if policy_violation else "ERROR"
+     )
+     value = {
+-        "schema_version": 1,
++        "schema_version": MEASUREMENT_SCHEMA_VERSION,
+         "artifact_kind": "TASK_MEASUREMENT",
+         "status": "ERROR" if not cleanup_passed or not containment_passed else status,
+         "failure_kind": (
+@@ -53,12 +58,18 @@
+         ),
+         "rendered_prompt_sha256": rendered["content_sha256"],
+         "generation_request": dict(generation),
+-        "environment_probe": environment_probe(),
++        "environment_probe": environment_probe(frozen),
+         "seed_attestation": dict(attestation),
+-        "diagnostic_summary": bounded_text(summary.encode("utf-8"), SUMMARY_LIMIT, credential_value),
+-        "diagnostic_stdout": bounded_text(stdout, DIAGNOSTIC_LIMIT, credential_value),
+-        "diagnostic_stderr": bounded_text(stderr, DIAGNOSTIC_LIMIT, credential_value),
++        "diagnostic_summary": frozen.bounded_text(
++            summary.encode("utf-8"), frozen.SUMMARY_LIMIT, credential_value,
++        ),
++        "diagnostic_stdout": frozen.bounded_text(stdout, frozen.DIAGNOSTIC_LIMIT, credential_value),
++        "diagnostic_stderr": frozen.bounded_text(stderr, frozen.DIAGNOSTIC_LIMIT, credential_value),
++        "edit_set": [dict(block) for block in edit_set] if edit_set is not None else None,
++        "edit_set_total_bytes": edit_set_total_bytes,
++        "patch_sha256": patch_sha256,
++        "base_adapter_runtime_identity": base_identity,
+         "content_sha256": "",
+     }
+-    bind_digest(value)
++    frozen.bind_digest(value)
+     return value

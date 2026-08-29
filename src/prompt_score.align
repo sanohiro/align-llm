@@ -2830,6 +2830,185 @@ fn verifier_evaluation_input_valid(
   verifier_valid_digest(input.content_sha256)
 }
 
+// --- C4-REPAIR-EDITSET: the version-2 measurement members ---------------------------------------
+//
+// Owner split, stated because it is not obvious. This verifier owns every rule expressible over the
+// persisted document: presence by version, the sortedness and uniqueness of the block paths, the
+// bounds, the digest shapes, `body_sha256` recomputed over `body_text`, and the total. It does NOT
+// own the `allowed_edits` membership of ladder row 15, because the editable set lives in the task
+// definition file rather than in the result document; `scripts/prompt-evaluate.py` and
+// `scripts/prompt-gate-validator.py` own that one, against the manifest-declared digest-pinned
+// file. No rule is unowned and none has two owners.
+
+fn verifier_string_equals(borrow value: string, expected: str) -> bool {
+  return value == expected
+}
+
+// Ladder row 11: the measurement's version is a checked function of the corpus. A task whose
+// declared adapter is the repair adapter must emit version 2; any other adapter must emit
+// version 1. The task manifest's `measurement_adapter_runtime` pins that file's digest, and the
+// evaluator re-verifies the retained helper against it, so the path below is the selector that
+// digest pins rather than an independent claim.
+fn verifier_task_expects_measurement_version_two(
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+) -> bool {
+  if task.argv.len() != 2 { return false }
+  return verifier_string_equals(task.argv[1], "scripts/prompt-repair-adapter.py")
+}
+
+// The EDITSET denominator exists only for a corpus that can render the section. A `canonical-v1r`
+// template declares no `EDITSET` kind, so `included_sections` can never name it and the quantity is
+// undefined rather than zero — and `eval/prompt/c4-repair-gate/` is a merged version-2 document
+// written before this capability existed. Presence therefore follows the corpus's adapter, exactly
+// as ladder row 11's measurement version does, rather than the container's version. Requiring it at
+// version 2 unconditionally would reject that merged evidence, which is the section 6.6 risk this
+// rule exists to avoid.
+fn verifier_result_uses_repair_adapter(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  mut index := 0
+  loop {
+    if index >= result.tasks.len() { break }
+    if verifier_task_expects_measurement_version_two(result.tasks[index]) { return true }
+    index = index + 1
+  }
+  return false
+}
+
+fn verifier_valid_runtime_identity(borrow value: string) -> bool {
+  bytes := value.bytes()
+  if bytes.len() != 71 { return false }
+  prefix := "PYTHON:".bytes()
+  mut index := 0
+  loop {
+    if index >= prefix.len() { break }
+    if bytes[index] != prefix[index] { return false }
+    index = index + 1
+  }
+  mut cursor := prefix.len()
+  loop {
+    if cursor >= bytes.len() { break }
+    byte := bytes[cursor]
+    if !((byte >= 0x30 && byte <= 0x39) || (byte >= 0x61 && byte <= 0x66)) { return false }
+    cursor = cursor + 1
+  }
+  return true
+}
+
+fn verifier_optional_string_equal(
+  borrow left: Option<string>,
+  borrow right: Option<string>,
+) -> bool {
+  return match left {
+    None => match right { None => true, Some(_) => false },
+    Some(a) => match right { None => false, Some(b) => a == b },
+  }
+}
+
+fn verifier_edit_set_block_valid(borrow block: prompt_artifacts.EditSetBlock) -> bool {
+  body_valid := match block.body_text {
+    // An omitted block keeps its path, length, and digest and loses only its text. Its
+    // `body_bytes` may exceed the prompt budget — that is precisely why it was omitted — so only
+    // the producer's own hard ceiling applies to it.
+    None => true,
+    Some(text) => {
+      hashed := crypto.sha256(text)
+      observed := encoding.hex_encode(hashed[0..hashed.len()])
+      observed == block.body_sha256 &&
+      text.bytes().len() == block.body_bytes &&
+      block.body_bytes <= 16_384
+    },
+  }
+  return block.schema_version == 1 &&
+  block.artifact_kind == "EDIT_SET_BLOCK" &&
+  verifier_valid_text(block.path, 4_096) &&
+  block.body_bytes >= 0 &&
+  block.body_bytes <= 262_144 &&
+  verifier_valid_digest(block.body_sha256) &&
+  body_valid &&
+  verifier_valid_digest(block.content_sha256)
+}
+
+fn verifier_edit_set_block_bytes(borrow block: prompt_artifacts.EditSetBlock) -> i64 {
+  return block.body_bytes
+}
+
+// Strictly ascending byte order, which is both the uniqueness check and the ordering check: the
+// producer returns `sorted(edits.items())`, so anything else is a divergence rather than a style.
+fn verifier_edit_set_pair_ascending(
+  borrow left: prompt_artifacts.EditSetBlock,
+  borrow right: prompt_artifacts.EditSetBlock,
+) -> bool {
+  a := left.path.bytes()
+  b := right.path.bytes()
+  mut index := 0
+  loop {
+    if index >= a.len() { break }
+    if index >= b.len() { return false }
+    if a[index] != b[index] { return a[index] < b[index] }
+    index = index + 1
+  }
+  return b.len() > a.len()
+}
+
+fn verifier_edit_set_valid(
+  borrow blocks: array<prompt_artifacts.EditSetBlock>,
+  total: i64,
+) -> bool {
+  if blocks.len() < 1 || blocks.len() > 32 { return false }
+  mut sum := 0
+  mut index := 0
+  loop {
+    if index >= blocks.len() { break }
+    if !verifier_edit_set_block_valid(blocks[index]) { return false }
+    if index > 0 {
+      if !verifier_edit_set_pair_ascending(blocks[index - 1], blocks[index]) { return false }
+    }
+    sum = sum.checked_add(verifier_edit_set_block_bytes(blocks[index])) else { return false }
+    index = index + 1
+  }
+  return sum == total
+}
+
+// Ladder row 10 at version 1: every version-2 member is absent, and absence is required rather
+// than defaulted.
+fn verifier_measurement_version_one_shape(
+  borrow measurement: prompt_artifacts.TaskMeasurement,
+) -> bool {
+  return match measurement.edit_set { None => true, Some(_) => false } &&
+  verifier_optional_i64_absent(measurement.edit_set_total_bytes) &&
+  verifier_optional_digest_absent(measurement.patch_sha256) &&
+  verifier_optional_digest_absent(measurement.base_adapter_runtime_identity)
+}
+
+// Ladder rows 10 and 13-16 at version 2.
+fn verifier_measurement_version_two_shape(
+  borrow measurement: prompt_artifacts.TaskMeasurement,
+) -> bool {
+  // Always `Some` at version 2: it records which frozen adapter the second adapter loaded, which
+  // is a fact about every version-2 measurement regardless of outcome.
+  base_valid := match measurement.base_adapter_runtime_identity {
+    None => false,
+    Some(identity) => verifier_valid_runtime_identity(identity),
+  }
+  // Row 13: a patch digest exists exactly when a patch reached the validation runner, which
+  // `patch_size_bytes` already records. A digest without bytes, or bytes without a digest, is a
+  // producer defect rather than a permitted shape.
+  patch_valid := match measurement.patch_sha256 {
+    None => measurement.patch_size_bytes == 0,
+    Some(digest_value) => measurement.patch_size_bytes > 0 && verifier_valid_digest(digest_value),
+  }
+  // Rows 14, 15, and 16.
+  set_valid := match measurement.edit_set {
+    None => verifier_optional_i64_absent(measurement.edit_set_total_bytes),
+    Some(blocks) => match measurement.edit_set_total_bytes {
+      None => false,
+      Some(total) => total >= 0 && verifier_edit_set_valid(blocks, total),
+    },
+  }
+  return base_valid && patch_valid && set_valid
+}
+
 fn verifier_measurement_valid(
   borrow measurement: prompt_artifacts.TaskMeasurement,
   borrow task: prompt_artifacts.PromptEvaluationTask,
@@ -2849,7 +3028,19 @@ fn verifier_measurement_valid(
       match measurement.benchmark_regression_ppm { None => true, Some(_) => false }
     },
   }
-  return measurement.schema_version == 1 &&
+  // Ladder rows 9, 10, and 11. The version is read first, then the version-specific shape is
+  // required. Presence never stands in for a version, in either direction.
+  version_shape := if measurement.schema_version == 1 {
+    verifier_measurement_version_one_shape(measurement)
+  } else if measurement.schema_version == 2 {
+    verifier_measurement_version_two_shape(measurement)
+  } else {
+    false
+  }
+  expects_two := verifier_task_expects_measurement_version_two(task)
+  return (measurement.schema_version == 1 || measurement.schema_version == 2) &&
+  (measurement.schema_version == 2) == expects_two &&
+  version_shape &&
   measurement.artifact_kind == "TASK_MEASUREMENT" &&
   measurement.repair_loop_count >= 0 && measurement.repair_loop_count <= 64 &&
   measurement.unrelated_diff_count >= 0 && measurement.unrelated_diff_count <= 1_048_576 &&
@@ -2874,17 +3065,22 @@ fn verifier_measurement_valid(
 // rejects binding a Move-typed element to a local and rejects reading a Move-typed field out of an
 // element expression, so an element is never named, only passed.
 
+// C4-REPAIR-EDITSET adds `EDITSET` immediately after `STATUS`: the model reads the verdict, then
+// what produced it, then the output describing it. The four earlier kinds keep their relative
+// order, so a version-2 prompt with `EDITSET` absent has the same section sequence as a
+// `canonical-v1r` prompt and the two runs stay comparable.
 fn verifier_repair_section_ordinal(borrow value: string) -> i64 {
   if value == "STATUS" { return 0 }
-  if value == "SUMMARY" { return 1 }
-  if value == "STDOUT" { return 2 }
-  if value == "STDERR" { return 3 }
+  if value == "EDITSET" { return 1 }
+  if value == "SUMMARY" { return 2 }
+  if value == "STDOUT" { return 3 }
+  if value == "STDERR" { return 4 }
   return -1
 }
 
-// A section list is a subset of the four kinds in their one fixed order, with no repeats.
+// A section list is a subset of the five kinds in their one fixed order, with no repeats.
 fn verifier_repair_section_list_valid(borrow values: array<string>) -> bool {
-  if values.len() > 4 { return false }
+  if values.len() > 5 { return false }
   mut previous := -1
   mut index := 0
   loop {
@@ -2996,7 +3192,48 @@ fn verifier_measurement_equal(
   left.diagnostic_summary == right.diagnostic_summary &&
   left.diagnostic_stdout == right.diagnostic_stdout &&
   left.diagnostic_stderr == right.diagnostic_stderr &&
+  // The four version-2 members. Omitting them would not fail anything: ladder row 18's
+  // "`row.measurement` is byte-equal to the final attempt that ran" would still pass while
+  // comparing 23 of 27 fields, and a row whose persisted measurement differed from its attempt's
+  // only in the edit set would be admitted. That is why they are here.
+  verifier_optional_edit_set_equal(left.edit_set, right.edit_set) &&
+  verifier_optional_i64_equal(left.edit_set_total_bytes, right.edit_set_total_bytes) &&
+  verifier_optional_string_equal(left.patch_sha256, right.patch_sha256) &&
+  verifier_optional_string_equal(
+    left.base_adapter_runtime_identity, right.base_adapter_runtime_identity,
+  ) &&
   left.content_sha256 == right.content_sha256
+}
+
+fn verifier_edit_set_block_digest_equal(
+  borrow left: prompt_artifacts.EditSetBlock,
+  borrow right: prompt_artifacts.EditSetBlock,
+) -> bool {
+  return left.content_sha256 == right.content_sha256
+}
+
+fn verifier_edit_set_lists_equal(
+  borrow left: array<prompt_artifacts.EditSetBlock>,
+  borrow right: array<prompt_artifacts.EditSetBlock>,
+) -> bool {
+  if left.len() != right.len() { return false }
+  mut index := 0
+  loop {
+    if index >= left.len() { break }
+    if !verifier_edit_set_block_digest_equal(left[index], right[index]) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_optional_edit_set_equal(
+  borrow left: Option<array<prompt_artifacts.EditSetBlock>>,
+  borrow right: Option<array<prompt_artifacts.EditSetBlock>>,
+) -> bool {
+  return match left {
+    None => match right { None => true, Some(_) => false },
+    Some(a) => match right { None => false, Some(b) => verifier_edit_set_lists_equal(a, b) },
+  }
 }
 
 fn verifier_valid_optional_digest_present(borrow value: Option<string>) -> bool {
@@ -3026,6 +3263,13 @@ fn verifier_ran_attempt_valid(
   return match attempt.measurement {
     None => false,
     Some(measurement) => verifier_measurement_valid(measurement, task) &&
+    // Ladder row 12: the section 2.3 gap, closed at attempt level. The row-level check binds only
+    // the final attempt once a row can run twice, so without this an intermediate attempt could
+    // carry any probe at all. `producer` names a role and is the same literal for both adapters;
+    // `runtime_identity` names a file, and binding it here makes every ran attempt's probe carry
+    // the digest of the code that actually produced it.
+    measurement.environment_probe.producer == "MEASUREMENT_ADAPTER" &&
+    measurement.environment_probe.runtime_identity == task.measurement_adapter_runtime &&
     // Each adapter invocation is single-attempt by construction, so a non-zero count here would
     // double-count against the evaluator-owned row total. The rule therefore binds exactly where
     // double-counting is possible — a task that offers a repair attempt — and not everywhere.
@@ -5394,6 +5638,46 @@ RepairAggregate {
   attempted: i64,
   recovered: i64,
   paired: bool,
+  // C4-REPAIR-EDITSET: repair attempts on this variant whose prompt actually carried `EDITSET`.
+  editset: i64,
+}
+
+fn verifier_section_list_contains(borrow values: array<string>, expected: str) -> bool {
+  mut index := 0
+  loop {
+    if index >= values.len() { break }
+    if verifier_string_equals(values[index], expected) { return true }
+    index = index + 1
+  }
+  return false
+}
+
+// A repair attempt contributes when it ran — not `SKIPPED` — and its own repair-prompt source
+// names `EDITSET` among the sections the assembled prompt actually carried. A row that dropped
+// `EDITSET` under the budget ladder is therefore excluded from every edit-set denominator by a
+// persisted number rather than by an argument.
+fn verifier_attempt_carried_editset(borrow attempt: prompt_artifacts.TaskAttemptRecord) -> bool {
+  if attempt.attempt_kind != "REPAIR" || attempt.status == "SKIPPED" { return false }
+  return match attempt.repair_prompt_source {
+    None => false,
+    Some(source) => verifier_section_list_contains(source.included_sections, "EDITSET"),
+  }
+}
+
+fn verifier_row_repair_editset_attempts(borrow row: prompt_artifacts.PromptTaskRow) -> i64 {
+  return match row.attempts {
+    None => 0,
+    Some(attempts) => {
+      mut total := 0
+      mut index := 0
+      loop {
+        if index >= attempts.len() { break }
+        if verifier_attempt_carried_editset(attempts[index]) { total = total + 1 }
+        index = index + 1
+      }
+      total
+    },
+  }
 }
 
 fn verifier_variant_repair_aggregate(
@@ -5404,6 +5688,7 @@ fn verifier_variant_repair_aggregate(
   sample_count := result.sample_count
   mut attempted := 0
   mut recovered := 0
+  mut editset := 0
   mut every := true
   mut sample := 1
   loop {
@@ -5416,6 +5701,7 @@ fn verifier_variant_repair_aggregate(
     } else {
       every = false
     }
+    editset = editset + verifier_row_repair_editset_attempts(result.rows[index])
     sample = sample + 1
   }
   return RepairAggregate {
@@ -5424,6 +5710,7 @@ fn verifier_variant_repair_aggregate(
     // A (task, variant) pair counts only when every paired sample recovered, so one lucky sample
     // is not a reproducible recovery.
     paired: every && sample_count > 0,
+    editset: editset,
   }
 }
 
@@ -5446,11 +5733,21 @@ fn verifier_task_repair_aggregate_matches(
     verifier_optional_i64_absent(persisted.candidate_repair_attempt_count) &&
     verifier_optional_i64_absent(persisted.parent_repair_recovery_count) &&
     verifier_optional_i64_absent(persisted.candidate_repair_recovery_count) &&
+    verifier_optional_i64_absent(persisted.parent_repair_editset_attempt_count) &&
+    verifier_optional_i64_absent(persisted.candidate_repair_editset_attempt_count) &&
     match persisted.repair_recovery_paired { None => true, Some(_) => false }
   }
   parent := verifier_variant_repair_aggregate(result, ordinal, true)
   candidate := verifier_variant_repair_aggregate(result, ordinal, false)
-  return verifier_optional_i64_is(persisted.parent_repair_attempt_count, parent.attempted) &&
+  editset_valid := if verifier_result_uses_repair_adapter(result) {
+    verifier_optional_i64_is(persisted.parent_repair_editset_attempt_count, parent.editset) &&
+    verifier_optional_i64_is(persisted.candidate_repair_editset_attempt_count, candidate.editset)
+  } else {
+    verifier_optional_i64_absent(persisted.parent_repair_editset_attempt_count) &&
+    verifier_optional_i64_absent(persisted.candidate_repair_editset_attempt_count)
+  }
+  return editset_valid &&
+  verifier_optional_i64_is(persisted.parent_repair_attempt_count, parent.attempted) &&
   verifier_optional_i64_is(persisted.candidate_repair_attempt_count, candidate.attempted) &&
   verifier_optional_i64_is(persisted.parent_repair_recovery_count, parent.recovered) &&
   verifier_optional_i64_is(persisted.candidate_repair_recovery_count, candidate.recovered) &&
@@ -5464,11 +5761,13 @@ fn verifier_corpus_repair_aggregate_matches(
   if result.schema_version == 1 {
     return verifier_optional_i64_absent(persisted.repair_attempt_count) &&
     verifier_optional_i64_absent(persisted.repair_recovery_count) &&
-    verifier_optional_i64_absent(persisted.repair_recovery_paired_count)
+    verifier_optional_i64_absent(persisted.repair_recovery_paired_count) &&
+    verifier_optional_i64_absent(persisted.repair_editset_attempt_count)
   }
   mut attempted := 0
   mut recovered := 0
   mut paired := 0
+  mut editset := 0
   mut task := 0
   loop {
     if task >= result.tasks.len() { break }
@@ -5476,11 +5775,20 @@ fn verifier_corpus_repair_aggregate_matches(
     candidate := verifier_variant_repair_aggregate(result, task, false)
     attempted = attempted + parent.attempted + candidate.attempted
     recovered = recovered + parent.recovered + candidate.recovered
+    editset = editset + parent.editset + candidate.editset
     if parent.paired { paired = paired + 1 }
     if candidate.paired { paired = paired + 1 }
     task = task + 1
   }
-  return verifier_optional_i64_is(persisted.repair_attempt_count, attempted) &&
+  // Ladder row 21: recomputed here and never trusted from the persisted document, exactly as the
+  // three C4-REPAIR-MEASURED quantities beside it are.
+  editset_valid := if verifier_result_uses_repair_adapter(result) {
+    verifier_optional_i64_is(persisted.repair_editset_attempt_count, editset)
+  } else {
+    verifier_optional_i64_absent(persisted.repair_editset_attempt_count)
+  }
+  return editset_valid &&
+  verifier_optional_i64_is(persisted.repair_attempt_count, attempted) &&
   verifier_optional_i64_is(persisted.repair_recovery_count, recovered) &&
   verifier_optional_i64_is(persisted.repair_recovery_paired_count, paired)
 }

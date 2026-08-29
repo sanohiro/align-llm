@@ -805,6 +805,75 @@ The current forward delivery order is:
     oracle-S run at `T_prefix = 1`, and `r6-prefix-suffix-prefill.md` sections 3.7, 5.6 and 11 record
     the lift.
 
+34. **C4-REPAIR-EDITSET — the failing edit set in the repair prompt, through a second
+    corpus-member adapter.** The direct consequence of item 31's measured negative. C4-REPAIR-
+    MEASURED ran ten repair attempts and recovered nothing, and its evidence names the reason:
+    on all six repair attempts where attempt 1 had produced a validated edit set, attempt 2
+    returned a patch of exactly the same byte count. The model was never shown what it wrote.
+    Design in [`c4-repair-editset.md`](c4-repair-editset.md), which owns the contract ledger,
+    the import-by-path contract, the closure matrix, the repair-prompt contract version 2, the
+    cost ceiling, the gate statement, and the implementation record. The design gate triggered on
+    the `TASK_MEASUREMENT` schema-2 exchanged format, a new frozen corpus scope with a **second
+    adapter** as a member, and a coordinated invariant across the new adapter,
+    `scripts/prompt-evaluate.py`, `src/prompt_score.align`, and the corpus assets.
+    `scripts/prompt-repair-adapter.py` **loads the frozen `scripts/prompt-measurement-adapter.py`
+    by path** and calls its functions, so the reviewed containment, sealing, redaction, and
+    process-ownership code has exactly one copy and the second file carries only the sequencing
+    that differs — which is what makes item 31's section 5.7 option B affordable now that its
+    tie-breaker has been answered. Only `measurement()` and `assemble()` are near-copies, and
+    their divergence from the frozen originals is asserted against a checked-in golden. Three
+    digest pins hold the base file byte-identical: a constant in the new adapter, the file-set
+    manifest, and the per-invocation artifact snapshot. `TASK_MEASUREMENT` moves to
+    `schema_version: 2` with the attempt's realized edit set, its total size, a **digest of the
+    complete patch body**, and the base adapter's runtime identity; version 1 stays decodable
+    forever, and `PROMPT_TASK_ROW` does **not** move, because the row gains no field. The repair
+    prompt gains an `EDITSET` section rendered in the response's own whole-file format, bounded
+    whole-block, and dropped **last** — after STDOUT, STDERR, and SUMMARY — so an over-budget row
+    degrades into the diagnostics-only prompt that already measured zero recoveries only as a last
+    resort, and `repair_editset_attempt_count` keeps a dropped row out of every edit-set
+    denominator. New freeze `eval/prompt/canonical-v1e/` + `eval/tasks/prompt-v1e/`, 30 file-set
+    members; the 24 shared with both earlier corpora carry identical digests in all three
+    manifests. **The addressable arm is six of ten repair attempts.** The other four are
+    `layer-precedence-frozen-module`, where the model emits well-formed blocks naming allowlisted
+    files and fills them with the files' **existing** content, so every hunk is empty and no patch
+    is synthesized — a no-op answer rather than a format failure, and the design's original
+    "no parsable block" reading is corrected against the evidence in section 1.2. That mode is a
+    prompt and edit-policy capability and is named as the fallback. Found by probe and closed here: a second adapter that
+    reused the frozen `environment_probe()` would persist the **imported** file's digest while
+    running its own code, and the existing check would accept it; the same probe found that no
+    producer or runtime-identity check existed on an *attempt-level* measurement's probe at all.
+    The gate is item 31's predicate unchanged: `repair_recovery_paired_count >= 1`. **A measured
+    negative is a published result**, and here it is directional — it would answer item 31's
+    tie-breaker in the negative and move the next capability from the adapter to the prompt.
+    No speed claim: the item 31 run measured an 8.1x spread over 22 calls at temperature 0, and the
+    repair prompt is a strict textual extension of the attempt-1 prompt, so prompt-cache reuse is
+    an uncontrolled confound. Recorded run-cost ceiling 60 minutes, expected 12-30, at most 22
+    provider calls. Named focused qualification `make c4-editset-gate`; it joins no aggregate, and
+    neither does the new owner test `make prompt-repair-adapter-smoke`.
+
+    **The gate is `NOT_MET`, and that is the published result.** The run made all 22 provider calls
+    the ceiling allowed — 12 initial plus 10 repair — in 839.492 s (13 min 59 s) against a recorded
+    60-minute ceiling. `repair_recovery_count` and `repair_recovery_paired_count` are both 0.
+    `repair_editset_attempt_count` came out at **exactly 6**, the value fixed before the run, so
+    the addressable arm was realized in full: every repair prompt that could carry `EDITSET` did,
+    and the drop ladder never fired at 8,348 to 16,904 assembled bytes of 65,536. **The question
+    item 31 could not answer is answered.** On all four rows where both attempts produced a patch,
+    `attempts[1].measurement.patch_sha256` equals `attempts[0]`'s exactly — the same bytes, not
+    merely the same byte count — so item 31's inference is now a verified identity. The persisted
+    edit set says more: on the two `record-codec-round-trip` CANDIDATE rows the model re-emitted a
+    byte-identical edit set, while on the two PARENT rows it dropped the file it had reproduced
+    unchanged and kept the other byte-identical, producing the same patch anyway. On the two
+    `duration-half-away-from-zero` PARENT rows it changed mode and got worse: shown its own
+    rejected answer it returned the pinned files **unchanged**, so every hunk is empty and no patch
+    is synthesized — a wrong patch replaced by a no-op. **Item 31's section 5.7 tie-breaker is
+    therefore answered in the negative:** on this model and this corpus the missing edit set was
+    not the binding constraint, and the next capability is the prompt, the template, and the edit
+    policy rather than more adapter work. Its first sub-problem is this capability's own recorded
+    gap — `edit_set` is `None` on every `PATCH` row (design section 11.3 deviation 14) — so the
+    answers the dominant mode produces are exactly the ones no artifact shows. Evidence in
+    `eval/prompt/c4-editset-gate/`; the per-row table and the analysis are in design section 11.4.
+
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
@@ -1020,9 +1089,21 @@ attempts were rendered from the run's own diagnostics, measured, bounded, and co
 recovered, so `repair_recovery_paired_count` is 0 and the qualification's verdict is `NOT_MET`.
 That is a measured negative, published as a result. It is provider-independent — no provider module
 changes — and it does not modify `src/repair.align` or `src/verification_loop.align`; converging
-the two loops is a named deferral in that document. The next capability toward a model-met C4 gate
-is the one that carries the failing edit set into the repair prompt, which needs either a re-freeze
-of `canonical-v1` or a second reviewed corpus-member adapter.
+the two loops is a named deferral in that document.
+
+### Second measured consumer: C4-REPAIR-EDITSET
+
+Item 34 above carried the failing attempt's own edit set into the repair prompt, through a second
+reviewed corpus-member adapter, and ran the gate again on the same predicate.
+`docs/specs/c4-repair-editset.md` section 11.4 is the authoritative record. **C4's gate is still
+not met by a model.** Six of the six addressable repair prompts carried `EDITSET`, none recovered,
+and `repair_recovery_paired_count` is 0 again. What the run settled is which capability comes next:
+`patch_sha256` shows attempt 2 re-sending attempt 1's **exact bytes**, and the persisted edit set
+shows the model reproducing pinned files unchanged rather than misunderstanding the diagnostics. So
+the missing edit set was not the binding constraint. The next capability toward a model-met C4 gate
+is a **prompt, template, and edit-policy** capability for the unchanged-file reproduction mode —
+starting with that document's section 11.3 deviation 14, which records that `edit_set` is discarded
+on exactly the rows where it would matter most.
 
 ---
 
