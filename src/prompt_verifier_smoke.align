@@ -1789,7 +1789,16 @@ fn task_template_adapter() -> prompt_artifacts.PromptEvaluationTask {
 // version-3 member. On a template-adapter corpus the version rule would reject it as well, and a
 // case with two possible causes proves neither.
 fn uses_template_adapter(defect: i64) -> bool {
-  return defect >= 26 && defect <= 32 && defect != 27
+  return defect >= 26 && defect <= 33 && defect != 27
+}
+
+// Defects 30 and 33 both take the reproduced-unchanged shape on their initial attempt. Defect 30
+// then discards the blocks, which the widened rule rejects; defect 33 keeps them, which is the
+// valid shape, so it is the ACCEPTANCE case for a **non-zero** refusal counter. Without it the
+// aggregate's non-zero arm is never compared against a persisted value and a recomputation that
+// always returned zero would pass every row — the pre-committed secondary this capability reports.
+fn unchanged_refusal(defect: i64, passing: bool) -> bool {
+  return (defect == 30 || defect == 33) && !passing
 }
 
 // Defect 28 is a template-adapter corpus emitting a version-2 measurement, so it is the one case
@@ -1842,7 +1851,7 @@ fn editset_attempts(defect: i64) -> i64 {
 // A ran attempt contributes to the refusal counter when its measurement records a code other than
 // `NONE`. Only defect 30 records one, on the initial attempt of each of the two rows per variant.
 fn edit_refusals(defect: i64) -> i64 {
-  if defect == 30 { return 2 }
+  if defect == 30 || defect == 33 { return 2 }
   return 0
 }
 
@@ -2046,13 +2055,17 @@ fn measurement_v3(
     status: if passing { "PASS".clone() } else { "FAIL".clone() },
     failure_kind: if passing {
       "NONE".clone()
-    } else if defect == 30 {
+    } else if unchanged_refusal(defect, passing) {
       "PATCH".clone()
     } else {
       "TEST".clone()
     },
-    build_status: if defect == 30 && !passing { "NOT_RUN".clone() } else { "PASS".clone() },
-    test_status: if defect == 30 && !passing {
+    build_status: if unchanged_refusal(defect, passing) {
+      "NOT_RUN".clone()
+    } else {
+      "PASS".clone()
+    },
+    test_status: if unchanged_refusal(defect, passing) {
       "NOT_RUN".clone()
     } else if passing {
       "PASS".clone()
@@ -2061,7 +2074,7 @@ fn measurement_v3(
     },
     repair_loop_count: 0,
     unrelated_diff_count: 0,
-    patch_size_bytes: if defect == 30 && !passing { 0 } else { 10 },
+    patch_size_bytes: if unchanged_refusal(defect, passing) { 0 } else { 10 },
     public_api_change_count: 0,
     policy_violation_count: 0,
     cleanup_passed: true,
@@ -2072,7 +2085,7 @@ fn measurement_v3(
     generation_request: generation_request(seed),
     environment_probe: probe("MEASUREMENT_ADAPTER", runtime),
     seed_attestation: seed_attestation("LOCAL_OPENAI", seed),
-    diagnostic_summary: if defect == 30 && !passing {
+    diagnostic_summary: if unchanged_refusal(defect, passing) {
       "the response reproduced the pinned files unchanged".clone()
     } else {
       "provider-backed candidate patch failed validation".clone()
@@ -2087,11 +2100,11 @@ fn measurement_v3(
     } else {
       Some(body_byte_count() + second_body_byte_count())
     },
-    patch_sha256: if defect == 30 && !passing { None } else { Some(digest_b()) },
+    patch_sha256: if unchanged_refusal(defect, passing) { None } else { Some(digest_b()) },
     base_adapter_runtime_identity: Some(base_identity_value()),
     edit_refusal: if defect == 29 {
       Some("NO_SUCH_REFUSAL".clone())
-    } else if defect == 30 && !passing {
+    } else if unchanged_refusal(defect, passing) {
       Some("UNCHANGED_FILES".clone())
     } else {
       Some("NONE".clone())
@@ -3075,6 +3088,16 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   v3_measurement_drift := complete_result_v2(32)
   v3_measurement_drift_evidence := evidence_v2(32)
   expect_invalid(v3_measurement_drift, v3_measurement_drift_evidence)?
+
+  // Acceptance, and the one case that checks the counted quantity's **non-zero** arm: every row's
+  // initial attempt records `UNCHANGED_FILES` and keeps the blocks its refusal was computed from,
+  // and its repair passes. `edit_refusal_count` is recomputed from the attempts and must equal the
+  // persisted 4. A recomputation that always returned zero passes every other row in this file.
+  template_refused := complete_result_v2(33)
+  template_refused_evidence := evidence_v2(33)
+  if verdict_code(prompt_score.verify_result(template_refused, template_refused_evidence)?) != 2 {
+    return Err(Error.Invalid)
+  }
 
   // A version-2 document may not be paired with version-1 evidence.
   version_split := complete_result_v2(0)

@@ -1792,3 +1792,15 @@ the freeze's `--check`; §7.7 is the §11.4 run.
     version 1, and the same loop gained four rows driving the version-3 members at version 1, which
     completes the absence matrix in both directions. A mutant deleting the below-version-3 absence
     check is killed by the new rows and by nothing else.
+15. **A falsifiability gap in this capability's own pre-committed secondary, found by mutation
+    after the merge and closed.** Every version-3 defect that recorded a refusal was a *rejection*
+    case, so the aggregates were only ever compared against a **zero** refusal count. Zeroing
+    `verifier_row_edit_refusals`'s accumulator — and, independently, the fixture's own
+    `edit_refusals` helper — left `make prompt-verifier-smoke` green. The recomputation of
+    `edit_refusal_count`, the number this capability reports as its secondary result, was therefore
+    unverified in its non-zero arm. Defect **33** is the acceptance case that closes it: every row's
+    initial attempt records `UNCHANGED_FILES` and **keeps** the blocks its refusal was computed
+    from, its repair passes, and the persisted counters are 2 per variant and 4 for the corpus.
+    Both mutants now die. This is the same class `c4-repair-editset.md`'s review found five times —
+    a clause with no falsifying case — and it is worth stating that the merge is what exposed it:
+    reading that branch's repair is what prompted the check.
