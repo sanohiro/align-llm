@@ -604,9 +604,55 @@ The current forward delivery order is:
     removes the per-step weight sweep item 29 left in place, and prefix-keyed lookup on top of it is
     the next capability toward the TTFT gate.
 
-<!-- Item 31 (C4-REPAIR) is reserved: it was on a branch when items 32 and 33 were written, so
-     the number is claimed and the entry lands with that branch. The gap is deliberate and must
-     not be re-used. Item 32 landed with R6-OLMOE-DECODE, which is the entry below. -->
+<!-- Items 34 and 35 are reserved: each was on a branch or in draft when the item beside it was
+     written, so the numbers are claimed and the entries land with those branches. The gap is
+     deliberate and must not be re-used. Item 31 landed with C4-REPAIR-MEASURED and item 32 with
+     R6-OLMOE-DECODE, which are the two entries below. -->
+
+31. **C4-REPAIR-MEASURED — one bounded model repair attempt in the provider-backed measurement
+    path.** The first Track A capability since the C6-MEASURED wave, and the one that asks whether
+    C4's roadmap gate can be closed with a model instead of a scripted patch. Design and results in
+    [`c4-repair-measured.md`](c4-repair-measured.md), which owns the contract ledger, closure
+    matrix, repair-prompt contract, cost ceiling, gate statement, and the implementation record.
+    The design gate triggered on the `PROMPT_TASK_ROW` schema-2 per-attempt identity, a new frozen
+    corpus scope, and a coordinated invariant across `scripts/prompt-evaluate.py`,
+    `src/prompt_score.align`, and the corpus assets. After a first-attempt validation `FAIL`, the
+    evaluator renders a repair prompt from the run's **own** redacted validation diagnostics, calls
+    `prompt generate` a second time, and validates again; `generation_to_passing_patch_ns` then
+    includes the repair, as C6 section 5.2 has always contracted and never exercised. The repair
+    prompt carries the failing attempt's status labels, diagnostic summary, stdout, and stderr but
+    **not its edit set**: the model's output lives only inside the adapter and is dropped when it
+    returns, so a diagnostics-driven second attempt is what an evaluator-owned loop can deliver
+    without breaking the freeze. That narrowing, and the two ways to lift it, are recorded in the
+    plan. **The adapter and the validation runner are byte-identical**: both are frozen `FILE_SET`
+    members of `canonical-v1`, so the loop is evaluator-owned and the corpus is a new freeze,
+    `eval/prompt/canonical-v1r/` over the same three tasks with `maximum_repair_loops: 1` so the
+    manifest itself is the cap. The 24 shared file-set members carry identical digests in both
+    manifests. The gate: on 3 tasks x 2 variants x 2 paired samples at temperature 0 and
+    `PAIRED_FIXED`, at least one (task, variant) pair fails at attempt 1 and passes at attempt 2 in
+    **both** samples.
+
+    **The gate is `NOT_MET`, and that is the published result.** The run made all 22 provider calls
+    the ceiling allowed — 12 initial plus 10 repair — in 824.2 s (13 min 44 s) against a recorded
+    60-minute ceiling. Every one of the ten repair prompts assembled from the run's own persisted
+    diagnostics, re-derived byte-exactly against its own output, and fitted the budget at 8,123 to
+    16,129 bytes of 65,536, so no section was ever dropped. **None of the ten recovered:**
+    `repair_recovery_count` and `repair_recovery_paired_count` are both 0. The mechanism is
+    delivered — measured, bounded, contained, re-derivable — and **C4's gate remains unmet by a
+    model.** In the one failure mode where the model emitted an applicable patch at all
+    (`record-codec-round-trip`, all four rows), attempt 2's patch had the same 1,008 bytes and the
+    same observable `TEST` failure as attempt 1; only `patch_size_bytes` is persisted, so that is an
+    inference and not a verified identity, and a patch digest is now a named deferral. In the other
+    mode (`layer-precedence-frozen-module`, all four rows) attempt 1 already produced an empty
+    patch, so more diagnostics were not the missing input. That splits the case for carrying the
+    failing edit set into the repair prompt: it addresses the first mode and not the second.
+    **No speed claim is made** — the 22 calls span 7.98 s to 64.67 s, an 8.1x ratio, and a first
+    run of the same corpus at the same seeds spanned 8.13 s to 73.82 s at 9.1x while reproducing
+    every correctness value exactly; the version-2 totals are a superset of the version-1 ones
+    anyway. Named focused qualification
+    `make c4-repair-gate`; it joins no aggregate. Multi-repair, corpus expansion, failure-memory
+    feedback, a persisted patch digest, and converging the Align `verification_loop`/`repair`
+    modules with this loop are deferred with resume conditions.
 
 32. **R6-OLMOE-DECODE — `N` greedy decode steps on a routed model, and the per-step expert demand
     they make.** Design and results in [`r6-olmoe-decode.md`](r6-olmoe-decode.md). Item 26 computes
@@ -702,26 +748,62 @@ The current forward delivery order is:
     instrument already printed. **The R6 gate is still unmet:** this ships the *execution* half of
     mechanism 2 (repo stable prefix KV) and none of its *lookup* half — there is still no prefix key,
     no store, no corpus, and no prefix-sharing consumer — so TTFT is reported as a labelled
-    diagnostic on three legs and no claim is made. One surface is **narrower than the mechanism
-    allows**: `T_prefix >= 2` is required, raising `R6_SUFFIX` with detail `prefix[<n>]`, because a
-    one-token prefill computes the embedding of token 0 whatever the operand says — see the
-    follow-up below.
+    diagnostic on three legs and no claim is made. One surface shipped **narrower than the mechanism
+    allows**: `T_prefix >= 2` was required, raising `R6_SUFFIX` with detail `prefix[<n>]`, because a
+    one-token prefill computed the embedding of token 0 whatever the operand said. **Item 36 removed
+    that defect and this branch lifted the bound**, so a one-token prefix is accepted and
+    `ds-suffix-prefix-one` is a passing oracle-S run rather than a refusal.
 
-    **Follow-up: `MF-SINGLE-TOKEN-LOGITS` (no item number yet).** A pre-existing defect this
-    capability found in an arm it does not touch: `model_forward.fill_members` gathers an embedding
-    row by id only when `pieces > 1`, so **any prompt of exactly one token computes the logits of
-    token 0**, silently and with `status: ok`, on `--layer-forward`, `--model-forward`,
-    `--moe-model-forward`, and `--decode-step`. The resident path does not share it
-    (`stage_embed_row` gathers by id at every count), and no golden in this repository exercises
-    `token_count == 1`, which is why it has been latent since R5B. The fix is a `gathered`
-    discriminator on `model_forward.GraphMembers` — eighteen construction sites across three modules
-    and four arms — with an `mf-tokens-one` row in `scripts/model-forward-golden.jsonl` and the same
-    question asked of `--moe-model-forward`; owner `gmake layer-forward-smoke`. It is **not** filed
-    inside item 33 because that would put an R5B correctness change inside a review scoped to a
-    suffix graph, and it takes a roadmap number when it is picked up rather than claiming one across
-    the reserved 31/32 gap. Its reproduction, evidence, and full field record are in
-    [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md) section 11.2. Completing it removes
-    item 33's `prefix[<n>]` refusal, which **widens** the accepted surface and needs no other change.
+    **Follow-up, discharged: `MF-SINGLE-TOKEN-LOGITS`, item 36 below.** A pre-existing defect this
+    capability found in an arm it does not touch: `fill_members` and `compare_source` gathered an
+    embedding row by id only where `pieces > 1`, so **any prompt of exactly one token computed the
+    logits of token 0**, silently and with `status: ok`. Section 11.2 of
+    [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md) filed it and item 36 measured its
+    blast radius, correcting three of that record's claims: four arms, but **not the four named**
+    (`--layer-forward` and `--moe-layer-forward` gather unconditionally and were never affected,
+    while `--model-forward-gpu` is), **nine** construction sites and not eighteen (ten once item 32
+    landed), and the resident
+    path is **not** immune — `stage_embed_row` staged the right row while `compare_source` still
+    expected row 0, so a one-token non-zero resident run with a reference reported
+    `R5_SOURCE_DIVERGED` over a correct result. It was filed outside item 33 because it would have
+    put an R5B correctness change inside a review scoped to a suffix graph.
+
+36. **MF-SINGLE-TOKEN-LOGITS — the one-token prefill reads the prompt's embedding row.** Design,
+    blast radius, and results in
+    [`mf-single-token-logits.md`](mf-single-token-logits.md). A bug fix, filed by
+    R6-PREFIX-SUFFIX-PREFILL section 11.2 and numbered 36 because **31, 32, 34 and 35 are reserved
+    by capabilities that were on branches or in draft at the time of writing** and this one merged
+    out of order; the numbering is a name, not a delivery order. `fill_members` and `compare_source` gathered a
+    member's rows by token id only where `pieces > 1` — the piece count used as a **proxy** for
+    "this member is the per-token embedding row set". `build_embed_members` sets `pieces = tokens`,
+    so a one-token prefill took the whole-member branch and read **row 0 of the embedding table**
+    instead of the prompt's row: wrong logits with `status: ok`. Four public arms were affected —
+    `--model-forward`, `--model-forward-gpu`, `--moe-model-forward`, and `--decode-step`'s prefill —
+    across ten `GraphMembers` construction sites in four modules — nine when the fix was written
+    and a tenth with item 32's `moe_decode_step`; `--layer-forward` and
+    `--moe-layer-forward` were not, because they gather unconditionally. The resident path was not
+    immune either: `stage_embed_row` staged the right row while `compare_source` still expected
+    row 0, so a one-token non-zero resident run **with** a reference reported `R5_SOURCE_DIVERGED`
+    over a correct result. The fix is a `gathered: bool` on both `GraphMembers` records and the
+    predicate `m.gathered && at == 0`, which is true exactly where `pieces > 1` was, so `T >= 2` is
+    byte-identical and **the gather fix changes no existing golden row in any of the six corpora**.
+    Its regression is therefore **six new rows** rather than a changed one — a one-token control at
+    id 0 and a one-token non-zero id on each affected arm, plus the streamed/resident equality pair
+    whose `R5_SOURCE_DIVERGED` false alarm disappears. *(The item 33 lift this branch also carries
+    adds one more row and removes `ds-suffix-prefix-one`'s, so the branch as a whole adds seven
+    golden rows, removes one, and changes none. That row leaves because a passing two-token run is
+    host-dependent in its decode step — measured on hosted CI — and is asserted from
+    `BOUNDARY_CASES` without a pinned digest, as item 33's own four-token comparand is.)* The
+    real-model half is
+    `--model-forward` at one non-zero token byte-identical to `llama-debug --save-logits` on the
+    same one-token prompt, with the tokenization checked rather than assumed. Owner
+    `gmake layer-forward-smoke`; focused `gmake model-forward-qualification` and
+    `gmake moe-model-forward-qualification`. No Align gap and no design gate: no CLI operand,
+    persisted format, or ownership boundary moves. **It also widens item 33's accepted surface**:
+    that capability's `T_prefix >= 2` bound existed only because of this defect, so this branch
+    lifts it — the `R6_SUFFIX prefix[<n>]` refusal is gone, `ds-suffix-prefix-one` becomes a passing
+    oracle-S run at `T_prefix = 1`, and `r6-prefix-suffix-prefill.md` sections 3.7, 5.6 and 11 record
+    the lift.
 
 35. **R6-MOE-RESIDENT-DENSE — the dense third of a routed decode step, held resident, with the
     expert measurement unmoved.** Design and results in
@@ -988,6 +1070,20 @@ repair
 ### Gate
 
 少なくとも一部の固定タスクで、初回失敗から自動修正してtest passまで到達すること。
+
+### First measured consumer: C4-REPAIR-MEASURED
+
+C4's gate was met in mechanism by `make verify-loop-smoke`, whose repair patch is a checked-in
+deterministic input rather than a model. Item 31 above ran it with a real provider on the C6
+measurement path, and `docs/specs/c4-repair-measured.md` section 10.3 is the authoritative record
+of what came back. **The loop is delivered and C4's gate is still not met by a model.** Ten repair
+attempts were rendered from the run's own diagnostics, measured, bounded, and contained; none
+recovered, so `repair_recovery_paired_count` is 0 and the qualification's verdict is `NOT_MET`.
+That is a measured negative, published as a result. It is provider-independent — no provider module
+changes — and it does not modify `src/repair.align` or `src/verification_loop.align`; converging
+the two loops is a named deferral in that document. The next capability toward a model-met C4 gate
+is the one that carries the failing edit set into the repair prompt, which needs either a re-freeze
+of `canonical-v1` or a second reviewed corpus-member adapter.
 
 ---
 

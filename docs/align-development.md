@@ -308,6 +308,57 @@ The repair patch is deliberately an input boundary, not a model implementation. 
 can consume `repair_prompt` and return an equivalent patch without changing verification, timeout,
 or result handling.
 
+### Model-driven repair on the measurement path
+
+`docs/specs/c4-repair-measured.md` specifies the first repair loop driven by a real provider. It
+does not change `src/repair.align` or `src/verification_loop.align`; it runs on the C6 evaluation
+path instead, where `scripts/prompt-evaluate.py` owns an attempt loop around the unchanged
+measurement adapter. After a first-attempt validation `FAIL`, the evaluator renders a repair prompt
+from that attempt's own redacted validation status, summary, stdout, and stderr, calls the
+generation child a second time, and validates again. It is a diagnostics-driven second attempt: the
+failing edit set is not reachable outside the adapter, which is a frozen corpus member.
+`PROMPT_TASK_ROW` moves to `schema_version: 2` with an ordered per-attempt list; version-1 rows keep
+their exact meaning and are never migrated. There is **one** `PromptTaskRow` record, not a
+version-2 twin: its three version-2 members are declared `Option`, the canonical encoder omits an
+`Option::None`, and the frozen version-1 documents therefore round-trip byte-identically. Presence
+is never how the version is chosen — the scorer reads `schema_version` first and then requires
+every version-2 member to be present at version 2 and absent at version 1, rejecting either
+mismatch.
+
+Each attempt is its own contained invocation, so each one carries the four digests of the trace
+records it produced: `snapshot_request_sha256`, `before_snapshot_result_sha256`,
+`after_snapshot_result_sha256`, and `input_snapshot_sha256`, present exactly when the attempt ran.
+`snapshot_attestations` still holds one record per row, so without them a repair invocation's
+records would be referenced by nothing. Naming is not enough and is not what is checked: each
+digest must resolve to exactly one persisted record of that row's task, and the resolved records
+face the same closure and artifact-equality rules the row's attestation faces.
+
+Two repair loops therefore exist, deliberately: the in-process Align loop above, whose provider is a
+`fn (str, str, i64) -> bool` input boundary, and the cross-process evaluator loop, whose provider is
+the real local model. Converging them is a named deferral in that document, not an oversight.
+
+The corpus is a new freeze, `eval/prompt/canonical-v1r/` with `eval/tasks/prompt-v1r/`, minted
+reproducibly by `scripts/freeze-canonical-v1r`. It exists because `maximum_repair_loops` lives in a
+task manifest and every `prompt-v1` manifest is a digest-verified member of `canonical-v1`'s
+`FILE_SET` manifest, which `make prompt-gate-check` verifies against the current head's bytes.
+The 24 members the two corpora share carry identical digests, which is the machine-checkable
+statement that the adapter, the runner, and the fixtures did not move.
+
+`scripts/prompt-evaluate.py` is pinned byte-exactly by `src/prompt_evaluate.align` **and** bounded
+by a chunked-argument launch window. That window is now four chunks, 196,609…262,144 bytes, and
+`EVALUATOR_BOOTSTRAP` pops four arguments; the attempt loop did not fit the previous three-chunk
+ceiling. Changing the evaluator means re-pinning `EVALUATOR_SOURCE_SHA256` in the same commit — a
+stale pin is a hard `INVALID_INPUT` at launch, so the two never drift.
+
+The named qualification is `make c4-repair-gate`. It requires a running host `llama-server`, the
+model file, and a Linux aarch64 container with `bwrap` and `socat`, so it is a focused
+qualification and joins no aggregate. Generation reaches the host server through a container-local
+`socat` forwarder bound to the loopback endpoint the frozen provider control already names, so no
+machine-specific hostname reaches a persisted artifact. `scripts/probe-provider-service` emits a
+`PROVIDER_SERVICE_PROBE` on the host and fails closed unless the build, the server binary digest,
+and the model digest all equal the frozen `provider_service_revision`; the answering server's
+advertised model id is checked in band as the second half of the pair.
+
 ## Persisted-result development
 
 The C7-PERSISTED-RESULT consumer is `src/persisted_result.align`, specified by
@@ -2124,17 +2175,15 @@ caller can shorten. An unparseable, empty, or trailing-separator list is `R6_SUF
 the same shape `R6_TOKENS` reports. The plane bound **widens an existing condition** rather than
 adding one: `T_prefix + S + N <= KV_WIDTH` raises the `R6_KV_WIDTH` R6 already owns.
 
-**The prefix must be at least two tokens**, and this is a refusal rather than a wrong answer.
-`T_prefix < 2` with a `SUFFIX` is `R6_SUFFIX` with detail `prefix[<n>]`, decided inside the same
-step and **before** the sequence cap. The reason is a defect this capability found and did not fix
-(`MF-SINGLE-TOKEN-LOGITS`, `docs/specs/r6-prefix-suffix-prefill.md` section 11.2): a prompt of
-exactly one token computes the embedding of token 0 whatever the operand says, because
-`model_forward.fill_members` gathers by id only when `pieces > 1`. A container saved for a one-token
-prefix therefore holds the wrong plane, and a suffix run over it would return `status: ok` and
-logits that are not the single-shot run's. A one-token `KV_LOAD` run **without** a suffix is
-unaffected and still accepted: it is R6-KV-PERSIST's own leg, and this capability neither widens nor
-narrows it. When the defect is fixed the refusal is the thing to remove, which widens the accepted
-surface rather than moving it.
+**A one-token prefix is legal.** `T_prefix >= 1`, and the only bound on the prefix is the sequence
+cap. This arm shipped with `T_prefix >= 2` — `R6_SUFFIX` with detail `prefix[<n>]`, decided inside
+step 3c before the sequence cap — for one reason: a prompt of exactly one token computed the
+embedding of token 0 whatever the operand said, so a container saved for a one-token prefix held the
+wrong plane and a suffix run over it returned `status: ok` with logits that are not the single-shot
+run's. **MF-SINGLE-TOKEN-LOGITS (roadmap item 36) fixed that gather and this refusal is gone**; see
+the section below and `docs/specs/r6-prefix-suffix-prefill.md` section 11.5. `ds-suffix-prefix-one`
+is now a passing oracle-S run at `T_prefix = 1` rather than a refusal, and `R6_SUFFIX` carries three
+details instead of four. Do not reintroduce a bound here: the case is covered by a test.
 
 The document is **schema 5** and carries a `suffix` object — `requested`, `completed`,
 `token_count`, `n_past_base`, `sequence_length`, `columns_written`, `first_column`, `graph_count`,
@@ -2533,6 +2582,67 @@ forced-failure builds outside the shared region — `engine+decode-position-moe`
 three R6 builds whose dense form is keyed on a `layer_qwen2` slot number that is an ordinary weight
 slot in a routed graph. They are separate builds rather than second indices, so every dense build
 stays behaviourally byte-unchanged and the sixth block's golden cannot move.
+
+## One-token prefills (MF-SINGLE-TOKEN-LOGITS)
+
+`docs/specs/mf-single-token-logits.md`. Until this fix a prefill of exactly one token read **row 0
+of the embedding table** instead of the prompt's row, and reported `status: ok` over the resulting
+logits. The proxy is gone: `GraphMembers` now carries `gathered: bool`, set `true` by
+`build_embed_members` in `src/model_forward.align` and `src/moe_model_forward.align` whatever the
+token count and `false` by every other builder — ten construction sites across four modules,
+including `decode_step.decode_embed_members` and `moe_decode_step.decode_embed_members`, both of
+which bake the row offset into `pack`/`source` themselves — and the two gather predicates in each
+module read
+
+```text
+source_at := if m.gathered && at == 0 { base + tokens.ids[piece] * span } else { base }
+```
+
+rather than `m.pieces[at] > 1`. **Do not reintroduce a count-derived test for "gather this member
+by id".** The field is a compile-time obligation on every `GraphMembers` literal, so a
+new builder cannot silently inherit the defect: a module added after this fix does not compile
+until it says which kind of member it is. `decode_step.decode_embed_members` legitimately builds a one-row member with
+`pieces = 1` and `token * row_bytes` already baked into `pack`/`source`, so `pieces == 1` has two
+meanings and only the flag separates them.
+
+Four arms read those predicates and were affected: `--model-forward`, `--model-forward-gpu` (through
+`render_parts` -> `execute`), `--moe-model-forward`, and `--decode-step`'s prefill.
+`--layer-forward` and `--moe-layer-forward` were **not** — they gather unconditionally on member 0.
+The resident weight path was not immune: `stage_embed_row` staged the correct row while
+`compare_source` still expected row 0, so a one-token non-zero resident run **with** a reference
+reported `R5_SOURCE_DIVERGED` over a correct result. Both predicates therefore move together.
+
+`gathered` is true exactly where `pieces > 1` was, so every `T >= 2` document is byte-identical: the
+gather fix changes **no** existing golden row and adds six to `gmake layer-forward-smoke` —
+`mf-tokens-one` with its `mf-tokens-one-zero` control, `gf-tokens-one`,
+`mm-tokens-one`, and the `ds-tokens-one` / `ds-tokens-one-resident` pair oracle R compares. They run
+outside each block's `ENGINE_CASES` loop, whose assertions are arithmetic on that block's
+three-token prompt. **One golden row does leave the corpus**, and it is the lift below rather than
+the gather: `ds-suffix-prefix-one` goes from a refusal to a passing run, and a passing two-token run
+is host-dependent in its decode step, so it and its comparand are asserted without golden rows. The
+change as a whole adds seven golden rows, removes one, and changes none.
+
+It also **widens `--decode-step`'s accepted surface**: R6-PREFIX-SUFFIX-PREFILL's `T_prefix >= 2`
+bound existed only because of this defect, so it is lifted in the same change — the
+`R6_SUFFIX prefix[<n>]` refusal is deleted from step 3c, `ds-suffix-prefix-one` becomes a passing
+oracle-S run joined by `ds-suffix-save-prefix-one` and `ds-suffix-single-shot-2`, and
+`scripts/run-decode-step`'s split guard widens from `2 <= j` to `1 <= j` — which adds no real-model
+run, because the two guards differ only on a prompt of two ids or fewer and that leg's prompts
+tokenize to 6, 3, 3 and 3.
+
+Both real-model qualifications gained a one-token leg on the same opt-in inputs they already use:
+
+```sh
+gmake model-forward-qualification       # Qwen2, --model-forward
+gmake moe-model-forward-qualification   # OLMoE, --moe-model-forward
+```
+
+Each captures `llama-debug -p def --save-logits`, reads the companion `<stem>-tokens.bin`, and
+requires **exactly one id, and that id != 0** before running the arm; anything else prints one `N/A`
+line naming the ids it observed rather than substituting prompts until one fits, because a
+prepended BOS makes a one-token prompt two ids and a BOS of id 0 would mask the defect. The arm is
+then run at that id with the reference and the one-token logits blob, and
+`oracle_logits.byte_identical` must be `true`.
 
 ## The aarch64 platform-profile gates
 

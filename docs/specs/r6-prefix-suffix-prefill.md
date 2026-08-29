@@ -233,7 +233,7 @@ position is spoken for, and moving one would change the meaning of an existing i
 | --- | --- |
 | Parse | `layer_forward.parse_tokens`, **unchanged and shared with `TOKENS`**, so the two operands cannot drift apart in what they accept. Unparseable, empty, or trailing-separator is `R6_SUFFIX` detail `suffix[<text>]`, bounded to 256 bytes by `bounded_detail` |
 | Count | `S >= 1`. **`-` is how a caller says "no suffix"**; an empty string is a malformed list, not an absence, exactly as `LOGITS` distinguishes them (`ds-path-logits-empty`), and it is refused by `parse_tokens` as `suffix[]`. *(This row was drafted with a `count[0]` detail for "a non-`-` operand parsing to zero ids". That check is unreachable — `parse_tokens` refuses an empty list outright — and section 11.1 finding 3 records that it is not implemented.)* |
-| **Prefix bound** (added by review repair) | **`T_prefix >= 2`**, raising `R6_SUFFIX` with detail `prefix[<n>]`. A container written for a one-token prefix holds the wrong plane, because `model_forward.fill_members` gathers an embedding row by id only when `pieces > 1` and a one-token prefill therefore computes the embedding of token 0 whatever `TOKENS` said (11.2, `MF-SINGLE-TOKEN-LOGITS`). Oracle S's equality — this capability's own acceptance rule — would silently not hold, so the arm refuses instead of answering wrongly. Section 11.1 correction 8 records why this is a refusal here rather than a fix there |
+| **Prefix bound** (added by review repair, **lifted — see 11.5**) | ~~**`T_prefix >= 2`**, raising `R6_SUFFIX` with detail `prefix[<n>]`~~. **`T_prefix >= 1`; the refusal is gone.** The reasoning below was correct when written and stopped being true when MF-SINGLE-TOKEN-LOGITS (roadmap item 36) fixed the gather: A container written for a one-token prefix holds the wrong plane, because `model_forward.fill_members` gathers an embedding row by id only when `pieces > 1` and a one-token prefill therefore computes the embedding of token 0 whatever `TOKENS` said (11.2, `MF-SINGLE-TOKEN-LOGITS`). Oracle S's equality — this capability's own acceptance rule — would silently not hold, so the arm refuses instead of answering wrongly. Section 11.1 correction 8 records why it was a refusal here rather than a fix there, and 11.5 records the lift |
 | Why `R6_SUFFIX` and not `R6_TOKENS` for the prefix bound | Because it is the **suffix** that makes the run illegal. Without the operand a one-token `KV_LOAD` run is R6-KV-PERSIST's own leg, unchanged and still accepted — it inherits the defect it always had, and this capability neither widens nor narrows that. The operand a caller must remove is `SUFFIX`, so the refusal names it, which is the same rule the sequence cap follows one row below |
 | Vocabulary | `0 <= id < n_vocab` for every id, checked in the same pass that re-checks `TOKENS` after the geometry loads (`stage_inputs` step 3′, `decode_step.align:1776-1781`). `R6_SUFFIX` detail `token[<index>]`, mirroring `R6_TOKENS`'s own detail. *(This row was drafted saying `<i>` is the offending **id**. It is the offending **index**, which is what `R6_TOKENS` has always reported; the row's own "mirroring" clause is what the implementation follows. Section 11.1 finding 3.)* |
 | **Sequence cap** | **`T_prefix + S <= MAX_PREFILL_TOKENS` (32).** `R6_SUFFIX` detail `sequence[<n>]`, where `<n>` is `T_prefix + S`. It implies `S <= 32` and is the tighter bound |
@@ -254,10 +254,14 @@ they are the ones a reader would guess wrong:
   before `T_prefix + S` is one. `ds-suffix-and-bad-tokens` asserts it.
 - `R6_SUFFIX` (3c) precedes `R6_KV_WIDTH` (6), for the same sentence, one term later.
   `ds-suffix-over-cap-and-narrow` asserts it.
-- **Inside 3c**, the prefix bound precedes the sequence cap. A caller who violates both cannot fix
-  `prefix[1]` by shortening `SUFFIX`, so naming the cap first would send them around the loop twice.
-  `ds-suffix-prefix-one` asserts the bound, and does so against a container written for a *longer*
-  token list — so it also shows 3c preceding L12 and every other container check.
+- **Inside 3c**, the prefix bound used to precede the sequence cap. That bound is **lifted**
+  (11.5), so 3c now decides the grammar and then the sequence cap, and `ds-suffix-prefix-one` is a
+  passing oracle-S row at `T_prefix = 1` rather than a refusal. **`3c ≺ L12` is still witnessed**,
+  by `ds-suffix-over-cap` and `ds-suffix-over-cap-and-narrow`: both supply the same container
+  written for a longer list that `ds-suffix-tokens-mismatch` uses, and both refuse first at 3c with
+  `R6_SUFFIX`/`sequence[33]`, `suffix.n_past_base = -1` and no pack byte read — the container is
+  never opened. `ds-suffix-tokens-mismatch` cannot be that witness: it **is** the L12 refusal
+  (`R6_KV_TOKENS`/`count[3]`, `n_past_base = 2`), which is what makes it 2.1's evidence instead.
 
 ### 2.4 The plane — a second writer, and the ordering invariant over three ranges
 
@@ -349,7 +353,7 @@ inserts **2c** and **3c**, widens **6**, and appends **X1–X5** after L14.
 | 2d | `RESIDENT` grammar | `R6_RESIDENT` | `resident[<text>]` |
 | 3 | `TOKENS` parses, `1 <= T_prefix <= MAX_PREFILL_TOKENS` | `R6_TOKENS` | `token[<index>]` — `parse_tokens`' own index, for a bad id **and** for an over-long list; three prior documents in this family printed `count[<n>]` here and no such detail is emitted (11.1 finding 3) |
 | 3b | `STEPS` parses, `1 <= N <= MAX_DECODE_STEPS` | `R6_STEPS` | `steps[<n>]` |
-| **3c** | **`SUFFIX` parses; `T_prefix >= 2`; `T_prefix + S <= MAX_PREFILL_TOKENS`** | **`R6_SUFFIX`** | **`suffix[<text>]` / `prefix[<n>]` / `sequence[<n>]`**, decided in that order |
+| **3c** | **`SUFFIX` parses; `T_prefix + S <= MAX_PREFILL_TOKENS`** (the `T_prefix >= 2` term is **lifted**, 11.5) | **`R6_SUFFIX`** | **`suffix[<text>]` / `sequence[<n>]`**, decided in that order |
 | 3a–5 | geometry readable, loads, dense | unchanged | unchanged |
 | 3′ | `TOKENS` **and now `SUFFIX`** re-checked against the real `n_vocab` | `R6_TOKENS` / **`R6_SUFFIX`** | `token[<index>]` |
 | 6 | `KV_WIDTH` parses, **`T_prefix + S + N <= KV_WIDTH <= MAX_ATTENTION_WIDTH`** | `R6_KV_WIDTH` | `kv_width[<n>]` |
@@ -722,6 +726,12 @@ implements it and its comment quotes it.
 > `timings.first_token_ns` and the invocation wall clocks of 1.4's three legs are **reported** and no
 > acceptance decision is taken from any of them.
 
+The rule is unconditional over **every** split index the operand grammar admits, `1 <= j < |L|`.
+It shipped with one exception — `T_prefix >= 2`, refused rather than silently excepted — and that
+exception is **gone**: MF-SINGLE-TOKEN-LOGITS (roadmap item 36) fixed the one-token embedding gather
+it stood in for, and section 11.5 records the lift with its evidence. `ds-suffix-prefix-one` is now
+rule 2's own `T_prefix = 1` witness.
+
 ### 3.8 The tolerance rule
 
 | Comparison | Rule | Value | Derivation |
@@ -1009,8 +1019,8 @@ capability adds.
 
 Every row refused with exactly its code and exactly its detail, and every one published
 `suffix.requested = 1`, `suffix.completed = 0`, no step, and no `IDENTICAL`. This table is
-`run-layer-forward-smoke`'s `SUFFIX_REFUSAL_DETAILS` tuple: the runner asserts all thirteen details
-below and the summary line counts *that tuple* rather than `STUB_CASES` membership, so a row added
+`run-layer-forward-smoke`'s `SUFFIX_REFUSAL_DETAILS` tuple: the runner asserts all twelve details
+below (thirteen as shipped, until 11.5 removed `ds-suffix-prefix-one`'s) and the summary line counts *that tuple* rather than `STUB_CASES` membership, so a row added
 here without an assertion cannot inflate the printed claim (`ds-suffix-tokens-mismatch` rides in
 `KV_REFUSALS` and is why membership was the wrong witness):
 
@@ -1020,7 +1030,6 @@ here without an assertion cannot inflate the printed claim (`ds-suffix-tokens-mi
 | `ds-suffix-empty` | `R6_SUFFIX` | `suffix[]` |
 | `ds-suffix-garbage` | `R6_SUFFIX` | `suffix[x]` |
 | `ds-suffix-trailing` | `R6_SUFFIX` | `suffix[5,]` |
-| `ds-suffix-prefix-one` | `R6_SUFFIX` | `prefix[1]` — **added by the review repair**; section 11.1 correction 8 |
 | `ds-suffix-over-vocab` | `R6_SUFFIX` | `token[0]` — see section 11.1, finding 3 |
 | `ds-suffix-over-cap` / `-over-cap-and-narrow` | `R6_SUFFIX` | `sequence[33]` |
 | `ds-suffix-and-bad-tokens` | `R6_TOKENS` | `token[32]`, not section 5.2's predicted `count[33]` — section 11.1 finding 3. The refusal is raised by step **3**'s own lexical parse, before the geometry is read, so it does establish the `3 ≺ 3c` precedence section 2.3 claims: the document it produces carries `suffix.n_past_base = -1` |
@@ -1046,9 +1055,15 @@ the loaded ones. Both runs freed the plane and balanced their teardown.
 | every other golden in `scripts/`: `layer-forward-golden.jsonl`, `model-forward-golden.jsonl`, `gpu-forward-golden.jsonl`, `moe-layer-forward-golden.jsonl`, `moe-model-forward-golden.jsonl`, `ggml-spike-golden.jsonl` | byte-unchanged | **byte-unchanged** |
 
 The six unchanged goldens are the check that `layer_qwen2`'s changed literals really are gated on
-the new parameter. The 21 added rows are **twelve** refusals, two single-shot/save documents, four
+the new parameter. The 21 added rows were **twelve** refusals, two single-shot/save documents, four
 suffix successes, the tokens-mismatch refusal, and the two forced builds. Twenty of them shipped
-at the implementation head; `ds-suffix-prefix-one` is the review repair's (11.1 correction 8).
+at the implementation head; `ds-suffix-prefix-one` is the review repair's (11.1 correction 8) and
+has since **left the corpus** — MF-SINGLE-TOKEN-LOGITS lifted the bound, the case is a passing
+oracle-S run at `T_prefix = 1`, and a two-token prefill's decode step is host-dependent, so it is a
+documented case in `BOUNDARY_CASES` without a golden row (11.5). This capability's added rows are
+therefore **twenty** today — eleven refusals, two single-shot/save documents, four suffix successes,
+the tokens-mismatch refusal, and the two forced builds — and `SUFFIX_REFUSAL_DETAILS` asserts twelve
+details rather than thirteen.
 
 **The twenty-second row did not survive hosted CI, and deviation 7 records why.** `ds-suffix-2`'s
 four-token single-shot comparand is host-dependent in the last bit, so it moves into
@@ -1297,7 +1312,7 @@ what is true, the owning document has it.
 
 | Draft | Landed in | What the applied text carries that the draft did not |
 | --- | --- | --- |
-| 9.1 roadmap item | `docs/specs/roadmap.md`, item **33** | the decode node table is parameterised by **six** literals across three functions, not the five the design predicted (11.1 correction 4); `ds-suffix-tokens-mismatch`; the three hosted synthetic splits; "measured on the real model at every split"; the owner's golden row count; and the review repair's `T_prefix >= 2` refusal |
+| 9.1 roadmap item | `docs/specs/roadmap.md`, item **33** | the decode node table is parameterised by **six** literals across three functions, not the five the design predicted (11.1 correction 4); `ds-suffix-tokens-mismatch`; the three hosted synthetic splits; "measured on the real model at every split"; the owner's golden row count; and the review repair's `T_prefix >= 2` refusal, now recorded there as lifted by item 36 |
 | 9.2 the active block | `HANDOFF.md`, `## Active: R6-PREFIX-SUFFIX-PREFILL` | the committed head and its next actions, the findings of section 11, the pre-existing defect of 11.2 and its follow-up capability, and the merge re-checks |
 | 9.3 the arm's reference | `docs/align-development.md`, the `--decode-step` section | the fifteen-operand grammar, the conditional rule, the sequence cap and its oracle reason, the prefix bound, the `token[<index>]` detail shape, schema 5, the `output` move, and the exact-prefix limitation |
 | 9.4 one correction | `docs/specs/r6-kv-persist.md` §2.3 header table and §2.8 schema row | that `document_schema_version` records the document schema the format was **defined against**. The draft's second half — a matching comment at `src/kv_plane.align:41` — was **not** applied, and 11.3 deviation 6 records why: it would end this document's own byte-unchanged claim for a sentence that belongs in the owning document |
@@ -1431,7 +1446,9 @@ against the code finds the difference named.
    post-pass site never runs. The container's vector is therefore digested **before** the pass on any
    run that requests one, and a completed pass digests again over its own logits. Both forced builds
    in 5.6 assert the failed half, which was not otherwise reachable.
-8. **`T_prefix = 1` is refused, and this is a contract addition made by the review repair.** Section
+8. **`T_prefix = 1` is refused, and this is a contract addition made by the review repair.**
+   *(Discharged: the refusal was lifted by roadmap item 36 — see 11.5. The record below stands as
+   the reasoning that was correct while the defect existed.)* Section
    3.7 rule 2 is unconditional: a suffix run and the single-shot run of `TOKENS ++ SUFFIX` are the
    same run. At `T_prefix = 1` it is **not true, silently** — the container was written by a
    one-token prefill, which computes the embedding of token 0 whatever the operand said (11.2), so
@@ -1462,6 +1479,7 @@ against the code finds the difference named.
    one-token prefix but now says so (correction 10). **It narrows the accepted surface**, and the
    resume condition is the follow-up capability of 11.2: when a one-token prefill computes the right
    row, this refusal is the thing to remove, and removing it widens the surface rather than moving it.
+   **That condition was met and the refusal is gone (11.5).**
 9. **The sentence the runner prints beside the TTFT trio was wrong, and it was product output.**
    Section 1.4 reason 4, section 5.10, and `scripts/run-decode-step`'s printed line all said the
    difference between the single-shot leg and the suffix leg is `T_prefix` columns of prefill
@@ -1477,6 +1495,13 @@ against the code finds the difference named.
     "smallest split is `j = 2`" and, after correction 8, reaching a refusal. No prompt in the corpus
     tokenizes to two ids, so no run ever took it and section 5.9's five splits are unchanged; the
     guard is `2 <= j` and the invariant is now the code's rather than the corpus's.
+    *(**Discharged, and deliberately reversed**: 11.5 restores `1 <= j`, because `T_prefix = 1` is
+    no longer a refusal and the guard would otherwise encode a bound that no longer exists. Safety
+    is a corpus property again, so it is stated as one — the two guards differ only where
+    `⌈|L|/2⌉ == 1`, which needs `|L| <= 2`, and **no prompt this leg takes tokenizes to two ids or
+    fewer**; 5.9 measured 6, 3, 3 and 3. The comment at that guard now carries the invariant, so a
+    two-id prompt added to `PROMPTS` is a documented decision to spend a `T_prefix = 1` real-model
+    run rather than a silent one. Correction 8's own refusal is discharged the same way.)*
 11. **Risk 2's witness guard checked blocks where it needed fields, and a mutant survived it.** The
     guard asserted `"decode" in witness`, `"steps"` non-empty, `steps[0].sha256`, `output.sha256`,
     `oracle_logits`, `oracle_decode`, and the plane's two fields. Excluding
@@ -1494,6 +1519,11 @@ against the code finds the difference named.
     build. Every mask upload now re-decides the latch, so a decode step's one-row mask clears it.
 
 ### 11.2 A pre-existing defect this capability found and did **not** fix — `MF-SINGLE-TOKEN-LOGITS`
+
+> **Discharged. Roadmap item 36 fixed it and section 11.5 records the lift and the corrections
+> to this section's own measurements.** This section is kept as filed, because it is the record
+> of what this capability found and why it refused; three of its claims turned out to be wrong
+> and 11.5 names each one. Read them together.
 
 **A one-token prompt computes the logits of token 0.** `model_forward.fill_members` gathers an
 embedding row by id only when `m.pieces[at] > 1`, and `build_embed_members` sets `pieces = tokens`;
@@ -1531,7 +1561,10 @@ TOKENS 3,17 -> status ok, output.sha256 99781f3e63a67b18..., argmax 27   (the co
 Three different single-token prompts, one answer; the two-token control moves, which is what makes
 the one-token case a defect rather than a fixture property. It is **reachable from the shipped CLI** on
 `--model-forward`, `--decode-step`, and the MoE arms, it is silent — `status: ok` — and the resident
-path does **not** share it, because `stage_embed_row` gathers by id at every count. No golden in this
+path does **not** share it, because `stage_embed_row` gathers by id at every count. *(11.5: the
+resident path shares half of it — `stage_embed_row` stages the right row, but `compare_source`
+carries the same predicate, so a one-token non-zero resident run with a reference is refused with
+`R5_SOURCE_DIVERGED` over a correct result.)* No golden in this
 repository exercises `token_count == 1`, which is why it has been latent since R5B.
 
 **It is not fixed here**, and the reason is the capability boundary rather than convenience: the
@@ -1552,23 +1585,24 @@ corpus is not the same as refusing it on the surface** — a caller could still 
 `T_prefix = 1` suffix run and get a silently wrong `ok` — so 11.1 correction 8 makes it a refusal.
 
 **It is filed as a follow-up capability, `MF-SINGLE-TOKEN-LOGITS`**, so the next action survives this
-document and the `HANDOFF.md` block that will replace this one. It has **no roadmap number yet**:
-`main` carries items to 30, 31 and 32 are on branches, and this capability is drafted as 33, so a
-number claimed here would collide. It is recorded as a named follow-up under roadmap item 33 and in
-`HANDOFF.md`, and it takes its number when it is picked up.
+document and the `HANDOFF.md` block that will replace this one. It had **no roadmap number** when
+filed — `main` carried items to 30, 31 and 32 were on branches, and this capability was drafted as
+33 — and **took 36** when it was picked up. It is recorded as a named follow-up under roadmap item
+33, as roadmap item 36 in its own right, and in `docs/specs/mf-single-token-logits.md`, which is now
+its authoritative record.
 
 | Field | Value |
 | --- | --- |
 | Name | `MF-SINGLE-TOKEN-LOGITS` |
 | Owner surface | `src/model_forward.align` — `fill_members`, `build_embed_members`, `GraphMembers` |
-| Blast radius | eighteen `GraphMembers` construction sites across three modules and four arms (`--layer-forward`, `--model-forward`, `--moe-model-forward`, `--decode-step`) |
+| Blast radius | eighteen `GraphMembers` construction sites across three modules and four arms (`--layer-forward`, `--model-forward`, `--moe-model-forward`, `--decode-step`) — **measured as nine sites and four arms**, and `--layer-forward` is not one of them while `--model-forward-gpu` is (11.5) |
 | Symptom | any prompt of exactly one token computes the embedding of token 0, silently, `status: ok` |
-| Not shared by | the resident path: `stage_embed_row` gathers by id at every count |
+| Not shared by | the resident path: `stage_embed_row` gathers by id at every count — **half true** (11.5) |
 | Why it is latent | no golden in this repository exercises `token_count == 1`; it has been so since R5B |
 | Fix | a `gathered` discriminator on `GraphMembers`, so the gather is chosen by construction rather than by `pieces > 1` |
 | Regression it must add | `mf-tokens-one` in `scripts/model-forward-golden.jsonl`, plus the same question asked of `--moe-model-forward` |
 | Owner test | `gmake layer-forward-smoke` |
-| What it unblocks here | removing this capability's `R6_SUFFIX`/`prefix[<n>]` refusal (11.1 correction 8), which **widens** the accepted surface and needs no other change |
+| What it unblocks here | removing this capability's `R6_SUFFIX`/`prefix[<n>]` refusal (11.1 correction 8), which **widens** the accepted surface and needs no other change — **done**, 11.5 |
 | Why not fixed here | filing an R5B correctness change inside a review scoped to a suffix graph. It is a distinct failure domain, which is `CLAUDE.md`'s own reason to split |
 
 ### 11.3 Deviations from the verification plan
@@ -1652,6 +1686,87 @@ the slot high-water is still 66 against a capacity of 128, `MAX_PREFILL_TOKENS` 
 `akvp` container's `format_version` is still 1, and its `DOCUMENT_SCHEMA_VERSION` is still 3 —
 section 2.9's decision, and section 9's row 9.4 prose correction is the only thing that moves with it.
 
+### 11.5 The `T_prefix >= 2` bound, lifted by `MF-SINGLE-TOKEN-LOGITS` (roadmap item 36)
+
+The refusal 11.1 correction 8 added existed for exactly one reason, and that reason is gone.
+`docs/specs/mf-single-token-logits.md` is the authoritative record; this section is what changes
+**here**, and it corrects three measurements 11.2 made from this capability's own vantage point.
+
+**The fix.** `GraphMembers` carries a `gathered: bool`, `true` from `build_embed_members` whatever
+the token count and `false` from every other builder, and `fill_members`/`compare_source` read
+`m.gathered && at == 0` instead of `m.pieces[at] > 1`. `gathered` is true exactly where `pieces > 1`
+was, so every `T >= 2` document is byte-identical: **136 of the 137 rows this capability's corpus
+shipped do not move at all**, and the one that does — `ds-suffix-prefix-one` — is removed from the
+corpus by the lift below rather than changed by the gather.
+
+**Three corrections to 11.2.**
+
+1. **Nine construction sites, not eighteen** — ten once item 32 (R6-OLMOE-DECODE) merged. Four in
+   `src/model_forward.align`, four in `src/moe_model_forward.align`, one in
+   `src/decode_step.align`, and one in item 32's `src/moe_decode_step.align`. Eighteen was an
+   estimate over three modules; the record is `pub GraphMembers` twice and two cross-module
+   literals. The field is a compile-time obligation, so a new builder cannot forget it: item 32's
+   arrived through a merge and the build refused it until it carried `gathered`.
+2. **Four arms, and not the four named.** `--layer-forward` and `--moe-layer-forward` are **not**
+   affected — they gather unconditionally on member 0 — while `--model-forward-gpu` is, through
+   `render_parts` -> `execute`. The affected set is `--model-forward`, `--model-forward-gpu`,
+   `--moe-model-forward`, and `--decode-step`'s prefill.
+3. **The resident path is not immune.** 11.2 said `stage_embed_row` gathers by id at every count, so
+   residency does not share the defect. That is half the story: staging is correct, but
+   `compare_source` carried the same predicate, so a one-token non-zero **resident** run with a
+   REFERENCE was refused with `R5_SOURCE_DIVERGED` over a correct result — a false alarm on a right
+   answer. Both predicates had to move together, and `ds-tokens-one-resident` is the row that pins
+   it.
+
+**What is lifted here.** Step 3c's `T_prefix >= 2` term and its `prefix[<n>]` detail are deleted
+from `stage_inputs`; `R6_SUFFIX` keeps its three remaining details; `scripts/run-decode-step`'s
+split guard widens from `2 <= j` to `1 <= j`, reversing correction 10. **It adds no real-model run,
+and the reason is 5.9's own arithmetic**: the two guards differ only where `⌈|L|/2⌉ == 1`, which
+needs `|L| <= 2`, and no prompt this leg takes tokenizes to two ids or fewer — 5.9 measured 6, 3, 3
+and 3. That is a property of `PROMPTS`, not of the code, so the guard's comment states it: adding a
+two-id prompt would spend a `T_prefix = 1` real-model run, which is now a legal run and a decision
+to take deliberately rather than a refusal to trip over. Nothing replaces the check: the sequence
+cap is the only bound on `T_prefix`.
+
+**The evidence, hosted.** `ds-suffix-prefix-one` stops being a refusal and becomes rule 2's own
+`T_prefix = 1` witness, joined by the two runs it needs — `ds-suffix-save-prefix-one`, a one-token
+prefill save in its own process, and `ds-suffix-single-shot-2`, the two-token comparand. Only the
+one-token save carries a golden row; the two two-token runs are asserted without one, for the
+measured cross-host reason under **The corpus** below.
+Oracle S holds byte for byte and oracle C″ agrees with `--model-forward` at `3,5`:
+
+```text
+ds-suffix-save-prefix-one  TOKENS 3               -> ok, output 867ebc4e..., kv SAVED, plane 2 cols
+ds-suffix-single-shot-2    TOKENS 3,5             -> ok, output 0cd795d9..., plane 5 cols
+ds-suffix-prefix-one       TOKENS 3, SUFFIX 5     -> ok, output 0cd795d9..., suffix n_past_base 1
+```
+
+`867ebc4e...` is the same one-token digest `mf-tokens-one` carries on `--model-forward`, and it is
+**not** the `62a46efd...` of 11.1 correction 8's transcript. That digest survives as
+`mf-tokens-one-zero`'s, and the reason it survives is the point of the control: at **id 0** the
+defect's answer and the correct answer coincide, because row 0 is the row the prompt asks for. So
+`62a46efd...` is the defect's signature at every *non-zero* id and the right answer at zero, which
+is what makes an unchanged id-0 row evidence that the gather moved rather than the table.
+
+**Mutation.** Reverting the four predicates to `m.pieces[at] > 1` kills `ds-suffix-prefix-one`
+through oracle S **and** oracle C″, kills `ds-suffix-save-prefix-one`'s golden row, and kills the six
+rows item 36 added — and nothing else in the six corpora. The refusal this section removes is
+therefore replaced by a test rather than by an assumption.
+
+**The corpus, and one more move of deviation 7's boundary.** 137 rows to **139**:
+`ds-suffix-save-prefix-one`, `ds-tokens-one` and `ds-tokens-one-resident` added, and
+`ds-suffix-prefix-one` **removed** — it was a refusal row, and a passing `T_prefix = 1` run cannot
+be pinned in a file compared across two hosts. Item 36's first hosted CI run measured why: the
+decode step after a **two**-token prefill publishes `.steps[0].bit_sum` 71850835819 on macOS/arm64
+against 71850835587 on Linux/x86_64, on both `ds-suffix-single-shot-2` and the suffix run it is the
+comparand for. Deviation 7 found the boundary at four tokens in the *prefill*; it is at two in the
+*decode step*, and the one-token rows (`ds-suffix-save-prefix-one`, `ds-tokens-one`) are identical
+on both hosts and stay pinned. Both two-token runs move into `BOUNDARY_CASES`, where oracle S
+compares them **within one host**, oracle C″ compares the suffix run against `--model-forward` on
+that host, and `record()`'s document-identity assertions still run: 143 documented cases, 139 with a
+golden row. Section 5.6's matrix asserts twelve details rather than thirteen, and 5.7's added rows
+are twenty.
+
 ## 12. Ledger and closure matrix to the final diff
 
 `CLAUDE.md`'s proportional design gate, step 4: every applicable ledger row and closure cell mapped
@@ -1666,7 +1781,7 @@ implementation head.
 | 2.2 absence is `-` and is the pre-existing behaviour | `run`'s default and `execute`'s `o.suffix_requested = suffix_text != "-"` | all 116 pre-existing golden rows unchanged but for `schema_version` and `suffix` |
 | 2.3 grammar shared with `TOKENS` | `stage_inputs` step 3c calls `layer_forward.parse_tokens` twice, unchanged | `ds-suffix-empty`/`-garbage`/`-trailing` |
 | 2.3 sequence cap `T_prefix + S <= 32`, detail `sequence[<n>]` | `stage_inputs` step 3c | `ds-suffix-over-cap`, `ds-suffix-over-cap-and-narrow` |
-| 2.3 prefix bound `T_prefix >= 2`, detail `prefix[<n>]` (added by the review repair, 11.1 correction 8) | `stage_inputs` step 3c, before the sequence cap | `ds-suffix-prefix-one` → `R6_SUFFIX`/`prefix[1]`, against a container written for a longer list, so it shows 3c preceding L12 too |
+| 2.3 prefix bound `T_prefix >= 2`, detail `prefix[<n>]` (added by the review repair, 11.1 correction 8; **lifted**, 11.5) | ~~`stage_inputs` step 3c~~ — no code remains; 3c decides the grammar and then the sequence cap | `ds-suffix-prefix-one` → a passing oracle-S run at `T_prefix = 1`, asserted from `BOUNDARY_CASES` without a golden row (11.5); `ds-suffix-over-cap` / `-over-cap-and-narrow` keep the 3c ≺ L12 precedence — same mismatched container, refused at 3c with `sequence[33]` and `n_past_base = -1` before it is opened |
 | 2.3 vocabulary re-check at 3′ | `stage_inputs`, same pass as `TOKENS` | `ds-suffix-over-vocab` (detail `token[0]`, section 11 finding 3) |
 | 2.3 plane bound widened, `R6_KV_WIDTH` | `stage_inputs` step 6, `width < parsed.count + suffix_count + steps` | `ds-suffix-narrow-width` |
 | 2.3 `SUFFIX` without `KV_LOAD` is `R6_KV_ARGS`/`suffix[no_load]` | `execute` step 2c | `ds-suffix-no-load`, `-and-save`, `-no-load-bad-steps` |
@@ -1678,7 +1793,7 @@ implementation head.
 | 2.5 `mf_write_mask_offset`'s comment corrected; no guard added | `layer_qwen2.align` doc comment | stated, with the reachability reason |
 | 2.6 positions absolute, ids `0 .. S-1`, `out_ids = S - 1` | `schedule_decode`'s three suffix images | the position mutant in 5.8 |
 | 2.6 the prefill's embedding builder at `pieces = S` | `decode_pass`'s `tokens_in > 1` branch | `ds-suffix-2`/`-3` differ from `ds-suffix-1` in `S` alone |
-| 2.7 `R6_SUFFIX`, one new code, four details (`suffix[<text>]`, `prefix[<n>]`, `sequence[<n>]`, `token[<index>]`) | `CODE_SUFFIX`, `suffix_detail`, and two `labelled` details | 5.6's matrix, every row naming its exact detail |
+| 2.7 `R6_SUFFIX`, one new code, ~~four~~ **three** details (`suffix[<text>]`, ~~`prefix[<n>]`~~, `sequence[<n>]`, `token[<index>]`) — 11.5 | `CODE_SUFFIX`, `suffix_detail`, and two `labelled` details | 5.6's matrix, every row naming its exact detail |
 | 2.7 X1–X5 and the `suffix[]` locator | `schedule_decode`'s pass block and `prefix_suffix` | both forced builds' details |
 | 2.8 a partial pass publishes no completion | the pass block's failure branch | both forced builds, all six clauses |
 | 2.9 schema 5, the `suffix` object in every document | `SCHEMA_VERSION`, `render_suffix`, `render` | `record()` asserts the object on all 139 documented cases (137 golden rows) |

@@ -1754,6 +1754,7 @@ fn decode_embed_members(
     pack: pack.build(),
     pieces: pieces.build(),
     stride: stride.build(),
+    gathered: false,
   }
 }
 
@@ -1822,25 +1823,14 @@ fn stage_inputs(
       fail(o, CODE_SUFFIX, unparsed_view)
       return g
     }
-    // R6-PREFIX-SUFFIX-PREFILL section 2.3's fifth refusal, and section 11.1 correction 8.
-    // **A suffix onto a one-token prefix is refused.** The container such a run loads was written
-    // by a one-token prefill, and `model_forward.fill_members` gathers an embedding row by id only
-    // when `pieces > 1` (section 11.2's pre-existing defect, `MF-SINGLE-TOKEN-LOGITS`): the plane
-    // would hold token 0's columns whatever `TOKENS` said, so oracle S's equality — this
-    // capability's own acceptance rule — would silently not hold. Refusing is the honest surface
-    // until that defect is fixed; the resume condition is recorded with the request.
-    //
-    // The code names `R6_SUFFIX` and not `R6_TOKENS` because it is the **suffix** that makes the
-    // run illegal: without the operand a one-token load is R6-KV-PERSIST's own leg, unchanged and
-    // still accepted. It is decided **before** the sequence cap, because a caller who violates both
-    // cannot fix `prefix[1]` by shortening `SUFFIX`, and naming the cap first would send them
-    // around the loop twice.
-    if lexical.count < 2 {
-      narrow := model_forward.labelled("prefix", lexical.count)
-      narrow_view: str := narrow
-      fail(o, CODE_SUFFIX, narrow_view)
-      return g
-    }
+    // R6-PREFIX-SUFFIX-PREFILL section 2.3's fifth refusal is **gone**, lifted by
+    // MF-SINGLE-TOKEN-LOGITS (roadmap item 36). That capability required `T_prefix >= 2` and raised
+    // `R6_SUFFIX prefix[<n>]` for one reason: a one-token prefill computed the embedding of token 0
+    // whatever `TOKENS` said, so a container saved for a one-token prefix held the wrong plane and
+    // oracle S's equality would silently not have held. `model_forward.fill_members` and
+    // `compare_source` now gather by `tokens.ids[piece]` on the embedding member whatever the count,
+    // so a one-token prefix is an ordinary prefix and `ds-suffix-prefix-one` is a passing oracle-S
+    // row. Nothing replaces the check: the sequence cap below is the only bound on `T_prefix`.
     sequence := lexical.count + lexical_suffix.count
     if sequence > layer_qwen2.MAX_PREFILL_TOKENS {
       ranged := model_forward.labelled("sequence", sequence)
@@ -2027,11 +2017,12 @@ fn decode_pass(
   // one row and would produce a shape error at `S > 1`; the prefill's layer table would compute the
   // right shapes at the wrong positions and produce a plausible wrong number.
   //
-  // At `tokens_in == 1` the decode builder is kept for **both** callers, and that is not a
-  // shortcut: `model_forward.fill_members` gathers by `tokens.ids[piece]` only when `pieces > 1`,
-  // so the prefill builder at one row reads the table's first row rather than the token's. A suffix
-  // of one token is therefore the decode step's own single-row window, whose graph gathers row 0 —
-  // which is exactly what `[0 .. S-1]` is at `S = 1`.
+  // At `tokens_in == 1` the decode builder is kept for **both** callers. It was originally kept
+  // because `model_forward.fill_members` gathered by `tokens.ids[piece]` only when `pieces > 1`;
+  // MF-SINGLE-TOKEN-LOGITS (roadmap item 36) removed that, so the two builders now agree byte for
+  // byte at one row and the branch is a specialization rather than a correction. It stays because a
+  // suffix of one token **is** the decode step's own single-row window, whose graph gathers row 0 —
+  // exactly what `[0 .. S-1]` is at `S = 1` — and one builder for that shape is one thing to read.
   embed_members := if tokens_in > 1 {
     model_forward.build_embed_members(g, ends, tokens_in)
   } else {

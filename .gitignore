@@ -10,3 +10,8 @@ __pycache__/
 build/
 ggml-spike
 ggml_spike
+
+# The C4-REPAIR-MEASURED gate's run-local scratch: the derived generation child, the per-run
+# experiment/preflight/source-policy inputs, the attempt workspaces, and the raw result pair.
+# The evidence that is kept is copied into `eval/prompt/c4-repair-gate/` by the run itself.
+run/

@@ -22,6 +22,7 @@ that happens before the first child, so it runs on any host.
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -36,20 +37,25 @@ from typing import Any, Callable, Mapping
 
 
 ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = ROOT
 VALIDATOR = ROOT / "scripts" / "prompt-gate-validator.py"
+# The merged C6-MEASURED evidence, read in place: the version-1 regression asserts against the
+# real frozen chain rather than against a rebuilt approximation of it.
+FROZEN_GATE = ROOT / "eval" / "prompt" / "gate"
 LINUX = sys.platform.startswith("linux")
 
 
-def load_fixture_module():
-    specification = importlib.util.spec_from_file_location(
-        "prompt_gate_fixture", ROOT / "scripts" / "prompt_gate_fixture.py"
-    )
+def load_module(name: str, path: Path):
+    specification = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)
     return module
 
 
-fixture = load_fixture_module()
+fixture = load_module("prompt_gate_fixture", ROOT / "scripts" / "prompt_gate_fixture.py")
+# The validator is also driven in-process for the two rows that assert a pure recomputation, so
+# they do not need the Linux containment floor a subprocess invocation reaches.
+validator = load_module("prompt_gate_validator", VALIDATOR)
 
 
 class SmokeFailure(RuntimeError):
@@ -778,6 +784,639 @@ def binding_rows(root: Path) -> None:
         "the environment policy reference identity",
         contains="environment policy reference names another policy",
     )
+    repair_attempt_rows(root)
+    frozen_version_one_chain()
+    frozen_corpus_rows()
+
+
+# --- C4-REPAIR-MEASURED: the version-2 attempt stream ---------------------------------
+
+
+def v2_evaluation_case(root: Path, name: str, mutate):
+    """A version-2 rejection row: edit the attempt stream and rebind every dependent digest."""
+
+    def apply(bundle) -> None:
+        evaluation = read(bundle, fixture.EVALUATION_NAME)
+        evidence = read(bundle, fixture.EVIDENCE_NAME)
+        mutate(evaluation, evidence)
+        store(bundle, fixture.EVIDENCE_NAME, fixture.bind(evidence))
+        rebind_chain_keeping_evidence(bundle, evaluation)
+
+    return case(root, name, apply, schema_version=2)
+
+
+def rebind_chain_keeping_evidence(bundle, evaluation: dict[str, Any]) -> None:
+    """`rebind_chain`, but preserving an already-edited evidence document's own edits."""
+    fixture.bind(evaluation)
+    store(bundle, fixture.EVALUATION_NAME, evaluation)
+    evidence = read(bundle, fixture.EVIDENCE_NAME)
+    evidence["evaluation_result_sha256"] = evaluation["content_sha256"]
+    store(bundle, fixture.EVIDENCE_NAME, fixture.bind(evidence))
+    accepted = read(bundle, fixture.ACCEPTED_NAME)
+    accepted["activation"]["accepted_evaluation_sha256"] = evaluation["content_sha256"]
+    fixture.bind(accepted["activation"])
+    fixture.bind(accepted)
+    store(bundle, fixture.ACCEPTED_NAME, accepted)
+    rollback = read(bundle, fixture.ROLLBACK_NAME)
+    rollback["activation"]["parent_activation_sha256"] = accepted["activation"]["content_sha256"]
+    fixture.bind(rollback["activation"])
+    fixture.bind(rollback)
+    store(bundle, fixture.ROLLBACK_NAME, rollback)
+    manifest = read(bundle, fixture.MANIFEST_NAME)
+    manifest["improved_evaluation"]["content_sha256"] = evaluation["content_sha256"]
+    manifest["improved_evaluation_evidence"]["content_sha256"] = evidence["content_sha256"]
+    manifest["accepted_activation"]["content_sha256"] = accepted["content_sha256"]
+    manifest["rollback_activation"]["content_sha256"] = rollback["content_sha256"]
+    store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+
+
+def repair_attempt_rows(root: Path) -> None:
+    """One rejection row per version-2 invariant `docs/specs/c4-repair-measured.md` section 3.8 adds.
+
+    A version-2 bundle is accepted first, so every row below differs from an accepted bundle in
+    exactly the attempt machinery it names. Each asserts its own diagnostic: a row that merely
+    exits 2 would be satisfied by an unrelated earlier check.
+    """
+    accepted = case(root, "v2-valid", schema_version=2)
+    observed, output = invoke(accepted)
+    require(
+        observed == accepted_code(),
+        f"valid version-2 bundle: expected exit {accepted_code()}, observed {observed}: {output.strip()}",
+    )
+    evaluation = read(accepted, fixture.EVALUATION_NAME)
+    require(
+        evaluation["schema_version"] == 2
+        and all(row["schema_version"] == 2 for row in evaluation["rows"]),
+        "the version-2 fixture did not produce a version-2 document",
+    )
+    # The gate quantity itself, recomputed rather than trusted: two candidate rows recover across
+    # both paired samples, so exactly one (task, variant) pair is a reproducible recovery.
+    corpus = evaluation["corpus_aggregate"]
+    require(
+        corpus["repair_attempt_count"] == 4
+        and corpus["repair_recovery_count"] == 3
+        and corpus["repair_recovery_paired_count"] == 1,
+        f"the version-2 repair aggregates are not the fixture's: {corpus!r}",
+    )
+
+    # The variant-symmetric `REPAIR_LOOPS` reason is defence in depth behind the attempt ladder:
+    # a document that survives `validate_attempts` can never carry a row count above its task cap,
+    # so the reason is unreachable through the CLI and is exercised here as a pure recomputation.
+    # Its record shape and its position in the stream are what `rescore` is compared on.
+    symmetry = read(accepted, fixture.EVALUATION_NAME)
+    policy = validator.validate_acceptance_policy(symmetry["acceptance_policy"])
+    parent_row = next(item for item in symmetry["rows"] if item["variant"] == "PARENT")
+    parent_row["repair_loop_count"] = 2
+    _, _, _, parent_reasons = validator.rescore(symmetry, policy)
+    emitted = [item for item in parent_reasons if item["code"] == "REPAIR_LOOPS"]
+    require(
+        any(
+            item["parent_value"] == "2"
+            and item["candidate_value"] == "NONE"
+            and item["sample_index"] == parent_row["sample_index"]
+            for item in emitted
+        ),
+        f"a parent row above its repair cap emitted no parent reason: {parent_reasons!r}",
+    )
+    candidate_row = next(item for item in symmetry["rows"] if item["variant"] == "CANDIDATE")
+    candidate_row["repair_loop_count"] = 2
+    _, _, _, both_reasons = validator.rescore(symmetry, policy)
+    codes = [(item["code"], item["parent_value"], item["candidate_value"]) for item in both_reasons]
+    require(
+        ("REPAIR_LOOPS", "2", "NONE") in codes and ("REPAIR_LOOPS", "NONE", "2") in codes,
+        f"the repair-loop check is not variant-symmetric: {codes!r}",
+    )
+    # The candidate record keeps its exact version-1 shape and its position after the three-name
+    # limit loop, so no version-1 verdict changes.
+    require(
+        codes.index(("REPAIR_LOOPS", "2", "NONE"))
+        < codes.index(("REPAIR_LOOPS", "NONE", "2")),
+        f"the parent repair reason is not emitted before the candidate's: {codes!r}",
+    )
+
+    def mixed_version(evaluation, evidence) -> None:
+        evaluation["rows"][0]["schema_version"] = 1
+        fixture.bind(evaluation["rows"][0])
+
+    rejected(
+        v2_evaluation_case(root, "v2-mixed-version", mixed_version),
+        "a mixed-version container",
+        contains="evaluation row version disagrees with its container",
+    )
+
+    def undeclared_row_field(evaluation, evidence) -> None:
+        # Rows were only structurally checked before version 2; the per-version tuple is what makes
+        # a grown or reordered row shape a rejection rather than a silently skipped key.
+        row = evaluation["rows"][0]
+        row["repair_recovery"] = True
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-row-field-order", undeclared_row_field),
+        "an undeclared row field",
+        contains="has the wrong fields or order",
+    )
+
+    def reordered_row_fields(evaluation, evidence) -> None:
+        row = evaluation["rows"][0]
+        reordered = {name: row[name] for name in list(row)[::-1]}
+        evaluation["rows"][0] = fixture.bind(reordered)
+
+    rejected(
+        v2_evaluation_case(root, "v2-row-field-reorder", reordered_row_fields),
+        "a reordered row",
+        contains="has the wrong fields or order",
+    )
+
+    def evidence_version_skew(evaluation, evidence) -> None:
+        evidence["schema_version"] = 1
+
+    rejected(
+        v2_evaluation_case(root, "v2-evidence-version", evidence_version_skew),
+        "an evidence container at another version",
+        contains="evaluation evidence header is invalid",
+    )
+
+    def sparse_attempt_index(evaluation, evidence) -> None:
+        row = evaluation["rows"][0]
+        row["attempts"][1]["attempt_index"] = 3
+        fixture.bind(row["attempts"][1])
+        fixture.bind(row)
+        evidence["expected_inputs"][1]["attempt_index"] = 3
+        fixture.bind(evidence["expected_inputs"][1])
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-index", sparse_attempt_index),
+        "a non-dense attempt index",
+        contains="attempt index is not dense and ascending from one",
+    )
+
+    def two_initial_attempts(evaluation, evidence) -> None:
+        row = evaluation["rows"][0]
+        row["attempts"][1]["attempt_kind"] = "INITIAL"
+        row["attempts"][1]["repair_prompt_source"] = None
+        row["attempts"][1]["repair_preparation_ns"] = 0
+        fixture.bind(row["attempts"][1])
+        row["repair_loop_count"] = 0
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-two-initial", two_initial_attempts),
+        "two initial attempts",
+        contains="does not begin with exactly one initial attempt",
+    )
+
+    def repair_loop_count_skew(evaluation, evidence) -> None:
+        row = evaluation["rows"][0]
+        row["repair_loop_count"] = 0
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-repair-count", repair_loop_count_skew),
+        "a row repair count that is not its repair attempts",
+        contains="repair loop count does not match its repair attempts",
+    )
+
+    def repair_bound_exceeded(evaluation, evidence) -> None:
+        # The corpus manifest is the cap: a second repair is a policy violation, not headroom.
+        # A task edit moves its own digest, so the declared-input cascade is rebound with it and
+        # the row proves the repair bound rather than a stale snapshot digest.
+        for task in evaluation["tasks"]:
+            task["regression_limits"]["maximum_repair_loops"] = 0
+        fixture.bind_declared_inputs(evaluation)
+
+    rejected(
+        v2_evaluation_case(root, "v2-repair-bound", repair_bound_exceeded),
+        "more attempts than the task admits",
+        contains="carries more attempts than its task admits",
+    )
+
+    def measurement_not_final(evaluation, evidence) -> None:
+        row = evaluation["rows"][0]
+        row["measurement"]["patch_size_bytes"] = row["measurement"]["patch_size_bytes"] + 1
+        fixture.bind(row["measurement"])
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-measurement-binding", measurement_not_final),
+        "a row measurement that is not its final attempt's",
+        contains="measurement is not its final attempt's measurement",
+    )
+
+    def timing_sum_skew(evaluation, evidence) -> None:
+        row = next(item for item in evaluation["rows"] if "generation_to_passing_patch_ns" in item)
+        row["generation_to_passing_patch_ns"] += 1
+        row["time_to_passing_patch_ns"] += 1
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-timing-sum", timing_sum_skew),
+        "a generation total that is not the attempt sum",
+        contains="generation total is not the sum of its attempts",
+    )
+
+    def overhead_on_failing_attempt(evaluation, evidence) -> None:
+        row = evaluation["rows"][0]
+        row["attempts"][0]["adapter_overhead_ns"] = 1
+        fixture.bind(row["attempts"][0])
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-overhead-presence", overhead_on_failing_attempt),
+        "adapter overhead on a failing attempt",
+        contains="adapter overhead presence does not agree with its status",
+    )
+
+    def adapter_repair_count(evaluation, evidence) -> None:
+        # Each adapter invocation is single-attempt, so a nonzero adapter repair count would
+        # double-count against the evaluator-owned row total.
+        row = evaluation["rows"][0]
+        row["attempts"][0]["measurement"]["repair_loop_count"] = 1
+        fixture.bind(row["attempts"][0]["measurement"])
+        row["attempts"][0]["measurement_sha256"] = row["attempts"][0]["measurement"][
+            "content_sha256"
+        ]
+        fixture.bind(row["attempts"][0])
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-adapter-repair-count", adapter_repair_count),
+        "an adapter-reported repair loop",
+        contains="adapter reported a repair loop it cannot run",
+    )
+
+    def skipped_attempt_with_a_run(evaluation, evidence) -> None:
+        row = evaluation["rows"][0]
+        row["attempts"][1]["status"] = "SKIPPED"
+        row["attempts"][1]["skip_reason"] = "REPAIR_PROMPT_BUDGET"
+        fixture.bind(row["attempts"][1])
+        row["repair_loop_count"] = 0
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-skipped-carries-run", skipped_attempt_with_a_run),
+        "a skipped attempt that carries a run",
+        contains="carries rendered_prompt_sha256 against its status",
+    )
+
+    def attempt_trace_unbound(evaluation, evidence) -> None:
+        # One positional attestation per row cannot reach a repair invocation's trace records, so
+        # the attempt record is what binds them. A well-formed digest that names no persisted
+        # record must be rejected, not merely a missing one.
+        row = evaluation["rows"][0]
+        row["attempts"][1]["input_snapshot_sha256"] = "f" * 64
+        fixture.bind(row["attempts"][1])
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-trace-unbound", attempt_trace_unbound),
+        "an attempt trace digest that names no persisted record",
+        contains="input_snapshot_sha256 names no persisted record",
+    )
+
+    def attempt_trace_missing(evaluation, evidence) -> None:
+        row = evaluation["rows"][0]
+        row["attempts"][1]["snapshot_request_sha256"] = None
+        fixture.bind(row["attempts"][1])
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-trace-missing", attempt_trace_missing),
+        "an attempt that ran and attests no snapshot request",
+        contains="omits snapshot_request_sha256 against its status",
+    )
+
+    def repair_attempt(evaluation) -> dict[str, Any]:
+        """The one attempt every rejection below re-points: row 0's repair, which ran."""
+        return evaluation["rows"][0]["attempts"][1]
+
+    def rebind_attempt(evaluation) -> None:
+        fixture.bind(repair_attempt(evaluation))
+        fixture.bind(evaluation["rows"][0])
+
+    def append_snapshot_result(evaluation, **fields) -> str:
+        """Persist a second, well-formed snapshot result and return its digest."""
+        record = copy.deepcopy(evaluation["snapshot_results"][0])
+        record.update(fields)
+        fixture.bind(record)
+        evaluation["snapshot_results"].append(record)
+        return record["content_sha256"]
+
+    def attempt_trace_cross_task(evaluation, evidence) -> None:
+        # Section 3.8 row 22: pool membership is not binding. A digest that resolves to a
+        # persisted record of *another* task names a record this row never observed, and the
+        # attempt would otherwise carry a referent nobody resolves.
+        digest = append_snapshot_result(evaluation, task_id="other-task")
+        repair_attempt(evaluation)["after_snapshot_result_sha256"] = digest
+        rebind_attempt(evaluation)
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-trace-cross-task", attempt_trace_cross_task),
+        "an attempt trace digest that resolves to another task's record",
+        contains="after_snapshot_result_sha256 does not resolve to exactly one record of its task",
+    )
+
+    def attempt_trace_ambiguous(evaluation, evidence) -> None:
+        # Resolution is to *exactly* one record. A second persisted copy of the same observation
+        # makes the referent ambiguous, and "at least one" would silently accept it.
+        evaluation["snapshot_results"].append(
+            copy.deepcopy(evaluation["snapshot_results"][0])
+        )
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-trace-ambiguous", attempt_trace_ambiguous),
+        "an attempt trace digest with two persisted records to resolve to",
+        contains=(
+            "before_snapshot_result_sha256 does not resolve to exactly one record of its task"
+        ),
+    )
+
+    def attempt_trace_drift(evaluation, evidence) -> None:
+        # The before and after observations of one invocation must be the same observation.
+        drifted = copy.deepcopy(evaluation["snapshot_results"][0]["artifact_digests"])
+        drifted[0]["sha256"] = "c" * 64
+        digest = append_snapshot_result(evaluation, artifact_digests=drifted)
+        repair_attempt(evaluation)["after_snapshot_result_sha256"] = digest
+        rebind_attempt(evaluation)
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-trace-drift", attempt_trace_drift),
+        "an attempt whose before and after observations disagree",
+        contains="before and after observations record drift",
+    )
+
+    def attempt_trace_unclosed(evaluation, evidence) -> None:
+        # An observation must be closed over the request that asked for it: the request the
+        # attempt names asks for one more path than the invocation actually observed.
+        request = copy.deepcopy(evaluation["snapshot_requests"][0])
+        request["additional_files"] = request["additional_files"] + ["unobserved"]
+        fixture.bind(request)
+        evaluation["snapshot_requests"].append(request)
+        repair_attempt(evaluation)["snapshot_request_sha256"] = request["content_sha256"]
+        rebind_attempt(evaluation)
+
+    rejected(
+        v2_evaluation_case(root, "v2-attempt-trace-unclosed", attempt_trace_unclosed),
+        "an observation that is not closed over its snapshot request",
+        contains="before observation is not closed over its snapshot request",
+    )
+
+    def attempt_input_snapshot_digests(evaluation, evidence) -> None:
+        # The sealed input the attempt names must carry what the invocation observed, so a repair
+        # cannot attest a prompt sealed over a different tree than the one it was measured on.
+        record = copy.deepcopy(evaluation["input_snapshots"][0])
+        record["artifact_digests"] = record["artifact_digests"] + [
+            {"path": "unobserved", "mode": "100644", "byte_count": 1, "sha256": "d" * 64}
+        ]
+        fixture.bind(record)
+        evaluation["input_snapshots"].append(record)
+        repair_attempt(evaluation)["input_snapshot_sha256"] = record["content_sha256"]
+        rebind_attempt(evaluation)
+
+    rejected(
+        v2_evaluation_case(
+            root, "v2-attempt-input-digests", attempt_input_snapshot_digests
+        ),
+        "an input snapshot that is not what the invocation observed",
+        contains="input snapshot does not carry the observed artifact digests",
+    )
+
+    def input_snapshots_exceed_invocations(evaluation, evidence) -> None:
+        # Section 3.8 row 23: the ceiling is the run's invocation count. Four rows each running an
+        # initial and a repair attempt buy eight sealed inputs, and a ninth is unaccounted for.
+        original = copy.deepcopy(evaluation["input_snapshots"][0])
+        while len(evaluation["input_snapshots"]) <= 8:
+            evaluation["input_snapshots"].append(copy.deepcopy(original))
+
+    rejected(
+        v2_evaluation_case(
+            root, "v2-input-snapshots-exceed-invocations", input_snapshots_exceed_invocations
+        ),
+        "more sealed inputs than the run made invocations",
+        contains="input snapshots outnumber the run's contained invocations",
+    )
+
+    def dropped_status_section(evaluation, evidence) -> None:
+        row = evaluation["rows"][0]
+        source = row["attempts"][1]["repair_prompt_source"]
+        source["included_sections"] = ["SUMMARY", "STDOUT", "STDERR"]
+        source["dropped_sections"] = ["STATUS"]
+        fixture.bind(source)
+        fixture.bind(row["attempts"][1])
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-repair-source-status", dropped_status_section),
+        "a repair prompt source that drops STATUS",
+        contains="drops the STATUS section",
+    )
+
+    def repair_source_on_initial(evaluation, evidence) -> None:
+        row = evaluation["rows"][0]
+        row["attempts"][0]["repair_prompt_source"] = copy.deepcopy(
+            row["attempts"][1]["repair_prompt_source"]
+        )
+        fixture.bind(row["attempts"][0])
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-repair-source-initial", repair_source_on_initial),
+        "a repair prompt source on the initial attempt",
+        contains="initial attempt carries a repair prompt source",
+    )
+
+    def duplicate_attempt_identity(evaluation, evidence) -> None:
+        evidence["expected_inputs"][1] = copy.deepcopy(evidence["expected_inputs"][0])
+
+    rejected(
+        v2_evaluation_case(root, "v2-expected-duplicate", duplicate_attempt_identity),
+        "a duplicated attempt identity",
+        contains="is out of attempt order",
+    )
+
+    def missing_attempt_identity(evaluation, evidence) -> None:
+        del evidence["expected_inputs"][1]
+
+    rejected(
+        v2_evaluation_case(root, "v2-expected-missing", missing_attempt_identity),
+        "a missing attempt identity",
+        contains="do not cover every attempt exactly once",
+    )
+
+    def extra_attempt_identity(evaluation, evidence) -> None:
+        evidence["expected_inputs"].append(copy.deepcopy(evidence["expected_inputs"][-1]))
+
+    rejected(
+        v2_evaluation_case(root, "v2-expected-extra", extra_attempt_identity),
+        "an extra attempt identity",
+        contains="do not cover every attempt exactly once",
+    )
+
+    def expected_input_content_skew(evaluation, evidence) -> None:
+        expected = evidence["expected_inputs"][0]
+        expected["adapter_request_sha256"] = "0" * 64
+        fixture.bind(expected)
+
+    rejected(
+        v2_evaluation_case(root, "v2-expected-content", expected_input_content_skew),
+        "an attempt digest that is not its attempt's",
+        contains="adapter_request_sha256 does not match its attempt",
+    )
+
+    def parent_repair_loops_exceed(evaluation, evidence) -> None:
+        # The variant-symmetric check: a PARENT row above its task cap was checked nowhere before.
+        row = next(item for item in evaluation["rows"] if item["variant"] == "PARENT")
+        row["repair_loop_count"] = 2
+        fixture.bind(row)
+
+    rejected(
+        v2_evaluation_case(root, "v2-parent-repair-loops", parent_repair_loops_exceed),
+        "a parent row above its repair cap",
+        contains="repair loop count does not match its repair attempts",
+    )
+
+    def aggregate_not_recomputed(evaluation, evidence) -> None:
+        evaluation["corpus_aggregate"]["repair_recovery_paired_count"] = 3
+
+    rejected(
+        v2_evaluation_case(root, "v2-aggregate-recompute", aggregate_not_recomputed),
+        "a persisted repair aggregate the verifier does not recompute",
+        contains="persisted corpus aggregate disagrees with the recomputed value",
+    )
+
+
+def frozen_version_one_chain() -> None:
+    """The frozen version-1 chain still validates and rescores byte-identically.
+
+    `make prompt-gate-check` is the full proof, but it needs a source bundle and a Linux floor.
+    This drives the same two functions directly against the merged C6-MEASURED evidence, so a
+    version-2-only decoder cannot silently delete C6's acceptance evidence.
+    """
+    result = json.loads((FROZEN_GATE / "prompt-evaluation-improved.json").read_text("utf-8"))
+    evidence = json.loads(
+        (FROZEN_GATE / "prompt-evaluation-improved-evidence.json").read_text("utf-8")
+    )
+    require(
+        result["schema_version"] == 1 and evidence["schema_version"] == 1,
+        "the frozen C6 chain is no longer version 1",
+    )
+    policy = validator.validate_acceptance_policy(result["acceptance_policy"])
+    status, aggregates, corpus, reasons = validator.rescore(result, policy)
+    require(status == "IMPROVED" and not reasons, f"the frozen chain no longer rescores: {status}")
+    for persisted, computed in zip(result["task_aggregates"], aggregates):
+        require(
+            validator.completed_record(persisted, validator.TASK_AGGREGATE_FIELDS) == computed,
+            "a frozen task aggregate no longer rescores byte-identically",
+        )
+    require(
+        validator.completed_record(result["corpus_aggregate"], validator.CORPUS_AGGREGATE_FIELDS)
+        == corpus,
+        "the frozen corpus aggregate no longer rescores byte-identically",
+    )
+    require(
+        "repair_attempt_count" not in corpus,
+        "a version-1 rescore grew a version-2 aggregate field",
+    )
+    validator.validate_evaluation_pair(copy.deepcopy(result), copy.deepcopy(evidence))
+    # A version-1 row's repair authority is, and stays, its measurement. The frozen chain carries
+    # zero everywhere, which would let a row-level reader pass unnoticed, so the source of truth is
+    # asserted against a nonzero value rather than against the frozen zeros.
+    sourced = copy.deepcopy(result)
+    parent_row = next(item for item in sourced["rows"] if item["variant"] == "PARENT")
+    candidate_row = next(item for item in sourced["rows"] if item["variant"] == "CANDIDATE")
+    parent_row["measurement"]["repair_loop_count"] = 3
+    candidate_row["measurement"]["repair_loop_count"] = 2
+    for task in sourced["tasks"]:
+        task["regression_limits"]["maximum_repair_loops"] = 8
+    _, sourced_aggregates, sourced_corpus, _ = validator.rescore(sourced, policy)
+    selected = next(
+        item for item in sourced_aggregates if item["task_id"] == parent_row["task_id"]
+    )
+    require(
+        selected["parent_repair_loop_count"] == 3
+        and selected["candidate_repair_loop_count"] == 2,
+        f"a version-1 repair count is no longer sourced from its measurement: {selected!r}",
+    )
+    require(
+        sourced_corpus["parent_repair_loop_count"] == 3
+        and sourced_corpus["candidate_repair_loop_count"] == 2,
+        f"a version-1 corpus repair count is no longer measurement-sourced: {sourced_corpus!r}",
+    )
+
+
+def frozen_corpus_rows() -> None:
+    """The non-mutation proof, read straight off the two file-set manifests.
+
+    Every member `canonical-v1r` shares with `canonical-v1` carries the same digest in both, which
+    is the machine-checkable statement that this capability moved neither the measurement adapter,
+    the validation runner, nor any fixture.
+    """
+
+    def members(path: Path) -> dict[str, str]:
+        entries: dict[str, str] = {}
+        for line in path.read_bytes().split(b"\n")[2:]:
+            if not line:
+                continue
+            head, _, rest = line.partition(b"\0")
+            _, _, remainder = head.partition(b" ")
+            length, _, relative = remainder.partition(b" ")
+            require(
+                len(relative) == int(length),
+                "a corpus manifest entry length disagrees with its path",
+            )
+            entries[relative.decode("utf-8")] = rest.split(b" ")[1].decode("ascii")
+        return entries
+
+    frozen = members(PROJECT_ROOT / "eval/prompt/canonical-v1/corpus-file-set.manifest")
+    repair = members(PROJECT_ROOT / "eval/prompt/canonical-v1r/corpus-file-set.manifest")
+    shared = sorted(set(frozen) & set(repair))
+    require(len(shared) == 24, f"the two corpora share {len(shared)} members, not 24")
+    for relative in shared:
+        require(
+            frozen[relative] == repair[relative],
+            f"a shared corpus member moved between the two freezes: {relative}",
+        )
+    for name in (
+        "eval/runners/run-coding-task.py",
+        "scripts/prompt-measurement-adapter.py",
+        "scripts/prompt-fixed-adapter.py",
+        "scripts/prompt-snapshot-helper.py",
+    ):
+        require(name in shared, f"{name} is not a shared member of both corpora")
+    added = sorted(set(repair) - set(frozen))
+    require(
+        added
+        == [
+            "eval/prompt/canonical-v1r/generation-policy.json",
+            "eval/prompt/canonical-v1r/repair-template.json",
+            "eval/tasks/prompt-v1r/duration-half-away-from-zero.json",
+            "eval/tasks/prompt-v1r/layer-precedence-frozen-module.json",
+            "eval/tasks/prompt-v1r/record-codec-round-trip.json",
+        ],
+        f"the repair corpus adds an unexpected member set: {added}",
+    )
+    # Every declared member's bytes still hash to the digest the manifest froze.
+    for relative, digest in repair.items():
+        path = PROJECT_ROOT / relative
+        require(path.is_file(), f"a frozen corpus member is missing: {relative}")
+        require(
+            hashlib.sha256(path.read_bytes()).hexdigest() == digest,
+            f"a frozen corpus member drifted from its manifest digest: {relative}",
+        )
+    # The repair bound is exactly one: the manifest itself is the cap.
+    for relative in added:
+        if not relative.startswith("eval/tasks/prompt-v1r/"):
+            continue
+        task = json.loads((PROJECT_ROOT / relative).read_text("utf-8"))
+        require(
+            task["regression_limits"]["maximum_repair_loops"] == 1,
+            f"a repair-corpus task does not declare exactly one repair loop: {relative}",
+        )
+        require(
+            task["repair_template_path"] == "eval/prompt/canonical-v1r/repair-template.json"
+            and task["repair_template_sha256"] == repair[task["repair_template_path"]],
+            f"a repair-corpus task does not pin the sealed template: {relative}",
+        )
 
 
 # --- family: source-bundle -----------------------------------------------------------

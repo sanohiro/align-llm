@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import argparse
 import copy
 import hashlib
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -396,6 +398,17 @@ def verify_descendant_cleanup_boundary() -> None:
             task_ns < outer and provider_ns < outer and task_ns + provider_ns < outer,
             f"an inner adapter deadline is not strictly smaller than the outer sum {outer}",
         )
+    # Everything above is a source and arithmetic boundary and runs anywhere. Everything below
+    # drives real process groups and asserts that no descendant outlives its owner, which is the
+    # Linux process-containment floor this repository's containment rules are written against.
+    # `scripts/run-prompt-gate-validator-smoke` reports SKIP for the same reason rather than
+    # asserting a containment guarantee the host does not provide.
+    if not sys.platform.startswith("linux"):
+        print(
+            "prompt evaluate smoke: descendant cleanup boundary SKIP "
+            "(requires the Linux process-containment floor)"
+        )
+        return
     original_cleanup = module.cleanup_process_group
     cleanup_calls = 0
 
@@ -1082,6 +1095,422 @@ def verify_strict_source_membership_boundary() -> None:
             pass
 
 
+def repair_evaluator_module(name: str):
+    """Load `scripts/prompt-evaluate.py` as a module, the idiom every boundary case here uses."""
+    module_path = SOURCE / "scripts/prompt-evaluate.py"
+    spec = importlib.util.spec_from_file_location(name, module_path)
+    require(spec is not None and spec.loader is not None, "evaluator could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def repair_measurement(
+    module,
+    status: str = "FAIL",
+    summary: str = "provider-backed candidate patch failed validation; applied edits: src/duration.py",
+    stdout: str = "post-repair validation exit code: 1\n",
+    stderr: str = "AssertionError: 0 != 1\n",
+    cleanup: bool = True,
+    containment: bool = True,
+    repairs: int = 0,
+    generation_ns=None,
+):
+    """A `TASK_MEASUREMENT`-shaped document carrying exactly what the attempt loop reads."""
+    passed = status == "PASS"
+    return bind({
+        "schema_version": 1, "artifact_kind": "TASK_MEASUREMENT", "status": status,
+        "failure_kind": "NONE" if passed else "TEST",
+        "build_status": "PASS", "test_status": "PASS" if passed else "FAIL",
+        "repair_loop_count": repairs, "unrelated_diff_count": 0, "patch_size_bytes": 10,
+        "public_api_change_count": 0, "policy_violation_count": 0,
+        "cleanup_passed": cleanup, "containment_passed": containment,
+        "benchmark_regression_ppm": None,
+        "generation_to_passing_patch_ns": generation_ns,
+        "rendered_prompt_sha256": "a" * 64,
+        "generation_request": {"content_sha256": "b" * 64, "provider_request_sha256": "c" * 64},
+        "seed_attestation": {"result": "APPLIED"},
+        "diagnostic_summary": summary, "diagnostic_stdout": stdout, "diagnostic_stderr": stderr,
+        "content_sha256": "",
+    })
+
+
+def verify_repair_attempt_boundary() -> None:
+    """C4-REPAIR-MEASURED sections 3.2, 3.6, 3.8, and 4.3: the evaluator-owned second attempt.
+
+    The attempt loop itself lives inside `evaluate()`'s row body and is exercised end to end by the
+    provider-backed cases below. What is asserted here is the part that is a pure function of a
+    failing attempt's persisted measurement: whether a repair is offered at all, what the skipped
+    record carries, and how the evaluator-observed totals are summed and bounded.
+    """
+    module = repair_evaluator_module("prompt_evaluate_attempt")
+    template = json.loads(
+        (SOURCE / "eval/prompt/canonical-v1r/repair-template.json").read_text(encoding="utf-8")
+    )
+    generation = {"max_prompt_bytes": 65_536}
+    seed = 20_260_824
+
+    calls: list[dict] = []
+
+    def run_attempt(attempt_index, rendered_text, rendered_text_sha, repair_source, preparation_ns):
+        calls.append({
+            "attempt_index": attempt_index, "rendered_text": rendered_text,
+            "rendered_text_sha": rendered_text_sha, "repair_source": repair_source,
+            "preparation_ns": preparation_ns,
+        })
+        return {"record": {"attempt_index": attempt_index}, "measurement": None}
+
+    def first(**changes):
+        return {
+            "measurement": repair_measurement(module, **changes),
+            "rendered_text": "BASE\n\n--- task prompt ---\nTASK\n",
+        }
+
+    # `attempt-no-repair-offered`: a task that names no repair template offers no repair, and the
+    # skipped record says so rather than the row silently closing with one attempt.
+    calls.clear()
+    not_eligible = module.build_repair_attempt(run_attempt, first(), None, generation, seed)
+    require(
+        not_eligible.get("skipped") is True
+        and not_eligible["record"]["skip_reason"] == "REPAIR_NOT_ELIGIBLE"
+        and not_eligible["record"]["status"] == "SKIPPED"
+        and not calls,
+        "attempt-no-repair-offered: a task with no repair template still called the provider",
+    )
+
+    # `attempt-record-order`: a skipped attempt carries identity and nothing else, in the declared
+    # field order, with `adapter_elapsed_ns` zero and every run-bearing field absent.
+    record = not_eligible["record"]
+    require(
+        tuple(record) == module.ATTEMPT_RECORD_FIELDS,
+        f"attempt-record-order: the attempt record field order changed: {tuple(record)!r}",
+    )
+    require(
+        record["attempt_kind"] == "REPAIR" and record["attempt_index"] == 2
+        and record["paired_seed"] == seed and record["adapter_elapsed_ns"] == 0
+        and record["repair_preparation_ns"] >= 0
+        and all(
+            record[name] is None for name in (
+                "rendered_prompt_sha256", "adapter_request_sha256", "generation_request",
+                "seed_attestation", "measurement", "measurement_sha256", "adapter_overhead_ns",
+            )
+        )
+        and record["repair_prompt_source"] is None,
+        "attempt-record-order: a skipped attempt carried a run it never made",
+    )
+    require(
+        set(module.SKIP_REASONS) == {
+            "NONE", "REPAIR_PROMPT_BUDGET", "REPAIR_NOT_ELIGIBLE", "REPAIR_INPUT_UNAVAILABLE",
+        },
+        "attempt-record-order: the declared skip reasons changed",
+    )
+
+    # `attempt-skip-inputs`: no usable diagnostic, and a run that could not prove it cleaned up or
+    # stayed contained, are both `REPAIR_INPUT_UNAVAILABLE` and both stop before a provider call.
+    for label, changes in (
+        ("empty diagnostics", {"summary": "", "stdout": "", "stderr": ""}),
+        ("unproven cleanup", {"cleanup": False}),
+        ("unproven containment", {"containment": False}),
+    ):
+        calls.clear()
+        skipped = module.build_repair_attempt(
+            run_attempt, first(**changes), template, generation, seed,
+        )
+        require(
+            skipped.get("skipped") is True
+            and skipped["record"]["skip_reason"] == "REPAIR_INPUT_UNAVAILABLE"
+            and skipped["record"]["repair_prompt_source"] is None
+            and not calls,
+            f"attempt-skip-inputs: {label} did not suppress the repair attempt",
+        )
+
+    # `attempt-cleanup-suppresses-repair`: the containment rule above, stated as its own case. A
+    # run that could not prove it cleaned up cannot prove the next attempt was contained.
+    calls.clear()
+    suppressed = module.build_repair_attempt(
+        run_attempt, first(cleanup=False), template, generation, seed,
+    )
+    require(
+        suppressed.get("skipped") is True and not calls,
+        "attempt-cleanup-suppresses-repair: attempt one's cleanup failure did not suppress attempt two",
+    )
+
+    # `attempt-skip-budget`: a prompt budget that cannot carry even STATUS yields a skipped attempt
+    # whose `repair_prompt_source` records exactly which sections were dropped reaching that
+    # decision, and still makes no provider call.
+    calls.clear()
+    budget_skipped = module.build_repair_attempt(
+        run_attempt, first(), template, {"max_prompt_bytes": 64}, seed,
+    )
+    source = budget_skipped["record"]["repair_prompt_source"]
+    require(
+        budget_skipped.get("skipped") is True
+        and budget_skipped["record"]["skip_reason"] == "REPAIR_PROMPT_BUDGET"
+        and source is not None
+        and tuple(source) == module.REPAIR_PROMPT_SOURCE_FIELDS
+        and source["included_sections"] == ["STATUS"]
+        and source["dropped_sections"] == ["SUMMARY", "STDOUT", "STDERR"]
+        and source["source_attempt_index"] == 1
+        and source["template_sha256"] == template["content_sha256"]
+        and not calls,
+        f"attempt-skip-budget: budget exhaustion was not recorded as a measured skip: {source!r}",
+    )
+
+    # `attempt-repair-recovers`: the ordinary path. Attempt two is a second ordinary invocation
+    # carrying a prompt that strictly extends attempt one's, bound to attempt one's measurement.
+    calls.clear()
+    failing = first()
+    module.build_repair_attempt(run_attempt, failing, template, generation, seed)
+    require(len(calls) == 1, "attempt-repair-recovers: the repair attempt was not invoked exactly once")
+    invoked = calls[0]
+    require(
+        invoked["attempt_index"] == 2
+        and invoked["rendered_text"].startswith(failing["rendered_text"])
+        and invoked["rendered_text_sha"] == hashlib.sha256(
+            invoked["rendered_text"].encode("utf-8")
+        ).hexdigest()
+        and invoked["preparation_ns"] >= 0,
+        "attempt-repair-recovers: the repair prompt is not a bound extension of attempt one",
+    )
+    repair_source = invoked["repair_source"]
+    require(
+        repair_source["source_measurement_sha256"] == failing["measurement"]["content_sha256"]
+        and repair_source["template_sha256"] == template["content_sha256"]
+        and repair_source["included_sections"] == ["STATUS", "SUMMARY", "STDOUT", "STDERR"]
+        and repair_source["dropped_sections"] == []
+        and repair_source["assembled_bytes"]
+        == len(invoked["rendered_text"].encode("utf-8"))
+        and repair_source["assembled_bytes"] <= generation["max_prompt_bytes"],
+        "attempt-repair-recovers: the repair prompt source does not bind attempt one's measurement",
+    )
+
+    # The repair prompt must carry *this* attempt's diagnostics and no other's. Feeding a different
+    # failing attempt must change the prompt; that is the whole difference between a prompt that
+    # talks about failure and a loop that reacts to one.
+    calls.clear()
+    other = first(stderr="AssertionError: 41 != 42\n")
+    module.build_repair_attempt(run_attempt, other, template, generation, seed)
+    require(
+        calls[0]["rendered_text"] != invoked["rendered_text"]
+        and "41 != 42" in calls[0]["rendered_text"]
+        and "41 != 42" not in invoked["rendered_text"],
+        "attempt-repair-recovers: the repair prompt did not carry the run's own diagnostics",
+    )
+
+    # `attempt-timing-sum`, `attempt-timing-none`, `attempt-timing-bound`: section 3.6's totals are
+    # evaluator-observed, exact, and error rather than clamp at the existing two-hour ceiling.
+    def attempt(status: str, elapsed: int, preparation: int, kind: str = "INITIAL"):
+        return {
+            "status": status, "attempt_kind": kind,
+            "adapter_elapsed_ns": elapsed, "repair_preparation_ns": preparation,
+        }
+
+    require(
+        module.attempt_total_ns([attempt("PASS", 100, 0)]) == 100,
+        "attempt-timing-sum: a single passing attempt did not total its own span",
+    )
+    require(
+        module.attempt_total_ns([
+            attempt("FAIL", 100, 0), attempt("PASS", 200, 50, "REPAIR"),
+        ]) == 350,
+        "attempt-timing-sum: the repair total is not the sum through the first passing attempt",
+    )
+    require(
+        module.attempt_total_ns([
+            attempt("FAIL", 100, 0), attempt("FAIL", 200, 50, "REPAIR"),
+        ]) is None,
+        "attempt-timing-none: a row that never passed reported a generation total",
+    )
+    require(
+        module.attempt_total_ns([
+            attempt("FAIL", 100, 0), attempt("SKIPPED", 0, 7, "REPAIR"),
+        ]) is None,
+        "attempt-timing-none: a skipped attempt contributed to a timing sum",
+    )
+    bounded = False
+    try:
+        module.attempt_total_ns([attempt("PASS", 7_200_000_000_001, 0)])
+    except module.EvaluationError:
+        bounded = True
+    require(
+        bounded,
+        "attempt-timing-bound: an out-of-bound nanosecond total was clamped rather than refused",
+    )
+
+    # `attempt-path-length`: run-local names carry a fixed-width attempt suffix on a fixed-depth
+    # run directory, so no attempt index, task id, or digest is concatenated into an unbounded
+    # name. Prior incident class: ENAMETOOLONG.
+    evaluator_source = (SOURCE / "scripts/prompt-evaluate.py").read_text()
+    require(
+        'prefix = f"t{task_ordinal + 1}-s{sample}-{variant_name.lower()}-a{attempt_index}"'
+        in evaluator_source,
+        "attempt-path-length: the fixed-width attempt suffix left the run-local path prefix",
+    )
+    require(
+        module.MAXIMUM_REPAIR_ATTEMPTS == 1,
+        "attempt-path-length: the attempt bound moved, so the suffix is no longer fixed width",
+    )
+    for ordinal, sample, variant_name, attempt_index in ((63, 16, "CANDIDATE", 2), (0, 1, "PARENT", 1)):
+        prefix = f"t{ordinal + 1}-s{sample}-{variant_name.lower()}-a{attempt_index}"
+        require(
+            len(f"{prefix}-measurement.json") <= 64,
+            f"attempt-path-length: a run-local component grew unbounded: {prefix!r}",
+        )
+
+    # `attempt-workspace-distinct` and `attempt-cleanup-order`: attempt two never reuses attempt
+    # one's workspace, and attempt one's owned paths are released before attempt two is prepared.
+    require(
+        evaluator_source.count(
+            "for path in (snapshot_result_path, adapter_request_path, rendered_path, variant_path):"
+        ) == 1
+        and "def run_attempt(" in evaluator_source,
+        "attempt-cleanup-order: the per-attempt cleanup sweep left the attempt body",
+    )
+
+    # `attempt-adapter-repair-count` and `attempt-overhead-presence`: the two invariants the row
+    # body enforces on every adapter document it wraps.
+    require(
+        "if repair_limit >= 1 and measurement[\"repair_loop_count\"] != 0:" in evaluator_source,
+        "attempt-adapter-repair-count: the single-attempt adapter invariant left the row body",
+    )
+    require(
+        'if measurement["status"] == "PASS":' in evaluator_source
+        and "overhead_ns = adapter_elapsed_ns - measurement[\"generation_to_passing_patch_ns\"]"
+        in evaluator_source,
+        "attempt-overhead-presence: adapter overhead is no longer published on a passing attempt",
+    )
+
+
+def verify_provider_probe_boundary() -> None:
+    """C4-REPAIR-MEASURED section 3.5 and 6.5: the fail-closed host provider-service probe.
+
+    Nothing here starts a server or hashes a model file. The probe's own `--model-sha256` input
+    exists so a several-gigabyte file is never rehashed, and the fake server is a script whose
+    `--version` prints the banner the probe parses.
+    """
+    loader = importlib.machinery.SourceFileLoader(
+        "probe_provider_service", str(SOURCE / "scripts/probe-provider-service"),
+    )
+    spec = importlib.util.spec_from_loader("probe_provider_service", loader)
+    require(spec is not None, "provider probe could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+
+    build = "10566"
+    commit = "bb4caa754"
+    model_sha256 = "5" * 64
+
+    with tempfile.TemporaryDirectory(prefix="prompt-provider-probe-") as directory:
+        root = Path(directory)
+        server = root / "fake-llama-server"
+        server.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            f"sys.stderr.write('version: 0.2.0 (build {build}, commit {commit})\\n')\n"
+            "sys.stderr.write('built with AppleClang for Darwin arm64\\n')\n"
+        )
+        server.chmod(0o755)
+        server_sha256 = hashlib.sha256(server.read_bytes()).hexdigest()
+        revision = module.observed_revision(build, commit, server_sha256, model_sha256)
+
+        def policy_at(path: Path, value: str) -> Path:
+            document = {
+                "schema_version": 1, "artifact_kind": "GENERATION_POLICY",
+                "generation_policy_id": "probe-fixture", "provider_service_revision": value,
+            }
+            path.write_text(json.dumps(document), encoding="utf-8")
+            return path
+
+        def values(policy: Path, out: Path):
+            return argparse.Namespace(
+                server_path=server, model_path=root / "absent.gguf",
+                generation_policy=policy, out=out, model_sha256=model_sha256,
+            )
+
+        # `provider-probe-shape`: the emitted document's field order and self-digest.
+        matched = policy_at(root / "policy.json", revision)
+        document = module.probe(values(matched, root / "probe.json"))
+        require(
+            tuple(document) == (
+                "schema_version", "artifact_kind", "provider_service_revision",
+                "server_version_string", "server_binary_sha256", "model_sha256", "content_sha256",
+            ),
+            f"provider-probe-shape: the probe field order changed: {tuple(document)!r}",
+        )
+        require(
+            document["schema_version"] == 1
+            and document["artifact_kind"] == "PROVIDER_SERVICE_PROBE"
+            and document["provider_service_revision"] == revision
+            and document["server_binary_sha256"] == server_sha256
+            and document["model_sha256"] == model_sha256
+            and document["server_version_string"]
+            == f"version: 0.2.0 (build {build}, commit {commit})",
+            "provider-probe-shape: the probe did not record what it observed",
+        )
+        preimage = dict(document)
+        preimage["content_sha256"] = ""
+        require(
+            document["content_sha256"] == hashlib.sha256(
+                b"".join(module.canonical_chunks(preimage))
+            ).hexdigest(),
+            "provider-probe-shape: the probe's own digest does not recompute",
+        )
+
+        # `provider-probe-mismatch` x4: each component of the recorded revision fails closed on its
+        # own, and nothing is written when it does.
+        for label, drifted in (
+            ("build", module.observed_revision("10567", commit, server_sha256, model_sha256)),
+            ("commit", module.observed_revision(build, "deadbeef", server_sha256, model_sha256)),
+            ("server-binary", module.observed_revision(build, commit, "9" * 64, model_sha256)),
+            ("model", module.observed_revision(build, commit, server_sha256, "0" * 64)),
+        ):
+            out = root / f"probe-{label}.json"
+            policy = policy_at(root / f"policy-{label}.json", drifted)
+            code = module.main([
+                "--server-path", str(server), "--model-path", str(root / "absent.gguf"),
+                "--generation-policy", str(policy), "--out", str(out),
+                "--model-sha256", model_sha256,
+            ])
+            require(
+                code == 1 and not out.exists(),
+                f"provider-probe-mismatch: a drifted {label} did not fail closed",
+            )
+
+        # `provider-probe-malformed`: a missing, unreadable, wrong-kind, or wrong-version policy.
+        malformed = (
+            ("missing", None),
+            ("unreadable", b"not json"),
+            ("wrong-kind", b'{"schema_version":1,"artifact_kind":"TASK_PROMPT","provider_service_revision":"x"}'),
+            ("wrong-version", b'{"schema_version":2,"artifact_kind":"GENERATION_POLICY","provider_service_revision":"x"}'),
+            ("no-revision", b'{"schema_version":1,"artifact_kind":"GENERATION_POLICY"}'),
+        )
+        for label, raw in malformed:
+            path = root / f"malformed-{label}.json"
+            if raw is not None:
+                path.write_bytes(raw)
+            out = root / f"probe-malformed-{label}.json"
+            code = module.main([
+                "--server-path", str(server), "--model-path", str(root / "absent.gguf"),
+                "--generation-policy", str(path), "--out", str(out),
+                "--model-sha256", model_sha256,
+            ])
+            require(
+                code == 1 and not out.exists(),
+                f"provider-probe-malformed: a {label} generation policy was admitted",
+            )
+
+        # A malformed supplied model digest is refused rather than recorded.
+        out = root / "probe-bad-digest.json"
+        code = module.main([
+            "--server-path", str(server), "--model-path", str(root / "absent.gguf"),
+            "--generation-policy", str(matched), "--out", str(out), "--model-sha256", "nothex",
+        ])
+        require(
+            code == 1 and not out.exists(),
+            "provider-probe-malformed: a malformed model digest was admitted",
+        )
+
+
 def verify_complete_score_boundary() -> None:
     module_path = SOURCE / "scripts/prompt-evaluate.py"
     spec = importlib.util.spec_from_file_location("prompt_evaluate_score", module_path)
@@ -1115,11 +1544,14 @@ def verify_complete_score_boundary() -> None:
         }
 
     def rows(parent: str, candidate: str, parent_time: int = 100, candidate_time: int = 100) -> list[dict]:
+        # `schema_version` is declared, not defaulted. The scorer selects the authority for
+        # `repair_loop_count` by version and never by presence, so a row that does not say which
+        # version it is has no authority to select and must not be silently treated as either.
         return [
-            {"task_id": "task", "sample_index": 1, "variant": "PARENT",
+            {"schema_version": 1, "task_id": "task", "sample_index": 1, "variant": "PARENT",
              "time_to_passing_patch_ns": parent_time if parent == "PASS" else None,
              "measurement": measurement(parent)},
-            {"task_id": "task", "sample_index": 1, "variant": "CANDIDATE",
+            {"schema_version": 1, "task_id": "task", "sample_index": 1, "variant": "CANDIDATE",
              "time_to_passing_patch_ns": candidate_time if candidate == "PASS" else None,
              "measurement": measurement(candidate)},
         ]
@@ -1151,6 +1583,186 @@ def verify_complete_score_boundary() -> None:
         corpus_limited[4][0]["task_id"] == "CORPUS"
         and corpus_limited[4][0]["code"] == "REPAIR_LOOPS",
         "corpus limit regression was not scored first",
+    )
+
+    # --- C4-REPAIR-MEASURED: the version-2 aggregates and the symmetric repair-loop check -------
+    # Section 3.7. `repair_recovery_paired_count` is the section 1.4 gate quantity; the C6
+    # acceptance verdict is recorded alongside it and is deliberately not consumed by the C4 gate.
+    repair_task = {
+        "task_id": "task", "regression_limits": {
+            "maximum_unrelated_diff_count": 0, "maximum_patch_size_bytes": 1_000,
+            "maximum_public_api_change_count": 0, "maximum_repair_loops": 1,
+            "maximum_benchmark_regression_ppm": None,
+        },
+    }
+
+    def attempts(*pairs) -> list[dict]:
+        return [
+            {"attempt_index": index + 1, "attempt_kind": kind, "status": status}
+            for index, (kind, status) in enumerate(pairs)
+        ]
+
+    def row_v2(variant_name: str, sample: int, status: str, repairs: int, records, total=None) -> dict:
+        return {
+            "schema_version": 2, "task_id": "task", "sample_index": sample, "variant": variant_name,
+            "repair_loop_count": repairs,
+            "generation_to_passing_patch_ns": total,
+            "time_to_passing_patch_ns": None if total is None else total + 10,
+            "attempts": records, "measurement": measurement(status),
+        }
+
+    recovered = attempts(("INITIAL", "FAIL"), ("REPAIR", "PASS"))
+    unrecovered = attempts(("INITIAL", "FAIL"), ("REPAIR", "FAIL"))
+    first_shot = attempts(("INITIAL", "PASS"))
+    skipped_repair = attempts(("INITIAL", "FAIL"), ("REPAIR", "SKIPPED"))
+
+    def score(rows_value, task_value=repair_task, sample_count=2):
+        return module.complete_score(
+            [task_value], rows_value, sample_count, policy, trust, environment,
+            {"provider_kind": "LIVE"},
+        )
+
+    # Both paired samples of the CANDIDATE arm recover; the PARENT arm never does. That is one
+    # (task, variant) pair, so the gate quantity is exactly 1.
+    paired = [
+        row_v2("PARENT", 1, "FAIL", 1, unrecovered),
+        row_v2("CANDIDATE", 1, "PASS", 1, recovered, 350),
+        row_v2("CANDIDATE", 2, "PASS", 1, recovered, 400),
+        row_v2("PARENT", 2, "FAIL", 1, unrecovered),
+    ]
+    _, _, paired_aggregates, paired_corpus, paired_reasons = score(paired)
+    require(
+        paired_corpus["repair_attempt_count"] == 4
+        and paired_corpus["repair_recovery_count"] == 2
+        and paired_corpus["repair_recovery_paired_count"] == 1,
+        f"the corpus repair aggregates are wrong: {paired_corpus!r}",
+    )
+    require(
+        paired_aggregates[0]["parent_repair_attempt_count"] == 2
+        and paired_aggregates[0]["candidate_repair_attempt_count"] == 2
+        and paired_aggregates[0]["parent_repair_recovery_count"] == 0
+        and paired_aggregates[0]["candidate_repair_recovery_count"] == 2
+        and paired_aggregates[0]["repair_recovery_paired"] is True,
+        f"the task repair aggregates are wrong: {paired_aggregates[0]!r}",
+    )
+    require(
+        not any(item["code"] == "REPAIR_LOOPS" for item in paired_reasons),
+        "a repair within the declared bound was scored as a policy violation",
+    )
+
+    # One lucky sample is not a reproducible recovery: the paired count must stay zero.
+    half = [
+        row_v2("PARENT", 1, "FAIL", 1, unrecovered),
+        row_v2("CANDIDATE", 1, "PASS", 1, recovered, 350),
+        row_v2("CANDIDATE", 2, "FAIL", 1, unrecovered),
+        row_v2("PARENT", 2, "FAIL", 1, unrecovered),
+    ]
+    _, _, _, half_corpus, _ = score(half)
+    require(
+        half_corpus["repair_recovery_count"] == 1
+        and half_corpus["repair_recovery_paired_count"] == 0,
+        f"an unpaired recovery was counted as reproducible: {half_corpus!r}",
+    )
+
+    # A first-shot pass makes no repair attempt, and a skipped repair is never counted as one.
+    quiet = [
+        row_v2("PARENT", 1, "PASS", 0, first_shot, 100),
+        row_v2("CANDIDATE", 1, "PASS", 0, first_shot, 100),
+        row_v2("CANDIDATE", 2, "FAIL", 0, skipped_repair),
+        row_v2("PARENT", 2, "PASS", 0, first_shot, 100),
+    ]
+    _, _, _, quiet_corpus, _ = score(quiet)
+    require(
+        quiet_corpus["repair_attempt_count"] == 0
+        and quiet_corpus["repair_recovery_count"] == 0
+        and quiet_corpus["repair_recovery_paired_count"] == 0,
+        f"a skipped or unoffered repair was counted as an attempt: {quiet_corpus!r}",
+    )
+
+    # The `REPAIR_LOOPS` limit check is variant-symmetric from version 2 on. The candidate record
+    # keeps its exact existing shape; the parent arm gets a distinguishable one.
+    over_candidate = [
+        row_v2("PARENT", 1, "FAIL", 1, unrecovered),
+        row_v2("CANDIDATE", 1, "FAIL", 2, unrecovered),
+        row_v2("CANDIDATE", 2, "FAIL", 1, unrecovered),
+        row_v2("PARENT", 2, "FAIL", 1, unrecovered),
+    ]
+    candidate_reasons = [
+        item for item in score(over_candidate)[4]
+        if item["code"] == "REPAIR_LOOPS" and item["task_id"] == "task"
+    ]
+    require(
+        len(candidate_reasons) == 1
+        and candidate_reasons[0]["parent_value"] == "NONE"
+        and candidate_reasons[0]["candidate_value"] == "2"
+        and candidate_reasons[0]["limit"] == "1",
+        f"the candidate repair-loop reason changed shape: {candidate_reasons!r}",
+    )
+    over_parent = [
+        row_v2("PARENT", 1, "FAIL", 2, unrecovered),
+        row_v2("CANDIDATE", 1, "FAIL", 1, unrecovered),
+        row_v2("CANDIDATE", 2, "FAIL", 1, unrecovered),
+        row_v2("PARENT", 2, "FAIL", 1, unrecovered),
+    ]
+    parent_reasons = [
+        item for item in score(over_parent)[4]
+        if item["code"] == "REPAIR_LOOPS" and item["task_id"] == "task"
+    ]
+    require(
+        len(parent_reasons) == 1
+        and parent_reasons[0]["parent_value"] == "2"
+        and parent_reasons[0]["candidate_value"] == "NONE"
+        and parent_reasons[0]["limit"] == "1",
+        f"a PARENT row exceeding its declared repair bound was not scored: {parent_reasons!r}",
+    )
+
+    # Version 1 keeps its exact meaning: the authority stays `row.measurement.repair_loop_count`,
+    # and a version-1 row is never credited with a recovery it has no attempts to prove.
+    legacy = rows("FAIL", "PASS")
+    legacy[1]["measurement"]["repair_loop_count"] = 1
+    require(
+        module.row_repair_loop_count(legacy[1]) == 1
+        and not module.row_repair_attempted(legacy[1])
+        and not module.row_repair_recovered(legacy[1]),
+        "a version-1 row was given a version-2 field it does not carry",
+    )
+    # The authority is selected by version, never by presence. A version-1 row that happens to
+    # carry a row-level `repair_loop_count` — which no producer emits, but which a permissive
+    # `.get(...)` fallback would silently prefer — must still be scored from its measurement.
+    shadowed = rows("FAIL", "PASS")
+    shadowed[1]["measurement"]["repair_loop_count"] = 1
+    shadowed[1]["repair_loop_count"] = 99
+    shadowed[1]["attempts"] = attempts(("INITIAL", "FAIL"), ("REPAIR", "PASS"))
+    require(
+        module.row_repair_loop_count(shadowed[1]) == 1
+        and not module.row_repair_attempted(shadowed[1])
+        and not module.row_repair_recovered(shadowed[1]),
+        "a version-1 row's authority was selected by field presence rather than by version",
+    )
+    # And the converse: a version-2 row whose measurement disagrees with its row-level count is
+    # scored from the row, because at version 2 the evaluator owns that field and the adapter does
+    # not. A single shared reader would satisfy only one of these two cases.
+    shadowed_v2 = row_v2("CANDIDATE", 1, "PASS", 1, recovered, 350)
+    shadowed_v2["measurement"]["repair_loop_count"] = 7
+    require(
+        module.row_repair_loop_count(shadowed_v2) == 1,
+        "a version-2 row was scored from its adapter's repair count rather than the evaluator's",
+    )
+    require(
+        module.row_repair_loop_count(paired[1]) == 1
+        and module.row_repair_attempted(paired[1])
+        and module.row_repair_recovered(paired[1])
+        and not module.row_repair_recovered(paired[0]),
+        "the version-2 recovery predicate does not match its declared definition",
+    )
+    _, _, _, legacy_corpus, _ = module.complete_score(
+        [task], legacy, 1, policy, trust, environment, {"provider_kind": "LIVE"},
+    )
+    require(
+        legacy_corpus["candidate_repair_loop_count"] == 1
+        and legacy_corpus["repair_attempt_count"] == 0
+        and legacy_corpus["repair_recovery_paired_count"] == 0,
+        f"a version-1 corpus gained version-2 repair counts: {legacy_corpus!r}",
     )
 
 
@@ -1292,6 +1904,8 @@ def main() -> int:
     verify_strict_source_membership_boundary()
     verify_complete_score_boundary()
     verify_provider_admission_boundary()
+    verify_repair_attempt_boundary()
+    verify_provider_probe_boundary()
     with tempfile.TemporaryDirectory(prefix="prompt-evaluate-") as directory:
         root = Path(directory)
         project = root / "project"
@@ -1469,7 +2083,14 @@ def main() -> int:
                 "artifacts": expectations,
                 "regression_limits": {
                     "maximum_unrelated_diff_count": 0, "maximum_patch_size_bytes": 16_384,
-                    "maximum_public_api_change_count": 0, "maximum_repair_loops": 2,
+                    # `attempt-no-repair-offered`, end to end. The deterministic fixed adapter is a
+                    # byte-frozen corpus member whose expected-failure path emits
+                    # `repair_loop_count: 1`, so it can only ever drive the single-attempt path.
+                    # Declaring `0` is what makes that explicit: no repair is offered, the row
+                    # closes with one attempt, and the adapter's own count is carried in
+                    # `attempt.measurement` without being the authority. The repair-enabled
+                    # end-to-end case below uses a synthetic adapter instead.
+                    "maximum_public_api_change_count": 0, "maximum_repair_loops": 0,
                     "maximum_benchmark_regression_ppm": None,
                 },
                 "content_sha256": "",
@@ -2487,6 +3108,101 @@ def main() -> int:
             "PARENT", "CANDIDATE", "CANDIDATE", "PARENT",
             "PARENT", "CANDIDATE", "CANDIDATE", "PARENT",
         ], "paired execution order changed")
+
+        # --- C4-REPAIR-MEASURED: the version-2 row shape, end to end -------------------------
+        # `attempt-no-repair-offered` and `attempt-record-order` against a real published
+        # document. Every task here declares `maximum_repair_loops: 0`, so every row must close
+        # with exactly one INITIAL attempt and no repair, exactly as it did before the loop
+        # existed. A document's rows all carry the container's version.
+        require(
+            result["schema_version"] == 2
+            and all(row["schema_version"] == 2 for row in result["rows"]),
+            "the published evaluation is not a uniform version-2 document",
+        )
+        evidence_document = json.loads(evidence_path.read_text())
+        require(
+            evidence_document["schema_version"] == 2
+            and all(item["schema_version"] == 2 for item in evidence_document["expected_inputs"]),
+            "the published evidence is not a uniform version-2 document",
+        )
+        for ordinal, row in enumerate(result["rows"]):
+            records = row["attempts"]
+            require(
+                len(records) == 1
+                and records[0]["attempt_index"] == 1
+                and records[0]["attempt_kind"] == "INITIAL"
+                and records[0]["skip_reason"] == "NONE"
+                and records[0]["status"] == row["measurement"]["status"],
+                f"row {ordinal} did not close with exactly one initial attempt: {records!r}",
+            )
+            require(
+                row["repair_loop_count"] == 0,
+                f"row {ordinal} counted a repair no task offered",
+            )
+            # `row.measurement` is byte-equal to the final attempt's, so every existing consumer
+            # of `row.measurement.*` keeps working with no re-derivation.
+            require(
+                canonical(canonical_digest_item(records[0]["measurement"]))
+                == canonical(canonical_digest_item(row["measurement"])),
+                f"row {ordinal} measurement is not byte-equal to its final attempt's",
+            )
+            require(
+                records[0]["measurement_sha256"] == row["measurement"]["content_sha256"]
+                and records[0]["paired_seed"] == row["evaluation_input"]["paired_seed"]
+                and records[0]["repair_preparation_ns"] == 0
+                and records[0]["adapter_elapsed_ns"] > 0,
+                f"row {ordinal} attempt identity or timing is not evaluator-observed",
+            )
+            passed = row["measurement"]["status"] == "PASS"
+            # The canonical encoder omits an `Option::None`, so a non-passing attempt has no
+            # `adapter_overhead_ns` key at all. Absent and `null` are the same statement here, and
+            # reading it with `[]` turned this assertion into a `KeyError` on every published
+            # non-passing row.
+            require(
+                (records[0].get("adapter_overhead_ns") is not None) is passed,
+                f"row {ordinal} publishes adapter overhead on a non-passing attempt",
+            )
+            if passed:
+                require(
+                    records[0]["adapter_overhead_ns"] >= 0
+                    and row["generation_to_passing_patch_ns"]
+                    == records[0]["adapter_elapsed_ns"] + records[0]["repair_preparation_ns"]
+                    and row["time_to_passing_patch_ns"]
+                    == row["prompt_preparation_ns"] + row["generation_to_passing_patch_ns"],
+                    f"row {ordinal} version-2 timing does not sum as declared",
+                )
+            else:
+                require(
+                    row.get("generation_to_passing_patch_ns") is None
+                    and row.get("time_to_passing_patch_ns") is None,
+                    f"row {ordinal} reported a generation total without a passing attempt",
+                )
+        # One expected-input record per non-skipped attempt, keyed on the attempt as well as the
+        # row, with no duplicate, missing, or extra identity.
+        identities = [
+            (item["task_id"], item["sample_index"], item["variant"], item["attempt_index"])
+            for item in evidence_document["expected_inputs"]
+        ]
+        require(
+            len(identities) == len(set(identities)) == len(result["rows"])
+            and identities == [
+                (row["task_id"], row["sample_index"], row["variant"], 1) for row in result["rows"]
+            ],
+            f"expected inputs do not cover every attempt exactly once: {identities!r}",
+        )
+        # `attempt-workspace-distinct`: the fixed-width attempt suffix reaches the real run-local
+        # names the snapshot request admits, so attempt two can never reuse attempt one's paths.
+        run_local = [
+            item
+            for snapshot in result["snapshot_requests"]
+            for item in snapshot["additional_files"]
+            if "-variant.json" in item or "-rendered.json" in item or "-request.json" in item
+        ]
+        require(run_local, "the snapshot requests no longer admit any run-local attempt input")
+        require(
+            all("-a1-" in Path(item).name for item in run_local),
+            f"a run-local attempt input carries no attempt suffix: {run_local[:4]!r}",
+        )
         verified = subprocess.run(
             [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
