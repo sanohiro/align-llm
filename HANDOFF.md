@@ -193,6 +193,13 @@ about a malformed one could fire (spec section 11.3 deviations 15 and 16).
 observed string equals `canonical-v1r`'s, which is a measurement rather than a copy — the probe
 fails closed had any component moved.
 
+**Coding-baseline chain, re-recorded.** `Makefile` is one of the twenty recorded input artifacts and
+this branch adds `c4-editset-gate` and `prompt-repair-adapter-smoke` to it, so `main`'s chain
+(`69d223e` -> `ca17997` -> `c89d147`) no longer binds this head. The pending record was measured on
+**Linux** (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) through the DinD wrapper at the merged
+publication head, and the chain is **source `7828451` -> oracle `0badc51` -> finalization
+`73de1e9`**. `gmake baseline-check` inside the same Linux image ends `baseline chain: PASS`.
+
 **Next actions, in order.** (1) Publish the English pull request with the exact verification
 commands, the measured result, the three review envelopes, and every finding's disposition, and post
 the review record as a dedicated comment. (2) Merge with `--merge`; a squash or a rebase would make
