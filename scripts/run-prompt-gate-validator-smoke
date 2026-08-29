@@ -1074,6 +1074,144 @@ def repair_attempt_rows(root: Path) -> None:
         contains="persisted corpus aggregate disagrees with the recomputed value",
     )
 
+    def for_each_editset_measurement(evaluation, mutate) -> None:
+        """Apply `mutate` to every persisted measurement that carries an edit set, and rebind.
+
+        Every attempt measurement and every row measurement is edited, because ladder row 18
+        compares a row against its final attempt and would otherwise reject the document for a
+        reason other than the one under test.
+        """
+        for row in evaluation["rows"]:
+            for attempt in row["attempts"]:
+                measurement = attempt["measurement"]
+                if "edit_set" not in measurement:
+                    continue
+                mutate(measurement)
+                fixture.bind(measurement)
+                attempt["measurement_sha256"] = measurement["content_sha256"]
+                fixture.bind(attempt)
+            if "edit_set" in row["measurement"]:
+                mutate(row["measurement"])
+                fixture.bind(row["measurement"])
+            fixture.bind(row)
+
+    def editset_path_order_skew(evaluation, evidence) -> None:
+        """Ladder row 15's ordering half. The `applied edits:` tail is reversed with the blocks, so
+        the row-17 cross-check still agrees and the ordering rule is the only one that can fire."""
+
+        def reverse(measurement) -> None:
+            measurement["edit_set"] = list(reversed(measurement["edit_set"]))
+            paths = [block["path"] for block in measurement["edit_set"]]
+            measurement["diagnostic_summary"] = (
+                measurement["diagnostic_summary"].rsplit("applied edits: ", 1)[0]
+                + "applied edits: "
+                + ", ".join(paths)
+            )
+
+        for_each_editset_measurement(evaluation, reverse)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-path-order", editset_path_order_skew),
+        "an edit set whose paths descend rather than ascend",
+        contains="edit set paths are not unique and sorted ascending",
+    )
+
+    def editset_path_duplicate_skew(evaluation, evidence) -> None:
+        """Ladder row 15's uniqueness half, which sorted order alone does not falsify: two blocks
+        at the same path are sorted and are still a producer defect."""
+
+        def duplicate(measurement) -> None:
+            first = copy.deepcopy(measurement["edit_set"][0])
+            measurement["edit_set"] = [measurement["edit_set"][0], first]
+            measurement["edit_set_total_bytes"] = sum(
+                block["body_bytes"] for block in measurement["edit_set"]
+            )
+            measurement["diagnostic_summary"] = (
+                measurement["diagnostic_summary"].rsplit("applied edits: ", 1)[0]
+                + "applied edits: "
+                + ", ".join(block["path"] for block in measurement["edit_set"])
+            )
+
+        for_each_editset_measurement(evaluation, duplicate)
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-path-duplicate", editset_path_duplicate_skew),
+        "an edit set naming the same path twice",
+        contains="edit set paths are not unique and sorted ascending",
+    )
+
+    def editset_total_skew(evaluation, evidence) -> None:
+        """Ladder row 14's sum. `edit_set_total_bytes` is the pre-omission sum of `body_bytes`, and
+        no other rule reads it, so this is the only rule that can reject the document."""
+        for_each_editset_measurement(
+            evaluation,
+            lambda measurement: measurement.update(
+                {"edit_set_total_bytes": measurement["edit_set_total_bytes"] + 1}
+            ),
+        )
+
+    rejected(
+        v2_evaluation_case(root, "v2-editset-total", editset_total_skew),
+        "an edit-set total that is not the sum of its block byte counts",
+        contains="edit set total is not the sum of its block byte counts",
+    )
+
+    # Ladder row 10 in the direction no bundle can reach. Row 11 requires a version-1 measurement
+    # to come from a corpus naming the frozen adapter, and this fixture's corpus names the repair
+    # adapter, so a downgraded bundle is rejected by row 11 before row 10 is consulted. The rule is
+    # therefore driven directly, exactly as the sibling owner's `editset-row10` case drives
+    # `scripts/prompt-evaluate.py`. Without this, every mutant of row 10's version-1 half survived.
+    frozen_task = copy.deepcopy(read(accepted, fixture.EVALUATION_NAME)["tasks"][0])
+    frozen_task["argv"] = [frozen_task["cmd"]]
+    frozen_task["measurement_adapter_runtime"] = fixture.BASE_ADAPTER_RUNTIME
+    # The four members are named here rather than read from the validator's own tuple: a mutant
+    # that empties that tuple must fail these rows, not pass them vacuously.
+    strays = (
+        ("edit_set", fixture.edit_set_blocks()),
+        ("edit_set_total_bytes", 64),
+        ("patch_sha256", "f" * 64),
+        ("base_adapter_runtime_identity", fixture.BASE_ADAPTER_RUNTIME),
+    )
+    for member, value in strays:
+        stray = copy.deepcopy(
+            read(accepted, fixture.EVALUATION_NAME)["rows"][0]["attempts"][0]["measurement"]
+        )
+        downgrade_measurement(stray)
+        stray[member] = value
+        failed = ""
+        try:
+            validator.validate_measurement_version(stray, frozen_task, "row10 case")
+        except validator.GateError as error:
+            failed = str(error)
+        require(
+            f"carries {member} at version 1" in failed,
+            f"a version-1 measurement carrying {member} was admitted: {failed!r}",
+        )
+
+    def editset_summary_truncated(evaluation, evidence) -> None:
+        """Ladder row 17 is exempt on a **cut** summary, and this is the acceptance case for that
+        exemption rather than a rejection: `bounded_text` appends its marker at the end, so the
+        applied-edit list is exactly what a cut removes. Without the exemption a legitimate
+        measurement with a long summary would be refused as malformed."""
+
+        def truncate(measurement) -> None:
+            measurement["diagnostic_summary"] = (
+                measurement["diagnostic_summary"].rsplit("applied edits: ", 1)[0]
+                + "applied edits: "
+                + fixture.EDITSET_PATH
+                + "\n[output truncated]"
+            )
+
+        for_each_editset_measurement(evaluation, truncate)
+
+    truncated = v2_evaluation_case(root, "v2-editset-summary-truncated", editset_summary_truncated)
+    observed, output = invoke(truncated)
+    require(
+        observed == accepted_code(),
+        "a truncated diagnostic summary was refused by the applied-edit cross-check: "
+        f"expected exit {accepted_code()}, observed {observed}: {output.strip()}",
+    )
+
     def measurement_not_final(evaluation, evidence) -> None:
         # `unrelated_diff_count` is the drifted field precisely because no aggregate and no other
         # ladder row reads it, so ladder row 18 is the only rule that can reject the document.

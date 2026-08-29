@@ -174,25 +174,37 @@ def synthetic_digest(label: str) -> str:
 REPAIR_ADAPTER_RELATIVE = "scripts/prompt-repair-adapter.py"
 REPAIR_ADAPTER_RUNTIME = "PYTHON:" + synthetic_digest("prompt-repair-adapter")[:64]
 BASE_ADAPTER_RUNTIME = "PYTHON:" + synthetic_digest("prompt-measurement-adapter")[:64]
+# Two blocks, not one, and that is a coverage requirement rather than a flourish: a single-block
+# edit set cannot falsify the ladder row that requires paths to be unique and ascending, so every
+# mutant of that row survived while this fixture emitted one block.
 EDITSET_PATH = "src/duration.py"
 EDITSET_BODY = "def round_to_minutes(seconds):\n    return seconds // 60\n"
+SECOND_EDITSET_PATH = "tests/test_duration.py"
+SECOND_EDITSET_BODY = "def test_round_to_minutes():\n    assert True\n"
+EDITSET_EDITS = ((EDITSET_PATH, EDITSET_BODY), (SECOND_EDITSET_PATH, SECOND_EDITSET_BODY))
+
+
+def edit_set_block(path: str, body: str) -> dict[str, Any]:
+    return bind(
+        {
+            "schema_version": 1,
+            "artifact_kind": "EDIT_SET_BLOCK",
+            "path": path,
+            "body_bytes": len(body.encode("utf-8")),
+            "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            "body_text": body,
+            "content_sha256": "",
+        }
+    )
 
 
 def edit_set_blocks() -> list[dict[str, Any]]:
-    body = EDITSET_BODY
-    return [
-        bind(
-            {
-                "schema_version": 1,
-                "artifact_kind": "EDIT_SET_BLOCK",
-                "path": EDITSET_PATH,
-                "body_bytes": len(body.encode("utf-8")),
-                "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
-                "body_text": body,
-                "content_sha256": "",
-            }
-        )
-    ]
+    return [edit_set_block(path, body) for path, body in EDITSET_EDITS]
+
+
+def applied_edits_text() -> str:
+    """The `applied edits: ` tail ladder row 17 cross-checks against the block path list."""
+    return ", ".join(path for path, _ in EDITSET_EDITS)
 
 
 def attempt_measurement(
@@ -225,7 +237,7 @@ def attempt_measurement(
     measurement["diagnostic_summary"] = (
         "provider-backed candidate patch "
         + ("passed" if passing else "failed")
-        + f" validation; applied edits: {EDITSET_PATH}"
+        + f" validation; applied edits: {applied_edits_text()}"
     )
     tail = measurement.pop("content_sha256")
     measurement["schema_version"] = 2
@@ -235,7 +247,9 @@ def attempt_measurement(
         measurement["patch_sha256"] = synthetic_digest(f"patch:{rendered}")
         if measurement["patch_size_bytes"] <= 0:
             # Ladder row 13 ties the digest to the byte count, so a fixture patch must have bytes.
-            measurement["patch_size_bytes"] = len(EDITSET_BODY.encode("utf-8"))
+            measurement["patch_size_bytes"] = sum(
+                len(body.encode("utf-8")) for _, body in EDITSET_EDITS
+            )
     else:
         # The `FAIL`/`PATCH` mode, encoded the way the wire actually encodes it: an `Option::None`
         # is **omitted**, not written as `null`. A fixture that wrote the keys explicitly would

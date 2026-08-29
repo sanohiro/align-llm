@@ -28,10 +28,17 @@ the adapter to the prompt.
 
 **The addressable arm, stated before the run.** Six of the C4 run's ten repair attempts can carry a
 non-empty `EDITSET` section: `record-codec-round-trip` x4 and `duration-half-away-from-zero`
-PARENT x2. The other four are `layer-precedence-frozen-module`, where attempt one produced no
-parsable file block on any of eight attempts, so there is no edit set to show and the section is
-structurally unreachable. `repair_editset_attempt_count` is the persisted denominator; its expected
-value is 6, and a value below 6 means the drop ladder fired or a row changed mode.
+PARENT x2. The other four are `layer-precedence-frozen-module`, where attempt one persists no edit
+set. The reason is **not** that the response failed to parse — none did. On six of that task's
+eight attempts the whole-file blocks reproduced the pinned files unchanged, so every hunk is empty,
+`synthesized_patch` raises, and the adapter resets `edit_set`, `edit_set_total_bytes`, and
+`patch_sha256` to `None` (`docs/specs/c4-repair-editset.md` section 11.3 deviation 14); on the
+other two the response named `src/legacy.py`, outside the task's `allowed_edits`, and was rejected
+as a `POLICY` violation. Either way the section's source is empty and the section is omitted, so a
+validated edit set that briefly existed is discarded rather than shown — which is a recorded gap in
+this capability, not a structural impossibility. `repair_editset_attempt_count` is the persisted
+denominator; its expected value is 6, and a value below 6 means the drop ladder fired or a row
+changed mode.
 
 **Patch identity, reported and new.** `patch_sha256` makes "attempt two re-sent attempt one's
 patch" a checkable fact rather than an inference from a byte count, which is all the C4 run could

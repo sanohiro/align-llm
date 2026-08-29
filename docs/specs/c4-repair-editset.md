@@ -462,7 +462,7 @@ a version, in either direction.
 
 | Member | At version 1 | At version 2 |
 | --- | --- | --- |
-| `edit_set` | absent | `Some` exactly when `validated_edit_set` returned; `None` on `PATCH`, `POLICY`, `ERROR`-before-parse, and on the declared-patch path |
+| `edit_set` | absent | `Some` exactly when `validated_edit_set` returned **and** a non-empty patch was synthesized from its return; `None` on `PATCH`, `POLICY`, `ERROR`-before-parse, and on the declared-patch path. The two clauses are not the same condition — a response can return a validated edit set whose every hunk is empty, and this corpus's dominant failure mode does exactly that. §11.3 deviation 14 records the measured consequence and owns the fix |
 | `edit_set_total_bytes` | absent | `Some` exactly when `edit_set` is `Some`; the sum of `body_bytes` over every block, including omitted ones |
 | `patch_sha256` | absent | `Some` exactly when a patch reached the validation runner; `None` otherwise |
 | `base_adapter_runtime_identity` | absent | always `Some` |
@@ -710,7 +710,7 @@ carrying its reason.
 | Surface | Exact contract |
 | --- | --- |
 | `EVALUATOR_SOURCE_SHA256` | `src/prompt_evaluate.align:8` is updated to the new `scripts/prompt-evaluate.py` digest in the same commit that changes the file. |
-| Size window | Four chunks, 196,609…262,144 bytes. The file is 217,056 bytes at the base, so the delta has **45,088 bytes** of headroom (§2.7). Realized: 234,347 bytes, **27,797 bytes** of headroom (§11.1). |
+| Size window | Four chunks, 196,609…262,144 bytes. The file is 217,056 bytes at the base, so the delta has **45,088 bytes** of headroom (§2.7). Realized: 235,059 bytes after the review repair, **27,085 bytes** of headroom (§11.1). |
 | If the budget is exceeded | It returns to this ledger as a public change to the launch contract, before implementation, not after. No widening is planned. |
 | What is not acceptable | Splitting the evaluator into a second file to dodge the window. |
 
@@ -828,10 +828,15 @@ unified diff — is smaller on the wire and is a *different* format from the one
 rejected for that reason. The fence run is chosen longer than any run appearing in the body, using
 the frozen `fence_run` / `closing_fence` rule, so a body containing fenced text nests correctly.
 
-**Producer-side bounding, whole-block.** The repair adapter carries blocks in the sorted order until
-the running total of `body_bytes` would exceed `EDIT_SET_LIMIT = 16,384`; every remaining block is
-persisted with `body_text: None` and its `path`, `body_bytes`, and `body_sha256` intact. An omitted
-block is rendered as one line naming its path and byte count, never as a partial file. A
+**Producer-side bounding, whole-block, and the carried set is a prefix.** The repair adapter carries
+blocks in the sorted order until the running total of `body_bytes` would exceed
+`EDIT_SET_LIMIT = 16,384`; that block **and every block after it** are persisted with
+`body_text: None` and their `path`, `body_bytes`, and `body_sha256` intact. The rejected
+alternative is a greedy best fit that keeps looking for a later block that still fits: it carries
+more bytes, and it is rejected because the section the model reads would then omit an earlier file
+while showing a later one, so the rendered answer would no longer be a prefix of the answer the
+model actually gave. An omitted block is rendered as one line naming its path and byte count, never
+as a partial file. A
 half-truncated source file would be worse than none: it would invite the model to "complete" a file
 it can only half see, and the whole-file format makes that a silent data-loss patch.
 
@@ -969,11 +974,11 @@ the spread is server state, prompt-cache reuse, and host contention — not the 
 
 | Owner | Adds |
 | --- | --- |
-| `scripts/run-prompt-repair-adapter-smoke` **(new)** | The import-by-path contract: verify-then-execute over one byte sequence; a mutated base file rejected; every consumed name present and of the expected kind; a removed name rejected; `base_adapter_runtime_identity` cross-derivation and its mismatch case; `producer` and own-`runtime_identity` values; the §3.2 **bounded-divergence golden** over `measurement()` and `assemble()`; and the version-2 `assemble()` output shape for each of the four §3.4 modes, driven by a stub generation child rather than a provider |
+| `scripts/run-prompt-repair-adapter-smoke` **(new)** | The import-by-path contract: verify-then-execute over one byte sequence; a mutated base file rejected; every consumed name present and of the expected kind; a removed name rejected; `base_adapter_runtime_identity` cross-derivation and its mismatch case; `producer` and own-`runtime_identity` values; the §4.3 budget as a pure function, separating a prefix cut from a greedy best fit; the §3.2 **bounded-divergence golden** over `measurement()` and `assemble()` with the compared span taken from the parser; and the version-2 `assemble()` output shape for each of the four §3.4 modes, driven by a stub generation child rather than a provider |
 | `scripts/run-prompt-evaluate-smoke` | `EDITSET` through the loop against the deterministic `scripts/prompt-fixed-adapter.py` and a v2-emitting stub: an attempt-1 measurement with `edit_set` `Some` (section rendered), with `edit_set` `None` (section omitted), with an omitted block (placeholder line), the version-2 ladder rows 9–21 one case each, the version-selected `TASK_MEASUREMENT_FIELDS`, and `repair_editset_attempt_count` |
 | `scripts/run-prompt-render-parity-smoke` | The §4.5 re-derivation as a byte golden with `EDITSET` present, with it absent, and with each block omitted; **each of the four drop-ladder steps as its own golden, including the new final `EDITSET` drop**; the budget-exhaustion `SKIPPED` case; a redaction case proving no credential, endpoint, or constructed path survives assembly; and a nested-fence case proving a body containing a fenced block round-trips |
 | `scripts/run-prompt-score-smoke` | Version-2 measurement decode; **version-1 measurement decode unchanged**; the present-at-2 / absent-at-1 rule in both directions; the §3.3 invariants; `verifier_measurement_equal` over all 27 fields; the new aggregates |
-| `scripts/run-prompt-gate-validator-smoke` | Version-2 evidence carrying version-2 measurements; the new aggregates recomputed by `rescore`; the attempt-level probe-identity check of ladder row 12; **and the inherited regression asserting that the frozen version-1 chain *and* the frozen C4 version-2 chain both still validate and rescore byte-identically** |
+| `scripts/run-prompt-gate-validator-smoke` | Version-2 evidence carrying version-2 measurements over a **two-block** edit set; the new aggregates recomputed by `rescore`; the attempt-level probe-identity check of ladder row 12; edit-set path order, path uniqueness, and the row-14 sum as rejection rows; the version-1 absence rule driven directly, one row per member, because ladder row 11 makes it unreachable through this fixture's corpus; the accepted truncated-summary row; **and the inherited regression asserting that the frozen version-1 chain *and* the frozen C4 version-2 chain both still validate and rescore byte-identically** |
 | `scripts/run-prompt-measurement-adapter-smoke` | **Unchanged and must stay green.** Its passing is part of the proof that the frozen adapter still behaves as reviewed while being imported elsewhere |
 | `make gate-topology-check` | Must pass with its byte-literal `EXPECTED` unmoved. `c4-editset-gate` joins no aggregate, exactly as `c4-repair-gate` does not. If `EXPECTED` moves, that is a check-topology change and it selects `make ci` per `CLAUDE.md` |
 | `make check`, `make fmt`, `make format-check`, `make build` | The Align side: `src/prompt_artifacts.align`, `src/prompt_score.align`, `src/prompt_model.align`, `src/prompt_evaluate.align` (the §3.11 pin) |
@@ -1463,14 +1468,14 @@ covered; it is listed as a deviation in §11.2.
 | §3.2 base identity cross-derived, mismatch is `ERROR`/`BASE_ADAPTER` | `base_runtime_identity` | portable row: `base_runtime_identity(raw[:-1], module)` is refused |
 | §3.2 subreaper effect disclosed, never set here | the adapter sets no `prctl`; it reads `frozen.CHILD_SUBREAPER_ENABLED` | `grep` shows one writer; the Linux launch rows exercise the posture |
 | §3.2 import-contract assertion, name and kind | `CONSUMED_NAMES` + `assert_import_contract` | mutant M22 dies; the missing-name and wrong-kind rows |
-| §3.2 bounded-divergence golden | `eval/fixtures/c4-repair-editset/adapter-divergence.diff`, 209 normalized lines | `check_divergence` runs on every invocation, on every platform |
+| §3.2 bounded-divergence golden | `eval/fixtures/c4-repair-editset/adapter-divergence.diff`, 209 normalized lines; the compared span is the parser's, not a column-0 scan | `check_divergence` runs on every invocation, on every platform; the triple-quoted-string span row (added in review repair) |
 | §3.3 27 declared members, four appended before `content_sha256` | the adapter's `assemble()`; `TASK_MEASUREMENT_V2_FIELDS`; `TaskMeasurement` | `assert_version_two_shape`; `editset-fields` in the evaluate smoke |
 | §3.3 `EditSetBlock` | `prompt_artifacts.EditSetBlock`; `edit_set_blocks()` | `EDIT_SET_BLOCK_FIELDS` shape row |
 | §3.3 digests over **redacted** bytes | `edit_set_blocks` redacts before hashing; `patch_sha256` over `redacted_bytes(raw_patch, …)` | mutant M19 dies; the credential-bearing launch row |
-| §3.3 presence rules, both directions | `valid_measurement_version_two`; `verifier_measurement_version_one_shape` / `…_two_shape`; `validate_measurement_version` | mutants M11, M12, M14; verifier defects 15 and 17 |
+| §3.3 presence rules, both directions | `valid_measurement_version_two`; `verifier_measurement_version_one_shape` / `…_two_shape`; `validate_measurement_version` | mutants M11, M12, M14; verifier defects 15, 17, and — added in review repair, one per version-1 absence clause — 21, 22, 23; the validator's four direct row-10 rows |
 | §3.3 `patch_sha256` iff `patch_size_bytes > 0` | all three owners | evaluate-smoke `editset-row13-*`; verifier defect via `patch_valid` |
-| §3.3 `edit_set_total_bytes` = sum | all three owners | mutant M10 dies; `editset-row14-total-disagrees` |
-| §3.3 summary cross-check | evaluator and gate validator (row 17) | mutant M2 dies |
+| §3.3 `edit_set_total_bytes` = sum | all three owners | mutant M10 dies; `editset-row14-total-disagrees`; validator `v2-editset-total` (added in review repair) |
+| §3.3 summary cross-check, exempt on a **cut** summary | evaluator and gate validator (row 17) | mutant M2 dies; `editset-row17-truncated` and validator `v2-editset-summary-truncated` accept the cut case (both added in review repair) |
 | §3.5 `PROMPT_TASK_ROW` unchanged | no row field added | `TASK_ROW_V2_FIELDS` unmoved |
 | §3.5 measurement version = f(adapter) | `expected_template_kinds` / `verifier_task_expects_measurement_version_two` / validator row 11 | mutants M9 and M14 die; verifier defect 16 |
 | §3.5 `verifier_measurement_equal` gains the four members | `src/prompt_score.align` | mutant M6 dies; verifier defect 19 |
@@ -1490,17 +1495,18 @@ covered; it is listed as a deviation in §11.2.
 | §3.9 row 11 | above | mutants M9, M14 |
 | §3.9 row 12 | evaluator, gate validator, and Align verifier, per **ran attempt** | mutants M7, M16 die; verifier defect 18; validator `v2-attempt-probe-identity` |
 | §3.9 rows 13-17 | `valid_measurement_version_two`, `validate_measurement_version`, `verifier_measurement_version_two_shape` | `editset-row13-*` … `editset-row17-*`; mutants M10, M15 |
+| §3.9 row 15 paths unique and strictly ascending | the same three owners | verifier defects 24 (descending) and 25 (repeated path); validator `v2-editset-path-order` and `v2-editset-path-duplicate`; `editset-row15-unsorted`. All four added in review repair, which found the rule unfalsifiable while every fixture edit set held one block |
 | §3.9 row 18 | `repair_eligibility` unchanged | `editset-eligibility` |
 | §3.9 rows 19-20 | unchanged from C4-REPAIR-MEASURED | `editset-budget-exhausted`, `editset-rederive-self` |
 | §3.9 row 21 | the recomputed denominator | mutants M8, M13, M17 |
 | §3.9 row 22 | `verifier_measurement_equal` over all 27 | mutant M6 |
 | §3.10 patch digest taken before `ProducedInput` | `measurement()` computes `patch_sha256` from `raw_patch` | the declared-patch and generated-patch launch rows |
 | §3.10 one module per process, never reloaded | `_BASE` guard | the second-load row |
-| §3.11 pin updated in the same commit | `EVALUATOR_SOURCE_SHA256` = `d1b8d4d4…`, 234,347 bytes | `run-prompt-evaluate-smoke` fails outright on a stale pin, which is how it was caught |
+| §3.11 pin updated in the same commit | `EVALUATOR_SOURCE_SHA256` = `aa37a51c…`, 235,059 bytes after the review repair | `run-prompt-evaluate-smoke` fails outright on a stale pin, which is how it was caught |
 | §4.2 template states the previous answer's rejected status | `REPAIR_PREAMBLE` and the `EDITSET` header in `freeze-canonical-v1e` | `editset_template_cases` |
 | §4.3 whole-file format, sorted, fenced longer than any nested run | `repair_edit_set_text`, `edit_set_fence` | `editset-golden`, `editset-nested-fence` |
 | §4.3 omitted block is one line | same | `editset-omitted`, both owners |
-| §4.3 producer-side whole-block bound | `edit_set_blocks` | mutant M20 dies |
+| §4.3 producer-side whole-block bound, carried set is a **prefix** | `edit_set_blocks` | mutant M20 dies; the 10,000/10,000/5,000 portable row separates a prefix cut from a greedy best fit (added in review repair, which found the code greedy and the prose a prefix) |
 | §4.4 drop order, `EDITSET` last, `STATUS` never | `REPAIR_DROP_ORDER` | mutants M1 and M5 die; four ladder goldens |
 | §4.5 re-derivability | unchanged `repair_prompt_text` path | `editset-rederive-self` at five budgets |
 | §4.6 nothing constructed reaches the prompt | — | `editset-redaction` |
@@ -1519,8 +1525,9 @@ clean-head run, whose timings are 7.98-64.67 s, median 18.59 s, 8.1x, 824.243 s 
 `record-codec-round-trip` x4 and `duration-half-away-from-zero` PARENT x2 — and §1.5's three live
 (task, variant) pairs stand.
 
-Realized size: `scripts/prompt-evaluate.py` is **234,347 bytes**, leaving **27,797 bytes** of
-headroom inside the unchanged four-chunk window. No widening was needed and none is planned.
+Realized size: `scripts/prompt-evaluate.py` is **235,059 bytes** after the review repair — 234,347
+before it — leaving **27,085 bytes** of headroom inside the unchanged four-chunk window. No
+widening was needed and none is planned.
 
 ### 11.2 The field-list parity table, built before implementation
 
@@ -1618,11 +1625,14 @@ Each is a place where implementation departed from, or had to decide something l
    Request 22 as known-limitation evidence rather than filed as a new request.
 
 9. **The bounded-divergence normalizer's rules are stated in the smoke, not here.** §8 item 8(a)
-   records this as an open item. The shipped rules are: only the two named functions' lines, from
-   `def` to the line before the next top-level statement; full-line `#` comments removed; blank
-   lines removed; trailing whitespace stripped. Nothing else — no identifier rewriting, no `frozen.`
+   records this as an open item. The shipped rules are: only the two named functions' lines, over
+   the span Python's own parser reports for that `def`; full-line `#` comments removed; blank lines
+   removed; trailing whitespace stripped. Nothing else — no identifier rewriting, no `frozen.`
    prefix stripping, no whitespace-insensitive comparison — so every executable difference survives
-   into the golden. A comment-only change in either file is deliberately not a divergence.
+   into the golden. A comment-only change in either file is deliberately not a divergence. The span
+   was first written as a scan to the next column-0 line, which a triple-quoted string holding a
+   column-0 line would end early, hiding every difference after it; review found it and the parser
+   now owns the span, with a case in the smoke. The golden's bytes are unchanged by the switch.
 
 10. **`make prompt-repair-adapter-smoke` joins no aggregate.** §6.1 requires
     `make gate-topology-check` to pass with its byte-literal `EXPECTED` unmoved, and adding the new
@@ -1634,19 +1644,11 @@ Each is a place where implementation departed from, or had to decide something l
     `gate_eligible`, and the C4 run is a published measured negative with two `POLICY` reasons. The
     same rules are reached; the entry point is the one that document can legitimately take.
 
-14. **`edit_set` is not persisted on the `PATCH` path, and on this corpus that is where it would
-    matter most.** `scripts/prompt-repair-adapter.py` builds the blocks from `validated_edit_set`'s
-    return and then calls `synthesized_patch`, which raises `EditFormatError` when every hunk is
-    empty; the handler resets `edit_set`, `edit_set_total_bytes`, and `patch_sha256` to `None`. So
-    on all eight unchanged-reproduction rows an edit set existed one statement earlier and is
-    discarded. This **conforms to §3.3**, whose presence table says `None` on `PATCH`, and it is
-    the shipped behaviour — but §3.3's other clause says `Some` exactly when `validated_edit_set`
-    returned, and the two disagree for precisely this path. The design wrote that table believing
-    mode 2 never reached `validated_edit_set` at all (§1.2), which the evidence falsifies. The
-    consequence is concrete: the answers this corpus's dominant failure mode produces are the ones
-    the capability cannot show a reader. Not changed here — the adapter's digest is pinned into
-    `canonical-v1e` by three manifests and a measured run, so changing it means a new freeze and a
-    new gate run — and it is the first thing §6.4's fallback capability should fix.
+12. **No Align capability request was filed.** Request 53 stays free. `Option<array<EditSetBlock>>`
+    decode, re-encode, the present/absent rule on a **nested** record's members, `crypto.sha256`
+    over an `Option<string>` payload bound in a `match` on a borrowed record, and the Move-element
+    array walk all worked at the pinned compiler on the first build. §10 item 2's pre-check was
+    therefore answered affirmatively by the build itself.
 
 13. **The gate validator's version-2 presence rule reads the wire form, not key presence.** Written
     as "all four keys present at version 2", it rejected the published gate evidence on its first
@@ -1656,11 +1658,40 @@ Each is a place where implementation departed from, or had to decide something l
     falsifiable. Found by running the validator against real evidence, which no fixture could have
     told us.
 
-12. **No Align capability request was filed.** Request 53 stays free. `Option<array<EditSetBlock>>`
-    decode, re-encode, the present/absent rule on a **nested** record's members, `crypto.sha256`
-    over an `Option<string>` payload bound in a `match` on a borrowed record, and the Move-element
-    array walk all worked at the pinned compiler on the first build. §10 item 2's pre-check was
-    therefore answered affirmatively by the build itself.
+14. **`edit_set` is not persisted on the `PATCH` path, and on this corpus that is where it would
+    matter most.** `scripts/prompt-repair-adapter.py` builds the blocks from `validated_edit_set`'s
+    return and then calls `synthesized_patch`, which raises `EditFormatError` when every hunk is
+    empty; the handler resets `edit_set`, `edit_set_total_bytes`, and `patch_sha256` to `None`. So
+    on all eight unchanged-reproduction rows an edit set existed one statement earlier and is
+    discarded. This **conforms to §3.3**, whose presence table says `None` on `PATCH`, and it is
+    the shipped behaviour — but as written the table's other clause said `Some` exactly when
+    `validated_edit_set` returned, and the two clauses disagreed for precisely this path. The design
+    wrote that table believing mode 2 never reached `validated_edit_set` at all (§1.2), which the
+    evidence falsifies. §3.3's `edit_set` cell now states the shipped condition — a validated edit
+    set **and** a non-empty synthesized patch — and points here; that is a wording repair to the
+    presence rule, not a change to the persisted contract, which is unmoved. The
+    consequence is concrete: the answers this corpus's dominant failure mode produces are the ones
+    the capability cannot show a reader. Not changed here, and the reason is the measurement rather
+    than the freeze: persisting the discarded blocks changes what the adapter records on the rows
+    that dominate this corpus, so the published result would no longer be the result this document
+    analyses. It is the first thing §6.4's fallback capability should fix, and that capability owns
+    its own freeze and its own run.
+
+15. **Review repair moved the repair adapter's bytes, so `canonical-v1e` was re-frozen and the
+    gate was re-run.** Review found the producer-side budget implemented as a greedy best fit while
+    §4.3, the adapter's own docstring, and `src/prompt_artifacts.align` all describe a prefix cut,
+    and the prose was the intended rule: a best fit omits an earlier file while carrying a later
+    one, so the `EDITSET` section would no longer be a prefix of the answer the model gave. The
+    code moved to break-on-first-overflow. That changes `scripts/prompt-repair-adapter.py`'s
+    digest, which three manifests and the corpus digest cascade pin, so `canonical-v1e` and
+    `eval/tasks/prompt-v1e/` were re-frozen — **the same member set**, with the repair adapter's
+    digest and every digest downstream of it moving and nothing else. The provider service revision
+    was re-derived, not inherited, and came back unmoved. The gate evidence at the previous head
+    could not have been affected in any correctness value — no row came within a factor of three of
+    `EDIT_SET_LIMIT`, at 8,348 to 16,904 assembled bytes, and the ladder never fired, so no block
+    was ever a candidate for omission — but the artifact's runtime-identity fields name the adapter
+    by digest, so the run was repeated from the repaired head rather than re-labelled. §11.4
+    records both runs.
 
 ### 11.4 The gate run and its result
 
@@ -1668,7 +1699,9 @@ Each is a place where implementation departed from, or had to decide something l
 `c4-repair-measured.md` §10.3 established: a gate record must name a reproducible commit.
 `align_llm_clean: true`, and all three reachability fields — `align_llm_reachability`,
 `align_reachability`, `corpus_reachability` — are `VERIFIED`. An earlier run from the same tree
-before it was committed reported `align_llm_clean: false` and `UNVERIFIED` reachability;
+before it was committed reported `align_llm_clean: false` and — of the three reachability fields —
+`align_llm_reachability: UNVERIFIED`, the one an uncommitted head makes unanswerable;
+`align_reachability` and `corpus_reachability` were `VERIFIED` in both runs;
 **every correctness value below reproduced exactly between the two**, including both patch digests,
 and only the clocks moved. That comparison is itself the reproducibility evidence, and it is why §6.3
 refuses a speed claim.
@@ -1725,7 +1758,10 @@ visible only because `edit_set` is persisted.
 two rows re-emitted a 716-byte patch. Shown their own rejected answer, they returned
 `FAIL`/`PATCH` with `patch_size_bytes: 0` and
 `diagnostic_summary: "the response reproduced the pinned files unchanged"` — a well-formed answer
-that **restores the file to its pinned content**. So the edit set did change the model's behaviour
+that, on the adapter's own reading of it, **restores the file to its pinned content**. That reading
+is an inference from the summary and the empty patch, not a persisted observation: `edit_set` is
+`None` on exactly these rows (§11.3 deviation 14), so the blocks the model actually emitted are not
+in any artifact and cannot be read back. So the edit set did change the model's behaviour
 on that arm: from a wrong patch to a **no-op**. Read against the template, which states the previous
 answer was rejected by the repository's own validation and instructs the model not to return it
 unchanged, the model appears to have taken "your answer was rejected" as "revert it".

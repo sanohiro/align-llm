@@ -6,7 +6,8 @@ file records durable project state.
 ## Active: C4-REPAIR-EDITSET (2026-08-29)
 
 Branch `agent/c4-repair-editset`, stacked on `agent/c4-repair-measured` at `c07775c`. Implemented,
-verified, and **measured**; two commits and nothing uncommitted. Ready for review.
+verified, **measured**, and **reviewed twice**; the recorded findings are repaired, `origin/main` is
+merged, and nothing is uncommitted.
 
 **GATE RESULT: `NOT_MET` — a measured negative, and a directional one.** 12 rows, 22 provider calls,
 **940.931 s = 15 min 41 s** against a 60-minute recorded ceiling. `repair_recovery_count: 0` and
@@ -17,7 +18,10 @@ table and the analysis are in spec section 11.4.
 
 **The checked-in evidence is the run from the clean committed head `de56c60`**, taken on the same
 terms C4-REPAIR-MEASURED used: `align_llm_clean: true` and all three reachability fields
-`VERIFIED`, against a pre-commit run's `false`/`UNVERIFIED`. **Every correctness value reproduced
+`VERIFIED`. A pre-commit run of the same tree reported `align_llm_clean: false` and, of the three
+reachability fields, only `align_llm_reachability: UNVERIFIED` — the one an uncommitted head makes
+unanswerable; `align_reachability` and `corpus_reachability` were `VERIFIED` in both.
+**Every correctness value reproduced
 exactly** between the two runs — same verdict, same rows, same statuses and failure kinds, same
 `patch_size_bytes`, same six-attempt denominator, same aggregates, same 8,348-16,904 assembled
 bytes, and **the same two patch digests** `8cd2aa30…` and `cd9ae218…`. Only the clocks moved:
@@ -103,7 +107,22 @@ that can blow the budget alone and a skipped attempt is a lost measurement.
 carry identical digests in all three manifests, and all 86 member digests across the three corpora
 recompute against the tree.
 
-**Verification at this head.** `gmake build`, `gmake check` (31 units), `gmake fmt`,
+**Review repair (2026-08-29).** Two comprehensive reviews (implementation; spec/evidence/
+governance) returned 7 major and 6 minor findings, all accepted and repaired in one commit. The one
+behaviour change: the producer-side edit-set budget was a **greedy best fit** while §4.3, the
+adapter's docstring, and `src/prompt_artifacts.align` all describe a **prefix cut**; the code moved
+to break-on-first-overflow. That moves `scripts/prompt-repair-adapter.py`'s digest from `e54ab3c1…`
+to `fa73f9dc…`, so `canonical-v1e` + `eval/tasks/prompt-v1e/` were **re-frozen — same member set**,
+with only the adapter digest and the cascade below it moving, and the gate was **re-run from the
+repaired head**. The provider service revision was re-derived and came back unmoved. Recorded as
+spec §11.3 deviation 15. The other findings were falsifiability gaps and wording: five ladder-row
+clauses had no falsifying case (edit-set path uniqueness/ascending in both the Align verifier and
+the gate validator, three of the four version-1 absence clauses in the Align verifier, and the
+validator's row-14 sum), the row-17 applied-edit cross-check refused a legitimately **truncated**
+`diagnostic_summary`, and the divergence normalizer ended a function at the first column-0 line,
+which a triple-quoted string can produce.
+
+**Verification at the repaired head.** `gmake build`, `gmake check` (31 units), `gmake fmt`,
 `gmake format-check`, `gmake gate-topology-check` (EXPECTED unmoved), `git diff --check`, and the
 macOS owner set — `prompt-model-smoke`, `prompt-render-parity-smoke`, `prompt-score-smoke`,
 `prompt-score-prefix-smoke`, `prompt-verifier-smoke`, `prompt-state-smoke`,
@@ -112,20 +131,21 @@ all PASS. Under the Linux recipe below: `run-prompt-repair-adapter-smoke` (full 
 `run-prompt-evaluate-smoke`, `run-prompt-measurement-adapter-smoke`, `test-prompt-fixed-adapter`,
 `test-prompt-snapshot-helper`, and `test-prompt-source-verifier` all PASS.
 `scripts/freeze-canonical-v1e --check` and `scripts/freeze-canonical-v1r --check` each reproduce
-their 10 frozen files. `EVALUATOR_SOURCE_SHA256` is re-pinned to
-`d1b8d4d409da89f0c43766419522a609f1d55435c8064ed69b7b67359573cebe` (234,347 bytes), inside the
-four-chunk window with 27,797 bytes of headroom.
+their 10 frozen files. `EVALUATOR_SOURCE_SHA256` is re-pinned in the same commit as the evaluator
+edit, inside the four-chunk window.
 
-**23 mutants, all killed**, across four owners: skip EDITSET, drop EDITSET first, remove the row-17
-summary cross-check, drop the four members from `verifier_measurement_equal`, remove ladder row 12,
-stop recomputing the EDITSET denominator, remove the version-versus-adapter rule, stop summing
-`edit_set_total_bytes`, allow a version-2 member at version 1, allow the base identity to be absent,
-trust the persisted denominator, disable the validator's row 11 / row 12 / row 15 body-digest
-checks, and — in the adapter — drop `patch_sha256`, report the **frozen** file's runtime identity,
-drop the edit set, digest before redaction, remove whole-block bounding, skip the base-digest
-verification, and make the name assertion vacuous. One mutant (the validator's row-11 check) first
-**survived**; the gap was closed by adding four version-2 rejection cases to
-`run-prompt-gate-validator-smoke`, and it now dies.
+**Mutants, all killed**, across four owners. The original 23: skip EDITSET, drop EDITSET first,
+remove the row-17 summary cross-check, drop the four members from `verifier_measurement_equal`,
+remove ladder row 12, stop recomputing the EDITSET denominator, remove the version-versus-adapter
+rule, stop summing `edit_set_total_bytes`, allow a version-2 member at version 1, allow the base
+identity to be absent, trust the persisted denominator, disable the validator's row 11 / row 12 /
+row 15 body-digest checks, and — in the adapter — drop `patch_sha256`, report the **frozen** file's
+runtime identity, drop the edit set, digest before redaction, remove whole-block bounding, skip the
+base-digest verification, and make the name assertion vacuous. Review then re-injected the mutants
+its findings named and **eleven more died** at the repaired head: greedy best fit in the adapter;
+the validator's path-order, path-uniqueness, row-14 sum, and version-1 absence rules; and the Align
+verifier's four version-1 absence clauses, its ascending rule, and its strictness (`>` weakened to
+`>=`). The claim "23/23 killed" did not reproduce before the repair and is superseded.
 
 **The provider service revision was re-derived, not inherited** (spec section 3.7):
 `llama-server --version` reports build 10566 commit `bb4caa754`, the resolved binary hashes to
@@ -133,14 +153,21 @@ verification, and make the name assertion vacuous. One mutant (the validator's r
 observed string equals `canonical-v1r`'s, which is a measurement rather than a copy — the probe
 fails closed had any component moved.
 
-**Next actions, in order.** (1) One comprehensive review of the stable candidate. (2) Publish the
-English pull request with the exact verification commands, the measured result, and the review
-envelope. (3) On merge, C4's roadmap gate remains unmet by a model, and the fallback capability
-named in spec section 6.4 — a prompt and edit-policy capability for the **unchanged-file
-reproduction** mode — becomes the next Track A item rather than a parallel one, because this gate
-answered its tie-breaker in the negative. Its first sub-problem is this capability's own recorded
-gap: **`edit_set` is `None` on every `PATCH` row** (spec section 11.3 deviation 14), so the answers
-that mode produces are exactly the ones no artifact shows.
+**Next actions, in order.** (1) **Re-record the gate-topology baseline and run the fresh-image
+preflight.** `origin/main` moved while this branch was in review — `a9561a9` and `45ff38e` (Track B
+R6) — and both the `Makefile` and the recorded baseline changed there, so the merge commit's
+`gmake baseline-check` must be re-recorded against the merged `Makefile` rather than assumed, and
+`Makefile` is in `FRESH_IMAGE_PATTERNS`, which selects the **installed fresh-image profile** for
+this branch's preflight. Fresh integration evidence at the merged head is required before
+publication; the DinD recipe is in the C8 note below. (2) `python3 scripts/pre-pr --owner-test ...`
+at the final head. (3) Publish the English pull request with the exact verification commands, the
+measured result, the two review envelopes, and every finding's disposition. (4) On merge, C4's
+roadmap gate remains unmet by a model, and the fallback capability named in spec section 6.4 — a
+prompt and edit-policy capability for the **unchanged-file reproduction** mode — becomes the next
+Track A item rather than a parallel one, because this gate answered its tie-breaker in the negative.
+Its first sub-problem is this capability's own recorded gap: **`edit_set` is `None` on every
+`PATCH` row** (spec section 11.3 deviation 14), so the answers that mode produces are exactly the
+ones no artifact shows.
 
 **Blockers.** Host capacity only: a DinD preflight and Track B's model work contend for memory, and
 the gate needs `llama-server` with the 4.7 GB model. No Align capability request blocks this; next

@@ -1284,6 +1284,21 @@ def verify_editset_attempt_boundary() -> None:
             "diagnostic_summary": "failed validation; applied edits: tests/test_duration.py",
         }),
     )
+    # Ladder row 17 is exempt on a **cut** summary, and this is the acceptance case for that
+    # exemption. `bounded_text` appends its marker at the end of a summary that exceeded
+    # `SUMMARY_LIMIT`, so the applied-edit list is exactly the part a cut removes; holding a cut
+    # summary to the full path list would refuse a legitimate measurement rather than a malformed
+    # one. The marker lands inside the tail the row parses, so the row fires without the exemption.
+    truncated = editset_measurement(module, [dict(item) for item in blocks])
+    truncated["diagnostic_summary"] = (
+        "provider-backed candidate patch failed validation; applied edits: "
+        f"{EDITSET_PATH}\n[output truncated]"
+    )
+    require(
+        module.valid_measurement_version_two(truncated, EDITSET_TASK, allowed),
+        "editset-row17-truncated: a cut diagnostic summary was refused by the cross-check",
+    )
+
     # Ladder row 10 in the other direction: a version-1 document carrying a version-2 member.
     stray = repair_measurement(module)
     stray["patch_sha256"] = "f" * 64

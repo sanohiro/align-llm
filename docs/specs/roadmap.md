@@ -699,6 +699,28 @@ The current forward delivery order is:
     provider calls. Named focused qualification `make c4-editset-gate`; it joins no aggregate, and
     neither does the new owner test `make prompt-repair-adapter-smoke`.
 
+    **The gate is `NOT_MET`, and that is the published result.** The run made all 22 provider calls
+    the ceiling allowed — 12 initial plus 10 repair — in 940.931 s (15 min 41 s) against a recorded
+    60-minute ceiling. `repair_recovery_count` and `repair_recovery_paired_count` are both 0.
+    `repair_editset_attempt_count` came out at **exactly 6**, the value fixed before the run, so
+    the addressable arm was realized in full: every repair prompt that could carry `EDITSET` did,
+    and the drop ladder never fired at 8,348 to 16,904 assembled bytes of 65,536. **The question
+    item 31 could not answer is answered.** On all four rows where both attempts produced a patch,
+    `attempts[1].measurement.patch_sha256` equals `attempts[0]`'s exactly — the same bytes, not
+    merely the same byte count — so item 31's inference is now a verified identity. The persisted
+    edit set says more: on the two `record-codec-round-trip` CANDIDATE rows the model re-emitted a
+    byte-identical edit set, while on the two PARENT rows it dropped the file it had reproduced
+    unchanged and kept the other byte-identical, producing the same patch anyway. On the two
+    `duration-half-away-from-zero` PARENT rows it changed mode and got worse: shown its own
+    rejected answer it returned the pinned files **unchanged**, so every hunk is empty and no patch
+    is synthesized — a wrong patch replaced by a no-op. **Item 31's section 5.7 tie-breaker is
+    therefore answered in the negative:** on this model and this corpus the missing edit set was
+    not the binding constraint, and the next capability is the prompt, the template, and the edit
+    policy rather than more adapter work. Its first sub-problem is this capability's own recorded
+    gap — `edit_set` is `None` on every `PATCH` row (design section 11.3 deviation 14) — so the
+    answers the dominant mode produces are exactly the ones no artifact shows. Evidence in
+    `eval/prompt/c4-editset-gate/`; the per-row table and the analysis are in design section 11.4.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
@@ -914,9 +936,21 @@ attempts were rendered from the run's own diagnostics, measured, bounded, and co
 recovered, so `repair_recovery_paired_count` is 0 and the qualification's verdict is `NOT_MET`.
 That is a measured negative, published as a result. It is provider-independent — no provider module
 changes — and it does not modify `src/repair.align` or `src/verification_loop.align`; converging
-the two loops is a named deferral in that document. The next capability toward a model-met C4 gate
-is the one that carries the failing edit set into the repair prompt, which needs either a re-freeze
-of `canonical-v1` or a second reviewed corpus-member adapter.
+the two loops is a named deferral in that document.
+
+### Second measured consumer: C4-REPAIR-EDITSET
+
+Item 34 above carried the failing attempt's own edit set into the repair prompt, through a second
+reviewed corpus-member adapter, and ran the gate again on the same predicate.
+`docs/specs/c4-repair-editset.md` section 11.4 is the authoritative record. **C4's gate is still
+not met by a model.** Six of the six addressable repair prompts carried `EDITSET`, none recovered,
+and `repair_recovery_paired_count` is 0 again. What the run settled is which capability comes next:
+`patch_sha256` shows attempt 2 re-sending attempt 1's **exact bytes**, and the persisted edit set
+shows the model reproducing pinned files unchanged rather than misunderstanding the diagnostics. So
+the missing edit set was not the binding constraint. The next capability toward a model-met C4 gate
+is a **prompt, template, and edit-policy** capability for the unchanged-file reproduction mode —
+starting with that document's section 11.3 deviation 14, which records that `edit_set` is discarded
+on exactly the rows where it would matter most.
 
 ---
 

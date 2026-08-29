@@ -19,6 +19,7 @@ No provider is contacted. The generation child is a synthetic script with exactl
 
 from __future__ import annotations
 
+import ast
 import difflib
 import hashlib
 import importlib.util
@@ -114,8 +115,11 @@ def load_repair_adapter():
 # The normalizer's exact rules, stated here because section 8 item 8(a) records that a normalizer
 # hiding a real divergence class would be a finding against the design:
 #
-#   1. Only the two named functions' source lines are compared, from the `def` line to the line
-#      before the next top-level statement.
+#   1. Only the two named functions' source lines are compared, over the exact span Python's own
+#      parser reports for that `def` — its `lineno` through its `end_lineno`. The span is taken
+#      from the parse rather than by scanning for the next column-0 line: a triple-quoted string
+#      inside either function can hold a line that starts in column 0, and a scanner would end the
+#      span there and silently hide every executable difference after it.
 #   2. Full-line `#` comments are removed. A comment-only change in either file is therefore not a
 #      divergence. Trailing comments on a code line are kept.
 #   3. Blank lines are removed.
@@ -129,20 +133,20 @@ DIVERGENCE_FUNCTIONS = ("measurement", "assemble")
 
 
 def function_source(text: str, name: str) -> list[str]:
+    """The named module-level function's own source lines, as the parser delimits them.
+
+    `ast` owns the span, so a `def` line, a `)`-continuation, or a column-0 line inside a
+    triple-quoted string cannot move either end of it.
+    """
     lines = text.split("\n")
-    start = None
-    for ordinal, line in enumerate(lines):
-        if line.startswith(f"def {name}("):
-            start = ordinal
-            break
-    require(start is not None, f"the divergence golden cannot find `def {name}(`")
-    end = len(lines)
-    for ordinal in range(start + 1, len(lines)):
-        line = lines[ordinal]
-        if line and not line[0].isspace() and not line.startswith(")"):
-            end = ordinal
-            break
-    return lines[start:end]
+    found = [
+        node for node in ast.parse(text).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+    ]
+    require(len(found) == 1, f"the divergence golden wants exactly one top-level `def {name}(`")
+    node = found[0]
+    require(node.end_lineno is not None, f"the parser reports no end line for `def {name}(`")
+    return lines[node.lineno - 1:node.end_lineno]
 
 
 def normalized_source(text: str, name: str) -> list[str]:
@@ -524,6 +528,56 @@ def portable_rows(repair) -> None:
         repair.runtime_identity() != "PYTHON:" + repair.BASE_ADAPTER_SHA256,
         "the repair adapter reports the base adapter's runtime identity",
     )
+    # Section 4.3's producer-side bound, as a pure function of the edit list: the carried set is a
+    # **prefix** of the sorted order, never a greedy best fit. Three blocks of 10,000 / 10,000 /
+    # 5,000 bytes against `EDIT_SET_LIMIT` = 16,384 separate the two rules exactly — a best fit
+    # carries the first and the third and omits the second, so the section the model reads would
+    # skip a file in the middle of its own answer.
+    budget_edits = [
+        ("src/a.py", "a" * 10_000),
+        ("src/b.py", "b" * 10_000),
+        ("src/c.py", "c" * 5_000),
+    ]
+    budget_blocks, budget_total = repair.edit_set_blocks(module, budget_edits, None)
+    require(
+        [block["path"] for block in budget_blocks] == ["src/a.py", "src/b.py", "src/c.py"],
+        "the bounded edit set dropped or reordered a block",
+    )
+    require(
+        [block["body_text"] is not None for block in budget_blocks] == [True, False, False],
+        "the edit-set budget is a greedy best fit rather than a prefix cut",
+    )
+    require(
+        [block["body_bytes"] for block in budget_blocks] == [10_000, 10_000, 5_000],
+        "an omitted block lost its pre-omission byte count",
+    )
+    require(budget_total == 25_000, "the edit-set total is not the pre-omission sum")
+    require(
+        all(
+            block["body_sha256"] == hashlib.sha256(body.encode("utf-8")).hexdigest()
+            for block, (_, body) in zip(budget_blocks, budget_edits)
+        ),
+        "an omitted block lost the digest of the body it stands for",
+    )
+
+    # The divergence normalizer takes its span from the parser, so a column-0 line inside a
+    # triple-quoted string cannot end a function early and hide every difference after it.
+    hazard = (
+        "def measurement():\n"
+        '    text = """\n'
+        "not indented, and not the end of this function\n"
+        '"""\n'
+        "    return text\n"
+        "\n"
+        "\n"
+        "def next_function():\n"
+        "    return 0\n"
+    )
+    require(
+        function_source(hazard, "measurement") == hazard.split("\n")[0:5],
+        "the divergence normalizer ends a function at a column-0 line inside a string",
+    )
+
     probe = repair.environment_probe(module)
     require(probe["producer"] == "MEASUREMENT_ADAPTER", "the probe's producer role moved")
     require(
@@ -608,7 +662,11 @@ def launch_rows(repair) -> None:
         )
 
         # Malformed input: `EDIT_SET_LIMIT` exceeded. The over-budget block keeps its identity and
-        # loses only its text, and the total is the pre-omission sum.
+        # loses only its text, the total is the pre-omission sum, and the cut is a **prefix**: the
+        # first block over the budget takes every later block with it, even one that would fit on
+        # its own. The pair of cases below is what separates that rule from a greedy best fit —
+        # here the oversized file sorts first, so nothing is carried; in `over-budget-tail` it
+        # sorts last, so the earlier file is carried and only the tail is dropped.
         oversized_body = EDITED_CONTENT + "# " + "x" * repair.EDIT_SET_LIMIT + "\n"
         wide = Fixture(scratch, "over-budget", allowed=[FIXTURE_EDIT_PATH, SECOND_EDIT_PATH])
         wide.write_child(content=(
@@ -636,13 +694,42 @@ def launch_rows(repair) -> None:
             "over-budget: an omitted block lost its digest",
         )
         require(
-            blocks[SECOND_EDIT_PATH]["body_text"] is not None,
-            "over-budget: a block inside the budget was omitted",
+            blocks[SECOND_EDIT_PATH]["body_text"] is None,
+            "over-budget: a block after the overflow was carried, so the cut is not a prefix",
+        )
+        require(
+            blocks[SECOND_EDIT_PATH]["body_bytes"] == len(second_body.encode("utf-8")),
+            "over-budget: a block after the overflow lost its byte count",
         )
         require(
             result["edit_set_total_bytes"]
             == sum(block["body_bytes"] for block in result["edit_set"]),
             "over-budget: the total is not the pre-omission sum",
+        )
+
+        # The same budget with the oversized file sorting **last**: the prefix before the overflow
+        # is carried in full, so this is not "omit everything once anything overflows" either.
+        tail = Fixture(scratch, "over-budget-tail", allowed=[FIXTURE_EDIT_PATH, SECOND_EDIT_PATH])
+        oversized_tail = second_body + "# " + "x" * repair.EDIT_SET_LIMIT + "\n"
+        tail.write_child(content=(
+            f"FILE: {FIXTURE_EDIT_PATH}\n```\n{EDITED_CONTENT}```\n\n"
+            f"FILE: {SECOND_EDIT_PATH}\n```\n{oversized_tail}```\n"
+        ))
+        tail.request(
+            task_definition_sha256=raw_digest(tail.task_path),
+            generation_child_sha256=raw_digest(tail.child_path),
+        )
+        completed, result = tail.invoke()
+        require(completed.returncode == 0, f"over-budget-tail: adapter exited {completed.returncode}")
+        assert_version_two_shape("over-budget-tail", result, repair)
+        blocks = {block["path"]: block for block in result["edit_set"]}
+        require(
+            blocks[FIXTURE_EDIT_PATH]["body_text"] is not None,
+            "over-budget-tail: the prefix before the overflow was dropped",
+        )
+        require(
+            blocks[SECOND_EDIT_PATH]["body_text"] is None,
+            "over-budget-tail: the over-budget block was carried",
         )
 
         # Failure: `FAIL`/`PATCH` — a response with no fenced block.

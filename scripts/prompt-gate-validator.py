@@ -398,6 +398,9 @@ TASK_MEASUREMENT_V2_MEMBERS = (
 MAXIMUM_FILE_BLOCKS = 32
 MAXIMUM_EDIT_BYTES = 262_144
 EDIT_SET_LIMIT = 16_384
+# The marker the frozen `bounded_text` appends at the end of a diagnostic it had to cut. Ladder
+# row 17 reads the tail of `diagnostic_summary`, which is exactly the part a cut removes.
+SUMMARY_TRUNCATION_TEXT = "\n[output truncated]"
 ATTEMPT_KINDS = ("INITIAL", "REPAIR")
 ATTEMPT_STATUSES = ("PASS", "FAIL", "POLICY_VIOLATION", "ERROR", "SKIPPED")
 SKIP_REASONS = ("NONE", "REPAIR_PROMPT_BUDGET", "REPAIR_NOT_ELIGIBLE", "REPAIR_INPUT_UNAVAILABLE")
@@ -1671,8 +1674,15 @@ def validate_measurement_version(
     # Ladder row 17: the cheapest cross-check in the design. `diagnostic_summary` is produced by
     # the frozen sequencing from `applied_edits` and `edit_set` from the same `edits` list, so a
     # divergence means the section 3.2 near-copy diverged.
+    #
+    # A **truncated** summary is exempt, and that is not a softening of the row: the marker is
+    # appended at the end, so the applied-edit list is precisely what the cut removes, and holding
+    # a cut summary to the full path list would refuse a legitimate measurement whose summary
+    # exceeded `SUMMARY_LIMIT`.
     marker = "applied edits: "
     summary = measurement["diagnostic_summary"]
+    if summary.endswith(SUMMARY_TRUNCATION_TEXT):
+        return
     if marker in summary:
         named = [item for item in summary.rsplit(marker, 1)[1].split(", ") if item]
         if named != paths:

@@ -598,8 +598,10 @@ pub RegressionLimits {
 // credential oracle: anyone holding a candidate credential could confirm it by recomputing the
 // digest. `body_text` is `Some` when the block was inside the producer's `EDIT_SET_LIMIT` budget
 // and `None` when it was not; an omitted block keeps its path, length, and digest and loses only
-// its text, so a reader can see exactly what the budget removed. Bounding is whole-block: a
-// half-truncated source file would invite the model to complete a file it can only half see.
+// its text, so a reader can see exactly what the budget removed. Bounding is whole-block and the
+// carried set is a prefix of the ascending path order: once one block would take the running total
+// past the budget, that block and every block after it lose their text. A half-truncated source
+// file would invite the model to complete a file it can only half see.
 pub EditSetBlock {
   schema_version: i64,
   artifact_kind: string,
@@ -641,7 +643,10 @@ pub TaskMeasurement {
   diagnostic_stdout: string,
   diagnostic_stderr: string,
   // The four version-2 members, in their declared position immediately before `content_sha256`.
-  // `edit_set` is `Some` exactly when the attempt's response produced a validated edit set;
+  // `edit_set` is `Some` exactly when the attempt's response produced a validated edit set **and**
+  // a non-empty patch was synthesized from it; a response whose every hunk is empty resets all
+  // three of `edit_set`, `edit_set_total_bytes`, and `patch_sha256` to `None`, which is the
+  // measured dominant mode on the C4 corpus (`docs/specs/c4-repair-editset.md` §11.3 deviation 14);
   // `edit_set_total_bytes` is `Some` exactly with it and is the pre-omission sum of `body_bytes`;
   // `patch_sha256` is `Some` exactly when a patch reached the validation runner, which makes
   // "attempt 2 re-sent attempt 1's patch" a checkable fact rather than an inference from a byte
