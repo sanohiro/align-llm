@@ -1332,11 +1332,14 @@ per prompt section 4.9 budgeted and covers four distinct key preimages instead o
 a **key** wants exercised; and both residency legs are covered hosted, where `ds-store-resident-miss`
 / `-hit` carry oracle K and oracle R at no model cost.
 
-**The measured addition is *not* recorded yet, and this sentence is a forward reference rather than
-a result.** It belongs in section 13.6 against risk 7's 120 s threshold; 13.6 records that the
-qualification has not run, so no measurement of this leg exists and no claim about its cost is made
-here. The run is a precondition of publication (section 3.5), so the reference cannot outlive the
-pull request: it is discharged by 13.6's own table or the capability does not ship.
+**The measured addition is 48.71 s, against risk 7's 120 s threshold.** Eight invocations — one
+miss and one hit per prompt — summing to **27.60 s of miss and 21.10 s of hit** inside a whole
+`gmake decode-step-qualification` of 15 min 38 s, so the leg adds **5.2 %** to the target and clears
+the threshold with better than a factor of two in hand. The host selected `SUFFIX_RESIDENT=weights`
+at 16 GiB physical, which is the resident branch this deviation predicts, and the four prompts
+produced four distinct keys over four distinct preimages — the coverage the split was chosen for.
+Section 13.6 records the per-prompt figures, all `DIAGNOSTIC`. Risk 7's recorded fallback
+(`ALIGN_LLM_STORE_PROMPTS=1`) was **not** needed and is retained for a slower host.
 
 ### D8 — the qualification's store leg is the TTFT "fourth leg", and it is one run per prompt
 
@@ -1758,6 +1761,11 @@ gmake alignpack-smoke          PASS - 27 positive fixtures, 128 negative sources
                                assertions; run as a neighbour check because this capability edits
                                the module that owns container identity
 gmake gate-topology-check      PASS
+gmake decode-step-qualification
+                               PASS - real model, 4 store prompts, oracle K / oracle S / gate G1 /
+                               oracle B all IDENTICAL on both the miss and the hit leg of each,
+                               four distinct keys, four 29,970,432 B containers byte-identical to
+                               KV_SAVE's; 15 min 38 s total, 48.71 s of it the store leg (13.6)
 gmake fmt                      leaves no diff
 gmake format-check             PASS
 git diff --check               clean
@@ -1769,32 +1777,64 @@ target-specific claim is made.
 
 ### 13.6 The real-model qualification — `gmake decode-step-qualification`
 
-**Not run: the host never freed.** The leg is implemented, its analysis block is dry-run (below), and
-the run was armed to fire automatically the moment the host cleared — it never did. Host memory was
-polled from **18:30 to 20:01, ninety-one minutes**, against this session's 6 GB coordination floor;
-available memory measured **3.2 to 4.97 GB** the whole time and never reached the floor, while
-concurrent Docker-in-Docker preflight containers from other work on the same box went from one to
-three and back to two. No process was killed and nothing was run below the floor: the reference model
-is 4.68 GB and both instruments load it, so a run at 3.7 GB would have measured the swap rather than
-the store.
+**Run, and `PASS`.** `gmake decode-step-qualification` on the reference host, **2026-08-30
+04:48:38 to 05:04:16 — 15 min 38 s** for the whole target, of which the store leg is 48.71 s (below).
+Real ggml, the real 4.68 GB Qwen2.5-Coder-7B-Instruct Q4_K_M, the pinned `r2c-v2`
+`llama-eval-callback` and `llama-debug --save-logits`, at 16 GiB physical, so the store leg ran
+**resident** — `SUFFIX_RESIDENT=weights`, which is the residency D7 says it takes. Four prompts, one
+keyed **miss** and one keyed **hit** each, at the suffix leg's first split:
 
-**A second window was polled at the repair head and the host still never freed.** From **20:47 to
-00:47, four hours**, against the same 6 GB floor and the same never-kill rule, with every
-prerequisite verified present first (the pinned `r2c-v2` `llama-eval-callback`, `llama-debug`, the
-4.68 GB reference model, `numpy`, and 20 GB of free space). The Docker-in-Docker preflight cleared
-early, but a `llama-server` holding the reference model ran for the whole window — **4 h 23 min** at
-the last sample — beside an aggregate `make` run and other model work, and available memory measured
-**2.2 to 6.15 GB**, reaching the floor only in single samples that a queued job immediately took
-back. Nothing was killed, nothing was run below the floor, and no partial or degraded measurement is
-recorded here in place of the real one. The coordination order this session ran under put this
-qualification last, behind the preflight, two benchmark legs, and two gates.
+| Prompt | `T` | Key (first 16) | Oracle K | Oracle S, both legs | Gate G1, both legs | Oracle B | Container |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 `def add(a, b):` | 6 | `ec1dfe27733840be` | IDENTICAL | IDENTICAL | IDENTICAL | IDENTICAL, 27,295,744 B | 29,970,432 B |
+| 2 `class Foo:` | 3 | `4f3a0e90958146c9` | IDENTICAL | IDENTICAL | IDENTICAL | IDENTICAL, 21,446,656 B | 29,970,432 B |
+| 3 `# TODO:` | 3 | `1181ea748efa2644` | IDENTICAL | IDENTICAL | IDENTICAL | IDENTICAL, 21,446,656 B | 29,970,432 B |
+| 4 `int main(` | 3 | `c324a0bba4d00236` | IDENTICAL | IDENTICAL | IDENTICAL | IDENTICAL, 21,446,656 B | 29,970,432 B |
+
+```text
+decode step qualification: 4 store prompts PASS -- a keyed miss prefills, saves under the key the
+arm derived, and continues; the hit that follows loads it; the two documents are byte-identical
+outside 20 excluded key groups (oracle K), both are byte-identical to the single-shot run of the
+whole prompt (oracle S) and to `llama-debug --save-logits` (gate G1), and the container is
+byte-identical to the one `KV_SAVE` writes.
+```
+
+**Four distinct keys for four distinct prompts, and each addresses a 29,970,432-byte container** —
+the real model's plane at `KV_WIDTH`, a thousand times the hosted fixture's 4,608 B, which is the
+point of running this at all: the hosted owner proves the logic and this proves it at the size the
+capability exists for. The store held exactly one file per prompt, named for the key the document
+published, and `scripts/kv_plane_reader.py --check-name` accepted each from the container's own
+bytes. **Gate G1 is `IDENTICAL` on all eight legs**, which is the assertion the dry run could not
+make and the reason this run was a precondition of publication.
+
+**Timings, `DIAGNOSTIC` and nothing else.** One run each, one host, and **no rate, speedup,
+per-token, or TTFT figure is derived from any of them** (section 2.9):
+
+| Prompt | `first_token_ns` miss | hit | invocation wall miss | hit | `store.lookup_ns` |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 4,669,105,334 | 2,995,616,000 | 7,521,114,292 | 5,853,962,625 | 9,667 |
+| 2 | 4,203,535,708 | 2,692,467,708 | 6,649,162,750 | 5,108,222,500 | 7,250 |
+| 3 | 3,920,567,084 | 2,450,634,250 | 6,391,235,750 | 4,908,969,791 | 6,500 |
+| 4 | 4,092,344,833 | 2,432,495,750 | 7,041,168,458 | 5,232,746,917 | 7,417 |
+
+`MAX_PREFILL_TOKENS` is 32, so no real prompt's shared prefix fits and the measurement that would
+mean something is roadmap item 38's. The lookup itself is **6.5 to 9.7 microseconds**, which is the
+one number worth stating plainly: the key costs nothing against a 4-second prefill.
+
+**Getting the host took three polling windows and no shortcut, and that is recorded because the
+discipline is the point.** Memory was polled 18:30-20:01 (91 min), 20:47-00:47 (4 h), and
+00:56-04:48 (3 h 52 min) against this session's 6 GB coordination floor. The box was held in turn by
+Docker-in-Docker preflights, a `llama-server` resident on the same reference model for over eight
+hours, an aggregate `make` run, and a second DinD preflight that took free disk to 11 GB. **Nothing
+was killed, nothing was run below the floor, and no partial or degraded measurement was ever
+recorded in place of this one.** The run started 2.5 minutes after the last of them cleared.
 
 Nothing about the implementation is waiting on this, and the hosted owner is the capability's own
 narrow owner. **This is the focused qualification, it is the last piece of section 3.5's acceptance
 rule, and it must be run — and its result recorded here — before the pull request.**
 
-What it will assert, per prompt of the persistence leg's four, at the suffix leg's first split
-(D7, D8):
+What it asserted, per prompt of the persistence leg's four, at the suffix leg's first split
+(D7, D8) — every one of these held:
 
 - a keyed **miss** — prefill the prefix, save under the derived name, suffix pass, `N` steps — then a
   keyed **hit** in a separate process, both timed with the runner's own `time_invocation` wrapper;
@@ -1823,11 +1863,13 @@ R6PK case1 key f8881c20575590e4 oracle K IDENTICAL, oracle S IDENTICAL on both l
 IDENTICAL on both legs, oracle B IDENTICAL over 1152 bytes, container 4608 B
 ```
 
-with **one** failure, and it is the expected one: those hosted rows carry no `LOGITS` blob, so
-`oracle_logits.present` is false and the gate-G1 assertion fires. The real-model leg supplies the
-blob `llama-debug --save-logits` wrote. Oracle K, oracle S on both legs, oracle D's document-derived
-key, oracle B, the store-object invariants, and the keyed-hit-versus-explicit-`KV_LOAD` comparison
-all pass on real documents before a single model run.
+with **one** failure, and it was the expected one: those hosted rows carry no `LOGITS` blob, so
+`oracle_logits.present` is false and the gate-G1 assertion fires. Oracle K, oracle S on both legs,
+oracle D's document-derived key, oracle B, the store-object invariants, and the
+keyed-hit-versus-explicit-`KV_LOAD` comparison all passed on real documents before a single model
+run — and the real-model leg then supplied the blob `llama-debug --save-logits` wrote and closed the
+one gap, `IDENTICAL` on all eight legs. The dry run predicted the outcome exactly, including which
+single assertion it could not reach.
 
 ---
 

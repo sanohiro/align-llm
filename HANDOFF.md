@@ -46,7 +46,8 @@ is untouched**: no target, no aggregate membership, and no check topology moves.
 **Verification, all green at this head** (`gmake`, `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib`):
 `gmake build`, `gmake check` (31 units), `gmake layer-forward-smoke` (159 documented cases, 155
 golden rows, 42 codes), `gmake ggml-spike-smoke`, `gmake alignpack-smoke`,
-`gmake gate-topology-check`, `gmake fmt` leaves no
+`gmake gate-topology-check`, `gmake decode-step-qualification` (real model, 4 store prompts, PASS),
+`gmake fmt` leaves no
 diff, `gmake format-check`, `git diff --check`. The golden movement was verified **mechanically**:
 all 139 pre-existing rows differ only in the document's own `schema_version` 5 → 6 plus a default
 `store` object, in the same order, with no row removed — the container header's separate
@@ -75,28 +76,27 @@ container of the same prefix, and the independent reader refuses it as `ZEROTAIL
 guarded call site before the pass; the regression is `ds-store-suffix-vs-kv-save`, which is also the
 fifth mutant.
 
-**Next actions, in order.** (1) `gmake decode-step-qualification` on the reference host — **not run:
-the host never freed, across two windows**. Memory was polled 18:30-20:01 (91 minutes) and again
-20:47-00:47 (four hours, at the repair head) against the 6 GB coordination floor: 3.2-4.97 GB in the
-first window with concurrent Docker-in-Docker preflights, and 2.2-6.15 GB in the second with a
-`llama-server` holding the reference model for its whole 4 h 23 min beside an aggregate `make` run.
-Every prerequisite was verified present first — the pinned `r2c-v2` `llama-eval-callback`,
-`llama-debug`, the 4.68 GB model, `numpy`, 20 GB free. Nothing was killed and nothing was run below
-the floor. The leg and its
-analysis block are implemented and dry-run against the hosted golden documents; this is the last
-piece of the acceptance rule and must run before the pull request. **The dry run does not verify
-gate G1**, and that is the one assertion it cannot: the hosted rows carry no `LOGITS` blob, so
-`oracle_logits.present` is false and the G1 assertion fires as the dry run's single expected
-failure. Everything else — oracle K, oracle S on both legs, oracle D's document-derived key,
-oracle B, the store-object invariants, and the keyed-hit-versus-explicit-`KV_LOAD` comparison —
-passed on real documents. G1 on both legs is therefore **unverified until the model runs**, and it
-is the assertion the run exists to add. (2) `python3 scripts/pre-pr
---owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (3) One comprehensive review is
-complete and repaired; another is required only if the qualification's record changes the design.
-(4) Merge — item 36's precondition is discharged.
+**The real-model qualification is run and `PASS`** (section 13.6). `gmake
+decode-step-qualification` on the reference host, **2026-08-30 04:48:38-05:04:16, 15 min 38 s**, of
+which the store leg is **48.71 s** against risk 7's 120 s threshold (D7). Four prompts, a keyed miss
+and a keyed hit each, resident at 16 GiB physical: **oracle K, oracle S on both legs, gate G1 on
+both legs, and oracle B are all IDENTICAL**, four distinct keys address four 29,970,432 B containers
+each byte-identical to `KV_SAVE`'s and accepted by the independent reader's `--check-name`, and
+`store.lookup_ns` is 6.5-9.7 us. Gate G1 was the one assertion the dry run could not reach and it is
+now closed on all eight legs. Getting the host took **three polling windows** — 18:30-20:01,
+20:47-00:47, and 00:56-04:48 — against the 6 GB coordination floor, held in turn by two
+Docker-in-Docker preflights, a `llama-server` resident on the same model for over eight hours, and
+an aggregate `make` run. **Nothing was killed, nothing ran below the floor, and no degraded
+measurement was recorded.**
 
-**Blockers.** Host memory for this branch's own qualification. Item 36 is no longer a blocker: it
-merged as PR #151 and is merged into this branch.
+**Next actions, in order.** (1) `python3 scripts/pre-pr
+--owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (2) Publish the pull request. One
+comprehensive review is complete and repaired; another is **not** required — the qualification
+recorded a result and changed no design, contract, or code. (3) Merge; item 36's precondition is
+discharged.
+
+**Blockers.** None. Item 36 merged as PR #151 and is merged into this branch, and the host
+qualification is run and green.
 
 **New Align request 53** (`std.fs` `create_dir` / `read_dir` / `is_dir`), `PROPOSED`, `medium`,
 non-blocking; its resume condition is a store eviction/GC capability. **The number is re-checked

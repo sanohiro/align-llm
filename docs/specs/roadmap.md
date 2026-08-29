@@ -832,7 +832,11 @@ The current forward delivery order is:
     **No new refusal code is minted**: step 2d adds two `R6_KV_ARGS` details and a miss whose create
     fails is `R6_KV_UNWRITABLE store[create]` — one code for three causes the pin cannot separate,
     which is Request 53's client evidence. Owner `gmake layer-forward-smoke`; focused
-    `gmake decode-step-qualification`, two extra invocations per prompt. **No TTFT or throughput
+    `gmake decode-step-qualification`, two extra invocations per prompt, **run on the reference host
+    and PASS**: four prompts, a keyed miss and a keyed hit each, oracle K / oracle S / gate G1 /
+    oracle B all IDENTICAL on both legs, four distinct keys addressing four 29,970,432 B containers
+    each byte-identical to `KV_SAVE`'s, and the leg costing 48.71 s of a 15 min 38 s
+    target. **No TTFT or throughput
     claim and no cost ceiling** — `CLAUDE.md`'s performance row is not selected; the runner's TTFT
     figures stay a labelled diagnostic. Stacked on item 36, whose lift of the `T_prefix >= 2` refusal
     a store that *writes* containers requires. One new Align request, **53** (`std.fs` directory
