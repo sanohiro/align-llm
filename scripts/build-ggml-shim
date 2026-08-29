@@ -76,7 +76,16 @@ if [ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ]; then
   flavour=real
   include_flags=("-I${ALIGN_LLM_GGML_INCLUDE}")
   if [ -n "${ALIGN_LLM_GGML_LIB:-}" ]; then
-    link_flags=("-L${ALIGN_LLM_GGML_LIB}")
+    # `-L` is the **link** path and an `rpath` is the **loader** path, and both are needed when
+    # `ALIGN_LLM_GGML_LIB` is not a system library directory. `docs/specs/r6-olmoe-decode.md`
+    # section 15 recommends pointing it at the ggml the transcript instrument was built from, which
+    # is a build directory whose libraries record `@rpath/...` install names with no `LC_RPATH` of
+    # their own. `DYLD_LIBRARY_PATH` does not stand in for this: macOS strips it from the
+    # environment of any SIP-protected binary, and the qualification launches the arm through
+    # `/usr/bin/time`, so the arm aborted in `dyld` before its first instruction. Recording the
+    # directory in the shim itself is what survives that. A system ggml is unaffected: the rpath is
+    # simply never consulted.
+    link_flags=("-L${ALIGN_LLM_GGML_LIB}" "-Wl,-rpath,${ALIGN_LLM_GGML_LIB}")
   fi
   link_flags+=("-lggml" "-lggml-base")
   # Section 4.6's named mechanism for the three failures no input can produce. Only the real shim
@@ -228,6 +237,23 @@ else
     engine+writeback-offset)
                        include_flags+=("${engine}" "-DALIGN_GGML_FORCE_WRITEBACK_OFFSET=1")
                        flavour="stub+engine+force-writeback-offset" ;;
+    # R6-OLMOE-DECODE (`docs/specs/r6-olmoe-decode.md` section 5.6). The routed counterparts of the
+    # three builds above whose dense form is keyed on a **slot number**: the routed arm's position,
+    # mask and post-RoPE K live at `layer_olmoe`'s slots, which are ordinary weight slots in a dense
+    # graph. They are separate builds rather than second indices on the dense ones, so every dense
+    # build stays behaviourally byte-unchanged and the sixth block's goldens cannot move for a
+    # capability that changes no dense behaviour. `plane-stage-offset` and `compute-step2` need no
+    # counterpart: both key on the past-K slot, which is `layer_qwen2`'s 64 on one arm and
+    # `layer_olmoe`'s 126 on the other and is written by no other graph on either.
+    engine+decode-position-moe)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_DECODE_POSITION_MOE=1")
+                       flavour="stub+engine+force-decode-position-moe" ;;
+    engine+mask-offset-moe)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_MASK_OFFSET_MOE=1")
+                       flavour="stub+engine+force-mask-offset-moe" ;;
+    engine+writeback-offset-moe)
+                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_WRITEBACK_OFFSET_MOE=1")
+                       flavour="stub+engine+force-writeback-offset-moe" ;;
     # R6-PREFIX-SUFFIX-PREFILL sections 4.1 and 4.2. Both key on the same latch: a graph computing
     # more than one column at `n_past > 0`, which is the suffix pass and nothing else. `compute-suffix`
     # refuses that graph's compute; `suffix-writeback-offset` shifts the bytes the pass writes back.

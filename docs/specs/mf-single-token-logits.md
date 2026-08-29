@@ -20,7 +20,8 @@ Blast radius, measured. **Four arms**: `--model-forward`, `--model-forward-gpu` 
 `--moe-layer-forward` are **not** affected: they gather unconditionally on member 0
 (`layer_forward.align:1847`, `:1488`; `moe_layer_forward.align:1974`, `:2338`). **Nine**
 `GraphMembers` sites in three modules (4 + 4 + 1), not eighteen, and only the four predicates read
-`pack`/`source`.
+`pack`/`source`. *(Ten in four modules after item 32's merge, which added
+`moe_decode_step.decode_embed_members`; section 8.5.)*
 
 Reproduced here on the checked-in fixture under `ALIGN_LLM_GGML_FORCE=engine`: `--model-forward` at
 `0`, `3`, `17` gives one digest `62a46efd…` against `99781f3e…` for the `3,17` control;
@@ -160,7 +161,8 @@ waiting on host memory for its real-model legs, and section 6's follow-up came d
 origin/main`, never a rebase; three conflicts — `HANDOFF.md`, `docs/specs/roadmap.md`, and
 `scripts/decode-step-golden.jsonl` — all resolved by keeping both sides, the golden taken from
 `main` and regenerated. Item 33's own reconciliation was checked: no new `GraphMembers` builder and
-no new copy of the predicate arrived, so the count is still **nine sites and four predicates**.
+no new copy of the predicate arrived, so the count was still **nine sites and four predicates**
+at that head. Item 32 later added a tenth; section 8.5.
 
 **The lift.** That capability required `T_prefix >= 2`, raising `R6_SUFFIX` with detail
 `prefix[<n>]` at step 3c, for exactly this defect — its section 11.2 filed it and named this
@@ -179,7 +181,8 @@ capability as the consumer that reopens the surface. The bound is deleted:
   no longer exists.
 * `docs/specs/r6-prefix-suffix-prefill.md` — new **section 11.5**, plus in-place corrections to
   2.3, 2.7, 3.7, 5.6, 5.7, 9.1, 11.1 correction 8, 11.2 and 12.1. Section 11.5 also records the
-  three measurements 11.2 got wrong: nine sites not eighteen, `--model-forward-gpu` affected while
+  three measurements 11.2 got wrong: nine sites (ten after item 32) not eighteen,
+  `--model-forward-gpu` affected while
   `--layer-forward` is not, and the resident path **not** immune.
 
 ```text
@@ -199,4 +202,29 @@ kills `ds-suffix-prefix-one` through **both** oracle S and oracle C″, kills
 `ds-suffix-single-shot-2`, a two-token prefill, correctly survives.
 
 Every command of 8.3 was re-run at the merged head and is `ok`.
+
+### 8.5 The second `main` merge — item 32 adds a tenth construction site
+
+`R6-OLMOE-DECODE` merged as PR #148 (`origin/main` `45ff38e`) while this capability was still
+waiting on host memory. `git merge origin/main`, never a rebase; three conflicts — `HANDOFF.md`,
+`docs/specs/roadmap.md`, and `docs/align-development.md` — each one both sides adding a block at the
+same place, resolved by keeping both. A fourth edit was needed in `HANDOFF.md`: my side's demoted
+`R6-PREFIX-SUFFIX-PREFILL` heading was orphaned, because `main` already carries that section.
+
+**The tenth site.** Item 32 ships `src/moe_decode_step.align`, whose `decode_embed_members` builds a
+`moe_model_forward.GraphMembers` — the MoE twin of `decode_step.decode_embed_members`, and the exact
+shape section 1 names as legitimately carrying `pieces == 1` with `token * row_bytes` already baked
+into `pack`/`source`. It takes `gathered: false`. The blast radius is therefore **ten sites in four
+modules**, still **four predicates**, and item 32 added no new copy of the gather.
+
+**This is the design choice paying for itself.** A `bool` on the record is a compile-time obligation:
+item 32's builder arrived through a merge, from a branch that had never seen this fix, and the build
+**refused it** until it said which kind of member it was. The rejected alternative of section 2 —
+baking `ids[0] * row_bytes` into `build_embed_members` at `tokens == 1` — would have let that
+builder merge silently, because it changes no record and asks nothing of a new construction site.
+
+Nothing else moved: `--moe-decode-step` prefills through `moe_model_forward.build_embed_members`,
+which is already correct, and its own decode graph gathers row 0 of a one-row window by
+construction. All six corpora regenerated unchanged apart from item 32's own rows, and every command
+of 8.3 was re-run at this head.
 

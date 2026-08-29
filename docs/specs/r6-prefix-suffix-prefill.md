@@ -1684,9 +1684,12 @@ byte-identical.
 
 **Three corrections to 11.2.**
 
-1. **Nine construction sites, not eighteen.** Four in `src/model_forward.align`, four in
-   `src/moe_model_forward.align`, one in `src/decode_step.align`. Eighteen was an estimate over
-   three modules; the record is `pub GraphMembers` twice and one cross-module literal.
+1. **Nine construction sites, not eighteen** — ten once item 32 (R6-OLMOE-DECODE) merged. Four in
+   `src/model_forward.align`, four in `src/moe_model_forward.align`, one in
+   `src/decode_step.align`, and one in item 32's `src/moe_decode_step.align`. Eighteen was an
+   estimate over three modules; the record is `pub GraphMembers` twice and two cross-module
+   literals. The field is a compile-time obligation, so a new builder cannot forget it: item 32's
+   arrived through a merge and the build refused it until it carried `gathered`.
 2. **Four arms, and not the four named.** `--layer-forward` and `--moe-layer-forward` are **not**
    affected — they gather unconditionally on member 0 — while `--model-forward-gpu` is, through
    `render_parts` -> `execute`. The affected set is `--model-forward`, `--model-forward-gpu`,
