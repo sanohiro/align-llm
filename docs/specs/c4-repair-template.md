@@ -1,6 +1,7 @@
 # C4-REPAIR-TEMPLATE: the prompt template and the declared edit policy
 
-Status: **designed, not implemented.** This document is the authoritative plan. The proportional
+Status: **implemented, owner-verified, and measured; review and publication pending.** This document
+is the authoritative plan and result record. The proportional
 design gate in `CLAUDE.md` triggered on an exchanged-format change (the repair-prompt content
 contract moves to **version 3**: a sixth section kind and a new sealed template), on a persisted-
 format change (`TASK_MEASUREMENT` `schema_version` 2 → 3 carries the refusal code, the retained edit
@@ -162,6 +163,11 @@ runs are directly comparable.
 ```text
 gate MET  <=>  repair_recovery_paired_count >= 1
 ```
+
+**Measured result, added after the run:** the predicate is `MET`, but the underlying corpus
+capability is unchanged and the C4 gate is **not closed**. The only counted recovery repairs an
+attempt-1 regression introduced by this capability and returns to the same patch that passed
+first-shot in both prior runs. Section 11.4 owns the evidence and applies section 1.6 reading (b).
 
 **The addressable arm, stated before the run.** Unlike C4E, whose arm was six of ten repair
 attempts, this capability's statement reaches **every ran attempt** — the task prompt changes
@@ -1147,6 +1153,10 @@ and a persisted explanation; that the repair prompt remains re-derivable from pe
 plus the frozen corpus; and, if the gate is `MET`, that at least one task recovered from a
 first-attempt failure reproducibly across both paired samples.
 
+**Measured qualification of that last clause.** Section 11.4 records that its literal predicate is
+true only because version 3 first regressed a previously first-shot passing pair. It is not evidence
+of a new passing task or a net repair capability, and this document makes no such claim.
+
 **What it does not claim.** **No speed claim of any kind** — §5's spread over 44 calls at
 temperature 0 supports no baseline, no floor, and no comparison, and the prompt-cache confound is
 uncontrolled. **No prompt-quality claim**: the CANDIDATE variant is not asserted to be better and the
@@ -1661,7 +1671,7 @@ their outcomes are recorded here rather than asserted.
 | §3.4 `EDIT_POLICY`, presence and equality | `EDIT_POLICY_FIELDS` + the `PROMPT_EVALUATION_TASK` branch; `EditPolicy` (Align); `build_edit_policy` (freeze) |
 | §3.4 constant parity across five scripts | `verify_constant_parity_boundary`; adapter `MAXIMUM_FILE_BLOCKS` / `MAXIMUM_EDIT_BYTES` asserted against the frozen module in `loaded_modules()` |
 | §3.5 fifteen-place parity table | walked; entries 1-5 and 9-14 changed as declared, entry 15 untouched, entries 6-8 in the Align files |
-| §3.5 entry 8 (`verifier_measurement_equal`, all 31) | `src/prompt_score.align`; defect 27 is the only case that fails on its omission |
+| §3.5 entry 8 (`verifier_measurement_equal`, all 31) | `src/prompt_score.align`; defect 32 is the only case that fails on its omission after the merged branch's renumbering (§11.3 item 12) |
 | §3.6 corpus assets | `scripts/freeze-canonical-v1t`, `eval/prompt/canonical-v1t/`, `eval/tasks/prompt-v1t/`, re-minted over `agent/c4-repair-editset`'s re-frozen `canonical-v1e` |
 | §3.8 aggregates, recomputed and adapter-selected | evaluator `row_edit_refusal_count`; `verifier_row_edit_refusals` + both aggregate verifiers; gate validator `rescore` |
 | §3.9 ladder rows 2-26 | rows 2-7 in the adapter; 8-13 in `validate_input_artifact_shape` / `validated_repair_template` / the task-prompt membership check; 14-21 in `valid_task_measurement` / `valid_measurement_version_two` / `valid_measurement_version_three`; 22-24 in `repair_eligibility` / `assemble_repair_prompt` / `build_repair_attempt`; 25-26 in the aggregates and `verifier_measurement_equal` |
@@ -1679,7 +1689,7 @@ Every cell of §7.1-§7.7 maps to a named case. §7.1 and §7.2 are
 `scripts/run-prompt-template-adapter-smoke` (`hop_rows`, `refusal_rows`, `launch_rows`); §7.3 and
 §7.4 are `verify_template_attempt_boundary`, `verify_constant_parity_boundary`,
 `policy_render_cases`, `template_template_cases`, and `template_prompt_cases`; §7.5 is
-`src/prompt_verifier_smoke.align` defects 21-27 plus `make check`; §7.6 is §11.5's recompute and
+`src/prompt_verifier_smoke.align` defects 26-33 and 39-40 plus `make check`; §7.6 is §11.5's recompute and
 the freeze's `--check`; §7.7 is the §11.4 run.
 
 ### 11.3 Deviations from the design, recorded rather than silently taken
@@ -1829,3 +1839,76 @@ the freeze's `--check`; §7.7 is the §11.4 run.
     capability's four defects — the freeze's field order, ladder row 13 twice, and this one — were
     invisible to owner tests that asserted the rule instead of driving the artifact through the
     consumer that enforces it.
+
+### 11.4 Gate result: predicate `MET`, capability unchanged
+
+The measurement of record is the single completed run from clean committed head
+`7ba2027d1403de92936de0eba146f649a35cb59d`, with `align_llm_clean: true`. It published 12 rows
+after **24 provider calls** (12 initial and 12 repair) in **700.452 s**, inside the pre-committed
+3,600 s ceiling. The evaluation is `IMPROVED` and gate-eligible under the unchanged C6 scoring
+contract. Those are properties of the persisted result; they are not promoted into a broader
+capability claim below.
+
+**The formal predicate is met.** `repair_recovery_count` is 2 and
+`repair_recovery_paired_count` is **1**, so the exact predicate in section 1.5 evaluates to `MET`.
+Both samples of `duration-half-away-from-zero` CANDIDATE fail attempt 1 with a 724-byte patch and
+pass attempt 2 with a 758-byte patch.
+
+**That is not a C4 gate closure.** The same pair passed at attempt 1 in both C4 and C4E, with the
+same 758-byte patch. Version 3 changed attempt 1, turned that previously passing answer into the
+724-byte failure, and then recovered to the old passing answer on attempt 2. The confound accepted
+before the run in section 4.3 item 4 therefore landed exactly: the predicate counts recovery from a
+regression this capability introduced. `candidate_pass_count` is 2 here and was 2 at C4E;
+`completion_gain_count` is 2 in both; no task passes here that did not pass before. The honest
+headline is **predicate met, capability unchanged**.
+
+| Task | Variant | Both samples, attempt 1 -> attempt 2 | Interpretation |
+| --- | --- | --- | --- |
+| `duration-half-away-from-zero` | PARENT | `FAIL/TEST/716` -> `FAIL/PATCH/0`, `UNCHANGED_FILES` | A real wrong patch becomes a no-op, as at C4E |
+| `duration-half-away-from-zero` | CANDIDATE | `FAIL/TEST/724` -> `PASS/758` | The counted recovery; version 3 regressed the prior first-shot 758-byte pass |
+| `layer-precedence-frozen-module` | PARENT | `FAIL/PATCH/0` -> `FAIL/PATCH/0`, both `UNCHANGED_FILES` | The same 414-byte completion is re-sent |
+| `layer-precedence-frozen-module` | CANDIDATE | `FAIL/PATCH/0` -> `FAIL/PATCH/0`, both `UNCHANGED_FILES` | The same 414-byte completion is re-sent |
+| `record-codec-round-trip` | PARENT | `FAIL/TEST/1008` -> `FAIL/TEST/1008` | Completion changes; the patch is byte-identical |
+| `record-codec-round-trip` | CANDIDATE | `FAIL/TEST/1008` -> `FAIL/TEST/1008` | Completion changes; the patch is byte-identical |
+
+The two paired samples agree for all six (task, variant) pairs. That makes the negative reading
+reproducible; it does not turn it into an improvement.
+
+**The pre-committed secondary is not met.** `edit_refusal_count` is **10**, not `< 10`, against a
+C4E baseline of 10. Its breakdown moves from eight inferred `UNCHANGED_FILES` plus two inferred
+`PATH_NOT_EDITABLE` to a persisted `{"UNCHANGED_FILES": 10}`. The `POLICY` section therefore did
+remove the out-of-allowlist mode — `PATH_NOT_EDITABLE` is **2 -> 0** — but those two attempts become
+unchanged-file refusals, leaving the total fixed. `POLICY` is present on all 12 repair attempts,
+`repair_editset_attempt_count` is 12, and the drop ladder fires zero times.
+
+Section 1.6 reading **(b)** applies. Eight of the ten refusals belong to
+`layer-precedence-frozen-module`; across both variants, both samples, and both attempts the model
+reproduces the pinned file after the rule is stated three times in the prompt. The adapter and the
+prompt are not the binding constraint for that task. The remaining named axes are the model and
+the decoding strategy, and either requires a different experimental design because it breaks the
+paired greedy comparison. No further prompt or adapter capability follows from this result.
+
+The capability still delivers its non-performance contract: the edit policy is declared and
+validated, the refusal is named and counted, the blocks behind `UNCHANGED_FILES` persist, all six
+repair sections remain re-derivable, and whole-answer identity is observable. It makes **no speed
+claim**; attempt 1 changed and its timing is not comparable to either prior run.
+
+Evidence digests:
+
+```text
+c4-template-evaluation.json          3e2ca12a2f7776fdbe8a0ec3067d7fa69dc444377889df21608f38adcc342ea2
+c4-template-evaluation-evidence.json 38da91e3cb5c203748938baaff8926bdd0af9b646ca57015fb621d65a8bcf954
+c4-template-gate-record.json         7bbb578ebf75f7f99185f9d9daf0f7b1f9e36fb56b7985f38e0b9faf084cc86c
+```
+
+### 11.5 Verification checkpoint before review
+
+At merged-tree head `0b44c85`, all 13 macOS owner targets pass: `gmake build`, `gmake check`,
+`gmake format-check`, `gmake gate-topology-check`, `gmake prompt-verifier-smoke`,
+`gmake prompt-score-smoke`, `gmake prompt-gate-validator-smoke`,
+`gmake prompt-render-parity-smoke`, `gmake prompt-template-adapter-smoke`,
+`gmake prompt-repair-adapter-smoke`, `gmake prompt-measurement-adapter-smoke`,
+`gmake prompt-model-smoke`, and `gmake prompt-state-smoke`. `gmake fmt` leaves no diff,
+`git diff --check` passes, and `scripts/freeze-canonical-v1t --check` reproduces the frozen scope.
+The Linux recipe for `prompt-evaluate-smoke` also passes. The evaluator is 252,067 bytes, leaving
+10,077 bytes in the four-chunk launch window; the adapter pin remains `fa73f9dc…`.

@@ -11,7 +11,7 @@ pushed for merge.
 
 **Capability.** The prompt template and the declared edit policy — the successor
 `c4-repair-editset.md` section 6.4 named. `docs/specs/c4-repair-template.md` is the authoritative
-ledger; section 11 is the implementation record and section 11.4 owes the gate analysis.
+ledger; section 11 is the implementation record and section 11.4 now carries the gate analysis.
 
 **GATE: `MET` by the predicate, and that is NOT a C4 gate closure.** From clean committed head
 `7ba2027`, `align_llm_clean: true`, 24 provider calls, 700.452 s against a 60-minute ceiling.
@@ -53,10 +53,7 @@ because the gate fixture never attached the record.
 **10,077 B** of four-chunk launch-window headroom. Adapter pin `fa73f9dc…` unmoved.
 
 **Next actions, in order.**
-1. **Correct the specification before anything else.** Section 11.4 must state the gate outcome as
-   "predicate met, capability unchanged", with the attempt-1 regression and the unmoved
-   `edit_refusal_count` as the headline, not a footnote. Roadmap item 39 and this block already say
-   it; the spec does not yet.
+1. Merge the latest `origin/main`, never rebase, and rerun the owner set on the merged candidate.
 2. **Two disjoint comprehensive reviews** (the diff is large and spans three surfaces): one for the
    adapter/import-chain/version-3 producer, one for the evaluator, Align verifier, corpus freeze,
    and gate evidence. Explicitly disjoint risks, per `CLAUDE.md`'s very-large-change allowance.

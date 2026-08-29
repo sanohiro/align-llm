@@ -931,6 +931,21 @@ The current forward delivery order is:
     Named focused qualification `make c4-template-gate`; it joins no aggregate, and neither does
     `make prompt-template-adapter-smoke`.
 
+    **The predicate is `MET`, and the capability is unchanged; this does not close C4.** The clean
+    committed-head run made 24 calls in 700.452 s. `repair_recovery_paired_count` is 1, but its only
+    pair is `duration-half-away-from-zero` CANDIDATE: a pair that passed first-shot at 758 bytes in
+    both prior runs now fails attempt 1 at 724 bytes and recovers to the same 758-byte patch at
+    attempt 2. Version 3 introduced the failure it then repaired. `candidate_pass_count` stays 2,
+    `completion_gain_count` stays 2, and no new task passes. The pre-committed secondary is also
+    unmet: `edit_refusal_count` stays 10 against `< 10`. `PATH_NOT_EDITABLE` does move 2 -> 0, but
+    those attempts become `UNCHANGED_FILES`, whose persisted breakdown is now 10. Section 1.6
+    reading (b) applies: on `layer-precedence-frozen-module` the model re-sends the same pinned file
+    despite the rule appearing three times, so neither adapter nor prompt is binding; the remaining
+    axes are model and decoding strategy and require a different experimental design. The shipped
+    value is the declared policy, machine-checkable refusal vocabulary and aggregate, retained edit
+    blocks, and whole-answer identity — not a recovery or speed claim. Evidence and the per-pair
+    analysis are in the design's section 11.4.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
