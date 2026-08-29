@@ -1662,10 +1662,10 @@ their outcomes are recorded here rather than asserted.
 | §3.4 constant parity across five scripts | `verify_constant_parity_boundary`; adapter `MAXIMUM_FILE_BLOCKS` / `MAXIMUM_EDIT_BYTES` asserted against the frozen module in `loaded_modules()` |
 | §3.5 fifteen-place parity table | walked; entries 1-5 and 9-14 changed as declared, entry 15 untouched, entries 6-8 in the Align files |
 | §3.5 entry 8 (`verifier_measurement_equal`, all 31) | `src/prompt_score.align`; defect 27 is the only case that fails on its omission |
-| §3.6 corpus assets | `scripts/freeze-canonical-v1t`, `eval/prompt/canonical-v1t/`, `eval/tasks/prompt-v1t/` |
+| §3.6 corpus assets | `scripts/freeze-canonical-v1t`, `eval/prompt/canonical-v1t/`, `eval/tasks/prompt-v1t/`, re-minted over `agent/c4-repair-editset`'s re-frozen `canonical-v1e` |
 | §3.8 aggregates, recomputed and adapter-selected | evaluator `row_edit_refusal_count`; `verifier_row_edit_refusals` + both aggregate verifiers; gate validator `rescore` |
 | §3.9 ladder rows 2-26 | rows 2-7 in the adapter; 8-13 in `validate_input_artifact_shape` / `validated_repair_template` / the task-prompt membership check; 14-21 in `valid_task_measurement` / `valid_measurement_version_two` / `valid_measurement_version_three`; 22-24 in `repair_eligibility` / `assemble_repair_prompt` / `build_repair_attempt`; 25-26 in the aggregates and `verifier_measurement_equal` |
-| §3.11 evaluator size checkpoint | **+15,667 B** (234,347 → 250,014), threshold 24,000, window headroom 12,130. Neither option (a) nor (b) was needed |
+| §3.11 evaluator size checkpoint | **+16,359 B** (235,059 → 251,418) against the merged `agent/c4-repair-editset` base, threshold 24,000, window headroom 10,726. Neither option (a) nor (b) was needed |
 | §4.2 sealed template, three changes | `REPAIR_PREAMBLE` / `REPAIR_HEADERS` in the freeze; asserted by `template_prompt_cases` |
 | §4.3 task-prompt delta | `build_task_prompt`; the addition and worked example are byte-checked by the freeze's `--check` |
 | §4.4 rendered `POLICY` form | `repair_policy_text`; byte golden in `policy_render_cases` |
@@ -1720,14 +1720,15 @@ the freeze's `--check`; §7.7 is the §11.4 run.
    item 34 all carry the corrected reading already. Only `docs/specs/c4-repair-measured.md` needed
    it, and it has it. The §1.2 correction stands; its propagation was smaller than the design
    expected, and that is a better outcome than the design assumed.
-7. **`REPAIR_ADAPTER_SHA256` is provisional and is re-derived at the merge commit.** §6.5
-   prerequisite 1 and §10.3 both require the constant to come from `agent/c4-repair-editset`'s
-   final head; that branch's review repair changes the repair adapter (break-on-first-overflow
-   prefix-cut edit-set budget) and re-freezes `canonical-v1e`. The value shipped here is `19b2e0e`'s
-   and the file says so. The owner smoke digests the on-disk file, so a stale pin is red rather than
-   silent, and the widened `edit_set` rule inherits the repaired budget semantics automatically
-   because this adapter **calls** `repair.edit_set_blocks` rather than copying it. The merge commit
-   re-derives the constant, regenerates the second-hop golden, and re-runs the freeze.
+7. **`REPAIR_ADAPTER_SHA256` was provisional and is now discharged.** §6.5 prerequisite 1 and
+   §10.3 require the constant to come from `agent/c4-repair-editset`'s final head. That branch's
+   review repair moved the edit-set budget to a break-on-first-overflow prefix cut and re-froze
+   `canonical-v1e`, moving the adapter from `e54ab3c1…` to **`fa73f9dc…`**. The merge commit
+   re-derived the constant, regenerated the second-hop golden, and re-minted `canonical-v1t`; the
+   repair adapter now carries **the same digest in `canonical-v1e` and `canonical-v1t`**. The
+   widened `edit_set` rule inherited the repaired prefix-cut semantics with no edit, because this
+   adapter **calls** `repair.edit_set_blocks` rather than copying it — which is the whole reason
+   §3.1 refused to re-implement it. All nine raise sites still map, so the repair moved no message.
 8. **`verifier_result_uses_repair_adapter` was widened to include the template adapter.** A
    six-kind template declares `EDITSET` too, so a version-3 corpus defines
    `repair_editset_attempt_count` exactly as a version-2 one does; leaving the predicate at "names
@@ -1769,3 +1770,25 @@ the freeze's `--check`; §7.7 is the §11.4 run.
     earlier adapter is not held to it. The design's own principle — *adapter-selected, never
     version-selected, and never applied to a corpus whose adapter cannot satisfy it* — was the
     answer both times; applying it to this row from the start would have avoided both rounds.
+
+12. **The merge with `agent/c4-repair-editset` renumbered this capability's verifier defects.** That
+    branch's review repair added defects 21-25 to `src/prompt_verifier_smoke.align` for edit-set
+    path uniqueness and ordering and for three version-1 absence clauses. This capability's seven
+    version-3 defects were 21-27 and are now **26-32**, with §7.5's cell map reading against the new
+    numbers. `src/prompt_verifier_smoke.align` was rebuilt from the merged side and this
+    capability's additions re-applied on top, rather than resolved hunk by hunk, because the two
+    branches changed the same five helper predicates.
+13. **The second-hop divergence normalizer adopts the merged branch's parser-delimited span.** That
+    repair replaced "scan for the next column-0 line" with `ast`, because a column-0 line inside a
+    triple-quoted string can end a span early. This file's copy took the same change, so the two
+    hops' goldens stay comparable and neither can silently truncate. The golden's byte count is
+    unchanged at 116 lines.
+14. **The merge broke one of the merged branch's own owner rows, and the fix belongs to this
+    capability.** `scripts/run-prompt-gate-validator-smoke`'s `downgrade_measurement` helper — added
+    by that branch's repair to drive ladder row 10's version-1 half directly — stripped the four
+    version-2 members and set `schema_version: 1`. Once this capability made the gate fixture emit
+    version 3, the helper left the four version-3 members behind, so every one of its four stray
+    rows was rejected for a member it had not planted. The helper now removes every member above
+    version 1, and the same loop gained four rows driving the version-3 members at version 1, which
+    completes the absence matrix in both directions. A mutant deleting the below-version-3 absence
+    check is killed by the new rows and by nothing else.

@@ -5,8 +5,8 @@ file records durable project state.
 
 ## Active: C4-REPAIR-TEMPLATE (2026-08-29)
 
-Branch `agent/c4-repair-template`, stacked on `agent/c4-repair-editset` at `19b2e0e`. Implemented
-and owner-verified; the gate run is the remaining step.
+Branch `agent/c4-repair-template`, merged with `agent/c4-repair-editset` at `2474d0f`.
+Implemented and owner-verified; the gate run is the remaining step.
 
 **Capability.** The prompt template and the declared edit policy — the successor
 `c4-repair-editset.md` section 6.4 named. `docs/specs/c4-repair-template.md` is the authoritative
@@ -46,8 +46,8 @@ frozen module object and one `prctl` writer per process. Second-hop divergence g
 `eval/fixtures/c4-repair-template/adapter-divergence.diff`, 116 lines.
 
 **Evaluator size checkpoint (spec section 3.11), the top ledger risk: PASSED.** Realized delta
-**+15,667 bytes** (234,347 -> 250,014) against a 24,000-byte return-to-ledger threshold and
-**12,130 bytes** of remaining four-chunk window headroom. `EVALUATOR_SOURCE_SHA256` re-pinned in the
+**+16,359 bytes** (235,059 -> 251,418) against the merged base, a 24,000-byte return-to-ledger
+threshold, and **10,726 bytes** of remaining four-chunk window headroom. `EVALUATOR_SOURCE_SHA256` re-pinned in the
 same change.
 
 **Two defects found by driving rules through their real owners, both recorded in spec section
@@ -61,14 +61,15 @@ also wrong, because declaring the task prompt in `artifacts` is a `prompt-v1*` c
 than a repository-wide one. It is now membership-only **and adapter-selected**, like every other
 rule in this capability.
 
-**MERGE-TIME ACTION, do not skip.** `REPAIR_ADAPTER_SHA256` in `scripts/prompt-template-adapter.py`
-is **provisional**: it is `19b2e0e`'s digest, and `agent/c4-repair-editset`'s review repair changes
-that file (break-on-first-overflow prefix-cut edit-set budget) and re-freezes `canonical-v1e`. At
-the merge commit, re-derive it, re-run `scripts/run-prompt-template-adapter-smoke --update-golden`,
-and re-run `scripts/freeze-canonical-v1t`. Nothing has to remember: the owner smoke digests the
-on-disk file and fails closed the moment the two disagree. The widened `edit_set` rule inherits the
-repaired prefix-cut semantics automatically, because this adapter **calls** `repair.edit_set_blocks`
-rather than copying it.
+**MERGE-TIME ACTION: DISCHARGED.** `agent/c4-repair-editset` was merged (never rebased) at
+`2474d0f`, which also brought main's Track B work. `REPAIR_ADAPTER_SHA256` is re-derived to
+**`fa73f9dc…`**, the second-hop divergence golden regenerated (116 lines, unchanged count), and
+`canonical-v1t` re-minted over the re-frozen `canonical-v1e`; the repair adapter now carries the
+same digest in both manifests. The widened `edit_set` rule inherited the repaired
+break-on-first-overflow prefix cut with no edit, because this adapter **calls**
+`repair.edit_set_blocks` rather than copying it. All nine raise sites still map, so the repair moved
+no exception message. The merge renumbered this capability's verifier defects from 21-27 to
+**26-32**, because that branch's repair took 21-25.
 
 **Gate.** `repair_recovery_paired_count >= 1`, unchanged. Pre-committed secondary
 `edit_refusal_count < 10` against a C4E baseline derived from the summary strings. Three live
@@ -76,10 +77,11 @@ rather than copying it.
 prompt 16,904 bytes of 65,536, no section ever dropped, refused rows carry the smallest prompts.
 `NOT_MET` has two pre-fixed readings, in spec section 1.6.
 
-**Next actions, in order.** (1) Run `make c4-template-gate` from a clean committed head once the
-host has no model process and >= 6 GB free (last checked: 3.84 GB, Docker VM resident, so blocked).
-(2) Record the row table, the refusal breakdown, and the verdict. (3) Merge
-`agent/c4-repair-editset` and discharge the merge-time action above. (4) Review.
+**Next actions, in order.** (1) Wait for `agent/c4-repair-editset`'s own gate re-run to finish;
+host sequencing gives it `llama-server` first. (2) Run `make c4-template-gate` from a clean
+committed head once `pgrep -f llama-server` is empty again and >= 6 GB is free. **Never start a
+second `llama-server`.** (3) Record the row table, the refusal breakdown, the completion-identity
+comparisons, and the verdict with the section 1.6 reading it selects. (4) Review.
 
 **Blockers.** Host capacity: Track B's model work contends for memory and the gate needs
 `llama-server` with the 4.7 GB model. No Align capability request blocks this. Request 52 gained a
@@ -92,7 +94,8 @@ both were routed around with the proven idioms.
 ## Active: C4-REPAIR-EDITSET (2026-08-29)
 
 Branch `agent/c4-repair-editset`, stacked on `agent/c4-repair-measured` at `c07775c`. Implemented,
-verified, and **measured**; two commits and nothing uncommitted. Ready for review.
+verified, **measured**, and **reviewed twice**; the recorded findings are repaired, `origin/main` is
+merged, and nothing is uncommitted.
 
 **GATE RESULT: `NOT_MET` — a measured negative, and a directional one.** 12 rows, 22 provider calls,
 **940.931 s = 15 min 41 s** against a 60-minute recorded ceiling. `repair_recovery_count: 0` and
@@ -103,7 +106,10 @@ table and the analysis are in spec section 11.4.
 
 **The checked-in evidence is the run from the clean committed head `de56c60`**, taken on the same
 terms C4-REPAIR-MEASURED used: `align_llm_clean: true` and all three reachability fields
-`VERIFIED`, against a pre-commit run's `false`/`UNVERIFIED`. **Every correctness value reproduced
+`VERIFIED`. A pre-commit run of the same tree reported `align_llm_clean: false` and, of the three
+reachability fields, only `align_llm_reachability: UNVERIFIED` — the one an uncommitted head makes
+unanswerable; `align_reachability` and `corpus_reachability` were `VERIFIED` in both.
+**Every correctness value reproduced
 exactly** between the two runs — same verdict, same rows, same statuses and failure kinds, same
 `patch_size_bytes`, same six-attempt denominator, same aggregates, same 8,348-16,904 assembled
 bytes, and **the same two patch digests** `8cd2aa30…` and `cd9ae218…`. Only the clocks moved:
@@ -189,7 +195,22 @@ that can blow the budget alone and a skipped attempt is a lost measurement.
 carry identical digests in all three manifests, and all 86 member digests across the three corpora
 recompute against the tree.
 
-**Verification at this head.** `gmake build`, `gmake check` (31 units), `gmake fmt`,
+**Review repair (2026-08-29).** Two comprehensive reviews (implementation; spec/evidence/
+governance) returned 7 major and 6 minor findings, all accepted and repaired in one commit. The one
+behaviour change: the producer-side edit-set budget was a **greedy best fit** while §4.3, the
+adapter's docstring, and `src/prompt_artifacts.align` all describe a **prefix cut**; the code moved
+to break-on-first-overflow. That moves `scripts/prompt-repair-adapter.py`'s digest from `e54ab3c1…`
+to `fa73f9dc…`, so `canonical-v1e` + `eval/tasks/prompt-v1e/` were **re-frozen — same member set**,
+with only the adapter digest and the cascade below it moving, and the gate was **re-run from the
+repaired head**. The provider service revision was re-derived and came back unmoved. Recorded as
+spec §11.3 deviation 15. The other findings were falsifiability gaps and wording: five ladder-row
+clauses had no falsifying case (edit-set path uniqueness/ascending in both the Align verifier and
+the gate validator, three of the four version-1 absence clauses in the Align verifier, and the
+validator's row-14 sum), the row-17 applied-edit cross-check refused a legitimately **truncated**
+`diagnostic_summary`, and the divergence normalizer ended a function at the first column-0 line,
+which a triple-quoted string can produce.
+
+**Verification at the repaired head.** `gmake build`, `gmake check` (31 units), `gmake fmt`,
 `gmake format-check`, `gmake gate-topology-check` (EXPECTED unmoved), `git diff --check`, and the
 macOS owner set — `prompt-model-smoke`, `prompt-render-parity-smoke`, `prompt-score-smoke`,
 `prompt-score-prefix-smoke`, `prompt-verifier-smoke`, `prompt-state-smoke`,
@@ -198,20 +219,21 @@ all PASS. Under the Linux recipe below: `run-prompt-repair-adapter-smoke` (full 
 `run-prompt-evaluate-smoke`, `run-prompt-measurement-adapter-smoke`, `test-prompt-fixed-adapter`,
 `test-prompt-snapshot-helper`, and `test-prompt-source-verifier` all PASS.
 `scripts/freeze-canonical-v1e --check` and `scripts/freeze-canonical-v1r --check` each reproduce
-their 10 frozen files. `EVALUATOR_SOURCE_SHA256` is re-pinned to
-`d1b8d4d409da89f0c43766419522a609f1d55435c8064ed69b7b67359573cebe` (234,347 bytes), inside the
-four-chunk window with 27,797 bytes of headroom.
+their 10 frozen files. `EVALUATOR_SOURCE_SHA256` is re-pinned in the same commit as the evaluator
+edit, inside the four-chunk window.
 
-**23 mutants, all killed**, across four owners: skip EDITSET, drop EDITSET first, remove the row-17
-summary cross-check, drop the four members from `verifier_measurement_equal`, remove ladder row 12,
-stop recomputing the EDITSET denominator, remove the version-versus-adapter rule, stop summing
-`edit_set_total_bytes`, allow a version-2 member at version 1, allow the base identity to be absent,
-trust the persisted denominator, disable the validator's row 11 / row 12 / row 15 body-digest
-checks, and — in the adapter — drop `patch_sha256`, report the **frozen** file's runtime identity,
-drop the edit set, digest before redaction, remove whole-block bounding, skip the base-digest
-verification, and make the name assertion vacuous. One mutant (the validator's row-11 check) first
-**survived**; the gap was closed by adding four version-2 rejection cases to
-`run-prompt-gate-validator-smoke`, and it now dies.
+**Mutants, all killed**, across four owners. The original 23: skip EDITSET, drop EDITSET first,
+remove the row-17 summary cross-check, drop the four members from `verifier_measurement_equal`,
+remove ladder row 12, stop recomputing the EDITSET denominator, remove the version-versus-adapter
+rule, stop summing `edit_set_total_bytes`, allow a version-2 member at version 1, allow the base
+identity to be absent, trust the persisted denominator, disable the validator's row 11 / row 12 /
+row 15 body-digest checks, and — in the adapter — drop `patch_sha256`, report the **frozen** file's
+runtime identity, drop the edit set, digest before redaction, remove whole-block bounding, skip the
+base-digest verification, and make the name assertion vacuous. Review then re-injected the mutants
+its findings named and **eleven more died** at the repaired head: greedy best fit in the adapter;
+the validator's path-order, path-uniqueness, row-14 sum, and version-1 absence rules; and the Align
+verifier's four version-1 absence clauses, its ascending rule, and its strictness (`>` weakened to
+`>=`). The claim "23/23 killed" did not reproduce before the repair and is superseded.
 
 **The provider service revision was re-derived, not inherited** (spec section 3.7):
 `llama-server --version` reports build 10566 commit `bb4caa754`, the resolved binary hashes to
@@ -219,14 +241,21 @@ verification, and make the name assertion vacuous. One mutant (the validator's r
 observed string equals `canonical-v1r`'s, which is a measurement rather than a copy — the probe
 fails closed had any component moved.
 
-**Next actions, in order.** (1) One comprehensive review of the stable candidate. (2) Publish the
-English pull request with the exact verification commands, the measured result, and the review
-envelope. (3) On merge, C4's roadmap gate remains unmet by a model, and the fallback capability
-named in spec section 6.4 — a prompt and edit-policy capability for the **unchanged-file
-reproduction** mode — becomes the next Track A item rather than a parallel one, because this gate
-answered its tie-breaker in the negative. Its first sub-problem is this capability's own recorded
-gap: **`edit_set` is `None` on every `PATCH` row** (spec section 11.3 deviation 14), so the answers
-that mode produces are exactly the ones no artifact shows.
+**Next actions, in order.** (1) **Re-record the gate-topology baseline and run the fresh-image
+preflight.** `origin/main` moved while this branch was in review — `a9561a9` and `45ff38e` (Track B
+R6) — and both the `Makefile` and the recorded baseline changed there, so the merge commit's
+`gmake baseline-check` must be re-recorded against the merged `Makefile` rather than assumed, and
+`Makefile` is in `FRESH_IMAGE_PATTERNS`, which selects the **installed fresh-image profile** for
+this branch's preflight. Fresh integration evidence at the merged head is required before
+publication; the DinD recipe is in the C8 note below. (2) `python3 scripts/pre-pr --owner-test ...`
+at the final head. (3) Publish the English pull request with the exact verification commands, the
+measured result, the two review envelopes, and every finding's disposition. (4) On merge, C4's
+roadmap gate remains unmet by a model, and the fallback capability named in spec section 6.4 — a
+prompt and edit-policy capability for the **unchanged-file reproduction** mode — becomes the next
+Track A item rather than a parallel one, because this gate answered its tie-breaker in the negative.
+Its first sub-problem is this capability's own recorded gap: **`edit_set` is `None` on every
+`PATCH` row** (spec section 11.3 deviation 14), so the answers that mode produces are exactly the
+ones no artifact shows.
 
 **Blockers.** Host capacity only: a DinD preflight and Track B's model work contend for memory, and
 the gate needs `llama-server` with the 4.7 GB model. No Align capability request blocks this; next
@@ -420,7 +449,385 @@ and free memory before starting `llama-server`, and never kill another agent's p
 
 **Intentional uncommitted files.** None.
 
-## Active: R6-RESIDENT-WEIGHTS (2026-08-29)
+## Active: R6-OLMOE-DECODE (2026-08-29)
+
+Branch `agent/r6-olmoe-decode`, implemented on `agent/r6-resident-weights` head `6facd56` and then
+**merged** with `origin/main` `553563e` (R6-RESIDENT-WEIGHTS, PR #147, carrying `cec1758`) by
+`git merge` — **never a rebase** — a clean fast-forward touching five files, none of them this
+capability's. The four things that merge re-checks all held: roadmap item **32** (30 is
+RESIDENT-WEIGHTS, 31 is claimed by `agent/c4-repair-measured` on its own branch), the new document
+kind `R6_MOE_DECODE_STEP` at schema **1** (which collides with nothing, because it is a new kind),
+the next free Align request number (**53**; 52 is taken by the C4 branch, and this capability takes
+none), and which goldens regenerate.
+
+**Merged a second time, with `origin/main` `a9561a9`** — R6-PREFIX-SUFFIX-PREFILL, PR #149, which
+landed during this capability's publication — again by `git merge` and never a rebase, so the
+recorded baseline-chain commits stay reachable. Three files conflicted and all three keep **both**
+sides: `scripts/build-ggml-shim` (three routed forced-build arms beside that capability's two
+suffix ones), `docs/specs/roadmap.md` (item 32 beside item 33, with the reservation comment narrowed
+to item 31, which is still on the C4 branch), and `HANDOFF.md`. The four re-checks hold again:
+roadmap item **32**, document kind `R6_MOE_DECODE_STEP` at schema **1**, the next free request number
+(the register on `main` still ends at **51**, PR #149 filed none, and this capability files none),
+and the goldens — `scripts/decode-step-golden.jsonl` is that capability's at **137** rows and this
+branch does not touch it, `scripts/moe-decode-step-golden.jsonl` is this one's at **59**.
+
+**Capability.** `N` greedy decode steps on OLMoE-1B-7B-0125-Instruct Q4_K_M over an Align-owned KV
+plane, each step resolving its own top-8 expert claims per layer and computing only those experts,
+weights **streamed**. CPU only. Authoritative ledger `docs/specs/r6-olmoe-decode.md`; sections 1 to 5
+are the pre-implementation design and 6 onward record what was built and every deviation. Three of
+the four design-gate triggers fire, including — for the first time in this wave — the
+coordinated-invariant one.
+
+**Complete.** Cell **G-P1** (50,304 rows of Q4_K, 50,057 distinct fingerprints, two collision
+classes covering 249 ids of which **two** are not all-zero: `{45382, 50278}`); `src/layer_olmoe.align`
+with `OP_CONCAT`, `WHEN_DECODE`, `mm_row_issued_at`, a **thirty-seven-row** `mm_decode_a_node_table`,
+`mm_decode_b_node_table` at its own base 58, `MM_SLOT_KPAST`/`VPAST` at the top of the slot map,
+`MM_K_ROW`/`MM_V_ROW`/`MM_DECODE_K_CONCAT_ROW`/`MM_DECODE_V_CONCAT_ROW` derived by reading the
+tables, `mm_write_mask_offset`, `mm_oracle_table_at`, `MAX_DECODE_STEPS := 64`, and
+`MAX_PREFILL_TOKENS 6 -> 32`; `src/moe_decode_step.align` (~4,400 lines) with the arm, the plane, the
+loop, the two-way claim accounting, and the `R6_MOE_DECODE_STEP` schema-1 document;
+`src/moe_model_forward.align` widened to `pub` where the new module imports it, plus
+`stage_carry_at`, `stage_plan_owned`, and the decode arm's `Outcome` fields; `scan_transcript_after`
+on the routed side; one `import` and one `if` in `src/ggml_spike.align`; the fixture's routed decode
+corpus; the **seventh** block of `scripts/run-layer-forward-smoke` and
+`scripts/moe-decode-step-golden.jsonl`; `scripts/run-moe-decode-step` and one `Makefile` target.
+
+**The `R5_ORACLE_TRUNCATED` guard is new, and its absence was a real gap.** The design predicted that
+`--moe-layer-forward` and `--moe-model-forward` already shipped it, as the dense arms do. They did
+not: at a cap of six tokens the condition was unreachable. The lift to 32 makes it reachable, so both
+arms now refuse a prefill above six tokens **with** a transcript, and `moe-tokens-33` /
+`mm-tokens-33` plus `*-tokens-seven-with-transcript` pin both halves.
+
+**Golden movement, measured against the merged head.** Five goldens byte-unchanged
+(`layer-forward`, `model-forward`, `gpu-forward`, `decode-step`, `ggml-spike`); one new
+(`moe-decode-step-golden.jsonl`, **59** cases after the review repair); and `moe-layer-forward-golden.jsonl` and
+`moe-model-forward-golden.jsonl` each **-1 renamed, +3 added, and zero pre-existing rows changed in
+value** — `moe-tokens-seven` becomes `moe-tokens-33` and gains
+`moe-tokens-seven-with-transcript` and `moe-tokens-seven-no-transcript`, and the same three on the
+`mm-` side. The routed pack itself is byte-identical, because
+`MOE_MODEL_DECODE_RESEEDED_ROWS` is empty: the routed decode chain is already non-degenerate.
+
+**Result** (the qualification of record, `gmake moe-decode-step-qualification`, four prompts x
+`N = 16` x three runs, Apple M1, `KV_WIDTH` 256, weights streamed, CPU only, **re-run at the review
+repair head**, exit 0; **1 min 23.4 s** warm and **5 min 41.3 s** with the page cache evicted by a
+concurrent build, against 3 min 18 s cold at the implementation head — the spread is the 4.2 GB
+pack's residency and every correctness value is identical across the runs). Gate G
+over 64 ids, oracle R **`MATCH` at 8,192 of 8,192** — the first full-axis routing identity in the
+repository — oracle B `IDENTICAL`, oracle T `PASS` with `max_abs_diff` **0**, and the claim
+accounting exact on all 64 steps. **Every correctness value reproduced exactly**; the residency
+columns below are the repaired metric:
+
+| prompt | oracle R | step bytes (arith) | step bytes (`pread`) | ampl | union keys | mean marginal | demands in prefill | distinct in prefill | reuse ppm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `def add(a, b` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 585 | 57.9 MB | 1540/2048 (75.2 %) | 273/515 (53.0 %) | **748** |
+| `The capital of` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 698 | 92.3 MB | 1064/2048 (52.0 %) | 240/627 (38.3 %) | **693** |
+| `import os` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 614 | 95.4 MB | 1154/2048 (56.3 %) | 173/573 (30.2 %) | **720** |
+| `return x +` | 2048/2048 | 487,587,840 | 487,587,840 | **0 ppm** | 607 | 83.1 MB | 1182/2048 (57.7 %) | 212/561 (37.8 %) | **726** |
+
+**The two accountings agree to the byte and the read amplification is zero**, which is the strongest
+form the primary claim could take: the arm read exactly what it claimed and not one byte more.
+**The streamed-to-marginal gap is 5.1x to 8.4x at sixteen steps, not the 9.2x a four-step probe
+suggested.**
+
+**`step_reuse_per_mille` was the wrong quantity and is re-recorded.** The first implementation
+published `(demands - |decode keys the prefill did not hold|) / demands` — prefill-relative reuse —
+under section 3.11's name, which defines `distinct` as the decode steps' **own** key set. The
+figures were 881/811/804/829; they are **748/693/720/726**. The fixture reproduced the
+implementation's arithmetic verbatim, so the generator, the golden and the smoke assertion all
+agreed with the wrong number: the oracle was co-derived with the subject, and it is now derived
+independently from the routings alone. The hosted figure moved 833 -> 333. Section 12.3's "roughly
+twice the adjacent-pair one" is **re-derived**: 1.55x to 1.67x R2D's pooled 447, about as much as an
+adjacent-pair window captures at its *best* transition, not twice it.
+
+**"Four fifths of every decode demand is already in the prefill" now has both of its fractions.**
+Demand-weighted it is 52.0 % to 75.2 %; over **distinct** decode keys — the form section 2.4 reading
+2 actually predicted at 79.9 % — it is **30.2 % to 53.0 %**, and that is the reading that collapses.
+
+**Cell C-P1** selected oracle C′'s second branch and the fallback is now **implemented**, not
+asserted on argmax alone: at all twelve checkpoints the runner reports the verdict with argmax
+equality, top-ten **set** equality, and `max_abs_diff` in ten-thousandths over the union of the two
+top-tens. Measured: 1 `IDENTICAL`, 6 `WITHIN`, 5 `FAIL`; argmax 12/12; the pre-committed 5000 bound
+holds 12/12 (range 0 to 3,678); top-ten **set** equality holds only **7 of 12**. Section 4.4's
+non-identical branch had already moved the acceptance weight to G, R and B, so the shipped rule
+reports the verdict and gates on argmax alone — a first draft gated on the whole triple and refused
+the run, and that refusal is the measurement.
+
+**Verification, at the repair head.** `gmake build`, `gmake check`, `gmake layer-forward-smoke` (all
+seven blocks, 80 s, 59 documented cases in the seventh, every golden as predicted),
+`gmake ggml-spike-smoke`, `gmake gate-topology-check`, `gmake fmt` (no change), `gmake format-check`,
+`git diff --check`, and the real-model qualification above. **Nine mutants re-injected by file-level
+backup** (never by copying this linked worktree — its `.git` pointer writes through to the shared
+worktree administration directory): eight die, including the three new ones — axis 0 mapped
+unconditionally dies as `md-used-eight: routing MISMATCH`, axis 1 never mapped dies as
+`md-used-eight: oracle T FAIL worst ffn_moe_up max_abs 8726`, and `step_reuse_per_mille` restored to
+the prefill-relative quantity dies as `833, not the generator's 333`. The ninth, `MM_V_ROW` 13 -> 12,
+is **inert and not a gap**: row 12 is the `MUL_MAT` and row 13 a `RESHAPE_3D` view over the same
+buffer, so the plane receives the same bytes.
+
+**The qualification needs one ggml build on both sides, and that is a toolchain debt this capability
+records rather than pays** (section 15 of the ledger). `scripts/llama-eval-callback-toolchain` builds
+the R2C instrument with `GGML_ACCELERATE=ON`/`GGML_BLAS=ON`; Homebrew's ggml at the **same commit**
+has neither, and the same prompt gives `result_output` sums of -113,284.84 and -111,030.03. Every
+earlier consumer of that instrument parsed text; this is the first to compare it numerically. The
+runner's instrument cross-check caught it before the arm ran and reported it as an instrument skew,
+which is what that check exists for.
+
+**Constraints.** CPU only; streamed weights, **by design and not by cost** — residency would make the
+primary metric zero. No TTFT, throughput, or performance claim, and no cost ceiling: this capability
+makes a measurement claim and `docs/specs/r6-resident-weights.md` section 3.4 remains the owner of
+Track B decode performance.
+
+**Blockers.** None. Five Align gaps are met and all five are already recorded with named clients
+(Requests 33, 36, 47, 48, 49); none blocks, and Request 49 gains its largest client — whose recorded
+duplication count is corrected from 23 to **36**, regenerated from the source, with the predicted
+duplicated `refill` removed because it does not exist.
+
+**Final review minors applied.** One final delta review of the repair head `bf7c87d` returned
+**approve with minors** — three stale "57" case counts in section 14 that the deviation-16 repair
+took to 59, one deviation cross-reference (16 -> 18), a clause recording that the union-versus-
+adjacent-pair ratio's *direction* is structural and only its magnitude informative, and one
+108-column roadmap line. All four are applied in `a5c216a`, are **Markdown only**, and touch no
+source, script, fixture, golden or `Makefile`, so the qualification recorded at `bf7c87d` stands.
+Re-verified at `a5c216a`: `gmake build` ok, `gmake format-check` PASS, `gmake layer-forward-smoke`
+PASS (seven blocks, 1 min 28 s, 13 no-document and 59 documented cases in the seventh),
+`git diff --check` clean.
+
+**Coding-baseline chain, re-recorded.** `Makefile` is in this publication diff, so `main`'s chain no
+longer binds this head. The pending record was measured on **Linux** (aarch64, kernel
+6.11.11-linuxkit, Python 3.12.3) through the DinD wrapper at the publication head, and the chain is
+**source `a5c216a` -> oracle `4cab8a7` -> finalization `245f7f5`**. `gmake baseline-check` inside the
+same Linux image ends `baseline chain: PASS`.
+
+**Publication found one more thing, and it is deviation 19.** The `Installed Ubuntu 24.04
+fresh-image profile (aarch64)` check failed **twice** at PR #148 with the canonical, detail-free
+`fresh compiler: ERROR CHILD aggregate`, at `worker-aggregate` phase durations of **1,992 s** and
+**2,000 s**, where `main` measured 1,867 s (PR #143) and 1,892 s (PR #144) and passed, `x86_64`
+measured 1,778 s and passed, and this host's own installed-profile run passed at 1,875 s. The
+aggregate child is `make capable-checks`, of which `layer-forward-smoke` — and therefore this
+capability's seventh block — is a member, and it runs under one `AGGREGATE_TIMEOUT`. That constant is
+**1,800 s -> 3,600 s** in `scripts/fresh-align-compiler`, with the measurement in its own comment.
+`enforce_aggregate_quota` is unchanged, so what the child may *consume* is bounded exactly as before.
+
+**Two environment findings worth carrying forward.** (1) The local DinD preflight must run
+`scripts/pre-pr` as an **unprivileged uid**: R6-KV-PERSIST's `ds-kv-save-unwritable` builds a `0555`
+directory and asserts `R6_KV_UNWRITABLE`, and root writes into it anyway, failing 26 assertions of
+that block. GitHub's runners are unprivileged, which is why hosted CI never saw it.
+`scratchpad/dind-prepr-r6m-user.sh` starts `dockerd` as root and drops to uid 501 for the preflight
+itself. (2) The fresh worker's aggregate had been sitting at roughly 98 % of its wall-clock cap on
+the slowest supported architecture; one added smoke block crossed it.
+
+**Next actions, in order.**
+1. `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` on the
+   unchanged head. The diff touches `Makefile`, `scripts/build-ggml-shim`, the fixture, the smoke and
+   the goldens, so the classifier selects the **executable** row and the **installed fresh-image
+   profile** (`--plan` reports scope `fresh-image`); do not substitute a Docker skip or an ambient
+   `DOCKER_HOST`.
+2. Open the English pull request with the verification table, the review envelope, the finding
+   dispositions and the consolidated repair commit. It must be a **merge** commit: squash or rebase
+   would make the baseline commits unreachable from `main`.
+3. `gmake ci` is **not** selected: this repair changes no aggregate membership, no check topology and
+   no integration behaviour, and `scripts/check-gate-topology`'s byte-literal EXPECTED does not move
+   (`moe-decode-step-qualification` stays in `.PHONY` and in no aggregate).
+4. After merge, refresh `main` and start the next eligible roadmap capability.
+
+**Reproducing the qualification on this host, exactly.** All three of the arm, `llama-eval-callback`
+and `llama-debug` must be **one ggml build** (deviation 4). The `r2c-v2` cache holds only a
+statically linked `llama-eval-callback`, so configure the pinned source once with
+`BUILD_SHARED_LIBS=ON` and the toolchain's other flags verbatim
+(`CMAKE_BUILD_TYPE=Release`, `GGML_NATIVE=OFF`, `GGML_METAL=OFF`, `GGML_OPENMP=OFF`,
+`GGML_CCACHE=OFF`, `LLAMA_CURL=OFF`, `LLAMA_BUILD_EXAMPLES=ON`, `LLAMA_BUILD_TESTS=OFF`,
+`LLAMA_BUILD_NUMBER=10566`, `LLAMA_BUILD_COMMIT=bb4caa754`) and build the `llama-eval-callback` and
+`llama-debug` targets. Then `ALIGN_LLM_GGML_INCLUDE=<source>/ggml/include`,
+`ALIGN_LLM_GGML_LIB=<build>/bin`, and both instruments from `<build>/bin`. The runner's new preflight
+checks that pairing by resolved object identity and refuses a mismatch. **Two repairs were needed to
+make this a one-command run**: `ALIGN_LLM_GGML_LIB` now joins the loader path, and the real shim
+records it as an `-Wl,-rpath` — macOS strips `DYLD_*` from `/usr/bin/time`, which is how the arm is
+launched, so the environment variable alone aborts it inside `dyld`.
+
+**Intentional uncommitted files.** None.
+
+## Merged checkpoint: R6-PREFIX-SUFFIX-PREFILL (PR #149, 2026-08-29)
+
+Merged as `a9561a9` on `main` while R6-OLMOE-DECODE was in publication, and taken into
+that branch by `git merge origin/main` — never a rebase. The next actions this section
+recorded are discharged by that merge; the record below is kept as the capability's own.
+
+Branch `agent/r6-prefix-suffix-prefill`, cut from `origin/main` `553563e` — the merge of
+R6-RESIDENT-WEIGHTS (PR #147). **The capability is committed** (`6cef75b`), with its review repair
+and the final delta review's minors on top; the tree is clean and every hosted check passes at the
+head. `origin/main` has not moved since the branch was cut, so **no merge is owed**: the merge base
+is still `553563e` and the branch is three commits ahead of it.
+`docs/specs/r6-prefix-suffix-prefill.md` is the authoritative ledger: sections 1 to 4 are the design,
+5.1 to 5.4 the verification plan, **5.5 to 5.10 the hosted, mutation, real-model and TTFT results**,
+**11 what implementation and the review found**, and 12 the ledger-to-diff mapping.
+
+**Reviewed and repaired.** One comprehensive review of `6cef75b` over two disjoint reviewers — A on
+`src` plus the runner, smoke and shim, B on the document and the reconciliation edits — returned
+8 major and 16 minor findings, no blocker; 24 dispositions, all applied, two of them as evidence
+rather than a code change (the `R6_TOKENS` precedence row does establish `3 ≺ 3c`, recorded in 5.6;
+and section 11.2's recorded digest does reproduce once the command is runnable). A **final delta
+review** of the repair — required because the repair added a contract, `T_prefix >= 2` — approved
+with three minors, applied on top: the 11.2 reproduction needed `LIBRARY_PATH` exported before the
+build line (it now runs end to end and reproduces `62a46efd73d18be1...` and the control
+`99781f3e63a67b18...`), acceptance rule 7 points at the shipped matrix in 5.6 rather than 5.2's
+superseded prediction, and the smoke's refusal-detail assertions are one named
+`SUFFIX_REFUSAL_DETAILS` tuple of all **thirteen** documented details that the summary line counts,
+instead of a literal loop counted from `STUB_CASES` membership. The one that changes behaviour is a
+**contract addition**: `SUFFIX` now requires `T_prefix >= 2` and refuses `R6_SUFFIX`/`prefix[<n>]`
+otherwise, because a one-token prefill computes the wrong embedding row (see the defect below) and
+the equality oracle would have failed silently. The rest are the split guard (`2 <= j`), the witness
+guard checking fields rather than blocks, the stub's suffix latch being cleared after the pass, and
+document currency.
+
+**Capability.** `R6-KV-PERSIST` made a prefill plane outlive its process, but only for the prompt it
+was saved for — the arm had no graph that computes more than one column at `n_past > 0`. This ships
+that graph. `--decode-step` gains a fifteenth operand, `SUFFIX` (a token id list or `-`), legal only
+with `KV_LOAD`: the arm loads a container holding `T_prefix` columns for exactly the tokens in
+`TOKENS`, runs **one suffix pass** over the `S` suffix tokens at absolute positions
+`T_prefix .. T_prefix+S-1` causally masked over prefix-plus-suffix, writes their K and V into the
+plane at columns `T_prefix ..`, verifies the plane over all `T_prefix + S` columns, and then
+continues the existing `N`-step loop from `n_past = T_prefix + S`. **Nothing is re-saved and the
+`akvp` format is byte-unchanged.** Dense Qwen2.5-Coder-7B Q4_K_M, CPU only. The oracle is that a
+suffix run and a single-shot prefill of `TOKENS ++ SUFFIX` are **the same run**.
+
+**Complete.** `SUFFIX` at `args[14]` with arity 15 and step 2c's conditional rule; `R6_SUFFIX` with
+four details (`suffix[<text>]`, `prefix[<n>]`, `sequence[<n>]`, `token[<index>]`); step 3c and the
+widened step 6; `mf_decode_layer_node_table(g, n_past, tokens, width)`
+with **six** literals parameterised across three functions; `decode_layer_inputs`/`_values`,
+`capture_plane`, and `verify_plane` at `tokens`; `decode_pass` at `tokens_in` with its own
+`suffix_pass` counter; eleven `Outcome` fields and the `suffix` object at document **schema 5**;
+`output`/`oracle_logits` moved to the pass's own logits on a completed run with the container's
+vector kept in `kv`; 22 new cases and **21** new golden rows (three oracle-S splits, twelve refusals
+including the repair's `ds-suffix-prefix-one`, three comparands, two forced builds, and a resident
+leg, minus the four-token comparand kept out of the cross-platform golden), two stub
+shim arms and two builder flavours;
+`scripts/run-decode-step`'s per-split suffix leg with oracle S, oracle C″, oracle B, gate G, the
+accounting, and the three-leg TTFT diagnostic; roadmap item **33**, `docs/align-development.md`,
+Request 49's negative client line and Request 22's cheaper-absence line, and
+`docs/specs/r6-kv-persist.md`'s `document_schema_version` correction.
+
+**`src/kv_plane.align`, `scripts/kv_plane_reader.py`, `src/ggml_ffi.align`, `scripts/ggml_shim.c`,
+`src/ggml_spike.align`, the `Makefile`, and `scripts/layer_forward_fixture.py` are byte-unchanged.**
+No new ggml op, shim symbol, node row, slot, or Align surface, and no aggregate membership or check
+topology change, so `scripts/check-gate-topology`'s byte-literal EXPECTED does not move.
+`scripts/ggml_shim_stub.c` and `scripts/build-ggml-shim` are not unchanged: two arms in the test
+double, recorded as section 11.3 deviation 3.
+
+**Risk 1 was discharged first, as the design asked.** `ds-suffix-3` was run before any refusal case
+was written, and oracle C″ was byte-identical on the **first** implementation checkpoint: the
+column-count sensitivity R6 measured in llama.cpp does not appear between this arm's own two paths
+at `S >= 2` **and** `n_past > 0`. It never reappeared on any later run, hosted or real-model.
+
+**Goldens.** `scripts/decode-step-golden.jsonl` 116 → **137**. A programmatic diff confirms the only
+fields that changed in a pre-existing row are `.schema_version` (4 → 5) and the added `.suffix` — the
+prediction exactly. **Every other golden in `scripts/` is byte-unchanged**, all six.
+**Hosted CI refused one added row and it is out**, recorded as section 11.3 deviation 7:
+`ds-suffix-single-shot-4`, a four-token single-shot prefill, has `.schedule[1].l_out_bit_sum`
+12,689,786,356 on macOS/arm64 against 12,689,786,355 on Linux/x86_64. It moves into
+`BOUNDARY_CASES` on `ds-resident-stage-full`'s precedent — still run, still recorded, still compared
+by oracle S **within one host** — and only the committed row goes. Risk 4's five-column mitigation is
+wrong as stated: a 1-ULP disagreement is available at any width and this fixture reaches it at four
+tokens, which the next capability adding a multi-token prefill case needs to know.
+
+**Findings, in section 11.** Oracle S's exclusion list needed four more fields and
+`plane.roundtrip_bytes_compared` a fifth, each **compensated by an explicit assertion** rather than
+dropped, with a witness guard so a later widening fails; two refusal details in the design's matrix
+were wrong and the implementation follows `R6_TOKENS`' own shape; the decode table holds six
+token-count literals and not five; the suffix pass's specs must carry `compare = false` or a run
+with a transcript panics; and `output`'s digest is taken twice so that a failed pass publishes the
+container's vector.
+
+**A pre-existing defect this capability found and did not fix — follow-up capability
+`MF-SINGLE-TOKEN-LOGITS`, no roadmap number yet (section 11.2, and a named follow-up under roadmap
+item 33).** **A one-token prompt
+computes the logits of token 0.** `model_forward.fill_members` gathers by id only when
+`pieces > 1`, and `build_embed_members` sets `pieces = tokens`, so at `tokens == 1` it reads the
+embedding table's first row. Measured: `--model-forward` at `0`, `3`, and `17` returns one digest.
+Reachable from the shipped CLI, silent, and **not shared by the resident path**. No golden exercises
+`token_count == 1`, so it has been latent since R5B. It is not fixed here because the honest fix is a
+discriminator on `model_forward.GraphMembers` — eighteen construction sites, three modules, four
+arms — needing its own regression and its own review, and it is a distinct failure domain, which is
+`CLAUDE.md`'s own reason to split. This capability depends on none of it: the hosted matrix has no
+`T_prefix = 1` case and the real-model leg's smallest split is already `j = 2`. **The review found
+that avoiding it in the corpus is not the same as refusing it on the surface**, so the arm now
+refuses `T_prefix = 1` with a `SUFFIX`. Completing `MF-SINGLE-TOKEN-LOGITS` removes that refusal,
+which widens the surface rather than moving it. Reproduction, evidence, owner surface, blast radius,
+and the regression it must add are the field table in section 11.2; it needs a
+`python3 scripts/pre-pr` of its own and takes a roadmap number when it is picked up.
+
+**Blockers.** None. No Align request is proposed; Request 49 gains a **negative** client (the gap
+shaped nothing, because the plane's only mutator is already in `decode_step`) and Request 22 gains a
+note that a suffix is an operand rather than decoded text.
+
+**Classifier scope.** `src` and executable scripts change, so the classifier selects the executable
+row and **hosted** preflight: `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake
+layer-forward-smoke`. `make ci` is **not** selected — no aggregate membership, check topology, or
+integration behaviour changes and this is not a `.align-revision` change — and `baseline-check` is
+`N/A` on R6-STEP-N's condition (the `Makefile` is byte-unchanged and both new shim arms are inputs
+to the **stub**). Re-checked at the publication head:
+`python3 scripts/verification_scope.py --base origin/main --head HEAD` returns
+`{"docs_only":false,"fresh_focused":false,"fresh_installed":false,"hosted":true,"scope":"hosted"}`,
+so no fresh-image profile and no Docker are selected and the baseline artifacts are not consulted.
+
+**Four merge re-checks this family always carries.** Roadmap item **33** (31 and 32 are on
+branches), document schema **5**, next free Align request **53** (52 is expected to be claimed by a
+parallel branch), and `scripts/decode-step-golden.jsonl` regenerated from the merged head. All four
+hold at the publication head and `origin/main` is unmoved, so nothing was merged in; if it moves
+before this lands, merge it by `git merge`, **never a rebase**, so every stacked branch's recorded
+commits stay reachable, and re-check all four.
+
+**Verification checkpoint (publication head).** `gmake build`, `gmake check`, `gmake fmt`,
+`gmake format-check`, `git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
+`gmake layer-forward-smoke` (all six blocks; **139** documented decode-step cases, **137** with a
+golden row, 42 codes, **13** suffix refusals each with its detail asserted, 52 `KV_REFUSALS` rows)
+all pass; the owner is 65.9 s real at the repaired head and ~50 s at the publication head.
+`python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` is stamped at
+the publication head, and hosted CI passes there on all three jobs.
+**`gmake decode-step-qualification` was not re-run for the repair or the minors**, and the reason is
+that no changed line can reach it: the `2 <= j` guard removes a split the four prompts never
+produce (the smallest `|L|` is 3), the `T_prefix >= 2` refusal cannot fire at `j >= 2`, the stub
+latch lives in a forced build the qualification never builds, and the remaining changes are the
+witness guard, the smoke's own assertions (this leg does not run that runner), comments, and
+documents. The five recorded splits and every verdict below stand.
+**`gmake decode-step-qualification`
+exits 0 on the real model at `N = 16`**, with five prefix/suffix splits over the four prompts and
+every one of oracle S, oracle C″, oracle B over `T_prefix + S` columns, and gate G1 **IDENTICAL** —
+`case1` at `(T_prefix, S) = (2, 4)` and `(3, 3)`, the other three prompts at `(2, 1)` because they
+tokenize to three ids. Both `case1` splits decode the same four ids, which is oracle S's claim seen
+from outside: where the split falls does not change the run. It was run **twice** — the first run
+found the TTFT trio's own comparability defect (section 11.3 deviation 6) and the second is at the
+corrected head; the acceptance verdicts are identical in both. Instruments unchanged:
+`ALIGN_LLM_LLAMA_DEBUG=/opt/homebrew/bin/llama-debug` (build 10566, `bb4caa754`) and the R2C-patched
+`llama-eval-callback` from the `r2c-v2` cache. **The host was under memory pressure during both
+runs** (another agent's OLMoE qualification had just finished), so R6-RESIDENT-WEIGHTS' own scaling
+leg reports slower absolute elapsed times than its recorded run; that leg still reports its floor
+MET and it is **not** this capability's claim — every verdict this capability owns is byte identity
+and is unaffected by host load.
+
+**Eight mutants injected at the repaired head, eight killed under `gmake layer-forward-smoke`.**
+Suffix positions off by one; the mask offset wrong for `S > 1`; the write-back column base wrong
+**at `S > 1` only**; the verify range at R6-STEP-N's exact old bound, which is correct for every
+step and wrong only at `S > 1`; `mf_decode_row_tail`'s sixth literal back to a hardwired `1`, which
+dies as `R5_SHAPE suffix[]node[26]`; and oracle S's exclusion list widened three ways — by the
+**blocks** `decode`/`steps`/`output`, by the **field** `("decode", "token_ids")`, and by
+`("decode", "n_past_first")`/`("n_past_last")`. **The `token_ids` field mutant survived at
+`6cef75b`** and is why the witness guard now names fields rather than blocks; all three die now. The
+two suffix-only arithmetic mutants die naming the exact case and the exact column
+(`suffix[]layer[0]tensor[k]col[2]` and `col[-1]`).
+
+**Next actions, in order.** (1) Publish the English pull request with the review envelope, every
+finding's disposition, the consolidated repair commit, and the exact commands and results. (2) Merge
+once the required checks pass. If `origin/main` moves first, `git merge` it — **never a rebase** —
+re-check the four merge items above, regenerate `scripts/decode-step-golden.jsonl` from the merged
+head, and re-stamp `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake
+layer-forward-smoke`, because the stamp belongs to an exact unchanged `HEAD`. (3) Re-check the four
+items at the merged head. (4) Pick up `MF-SINGLE-TOKEN-LOGITS` or the next eligible roadmap
+capability.
+
+**Intentional uncommitted files.** None. The tree is clean and there is no scratch file inside it.
+
+
+## Merged checkpoint: R6-RESIDENT-WEIGHTS (PR #147, 2026-08-29)
 
 Branch `agent/r6-resident-weights`. Implemented on `agent/r6-kv-persist` head `9699848`, then
 **merged** with that branch's review repair `1971c61` and its own `main` merge `bdb34eb` — which
@@ -570,10 +977,7 @@ against a future caller, not a fix for a reachable defect. That mutant loosens t
 runs a resident prefill of exactly `MAX_PREFILL_TOKENS` distinct ids — the highest slot either call
 site can produce — against its streamed twin under oracle R.
 
-**Next actions, in order.** (1) `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake
-layer-forward-smoke` at the exact publication head. (2) Publish the English pull request with the
-review envelope, every finding's disposition, and the exact commands and results. (3) Merge once the
-required checks pass.
+**Merged** as PR #147; `origin/main` `553563e` is that merge and is the base of the branch above.
 
 **Process correction this capability owes the next one.** Sections 1 to 4 of
 `docs/specs/r6-resident-weights.md` were written before implementation, but the file's first commit

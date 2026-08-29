@@ -6592,7 +6592,15 @@ column pair, and the verdict as the `i64` code every other verdict on the wire a
 **non-blocking** and adds no consumer of a hypothetical surface; it does record that the
 stream-plus-column shape is now reached by capabilities that have nothing to do with GGUF, so the
 migration named below gains a third producer surface. R6-STEP-N also deliberately gates on **token ids** rather
-than on decoded text precisely so this request stays non-blocking through the decode loop. The
+than on decoded text precisely so this request stays non-blocking through the decode loop.
+R6-PREFIX-SUFFIX-PREFILL (`docs/specs/r6-prefix-suffix-prefill.md` section 3.5) is the first client
+that makes the tokenizer's absence *cheaper* rather than merely tolerable, and it is recorded
+because the direction is unusual: a **suffix is not decoded**. It is an operand, obtained by
+splitting an id list the instrument printed, so continuing a saved prefix with a different suffix
+needs no detokenization at any point — not in the arm, not in the qualification runner, and not in
+gate G, whose `llama-debug --save-logits` blob for the whole prompt is reused unchanged because
+`TOKENS ++ SUFFIX` is that prompt's id list by construction. It adds **no client** and consumes no
+hypothetical surface. The
 first consumer that would make it blocking is a
 tokenizer/vocabulary-inspection capability, which needs `tokenizer.ggml.tokens` and
 `tokenizer.ggml.merges` as addressable data; per `CLAUDE.md`, this request reclassifies as blocking
@@ -7901,6 +7909,12 @@ align-llm verification: allocate the block and output buffers with the new align
   `alignpack_read.read_append`), and pass `make ggml-spike-qualification`.
 ```
 
+R6-OLMOE-DECODE adds `src/moe_decode_step.align` and `gmake moe-decode-step-qualification` as
+clients. It is the first arm that pays the 64-byte over-reservation **three** times in one
+invocation — the dense window, the claim window, and the KV plane — where R5E pays it twice, so the
+compensation's cost is now proportional to the number of Align-owned regions an arm holds rather than
+to the number of arms. **No status change**, `Blocking: no`.
+
 ### Motivation and current sibling evidence
 
 R4.5-EXTERNAL-BUFFER-SPIKE hands ggml's CPU backend a pointer into an Align-owned `buffer` so it can
@@ -8235,6 +8249,12 @@ align-llm verification: collapse `src/layer_forward.align`'s eight column record
   `OracleStates`) into the one `Outcome` section 3.7 designed, with each stage replacing the fields
   it produces in place; pass `make layer-forward-smoke`.
 ```
+
+R6-OLMOE-DECODE adds `src/moe_decode_step.align` and `gmake moe-decode-step-qualification` as
+clients. Its `steps[]` rows carry a `n_layer x n_expert_used` integer matrix **per step** — the
+demand stream this capability exists to publish — and R5A correction C9's shape forces that to be
+rendered as it is produced into one string rather than carried as a column set, exactly as R5E's
+`schedule[]` is. **No status change**, `Blocking: no`.
 
 ### Motivation and current sibling evidence
 
@@ -9536,6 +9556,11 @@ align-llm verification: rewrite `src/moe_model_forward.align`'s window-region an
   `make layer-forward-smoke`.
 ```
 
+R6-OLMOE-DECODE adds `src/moe_decode_step.align` and `gmake moe-decode-step-qualification` as
+clients: the new module inherits R5E's mitigation throughout — every window region, every claim
+region, and every `str` view bound to a named local on the preceding line. **No status change**,
+`Blocking: no`.
+
 ### Motivation and current sibling evidence
 
 Every `borrow` argument must name a stable local or a field. Three ordinary expression forms are
@@ -9603,6 +9628,10 @@ align-llm verification: pass `plan.n_layer`-style scalars directly beside their 
   `borrow mut` in `src/moe_model_forward.align` instead of copying each to a local first, and pass
   `make layer-forward-smoke`.
 ```
+
+R6-OLMOE-DECODE adds `src/moe_decode_step.align` and `gmake moe-decode-step-qualification` as
+clients, with the same mitigation: `alignment := o.tensor_alignment` and the block alignment copied
+to locals before every call that also takes `borrow mut o`. **No status change**, `Blocking: no`.
 
 ### Motivation and current sibling evidence
 
@@ -9687,10 +9716,55 @@ Resume condition: an Align release admits a call into another module that takes 
 Align commit or pull request: none
 align-llm verification: delete `src/decode_step.align`'s local `fail`, `fault_into`,
   `pack_fault_into`, `take`, `take_pack`, `account`, `check_types`, `top_k`, and
-  `compare_prefill_logits`, call `src/model_forward.align`'s identical functions instead, replace
-  `model_forward.stage_plan_owned` with the pre-existing `model_forward.stage_plan`, and pass
-  `gmake layer-forward-smoke` with `scripts/decode-step-golden.jsonl` byte-unchanged.
+  `compare_prefill_logits`, **and `src/moe_decode_step.align`'s local `fail`, `fault_into`,
+  `pack_fault_into`, `take`, `take_pack`, `account`, `check_balance`, `check_types`, `top_k`,
+  `compare_prefill_logits`, `stage_claims`, `read_block_scatter`, `claim_tensors`,
+  `graph_identity`, `graph_alignment`, `free_gallocr`, `free_context`, `free_buffer`,
+  `teardown_layer`, `oracle_ten_thousandths`, `compare_transcript_rows`,
+  `compare_transcript_elements`, and `compare_transcript_sum`**, call the identical functions in
+  `src/model_forward.align` and `src/moe_model_forward.align` instead, replace both
+  `stage_plan_owned`s with the pre-existing `stage_plan`s, and pass `gmake layer-forward-smoke` with
+  **all seven** goldens byte-unchanged.
 ```
+
+**R6-OLMOE-DECODE is this request's largest client to date.** `src/moe_decode_step.align` carries a
+**third** copy of the failure sink and, beyond it, **thirty-six** functions that exist only because
+they take `borrow mut Outcome`, `borrow mut buffer`, or `borrow mut Counters` as a **parameter**
+rather than as a local. The list is **regenerated from the source** rather than written by hand — the
+criterion is "shares a name with a function in `src/moe_model_forward.align`,
+`src/moe_layer_forward.align`, `src/decode_step.align`, `src/layer_olmoe.align` or
+`src/model_forward.align` **and** takes a `borrow mut` parameter" — and it is 36 of the module's 91
+functions:
+
+```text
+  `account`, `capture_plane`, `check_balance`, `check_types`, `claim_tensors`,
+  `compare_prefill_logits`, `compare_routing_layer`, `compare_transcript_elements`,
+  `compare_transcript_rows`, `compare_transcript_sum`, `decode_loop`, `decode_pass`, `execute`,
+  `fail`, `fault_into`, `free_buffer`, `free_context`, `free_gallocr`, `graph_alignment`,
+  `graph_identity`, `pack_fault_into`, `prefill_pass`, `prefix_step`, `publish`,
+  `read_block_scatter`, `reset_step_oracle`, `schedule_decode`, `stage_claims`, `stage_inputs`,
+  `stage_past_k`, `stage_past_v`, `take`, `take_pack`, `teardown_layer`, `top_k`,
+  `verify_plane`
+```
+
+An earlier draft of this block said twenty-three and named a duplicated `refill` that
+`src/moe_decode_step.align` does not contain: KV persistence is out of R6-OLMOE-DECODE's scope, so
+its plane is never refilled from a container. A future collapse that followed the short list
+verbatim would have left thirteen copies behind, which is why the count is now derived and not
+remembered. The measured shape is unchanged and was met twice more here:
+
+* `moe_model_forward.read_block_scatter(pak, temp, claim_window, …, starts, sizes, dests, …)` where
+  `temp` is the caller's own `borrow mut buffer` **parameter** and `starts`/`sizes`/`dests` are that
+  frame's locals is refused with "cannot retain a shorter-lived view through this mutable borrow" —
+  and `alignc check` **accepts** it while `alignc build` refuses it, which is Request 42's divergence
+  met once more and is how this instance was found;
+* `moe_model_forward.stage_plan(pak, g, table, tokens, plan, ends, win, o, counters)` unions its four
+  mutable borrows, so `src/moe_decode_step.align` consumes a new `stage_plan_owned` beside it exactly
+  as `src/decode_step.align` does.
+
+The cost is measurable rather than rhetorical: of `src/moe_decode_step.align`'s 4,400 lines, roughly
+600 are functions that would be one-line calls if either refusal were lifted. **No status change**,
+`Blocking: no`, and no compatibility layer is built.
 
 ### Motivation and current sibling evidence
 
@@ -9738,6 +9812,18 @@ The plane **refill** does not: it must write into `src/decode_step.align`'s own 
 alongside that frame's other locals, which is precisely the refused shape. The byte movement
 therefore stays with the buffer's owner, the format's authority stays in one module, and no
 compatibility layer is built around the gap. **No status change.**
+
+**R6-PREFIX-SUFFIX-PREFILL is a continuing client, and a *negative* one worth recording**
+(`docs/specs/r6-prefix-suffix-prefill.md` section 8). It adds a second writer into the same plane —
+a multi-column write-back at `n_past = T_prefix` before any decode step runs — and the gap **shaped
+nothing**, because the write goes through `capture_plane`, which is already in `src/decode_step.align`
+with the buffer, and the pass's eleven scalars travel in `model_forward.Outcome` fields as
+`weights`' nine do. It did shape one small thing and the shape is recorded rather than worked
+around: `stage_inputs` could not gain a third `borrow mut` out-parameter for the suffix ids beside
+the caller's `tokens` and `o`, so the arm re-parses the operand in `execute` with the same total
+`parse_tokens` it already calls twice — which is a re-parse of at most 32 decimal ids, not a
+compatibility layer. **No status change, no workaround built, and no hypothetical surface
+consumed.**
 
 **2. A foreign call unions its `borrow mut` arguments.** `model_forward.stage_plan` reports through
 four of them:
@@ -9792,6 +9878,11 @@ No new syntax. Two checker changes:
   criterion, restated here because that is how both were discovered).
 
 ---
+
+<!-- The next free request number is **53**. R6-PREFIX-SUFFIX-PREFILL proposes none: every gap it
+     met is already recorded above (49 as a continuing client, and 22, 41, 35, 31, 21, 30, 29, 38,
+     39, 33 inherited unchanged through paths it does not touch). 52 is expected to be claimed by a
+     parallel branch; both numbers must be re-checked when this branch merges `origin/main`. -->
 
 ## Request 50 — `std.os`: how much physical and available memory the host has
 

@@ -361,13 +361,28 @@ PRINTED = 6
 HALF = 3
 
 
-def printed_positions(extent):
-    if extent <= PRINTED:
+def printed_positions(extent, half=HALF):
+    if extent <= 2 * half:
         return [(i, False) for i in range(extent)]
-    rows = [(i, False) for i in range(HALF)]
+    rows = [(i, False) for i in range(half)]
     rows.append((-1, True))
-    rows.extend((extent - HALF + i, False) for i in range(HALF))
+    rows.extend((extent - half + i, False) for i in range(half))
     return rows
+
+
+# `patches/llama.cpp/r2c-decode-instrument.patch`' `common_debug_print_limit`, emulated. The patched
+# instrument raises the print limit from 3 to `max(ne)` for any tensor whose name is `ffn_moe_topk`
+# or begins `ffn_moe_topk-`, and the limit is one number applied to **all four** axes, so a router
+# slot axis of 8 and a token axis of 7 are both printed in full with no ellipsis anywhere. Every
+# other node keeps the unpatched limit of 3.
+#
+# Emulating it here is what gives the scanner's direct-mapping branch a hosted regression. It leaves
+# every pre-existing corpus file byte-identical, because each `ffn_moe_topk*` axis in them is at
+# most 3 and `2 * 3 >= 3` already printed those in full.
+def print_half(name, tensor):
+    if name == "ffn_moe_topk" or name.startswith("ffn_moe_topk-"):
+        return max(tensor.ne)
+    return HALF
 
 
 def transcript_block(name, op, source, tensor):
@@ -376,25 +391,26 @@ def transcript_block(name, op, source, tensor):
     The trailing space on the `..., ` truncation markers is the instrument's and is significant:
     `.gitattributes` exempts the checked-in excerpt from whitespace checks for this reason.
     """
+    half = print_half(name, tensor)
     dims = "{%d, %d, %d, %d}" % tuple(tensor.ne)
     lines = ["common_debug_cb_eval: %24s = (f32) %10s(%s%s, }) = %s"
              % (name, op, source, dims, dims)]
     lines.append("    [")
-    for i3, mark3 in printed_positions(tensor.ne[3]):
+    for i3, mark3 in printed_positions(tensor.ne[3], half):
         if mark3:
             lines.append("    ..., ")
             continue
         lines.append("        [")
-        for i2, mark2 in printed_positions(tensor.ne[2]):
+        for i2, mark2 in printed_positions(tensor.ne[2], half):
             if mark2:
                 lines.append("        ..., ")
                 continue
-            for i1, mark1 in printed_positions(tensor.ne[1]):
+            for i1, mark1 in printed_positions(tensor.ne[1], half):
                 if mark1:
                     lines.append("            ..., ")
                     continue
                 pieces = []
-                for i0, mark0 in printed_positions(tensor.ne[0]):
+                for i0, mark0 in printed_positions(tensor.ne[0], half):
                     pieces.append("   ..." if mark0 else "%12.4f" % tensor.at(i0, i1, i2, i3))
                 lines.append("            [" + ", ".join(pieces) + "  ],")
             lines.append("        ],")
@@ -1891,7 +1907,13 @@ def moe_tensor(role, layer, g, expert=None):
     seed = role if layer < 0 else "%s@%d" % (role, layer)
     if expert is not None:
         seed = "%s#%d" % (seed, expert)
-    return Tensor([dim0, dim1], weight_values(seed, dim0 * dim1))
+    tensor = Tensor([dim0, dim1], weight_values(seed, dim0 * dim1))
+    if role == "token_embd" and expert is None:
+        # `MOE_MODEL_DECODE_RESEEDED_ROWS`' reason, in one place so the pack and the reference
+        # forward cannot disagree: both read this function and neither holds a copy of the row.
+        for row in MOE_MODEL_DECODE_RESEEDED_ROWS:
+            tensor.data[row * dim0:(row + 1) * dim0] = weight_values("%s@%d" % (role, row), dim0)
+    return tensor
 
 
 def soft_max_plain(a):
@@ -2381,6 +2403,7 @@ def write_moe_corpus(directory, emit):
 
 
 
+
 # =============================================================================================
 # R5E-MOE-MODEL-PREFILL (`docs/specs/r5e-moe-model-prefill.md` section 5.1)
 #
@@ -2415,6 +2438,27 @@ GEOMETRY_MOE_MODEL = GEOMETRY_MOE
 MOE_MODEL_TOKENS = [3, 17, 16]
 MOE_MODEL_KV_WIDTH = 8
 
+# R6-OLMOE-DECODE's decode corpus. `K` is 3 and not 16 on purpose, R6-STEP-N's reason unchanged: the
+# loop's correctness is a property of the **second** iteration — the first step reads a plane the
+# prefill wrote and the second reads one a step wrote — and sixteen synthetic steps buy nothing the
+# third does not.
+MOE_DECODE_STEPS = 3
+
+# `MODEL_DECODE_RESEEDED_ROWS`' fixed-point hazard, met again on the routed model — and **measured
+# to be absent**, which is why this tuple is empty and the routed pack is byte-unchanged.
+#
+# The hazard is real and the check for it is not optional: if the decoded chain were a fixed point, a
+# loop that fed step 1's token to every later step would satisfy every per-step assertion the seventh
+# smoke block makes. The dense corpus needed one re-seeded row to break it; this one does not, and
+# the chain is `6 -> 9 -> 16` on the unmodified generator. `write_moe_decode_corpus` asserts that at
+# the point the fixture is generated, so a later geometry or weight change cannot silently restore
+# the fixed point — and the lever to fix it is here, empty, rather than invented at that moment.
+#
+# Keeping it empty is what makes `moe-model-pack.alignpack` and every other pre-existing corpus file
+# byte-identical to its pre-R6-OLMOE-DECODE self, which is in turn what makes "the two MoE goldens
+# move by exactly the rows section 6.3 predicts" a property of the diff rather than a hope.
+MOE_MODEL_DECODE_RESEEDED_ROWS = ()
+
 
 def moe_model_head_dims(role, g):
     return {
@@ -2428,8 +2472,13 @@ def moe_model_head_tensor(role, g):
     return Tensor([dim0, dim1], weight_values(role, dim0 * dim1))
 
 
-def moe_model_layer(cur, dense, experts, g, tokens, width, mask, last, records, layer):
-    """One routed layer of section 3.6's thirty-five-row phase-A table and its phase-B table."""
+def moe_model_layer(cur, dense, experts, g, tokens, width, mask, last, records, layer,
+                    planes=None):
+    """One routed layer of section 3.6's thirty-five-row phase-A table and its phase-B table.
+
+    `planes` is R6-OLMOE-DECODE's addition and its only one: when a list is supplied, this layer's
+    post-QK-norm post-RoPE K and its reshaped V are appended to it, which is exactly the pair
+    `layer_olmoe.MM_K_ROW` and `MM_V_ROW` name and exactly what the arm writes into its plane."""
     t = len(tokens)
     head_dim, n_head = g["head_dim"], g["n_head"]
     n_embd, n_expert, n_used = g["n_embd"], g["n_expert"], g["n_expert_used"]
@@ -2498,6 +2547,9 @@ def moe_model_layer(cur, dense, experts, g, tokens, width, mask, last, records, 
         moe_out = broadcast(moe_out, views[slot], lambda x, y: x + y)
     l_out = broadcast(moe_out, ffn_inp, lambda x, y: x + y)
 
+    if planes is not None:
+        planes.append((k_rope, v3))
+
     records.extend([
         ("norm" + suffix, "RMS_NORM", "embd" if layer == 0 else "l_out-%d" % (layer - 1), norm_in),
         ("attn_norm" + suffix, "MUL", "norm" + suffix, attn_norm),
@@ -2534,7 +2586,7 @@ def moe_model_layer(cur, dense, experts, g, tokens, width, mask, last, records, 
     return l_out, topk
 
 
-def moe_model_forward(embed, layers, experts, head, g, tokens, width):
+def moe_model_forward(embed, layers, experts, head, g, tokens, width, planes=None):
     """The whole routed prefill: one embedding graph, two layers of two graphs, and the head."""
     t = len(tokens)
     mask = Tensor([width, t], [0.0 if c <= r else float("-inf")
@@ -2546,7 +2598,7 @@ def moe_model_forward(embed, layers, experts, head, g, tokens, width):
     routings = []
     for layer in range(g["n_layer"]):
         cur, topk = moe_model_layer(cur, layers[layer], experts[layer], g, tokens, width, mask,
-                                    layer == g["n_layer"] - 1, records, layer)
+                                    layer == g["n_layer"] - 1, records, layer, planes)
         routings.append(topk)
     norm = rms_norm(cur, g["rms_eps"])
     result_norm = broadcast(norm, head["output_norm"], lambda x, y: x * y)
@@ -2903,6 +2955,392 @@ def write_moe_model_corpus(directory, emit):
         "cumulative_expert_bytes": [sum(r["claim_bytes"] for r in rows[:i + 1])
                                     for i in range(len(rows))],
         "logits_order_swap_gap": abs(runtime_logits.data[a] - runtime_logits.data[b]),
+    }, separators=(",", ":")) + "\n")
+
+    write_moe_decode_corpus(g, embed, layers, experts, head, records, routings, logits, emit)
+    for used_variant in (6, 8):
+        write_moe_decode_used_corpus(g, embed, layers, experts, head, used_variant, emit)
+
+
+# =============================================================================================
+# R6-OLMOE-DECODE (`docs/specs/r6-olmoe-decode.md` sections 5.6 and 6.1)
+#
+# The routed decode corpus: a `K + 1`-graph transcript exactly as `llama-eval-callback -n K` emits
+# one, the ids the reference loop consumed, the per-step routed demand stream, and the four
+# transcript mutations the seventh smoke block scores against.
+#
+# It is a **second implementation of the same routed decode step**, in Python, over the same
+# synthetic two-layer model: the concatenated past, both concat axes, the offset mask, the router,
+# the compact stack, `mul_mat_id`, and the plane's growth by one column per layer per step. The arm
+# is never its own oracle.
+#
+# `n_expert_used = 3 <= 6` keeps the routing oracle's element-wise coverage complete even against a
+# compact-axis printer, so this block does **not** depend on the R2C patch — which is the property
+# that lets a hosted owner gate a capability whose real oracle needs a patched instrument.
+# =============================================================================================
+
+
+def moe_model_decode_layer(cur, dense, experts, g, planes, n_past, width, mask, last, records,
+                           layer):
+    """One routed decode layer: the thirty-seven-row decode phase-A table and its phase-B table."""
+    head_dim, n_head, n_head_kv = g["head_dim"], g["n_head"], g["n_head_kv"]
+    n_embd, n_expert, n_used = g["n_embd"], g["n_expert"], g["n_expert_used"]
+    eps, freq_base = g["rms_eps"], g["rope_freq_base"]
+    suffix = "-%d" % layer
+    plane_k, plane_v = planes[layer]
+
+    norm_in = rms_norm(cur, eps)
+    attn_norm = broadcast(norm_in, dense["attn_norm"], lambda x, y: x * y)
+    q_pre = mul_mat(dense["attn_q"], attn_norm)
+    norm_q = rms_norm(q_pre, eps)
+    q_normed = broadcast(norm_q, dense["attn_q_norm"], lambda x, y: x * y)
+    # The position is `n_past`, not 0: the embedding row index and the RoPE position are two
+    # different numbers, which is the whole reason the arm carries two one-element inputs.
+    q_rope = rope_neox(reshape(q_normed, [head_dim, n_head, 1]), [n_past],
+                       g["rope_dim_count"], freq_base)
+    k_pre = mul_mat(dense["attn_k"], attn_norm)
+    norm_k = rms_norm(k_pre, eps)
+    k_normed = broadcast(norm_k, dense["attn_k_norm"], lambda x, y: x * y)
+    k_rope = rope_neox(reshape(k_normed, [head_dim, n_head_kv, 1]), [n_past],
+                       g["rope_dim_count"], freq_base)
+    v_cur = mul_mat(dense["attn_v"], attn_norm)
+    v3 = reshape(v_cur, [head_dim, n_head_kv, 1])
+    kp = permute(k_rope, [0, 2, 1, 3])
+    qp = permute(q_rope, [0, 2, 1, 3])
+    # Rows 16 to 19: `cont`, `concat` on axis 1, `pad` to `KV_WIDTH`, `mul_mat`. The concatenation
+    # is what `WHEN_WIDE` cannot express: `ggml_pad` writes its source at index 0, and this step's
+    # new column belongs at `n_past`.
+    kcont = cont(kp, [head_dim, 1, n_head_kv])
+    kcat = concat_tensor(plane_to_past_k(plane_k, head_dim, n_head_kv, n_past), kcont, 1)
+    kpad = pad_tensor(kcat, 0, width - (n_past + 1), 0, 0)
+    kq = mul_mat(kpad, qp)
+    kqs = soft_max_ext(kq, mask, f32(1.0 / math.sqrt(head_dim)))
+    # Rows 21 to 25: the V path, whose column axis after `cont` is **0** and not 1. One shared
+    # constant here would be a silent transpose that every downstream shape check accepts.
+    vt = cont(permute(v3, [1, 2, 0, 3]), [1, head_dim, n_head_kv])
+    vcat = concat_tensor(plane_to_past_v(plane_v, head_dim, n_head_kv, n_past), vt, 0)
+    vpad = pad_tensor(vcat, width - (n_past + 1), 0, 0, 0)
+    kqv = mul_mat(vpad, kqs)
+    kqv_out = cont(permute(kqv, [0, 2, 1, 3]), [n_embd, 1, 1])
+    attn_out = mul_mat(dense["attn_output"], kqv_out)
+    # The two `WHEN_LAST` rows are kept at `t = 1`, where `get_rows(x, [0])` is the identity. A
+    # decode graph does not narrow — section 2.2 measured that on the real model — so they compute
+    # nothing; they are not load-bearing and they are not free to be wrong.
+    narrowed = get_rows(attn_out, [0]) if last else attn_out
+    residual = get_rows(cur, [0]) if last else cur
+    ffn_inp = broadcast(narrowed, residual, lambda x, y: x + y)
+    norm_ffn = rms_norm(ffn_inp, eps)
+    ffn_norm = broadcast(norm_ffn, dense["ffn_norm"], lambda x, y: x * y)
+
+    logits = mul_mat(dense["router"], ffn_norm)
+    probs = soft_max_plain(logits)
+    argsort = argsort_desc(probs)
+    topk = [int(argsort.data[slot]) for slot in range(n_used)]
+    topk_tensor = Tensor([n_used, 1], [float(v) for v in topk])
+    probs_r = reshape(probs, [1, n_expert, 1])
+    weights = get_rows_3d(probs_r, topk_tensor)
+    ffn_norm_r = reshape(ffn_norm, [n_embd, 1, 1])
+    gate = mul_mat_id(experts["ffn_gate_exps"], ffn_norm_r, topk, n_used)
+    up = mul_mat_id(experts["ffn_up_exps"], ffn_norm_r, topk, n_used)
+    swiglu = swiglu_split(gate, up)
+    down = mul_mat_id(experts["ffn_down_exps"], swiglu, topk, n_used)
+    weighted = broadcast(down, weights, lambda x, y: x * y)
+    views = [slot_view(weighted, slot) for slot in range(n_used)]
+    moe_out = views[0]
+    for slot in range(1, n_used):
+        moe_out = broadcast(moe_out, views[slot], lambda x, y: x + y)
+    l_out = broadcast(moe_out, ffn_inp, lambda x, y: x + y)
+
+    # The write-back, in the reference. The plane grows by exactly one column of this layer's
+    # post-QK-norm post-RoPE K and its reshaped V — the same two nodes the prefill captured, at
+    # `t = 1` — **after** the concats above read the plane as it was. The two byte ranges are
+    # disjoint and the order is upload, compute, write, which is the invariant the arm claims.
+    planes[layer] = (concat_tensor(plane_k, k_rope, 2), concat_tensor(plane_v, v3, 2))
+
+    records.extend([
+        ("norm" + suffix, "RMS_NORM", "embd" if layer == 0 else "l_out-%d" % (layer - 1), norm_in),
+        ("attn_norm" + suffix, "MUL", "norm" + suffix, attn_norm),
+        ("Qcur" + suffix, "MUL_MAT", "blk.%d.attn_q.weight" % layer, q_pre),
+        ("norm" + suffix, "RMS_NORM", "Qcur" + suffix, norm_q),
+        ("Qcur_normed" + suffix, "MUL", "norm" + suffix, q_normed),
+        ("Qcur" + suffix, "ROPE", "Qcur_normed%s (reshaped)" % suffix, q_rope),
+        ("Kcur" + suffix, "MUL_MAT", "blk.%d.attn_k.weight" % layer, k_pre),
+        ("norm" + suffix, "RMS_NORM", "Kcur" + suffix, norm_k),
+        ("Kcur_normed" + suffix, "MUL", "norm" + suffix, k_normed),
+        ("Kcur" + suffix, "ROPE", "Kcur_normed%s (reshaped)" % suffix, k_rope),
+        ("Vcur" + suffix, "MUL_MAT", "blk.%d.attn_v.weight" % layer, v_cur),
+        ("kq" + suffix, "MUL_MAT", "cache_k_l%d (view) (permuted)" % layer, kq),
+        ("kq_soft_max" + suffix, "SOFT_MAX", "kq" + suffix, kqs),
+        ("kqv" + suffix, "MUL_MAT", "cache_v_l%d (view) (permuted)" % layer, kqv),
+        ("kqv_out" + suffix, "CONT", "kqv%s (permuted)" % suffix, kqv_out),
+        ("node_%d" % (200 + layer), "MUL_MAT", "blk.%d.attn_output.weight" % layer, attn_out),
+        ("ffn_inp" + suffix, "ADD", "node_%d" % (200 + layer), ffn_inp),
+        ("norm" + suffix, "RMS_NORM", "ffn_inp" + suffix, norm_ffn),
+        ("ffn_norm" + suffix, "MUL", "norm" + suffix, ffn_norm),
+        ("ffn_moe_logits" + suffix, "MUL_MAT", "blk.%d.ffn_gate_inp.weight" % layer, logits),
+        ("ffn_moe_probs" + suffix, "SOFT_MAX", "ffn_moe_logits" + suffix, probs),
+        ("ffn_moe_argsort" + suffix, "ARGSORT", "ffn_moe_probs" + suffix, argsort),
+        ("ffn_moe_topk" + suffix, "VIEW", "ffn_moe_argsort" + suffix, topk_tensor),
+        ("ffn_moe_weights" + suffix, "GET_ROWS", "ffn_moe_probs%s (reshaped)" % suffix, weights),
+        ("ffn_moe_gate" + suffix, "MUL_MAT_ID", "blk.%d.ffn_gate_exps.weight" % layer, gate),
+        ("ffn_moe_up" + suffix, "MUL_MAT_ID", "blk.%d.ffn_up_exps.weight" % layer, up),
+        ("ffn_moe_swiglu" + suffix, "SWIGLU", "ffn_moe_gate" + suffix, swiglu),
+        ("ffn_moe_down" + suffix, "MUL_MAT_ID", "blk.%d.ffn_down_exps.weight" % layer, down),
+        ("ffn_moe_weighted" + suffix, "MUL", "ffn_moe_down" + suffix, weighted),
+        ("ffn_moe_out" + suffix, "ADD", "node_%d" % (300 + layer), moe_out),
+        ("l_out" + suffix, "ADD", "ffn_moe_out" + suffix, l_out),
+    ])
+    return l_out, topk
+
+
+def moe_model_decode(embed, layers, experts, head, g, planes, token, n_past, width):
+    """One routed decode graph set: the embedding gather, the layers, and the head."""
+    mask = Tensor([width, 1], [0.0 if c <= n_past else float("-inf") for c in range(width)])
+    records = []
+    embd = get_rows(embed, [token])
+    records.append(("embd", "GET_ROWS", "token_embd.weight", embd))
+    cur = embd
+    routings = []
+    for layer in range(g["n_layer"]):
+        cur, topk = moe_model_decode_layer(cur, layers[layer], experts[layer], g, planes, n_past,
+                                           width, mask, layer == g["n_layer"] - 1, records, layer)
+        routings.append(topk)
+    norm = rms_norm(cur, g["rms_eps"])
+    result_norm = broadcast(norm, head["output_norm"], lambda x, y: x * y)
+    result_output = mul_mat(head["output"], result_norm)
+    records.append(("norm", "RMS_NORM", "l_out-%d" % (g["n_layer"] - 1), norm))
+    records.append(("result_norm", "MUL", "norm", result_norm))
+    records.append(("result_output", "MUL_MAT", "output.weight", result_output))
+    return records, routings, result_output
+
+
+def write_moe_decode_used_corpus(g_base, embed, layers, experts, head, used, emit):
+    """R6-OLMOE-DECODE deviation 3, hosted at both ends of `TRUNCATION_PRINTED`.
+
+    The base decode corpus runs at `n_expert_used = 3`, so `ffn_moe_topk-L` is a three-wide row and
+    the scanner's direct-mapping branch is inert in it: the deviation-3 fix shipped with no case
+    that could tell the two mappings apart. These two run the **same pack** at a different
+    `n_expert_used`, which is legal because the container carries all eight expert planes and the
+    routing decision is the geometry's, not the container's.
+
+      * `used = 6`: `ffn_moe_topk-L` is `{6, 1}`. Six is `TRUNCATION_PRINTED`, the last extent at
+        which `axis_index` is the identity, so this case is **inert by construction** — it passes
+        whether axis 0 is mapped directly or through `axis_index`. It is here to place the boundary
+        at 6 and not at 5 or 7.
+      * `used = 8`: `ffn_moe_topk-L` is `{8, 1}`, printed in full by the emulated R2C limit.
+        Eight is the first extent at which the two mappings disagree: ordinals 3..7 map to
+        themselves directly and to 5..9 through `axis_index`, two of those past the extent. A build
+        that dropped the `truncated` gate matches at most three ids of every eight.
+
+    `used = 8` also carries the **other** half of the same fix. `ffn_moe_weights-L` is `{1, 8, 1}`
+    and the three `MUL_MAT_ID` nodes are `{16, 8, 1}`, so their axis 1 is 8 and **is** truncated,
+    with an `..., ` line at indent 12. Those rows map correctly only while the axis-1 marker is
+    raised, so the case pins the marker as well as the gate it feeds. Both variants are also the
+    first hosted cases where `U == n_expert` at every layer and every step.
+    """
+    g = dict(g_base, n_expert_used=used)
+    planes = []
+    prefill_records, _, prefill_logits = moe_model_forward(
+        embed, layers, experts, head, g, MOE_MODEL_TOKENS, MOE_MODEL_KV_WIDTH, planes)
+    n_past = len(MOE_MODEL_TOKENS)
+    token = max(range(prefill_logits.count()), key=lambda i: prefill_logits.data[i])
+    decode_records = []
+    consumed = []
+    step_routings = []
+    decode_logits = prefill_logits
+    for step in range(MOE_DECODE_STEPS):
+        consumed.append(token)
+        records, routings, decode_logits = moe_model_decode(
+            embed, layers, experts, head, g, planes, token, n_past + step, MOE_MODEL_KV_WIDTH)
+        step_routings.append(routings)
+        decode_records.extend(records)
+        token = max(range(decode_logits.count()), key=lambda i: decode_logits.data[i])
+    tag = "moe-model-decode-used-%d" % used
+    emit(tag + "-geometry.json",
+         json.dumps(moe_model_geometry_document(g), separators=(",", ":")) + "\n")
+    emit(tag + "-transcript.txt", moe_transcript(prefill_records + decode_records,
+                                                 MOE_MODEL_TOKENS))
+    emit(tag + "-logits.bin",
+         struct.pack("<%df" % prefill_logits.count(), *prefill_logits.data))
+    emit(tag + "-routing.json", json.dumps({
+        "n_expert_used": used,
+        "token_ids": consumed,
+        "layers": [[sorted(set(routings[layer])) for layer in range(g["n_layer"])]
+                   for routings in step_routings],
+        "ids_total": g["n_layer"] * used * MOE_DECODE_STEPS,
+    }, separators=(",", ":")) + "\n")
+
+
+def write_moe_decode_corpus(g, embed, layers, experts, head, prefill_records, prefill_routings,
+                            prefill_logits, emit):
+    """The `K + 1`-graph routed transcript, its ids, its demand stream, and its four mutations."""
+    n_past = len(MOE_MODEL_TOKENS)
+    planes = []
+    # The prefill is recomputed with the planes captured; its records are the ones already emitted,
+    # so the two agree by construction rather than by inspection.
+    replayed, replayed_routings, replayed_logits = moe_model_forward(
+        embed, layers, experts, head, g, MOE_MODEL_TOKENS, MOE_MODEL_KV_WIDTH, planes)
+    assert replayed_logits.data == prefill_logits.data
+    assert replayed_routings == prefill_routings
+    token = max(range(prefill_logits.count()), key=lambda i: prefill_logits.data[i])
+
+    decode_records = []
+    consumed = []
+    per_step = []
+    step_routings = []
+    decode_logits = prefill_logits
+    for step in range(MOE_DECODE_STEPS):
+        consumed.append(token)
+        records, routings, decode_logits = moe_model_decode(
+            embed, layers, experts, head, g, planes, token, n_past + step, MOE_MODEL_KV_WIDTH)
+        per_step.append(records)
+        step_routings.append(routings)
+        decode_records.extend(records)
+        token = max(range(decode_logits.count()), key=lambda i: decode_logits.data[i])
+    lines = moe_transcript(prefill_records + decode_records, MOE_MODEL_TOKENS)
+    emit("moe-model-decode-transcript.txt", lines)
+    emit("moe-model-decode-logits.bin",
+         struct.pack("<%df" % decode_logits.count(), *decode_logits.data))
+    assert len(set(consumed)) == len(consumed), \
+        "the reference routed decode loop is degenerate: %r" % (consumed,)
+    emit("moe-model-decode-tokens.txt", "".join("%d\n" % i for i in consumed))
+
+    # A transcript holding only the **prefill** graph. The arm skips the first graph, so every oracle
+    # row is then missing and the run is `R6M_ORACLE_MISSING` rather than a silent comparison against
+    # the wrong graph — which is the failure this fixture exists to make visible.
+    emit("moe-model-decode-transcript-onegraph.txt",
+         moe_transcript(prefill_records, MOE_MODEL_TOKENS))
+
+    # A transcript one graph short of what `STEPS = K` needs. The first `K - 1` steps compare
+    # normally and step `K` finds no graph `K + 1`, so the refusal names the step it happened at.
+    emit("moe-model-decode-transcript-short-for-steps.txt",
+         moe_transcript(prefill_records + [r for s in per_step[:-1] for r in s], MOE_MODEL_TOKENS))
+
+    rows = lines.split("\n")
+    marker = "common_debug_cb_eval:"
+
+    def graph_hits(name, op):
+        return [i for i, line in enumerate(rows)
+                if line.startswith(marker) and (" %s = " % name) in line and ("%s(" % op) in line]
+
+    # A tolerance breach inside the **first decode** graph: one printed element of its `l_out-0`
+    # moved by 0.0003, three times the threshold. It is graph 2 and therefore step 1's, so the case
+    # is refused at the first step whatever `STEPS` is.
+    hits = graph_hits("l_out-0", "ADD")
+    perturbed = list(rows)
+    row = hits[1] + 3
+    original = perturbed[row]
+    first = original.index("[") + 1
+    value = float(original[first:first + 12])
+    perturbed[row] = original[:first] + ("%12.4f" % (value + 0.0003)) + original[first + 12:]
+    emit("moe-model-decode-transcript-perturbed.txt", "\n".join(perturbed))
+
+    # `kq-0` of the first **decode** graph declaring a reduction width the operand does not name.
+    kq_hits = graph_hits("kq-0", "MUL_MAT")
+    widened = list(rows)
+    widened[kq_hits[1]] = widened[kq_hits[1]].replace(
+        "= {%d, " % MOE_MODEL_KV_WIDTH, "= {%d, " % (MOE_MODEL_KV_WIDTH - 1))
+    emit("moe-model-decode-transcript-kv-width.txt", "\n".join(widened))
+
+    # `routing_oracle.verdict: MISMATCH` on a **successful** run: one printed expert id of the first
+    # decode graph's `ffn_moe_topk-1` is moved to another expert and the block sum moves with it, so
+    # both halves of oracle R disagree while oracle T is still evaluated and reported beside it.
+    topk_hits = graph_hits("ffn_moe_topk-1", "VIEW")
+    header = topk_hits[1]
+    id_row = header + 3
+    mismatch = list(rows)
+    original = mismatch[id_row]
+    first = original.index("[") + 1
+    was = int(float(original[first:first + 12]))
+    now = (was + 1) % g["n_expert"]
+    mismatch[id_row] = original[:first] + ("%12.4f" % now) + original[first + 12:]
+    sum_row = next(i for i, line in enumerate(mismatch[header:], header)
+                   if line.startswith("    sum = "))
+    mismatch[sum_row] = "    sum = %f" % (sum(step_routings[0][1]) - was + now)
+    emit("moe-model-decode-transcript-routing.txt", "\n".join(mismatch))
+
+    # The demand stream the generator's own second implementation produced, per step and per layer,
+    # so the runner asserts the document's `steps[].routed` against an independent computation of
+    # the same routed model rather than against itself.
+    plane_bytes = sum(moe_claim_dims(role, g)[0] * moe_claim_dims(role, g)[1] * 4
+                      for role, _ in MOE_EXPERT_ROLES)
+    used = g["n_expert_used"]
+    prefill_keys = set()
+    for layer, topk in enumerate(prefill_routings):
+        for expert in set(topk):
+            prefill_keys.add(layer * g["n_expert"] + expert)
+    seen = set(prefill_keys)
+    step_rows = []
+    for step, routings in enumerate(step_routings):
+        layers_out = [sorted(set(routings[layer])) for layer in range(g["n_layer"])]
+        keys = [layer * g["n_expert"] + expert
+                for layer in range(g["n_layer"]) for expert in layers_out[layer]]
+        new = [k for k in keys if k not in seen]
+        seen.update(keys)
+        step_rows.append({
+            "index": step + 1,
+            "n_past": n_past + step,
+            "token_id": consumed[step],
+            "layers": layers_out,
+            "keys_demanded": sum(len(x) for x in layers_out),
+            "new_keys": len(new),
+            "new_bytes": len(new) * plane_bytes,
+            "union_keys_after": len(seen),
+            "union_bytes_after": len(seen) * plane_bytes,
+            "expert_bytes": sum(len(x) for x in layers_out) * plane_bytes,
+            "claim_planes_read": sum(len(x) for x in layers_out) * len(MOE_EXPERT_ROLES),
+        })
+    decode_demands = sum(r["keys_demanded"] for r in step_rows)
+    # R6-OLMOE-DECODE section 3.11's `distinct`, derived here **independently of the union curve
+    # above**: the decode steps' own key set, accumulated from `step_routings` alone and never as
+    # `seen - prefill_keys`. The arm accumulates a second, empty-seeded set for the same reason.
+    # Restating the implementation's own arithmetic here is what let a prefill-relative quantity
+    # ship under this metric's name with a golden that agreed with it.
+    decode_keys = set()
+    in_prefill = 0
+    distinct_in_prefill = 0
+    for step, routings in enumerate(step_routings):
+        for layer in range(g["n_layer"]):
+            for expert in sorted(set(routings[layer])):
+                key = layer * g["n_expert"] + expert
+                decode_keys.add(key)
+                if key in prefill_keys:
+                    in_prefill = in_prefill + 1
+    for key in decode_keys:
+        if key in prefill_keys:
+            distinct_in_prefill = distinct_in_prefill + 1
+    decode_distinct = len(decode_keys)
+    # R6-OLMOE-DECODE section 3.7's tightened ceiling, which the synthetic geometry cannot reach on
+    # its own: `n_expert` is 8 there, so `n_expert_used <= 8` always and the decode arm's bound of 30
+    # is unreachable. These two documents declare a wide router instead — `n_expert` 64 with
+    # `n_expert_used` 30 and 31 — so the **decode** arm admits the first and refuses the second while
+    # `--moe-model-forward` admits both. Nothing else in the corpus changes, and the pack is not
+    # described by either: both are refused (or admitted and then refused on the container) before a
+    # graph is built, which is the point — the ceiling is a geometry precondition and not a node walk.
+    for used in (30, 31):
+        wide = json.loads(json.dumps(moe_model_geometry_document(g)))
+        wide["model"]["n_expert"] = 64
+        wide["model"]["n_expert_used"] = used
+        emit("moe-model-geometry-decode-used-%d.json" % used,
+             json.dumps(wide, separators=(",", ":")) + "\n")
+
+    emit("moe-model-decode-routing.json", json.dumps({
+        "tokens": MOE_MODEL_TOKENS,
+        "kv_width": MOE_MODEL_KV_WIDTH,
+        "steps": MOE_DECODE_STEPS,
+        "token_ids": consumed,
+        "plane_bytes": plane_bytes,
+        "prefill_keys": sorted(prefill_keys),
+        "rows": step_rows,
+        "decode_keys_demanded": decode_demands,
+        "decode_keys_distinct": decode_distinct,
+        "decode_keys_in_prefill_union": in_prefill,
+        "decode_distinct_keys_in_prefill_union": distinct_in_prefill,
+        "decode_expert_bytes": sum(r["expert_bytes"] for r in step_rows),
+        "union_keys_final": len(seen),
+        "union_bytes_final": len(seen) * plane_bytes,
+        "step_reuse_per_mille": ((decode_demands - decode_distinct) * 1000 // decode_demands)
+        if decode_demands else 0,
     }, separators=(",", ":")) + "\n")
 
 

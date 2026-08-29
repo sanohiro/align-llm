@@ -59,20 +59,18 @@ from typing import Any, Mapping, Sequence
 # `prompt-v1t` task manifest's `artifacts` entry, which the snapshot helper verifies before and
 # after every invocation. All four must agree.
 #
-# **PROVISIONAL until `agent/c4-repair-editset` is merged.** Section 6.5 prerequisite 1 and section
-# 10.3 both require this constant to be derived from that branch's **final** head, not from the
-# base this branch was cut at: its review repair changes the repair adapter's edit-set budget to a
-# break-on-first-overflow prefix cut and re-freezes `canonical-v1e`, which moves these bytes. The
-# value below is the base's digest and is re-derived at the merge commit. Nothing has to remember:
-# `scripts/run-prompt-template-adapter-smoke` digests the on-disk file and fails closed the moment
-# the two disagree, and ladder rows 3 and 4 bind the same value to the corpus manifests.
+# Derived from `agent/c4-repair-editset`'s final head, per section 6.5 prerequisite 1 and section
+# 10.3. That branch's review repair moved the edit-set budget to a break-on-first-overflow prefix
+# cut, which moved these bytes and re-froze `canonical-v1e`; this constant, the second-hop
+# divergence golden, and `canonical-v1t` were all re-derived in the merge commit. Nothing has to
+# remember: `scripts/run-prompt-template-adapter-smoke` digests the on-disk file and fails closed
+# the moment the two disagree, and ladder rows 3 and 4 bind the same value to the corpus manifests.
 #
 # This file consumes that budget rule by **calling** `repair.edit_set_blocks`, never by copying it,
 # so the widened version-3 `edit_set` persistence inherits the repaired prefix-cut semantics
-# automatically and cannot drift from them. The second-hop divergence golden is regenerated in the
-# merge commit for the same reason.
+# automatically and cannot drift from them.
 REPAIR_ADAPTER_RELATIVE = "scripts/prompt-repair-adapter.py"
-REPAIR_ADAPTER_SHA256 = "e54ab3c1d7f51790a408339da25ae468e782a8f6470682c99f88cabfd830de46"
+REPAIR_ADAPTER_SHA256 = "fa73f9dc20415bfa59b37ad8a86c971e8d0e9dc5ba228812789e7726685283da"
 # The repair adapter is a source file, not an executable artifact; it shares the frozen adapter's
 # own `ARTIFACT_LIMIT`. Named here rather than read from a module, because the bound must apply to
 # the read that happens *before* any module exists.

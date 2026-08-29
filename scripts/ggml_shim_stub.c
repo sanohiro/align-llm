@@ -508,6 +508,24 @@ static int64_t align_force_first_past_bytes = -1;
 static int align_force_compute_step2 = 0;
 #endif
 
+#if defined(ALIGN_GGML_FORCE_COMPUTE_SUFFIX) \
+    || defined(ALIGN_GGML_FORCE_SUFFIX_WRITEBACK_OFFSET)
+/* R6-PREFIX-SUFFIX-PREFILL sections 4.1 and 4.2. One latch, set by the only graph in this arm that
+ * computes **more than one column at `n_past > 0`** — which is the suffix pass and nothing else.
+ *
+ * The key is the mask image and it is fixture-independent. Slot 14 is `MF_SLOT_MASK`. A decode step
+ * uploads one row (`ne[1] == 1`) and is excluded. A prefill uploads `T` rows whose row 0 unmasks
+ * exactly one column, because `mf_write_mask` is `mf_write_mask_offset` at `row_offset = 0`. The
+ * suffix pass uploads `S` rows at `row_offset = T_prefix >= 1`, so its row 0 unmasks `T_prefix + 1`
+ * columns. "More than one open column in row 0 of a multi-row mask" is therefore exactly the suffix
+ * pass, on any geometry and any split.
+ *
+ * Every mask upload re-decides it, so it is **cleared** by the first decode step's own mask and the
+ * latch names the graph set now being built rather than one that has finished. Never defined in an
+ * ordinary build. */
+static int align_force_suffix_pass = 0;
+#endif
+
 /* ---------------------------------------------------------------------------------------------
  * Availability, the ABI probe, and the type predicate — the four entry points the stub answers
  * ------------------------------------------------------------------------------------------- */
@@ -1677,7 +1695,7 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
      * shapes and computes a plausible answer, and the bytes it consumed no longer equal the bytes the
      * prefill wrote, which is `R6_PLANE_MISMATCH layer[0]tensor[k]col[0]`. Never defined in an
      * ordinary build. */
-    if (status == ALIGN_GGML_OK && index == 64 && n >= 8) {
+    if (status == ALIGN_GGML_OK && (index == 64 || index == 126) && n >= 8) {
         memmove(t->data + off, t->data + off + 4, (size_t) (n - 4));
     }
 #endif
@@ -1694,6 +1712,39 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
         t->data[3] = 0u;
     }
 #endif
+#ifdef ALIGN_GGML_FORCE_DECODE_POSITION_MOE
+    /* R6-OLMOE-DECODE's routed counterpart of `ALIGN_GGML_FORCE_DECODE_POSITION`. The routed arm's
+     * `inp_pos` is `layer_olmoe.MM_SLOT_POS` (10), which is an ordinary **weight** slot in a dense
+     * graph, so this is a separate build rather than a second index on the dense one: the dense
+     * builds stay behaviourally byte-unchanged. `ne[0] == 1` with `n == 4` is the decode graph's
+     * one-element position vector and nothing else. Never defined in an ordinary build. */
+    if (status == ALIGN_GGML_OK && index == 10 && t->ne[0] == 1 && n == 4 && off == 0) {
+        t->data[0] = 0u;
+        t->data[1] = 0u;
+        t->data[2] = 0u;
+        t->data[3] = 0u;
+    }
+#endif
+#ifdef ALIGN_GGML_FORCE_MASK_OFFSET_MOE
+    /* R6-OLMOE-DECODE's routed counterpart of `ALIGN_GGML_FORCE_MASK_OFFSET`. The routed arm's
+     * `kq_mask` is `layer_olmoe.MM_SLOT_MASK` (11), a weight slot in a dense graph, so this too is
+     * a separate build. The row is additionally required to end in `-inf`, which every masked row
+     * at a width above `n_past + 1` does and no weight does. Never defined in an ordinary build. */
+    if (status == ALIGN_GGML_OK && index == 11 && t->ne[1] == 1 && off == 0 && n >= 8
+        && ((float *) (void *) t->data)[n / 4 - 1] == -INFINITY) {
+        int64_t lane = 0;
+        int64_t last = -1;
+        float *row = (float *) (void *) t->data;
+        for (lane = 0; lane < n / 4; lane++) {
+            if (row[lane] == 0.0f) {
+                last = lane;
+            }
+        }
+        if (last >= 0) {
+            row[last] = -INFINITY;
+        }
+    }
+#endif
 #ifdef ALIGN_GGML_FORCE_COMPUTE_STEP2
     /* R6-STEP-N section 4.1's `failure` cell: a step that fails at a chosen **step** index, which is
      * the axis this capability adds. Slot 64 is `MF_SLOT_KPAST` and only a decode layer graph ever
@@ -1702,12 +1753,39 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
      * first `n` seen is step 1's and any larger `n` is step 2 or beyond. Keying on the growth rather
      * than on a token count keeps the build independent of the fixture's `T`. Never defined in an
      * ordinary build. */
-    if (status == ALIGN_GGML_OK && index == 64) {
+    /* R6-OLMOE-DECODE: the routed arm's past-K slot is `layer_olmoe.MM_SLOT_KPAST` (126). The
+     * growth rule is identical on both arms and only one of the two slots exists in any one run. */
+    if (status == ALIGN_GGML_OK && (index == 64 || index == 126)) {
         if (align_force_first_past_bytes < 0) {
             align_force_first_past_bytes = n;
         } else if (n > align_force_first_past_bytes) {
             align_force_compute_step2 = 1;
         }
+    }
+#endif
+#if defined(ALIGN_GGML_FORCE_COMPUTE_SUFFIX) \
+    || defined(ALIGN_GGML_FORCE_SUFFIX_WRITEBACK_OFFSET)
+    /* The latch above, set from the mask the graph is about to consume. It is read below by
+     * `align_ggml_graph_compute` and by `align_ggml_slot_get`, both of which run after this call for
+     * the same graph, so the pass is identified before either can act on it.
+     *
+     * It is **re-decided on every mask upload and therefore cleared after the pass**, not only
+     * set: a decode step uploads a one-row mask and a prefill's row 0 unmasks exactly one column,
+     * so either drives the latch back to 0. A set-only latch would leave the forced arms armed for
+     * every decode step that followed a suffix pass, which is not what the two comments below
+     * claim and not what the two forced builds are regressions for. */
+    if (status == ALIGN_GGML_OK && index == 14 && off == 0 && n >= 8) {
+        const float *mask_row = (const float *) (const void *) t->data;
+        int64_t open_columns = 0;
+        int64_t column = 0;
+        if (t->ne[1] > 1) {
+            for (column = 0; column < t->ne[0]; column++) {
+                if (mask_row[column] == 0.0f) {
+                    open_columns++;
+                }
+            }
+        }
+        align_force_suffix_pass = (open_columns > 1) ? 1 : 0;
     }
 #endif
 #ifdef ALIGN_GGML_FORCE_MASK_OFFSET
@@ -1740,6 +1818,20 @@ int32_t align_ggml_slot_get(void *slots, int64_t index, void *bytes, int64_t off
     if (t == NULL) {
         return ALIGN_GGML_SLOT;
     }
+#ifdef ALIGN_GGML_FORCE_WRITEBACK_OFFSET_MOE
+    /* R6-OLMOE-DECODE's routed counterpart of `ALIGN_GGML_FORCE_WRITEBACK_OFFSET`. The routed arm
+     * reads its write-back out of `layer_olmoe.MM_A_NODE_BASE + MM_K_ROW` (32), which is the K
+     * concatenation's own slot in a dense graph, so this is a separate build and the dense one is
+     * behaviourally byte-unchanged. A routed **prefill** reads slot 32 with `ne[2] == T`, so
+     * `ne[2] == 1` selects the decode step's own readback. Never defined in an ordinary build. */
+    if (index == 32 && t->ne[2] == 1) {
+        int32_t status = align_ggml_tensor_get((void *) t, bytes, off, n);
+        if (status == ALIGN_GGML_OK && bytes != NULL && n >= 8) {
+            memmove(bytes, (unsigned char *) bytes + 4, (size_t) (n - 4));
+        }
+        return status;
+    }
+#endif
 #ifdef ALIGN_GGML_FORCE_WRITEBACK_OFFSET
     /* R6-STEP-N section 4.2's `failure -- round trip` cell, and the shipped regression that proves
      * oracle B compares the **new** column and not only the past ones. Slot 28 is
@@ -1751,6 +1843,23 @@ int32_t align_ggml_slot_get(void *slots, int64_t index, void *bytes, int64_t off
      * produced -- which oracle B reports at column `T`, the column the step just wrote. Never
      * defined in an ordinary build. */
     if (index == 28 && t->ne[2] == 1) {
+        int32_t status = align_ggml_tensor_get((void *) t, bytes, off, n);
+        if (status == ALIGN_GGML_OK && bytes != NULL && n >= 8) {
+            memmove(bytes, (unsigned char *) bytes + 4, (size_t) (n - 4));
+        }
+        return status;
+    }
+#endif
+#ifdef ALIGN_GGML_FORCE_SUFFIX_WRITEBACK_OFFSET
+    /* R6-PREFIX-SUFFIX-PREFILL section 4.2's `failure -- round trip` cell, and the shipped
+     * regression that proves oracle B compares the **first suffix column** and not only the loaded
+     * ones. Slot 28 is `MF_SLOT_NODE_BASE + 12`, the post-RoPE K the write-back reads; the latch
+     * confines the shift to the suffix pass, so the prefill's own capture and every decode step's
+     * write-back are untouched. Shifting the copied bytes by one `float` is exactly the off-by-one
+     * lane a write-back can commit: every shape stays valid and the bytes now in the plane are not
+     * the bytes the graph produced, which oracle B reports at column `T_prefix` — the first column
+     * this pass wrote. Never defined in an ordinary build. */
+    if (index == 28 && align_force_suffix_pass) {
         int32_t status = align_ggml_tensor_get((void *) t, bytes, off, n);
         if (status == ALIGN_GGML_OK && bytes != NULL && n >= 8) {
             memmove(bytes, (unsigned char *) bytes + 4, (size_t) (n - 4));
@@ -2517,6 +2626,15 @@ int32_t align_ggml_graph_compute(void *backend, void *graph) {
 #ifdef ALIGN_GGML_FORCE_COMPUTE_STEP2
     /* R6-STEP-N section 4.1. The same non-success status, withheld until the plane has grown once. */
     if (align_force_compute_step2) {
+        return 2;
+    }
+#endif
+#ifdef ALIGN_GGML_FORCE_COMPUTE_SUFFIX
+    /* R6-PREFIX-SUFFIX-PREFILL section 4.1's `failure` cell: the same non-success status, withheld
+     * until a graph computes more than one column at `n_past > 0`. It therefore fires inside the
+     * suffix pass, in no prefill, and in no decode step — which is what makes the document it
+     * produces a statement about a partial **pass**. */
+    if (align_force_suffix_pass) {
         return 2;
     }
 #endif

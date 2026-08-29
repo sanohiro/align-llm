@@ -22,6 +22,7 @@ No provider is contacted. The generation child is a synthetic script with exactl
 
 from __future__ import annotations
 
+import ast
 import difflib
 import hashlib
 import json
@@ -110,9 +111,9 @@ def load_template_adapter() -> ModuleType:
 
 # --- Section 3.2: the second-hop bounded-divergence golden ---------------------------------------
 #
-# The normalizer is `c4-repair-editset.md` section 11.3 deviation 9's, unchanged, applied one hop
-# up. Only the two named functions' lines are compared, full-line `#` comments and blank lines are
-# removed, and trailing whitespace is stripped. Nothing else is normalized: no identifier
+# The normalizer is the one `c4-repair-editset.md`'s review repair settled, applied one hop up:
+# the parser delimits each function's span, and only those lines are compared, with full-line
+# `#` comments and blank lines removed and trailing whitespace stripped. Nothing else is normalized: no identifier
 # rewriting, no prefix stripping, no reordering, no whitespace-insensitive comparison. Every
 # executable difference survives into the diff, which is the property that makes it worth having.
 
@@ -120,20 +121,22 @@ DIVERGENCE_FUNCTIONS = ("measurement", "assemble")
 
 
 def function_source(text: str, name: str) -> list[str]:
+    """The named module-level function's own source lines, as the parser delimits them.
+
+    `ast` owns the span, so a `def` line, a `)`-continuation, or a column-0 line inside a
+    triple-quoted string cannot move either end of it. This is the normalizer
+    `c4-repair-editset.md`'s review repair settled; the second hop uses the same one, so the two
+    goldens stay comparable.
+    """
     lines = text.split("\n")
-    start = None
-    for ordinal, line in enumerate(lines):
-        if line.startswith(f"def {name}("):
-            start = ordinal
-            break
-    require(start is not None, f"the divergence golden cannot find `def {name}(`")
-    end = len(lines)
-    for ordinal in range(start + 1, len(lines)):
-        line = lines[ordinal]
-        if line and not line[0].isspace() and not line.startswith(")"):
-            end = ordinal
-            break
-    return lines[start:end]
+    found = [
+        node for node in ast.parse(text).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+    ]
+    require(len(found) == 1, f"the divergence golden wants exactly one top-level `def {name}(`")
+    node = found[0]
+    require(node.end_lineno is not None, f"the parser reports no end line for `def {name}(`")
+    return lines[node.lineno - 1:node.end_lineno]
 
 
 def normalized_source(text: str, name: str) -> list[str]:

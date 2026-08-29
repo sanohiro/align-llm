@@ -315,24 +315,32 @@ def edit_set_blocks(
       as of content, which is the correct trade and is stated rather than discovered.
     - **`body_bytes` is the redacted body's full length**, before any budget omission, so
       `edit_set_total_bytes` is the pre-omission sum and a reader can see what was dropped.
-    - **Bounding is whole-block.** Once the running total would exceed `EDIT_SET_LIMIT` every
-      remaining block is persisted with `body_text: None` and its identity intact. A half-truncated
-      source file would be worse than none: the whole-file answer format makes "complete the file
-      you can only half see" a silent data-loss patch.
+    - **Bounding is whole-block, and the carried set is a prefix.** Once one block would take the
+      running total past `EDIT_SET_LIMIT`, that block **and every block after it** are persisted
+      with `body_text: None` and their identity intact. The cut is a prefix rather than a greedy
+      best fit: a best fit would carry a later small file while omitting an earlier large one, so
+      the section the model reads would silently reorder its own answer relative to the paths it
+      names. A half-truncated source file would be worse still — the whole-file answer format makes
+      "complete the file you can only half see" a silent data-loss patch — so no block is ever cut
+      in the middle.
 
     The order is `validated_edit_set`'s, which is `sorted(edits.items())`, so paths are unique and
-    ascending by construction rather than by a second sort here.
+    ascending by construction rather than by a second sort here, and the prefix rule is therefore
+    stated over that same ascending order.
     """
     blocks: list[dict[str, Any]] = []
     total = 0
     carried = 0
+    overflowed = False
     for path, body in edits:
         redacted = frozen.redacted_bytes(body.encode("utf-8"), credential_value)
         length = len(redacted)
         total += length
-        keep = carried + length <= EDIT_SET_LIMIT
+        keep = not overflowed and carried + length <= EDIT_SET_LIMIT
         if keep:
             carried += length
+        else:
+            overflowed = True
         value = {
             "schema_version": 1,
             "artifact_kind": "EDIT_SET_BLOCK",

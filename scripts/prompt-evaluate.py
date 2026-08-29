@@ -36,6 +36,9 @@ LEARNED_APPEND_LIMIT = 8_192
 MEMORY_JSONL_LIMIT = 1_048_576
 CONTEXT_TRUNCATION_MARKER = b"\n[context truncated]"
 DIAGNOSTIC_TRUNCATION_MARKER = b"\n[output truncated]"
+# Ladder row 17 reads the tail of `diagnostic_summary`, and this marker sits at the end of a
+# summary the frozen `bounded_text` had to cut, so the applied-edit list is what the cut removes.
+SUMMARY_TRUNCATION_TEXT = DIAGNOSTIC_TRUNCATION_MARKER.decode("utf-8")
 MEMORY_EVENT_TEXT_FIELDS = (
     "root", "task_id", "attempted_patch", "final_status", "failure_stage", "failed_test",
     "failure_status", "root_cause", "repair_result", "successful_strategy",
@@ -2562,8 +2565,15 @@ def valid_measurement_version_two(
     # Row 17, the cheapest cross-check in the design and the most valuable. `diagnostic_summary` is
     # produced by the frozen sequencing from `applied_edits`, and `edit_set` is produced from the
     # same `edits` list, so a divergence means the section 3.2 near-copy diverged.
+    #
+    # It is skipped on a **truncated** summary, and that exclusion is load bearing rather than a
+    # softening: `bounded_text` appends its marker at the end of a summary that exceeded
+    # `SUMMARY_LIMIT`, so the applied-edit list is exactly the part it cuts. Without this, a
+    # legitimate measurement with a long summary and many edits would be refused as malformed.
     marker = "applied edits: "
     summary = value["diagnostic_summary"]
+    if summary.endswith(SUMMARY_TRUNCATION_TEXT):
+        return True
     if marker in summary:
         named = [item for item in summary.rsplit(marker, 1)[1].split(", ") if item]
         if named != paths:

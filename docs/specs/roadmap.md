@@ -649,9 +649,120 @@ The current forward delivery order is:
     feedback, a persisted patch digest, and converging the Align `verification_loop`/`repair`
     modules with this loop are deferred with resume conditions.
 
-> Items 32 and 33 are Track B (`agent/r6-olmoe-decode`, `agent/r6-prefix-suffix-prefill`) and are
-> not yet on this branch's base. Item 34 is numbered on the assumption that 31, 32, and 33 land
-> first; the number is corrected at reconciliation if that changes.
+32. **R6-OLMOE-DECODE — `N` greedy decode steps on a routed model, and the per-step expert demand
+    they make.** Design and results in [`r6-olmoe-decode.md`](r6-olmoe-decode.md). Item 26 computes
+    one OLMoE prefill and measures that 33.36 % of the model's expert bytes are touched by it; item
+    30 makes a dense decode loop read zero weight bytes per step. Neither can say what a *routed*
+    decode step demands, and [`r3-residency-sim.md`](r3-residency-sim.md) section 8 — whose
+    four-word finding is **the intervention is decode** — could only simulate it over llama.cpp's
+    trace. This capability ships a **seventh arm**, `--moe-decode-step`, with `--decode-step`'s
+    operand shape position for position and its own document kind `R6_MOE_DECODE_STEP` at schema 1:
+    `N` greedy steps on OLMoE-1B-7B-0125-Instruct Q4_K_M over an Align-owned KV plane, each step
+    resolving that step's top-8 claims in **all sixteen** layers and computing only those experts,
+    weights **streamed**. Weights are streamed **because residency would destroy the measurement** —
+    item 30 makes `step_pack_bytes` zero by construction — so the two are mutually exclusive in one
+    invocation and demand measurement comes first. The design's probe record settles three things
+    before implementation, from two full-axis transcripts the item-22 instrument had already
+    produced: a decode graph does **not** narrow, so all sixteen layers route and the routing oracle
+    compares 8 of 8 slots on 16 of 16 layers where item 26 compared 546 of 728; the per-step demand
+    is therefore exactly `3,900,702,720 / 8 = 487,587,840` bytes, **125,000 ppm**, prompt- and
+    step-independent, and the same number `r3-residency-sim.md` section 8.1 publishes as the decode
+    arms' one-token working set; and the open quantity is the **union**, which over four steps on
+    one prompt grows 128 → 274 keys of 1,024 while **79.9 %** of those 274 *distinct* decode keys
+    were already read by the prefill. The plane is OLMoE's geometry in item 27's unchanged layout,
+    67,108,864 B at width 256 — **2.29×** the dense arm's on a model with a fifth of the parameters,
+    because sixteen KV heads beat twenty-eight layers. What it needed that did not exist: an
+    `OP_CONCAT` and a `WHEN_DECODE` condition in `src/layer_olmoe.align`, and a **thirty-seven-row**
+    decode phase-A table — `WHEN_WIDE` cannot be reused, because `ggml_pad` writes its source at
+    index 0 and a decode step's new column belongs at `n_past`. `MAX_PREFILL_TOKENS` moves
+    **6 → 32** so the self-reference oracle can run at `T + k` tokens, and the guard that keeps the
+    cap's original reason is **new**: `--moe-layer-forward` and `--moe-model-forward` did not ship
+    `R5_ORACLE_TRUNCATED` because at a cap of 6 the condition was unreachable, and both now refuse a
+    prefill above six tokens *with* a transcript exactly as the dense arms do. **No new ggml op, FFI
+    symbol, or shim body**, and `src/decode_step.align` is byte-unchanged; the dense arm's
+    `R6_ARCH_UNSUPPORTED` refusal keeps its meaning and gains a documented answer. Acceptance is
+    stated once in `r6-olmoe-decode.md` section 4.6: **gate G**, the `N` ids equal llama.cpp's over
+    a vocabulary whose fingerprint collision classes are measured before the gate is claimed;
+    **oracle R**, routing identity `MATCH` at every step over 128`N` of 128`N` ids; **oracle B**, the
+    plane round trip `IDENTICAL` at every step including the column that step wrote; **oracle C′** at
+    `k ∈ {1, ⌈N/2⌉, N}`; and **oracle T**, structurally complete at every step and numerically
+    admitted at step 1 only. **Measured**, four prompts x sixteen steps in 3 min 18 s: gate G over
+    64 ids, oracle R **`MATCH` at 8,192 of 8,192**, oracle B `IDENTICAL`, oracle T `PASS` with
+    `max_abs_diff` **0**, `expert_bytes` and `expert_pread_bytes` **both exactly 487,587,840 on all
+    64 steps** — a read amplification of **zero**, so the arm read exactly what it claimed. The
+    union over sixteen steps reaches 585, 698, 614 and 607 keys of 1,024, and the mean marginal cost
+    is 57.9, 92.3, 95.4 and 83.1 MB against the 487.6 MB a streamed step reads: **a 5.1x to 8.4x
+    gap**, which corrects the 9.2x a four-step probe suggested and is the honest size of the case for
+    a decode-side residency policy. "Four fifths of every decode demand is already in the prefill's
+    union" is likewise a short-window artifact: over sixteen steps it is 52.0 % to 75.2 %. Oracle C′
+    demoted to **characterization** by its own measurement — `mul_mat_id` is not stack-shape
+    invariant, 1 of 12 checkpoints byte-identical and 12 of 12 argmax-equal — exactly as the design
+    wrote both branches in advance. Owner `gmake layer-forward-smoke`, whose **seventh** block gains a
+    routed decode loop over the synthetic two-layer MoE model and runs the whole seven-block runner in
+    80 s; focused `gmake moe-decode-step-qualification`. **No TTFT or throughput claim and no cost ceiling** — the
+    claim is a byte demand and the byte counters are exact, published twice, arithmetically and from
+    the pack reader's own `pread` accounting, with a bounded relation between them. **What it leaves
+    open:** the R6 gate still asks that TTFT improve on repeated coding tasks *sharing a prefix*. A
+    routed decode loop that streams its weights and shares no prefix does not answer it; the gate
+    stays unmet, and the next capability toward it is resident dense weights with streamed experts,
+    whose input is this capability's per-step demand stream.
+33. **R6-PREFIX-SUFFIX-PREFILL — a saved prefix plane continued with a different suffix.** Design
+    and results in [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md). Item 29 made a
+    prefill plane outlive its process; it could only be reloaded for the prompt it was saved for,
+    because the arm had no graph that computes more than one column at `n_past > 0`. This capability
+    ships that graph. `--decode-step` gains a fifteenth operand, `SUFFIX` (a token id list or `-`),
+    legal only with `KV_LOAD`: the arm loads a container holding `T_prefix` columns for exactly the
+    tokens in `TOKENS`, runs **one suffix pass** — a decode-shaped graph set over the `S` suffix
+    tokens at absolute positions `T_prefix .. T_prefix+S-1`, causally masked over prefix-plus-suffix,
+    writing the suffix's K and V into the plane at columns `T_prefix ..` — and then continues the
+    existing `N`-step loop from `n_past = T_prefix + S`. Nothing is re-saved and the `akvp` format is
+    **byte-unchanged**, which is a consequence of keeping `TOKENS` meaning "the container's tokens":
+    every `R6_KV_*` identity check holds character for character, and `ds-suffix-tokens-mismatch`
+    proves it by having an **unmodified** L12 refuse a container written for the whole list when a
+    run supplies that list as a prefix. No new ggml op, shim symbol, node row, slot, or Align
+    surface: the decode node table becomes parameterised by its token count — **six** literals, one
+    more than the design predicted — and `mf_write_mask_offset` and `capture_plane` are called for
+    the first time with **both** of their existing parameters non-trivial. The oracle is that a
+    suffix run and a single-shot prefill of `TOKENS ++ SUFFIX` are **the same run**: byte-identical
+    documents outside a fixed exclusion list, byte-identical logits against `--model-forward` at the
+    whole prompt, byte-identical logits against `llama-debug --save-logits`, and identical decoded
+    ids, with the plane round trip verified over `T_prefix + S` columns before the first decode step.
+    Measured on the real model at every split, and hosted on three splits of a two-layer synthetic
+    model — where the design's load-bearing risk, that ggml's `MUL_MAT` selection might be
+    column-count-sensitive at `S >= 2` **and** `n_past > 0`, was discharged on the first
+    implementation checkpoint and never reappeared. Document schema **5** with a `suffix` object in
+    every document; `output` and `oracle_logits` describe the suffix pass's own logits on a completed
+    suffix run, with the container's vector still published in `kv`. Exact prefixes only: RoPE
+    positions are absolute, so prefix sharing is inherently **left-anchored**, and prefix truncation
+    is deferred. Owner `gmake layer-forward-smoke`, whose fifth block gains 22 cases and 21 golden
+    rows — three oracle-S splits, twelve refusals, and two forced builds that publish a partial pass,
+    plus a four-token comparand kept out of the cross-platform golden because its `l_out` digest
+    differs between arm64 and x86_64 in the last bit (section 11.3 deviation 7); focused
+    `gmake decode-step-qualification`, which splits each of the four prompts at up to two points and
+    needs **no new `llama-debug` run and no new instrument run**, because the split is on ids the
+    instrument already printed. **The R6 gate is still unmet:** this ships the *execution* half of
+    mechanism 2 (repo stable prefix KV) and none of its *lookup* half — there is still no prefix key,
+    no store, no corpus, and no prefix-sharing consumer — so TTFT is reported as a labelled
+    diagnostic on three legs and no claim is made. One surface is **narrower than the mechanism
+    allows**: `T_prefix >= 2` is required, raising `R6_SUFFIX` with detail `prefix[<n>]`, because a
+    one-token prefill computes the embedding of token 0 whatever the operand says — see the
+    follow-up below.
+
+    **Follow-up: `MF-SINGLE-TOKEN-LOGITS` (no item number yet).** A pre-existing defect this
+    capability found in an arm it does not touch: `model_forward.fill_members` gathers an embedding
+    row by id only when `pieces > 1`, so **any prompt of exactly one token computes the logits of
+    token 0**, silently and with `status: ok`, on `--layer-forward`, `--model-forward`,
+    `--moe-model-forward`, and `--decode-step`. The resident path does not share it
+    (`stage_embed_row` gathers by id at every count), and no golden in this repository exercises
+    `token_count == 1`, which is why it has been latent since R5B. The fix is a `gathered`
+    discriminator on `model_forward.GraphMembers` — eighteen construction sites across three modules
+    and four arms — with an `mf-tokens-one` row in `scripts/model-forward-golden.jsonl` and the same
+    question asked of `--moe-model-forward`; owner `gmake layer-forward-smoke`. It is **not** filed
+    inside item 33 because that would put an R5B correctness change inside a review scoped to a
+    suffix graph, and it takes a roadmap number when it is picked up rather than claiming one across
+    the reserved 31/32 gap. Its reproduction, evidence, and full field record are in
+    [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md) section 11.2. Completing it removes
+    item 33's `prefix[<n>]` refusal, which **widens** the accepted surface and needs no other change.
 
 34. **C4-REPAIR-EDITSET — the failing edit set in the repair prompt, through a second
     corpus-member adapter.** The direct consequence of item 31's measured negative. C4-REPAIR-
@@ -698,6 +809,29 @@ The current forward delivery order is:
     an uncontrolled confound. Recorded run-cost ceiling 60 minutes, expected 12-30, at most 22
     provider calls. Named focused qualification `make c4-editset-gate`; it joins no aggregate, and
     neither does the new owner test `make prompt-repair-adapter-smoke`.
+
+    **The gate is `NOT_MET`, and that is the published result.** The run made all 22 provider calls
+    the ceiling allowed — 12 initial plus 10 repair — in 940.931 s (15 min 41 s) against a recorded
+    60-minute ceiling. `repair_recovery_count` and `repair_recovery_paired_count` are both 0.
+    `repair_editset_attempt_count` came out at **exactly 6**, the value fixed before the run, so
+    the addressable arm was realized in full: every repair prompt that could carry `EDITSET` did,
+    and the drop ladder never fired at 8,348 to 16,904 assembled bytes of 65,536. **The question
+    item 31 could not answer is answered.** On all four rows where both attempts produced a patch,
+    `attempts[1].measurement.patch_sha256` equals `attempts[0]`'s exactly — the same bytes, not
+    merely the same byte count — so item 31's inference is now a verified identity. The persisted
+    edit set says more: on the two `record-codec-round-trip` CANDIDATE rows the model re-emitted a
+    byte-identical edit set, while on the two PARENT rows it dropped the file it had reproduced
+    unchanged and kept the other byte-identical, producing the same patch anyway. On the two
+    `duration-half-away-from-zero` PARENT rows it changed mode and got worse: shown its own
+    rejected answer it returned the pinned files **unchanged**, so every hunk is empty and no patch
+    is synthesized — a wrong patch replaced by a no-op. **Item 31's section 5.7 tie-breaker is
+    therefore answered in the negative:** on this model and this corpus the missing edit set was
+    not the binding constraint, and the next capability is the prompt, the template, and the edit
+    policy rather than more adapter work. Its first sub-problem is this capability's own recorded
+    gap — `edit_set` is `None` on every `PATCH` row (design section 11.3 deviation 14) — so the
+    answers the dominant mode produces are exactly the ones no artifact shows. Evidence in
+    `eval/prompt/c4-editset-gate/`; the per-row table and the analysis are in design section 11.4.
+
 
 > Items 35 and 36 are claimed on sibling branches (`agent/r6-moe-resident-dense`,
 > `agent/mf-single-token-logits`); 37 and 38 are reserved for Track B's `R6-PREFIX-KEY-CORPUS`,
@@ -971,9 +1105,21 @@ attempts were rendered from the run's own diagnostics, measured, bounded, and co
 recovered, so `repair_recovery_paired_count` is 0 and the qualification's verdict is `NOT_MET`.
 That is a measured negative, published as a result. It is provider-independent — no provider module
 changes — and it does not modify `src/repair.align` or `src/verification_loop.align`; converging
-the two loops is a named deferral in that document. The next capability toward a model-met C4 gate
-is the one that carries the failing edit set into the repair prompt, which needs either a re-freeze
-of `canonical-v1` or a second reviewed corpus-member adapter.
+the two loops is a named deferral in that document.
+
+### Second measured consumer: C4-REPAIR-EDITSET
+
+Item 34 above carried the failing attempt's own edit set into the repair prompt, through a second
+reviewed corpus-member adapter, and ran the gate again on the same predicate.
+`docs/specs/c4-repair-editset.md` section 11.4 is the authoritative record. **C4's gate is still
+not met by a model.** Six of the six addressable repair prompts carried `EDITSET`, none recovered,
+and `repair_recovery_paired_count` is 0 again. What the run settled is which capability comes next:
+`patch_sha256` shows attempt 2 re-sending attempt 1's **exact bytes**, and the persisted edit set
+shows the model reproducing pinned files unchanged rather than misunderstanding the diagnostics. So
+the missing edit set was not the binding constraint. The next capability toward a model-met C4 gate
+is a **prompt, template, and edit-policy** capability for the unchanged-file reproduction mode —
+starting with that document's section 11.3 deviation 14, which records that `edit_set` is discarded
+on exactly the rows where it would matter most.
 
 ---
 
